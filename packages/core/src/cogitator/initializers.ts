@@ -19,6 +19,8 @@ import {
   MongoDBAdapter,
   QdrantAdapter,
   ContextBuilder,
+  InMemoryEmbeddingAdapter,
+  MessageIndex,
   createEmbeddingService,
   type ContextBuilderDeps,
 } from '@cogitator-ai/memory';
@@ -67,6 +69,7 @@ export interface InitializerState {
   memoryAdapter?: MemoryAdapter;
   embeddingStore?: QdrantAdapter;
   contextBuilder?: ContextBuilder;
+  messageIndex?: MessageIndex;
   memoryInitialized: boolean;
   sandboxManager?: SandboxManager;
   sandboxInitialized: boolean;
@@ -111,17 +114,23 @@ export async function initializeMemory(
   if (memory.contextBuilder) {
     const embeddingAdapter =
       (await connectEmbeddingStore(memory, embeddingService, state)) ?? embeddingStoreOf(adapter);
-    const deps: ContextBuilderDeps = {
-      memoryAdapter: adapter,
-      ...(isFactAdapter(adapter) && { factAdapter: adapter }),
-      ...(embeddingAdapter && { embeddingAdapter }),
-      ...(embeddingService && { embeddingService }),
-    };
     const contextConfig = {
       ...memory.contextBuilder,
       strategy: memory.contextBuilder.strategy ?? 'recent',
       includeSystemPrompt: true,
     } as const;
+    const messageIndex =
+      contextConfig.strategy !== 'recent' && embeddingService
+        ? indexFor(adapter, embeddingAdapter, embeddingService)
+        : undefined;
+    state.messageIndex = messageIndex;
+    const deps: ContextBuilderDeps = {
+      memoryAdapter: adapter,
+      ...(isFactAdapter(adapter) && { factAdapter: adapter }),
+      ...(embeddingAdapter && { embeddingAdapter }),
+      ...(embeddingService && { embeddingService }),
+      ...(messageIndex && { messageIndex }),
+    };
     warnAboutMissingContextParts(memory.contextBuilder, deps);
     state.contextBuilder = new ContextBuilder(contextConfig, deps);
   } else if (memory.qdrant) {
@@ -131,6 +140,33 @@ export async function initializeMemory(
   }
 
   state.memoryInitialized = true;
+}
+
+/**
+ * The index keeping a vector per history entry for the `relevant` and `hybrid` strategies: in
+ * the embedding store when there is one, in process next to an in-process thread store. A thread
+ * store kept elsewhere without a vector store has none, the context builder then keeps vectors
+ * in process. Background failures are logged, as no run waits on them.
+ */
+function indexFor(
+  adapter: MemoryAdapter,
+  store: EmbeddingAdapter | undefined,
+  embedding: EmbeddingService
+): MessageIndex | undefined {
+  const vectors =
+    store ?? (adapter instanceof InMemoryAdapter ? new InMemoryEmbeddingAdapter() : undefined);
+  if (!vectors) return undefined;
+  const index = new MessageIndex({
+    store: vectors,
+    embedding,
+    onError: (error) =>
+      getLogger().warn('Indexing memory entries failed', {
+        operation: 'index',
+        error: error.message,
+      }),
+  });
+  index.attach(adapter);
+  return index;
 }
 
 /**
@@ -394,6 +430,10 @@ export function initializeContextManager(
 }
 
 export async function cleanupState(state: InitializerState): Promise<void> {
+  if (state.messageIndex) {
+    await state.messageIndex.close();
+    state.messageIndex = undefined;
+  }
   if (state.memoryAdapter) {
     await state.memoryAdapter.disconnect();
     state.memoryAdapter = undefined;

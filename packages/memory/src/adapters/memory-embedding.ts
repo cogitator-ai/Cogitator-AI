@@ -121,6 +121,12 @@ export class InMemoryEmbeddingAdapter implements EmbeddingAdapter, KeywordSearch
     return { success: true, data: undefined };
   }
 
+  async getBySources(sourceIds: string[]): Promise<MemoryResult<Embedding[]>> {
+    const wanted = new Set(sourceIds);
+    const found = [...this.embeddings.values()].filter((emb) => wanted.has(emb.sourceId));
+    return { success: true, data: found.map((emb) => ({ ...emb, vector: [...emb.vector] })) };
+  }
+
   async deleteByFilter(filter: EmbeddingDeleteFilter): Promise<MemoryResult<void>> {
     if (!hasDeleteCondition(filter)) return { success: false, error: EMPTY_DELETE_FILTER_ERROR };
     for (const [id, emb] of this.embeddings) {

@@ -35,6 +35,7 @@ Every built-in adapter behaves the same way, checked by one conformance suite ag
 - `toolCalls` and `toolResults` come back only with `includeToolCalls`, and a field that was never set is absent, never `null`.
 - `deleteThread` removes the thread's entries too, `clearThread` keeps the thread.
 - Returned threads and entries are copies: changing them does not change what is stored.
+- `onChange(listener)` reports every change once it is stored: `entry-added`, `entry-deleted` (also for entries InMemory drops at `maxEntries`), `thread-cleared` and `thread-deleted`. It returns a function that stops the listener. A listener that throws is logged and does not fail the write. The message index uses it, see [Context Builder](/docs/memory#context-builder).
 
 The suite ships in `@cogitator-ai/test-utils` as `memoryAdapterConformanceCases`, so an adapter of your own can be checked the same way (see [Test Utils](/docs/testing/test-utils#conformance-suites)).
 
@@ -166,6 +167,10 @@ On `connect()` the adapter creates the schema, the `threads`, `entries`, `facts`
 pgvector is only needed for embeddings. On a database without it (a managed Postgres without the extension, or a role not allowed to run `CREATE EXTENSION`), `connect()` still succeeds and threads, entries and facts work: the `embeddings` table is not created, a warning names the reason, and `addEmbedding`, `search`, `keywordSearch`, `deleteEmbedding` and `deleteBySource` return a failed result with it. `memory.vectorStatus()` returns `{ available: true, dimensions }` or `{ available: false, reason }`, and the `Cogitator` runtime does not use such a store for semantic context.
 
 HNSW needs no training data, so the index built on the empty table finds every row as the table fills up. Earlier versions built an `ivfflat` index there instead, which missed rows for small limits. The first `connect()` after upgrading replaces that index with HNSW, which on a large table takes a while. To avoid the wait, build the index ahead of the deploy with `CREATE INDEX CONCURRENTLY idx_embeddings_vector_new ON <schema>.embeddings USING hnsw (vector vector_cosine_ops)`, then drop the old index and rename the new one to `idx_embeddings_vector`. An existing HNSW index is kept as it is.
+
+Vectors of more than 2000 dimensions (such as the 3072 of `gemini-embedding-001` or `text-embedding-3-large`) are too large for a pgvector index on the column. Up to 4000 dimensions the adapter indexes the column cast to `halfvec` instead (pgvector 0.7 or later), and searches compare the same cast, so the index serves them while the stored vectors keep full precision. Larger vectors have no index and a warning says that searches scan every row.
+
+`connect()` records the layout of threads, entries and facts in `<schema>.schema_migrations` and changes the schema only when it is older than the adapter's, under an advisory lock, so processes starting at once do not race. A schema from before versions were recorded is brought up to date in place.
 
 `search()` sizes each query for the index: it raises `hnsw.ef_search` to the requested `limit` (up to 1000) and, on pgvector 0.8 or later, turns on iterative scans, so a large limit or a filter on agent, thread or user still gets every matching row. Equally similar rows are ordered by id, so the result does not depend on the query plan.
 

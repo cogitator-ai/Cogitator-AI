@@ -42,6 +42,13 @@ export {
 } from './context-builder';
 
 export {
+  MessageIndex,
+  indexedText,
+  type MessageIndexOptions,
+  type IndexedText,
+} from './message-index';
+
+export {
   countTokens,
   countMessageTokens,
   countMessagesTokens,

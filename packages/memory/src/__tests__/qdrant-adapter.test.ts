@@ -8,7 +8,13 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0
 
 type ClientSurface = Pick<
   RealQdrantClient,
-  'getCollections' | 'createCollection' | 'upsert' | 'query' | 'delete'
+  | 'getCollections'
+  | 'createCollection'
+  | 'upsert'
+  | 'query'
+  | 'delete'
+  | 'scroll'
+  | 'createPayloadIndex'
 >;
 
 const updated: Schemas['UpdateResult'] = { operation_id: 1, status: 'completed' };
@@ -19,6 +25,8 @@ const mockClient = {
   upsert: vi.fn<ClientSurface['upsert']>().mockResolvedValue(updated),
   query: vi.fn<ClientSurface['query']>(),
   delete: vi.fn<ClientSurface['delete']>().mockResolvedValue(updated),
+  scroll: vi.fn<ClientSurface['scroll']>(),
+  createPayloadIndex: vi.fn<ClientSurface['createPayloadIndex']>().mockResolvedValue(updated),
 } satisfies ClientSurface;
 
 vi.mock('@qdrant/js-client-rest', () => {
@@ -107,6 +115,9 @@ describe('QdrantAdapter', () => {
       expect(mockClient.createCollection).toHaveBeenCalledWith('new_collection', {
         vectors: { size: 768, distance: 'Cosine' },
       });
+      expect(mockClient.createPayloadIndex.mock.calls.map(([, index]) => index.field_name)).toEqual(
+        ['sourceId', 'sourceType', 'metadata.threadId']
+      );
     });
 
     it('skips collection creation if exists', async () => {
@@ -374,6 +385,17 @@ describe('QdrantAdapter', () => {
       });
     });
 
+    it('filters by any of several source types', async () => {
+      await adapter.search({ vector: [0.1], filter: { sourceType: ['fact', 'document'] } });
+
+      expect(mockClient.query).toHaveBeenCalledWith(
+        'test_collection',
+        expect.objectContaining({
+          filter: { must: [{ key: 'sourceType', match: { any: ['fact', 'document'] } }] },
+        })
+      );
+    });
+
     it('filters by user, letting through embeddings of no user', async () => {
       await adapter.search({ vector: [0.1], filter: { userId: 'alice' } });
 
@@ -555,6 +577,49 @@ describe('QdrantAdapter', () => {
       if (!result.success) {
         expect(result.error).toContain('Delete failed');
       }
+    });
+  });
+
+  describe('getBySources', () => {
+    it('reads the points of the sources with their vectors, page by page', async () => {
+      const point = (id: string, sourceId: string): Schemas['Record'] => ({
+        id,
+        payload: {
+          embeddingId: `emb_${id}`,
+          sourceId,
+          sourceType: 'message',
+          content: sourceId,
+          createdAt: new Date(0).toISOString(),
+          metadata: { threadId: 't' },
+        },
+        vector: [0.5, 0.25],
+      });
+      mockClient.scroll
+        .mockResolvedValueOnce({ points: [point('p1', 'e1')], next_page_offset: 'p2' })
+        .mockResolvedValueOnce({ points: [point('p2', 'e2')], next_page_offset: null });
+
+      const result = await adapter.getBySources(['e1', 'e2']);
+
+      expect(result.success && result.data.map((e) => [e.id, e.sourceId, e.vector])).toEqual([
+        ['emb_p1', 'e1', [0.5, 0.25]],
+        ['emb_p2', 'e2', [0.5, 0.25]],
+      ]);
+      expect(mockClient.scroll).toHaveBeenNthCalledWith(1, 'test_collection', {
+        filter: { must: [{ key: 'sourceId', match: { any: ['e1', 'e2'] } }] },
+        limit: 256,
+        with_payload: true,
+        with_vector: true,
+      });
+      expect(mockClient.scroll).toHaveBeenNthCalledWith(
+        2,
+        'test_collection',
+        expect.objectContaining({ offset: 'p2' })
+      );
+    });
+
+    it('reads nothing for no sources', async () => {
+      expect(await adapter.getBySources([])).toEqual({ success: true, data: [] });
+      expect(mockClient.scroll).not.toHaveBeenCalled();
     });
   });
 

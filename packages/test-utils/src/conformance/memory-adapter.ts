@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import type { MemoryAdapter, MemoryEntry, MemoryResult, Thread } from '@cogitator-ai/types';
+import type {
+  MemoryAdapter,
+  MemoryChange,
+  MemoryEntry,
+  MemoryResult,
+  Thread,
+} from '@cogitator-ai/types';
 
 /** A memory adapter under test. */
 export interface MemoryAdapterConformanceTarget<T extends MemoryAdapter = MemoryAdapter> {
@@ -34,7 +40,8 @@ export type MemoryAdapterScenario =
   | 'list-threads-refuses-bad-input'
   | 'list-threads-edges'
   | 'unserializable-values'
-  | 'refuses-empty-thread-id';
+  | 'refuses-empty-thread-id'
+  | 'reports-changes';
 
 /** One case of the memory adapter contract. */
 export interface MemoryAdapterConformanceCase {
@@ -516,6 +523,47 @@ const SCENARIOS: Record<MemoryAdapterScenario, (adapter: MemoryAdapter) => Promi
     const result = stored[0].toolResults?.[0]?.result as Record<string, unknown> | undefined;
     assert.equal(result?.ok, true, 'the storable part of a tool result is kept');
     assert.equal(typeof result?.fn, 'undefined', 'a function is stored as nothing');
+  },
+
+  async 'reports-changes'(adapter) {
+    if (!adapter.onChange) return;
+    const { agentId, threadId } = scope();
+    const id = threadId();
+    const other = threadId();
+    const changes: MemoryChange[] = [];
+    const stop = adapter.onChange((change) => changes.push(change));
+    try {
+      await newThread(adapter, agentId, id);
+      await newThread(adapter, agentId, other);
+      const first = ok(
+        await adapter.addEntry({ threadId: id, message: user('one'), tokenCount: 1 }),
+        'addEntry'
+      );
+      refused(
+        await adapter.addEntry({ threadId: `${id}-missing`, message: user('x'), tokenCount: 1 }),
+        'addEntry into a missing thread'
+      );
+      ok(await adapter.deleteEntry(first.id), 'deleteEntry');
+      ok(await adapter.clearThread(id), 'clearThread');
+      ok(await adapter.deleteThread(other), 'deleteThread');
+    } finally {
+      stop();
+    }
+    ok(await adapter.addEntry({ threadId: id, message: user('after'), tokenCount: 1 }), 'addEntry');
+
+    assert.deepEqual(
+      changes.map((change) => change.type),
+      ['entry-added', 'entry-deleted', 'thread-cleared', 'thread-deleted'],
+      'each change once, none for a refused write or after the listener stopped'
+    );
+    const [added, deleted, cleared, dropped] = changes;
+    assert.ok(added.type === 'entry-added');
+    assert.equal(contents([added.entry])[0], 'one');
+    assert.equal(added.entry.threadId, id);
+    assert.ok(deleted.type === 'entry-deleted');
+    assert.equal(deleted.entryId, added.entry.id);
+    assert.deepEqual(cleared, { type: 'thread-cleared', threadId: id });
+    assert.deepEqual(dropped, { type: 'thread-deleted', threadId: other });
   },
 
   async 'refuses-empty-thread-id'(adapter) {

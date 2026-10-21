@@ -141,7 +141,7 @@ await memory.connect();
 memory.vectorStatus(); // { available: true, dimensions: 1536 } or { available: false, reason }
 ```
 
-On `connect()` the adapter creates its tables and an HNSW cosine index on the embeddings, which works from the first row on (no training data needed). An `ivfflat` index left by an earlier version is replaced on the first connect after upgrading, see the [adapters docs](https://cogitator.app/docs/memory/adapters) for building the new index ahead of time on a large table. `search()` raises `hnsw.ef_search` to the requested limit and, on pgvector 0.8+, uses iterative scans, so large limits and filters still get every matching row. Messages, tool calls, tool results and metadata are stored as `jsonb`.
+On `connect()` the adapter creates its tables and an HNSW cosine index on the embeddings, which works from the first row on (no training data needed). An `ivfflat` index left by an earlier version is replaced on the first connect after upgrading, see the [adapters docs](https://cogitator.app/docs/memory/adapters) for building the new index ahead of time on a large table. `search()` raises `hnsw.ef_search` to the requested limit and, on pgvector 0.8+, uses iterative scans, so large limits and filters still get every matching row. Vectors of 2001 to 4000 dimensions are indexed as `halfvec` (pgvector 0.7+), larger ones are searched without an index. The schema version is kept in `<schema>.schema_migrations`, so a `connect()` changes tables only after an upgrade. Messages, tool calls, tool results and metadata are stored as `jsonb`.
 
 pgvector is only needed for embeddings. Without it, `connect()` still succeeds and threads, entries and facts work, while embedding operations return a failed result naming the reason (also logged at connect). An existing `embeddings` table keeps its vector size: an adapter without `dimensions` adopts it, one configured for another size reports the mismatch through `vectorStatus()` and the failed results instead of failing each search with a Postgres error.
 
@@ -340,7 +340,21 @@ Strategies:
 - `relevant` - messages ranked by embedding similarity to `currentInput` (requires `embeddingService`; falls back to `recent` without input), returned in chronological order
 - `hybrid` - always keeps the latest messages and fills the remaining budget with the most relevant older ones
 
-The system prompt is always kept and counted: history gets what it leaves of `maxTokens - reserveTokens`, and a prompt larger than that is still sent whole, with a note in `warnings`. Entries are counted by their text, tool call arguments and images rather than only by their saved `tokenCount`. `relevant` and `hybrid` score the newest 200 entries and embed each entry once per builder (vectors are cached by entry id).
+The system prompt is always kept and counted: history gets what it leaves of `maxTokens - reserveTokens`, and a prompt larger than that is still sent whole, with a note in `warnings`. Entries are counted by their text, tool call arguments and images rather than only by their saved `tokenCount`. `relevant` and `hybrid` score the newest 200 entries and embed each entry once per builder (vectors are cached by entry id). Give the builder a `messageIndex` to keep those vectors in an embedding store instead: each entry is embedded once, in the background, and older entries of the thread are found by a search of the store.
+
+```typescript
+import { MessageIndex } from '@cogitator-ai/memory';
+
+const index = new MessageIndex({ store: postgres, embedding: embeddings });
+index.attach(memory); // background embedding of new entries, vectors deleted with their entries
+
+const builder = new ContextBuilder(
+  { maxTokens: 8000, strategy: 'relevant' },
+  { memoryAdapter: memory, embeddingService: embeddings, messageIndex: index }
+);
+```
+
+Every built-in adapter reports its changes through `onChange(listener)` (`entry-added`, `entry-deleted`, `thread-cleared`, `thread-deleted`), which is what `attach` listens to, and every built-in embedding store reads vectors by source with `getBySources(ids)`.
 
 ### Basic Usage
 

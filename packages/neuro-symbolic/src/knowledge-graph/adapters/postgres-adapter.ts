@@ -19,6 +19,8 @@ import {
   detectVectorSearchTuning,
   ensureHnswCosineIndex,
   hnswSearchSettings,
+  vectorColumnPlan,
+  type VectorColumnPlan,
   type VectorSearchTuning,
 } from './pgvector';
 
@@ -61,7 +63,8 @@ export class PostgresGraphAdapter implements GraphAdapter {
   private config: PostgresGraphAdapterConfig;
   private schema: string;
   private vectorDimensions: number;
-  private vectorTuning: VectorSearchTuning = { iterativeScan: false };
+  private vectorTuning: VectorSearchTuning = { iterativeScan: false, halfvec: false };
+  private vectorPlan: VectorColumnPlan = vectorColumnPlan('embedding', 0, { halfvec: false });
 
   constructor(config: PostgresGraphAdapterConfig) {
     this.config = config;
@@ -174,14 +177,22 @@ export class PostgresGraphAdapter implements GraphAdapter {
     `);
 
     try {
-      await ensureHnswCosineIndex(this.pool, {
-        schema: this.schema,
-        table: 'graph_nodes',
-        column: 'embedding',
-        index: 'idx_graph_nodes_embedding',
-      });
       this.vectorTuning = await detectVectorSearchTuning(this.pool);
-    } catch {}
+      this.vectorPlan = vectorColumnPlan('embedding', this.vectorDimensions, this.vectorTuning);
+      this.vectorPlan = await ensureHnswCosineIndex(
+        this.pool,
+        {
+          schema: this.schema,
+          table: 'graph_nodes',
+          column: 'embedding',
+          index: 'idx_graph_nodes_embedding',
+          dimensions: this.vectorDimensions,
+        },
+        this.vectorTuning
+      );
+    } catch (err) {
+      console.warn('Failed to create the graph node vector index:', (err as Error).message);
+    }
   }
 
   async disconnect(): Promise<MemoryResult<void>> {
@@ -407,15 +418,16 @@ export class PostgresGraphAdapter implements GraphAdapter {
     params.push(settings.candidates, limit);
     const candidatesParam = params.length - 1;
     const limitParam = params.length;
+    const distance = this.vectorPlan.distance('$1');
 
     const sql = `
       SELECT * FROM (
-        SELECT *, 1 - (embedding <=> $1) as score
+        SELECT *, 1 - (${distance}) as score
         FROM ${this.schema}.graph_nodes
         WHERE agent_id = $2
           AND embedding IS NOT NULL
-          AND 1 - (embedding <=> $1) >= $3${typeFilter}
-        ORDER BY embedding <=> $1
+          AND 1 - (${distance}) >= $3${typeFilter}
+        ORDER BY ${distance}
         LIMIT $${candidatesParam}
       ) nearest
       ORDER BY score DESC, id

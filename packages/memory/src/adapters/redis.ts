@@ -449,6 +449,13 @@ export class RedisAdapter extends BaseMemoryAdapter {
   }
 
   async deleteThread(threadId: string): Promise<MemoryResult<void>> {
+    return this.reported(await this.dropThread(threadId), () => ({
+      type: 'thread-deleted',
+      threadId,
+    }));
+  }
+
+  private async dropThread(threadId: string): Promise<MemoryResult<void>> {
     if (threadId === '') return this.success(undefined);
     return this.run(async (client) => {
       await client.eval(
@@ -575,6 +582,13 @@ export class RedisAdapter extends BaseMemoryAdapter {
   }
 
   async addEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>> {
+    return this.reported(await this.storeEntry(entry), (stored) => ({
+      type: 'entry-added',
+      entry: stored,
+    }));
+  }
+
+  private async storeEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>> {
     return this.run(async (client) => {
       const id = this.generateId('entry');
       const createdAt = this.entryTimestamp(entry);
@@ -674,6 +688,13 @@ export class RedisAdapter extends BaseMemoryAdapter {
   }
 
   async deleteEntry(entryId: string): Promise<MemoryResult<void>> {
+    return this.reported(await this.removeEntry(entryId), () => ({
+      type: 'entry-deleted',
+      entryId,
+    }));
+  }
+
+  private async removeEntry(entryId: string): Promise<MemoryResult<void>> {
     return this.run(async (client) => {
       const key = this.key('entry', entryId);
       const data = await client.get(key);
@@ -687,6 +708,13 @@ export class RedisAdapter extends BaseMemoryAdapter {
   }
 
   async clearThread(threadId: string): Promise<MemoryResult<void>> {
+    return this.reported(await this.emptyThread(threadId), () => ({
+      type: 'thread-cleared',
+      threadId,
+    }));
+  }
+
+  private async emptyThread(threadId: string): Promise<MemoryResult<void>> {
     return this.run(async (client) => {
       await client.eval(DROP_ENTRIES, 1, this.key('thread:entries', threadId));
       return this.success(undefined);

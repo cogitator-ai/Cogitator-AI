@@ -13,6 +13,8 @@ import type {
   NewMemoryEntry,
   ListThreadsOptions,
   ThreadPage,
+  MemoryChange,
+  MemoryChangeListener,
 } from '@cogitator-ai/types';
 
 const MAX_TRACKED_THREADS = 10_000;
@@ -52,6 +54,34 @@ export abstract class BaseMemoryAdapter implements MemoryAdapter {
   abstract disconnect(): Promise<MemoryResult<void>>;
 
   private lastEntryTimes = new Map<string, number>();
+  private readonly changeListeners = new Set<MemoryChangeListener>();
+
+  onChange(listener: MemoryChangeListener): () => void {
+    this.changeListeners.add(listener);
+    return () => {
+      this.changeListeners.delete(listener);
+    };
+  }
+
+  /**
+   * `result`, after telling the change listeners about the change it made when it succeeded. A
+   * listener that throws is logged and does not fail the write.
+   */
+  protected reported<T>(
+    result: MemoryResult<T>,
+    change: (data: T) => MemoryChange
+  ): MemoryResult<T> {
+    if (!result.success || this.changeListeners.size === 0) return result;
+    const made = change(result.data);
+    for (const listener of this.changeListeners) {
+      try {
+        listener(made);
+      } catch (error) {
+        console.warn(`[${this.provider} memory] A change listener failed:`, error);
+      }
+    }
+    return result;
+  }
 
   protected generateId(prefix: string): string {
     return `${prefix}_${nanoid(12)}`;

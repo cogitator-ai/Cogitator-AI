@@ -629,8 +629,8 @@ describe('PostgresAdapter', () => {
       });
 
       const lastCall = mockPool.query.mock.calls[mockPool.query.mock.calls.length - 1];
-      expect(lastCall[0]).toContain('source_type =');
-      expect(lastCall[1]).toContain('fact');
+      expect(lastCall[0]).toContain('source_type = ANY(');
+      expect(lastCall[1]).toContainEqual(['fact']);
     });
 
     it('filters search by user, letting through embeddings of no user', async () => {

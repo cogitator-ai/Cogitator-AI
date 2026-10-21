@@ -16,7 +16,12 @@ import type {
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { unwrap } from '../result';
-import { ensureHnswCosineIndex } from '../adapters/pgvector';
+import {
+  detectVectorSearchTuning,
+  ensureHnswCosineIndex,
+  vectorColumnPlan,
+  type VectorColumnPlan,
+} from '../adapters/pgvector';
 
 type Pool = {
   query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
@@ -34,6 +39,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
   private pool: Pool;
   private schema: string;
   private vectorDimensions: number;
+  private vectorPlan: VectorColumnPlan = vectorColumnPlan('embedding', 0, { halfvec: false });
   private initPromise?: Promise<void>;
 
   constructor(config: PostgresGraphAdapterConfig) {
@@ -133,14 +139,23 @@ export class PostgresGraphAdapter implements GraphAdapter {
       ON ${this.schema}.graph_edges(agent_id, type)
     `);
 
+    const tuning = await detectVectorSearchTuning(this.pool);
+    this.vectorPlan = vectorColumnPlan('embedding', this.vectorDimensions, tuning);
     try {
-      await ensureHnswCosineIndex(this.pool, {
-        schema: this.schema,
-        table: 'graph_nodes',
-        column: 'embedding',
-        index: 'idx_graph_nodes_embedding',
-      });
-    } catch {}
+      this.vectorPlan = await ensureHnswCosineIndex(
+        this.pool,
+        {
+          schema: this.schema,
+          table: 'graph_nodes',
+          column: 'embedding',
+          index: 'idx_graph_nodes_embedding',
+          dimensions: this.vectorDimensions,
+        },
+        tuning
+      );
+    } catch (err) {
+      console.warn('Failed to create the graph node vector index:', (err as Error).message);
+    }
   }
 
   private success<T>(data: T): MemoryResult<T> {
@@ -347,10 +362,11 @@ export class PostgresGraphAdapter implements GraphAdapter {
       const limit = options.limit ?? 10;
       const threshold = options.threshold ?? 0.7;
 
+      const distance = this.vectorPlan.distance('$1');
       let sql = `
-        SELECT *, 1 - (embedding <=> $1) as score
+        SELECT *, 1 - (${distance}) as score
         FROM ${this.schema}.graph_nodes
-        WHERE agent_id = $2 AND embedding IS NOT NULL AND 1 - (embedding <=> $1) >= $3
+        WHERE agent_id = $2 AND embedding IS NOT NULL AND 1 - (${distance}) >= $3
       `;
       const params: unknown[] = [vectorStr, options.agentId, threshold];
       let paramIndex = 4;
@@ -360,7 +376,7 @@ export class PostgresGraphAdapter implements GraphAdapter {
         params.push(options.entityTypes);
       }
 
-      sql += ` ORDER BY embedding <=> $1 LIMIT $${paramIndex}`;
+      sql += ` ORDER BY ${distance} LIMIT $${paramIndex}`;
       params.push(limit);
 
       const result = await this.pool.query(sql, params);

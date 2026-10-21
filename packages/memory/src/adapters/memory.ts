@@ -141,6 +141,13 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
   }
 
   async deleteThread(threadId: string): Promise<MemoryResult<void>> {
+    return this.reported(await this.dropThread(threadId), () => ({
+      type: 'thread-deleted',
+      threadId,
+    }));
+  }
+
+  private async dropThread(threadId: string): Promise<MemoryResult<void>> {
     const entryIds = this.threadEntries.get(threadId) ?? [];
     for (const id of entryIds) {
       this.entries.delete(id);
@@ -151,6 +158,13 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
   }
 
   async addEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>> {
+    return this.reported(await this.storeEntry(entry), (stored) => ({
+      type: 'entry-added',
+      entry: stored,
+    }));
+  }
+
+  private async storeEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>> {
     if (!this.threads.has(entry.threadId)) {
       return this.failure(`Thread not found: ${entry.threadId}`);
     }
@@ -211,6 +225,13 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
   }
 
   async deleteEntry(entryId: string): Promise<MemoryResult<void>> {
+    return this.reported(await this.removeEntry(entryId), () => ({
+      type: 'entry-deleted',
+      entryId,
+    }));
+  }
+
+  private async removeEntry(entryId: string): Promise<MemoryResult<void>> {
     const entry = this.entries.get(entryId);
     if (entry) {
       const threadList = this.threadEntries.get(entry.threadId);
@@ -224,6 +245,13 @@ export class InMemoryAdapter extends BaseMemoryAdapter {
   }
 
   async clearThread(threadId: string): Promise<MemoryResult<void>> {
+    return this.reported(await this.emptyThread(threadId), () => ({
+      type: 'thread-cleared',
+      threadId,
+    }));
+  }
+
+  private async emptyThread(threadId: string): Promise<MemoryResult<void>> {
     const entryIds = this.threadEntries.get(threadId) ?? [];
     for (const id of entryIds) {
       this.entries.delete(id);

@@ -190,9 +190,9 @@ describe('PostgresAdapter vector store', () => {
       expect(searchParams?.[1]).toBe('{"namespace":"docs"}');
       const [deleteSql, deleteParams] = pool.query.mock.calls[1];
       expect(deleteSql.replace(/\s+/g, ' ')).toBe(
-        'DELETE FROM cogitator.embeddings WHERE TRUE AND source_type = $1 AND metadata @> $2::jsonb'
+        'DELETE FROM cogitator.embeddings WHERE TRUE AND source_type = ANY($1::text[]) AND metadata @> $2::jsonb'
       );
-      expect(deleteParams).toEqual(['document', '{"source":"/a.md","namespace":"docs"}']);
+      expect(deleteParams).toEqual([['document'], '{"source":"/a.md","namespace":"docs"}']);
     });
 
     it('refuses a delete filter without conditions', async () => {

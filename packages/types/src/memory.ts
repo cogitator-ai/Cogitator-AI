@@ -193,6 +193,18 @@ export interface SemanticSearchOptions {
 }
 
 /**
+ * A change an adapter made to what it stores, reported once the write succeeded. An entry the
+ * adapter dropped to stay within its limits is reported as deleted.
+ */
+export type MemoryChange =
+  | { type: 'entry-added'; entry: MemoryEntry }
+  | { type: 'entry-deleted'; entryId: string; threadId?: string }
+  | { type: 'thread-cleared'; threadId: string }
+  | { type: 'thread-deleted'; threadId: string };
+
+export type MemoryChangeListener = (change: MemoryChange) => void;
+
+/**
  * Core memory adapter - all adapters implement this
  */
 export interface MemoryAdapter {
@@ -218,6 +230,12 @@ export interface MemoryAdapter {
   getEntry(entryId: string): Promise<MemoryResult<MemoryEntry | null>>;
   deleteEntry(entryId: string): Promise<MemoryResult<void>>;
   clearThread(threadId: string): Promise<MemoryResult<void>>;
+  /**
+   * Calls `listener` with every change the adapter makes from now on, until the returned
+   * function is called. The built-in adapters report every change; one that does not is still
+   * read correctly, its entries are only indexed when a context is built.
+   */
+  onChange?(listener: MemoryChangeListener): () => void;
 
   connect(): Promise<MemoryResult<void>>;
   disconnect(): Promise<MemoryResult<void>>;
@@ -245,6 +263,8 @@ export interface EmbeddingAdapter {
   search(options: SemanticSearchOptions): Promise<MemoryResult<(Embedding & { score: number })[]>>;
   deleteEmbedding(embeddingId: string): Promise<MemoryResult<void>>;
   deleteBySource(sourceId: string): Promise<MemoryResult<void>>;
+  /** The embeddings of these sources, vectors included, in no particular order */
+  getBySources?(sourceIds: string[]): Promise<MemoryResult<Embedding[]>>;
   /**
    * Deletes every embedding the filter matches; a filter without any condition is rejected.
    * Built-in stores implement it, RAG re-ingest needs it to replace a source's chunks.
@@ -383,7 +403,8 @@ export interface HybridSearchWeights {
 }
 
 export interface SearchFilter {
-  sourceType?: Embedding['sourceType'];
+  /** One source type, or any of several */
+  sourceType?: Embedding['sourceType'] | Embedding['sourceType'][];
   threadId?: string;
   agentId?: string;
   /** Only embeddings of this user (`metadata.userId`) and those of no user */

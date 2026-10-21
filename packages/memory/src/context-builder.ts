@@ -23,6 +23,7 @@ import type {
 } from '@cogitator-ai/types';
 import type { GraphContextBuilder } from './knowledge-graph/graph-context-builder';
 import { countEntryTokens, countMessageTokens, countTokens } from './token-counter';
+import { indexedText, type IndexedText, type MessageIndex } from './message-index';
 
 const SEMANTIC_RESULTS = 5;
 
@@ -34,6 +35,12 @@ const MAX_SCORED_ENTRIES = 200;
 
 /** History entry vectors kept per builder, so an entry is embedded once rather than every turn. */
 const ENTRY_VECTOR_CACHE_SIZE = 4096;
+
+/** Entries older than the scored window a `messageIndex` search may bring back */
+const INDEX_SEARCH_RESULTS = 50;
+
+/** What semantic context searches: facts and documents, never the vectors of messages */
+const SEMANTIC_SOURCES: Embedding['sourceType'][] = ['fact', 'document'];
 
 /** The value of a memory operation, or an error naming the operation that failed. */
 function unwrap<T>(result: MemoryResult<T>, operation: string): T {
@@ -66,6 +73,12 @@ export interface ContextBuilderDeps {
   embeddingAdapter?: EmbeddingAdapter;
   embeddingService?: EmbeddingService;
   graphContextBuilder?: GraphContextBuilder;
+  /**
+   * Vectors of history entries kept in an embedding store. With it `relevant` and `hybrid`
+   * embed only the input and the entries not indexed yet, and find older entries of the thread
+   * by a search of the store. Without it the builder keeps vectors in process.
+   */
+  messageIndex?: MessageIndex;
 }
 
 export interface BuildContextOptions {
@@ -303,7 +316,10 @@ export class ContextBuilder {
         vector,
         limit: SEMANTIC_RESULTS * 4,
         threshold: 0.7,
-        ...(options.userId !== undefined && { filter: { userId: options.userId } }),
+        filter: {
+          sourceType: SEMANTIC_SOURCES,
+          ...(options.userId !== undefined && { userId: options.userId }),
+        },
       }),
       'search'
     );
@@ -429,9 +445,10 @@ export class ContextBuilder {
   }
 
   /**
-   * Similarity of the newest {@link MAX_SCORED_ENTRIES} user/assistant text entries to the
-   * input, best first. Each entry is embedded once: its vector is kept by entry id, so a turn
-   * only embeds the input and the entries added since the last build. Returns null, recording a
+   * Similarity of user/assistant text entries to the input, best first. The newest
+   * {@link MAX_SCORED_ENTRIES} are scored against their vectors, each embedded once: kept in the
+   * `messageIndex` when there is one, else by entry id in process. With a `messageIndex`, older
+   * entries the store finds close to the input are scored too. Returns null, recording a
    * `relevance` error, when embedding fails.
    */
   private async scoreEntries(
@@ -443,37 +460,42 @@ export class ContextBuilder {
     const embeddingService = this.deps.embeddingService;
     if (!embeddingService) return null;
 
-    const embeddable: { entry: MemoryEntry; text: string }[] = [];
+    const embeddable: { entry: MemoryEntry; text: IndexedText }[] = [];
     for (const entry of entries) {
-      if (entry.message.role !== 'user' && entry.message.role !== 'assistant') continue;
-      const content = entry.message.content;
-      if (typeof content === 'string' && content.trim().length > 0) {
-        embeddable.push({ entry, text: content });
-      }
+      const text = indexedText(entry);
+      if (text) embeddable.push({ entry, text });
     }
     const candidates = embeddable.slice(-MAX_SCORED_ENTRIES);
     if (candidates.length === 0) return [];
-
-    const missing = candidates.filter(({ entry }) => !this.entryVectors.has(entry.id));
+    const older = embeddable.slice(0, embeddable.length - candidates.length);
+    const index = this.deps.messageIndex;
 
     try {
+      const texts = candidates.map(({ text }) => text);
       const [inputVector, vectors] = await Promise.all([
         embeddingService.embed(input),
-        missing.length > 0 ? embeddingService.embedBatch(missing.map((e) => e.text)) : [],
+        index ? index.vectorsOf(texts) : this.processVectors(texts),
       ]);
-      if (vectors.length !== missing.length) {
-        throw new Error(
-          `Embedding returned ${vectors.length} vectors for ${missing.length} history entries`
-        );
-      }
-      missing.forEach(({ entry }, i) => this.rememberVector(entry.id, vectors[i]));
 
       const scored: { entry: MemoryEntry; score: number }[] = [];
       for (const { entry } of candidates) {
-        const vector = this.recallVector(entry.id);
+        const vector = vectors.get(entry.id);
         if (!vector) continue;
         const score = this.cosineSimilarity(inputVector, vector);
         if (score > minScore) scored.push({ entry, score });
+      }
+
+      if (index && older.length > 0) {
+        const found = await index.search(
+          older[0].entry.threadId,
+          inputVector,
+          INDEX_SEARCH_RESULTS + candidates.length,
+          minScore
+        );
+        for (const { entry } of older) {
+          const score = found.get(entry.id);
+          if (score !== undefined && score > minScore) scored.push({ entry, score });
+        }
       }
       return scored.sort((a, b) => b.score - a.score);
     } catch (err) {
@@ -483,6 +505,27 @@ export class ContextBuilder {
       });
       return null;
     }
+  }
+
+  /** Vectors of `texts` by entry id from the builder's own cache, embedding the ones it lacks */
+  private async processVectors(texts: IndexedText[]): Promise<Map<string, Float32Array>> {
+    const embeddingService = this.deps.embeddingService;
+    const missing = texts.filter(({ entryId }) => !this.entryVectors.has(entryId));
+    if (embeddingService && missing.length > 0) {
+      const vectors = await embeddingService.embedBatch(missing.map(({ text }) => text));
+      if (vectors.length !== missing.length) {
+        throw new Error(
+          `Embedding returned ${vectors.length} vectors for ${missing.length} history entries`
+        );
+      }
+      missing.forEach(({ entryId }, i) => this.rememberVector(entryId, vectors[i]));
+    }
+    const found = new Map<string, Float32Array>();
+    for (const { entryId } of texts) {
+      const vector = this.recallVector(entryId);
+      if (vector) found.set(entryId, vector);
+    }
+    return found;
   }
 
   private rememberVector(entryId: string, vector: number[]): void {
