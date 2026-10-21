@@ -255,3 +255,30 @@ describe('MemoryItems', () => {
     ]);
   });
 });
+
+describe('MemoryItems at once', () => {
+  it('keeps one current state of a slot and one entity when writes race', async () => {
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    const writers = Array.from({ length: 5 }, () => new MemoryItems({ adapter }));
+    const cities = ['Porto', 'Lisbon', 'Braga', 'Faro', 'Evora'];
+
+    await Promise.all(
+      cities.map((city, at) =>
+        writers[at]!.write([
+          said({
+            content: `Ana lives in ${city}`,
+            subject: 'Ana',
+            attribute: 'home city',
+            value: city,
+            sessionAt: day(at + 1),
+          }),
+        ])
+      )
+    );
+
+    const current = await writers[0]!.query({ scope });
+    expect(current.map((item) => item.value)).toEqual(['Evora']);
+    const entities = await adapter.findEntities({ agentId: 'a' });
+    expect(entities.success && entities.data).toHaveLength(1);
+  });
+});

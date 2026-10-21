@@ -18,6 +18,9 @@ import type {
   NewMemoryItem,
 } from '@cogitator-ai/types';
 
+/** Writes in progress, per storage and agent, which the next write of the same agent waits for */
+const writing = new WeakMap<MemoryItemAdapter, Map<string, Promise<void>>>();
+
 /** Confidence an item needs to become `active` on its own */
 export const DEFAULT_ACTIVATION_CONFIDENCE = 0.7;
 /** How much an opinion said again gains, and one said otherwise by a weaker source loses */
@@ -163,11 +166,38 @@ export class MemoryItems {
     return trusted && item.confidence >= this.threshold ? 'active' : 'suggested';
   }
 
-  /** Writes `items` in order, see {@link MemoryItems} for the rules, and returns them as kept */
+  /**
+   * Writes `items` in order, see {@link MemoryItems} for the rules, and returns them as kept.
+   * Writes of one agent's memory in this process go one after another, so two of the same slot
+   * never both stay current and one name never becomes two entities.
+   */
   async write(items: readonly NewMemoryItem[]): Promise<MemoryItem[]> {
     const written: MemoryItem[] = [];
-    for (const item of items) written.push(await this.writeOne(item));
+    for (const item of items) {
+      written.push(await this.exclusive(item.scope.agentId, () => this.writeOne(item)));
+    }
     return written;
+  }
+
+  /** Runs `work` after every write of `agentId`'s memory before it in this process */
+  private async exclusive<T>(agentId: string, work: () => Promise<T>): Promise<T> {
+    let agents = writing.get(this.adapter);
+    if (!agents) {
+      agents = new Map();
+      writing.set(this.adapter, agents);
+    }
+    const before = agents.get(agentId) ?? Promise.resolve();
+    const run = before.then(work, work);
+    const settled = run.then(
+      () => undefined,
+      () => undefined
+    );
+    agents.set(agentId, settled);
+    try {
+      return await run;
+    } finally {
+      if (agents.get(agentId) === settled) agents.delete(agentId);
+    }
   }
 
   private async writeOne(input: NewMemoryItem): Promise<MemoryItem> {
@@ -387,10 +417,14 @@ export class MemoryItems {
 
   /** Makes a `suggested` item `active`, such as one the user confirmed, closing what it follows */
   async activate(itemId: string): Promise<MemoryItem> {
-    const item = unwrap(await this.adapter.getItem(itemId));
-    if (!item) throw new Error(`No memory item ${itemId}`);
-    if (item.status === 'active') return item;
-    return this.writeState({ ...item, status: 'active' }, item.id);
+    const found = unwrap(await this.adapter.getItem(itemId));
+    if (!found) throw new Error(`No memory item ${itemId}`);
+    return this.exclusive(found.scope.agentId, async () => {
+      const item = unwrap(await this.adapter.getItem(itemId));
+      if (!item) throw new Error(`No memory item ${itemId}`);
+      if (item.status === 'active') return item;
+      return this.writeState({ ...item, status: 'active' }, item.id);
+    });
   }
 
   /** Marks items as no longer trusted to hold: kept and found by `statuses: ['stale']` */
