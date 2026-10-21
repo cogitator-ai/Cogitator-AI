@@ -106,8 +106,9 @@ const THREAD_TIME = "date_trunc('milliseconds', updated_at AT TIME ZONE 'UTC')";
  * indexes. 2: entries form trees (`parent_id`, `type`, `event`, `format_version`) and threads
  * name their active leaf, entries written before are chained in the order they were added. 3:
  * memory items and their entity index, every row of `facts` becomes an item of the fact's own
- * slot with the fact's id, and the old table is kept as `facts_legacy`. A schema from before
- * versions were recorded is brought up to date in place.
+ * slot with the fact's id, and the old table is kept as `facts_legacy`. 4: memory file versions
+ * (`memory_file_versions`), a new table and nothing moved. A schema from before versions were
+ * recorded is brought up to date in place.
  */
 const MEMORY_SCHEMA_VERSION = 4;
 
@@ -492,7 +493,7 @@ export class PostgresAdapter
     await db.query(`DROP TABLE ${facts}`);
   }
 
-  /** Brings threads, entries and memory items to {@link MEMORY_SCHEMA_VERSION} */
+  /** Brings threads, entries, memory items and memory files to {@link MEMORY_SCHEMA_VERSION} */
   private async migrate(connection: SqlQueryable): Promise<void> {
     const tables = [
       'threads',

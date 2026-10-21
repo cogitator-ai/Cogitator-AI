@@ -52,7 +52,7 @@ export interface MemoryFileFilter {
   ids?: string[];
   /** Versions of exactly these paths */
   paths?: string[];
-  /** Versions of the paths under this one, `/memories/notes/` for example */
+  /** Versions of the paths that start with this text, `/memories/notes/` for example */
   prefix?: string;
   /**
    * Versions a run of this scope sees: for each of `userId`, `projectId` and `threadId`, the
@@ -103,6 +103,6 @@ export interface MemoryFilesConfig {
   scope?: 'user' | 'agent' | 'thread';
   /** The agent views the files and never changes them */
   readOnly?: boolean;
-  /** Characters of the context the list of files takes at most (default 2000) */
+  /** Characters the lines of files of the list take at most, its heading aside (default 2000) */
   indexChars?: number;
 }

@@ -385,6 +385,7 @@ export class MemoryFiles {
     const entries = new Map<string, number>();
     for (const found of files) {
       const parts = found.path.slice(target.length + 1).split('/');
+      if (parts.some((part) => part.startsWith('.'))) continue;
       for (let depth = 1; depth <= Math.min(2, parts.length); depth++) {
         const relative = parts.slice(0, depth).join('/');
         const key = depth < parts.length ? `${relative}/` : relative;

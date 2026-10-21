@@ -83,6 +83,23 @@ describe('memory tool in a run', () => {
     expect(lastUserText(llm.requests.at(-1))).not.toContain('prefs.md');
   });
 
+  it('lists the files with the turn, never in the system message, under a context builder', async () => {
+    const llm = calling([{ command: 'create', path: '/memories/a.md', file_text: 'first note' }]);
+    const cog = new Cogitator({
+      llm: { backends: { mock: llm } },
+      memory: { adapter: 'memory', files: {}, contextBuilder: { strategy: 'recent', maxTokens: 4000 } },
+    });
+    cogs.push(cog);
+    await cog.run(agent, { input: 'note it', userId: 'ana', threadId: 'b1' });
+
+    await cog.run(agent, { input: 'what is noted?', userId: 'ana', threadId: 'b1' });
+
+    const request = llm.requests.at(-1);
+    const system = String(request?.messages.find((m) => m.role === 'system')?.content ?? '');
+    expect(system).not.toContain('/memories/a.md');
+    expect(lastUserText(request)).toContain('- /memories/a.md (10B): first note');
+  });
+
   it('keeps a branch to the files it wrote', async () => {
     const llm = calling([]);
     const cog = runtime(llm);

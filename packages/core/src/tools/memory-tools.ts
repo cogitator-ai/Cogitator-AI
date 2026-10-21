@@ -40,7 +40,9 @@ export interface MemoryToolsConfig {
    * The conversations `remember` checks its `quote` against. With it, a fact counts as the
    * user's (graph `source: 'user'`, an `active` memory item, a core fact) only when the quote is
    * found word for word in a user message of the run's thread, so a model cannot plant what the
-   * user never said. Without it nothing can be checked and every fact is kept as before.
+   * user never said. Without it nothing can be checked and every fact is kept as before. When it
+   * keeps memory items too, it must be the store `items` is over: `recall` then ranks items with
+   * the memory retriever, by their words, the entities they name and the graph around them.
    */
   memory?: Pick<MemoryAdapter, 'getEntries' | 'getPath'>;
 }

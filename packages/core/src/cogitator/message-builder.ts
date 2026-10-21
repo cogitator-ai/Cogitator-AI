@@ -188,6 +188,7 @@ export async function buildInitialMessages(
   const index = await indexOf(memoryIndex, threadId, options);
 
   if (contextBuilder && options.loadHistory !== false) {
+    const brief = briefWith(index, options);
     const ctx = await contextBuilder.build({
       threadId,
       agentId: agent.id,
@@ -196,8 +197,7 @@ export async function buildInitialMessages(
       userId: options.userId,
       systemPrompt: agent.instructions,
       currentInput: options.input,
-      ...(options.brief !== undefined && { brief: options.brief }),
-      ...(index !== undefined && { index }),
+      ...(brief !== undefined && { brief }),
       ...(options.asOf !== undefined && { asOf: options.asOf }),
       ...(typeof timeZone === 'string' && { timeZone }),
       ...(contextBudget !== undefined && { maxTokens: contextBudget, reserveTokens: 0 }),
@@ -276,6 +276,16 @@ async function indexOf(
     reportMemoryError(err, 'load', options.onMemoryError);
     return undefined;
   }
+}
+
+/**
+ * The turn's notes with what memory holds for the run, such as the list of its memory files, in
+ * front: both change from turn to turn, so they go with the turn and never into the system
+ * message the prompt cache keeps
+ */
+function briefWith(index: string | undefined, options: RunOptions): string | undefined {
+  const parts = [index, options.brief].filter((part): part is string => part !== undefined);
+  return parts.length === 0 ? undefined : parts.join('\n\n');
 }
 
 /** The turn's input with what memory holds in its turn context, for a run without a context builder */

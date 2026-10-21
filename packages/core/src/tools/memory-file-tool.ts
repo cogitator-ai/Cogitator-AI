@@ -31,7 +31,10 @@ export interface MemoryFilePlaceOfRun {
 }
 
 export interface MemoryFileToolConfig {
-  /** The store the files are kept in, which must keep memory files */
+  /**
+   * The store the run's thread is read from, for the branch it stands on, and the files are kept
+   * in unless `files` is given: then it must keep memory files
+   */
   memory: MemoryAdapter;
   /** The id the agent's memory is kept under (`memoryAgentId(agent)`) */
   agentId: string;

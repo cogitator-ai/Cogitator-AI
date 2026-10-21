@@ -133,6 +133,7 @@ export function withParsedArguments<TParams, TResult>(
     ...(tool.timeout !== undefined && { timeout: tool.timeout }),
     ...(tool.sandbox !== undefined && { sandbox: tool.sandbox }),
     ...(tool.maxResultLength !== undefined && { maxResultLength: tool.maxResultLength }),
+    ...(tool.providerTypes && { providerTypes: tool.providerTypes }),
     toJSON: () => tool.toJSON(),
   };
 }

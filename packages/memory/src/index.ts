@@ -254,7 +254,6 @@ export {
   matchesEntityFilter,
   matchesItemFilter,
   normalizeName,
-  onePerSlot,
   sameValue,
   slotOf,
   visibleIn,
