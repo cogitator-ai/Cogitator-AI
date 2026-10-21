@@ -268,7 +268,9 @@ export {
 } from './time-resolution';
 export {
   EXTRACTION_PROMPT,
+  ExtractionAnswerError,
   MemoryExtractor,
+  WindowError,
   parseExtraction,
   sessionLine,
   trustOfEntry,

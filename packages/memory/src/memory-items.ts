@@ -18,6 +18,9 @@ import type {
   NewMemoryItem,
 } from '@cogitator-ai/types';
 
+/** The last time an item was recorded, per storage and agent, in this process */
+const recorded = new WeakMap<MemoryItemAdapter, Map<string, number>>();
+
 /** Writes in progress, per storage and agent, which the next write of the same agent waits for */
 const writing = new WeakMap<MemoryItemAdapter, Map<string, Promise<void>>>();
 
@@ -217,6 +220,22 @@ export class MemoryItems {
     return written;
   }
 
+  /**
+   * Now, or a millisecond after the last item of `agentId` this process recorded when the clock
+   * has not moved on, so items written one after another never tie in time and the later one
+   * stays later in its slot
+   */
+  private nextRecordedAt(agentId: string): Date {
+    let agents = recorded.get(this.adapter);
+    if (!agents) {
+      agents = new Map();
+      recorded.set(this.adapter, agents);
+    }
+    const at = Math.max(this.now().getTime(), (agents.get(agentId) ?? -Infinity) + 1);
+    agents.set(agentId, at);
+    return new Date(at);
+  }
+
   /** Runs `work` after every write of `agentId`'s memory before it in this process */
   private async exclusive<T>(agentId: string, work: () => Promise<T>): Promise<T> {
     let agents = writing.get(this.adapter);
@@ -239,7 +258,7 @@ export class MemoryItems {
   }
 
   private async writeOne(input: NewMemoryItem): Promise<MemoryItem> {
-    const recordedAt = input.recordedAt ?? this.now();
+    const recordedAt = input.recordedAt ?? this.nextRecordedAt(input.scope.agentId);
     const entity = input.subject
       ? await this.link(input.scope, input.subject, recordedAt)
       : undefined;
@@ -285,38 +304,42 @@ export class MemoryItems {
       })
     ).filter((known) => sameScope(known.scope, item.scope));
     const content = normalizeName(item.content);
-    const candidate = found.find(
-      (known) =>
-        known.kind === item.kind &&
-        (known.status === 'active' || known.status === 'suggested') &&
-        known.validTo === undefined &&
-        known.expiredAt === undefined &&
-        (normalizeName(known.content) === content ||
-          (item.slot !== undefined &&
-            item.value !== undefined &&
-            known.value !== undefined &&
-            sameValue(known.value, item.value)))
-    );
-    if (!candidate || item.slot === undefined) return candidate;
-    const since = time(candidate.validFrom) ?? 0;
-    const followed = found.some(
-      (known) =>
-        known.id !== candidate.id &&
-        (known.status === 'active' || known.status === 'superseded') &&
-        (time(known.validFrom) ?? 0) > since
-    );
-    return followed ? undefined : candidate;
+    const candidates = [...found]
+      .reverse()
+      .filter(
+        (known) =>
+          known.kind === item.kind &&
+          (known.status === 'active' || known.status === 'suggested') &&
+          known.validTo === undefined &&
+          known.expiredAt === undefined &&
+          (normalizeName(known.content) === content ||
+            (item.slot !== undefined &&
+              item.value !== undefined &&
+              known.value !== undefined &&
+              sameValue(known.value, item.value)))
+      );
+    if (item.slot === undefined) return candidates[0];
+    return candidates.find((candidate) => {
+      const since = time(candidate.validFrom) ?? 0;
+      return !found.some(
+        (known) =>
+          known.id !== candidate.id &&
+          (known.status === 'active' || known.status === 'superseded') &&
+          (time(known.validFrom) ?? 0) > since
+      );
+    });
   }
 
   /**
    * `item` merged into `known`, the item it says again: the evidence of both, and the trust that
-   * comes with the better grounded of the two (quotes that hold first, then the more trusted
-   * source), so a quote of one source never vouches for the trust of another. An opinion said
+   * comes with the better source of the two (the more trusted one, then the one whose quotes
+   * hold), so a quote of one source never vouches for the trust of another and the application's
+   * own word is never taken down to a model's. An opinion said
    * again with quotes that hold gains confidence.
    */
   private async merge(known: MemoryItem, item: MemoryItem): Promise<MemoryItem> {
     const itemBetter =
-      Number(item.verified) - Number(known.verified) || rank(item.trust) - rank(known.trust);
+      rank(item.trust) - rank(known.trust) || Number(item.verified) - Number(known.verified);
     const source = itemBetter > 0 ? item : known;
     const confidence =
       known.kind === 'opinion' && item.verified
@@ -486,7 +509,7 @@ export class MemoryItems {
     const words = query.text ? normalizeName(query.text).split(' ').filter(Boolean) : [];
     const matching = found.filter((item) => {
       if (!visibleIn(item, query.scope)) return false;
-      if (item.recordedAt.getTime() > knownAt) return false;
+      if (query.knownAt !== undefined && item.recordedAt.getTime() > knownAt) return false;
       if (item.expiredAt && item.expiredAt.getTime() <= knownAt) return false;
       if (!query.includeClosed && item.slot !== undefined) {
         if ((time(item.validFrom) ?? 0) > asOf) return false;

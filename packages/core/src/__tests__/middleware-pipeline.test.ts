@@ -64,7 +64,7 @@ describe('MiddlewarePipeline', () => {
     ]);
     const result = { runId: 'run_1' } as unknown as RunResult;
 
-    await pipeline.afterRun({ result, model: 'p/m' }, context);
+    await pipeline.afterRun({ result, model: 'p/m', memoryAgentId: 'agent' }, context);
 
     expect(after).toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(

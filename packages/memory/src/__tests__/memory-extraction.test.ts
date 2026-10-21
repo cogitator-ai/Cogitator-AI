@@ -146,7 +146,7 @@ describe('trustOfEntry and sessionLine', () => {
   });
 
   it('trusts by who wrote the entry', () => {
-    expect(window.map(trustOfEntry)).toEqual(['user', 'model', 'web']);
+    expect(window.map((item) => trustOfEntry(item))).toEqual(['user', 'model', 'web']);
     expect(trustOfEntry(entry('x', { role: 'tool', name: 'calculator', content: '4' }))).toBe(
       'tool'
     );

@@ -42,10 +42,18 @@ export interface MemoryToolsConfig {
 /** Entries of a thread, the newest, among which `remember` looks for its quote */
 const QUOTE_LOOKBACK = 200;
 
-/** Whether `text` holds `query` as whole words, without case */
+/** Scripts written without spaces between words, where a word is any run of its letters */
+const UNSPACED =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]/u;
+
+/**
+ * Whether `text` holds `query` as whole words, without case. A query in a script written without
+ * spaces (Chinese, Japanese, Thai and the like) is matched as it stands.
+ */
 function holdsWords(text: string, query: string): boolean {
   const words = normalizeName(query).split(' ').filter(Boolean);
   if (words.length === 0) return false;
+  if (UNSPACED.test(query)) return normalizeName(text).includes(words.join(' '));
   const phrase = words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
   return new RegExp(`(^|[^\\p{L}\\p{N}])${phrase}($|[^\\p{L}\\p{N}])`, 'u').test(
     normalizeName(text)
@@ -258,7 +266,14 @@ export function createMemoryTools(config: MemoryToolsConfig) {
     parameters: forgetParams,
     execute: async ({ query }, context) => {
       const expired = items
-        ? (await items.query({ scope: seenFrom(context), text: query })).filter(
+        ? (
+            await items.query({
+              scope: seenFrom(context),
+              text: query,
+              includeClosed: true,
+              statuses: ['active', 'superseded', 'suggested'],
+            })
+          ).filter(
             (item) =>
               ownedBy(item, context) && holdsWords(`${item.content} ${item.value ?? ''}`, query)
           )

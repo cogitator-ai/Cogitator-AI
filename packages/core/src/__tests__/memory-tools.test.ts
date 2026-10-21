@@ -471,5 +471,36 @@ describe('createMemoryTools', () => {
         (await forget.execute({ query: 'a' }, createToolContext({ userId: 'u1' }))).forgotten
       ).toBeUndefined();
     });
+
+    it('forgets past and suggested states, and words of scripts without spaces', async () => {
+      const adapter = new InMemoryAdapter({ provider: 'memory' });
+      const items = new MemoryItems({ adapter });
+      const place = (content: string, value: string, day: number, attribute = 'street') => ({
+        kind: 'fact' as const,
+        content,
+        subject: 'user',
+        attribute,
+        value,
+        trust: 'user' as const,
+        confidence: 0.9,
+        evidence: [],
+        verified: true,
+        saidAt: new Date(2026, 0, day),
+        sessionAt: new Date(2026, 0, day),
+        scope: { agentId: 'a1', userId: 'u1' },
+      });
+      await items.write([place('I live on Baker St', 'Baker St', 1)]);
+      await items.write([place('I live on Oak Ave', 'Oak Ave', 2)]);
+      await items.write([place('私は東京に住んでいる', '東京', 3, 'city')]);
+      const { forget } = byName(createMemoryTools(createConfig(mocks, { items })));
+      const context = createToolContext({ userId: 'u1' });
+
+      expect(await forget.execute({ query: 'Baker St' }, context)).toMatchObject({
+        forgotten: ['I live on Baker St'],
+      });
+      expect(await forget.execute({ query: '東京' }, context)).toMatchObject({
+        forgotten: ['私は東京に住んでいる'],
+      });
+    });
   });
 });

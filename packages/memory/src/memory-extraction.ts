@@ -232,10 +232,37 @@ export interface MemoryExtractorConfig {
   windowTokens?: number;
 }
 
+/**
+ * The extraction model answered a window three times with no JSON array of items: a failure of
+ * that window's content, unlike a provider or storage error, which may pass on its own
+ */
+export class ExtractionAnswerError extends Error {
+  /** The window the model could not answer */
+  readonly window: readonly MemoryEntry[];
+
+  constructor(window: readonly MemoryEntry[]) {
+    super('The extraction model did not answer with memory items after 3 tries');
+    this.name = 'ExtractionAnswerError';
+    this.window = window;
+  }
+}
+
 /** Tokens of conversation one extraction call reads */
 const DEFAULT_WINDOW_TOKENS = 4000;
 /** Tokens an extraction answer may take: a dense window's items with their quotes */
 const EXTRACTION_MAX_TOKENS = 8000;
+
+/** An {@link ExtractionAnswerError} of a window, with the entries that window was the first to read */
+export class WindowError extends ExtractionAnswerError {
+  /** The entries of the window no window before it read */
+  readonly own: readonly MemoryEntry[];
+
+  constructor(cause: ExtractionAnswerError, own: readonly MemoryEntry[]) {
+    super(cause.window);
+    this.name = 'WindowError';
+    this.own = own;
+  }
+}
 
 /**
  * Extracts memory items from entries and writes them. Each window of about `windowTokens` is one
@@ -271,7 +298,9 @@ export class MemoryExtractor {
         items = await this.config.items.write(await this.read(window, context, windowTokens));
       } catch (error) {
         const failure = error instanceof Error ? error : new Error(String(error));
-        if (!progress.skip?.(failure, own, index)) throw failure;
+        if (!progress.skip?.(failure, own, index)) {
+          throw failure instanceof ExtractionAnswerError ? new WindowError(failure, own) : failure;
+        }
         items = [];
       }
       written.push(...items);
@@ -302,6 +331,6 @@ export class MemoryExtractor {
       const items = parseExtraction(answer, window, { ...context, sessionAt });
       if (items) return items;
     }
-    throw new Error('The extraction model did not answer with memory items after 3 tries');
+    throw new ExtractionAnswerError(window);
   }
 }

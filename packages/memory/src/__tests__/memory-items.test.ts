@@ -320,6 +320,25 @@ describe('MemoryItems timelines', () => {
     expect(await values(items, day(25))).toEqual(['Lisbon']);
   });
 
+  it('merges a value said again into the newest open one, not an older suggestion', async () => {
+    const { items } = memory();
+    await items.write([city('Paris', 1, { trust: 'model' })]);
+    await items.write([city('Berlin', 2), city('Paris', 3)]);
+    await items.write([city('Paris', 4)]);
+
+    const history = await items.history(scope, (await items.query({ scope }))[0]!.slot!);
+    expect(history.map((item) => item.value)).toEqual(['Berlin', 'Paris']);
+  });
+
+  it('keeps the later of two states written in one millisecond the current one', async () => {
+    const { items } = memory(day(30));
+    for (let at = 0; at < 5; at++) {
+      await items.write([city(`City ${at}`, 1)]);
+    }
+
+    expect(await values(items)).toEqual(['City 4']);
+  });
+
   it('fits a state told late between the ones around it', async () => {
     const { items } = memory();
     await items.write([city('Porto', 1), city('Lisbon', 10), city('Braga', 5)]);
@@ -395,10 +414,16 @@ describe('MemoryItems timelines', () => {
     const [page] = await items.write([said({ content: 'Ana is a pilot', trust: 'web' })]);
     expect(page).toMatchObject({
       id: guess?.id,
-      trust: 'web',
-      verified: true,
+      trust: 'user',
+      verified: false,
       status: 'suggested',
     });
+
+    const [plan] = await items.write([
+      said({ content: 'Plan is pro', trust: 'system', verified: false, evidence: [] }),
+    ]);
+    const [echo] = await items.write([said({ content: 'Plan is pro', trust: 'model' })]);
+    expect(echo).toMatchObject({ id: plan?.id, trust: 'system', status: 'active' });
   });
 
   it('settles on one entity for a name when writers that do not share a queue race', async () => {

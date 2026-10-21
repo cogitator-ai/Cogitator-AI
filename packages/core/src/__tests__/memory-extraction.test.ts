@@ -271,6 +271,40 @@ describe('memory.extraction', () => {
     );
   });
 
+  it('never leaves a window out for a provider failure, however long it lasts', async () => {
+    vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const llm = backend();
+    const answer = vi.mocked(llm.chat).getMockImplementation()!;
+    let down = 4;
+    vi.mocked(llm.chat).mockImplementation(async (request) => {
+      if (isExtraction(request) && down > 0) {
+        down--;
+        throw new Error('overloaded');
+      }
+      return answer(request);
+    });
+    const cog = runtime(llm);
+
+    try {
+      await cog.run(agent, { input: 'I live in Porto', threadId: 't', userId: 'u1' });
+      for (let attempt = 0; attempt < 4; attempt++) {
+        vi.setSystemTime(Date.now() + 2 * 3600_000);
+        await cog.run(agent, { input: 'Thanks', threadId: 't', userId: 'u1' });
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const items = await itemsOf(cog);
+    const later = new Date(Date.now() + 20 * 3600_000);
+    expect(
+      (await items.query({ scope: { agentId: agent.name, userId: 'u1' }, knownAt: later })).map(
+        (item) => item.value
+      )
+    ).toEqual(['Porto']);
+  });
+
   it('leaves alone a run on another branch', async () => {
     const llm = backend();
     const cog = runtime(llm);

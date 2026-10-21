@@ -1,6 +1,8 @@
 import {
+  ExtractionAnswerError,
   MemoryExtractor,
   MemoryItems,
+  WindowError,
   isMemoryItemAdapter,
   isTimeZone,
   type SummarizeFn,
@@ -46,7 +48,7 @@ async function newEntries(
   leafId: string,
   cursor: string | null | undefined,
   branchPoint: string | null
-): Promise<MemoryEntry[]> {
+): Promise<{ entries: MemoryEntry[]; found: boolean }> {
   const read: MemoryEntry[] = [];
   let before: string | undefined;
   for (;;) {
@@ -62,15 +64,16 @@ async function newEntries(
       cursor === undefined || cursor === null
         ? -1
         : page.data.findIndex((entry) => entry.id === cursor);
-    if (stop !== -1) return [...page.data.slice(stop + 1), ...read];
+    if (stop !== -1) return { entries: [...page.data.slice(stop + 1), ...read], found: true };
     read.unshift(...page.data);
     const first = page.data[0];
     if (!first || page.data.length < PAGE) break;
     before = first.id;
   }
-  if (cursor === null || branchPoint === null) return read;
+  if (cursor === null) return { entries: read, found: true };
+  if (branchPoint === null) return { entries: read, found: false };
   const after = read.findIndex((entry) => entry.id === branchPoint);
-  return read.slice(after + 1);
+  return { entries: read.slice(after + 1), found: false };
 }
 
 /**
@@ -94,17 +97,27 @@ async function onActivePath(
 interface ExtractionCursor {
   /** The last entry extracted, `null` to start from the thread's first entry */
   through: string | null;
-  /** Extractions in a row that failed at this place */
+  /** Extractions in a row the model could not answer the same window of */
   failures?: number;
+  /** The last entry of that window */
+  failedThrough?: string;
 }
 
 /** Where extraction stands on a thread, undefined when the thread was never extracted */
 function cursorOf(metadata: Record<string, unknown> | undefined): ExtractionCursor | undefined {
   const cursor = metadata?.[EXTRACTION_CURSOR];
   if (typeof cursor !== 'object' || cursor === null) return undefined;
-  const { through, failures } = cursor as { through?: unknown; failures?: unknown };
+  const { through, failures, failedThrough } = cursor as {
+    through?: unknown;
+    failures?: unknown;
+    failedThrough?: unknown;
+  };
   if (typeof through !== 'string' && through !== null) return undefined;
-  return { through, ...(typeof failures === 'number' && { failures }) };
+  return {
+    through,
+    ...(typeof failures === 'number' && { failures }),
+    ...(typeof failedThrough === 'string' && { failedThrough }),
+  };
 }
 
 function unwrapUpdate(result: MemoryResult<unknown>): void {
@@ -117,8 +130,9 @@ function unwrapUpdate(result: MemoryResult<unknown>): void {
  * thread keeps in `metadata.memoryExtraction`), or for a first extraction the run's own, read in
  * windows by the extraction model and written through `MemoryItems`, so items are grounded,
  * trusted by who said them and only added. The thread keeps its place after every window, so a
- * failure later on does not read the earlier windows again, and a window that failed three
- * extractions in a row is left out with a warning instead of holding the thread back. Runs of
+ * failure later on does not read the earlier windows again, and a window the model could not
+ * answer in three extractions in a row is left out with a warning instead of holding the thread
+ * back. A provider or storage failure never leaves a window out. Runs of
  * one thread extract one after another. A first extraction that fails marks where it started,
  * so the next one takes those entries too. The items are kept under the agent's memory id (its
  * configured id, else its name) and the run's user. A run without a user keeps its items to its thread, so
@@ -194,23 +208,24 @@ export function memoryExtractionMiddleware(
         : (config.timeZone ?? 'UTC');
     const stored = cursorOf(metadata);
     let through = stored?.through;
-    const keep = (position: string | null, failed: number) =>
+    let held = stored;
+    const keep = (position: string | null, failure?: { failures: number; failedThrough: string }) =>
       memory.updateThread(place.threadId, {
-        [EXTRACTION_CURSOR]: {
-          through: position,
-          at: new Date().toISOString(),
-          ...(failed > 0 && { failures: failed }),
-        },
+        [EXTRACTION_CURSOR]: { through: position, at: new Date().toISOString(), ...failure },
       });
 
     try {
-      const entries = await newEntries(
+      const { entries, found } = await newEntries(
         { getPath: memory.getPath.bind(memory) },
         place.threadId,
         place.leafId,
         through,
         place.branchPoint
       );
+      if (!found) {
+        through = place.branchPoint;
+        held = undefined;
+      }
       if (entries.length === 0) return;
       const extractor = new MemoryExtractor({
         items: new MemoryItems({
@@ -226,7 +241,6 @@ export function memoryExtractionMiddleware(
         ...(config.prompt && { prompt: config.prompt }),
         ...(windowTokens !== undefined && { windowTokens }),
       });
-      if (through === undefined) through = place.branchPoint;
       const written = await extractor.extract(
         entries,
         { scope, timeZone },
@@ -235,10 +249,17 @@ export function memoryExtractionMiddleware(
             const last = own.at(-1);
             if (!last) return;
             through = last.id;
-            unwrapUpdate(await keep(last.id, 0));
+            held = undefined;
+            unwrapUpdate(await keep(last.id));
           },
           skip: (error, own, index) => {
-            if (index > 0 || (stored?.failures ?? 0) < WINDOW_ATTEMPTS - 1) return false;
+            if (index > 0 || !(error instanceof ExtractionAnswerError) || context.signal.aborted) {
+              return false;
+            }
+            const stuck =
+              held?.failedThrough === own.at(-1)?.id &&
+              (held?.failures ?? 0) >= WINDOW_ATTEMPTS - 1;
+            if (!stuck) return false;
             getLogger().warn('Skipped a window that failed memory extraction again and again', {
               threadId: place.threadId,
               from: own[0]?.id,
@@ -250,7 +271,7 @@ export function memoryExtractionMiddleware(
         }
       );
       const last = entries.at(-1);
-      if (last && through !== last.id) unwrapUpdate(await keep(last.id, 0));
+      if (last && through !== last.id) unwrapUpdate(await keep(last.id));
       failures.delete(place.threadId);
       try {
         await config.afterExtract?.(written);
@@ -262,8 +283,18 @@ export function memoryExtractionMiddleware(
       }
     } catch (error) {
       if (context.signal.aborted) return;
-      const failed = through === stored?.through ? (stored?.failures ?? 0) + 1 : 1;
-      await keep(through ?? place.branchPoint, failed).catch(() => undefined);
+      const position = through === undefined ? place.branchPoint : through;
+      const window = error instanceof WindowError ? error.own.at(-1)?.id : undefined;
+      const failure =
+        window !== undefined
+          ? {
+              failures: held?.failedThrough === window ? (held.failures ?? 0) + 1 : 1,
+              failedThrough: window,
+            }
+          : held?.failedThrough !== undefined && held.failures !== undefined
+            ? { failures: held.failures, failedThrough: held.failedThrough }
+            : undefined;
+      await keep(position, failure).catch(() => undefined);
       const wait = Math.min(
         (failures.get(place.threadId)?.wait ?? RETRY_AFTER_MS / 2) * 2,
         RETRY_AFTER_MAX_MS
