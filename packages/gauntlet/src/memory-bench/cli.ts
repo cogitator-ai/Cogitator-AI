@@ -15,6 +15,7 @@ import {
   EMBEDDING_PRICE,
 } from './budget.js';
 import { cacheDir } from './cache.js';
+import { runCompactionLossSuite } from './compaction-loss.js';
 import { runConsistencySuite, type ConsistencyCheck } from './consistency.js';
 import { DATASETS, loadDataset } from './datasets/index.js';
 import { CachedEmbeddingService, RateLimitedEmbeddingService } from './embeddings.js';
@@ -24,9 +25,13 @@ import {
   ANSWER_INSTRUCTIONS,
   answerConversation,
   answerKey,
+  CLOSING_TURN,
+  compactionEstimate,
+  compactionSettings,
   followUps,
   mapConcurrent,
   NEUTRAL_FOLLOW_UP,
+  usesEmbeddings,
 } from './runner.js';
 import {
   latest,
@@ -63,7 +68,14 @@ Usage: pnpm memory-bench [options]
 
   --datasets <ids>       comma-separated, from: ${DATASETS.join(', ')}
                          (default longmemeval-s,beam-100k,mab-conflict)
-  --strategies <names>   recent, relevant, hybrid (default all three)
+  --strategies <names>   recent, relevant, hybrid, compacted (default the first three).
+                         compacted is opt-in: after a conversation goes in, a closing turn
+                         ("${CLOSING_TURN}") is saved on its thread and the runtime
+                         compacts the thread (memory.compaction, hierarchical, the bench model
+                         writing the chapters) once it passed the context budget, keeping a
+                         quarter of the budget verbatim, then recent answers from the summary
+                         and the kept tail. The closing turn and the chapter calls are charged
+                         as the compaction stage
   --sample <spec>        questions per dataset, stratified by category, e.g.
                          longmemeval-s=100,beam-1m=200 (default all)
   --context-tokens <n>   context budget of the memory (default 8192)
@@ -87,7 +99,10 @@ Usage: pnpm memory-bench [options]
                          letters, digits, '.', '_' and '-' (default: now)
   --no-batch             judge one request at a time instead of Message Batches
   --estimate             print the questions, tokens and cost the run would take, and exit
-  --consistency-only     only the fork and rewind suite (no API calls)
+                         (compacted: the closing turn and one chapter call per 4000 tokens
+                         of conversation, roughly)
+  --consistency-only     only the offline suites, fork and rewind and compaction loss (no API
+                         calls)
   -h, --help             show this help
 
 Environment: ANTHROPIC_API_KEY (answers and judge), ANTHROPIC_WORKSPACE_ID (for a key that is
@@ -101,7 +116,7 @@ repository's .env too.`;
  */
 const METHOD_VERSION = 3;
 
-const STRATEGIES = ['recent', 'relevant', 'hybrid'] as const;
+const STRATEGIES = ['recent', 'relevant', 'hybrid', 'compacted'] as const;
 
 /** Conversations answered at once, each with its own runtime and its questions concurrent. */
 const CONVERSATIONS_AT_ONCE = 4;
@@ -179,14 +194,22 @@ async function main(): Promise<number> {
     );
   }
 
+  const printChecks = (checks: readonly ConsistencyCheck[]) => {
+    for (const check of checks) {
+      log(
+        `  ${check.passed ? 'pass' : 'FAIL'}  ${check.strategy.padEnd(8)} ${check.name}${check.passed ? '' : `: ${check.detail}`}`
+      );
+    }
+  };
   log('Fork and rewind consistency');
   const consistency: ConsistencyCheck[] = await runConsistencySuite();
-  for (const check of consistency) {
-    log(
-      `  ${check.passed ? 'pass' : 'FAIL'}  ${check.strategy.padEnd(8)} ${check.name}${check.passed ? '' : `: ${check.detail}`}`
-    );
+  printChecks(consistency);
+  log('Compaction loss');
+  const compactionLoss: ConsistencyCheck[] = await runCompactionLossSuite();
+  printChecks(compactionLoss);
+  if (values['consistency-only']) {
+    return [...consistency, ...compactionLoss].every((check) => check.passed) ? 0 : 1;
   }
-  if (values['consistency-only']) return consistency.every((check) => check.passed) ? 0 : 1;
 
   const loaded = new Map<BenchDatasetId, BenchConversation[]>();
   for (const id of datasets) {
@@ -197,13 +220,16 @@ async function main(): Promise<number> {
     );
   }
 
-  const embedded = strategies.some((strategy) => strategy.name !== 'recent');
+  const embedded = strategies.some((strategy) => usesEmbeddings(strategy.name));
+  const compacted = strategies.some((strategy) => strategy.name === 'compacted');
   let embeddingEstimate = 0;
   let answerEstimate = 0;
   let judgeEstimate = 0;
+  let compactionCost = 0;
   for (const conversations of loaded.values()) {
     for (const conversation of conversations) {
       if (embedded) embeddingEstimate += (embeddingTokens(conversation) * EMBEDDING_PRICE) / 1e6;
+      if (compacted) compactionCost += compactionEstimate(conversation, contextTokens);
       for (const question of conversation.questions) {
         const inputs = [question.question, ...followUps(conversation, question, turns)];
         for (const input of inputs) {
@@ -219,7 +245,8 @@ async function main(): Promise<number> {
     log(`${turns} turns per question: follow-ups priced like first turns, at the input price`);
   }
   log(
-    `Estimated cost: answers $${answerEstimate.toFixed(3)}, judge $${judgeEstimate.toFixed(3)} ` +
+    `Estimated cost: answers $${answerEstimate.toFixed(3)}, judge $${judgeEstimate.toFixed(3)}` +
+      `${compacted ? `, compaction $${compactionCost.toFixed(3)}` : ''} ` +
       `(Anthropic budget $${anthropicLimit.toFixed(2)}), embeddings ` +
       `$${embeddingEstimate.toFixed(3)} (budget $${embeddingLimit.toFixed(2)})`
   );
@@ -297,7 +324,7 @@ async function main(): Promise<number> {
             turns,
             anthropicApiKey,
             ...(anthropicWorkspace && { anthropicWorkspace }),
-            ...(strategy.name !== 'recent' && embedding && { embedding }),
+            ...(usesEmbeddings(strategy.name) && embedding && { embedding }),
             budget,
             concurrency,
             done,
@@ -430,6 +457,9 @@ async function main(): Promise<number> {
       judge: `${BENCH_MODEL} (thinking off), Message Batches: ${!values['no-batch']}`,
       embedding: embedding?.model ?? null,
       contextTokens,
+      ...(compacted && {
+        compaction: { ...compactionSettings(contextTokens), closingTurn: CLOSING_TURN },
+      }),
       turns,
       instructions: ANSWER_INSTRUCTIONS,
       samples: Object.fromEntries(sizes),
@@ -440,6 +470,7 @@ async function main(): Promise<number> {
     ...(stopped && { stopped }),
     unjudged,
     consistency,
+    compactionLoss,
     rows,
   };
   const reportsDir = join(PACKAGE_DIR, 'reports', 'memory');
@@ -449,7 +480,7 @@ async function main(): Promise<number> {
     stopped && `Stopped early: ${stopped}.`,
     unjudged > 0 && `${unjudged} answers are not judged yet and are left out of the tables.`,
   ].filter(Boolean);
-  const markdown = `# Memory benchmarks: ${run}\n\nModel ${BENCH_MODEL}, context budget ${contextTokens} tokens${turns > 1 ? `, ${turns} turns per question` : ''}, spent $${budget.spentUsd.toFixed(3)} on answers and the judge and $${embeddingBudget.spentUsd.toFixed(3)} on embeddings.${notes.length > 0 ? ` ${notes.join(' ')}` : ''}\n\n${markdownReport(rows)}`;
+  const markdown = `# Memory benchmarks: ${run}\n\nModel ${BENCH_MODEL}, context budget ${contextTokens} tokens${turns > 1 ? `, ${turns} turns per question` : ''}, spent $${budget.spentUsd.toFixed(3)} on answers${compacted ? ', compaction' : ''} and the judge and $${embeddingBudget.spentUsd.toFixed(3)} on embeddings.${notes.length > 0 ? ` ${notes.join(' ')}` : ''}\n\n${markdownReport(rows)}`;
   await writeFile(join(reportsDir, `${run}.md`), markdown);
   log(markdown);
   log(`Report: ${join(reportsDir, `${run}.json`)}`);

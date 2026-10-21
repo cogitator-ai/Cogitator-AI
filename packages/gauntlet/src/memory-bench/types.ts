@@ -53,9 +53,12 @@ export type BenchDatasetId =
   | 'lme-v2-small'
   | 'locomo';
 
-/** How the run answers: the memory strategy and the context it may fill. */
+/**
+ * How the run answers: the memory strategy and the context it may fill. `compacted` is `recent`
+ * over a thread the runtime compacted (`memory.compaction`) once the conversation went in.
+ */
 export interface BenchStrategy {
-  name: 'recent' | 'relevant' | 'hybrid';
+  name: 'recent' | 'relevant' | 'hybrid' | 'compacted';
   /** Token budget of the built context (`memory.contextBuilder.maxTokens`) */
   contextTokens: number;
 }

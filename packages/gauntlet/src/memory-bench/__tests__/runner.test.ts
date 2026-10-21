@@ -4,9 +4,16 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AnthropicBackend } from '@cogitator-ai/core';
 import type { ChatRequest, ChatResponse, EmbeddingService } from '@cogitator-ai/types';
-import { Budget, BudgetExceededError } from '../budget.js';
+import { countTokens } from '@cogitator-ai/memory';
+import { Budget, BudgetExceededError, callCost, usageCost } from '../budget.js';
 import { HashedWordsEmbedding } from '../consistency.js';
-import { answerConversation, answerKey, type AnswerOptions } from '../runner.js';
+import {
+  answerConversation,
+  answerKey,
+  CLOSING_TURN,
+  compactionEstimate,
+  type AnswerOptions,
+} from '../runner.js';
 import type { BenchAnswer, BenchConversation } from '../types.js';
 
 const dirs: string[] = [];
@@ -236,5 +243,127 @@ describe('answerConversation', () => {
       BudgetExceededError
     );
     expect(answers).toEqual([]);
+  });
+});
+
+describe('answerConversation with the compacted strategy', () => {
+  const isChapter = (request: ChatRequest) =>
+    String(request.messages[0]?.content ?? '').startsWith('You compact');
+
+  /** A chapter answer naming the cat line of the window, when it holds one, with its exact quote */
+  const chapter = (request: ChatRequest) => {
+    const line = textOf(request)
+      .split('\n')
+      .find((text) => text.includes('My cat is called Miso.'));
+    const at = line && /^\[(\d+)\]/.exec(line)?.[1];
+    return at === undefined || at === ''
+      ? '[]'
+      : JSON.stringify([
+          {
+            kind: 'fact',
+            text: 'The user has a cat called Miso',
+            evidence: [{ message: Number(at), quote: 'My cat is called Miso.' }],
+          },
+        ]);
+  };
+
+  const long: BenchConversation = {
+    ...conversation,
+    turns: [
+      ...conversation.turns,
+      ...Array.from({ length: 80 }, (_, i) => ({
+        role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+        content: `Filler ${i} about the garden, the weather and a long walk by the river.`,
+      })),
+    ],
+  };
+  const compacted = { strategy: { name: 'compacted' as const, contextTokens: 400 } };
+
+  it('closes the session, lets the runtime compact the thread and answers from the summary', async () => {
+    const requests = stubModel((request) => (isChapter(request) ? chapter(request) : 'Miso'));
+    const { options: opts, answers } = options(compacted);
+    await answerConversation(long, opts);
+
+    expect(answers.map((answer) => [answer.questionId, answer.error])).toEqual(
+      expect.arrayContaining([
+        ['q1', undefined],
+        ['q2', undefined],
+      ])
+    );
+    expect(requests.some(isChapter)).toBe(true);
+    const question = requests.find((request) => textOf(request).includes('What is my cat called?'));
+    const seen = textOf(question!);
+    expect(seen).toContain('[Conversation summary]');
+    expect(seen).toContain('The user has a cat called Miso');
+    expect(seen).toContain('That is all for now, thank you.');
+    expect(seen).not.toContain('Filler 0 ');
+    expect(opts.budget.byStage().compaction).toBeGreaterThan(0);
+    expect(opts.budget.byStage().answers).toBeGreaterThan(0);
+  });
+
+  it('fails the questions when the runtime could not compact, asking nothing', async () => {
+    const requests = stubModel((request) => (isChapter(request) ? 'no atoms today' : 'Miso'));
+    const { options: opts, answers } = options(compacted);
+    await answerConversation(long, opts);
+
+    expect(answers).toHaveLength(2);
+    for (const answer of answers) expect(answer.error).toMatch(/^compaction: /);
+    expect(requests.filter(isChapter)).toHaveLength(3);
+    expect(requests.some((request) => textOf(request).includes('What is my cat called?'))).toBe(
+      false
+    );
+  });
+
+  it('answers a conversation under the threshold as it is', async () => {
+    const requests = stubModel(() => 'Miso');
+    const { options: opts, answers, lines } = options(compacted);
+    await answerConversation(conversation, opts);
+
+    expect(answers.every((answer) => answer.error === undefined)).toBe(true);
+    expect(requests.some(isChapter)).toBe(false);
+    expect(lines.some((line) => line.includes('under the compaction threshold'))).toBe(true);
+  });
+
+  it('stops when the budget refuses a chapter call, though the runtime only logs it', async () => {
+    vi.spyOn(AnthropicBackend.prototype, 'chat').mockImplementation(async (request) => ({
+      id: 'stub',
+      content: isChapter(request) ? chapter(request) : 'Miso',
+      finishReason: 'stop',
+      usage: { inputTokens: 20_000, outputTokens: 20, totalTokens: 20_020 },
+    }));
+    const { options: opts, answers } = options({ ...compacted, budget: budget(0.003) });
+    await expect(answerConversation(long, opts)).rejects.toBeInstanceOf(BudgetExceededError);
+    expect(answers).toEqual([]);
+  });
+});
+
+describe('compaction pricing', () => {
+  it('prices the closing turn alone under the threshold, chapters above it', () => {
+    const small = compactionEstimate(conversation, 8192);
+    expect(small).toBeCloseTo(callCost(8192 + countTokens(CLOSING_TURN), 200));
+    const turns = Array.from({ length: 2000 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      content: `Turn ${i} talks about topic ${i} at some length, with a few more words.`,
+    }));
+    const large = compactionEstimate({ ...conversation, turns }, 8192);
+    const larger = compactionEstimate({ ...conversation, turns: [...turns, ...turns] }, 8192);
+    expect(large).toBeGreaterThan(small);
+    expect(larger).toBeGreaterThan(large * 1.8);
+  });
+
+  it('prices a reported usage per token class', () => {
+    expect(usageCost({ inputTokens: 100_000, outputTokens: 0, totalTokens: 100_000 })).toBeCloseTo(
+      0.01,
+      9
+    );
+    const cached = usageCost({
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      totalTokens: 2_000_000,
+      cachedInputTokens: 500_000,
+      cacheWriteTokens: 500_000,
+      cacheWrite1hTokens: 100_000,
+    });
+    expect(cached).toBeCloseTo((0.005 + 0.05 + 0.02 + 0.5) * 5, 6);
   });
 });
