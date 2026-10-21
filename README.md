@@ -46,7 +46,7 @@ const weather = tool({
 
 const agent = new Agent({
   name: 'assistant',
-  model: 'google/gemini-3.5-flash-lite', // free tier, no credit card
+  model: 'google/gemini-3.8-flash', // free tier, no credit card
   instructions: 'You help people with questions. Use tools when needed.',
   tools: [weather],
 });
@@ -93,7 +93,7 @@ Set `GOOGLE_API_KEY` in your `.env` ([get one free here](https://aistudio.google
 npx tsx examples/core/01-basic-agent.ts
 ```
 
-> **Works with any LLM**: swap `google/gemini-3.5-flash-lite` for `openai/gpt-6.1-sol`, `anthropic/claude-sonnet-5-5`, `ollama/llama3.3`, or any other of the [12 built-in providers](https://cogitator.app/docs/core/llm-backends).
+> **Works with any LLM**: swap `google/gemini-3.8-flash` for `openai/gpt-6.1-sol`, `anthropic/claude-sonnet-5-5`, `ollama/llama3.3`, or any other of the [12 built-in providers](https://cogitator.app/docs/core/llm-backends).
 
 ---
 
@@ -209,7 +209,7 @@ name: Jarvis
 personality: 'You are Jarvis, a sharp personal assistant.'
 llm:
   provider: google
-  model: gemini-3.5-flash-lite
+  model: gemini-3.8-flash
 channels:
   telegram:
     ownerIds: ['YOUR_TG_ID']
@@ -418,7 +418,7 @@ npx tsx examples/core/01-basic-agent.ts
 
 The [`cli/`](./examples/cli/README.md) folder adds step-by-step `cogitator` CLI walkthroughs on top of these.
 
-Default LLM is **Google Gemini 3.5 Flash-Lite** (`google/gemini-3.5-flash-lite`) - free tier, no credit card. See [`examples/README.md`](./examples/README.md) for setup.
+The examples run on **Google Gemini 3.5 Flash-Lite** (`google/gemini-3.5-flash-lite`), free tier, no credit card. They make many calls in a row, and Flash-Lite is cheaper and answers more reliably under load than Gemini 3.8 Flash. See [`examples/README.md`](./examples/README.md) for setup.
 
 ---
 
