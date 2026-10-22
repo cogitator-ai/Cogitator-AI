@@ -7,6 +7,7 @@ import type { Cogitator } from '@cogitator-ai/core';
 import { CogitatorServer } from '@cogitator-ai/express';
 import {
   describeServerAdapter,
+  describeResumeStream,
   parseSSEEvents,
   type ServerFactory,
 } from '../../helpers/server-test-utils';
@@ -46,6 +47,7 @@ const factory: ServerFactory = {
 };
 
 describeServerAdapter('Express', factory);
+describeResumeStream('Express', factory);
 
 describe('Express adapter: streaming and WebSocket', () => {
   let cogitator: Cogitator;

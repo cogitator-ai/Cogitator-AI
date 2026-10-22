@@ -2,7 +2,11 @@ import { Hono } from 'hono';
 import { serve, type ServerType } from '@hono/node-server';
 import type { AddressInfo } from 'net';
 import { cogitatorApp } from '@cogitator-ai/hono';
-import { describeServerAdapter, type ServerFactory } from '../../helpers/server-test-utils';
+import {
+  describeResumeStream,
+  describeServerAdapter,
+  type ServerFactory,
+} from '../../helpers/server-test-utils';
 
 let httpServer: ServerType;
 
@@ -29,3 +33,4 @@ const factory: ServerFactory = {
 };
 
 describeServerAdapter('Hono', factory);
+describeResumeStream('Hono', factory);

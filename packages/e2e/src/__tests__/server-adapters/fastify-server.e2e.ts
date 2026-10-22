@@ -6,6 +6,7 @@ import type { Cogitator } from '@cogitator-ai/core';
 import { cogitatorPlugin } from '@cogitator-ai/fastify';
 import {
   describeServerAdapter,
+  describeResumeStream,
   parseSSEEvents,
   type ServerFactory,
 } from '../../helpers/server-test-utils';
@@ -38,6 +39,7 @@ const factory: ServerFactory = {
 };
 
 describeServerAdapter('Fastify', factory);
+describeResumeStream('Fastify', factory);
 
 describe('Fastify adapter: streaming, validation and WebSocket', () => {
   let cogitator: Cogitator;

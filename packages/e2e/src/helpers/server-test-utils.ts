@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import type { Cogitator, Agent } from '@cogitator-ai/core';
+import { z } from 'zod';
+import { Agent, Cogitator, tool } from '@cogitator-ai/core';
+import { StreamEventSchema, type StreamEvent } from '@cogitator-ai/server-shared';
 import { createTestCogitator, createTestAgent, ollamaSkipReason } from './setup';
 
 export interface ServerFactory {
@@ -129,5 +131,95 @@ export function describeServerAdapter(name: string, factory: ServerFactory): voi
       const isError = res.status === 404 || body.error !== undefined;
       expect(isError).toBe(true);
     });
+  });
+}
+
+/** The events of an SSE body, each checked against the stream protocol schema */
+function protocolEvents(body: string): StreamEvent[] {
+  return parseSSEEvents(body)
+    .filter((entry) => entry.data !== '[DONE]')
+    .map((entry) => StreamEventSchema.parse(entry.data));
+}
+
+/**
+ * A run paused for approval over `/stream`, then resumed over `/resume/stream`, on Gemini:
+ * every event must match the stream protocol schema.
+ */
+export function describeResumeStream(name: string, factory: ServerFactory): void {
+  const describeGoogle = process.env.GOOGLE_API_KEY ? describe : describe.skip;
+
+  describeGoogle(`Server Adapter: ${name} resume stream`, () => {
+    let port: number;
+    let cogitator: Cogitator;
+    const refunded: Array<{ order: string; amount: number }> = [];
+
+    const refund = tool({
+      name: 'refund_order',
+      description: 'Refund an order to the customer',
+      parameters: z.object({ order: z.string(), amount: z.number() }),
+      requiresApproval: true,
+      execute: async (args) => {
+        refunded.push(args);
+        return { refunded: args.amount };
+      },
+    });
+
+    const post = async (path: string, body: unknown) => {
+      const res = await fetch(`http://localhost:${port}/cogitator/agents/support/${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type') ?? '').toContain('text/event-stream');
+      return protocolEvents(await res.text());
+    };
+
+    beforeAll(async () => {
+      cogitator = new Cogitator({
+        llm: { providers: { google: { apiKey: process.env.GOOGLE_API_KEY! } } },
+        memory: { adapter: 'memory' },
+      });
+      const support = new Agent({
+        name: 'support',
+        model: 'google/gemini-3.5-flash-lite',
+        instructions: 'Refund orders with refund_order when asked. Answer in one short sentence.',
+        tools: [refund],
+        temperature: 0,
+      });
+      ({ port } = await factory.start(cogitator, { support }));
+    });
+
+    afterAll(async () => {
+      await factory.stop();
+      await cogitator?.close();
+    });
+
+    it('pauses a stream for approval and streams the rest of the run once approved', async () => {
+      const threadId = `resume-stream-${name.toLowerCase()}`;
+      const paused = await post('stream', { input: 'Refund $340 for order A-1.', threadId });
+
+      const approval = paused.find((event) => event.type === 'approval-required');
+      expect(approval).toMatchObject({
+        threadId,
+        approvals: [{ toolName: 'refund_order', arguments: { order: 'A-1', amount: 340 } }],
+      });
+      expect(paused.at(-1)).toMatchObject({ type: 'finish', threadId, status: 'paused' });
+      expect(refunded).toEqual([]);
+
+      const resumed = await post('resume/stream', {
+        threadId,
+        defaultDecision: { approved: true },
+      });
+
+      expect(resumed[0]).toMatchObject({ type: 'start', threadId });
+      expect(resumed.some((event) => event.type === 'tool-result')).toBe(true);
+      expect(resumed.some((event) => event.type === 'text-delta')).toBe(true);
+      expect(resumed.at(-1)).toMatchObject({ type: 'finish', threadId, status: 'completed' });
+      expect(refunded).toEqual([{ order: 'A-1', amount: 340 }]);
+
+      const again = await post('resume/stream', { threadId });
+      expect(again.at(-1)).toMatchObject({ type: 'error', code: 'RUN_NOT_PAUSED' });
+    }, 180_000);
   });
 }

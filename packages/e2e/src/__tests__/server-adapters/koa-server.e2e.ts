@@ -2,7 +2,11 @@ import Koa from 'koa';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import { cogitatorApp } from '@cogitator-ai/koa';
-import { describeServerAdapter, type ServerFactory } from '../../helpers/server-test-utils';
+import {
+  describeResumeStream,
+  describeServerAdapter,
+  type ServerFactory,
+} from '../../helpers/server-test-utils';
 
 let httpServer: Server;
 
@@ -29,3 +33,4 @@ const factory: ServerFactory = {
 };
 
 describeServerAdapter('Koa', factory);
+describeResumeStream('Koa', factory);
