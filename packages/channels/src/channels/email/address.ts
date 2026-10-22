@@ -7,7 +7,7 @@ export interface EmailMailbox {
 /** Headers of a message by lower-case name, in their order, duplicates kept. */
 export type EmailHeaders = readonly (readonly [name: string, value: string])[];
 
-const ADDRESS = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
+const ADDRESS = /^[^\s@<>()",;:]+@[^\s@<>()",;:.]+(?:\.[^\s@<>()",;:.]+)+$/;
 
 /** An address in the form the channel keys senders by: trimmed and in lower case. */
 export function normalizeAddress(address: string): string {
@@ -56,31 +56,94 @@ export function decodeMimeWords(text: string): string {
     );
 }
 
+/** The parts of the first mailbox of an address header, read outside quotes and comments. */
+interface MailboxParts {
+  /** The text of the last `<...>` outside quoted strings and comments */
+  angle?: string;
+  /** The display name: the words and quoted strings before the angle address */
+  phrase: string;
+  /** The text outside quotes, comments and angle brackets, where a bare address is */
+  bare: string;
+  /** The first comment, which names a bare address the old way: `ann@example.com (Ann)` */
+  comment?: string;
+}
+
+/**
+ * Splits the first mailbox of an address header (RFC 5322) in one pass: quoted strings and
+ * comments are taken as text, so an address written inside them (`"x <ceo@victim.com>"`) is
+ * part of the name and never the address. The mailbox ends at the first comma outside them.
+ */
+function mailboxParts(text: string): MailboxParts {
+  let phrase = '';
+  let bare = '';
+  let comment: string | undefined;
+  let angle: string | undefined;
+  let quoted = false;
+  let depth = 0;
+  let currentComment = '';
+  let inAngle = false;
+  let angleText = '';
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (quoted) {
+      if (char === '\\' && i + 1 < text.length) phrase += text[++i];
+      else if (char === '"') quoted = false;
+      else phrase += char;
+      continue;
+    }
+    if (depth > 0) {
+      if (char === '\\' && i + 1 < text.length) currentComment += text[++i];
+      else if (char === '(') {
+        depth++;
+        currentComment += char;
+      } else if (char === ')') {
+        depth--;
+        if (depth === 0) comment ??= currentComment.trim();
+        else currentComment += char;
+      } else currentComment += char;
+      continue;
+    }
+    if (inAngle) {
+      if (char === '>') {
+        inAngle = false;
+        angle = angleText.trim();
+      } else angleText += char;
+      continue;
+    }
+    if (char === '"') quoted = true;
+    else if (char === '(') {
+      depth = 1;
+      currentComment = '';
+    } else if (char === '<') {
+      inAngle = true;
+      angleText = '';
+    } else if (char === ',') break;
+    else {
+      if (angle === undefined) phrase += char;
+      bare += char;
+    }
+  }
+  return { ...(angle !== undefined && { angle }), phrase, bare, ...(comment && { comment }) };
+}
+
 /**
  * The first mailbox of an address header such as `From`: `"Ann Lee" <ann@example.com>`,
- * `Ann <ann@example.com>` or `ann@example.com`, with encoded words in the name decoded.
+ * `Ann <ann@example.com>` or `ann@example.com (Ann)`, with encoded words in the name decoded.
+ * The address is the angle address outside quoted strings and comments, so a display name that
+ * holds another address cannot pass for it.
  */
 export function parseMailbox(value: string | undefined): EmailMailbox | undefined {
   if (!value) return undefined;
-  const text = value.replace(/\r?\n[ \t]+/g, ' ').trim();
-  const angled = /^(.*?)<\s*([^<>\s]+@[^<>\s]+)\s*>/.exec(text);
-  if (angled) {
-    const name = decodeMimeWords(
-      angled[1]
-        .trim()
-        .replace(/^"(.*)"$/, '$1')
-        .replace(/\\(.)/g, '$1')
-    ).trim();
-    const address = normalizeAddress(angled[2]);
+  const parts = mailboxParts(value.replace(/\r?\n[ \t]+/g, ' ').trim());
+  if (parts.angle !== undefined) {
+    const address = normalizeAddress(parts.angle);
     if (!isAddress(address)) return undefined;
+    const name = decodeMimeWords(parts.phrase.replace(/\s+/g, ' ').trim()).trim();
     return name ? { address, name } : { address };
   }
-  const bare = /([^\s<>(),;:"]+@[^\s<>(),;:"]+)/.exec(text);
-  if (!bare) return undefined;
-  const address = normalizeAddress(bare[1]);
+  const address = normalizeAddress(parts.bare.trim());
   if (!isAddress(address)) return undefined;
-  const comment = /\(([^)]+)\)/.exec(text)?.[1]?.trim();
-  return comment ? { address, name: decodeMimeWords(comment) } : { address };
+  return parts.comment ? { address, name: decodeMimeWords(parts.comment) } : { address };
 }
 
 /** The message ids (`<id@host>`) of a `Message-ID`, `In-Reply-To` or `References` header. */

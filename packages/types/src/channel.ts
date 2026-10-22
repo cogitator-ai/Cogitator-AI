@@ -161,6 +161,15 @@ export interface Channel {
    */
   onMessage(handler: (msg: ChannelMessage) => Promise<void>): void;
 
+  /**
+   * Called when the Gateway does not answer a message of this channel because it stops: one
+   * that came in while it was stopping (called before the handler resolves), or one it had
+   * queued or was running and dropped after `drainTimeout`. A channel that can deliver it again
+   * later does: the email channel leaves the mail unread or marks it unread again, and answers
+   * a webhook `503` so the provider retries. The Gateway waits for it before it stops the channel.
+   */
+  redeliver?(msg: ChannelMessage): Promise<void>;
+
   sendText(channelId: string, text: string, options?: SendOptions): Promise<string>;
   editText(
     channelId: string,

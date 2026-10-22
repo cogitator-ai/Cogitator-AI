@@ -5,15 +5,16 @@ import { htmlToText, markdownToHtml } from '../../formatters/html';
 import { markdownToPlainText } from '../../formatters/plain-text';
 import { allowsSender, domainOf, headerOf, isAddress, normalizeAddress } from './address';
 import { secretsEqual, verifyMailgunSignature } from './auth';
+import { EmailDependencyError } from './errors';
 import { ImapInbox, type EmailImapConfig } from './imap';
-import { parseRawEmail, type InboundEmail } from './mime';
+import { loadPostalMime, parseRawEmail, type InboundEmail } from './mime';
+import { readFormFields, type FormFields } from './multipart';
 import {
   bodyText,
   isForm,
   mailgunFormEmail,
   mailgunJsonEmail,
   postmarkEmail,
-  readForm,
   requestHeader,
   sendgridEmail,
   type EmailWebhookRequest,
@@ -32,6 +33,13 @@ export const MAILGUN_DEFAULT_MAX_AGE = 300;
 
 const MAX_TRACKED = 1000;
 const MAX_REFERENCES = 20;
+/** The most Mailgun signatures remembered against replays, however many came in the window. */
+const MAX_SIGNATURES = 100_000;
+/**
+ * How long a webhook request waits for the gateway to take its mail, in ms. A gateway that queues
+ * takes it at once, and one that answers before it returns is answered `200` after this long.
+ */
+const HANDOVER_TIMEOUT = 5000;
 const AUTOMATED_SENDER =
   /^(mailer-daemon|postmaster|no-?reply|do-?not-?reply|bounces?)([+-.].*)?@/i;
 
@@ -135,11 +143,18 @@ export interface EmailChannelConfig {
    * about, since anyone can send mail and the `From` address can be forged.
    */
   allowFrom?: string[];
+  /**
+   * Addresses the gateway gives owner rights, also answered whatever `allowFrom` says. A `From`
+   * can be forged, so their mail reaches the agent only when the sender authentication passes
+   * for their domain, unless `senderAuth` is `off`.
+   */
+  owners?: string[];
   /** See {@link EmailSenderAuthPolicy}. Default `when-reported` */
   senderAuth?: EmailSenderAuthPolicy;
   /**
-   * The authserv-ids (the first word of `Authentication-Results`, such as `mx.google.com`)
-   * whose results count, for IMAP and Postmark. Default: the topmost header, whoever wrote it.
+   * The authserv-ids (the first word of `Authentication-Results`, such as `mx.google.com`) of
+   * the servers that receive the mail, whose results count over IMAP and Postmark. A sender can
+   * add any header, so without them IMAP mail has no sender authentication at all.
    */
   trustedAuthservIds?: string[];
   /** Start the text of a conversation's first mail with its subject (default true) */
@@ -157,6 +172,9 @@ interface ThreadEntry {
   root: string;
 }
 
+/** What became of an inbound mail: handed to the gateway, skipped, or refused by a stopping gateway. */
+type Acceptance = 'taken' | 'skipped' | 'refused';
+
 interface NodemailerModule {
   createTransport(options: Record<string, unknown>): EmailTransport;
 }
@@ -167,13 +185,17 @@ async function loadNodemailer(): Promise<NodemailerModule> {
       NodemailerModule | { default: NodemailerModule };
     return 'createTransport' in module ? module : module.default;
   } catch (error) {
-    throw new Error(
-      'nodemailer is required to send email over SMTP. Install it: pnpm add nodemailer',
-      {
-        cause: error,
-      }
-    );
+    throw new EmailDependencyError('nodemailer', 'to send email over SMTP', { cause: error });
   }
+}
+
+/** Resolves with `fallback` when `promise` takes longer than `ms`. */
+function within<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function forgetOldest(collection: Set<string> | Map<string, unknown>): void {
@@ -251,14 +273,22 @@ export class EmailChannel implements Channel {
   private readonly config: EmailChannelConfig;
   private readonly address: string;
   private readonly ownAddresses: Set<string>;
+  private readonly owners: Set<string>;
   private handler: ((msg: ChannelMessage) => Promise<void>) | null = null;
+  /** Mail handed to the gateway whose handler has not resolved yet, by `Message-ID` */
+  private readonly inFlight = new Set<string>();
+  /** Mail of `inFlight` the gateway handed back while it was being taken */
+  private readonly refused = new Set<string>();
   private readonly handled = new Set<string>();
-  private readonly signatures = new Set<string>();
+  /** Mailgun signatures seen, with their timestamps, against replays */
+  private readonly signatures = new Map<string, number>();
+  /** The IMAP UID of each mail taken from the mailbox, by `Message-ID`, to mark it unread again */
+  private readonly uids = new Map<string, number>();
   private readonly threads = new Map<string, ThreadEntry>();
   /** The latest mail of each thread, by `address|root` */
   private readonly latest = new Map<string, string>();
   private transport?: Promise<EmailTransport>;
-  private inbox?: ImapInbox<InboundEmail>;
+  private inbox?: ImapInbox<{ email: InboundEmail; uid: number }>;
   private server?: Server;
   private running = false;
   private stopped = false;
@@ -283,9 +313,15 @@ export class EmailChannel implements Channel {
         `[email] ${webhook.provider} does not sign its webhook: set webhook.basicAuth or webhook.token`
       );
     }
+    if (config.imap && config.senderAuth === 'required' && !config.trustedAuthservIds?.length) {
+      throw new Error(
+        "[email] senderAuth 'required' over IMAP needs trustedAuthservIds: the Authentication-Results of the receiving server, such as mx.google.com, are the only ones a sender cannot forge"
+      );
+    }
     this.config = config;
     this.address = address;
     this.ownAddresses = new Set([address, ...(config.aliases ?? []).map(normalizeAddress)]);
+    this.owners = new Set((config.owners ?? []).map(normalizeAddress));
   }
 
   onMessage(handler: (msg: ChannelMessage) => Promise<void>): void {
@@ -306,9 +342,20 @@ export class EmailChannel implements Channel {
     if (!this.config.imap && !this.config.webhook) {
       console.warn('[email] Neither imap nor webhook is set: the channel only sends mail');
     }
+    if (
+      this.config.imap &&
+      this.config.senderAuth !== 'off' &&
+      !this.config.trustedAuthservIds?.length
+    ) {
+      console.warn(
+        `[email] No trustedAuthservIds: mail read over IMAP has no sender authentication, so a forged From passes${this.owners.size > 0 ? ' and mail from the owners is dropped' : ''}. Set them to the authserv-id the receiving server writes in Authentication-Results, such as mx.google.com`
+      );
+    }
     this.running = true;
     this.stopped = false;
     try {
+      if (this.config.imap) await loadPostalMime();
+      if (!('transport' in this.config.smtp)) await this.transportOf();
       const webhook = this.config.webhook;
       if (webhook?.port !== undefined) {
         await this.listen(webhook.port, webhook.path ?? '/email/webhook', webhook.host);
@@ -318,10 +365,10 @@ export class EmailChannel implements Channel {
           this.config.imap,
           (raw, uid) =>
             parseRawEmail(raw, this.parseOptions()).then((email) => ({
-              ...email,
-              raw: { uid, email: email.raw },
+              email: { ...email, raw: { uid, email: email.raw } },
+              uid,
             })),
-          (email) => this.accept(email)
+          async ({ email, uid }) => (await this.accept(email, uid)) !== 'refused'
         );
         await this.inbox.start();
       }
@@ -357,6 +404,27 @@ export class EmailChannel implements Channel {
   }
 
   /**
+   * Takes back a mail the gateway does not answer because it stops. One it refuses while it is
+   * being handed over stays unread in the mailbox, and its webhook request is answered `503`, so
+   * the provider sends it again. One it dropped after taking it is marked unread again, so the
+   * next start reads it once more, or, when a webhook brought it, only logged.
+   */
+  async redeliver(msg: ChannelMessage): Promise<void> {
+    if (this.inFlight.has(msg.id)) {
+      this.refused.add(msg.id);
+      return;
+    }
+    const uid = this.uids.get(msg.id);
+    if (uid === undefined || !this.inbox) {
+      console.warn(`[email] The mail ${msg.id} from ${msg.channelId} was dropped unanswered`);
+      return;
+    }
+    this.handled.delete(msg.id.toLowerCase());
+    this.uids.delete(msg.id);
+    await this.inbox.unsee(uid);
+  }
+
+  /**
    * Answers a provider's inbound webhook request: checks its signature or secret, reads the
    * mail, answers at once and hands the mail to the agent after. Mount it in any HTTP server
    * with the raw body unparsed. It works before `start()` too and answers `503` once stopped.
@@ -372,27 +440,33 @@ export class EmailChannel implements Channel {
       return { status: 401, body: 'Unauthorized' };
     }
     let email: InboundEmail;
+    let replayKey: string | undefined;
     try {
       if (webhook.provider === 'mailgun') {
         const verified = await this.mailgunEmail(webhook, request, raw, contentType);
         if ('status' in verified) return verified;
-        email = verified.email;
+        ({ email, replayKey } = verified);
       } else if (webhook.provider === 'postmark') {
         email = postmarkEmail(JSON.parse(bodyText(raw)), this.parseOptions());
       } else {
         if (!isForm(contentType)) return { status: 415, body: 'Expected multipart/form-data' };
-        email = await sendgridEmail(await readForm(raw, contentType), this.parseOptions());
+        email = await sendgridEmail(readFormFields(raw, contentType), this.parseOptions());
       }
     } catch (error) {
-      if (error instanceof Error && error.message.includes('postal-mime is required')) {
+      if (error instanceof EmailDependencyError) {
         console.error(`[email] ${error.message}`);
         return { status: 500, body: 'Could not read the message' };
       }
       return { status: 400, body: 'Invalid payload' };
     }
-    void this.accept(email).catch((error: unknown) =>
-      console.error('[email] Webhook mail failed:', error)
-    );
+    const accepted = this.accept(email).catch((error: unknown): Acceptance => {
+      console.error('[email] Webhook mail failed:', error);
+      return 'taken';
+    });
+    if ((await within(accepted, HANDOVER_TIMEOUT, 'taken')) === 'refused') {
+      if (replayKey !== undefined) this.signatures.delete(replayKey);
+      return { status: 503, body: 'Not taken now, send it again later' };
+    }
     return { status: 200, body: 'OK' };
   }
 
@@ -488,26 +562,26 @@ export class EmailChannel implements Channel {
     return false;
   }
 
-  /** Checks a Mailgun request's signature, age and token, and reads its mail. */
+  /**
+   * Checks a Mailgun request's signature, age and token, and reads its mail. The signature is
+   * checked before the mail is read: a form is only split into its fields first, where the
+   * signature is.
+   */
   private async mailgunEmail(
     webhook: MailgunWebhookConfig,
     request: EmailWebhookRequest,
     raw: string | Uint8Array,
     contentType: string
-  ): Promise<EmailWebhookResponse | { email: InboundEmail }> {
+  ): Promise<EmailWebhookResponse | { email: InboundEmail; replayKey: string }> {
     let timestamp: string | undefined;
     let token: string | Uint8Array | undefined;
     let signature: string | undefined;
-    let form: FormData | undefined;
+    let fields: FormFields | undefined;
     if (isForm(contentType)) {
-      form = await readForm(raw, contentType);
-      const field = (name: string) => {
-        const value = form?.get(name);
-        return typeof value === 'string' ? value : undefined;
-      };
-      timestamp = field('timestamp');
-      token = field('token');
-      signature = field('signature');
+      fields = readFormFields(raw, contentType);
+      timestamp = fields.text('timestamp');
+      token = fields.text('token');
+      signature = fields.text('signature');
     } else {
       timestamp = requestHeader(request.headers, 'x-mailgun-timestamp');
       signature = requestHeader(request.headers, 'x-mailgun-signature');
@@ -515,28 +589,42 @@ export class EmailChannel implements Channel {
     }
     if (
       !timestamp ||
+      !signature ||
       token === undefined ||
       !verifyMailgunSignature(timestamp, token, signature, webhook.signingKey)
     ) {
       return { status: 401, body: 'Invalid signature' };
     }
-    const age = Math.abs(Date.now() / 1000 - Number(timestamp));
-    if (!Number.isFinite(age) || age > (webhook.maxAge ?? MAILGUN_DEFAULT_MAX_AGE)) {
+    const maxAge = webhook.maxAge ?? MAILGUN_DEFAULT_MAX_AGE;
+    const now = Date.now() / 1000;
+    const sent = Number(timestamp);
+    if (!Number.isFinite(sent) || Math.abs(now - sent) > maxAge) {
       return { status: 401, body: 'Stale signature' };
     }
-    const key = signature ?? '';
-    if (this.signatures.has(key)) return { status: 200, body: 'Already received' };
-    this.signatures.add(key);
-    forgetOldest(this.signatures);
+    const replayKey = signature.toLowerCase();
+    if (this.signatures.has(replayKey)) return { status: 200, body: 'Already received' };
+    this.rememberSignature(replayKey, sent, now - maxAge);
     try {
-      const email = form
-        ? await mailgunFormEmail(form, this.parseOptions())
+      const email = fields
+        ? await mailgunFormEmail(fields, this.parseOptions())
         : await mailgunJsonEmail(JSON.parse(bodyText(raw)), this.parseOptions());
-      return { email };
+      return { email, replayKey };
     } catch (error) {
-      this.signatures.delete(key);
+      this.signatures.delete(replayKey);
       throw error;
     }
+  }
+
+  /**
+   * Remembers a signature for as long as its timestamp is within the replay window: older ones
+   * are refused as stale anyway. Past `MAX_SIGNATURES` the oldest are forgotten.
+   */
+  private rememberSignature(key: string, sent: number, oldestValid: number): void {
+    for (const [seen, at] of this.signatures) {
+      if (at >= oldestValid && this.signatures.size < MAX_SIGNATURES) break;
+      this.signatures.delete(seen);
+    }
+    this.signatures.set(key, sent);
   }
 
   /** Whether the mail may reach the agent: by its sender, its kind and its authentication. */
@@ -549,29 +637,49 @@ export class EmailChannel implements Channel {
       if (email.authentication === 'fail') return false;
       if (policy === 'required' && email.authentication !== 'pass') return false;
     }
+    if (this.owners.has(sender)) return policy === 'off' || email.authentication === 'pass';
     return allowsSender(this.config.allowFrom ?? [], sender);
   }
 
-  /** Hands an inbound mail to the agent when it is one to answer. */
-  private async accept(email: InboundEmail): Promise<void> {
-    if (!this.handler || !email.from) return;
-    const sender = email.from.address;
-    if (!this.admits(email, sender)) return;
-    const messageId = email.messageId ?? this.fallbackId(email, sender);
-    const dedupeKey = messageId.toLowerCase();
-    if (this.handled.has(dedupeKey)) return;
+  /**
+   * The text the agent reads: the new text of the mail, starting with the subject on a thread's
+   * first mail. A command (`/status`) stays first, so the gateway still sees it, and a mail
+   * with only a command as its subject is that command.
+   */
+  private textOf(email: InboundEmail): string {
     const body = stripQuotedReply(
       email.text?.trim() ? email.text : email.html ? htmlToText(email.html) : ''
     );
+    const subject = email.subject.trim();
+    if (!body && subject.startsWith('/')) return subject;
     const starts = !email.inReplyTo && email.references.length === 0;
-    const text =
-      starts && email.subject && this.config.includeSubject !== false
-        ? `Subject: ${email.subject}${body ? `\n\n${body}` : ''}`
-        : body;
-    if (!text && email.attachments.length === 0) return;
+    if (!starts || !subject || this.config.includeSubject === false || body.startsWith('/')) {
+      return body;
+    }
+    return `Subject: ${subject}${body ? `\n\n${body}` : ''}`;
+  }
+
+  /**
+   * Hands an inbound mail to the agent when it is one to answer. Resolves `refused` when the
+   * gateway did not take it, so it may come again.
+   */
+  private async accept(email: InboundEmail, uid?: number): Promise<Acceptance> {
+    if (!this.handler || !email.from) return 'skipped';
+    const sender = email.from.address;
+    if (!this.admits(email, sender)) return 'skipped';
+    const messageId = email.messageId ?? this.fallbackId(email, sender);
+    const dedupeKey = messageId.toLowerCase();
+    if (this.handled.has(dedupeKey)) return 'skipped';
+    const text = this.textOf(email);
+    if (!text && email.attachments.length === 0) return 'skipped';
     this.handled.add(dedupeKey);
     forgetOldest(this.handled);
-    const root = email.references[0] ?? email.inReplyTo ?? messageId;
+    const parent = email.inReplyTo ?? email.references[email.references.length - 1];
+    const root =
+      (parent && this.threads.get(parent)?.root) ??
+      email.references[0] ??
+      email.inReplyTo ??
+      messageId;
     this.remember(sender, messageId, {
       subject: email.subject,
       references: trimReferences([
@@ -592,11 +700,22 @@ export class EmailChannel implements Channel {
       topicId: root,
       raw: email.raw,
     };
+    if (uid !== undefined) {
+      this.uids.set(messageId, uid);
+      forgetOldest(this.uids);
+    }
+    this.inFlight.add(messageId);
     try {
       await this.handler(message);
     } catch (error) {
       console.error('[email] Message handler error:', error);
+    } finally {
+      this.inFlight.delete(messageId);
     }
+    if (!this.refused.delete(messageId)) return 'taken';
+    this.handled.delete(dedupeKey);
+    this.uids.delete(messageId);
+    return 'refused';
   }
 
   private fallbackId(email: InboundEmail, sender: string): string {
@@ -662,11 +781,9 @@ export class EmailChannel implements Channel {
       throw new Error(`[email] Unknown channel id "${channelId}": use the recipient's address`);
     }
     const thread = this.threadOf(to, options);
-    const baseSubject =
-      thread.entry?.subject ||
-      this.config.subject ||
-      `Message from ${this.config.name ?? this.address}`;
-    const subject = thread.inReplyTo ? replySubject(baseSubject) : baseSubject;
+    const ownSubject = this.config.subject || `Message from ${this.config.name ?? this.address}`;
+    const baseSubject = thread.entry?.subject || ownSubject;
+    const subject = thread.entry ? replySubject(baseSubject) : baseSubject;
     const references = thread.inReplyTo
       ? trimReferences([...(thread.entry?.references ?? []), thread.inReplyTo])
       : [];

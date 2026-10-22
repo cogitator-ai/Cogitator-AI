@@ -14,8 +14,10 @@ import { createCogitator, DEFAULT_MODEL, requireEnv } from '../_shared/setup';
  * Gmail turn on 2-step verification and create an app password, then use
  * imap.gmail.com and smtp.gmail.com. EMAIL_ALLOW_FROM lists who may write to
  * it (addresses or domains, comma-separated), since anyone can send mail and
- * a `From` address is easy to forge. Mail whose DKIM, SPF or DMARC results
- * fail for the sender's domain is dropped.
+ * a `From` address is easy to forge. EMAIL_TRUSTED_AUTHSERV_IDS names the
+ * server whose Authentication-Results count (mx.google.com for Gmail): mail
+ * whose DKIM, SPF or DMARC results there fail for the sender's domain is
+ * dropped.
  *
  * Needs the transports: pnpm add imapflow postal-mime nodemailer
  */
@@ -25,6 +27,9 @@ const allowFrom = requireEnv('EMAIL_ALLOW_FROM')
   .split(',')
   .map((entry) => entry.trim())
   .filter(Boolean);
+const trustedAuthservIds = process.env.EMAIL_TRUSTED_AUTHSERV_IDS?.split(',').map((id) =>
+  id.trim()
+);
 const imapPassword = requireEnv('EMAIL_IMAP_PASSWORD');
 const smtpPassword = process.env.EMAIL_SMTP_PASSWORD ?? imapPassword;
 
@@ -32,6 +37,7 @@ const email = emailChannel({
   address,
   name: 'Cogitator Assistant',
   allowFrom,
+  ...(trustedAuthservIds && { trustedAuthservIds }),
   imap: {
     host: requireEnv('EMAIL_IMAP_HOST'),
     auth: { user: process.env.EMAIL_IMAP_USER ?? address, pass: imapPassword },

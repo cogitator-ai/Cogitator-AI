@@ -82,9 +82,9 @@
     "qrcode-terminal": ">=0.12.0",
     "ws": ">=8.0.0",
     "@atproto/api": ">=0.24.0",
-    "imapflow": ">=1.0.0",
-    "nodemailer": ">=6.0.0",
-    "postal-mime": ">=2.0.0"
+    "imapflow": ">=2.0.0",
+    "nodemailer": "^6.0.0 || ^7.0.0 || ^8.0.0 || ^9.0.0 || ^10.0.0",
+    "postal-mime": ">=4.0.0"
   },
   "peerDependenciesMeta": {
     "grammy": {

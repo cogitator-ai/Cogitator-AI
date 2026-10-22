@@ -94,7 +94,7 @@ export const CHANNEL_CHOICES: Choice<ChannelKind>[] = [
   {
     value: 'email',
     label: 'Email',
-    hint: 'answers mail in its thread; needs a mailbox with IMAP and SMTP',
+    hint: 'answers mail in its thread, needs a mailbox with IMAP and SMTP',
   },
 ];
 

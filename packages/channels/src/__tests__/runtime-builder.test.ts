@@ -542,7 +542,8 @@ describe('RuntimeBuilder', () => {
           lookbackDays: 2,
         },
         webhook: { provider: 'mailgun', signingKey: 'mg-key', port: 8788 },
-        allowFrom: ['example.org', 'me@example.com'],
+        allowFrom: ['example.org'],
+        owners: ['me@example.com'],
         senderAuth: 'required',
       },
     ]);
@@ -562,13 +563,17 @@ describe('RuntimeBuilder', () => {
     };
     const base = { EMAIL_ADDRESS: 'bot@example.com', EMAIL_SMTP_HOST: 'smtp.example.com' };
     await build({ imap: {} }, { EMAIL_SMTP_HOST: 'smtp.example.com' });
+    await build({}, { EMAIL_ADDRESS: 'bot@example.com' });
+    await build({}, { EMAIL_ADDRESS: 'not an address', EMAIL_SMTP_HOST: 'smtp.example.com' });
     await build({ imap: { host: 'imap.example.com' } }, base);
     await build({ webhook: { provider: 'postmark' } }, base);
     await build({ webhook: { provider: 'mailgun' } }, base);
     expect(socialConfigs.email).toEqual([]);
     const warnings = warn.mock.calls.map((call) => String(call[0]));
+    expect(warnings.some((w) => w.includes('"not an address" is not an email address'))).toBe(true);
     for (const name of [
       'EMAIL_ADDRESS',
+      'EMAIL_SMTP_HOST',
       'EMAIL_IMAP_PASSWORD',
       'EMAIL_WEBHOOK_TOKEN',
       'EMAIL_MAILGUN_SIGNING_KEY',

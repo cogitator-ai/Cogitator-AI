@@ -221,7 +221,7 @@ for (const target of targets) {
     });
 
     it('refuses forged signatures and stays quiet for spoofed, foreign and own mail', async () => {
-      backend.setResponse({ content: 'Should not be sent.' });
+      backend.setResponse({ content: 'Only the allowed mail is answered.' });
       await serve();
       const unsigned = await deliver(
         port,
@@ -256,8 +256,19 @@ for (const target of targets) {
         messageId: '<own@cogitator.test>',
         sender: BOT,
       });
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      expect(transport.raw).toEqual([]);
+      const callsBefore = backend.getCallCount();
+      const allowed = await deliver(port, {
+        from: 'Ann Lee <ann@example.com>',
+        subject: 'Still there?',
+        text: 'Are you there?',
+        messageId: '<allowed@example.com>',
+      });
+      expect(allowed.status).toBe(200);
+      await waitFor(() => transport.raw.length === 1);
+      const [only] = await transport.parsed();
+      expect(only.inReplyTo).toBe('<allowed@example.com>');
+      expect(transport.raw).toHaveLength(1);
+      if (scripted) expect(backend.getCallCount() - callsBefore).toBe(1);
     });
   });
 }

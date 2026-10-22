@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   channelsKeptOnEdit,
+  emailChannelConfig,
   extractMcpName,
   parsePathList,
   resolveMemoryConfig,
@@ -120,5 +121,49 @@ describe('channelsKeptOnEdit', () => {
       webchat: { port: 9000 },
     });
     expect(channelsKeptOnEdit(undefined)).toEqual({});
+  });
+});
+
+describe('emailChannelConfig', () => {
+  const answers = {
+    address: 'new@example.com',
+    imapHost: 'imap.new.com',
+    smtpHost: 'smtp.new.com',
+    ownerIds: ['me@example.com'],
+    allowFrom: [],
+    trustedAuthservIds: [],
+  };
+
+  it('writes the new address and servers over what cogitator.yml held, keeping the rest', () => {
+    expect(
+      emailChannelConfig(
+        {
+          address: 'old@example.com',
+          imap: { host: 'imap.old.com', mailbox: 'Bot' },
+          smtp: { host: 'smtp.old.com', port: 465 },
+          subject: 'Hi',
+        },
+        { ...answers, trustedAuthservIds: ['mx.google.com'] }
+      )
+    ).toEqual({
+      address: 'new@example.com',
+      imap: { host: 'imap.new.com', mailbox: 'Bot' },
+      smtp: { host: 'smtp.new.com', port: 465 },
+      subject: 'Hi',
+      ownerIds: ['me@example.com'],
+      trustedAuthservIds: ['mx.google.com'],
+    });
+  });
+
+  it('removes allowFrom and trustedAuthservIds when the answers are blank', () => {
+    const config = emailChannelConfig(
+      { allowFrom: ['*'], trustedAuthservIds: ['mx.google.com'] },
+      answers
+    );
+    expect(config).not.toHaveProperty('allowFrom');
+    expect(config).not.toHaveProperty('trustedAuthservIds');
+    expect(
+      emailChannelConfig({ allowFrom: ['*'] }, { ...answers, allowFrom: ['example.com'] })
+    ).toMatchObject({ allowFrom: ['example.com'] });
   });
 });

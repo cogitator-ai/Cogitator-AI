@@ -8,7 +8,10 @@ import { alignedDomains, domainOf, headersOf, type EmailHeaders } from './addres
  */
 export type SenderAuthentication = 'pass' | 'fail' | 'none';
 
-/** Combines the verdicts of several sources: any pass passes, else any fail fails. */
+/**
+ * Combines the results of one source, such as the methods of one `Authentication-Results`:
+ * any pass passes (mail forwarded on breaks SPF but keeps DKIM), else any fail fails.
+ */
 export function combineAuthentication(
   ...verdicts: readonly SenderAuthentication[]
 ): SenderAuthentication {
@@ -78,38 +81,65 @@ export function parseAuthenticationResults(
   return { authservId, verdict: reported ? 'fail' : 'none' };
 }
 
+/** Where the sender authentication of a message's headers comes from, and whom to trust. */
+export interface HeaderAuthenticationOptions {
+  /**
+   * `imap`: the `Authentication-Results` of `trustedAuthservIds`. `postmark`: the SpamAssassin
+   * `X-Spam-Tests` Postmark adds, whose earlier copies SpamAssassin removes, and the
+   * `Authentication-Results` of `trustedAuthservIds`.
+   */
+  source: 'imap' | 'postmark';
+  /** The authserv-ids (the receiving servers) whose `Authentication-Results` count */
+  trustedAuthservIds?: readonly string[];
+}
+
 /**
- * The sender verdict a message's own headers carry, for the author domain `fromDomain`: the
- * topmost `Authentication-Results` (or the topmost from one of `trustedAuthservIds`, when set),
- * the topmost `Received-SPF` and the SpamAssassin `X-Spam-Tests` Postmark adds. Only the topmost
- * header of each kind counts, since the receiving server adds its own on top and anything below
- * may come from the sender.
+ * Combines the verdicts of independent sources: a fail of any of them fails, since one source
+ * passing does not undo what another found, then any pass passes.
+ */
+export function combineSources(...verdicts: readonly SenderAuthentication[]): SenderAuthentication {
+  if (verdicts.includes('fail')) return 'fail';
+  if (verdicts.includes('pass')) return 'pass';
+  return 'none';
+}
+
+/**
+ * The verdict of Postmark's SpamAssassin tests: `DKIM_VALID_AU` is a valid signature of the
+ * author's domain, an SPF fail or an invalid signature fails. More than one `X-Spam-Tests`
+ * header fails, since one of them came from the sender.
+ */
+function spamTestsAuthentication(headers: EmailHeaders): SenderAuthentication {
+  const tests = headersOf(headers, 'x-spam-tests');
+  if (tests.length > 1) return 'fail';
+  if (tests.length === 0) return 'none';
+  if (/\bDKIM_VALID_AU\b/.test(tests[0])) return 'pass';
+  if (/\b(SPF_FAIL|SPF_SOFTFAIL|DKIM_INVALID)\b/.test(tests[0])) return 'fail';
+  return 'none';
+}
+
+/**
+ * The sender verdict a message's headers carry, for the author domain `fromDomain`. A sender can
+ * add any header, so only those the receiving side wrote count: the topmost
+ * `Authentication-Results` of one of `trustedAuthservIds` (without them none is trusted), and
+ * Postmark's `X-Spam-Tests`. A fail of either source fails.
  */
 export function headerAuthentication(
   headers: EmailHeaders,
   fromDomain: string,
-  trustedAuthservIds?: readonly string[]
+  options: HeaderAuthenticationOptions
 ): SenderAuthentication {
   const verdicts: SenderAuthentication[] = [];
-  const trusted = trustedAuthservIds?.map((id) => id.toLowerCase());
-  for (const value of headersOf(headers, 'authentication-results')) {
-    const parsed = parseAuthenticationResults(value, fromDomain);
-    if (trusted && trusted.length > 0 && !trusted.includes(parsed.authservId)) continue;
-    verdicts.push(parsed.verdict);
-    break;
-  }
-  if (!trusted?.length) {
-    const spf = headersOf(headers, 'received-spf')[0];
-    if (spf) {
-      const result = /^\s*([a-z]+)/i.exec(spf)?.[1]?.toLowerCase();
-      const sender = propertyDomain(withoutComments(spf), 'envelope-from', 'smtp.mailfrom');
-      if (result === 'pass' && sender && alignedDomains(sender, fromDomain)) verdicts.push('pass');
-      else if (result && DEFINITE.has(result)) verdicts.push('fail');
+  const trusted = options.trustedAuthservIds?.map((id) => id.toLowerCase()) ?? [];
+  if (trusted.length > 0) {
+    for (const value of headersOf(headers, 'authentication-results')) {
+      const parsed = parseAuthenticationResults(value, fromDomain);
+      if (!trusted.includes(parsed.authservId)) continue;
+      verdicts.push(parsed.verdict);
+      break;
     }
-    const tests = headersOf(headers, 'x-spam-tests')[0];
-    if (tests && /\bDKIM_VALID_AU\b/.test(tests)) verdicts.push('pass');
   }
-  return combineAuthentication(...verdicts);
+  if (options.source === 'postmark') verdicts.push(spamTestsAuthentication(headers));
+  return combineSources(...verdicts);
 }
 
 /** Compares two secrets in constant time, whatever their lengths. */

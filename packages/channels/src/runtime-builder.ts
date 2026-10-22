@@ -56,6 +56,7 @@ import { blueskyChannel } from './channels/bluesky/channel';
 import { threadsChannel } from './channels/threads/channel';
 import { githubChannel } from './channels/github/channel';
 import { emailChannel, type EmailWebhookConfig } from './channels/email/channel';
+import { isAddress } from './channels/email/address';
 import { FileTokenStore } from './feeds/token-store';
 import type { GatewayApprovalsConfig } from './approvals';
 import { ownerCommands } from './middleware/owner-commands';
@@ -1075,6 +1076,12 @@ export class RuntimeBuilder {
     };
     const address = email.address ?? env('EMAIL_ADDRESS')?.toLowerCase();
     if (!address) return missing('EMAIL_ADDRESS (or channels.email.address)');
+    if (!isAddress(address)) {
+      console.warn(
+        `[RuntimeBuilder] Email configured but EMAIL_ADDRESS "${address}" is not an email address`
+      );
+      return undefined;
+    }
 
     const smtpHost = email.smtp?.host ?? env('EMAIL_SMTP_HOST');
     const smtpPassword = env('EMAIL_SMTP_PASSWORD');
@@ -1113,13 +1120,6 @@ export class RuntimeBuilder {
         };
       }
     }
-    if (!imapWanted && !webhook) {
-      console.warn(
-        '[RuntimeBuilder] Email configured without imap or webhook: the channel only sends mail'
-      );
-    }
-
-    const allowFrom = [...(email.allowFrom ?? []), ...(email.ownerIds ?? [])];
     return emailChannel({
       address,
       ...(email.name && { name: email.name }),
@@ -1150,7 +1150,8 @@ export class RuntimeBuilder {
           },
         }),
       ...(webhook && { webhook }),
-      ...(allowFrom.length > 0 && { allowFrom: [...new Set(allowFrom)] }),
+      ...(email.allowFrom && { allowFrom: email.allowFrom }),
+      ...(email.ownerIds && { owners: email.ownerIds }),
       ...(email.senderAuth && { senderAuth: email.senderAuth }),
       ...(email.trustedAuthservIds && { trustedAuthservIds: email.trustedAuthservIds }),
       ...(email.subject && { subject: email.subject }),

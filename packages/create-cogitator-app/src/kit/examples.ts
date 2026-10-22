@@ -127,6 +127,10 @@ const KNOWN_ENV: Record<string, { description: string; example?: string }> = {
     example: 'example.com',
   },
   EMAIL_IMAP_HOST: { description: 'IMAP server of the mailbox', example: 'imap.gmail.com' },
+  EMAIL_TRUSTED_AUTHSERV_IDS: {
+    description: 'The id the mailbox host writes in Authentication-Results',
+    example: 'mx.google.com',
+  },
   EMAIL_IMAP_USER: { description: 'IMAP user, the address when not set' },
   EMAIL_IMAP_PASSWORD: { description: 'IMAP password, an app password for Gmail and Outlook' },
   EMAIL_SMTP_HOST: { description: 'SMTP server the bot sends through', example: 'smtp.gmail.com' },

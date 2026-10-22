@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import type { ChannelMessage } from '@cogitator-ai/types';
+import type { ChannelMessage, RunOptions } from '@cogitator-ai/types';
+import { Gateway } from '../gateway';
 import {
   EMAIL_LOOP_HEADER,
   EmailChannel,
@@ -15,11 +16,14 @@ import { EMAIL_RECONNECT_MIN_DELAY } from '../channels/email/imap';
 import { stripQuotedReply } from '../channels/email/reply';
 import { htmlToText, markdownToHtml } from '../formatters/html';
 import { defaultThreadKey } from '../thread-key';
+import { ownerCommands } from '../middleware/owner-commands';
 
 interface StoredMail {
   uid: number;
   source: Uint8Array;
   seen: boolean;
+  /** When the server received it, default now */
+  received?: Date;
 }
 
 const imap = vi.hoisted(() => ({
@@ -28,6 +32,10 @@ const imap = vi.hoisted(() => ({
   failConnects: 0,
   clients: [] as unknown[],
   events: [] as string[],
+  searches: [] as { since?: Date }[],
+  /** Makes the next source fetch hang until the test resolves it */
+  hang: undefined as Promise<void> | undefined,
+  failSearches: 0,
 }));
 
 vi.mock('imapflow', async () => {
@@ -50,13 +58,39 @@ vi.mock('imapflow', async () => {
     async mailboxOpen(): Promise<{ uidValidity: bigint }> {
       return { uidValidity: imap.uidValidity };
     }
-    async search(query: { seen?: boolean }): Promise<number[]> {
-      return imap.mailbox.filter((mail) => query.seen !== false || !mail.seen).map((m) => m.uid);
-    }
-    async *fetch(range: number[]): AsyncGenerator<{ uid: number; source: Uint8Array }> {
-      for (const mail of imap.mailbox) {
-        if (range.includes(mail.uid)) yield { uid: mail.uid, source: mail.source };
+    async search(query: { seen?: boolean; since?: Date }): Promise<number[]> {
+      imap.searches.push({ ...(query.since && { since: query.since }) });
+      if (imap.failSearches > 0) {
+        imap.failSearches--;
+        throw new Error('search failed');
       }
+      return imap.mailbox
+        .filter((mail) => query.seen !== false || !mail.seen)
+        .filter((mail) => !query.since || (mail.received ?? new Date()) >= query.since)
+        .map((m) => m.uid);
+    }
+    async *fetch(
+      range: number[],
+      query: { size?: boolean; source?: boolean }
+    ): AsyncGenerator<{ uid: number; size?: number; source?: Uint8Array }> {
+      if (query.source && imap.hang) await imap.hang;
+      for (const mail of imap.mailbox) {
+        if (!range.includes(mail.uid)) continue;
+        yield {
+          uid: mail.uid,
+          ...(query.size && { size: mail.source.byteLength }),
+          ...(query.source && { source: mail.source }),
+        };
+      }
+    }
+    async messageFlagsRemove(range: number[], flags: string[]): Promise<boolean> {
+      for (const mail of imap.mailbox) {
+        if (range.includes(mail.uid) && flags.includes('\\Seen')) {
+          mail.seen = false;
+          imap.events.push(`unseen:${mail.uid}`);
+        }
+      }
+      return true;
     }
     async messageFlagsAdd(range: number[], flags: string[]): Promise<boolean> {
       for (const mail of imap.mailbox) {
@@ -82,6 +116,9 @@ beforeEach(() => {
   imap.failConnects = 0;
   imap.clients = [];
   imap.events = [];
+  imap.searches = [];
+  imap.hang = undefined;
+  imap.failSearches = 0;
 });
 
 afterEach(async () => {
@@ -119,7 +156,33 @@ function created(config: Partial<EmailChannelConfig> = {}) {
   return { channel, received, sent: mail.sent, transport: mail.transport };
 }
 
-const flush = () => new Promise((resolve) => setTimeout(resolve, 5));
+let controls = 0;
+
+/**
+ * Sends an allowed, signed mail after the ones a test expects to be dropped and waits until it
+ * arrives: what came before it is all there is. Resolves with the messages but the control.
+ */
+async function control(
+  made: { channel: EmailChannel; received: ChannelMessage[] },
+  sender = 'ann@example.com'
+): Promise<ChannelMessage[]> {
+  const id = `<control-${++controls}@example.com>`;
+  const response = await made.channel.handleWebhook(
+    mailgunRequest(
+      mailgunFields({
+        from: sender,
+        sender,
+        headers: [
+          ['From', sender],
+          ['Message-Id', id],
+        ],
+      })
+    )
+  );
+  expect(response.status).toBe(200);
+  await vi.waitFor(() => expect(made.received.map((msg) => msg.id)).toContain(id));
+  return made.received.filter((msg) => !msg.id.startsWith('<control-'));
+}
 
 let tokens = 0;
 
@@ -219,7 +282,8 @@ describe('Mailgun webhooks', () => {
   });
 
   it('refuses unsigned, wrongly signed and stale requests', async () => {
-    const { channel, received } = created();
+    const made = created();
+    const { channel } = made;
     const unsigned = mailgunFields();
     delete unsigned.signature;
     expect((await channel.handleWebhook(mailgunRequest(unsigned))).status).toBe(401);
@@ -230,20 +294,18 @@ describe('Mailgun webhooks', () => {
       mailgunRequest(mailgunFields({ timestamp: Math.floor(Date.now() / 1000) - 3600 }))
     );
     expect(stale).toEqual({ status: 401, body: 'Stale signature' });
-    await flush();
-    expect(received).toHaveLength(0);
+    expect(await control(made)).toEqual([]);
   });
 
   it('handles a replayed request once', async () => {
-    const { channel, received } = created();
+    const made = created();
     const fields = mailgunFields();
-    expect((await channel.handleWebhook(mailgunRequest(fields))).status).toBe(200);
-    expect(await channel.handleWebhook(mailgunRequest(fields))).toEqual({
+    expect((await made.channel.handleWebhook(mailgunRequest(fields))).status).toBe(200);
+    expect(await made.channel.handleWebhook(mailgunRequest(fields))).toEqual({
       status: 200,
       body: 'Already received',
     });
-    await flush();
-    expect(received).toHaveLength(1);
+    expect(await control(made)).toHaveLength(1);
   });
 
   it('takes the JSON mode, signed over the timestamp and the whole body', async () => {
@@ -333,8 +395,7 @@ describe('Mailgun webhooks', () => {
         mailgunFields({ from: 'Boss <ceo@example.com>', sender: 'x@evil.example', headers: forged })
       )
     );
-    await flush();
-    expect(strict.received).toHaveLength(0);
+    expect(await control(strict)).toEqual([]);
 
     const lax = created({ senderAuth: 'off' });
     await lax.channel.handleWebhook(
@@ -535,8 +596,16 @@ describe('SendGrid Inbound Parse', () => {
     await post(channel, parsedForm({ dkim: '{@evil.example : pass}', SPF: 'fail' }), {
       token: 't',
     });
-    await flush();
-    expect(received).toHaveLength(0);
+    await post(
+      channel,
+      parsedForm({
+        headers:
+          'From: Ann Lee <ann@example.com>\r\nSubject: Ok\r\nMessage-ID: <sg-ok@example.com>\r\n',
+      }),
+      { token: 't' }
+    );
+    await vi.waitFor(() => expect(received.map((msg) => msg.id)).toContain('<sg-ok@example.com>'));
+    expect(received.map((msg) => msg.id)).toEqual(['<sg-ok@example.com>']);
   });
 
   it('parses the raw MIME mode with postal-mime', async () => {
@@ -691,8 +760,8 @@ describe('what reaches the agent', () => {
   async function deliver(config: Partial<EmailChannelConfig>, mail: MailgunMail) {
     const made = created(config);
     await made.channel.handleWebhook(mailgunRequest(mailgunFields(mail)));
-    await flush();
-    return made.received;
+    const allowed = config.allowFrom?.find((entry) => entry.includes('@'))?.toLowerCase();
+    return control(made, allowed ?? 'ann@example.com');
   }
 
   it('skips auto-replies, bounces and bulk mail', async () => {
@@ -739,8 +808,7 @@ describe('what reaches the agent', () => {
     const { channel, received } = created({ allowFrom: undefined });
     await channel.start();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('No allowFrom set'));
-    await channel.handleWebhook(mailgunRequest(mailgunFields()));
-    await flush();
+    expect((await channel.handleWebhook(mailgunRequest(mailgunFields()))).status).toBe(200);
     expect(received).toHaveLength(0);
   });
 
@@ -754,15 +822,15 @@ describe('what reaches the agent', () => {
   });
 
   it('hands a mail over once by its Message-ID, whichever request brings it', async () => {
-    const { channel, received } = created();
+    const made = created();
+    const { channel } = made;
     const headers: [string, string][] = [
       ['From', 'ann@example.com'],
       ['Message-Id', '<same@example.com>'],
     ];
     await channel.handleWebhook(mailgunRequest(mailgunFields({ headers })));
     await channel.handleWebhook(mailgunRequest(mailgunFields({ headers })));
-    await flush();
-    expect(received).toHaveLength(1);
+    expect(await control(made)).toHaveLength(1);
   });
 
   it('skips mail with nothing in it', async () => {
@@ -842,7 +910,7 @@ describe('IMAP', () => {
   it('reads new mail IDLE reports at once', async () => {
     const { channel, received } = created({ webhook: undefined, imap: imapConfig });
     await channel.start();
-    await flush();
+    await vi.waitFor(() => expect(imap.searches.length).toBeGreaterThan(0));
     imap.mailbox.push({ uid: 3, source: rawMail('<n3@example.com>'), seen: false });
     (imap.clients[0] as EventEmitter).emit('exists', { count: 1 });
     await vi.waitFor(() => expect(received).toHaveLength(1));
@@ -1014,13 +1082,465 @@ describe('sender authentication', () => {
     ).toBe('none');
   });
 
-  it('trusts only the topmost results, or those of the servers named', () => {
+  it('trusts only the results of the servers named, the topmost of them', () => {
     const headers: [string, string][] = [
       ['authentication-results', 'mx.mine.com; dkim=fail header.d=example.com'],
       ['authentication-results', 'mx.fake.com; dkim=pass header.d=example.com'],
+      ['authentication-results', 'mx.mine.com; dkim=pass header.d=example.com'],
     ];
-    expect(headerAuthentication(headers, 'example.com')).toBe('fail');
-    expect(headerAuthentication(headers, 'example.com', ['mx.fake.com'])).toBe('pass');
-    expect(headerAuthentication([], 'example.com')).toBe('none');
+    const imap = (trustedAuthservIds?: string[]) =>
+      headerAuthentication(headers, 'example.com', {
+        source: 'imap',
+        ...(trustedAuthservIds && { trustedAuthservIds }),
+      });
+    expect(imap()).toBe('none');
+    expect(imap(['mx.mine.com'])).toBe('fail');
+    expect(imap(['mx.fake.com'])).toBe('pass');
+  });
+
+  it('ignores the headers a sender can add over IMAP: X-Spam-Tests and Received-SPF', () => {
+    const injected: [string, string][] = [
+      ['authentication-results', 'mx.google.com; dkim=none; spf=softfail; dmarc=fail'],
+      ['x-spam-tests', 'DKIM_SIGNED,DKIM_VALID,DKIM_VALID_AU'],
+      ['received-spf', 'Pass (forged) envelope-from=ceo@example.com'],
+      ['authentication-results', 'evil.example; dkim=pass header.d=example.com'],
+    ];
+    const verdict = (trusted: string[]) =>
+      headerAuthentication(injected, 'example.com', {
+        source: 'imap',
+        trustedAuthservIds: trusted,
+      });
+    expect(verdict(['mx.google.com'])).toBe('fail');
+    expect(verdict([])).toBe('none');
+  });
+
+  it("reads Postmark's spam tests only once, and a trusted fail beats them", () => {
+    const tests = (...values: string[]): [string, string][] =>
+      values.map((value) => ['x-spam-tests', value]);
+    const postmark = (headers: [string, string][], trustedAuthservIds?: string[]) =>
+      headerAuthentication(headers, 'example.com', {
+        source: 'postmark',
+        ...(trustedAuthservIds && { trustedAuthservIds }),
+      });
+    expect(postmark(tests('DKIM_VALID_AU'))).toBe('pass');
+    expect(postmark(tests('SPF_FAIL'))).toBe('fail');
+    expect(postmark(tests('DKIM_VALID_AU', 'DKIM_VALID_AU'))).toBe('fail');
+    expect(
+      postmark(
+        [
+          [
+            'authentication-results',
+            'mx.inbound.postmarkapp.com; dmarc=fail header.from=example.com',
+          ],
+          ...tests('DKIM_VALID_AU'),
+        ],
+        ['mx.inbound.postmarkapp.com']
+      )
+    ).toBe('fail');
+  });
+
+  it('fails Mailgun results the message carries twice', async () => {
+    const made = created();
+    await made.channel.handleWebhook(
+      mailgunRequest(
+        mailgunFields({
+          headers: [
+            ['X-Mailgun-Spf', 'Fail'],
+            ['From', 'Ann <ann@example.com>'],
+            ['X-Mailgun-Spf', 'Pass'],
+            ['Message-Id', '<twice@example.com>'],
+          ],
+        })
+      )
+    );
+    expect(await control(made)).toEqual([]);
+  });
+
+  it('needs trusted servers for senderAuth required over IMAP', () => {
+    expect(
+      () =>
+        new EmailChannel({
+          address: BOT,
+          smtp: { transport: transport().transport },
+          imap: { host: 'imap.example.com', auth: { user: BOT, pass: 'x' } },
+          senderAuth: 'required',
+        })
+    ).toThrow(/trustedAuthservIds/);
+  });
+});
+
+describe('forged senders', () => {
+  it('takes the address outside quotes and comments, never one inside the display name', () => {
+    expect(parseMailbox('"x <ceo@victim.com>" <attacker@evil.com>')).toEqual({
+      address: 'attacker@evil.com',
+      name: 'x <ceo@victim.com>',
+    });
+    expect(parseMailbox('(ceo@victim.com) attacker@evil.com')?.address).toBe('attacker@evil.com');
+    expect(parseMailbox('x <ceo@victim.com> <attacker@evil.com>')?.address).toBe(
+      'attacker@evil.com'
+    );
+    expect(parseMailbox('"\\"q\\" <ceo@victim.com>" <z@evil.com>')?.address).toBe('z@evil.com');
+  });
+
+  it('uses the address Postmark parsed, whatever the display name says', async () => {
+    const { channel, received } = created({
+      allowFrom: ['victim.com'],
+      webhook: { provider: 'postmark', token: 't' },
+    });
+    const post = (email: string, id: string) =>
+      channel.handleWebhook({
+        method: 'POST',
+        query: { token: 't' },
+        headers: { 'content-type': 'application/json' },
+        rawBody: JSON.stringify({
+          FromFull: { Email: email, Name: 'Boss <ceo@victim.com>' },
+          Subject: 'Wire',
+          TextBody: 'Pay now',
+          Headers: [
+            { Name: 'Message-ID', Value: id },
+            { Name: 'X-Spam-Tests', Value: 'DKIM_VALID,DKIM_VALID_AU' },
+          ],
+        }),
+      });
+    await post('attacker@evil.com', '<pm-evil@evil.com>');
+    await post('cfo@victim.com', '<pm-ok@victim.com>');
+    expect(received.map((msg) => [msg.channelId, msg.userName])).toEqual([
+      ['cfo@victim.com', 'Boss <ceo@victim.com>'],
+    ]);
+  });
+
+  it('gives owner mail to the agent only when its sender authentication passes', async () => {
+    const made = created({ allowFrom: ['example.com'], owners: ['Me@Example.com'] });
+    const send = (spf: string, id: string) =>
+      made.channel.handleWebhook(
+        mailgunRequest(
+          mailgunFields({
+            from: 'me@example.com',
+            sender: 'me@example.com',
+            headers: [
+              ['X-Mailgun-Spf', spf],
+              ['From', 'me@example.com'],
+              ['Message-Id', id],
+            ],
+          })
+        )
+      );
+    await send('Neutral', '<owner-unverified@example.com>');
+    await send('Pass', '<owner-verified@example.com>');
+    expect((await control(made)).map((msg) => msg.id)).toEqual(['<owner-verified@example.com>']);
+  });
+});
+
+describe('SendGrid character sets', () => {
+  it('decodes each field in the character set SendGrid names', async () => {
+    const { channel, received } = created({ webhook: { provider: 'sendgrid', token: 't' } });
+    const boundary = 'xYzBoundary';
+    const fields: [string, Buffer][] = [
+      ['headers', Buffer.from('From: Ann <ann@example.com>\r\nMessage-ID: <cs@example.com>\r\n')],
+      ['subject', Buffer.from('Grüße', 'latin1')],
+      ['text', Buffer.from([0xf0, 0xd2, 0xc9, 0xd7, 0xc5, 0xd4])],
+      ['charsets', Buffer.from(JSON.stringify({ subject: 'iso-8859-1', text: 'koi8-r' }))],
+    ];
+    const rawBody = Buffer.concat([
+      ...fields.flatMap(([name, value]) => [
+        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n`),
+        value,
+        Buffer.from('\r\n'),
+      ]),
+      Buffer.from(`--${boundary}--\r\n`),
+    ]);
+    const response = await channel.handleWebhook({
+      method: 'POST',
+      query: { token: 't' },
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      rawBody,
+    });
+    expect(response.status).toBe(200);
+    expect(received[0]?.text).toBe('Subject: Grüße\n\nПривет');
+  });
+});
+
+describe('commands and threads', () => {
+  it('keeps a command first, so the real owner commands answer it', async () => {
+    const made = created({ owners: ['me@example.com'] });
+    const commands = ownerCommands({ ownerIds: { email: 'me@example.com' } });
+    const send = (subject: string, text: string, id: string) =>
+      made.channel.handleWebhook(
+        mailgunRequest(
+          mailgunFields({
+            from: 'me@example.com',
+            sender: 'me@example.com',
+            subject,
+            text,
+            headers: [
+              ['X-Mailgun-Spf', 'Pass'],
+              ['From', 'me@example.com'],
+              ['Subject', subject],
+              ['Message-Id', id],
+            ],
+          })
+        )
+      );
+    await send('Switch the model', '/model gpt-5\n\n-- \nMe', '<cmd-1@example.com>');
+    await send('/status', '', '<cmd-2@example.com>');
+    expect(made.received.map((msg) => msg.text)).toEqual(['/model gpt-5', '/status']);
+    const sendText = vi.fn().mockResolvedValue('id');
+    const next = vi.fn();
+    await commands.handle(
+      made.received[0],
+      {
+        channel: { sendText } as never,
+        threadId: 't',
+        user: {} as never,
+        set: vi.fn(),
+        get: vi.fn(),
+      },
+      next
+    );
+    expect(next).not.toHaveBeenCalled();
+    expect(sendText).toHaveBeenCalledWith('me@example.com', 'Model set to: gpt-5');
+  });
+
+  it('roots a reply to the bot that names only In-Reply-To in the thread of that mail', async () => {
+    const made = created();
+    const first = await control(made).then(() => made.received[0]);
+    const reply = await made.channel.sendText(first.channelId, 'Answer', { replyTo: first.id });
+    await made.channel.handleWebhook(
+      mailgunRequest(
+        mailgunFields({
+          headers: [
+            ['From', 'ann@example.com'],
+            ['Message-Id', '<in-reply-only@example.com>'],
+            ['In-Reply-To', reply],
+          ],
+        })
+      )
+    );
+    expect(made.received.at(-1)).toMatchObject({
+      id: '<in-reply-only@example.com>',
+      topicId: first.id,
+    });
+  });
+
+  it('answers a topic it no longer remembers without a made-up Re: subject', async () => {
+    const { channel, sent } = created();
+    await channel.sendText('ann@example.com', 'Reminder', { topicId: '<old-root@example.com>' });
+    expect(sent[0]).toMatchObject({
+      subject: 'Message from Cogi',
+      inReplyTo: '<old-root@example.com>',
+      references: ['<old-root@example.com>'],
+    });
+  });
+});
+
+describe('a gateway that does not take the mail', () => {
+  it('answers 503 so the provider sends it again, and takes the retry', async () => {
+    const { channel } = created();
+    const taken: string[] = [];
+    let accept = false;
+    channel.onMessage(async (msg) => {
+      if (!accept) return channel.redeliver(msg);
+      taken.push(msg.id);
+    });
+    const fields = mailgunFields();
+    expect((await channel.handleWebhook(mailgunRequest(fields))).status).toBe(503);
+    accept = true;
+    expect((await channel.handleWebhook(mailgunRequest(fields))).status).toBe(200);
+    expect(taken).toHaveLength(1);
+  });
+});
+
+describe('IMAP reading', () => {
+  const imapConfig = { host: 'imap.example.com', auth: { user: BOT, pass: 'app-password' } };
+  const mail = (id: string, body = 'Hello', extra: string[] = []) =>
+    Buffer.from(
+      [
+        'From: Ann <ann@example.com>',
+        `To: ${BOT}`,
+        'Subject: Question',
+        `Message-ID: ${id}`,
+        ...extra,
+        'Content-Type: text/plain; charset=utf-8',
+        '',
+        body,
+        '',
+      ].join('\r\n')
+    );
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('leaves mail the gateway refuses unread, and marks mail unread again on redelivery', async () => {
+    imap.mailbox.push({ uid: 1, source: mail('<r1@example.com>'), seen: false });
+    const { channel } = created({ webhook: undefined, imap: imapConfig });
+    let accept = false;
+    const taken: ChannelMessage[] = [];
+    channel.onMessage(async (msg) => {
+      if (!accept) return channel.redeliver(msg);
+      taken.push(msg);
+    });
+    await channel.start();
+    await vi.waitFor(() => expect(imap.searches.length).toBeGreaterThan(0));
+    await channel.poll();
+    expect(imap.mailbox[0].seen).toBe(false);
+    accept = true;
+    await channel.poll();
+    expect(taken.map((msg) => msg.id)).toEqual(['<r1@example.com>']);
+    expect(imap.mailbox[0].seen).toBe(true);
+    await channel.redeliver(taken[0]);
+    expect(imap.events).toContain('unseen:1');
+    await channel.poll();
+    expect(taken.map((msg) => msg.id)).toEqual(['<r1@example.com>', '<r1@example.com>']);
+  });
+
+  it('marks mail a real gateway drops unanswered at stop unread again', async () => {
+    imap.mailbox.push({ uid: 1, source: mail('<drop@example.com>'), seen: false });
+    const { channel } = created({ webhook: undefined, imap: imapConfig });
+    const run = vi.fn(
+      (_agent: unknown, options: RunOptions) =>
+        new Promise((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        })
+    );
+    const gateway = new Gateway({
+      agent: { name: 'bot', id: 'a1', instructions: 'hi', tools: [], config: {} } as never,
+      channels: [channel],
+      cogitator: { run } as never,
+      drainTimeout: 20,
+      onError: vi.fn(),
+    });
+    await gateway.start();
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    expect(imap.mailbox[0].seen).toBe(true);
+    await gateway.stop();
+    expect(imap.mailbox[0].seen).toBe(false);
+  });
+
+  it('drops a forged sender with the results of the trusted server, ignoring injected ones', async () => {
+    imap.mailbox.push(
+      {
+        uid: 1,
+        source: mail('<forged@example.com>', 'Pay', [
+          'Authentication-Results: mx.google.com; dkim=none; spf=fail smtp.mailfrom=example.com; dmarc=fail',
+          'X-Spam-Tests: DKIM_VALID_AU',
+          'Authentication-Results: mx.google.com; dkim=pass header.d=example.com',
+        ]),
+        seen: false,
+      },
+      {
+        uid: 2,
+        source: mail('<genuine@example.com>', 'Hi', [
+          'Authentication-Results: mx.google.com; dkim=pass header.d=example.com',
+        ]),
+        seen: false,
+      }
+    );
+    const { channel, received } = created({
+      webhook: undefined,
+      imap: imapConfig,
+      trustedAuthservIds: ['mx.google.com'],
+    });
+    await channel.start();
+    await vi.waitFor(() => expect(imap.mailbox.every((m) => m.seen)).toBe(true));
+    expect(received.map((msg) => msg.id)).toEqual(['<genuine@example.com>']);
+  });
+
+  it('reads only the last lookbackDays of unread mail', async () => {
+    const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    imap.mailbox.push({ uid: 1, source: mail('<old@example.com>'), seen: false, received: old });
+    const recent = created({ webhook: undefined, imap: imapConfig });
+    await recent.channel.start();
+    await recent.channel.poll();
+    expect(recent.received).toEqual([]);
+    await recent.channel.stop();
+    const wide = created({ webhook: undefined, imap: { ...imapConfig, lookbackDays: 30 } });
+    await wide.channel.start();
+    await vi.waitFor(() =>
+      expect(wide.received.map((msg) => msg.id)).toEqual(['<old@example.com>'])
+    );
+  });
+
+  it('skips mail over maxBytes without fetching it, marking it read', async () => {
+    imap.mailbox.push(
+      { uid: 1, source: mail('<big@example.com>', 'x'.repeat(5000)), seen: false },
+      { uid: 2, source: mail('<small@example.com>'), seen: false }
+    );
+    const { channel, received } = created({
+      webhook: undefined,
+      imap: { ...imapConfig, maxBytes: 2000 },
+    });
+    await channel.start();
+    await vi.waitFor(() => expect(imap.mailbox.every((m) => m.seen)).toBe(true));
+    expect(received.map((msg) => msg.id)).toEqual(['<small@example.com>']);
+  });
+
+  it('looks again after a failed look when new mail came meanwhile', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { channel, received } = created({ webhook: undefined, imap: imapConfig });
+    await channel.start();
+    await vi.waitFor(() => expect(imap.searches.length).toBeGreaterThan(0));
+    await channel.poll();
+    imap.failSearches = 1;
+    imap.mailbox.push({ uid: 5, source: mail('<after-error@example.com>'), seen: false });
+    const first = channel.poll();
+    const second = channel.poll();
+    await Promise.all([first, second]);
+    expect(received.map((msg) => msg.id)).toEqual(['<after-error@example.com>']);
+  });
+
+  it('stops within its timeout when a fetch hangs, closing the connection', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    let release = () => {};
+    imap.hang = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    imap.mailbox.push({ uid: 1, source: mail('<hang@example.com>'), seen: false });
+    const { channel } = created({ webhook: undefined, imap: imapConfig });
+    await channel.start();
+    const client = imap.clients[0] as { close: () => void };
+    const close = vi.spyOn(client, 'close');
+    let stopped = false;
+    const stopping = channel.stop().then(() => {
+      stopped = true;
+    });
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(stopped).toBe(false);
+    await vi.advanceTimersByTimeAsync(1500);
+    await stopping;
+    expect(close).toHaveBeenCalled();
+    release();
+  });
+});
+
+describe('time it takes', () => {
+  const quick = (work: () => unknown) => {
+    const started = performance.now();
+    work();
+    return performance.now() - started;
+  };
+
+  it('reads hostile HTML in linear time', () => {
+    expect(quick(() => htmlToText('<a'.repeat(500_000)))).toBeLessThan(1500);
+    expect(quick(() => htmlToText('<!--'.repeat(250_000)))).toBeLessThan(1500);
+    expect(quick(() => htmlToText('<a href="'.repeat(100_000)))).toBeLessThan(1500);
+    expect(quick(() => htmlToText(`${'\n> '.repeat(300_000)}x`))).toBeLessThan(1500);
+    expect(quick(() => markdownToHtml('[a]('.repeat(20_000)))).toBeLessThan(1500);
+  });
+
+  it('strips quotes of hostile text in linear time', () => {
+    expect(quick(() => stripQuotedReply(`${'a@'.repeat(5000)}.`))).toBeLessThan(1500);
+    expect(
+      quick(() => stripQuotedReply(`${Array(20_000).fill('> a@b.co:').join('\n')}\nx`))
+    ).toBeLessThan(1500);
+    expect(
+      quick(() => stripQuotedReply(`${Array(20_000).fill('ann@example.com:').join('\n')}\n> q`))
+    ).toBeLessThan(1500);
+  });
+
+  it('keeps model output from forging its own code placeholders', () => {
+    const html = markdownToHtml('0 and `x`');
+    expect(html).toContain('�0�');
+    expect(html.match(/<code/g)).toHaveLength(1);
   });
 });

@@ -92,6 +92,80 @@ interface Line {
   text: string;
 }
 
+/** `text` without the trailing characters of `chars`, in one pass from the end. */
+function trimEndOf(text: string, chars: string): string {
+  let end = text.length;
+  while (end > 0 && chars.includes(text[end - 1])) end--;
+  return text.slice(0, end);
+}
+
+type HtmlToken = { text: string } | { closing: boolean; name: string; attributes: string };
+
+const TAG_NAME = /\/?([a-zA-Z][\w:-]*)/y;
+
+/**
+ * The tokens of HTML, in one linear pass: text, and tags with their attributes. Comments,
+ * CDATA, doctypes and processing instructions are left out. A tag that is never closed makes
+ * the rest of the input text, and a comment that is never closed drops it, so malformed input
+ * cannot make the scan go over the rest again for every `<`.
+ */
+function* htmlTokens(html: string): Generator<HtmlToken> {
+  let i = 0;
+  const skipTo = (marker: string, from: number) => {
+    const end = html.indexOf(marker, from);
+    return end === -1 ? html.length : end + marker.length;
+  };
+  while (i < html.length) {
+    const open = html.indexOf('<', i);
+    if (open === -1) {
+      yield { text: html.slice(i) };
+      return;
+    }
+    if (open > i) yield { text: html.slice(i, open) };
+    if (html.startsWith('<!--', open)) {
+      i = skipTo('-->', open + 4);
+      continue;
+    }
+    if (html.startsWith('<![CDATA[', open)) {
+      i = skipTo(']]>', open + 9);
+      continue;
+    }
+    if (html[open + 1] === '!' || html[open + 1] === '?') {
+      i = skipTo('>', open + 2);
+      continue;
+    }
+    TAG_NAME.lastIndex = open + 1;
+    const name = TAG_NAME.exec(html);
+    if (!name) {
+      yield { text: '<' };
+      i = open + 1;
+      continue;
+    }
+    const attributesStart = TAG_NAME.lastIndex;
+    let end = attributesStart;
+    let quote = '';
+    let previous = '';
+    for (; end < html.length; end++) {
+      const char = html[end];
+      if (quote) {
+        if (char === quote) quote = '';
+      } else if ((char === '"' || char === "'") && previous === '=') quote = char;
+      else if (char === '>') break;
+      if (!/\s/.test(char)) previous = char;
+    }
+    if (end >= html.length) {
+      yield { text: html.slice(open) };
+      return;
+    }
+    yield {
+      closing: name[0].startsWith('/'),
+      name: name[1],
+      attributes: html.slice(attributesStart, end),
+    };
+    i = end + 1;
+  }
+}
+
 /**
  * The text of an HTML email: paragraphs and line breaks kept, links written as `text (url)`,
  * list items with a dash, quoted blocks (`<blockquote>`) as `>` lines, scripts, styles and the
@@ -108,7 +182,7 @@ export function htmlToText(html: string): string {
   const links: { href?: string; start: number }[] = [];
 
   const flush = () => {
-    lines.push({ depth: lineDepth, text: line.replace(/[ \t]+$/, '') });
+    lines.push({ depth: lineDepth, text: trimEndOf(line, ' \t') });
     line = '';
     lineDepth = depth;
   };
@@ -129,13 +203,10 @@ export function htmlToText(html: string): string {
     line += text;
   };
 
-  const tokens =
-    /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<![^>]*>|<(\/?)([a-zA-Z][\w:-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>|([^<]+)|</g;
-  for (const match of html.matchAll(tokens)) {
-    const [whole, closing, rawName, attributes = '', text] = match;
-    if (text !== undefined || whole === '<') {
+  for (const token of htmlTokens(html)) {
+    if ('text' in token) {
       if (skipping > 0) continue;
-      const decoded = decodeHtmlEntities(text ?? whole);
+      const decoded = decodeHtmlEntities(token.text);
       if (pre > 0) {
         const parts = decoded.split('\n');
         parts.forEach((part, index) => {
@@ -148,11 +219,11 @@ export function htmlToText(html: string): string {
       }
       continue;
     }
-    if (!rawName) continue;
-    const name = rawName.toLowerCase();
+    const { closing, attributes } = token;
+    const name = token.name.toLowerCase();
     if (SKIPPED.has(name)) {
       if (closing) skipping = Math.max(0, skipping - 1);
-      else if (!/\/\s*$/.test(attributes)) skipping++;
+      else if (!attributes.trimEnd().endsWith('/')) skipping++;
       continue;
     }
     if (skipping > 0) continue;
@@ -240,14 +311,16 @@ export function htmlToText(html: string): string {
   }
   endLine();
 
-  return lines
-    .map(({ depth: level, text }) => {
-      const cleaned = text.replace(/\t+$/, '').replace(/\t/g, ' | ');
-      return level > 0 ? `${'> '.repeat(level)}${cleaned}`.trimEnd() : cleaned;
-    })
+  const rendered = lines.map(({ depth: level, text }) => {
+    const cleaned = trimEndOf(text, '\t').replace(/\t/g, ' | ');
+    return level > 0 ? `${'> '.repeat(level)}${cleaned}`.trimEnd() : cleaned;
+  });
+  while (rendered.length > 0 && trimEndOf(rendered[rendered.length - 1], '> ') === '') {
+    rendered.pop();
+  }
+  return rendered
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
-    .replace(/(\n[> ]*)+$/, '')
     .trim();
 }
 
@@ -260,41 +333,42 @@ function safeUrl(url: string): string | undefined {
 }
 
 /** Inline Markdown (code spans, emphasis, links) as HTML, the text escaped. */
-function inlineHtml(text: string): string {
+function inlineHtml(input: string): string {
   const code: string[] = [];
-  const keep = (html: string) => `${code.push(html) - 1}`;
-  let html = text.replace(/(`+)([\s\S]*?[^`])\1(?!`)/g, (_, _ticks: string, body: string) =>
+  const keep = (html: string) => `\uE000${code.push(html) - 1}\uE000`;
+  const text = input.replace(/\uE000/g, '\uFFFD');
+  let html = text.replace(/(`+)([\s\S]{0,4000}?[^`])\1(?!`)/g, (_, _ticks: string, body: string) =>
     keep(`<code style="${CODE_STYLE}; padding: 0 3px">${escapeHtml(body.trim())}</code>`)
   );
   html = escapeHtml(html)
     .replace(
-      /!\[([^\]]*)\]\(([^)\s]+)(?:\s+&quot;[^)]*&quot;)?\)/g,
+      /!\[([^\]\n]{0,1000})\]\(([^)\s]{1,2048})(?:\s+&quot;[^)\n]{0,1000}&quot;)?\)/g,
       (whole, alt: string, url: string) => {
         const href = safeUrl(url);
         return href ? keep(`<a href="${href}">${alt || href}</a>`) : whole;
       }
     )
     .replace(
-      /\[([^\]\n]+)\]\(([^)\s]+)(?:\s+&quot;[^)]*&quot;)?\)/g,
+      /\[([^\]\n]{1,1000})\]\(([^)\s]{1,2048})(?:\s+&quot;[^)\n]{0,1000}&quot;)?\)/g,
       (whole, label: string, url: string) => {
         const href = safeUrl(url);
         return href ? keep(`<a href="${href}">${label}</a>`) : whole;
       }
     )
     .replace(
-      /&lt;((?:https?:\/\/|mailto:)[^\s&]+(?:&amp;[^\s&]+)*)&gt;/gi,
+      /&lt;((?:https?:\/\/|mailto:)[^\s&]{1,2048}(?:&amp;[^\s&]{1,2048}){0,64})&gt;/gi,
       (whole, url: string) => {
         const href = safeUrl(url);
         return href ? keep(`<a href="${href}">${url}</a>`) : whole;
       }
     )
-    .replace(/(\*\*|__)(?=\S)([\s\S]*?\S)\1/g, '<strong>$2</strong>')
+    .replace(/(\*\*|__)(?=\S)([^\n]{0,2000}?\S)\1/g, '<strong>$2</strong>')
     .replace(/(?<![\w*])\*(?=\S)([^*\n]*?\S)\*(?![\w*])/g, '<em>$1</em>')
     .replace(/(?<![\w_])_(?=\S)([^_\n]*?\S)_(?![\w_])/g, '<em>$1</em>')
-    .replace(/~~(?=\S)([\s\S]*?\S)~~/g, '<del>$1</del>')
+    .replace(/~~(?=\S)([^\n]{0,2000}?\S)~~/g, '<del>$1</del>')
     .replace(/\n/g, '<br>\n');
-  for (let round = 0; round < 3 && html.includes(''); round++) {
-    html = html.replace(/(\d+)/g, (_, index: string) => code[Number(index)]);
+  for (let round = 0; round < 3 && html.includes('\uE000'); round++) {
+    html = html.replace(/\uE000(\d+)\uE000/g, (_, index: string) => code[Number(index)]);
   }
   return html;
 }

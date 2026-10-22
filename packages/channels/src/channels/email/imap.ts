@@ -1,3 +1,5 @@
+import { EmailDependencyError } from './errors';
+
 /** Where the channel reads mail over IMAP. */
 export interface EmailImapConfig {
   host: string;
@@ -23,6 +25,11 @@ export interface EmailImapConfig {
   batchSize?: number;
   /** How many fetched messages are parsed at once (default 4). They reach the agent in order */
   concurrency?: number;
+  /**
+   * The largest mail read, in bytes (default 25 MB, the limit of Gmail and Outlook). A larger
+   * one is not fetched, logged and marked read.
+   */
+  maxBytes?: number;
   /** Further options for the `ImapFlow` client, such as `tls` */
   clientOptions?: Record<string, unknown>;
 }
@@ -39,10 +46,11 @@ export interface ImapClient {
   ): Promise<number[] | false | undefined>;
   fetch(
     range: number[],
-    query: { uid: true; source: true },
+    query: { uid: true; size?: true; source?: true },
     options: { uid: true }
-  ): AsyncIterable<{ uid: number; source?: Uint8Array }>;
+  ): AsyncIterable<{ uid: number; size?: number; source?: Uint8Array }>;
   messageFlagsAdd(range: number[], flags: string[], options: { uid: true }): Promise<boolean>;
+  messageFlagsRemove(range: number[], flags: string[], options: { uid: true }): Promise<boolean>;
   on(event: 'exists' | 'close' | 'error', listener: (arg?: unknown) => void): unknown;
 }
 
@@ -53,17 +61,20 @@ interface ImapFlowModule {
 /** The first wait before reconnecting, in ms. Each failed try doubles it, up to the maximum. */
 export const EMAIL_RECONNECT_MIN_DELAY = 1000;
 export const EMAIL_RECONNECT_MAX_DELAY = 60_000;
+/** The largest mail read over IMAP by default, in bytes. */
+export const EMAIL_DEFAULT_MAX_IMAP_BYTES = 25 * 1024 * 1024;
+/** How long `stop()` waits for a read in progress before it closes the connection, in ms. */
+const STOP_TIMEOUT = 5000;
 
 const MAX_TRACKED = 1000;
 const DAY = 24 * 60 * 60 * 1000;
 
-async function loadImapFlow(): Promise<ImapFlowModule> {
+/** Loads `imapflow`, failing with an install hint when it is missing. */
+export async function loadImapFlow(): Promise<ImapFlowModule> {
   try {
     return (await import('imapflow')) as unknown as ImapFlowModule;
   } catch (error) {
-    throw new Error('imapflow is required to read mail over IMAP. Install it: pnpm add imapflow', {
-      cause: error,
-    });
+    throw new EmailDependencyError('imapflow', 'to read mail over IMAP', { cause: error });
   }
 }
 
@@ -89,11 +100,20 @@ async function mapBounded<T, R>(
   return results;
 }
 
+function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  return Promise.race([promise.then(() => true), timeout]).finally(() => clearTimeout(timer));
+}
+
 /**
  * Reads a mailbox over IMAP: unread mail, at once through IDLE and on a timer. A message is
- * flagged `\Seen` once it was handed over, so a restart reads only what was not, and the UIDs
- * handed over are remembered in case flagging failed. A dropped connection is opened again, the
- * wait doubling from 1 s up to 60 s while it keeps failing.
+ * flagged `\Seen` once it was taken, so a restart reads only what was not, and the UIDs taken
+ * are remembered in case flagging failed. A message `deliver` refuses (resolving `false`) stays
+ * unread and ends the look. A dropped connection is opened again, the wait doubling from 1 s up
+ * to 60 s while it keeps failing.
  */
 export class ImapInbox<T> {
   private client?: ImapClient;
@@ -109,7 +129,7 @@ export class ImapInbox<T> {
   constructor(
     private readonly config: EmailImapConfig,
     private readonly parse: (raw: Uint8Array, uid: number) => Promise<T>,
-    private readonly deliver: (item: T) => Promise<void>
+    private readonly deliver: (item: T) => Promise<boolean>
   ) {}
 
   /** Connects and reads what is unread. Rejects when the first connection fails. */
@@ -124,21 +144,25 @@ export class ImapInbox<T> {
     }
   }
 
+  /** Stops reading: waits up to 5 s for a read in progress, then closes the connection. */
   async stop(): Promise<void> {
     this.stopped = true;
     clearInterval(this.pollTimer);
     clearTimeout(this.reconnectTimer);
     this.pollTimer = undefined;
     this.reconnectTimer = undefined;
-    await this.syncing?.catch(() => undefined);
+    const settled = this.syncing ? await settlesWithin(this.syncing, STOP_TIMEOUT) : true;
     const client = this.client;
     this.client = undefined;
-    if (client) {
-      try {
-        await client.logout();
-      } catch {
-        client.close();
-      }
+    if (!client) return;
+    if (!settled) {
+      client.close();
+      return;
+    }
+    try {
+      await client.logout();
+    } catch {
+      client.close();
     }
   }
 
@@ -152,16 +176,24 @@ export class ImapInbox<T> {
       try {
         do {
           this.again = false;
-          await this.syncOnce();
+          try {
+            await this.syncOnce();
+          } catch (error) {
+            console.error('[email] Reading the IMAP mailbox failed:', error);
+          }
         } while (this.again && !this.stopped);
-      } catch (error) {
-        console.error('[email] Reading the IMAP mailbox failed:', error);
       } finally {
         this.syncing = undefined;
       }
     })();
     this.syncing = run;
     return run;
+  }
+
+  /** Marks a message unread again and forgets it, so the next look reads it once more. */
+  async unsee(uid: number): Promise<void> {
+    this.done.delete(this.key(uid));
+    await this.client?.messageFlagsRemove([uid], ['\\Seen'], { uid: true });
   }
 
   private async connect(): Promise<void> {
@@ -239,6 +271,16 @@ export class ImapInbox<T> {
     }
   }
 
+  /** Marks a message read and remembers it, so it is not read again. */
+  private async finish(client: ImapClient, uid: number): Promise<void> {
+    this.remember(uid);
+    await client
+      .messageFlagsAdd([uid], ['\\Seen'], { uid: true })
+      .catch((error: unknown) =>
+        console.error(`[email] Could not mark message ${uid} read:`, error)
+      );
+  }
+
   private async syncOnce(): Promise<void> {
     const client = this.client;
     if (!client || this.stopped) return;
@@ -246,12 +288,28 @@ export class ImapInbox<T> {
     const found = await client.search({ seen: false, since }, { uid: true });
     const uids = (found || []).filter((uid) => !this.done.has(this.key(uid))).sort((a, b) => a - b);
     const batchSize = Math.max(1, this.config.batchSize ?? 20);
+    const maxBytes = this.config.maxBytes ?? EMAIL_DEFAULT_MAX_IMAP_BYTES;
     for (let start = 0; start < uids.length; start += batchSize) {
       if (this.stopped || client !== this.client) return;
       const batch = uids.slice(start, start + batchSize);
+      const wanted: number[] = [];
+      for await (const message of client.fetch(batch, { uid: true, size: true }, { uid: true })) {
+        if (message.size !== undefined && message.size > maxBytes) {
+          console.warn(
+            `[email] Message ${message.uid} of ${message.size} bytes is over the limit of ${maxBytes}: it is marked read without reaching the agent`
+          );
+          await this.finish(client, message.uid);
+        } else wanted.push(message.uid);
+      }
       const sources = new Map<number, Uint8Array>();
-      for await (const message of client.fetch(batch, { uid: true, source: true }, { uid: true })) {
-        if (message.source) sources.set(message.uid, message.source);
+      if (wanted.length > 0) {
+        for await (const message of client.fetch(
+          wanted,
+          { uid: true, source: true },
+          { uid: true }
+        )) {
+          if (message.source) sources.set(message.uid, message.source);
+        }
       }
       const fetched = batch.filter((uid) => sources.has(uid));
       const parsed = await mapBounded(fetched, this.config.concurrency ?? 4, (uid) => {
@@ -262,21 +320,20 @@ export class ImapInbox<T> {
       for (const [index, uid] of fetched.entries()) {
         if (this.stopped) return;
         const result = parsed[index];
-        if (result.status === 'fulfilled') {
-          try {
-            await this.deliver(result.value);
-          } catch (error) {
-            console.error(`[email] Handling message ${uid} failed:`, error);
-          }
-        } else {
+        if (result.status === 'rejected') {
+          if (result.reason instanceof EmailDependencyError) throw result.reason;
           console.error(`[email] Could not read message ${uid}, it is marked read:`, result.reason);
+          await this.finish(client, uid);
+          continue;
         }
-        this.remember(uid);
-        await client
-          .messageFlagsAdd([uid], ['\\Seen'], { uid: true })
-          .catch((error: unknown) =>
-            console.error(`[email] Could not mark message ${uid} read:`, error)
-          );
+        let taken = true;
+        try {
+          taken = await this.deliver(result.value);
+        } catch (error) {
+          console.error(`[email] Handling message ${uid} failed:`, error);
+        }
+        if (!taken) return;
+        await this.finish(client, uid);
       }
     }
   }

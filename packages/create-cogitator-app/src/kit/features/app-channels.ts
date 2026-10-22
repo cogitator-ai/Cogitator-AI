@@ -150,8 +150,13 @@ const CHANNEL_SETUP: Record<ChannelKind, ChannelSetup> = {
         allowFrom: env.EMAIL_ALLOW_FROM.split(',')
           .map((entry) => entry.trim())
           .filter(Boolean),
+        ...(env.EMAIL_TRUSTED_AUTHSERV_IDS && {
+          trustedAuthservIds: env.EMAIL_TRUSTED_AUTHSERV_IDS.split(',').map((id) => id.trim()),
+        }),
         imap: {
           host: env.EMAIL_IMAP_HOST,
+          port: Number(env.EMAIL_IMAP_PORT ?? 993),
+          secure: env.EMAIL_IMAP_SECURE !== 'false',
           auth: { user: env.EMAIL_IMAP_USER ?? env.EMAIL_ADDRESS, pass: env.EMAIL_IMAP_PASSWORD },
         },
         smtp: {
@@ -181,9 +186,28 @@ const CHANNEL_SETUP: Record<ChannelKind, ChannelSetup> = {
         secret: false,
       },
       {
+        name: 'EMAIL_TRUSTED_AUTHSERV_IDS',
+        description:
+          'The id the mailbox host writes in Authentication-Results (mx.google.com for Gmail), so mail with a forged sender is dropped',
+        required: false,
+        secret: false,
+      },
+      {
         name: 'EMAIL_IMAP_HOST',
         description: 'IMAP server of the mailbox, such as imap.gmail.com',
         required: true,
+        secret: false,
+      },
+      {
+        name: 'EMAIL_IMAP_PORT',
+        description: 'IMAP port: 993 for TLS (default) or 143 with EMAIL_IMAP_SECURE=false',
+        required: false,
+        secret: false,
+      },
+      {
+        name: 'EMAIL_IMAP_SECURE',
+        description: 'Set to false for STARTTLS instead of TLS from the start',
+        required: false,
         secret: false,
       },
       {
@@ -254,7 +278,11 @@ export const appChannelsFeature: FeatureModule = {
       const setup = CHANNEL_SETUP[channel];
       for (const [name, version] of setup.packages) project.dependency(name, version);
       for (const variable of setup.env) {
-        project.envVar({ ...variable, secret: variable.secret ?? true });
+        project.envVar({
+          ...variable,
+          secret: variable.secret ?? true,
+          ...(variable.required && { deploy: true }),
+        });
       }
     }
     if (
@@ -384,7 +412,7 @@ export const appChannelsFeature: FeatureModule = {
     if (spec.channels.includes('email')) {
       project.readmeSection(
         'Email',
-        'The bot reads unread mail of `EMAIL_ADDRESS` over IMAP and answers in the same thread over SMTP, marking what it read. Give it a mailbox of its own, since it reads every unread mail there. It answers only `EMAIL_ALLOW_FROM`, skips auto-replies, bounces and mailing lists, and drops mail whose DKIM, SPF or DMARC results fail for the sender domain, as reported in `Authentication-Results`. A `From` address is easy to forge, so keep the list short and give the agent no tools a stranger must not use.'
+        'The bot reads unread mail of `EMAIL_ADDRESS` over IMAP and answers in the same thread over SMTP, marking what it read. Give it a mailbox of its own, since it reads every unread mail there. It answers only `EMAIL_ALLOW_FROM` and skips auto-replies, bounces and mailing lists. A `From` address is easy to forge: set `EMAIL_TRUSTED_AUTHSERV_IDS` to the id your mailbox host writes in `Authentication-Results` (`mx.google.com` for Gmail), so mail whose DKIM, SPF or DMARC results fail for the sender domain is dropped, keep the list short and give the agent no tools a stranger must not use.'
       );
     }
     if (github) {

@@ -489,6 +489,29 @@ describe('a messaging bot on email', () => {
     expect(readme).toContain('Authentication-Results');
     expect(file(plan, 'src/env.ts')).toContain("required('EMAIL_IMAP_PASSWORD'");
   });
+
+  it('hands every variable the bot needs to a deployment, the settings with the passwords', () => {
+    const deployed = planProject(
+      specFor('channels', 'openai', { channels: ['email'], deploy: 'docker' })
+    );
+    const yml = file(deployed, 'cogitator.yml');
+    for (const name of [
+      'EMAIL_ADDRESS',
+      'EMAIL_ALLOW_FROM',
+      'EMAIL_IMAP_HOST',
+      'EMAIL_IMAP_PASSWORD',
+      'EMAIL_SMTP_HOST',
+      'EMAIL_SMTP_PASSWORD',
+    ]) {
+      expect(yml).toContain(`    - ${name}`);
+    }
+    expect(yml).not.toContain('    - EMAIL_SMTP_PORT');
+    const gateway = file(deployed, 'src/gateway.ts');
+    expect(gateway).toContain('port: Number(env.EMAIL_IMAP_PORT ?? 993)');
+    expect(gateway).toContain("secure: env.EMAIL_IMAP_SECURE !== 'false'");
+    expect(gateway).toContain('trustedAuthservIds: env.EMAIL_TRUSTED_AUTHSERV_IDS');
+    expect(syntaxErrors('src/gateway.ts', gateway)).toEqual([]);
+  });
 });
 
 describe('a messaging bot on GitHub', () => {

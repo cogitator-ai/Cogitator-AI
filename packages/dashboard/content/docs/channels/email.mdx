@@ -74,15 +74,15 @@ await gateway.start();
 | `text`           | the plain text part, or the HTML as text, without quoted history and signature   |
 | `attachments`    | the attachments, up to `maxAttachmentBytes` (10 MB) each, inline images left out |
 
-The [Gateway](/docs/channels/gateway) keeps one conversation per sender and thread, `email:<address>:<root>:<address>`, so each email thread is a conversation of its own, whatever its subject turns into. The first mail of a thread starts with its subject (`Subject: ...`), which often holds the question, and `includeSubject: false` leaves it out.
+The [Gateway](/docs/channels/gateway) keeps one conversation per sender and thread, `email:<address>:<root>:<address>`, so each email thread is a conversation of its own, whatever its subject turns into. Only the first mail of a thread (one without `In-Reply-To` and `References`) starts with its subject (`Subject: ...`), which often holds the question, and `includeSubject: false` leaves it out. A mail whose text is a command such as `/status` goes without the subject, so [owner commands](/docs/channels/owner-commands) and `/pair` still see it, and a mail with an empty text and a command as its subject is that command.
 
 The text is cut where the quoted history starts: an `On ... wrote:` line and its translations (German, French, Spanish, Portuguese, Dutch, Italian, and the `<address>:` lines Gmail and Yandex write in Russian), an Outlook `From:` and `Sent:` block or `-----Original Message-----`, and a trailing block of `>` quotes. A signature after a `-- ` line and a `Sent from my ...` line go too. Quotes the writer answers between are kept, since they say what each answer is about. HTML mail becomes text with its paragraphs, lists, links as `text (url)` and quotes as `>` lines.
 
 ## Answers
 
-`sendText(address, text, options)` sends a mail to the address. With the `replyTo` of a mail the channel saw it answers that mail: the subject gets `Re: `, `In-Reply-To` names the mail and `References` the thread (the first id and the latest 19), so mail clients keep it in the conversation. With only a `topicId`, as a [scheduled](/docs/channels/scheduler) reminder has, it answers the latest mail of that thread. Otherwise it starts a new thread, with the subject `subject` (default `Message from <name>`). It resolves with the new mail's `Message-ID`.
+`sendText(address, text, options)` sends a mail to the address. With the `replyTo` of a mail the channel saw it answers that mail: the subject gets `Re: `, `In-Reply-To` names the mail and `References` the thread (the first id and the latest 19), so mail clients keep it in the conversation. With only a `topicId`, as a [scheduled](/docs/channels/scheduler) reminder has, it answers the latest mail of that thread. A reply that names only `In-Reply-To` belongs to the thread of the mail it answers. Otherwise it starts a new thread, with the subject `subject` (default `Message from <name>`). It resolves with the new mail's `Message-ID`.
 
-The channel remembers the subject and references of the latest 1000 mails in memory. After a restart an answer to an older mail still sets `In-Reply-To` and `References` from the ids it has, with the default subject.
+The channel remembers the subject and references of the latest 1000 mails in memory. After a restart an answer to an older mail still sets `In-Reply-To` and `References` from the ids it has, with the `subject` of the channel and no `Re:`, since the thread's own subject is not known any more.
 
 - **Format.** The agent writes Markdown, sent as HTML (headings, lists, tables, code, links to `http`, `https` and `mailto` only, inline styles, raw HTML escaped) with a plain text alternative. `format: 'plain'` sends only text, `format: 'html'` sends HTML as given with its text.
 - **Editing.** Sent mail cannot be changed, so the channel says `editable: false` and the Gateway sends each answer once it is finished. `editText` rejects.
@@ -108,9 +108,9 @@ const email = emailChannel({
 
 ## IMAP
 
-The channel opens the mailbox (`mailbox`, default `INBOX`) and reads its unread mail of the last `lookbackDays` (default 7), so a first start does not answer a whole inbox. New mail is reported at once through IMAP IDLE, and a poll every `pollInterval` (default 60 s) catches what IDLE missed. Mail is fetched `batchSize` (20) at a time and parsed `concurrency` (4) at once, and reaches the agent in order.
+The channel opens the mailbox (`mailbox`, default `INBOX`) and reads its unread mail of the last `lookbackDays` (default 7), so a first start does not answer a whole inbox. New mail is reported at once through IMAP IDLE, and a poll every `pollInterval` (default 60 s) catches what IDLE missed. Mail is fetched `batchSize` (20) at a time and parsed `concurrency` (4) at once, and reaches the agent in order. Its size is asked first: mail over `maxBytes` (25 MB) is not fetched, but logged and marked read.
 
-A mail is flagged `\Seen` only once it was handed to the Gateway, which queues it, so a restart reads only what was not handed over yet, and the UIDs handed over are remembered in case flagging failed. A mail that cannot be parsed is logged and marked read. When the connection drops, the channel connects again after 1 s, doubling the wait up to 60 s while it keeps failing. `poll()` looks for new mail at once.
+A mail is flagged `\Seen` only once the Gateway took it, which queues it, so a restart reads only what was not taken yet, and the UIDs taken are remembered in case flagging failed. A stopping Gateway refuses new mail, which stays unread, and mail it took but drops unanswered at `stop()` (still queued after `drainTimeout`) is marked unread again through `redeliver`, so the next start reads it. A mail that cannot be parsed is logged and marked read, but a missing `postal-mime` leaves mail unread, and `start()` fails without it, as it does without `nodemailer` for an SMTP server. `stop()` waits up to 5 seconds for a read in progress, then closes the connection. When the connection drops, the channel connects again after 1 s, doubling the wait up to 60 s while it keeps failing. `poll()` looks for new mail at once.
 
 ```typescript
 emailChannel({
@@ -132,7 +132,7 @@ emailChannel({
 
 ## Webhooks
 
-With `webhook`, the channel takes mail a provider posts. It runs a server of its own on `port` (at `/email/webhook` unless `path` says otherwise, bodies up to `maxBody`, 10 MB, `413` beyond), or you mount `handleWebhook` or `webhookListener()` in your server with the raw body. A request is checked, answered `200` at once and its mail handed to the agent after. Once `stop()` was called, requests are answered `503`.
+With `webhook`, the channel takes mail a provider posts. It runs a server of its own on `port` (at `/email/webhook` unless `path` says otherwise, bodies up to `maxBody`, 10 MB, `413` beyond), or you mount `handleWebhook` or `webhookListener()` in your server with the raw body. A request is checked, its mail handed to the Gateway, which queues it, and answered `200`, while the agent answers after. When the Gateway does not take the mail (it is stopping), or once `stop()` was called, the request is answered `503`, so the provider sends it again later. A Gateway that answers before it takes the next message (`queueMode: 'parallel'`) gets 5 seconds, then the request is answered `200`.
 
 ```typescript
 import express from 'express';
@@ -155,10 +155,10 @@ app.post('/email/webhook', express.raw({ type: '*/*', limit: '10mb' }), async (r
 | Postmark | basic auth in the URL, or `?token=`                                                                | the inbound JSON (`FromFull`, `TextBody`, `HtmlBody`, `Headers`, `Attachments`) | the inbound webhook URL `https://user:password@<host>/email/webhook`          |
 | SendGrid | `?token=` in the URL, or basic auth                                                                | Inbound Parse multipart (`headers`, `text`, `html`, `attachment1`...), or raw   | Inbound Parse to `https://<host>/email/webhook?token=...`, raw MIME preferred |
 
-- **Mailgun.** The signing key is the HTTP webhook signing key of the account. A request without a valid signature, or older than `maxAge`, is refused with `401`, and a signature seen before is answered `200` and not handled again, so a replayed request does nothing.
+- **Mailgun.** The signing key is the HTTP webhook signing key of the account. A request without a valid signature, or older than `maxAge`, is refused with `401`, and a signature seen before is answered `200` and not handled again, so a replayed request does nothing. Signatures are remembered as long as their timestamp is within `maxAge`, up to 100 000. The signature is checked before the mail is read.
 - **Postmark and SendGrid** do not sign inbound mail, so the URL carries a secret: `basicAuth` (`{ username, password }`, which Postmark sends from the `user:password@` of the URL) or a `token` in the query (`?token=`, or an `X-Webhook-Token` header). At least one is required, both are compared in constant time, and a request without them gets `401`.
-- **SendGrid** sends the parsed fields in their own character sets. Turn on "POST the raw, full MIME message" for mail in other encodings than UTF-8: the channel parses the raw message with `postal-mime`.
-- **Postmark** gives each mail an id of its own. The channel uses the `Message-ID` header when it is among the headers, and `<id@postmark.invalid>` otherwise.
+- **SendGrid** sends the parsed fields in their own character sets and names them in `charsets`, and the channel decodes each field by it. With "POST the raw, full MIME message" it parses the raw message with `postal-mime`.
+- **Postmark** gives each mail an id of its own. The channel uses the `Message-ID` header when it is among the headers, and `<id@postmark.invalid>` otherwise. The sender is the address Postmark parsed (`FromFull.Email`), never one from the display name.
 
 ## What Reaches the Agent
 
@@ -171,12 +171,13 @@ app.post('/email/webhook', express.raw({ type: '*/*', limit: '10mb' }), async (r
 
 Anyone can send mail, and the `From` address is easy to forge. Treat what arrives as untrusted input:
 
-- **Who may write.** `allowFrom` lists addresses (`ann@example.com`), domains (`example.com`, without subdomains), subdomain wildcards (`*.example.com`) or `*` for everyone. Without it the bot answers nobody. With `cogitator up`, the `ownerIds` are always answered too.
-- **Sender authentication.** The receiving side checks DKIM, SPF and DMARC, and the channel uses what it reports for the `From` domain. A DKIM signature, an SPF pass for the envelope sender or a DMARC pass passes only when its domain is the `From` domain or a subdomain of it, so a spoofer who signs with a domain of its own fails. `senderAuth: 'when-reported'` (default) drops mail whose results fail, `'required'` also drops mail without results, `'off'` does not look.
-  - **Mailgun** reports `X-Mailgun-Spf` (for the envelope sender, compared with the `From` domain) and `X-Mailgun-Dkim-Check-Result`, which does not say which signature it checked: a DKIM pass counts when the mail carries exactly one signature, for the `From` domain.
-  - **SendGrid** posts `dkim` (`{@example.com : pass}`, one entry per signature) and `SPF` for the envelope sender.
-  - **Postmark** adds SpamAssassin's `X-Spam-Tests`, where `DKIM_VALID_AU` is a valid signature of the author's domain.
-  - **IMAP** has the `Authentication-Results` and `Received-SPF` headers of the receiving server (Gmail, Outlook and most hosts add them). Only the topmost of each counts, since the receiving server puts its own on top and anything below may come from the sender. `trustedAuthservIds` (such as `['mx.google.com']`) makes the channel use only the results of those servers.
+- **Who may write.** `allowFrom` lists addresses (`ann@example.com`), domains (`example.com`, without subdomains), subdomain wildcards (`*.example.com`) or `*` for everyone. Without it the bot answers nobody. The address is the one outside the quoted strings and comments of `From`, so `"ceo@example.com" <attacker@evil.example>` is `attacker@evil.example`.
+- **Owners.** `owners` (the `ownerIds` of `cogitator.yml`) are allowed too, and the Gateway gives them owner rights, so their mail reaches the agent only when the sender authentication passes for their domain. Mail claiming an owner address without a pass is dropped. `senderAuth: 'off'` turns this off too, for a setup that checks senders some other way.
+- **Sender authentication.** The receiving side checks DKIM, SPF and DMARC, and the channel uses what it reports for the `From` domain. A DKIM signature, an SPF pass for the envelope sender or a DMARC pass passes only when its domain is the `From` domain or a subdomain of it, so a spoofer who signs with a domain of its own fails. Within one report any pass passes (forwarded mail breaks SPF but keeps DKIM), and across reports a fail wins. `senderAuth: 'when-reported'` (default) drops mail whose results fail, `'required'` also drops mail without results, `'off'` does not look. A sender can add any header, so only results the receiving side wrote count:
+  - **Mailgun** adds `X-Mailgun-Spf` (for the envelope sender, compared with the `From` domain) and `X-Mailgun-Dkim-Check-Result`, which does not say which signature it checked: a DKIM pass counts when the mail carries exactly one signature, for the `From` domain. A mail with two copies of either fails, since one came from the sender.
+  - **SendGrid** posts `dkim` (`{@example.com : pass}`, one entry per signature) and `SPF` for the envelope sender as fields of the request, which a sender cannot write.
+  - **Postmark** adds SpamAssassin's `X-Spam-Tests`, where `DKIM_VALID_AU` is a valid signature of the author's domain. SpamAssassin removes the copies a sender brings, and a mail with more than one fails. It counts only on the Postmark webhook.
+  - **IMAP** has only the headers of the mail, so it uses the `Authentication-Results` of `trustedAuthservIds`: the authserv-id, the first word of the header, of the server that received the mail (`mx.google.com` for Gmail). The topmost of those counts, since the receiving server puts its own on top. Without `trustedAuthservIds` no result over IMAP is trusted: mail counts as not reported, `start()` warns, and `senderAuth: 'required'` is refused. `X-Spam-Tests` and `Received-SPF` never count over IMAP.
 - **Prefer verified webhooks.** A provider that receives the mail and reports DKIM and SPF, behind a signed (Mailgun) or secret (Postmark, SendGrid) webhook, is the strongest setup. With IMAP, use a mailbox whose server adds `Authentication-Results`.
 - **Prompt injection.** A mail can tell the agent to ignore its instructions, to forward a secret or to call a tool. Give the agent only the tools it needs, ask [approval](/docs/channels/gateway#approvals) for tools that write, send or delete, and keep secrets out of what it can read.
 - **Credentials.** Use an app password or a mailbox of the bot's own, never your personal password, and keep them in the environment.
@@ -207,6 +208,7 @@ interface EmailChannelConfig {
     lookbackDays?: number; // default 7
     batchSize?: number; // default 20
     concurrency?: number; // default 4
+    maxBytes?: number; // default 25 MB
     clientOptions?: Record<string, unknown>;
   };
   webhook?: (
@@ -218,6 +220,7 @@ interface EmailChannelConfig {
       }
   ) & { port?: number; path?: string; host?: string; maxBody?: number };
   allowFrom?: string[]; // default nobody
+  owners?: string[]; // allowed, with a passing sender authentication
   senderAuth?: 'required' | 'when-reported' | 'off'; // default 'when-reported'
   trustedAuthservIds?: string[];
   includeSubject?: boolean; // default true
@@ -226,7 +229,7 @@ interface EmailChannelConfig {
 }
 ```
 
-In `cogitator.yml`, `channels.email` takes `ownerIds` (addresses, always answered), `address`, `name`, `aliases`, `allowFrom`, `senderAuth`, `trustedAuthservIds`, `subject`, `imap` (`host`, `port`, `secure`, `mailbox`, `pollInterval`, `lookbackDays`), `smtp` (`host`, `port`, `secure`) and `webhook` (`provider`, `port`, default `8788`, and `path`, starting with `/`). Hosts, ports and the address may come from the environment instead, and the secrets always do:
+In `cogitator.yml`, `channels.email` takes `ownerIds` (addresses, allowed whatever `allowFrom` says, with a passing sender authentication), `address`, `name`, `aliases`, `allowFrom`, `senderAuth`, `trustedAuthservIds`, `subject`, `imap` (`host`, `port`, `secure`, `mailbox`, `pollInterval`, `lookbackDays`), `smtp` (`host`, `port`, `secure`) and `webhook` (`provider`, `port`, default `8788`, and `path`, starting with `/`). Hosts, ports and the address may come from the environment instead, and the secrets always do:
 
 | Variable                                       | For                                                      |
 | ---------------------------------------------- | -------------------------------------------------------- |
@@ -245,6 +248,7 @@ channels:
     ownerIds: [me@example.com]
     address: assistant@example.com
     allowFrom: [example.com]
+    trustedAuthservIds: [mx.google.com]
     imap:
       host: imap.gmail.com
     smtp:

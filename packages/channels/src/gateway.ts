@@ -227,6 +227,8 @@ export class Gateway {
   private readonly pending = new Set<Promise<boolean>>();
   /** The stop in progress, which a second {@link stop} call returns */
   private stopping: Promise<void> | null = null;
+  /** Messages being handed back to their channel after `stop()` dropped them */
+  private readonly redeliveries = new Set<Promise<void>>();
   /** The last pending write of each user's session, so writes to one session never interleave */
   private readonly sessionWrites = new Map<string, Promise<void>>();
   private running = false;
@@ -261,7 +263,7 @@ export class Gateway {
       : null;
 
     for (const channel of this.channels) {
-      channel.onMessage((msg) => this.handleIncoming(msg, false));
+      channel.onMessage((msg) => this.handleIncoming(msg, false, channel));
       channel.onAction?.((action) => this.handleAction(channel, action));
       channel.onStop?.((stop) => {
         this.stoppableDrafts
@@ -318,6 +320,7 @@ export class Gateway {
       await settlesWithin(this.idle(), timeout);
     }
     this.messageQueue?.dispose();
+    await Promise.allSettled([...this.redeliveries]);
 
     await Promise.all(this.channels.map((ch) => ch.stop()));
     this.startedAt = null;
@@ -582,13 +585,20 @@ export class Gateway {
   /**
    * A message from a channel, a button or {@link injectMessage}. With a queue, a channel's message
    * is only queued, so the channel goes on to its next update while the thread waits its turn.
-   * `untilAnswered` waits for the answer.
+   * `untilAnswered` waits for the answer. A message of `channel` the gateway does not answer
+   * because it stops (refused while stopping, or dropped by `stop()`) goes back through
+   * `channel.redeliver`.
    */
-  private async handleIncoming(msg: ChannelMessage, untilAnswered: boolean): Promise<void> {
+  private async handleIncoming(
+    msg: ChannelMessage,
+    untilAnswered: boolean,
+    channel?: Channel
+  ): Promise<void> {
     if (this.stopping) {
       const refused = new Error('The gateway is stopping: the message was dropped');
       this.config.onError?.(refused, msg);
       if (untilAnswered) throw refused;
+      if (channel?.redeliver) await this.redeliver(channel, msg);
       return;
     }
     if (this.debouncer) {
@@ -597,12 +607,33 @@ export class Gateway {
     }
     const answered = this.dispatch(msg);
     if (untilAnswered || !this.messageQueue) {
-      if (!(await answered) && untilAnswered) {
+      const done = await answered;
+      if (!done && untilAnswered) {
         throw new Error('The message was not answered: its run failed or was aborted');
       }
+      if (!done && !this.running && channel?.redeliver) await this.redeliver(channel, msg);
       return;
     }
-    answered.catch(() => {});
+    if (channel?.redeliver) this.redeliverIfDropped(channel, msg, answered);
+    else answered.catch(() => {});
+  }
+
+  /** Hands a message back to its channel, reporting a failure to `onError`. */
+  private redeliver(channel: Channel, msg: ChannelMessage): Promise<void> {
+    const redelivery = Promise.resolve()
+      .then(() => channel.redeliver?.(msg))
+      .catch((error: unknown) => this.config.onError?.(toError(error), msg))
+      .finally(() => this.redeliveries.delete(redelivery));
+    this.redeliveries.add(redelivery);
+    return redelivery;
+  }
+
+  /** Hands a queued message back to its channel when the gateway stops before answering it. */
+  private redeliverIfDropped(channel: Channel, msg: ChannelMessage, answered: Promise<boolean>) {
+    const watched: Promise<void> = answered
+      .then((done) => (!done && !this.running ? this.redeliver(channel, msg) : undefined))
+      .finally(() => this.redeliveries.delete(watched));
+    this.redeliveries.add(watched);
   }
 
   /** Puts a message through the queue of its thread, resolving once it is done with */

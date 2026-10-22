@@ -3,15 +3,18 @@ import type { Attachment } from '@cogitator-ai/types';
 import {
   alignedDomains,
   domainOf,
-  headerOf,
   headersOf,
   messageIdOf,
   messageIdsOf,
+  isAddress,
+  normalizeAddress,
   parseHeaderBlock,
   parseMailbox,
   type EmailHeaders,
+  type EmailMailbox,
 } from './address';
 import { combineAuthentication, headerAuthentication, type SenderAuthentication } from './auth';
+import type { FormFields } from './multipart';
 import {
   attachmentOf,
   envelopeOf,
@@ -53,33 +56,23 @@ export function bodyText(raw: string | Uint8Array): string {
   return typeof raw === 'string' ? raw : Buffer.from(raw).toString('utf-8');
 }
 
-/** A form body (`application/x-www-form-urlencoded` or `multipart/form-data`), parsed. */
-export function readForm(raw: string | Uint8Array, contentType: string): Promise<FormData> {
-  const body = typeof raw === 'string' ? raw : new Uint8Array(raw);
-  return new Response(body, { headers: { 'content-type': contentType } }).formData();
-}
-
 export function isForm(contentType: string | undefined): boolean {
   return /^(multipart\/form-data|application\/x-www-form-urlencoded)/i.test(contentType ?? '');
 }
 
-function formText(form: FormData, name: string): string | undefined {
-  const value = form.get(name);
-  return typeof value === 'string' ? value : undefined;
-}
-
-async function formFile(
-  form: FormData,
+/** The attachment a form part holds, typed by `info` where the provider lists it. */
+function formAttachment(
+  fields: FormFields,
   name: string,
   maxBytes: number,
   info?: { filename?: string; type?: string }
-): Promise<Attachment | undefined> {
-  const value = form.get(name);
-  if (!value || typeof value === 'string') return undefined;
+): Attachment | undefined {
+  const part = fields.part(name);
+  if (!part) return undefined;
   return attachmentOf(
-    new Uint8Array(await value.arrayBuffer()),
-    info?.type ?? (value.type || 'application/octet-stream'),
-    info?.filename ?? (value.name || undefined),
+    new Uint8Array(part.data),
+    info?.type ?? part.contentType ?? 'application/octet-stream',
+    info?.filename ?? part.filename,
     maxBytes
   );
 }
@@ -113,23 +106,36 @@ function signingDomains(headers: EmailHeaders): string[] {
 }
 
 /**
- * Mailgun's verdict: `X-Mailgun-Spf` for the envelope sender and `X-Mailgun-Dkim-Check-Result`.
- * Mailgun does not say which signature its DKIM result is for, so a DKIM pass counts only when
- * the message carries exactly one signature and it is for the author's domain.
+ * The value of a header the provider adds, or `fail` when the message carries more than one copy:
+ * the sender may have added one, and which is the provider's own cannot be told.
+ */
+function providerHeader(headers: EmailHeaders, name: string): string | 'duplicate' | undefined {
+  const values = headersOf(headers, name);
+  if (values.length > 1) return 'duplicate';
+  return values[0]?.trim().toLowerCase();
+}
+
+/**
+ * Mailgun's verdict, from the headers Mailgun adds to a received message: `X-Mailgun-Spf` for the
+ * envelope sender and `X-Mailgun-Dkim-Check-Result`. A message with more than one copy of either
+ * fails, since the sender may have added one. Mailgun does not say which signature its DKIM
+ * result is for, so a DKIM pass counts only when the message carries exactly one signature and
+ * it is for the author's domain.
  */
 export function mailgunAuthentication(
   headers: EmailHeaders,
   fromDomain: string,
   envelopeSender: string | undefined
 ): SenderAuthentication {
+  const spf = providerHeader(headers, 'x-mailgun-spf');
+  const dkim = providerHeader(headers, 'x-mailgun-dkim-check-result');
+  if (spf === 'duplicate' || dkim === 'duplicate') return 'fail';
   const verdicts: SenderAuthentication[] = [];
-  const spf = headerOf(headers, 'x-mailgun-spf')?.trim().toLowerCase();
   if (spf) {
     const senderDomain = envelopeSender ? domainOf(envelopeSender) : '';
     if (spf === 'pass' && alignedDomains(senderDomain, fromDomain)) verdicts.push('pass');
     else if (spf !== 'neutral' && spf !== 'none') verdicts.push('fail');
   }
-  const dkim = headerOf(headers, 'x-mailgun-dkim-check-result')?.trim().toLowerCase();
   if (dkim) {
     const domains = signingDomains(headers);
     if (dkim === 'pass' && domains.length === 1 && alignedDomains(domains[0], fromDomain)) {
@@ -189,24 +195,22 @@ async function mailgunEmailOf(
 
 /** A Mailgun route's form post (`forward()` to a URL), as an inbound email. */
 export async function mailgunFormEmail(
-  form: FormData,
+  fields: FormFields,
   options: RawEmailOptions
 ): Promise<InboundEmail> {
-  const count = Number(formText(form, 'attachment-count') ?? 0);
+  const count = Number(fields.text('attachment-count') ?? 0);
   const attachments: Attachment[] = [];
   for (let i = 1; i <= Math.min(count, 100); i++) {
-    const attachment = await formFile(form, `attachment-${i}`, options.maxAttachmentBytes);
+    const attachment = formAttachment(fields, `attachment-${i}`, options.maxAttachmentBytes);
     if (attachment) attachments.push(attachment);
   }
-  const raw: Record<string, string> = {};
-  for (const [key, value] of form.entries()) if (typeof value === 'string') raw[key] = value;
   return mailgunEmailOf(
     {
-      get: (name) => formText(form, name),
-      headers: headerPairs(formText(form, 'message-headers')),
+      get: (name) => fields.text(name),
+      headers: headerPairs(fields.text('message-headers')),
       attachments,
     },
-    raw,
+    fields.entries(),
     options
   );
 }
@@ -284,15 +288,11 @@ export function postmarkEmail(payload: unknown, options: RawEmailOptions): Inbou
     Value,
   ]);
   const envelope = envelopeOf(headers);
-  const fromAddress = body.FromFull?.Email ?? body.From;
-  const from =
-    (fromAddress &&
-      parseMailbox(
-        body.FromFull?.Name || body.FromName
-          ? `"${(body.FromFull?.Name || body.FromName || '').replace(/"/g, '')}" <${fromAddress}>`
-          : fromAddress
-      )) ||
-    envelope.from;
+  const fromAddress = normalizeAddress(body.FromFull?.Email ?? body.From ?? '');
+  const fromName = (body.FromFull?.Name || body.FromName || '').trim();
+  const from: EmailMailbox | undefined = isAddress(fromAddress)
+    ? { address: fromAddress, ...(fromName && { name: fromName }) }
+    : envelope.from;
   const messageId =
     envelope.messageId ??
     (body.MessageID ? fallbackMessageId('postmark', body.MessageID) : undefined);
@@ -315,11 +315,10 @@ export function postmarkEmail(payload: unknown, options: RawEmailOptions): Inbou
     ...(body.HtmlBody !== undefined && { html: body.HtmlBody }),
     headers,
     attachments,
-    authentication: headerAuthentication(
-      headers,
-      domainOf(from?.address ?? ''),
-      options.trustedAuthservIds
-    ),
+    authentication: headerAuthentication(headers, domainOf(from?.address ?? ''), {
+      source: 'postmark',
+      ...(options.trustedAuthservIds && { trustedAuthservIds: options.trustedAuthservIds }),
+    }),
     raw: payload,
   };
 }
@@ -341,7 +340,7 @@ export function sendgridAuthentication(
 ): SenderAuthentication {
   const verdicts: SenderAuthentication[] = [];
   if (dkim) {
-    const entries = [...dkim.matchAll(/@?([a-z0-9.-]+\.[a-z]{2,})\s*:\s*([a-z]+)/gi)];
+    const entries = [...dkim.matchAll(/@?((?:[a-z0-9-]+\.)+[a-z]{2,})\s*:\s*([a-z]+)/gi)];
     if (
       entries.some(
         ([, domain, result]) =>
@@ -364,52 +363,55 @@ export function sendgridAuthentication(
   return combineAuthentication(...verdicts);
 }
 
-/** A SendGrid Inbound Parse post (parsed, or raw with the whole message in `email`). */
+const CharsetsSchema = z.record(z.string(), z.string());
+
+/**
+ * A SendGrid Inbound Parse post (parsed, or raw with the whole message in `email`). SendGrid
+ * posts each parsed field in the character set it was written in and names them in `charsets`,
+ * so the fields are decoded by it.
+ */
 export async function sendgridEmail(
-  form: FormData,
+  fields: FormFields,
   options: RawEmailOptions
 ): Promise<InboundEmail> {
+  const charsets = CharsetsSchema.safeParse(safeJson(fields.text('charsets') ?? ''));
+  const text = (name: string) =>
+    fields.text(name, charsets.success ? charsets.data[name] : undefined);
   const envelopeFrom = z
     .object({ from: z.string().optional() })
-    .safeParse(safeJson(formText(form, 'envelope') ?? ''));
+    .safeParse(safeJson(text('envelope') ?? ''));
   const sender = envelopeFrom.success ? envelopeFrom.data.from : undefined;
-  const raw: Record<string, string> = {};
-  for (const [key, value] of form.entries()) if (typeof value === 'string') raw[key] = value;
+  const raw = fields.entries();
   const authenticate = (fromAddress: string | undefined) =>
-    sendgridAuthentication(
-      formText(form, 'dkim'),
-      formText(form, 'SPF'),
-      sender,
-      domainOf(fromAddress ?? '')
-    );
-  const mime = formText(form, 'email');
-  if (mime) {
-    const parsed = await parseRawEmail(mime, options);
+    sendgridAuthentication(text('dkim'), text('SPF'), sender, domainOf(fromAddress ?? ''));
+  const mime = fields.part('email');
+  if (mime && mime.data.length > 0) {
+    const parsed = await parseRawEmail(new Uint8Array(mime.data), options);
     return { ...parsed, authentication: authenticate(parsed.from?.address), raw };
   }
-  const headers = parseHeaderBlock(formText(form, 'headers') ?? '');
+  const headers = parseHeaderBlock(text('headers') ?? '');
   const envelope = envelopeOf(headers);
-  const from = envelope.from ?? parseMailbox(formText(form, 'from'));
-  const info = AttachmentInfoSchema.safeParse(safeJson(formText(form, 'attachment-info') ?? ''));
-  const count = Number(formText(form, 'attachments') ?? 0);
+  const from = envelope.from ?? parseMailbox(text('from'));
+  const info = AttachmentInfoSchema.safeParse(safeJson(text('attachment-info') ?? ''));
+  const count = Number(text('attachments') ?? 0);
   const attachments: Attachment[] = [];
   for (let i = 1; i <= Math.min(count, 100); i++) {
     const name = `attachment${i}`;
-    const attachment = await formFile(
-      form,
+    const attachment = formAttachment(
+      fields,
       name,
       options.maxAttachmentBytes,
       info.success ? info.data[name] : undefined
     );
     if (attachment) attachments.push(attachment);
   }
-  const text = formText(form, 'text');
-  const html = formText(form, 'html');
+  const body = text('text');
+  const html = text('html');
   return {
     ...envelope,
     ...(from && { from }),
-    subject: envelope.subject || (formText(form, 'subject') ?? '').trim(),
-    ...(text !== undefined && { text }),
+    subject: envelope.subject || (text('subject') ?? '').trim(),
+    ...(body !== undefined && { text: body }),
     ...(html !== undefined && { html }),
     headers,
     attachments,

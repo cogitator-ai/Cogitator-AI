@@ -117,6 +117,8 @@ export type { SelfConfigToolsOptions, SelfConfigCaller } from './tools/self-conf
 
 export {
   AssistantConfigSchema,
+  EMAIL_ADDRESS_PATTERN,
+  EMAIL_ALLOW_FROM_PATTERN,
   type AssistantConfigInput,
   type AssistantConfigOutput,
 } from './assistant-config';

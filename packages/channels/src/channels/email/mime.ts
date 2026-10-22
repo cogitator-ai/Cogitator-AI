@@ -10,6 +10,7 @@ import {
   type EmailMailbox,
 } from './address';
 import { headerAuthentication, type SenderAuthentication } from './auth';
+import { EmailDependencyError } from './errors';
 
 /** An incoming email, whichever way it came: IMAP or a provider's webhook. */
 export interface InboundEmail {
@@ -62,12 +63,14 @@ interface PostalMimeModule {
 
 let postalMime: Promise<PostalMimeModule> | undefined;
 
-function loadPostalMime(): Promise<PostalMimeModule> {
+/** Loads `postal-mime` once, failing with an install hint when it is missing. */
+export function loadPostalMime(): Promise<PostalMimeModule> {
   postalMime ??= (import('postal-mime') as Promise<unknown> as Promise<PostalMimeModule>).catch(
     (error: unknown) => {
       postalMime = undefined;
-      throw new Error(
-        'postal-mime is required to read raw email (IMAP, Mailgun MIME mode, SendGrid raw mode). Install it: pnpm add postal-mime',
+      throw new EmailDependencyError(
+        'postal-mime',
+        'to read raw email (IMAP, Mailgun MIME mode, SendGrid raw mode)',
         { cause: error }
       );
     }
@@ -162,11 +165,10 @@ export async function parseRawEmail(
     ...(parsed.html !== undefined && { html: parsed.html }),
     headers,
     attachments,
-    authentication: headerAuthentication(
-      headers,
-      domainOf(envelope.from?.address ?? ''),
-      options.trustedAuthservIds
-    ),
+    authentication: headerAuthentication(headers, domainOf(envelope.from?.address ?? ''), {
+      source: 'imap',
+      ...(options.trustedAuthservIds && { trustedAuthservIds: options.trustedAuthservIds }),
+    }),
     raw: parsed,
   };
 }

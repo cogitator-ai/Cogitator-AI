@@ -13,10 +13,17 @@ const McpServerSchema = z.object({
 
 const OwnerIdsSchema = z.array(z.string()).optional();
 
+/** An email address, as `channels.email` takes them */
+export const EMAIL_ADDRESS_PATTERN = /^[^\s@<>]+@[^\s@<>.]+(?:\.[^\s@<>.]+)+$/;
+
+/** An entry of `channels.email.allowFrom`: an address, a domain, `*.domain`, `@domain` or `*` */
+export const EMAIL_ALLOW_FROM_PATTERN =
+  /^(\*|(\*\.|@)?[^\s@*.]+(?:\.[^\s@*.]+)+|[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+)$/;
+
 const EmailAddressSchema = z
   .string()
   .trim()
-  .regex(/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/, 'Not an email address')
+  .regex(EMAIL_ADDRESS_PATTERN, 'Not an email address')
   .transform((address) => address.toLowerCase());
 
 const AssistantChannelsSchema = z.object({
@@ -111,7 +118,10 @@ const AssistantChannelsSchema = z.object({
     .optional(),
   email: z
     .object({
-      /** Owner addresses, also answered whatever `allowFrom` says */
+      /**
+       * Owner addresses, also answered whatever `allowFrom` says, but only when their sender
+       * authentication passes (unless `senderAuth` is `off`), since a `From` can be forged
+       */
       ownerIds: z.array(EmailAddressSchema).optional(),
       /** The bot's address (default `EMAIL_ADDRESS` from the env) */
       address: EmailAddressSchema.optional(),
@@ -125,7 +135,7 @@ const AssistantChannelsSchema = z.object({
           z
             .string()
             .regex(
-              /^(\*|(\*\.|@)?[^\s@*]+\.[^\s@*]+|[^\s@]+@[^\s@]+\.[^\s@]+)$/,
+              EMAIL_ALLOW_FROM_PATTERN,
               'An allowFrom entry is an address, a domain, *.domain or *'
             )
         )
