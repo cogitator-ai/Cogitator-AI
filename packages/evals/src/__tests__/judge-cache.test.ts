@@ -75,6 +75,48 @@ describe('judge cache and concurrency', () => {
     expect(judge.peak()).toBe(2);
   });
 
+  it('judges a prompt asked again while its verdict is still being written only once', async () => {
+    const store = new Map<string, string>();
+    const cache: JudgeCache = {
+      get: (key) => store.get(key),
+      set: async (key, verdict) => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        store.set(key, verdict);
+      },
+    };
+    const judge = judgeRuntime();
+    const config = JudgeConfigSchema.parse({ model: 'm', cache });
+    const metric = bindJudgeContext(relevance(), judgeContextFor(judge.cogitator, config));
+
+    const first = metric(caseResult('q', 'a'));
+    await vi.waitFor(() => expect(judge.run).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = metric(caseResult('q', 'a'));
+
+    expect((await Promise.all([first, second])).map((s) => s.score)).toEqual([0.8, 0.8]);
+    expect(judge.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('judges again over a cached verdict it cannot read', async () => {
+    const store = new Map<string, string>();
+    const cache: JudgeCache = {
+      get: (key) => store.get(key),
+      set: (key, verdict) => void store.set(key, verdict),
+    };
+    const judge = judgeRuntime();
+    const config = JudgeConfigSchema.parse({ model: 'm', cache });
+    const metric = bindJudgeContext(relevance(), judgeContextFor(judge.cogitator, config));
+    await metric(caseResult('q', 'a'));
+    const [key] = store.keys();
+    store.set(key!, 'garbage');
+
+    const rejudged = await metric(caseResult('q', 'a'));
+
+    expect(judge.run).toHaveBeenCalledTimes(2);
+    expect(rejudged.score).toBe(0.8);
+    expect(store.get(key!)).toBe('{"score": 0.8, "reasoning": "fine"}');
+  });
+
   it('frees the slot of a judge call that failed', async () => {
     const run = vi
       .fn()

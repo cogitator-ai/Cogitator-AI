@@ -12,6 +12,6 @@ The judge takes `cache` (`true` for memory, or a `JudgeCache` with `get` and `se
 
 The `ci` reporter sets `process.exitCode` instead of calling `process.exit(1)`, so output flushes and later hooks run. The new `junit` reporter writes `<path>.xml`, and the `github` reporter prints workflow command annotations and appends a summary to `$GITHUB_STEP_SUMMARY`.
 
-`Dataset.sample(n, { seed })` and `shuffle({ seed })` pick and order the same cases on every run for a number or string seed. The JSONL and CSV loaders name the line of the file a case the schema refuses comes from.
+`Dataset.sample(n, { seed })` and `shuffle({ seed })` pick and order the same cases on every run for a number or string seed. The JSONL and CSV loaders name the line of the file a case the schema refuses comes from. The CSV loader now splits on commas instead of guessing the delimiter, so a single column with semicolons stays whole, and throws on a malformed row such as a quote never closed instead of folding the rest of the file into one case.
 
 `EvalComparison` counts a case that errored on one side as a 0 for that side, so a challenger that fails cases loses on them, leaves out the cases neither side scored, and gives each metric `n`, the cases it was compared on.

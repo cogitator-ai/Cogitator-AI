@@ -21,11 +21,19 @@ export async function loadCsv(path: string): Promise<EvalCase[]> {
   let fields: string[] | undefined;
   const rows: Array<{ row: Record<string, string>; line: number }> = [];
   let rowStart = 0;
+  let malformed: string | undefined;
   Papa.parse<string[]>(content, {
+    delimiter: ',',
     skipEmptyLines: true,
-    step: (result) => {
+    step: (result, parser) => {
       const line = lineOf(firstContent(content, rowStart));
       rowStart = result.meta.cursor;
+      const [error] = result.errors;
+      if (error) {
+        malformed = `Invalid CSV at line ${line}: ${error.message}`;
+        parser.abort();
+        return;
+      }
       if (!fields) {
         fields = result.data;
         return;
@@ -39,6 +47,7 @@ export async function loadCsv(path: string): Promise<EvalCase[]> {
     },
   });
 
+  if (malformed) throw new Error(malformed);
   if (!fields?.includes('input')) {
     throw new Error('CSV must have an "input" column');
   }

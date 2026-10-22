@@ -139,17 +139,21 @@ export function judgeContextFor(cogitator: JudgeCogitator, judgeConfig: JudgeCon
   const limited = (input: string) => (slots ? slots(() => judge(input)) : judge(input));
   const inFlight = new Map<string, Promise<{ output: string; usage?: MetricUsage }>>();
 
-  const cached = async (input: string) => {
-    const key = cacheKey(judgeConfig, input);
+  const lookup = async (input: string, key: string) => {
     const hit = await cacheRead(cache!, key);
-    if (hit !== undefined) return { output: hit };
-    const running = inFlight.get(key);
-    if (running) return { output: (await running).output };
-    const verdict = limited(input).finally(() => inFlight.delete(key));
-    inFlight.set(key, verdict);
-    const answered = await verdict;
+    if (hit !== undefined && parseJudgeOutput(hit)) return { output: hit };
+    const answered = await limited(input);
     if (parseJudgeOutput(answered.output)) await cacheWrite(cache!, key, answered.output);
     return answered;
+  };
+
+  const cached = async (input: string) => {
+    const key = cacheKey(judgeConfig, input);
+    const running = inFlight.get(key);
+    if (running) return { output: (await running).output };
+    const verdict = lookup(input, key).finally(() => inFlight.delete(key));
+    inFlight.set(key, verdict);
+    return verdict;
   };
 
   return {

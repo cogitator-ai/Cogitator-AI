@@ -5,6 +5,8 @@ import { caseLabel } from './reporters/format';
 const DEFAULT_TIMEOUT = 10 * 60 * 1000;
 /** Time the hook keeps after the deadline settled the outcome, for Vitest itself */
 const HOOK_GRACE = 5 * 1000;
+/** The longest delay `setTimeout` keeps, less the grace the hook adds to it */
+const MAX_TIMEOUT = 2_147_483_647 - HOOK_GRACE;
 
 export interface DescribeEvalOptions {
   /** The suite to run */
@@ -51,9 +53,9 @@ function messageOf(error: unknown): string {
  */
 export function describeEval(name: string, options: DescribeEvalOptions): DescribeEvalHandle {
   const { suite, run = {}, timeout = DEFAULT_TIMEOUT } = options;
-  if (!Number.isFinite(timeout) || timeout <= 0) {
+  if (!Number.isFinite(timeout) || timeout <= 0 || timeout > MAX_TIMEOUT) {
     throw new Error(
-      `describeEval timeout must be a positive number of milliseconds, got ${timeout}`
+      `describeEval timeout must be a positive number of milliseconds up to ${MAX_TIMEOUT}, got ${timeout}`
     );
   }
 

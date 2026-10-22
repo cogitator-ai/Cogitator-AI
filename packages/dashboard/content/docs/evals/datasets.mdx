@@ -54,7 +54,7 @@ Example JSONL file:
 {"input": "Translate hello to Spanish", "expected": "hola"}
 ```
 
-Each line is validated against the `EvalCase` schema. Invalid JSON or a case the schema refuses throws with the line number and the fields at fault, such as `Invalid case at line 3: input: Invalid input`. The CSV loader names the line of the row too, counting quoted fields that span several lines.
+Each line is validated against the `EvalCase` schema. Invalid JSON or a case the schema refuses throws with the line number and the fields at fault, such as `Invalid case at line 3: input: Invalid input`. The CSV loader names the line of the row too, counting quoted fields that span several lines. It reads commas as the delimiter and throws on a malformed row, such as a quote that is never closed, naming its line.
 
 You can also use the standalone loader:
 

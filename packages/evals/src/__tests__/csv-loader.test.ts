@@ -144,4 +144,17 @@ describe('loadCsv', () => {
     await expect(loadCsv(header)).rejects.toThrow('Invalid case at line 3: input');
     expect(await loadCsv(bom)).toEqual([{ input: 'hello', expected: 'hi' }]);
   });
+
+  it('splits on commas only, keeping semicolons in a single column', async () => {
+    const file = writeTmpFile('semi.csv', ['input', 'a; b; c', 'd; e; f'].join('\n'));
+    expect(await loadCsv(file)).toEqual([{ input: 'a; b; c' }, { input: 'd; e; f' }]);
+  });
+
+  it('throws on a quote never closed, naming its line', async () => {
+    const file = writeTmpFile(
+      'quote.csv',
+      ['input,expected', 'ok,fine', '"open,x', 'more,y'].join('\n')
+    );
+    await expect(loadCsv(file)).rejects.toThrow(/^Invalid CSV at line 3: /);
+  });
 });

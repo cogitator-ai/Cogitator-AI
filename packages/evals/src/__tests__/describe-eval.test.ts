@@ -4,6 +4,9 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { Dataset } from '../datasets';
+import { EvalSuite } from '../eval-suite';
+import { describeEval } from '../vitest';
 
 interface AssertionReport {
   fullName: string;
@@ -132,4 +135,19 @@ describe('describeEval in a real vitest run', () => {
   it('gives later tests the finished result', () => {
     expect(test('result access reads the finished result').status).toBe('passed');
   });
+});
+
+describe('describeEval options', () => {
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 31])(
+    'refuses a timeout of %s before registering anything',
+    (timeout) => {
+      const suite = new EvalSuite({
+        dataset: Dataset.from([{ input: 'q' }]),
+        target: { fn: async () => 'a' },
+      });
+      expect(() => describeEval('refused', { suite, timeout })).toThrow(
+        'describeEval timeout must be a positive number of milliseconds up to'
+      );
+    }
+  );
 });

@@ -140,7 +140,7 @@ const dataset = await Dataset.fromCsv('./evals/qa.csv');
 
 CSV must have an `input` column. Optional columns: `expected`, `metadata.*`, `context.*`.
 
-Both loaders name the line of the file a case comes from when the case schema refuses it (`Invalid case at line 3: input: ...`), the CSV loader counting quoted fields that span lines.
+Both loaders name the line of the file a case comes from when the case schema refuses it (`Invalid case at line 3: input: ...`), the CSV loader counting quoted fields that span lines. The CSV loader splits on commas and throws on a malformed row, a quote never closed for one, with its line.
 
 ### Transformations
 

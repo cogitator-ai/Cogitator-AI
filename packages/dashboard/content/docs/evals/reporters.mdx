@@ -88,7 +88,7 @@ The JSON output includes:
     }
   ],
   "aggregated": {
-    "exactMatch": { "name": "exactMatch", "mean": 0.92, "median": 1, "p95": 1, "count": 50, ... }
+    "exactMatch": { "name": "exactMatch", "mean": 0.92, "median": 1, "p95": 1, "count": 48, ... }
   },
   "assertions": [
     { "name": "threshold(exactMatch)", "passed": true, "message": "..." }
@@ -204,7 +204,7 @@ result.report(['github', 'ci']);
 
 ```
 ::error title=Eval case [2] Capital of France?::Timed out after 2000ms
-::warning title=Eval metric relevance on case [1] What is 2+2?::judge gave no verdict
+::warning title=Eval metric relevance on case [1] What is 2+2?::could not parse judge response
 ::error title=Eval assertion threshold(exactMatch)::exactMatch = 0.5, expected >= 0.9
 ```
 
