@@ -13,6 +13,7 @@ import type {
   ToolResult,
   ToolResultMessage,
 } from '@cogitator-ai/types';
+import { z } from 'zod';
 import { isRecord, toJSONValue, type JSONObject, type JSONValue } from './json.js';
 import type { CogitatorFinishReasonV3, CogitatorProviderOptions } from './types.js';
 
@@ -379,6 +380,18 @@ export class AgentRunner {
   }
 }
 
+const CallOptionsSchema = z.object(
+  {
+    threadId: z
+      .string({ error: 'must be a non-empty string' })
+      .refine((threadId) => threadId.trim().length > 0, 'must be a non-empty string')
+      .optional(),
+    userId: z.string({ error: 'must be a string' }).optional(),
+    saveHistory: z.boolean({ error: 'must be a boolean' }).optional(),
+  },
+  { error: 'must be an object' }
+);
+
 /**
  * The `providerOptions.cogitator` of a call, checked
  *
@@ -386,17 +399,13 @@ export class AgentRunner {
  */
 function callOptions(raw: unknown): CogitatorCallOptions {
   if (raw === undefined) return {};
-  if (!isRecord(raw)) throw new Error('providerOptions.cogitator must be an object');
-  const { threadId, userId, saveHistory } = raw;
-  if (threadId !== undefined && (typeof threadId !== 'string' || !threadId.trim())) {
-    throw new Error('providerOptions.cogitator.threadId must be a non-empty string');
+  const parsed = CallOptionsSchema.safeParse(raw);
+  if (!parsed.success) {
+    const [issue] = parsed.error.issues;
+    const field = issue?.path.length ? `.${issue.path.join('.')}` : '';
+    throw new Error(`providerOptions.cogitator${field} ${issue?.message ?? 'is invalid'}`);
   }
-  if (userId !== undefined && typeof userId !== 'string') {
-    throw new Error('providerOptions.cogitator.userId must be a string');
-  }
-  if (saveHistory !== undefined && typeof saveHistory !== 'boolean') {
-    throw new Error('providerOptions.cogitator.saveHistory must be a boolean');
-  }
+  const { threadId, userId, saveHistory } = parsed.data;
   return {
     ...(threadId !== undefined && { threadId }),
     ...(userId !== undefined && { userId }),

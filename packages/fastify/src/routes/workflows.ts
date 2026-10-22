@@ -25,6 +25,7 @@ import {
   workflowOptionsWithin,
   workflowRunFailure,
 } from '@cogitator-ai/server-shared';
+import type { RunLimits } from '@cogitator-ai/server-shared';
 import {
   isModuleNotFound,
   onClientDisconnect,
@@ -34,6 +35,25 @@ import {
   sendRouteError,
   validateBody,
 } from './utils.js';
+
+/**
+ * The options of a workflow request the executor takes, held to the limits, and nothing else of
+ * the body: the route schema strips unknown keys, and this does not rely on it
+ */
+function requestedOptions(
+  options: { maxConcurrency?: number; maxIterations?: number; checkpoint?: boolean },
+  limits: RunLimits | undefined
+): WorkflowExecuteOptions {
+  const held = workflowOptionsWithin(
+    { maxConcurrency: options.maxConcurrency, maxIterations: options.maxIterations },
+    limits
+  );
+  return {
+    ...(held.maxConcurrency !== undefined && { maxConcurrency: held.maxConcurrency }),
+    ...(held.maxIterations !== undefined && { maxIterations: held.maxIterations }),
+    ...(options.checkpoint === true && { checkpoint: true }),
+  };
+}
 
 interface WorkflowParams {
   name: string;
@@ -105,7 +125,7 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
         : undefined;
     return async (runOptions) =>
       (await executorFor(checkpoints)).execute(workflow, input, {
-        ...workflowOptionsWithin(options, limits),
+        ...requestedOptions(options, limits),
         ...runOptions,
       });
   };
@@ -129,7 +149,7 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
           await (
             await executorFor(checkpoints)
           ).resume(workflow, checkpointId, {
-            ...workflowOptionsWithin(options, limits),
+            ...requestedOptions(options, limits),
             checkpoint: true,
             ...runOptions,
           }),
@@ -212,9 +232,8 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
       }
     } catch (error) {
       if (isModuleNotFound(error)) {
-        return sendError(reply, 501, WORKFLOWS_MISSING, 'UNIMPLEMENTED');
-      }
-      if (!abortController.signal.aborted) {
+        writer.error(WORKFLOWS_MISSING, 'UNIMPLEMENTED');
+      } else if (!abortController.signal.aborted) {
         const resolved = resolveError(request, error, 'workflow stream error');
         writer.error(resolved.message, resolved.code);
       }
