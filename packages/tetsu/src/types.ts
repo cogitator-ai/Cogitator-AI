@@ -81,6 +81,16 @@ export type ShutdownSignal = AbortSignal | (() => AbortSignal | undefined);
 export interface WebSocketOptions {
   /** Path of the handshake. Default: `/ws`. */
   path?: `/${string}`;
+  /**
+   * Runs a socket may have going at once, told apart by the `id` of their frames. One more
+   * gets an error with `code: 'TOO_MANY_RUNS'`. Default: `8`.
+   */
+  maxRuns?: number;
+  /**
+   * Bytes of frames that may wait for a client that reads slowly, once the socket pushes back.
+   * Past them the socket is closed with `1008`, which cancels its runs. Default: 4 MiB.
+   */
+  maxBufferedBytes?: number;
 }
 
 /** What `cogitatorController()` is built from. */

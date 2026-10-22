@@ -642,12 +642,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
   };
 
   const socket = deps.websocket
-    ? cogitatorSocket(
-        deps,
-        caller,
-        admitted,
-        deps.websocket === true ? undefined : deps.websocket.path
-      )
+    ? cogitatorSocket(deps, caller, admitted, deps.websocket === true ? undefined : deps.websocket)
     : undefined;
   return { ...routes, ...(socket && { socket }) };
 });

@@ -213,7 +213,7 @@ The shared part of the protocol:
 
 The server answers with `{ "type": "event", "id": "r1", "payload": { ... } }` frames whose payload `type` is `token` (`delta`), `reasoning` (`delta`), `tool-call` (`id`, `name`, `arguments`), `tool-result`, and finally `complete` or `cancelled`, with `{ "type": "error", "id", "error" }` for failures (Tetsu adds a `code`) and with `pong`. The `result` of an agent's `complete` is the same object as the JSON answer of `/run`, never the full `RunResult`. Runs get the connection's `userId`, and closing the socket aborts its run.
 
-One run at a time per connection: Fastify, Hono, Koa and Tetsu refuse a second `run` with `A run is already in progress`, while Express aborts the running one and starts the new one. `subscribe` / `unsubscribe` exist only on Express and Fastify — see their pages.
+Fastify, Hono and Koa run one at a time per connection and refuse a second `run` with `A run is already in progress`, while Express aborts the running one and starts the new one. Tetsu runs several side by side, told apart by `id`, up to `websocket.maxRuns`, and `stop` with an `id` cancels only that run (see [Tetsu](/docs/server-adapters/tetsu#websocket)). `subscribe` / `unsubscribe` exist only on Express and Fastify, see their pages.
 
 ## Authentication
 

@@ -52,22 +52,22 @@ A run that waits on a slow tool or model can stay silent for longer than the `id
 
 A Tetsu controller named `Cogitator`: `operationId`s in the OpenAPI document are `cogitatorRunAgent`, `cogitatorGetThread` and so on.
 
-| Option               | Type                                        | Description                                                                                                                            |
-| -------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `cogitator`          | `Cogitator`                                 | **Required.** The runtime                                                                                                              |
-| `agents`             | `Record<string, Agent>`                     | Agents by name                                                                                                                         |
-| `workflows`          | `Record<string, Workflow>`                  | Workflows by name                                                                                                                      |
-| `swarms`             | `Record<string, SwarmConfig>`               | Swarms by name                                                                                                                         |
-| `auth`               | `(ctx) => AuthContext \| undefined` or hook | Establishes the caller, see [Authentication](#authentication)                                                                          |
-| `anonymous`          | `'allow' \| 'deny'`                         | Whether callers without a `userId` may use the API (default `'allow'`), see [Anonymous callers](#anonymous-callers)                    |
-| `authorizeThread`    | `(auth, threadId) => boolean`               | Decides who may use a memory thread, see [Users and threads](#users-and-threads)                                                       |
-| `limits`             | `RunLimits`                                 | Caps on what a request may ask a swarm or workflow run for, see [Run limits](#run-limits)                                              |
-| `deps`               | `(ctx) => unknown \| Promise<unknown>`      | Builds the `deps` agent runs pass to their tools, see [Run deps](#run-deps)                                                            |
-| `websocket`          | `boolean \| { path?: string }`              | Serve the WebSocket endpoint (default path `/ws`)                                                                                      |
-| `until`              | `AbortSignal \| (() => AbortSignal)`        | Ends open streams and sockets, such as `draining` from `@tetsujs/lifecycle`                                                            |
-| `sseHeartbeatMs`     | `number`                                    | Heartbeat comment interval of SSE streams (default `5000`, `0` turns it off)                                                           |
-| `acceptContext`      | `boolean \| string[]`                       | Keys of a run `context` clients may send: none by default, a list, or `true` for any (the model reads it as data from the application) |
-| `threadMessageRoles` | `ThreadMessageRole[]`                       | Roles `POST /threads/:id/messages` accepts (default `user` and `assistant`)                                                            |
+| Option               | Type                                                | Description                                                                                                                            |
+| -------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `cogitator`          | `Cogitator`                                         | **Required.** The runtime                                                                                                              |
+| `agents`             | `Record<string, Agent>`                             | Agents by name                                                                                                                         |
+| `workflows`          | `Record<string, Workflow>`                          | Workflows by name                                                                                                                      |
+| `swarms`             | `Record<string, SwarmConfig>`                       | Swarms by name                                                                                                                         |
+| `auth`               | `(ctx) => AuthContext \| undefined` or hook         | Establishes the caller, see [Authentication](#authentication)                                                                          |
+| `anonymous`          | `'allow' \| 'deny'`                                 | Whether callers without a `userId` may use the API (default `'allow'`), see [Anonymous callers](#anonymous-callers)                    |
+| `authorizeThread`    | `(auth, threadId) => boolean`                       | Decides who may use a memory thread, see [Users and threads](#users-and-threads)                                                       |
+| `limits`             | `RunLimits`                                         | Caps on what a request may ask a swarm or workflow run for, see [Run limits](#run-limits)                                              |
+| `deps`               | `(ctx) => unknown \| Promise<unknown>`              | Builds the `deps` agent runs pass to their tools, see [Run deps](#run-deps)                                                            |
+| `websocket`          | `boolean \| { path?, maxRuns?, maxBufferedBytes? }` | Serve the WebSocket endpoint (default path `/ws`), see [WebSocket](#websocket)                                                         |
+| `until`              | `AbortSignal \| (() => AbortSignal)`                | Ends open streams and sockets, such as `draining` from `@tetsujs/lifecycle`                                                            |
+| `sseHeartbeatMs`     | `number`                                            | Heartbeat comment interval of SSE streams (default `5000`, `0` turns it off)                                                           |
+| `acceptContext`      | `boolean \| string[]`                               | Keys of a run `context` clients may send: none by default, a list, or `true` for any (the model reads it as data from the application) |
+| `threadMessageRoles` | `ThreadMessageRole[]`                               | Roles `POST /threads/:id/messages` accepts (default `user` and `assistant`)                                                            |
 
 ## Endpoints
 
@@ -345,16 +345,26 @@ Validation (`415`, `422`), `401`, `404` and the `403 THREAD_FORBIDDEN` of `autho
 cogitatorController({ cogitator, agents, auth, websocket: true });
 ```
 
-The handshake runs `auth` and the `anonymous` policy like any route, and builds the connection's `deps` once: every run and resume on the socket shares them, and none rebuilds them. Workflow and swarm runs are held to `limits`, and runs that name a thread are checked by `authorizeThread`. Each socket runs one agent, workflow or swarm at a time, and a `run` or `resume` sent while one is in progress gets an error with `code: 'RUN_IN_PROGRESS'`.
+The handshake runs `auth` and the `anonymous` policy like any route, and builds the connection's `deps` once: every run and resume on the socket shares them, and none rebuilds them. Workflow and swarm runs are held to `limits`, and runs that name a thread are checked by `authorizeThread`. A socket runs several agents, workflows and swarms at once, told apart by the `id` of the frame that started each, and every frame the server sends for a run carries that `id`. A `run` or `resume` with the `id` of a run still going, or a second one without an `id`, gets an error with `code: 'RUN_IN_PROGRESS'`. Past `maxRuns` runs at once (8 by default) a new one gets `code: 'TOO_MANY_RUNS'`, so one handshake cannot open any number of model runs.
+
+```typescript
+cogitatorController({
+  cogitator,
+  agents,
+  websocket: { path: '/ws', maxRuns: 4, maxBufferedBytes: 1024 * 1024 },
+});
+```
+
+A client that reads slowly gets every frame in order: once the socket pushes back, the frames after it wait on the server and go out as it drains. When more than `maxBufferedBytes` wait (4 MiB by default), or Bun drops a frame, the socket is closed with code `1008`, which cancels its runs, rather than losing frames in the middle of a run. Both options must be positive integers, or building the controller throws.
 
 | Client sends                                                                                                  | Server answers                                                                                                                                              |
 | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `{ type: 'run', id?, payload: { type: 'agent' \| 'workflow' \| 'swarm', name, input, context?, threadId? } }` | `event` frames: `token`, `reasoning`, `tool-call`, `tool-result`, then `complete` with the result (for an agent, the JSON answer of `/run`), or `cancelled` |
 | `{ type: 'resume', id?, payload: { name, threadId, decisions?, defaultDecision? } }`                          | the same frames for an agent run paused for [approvals](#approvals)                                                                                         |
-| `{ type: 'stop' }`                                                                                            | cancels the current run                                                                                                                                     |
+| `{ type: 'stop', id? }`                                                                                       | `cancelled` for the run of that `id` at once, or for every run of the socket without an `id`                                                                |
 | `{ type: 'ping', id? }`                                                                                       | `{ type: 'pong', id }`                                                                                                                                      |
 
-Errors arrive as `{ type: 'error', id, error, code }` and leave the socket open. An invalid frame gets `code: 'INVALID_MESSAGE'`, a swarm that ran out of time `code: 'RUN_TIMEOUT'`, and an error that is not a `CogitatorError` is sent as `Internal server error` with `code: 'INTERNAL_ERROR'`. Closing the socket cancels its run. Bun's server-level options such as `maxPayloadLength` are set where the app is served:
+Errors arrive as `{ type: 'error', id, error, code }` and leave the socket open. An invalid frame gets `code: 'INVALID_MESSAGE'`, a swarm that ran out of time `code: 'RUN_TIMEOUT'`, and an error that is not a `CogitatorError` is sent as `Internal server error` with `code: 'INTERNAL_ERROR'`. Closing the socket cancels its runs. A cancelled run sends nothing after `cancelled`, even one that notices the stop only later, such as a workflow node still running, and keeps its place among the `maxRuns` until it ends. Bun's server-level options such as `maxPayloadLength` are set where the app is served:
 
 ```typescript
 Bun.serve({ ...app, websocket: { ...app.websocket, maxPayloadLength: 1024 * 1024 } });

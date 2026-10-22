@@ -11,6 +11,7 @@ import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import type { Workflow, WorkflowState } from '@cogitator-ai/types';
 import {
   chatAgent,
+  deferred,
   fakeCogitator,
   lastResumeCall,
   lastRunOptions,
@@ -25,10 +26,14 @@ afterEach(() => {
   for (const socket of sockets.splice(0)) socket.close();
 });
 
-function serveSockets(deps: Omit<CogitatorDeps, 'websocket'>, reports: FailureReport[] = []) {
+function serveSockets(
+  deps: Omit<CogitatorDeps, 'websocket'>,
+  reports: FailureReport[] = [],
+  websocket: CogitatorDeps['websocket'] = true
+) {
   return serve(
     createApp({
-      routes: cogitatorController({ ...deps, websocket: true }),
+      routes: cogitatorController({ ...deps, websocket }),
       reportError: (report) => {
         reports.push(report);
       },
@@ -154,7 +159,48 @@ describe('websocket', () => {
     ]);
   });
 
-  test('stops a run on request', async () => {
+  test('runs agents side by side by id, and stops only the run a stop names', async () => {
+    const signals = new Map<string, AbortSignal>();
+    const { cogitator } = fakeCogitator(
+      (_agent, options) =>
+        new Promise((resolve, reject) => {
+          const input = String(options.input);
+          if (options.signal) signals.set(input, options.signal);
+          options.onToken?.(`working on ${input}`);
+          if (input === 'quick') {
+            resolve(runResult({ output: 'done quick' }));
+            return;
+          }
+          options.signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+            once: true,
+          });
+        })
+    );
+    const request = serveSockets({ cogitator, agents: { chat: chatAgent() } });
+    const connection = await connect(request.url);
+    const run = (id: string, input: string) =>
+      connection.send({ type: 'run', id, payload: { type: 'agent', name: 'chat', input } });
+
+    run('slow-1', 'slow-1');
+    run('slow-2', 'slow-2');
+    run('quick', 'quick');
+    const untilQuick = await connection.until('complete');
+    expect(untilQuick.at(-1)).toMatchObject({ id: 'quick', payload: { type: 'complete' } });
+
+    connection.send({ type: 'stop', id: 'slow-1' });
+    expect(await connection.next()).toEqual({
+      type: 'event',
+      id: 'slow-1',
+      payload: { type: 'cancelled' },
+    });
+    expect(signals.get('slow-1')?.aborted).toBe(true);
+    expect(signals.get('slow-2')?.aborted).toBe(false);
+
+    connection.send({ type: 'ping', id: 'still-there' });
+    expect(await connection.until('pong')).toEqual([{ type: 'pong', id: 'still-there' }]);
+  });
+
+  test('refuses a run whose id is already running, and one more run without an id', async () => {
     const { cogitator } = fakeCogitator(
       (_agent, options) =>
         new Promise((_resolve, reject) => {
@@ -166,31 +212,88 @@ describe('websocket', () => {
     );
     const request = serveSockets({ cogitator, agents: { chat: chatAgent() } });
     const connection = await connect(request.url);
+    const payload = { type: 'agent', name: 'chat', input: 'go' };
 
-    connection.send({
-      type: 'run',
-      id: 'r-1',
-      payload: { type: 'agent', name: 'chat', input: 'go' },
-    });
+    connection.send({ type: 'run', id: 'r-1', payload });
     await connection.next();
-    connection.send({
-      type: 'run',
-      id: 'r-2',
-      payload: { type: 'agent', name: 'chat', input: 'go' },
-    });
+    connection.send({ type: 'run', id: 'r-1', payload });
     expect(await connection.next()).toMatchObject({
       type: 'error',
-      id: 'r-2',
+      id: 'r-1',
       code: 'RUN_IN_PROGRESS',
     });
 
+    connection.send({ type: 'run', payload });
+    await connection.next();
+    connection.send({ type: 'run', payload });
+    expect(await connection.next()).toMatchObject({ type: 'error', code: 'RUN_IN_PROGRESS' });
+  });
+
+  test('stops every run of the socket on a stop without an id', async () => {
+    const { cogitator } = fakeCogitator(
+      (_agent, options) =>
+        new Promise((_resolve, reject) => {
+          options.onToken?.('working');
+          options.signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+            once: true,
+          });
+        })
+    );
+    const request = serveSockets({ cogitator, agents: { chat: chatAgent() } });
+    const connection = await connect(request.url);
+    for (const id of ['a', 'b']) {
+      connection.send({ type: 'run', id, payload: { type: 'agent', name: 'chat', input: id } });
+      await connection.next();
+    }
+
     connection.send({ type: 'stop' });
 
-    expect(await connection.next()).toEqual({
-      type: 'event',
-      id: 'r-1',
-      payload: { type: 'cancelled' },
+    const cancelled = [await connection.next(), await connection.next()];
+    expect(cancelled.map((message) => message.id).sort()).toEqual(['a', 'b']);
+    for (const message of cancelled) expect(message.payload).toEqual({ type: 'cancelled' });
+  });
+
+  test('refuses a run past maxRuns until one of them ends', async () => {
+    const { cogitator } = fakeCogitator(
+      (_agent, options) =>
+        new Promise((_resolve, reject) => {
+          options.onToken?.('working');
+          options.signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+            once: true,
+          });
+        })
+    );
+    const request = serveSockets({ cogitator, agents: { chat: chatAgent() } }, [], {
+      maxRuns: 2,
     });
+    const connection = await connect(request.url);
+    const run = (id: string) =>
+      connection.send({ type: 'run', id, payload: { type: 'agent', name: 'chat', input: id } });
+
+    run('a');
+    await connection.next();
+    run('b');
+    await connection.next();
+    run('c');
+    expect(await connection.next()).toMatchObject({
+      type: 'error',
+      id: 'c',
+      code: 'TOO_MANY_RUNS',
+    });
+
+    connection.send({ type: 'stop', id: 'a' });
+    expect(await connection.next()).toMatchObject({ id: 'a', payload: { type: 'cancelled' } });
+    run('c');
+    expect(await connection.next()).toMatchObject({ id: 'c', payload: { type: 'token' } });
+  });
+
+  test.each([
+    [{ maxRuns: 0 }, 'websocket.maxRuns must be a positive integer'],
+    [{ maxRuns: 1.5 }, 'websocket.maxRuns must be a positive integer'],
+    [{ maxBufferedBytes: -1 }, 'websocket.maxBufferedBytes must be a positive integer'],
+  ])('refuses websocket options %p when the controller is built', (websocket, message) => {
+    const { cogitator } = fakeCogitator();
+    expect(() => cogitatorController({ cogitator, websocket })).toThrow(message);
   });
 
   test('aborts a run when the socket closes', async () => {
@@ -456,6 +559,104 @@ describe('websocket server contract', () => {
       expect(swarmRun.mock.calls[0]?.[0]).toMatchObject({ timeout: 1500 });
     } finally {
       execute.mockRestore();
+      swarmRun.mockRestore();
+    }
+  });
+
+  test('runs a workflow and a swarm side by side, answering each by its id', async () => {
+    const request = serveSockets({
+      cogitator: fakeCogitator(async () => runResult({ output: 'swarm answer' })).cogitator,
+      workflows: { steps: steps() },
+      swarms: { team },
+    });
+    const connection = await connect(request.url);
+
+    connection.send({
+      type: 'run',
+      id: 'w',
+      payload: { type: 'workflow', name: 'steps', input: 'x' },
+    });
+    connection.send({
+      type: 'run',
+      id: 's',
+      payload: { type: 'swarm', name: 'team', input: 'go' },
+    });
+    const completed = new Map<string | undefined, unknown>();
+    while (completed.size < 2) {
+      const message = await connection.next();
+      const payload = message.payload as { type?: string; result?: unknown } | undefined;
+      if (payload?.type === 'complete') completed.set(message.id, payload.result);
+    }
+
+    expect(completed.get('w')).toMatchObject({ workflowName: 'steps', state: expect.anything() });
+    expect(completed.get('s')).toMatchObject({ swarmName: 'team', output: 'swarm answer' });
+  });
+
+  test('stops a workflow run by its id and leaves a swarm run going', async () => {
+    const nodeStarted = deferred<void>();
+    const release = deferred<void>();
+    const swarmStarted = deferred<void>();
+    const held = new WorkflowBuilder('held')
+      .addNode('wait', async () => {
+        nodeStarted.resolve();
+        await release.promise;
+        return { output: 'released' };
+      })
+      .build() as unknown as Workflow<WorkflowState>;
+    const swarmRun = spyOn(Swarm.prototype, 'run').mockImplementation(async () => {
+      swarmStarted.resolve();
+      await Bun.sleep(50);
+      return { output: 'still answered', agentResults: new Map() };
+    });
+    try {
+      const request = serveSockets({
+        cogitator: fakeCogitator().cogitator,
+        workflows: { held },
+        swarms: { team },
+      });
+      const connection = await connect(request.url);
+
+      connection.send({
+        type: 'run',
+        id: 'w',
+        payload: { type: 'workflow', name: 'held', input: 'x' },
+      });
+      connection.send({
+        type: 'run',
+        id: 's',
+        payload: { type: 'swarm', name: 'team', input: 'go' },
+      });
+      await Promise.all([nodeStarted.promise, swarmStarted.promise]);
+      connection.send({ type: 'stop', id: 'w' });
+
+      const ends = new Map<string | undefined, string | undefined>();
+      while (ends.size < 2) {
+        const message = await connection.next();
+        const type = (message.payload as { type?: string } | undefined)?.type ?? message.type;
+        if (type === 'cancelled' || type === 'complete' || type === 'error')
+          ends.set(message.id, type);
+      }
+      expect(Object.fromEntries(ends)).toEqual({ w: 'cancelled', s: 'complete' });
+
+      const again = {
+        type: 'run',
+        id: 'w',
+        payload: { type: 'workflow', name: 'held', input: 'x' },
+      };
+      connection.send(again);
+      expect(await connection.next()).toMatchObject({ id: 'w', code: 'RUN_IN_PROGRESS' });
+
+      release.resolve();
+      let answer: WebSocketServerMessage | undefined;
+      for (let attempt = 0; attempt < 50; attempt++) {
+        connection.send(again);
+        answer = await connection.next();
+        if (answer.type !== 'error') break;
+        await Bun.sleep(10);
+      }
+      expect(answer).toMatchObject({ id: 'w', payload: { type: 'complete' } });
+    } finally {
+      release.resolve();
       swarmRun.mockRestore();
     }
   });

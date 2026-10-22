@@ -229,5 +229,48 @@ describe.skipIf(!hasBun)('Tetsu adapter on Bun', () => {
       expect(frames.some((frame) => frame.payload?.type === 'token')).toBe(true);
       expect(frames.at(-1)?.payload?.result?.output.toLowerCase()).toContain('pong');
     });
+
+    it('runs two agents on one socket side by side and stops one of them by id', async (ctx) => {
+      if (!live()) return ctx.skip();
+
+      const url = new URL(`${server!.baseUrl}/ws`);
+      url.protocol = 'ws:';
+      url.searchParams.set('token', TOKEN);
+      const socket = new WebSocket(url);
+      const ends = new Map<string, { type: string; result?: { output: string } }>();
+      const done = new Promise<void>((resolve, reject) => {
+        socket.addEventListener('message', (event) => {
+          const frame = JSON.parse(String(event.data)) as {
+            type: string;
+            id: string;
+            error?: string;
+            payload?: { type: string; result?: { output: string } };
+          };
+          if (frame.type === 'error') reject(new Error(frame.error));
+          if (frame.payload?.type === 'token' && frame.id === 'stopped') {
+            socket.send(JSON.stringify({ type: 'stop', id: 'stopped' }));
+          }
+          if (frame.payload?.type === 'complete' || frame.payload?.type === 'cancelled') {
+            ends.set(frame.id, frame.payload);
+            if (ends.size === 2) resolve();
+          }
+        });
+        socket.addEventListener('error', () => reject(new Error('socket failed')));
+      });
+      await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
+
+      const run = (id: string, input: string) =>
+        socket.send(
+          JSON.stringify({ type: 'run', id, payload: { type: 'agent', name: 'chat', input } })
+        );
+      run('kept', 'Reply with the word pong.');
+      run('stopped', 'Write a long story about the sea, at least three hundred words.');
+      await done;
+      socket.close();
+
+      expect(ends.get('kept')?.type).toBe('complete');
+      expect(ends.get('kept')?.result?.output.toLowerCase()).toContain('pong');
+      expect(ends.get('stopped')?.type).toBe('cancelled');
+    });
   });
 });
