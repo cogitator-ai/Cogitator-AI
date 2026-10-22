@@ -73,9 +73,9 @@ await fastify.register(cogitatorPlugin, {
 });
 ```
 
-Its document is generated from the Fastify route schemas: it describes the generic routes (`/cogitator/agents/{name}/run`, …) and their validated bodies, not one path per agent. Swagger UI is at `<prefix>/docs` and the JSON at `<prefix>/docs/json`.
+Its document is generated from the Fastify route schemas: it describes the generic routes (`/cogitator/agents/{name}/run`, …) and their validated bodies, not one path per agent. The stream components and the `StreamEvent` body of every `/stream` route are added to it with `documentStreamEvents`. Swagger UI is at `<prefix>/docs` and the JSON at `<prefix>/docs/json`.
 
-Tetsu describes each route of `cogitatorController` with its Zod schemas and error responses; mount `docs()` from `@tetsujs/openapi` next to it to serve `/openapi.json` and `/docs` ([Tetsu Adapter](/docs/server-adapters/tetsu)).
+Tetsu describes each route of `cogitatorController` with its Zod schemas and error responses; mount `docs()` from `@tetsujs/openapi` next to it to serve `/openapi.json` and `/docs` ([Tetsu Adapter](/docs/server-adapters/tetsu)). `@tetsujs/openapi` cannot give an SSE route a body schema yet, so its document leaves the stream bodies out, and a client takes the events from `StreamEventSchema`.
 
 ## SwaggerConfig
 
@@ -134,16 +134,16 @@ const swagger: SwaggerConfig = {
 
 The spec organizes endpoints into six tags:
 
-| Tag         | Endpoints                                                                             |
-| ----------- | ------------------------------------------------------------------------------------- |
-| `health`    | `/health`, `/ready`                                                                   |
-| `agents`    | `/agents`, `/agents/{name}/run`, `/agents/{name}/resume`, `/agents/{name}/stream`     |
-| `threads`   | `/threads/{id}` (GET, DELETE), `/threads/{id}/messages`                               |
-| `tools`     | `/tools`                                                                              |
-| `workflows` | `/workflows`, `/workflows/{name}/run`, `/workflows/{name}/stream`                     |
-| `swarms`    | `/swarms`, `/swarms/{name}/run`, `/swarms/{name}/stream`, `/swarms/{name}/blackboard` |
+| Tag         | Endpoints                                                                                                         |
+| ----------- | ----------------------------------------------------------------------------------------------------------------- |
+| `health`    | `/health`, `/ready`                                                                                               |
+| `agents`    | `/agents`, `/agents/{name}/run`, `/agents/{name}/resume`, `/agents/{name}/stream`, `/agents/{name}/resume/stream` |
+| `threads`   | `/threads/{id}` (GET, DELETE), `/threads/{id}/messages`                                                           |
+| `tools`     | `/tools`                                                                                                          |
+| `workflows` | `/workflows`, `/workflows/{name}/run`, `/workflows/{name}/stream`                                                 |
+| `swarms`    | `/swarms`, `/swarms/{name}/run`, `/swarms/{name}/stream`, `/swarms/{name}/blackboard`                             |
 
-Agent, workflow, and swarm endpoints are listed per registered name. If you register agents named `assistant` and `coder`, the spec includes `/agents/assistant/run`, `/agents/assistant/resume`, `/agents/assistant/stream` and the same three for `coder`. Paths are relative to `servers`.
+Agent, workflow, and swarm endpoints are listed per registered name. If you register agents named `assistant` and `coder`, the spec includes `/agents/assistant/run`, `/agents/assistant/resume`, `/agents/assistant/stream`, `/agents/assistant/resume/stream` and the same four for `coder`. Paths are relative to `servers`.
 
 ## Component Schemas
 
@@ -154,7 +154,9 @@ The generated spec includes schemas for all request and response types:
 - `AgentRunRequest` — input (required), context, threadId
 - `AgentRunResponse` — output, threadId, usage, toolCalls, reasoning, status (`completed` | `paused`), pendingApprovals
 - `RunUsage` — inputTokens, outputTokens, totalTokens, and reasoningTokens, cachedInputTokens, cacheWriteTokens when the model reported them
-- `StreamFinishEvent` — the last event of an agent stream: type, messageId, usage (the same `RunUsage` as the JSON run response)
+- `StreamEvent` - any event of a stream, a `oneOf` of the event schemas with a discriminator on `type`. Every SSE route answers `text/event-stream` with it
+- `StreamStartEvent`, `StreamTextDeltaEvent`, `StreamToolCallStartEvent`, `StreamApprovalRequiredEvent`, `StreamErrorEvent` and the other `Stream<Name>Event` schemas - one per event of the [streaming protocol](/docs/server-adapters#streaming-protocol)
+- `StreamFinishEvent` - the last event of an agent stream: type, messageId, threadId, the outcome fields and usage (the same `RunUsage` as the JSON run response)
 - `AgentResumeRequest` — threadId (required), decisions, defaultDecision
 - `PendingApproval` — toolCallId, toolName, arguments, description, sideEffects
 - `ToolApprovalDecision` — approved (required), reason

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import type { Response } from 'express';
+import type { RunResult } from '@cogitator-ai/types';
 import type { RouteContext, CogitatorRequest, AgentListResponse } from '../types.js';
 import {
   AgentStreamSession,
@@ -22,6 +23,35 @@ export function createAgentRoutes(ctx: RouteContext): Router {
 
   const findAgent = (name: string) =>
     Object.hasOwn(ctx.agents, name) ? ctx.agents[name] : undefined;
+
+  const streamAgent = async (
+    res: Response,
+    threadId: string | undefined,
+    errorLabel: string,
+    execute: (session: AgentStreamSession, signal: AbortSignal) => Promise<RunResult>
+  ) => {
+    setupSSEHeaders(res);
+    const writer = new ExpressStreamWriter(res, { heartbeatMs: ctx.config.sseHeartbeatMs });
+    const session = new AgentStreamSession((event) => writer.send(event), { threadId });
+    const abortController = new AbortController();
+
+    onClientDisconnect(res, () => {
+      abortController.abort();
+      writer.close();
+    });
+
+    try {
+      session.start();
+      session.complete(await execute(session, abortController.signal));
+    } catch (error) {
+      if (!abortController.signal.aborted) {
+        const resolved = resolveError(error, errorLabel);
+        session.fail(resolved.message, resolved.code);
+      }
+    } finally {
+      writer.close();
+    }
+  };
 
   router.get('/agents', (_req, res) => {
     const agentList = Object.entries(ctx.agents).map(([name, agent]) => ({
@@ -138,39 +168,53 @@ export function createAgentRoutes(ctx: RouteContext): Router {
       const admitted = await admitAgentRun(ctx, req, res, body.threadId, 'Agent stream error');
       if (!admitted) return;
 
-      setupSSEHeaders(res);
-      const writer = new ExpressStreamWriter(res, { heartbeatMs: ctx.config.sseHeartbeatMs });
-      const session = new AgentStreamSession((event) => writer.send(event), {
-        threadId: body.threadId,
-      });
-      const abortController = new AbortController();
-
-      onClientDisconnect(res, () => {
-        abortController.abort();
-        writer.close();
-      });
-
-      try {
-        session.start();
-        const result = await ctx.cogitator.run(agent, {
+      await streamAgent(res, body.threadId, 'Agent stream error', (session, signal) =>
+        ctx.cogitator.run(agent, {
           input: body.input,
           context: body.context,
           threadId: session.threadId,
           userId: req.cogitator?.auth?.userId,
-          signal: abortController.signal,
+          signal,
           stream: true,
           ...session.callbacks,
           ...admitted,
-        });
-        session.complete(result);
-      } catch (error) {
-        if (!abortController.signal.aborted) {
-          const resolved = resolveError(error, 'Agent stream error');
-          session.fail(resolved.message, resolved.code);
-        }
-      } finally {
-        writer.close();
+        })
+      );
+    }
+  );
+
+  router.post(
+    '/agents/:name/resume/stream',
+    async (req: CogitatorRequest<{ name: string }>, res: Response) => {
+      const { name } = req.params;
+      const agent = findAgent(name);
+
+      if (!agent) {
+        sendError(res, 404, `Agent '${name}' not found`, 'NOT_FOUND');
+        return;
       }
+
+      const parsed = parseResumeRequest(req.body);
+      if (!parsed.ok) {
+        sendError(res, 400, parsed.message, 'INVALID_INPUT');
+        return;
+      }
+      const { threadId, decisions, defaultDecision } = parsed.value;
+
+      const admitted = await admitAgentRun(ctx, req, res, threadId, 'Agent resume stream error');
+      if (!admitted) return;
+
+      await streamAgent(res, threadId, 'Agent resume stream error', (session, signal) =>
+        ctx.cogitator.resume(agent, threadId, {
+          userId: req.cogitator?.auth?.userId,
+          decisions,
+          defaultDecision,
+          signal,
+          stream: true,
+          ...session.callbacks,
+          ...admitted,
+        })
+      );
     }
   );
 

@@ -49,10 +49,11 @@ console.log('Server running on http://localhost:3000');
 ### Agents
 
 ```
-GET    /api/agents                    - List all agents
-POST   /api/agents/:name/run          - Run agent (JSON response)
-POST   /api/agents/:name/stream       - Run agent (SSE stream)
-POST   /api/agents/:name/resume       - Resume a run paused for tool approvals
+GET    /api/agents                         - List all agents
+POST   /api/agents/:name/run               - Run agent (JSON response)
+POST   /api/agents/:name/stream            - Run agent (SSE stream)
+POST   /api/agents/:name/resume            - Resume a run paused for tool approvals
+POST   /api/agents/:name/resume/stream     - Resume a paused run (SSE stream)
 ```
 
 Bodies are validated with JSON Schema (`input` must contain more than whitespace, the same rule the other adapters share from `@cogitator-ai/server-shared`); validation failures return `400 INVALID_INPUT` before the model is called. The `usage` of a run answer carries `inputTokens`, `outputTokens` and `totalTokens`, plus `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them, the same shape as every other adapter. The `finish` event of an agent stream carries the same `usage` (never the run's cost or duration). The agent list exposes `config.description`, never the instructions. The authenticated `userId` is passed to the run, and runs are aborted when the client disconnects.
@@ -214,6 +215,8 @@ await fetch('/api/agents/support/resume', {
 ```
 
 The body is `{ threadId, decisions?, defaultDecision? }`, where a decision is `{ approved: boolean, reason?: string }`; malformed bodies get `400 INVALID_INPUT`. The response has the same shape as `/run` and may pause again for calls left without a decision. The run resumes as the authenticated `userId`: a thread with no paused run answers `409 RUN_NOT_PAUSED`, and another user's paused run `403 THREAD_ACCESS_DENIED`. Over WebSocket, send `{ type: 'resume', id, payload: { name, threadId, decisions?, defaultDecision? } }`; a paused run's `complete` event carries `status` and `pendingApprovals`.
+
+`POST /agents/:name/resume/stream` takes the same body and streams the rest of the run like `/stream`. `start` and `finish` name the resumed thread, and a body, agent or thread refused before the stream opens is answered as JSON, just like `/resume`. A thread with no paused run ends the open stream with an `error` event, `code: 'RUN_NOT_PAUSED'`, and disconnecting aborts the resume.
 
 ## SSE Streaming
 

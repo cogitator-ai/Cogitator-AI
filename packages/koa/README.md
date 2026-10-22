@@ -89,12 +89,13 @@ The router answers `OPTIONS` for its own paths with `204` and the methods they s
 
 ### Agents
 
-| Method | Path                   | Description               |
-| ------ | ---------------------- | ------------------------- |
-| `GET`  | `/agents`              | List all agents           |
-| `POST` | `/agents/:name/run`    | Run agent (JSON response) |
-| `POST` | `/agents/:name/stream` | Run agent (SSE stream)    |
-| `POST` | `/agents/:name/resume` | Resume a paused run       |
+| Method | Path                          | Description                      |
+| ------ | ----------------------------- | -------------------------------- |
+| `GET`  | `/agents`                     | List all agents                  |
+| `POST` | `/agents/:name/run`           | Run agent (JSON response)        |
+| `POST` | `/agents/:name/stream`        | Run agent (SSE stream)           |
+| `POST` | `/agents/:name/resume`        | Resume a paused run              |
+| `POST` | `/agents/:name/resume/stream` | Resume a paused run (SSE stream) |
 
 ### Threads (Memory)
 
@@ -228,6 +229,8 @@ await fetch('/agents/support/resume', {
 ```
 
 The body is `{ threadId, decisions?, defaultDecision? }`, where a decision is `{ approved: boolean, reason?: string }`; malformed bodies get `400 INVALID_INPUT`. The response has the same shape as `/run` and may pause again for calls left without a decision. The run resumes as the authenticated `userId`: a thread with no paused run answers `409 RUN_NOT_PAUSED`, and another user's paused run `403 THREAD_ACCESS_DENIED`. Over WebSocket, send `resume` with `{ name, threadId, decisions?, defaultDecision? }`; a paused run's `complete` event carries `status` and `pendingApprovals`.
+
+`POST /agents/:name/resume/stream` takes the same body and streams the rest of the run like `/stream`. `start` and `finish` name the resumed thread, and a body, agent or thread refused before the stream opens is answered as JSON, just like `/resume`. A thread with no paused run ends the open stream with an `error` event, `code: 'RUN_NOT_PAUSED'`, and disconnecting aborts the resume.
 
 ## Route Prefix
 

@@ -3,6 +3,7 @@ import {
   DEFAULT_THREAD_MESSAGE_ROLES,
   admitCaller,
   checkRunLimits,
+  documentStreamEvents,
   refuseNonJsonBody,
   resolveSseHeartbeatMs,
 } from '@cogitator-ai/server-shared';
@@ -122,6 +123,10 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
                 { name: 'health', description: 'Health check endpoints' },
               ],
             },
+            transformObject: (documentObject) =>
+              'openapiObject' in documentObject
+                ? documentStreamEvents(documentObject.openapiObject)
+                : documentObject.swaggerObject,
           });
 
           await instance.register(swaggerUiModule.default, {

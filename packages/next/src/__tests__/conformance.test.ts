@@ -15,8 +15,8 @@ const agent = { name: 'assistant', config: { tools: [] } } as unknown as Agent;
 
 /**
  * Next serves an agent through route handlers, not the REST routes of the other adapters: a
- * run is `createAgentHandler`, a resume `createResumeHandler`. The cases for those two run
- * against them; the streaming cases run against `createChatHandler` in the next block.
+ * run is `createAgentHandler`, a resume `createResumeHandler` (with `stream: true` for a resume
+ * over SSE). The cases for those run against them, and the streaming cases run against `createChatHandler` in the next block.
  */
 /** The handler options a case's server options map to */
 function contractOf(testCase: ConformanceCase) {
@@ -39,6 +39,11 @@ const handlers = {
     }),
   agentResume: (runtime: ConformanceRuntime, testCase: ConformanceCase) =>
     createResumeHandler(runtime as unknown as Cogitator, agent, contractOf(testCase)),
+  agentResumeStream: (runtime: ConformanceRuntime, testCase: ConformanceCase) =>
+    createResumeHandler(runtime as unknown as Cogitator, agent, {
+      ...contractOf(testCase),
+      stream: true,
+    }),
 } as const;
 
 function isHandled(testCase: ConformanceCase): testCase is ConformanceCase & {

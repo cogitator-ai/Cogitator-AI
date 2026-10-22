@@ -19,28 +19,29 @@ Cogitator ships five server adapters that turn your agent runtime into an HTTP A
 
 Every adapter registers these routes. Express (`config.basePath`) and Fastify (`prefix`) mount them under `/cogitator` by default; Hono, Koa and Tetsu serve them where you mount the app, router or controller.
 
-| Method   | Path                       | Description                                                                       |
-| -------- | -------------------------- | --------------------------------------------------------------------------------- |
-| `GET`    | `/health`                  | Health check: `{ status, uptime, timestamp }`                                     |
-| `GET`    | `/ready`                   | Readiness probe: `{ status, checks }` (200 when ready, 503 on dependency failure) |
-| `GET`    | `/agents`                  | List agents: name, `description`, tool names (never `instructions`)               |
-| `POST`   | `/agents/:name/run`        | Run an agent (JSON response)                                                      |
-| `POST`   | `/agents/:name/stream`     | Run an agent (SSE stream)                                                         |
-| `POST`   | `/agents/:name/resume`     | Resume a run paused for [approvals](/docs/tools/approvals)                        |
-| `GET`    | `/threads/:id`             | Get thread messages, whole or a page at a time (`limit`, `cursor`)                |
-| `POST`   | `/threads/:id/messages`    | Add a message to a thread                                                         |
-| `DELETE` | `/threads/:id`             | Delete a thread                                                                   |
-| `GET`    | `/tools`                   | List the tools of all agents (parameters as JSON Schema)                          |
-| `GET`    | `/workflows`               | List workflows                                                                    |
-| `POST`   | `/workflows/:name/run`     | Execute a workflow                                                                |
-| `POST`   | `/workflows/:name/stream`  | Stream workflow execution                                                         |
-| `GET`    | `/swarms`                  | List swarms                                                                       |
-| `POST`   | `/swarms/:name/run`        | Execute a swarm                                                                   |
-| `POST`   | `/swarms/:name/stream`     | Stream swarm execution                                                            |
-| `GET`    | `/swarms/:name/blackboard` | The swarm's configured blackboard sections (only when it is enabled)              |
-| `GET`    | `/openapi.json`, `/docs`   | OpenAPI spec and Swagger UI — see [OpenAPI](/docs/server-adapters/openapi)        |
+| Method   | Path                          | Description                                                                       |
+| -------- | ----------------------------- | --------------------------------------------------------------------------------- |
+| `GET`    | `/health`                     | Health check: `{ status, uptime, timestamp }`                                     |
+| `GET`    | `/ready`                      | Readiness probe: `{ status, checks }` (200 when ready, 503 on dependency failure) |
+| `GET`    | `/agents`                     | List agents: name, `description`, tool names (never `instructions`)               |
+| `POST`   | `/agents/:name/run`           | Run an agent (JSON response)                                                      |
+| `POST`   | `/agents/:name/stream`        | Run an agent (SSE stream)                                                         |
+| `POST`   | `/agents/:name/resume`        | Resume a run paused for [approvals](/docs/tools/approvals)                        |
+| `POST`   | `/agents/:name/resume/stream` | Resume a paused run and stream the rest of it (SSE stream)                        |
+| `GET`    | `/threads/:id`                | Get thread messages, whole or a page at a time (`limit`, `cursor`)                |
+| `POST`   | `/threads/:id/messages`       | Add a message to a thread                                                         |
+| `DELETE` | `/threads/:id`                | Delete a thread                                                                   |
+| `GET`    | `/tools`                      | List the tools of all agents (parameters as JSON Schema)                          |
+| `GET`    | `/workflows`                  | List workflows                                                                    |
+| `POST`   | `/workflows/:name/run`        | Execute a workflow                                                                |
+| `POST`   | `/workflows/:name/stream`     | Stream workflow execution                                                         |
+| `GET`    | `/swarms`                     | List swarms                                                                       |
+| `POST`   | `/swarms/:name/run`           | Execute a swarm                                                                   |
+| `POST`   | `/swarms/:name/stream`        | Stream swarm execution                                                            |
+| `GET`    | `/swarms/:name/blackboard`    | The swarm's configured blackboard sections (only when it is enabled)              |
+| `GET`    | `/openapi.json`, `/docs`      | OpenAPI spec and Swagger UI — see [OpenAPI](/docs/server-adapters/openapi)        |
 
-Tetsu also serves `POST /agents/:name/resume/stream`. Fastify serves its spec at `/docs/json` instead of `/openapi.json`, and Tetsu's document comes from `docs()` of `@tetsujs/openapi`.
+Fastify serves its spec at `/docs/json` instead of `/openapi.json`, and Tetsu's document comes from `docs()` of `@tetsujs/openapi`.
 
 Request bodies:
 
@@ -162,7 +163,7 @@ The `start` event of an agent stream names the run's thread: the one the request
 
 The `finish` event of an agent stream (and of a resumed one) carries the run's `usage`, the same object as in the JSON answer of `POST /agents/:name/run`: `inputTokens`, `outputTokens`, `totalTokens`, and `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them. Workflow and swarm streams finish without `usage`. `createFinishEvent` builds it with `toRunUsage`, the converter of the JSON answer, so a run's `RunResult.usage` can be passed as is.
 
-Text and reasoning blocks are closed before a tool call starts. An answer the model gave in one piece, without tokens, arrives as one text part before `finish`. With the Constitutional AI output filter on, tokens are held back until the filter checked the turn, so each turn arrives as one text part (see [Constitutional AI](/docs/advanced/constitutional-ai)). Agents with `reasoning: { summary: true }` stream their reasoning as its own part before the text it leads to. A run that pauses for approval sends `approval-required` with the pending calls (`toolCallId`, `toolName`, `arguments`, `description`, `sideEffects?`) right before `finish`, resume it with `POST /agents/:name/resume`.
+Text and reasoning blocks are closed before a tool call starts. An answer the model gave in one piece, without tokens, arrives as one text part before `finish`. With the Constitutional AI output filter on, tokens are held back until the filter checked the turn, so each turn arrives as one text part (see [Constitutional AI](/docs/advanced/constitutional-ai)). Agents with `reasoning: { summary: true }` stream their reasoning as its own part before the text it leads to. A run that pauses for approval sends `approval-required` with the pending calls (`toolCallId`, `toolName`, `arguments`, `description`, `sideEffects?`) right before `finish`, resume it with `POST /agents/:name/resume`, or with `POST /agents/:name/resume/stream` to stream the rest of the run the same way.
 
 Every stream also writes a heartbeat comment, `: keep-alive`, every 5 seconds while it is open (`sseHeartbeatMs` on each adapter, on `createChatHandler` and `createResumeHandler` of `@cogitator-ai/next`, on `A2AServer` and on the openai-compat server, `0` turns it off). SSE clients skip comments, and the heartbeat keeps a stream that waits on a slow tool or model from being closed by an idle timeout: `Bun.serve` closes a connection silent for 10 seconds, nginx one silent for 60.
 
@@ -170,7 +171,16 @@ Swarm routes close the swarm they build once the run ends, succeeded, failed or 
 
 Workflow streams send `workflow` events named `node_started`, `node_completed`, `node_error`, `node_progress` and `workflow_completed`; swarm streams send `swarm` events named `agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, and `swarm_completed`. Disconnecting the client aborts the run.
 
-The event types (`StreamEvent`, `TextDeltaEvent`, …), their factories (`createTextDeltaEvent`, `createFinishEvent`, …) and the `encodeSSE` / `encodeDone` helpers are exported from `@cogitator-ai/server-shared`, and the adapters re-export the event types.
+The event types (`StreamEvent`, `TextDeltaEvent`, …), their factories (`createTextDeltaEvent`, `createFinishEvent`, …) and the `encodeSSE` / `encodeDone` helpers are exported from `@cogitator-ai/server-shared`, and the adapters re-export the event types. So are Zod schemas of the same shapes, for a client that checks what it receives:
+
+```typescript
+import { StreamEventSchema } from '@cogitator-ai/server-shared';
+
+const event = StreamEventSchema.parse(JSON.parse(data));
+if (event.type === 'text-delta') render(event.delta);
+```
+
+`StreamEventSchema` refuses an unknown event type and drops a field a newer server adds. The OpenAPI document of every adapter but Tetsu has the same schemas as components, `StreamEvent` among them (see [OpenAPI](/docs/server-adapters/openapi)).
 
 ## Long-Running Runs
 

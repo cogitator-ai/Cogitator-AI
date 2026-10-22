@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
+import { CogitatorError, ErrorCode, type ResumeOptions } from '@cogitator-ai/types';
 import { cogitatorApp } from '../app.js';
 import { createClientState, handleWebSocketMessage } from '../websocket/handler.js';
 import type { CogitatorAppOptions, CogitatorContext } from '../types.js';
@@ -211,6 +211,155 @@ describe('approvals over HTTP', () => {
 
     expect(res.status).toBe(status);
     expect(await res.json()).toEqual({ error: { message: 'nope', code } });
+  });
+});
+
+describe('resume over SSE', () => {
+  it('streams the rest of a paused run on its thread', async () => {
+    const resume = vi.fn(async (_agent: unknown, _threadId: string, options: ResumeOptions) => {
+      options.onToolCall?.({ id: 'call_1', name: 'refund', arguments: { orderId: 42 } });
+      options.onToolResult?.({ callId: 'call_1', name: 'refund', result: { ok: true } });
+      options.onToken?.('Refunded');
+      return result({ output: 'Refunded' });
+    });
+    const app = buildApp({ resume }, { auth: () => ({ userId: 'user-7' }) });
+
+    const res = await app.request(
+      '/agents/bot/resume/stream',
+      post({
+        threadId: 'thread-1',
+        decisions: { call_1: { approved: true } },
+        defaultDecision: { approved: false, reason: 'no' },
+      })
+    );
+    const raw = await res.text();
+    const events = parseSSE(raw);
+
+    expect(res.headers.get('content-type')).toContain('text/event-stream');
+    expect(events.map((e) => e.type)).toEqual([
+      'start',
+      'tool-call-start',
+      'tool-call-delta',
+      'tool-call-end',
+      'tool-result',
+      'text-start',
+      'text-delta',
+      'text-end',
+      'finish',
+    ]);
+    expect(events[0]).toMatchObject({ threadId: 'thread-1' });
+    expect(events.at(-1)).toMatchObject({ threadId: 'thread-1', status: 'completed' });
+    expect(raw.trimEnd().endsWith('data: [DONE]')).toBe(true);
+
+    const [calledAgent, threadId, options] = resume.mock.calls[0];
+    expect(calledAgent).toBe(agent);
+    expect(threadId).toBe('thread-1');
+    expect(options).toMatchObject({
+      userId: 'user-7',
+      decisions: { call_1: { approved: true } },
+      defaultDecision: { approved: false, reason: 'no' },
+      stream: true,
+    });
+    expect(options.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('streams approval-required when the resumed run pauses again', async () => {
+    const app = buildApp({ resume: vi.fn().mockResolvedValue(paused()) });
+
+    const raw = await (
+      await app.request('/agents/bot/resume/stream', post({ threadId: 'thread-1' }))
+    ).text();
+    const events = parseSSE(raw);
+
+    expect(events.map((e) => e.type).slice(-2)).toEqual(['approval-required', 'finish']);
+    expect(events.at(-1)).toMatchObject({ status: 'paused' });
+    expect(raw).not.toContain('SECRET_CHECKPOINT');
+  });
+
+  it.each([
+    ['malformed JSON', '{oops'],
+    ['decision without approved', { threadId: 't', decisions: { call_1: {} } }],
+  ])('answers 400 for a body with %s before streaming', async (_name, body) => {
+    const resume = vi.fn();
+    const app = buildApp({ resume });
+
+    const res = await app.request('/agents/bot/resume/stream', post(body));
+
+    expect(res.status).toBe(400);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('INVALID_INPUT');
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it('answers 404 for an unknown agent', async () => {
+    const resume = vi.fn();
+    const app = buildApp({ resume });
+
+    const res = await app.request('/agents/ghost/resume/stream', post({ threadId: 't' }));
+
+    expect(res.status).toBe(404);
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it('refuses a thread the caller cannot access before streaming', async () => {
+    const resume = vi.fn();
+    const app = buildApp({ resume }, { authorizeThread: () => false });
+
+    const res = await app.request('/agents/bot/resume/stream', post({ threadId: 'thread-1' }));
+
+    expect(res.status).toBe(403);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('THREAD_FORBIDDEN');
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it('ends the stream with an error event when the thread has no paused run', async () => {
+    const app = buildApp({
+      resume: vi
+        .fn()
+        .mockRejectedValue(
+          new CogitatorError({ message: 'nothing to resume', code: ErrorCode.RUN_NOT_PAUSED })
+        ),
+    });
+
+    const res = await app.request('/agents/bot/resume/stream', post({ threadId: 'thread-1' }));
+    const events = parseSSE(await res.text());
+
+    expect(res.status).toBe(200);
+    expect(events[0]).toMatchObject({ type: 'start', threadId: 'thread-1' });
+    expect(events.at(-1)).toEqual({
+      type: 'error',
+      message: 'nothing to resume',
+      code: ErrorCode.RUN_NOT_PAUSED,
+    });
+  });
+
+  it('aborts the resume when the client disconnects', async () => {
+    let seeAbort!: () => void;
+    const abortSeen = new Promise<void>((resolve) => (seeAbort = resolve));
+    const resume = vi.fn(
+      (_agent: unknown, _threadId: string, options: ResumeOptions) =>
+        new Promise((resolve) => {
+          options.signal?.addEventListener('abort', () => {
+            seeAbort();
+            resolve(result());
+          });
+          options.onToken?.('Working');
+        })
+    );
+    const app = buildApp({ resume });
+    const client = new AbortController();
+
+    const res = await app.fetch(
+      new Request('http://localhost/agents/bot/resume/stream', {
+        ...post({ threadId: 'thread-1' }),
+        signal: client.signal,
+      })
+    );
+    await res.body!.getReader().read();
+    client.abort();
+
+    await abortSeen;
   });
 });
 

@@ -257,6 +257,150 @@ describe('approvals over HTTP', () => {
   });
 });
 
+describe('resume over SSE', () => {
+  it('streams the rest of a paused run on its thread', async () => {
+    const { base, resume } = await start(
+      {
+        resume: async (_threadId, options) => {
+          options.onToolCall?.({ id: 'call_1', name: 'refund', arguments: { orderId: 42 } });
+          options.onToolResult?.({ callId: 'call_1', name: 'refund', result: { ok: true } });
+          options.onToken?.('Refunded');
+          return result({ output: 'Refunded' });
+        },
+      },
+      { auth: () => ({ userId: 'user-7' }) }
+    );
+
+    const res = await post(`${base}/agents/bot/resume/stream`, {
+      threadId: 'thread-1',
+      decisions: { call_1: { approved: true } },
+      defaultDecision: { approved: false, reason: 'no' },
+    });
+    const raw = await res.text();
+    const events = parseEvents(raw);
+
+    expect(res.headers.get('content-type')).toContain('text/event-stream');
+    expect(events.map((e) => e.type)).toEqual([
+      'start',
+      'tool-call-start',
+      'tool-call-delta',
+      'tool-call-end',
+      'tool-result',
+      'text-start',
+      'text-delta',
+      'text-end',
+      'finish',
+    ]);
+    expect(events[0]).toMatchObject({ threadId: 'thread-1' });
+    expect(events.at(-1)).toMatchObject({ threadId: 'thread-1', status: 'completed' });
+    expect(raw.trimEnd().endsWith('data: [DONE]')).toBe(true);
+
+    const [calledAgent, threadId, options] = resume.mock.calls[0];
+    expect(calledAgent).toBe(agent);
+    expect(threadId).toBe('thread-1');
+    expect(options).toMatchObject({
+      userId: 'user-7',
+      decisions: { call_1: { approved: true } },
+      defaultDecision: { approved: false, reason: 'no' },
+      stream: true,
+    });
+    expect(options.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('aborts the resume when the client disconnects', async () => {
+    let seeAbort!: () => void;
+    const abortSeen = new Promise<void>((resolve) => (seeAbort = resolve));
+    const { base } = await start({
+      resume: (_threadId, options) =>
+        new Promise((resolve) => {
+          options.signal?.addEventListener('abort', () => {
+            seeAbort();
+            resolve(result());
+          });
+          options.onToken?.('Working');
+        }),
+    });
+    const client = new AbortController();
+
+    const res = await fetch(`${base}/agents/bot/resume/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ threadId: 'thread-1' }),
+      signal: client.signal,
+    });
+    await res.body!.getReader().read();
+    client.abort();
+
+    await abortSeen;
+  });
+
+  it('streams approval-required when the resumed run pauses again', async () => {
+    const { base } = await start({ resume: async () => paused() });
+
+    const raw = await (
+      await post(`${base}/agents/bot/resume/stream`, { threadId: 'thread-1' })
+    ).text();
+    const events = parseEvents(raw);
+
+    expect(events.map((e) => e.type).slice(-2)).toEqual(['approval-required', 'finish']);
+    expect(events.at(-1)).toMatchObject({ status: 'paused' });
+    expect(raw).not.toContain('SECRET_CHECKPOINT');
+  });
+
+  it('answers 400 for an invalid body before streaming', async () => {
+    const { base, resume } = await start();
+
+    const res = await post(`${base}/agents/bot/resume/stream`, {
+      threadId: 't',
+      decisions: { call_1: {} },
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('INVALID_INPUT');
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it('answers 404 for an unknown agent', async () => {
+    const { base, resume } = await start();
+
+    const res = await post(`${base}/agents/ghost/resume/stream`, { threadId: 't' });
+
+    expect(res.status).toBe(404);
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it('refuses a thread the caller cannot access before streaming', async () => {
+    const { base, resume } = await start({}, { authorizeThread: () => false });
+
+    const res = await post(`${base}/agents/bot/resume/stream`, { threadId: 'thread-1' });
+
+    expect(res.status).toBe(403);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('THREAD_FORBIDDEN');
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it('ends the stream with an error event when the thread has no paused run', async () => {
+    const { base } = await start({
+      resume: async () => {
+        throw new CogitatorError({ message: 'nothing to resume', code: ErrorCode.RUN_NOT_PAUSED });
+      },
+    });
+
+    const res = await post(`${base}/agents/bot/resume/stream`, { threadId: 'thread-1' });
+    const events = parseEvents(await res.text());
+
+    expect(res.status).toBe(200);
+    expect(events[0]).toMatchObject({ type: 'start', threadId: 'thread-1' });
+    expect(events.at(-1)).toEqual({
+      type: 'error',
+      message: 'nothing to resume',
+      code: ErrorCode.RUN_NOT_PAUSED,
+    });
+  });
+});
+
 describe('approvals over WebSocket', () => {
   function connect(url: string): Promise<{
     messages: WebSocketResponse[];

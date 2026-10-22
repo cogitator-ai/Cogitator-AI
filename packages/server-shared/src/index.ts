@@ -40,6 +40,30 @@ export type {
   SwarmEvent,
 } from './protocol.js';
 
+export {
+  StreamEventSchema,
+  StartEventSchema,
+  TextStartEventSchema,
+  TextDeltaEventSchema,
+  TextEndEventSchema,
+  ReasoningStartEventSchema,
+  ReasoningDeltaEventSchema,
+  ReasoningEndEventSchema,
+  ToolCallStartEventSchema,
+  ToolCallDeltaEventSchema,
+  ToolCallEndEventSchema,
+  ToolResultEventSchema,
+  ApprovalRequiredEventSchema,
+  ErrorEventSchema,
+  FinishEventSchema,
+  WorkflowEventSchema,
+  SwarmEventSchema,
+  RunUsageSchema,
+  PendingApprovalSchema,
+  streamEventComponents,
+} from './stream-schemas.js';
+export type { OpenAPISchemaObject } from './stream-schemas.js';
+
 export { generateId, encodeSSE, encodeDone } from './helpers.js';
 
 export {
@@ -133,7 +157,8 @@ export { toRunUsage } from './usage.js';
 
 export type { RunUsage } from './usage.js';
 
-export { generateOpenAPISpec, generateSwaggerHTML } from './openapi.js';
+export { documentStreamEvents, generateOpenAPISpec, generateSwaggerHTML } from './openapi.js';
+export type { StreamDocumentable } from './openapi.js';
 
 export type { OpenAPISpec, SwaggerConfig, OpenAPIContext } from './openapi-types.js';
 

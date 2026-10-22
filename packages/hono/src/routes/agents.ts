@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
+import type { RunResult } from '@cogitator-ai/types';
 import { streamSSE } from 'hono/streaming';
 import {
   AgentStreamSession,
@@ -23,6 +25,37 @@ import {
   runDeps,
   sendError,
 } from '../utils/request.js';
+
+function streamAgent(
+  c: Context<HonoEnv>,
+  threadId: string | undefined,
+  errorLabel: string,
+  execute: (session: AgentStreamSession, signal: AbortSignal) => Promise<RunResult>
+): Response {
+  const abortController = createRequestAbortController(c);
+
+  return streamSSE(c, async (stream) => {
+    const writer = new HonoStreamWriter(stream, { heartbeatMs: c.get('cogitator').sseHeartbeatMs });
+    const session = new AgentStreamSession((event) => void writer.send(event), { threadId });
+
+    stream.onAbort(() => {
+      writer.close();
+      abortController.abort();
+    });
+
+    try {
+      session.start();
+      session.complete(await execute(session, abortController.signal));
+    } catch (error) {
+      if (abortController.signal.aborted) return;
+      const failure = describeError(error, errorLabel);
+      session.fail(failure.message, failure.code);
+    } finally {
+      await writer.flush();
+      writer.close();
+    }
+  });
+}
 
 export function createAgentRoutes(): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
@@ -126,40 +159,50 @@ export function createAgentRoutes(): Hono<HonoEnv> {
 
     const userId = c.get('cogitatorAuth')?.userId;
     const deps = await runDeps(c);
-    const abortController = createRequestAbortController(c);
 
-    return streamSSE(c, async (stream) => {
-      const writer = new HonoStreamWriter(stream, { heartbeatMs: ctx.sseHeartbeatMs });
-      const session = new AgentStreamSession((event) => void writer.send(event), {
-        threadId: parsed.value.threadId,
-      });
+    return streamAgent(c, parsed.value.threadId, 'Agent stream error', (session, signal) =>
+      ctx.runtime.run(agent, {
+        ...parsed.value,
+        threadId: session.threadId,
+        userId,
+        ...deps,
+        stream: true,
+        signal,
+        ...session.callbacks,
+      })
+    );
+  });
 
-      stream.onAbort(() => {
-        writer.close();
-        abortController.abort();
-      });
+  app.post('/agents/:name/resume/stream', async (c) => {
+    const ctx = c.get('cogitator');
+    const name = c.req.param('name');
+    const agent = getOwn(ctx.agents, name);
 
-      try {
-        session.start();
-        const result = await ctx.runtime.run(agent, {
-          ...parsed.value,
-          threadId: session.threadId,
-          userId,
-          ...deps,
-          stream: true,
-          signal: abortController.signal,
-          ...session.callbacks,
-        });
-        session.complete(result);
-      } catch (error) {
-        if (abortController.signal.aborted) return;
-        const failure = describeError(error, 'Agent stream error');
-        session.fail(failure.message, failure.code);
-      } finally {
-        await writer.flush();
-        writer.close();
-      }
-    });
+    if (!agent) return notFound(c, `Agent '${name}' not found`);
+
+    const body = await readJsonBody(c);
+    if (!body.ok) return bodyRefused(c, body.refusal);
+    const parsed = parseResumeRequest(body.value);
+    if (!parsed.ok) return invalidInput(c, parsed.message);
+
+    const { threadId, decisions, defaultDecision } = parsed.value;
+    const refusal = await refuseThread(c, threadId);
+    if (refusal) return sendError(c, refusal);
+
+    const userId = c.get('cogitatorAuth')?.userId;
+    const deps = await runDeps(c);
+
+    return streamAgent(c, threadId, 'Agent resume stream error', (session, signal) =>
+      ctx.runtime.resume(agent, threadId, {
+        userId,
+        ...deps,
+        decisions,
+        defaultDecision,
+        stream: true,
+        signal,
+        ...session.callbacks,
+      })
+    );
   });
 
   return app;

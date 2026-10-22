@@ -113,6 +113,26 @@ Standardized Server-Sent Events protocol for agent runs, workflow runs, swarm ru
 - `SwarmEvent`: Structure of swarm progress events.
 - `Usage`: Token usage counts (`inputTokens`, `outputTokens`, `totalTokens`, and optional `reasoningTokens`, `cachedInputTokens`, `cacheWriteTokens`).
 
+#### Protocol Schemas
+
+Every event has a Zod schema of the same shape as its type, so a client can check what a server sends at its boundary:
+
+```typescript
+import { StreamEventSchema } from '@cogitator-ai/server-shared';
+
+for (const data of sseDataLines) {
+  if (data === '[DONE]') break;
+  const event = StreamEventSchema.parse(JSON.parse(data));
+  if (event.type === 'text-delta') process.stdout.write(event.delta);
+}
+```
+
+- `StreamEventSchema`: Discriminated union of every event schema on `type`. An unknown `type` or a field of the wrong type fails to parse, a field a newer server adds is dropped.
+- `StartEventSchema`, `TextStartEventSchema`, `TextDeltaEventSchema`, `TextEndEventSchema`, `ReasoningStartEventSchema`, `ReasoningDeltaEventSchema`, `ReasoningEndEventSchema`, `ToolCallStartEventSchema`, `ToolCallDeltaEventSchema`, `ToolCallEndEventSchema`, `ToolResultEventSchema`, `ApprovalRequiredEventSchema`, `ErrorEventSchema`, `FinishEventSchema`, `WorkflowEventSchema`, `SwarmEventSchema`: The schema of each event.
+- `RunUsageSchema`, `PendingApprovalSchema`: The schemas of the `usage` of `finish` and of a pending approval.
+- `streamEventComponents()`: The same schemas as OpenAPI 3.0 components: `StreamEvent` (a `oneOf` with a discriminator on `type`), a `Stream<Name>Event` per event, `RunUsage` and `PendingApproval`.
+- `OpenAPISchemaObject`: A component schema as plain JSON.
+
 ### 2. SSE Helpers & Heartbeat Management
 
 Wire formatting and keep-alive ping mechanisms to maintain streaming connections through intermediate proxies and strict runtime timeouts.
@@ -220,7 +240,9 @@ Resource safety helpers for multi-agent swarm orchestration.
 
 Dynamic documentation generators reflecting registered agents, tools, workflows, and swarms.
 
-- `generateOpenAPISpec(context, config)`: Builds an OpenAPI 3.0 specification from registered agents, tools (with JSON schemas), workflows, and swarms.
+- `generateOpenAPISpec(context, config)`: Builds an OpenAPI 3.0 specification from registered agents, tools (with JSON schemas), workflows, and swarms. Every SSE route answers `text/event-stream` with the `StreamEvent` schema.
+- `documentStreamEvents(document)`: Adds the stream protocol to an OpenAPI document a framework generated from its own routes, such as `@fastify/swagger`: the StreamEvent components, and `StreamEvent` as the `text/event-stream` body of every POST route ending in `/stream`. `generateOpenAPISpec` already documents its streams this way.
+- `StreamDocumentable`: What `documentStreamEvents` needs of a document.
 - `generateSwaggerHTML(spec)`: Generates a standalone HTML page embedding Swagger UI from CDN with the OpenAPI `spec` object embedded inline for `/docs`.
 - `OpenAPISpec`: TypeScript interface for the generated OpenAPI 3.0 document.
 - `SwaggerConfig`: Customization options for Swagger UI and OpenAPI generation (title, version, base path, auth, and `limits`, which the spec shows as the defaults and caps of the capped request fields).
@@ -232,7 +254,7 @@ Shared conformance test cases and mock runtime ensuring all adapters behave iden
 
 - `checkConformance(testCase, response, runtime, check?)`: Compares a response the adapter already returned against the test case and runtime state, returning a list of mismatches (an empty array means the adapter conforms).
 - `ConformanceRuntime`: Mock runtime tracking runs, resumes, streaming callbacks, and memory operations. `new ConformanceRuntime(testCase)` follows the case's `runtime` options: runs that fail with a `CogitatorError` (`fail`) or a plain error (`crash`), and a thread holding `threadEntries` messages.
-- `CONFORMANCE_CASES`: Collection of standardized test cases covering input validation, context policy, thread isolation, and error conditions.
+- `CONFORMANCE_CASES`: Collection of standardized test cases covering input validation, context policy, thread isolation, error conditions and the streams of runs and resumes. Every event of a stream a case reads must match `StreamEventSchema`, and nothing may follow its `finish` or `error`.
 - `CONFORMANCE_ROUTES`: Standard test route mapping (`/agents/:name/run`, `/threads/:id/messages`, etc.).
 - `CONFORMANCE_NAMES`: Standard test entity names (`assistant`, `team`, `flow`, `thread-1`).
 - `CONFORMANCE_SWARM`: Standard swarm fixture with router and pipeline stages.

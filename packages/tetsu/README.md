@@ -329,6 +329,8 @@ data: {"type":"finish","messageId":"msg_…","usage":{"inputTokens":12,"outputTo
 data: [DONE]
 ```
 
+Each event matches `StreamEventSchema` from `@cogitator-ai/server-shared`, which a client can parse events with. The document `@tetsujs/openapi` generates has no way yet to give an SSE route a body schema, so it describes these routes without one, and the schemas are where the event types live.
+
 `start` names the run's thread: the `threadId` of the request, or the thread the controller opened for it, so a client that sent none continues the conversation with this one even if the stream breaks. `finish` repeats it with `status` and the other outcome fields of the JSON answer.
 
 An agent with `reasoning: { summary: true }` also streams its reasoning summary as `reasoning-start`, `reasoning-delta` and `reasoning-end` events. A text or reasoning part opens with its first delta and is closed before a part of the other kind, a tool call or `finish`, so parts never overlap and text after a tool call starts a new part. An answer the model gave in one piece arrives as one text part before `finish`, and a resumed run that pauses again sends `approval-required` before `finish`. `POST /agents/:name/run` returns the summary as `reasoning`, and `usage` gains `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the provider reports them. The `finish` event of an agent stream carries the same `usage` as the JSON answer, these counts included.

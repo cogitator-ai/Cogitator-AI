@@ -2,8 +2,14 @@ import type { OpenAPIContext, SwaggerConfig, OpenAPISpec } from './openapi-types
 import { MAX_RUN_TIMEOUT_MS, NON_BLANK_PATTERN, RUN_INPUT_SCHEMA } from './validation.js';
 import type { RunLimits } from './contract.js';
 import { MAX_THREAD_PAGE_LIMIT } from './thread-page.js';
+import { streamEventComponents } from './stream-schemas.js';
 
 const THREAD_ID_SCHEMA = { type: 'string', minLength: 1, pattern: NON_BLANK_PATTERN } as const;
+
+/** The body of an SSE route: each `data:` line is a StreamEvent, then `data: [DONE]` */
+const SSE_CONTENT = {
+  'text/event-stream': { schema: { $ref: '#/components/schemas/StreamEvent' } },
+} as const;
 
 const CONTEXT_SCHEMA = {
   type: 'object',
@@ -208,9 +214,32 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
           200: {
             description:
               'SSE stream of protocol events. The start event (StreamStartEvent) names the thread of the run, and the finish event (StreamFinishEvent) repeats it with the usage and the outcome of the JSON run response',
-            content: { 'text/event-stream': {} },
+            content: SSE_CONTENT,
           },
           ...refusals,
+        },
+      },
+    };
+
+    spec.paths[`/agents/${name}/resume/stream`] = {
+      post: {
+        tags: ['agents'],
+        summary: `Resume a paused run of ${name} and stream the rest of it`,
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': { schema: { $ref: '#/components/schemas/AgentResumeRequest' } },
+          },
+        },
+        responses: {
+          200: {
+            description:
+              'SSE stream of protocol events, as on /stream. A thread with no paused run ends the stream with an error event (RUN_NOT_PAUSED)',
+            content: SSE_CONTENT,
+          },
+          ...refusals,
+          403: threadForbidden,
+          404: { description: 'Agent not found' },
         },
       },
     };
@@ -332,7 +361,12 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
       post: {
         tags: ['workflows'],
         summary: `Stream workflow: ${name}`,
-        responses: { 200: { description: 'SSE stream', content: { 'text/event-stream': {} } } },
+        responses: {
+          200: {
+            description: 'SSE stream of protocol events (StreamEvent), ending with `data: [DONE]`',
+            content: SSE_CONTENT,
+          },
+        },
       },
     };
   }
@@ -381,7 +415,12 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
       post: {
         tags: ['swarms'],
         summary: `Stream swarm: ${name}`,
-        responses: { 200: { description: 'SSE stream', content: { 'text/event-stream': {} } } },
+        responses: {
+          200: {
+            description: 'SSE stream of protocol events (StreamEvent), ending with `data: [DONE]`',
+            content: SSE_CONTENT,
+          },
+        },
       },
     };
 
@@ -428,6 +467,61 @@ function scriptJson(value: unknown): string {
     .replace(/&/g, '\\u0026')
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
+}
+
+/** What {@link documentStreamEvents} needs of an OpenAPI document, typed loosely enough for any generator's */
+export interface StreamDocumentable {
+  paths?: object;
+  components?: object;
+}
+
+type PathItem = Record<string, unknown>;
+type StreamOperation = { responses?: Record<string, { description?: string }> };
+
+/**
+ * Adds the stream protocol to an OpenAPI document a framework generated from its own routes:
+ * the StreamEvent components, and StreamEvent as the `text/event-stream` body of the `200` of
+ * every POST route whose path ends in `/stream`. Components of the same name the document
+ * already has are kept. `generateOpenAPISpec` documents its streams itself.
+ *
+ * @example
+ * ```ts
+ * await fastify.register(swagger, {
+ *   openapi: { info },
+ *   transformObject: ({ openapiObject }) => documentStreamEvents(openapiObject),
+ * });
+ * ```
+ */
+export function documentStreamEvents<T extends StreamDocumentable>(document: T): T {
+  const paths: Record<string, unknown> = {};
+  for (const [path, item] of Object.entries((document.paths ?? {}) as Record<string, unknown>)) {
+    const post = (item as PathItem | undefined)?.post as StreamOperation | undefined;
+    if (!path.endsWith('/stream') || !post) {
+      paths[path] = item;
+      continue;
+    }
+    paths[path] = {
+      ...(item as PathItem),
+      post: {
+        ...post,
+        responses: {
+          ...post.responses,
+          200: {
+            description:
+              post.responses?.['200']?.description ??
+              'SSE stream of protocol events (StreamEvent), ending with `data: [DONE]`',
+            content: SSE_CONTENT,
+          },
+        },
+      },
+    };
+  }
+  const components = (document.components ?? {}) as { schemas?: Record<string, unknown> };
+  return {
+    ...document,
+    paths,
+    components: { ...components, schemas: { ...streamEventComponents(), ...components.schemas } },
+  };
 }
 
 export function generateSwaggerHTML(spec: OpenAPISpec): string {
@@ -497,6 +591,7 @@ const RUN_OUTCOME_PROPERTIES = {
 
 function generateSchemas(limits: RunLimits | undefined): Record<string, unknown> {
   return {
+    ...streamEventComponents(),
     HealthResponse: {
       type: 'object',
       properties: {
@@ -541,17 +636,6 @@ function generateSchemas(limits: RunLimits | undefined): Record<string, unknown>
         threadId: THREAD_ID_SCHEMA,
       },
     },
-    PendingApproval: {
-      type: 'object',
-      required: ['toolCallId', 'toolName', 'arguments', 'description'],
-      properties: {
-        toolCallId: { type: 'string' },
-        toolName: { type: 'string' },
-        arguments: { type: 'object' },
-        description: { type: 'string' },
-        sideEffects: { type: 'array', items: { type: 'string' } },
-      },
-    },
     ToolApprovalDecision: {
       type: 'object',
       required: ['approved'],
@@ -567,56 +651,6 @@ function generateSchemas(limits: RunLimits | undefined): Record<string, unknown>
           additionalProperties: { $ref: '#/components/schemas/ToolApprovalDecision' },
         },
         defaultDecision: { $ref: '#/components/schemas/ToolApprovalDecision' },
-      },
-    },
-    RunUsage: {
-      type: 'object',
-      description:
-        'Token usage of a run, the same in the JSON response and in the finish event of the stream',
-      required: ['inputTokens', 'outputTokens', 'totalTokens'],
-      properties: {
-        inputTokens: { type: 'number' },
-        outputTokens: { type: 'number' },
-        totalTokens: { type: 'number' },
-        reasoningTokens: {
-          type: 'number',
-          description: 'Hidden reasoning tokens, already counted in outputTokens',
-        },
-        cachedInputTokens: {
-          type: 'number',
-          description: "Input tokens read from the provider's prompt cache",
-        },
-        cacheWriteTokens: {
-          type: 'number',
-          description: "Input tokens written to the provider's prompt cache",
-        },
-      },
-    },
-    StreamStartEvent: {
-      type: 'object',
-      description: 'The first event of a stream',
-      required: ['type', 'messageId'],
-      properties: {
-        type: { type: 'string', enum: ['start'] },
-        messageId: { type: 'string' },
-        threadId: {
-          type: 'string',
-          description:
-            'The thread of an agent run: the one the request named, or a new one. Send it with the next message to continue the conversation',
-        },
-      },
-    },
-    StreamFinishEvent: {
-      type: 'object',
-      description:
-        'The last event of a stream, sent before `data: [DONE]`. For an agent run it carries the thread and the outcome fields of AgentRunResponse',
-      required: ['type', 'messageId'],
-      properties: {
-        type: { type: 'string', enum: ['finish'] },
-        messageId: { type: 'string' },
-        usage: { $ref: '#/components/schemas/RunUsage' },
-        threadId: { type: 'string' },
-        ...RUN_OUTCOME_PROPERTIES,
       },
     },
     AgentToolCall: {
