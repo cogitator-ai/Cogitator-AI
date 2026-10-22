@@ -40,6 +40,7 @@ import type {
   MemoryFileFilter,
   MemoryFileVersion,
   EntryRedaction,
+  MemoryFileHeadFilter,
 } from '@cogitator-ai/types';
 import {
   CONVERSATION_ENTRY_TYPES,
@@ -1336,8 +1337,11 @@ export class PostgresAdapter
     }
   }
 
-  async findFileVersions(filter: MemoryFileFilter): Promise<MemoryResult<MemoryFileVersion[]>> {
-    if (!this.pool) return this.failure('Not connected');
+  /** The conditions of `filter` on the memory file versions table, with their parameters */
+  private fileConditions(filter: MemoryFileFilter): {
+    conditions: string[];
+    params: unknown[];
+  } {
     const conditions = ['agent_id = $1'];
     const params: unknown[] = [filter.agentId];
     if (filter.ids) {
@@ -1367,6 +1371,12 @@ export class PostgresAdapter
         }
       }
     }
+    return { conditions, params };
+  }
+
+  async findFileVersions(filter: MemoryFileFilter): Promise<MemoryResult<MemoryFileVersion[]>> {
+    if (!this.pool) return this.failure('Not connected');
+    const { conditions, params } = this.fileConditions(filter);
     try {
       const found = await this.pool.query(
         `SELECT version FROM ${this.schema}.memory_file_versions
@@ -1378,6 +1388,36 @@ export class PostgresAdapter
         found.rows
           .map((row) => memoryFileVersionFromJson(row.version as StoredMemoryFileVersion))
           .filter((version) => matchesFileFilter(version, filter))
+      );
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+  async findFileHeads(filter: MemoryFileHeadFilter): Promise<MemoryResult<MemoryFileVersion[]>> {
+    if (!this.pool) return this.failure('Not connected');
+    const { place, ...rest } = filter;
+    const { conditions, params } = this.fileConditions(rest);
+    if (place) {
+      params.push(place.threadId, [...place.pathIds]);
+      conditions.push(
+        `(version->'place' IS NULL OR jsonb_typeof(version->'place') = 'null' OR version->'place'->>'threadId' <> $${params.length - 1} OR version->'place'->>'entryId' = ANY($${params.length}::text[]))`
+      );
+    }
+    try {
+      const found = await this.pool.query(
+        `SELECT version FROM (
+           SELECT DISTINCT ON (file_key) version, created_at, sequence, id
+           FROM ${this.schema}.memory_file_versions
+           WHERE ${conditions.join(' AND ')}
+           ORDER BY file_key, sequence DESC
+         ) heads
+         ORDER BY created_at, sequence, (id COLLATE "C")`,
+        params
+      );
+      return this.success(
+        found.rows
+          .map((row) => memoryFileVersionFromJson(row.version as StoredMemoryFileVersion))
+          .filter((version) => matchesFileFilter(version, rest))
       );
     } catch (err) {
       return this.failure((err as Error).message);

@@ -157,6 +157,28 @@ export function matchesFileFilter(version: MemoryFileVersion, filter: MemoryFile
   );
 }
 
+/**
+ * Of `versions`, the newest of each scope and path that a run on `place` sees, for a storage that
+ * finds heads in process (see `MemoryFileAdapter.findFileHeads`)
+ */
+export function fileHeads(
+  versions: readonly MemoryFileVersion[],
+  place?: { threadId: string; pathIds: readonly string[] }
+): MemoryFileVersion[] {
+  const onPath = place ? new Set(place.pathIds) : undefined;
+  const heads = new Map<string, MemoryFileVersion>();
+  for (const version of versions) {
+    const written = version.place;
+    if (place && onPath && written && written.threadId === place.threadId) {
+      if (!onPath.has(written.entryId)) continue;
+    }
+    const key = fileKeyOf(version.scope, version.path);
+    const known = heads.get(key);
+    if (!known || version.sequence > known.sequence) heads.set(key, version);
+  }
+  return [...heads.values()].sort(byFileVersion);
+}
+
 /** Oldest first: by `createdAt`, then `sequence`, then `id`, the order versions are found in */
 export function byFileVersion(a: MemoryFileVersion, b: MemoryFileVersion): number {
   return (
@@ -312,12 +334,19 @@ export class MemoryFiles {
   /** The files the access sees, by path */
   async list(access: MemoryFileAccess, directory = MEMORY_ROOT): Promise<MemoryFile[]> {
     const root = memoryPath(directory);
+    const filter = {
+      agentId: access.scope.agentId,
+      visibleTo: access.visibleTo ?? access.scope,
+      ...(root !== MEMORY_ROOT && { prefix: root }),
+    };
+    const place = access.place;
     const versions = unwrap(
-      await this.adapter.findFileVersions({
-        agentId: access.scope.agentId,
-        visibleTo: access.visibleTo ?? access.scope,
-        ...(root !== MEMORY_ROOT && { prefix: root }),
-      })
+      this.adapter.findFileHeads
+        ? await this.adapter.findFileHeads({
+            ...filter,
+            ...(place && { place: { threadId: place.threadId, pathIds: [...place.pathIds] } }),
+          })
+        : await this.adapter.findFileVersions(filter)
     );
     return this.filesOf(access, versions, root);
   }
@@ -766,7 +795,10 @@ export class MemoryFiles {
         }
         const sequences = this.nextSequences(snapshot, writes);
         const conflict = await this.write(access, writes, current, sequences);
-        if (!conflict) return;
+        if (!conflict) {
+          await this.keepTree(access, writes, current);
+          return;
+        }
         if (attempt >= WRITE_ATTEMPTS) {
           throw new MemoryFileError(
             `The memory at ${roots[0] ?? MEMORY_ROOT} is being changed by another writer. Try again.`
@@ -774,6 +806,62 @@ export class MemoryFiles {
         }
       }
     });
+  }
+
+  /**
+   * Checks, once `writes` are kept, that no file the change wrote lies under another file or has
+   * files under it, which another process writing at the same time could cause, as each change is
+   * planned on what stood before it. A change that broke the tree is undone (each path as it stood
+   * before) and refused, so the writer tries again on what stands now.
+   */
+  private async keepTree(
+    access: MemoryFileAccess,
+    writes: readonly (PlannedWrite & { scope: MemoryItemScope })[],
+    before: ReadonlyMap<string, MemoryFile>
+  ): Promise<void> {
+    const written = writes.filter((write) => write.content !== null).map((write) => write.path);
+    if (written.length === 0) return;
+    const snapshot = unwrap(
+      await this.adapter.findFileVersions({
+        agentId: access.scope.agentId,
+        visibleTo: access.visibleTo ?? access.scope,
+      })
+    );
+    const paths = this.filesOf(access, snapshot).map((file) => file.path);
+    const broken = written.find((path) =>
+      paths.some((other) => other !== path && (under(other, path) || under(path, other)))
+    );
+    if (broken === undefined) return;
+    const undo = new Map<string, PlannedWrite & { scope: MemoryItemScope }>();
+    for (const write of writes) {
+      undo.set(write.path, {
+        path: write.path,
+        content: before.get(write.path)?.content ?? null,
+        scope: write.scope,
+      });
+      if (write.from !== undefined) {
+        undo.set(write.from, {
+          path: write.from,
+          content: before.get(write.from)?.content ?? null,
+          scope: write.scope,
+        });
+      }
+    }
+    const undone = [...undo.values()];
+    for (let attempt = 1, seen = snapshot; attempt <= WRITE_ATTEMPTS; attempt++) {
+      const latest = new Map(this.filesOf(access, seen).map((file) => [file.path, file]));
+      const taken = await this.write(access, undone, latest, this.nextSequences(seen, undone));
+      if (!taken) break;
+      seen = unwrap(
+        await this.adapter.findFileVersions({
+          agentId: access.scope.agentId,
+          visibleTo: access.visibleTo ?? access.scope,
+        })
+      );
+    }
+    throw new MemoryFileError(
+      `Another writer changed the memory around ${broken} at the same time. View it again and try again.`
+    );
   }
 
   /**

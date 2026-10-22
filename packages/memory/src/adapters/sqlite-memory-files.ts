@@ -6,6 +6,7 @@ import {
   MEMORY_FILE_CONFLICT,
   type MemoryFileAdapter,
   type MemoryFileFilter,
+  type MemoryFileHeadFilter,
   type MemoryFileVersion,
   type MemoryResult,
 } from '@cogitator-ai/types';
@@ -76,6 +77,43 @@ export function sqliteMemoryFiles(db: SqliteItemsDatabase): MemoryFileAdapter {
     }
   };
 
+  const conditionsOf = (filter: MemoryFileFilter) => {
+    const conditions = ['agent_id = ?'];
+    const params: unknown[] = [filter.agentId];
+    if (filter.ids) {
+      conditions.push(
+        filter.ids.length === 0 ? '1 = 0' : `id IN (${filter.ids.map(() => '?').join(', ')})`
+      );
+      params.push(...filter.ids);
+    }
+    if (filter.paths) {
+      conditions.push(
+        filter.paths.length === 0 ? '1 = 0' : `path IN (${filter.paths.map(() => '?').join(', ')})`
+      );
+      params.push(...filter.paths);
+    }
+    if (filter.prefix !== undefined) {
+      conditions.push('substr(path, 1, ?) = ?');
+      params.push([...filter.prefix].length, filter.prefix);
+    }
+    const visibleTo = filter.visibleTo;
+    if (visibleTo) {
+      for (const [column, value] of [
+        ['user_id', visibleTo.userId],
+        ['project_id', visibleTo.projectId],
+        ['thread_id', visibleTo.threadId],
+      ] as const) {
+        if (value === undefined) {
+          conditions.push(`${column} IS NULL`);
+        } else {
+          conditions.push(`(${column} IS NULL OR ${column} = ?)`);
+          params.push(value);
+        }
+      }
+    }
+    return { conditions, params };
+  };
+
   return {
     putFileVersions: (versions) =>
       run(() => {
@@ -106,41 +144,7 @@ export function sqliteMemoryFiles(db: SqliteItemsDatabase): MemoryFileAdapter {
 
     findFileVersions: (filter: MemoryFileFilter) =>
       run(() => {
-        const conditions = ['agent_id = ?'];
-        const params: unknown[] = [filter.agentId];
-        if (filter.ids) {
-          conditions.push(
-            filter.ids.length === 0 ? '1 = 0' : `id IN (${filter.ids.map(() => '?').join(', ')})`
-          );
-          params.push(...filter.ids);
-        }
-        if (filter.paths) {
-          conditions.push(
-            filter.paths.length === 0
-              ? '1 = 0'
-              : `path IN (${filter.paths.map(() => '?').join(', ')})`
-          );
-          params.push(...filter.paths);
-        }
-        if (filter.prefix !== undefined) {
-          conditions.push('substr(path, 1, ?) = ?');
-          params.push([...filter.prefix].length, filter.prefix);
-        }
-        const visibleTo = filter.visibleTo;
-        if (visibleTo) {
-          for (const [column, value] of [
-            ['user_id', visibleTo.userId],
-            ['project_id', visibleTo.projectId],
-            ['thread_id', visibleTo.threadId],
-          ] as const) {
-            if (value === undefined) {
-              conditions.push(`${column} IS NULL`);
-            } else {
-              conditions.push(`(${column} IS NULL OR ${column} = ?)`);
-              params.push(value);
-            }
-          }
-        }
+        const { conditions, params } = conditionsOf(filter);
         const rows = db
           .prepare(
             `SELECT data FROM memory_file_versions WHERE ${conditions.join(' AND ')}
@@ -150,6 +154,31 @@ export function sqliteMemoryFiles(db: SqliteItemsDatabase): MemoryFileAdapter {
         return rows
           .map((row) => versionFrom(row.data))
           .filter((version) => matchesFileFilter(version, filter));
+      }),
+
+    findFileHeads: (filter: MemoryFileHeadFilter) =>
+      run(() => {
+        const { place, ...rest } = filter;
+        const { conditions, params } = conditionsOf(rest);
+        if (place) {
+          conditions.push(
+            `(json_extract(data, '$.place') IS NULL OR json_extract(data, '$.place.threadId') <> ? OR json_extract(data, '$.place.entryId') IN (SELECT value FROM json_each(?)))`
+          );
+          params.push(place.threadId, JSON.stringify(place.pathIds));
+        }
+        const rows = db
+          .prepare(
+            `SELECT data FROM (
+               SELECT data, created_at, sequence, id,
+                 ROW_NUMBER() OVER (PARTITION BY file_key ORDER BY sequence DESC) AS rank
+               FROM memory_file_versions WHERE ${conditions.join(' AND ')}
+             ) WHERE rank = 1
+             ORDER BY created_at, sequence, id`
+          )
+          .all(...params) as { data: string }[];
+        return rows
+          .map((row) => versionFrom(row.data))
+          .filter((version) => matchesFileFilter(version, rest));
       }),
 
     redactFileVersions: (ids, redaction) =>

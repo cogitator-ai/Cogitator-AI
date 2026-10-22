@@ -21,6 +21,7 @@ import type {
   MemoryFileFilter,
   MemoryFileVersion,
   EntryRedaction,
+  MemoryFileHeadFilter,
 } from '@cogitator-ai/types';
 import { BranchingMemoryAdapter, entryTypeWanted, withoutToolCalls } from './base';
 import { MEMORY_ENTRY_FORMAT, MEMORY_FILE_CONFLICT } from '@cogitator-ai/types';
@@ -32,7 +33,7 @@ import {
   threadPage,
 } from './thread-listing';
 import { byRecorded, matchesEntityFilter, matchesItemFilter } from '../memory-items';
-import { byFileVersion, fileKeyOf, matchesFileFilter } from '../memory-files';
+import { byFileVersion, fileKeyOf, matchesFileFilter, fileHeads } from '../memory-files';
 
 /**
  * A copy of `value` that shares nothing with it: a structured clone, or for a value it cannot
@@ -420,6 +421,12 @@ export class InMemoryAdapter
       this.filePlaces.add(places[at]!);
     }
     return this.success(versions.map((version) => structuredClone(version)));
+  }
+
+  async findFileHeads(filter: MemoryFileHeadFilter): Promise<MemoryResult<MemoryFileVersion[]>> {
+    const { place, ...rest } = filter;
+    const found = await this.findFileVersions(rest);
+    return found.success ? this.success(fileHeads(found.data, place)) : found;
   }
 
   async findFileVersions(filter: MemoryFileFilter): Promise<MemoryResult<MemoryFileVersion[]>> {

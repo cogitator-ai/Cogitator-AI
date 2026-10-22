@@ -24,6 +24,7 @@ import type {
   MemoryFileFilter,
   MemoryFileVersion,
   EntryRedaction,
+  MemoryFileHeadFilter,
 } from '@cogitator-ai/types';
 import {
   CONVERSATION_ENTRY_TYPES,
@@ -44,7 +45,7 @@ import type {
 import { BranchingMemoryAdapter, entryTypeWanted } from './base';
 import { threadListing, threadPage, type ThreadListing } from './thread-listing';
 import { entityNames } from '../memory-items';
-import { byFileVersion, fileKeyOf, matchesFileFilter } from '../memory-files';
+import { byFileVersion, fileKeyOf, matchesFileFilter, fileHeads } from '../memory-files';
 
 /** A cursor over `find()` results, as far as the adapter reads it. */
 type MongoCursor<T extends Document> = Pick<
@@ -222,6 +223,36 @@ function itemDoc(item: MemoryItem): Omit<ItemDoc, '_id'> {
  * The versions one change added, kept in one document so a reader sees all of them or none,
  * beside the fields its filters read
  */
+/**
+ * The batches `filter` finds versions in: of its agent, ids and paths, and holding a version of
+ * a scope it sees (`visibleTo`) or of its exact `scope`, so a reader of one user's files does
+ * not fetch every other user's. Versions are filtered again in process.
+ */
+function fileBatchQuery(filter: MemoryFileFilter): Filter<FileBatchDoc> {
+  const scoped: Record<string, unknown> = {};
+  for (const field of ['userId', 'projectId', 'threadId'] as const) {
+    const seen = filter.visibleTo?.[field];
+    const exact = filter.scope?.[field];
+    if (filter.scope) {
+      scoped[`scope.${field}`] = exact === undefined ? { $exists: false } : exact;
+    } else if (filter.visibleTo) {
+      scoped[`scope.${field}`] = seen === undefined ? { $exists: false } : { $in: [null, seen] };
+    }
+  }
+  return {
+    agentIds: filter.agentId,
+    ...(filter.ids && { ids: { $in: filter.ids } }),
+    ...(filter.paths && { paths: { $in: filter.paths } }),
+    ...(filter.prefix !== undefined &&
+      !filter.paths && {
+        paths: { $regex: `^${filter.prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}` },
+      }),
+    ...(Object.keys(scoped).length > 0 && {
+      versions: { $elemMatch: { 'scope.agentId': filter.agentId, ...scoped } },
+    }),
+  } as Filter<FileBatchDoc>;
+}
+
 interface FileBatchDoc {
   _id: string;
   agentIds: string[];
@@ -1424,19 +1455,16 @@ export class MongoDBAdapter
     }
   }
 
+  async findFileHeads(filter: MemoryFileHeadFilter): Promise<MemoryResult<MemoryFileVersion[]>> {
+    const { place, ...rest } = filter;
+    const found = await this.findFileVersions(rest);
+    return found.success ? this.success(fileHeads(found.data, place)) : found;
+  }
+
   async findFileVersions(filter: MemoryFileFilter): Promise<MemoryResult<MemoryFileVersion[]>> {
     if (!this.db) return this.failure('Not connected');
     try {
-      const query: Filter<FileBatchDoc> = {
-        agentIds: filter.agentId,
-        ...(filter.ids && { ids: { $in: filter.ids } }),
-        ...(filter.paths && { paths: { $in: filter.paths } }),
-        ...(filter.prefix !== undefined &&
-          !filter.paths && {
-            paths: { $regex: `^${filter.prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}` },
-          }),
-      };
-      const batches = await this.fileBatches.find(query).toArray();
+      const batches = await this.fileBatches.find(fileBatchQuery(filter)).toArray();
       return this.success(
         batches
           .flatMap((batch) => batch.versions)

@@ -63,6 +63,15 @@ export interface MemoryFileFilter {
   scope?: MemoryItemScope;
 }
 
+/** Which heads a {@link MemoryFileAdapter.findFileHeads} finds */
+export interface MemoryFileHeadFilter extends Omit<MemoryFileFilter, 'ids'> {
+  /**
+   * The branch a run stands on: a version placed in `threadId` at an entry that is not among
+   * `pathIds` is not seen, as on another branch of that thread
+   */
+  place?: { threadId: string; pathIds: readonly string[] };
+}
+
 /** What a {@link MemoryFileAdapter} reports when the version's place is taken already */
 export const MEMORY_FILE_CONFLICT = 'memory-file-conflict';
 
@@ -88,6 +97,12 @@ export interface MemoryFileAdapter {
   ): Promise<MemoryResult<void>>;
   /** Deletes the versions for good */
   deleteFileVersions(ids: string[]): Promise<MemoryResult<void>>;
+  /**
+   * The newest version (highest `sequence`) of each scope and path the filter sees, deletions
+   * included, so a read of the files that stand reads no history. Without it reads go through
+   * {@link findFileVersions}.
+   */
+  findFileHeads?(filter: MemoryFileHeadFilter): Promise<MemoryResult<MemoryFileVersion[]>>;
 }
 
 /**

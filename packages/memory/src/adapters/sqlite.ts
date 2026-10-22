@@ -19,6 +19,7 @@ import type {
   MemoryFileVersion,
   MemoryItemFilter,
   EntryRedaction,
+  MemoryFileHeadFilter,
 } from '@cogitator-ai/types';
 import { CONVERSATION_ENTRY_TYPES, MEMORY_ENTRY_FORMAT } from '@cogitator-ai/types';
 import { mkdir } from 'node:fs/promises';
@@ -761,6 +762,12 @@ export class SQLiteAdapter
 
   async findFileVersions(filter: MemoryFileFilter): Promise<MemoryResult<MemoryFileVersion[]>> {
     return this.files ? this.files.findFileVersions(filter) : this.failure('Not connected');
+  }
+
+  async findFileHeads(filter: MemoryFileHeadFilter): Promise<MemoryResult<MemoryFileVersion[]>> {
+    return this.files?.findFileHeads
+      ? this.files.findFileHeads(filter)
+      : this.failure('Not connected');
   }
 
   async redactFileVersions(

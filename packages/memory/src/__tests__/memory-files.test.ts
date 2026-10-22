@@ -57,6 +57,26 @@ describe('MemoryFiles', () => {
     expect(await files.view(guarded, '/memories/observations/ana.md')).toContain('kept by memory');
   });
 
+  it('undoes a change that another process made into a file under a file', async () => {
+    let first = true;
+    const elsewhere = new MemoryFiles({ adapter });
+    const racing = Object.create(adapter) as InMemoryAdapter;
+    racing.findFileVersions = async (filter) => {
+      const found = await adapter.findFileVersions(filter);
+      if (first) {
+        first = false;
+        await elsewhere.create(access, '/memories/a', 'a file');
+      }
+      return found;
+    };
+    const mine = new MemoryFiles({ adapter: racing });
+
+    await expect(mine.create(access, '/memories/a/b.md', 'under it')).rejects.toThrow(
+      'Another writer changed the memory around /memories/a/b.md'
+    );
+    expect((await files.list(access)).map((file) => file.path)).toEqual(['/memories/a']);
+  });
+
   it('answers each command as the memory tool does', async () => {
     expect(await files.create(access, '/memories/notes/plan.md', 'one\ntwo\nthree')).toBe(
       'File created successfully at: /memories/notes/plan.md'
