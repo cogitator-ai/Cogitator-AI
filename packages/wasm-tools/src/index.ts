@@ -344,6 +344,31 @@ export const slugToolSchema = z.object({
   maxLength: z.number().int().min(1).optional().describe('Maximum length of the slug'),
 });
 
+export const semverToolSchema = z.object({
+  operation: z
+    .enum(['parse', 'compare', 'satisfies', 'bump'])
+    .describe('SemVer operation: "parse", "compare", "satisfies", or "bump"'),
+  version: z
+    .string()
+    .optional()
+    .describe('Semantic version string to parse, compare, test, or bump'),
+  version2: z.string().optional().describe('Second semantic version string for compare operation'),
+  range: z
+    .string()
+    .optional()
+    .describe(
+      'SemVer range string for satisfies operation (e.g. "^1.0.0", "~1.2.3", ">=1.0.0 <2.0.0", "1.x || >=2.5.0")'
+    ),
+  release: z
+    .enum(['major', 'minor', 'patch', 'prerelease'])
+    .optional()
+    .describe('Release type for bump operation ("major", "minor", "patch", or "prerelease")'),
+  identifier: z
+    .string()
+    .optional()
+    .describe('Optional prerelease identifier for bump operation (e.g. "alpha", "beta")'),
+});
+
 export const textcaseToolSchema = z.object({
   text: z.string().describe('Text to convert between naming conventions'),
   to: z
@@ -493,6 +518,21 @@ export function createSlugTool(options?: { timeout?: number }): Tool<SlugToolInp
     parameters: slugToolSchema,
     category: 'utility',
     tags: ['slug', 'url', 'text'],
+    timeout: options?.timeout ?? 5000,
+  });
+}
+
+export function createSemverTool(options?: { timeout?: number }): Tool<SemverToolInput, unknown> {
+  return defineWasmTool({
+    name: 'semver',
+    description:
+      'Semantic versioning tool: parse versions, compare precedence (SemVer 2.0.0), check range satisfaction (^, ~, comparison operators, wildcards, ||), and bump versions',
+    wasmModule: getWasmPath('semver'),
+    wasi: true,
+    wasmFunction: 'semver',
+    parameters: semverToolSchema,
+    category: 'utility',
+    tags: ['semver', 'version', 'comparison', 'range'],
     timeout: options?.timeout ?? 5000,
   });
 }
@@ -679,6 +719,7 @@ export function createColorTool(options?: { timeout?: number }): Tool<ColorToolI
 }
 
 export type SlugToolInput = z.infer<typeof slugToolSchema>;
+export type SemverToolInput = z.infer<typeof semverToolSchema>;
 export type TextcaseToolInput = z.infer<typeof textcaseToolSchema>;
 export type UnitsToolInput = z.infer<typeof unitsToolSchema>;
 export type ValidationToolInput = z.infer<typeof validationToolSchema>;

@@ -4,7 +4,7 @@ WASM-based tools for Cogitator agents. Secure, sandboxed tool execution using We
 
 ## Features
 
-- **17 pre-built tools** - calculator, JSON, hash, Base64, slug, textcase, units, validation, diff, regex, CSV, Markdown, XML, datetime, compression, Ed25519 signing, color
+- **18 pre-built tools** - calculator, JSON, hash, Base64, slug, textcase, units, validation, diff, regex, CSV, Markdown, XML, datetime, compression, Ed25519 signing, color, semver
 - **Isolated execution** - every call runs in an Extism sandbox in a worker thread, without filesystem or network access
 - **Fast startup** - no container to start; compiled modules are cached per file
 - **Custom tool framework** - `defineWasmTool()` for your own WASM modules
@@ -60,6 +60,7 @@ import {
   createCompressionTool,
   createSigningTool,
   createColorTool,
+  createSemverTool,
 } from '@cogitator-ai/wasm-tools';
 import { Cogitator, Agent } from '@cogitator-ai/core';
 
@@ -85,6 +86,7 @@ const agent = new Agent({
     createCompressionTool(),
     createSigningTool(),
     createColorTool(),
+    createSemverTool(),
   ],
 });
 
@@ -431,6 +433,28 @@ const color = createColorTool({ timeout: 5000 });
 ```
 
 Supports `#rgb`, `#rrggbb`, `#rrggbbaa`, `rgb()`, `rgba()`, `hsl()`, and `hsla()` inputs with alpha preservation. Contrast calculations follow WCAG 2.x relative luminance and evaluate AA/AAA conformance for normal and large text.
+
+### createSemverTool(options?)
+
+Parse versions, compare precedence (SemVer 2.0.0), evaluate range satisfaction, and bump versions.
+
+```typescript
+const semver = createSemverTool({ timeout: 5000 });
+
+// Parse: { operation: "parse", version: "1.2.3-alpha.1+build" }
+// → { major: 1, minor: 2, patch: 3, prerelease: ["alpha", 1], build: ["build"], version: "1.2.3-alpha.1+build" }
+
+// Compare: { operation: "compare", version: "1.0.0-alpha", version2: "1.0.0" }
+// → { comparison: -1 }
+
+// Satisfies: { operation: "satisfies", version: "1.2.3", range: "^1.0.0" }
+// → { satisfies: true }
+
+// Bump: { operation: "bump", version: "1.2.3", release: "minor" }
+// → { version: "1.3.0" }
+```
+
+Implements SemVer 2.0.0 precedence rules (build metadata ignored in comparison), range satisfaction supporting `^`, `~`, relational operators (`>=`, `<=`, `>`, `<`, `=`), wildcards (`x`, `X`, `*`), and `||` unions with prerelease isolation, and deterministic version bumping.
 
 ### getWasmPath(name)
 

@@ -25,6 +25,7 @@ import {
   createCompressionTool,
   createSigningTool,
   createColorTool,
+  createSemverTool,
   calcToolSchema,
   jsonToolSchema,
   hashToolSchema,
@@ -42,6 +43,7 @@ import {
   compressionToolSchema,
   signingToolSchema,
   colorToolSchema,
+  semverToolSchema,
 } from '../index.js';
 import { z } from 'zod';
 
@@ -164,6 +166,7 @@ describe('defineWasmTool', () => {
       createCompressionTool(),
       createSigningTool(),
       createColorTool(),
+      createSemverTool(),
     ];
     for (const tool of tools) {
       expect(tool.sandbox?.wasi).toBe(true);
@@ -307,6 +310,7 @@ describe('tool factory functions', () => {
     { fn: createCompressionTool, name: 'compression', func: 'compression' },
     { fn: createSigningTool, name: 'signing', func: 'signing' },
     { fn: createColorTool, name: 'color', func: 'color' },
+    { fn: createSemverTool, name: 'semver', func: 'semver' },
   ];
 
   for (const { fn, name, func } of factories) {
@@ -506,5 +510,32 @@ describe('schema validation', () => {
     expect('foreground' in parsed).toBe(false);
     expect('background' in parsed).toBe(false);
     expect(colorToolSchema.safeParse({ operation: 'invalid' }).success).toBe(false);
+  });
+
+  it('semverToolSchema accepts valid operations and validates operation enum', () => {
+    expect(semverToolSchema.safeParse({ operation: 'parse', version: '1.2.3' }).success).toBe(true);
+    expect(
+      semverToolSchema.safeParse({
+        operation: 'compare',
+        version: '1.2.3',
+        version2: '2.0.0',
+      }).success
+    ).toBe(true);
+    expect(
+      semverToolSchema.safeParse({
+        operation: 'satisfies',
+        version: '1.2.3',
+        range: '^1.0.0',
+      }).success
+    ).toBe(true);
+    expect(
+      semverToolSchema.safeParse({
+        operation: 'bump',
+        version: '1.2.3',
+        release: 'minor',
+      }).success
+    ).toBe(true);
+    expect('other' in semverToolSchema.shape).toBe(false);
+    expect(semverToolSchema.safeParse({ operation: 'invalid' }).success).toBe(false);
   });
 });
