@@ -174,6 +174,26 @@ describe('WebSocket', () => {
     expect(runMock.mock.calls[0][1].userId).toBe('u-1');
   });
 
+  it('refuses an upgrade without a user id under anonymous deny', async () => {
+    const { url, runMock } = await start(async () => ({ output: 'ok' }), {
+      anonymous: 'deny',
+      auth: (req) =>
+        req.headers['x-user'] ? { userId: String(req.headers['x-user']) } : undefined,
+    });
+
+    await expect(connect(url)).rejects.toThrow('HTTP 401');
+
+    const client = await connect(url, { 'x-user': 'alice' });
+    client.send(runMessage('r1'));
+    await vi.waitFor(() => expect(runMock).toHaveBeenCalled());
+    expect(runMock.mock.calls[0][1].userId).toBe('alice');
+  });
+
+  it('refuses every upgrade under anonymous deny without an auth function', async () => {
+    const { url } = await start(async () => ({ output: 'ok' }), { anonymous: 'deny' });
+    await expect(connect(url)).rejects.toThrow('HTTP 401');
+  });
+
   it('publishes run events to subscribers of the agent channel', async () => {
     const { url } = await start(async (options) => {
       options.onToken?.('Hi');
@@ -229,6 +249,103 @@ describe('WebSocket', () => {
     );
     expect(JSON.stringify(aliceTab.messages)).not.toContain('secret of bob');
     expect(alice.messages.some((m) => m.id === 'bob-run')).toBe(false);
+  });
+
+  it('shows a subscriber the run events only on the threads authorizeThread lets it on', async () => {
+    const authorizeThread = vi.fn(
+      (
+        auth: { userId?: string; metadata?: Record<string, unknown> } | undefined,
+        threadId: string
+      ) => auth?.metadata !== undefined || threadId === 'shared'
+    );
+    const { url } = await start(
+      async (options) => {
+        options.onRunStart?.({
+          runId: 'run-1',
+          agentId: 'bot',
+          input: 'hello',
+          threadId: options.threadId ?? 'thread_fresh',
+        });
+        options.onToken?.(`secret on ${options.threadId ?? 'thread_fresh'}`);
+        return { output: 'done', threadId: options.threadId ?? 'thread_fresh' };
+      },
+      {
+        auth: (req) => (req.headers['x-admin'] ? { metadata: { admin: true } } : undefined),
+        authorizeThread,
+      }
+    );
+    const refused = await connect(url);
+    const allowed = await connect(url, { 'x-admin': '1' });
+    for (const client of [refused, allowed]) {
+      client.send({ type: 'subscribe', channel: 'agent:bot' });
+      await vi.waitFor(() => expect(client.messages[0]).toMatchObject({ type: 'subscribed' }));
+    }
+
+    const runner = await connect(url, { 'x-admin': '1' });
+    runner.send({
+      type: 'run',
+      id: 'private-run',
+      payload: { type: 'agent', name: 'bot', input: 'hello', threadId: 'private' },
+    });
+    await vi.waitFor(() => expect(runner.messages).toHaveLength(2));
+    runner.send(runMessage('fresh-run'));
+    await vi.waitFor(() => expect(runner.messages).toHaveLength(4));
+
+    await vi.waitFor(() =>
+      expect(
+        allowed.messages.slice(1).map((m) => [m.id, (m.payload as { type: string }).type])
+      ).toEqual([
+        ['private-run', 'token'],
+        ['private-run', 'complete'],
+        ['fresh-run', 'token'],
+        ['fresh-run', 'complete'],
+      ])
+    );
+    expect(refused.messages).toHaveLength(1);
+    expect(authorizeThread).toHaveBeenCalledWith(undefined, 'private');
+    expect(authorizeThread).toHaveBeenCalledWith(undefined, 'thread_fresh');
+    expect(authorizeThread).toHaveBeenCalledWith({ metadata: { admin: true } }, 'private');
+
+    runner.send({
+      type: 'run',
+      id: 'shared-run',
+      payload: { type: 'agent', name: 'bot', input: 'hello', threadId: 'shared' },
+    });
+    await vi.waitFor(() =>
+      expect(refused.messages.slice(1).map((m) => m.id)).toEqual(['shared-run', 'shared-run'])
+    );
+  });
+
+  it('shows a subscriber nothing when authorizeThread throws for it', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { url } = await start(
+      async (options) => {
+        options.onToken?.('secret');
+        return { output: 'done' };
+      },
+      {
+        auth: (req) => (req.headers['x-runner'] ? { metadata: { runner: true } } : undefined),
+        authorizeThread: (auth) => {
+          if (!auth) throw new Error('policy store down');
+          return true;
+        },
+      }
+    );
+    const observer = await connect(url);
+    observer.send({ type: 'subscribe', channel: 'agent:bot' });
+    await vi.waitFor(() => expect(observer.messages[0]).toMatchObject({ type: 'subscribed' }));
+
+    const runner = await connect(url, { 'x-runner': '1' });
+    runner.send({
+      type: 'run',
+      id: 'r1',
+      payload: { type: 'agent', name: 'bot', input: 'hello', threadId: 'thread-1' },
+    });
+    await vi.waitFor(() => expect(runner.messages).toHaveLength(2));
+    await vi.waitFor(() => expect(error).toHaveBeenCalled());
+
+    expect(observer.messages).toHaveLength(1);
+    error.mockRestore();
   });
 
   it.each([

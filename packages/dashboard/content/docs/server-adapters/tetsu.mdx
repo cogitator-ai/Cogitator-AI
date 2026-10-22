@@ -57,7 +57,10 @@ interface CogitatorDeps {
   workflows?: Record<string, Workflow>;
   swarms?: Record<string, SwarmConfig>;
   auth?: Authenticate | CallerHook;
+  anonymous?: 'allow' | 'deny'; // 'deny' answers 401 to a caller without userId, default 'allow'
   authorizeThread?: (auth: AuthContext | undefined, threadId: string) => boolean | Promise<boolean>;
+  limits?: RunLimits; // { swarmTimeout?, workflowMaxIterations?, workflowMaxConcurrency? }
+  deps?: (ctx: BaseCtx) => unknown | Promise<unknown>; // the deps of agent runs, never from the body
   websocket?: boolean | { path?: `/${string}` };
   until?: AbortSignal | (() => AbortSignal | undefined);
   sseHeartbeatMs?: number; // SSE heartbeat interval in ms, default 5000, 0 turns it off
@@ -68,23 +71,24 @@ interface CogitatorDeps {
 
 ## Errors
 
-Every error is answered in Tetsu's envelope `{ status, message, error }`. A request that fails its schema gets `422 VALIDATION_FAILED` with every issue, a `context` key the controller does not accept (`acceptContext`) and a thread message role it does not take (`threadMessageRoles`, `user` and `assistant` by default) included. A `CogitatorError` keeps its status and code, for example `429 LLM_RATE_LIMITED` with `Retry-After`. Any other error answers `500 INTERNAL_SERVER_ERROR` and goes to the application's `reportError`, never to the client.
+Every error is answered in Tetsu's envelope `{ status, message, error }`. A request that fails its schema gets `422 VALIDATION_FAILED` with every issue, a `context` key the controller does not accept (`acceptContext`) and a thread message role it does not take (`threadMessageRoles`, `user` and `assistant` by default) included. Statuses, codes and `Retry-After` come from the taxonomy every adapter shares (`describeHttpError()` of `@cogitator-ai/server-shared`), in Tetsu's own envelope: a `CogitatorError` keeps its status and code, for example `429 LLM_RATE_LIMITED` with `Retry-After` in whole seconds, and a swarm that ran out of time answers `504 RUN_TIMEOUT`. Any other error answers `500 INTERNAL_SERVER_ERROR` and goes to the application's `reportError`, never to the client. Streams and the WebSocket send it as `Internal server error` with code `INTERNAL_ERROR`, the stream protocol every Cogitator adapter shares.
 
-| Status | `error`                  | When                                                        |
-| ------ | ------------------------ | ----------------------------------------------------------- |
-| 400    | `MALFORMED_JSON`         | The body is not valid JSON                                  |
-| 401    | `UNAUTHORIZED`           | `auth` returned `undefined` or threw (an expired token)     |
-| 403    | `THREAD_ACCESS_DENIED`   | The thread belongs to another user                          |
-| 403    | `THREAD_FORBIDDEN`       | `authorizeThread` refused the thread                        |
-| 404    | `AGENT_NOT_FOUND`, …     | No agent, workflow or swarm with that name                  |
-| 409    | `BLACKBOARD_DISABLED`    | The swarm has no blackboard                                 |
-| 409    | `RUN_NOT_PAUSED`         | A resume named a thread without a paused run                |
-| 413    | `BODY_TOO_LARGE`         | The body is over the application's limit                    |
-| 415    | `UNSUPPORTED_MEDIA_TYPE` | The body is not JSON (`text/plain`, a form)                 |
-| 501    | `PACKAGE_NOT_INSTALLED`  | `@cogitator-ai/workflows` or `@cogitator-ai/swarms` missing |
-| 503    | `MEMORY_NOT_CONFIGURED`  | A thread endpoint on a runtime without memory               |
+| Status | `error`                  | When                                                                                                          |
+| ------ | ------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| 400    | `MALFORMED_JSON`         | The body is not valid JSON                                                                                    |
+| 401    | `UNAUTHORIZED`           | `auth` returned `undefined` or threw (an expired token), or `anonymous: 'deny'` met a caller without `userId` |
+| 403    | `THREAD_ACCESS_DENIED`   | The thread belongs to another user                                                                            |
+| 403    | `THREAD_FORBIDDEN`       | `authorizeThread` refused the thread                                                                          |
+| 404    | `AGENT_NOT_FOUND`, …     | No agent, workflow or swarm with that name                                                                    |
+| 409    | `BLACKBOARD_DISABLED`    | The swarm has no blackboard                                                                                   |
+| 409    | `RUN_NOT_PAUSED`         | A resume named a thread without a paused run                                                                  |
+| 413    | `BODY_TOO_LARGE`         | The body is over the application's limit                                                                      |
+| 415    | `UNSUPPORTED_MEDIA_TYPE` | The body is not JSON (`text/plain`, a form)                                                                   |
+| 501    | `PACKAGE_NOT_INSTALLED`  | `@cogitator-ai/workflows` or `@cogitator-ai/swarms` missing                                                   |
+| 503    | `MEMORY_NOT_CONFIGURED`  | A thread endpoint on a runtime without memory                                                                 |
+| 504    | `RUN_TIMEOUT`            | A swarm ran past its timeout                                                                                  |
 
-`cogitatorErrors()` returns the `onError` hook the controller uses. Mount one on the application to map `CogitatorError`s from your own routes too.
+`cogitatorErrors()` returns the `onError` hook the controller uses. Mount one on the application to map `CogitatorError`s and swarm timeouts from your own routes too.
 
 ## Authentication
 
@@ -119,6 +123,14 @@ const signedIn = secured(callerHook(authenticate), {
 cogitatorController({ cogitator, agents, auth: signedIn });
 ```
 
+### Anonymous callers
+
+By default a caller without a `userId` (no `auth`, or `auth` returned `{}`) uses the API as an anonymous user. With `anonymous: 'deny'` such a caller gets `401 UNAUTHORIZED` on every route and on the WebSocket handshake, while `/health`, `/ready` and your `docs()` routes stay open. `auth` returning `undefined` answers `401` under either policy, and a `secured()` caller hook documents that `401`. A path the application does not serve, and a method a path does not take, are answered by the application before any route runs, with Tetsu's own `404` and `405`, so the controller cannot put `auth` in front of them.
+
+```typescript
+cogitatorController({ cogitator, agents, auth, anonymous: 'deny' });
+```
+
 ## Users and Threads
 
 ### Multiple users
@@ -138,7 +150,40 @@ cogitatorController({
 });
 ```
 
-Use it for rules ownership does not express, such as thread ids your server hands out.
+Use it for rules ownership does not express, such as thread ids your server hands out. It is checked on `GET`, `DELETE` and `POST /threads/:id/messages`, agent runs, streams and resumes, swarm runs and streams, and WebSocket runs and resumes, and `false` answers `403 THREAD_FORBIDDEN` without starting a run.
+
+### Thread pages
+
+`GET /threads/:id` answers the whole thread, or one page with `?limit=50`: the newest 50 messages, oldest first within the page, and a `nextCursor`. Pass it back as `?limit=50&cursor=<nextCursor>` for the 50 before them, until an answer has no `nextCursor`. Messages written in the same millisecond are neither skipped nor repeated. A `limit` outside 1 to 1000 or a cursor the server did not give answers `422 VALIDATION_FAILED`, and the OpenAPI document describes both query parameters.
+
+## Run Deps
+
+`deps` builds what an agent's tools get as `context.deps`, such as a database handle or the tenant. The model never sees them, and they never come from the request body.
+
+```typescript
+cogitatorController({
+  cogitator,
+  agents,
+  auth,
+  deps: async (ctx) => ({ db: await pool.connect(), tenant: ctx.req.headers.get('x-tenant') }),
+});
+```
+
+Agent runs, streams and resumes call it once per request, after `auth` and `authorizeThread`. A WebSocket connection calls it once, with its handshake, never for each run: all its agent runs and resumes get what it built, which lives as long as the connection, since a Tetsu context belongs to its request and not to the connection. An error it throws refuses the handshake, as `500` unless it is an `HttpError`, and no socket opens.
+
+## Run Limits
+
+`limits` caps what a request may ask a run for: `swarmTimeout` (ms) for swarm runs, `workflowMaxIterations` and `workflowMaxConcurrency` for workflow runs, over HTTP, SSE and WebSocket alike. A request that asks for more is held to the cap, one that asks for nothing gets it, and each limit must be a positive integer or building the controller throws.
+
+```typescript
+cogitatorController({
+  cogitator,
+  swarms: { research },
+  limits: { swarmTimeout: 120_000, workflowMaxIterations: 50, workflowMaxConcurrency: 4 },
+});
+```
+
+The request schemas show each limit as the default of the field it caps, with a description, and not as a `maximum`, since a larger value is held to the limit rather than refused.
 
 ## Approvals
 
@@ -162,7 +207,7 @@ curl -X POST localhost:3000/cogitator/agents/support/resume \
 cogitatorController({ cogitator, agents, auth, websocket: true });
 ```
 
-The handshake runs `auth`. Send `{ type: 'run', id, payload: { type: 'agent', name, input, threadId? } }` and receive `event` frames (`token`, `reasoning`, `tool-call`, `tool-result`, then `complete` or `cancelled`). `{ type: 'resume', id, payload: { name, threadId, decisions? } }` continues a run paused for [approvals](#approvals). `{ type: 'stop' }` cancels the run, `{ type: 'ping' }` is answered with `pong`, and errors arrive as `{ type: 'error', error, code }` without closing the socket.
+The handshake runs `auth` and the `anonymous` policy and builds the connection's `deps` once, for every run on the socket, and workflow and swarm runs are held to `limits`. Send `{ type: 'run', id, payload: { type: 'agent', name, input, threadId? } }` and receive `event` frames (`token`, `reasoning`, `tool-call`, `tool-result`, then `complete` or `cancelled`). `{ type: 'resume', id, payload: { name, threadId, decisions? } }` continues a run paused for [approvals](#approvals). `{ type: 'stop' }` cancels the run, `{ type: 'ping' }` is answered with `pong`, and errors arrive as `{ type: 'error', error, code }` without closing the socket, for example `THREAD_FORBIDDEN` or `RUN_TIMEOUT`.
 
 ## Shutdown
 

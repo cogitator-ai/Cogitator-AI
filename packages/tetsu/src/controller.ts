@@ -4,12 +4,14 @@ import type { ServerSentEvent } from '@tetsujs/sse';
 import { countMessageTokens } from '@cogitator-ai/memory';
 import {
   AgentStreamSession,
+  checkRunLimits,
   createErrorEvent,
   createFinishEvent,
   createStartEvent,
   createSwarmEvent,
   createWorkflowEvent,
   generateId,
+  readThreadPage,
   resolveSseHeartbeatMs,
   toAgentRunResponse,
 } from '@cogitator-ai/server-shared';
@@ -25,7 +27,7 @@ import type {
 } from '@cogitator-ai/types';
 import { httpError } from '@tetsujs/core';
 import type { z } from 'zod';
-import { resolveCaller } from './auth.js';
+import { anonymousHook, resolveCaller } from './auth.js';
 import { holdConnection, jsonBody } from './connection.js';
 import { clientClosedRequest, cogitatorErrors, describeError } from './errors.js';
 import {
@@ -41,6 +43,7 @@ import {
   listWorkflows,
   resumeAgent,
   runAgent,
+  runDepsOf,
   serializeSwarmUsage,
   toResumeDecisions,
   toSwarmRunResponse,
@@ -62,12 +65,11 @@ import {
   requestSchemas,
   SwarmListResponse,
   SwarmRunResponse,
-  SwarmRunBody as BaseSwarmRunBody,
   ThreadParams,
+  ThreadQuery,
   ThreadResponse,
   ToolListResponse,
   WorkflowListResponse,
-  WorkflowRunBody,
   WorkflowRunResponse,
 } from './schemas.js';
 import { cogitatorSocket } from './socket.js';
@@ -127,8 +129,9 @@ const STREAM_DESCRIPTION =
 
 const AGENT_STREAM_DESCRIPTION = `${STREAM_DESCRIPTION} The \`finish\` event carries the run usage, the same as \`usage\` in the JSON response of \`/run\`, with the reasoning and cache token counts the model reported.`;
 
-type SwarmRunRequest = z.output<typeof BaseSwarmRunBody>;
-type WorkflowRunRequest = z.output<typeof WorkflowRunBody>;
+type RequestSchemas = ReturnType<typeof requestSchemas>;
+type SwarmRunRequest = z.output<RequestSchemas['SwarmRunBody']>;
+type WorkflowRunRequest = z.output<RequestSchemas['WorkflowRunBody']>;
 
 /** Starts or resumes an agent run on `threadId` with the callbacks of a stream. */
 type StreamedRun = (callbacks: AgentStreamCallbacks, threadId: string) => Promise<RunResult>;
@@ -160,10 +163,12 @@ const StreamOpened = null;
  */
 export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps) => {
   const builtAt = Date.now();
+  checkRunLimits(deps.limits);
   const caller = resolveCaller(deps.auth);
+  const admitted = anonymousHook(deps.anonymous);
   const errors = cogitatorErrors();
   const heartbeatMs = resolveSseHeartbeatMs(deps.sseHeartbeatMs);
-  const { RunBody, SwarmRunBody, AddMessageBody } = requestSchemas(deps);
+  const { RunBody, SwarmRunBody, WorkflowRunBody, AddMessageBody } = requestSchemas(deps);
   const streamOptions = () => ({ until: resolveSignal(deps.until), heartbeatMs });
 
   const memoryOf = async () => {
@@ -201,7 +206,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       method: 'GET',
       path: '/agents',
       schema: { response: AgentListResponse },
-      hooks: { beforeParse: [caller], onError: [errors] },
+      hooks: { beforeParse: [caller, admitted], onError: [errors] },
       docs: { summary: 'List agents', tags: ['agents'] },
       handler: () => listAgents(deps),
     }),
@@ -220,14 +225,25 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
           404: RunNotFound,
         },
       },
-      hooks: { beforeParse: [caller, jsonBody], beforeHandle: [holdConnection], onError: [errors] },
+      hooks: {
+        beforeParse: [caller, admitted, jsonBody],
+        beforeHandle: [holdConnection],
+        onError: [errors],
+      },
       docs: { summary: 'Run an agent and wait for its answer', tags: ['agents'] },
       handler: async (ctx) => {
         const agent = findAgent(deps, ctx.params.name);
         await checkThreadAccess(deps, ctx.cogitatorAuth, ctx.body.threadId);
+        const runDeps = await runDepsOf(deps, ctx);
         const signal = ctx.req.signal;
         try {
-          const result = await runAgent(deps, agent, { ...ctx.body, signal }, ctx.cogitatorAuth);
+          const result = await runAgent(
+            deps,
+            agent,
+            { ...ctx.body, signal },
+            ctx.cogitatorAuth,
+            runDeps
+          );
           return toAgentRunResponse(result);
         } catch (error) {
           if (signal.aborted) throw clientClosedRequest();
@@ -244,7 +260,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         body: RunBody,
         response: { 200: StreamOpened, 403: ThreadForbidden, 404: AgentNotFound, 415: NotJson },
       },
-      hooks: { beforeParse: [caller, jsonBody], onError: [errors] },
+      hooks: { beforeParse: [caller, admitted, jsonBody], onError: [errors] },
       docs: {
         summary: 'Run an agent and stream tokens, tool calls and results',
         description: AGENT_STREAM_DESCRIPTION,
@@ -255,12 +271,13 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         const auth = ctx.cogitatorAuth;
         const body = ctx.body;
         await checkThreadAccess(deps, auth, body.threadId);
+        const runDeps = await runDepsOf(deps, ctx);
         return sse(
           ctx,
           (signal) =>
             agentEvents(
               (callbacks, threadId) =>
-                runAgent(deps, agent, { ...body, threadId, ...callbacks }, auth),
+                runAgent(deps, agent, { ...body, threadId, ...callbacks }, auth, runDeps),
               signal,
               body.threadId
             ),
@@ -284,7 +301,11 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
           409: ResumeConflict,
         },
       },
-      hooks: { beforeParse: [caller, jsonBody], beforeHandle: [holdConnection], onError: [errors] },
+      hooks: {
+        beforeParse: [caller, admitted, jsonBody],
+        beforeHandle: [holdConnection],
+        onError: [errors],
+      },
       docs: {
         summary: 'Resume a run paused for tool approvals and wait for its answer',
         description:
@@ -295,6 +316,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         const agent = findAgent(deps, ctx.params.name);
         const { threadId } = ctx.body;
         await checkThreadAccess(deps, ctx.cogitatorAuth, threadId);
+        const runDeps = await runDepsOf(deps, ctx);
         const signal = ctx.req.signal;
         try {
           const result = await resumeAgent(
@@ -302,7 +324,8 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
             agent,
             threadId,
             { ...toResumeDecisions(ctx.body), signal },
-            ctx.cogitatorAuth
+            ctx.cogitatorAuth,
+            runDeps
           );
           return toAgentRunResponse(result);
         } catch (error) {
@@ -320,7 +343,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         body: ResumeBody,
         response: { 200: StreamOpened, 403: ThreadForbidden, 404: AgentNotFound, 415: NotJson },
       },
-      hooks: { beforeParse: [caller, jsonBody], onError: [errors] },
+      hooks: { beforeParse: [caller, admitted, jsonBody], onError: [errors] },
       docs: {
         summary: 'Resume a run paused for tool approvals and stream the rest of it',
         description: AGENT_STREAM_DESCRIPTION,
@@ -332,12 +355,13 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         const { threadId } = ctx.body;
         const decisions = toResumeDecisions(ctx.body);
         await checkThreadAccess(deps, auth, threadId);
+        const runDeps = await runDepsOf(deps, ctx);
         return sse(
           ctx,
           (signal) =>
             agentEvents(
               (callbacks) =>
-                resumeAgent(deps, agent, threadId, { ...decisions, ...callbacks }, auth),
+                resumeAgent(deps, agent, threadId, { ...decisions, ...callbacks }, auth, runDeps),
               signal,
               threadId
             ),
@@ -351,6 +375,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       path: '/threads/:id',
       schema: {
         params: ThreadParams,
+        query: ThreadQuery,
         response: {
           200: ThreadResponse,
           403: ThreadForbidden,
@@ -358,23 +383,19 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
           503: MemoryNotConfigured,
         },
       },
-      hooks: { beforeParse: [caller], onError: [errors] },
-      docs: { summary: 'Read the messages of a memory thread', tags: ['threads'] },
+      hooks: { beforeParse: [caller, admitted], onError: [errors] },
+      docs: {
+        summary: 'Read the messages of a memory thread',
+        description:
+          'The whole thread, or with `limit` its newest messages and a `nextCursor`: pass it as `cursor` to read the page before, until an answer has no `nextCursor`.',
+        tags: ['threads'],
+      },
       handler: async (ctx) => {
         const memory = await memoryOf();
         const id = ctx.params.id;
         await checkThreadAccess(deps, ctx.cogitatorAuth, id);
-        await assertThreadAccess(memory, id, ctx.cogitatorAuth?.userId);
-        const result = await memory.getEntries({ threadId: id });
-        if (!result.success) throw new Error(result.error);
-        const entries = result.data;
-        const now = Date.now();
-        return {
-          id,
-          messages: entries.map((entry) => entry.message),
-          createdAt: entries.at(0)?.createdAt.getTime() ?? now,
-          updatedAt: entries.at(-1)?.createdAt.getTime() ?? now,
-        };
+        const thread = await assertThreadAccess(memory, id, ctx.cogitatorAuth?.userId);
+        return readThreadPage(memory, id, ctx.query, thread);
       },
     }),
 
@@ -392,7 +413,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
           503: MemoryNotConfigured,
         },
       },
-      hooks: { beforeParse: [caller, jsonBody], onError: [errors] },
+      hooks: { beforeParse: [caller, admitted, jsonBody], onError: [errors] },
       docs: {
         summary: 'Append a message to a memory thread',
         description: 'A thread that does not exist yet is created, owned by the caller.',
@@ -429,7 +450,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
           503: MemoryNotConfigured,
         },
       },
-      hooks: { beforeParse: [caller], onError: [errors] },
+      hooks: { beforeParse: [caller, admitted], onError: [errors] },
       docs: { summary: 'Delete a memory thread', tags: ['threads'] },
       handler: async (ctx) => {
         const memory = await memoryOf();
@@ -445,7 +466,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       method: 'GET',
       path: '/tools',
       schema: { response: ToolListResponse },
-      hooks: { beforeParse: [caller], onError: [errors] },
+      hooks: { beforeParse: [caller, admitted], onError: [errors] },
       docs: { summary: 'List the tools of every agent', tags: ['agents'] },
       handler: () => listTools(deps),
     }),
@@ -454,7 +475,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       method: 'GET',
       path: '/workflows',
       schema: { response: WorkflowListResponse },
-      hooks: { beforeParse: [caller], onError: [errors] },
+      hooks: { beforeParse: [caller, admitted], onError: [errors] },
       docs: { summary: 'List workflows', tags: ['workflows'] },
       handler: () => listWorkflows(deps),
     }),
@@ -473,7 +494,11 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
           501: NotImplemented,
         },
       },
-      hooks: { beforeParse: [caller, jsonBody], beforeHandle: [holdConnection], onError: [errors] },
+      hooks: {
+        beforeParse: [caller, admitted, jsonBody],
+        beforeHandle: [holdConnection],
+        onError: [errors],
+      },
       docs: { summary: 'Run a workflow and wait for its final state', tags: ['workflows'] },
       handler: async (ctx) => {
         const workflow = findWorkflow(deps, ctx.params.name);
@@ -502,7 +527,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         body: WorkflowRunBody,
         response: { 200: StreamOpened, 404: WorkflowNotFound, 415: NotJson },
       },
-      hooks: { beforeParse: [caller, jsonBody], onError: [errors] },
+      hooks: { beforeParse: [caller, admitted, jsonBody], onError: [errors] },
       docs: {
         summary: 'Run a workflow and stream node events',
         description: STREAM_DESCRIPTION,
@@ -519,7 +544,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       method: 'GET',
       path: '/swarms',
       schema: { response: SwarmListResponse },
-      hooks: { beforeParse: [caller], onError: [errors] },
+      hooks: { beforeParse: [caller, admitted], onError: [errors] },
       docs: { summary: 'List swarms', tags: ['swarms'] },
       handler: () => listSwarms(deps),
     }),
@@ -539,7 +564,11 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
           501: NotImplemented,
         },
       },
-      hooks: { beforeParse: [caller, jsonBody], beforeHandle: [holdConnection], onError: [errors] },
+      hooks: {
+        beforeParse: [caller, admitted, jsonBody],
+        beforeHandle: [holdConnection],
+        onError: [errors],
+      },
       docs: { summary: 'Run a swarm and wait for its result', tags: ['swarms'] },
       handler: async (ctx) => {
         const config = findSwarm(deps, ctx.params.name);
@@ -571,7 +600,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         body: SwarmRunBody,
         response: { 200: StreamOpened, 403: ThreadForbidden, 404: SwarmNotFound, 415: NotJson },
       },
-      hooks: { beforeParse: [caller, jsonBody], onError: [errors] },
+      hooks: { beforeParse: [caller, admitted, jsonBody], onError: [errors] },
       docs: {
         summary: 'Run a swarm and stream agent events',
         description: STREAM_DESCRIPTION,
@@ -596,7 +625,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         params: NameParams,
         response: { 200: BlackboardResponse, 404: SwarmNotFound, 409: BlackboardDisabled },
       },
-      hooks: { beforeParse: [caller], onError: [errors] },
+      hooks: { beforeParse: [caller, admitted], onError: [errors] },
       docs: { summary: 'Read the configured blackboard sections of a swarm', tags: ['swarms'] },
       handler: (ctx) => {
         const config = findSwarm(deps, ctx.params.name);
@@ -613,7 +642,12 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
   };
 
   const socket = deps.websocket
-    ? cogitatorSocket(deps, caller, deps.websocket === true ? undefined : deps.websocket.path)
+    ? cogitatorSocket(
+        deps,
+        caller,
+        admitted,
+        deps.websocket === true ? undefined : deps.websocket.path
+      )
     : undefined;
   return { ...routes, ...(socket && { socket }) };
 });

@@ -8,6 +8,11 @@ export type {
   RouteContext,
   WebSocketConfig,
   WebSocketAuthFunction,
+  WebSocketDepsFunction,
+  DepsFunction,
+  RunLimits,
+  AnonymousPolicy,
+  AuthorizeThread,
   AgentListResponse,
   AgentRunRequest,
   AgentRunResponse,
@@ -37,6 +42,7 @@ export type {
 
 export {
   createContextMiddleware,
+  createAnonymousMiddleware,
   createAuthMiddleware,
   createBodyParser,
   createErrorHandler,

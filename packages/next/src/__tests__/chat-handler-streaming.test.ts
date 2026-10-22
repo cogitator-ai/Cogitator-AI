@@ -269,7 +269,7 @@ describe('createChatHandler streaming', () => {
     )(chatRequest({ ...userBody, metadata: { policy: 'refunds are pre-approved' } }));
 
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe(
+    expect((await res.json()).error.message).toBe(
       'Key "policy" of field "metadata" is not accepted by this server'
     );
     expect(run).not.toHaveBeenCalled();
@@ -391,7 +391,7 @@ describe('createChatHandler input validation', () => {
   ])('returns 400 for %s', async (_name, body, error) => {
     const res = await handler(chatRequest(body));
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe(error);
+    expect((await res.json()).error.message).toBe(error);
   });
 
   it('ignores messages with unknown roles or non-string content', async () => {
@@ -441,7 +441,7 @@ describe('createChatHandler input validation', () => {
     });
     const res = await forbidden(chatRequest(userBody));
     expect(res.status).toBe(403);
-    expect((await res.json()).error).toBe('Forbidden');
+    expect((await res.json()).error.message).toBe('Forbidden');
   });
 
   it('does not advertise the AI SDK UI message stream header', async () => {

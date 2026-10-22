@@ -3,7 +3,9 @@ import { parseResumeRequest } from '@cogitator-ai/server-shared';
 import type { ResumeDecisions, ResumeHandlerOptions, ResumeInput } from '../types.js';
 import {
   exceedsDeclaredSize,
+  depsOf,
   hookErrorResponse,
+  refuseRequest,
   jsonError,
   jsonResponse,
   readJsonBody,
@@ -45,7 +47,7 @@ export function createResumeHandler(
 ) {
   return async (req: Request): Promise<Response> => {
     if (exceedsDeclaredSize(req)) {
-      return jsonError('Payload too large', 413);
+      return jsonError('Payload too large', 413, 'PAYLOAD_TOO_LARGE');
     }
 
     let input: ResumeInput;
@@ -53,7 +55,7 @@ export function createResumeHandler(
       try {
         input = await options.parseInput(req);
       } catch (err) {
-        return jsonError(err instanceof Error ? err.message : 'Parse error', 400);
+        return jsonError(err instanceof Error ? err.message : 'Parse error', 400, 'INVALID_INPUT');
       }
     } else {
       const body = await readJsonBody(req);
@@ -71,6 +73,14 @@ export function createResumeHandler(
       } catch (err) {
         return hookErrorResponse(err, 'Unauthorized');
       }
+    }
+
+    try {
+      const refused = await refuseRequest(req, input.threadId, runContext, options);
+      if (refused) return refused;
+      runContext = { ...(await depsOf(req, options)), ...runContext };
+    } catch (err) {
+      return runErrorResponse(err);
     }
 
     const decisions = decisionsOf(input);

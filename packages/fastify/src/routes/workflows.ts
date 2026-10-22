@@ -1,8 +1,12 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { WorkflowListResponse, WorkflowRunRequest, WorkflowRunResponse } from '../types.js';
-import { WorkflowRunRequestSchema } from '../types.js';
+import { workflowRunRequestSchema } from '../types.js';
 import { FastifyStreamWriter, generateId } from '../streaming/index.js';
-import { parseWorkflowRunRequest } from '@cogitator-ai/server-shared';
+import {
+  parseWorkflowRunRequest,
+  workflowOptionsWithin,
+  type RunLimits,
+} from '@cogitator-ai/server-shared';
 import {
   isModuleNotFound,
   onClientDisconnect,
@@ -26,8 +30,8 @@ const paramsSchema = {
 
 const WORKFLOWS_MISSING = 'Workflows package not installed';
 
-function executorOptions(body: WorkflowRunRequest | undefined) {
-  const options = body?.options ?? {};
+function executorOptions(body: WorkflowRunRequest | undefined, limits: RunLimits | undefined) {
+  const options = workflowOptionsWithin(body?.options ?? {}, limits);
   return {
     maxConcurrency: options.maxConcurrency,
     maxIterations: options.maxIterations,
@@ -39,6 +43,11 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
     Object.hasOwn(fastify.cogitator.workflows, name)
       ? fastify.cogitator.workflows[name]
       : undefined;
+
+  const runSchema = {
+    params: paramsSchema,
+    body: workflowRunRequestSchema(fastify.cogitator.limits),
+  };
 
   fastify.get('/workflows', async () => {
     const workflowList = Object.entries(fastify.cogitator.workflows).map(([name, workflow]) => ({
@@ -54,7 +63,7 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: WorkflowParams; Body: WorkflowRunRequest }>(
     '/workflows/:name/run',
     {
-      schema: { params: paramsSchema, body: WorkflowRunRequestSchema },
+      schema: runSchema,
       preValidation: workflowBody,
     },
     async (request, reply) => {
@@ -73,17 +82,12 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
         const executor = new WorkflowExecutor(fastify.cogitator.runtime);
 
         const result = await executor.execute(workflow, request.body?.input, {
-          ...executorOptions(request.body),
+          ...executorOptions(request.body, fastify.cogitator.limits),
           signal: abortController.signal,
         });
 
         if (result.error) {
-          return sendError(
-            reply,
-            500,
-            `Workflow failed: ${resolveError(request, result.error, 'workflow run error').message}`,
-            'WORKFLOW_FAILED'
-          );
+          return sendRouteError(request, reply, result.error, 'workflow run error');
         }
 
         const response: WorkflowRunResponse = {
@@ -107,7 +111,7 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: WorkflowParams; Body: WorkflowRunRequest }>(
     '/workflows/:name/stream',
     {
-      schema: { params: paramsSchema, body: WorkflowRunRequestSchema },
+      schema: runSchema,
       preValidation: workflowBody,
     },
     async (request, reply) => {
@@ -136,7 +140,7 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
         writer.start(messageId);
 
         const result = await executor.execute(workflow, request.body?.input, {
-          ...executorOptions(request.body),
+          ...executorOptions(request.body, fastify.cogitator.limits),
           signal: abortController.signal,
           onNodeStart: (node: string) => {
             writer.workflowEvent('node_started', { nodeName: node, timestamp: Date.now() });
@@ -156,10 +160,8 @@ export const workflowRoutes: FastifyPluginAsync = async (fastify) => {
         });
 
         if (result.error) {
-          writer.error(
-            `Workflow failed: ${resolveError(request, result.error, 'workflow stream error').message}`,
-            'WORKFLOW_FAILED'
-          );
+          const failure = resolveError(request, result.error, 'workflow stream error');
+          writer.error(failure.message, failure.code);
         } else {
           writer.workflowEvent('workflow_completed', {
             workflowId: result.workflowId,

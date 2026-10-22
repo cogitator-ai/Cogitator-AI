@@ -4,11 +4,11 @@ export type { CallerFields, CallerHook } from './auth.js';
 export {
   cogitatorErrors,
   cogitatorErrorResponse,
-  cogitatorErrorStatus,
   describeError,
   CLIENT_CLOSED_REQUEST,
 } from './errors.js';
 export type { DescribedError } from './errors.js';
+export { cogitatorErrorStatus } from '@cogitator-ai/server-shared';
 
 export {
   RunBody,
@@ -27,6 +27,7 @@ export {
   SwarmRunResponse,
   BlackboardResponse,
   HealthResponse,
+  ThreadQuery,
 } from './schemas.js';
 
 export type {
@@ -34,6 +35,7 @@ export type {
   Authenticate,
   AuthorizeThread,
   CogitatorDeps,
+  DepsBuilder,
   ShutdownSignal,
   WebSocketOptions,
   AgentRunRequest,
@@ -55,4 +57,4 @@ export type {
   WebSocketServerMessage,
 } from './types.js';
 
-export type { StreamEvent, Usage } from '@cogitator-ai/server-shared';
+export type { AnonymousPolicy, RunLimits, StreamEvent, Usage } from '@cogitator-ai/server-shared';

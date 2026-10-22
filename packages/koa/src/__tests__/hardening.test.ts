@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createServer, type Server } from 'http';
 import type { AddressInfo } from 'net';
 import Koa from 'koa';
+import Router from '@koa/router';
 import request from 'supertest';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import { cogitatorApp } from '../app.js';
@@ -507,5 +508,340 @@ describe('body parser', () => {
 
     const small = await postJson(app, '/agents/bot/run', { input: 'tiny' });
     expect(small.status).toBe(200);
+  });
+});
+
+describe('server contract', () => {
+  function threadMemory(count: number) {
+    const entries = Array.from({ length: count }, (_, at) => ({
+      id: `entry_${at + 1}`,
+      threadId: 'thread-1',
+      message: { role: 'user', content: `message ${at + 1}` },
+      tokenCount: 1,
+      createdAt: new Date(at + 1),
+    }));
+    return {
+      getThread: vi.fn(async () => ({ success: true, data: null })),
+      getEntries: vi.fn(async (query: { before?: Date; limit?: number }) => {
+        let data = entries;
+        if (query.before) data = data.filter((entry) => entry.createdAt < query.before!);
+        if (query.limit) data = data.slice(-query.limit);
+        return { success: true, data };
+      }),
+      addEntry: vi.fn(),
+      clearThread: vi.fn(),
+    };
+  }
+
+  function contents(body: { messages: Array<{ content: string }> }): string[] {
+    return body.messages.map((message) => message.content);
+  }
+
+  it('refuses limits that are not positive integers when the router is built', () => {
+    expect(() => buildApp({ limits: { swarmTimeout: 0 } })).toThrow(/limits\.swarmTimeout/);
+    expect(() => buildApp({ limits: { workflowMaxConcurrency: 2.5 } })).toThrow(
+      /limits\.workflowMaxConcurrency/
+    );
+  });
+
+  it('holds swarm runs and streams to the swarm timeout limit', async () => {
+    const app = buildApp({ limits: { swarmTimeout: 1000 } });
+
+    await postJson(app, '/swarms/team/run', { input: 'go', timeout: 60_000 });
+    await postJson(app, '/swarms/team/run', { input: 'go', timeout: 500 });
+    await postJson(app, '/swarms/team/run', { input: 'go' });
+    await postJson(app, '/swarms/team/stream', { input: 'go', timeout: 60_000 });
+
+    expect(swarmRun.mock.calls.map(([options]) => options.timeout)).toEqual([
+      1000, 500, 1000, 1000,
+    ]);
+  });
+
+  it('holds workflow runs and streams to the workflow limits', async () => {
+    const app = buildApp({ limits: { workflowMaxIterations: 10, workflowMaxConcurrency: 2 } });
+
+    await postJson(app, '/workflows/pipeline/run', { options: { maxIterations: 50 } });
+    await postJson(app, '/workflows/pipeline/run', { options: { maxConcurrency: 1 } });
+    await postJson(app, '/workflows/pipeline/stream', {});
+
+    expect(workflowExecute.mock.calls.map(([, , options]) => options)).toMatchObject([
+      { maxIterations: 10, maxConcurrency: 2 },
+      { maxIterations: 10, maxConcurrency: 1 },
+      { maxIterations: 10, maxConcurrency: 2 },
+    ]);
+  });
+
+  it('shows the limits in the OpenAPI spec', async () => {
+    const app = buildApp({ enableSwagger: true, limits: { swarmTimeout: 1000 } });
+    const res = await request(app.callback()).get('/openapi.json');
+    expect(res.text).toContain("Held to 1000 ms, the server's limit");
+  });
+
+  it('turns away anonymous callers under anonymous deny, leaving health and docs open', async () => {
+    const app = buildApp({
+      enableSwagger: true,
+      anonymous: 'deny',
+      auth: (ctx) => {
+        const user = ctx.get('x-user');
+        return user ? { userId: user } : undefined;
+      },
+    });
+
+    for (const path of ['/health', '/ready', '/openapi.json', '/docs']) {
+      expect((await request(app.callback()).get(path)).status).toBe(200);
+    }
+    const refused = await postJson(app, '/agents/bot/run', { input: 'hi' });
+    expect(refused.status).toBe(401);
+    expect(refused.body).toEqual({
+      error: { message: 'Authentication required', code: 'UNAUTHORIZED' },
+    });
+    expect((await request(app.callback()).get('/agents')).status).toBe(401);
+
+    const allowed = await request(app.callback()).get('/agents').set('x-user', 'alice');
+    expect(allowed.status).toBe(200);
+  });
+
+  it('refuses the thread routes on threads authorizeThread keeps the caller from', async () => {
+    const memory = threadMemory(2);
+    const app = buildApp(
+      { authorizeThread: (_auth, id) => id !== 'thread-1' },
+      { getMemory: async () => memory }
+    );
+
+    const answers = [
+      await request(app.callback()).get('/threads/thread-1'),
+      await request(app.callback()).delete('/threads/thread-1'),
+      await postJson(app, '/threads/thread-1/messages', { role: 'user', content: 'hi' }),
+    ];
+
+    for (const res of answers) {
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('THREAD_FORBIDDEN');
+    }
+    expect(memory.getThread).not.toHaveBeenCalled();
+    expect(memory.clearThread).not.toHaveBeenCalled();
+    expect(memory.addEntry).not.toHaveBeenCalled();
+  });
+
+  it('refuses swarm runs on threads authorizeThread keeps the caller from', async () => {
+    const app = buildApp({ authorizeThread: () => false });
+    const res = await postJson(app, '/swarms/team/stream', { input: 'go', threadId: 't' });
+    expect(res.status).toBe(403);
+    expect(swarmRun).not.toHaveBeenCalled();
+  });
+
+  it('reads a thread page by page, newest first', async () => {
+    const app = buildApp({}, { getMemory: async () => threadMemory(5) });
+    const page = (query: string) => request(app.callback()).get(`/threads/thread-1?${query}`);
+
+    const first = (await page('limit=2')).body;
+    expect(contents(first)).toEqual(['message 4', 'message 5']);
+    expect(typeof first.nextCursor).toBe('string');
+
+    const second = (await page(`limit=2&cursor=${first.nextCursor}`)).body;
+    expect(contents(second)).toEqual(['message 2', 'message 3']);
+
+    const last = (await page(`limit=2&cursor=${second.nextCursor}`)).body;
+    expect(contents(last)).toEqual(['message 1']);
+    expect(last).not.toHaveProperty('nextCursor');
+  });
+
+  it('refuses a thread page query it cannot read', async () => {
+    const app = buildApp({}, { getMemory: async () => threadMemory(1) });
+    for (const query of ['limit=0', 'limit=abc', 'cursor=bogus']) {
+      const res = await request(app.callback()).get(`/threads/thread-1?${query}`);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('INVALID_INPUT');
+    }
+  });
+
+  it('answers a run error with Retry-After and streams its code', async () => {
+    const run = vi.fn().mockRejectedValue(
+      new CogitatorError({
+        message: 'slow down',
+        code: ErrorCode.LLM_RATE_LIMITED,
+        retryAfter: 1500,
+      })
+    );
+    const app = buildApp({}, { run });
+
+    const res = await postJson(app, '/agents/bot/run', { input: 'hi' });
+    expect(res.status).toBe(429);
+    expect(res.headers['retry-after']).toBe('2');
+    expect(res.body).toEqual({
+      error: { message: 'slow down', code: ErrorCode.LLM_RATE_LIMITED },
+    });
+
+    const stream = await postJson(app, '/agents/bot/stream', { input: 'hi' });
+    expect(parseSSE(stream.text).at(-1)).toEqual({
+      type: 'error',
+      message: 'slow down',
+      code: ErrorCode.LLM_RATE_LIMITED,
+    });
+  });
+
+  it('answers an error outside the routes with the envelope and Retry-After', async () => {
+    const app = buildApp({
+      deps: () => {
+        throw new CogitatorError({
+          message: 'provider down',
+          code: ErrorCode.LLM_UNAVAILABLE,
+          retryAfter: 30_000,
+        });
+      },
+    });
+    const res = await postJson(app, '/agents/bot/run', { input: 'hi' });
+    expect(res.status).toBe(503);
+    expect(res.headers['retry-after']).toBe('30');
+    expect(res.body.error.code).toBe(ErrorCode.LLM_UNAVAILABLE);
+  });
+
+  it('answers a swarm that ran out of time with 504 RUN_TIMEOUT', async () => {
+    swarmRun.mockRejectedValue(
+      Object.assign(new Error('Swarm timed out after 1000ms'), { name: 'SwarmTimeoutError' })
+    );
+    const res = await postJson(buildApp(), '/swarms/team/run', { input: 'go' });
+    expect(res.status).toBe(504);
+    expect(res.body.error.code).toBe('RUN_TIMEOUT');
+  });
+
+  it('hands agent runs, streams and resumes the deps the server builds, never the body', async () => {
+    const run = vi.fn().mockResolvedValue(runResult());
+    const resume = vi.fn().mockResolvedValue(runResult());
+    const app = buildApp(
+      { deps: async (ctx) => ({ tenant: ctx.get('x-tenant') }) },
+      { run, resume }
+    );
+    const send = (path: string, body: unknown) =>
+      request(app.callback())
+        .post(path)
+        .set('Content-Type', 'application/json')
+        .set('x-tenant', 'acme')
+        .send(JSON.stringify(body));
+
+    await send('/agents/bot/run', { input: 'hi', deps: { tenant: 'evil' } });
+    await send('/agents/bot/stream', { input: 'hi' });
+    await send('/agents/bot/resume', { threadId: 't', decisions: {} });
+
+    expect(run.mock.calls.map(([, options]) => options.deps)).toEqual([
+      { tenant: 'acme' },
+      { tenant: 'acme' },
+    ]);
+    expect(resume.mock.calls[0][2]).toMatchObject({ deps: { tenant: 'acme' } });
+  });
+});
+
+describe('unmatched paths', () => {
+  const auth: CogitatorAppOptions['auth'] = (ctx) => {
+    const user = ctx.get('x-user');
+    return user ? { userId: user } : undefined;
+  };
+
+  function buildRouter(overrides: Partial<CogitatorAppOptions> = {}) {
+    return cogitatorApp({
+      cogitator: { run: vi.fn() } as unknown as CogitatorAppOptions['cogitator'],
+      agents: { bot: { config: { instructions: 'x', tools: [] } } as never },
+      ...overrides,
+    });
+  }
+
+  it('answers an unknown path and a method no route takes with 404 in the envelope', async () => {
+    const app = buildApp();
+
+    const unknown = await postJson(app, '/nowhere', { input: 'hi' });
+    expect(unknown.status).toBe(404);
+    expect(unknown.body).toEqual({ error: { message: 'Not found', code: 'NOT_FOUND' } });
+
+    const wrongMethod = await request(app.callback()).get('/agents/bot/run');
+    expect(wrongMethod.status).toBe(404);
+    expect(wrongMethod.body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('answers OPTIONS on a path it serves with the methods it serves, with or without allowedMethods', async () => {
+    const plain = new Koa<CogitatorState>();
+    plain.use(buildRouter().routes());
+    const withAllowed = new Koa<CogitatorState>();
+    const router = buildRouter();
+    withAllowed.use(router.routes());
+    withAllowed.use(router.allowedMethods());
+
+    for (const app of [plain, withAllowed]) {
+      const agents = await request(app.callback()).options('/agents');
+      expect(agents.status).toBe(204);
+      expect(agents.headers.allow).toBe('GET, HEAD, OPTIONS');
+      const run = await request(app.callback()).options('/agents/bot/run');
+      expect(run.headers.allow).toBe('OPTIONS, POST');
+    }
+    const unknown = await request(plain.callback()).options('/nowhere');
+    expect(unknown.status).toBe(404);
+  });
+
+  it('answers 401 on any path but the public ones under anonymous deny', async () => {
+    const app = buildApp({ anonymous: 'deny', auth });
+
+    for (const path of ['/nowhere', '/agents/bot/run', '/docs']) {
+      const res = await request(app.callback()).get(path);
+      expect(res.status).toBe(401);
+      expect(res.body).toEqual({
+        error: { message: 'Authentication required', code: 'UNAUTHORIZED' },
+      });
+    }
+    expect((await request(app.callback()).get('/health')).status).toBe(200);
+
+    const known = await request(app.callback()).get('/nowhere').set('x-user', 'alice');
+    expect(known.status).toBe(404);
+    expect(known.body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('answers 401 when auth throws on an unknown path', async () => {
+    const app = buildApp({
+      auth: () => {
+        throw new Error('bad token');
+      },
+    });
+    const res = await request(app.callback()).get('/nowhere');
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('leaves what it does not serve to the middleware after the router, untouched', async () => {
+    const authFn = vi.fn(auth);
+    const app = new Koa<CogitatorState>();
+    const router = buildRouter({ anonymous: 'deny', auth: authFn });
+    app.use(router.routes());
+    app.use(router.allowedMethods());
+    app.use((ctx) => {
+      if (ctx.path === '/upload') ctx.body = { type: ctx.get('content-type') };
+    });
+
+    const res = await request(app.callback()).post('/upload').type('form').send({ name: 'file' });
+    expect(res.status).toBe(200);
+    expect(res.body.type).toContain('application/x-www-form-urlencoded');
+    expect(authFn).not.toHaveBeenCalled();
+
+    expect((await request(app.callback()).get('/nowhere')).status).toBe(401);
+  });
+
+  it('answers only the paths under the prefix it is mounted at', async () => {
+    const app = new Koa<CogitatorState>();
+    const parent = new Router<CogitatorState>();
+    const router = buildRouter({ anonymous: 'deny', auth });
+    parent.use('/api/ai', router.routes(), router.allowedMethods());
+    app.use(parent.routes());
+
+    const inside = await request(app.callback()).get('/api/ai/nowhere');
+    expect(inside.status).toBe(401);
+    expect(inside.body.error.code).toBe('UNAUTHORIZED');
+
+    const known = await request(app.callback()).get('/api/ai/nowhere').set('x-user', 'alice');
+    expect(known.status).toBe(404);
+    expect(known.body.error.code).toBe('NOT_FOUND');
+
+    const outside = await request(app.callback()).get('/elsewhere');
+    expect(outside.status).toBe(404);
+    expect(outside.text).toBe('Not Found');
+
+    const agents = await request(app.callback()).get('/api/ai/agents').set('x-user', 'alice');
+    expect(agents.status).toBe(200);
   });
 });

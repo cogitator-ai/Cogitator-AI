@@ -223,7 +223,7 @@ Dynamic documentation generators reflecting registered agents, tools, workflows,
 - `generateOpenAPISpec(context, config)`: Builds an OpenAPI 3.0 specification from registered agents, tools (with JSON schemas), workflows, and swarms.
 - `generateSwaggerHTML(spec)`: Generates a standalone HTML page embedding Swagger UI from CDN with the OpenAPI `spec` object embedded inline for `/docs`.
 - `OpenAPISpec`: TypeScript interface for the generated OpenAPI 3.0 document.
-- `SwaggerConfig`: Customization options for Swagger UI and OpenAPI generation (title, version, base path, auth).
+- `SwaggerConfig`: Customization options for Swagger UI and OpenAPI generation (title, version, base path, auth, and `limits`, which the spec shows as the defaults and caps of the capped request fields).
 - `OpenAPIContext`: Context containing the registered agents, workflows, and swarms.
 
 ### 10. Conformance Testing Suite
@@ -231,7 +231,7 @@ Dynamic documentation generators reflecting registered agents, tools, workflows,
 Shared conformance test cases and mock runtime ensuring all adapters behave identically.
 
 - `checkConformance(testCase, response, runtime, check?)`: Compares a response the adapter already returned against the test case and runtime state, returning a list of mismatches (an empty array means the adapter conforms).
-- `ConformanceRuntime`: Mock runtime tracking runs, resumes, streaming callbacks, and memory operations.
+- `ConformanceRuntime`: Mock runtime tracking runs, resumes, streaming callbacks, and memory operations. `new ConformanceRuntime(testCase)` follows the case's `runtime` options: runs that fail with a `CogitatorError` (`fail`) or a plain error (`crash`), and a thread holding `threadEntries` messages.
 - `CONFORMANCE_CASES`: Collection of standardized test cases covering input validation, context policy, thread isolation, and error conditions.
 - `CONFORMANCE_ROUTES`: Standard test route mapping (`/agents/:name/run`, `/threads/:id/messages`, etc.).
 - `CONFORMANCE_NAMES`: Standard test entity names (`assistant`, `team`, `flow`, `thread-1`).
@@ -244,9 +244,21 @@ Shared conformance test cases and mock runtime ensuring all adapters behave iden
 - `parseSseEvents(text)`: Parses raw SSE wire text into structured event objects for test assertions.
 - `ConformanceCase`: Interface defining a test case.
 - `ConformanceCheckOptions`: Custom status code and error code mapping options for `checkConformance` (e.g. for adapters following framework-specific error conventions).
-- `ConformanceResponse`: Standardized response representation for adapter fetchers.
+- `ConformanceResponse`: Standardized response representation for adapter fetchers, with the answer's `headers` (names in lower case) for the cases that check `Retry-After`.
 - `ConformanceRoute`: Union of supported conformance route names.
-- `ConformanceServerOptions`: Adapter server options required by specific conformance test cases.
+- `ConformanceServerOptions`: Adapter server options required by specific conformance test cases: `acceptContext`, `threadMessageRoles`, `limits`, `anonymous`, `forbiddenThreads` (threads the adapter's `authorizeThread` refuses) and `deps` (what its `deps` hook returns).
+
+### 11. Server Contract
+
+What every adapter keeps the same, so an application behaves alike on any of them.
+
+- `RunLimits`, `checkRunLimits(limits)`: The operator's caps on a run (`swarmTimeout`, `workflowMaxIterations`, `workflowMaxConcurrency`), checked to be positive integers.
+- `swarmTimeoutWithin(requested, limits)`, `workflowOptionsWithin(options, limits)`: What a run gets, the smaller of what the request asked and the cap, the cap when it asked for nothing.
+- `AuthorizeThread`, `authorizeThreadAccess(authorize, auth, threadId)`, `threadForbidden(threadId)`: The hook an adapter asks about every thread a request names, and the `403 THREAD_FORBIDDEN` it answers when the hook says no.
+- `AnonymousPolicy`, `admitCaller(userId, policy)`, `UNAUTHORIZED`: `'deny'` turns away a caller without a user id with `401 UNAUTHORIZED`.
+- `describeHttpError(error)`: The status, code, message and `retryAfter` (whole seconds) an error is answered with: a `CogitatorError` its own status or the one of its code, a `SwarmTimeoutError` `504 RUN_TIMEOUT`, anything else `undefined`, which the adapter logs and answers with `INTERNAL_ERROR` without its text. `cogitatorErrorStatus` and `retryAfterSeconds` are the parts of it.
+- `errorEnvelope(error)`, `errorHeaders(error)`: The `{ error: { message, code } }` body and the `Retry-After` header of an error answer.
+- `parseThreadPageQuery(query)`, `readThreadPage(memory, threadId, page, thread?)`, `MAX_THREAD_PAGE_LIMIT`: `GET /threads/:id?limit&cursor`, the newest `limit` messages of what is left and a `nextCursor` for the page before them. The cursor tells apart entries that share a time, so no message is skipped or repeated across pages.
 
 ## Packages Built on `@cogitator-ai/server-shared`
 

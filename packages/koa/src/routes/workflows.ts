@@ -1,9 +1,20 @@
 import Router from '@koa/router';
 import type { CogitatorState, WorkflowListResponse } from '../types.js';
 import { KoaStreamWriter, setupSSEHeaders } from '../streaming/index.js';
-import { generateId, parseWorkflowRunRequest } from '@cogitator-ai/server-shared';
+import {
+  generateId,
+  parseWorkflowRunRequest,
+  workflowOptionsWithin,
+} from '@cogitator-ai/server-shared';
 import { getOwn } from '../utils/lookup.js';
-import { isModuleNotFoundError, resolveError } from '../utils/errors.js';
+import {
+  describeError,
+  invalidInput,
+  isModuleNotFoundError,
+  notFound,
+  notInstalled,
+  respondWithError,
+} from '../utils/errors.js';
 import { getRequestBody, onClientDisconnect } from '../utils/request.js';
 import { toWorkflowRunResponse } from '../utils/results.js';
 
@@ -28,15 +39,13 @@ export function createWorkflowRoutes(): Router<CogitatorState> {
     const workflow = getOwn(workflows, name);
 
     if (!workflow) {
-      ctx.status = 404;
-      ctx.body = { error: { message: `Workflow '${name}' not found`, code: 'NOT_FOUND' } };
+      notFound(ctx, `Workflow '${name}' not found`);
       return;
     }
 
     const parsed = parseWorkflowRunRequest(getRequestBody(ctx));
     if (!parsed.ok) {
-      ctx.status = 400;
-      ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };
+      invalidInput(ctx, parsed.message);
       return;
     }
 
@@ -48,16 +57,14 @@ export function createWorkflowRoutes(): Router<CogitatorState> {
       const executor = new WorkflowExecutor(runtime);
 
       const result = await executor.execute(workflow, parsed.value.input, {
-        ...parsed.value.options,
+        ...workflowOptionsWithin(parsed.value.options ?? {}, ctx.state.cogitator.limits),
         signal: abortController.signal,
       });
 
       if (abortController.signal.aborted) return;
 
       if (result.error) {
-        const { status, body } = resolveError(result.error, 'Workflow run error');
-        ctx.status = status;
-        ctx.body = body;
+        respondWithError(ctx, result.error, 'Workflow run error');
         return;
       }
 
@@ -65,14 +72,11 @@ export function createWorkflowRoutes(): Router<CogitatorState> {
     } catch (error) {
       if (abortController.signal.aborted) return;
       if (isModuleNotFoundError(error)) {
-        ctx.status = 501;
-        ctx.body = { error: { message: 'Workflows package not installed', code: 'UNIMPLEMENTED' } };
+        notInstalled(ctx, 'Workflows');
         return;
       }
 
-      const { status, body } = resolveError(error, 'Workflow run error');
-      ctx.status = status;
-      ctx.body = body;
+      respondWithError(ctx, error, 'Workflow run error');
     }
   });
 
@@ -82,15 +86,13 @@ export function createWorkflowRoutes(): Router<CogitatorState> {
     const workflow = getOwn(workflows, name);
 
     if (!workflow) {
-      ctx.status = 404;
-      ctx.body = { error: { message: `Workflow '${name}' not found`, code: 'NOT_FOUND' } };
+      notFound(ctx, `Workflow '${name}' not found`);
       return;
     }
 
     const parsed = parseWorkflowRunRequest(getRequestBody(ctx));
     if (!parsed.ok) {
-      ctx.status = 400;
-      ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };
+      invalidInput(ctx, parsed.message);
       return;
     }
 
@@ -113,7 +115,7 @@ export function createWorkflowRoutes(): Router<CogitatorState> {
       writer.start(messageId);
 
       const result = await executor.execute(workflow, parsed.value.input, {
-        ...parsed.value.options,
+        ...workflowOptionsWithin(parsed.value.options ?? {}, ctx.state.cogitator.limits),
         signal: abortController.signal,
         onNodeStart: (node: string) => {
           writer.workflowEvent('node_started', { nodeName: node, timestamp: Date.now() });
@@ -124,7 +126,7 @@ export function createWorkflowRoutes(): Router<CogitatorState> {
         onNodeError: (node: string, error: Error) => {
           writer.workflowEvent('node_error', {
             nodeName: node,
-            error: resolveError(error, `Workflow node ${node} error`).body.error.message,
+            error: describeError(error, `Workflow node ${node} error`).message,
           });
         },
         onNodeProgress: (node: string, progress: number) => {
@@ -135,8 +137,8 @@ export function createWorkflowRoutes(): Router<CogitatorState> {
       if (abortController.signal.aborted) return;
 
       if (result.error) {
-        const { body } = resolveError(result.error, 'Workflow stream error');
-        writer.error(body.error.message, body.error.code);
+        const failure = describeError(result.error, 'Workflow stream error');
+        writer.error(failure.message, failure.code);
         return;
       }
 
@@ -150,8 +152,8 @@ export function createWorkflowRoutes(): Router<CogitatorState> {
       if (isModuleNotFoundError(error)) {
         writer.error('Workflows package not installed', 'UNIMPLEMENTED');
       } else {
-        const { body } = resolveError(error, 'Workflow stream error');
-        writer.error(body.error.message, body.error.code);
+        const failure = describeError(error, 'Workflow stream error');
+        writer.error(failure.message, failure.code);
       }
     } finally {
       writer.close();

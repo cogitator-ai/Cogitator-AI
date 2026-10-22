@@ -8,7 +8,13 @@ import {
   toAgentRunResponse,
 } from '@cogitator-ai/server-shared';
 import { ExpressStreamWriter, setupSSEHeaders } from '../streaming/index.js';
-import { handleRouteError, onClientDisconnect, resolveError, sendError } from './utils.js';
+import {
+  admitAgentRun,
+  handleRouteError,
+  onClientDisconnect,
+  resolveError,
+  sendError,
+} from './utils.js';
 
 export function createAgentRoutes(ctx: RouteContext): Router {
   const router = Router();
@@ -46,6 +52,9 @@ export function createAgentRoutes(ctx: RouteContext): Router {
       }
       const body = parsed.value;
 
+      const admitted = await admitAgentRun(ctx, req, res, body.threadId, 'Agent run error');
+      if (!admitted) return;
+
       const abortController = new AbortController();
       onClientDisconnect(res, () => abortController.abort());
 
@@ -56,6 +65,7 @@ export function createAgentRoutes(ctx: RouteContext): Router {
           threadId: body.threadId,
           userId: req.cogitator?.auth?.userId,
           signal: abortController.signal,
+          ...admitted,
         });
 
         res.json(toAgentRunResponse(result));
@@ -84,6 +94,9 @@ export function createAgentRoutes(ctx: RouteContext): Router {
       }
       const { threadId, decisions, defaultDecision } = parsed.value;
 
+      const admitted = await admitAgentRun(ctx, req, res, threadId, 'Agent resume error');
+      if (!admitted) return;
+
       const abortController = new AbortController();
       onClientDisconnect(res, () => abortController.abort());
 
@@ -93,6 +106,7 @@ export function createAgentRoutes(ctx: RouteContext): Router {
           decisions,
           defaultDecision,
           signal: abortController.signal,
+          ...admitted,
         });
 
         res.json(toAgentRunResponse(result));
@@ -121,6 +135,9 @@ export function createAgentRoutes(ctx: RouteContext): Router {
       }
       const body = parsed.value;
 
+      const admitted = await admitAgentRun(ctx, req, res, body.threadId, 'Agent stream error');
+      if (!admitted) return;
+
       setupSSEHeaders(res);
       const writer = new ExpressStreamWriter(res, { heartbeatMs: ctx.config.sseHeartbeatMs });
       const session = new AgentStreamSession((event) => writer.send(event), {
@@ -143,6 +160,7 @@ export function createAgentRoutes(ctx: RouteContext): Router {
           signal: abortController.signal,
           stream: true,
           ...session.callbacks,
+          ...admitted,
         });
         session.complete(result);
       } catch (error) {

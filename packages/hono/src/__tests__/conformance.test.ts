@@ -9,11 +9,23 @@ import {
   conformanceContentType,
   conformanceMethod,
   type ConformanceCase,
+  type ConformanceServerOptions,
 } from '@cogitator-ai/server-shared';
 import { cogitatorApp } from '../app.js';
 import type { CogitatorAppOptions } from '../types.js';
 
 type Options = CogitatorAppOptions;
+
+function serverOptions(server: ConformanceServerOptions = {}): Partial<Options> {
+  const { forbiddenThreads, deps, ...options } = server;
+  return {
+    ...options,
+    ...(forbiddenThreads && {
+      authorizeThread: (_auth, id) => !forbiddenThreads.includes(id),
+    }),
+    ...(deps && { deps: () => deps }),
+  };
+}
 
 async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
   const app = cogitatorApp({
@@ -26,7 +38,7 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
       [CONFORMANCE_NAMES.workflow]: { name: 'flow', entryPoint: 'a', nodes: new Map() },
     } as unknown as Options['workflows'],
     sseHeartbeatMs: 0,
-    ...testCase.server,
+    ...serverOptions(testCase.server),
   });
 
   const res = await app.request(CONFORMANCE_ROUTES[testCase.route], {
@@ -36,14 +48,17 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
   });
   const body = await res.text();
   const code = res.ok ? undefined : (JSON.parse(body) as { error: { code: string } }).error.code;
-  return { status: res.status, code, body };
+  const headers = Object.fromEntries(
+    [...res.headers.entries()].map(([name, value]) => [name.toLowerCase(), value])
+  );
+  return { status: res.status, code, body, headers };
 }
 
 describe('server protocol conformance', () => {
   it.each(CONFORMANCE_CASES.map((testCase) => [testCase.name, testCase] as const))(
     '%s',
     async (_name, testCase) => {
-      const runtime = new ConformanceRuntime();
+      const runtime = new ConformanceRuntime(testCase);
       const response = await answer(testCase, runtime);
       expect(checkConformance(testCase, response, runtime)).toEqual([]);
     }

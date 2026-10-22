@@ -15,6 +15,8 @@ import {
   lastRunOptions,
   fakeMemory,
   json,
+  lastResumeCall,
+  pagedMemory,
   readStream,
   runResult,
 } from './helpers.js';
@@ -290,6 +292,249 @@ describe('auth that fails', () => {
       expect(reports).toEqual([]);
     }
   );
+});
+
+describe('anonymous callers', () => {
+  const routes: Array<[string, RequestInit?]> = [
+    ['/cogitator/agents'],
+    ['/cogitator/tools'],
+    ['/cogitator/agents/chat/run', json({ input: 'hi' })],
+    ['/cogitator/agents/chat/stream', json({ input: 'hi' })],
+    ['/cogitator/agents/chat/resume', json({ threadId: 't-1' })],
+    ['/cogitator/threads/t-1'],
+    ['/cogitator/threads/t-1', { method: 'DELETE' }],
+    ['/cogitator/threads/t-1/messages', json({ role: 'user', content: 'hi' })],
+    ['/cogitator/workflows'],
+    ['/cogitator/swarms'],
+  ];
+
+  test.each([
+    ['without auth', undefined],
+    ['that auth admits as {}', () => ({})],
+  ] as const)('are refused under anonymous deny %s, health stays open', async (_, auth) => {
+    const memory = fakeMemory();
+    const { cogitator, run, resume } = fakeCogitator(undefined, memory);
+    const request = serveCogitator({
+      cogitator,
+      agents: { chat: chatAgent() },
+      anonymous: 'deny',
+      ...(auth && { auth }),
+    });
+
+    for (const [path, init] of routes) {
+      const res = await request(path, init);
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({
+        status: 401,
+        message: 'Authentication required',
+        error: 'UNAUTHORIZED',
+      });
+    }
+    expect((await request('/cogitator/health')).status).toBe(200);
+    expect((await request('/cogitator/ready')).status).toBe(200);
+    expect(run).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
+    expect(memory.getEntries).not.toHaveBeenCalled();
+    expect(memory.clearThread).not.toHaveBeenCalled();
+    expect(memory.addEntry).not.toHaveBeenCalled();
+  });
+
+  test('let a caller with a user id through under anonymous deny', async () => {
+    const { cogitator, run } = fakeCogitator();
+    const request = serveCogitator({
+      cogitator,
+      agents: { chat: chatAgent() },
+      anonymous: 'deny',
+      auth: (ctx) => {
+        const user = ctx.req.headers.get('x-user');
+        return user ? { userId: user } : {};
+      },
+    });
+
+    const res = await request('/cogitator/agents/chat/run', {
+      ...json({ input: 'hi' }),
+      headers: { 'content-type': 'application/json', 'x-user': 'ada' },
+    });
+    expect(res.status).toBe(200);
+    expect(lastRunOptions(run).userId).toBe('ada');
+  });
+
+  test('are let through by default, and auth returning undefined is still refused', async () => {
+    const { cogitator } = fakeCogitator();
+    const open = serveCogitator({ cogitator, agents: { chat: chatAgent() } });
+    expect((await open('/cogitator/agents/chat/run', json({ input: 'hi' }))).status).toBe(200);
+    expect(
+      (await serveCogitator({ cogitator, auth: () => ({}) })('/cogitator/agents')).status
+    ).toBe(200);
+    expect(
+      (await serveCogitator({ cogitator, auth: () => undefined })('/cogitator/agents')).status
+    ).toBe(401);
+  });
+});
+
+describe('thread pages', () => {
+  function contents(body: unknown): string[] {
+    return (body as { messages: Array<{ content: string }> }).messages.map(
+      (message) => message.content
+    );
+  }
+
+  test('read a thread newest first, page by page, to its start', async () => {
+    const { cogitator } = fakeCogitator(undefined, pagedMemory(5));
+    const request = serveCogitator({ cogitator });
+    const page = async (query: string) =>
+      (await (await request(`/cogitator/threads/thread-1?${query}`)).json()) as {
+        messages: unknown[];
+        nextCursor?: string;
+        createdAt: number;
+        updatedAt: number;
+      };
+
+    const first = await page('limit=2');
+    expect(contents(first)).toEqual(['message 4', 'message 5']);
+    expect(typeof first.nextCursor).toBe('string');
+
+    const second = await page(`limit=2&cursor=${first.nextCursor}`);
+    expect(contents(second)).toEqual(['message 2', 'message 3']);
+
+    const last = await page(`limit=2&cursor=${second.nextCursor}`);
+    expect(contents(last)).toEqual(['message 1']);
+    expect(last).not.toHaveProperty('nextCursor');
+
+    const whole = await page('');
+    expect(contents(whole)).toHaveLength(5);
+    expect(whole).not.toHaveProperty('nextCursor');
+    expect([whole.createdAt, whole.updatedAt]).toEqual([1, 5]);
+  });
+
+  test('read a repeated page parameter by its last value and an empty one as absent', async () => {
+    const memory = pagedMemory(5);
+    const { cogitator } = fakeCogitator(undefined, memory);
+    const request = serveCogitator({ cogitator });
+    const page = async (query: string) => {
+      const res = await request(`/cogitator/threads/thread-1?${query}`);
+      expect(res.status).toBe(200);
+      return (await res.json()) as { messages: unknown[]; nextCursor?: string };
+    };
+
+    const repeated = await page('limit=1&limit=2');
+    expect(contents(repeated)).toEqual(['message 4', 'message 5']);
+
+    const empty = await page('limit=&cursor=');
+    expect(contents(empty)).toHaveLength(5);
+    expect(empty).not.toHaveProperty('nextCursor');
+
+    const second = await page(`limit=2&cursor=bogus&cursor=${repeated.nextCursor}`);
+    expect(contents(second)).toEqual(['message 2', 'message 3']);
+  });
+
+  test("answer with the thread's own times when it has a record", async () => {
+    const memory = pagedMemory(3);
+    memory.getThread.mockImplementation((id) =>
+      Promise.resolve({
+        success: true,
+        data: {
+          id,
+          agentId: 'chat',
+          metadata: {},
+          createdAt: new Date(100),
+          updatedAt: new Date(200),
+        },
+      })
+    );
+    const { cogitator } = fakeCogitator(undefined, memory);
+    const res = await serveCogitator({ cogitator })('/cogitator/threads/thread-1?limit=1');
+    expect(await res.json()).toMatchObject({ createdAt: 100, updatedAt: 200 });
+  });
+
+  test.each(['limit=0', 'limit=1001', 'limit=1.5', 'limit=abc', 'cursor=bogus', 'limit=2&limit=0'])(
+    'refuse the query %s before reading memory',
+    async (query) => {
+      const memory = pagedMemory(1);
+      const { cogitator } = fakeCogitator(undefined, memory);
+      const res = await serveCogitator({ cogitator })(`/cogitator/threads/thread-1?${query}`);
+      expect(res.status).toBe(422);
+      expect(((await res.json()) as { error: string }).error).toBe('VALIDATION_FAILED');
+      expect(memory.getEntries).not.toHaveBeenCalled();
+    }
+  );
+
+  test('refuse a thread authorizeThread keeps the caller from on every thread route', async () => {
+    const memory = pagedMemory(2);
+    const { cogitator } = fakeCogitator(undefined, memory);
+    const request = serveCogitator({ cogitator, authorizeThread: (_, id) => id !== 'thread-1' });
+
+    const answers = [
+      await request('/cogitator/threads/thread-1?limit=1'),
+      await request('/cogitator/threads/thread-1', { method: 'DELETE' }),
+      await request('/cogitator/threads/thread-1/messages', json({ role: 'user', content: 'x' })),
+    ];
+    for (const res of answers) {
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toBe('THREAD_FORBIDDEN');
+    }
+    expect(memory.getEntries).not.toHaveBeenCalled();
+    expect(memory.clearThread).not.toHaveBeenCalled();
+    expect(memory.addEntry).not.toHaveBeenCalled();
+  });
+});
+
+describe('deps', () => {
+  test('hands agent runs, streams and resumes what the server builds, never the body', async () => {
+    const { cogitator, run, resume } = fakeCogitator();
+    const request = serveCogitator({
+      cogitator,
+      agents: { chat: chatAgent() },
+      deps: async (ctx) => ({ tenant: ctx.req.headers.get('x-tenant') }),
+    });
+    const send = (path: string, body: unknown) =>
+      request(path, {
+        ...json(body),
+        headers: { 'content-type': 'application/json', 'x-tenant': 'acme' },
+      });
+
+    await send('/cogitator/agents/chat/run', { input: 'hi', deps: { tenant: 'evil' } });
+    await readStream(await send('/cogitator/agents/chat/stream', { input: 'hi' }));
+    await send('/cogitator/agents/chat/resume', { threadId: 't-1', deps: { tenant: 'evil' } });
+    await readStream(await send('/cogitator/agents/chat/resume/stream', { threadId: 't-1' }));
+
+    expect(run.mock.calls.map(([, options]) => options.deps)).toEqual([
+      { tenant: 'acme' },
+      { tenant: 'acme' },
+    ]);
+    expect(resume.mock.calls.map(([, , options]) => options.deps)).toEqual([
+      { tenant: 'acme' },
+      { tenant: 'acme' },
+    ]);
+    expect(lastResumeCall(resume).threadId).toBe('t-1');
+  });
+
+  test('passes no deps without the hook', async () => {
+    const { cogitator, run } = fakeCogitator();
+    const request = serveCogitator({ cogitator, agents: { chat: chatAgent() } });
+    await request('/cogitator/agents/chat/run', json({ input: 'hi', deps: { tenant: 'evil' } }));
+    expect(lastRunOptions(run)).not.toHaveProperty('deps');
+  });
+
+  test('answers a CogitatorError the hook throws before the run starts', async () => {
+    const { cogitator, run } = fakeCogitator();
+    const request = serveCogitator({
+      cogitator,
+      agents: { chat: chatAgent() },
+      deps: () => {
+        throw new CogitatorError({
+          message: 'Tenant database down',
+          code: ErrorCode.LLM_UNAVAILABLE,
+          retryAfter: 30_000,
+        });
+      },
+    });
+
+    const res = await request('/cogitator/agents/chat/stream', json({ input: 'hi' }));
+    expect(res.status).toBe(503);
+    expect(res.headers.get('retry-after')).toBe('30');
+    expect(run).not.toHaveBeenCalled();
+  });
 });
 
 describe('threads', () => {
@@ -719,7 +964,7 @@ describe('agent stream', () => {
     expect(events.at(-1)).toEqual({
       type: 'error',
       message: 'Internal server error',
-      code: 'INTERNAL_SERVER_ERROR',
+      code: 'INTERNAL_ERROR',
     });
     expect(reports.map((report) => report.source)).toEqual(['stream']);
   });

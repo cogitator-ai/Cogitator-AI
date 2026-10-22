@@ -6,6 +6,10 @@ export type {
   HonoEnv,
   AuthContext,
   AuthFunction,
+  DepsFunction,
+  RunLimits,
+  AnonymousPolicy,
+  AuthorizeThread,
   WebSocketConfig,
   AgentListResponse,
   AgentRunRequest,
@@ -40,7 +44,7 @@ export { HonoStreamWriter } from './streaming/hono-stream-writer.js';
 export type { HonoStreamWriterOptions } from './streaming/hono-stream-writer.js';
 
 export { createContextMiddleware } from './middleware/context.js';
-export { createAuthMiddleware } from './middleware/auth.js';
+export { createAnonymousMiddleware, createAuthMiddleware } from './middleware/auth.js';
 export { errorHandler } from './middleware/error-handler.js';
 export { createBodyLimitMiddleware } from './middleware/body-limit.js';
 

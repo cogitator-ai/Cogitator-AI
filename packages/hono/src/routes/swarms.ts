@@ -4,21 +4,26 @@ import {
   generateId,
   parseSwarmRunRequest,
   swarmAgentNames,
+  swarmTimeoutWithin,
   withSwarm,
 } from '@cogitator-ai/server-shared';
 import { HonoStreamWriter } from '../streaming/hono-stream-writer.js';
 import type { HonoEnv, SwarmListResponse, BlackboardResponse } from '../types.js';
 import type { RunResult, SwarmMessage, SwarmEvent } from '@cogitator-ai/types';
 import { getOwn } from '../utils/lookup.js';
-import { isModuleNotFoundError, resolveError } from '../utils/errors.js';
+import { describeError, isModuleNotFoundError } from '../utils/errors.js';
 import {
   createRequestAbortController,
   holdConnectionOpen,
   errorResponse,
   invalidInput,
   bodyRefused,
+  notFound,
+  notInstalled,
   readJsonBody,
+  refuseThread,
   requestAborted,
+  sendError,
 } from '../utils/request.js';
 import { serializeSwarmUsage, toSwarmRunResponse } from '../utils/results.js';
 
@@ -42,14 +47,15 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
     const name = c.req.param('name');
     const swarmConfig = getOwn(ctx.swarms, name);
 
-    if (!swarmConfig) {
-      return c.json({ error: { message: `Swarm '${name}' not found`, code: 'NOT_FOUND' } }, 404);
-    }
+    if (!swarmConfig) return notFound(c, `Swarm '${name}' not found`);
 
     const body = await readJsonBody(c);
     if (!body.ok) return bodyRefused(c, body.refusal);
     const parsed = parseSwarmRunRequest(body.value, { acceptContext: ctx.acceptContext });
     if (!parsed.ok) return invalidInput(c, parsed.message);
+    const refusal = await refuseThread(c, parsed.value.threadId);
+    if (refusal) return sendError(c, refusal);
+    const timeout = swarmTimeoutWithin(parsed.value.timeout, ctx.limits);
 
     holdConnectionOpen(c);
     const abortController = createRequestAbortController(c);
@@ -61,6 +67,7 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
         abortController.signal.addEventListener('abort', () => swarm.abort(), { once: true });
         const result = await swarm.run({
           ...parsed.value,
+          timeout,
           userId: c.get('cogitatorAuth')?.userId,
         });
         return toSwarmRunResponse(swarm, result);
@@ -71,10 +78,7 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
     } catch (error) {
       if (abortController.signal.aborted) return requestAborted(c);
       if (isModuleNotFoundError(error)) {
-        return c.json(
-          { error: { message: 'Swarms package not installed', code: 'UNIMPLEMENTED' } },
-          501
-        );
+        return notInstalled(c, 'Swarms');
       }
       return errorResponse(c, error, 'Swarm run error');
     }
@@ -85,14 +89,15 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
     const name = c.req.param('name');
     const swarmConfig = getOwn(ctx.swarms, name);
 
-    if (!swarmConfig) {
-      return c.json({ error: { message: `Swarm '${name}' not found`, code: 'NOT_FOUND' } }, 404);
-    }
+    if (!swarmConfig) return notFound(c, `Swarm '${name}' not found`);
 
     const body = await readJsonBody(c);
     if (!body.ok) return bodyRefused(c, body.refusal);
     const parsed = parseSwarmRunRequest(body.value, { acceptContext: ctx.acceptContext });
     if (!parsed.ok) return invalidInput(c, parsed.message);
+    const refusal = await refuseThread(c, parsed.value.threadId);
+    if (refusal) return sendError(c, refusal);
+    const timeout = swarmTimeoutWithin(parsed.value.timeout, ctx.limits);
 
     const abortController = createRequestAbortController(c);
 
@@ -115,6 +120,7 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
 
           const result = await swarm.run({
             ...parsed.value,
+            timeout,
             userId: c.get('cogitatorAuth')?.userId,
             onAgentStart: (agentName: string) => {
               void writer.swarmEvent('agent_start', { agentName, timestamp: Date.now() });
@@ -129,7 +135,7 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
             onAgentError: (agentName: string, error: Error) => {
               void writer.swarmEvent('agent_error', {
                 agentName,
-                error: resolveError(error, `Swarm agent ${agentName} error`).body.error.message,
+                error: describeError(error, `Swarm agent ${agentName} error`).message,
               });
             },
             onMessage: (message: SwarmMessage) => {
@@ -154,8 +160,8 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
         if (isModuleNotFoundError(error)) {
           await writer.error('Swarms package not installed', 'UNIMPLEMENTED');
         } else {
-          const { body: errorBody } = resolveError(error, 'Swarm stream error');
-          await writer.error(errorBody.error.message, errorBody.error.code);
+          const failure = describeError(error, 'Swarm stream error');
+          await writer.error(failure.message, failure.code);
         }
       } finally {
         writer.close();
@@ -168,15 +174,10 @@ export function createSwarmRoutes(): Hono<HonoEnv> {
     const name = c.req.param('name');
     const swarmConfig = getOwn(ctx.swarms, name);
 
-    if (!swarmConfig) {
-      return c.json({ error: { message: `Swarm '${name}' not found`, code: 'NOT_FOUND' } }, 404);
-    }
+    if (!swarmConfig) return notFound(c, `Swarm '${name}' not found`);
 
     if (!swarmConfig.blackboard?.enabled) {
-      return c.json(
-        { error: { message: 'Blackboard not enabled for this swarm', code: 'INVALID_INPUT' } },
-        400
-      );
+      return invalidInput(c, 'Blackboard not enabled for this swarm');
     }
 
     const response: BlackboardResponse = {

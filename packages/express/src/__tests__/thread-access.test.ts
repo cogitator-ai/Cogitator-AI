@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import express from 'express';
 import type { Request } from 'express';
 import type { Server } from 'http';
@@ -33,8 +33,11 @@ function threadMemory() {
       entries.set(entry.threadId, [...(entries.get(entry.threadId) ?? []), stored]);
       return { success: true, data: stored };
     },
-    async getEntries({ threadId }) {
-      return { success: true, data: entries.get(threadId) ?? [] };
+    async getEntries({ threadId, before, limit }) {
+      let list = entries.get(threadId) ?? [];
+      if (before) list = list.filter((entry) => entry.createdAt < before);
+      if (limit !== undefined) list = list.slice(-limit);
+      return { success: true, data: list };
     },
     async clearThread(threadId) {
       entries.delete(threadId);
@@ -52,7 +55,11 @@ const userFromHeader: AuthFunction = (req: Request) => {
 
 let server: Server | undefined;
 
-async function start(memory: ThreadMemory, auth?: AuthFunction) {
+async function start(
+  memory: ThreadMemory,
+  auth?: AuthFunction,
+  config: CogitatorServerConfig['config'] = {}
+) {
   const app = express();
   const srv = new CogitatorServer({
     app,
@@ -60,7 +67,7 @@ async function start(memory: ThreadMemory, auth?: AuthFunction) {
       memory,
       getMemory: async () => memory,
     } as unknown as CogitatorServerConfig['cogitator'],
-    config: { basePath: '/api', enableSwagger: false, auth },
+    config: { basePath: '/api', enableSwagger: false, auth, ...config },
   });
   await srv.init();
   server = await new Promise<Server>((resolve) => {
@@ -194,5 +201,147 @@ describe('threads before any run', () => {
     expect(thread.status).toBe(200);
     expect((await thread.json()).messages).toHaveLength(1);
     await cogitator.close();
+  });
+});
+
+describe('thread pages', () => {
+  interface Page {
+    messages: Array<{ content: string }>;
+    nextCursor?: string;
+  }
+
+  async function seeded(count: number) {
+    const { memory } = threadMemory();
+    const base = await start(memory);
+    for (let at = 1; at <= count; at++) {
+      expect((await postMessage(base, 't1', undefined, `m${at}`)).status).toBe(201);
+    }
+    return base;
+  }
+
+  const contents = (page: Page) => page.messages.map((message) => message.content);
+
+  it('reads a thread newest page first and walks back with nextCursor', async () => {
+    const base = await seeded(5);
+
+    const first = (await (await fetch(`${base}/threads/t1?limit=2`)).json()) as Page;
+    const second = (await (
+      await fetch(`${base}/threads/t1?limit=2&cursor=${first.nextCursor}`)
+    ).json()) as Page;
+    const last = (await (
+      await fetch(`${base}/threads/t1?limit=2&cursor=${second.nextCursor}`)
+    ).json()) as Page;
+
+    expect(contents(first)).toEqual(['m4', 'm5']);
+    expect(contents(second)).toEqual(['m2', 'm3']);
+    expect(contents(last)).toEqual(['m1']);
+    expect(last.nextCursor).toBeUndefined();
+  });
+
+  it('answers the whole thread without a limit', async () => {
+    const base = await seeded(3);
+    const page = (await (await fetch(`${base}/threads/t1`)).json()) as Page;
+    expect(contents(page)).toEqual(['m1', 'm2', 'm3']);
+    expect(page.nextCursor).toBeUndefined();
+  });
+
+  it.each([
+    ['a limit of zero', 'limit=0'],
+    ['a fractional limit', 'limit=1.5'],
+    ['a limit over the maximum', 'limit=1001'],
+    ['a cursor the server never gave', 'cursor=not-a-cursor'],
+  ])('refuses %s with 400 INVALID_INPUT', async (_name, query) => {
+    const base = await seeded(1);
+    const res = await fetch(`${base}/threads/t1?${query}`);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('INVALID_INPUT');
+  });
+});
+
+describe('authorizeThread', () => {
+  it('refuses every thread route on a thread it keeps the caller from, leaving it untouched', async () => {
+    const { memory, entries } = threadMemory();
+    const authorizeThread = vi.fn((_auth: unknown, threadId: string) => threadId !== 'locked');
+    const base = await start(memory, userFromHeader, { authorizeThread });
+    await memory.addEntry({
+      threadId: 'locked',
+      message: { role: 'user', content: 'kept' },
+      tokenCount: 0,
+    });
+
+    const read = await fetch(`${base}/threads/locked`, as('alice'));
+    const write = await postMessage(base, 'locked', 'alice', 'injected');
+    const remove = await fetch(`${base}/threads/locked`, as('alice', { method: 'DELETE' }));
+
+    for (const res of [read, write, remove]) {
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({
+        error: { message: "Access to thread 'locked' is not allowed", code: 'THREAD_FORBIDDEN' },
+      });
+    }
+    expect(entries.get('locked')).toHaveLength(1);
+    expect(authorizeThread).toHaveBeenCalledWith({ userId: 'alice' }, 'locked');
+  });
+
+  it('lets the caller through to the threads it allows', async () => {
+    const { memory } = threadMemory();
+    const base = await start(memory, userFromHeader, { authorizeThread: () => true });
+    expect((await postMessage(base, 'open', 'alice', 'hi')).status).toBe(201);
+    expect((await fetch(`${base}/threads/open`, as('alice'))).status).toBe(200);
+  });
+});
+
+describe('anonymous policy', () => {
+  it('refuses callers without a user id on the API under deny', async () => {
+    const { memory } = threadMemory();
+    const base = await start(memory, userFromHeader, { anonymous: 'deny' });
+
+    const anonymous = await fetch(`${base}/threads/t1`);
+    const known = await fetch(`${base}/threads/t1`, as('alice'));
+
+    expect(anonymous.status).toBe(401);
+    expect(await anonymous.json()).toEqual({
+      error: { message: 'Authentication required', code: 'UNAUTHORIZED' },
+    });
+    expect(known.status).toBe(200);
+  });
+
+  it('keeps health, ready and the docs open under deny', async () => {
+    const { memory } = threadMemory();
+    const base = await start(memory, undefined, { anonymous: 'deny', enableSwagger: true });
+
+    for (const path of ['/health', '/ready', '/openapi.json', '/docs']) {
+      expect((await fetch(`${base}${path}`)).status, path).toBe(200);
+    }
+    expect((await fetch(`${base}/agents`)).status).toBe(401);
+  });
+
+  it('lets anonymous callers in by default', async () => {
+    const { memory } = threadMemory();
+    const base = await start(memory);
+    expect((await fetch(`${base}/threads/t1`)).status).toBe(200);
+  });
+
+  it('answers an unknown path with 401 under deny, before telling whether it exists', async () => {
+    const { memory } = threadMemory();
+    const base = await start(memory, userFromHeader, { anonymous: 'deny' });
+
+    const anonymous = await fetch(`${base}/no-such-route`);
+    expect(anonymous.status).toBe(401);
+    expect(await anonymous.json()).toEqual({
+      error: { message: 'Authentication required', code: 'UNAUTHORIZED' },
+    });
+
+    const known = await fetch(`${base}/no-such-route`, as('alice'));
+    expect(known.status).toBe(404);
+    expect(await known.json()).toEqual({ error: { message: 'Not found', code: 'NOT_FOUND' } });
+  });
+
+  it('answers an unknown path with 404 in the envelope under allow', async () => {
+    const { memory } = threadMemory();
+    const base = await start(memory);
+    const res = await fetch(`${base}/no-such-route`, { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: { message: 'Not found', code: 'NOT_FOUND' } });
   });
 });

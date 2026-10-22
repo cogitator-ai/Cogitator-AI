@@ -1,6 +1,13 @@
 import { httpError } from '@tetsujs/core';
+import type { BaseCtx } from '@tetsujs/core';
 import type { Agent } from '@cogitator-ai/core';
-import { swarmAgentNames, withSwarm } from '@cogitator-ai/server-shared';
+import {
+  authorizeThreadAccess,
+  swarmAgentNames,
+  swarmTimeoutWithin,
+  withSwarm,
+  workflowOptionsWithin,
+} from '@cogitator-ai/server-shared';
 import type {
   ResumeOptions,
   RunOptions,
@@ -16,7 +23,7 @@ import type {
   WorkflowState,
 } from '@cogitator-ai/types';
 import type { z } from 'zod';
-import { importOptional } from './errors.js';
+import { importOptional, refusalError } from './errors.js';
 import type { ResumeBody } from './schemas.js';
 import type {
   AgentListResponseBody,
@@ -51,15 +58,22 @@ export function findSwarm(deps: CogitatorDeps, name: string): SwarmConfig {
   return swarm;
 }
 
+/** Refuses with `403 THREAD_FORBIDDEN` a thread `authorizeThread` keeps the caller from */
 export async function checkThreadAccess(
   deps: CogitatorDeps,
   auth: AuthContext | undefined,
   threadId: string | undefined
 ): Promise<void> {
-  if (threadId === undefined || !deps.authorizeThread) return;
-  if (!(await deps.authorizeThread(auth, threadId))) {
-    throw httpError(403, 'THREAD_FORBIDDEN', `Access to thread '${threadId}' is not allowed`);
-  }
+  const refusal = await authorizeThreadAccess(deps.authorizeThread, auth, threadId);
+  if (refusal) throw refusalError(refusal);
+}
+
+/** The `deps` of the agent runs of a request, as run options: none without a `deps` hook */
+export type RunDeps = Pick<RunOptions, 'deps'>;
+
+/** Builds the `deps` of the agent runs of the request in `ctx` with the `deps` hook */
+export async function runDepsOf(deps: CogitatorDeps, ctx: BaseCtx): Promise<RunDeps> {
+  return deps.deps ? { deps: await deps.deps(ctx) } : {};
 }
 
 export function listAgents(deps: CogitatorDeps): AgentListResponseBody {
@@ -181,35 +195,45 @@ export function toSwarmRunResponse(
   };
 }
 
+/**
+ * Runs an agent as the caller, with the `deps` the server built for the request. They come
+ * after `options`, so nothing a client sent can stand in for them.
+ */
 export function runAgent(
   deps: CogitatorDeps,
   agent: Agent,
   options: RunOptions,
-  auth: AuthContext | undefined
+  auth: AuthContext | undefined,
+  runDeps: RunDeps
 ): Promise<RunResult> {
   return deps.cogitator.run(agent, {
     ...options,
+    ...runDeps,
     ...(auth?.userId !== undefined && { userId: auth.userId }),
   });
 }
 
 /**
- * Continues the run paused in `threadId` as the caller. The runtime refuses a
- * caller who is not the user the run belongs to with `THREAD_ACCESS_DENIED`.
+ * Continues the run paused in `threadId` as the caller, with the `deps` the server built for
+ * the request. The runtime refuses a caller who is not the user the run belongs to with
+ * `THREAD_ACCESS_DENIED`.
  */
 export function resumeAgent(
   deps: CogitatorDeps,
   agent: Agent,
   threadId: string,
   options: ResumeOptions,
-  auth: AuthContext | undefined
+  auth: AuthContext | undefined,
+  runDeps: RunDeps
 ): Promise<RunResult> {
   return deps.cogitator.resume(agent, threadId, {
     ...options,
+    ...runDeps,
     ...(auth?.userId !== undefined && { userId: auth.userId }),
   });
 }
 
+/** Runs a workflow with `maxIterations` and `maxConcurrency` held to the server's limits */
 export async function executeWorkflow(
   deps: CogitatorDeps,
   workflow: Workflow<WorkflowState>,
@@ -222,7 +246,7 @@ export async function executeWorkflow(
     '@cogitator-ai/workflows'
   );
   const result = await new WorkflowExecutor(deps.cogitator).execute(workflow, input, {
-    ...options,
+    ...workflowOptionsWithin(options, deps.limits),
     signal,
   });
   if (result.error) throw result.error;
@@ -230,8 +254,8 @@ export async function executeWorkflow(
 }
 
 /**
- * Runs a swarm built for this request and answers with what `finish` makes of it, then
- * closes the swarm, whether the run succeeded, failed or was aborted: a distributed swarm
+ * Runs a swarm built for this request, its timeout held to the server's limit, and answers
+ * with what `finish` makes of it, then closes the swarm, whether the run succeeded, failed or was aborted: a distributed swarm
  * holds two Redis connections and keeps its state without expiry until it is closed.
  */
 export async function executeSwarm<T>(
@@ -247,12 +271,14 @@ export async function executeSwarm<T>(
     '@cogitator-ai/swarms'
   );
   signal.throwIfAborted();
+  const timeout = swarmTimeoutWithin(options.timeout, deps.limits);
   return withSwarm(new Swarm(deps.cogitator, config), async (swarm) => {
     const abort = () => swarm.abort();
     signal.addEventListener('abort', abort, { once: true });
     try {
       const result = await swarm.run({
         ...options,
+        ...(timeout !== undefined && { timeout }),
         ...(auth?.userId !== undefined && { userId: auth.userId }),
       });
       return finish(swarm, result);

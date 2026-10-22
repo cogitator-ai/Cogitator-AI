@@ -1154,7 +1154,7 @@ export class MongoDBAdapter
       const types = typeFilter(options.types);
       let cursor = this.entries
         .find(types ? { $and: [filter, types] } : filter)
-        .sort({ createdAt: -1, seq: -1 });
+        .sort({ createdAt: -1, seq: -1, _id: -1 });
       if (options.limit) cursor = cursor.limit(options.limit);
 
       const docs = await cursor.toArray();

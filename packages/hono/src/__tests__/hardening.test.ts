@@ -652,10 +652,446 @@ describe('websocket route', () => {
     );
   });
 
+  it('refuses runs and resumes on threads authorizeThread keeps the caller from', async () => {
+    const { upgradeWebSocket, sockets } = createUpgradeHelper();
+    const run = vi.fn().mockResolvedValue(runResult());
+    const resume = vi.fn().mockResolvedValue(runResult());
+    const authorizeThread = vi.fn((_auth: unknown, id: string) => id !== 'thread-locked');
+    const app = buildApp(
+      {
+        enableWebSocket: true,
+        websocket: { upgradeWebSocket },
+        auth: () => ({ userId: 'u1' }),
+        authorizeThread,
+      },
+      { run, resume }
+    );
+    const { socket } = await connect(app, sockets);
+
+    await send(socket!, {
+      type: 'run',
+      id: 'r1',
+      payload: { type: 'agent', name: 'bot', input: 'hi', threadId: 'thread-locked' },
+    });
+    await send(socket!, {
+      type: 'resume',
+      id: 'r2',
+      payload: { name: 'bot', threadId: 'thread-locked', decisions: {} },
+    });
+    await send(socket!, {
+      type: 'run',
+      id: 'r3',
+      payload: { type: 'swarm', name: 'team', input: 'go', threadId: 'thread-locked' },
+    });
+
+    await vi.waitFor(() => expect(socket!.sent).toHaveLength(3));
+    expect(socket!.sent).toEqual(
+      ['r1', 'r2', 'r3'].map((id) => ({
+        type: 'error',
+        id,
+        error: "Access to thread 'thread-locked' is not allowed",
+      }))
+    );
+    expect(run).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
+    expect(swarmRun).not.toHaveBeenCalled();
+    expect(authorizeThread).toHaveBeenCalledWith({ userId: 'u1' }, 'thread-locked');
+
+    await send(socket!, {
+      type: 'run',
+      id: 'r4',
+      payload: { type: 'agent', name: 'bot', input: 'hi', threadId: 'thread-open' },
+    });
+    await vi.waitFor(() =>
+      expect(socket!.sent.at(-1)).toMatchObject({ id: 'r4', payload: { type: 'complete' } })
+    );
+    expect(run.mock.calls[0][1]).toMatchObject({ threadId: 'thread-open' });
+  });
+
+  it('holds WebSocket workflow and swarm runs to the limits', async () => {
+    const { upgradeWebSocket, sockets } = createUpgradeHelper();
+    const app = buildApp({
+      enableWebSocket: true,
+      websocket: { upgradeWebSocket },
+      limits: { swarmTimeout: 1500, workflowMaxIterations: 10, workflowMaxConcurrency: 2 },
+    });
+    const { socket } = await connect(app, sockets);
+
+    await send(socket!, {
+      type: 'run',
+      id: 'w',
+      payload: { type: 'workflow', name: 'pipeline', input: 'x' },
+    });
+    await vi.waitFor(() => expect(socket!.sent).toHaveLength(1));
+    await send(socket!, {
+      type: 'run',
+      id: 's',
+      payload: { type: 'swarm', name: 'team', input: 'go' },
+    });
+    await vi.waitFor(() => expect(socket!.sent).toHaveLength(2));
+
+    expect(workflowExecute.mock.calls[0][2]).toMatchObject({
+      maxIterations: 10,
+      maxConcurrency: 2,
+    });
+    expect(swarmRun.mock.calls[0][0]).toMatchObject({ timeout: 1500 });
+  });
+
+  it('hands WebSocket agent runs the deps built from the upgrade request', async () => {
+    const { upgradeWebSocket, sockets } = createUpgradeHelper();
+    const run = vi.fn().mockResolvedValue(runResult());
+    const app = buildApp(
+      {
+        enableWebSocket: true,
+        websocket: { upgradeWebSocket },
+        deps: (c) => ({ tenant: c.req.header('x-tenant') }),
+      },
+      { run }
+    );
+    const { socket } = await connect(app, sockets, { 'x-tenant': 'acme' });
+
+    await send(socket!, {
+      type: 'run',
+      id: 'r1',
+      payload: { type: 'agent', name: 'bot', input: 'hi', deps: { tenant: 'evil' } },
+    });
+    await vi.waitFor(() => expect(run).toHaveBeenCalled());
+    expect(run.mock.calls[0][1]).toMatchObject({ deps: { tenant: 'acme' } });
+  });
+
+  it('refuses the upgrade of a caller without a user under anonymous deny', async () => {
+    const { upgradeWebSocket, sockets } = createUpgradeHelper();
+    const app = buildApp({
+      enableWebSocket: true,
+      websocket: { upgradeWebSocket },
+      anonymous: 'deny',
+      auth: (c) => {
+        const user = c.req.header('x-user');
+        return user ? { userId: user } : undefined;
+      },
+    });
+
+    const refused = await app.request('/ws');
+    expect(refused.status).toBe(401);
+    expect(await refused.json()).toEqual({
+      error: { message: 'Authentication required', code: 'UNAUTHORIZED' },
+    });
+    expect(sockets).toHaveLength(0);
+
+    const allowed = await connect(app, sockets, { 'x-user': 'alice' });
+    expect(allowed.res.status).toBe(200);
+    expect(sockets).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      'deps',
+      {
+        deps: () => {
+          throw new Error('deps exploded');
+        },
+      },
+    ],
+    [
+      'authorizeThread',
+      {
+        authorizeThread: () => {
+          throw new Error('authorizeThread exploded');
+        },
+      },
+    ],
+  ] satisfies Array<[string, Partial<CogitatorAppOptions>]>)(
+    'answers a %s hook that throws during a run with an error frame and starts no run',
+    async (_hook, hooks) => {
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { upgradeWebSocket, sockets } = createUpgradeHelper();
+      const run = vi.fn().mockResolvedValue(runResult());
+      const app = buildApp(
+        { enableWebSocket: true, websocket: { upgradeWebSocket }, ...hooks },
+        { run }
+      );
+      const { socket } = await connect(app, sockets);
+
+      await send(socket!, {
+        type: 'run',
+        id: 'r1',
+        payload: { type: 'agent', name: 'bot', input: 'hi', threadId: 'thread-1' },
+      });
+      await vi.waitFor(() =>
+        expect(socket!.sent).toEqual([{ type: 'error', id: 'r1', error: 'Internal server error' }])
+      );
+      expect(run).not.toHaveBeenCalled();
+
+      await send(socket!, { type: 'ping', id: 'p1' });
+      await vi.waitFor(() => expect(socket!.sent.at(-1)).toEqual({ type: 'pong', id: 'p1' }));
+      expect(socket!.closed).toEqual([]);
+      consoleSpy.mockRestore();
+    }
+  );
+
   it('keeps accepting a path string for backwards compatibility', async () => {
     const app = new Hono<HonoEnv>();
     const { createWebSocketRoutes } = await import('../websocket/handler.js');
     app.route('/', createWebSocketRoutes('/socket'));
     expect((await app.request('/socket')).status).toBe(501);
+  });
+});
+
+describe('server contract', () => {
+  function threadMemory(count: number) {
+    const entries = Array.from({ length: count }, (_, at) => ({
+      id: `entry_${at + 1}`,
+      threadId: 'thread-1',
+      message: { role: 'user', content: `message ${at + 1}` },
+      tokenCount: 1,
+      createdAt: new Date(at + 1),
+    }));
+    return {
+      getThread: vi.fn(async () => ({ success: true, data: null })),
+      getEntries: vi.fn(async (query: { before?: Date; limit?: number }) => {
+        let data = entries;
+        if (query.before) data = data.filter((entry) => entry.createdAt < query.before!);
+        if (query.limit) data = data.slice(-query.limit);
+        return { success: true, data };
+      }),
+    };
+  }
+
+  function threadApp(memory: unknown, overrides: Partial<CogitatorAppOptions> = {}) {
+    return buildApp(overrides, { getMemory: async () => memory });
+  }
+
+  it('refuses limits that are not positive integers when the app is built', () => {
+    expect(() => buildApp({ limits: { swarmTimeout: 0 } })).toThrow(/limits\.swarmTimeout/);
+    expect(() => buildApp({ limits: { workflowMaxIterations: 1.5 } })).toThrow(
+      /limits\.workflowMaxIterations/
+    );
+  });
+
+  it('holds swarm runs and streams to the swarm timeout limit', async () => {
+    const app = buildApp({ limits: { swarmTimeout: 1000 } });
+
+    await app.request('/swarms/team/run', post({ input: 'go', timeout: 60_000 }));
+    await app.request('/swarms/team/run', post({ input: 'go', timeout: 500 }));
+    await app.request('/swarms/team/run', post({ input: 'go' }));
+    await (await app.request('/swarms/team/stream', post({ input: 'go', timeout: 60_000 }))).text();
+
+    expect(swarmRun.mock.calls.map(([options]) => options.timeout)).toEqual([
+      1000, 500, 1000, 1000,
+    ]);
+  });
+
+  it('holds workflow runs and streams to the workflow limits', async () => {
+    const app = buildApp({ limits: { workflowMaxIterations: 10, workflowMaxConcurrency: 2 } });
+
+    await app.request('/workflows/pipeline/run', post({ options: { maxIterations: 50 } }));
+    await app.request('/workflows/pipeline/run', post({ options: { maxConcurrency: 1 } }));
+    await (await app.request('/workflows/pipeline/stream', post({}))).text();
+
+    expect(workflowExecute.mock.calls.map(([, , options]) => options)).toMatchObject([
+      { maxIterations: 10, maxConcurrency: 2 },
+      { maxIterations: 10, maxConcurrency: 1 },
+      { maxIterations: 10, maxConcurrency: 2 },
+    ]);
+  });
+
+  it('shows the limits in the OpenAPI spec', async () => {
+    const app = buildApp({ enableSwagger: true, limits: { swarmTimeout: 1000 } });
+    const spec = await (await app.request('/openapi.json')).text();
+    expect(spec).toContain("Held to 1000 ms, the server's limit");
+  });
+
+  it('turns away anonymous callers under anonymous deny, leaving health and docs open', async () => {
+    const app = buildApp({
+      enableSwagger: true,
+      anonymous: 'deny',
+      auth: (c) => {
+        const user = c.req.header('x-user');
+        return user ? { userId: user } : undefined;
+      },
+    });
+
+    for (const path of ['/health', '/ready', '/openapi.json', '/docs']) {
+      expect((await app.request(path)).status).toBe(200);
+    }
+    const refused = await app.request('/agents/bot/run', post({ input: 'hi' }));
+    expect(refused.status).toBe(401);
+    expect(await refused.json()).toEqual({
+      error: { message: 'Authentication required', code: 'UNAUTHORIZED' },
+    });
+    expect((await app.request('/agents')).status).toBe(401);
+
+    const allowed = await app.request('/agents', { headers: { 'x-user': 'alice' } });
+    expect(allowed.status).toBe(200);
+  });
+
+  it('refuses the thread routes on threads authorizeThread keeps the caller from', async () => {
+    const memory = { ...threadMemory(2), clearThread: vi.fn(), addEntry: vi.fn() };
+    const app = threadApp(memory, { authorizeThread: (_auth, id) => id !== 'thread-1' });
+
+    const answers = [
+      await app.request('/threads/thread-1'),
+      await app.request('/threads/thread-1', { method: 'DELETE' }),
+      await app.request('/threads/thread-1/messages', post({ role: 'user', content: 'hi' })),
+    ];
+
+    for (const res of answers) {
+      expect(res.status).toBe(403);
+      expect((await res.json()).error.code).toBe('THREAD_FORBIDDEN');
+    }
+    expect(memory.getThread).not.toHaveBeenCalled();
+    expect(memory.clearThread).not.toHaveBeenCalled();
+    expect(memory.addEntry).not.toHaveBeenCalled();
+  });
+
+  it('refuses swarm runs on threads authorizeThread keeps the caller from', async () => {
+    const app = buildApp({ authorizeThread: () => false });
+    const res = await app.request('/swarms/team/stream', post({ input: 'go', threadId: 't' }));
+    expect(res.status).toBe(403);
+    expect(swarmRun).not.toHaveBeenCalled();
+  });
+
+  it('reads a thread page by page, newest first', async () => {
+    const app = threadApp(threadMemory(5));
+
+    const first = await (await app.request('/threads/thread-1?limit=2')).json();
+    expect(first.messages.map((m: { content: string }) => m.content)).toEqual([
+      'message 4',
+      'message 5',
+    ]);
+    expect(typeof first.nextCursor).toBe('string');
+
+    const second = await (
+      await app.request(`/threads/thread-1?limit=2&cursor=${first.nextCursor}`)
+    ).json();
+    expect(second.messages.map((m: { content: string }) => m.content)).toEqual([
+      'message 2',
+      'message 3',
+    ]);
+
+    const last = await (
+      await app.request(`/threads/thread-1?limit=2&cursor=${second.nextCursor}`)
+    ).json();
+    expect(last.messages.map((m: { content: string }) => m.content)).toEqual(['message 1']);
+    expect(last).not.toHaveProperty('nextCursor');
+  });
+
+  it('reads a repeated page parameter by its last value and an empty one as absent', async () => {
+    const app = threadApp(threadMemory(5));
+
+    const repeated = await (await app.request('/threads/thread-1?limit=1&limit=2')).json();
+    expect(repeated.messages.map((m: { content: string }) => m.content)).toEqual([
+      'message 4',
+      'message 5',
+    ]);
+
+    const empty = await (await app.request('/threads/thread-1?limit=&cursor=')).json();
+    expect(empty.messages).toHaveLength(5);
+    expect(empty).not.toHaveProperty('nextCursor');
+  });
+
+  it('answers an unknown path with 404 under allow and 401 under deny, in the envelope', async () => {
+    const allow = await buildApp().request('/nowhere', post({ input: 'hi' }));
+    expect(allow.status).toBe(404);
+    expect(await allow.json()).toEqual({ error: { message: 'Not found', code: 'NOT_FOUND' } });
+
+    const deny = buildApp({
+      anonymous: 'deny',
+      auth: (c) => {
+        const user = c.req.header('x-user');
+        return user ? { userId: user } : undefined;
+      },
+    });
+    const refused = await deny.request('/nowhere');
+    expect(refused.status).toBe(401);
+    expect(await refused.json()).toEqual({
+      error: { message: 'Authentication required', code: 'UNAUTHORIZED' },
+    });
+
+    const known = await deny.request('/nowhere', { headers: { 'x-user': 'alice' } });
+    expect(known.status).toBe(404);
+    expect((await known.json()).error.code).toBe('NOT_FOUND');
+  });
+
+  it('refuses a thread page query it cannot read', async () => {
+    const app = threadApp(threadMemory(1));
+    for (const query of ['limit=0', 'limit=abc', 'cursor=bogus']) {
+      const res = await app.request(`/threads/thread-1?${query}`);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error.code).toBe('INVALID_INPUT');
+    }
+  });
+
+  it('answers a run error with Retry-After and streams its code', async () => {
+    const run = vi.fn().mockRejectedValue(
+      new CogitatorError({
+        message: 'slow down',
+        code: ErrorCode.LLM_RATE_LIMITED,
+        retryAfter: 1500,
+      })
+    );
+    const app = buildApp({}, { run });
+
+    const res = await app.request('/agents/bot/run', post({ input: 'hi' }));
+    expect(res.status).toBe(429);
+    expect(res.headers.get('retry-after')).toBe('2');
+    expect(await res.json()).toEqual({
+      error: { message: 'slow down', code: ErrorCode.LLM_RATE_LIMITED },
+    });
+
+    const stream = await app.request('/agents/bot/stream', post({ input: 'hi' }));
+    expect(parseSSE(await stream.text()).at(-1)).toEqual({
+      type: 'error',
+      message: 'slow down',
+      code: ErrorCode.LLM_RATE_LIMITED,
+    });
+  });
+
+  it('answers an error outside the routes with the envelope and Retry-After', async () => {
+    const app = buildApp({
+      deps: () => {
+        throw new CogitatorError({
+          message: 'provider down',
+          code: ErrorCode.LLM_UNAVAILABLE,
+          retryAfter: 30_000,
+        });
+      },
+    });
+    const res = await app.request('/agents/bot/run', post({ input: 'hi' }));
+    expect(res.status).toBe(503);
+    expect(res.headers.get('retry-after')).toBe('30');
+    expect((await res.json()).error.code).toBe(ErrorCode.LLM_UNAVAILABLE);
+  });
+
+  it('answers a swarm that ran out of time with 504 RUN_TIMEOUT', async () => {
+    swarmRun.mockRejectedValue(
+      Object.assign(new Error('Swarm timed out after 1000ms'), { name: 'SwarmTimeoutError' })
+    );
+    const res = await buildApp().request('/swarms/team/run', post({ input: 'go' }));
+    expect(res.status).toBe(504);
+    expect((await res.json()).error.code).toBe('RUN_TIMEOUT');
+  });
+
+  it('hands agent runs, streams and resumes the deps the server builds, never the body', async () => {
+    const run = vi.fn().mockResolvedValue(runResult());
+    const resume = vi.fn().mockResolvedValue(runResult());
+    const app = buildApp(
+      { deps: async (c) => ({ tenant: c.req.header('x-tenant') }) },
+      { run, resume }
+    );
+    const headers = { 'Content-Type': 'application/json', 'x-tenant': 'acme' };
+
+    await app.request(
+      '/agents/bot/run',
+      post({ input: 'hi', deps: { tenant: 'evil' } }, { headers })
+    );
+    await (await app.request('/agents/bot/stream', post({ input: 'hi' }, { headers }))).text();
+    await app.request('/agents/bot/resume', post({ threadId: 't', decisions: {} }, { headers }));
+
+    expect(run.mock.calls.map(([, options]) => options.deps)).toEqual([
+      { tenant: 'acme' },
+      { tenant: 'acme' },
+    ]);
+    expect(resume.mock.calls[0][2]).toMatchObject({ deps: { tenant: 'acme' } });
   });
 });

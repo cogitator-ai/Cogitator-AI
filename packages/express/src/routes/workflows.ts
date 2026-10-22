@@ -6,7 +6,7 @@ import type {
   WorkflowListResponse,
   WorkflowRunResponse,
 } from '../types.js';
-import { parseWorkflowRunRequest } from '@cogitator-ai/server-shared';
+import { parseWorkflowRunRequest, workflowOptionsWithin } from '@cogitator-ai/server-shared';
 import { ExpressStreamWriter, setupSSEHeaders, generateId } from '../streaming/index.js';
 import {
   handleRouteError,
@@ -61,19 +61,14 @@ export function createWorkflowRoutes(ctx: RouteContext): Router {
         const executor = new WorkflowExecutor(ctx.cogitator);
 
         const result = await executor.execute(workflow, body.input, {
-          ...body.options,
+          ...workflowOptionsWithin(body.options ?? {}, ctx.config.limits),
           signal: abortController.signal,
         });
 
         if (abortController.signal.aborted) return;
 
         if (result.error) {
-          sendError(
-            res,
-            500,
-            `Workflow failed: ${resolveError(result.error, 'Workflow run').message}`,
-            'WORKFLOW_FAILED'
-          );
+          handleRouteError(res, result.error, 'Workflow run error');
           return;
         }
 
@@ -131,7 +126,7 @@ export function createWorkflowRoutes(ctx: RouteContext): Router {
         writer.start(messageId);
 
         const result = await executor.execute(workflow, body.input, {
-          ...body.options,
+          ...workflowOptionsWithin(body.options ?? {}, ctx.config.limits),
           signal: abortController.signal,
           onNodeStart: (node: string) => {
             writer.workflowEvent('node_started', { nodeName: node, timestamp: Date.now() });
@@ -151,10 +146,8 @@ export function createWorkflowRoutes(ctx: RouteContext): Router {
         });
 
         if (result.error) {
-          writer.error(
-            `Workflow failed: ${resolveError(result.error, 'Workflow run').message}`,
-            'WORKFLOW_FAILED'
-          );
+          const failure = resolveError(result.error, 'Workflow stream error');
+          writer.error(failure.message, failure.code);
           return;
         }
 

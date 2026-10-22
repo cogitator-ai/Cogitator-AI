@@ -5,7 +5,7 @@ import type {
   RunResult,
   ToolApprovalDecision,
 } from '@cogitator-ai/types';
-import type { AgentRunResponse, ContextPolicy } from '@cogitator-ai/server-shared';
+import type { AgentRunResponse, AnonymousPolicy, ContextPolicy } from '@cogitator-ai/server-shared';
 import type { PendingApproval } from './streaming/protocol.js';
 
 export type { Message, ToolCall, ToolResult, RunResult, ToolApprovalDecision, PendingApproval };
@@ -33,7 +33,28 @@ export interface AgentInput {
   threadId?: string;
 }
 
-export interface ChatHandlerOptions {
+/** What every handler takes to keep the server contract of the Cogitator adapters */
+export interface ServerContractOptions {
+  /**
+   * Whether a caller without a user id (no `userId` in what `beforeRun` returned) may run
+   * the agent: `'allow'` (the default) lets them, `'deny'` answers `401 UNAUTHORIZED`
+   */
+  anonymous?: AnonymousPolicy;
+  /**
+   * Decides whether the request may touch the thread it names, on top of the ownership check
+   * of core: called with the request and the thread id, answering `false` refuses it with
+   * `403 THREAD_FORBIDDEN` before the run starts
+   */
+  authorizeThread?: (req: Request, threadId: string) => boolean | Promise<boolean>;
+  /**
+   * The run's `deps` (`context.deps` of its tools) for the request, such as a database client
+   * for the signed-in tenant. Never read from the body. What `beforeRun` returns comes after,
+   * so a `deps` it returns wins
+   */
+  deps?: (req: Request) => unknown;
+}
+
+export interface ChatHandlerOptions extends ServerContractOptions {
   parseInput?: (req: Request) => Promise<ChatInput>;
   beforeRun?: (req: Request, input: ChatInput) => Promise<Record<string, unknown> | void>;
   afterRun?: (result: RunResult) => Promise<void>;
@@ -52,7 +73,7 @@ export interface ChatHandlerOptions {
   sseHeartbeatMs?: number;
 }
 
-export interface AgentHandlerOptions {
+export interface AgentHandlerOptions extends ServerContractOptions {
   parseInput?: (req: Request) => Promise<AgentInput>;
   beforeRun?: (req: Request, input: AgentInput) => Promise<Record<string, unknown> | void>;
   afterRun?: (result: RunResult) => Promise<void>;
@@ -78,7 +99,7 @@ export interface ResumeInput extends ResumeDecisions {
   threadId: string;
 }
 
-export interface ResumeHandlerOptions {
+export interface ResumeHandlerOptions extends ServerContractOptions {
   parseInput?: (req: Request) => Promise<ResumeInput>;
   /** Return run options such as `{ userId }`: only the user the run belongs to may resume it */
   beforeRun?: (req: Request, input: ResumeInput) => Promise<Record<string, unknown> | void>;

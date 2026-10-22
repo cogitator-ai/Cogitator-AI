@@ -18,13 +18,27 @@ const agent = { name: 'assistant', config: { tools: [] } } as unknown as Agent;
  * run is `createAgentHandler`, a resume `createResumeHandler`. The cases for those two run
  * against them; the streaming cases run against `createChatHandler` in the next block.
  */
+/** The handler options a case's server options map to */
+function contractOf(testCase: ConformanceCase) {
+  const server = testCase.server ?? {};
+  const { anonymous, forbiddenThreads: forbidden, deps } = server;
+  return {
+    ...(anonymous && { anonymous }),
+    ...(forbidden && {
+      authorizeThread: (_req: Request, threadId: string) => !forbidden.includes(threadId),
+    }),
+    ...(deps && { deps: () => deps }),
+  };
+}
+
 const handlers = {
   agentRun: (runtime: ConformanceRuntime, testCase: ConformanceCase) =>
     createAgentHandler(runtime as unknown as Cogitator, agent, {
       acceptContext: testCase.server?.acceptContext,
+      ...contractOf(testCase),
     }),
-  agentResume: (runtime: ConformanceRuntime) =>
-    createResumeHandler(runtime as unknown as Cogitator, agent),
+  agentResume: (runtime: ConformanceRuntime, testCase: ConformanceCase) =>
+    createResumeHandler(runtime as unknown as Cogitator, agent, contractOf(testCase)),
 } as const;
 
 function isHandled(testCase: ConformanceCase): testCase is ConformanceCase & {
@@ -37,7 +51,7 @@ describe('server protocol conformance', () => {
   it.each(
     CONFORMANCE_CASES.filter(isHandled).map((testCase) => [testCase.name, testCase] as const)
   )('%s', async (_name, testCase) => {
-    const runtime = new ConformanceRuntime();
+    const runtime = new ConformanceRuntime(testCase);
     const handler = handlers[testCase.route](runtime, testCase);
     const res = await handler(
       new Request('http://localhost/api', {
@@ -47,8 +61,11 @@ describe('server protocol conformance', () => {
       })
     );
     const body = await res.text();
-    const code = res.ok ? undefined : (JSON.parse(body) as { code?: string }).code;
-    expect(checkConformance(testCase, { status: res.status, code, body }, runtime)).toEqual([]);
+    const code = res.ok ? undefined : (JSON.parse(body) as { error: { code: string } }).error.code;
+    const headers = Object.fromEntries(res.headers);
+    expect(
+      checkConformance(testCase, { status: res.status, code, body, headers }, runtime)
+    ).toEqual([]);
   });
 });
 

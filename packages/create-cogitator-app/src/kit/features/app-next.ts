@@ -177,12 +177,20 @@ const THREAD_ROUTE_TS = code`
       const thread = await assertThreadAccess(memory, id, await currentUser());
       if (!thread) return Response.json({ messages: [] });
     } catch (error) {
-      if (error instanceof CogitatorError) return Response.json({ error: error.message }, { status: 403 });
+      if (error instanceof CogitatorError) {
+        return Response.json({ error: { message: error.message, code: error.code } }, { status: 403 });
+      }
       throw error;
     }
 
     const entries = await memory.getEntries({ threadId: id, includeToolCalls: true });
-    if (!entries.success) return Response.json({ error: entries.error }, { status: 500 });
+    if (!entries.success) {
+      console.error('[thread] Could not read the thread:', entries.error);
+      return Response.json(
+        { error: { message: 'Internal server error', code: 'INTERNAL_ERROR' } },
+        { status: 500 }
+      );
+    }
 
     const messages: ChatMessage[] = entries.data
       .filter((entry) => entry.message.role === 'user' || entry.message.role === 'assistant')

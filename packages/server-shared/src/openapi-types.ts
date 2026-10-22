@@ -46,7 +46,7 @@ export interface SwaggerConfig {
    * declares an optional bearer token, so Swagger UI offers to send one.
    */
   auth?: boolean;
-  /** The operator's run limits: the spec shows them as the maximums of the request fields */
+  /** The operator's run limits: the spec shows them as the defaults of the fields they cap */
   limits?: RunLimits;
 }
 

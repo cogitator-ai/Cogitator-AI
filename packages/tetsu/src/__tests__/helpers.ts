@@ -3,6 +3,7 @@ import { Agent, tool } from '@cogitator-ai/core';
 import type { Cogitator } from '@cogitator-ai/core';
 import type {
   MemoryAdapter,
+  MemoryQueryOptions,
   MemoryResult,
   ResumeOptions,
   RunOptions,
@@ -55,10 +56,35 @@ export function fakeMemory(entries: MemoryEntry[] = []) {
           },
         })
     ),
-    getEntries: mock(() => Promise.resolve({ success: true as const, data: entries })),
+    getEntries: mock((_query: MemoryQueryOptions) =>
+      Promise.resolve({ success: true as const, data: entries })
+    ),
     addEntry: mock(() => Promise.resolve({ success: true as const, data: {} })),
     clearThread: mock(() => Promise.resolve({ success: true as const, data: undefined })),
   };
+}
+
+/**
+ * A memory whose thread holds `count` messages, one a millisecond, and reads them as an
+ * adapter does: before a time, the last `limit` of them.
+ */
+export function pagedMemory(count: number) {
+  const entries = Array.from({ length: count }, (_, at) => ({
+    id: `entry-${at + 1}`,
+    threadId: 'thread-1',
+    message: { role: 'user' as const, content: `message ${at + 1}` },
+    tokenCount: 1,
+    createdAt: new Date(at + 1),
+  }));
+  const memory = fakeMemory();
+  memory.getEntries.mockImplementation((query) => {
+    let data = entries.filter((entry) => entry.threadId === query.threadId);
+    const before = query.before;
+    if (before) data = data.filter((entry) => entry.createdAt < before);
+    if (query.limit) data = data.slice(-query.limit);
+    return Promise.resolve({ success: true as const, data });
+  });
+  return memory;
 }
 
 export function lastRunOptions(run: { mock: { calls: Array<[Agent, RunOptions]> } }): RunOptions {

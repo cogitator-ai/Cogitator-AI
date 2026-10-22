@@ -3,7 +3,13 @@ import type { CallerHook } from './auth.js';
 import type { z } from 'zod';
 import type { Agent, Cogitator } from '@cogitator-ai/core';
 import type { SwarmConfig, Workflow, WorkflowState } from '@cogitator-ai/types';
-import type { ContextPolicy, ThreadMessageRole } from '@cogitator-ai/server-shared';
+import type {
+  AnonymousPolicy,
+  AuthorizeThread as SharedAuthorizeThread,
+  ContextPolicy,
+  RunLimits,
+  ThreadMessageRole,
+} from '@cogitator-ai/server-shared';
 import type {
   AddMessageBody,
   AgentListResponse,
@@ -44,7 +50,8 @@ export interface AuthContext {
  * Return the caller to let the request through, or `undefined` to refuse it
  * with `401 UNAUTHORIZED`; any other error it throws or rejects with (an expired
  * token, say) refuses it with `401` too. Throw an `HttpError` to answer with
- * another status. Return an empty object to accept anonymous callers.
+ * another status. Return an empty object to accept anonymous callers, unless
+ * `anonymous` is `'deny'`.
  */
 export type Authenticate = (
   ctx: BaseCtx
@@ -57,10 +64,13 @@ export type Authenticate = (
  * Checked on the thread routes and on every run, stream and WebSocket run
  * that names a `threadId`. A refusal answers `403 THREAD_FORBIDDEN`.
  */
-export type AuthorizeThread = (
-  auth: AuthContext | undefined,
-  threadId: string
-) => boolean | Promise<boolean>;
+export type AuthorizeThread = SharedAuthorizeThread<AuthContext>;
+
+/**
+ * Builds the `deps` of the agent runs and resumes of a request, which tools get as
+ * `context.deps` and the model never sees: a database handle, a tenant, a client.
+ */
+export type DepsBuilder = (ctx: BaseCtx) => unknown | Promise<unknown>;
 
 /**
  * A signal that ends open SSE streams and WebSocket connections, such as
@@ -85,7 +95,28 @@ export interface CogitatorDeps {
    * `secured()` from `@tetsujs/openapi` to document it.
    */
   auth?: Authenticate | CallerHook;
+  /**
+   * Whether a caller without a `userId` may use the API: `'allow'` (the default) lets them
+   * in, `'deny'` answers `401 UNAUTHORIZED`, on every route but `/health` and `/ready` and on
+   * the WebSocket handshake. It covers callers `auth` returned `{}` for and, without `auth`,
+   * every caller. `auth` returning `undefined` answers `401` under either policy.
+   */
+  anonymous?: AnonymousPolicy;
   authorizeThread?: AuthorizeThread;
+  /**
+   * Caps on what a request may ask a run for. A swarm run times out after at most
+   * `swarmTimeout` ms and a workflow run takes at most `workflowMaxIterations` iterations and
+   * `workflowMaxConcurrency` nodes at once, over HTTP, SSE and WebSocket alike. A request that
+   * asks for more is held to the cap, one that asks for nothing gets it. Each limit must be a
+   * positive integer, or building the controller throws.
+   */
+  limits?: RunLimits;
+  /**
+   * Builds the `deps` of the agent runs and resumes of a request (`RunOptions.deps`). Called
+   * for each HTTP run with its request context, and once for a WebSocket connection with its
+   * handshake, whose runs all get what it built. Deps never come from the request body.
+   */
+  deps?: DepsBuilder;
   /** Serve the WebSocket endpoint. Default: `false`. */
   websocket?: boolean | WebSocketOptions;
   /** Ends streams and sockets when the server starts draining. */

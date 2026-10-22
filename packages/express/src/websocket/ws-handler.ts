@@ -10,7 +10,10 @@ import type {
   WebSocketConfig,
 } from '../types.js';
 import {
+  admitCaller,
+  authorizeThreadAccess,
   isJsonObject,
+  type AuthorizeThread,
   parseResumeRequest,
   parseRunRequest,
   toAgentRunResponse,
@@ -38,6 +41,8 @@ const MESSAGE_TYPES: ReadonlySet<string> = new Set([
 
 interface ClientState {
   id: string;
+  /** The upgrade request, which `websocket.deps` builds a run's deps from */
+  request: IncomingMessage;
   auth?: AuthContext;
   subscriptions: Set<string>;
   abortController?: AbortController;
@@ -57,23 +62,35 @@ interface ResumePayload extends ResumeRequestBody {
 
 type AgentRunControls = Pick<
   RunOptions,
-  'userId' | 'signal' | 'stream' | 'onToken' | 'onReasoning' | 'onToolCall' | 'onToolResult'
+  | 'userId'
+  | 'signal'
+  | 'stream'
+  | 'onToken'
+  | 'onReasoning'
+  | 'onToolCall'
+  | 'onToolResult'
+  | 'onRunStart'
+  | 'deps'
 >;
 
 /**
- * Run events fan out only to subscribers acting as the user who started the run,
- * so one user's prompts and results never reach another user's socket.
+ * The subscribers of each channel, with what authentication returned for them. A run's events
+ * reach a subscriber only when it acts as the user who started the run and `authorizeThread`
+ * lets it on the run's thread, so a caller never sees the prompts and results of a run it
+ * could not open itself.
  */
 class ChannelHub {
-  private readonly channels = new Map<string, Map<WebSocketType, string | undefined>>();
+  private readonly channels = new Map<string, Map<WebSocketType, AuthContext | undefined>>();
 
-  subscribe(ws: WebSocketType, channel: string, userId: string | undefined): void {
+  constructor(private readonly authorizeThread: AuthorizeThread<AuthContext> | undefined) {}
+
+  subscribe(ws: WebSocketType, channel: string, auth: AuthContext | undefined): void {
     let members = this.channels.get(channel);
     if (!members) {
       members = new Map();
       this.channels.set(channel, members);
     }
-    members.set(ws, userId);
+    members.set(ws, auth);
   }
 
   unsubscribe(ws: WebSocketType, channel: string): void {
@@ -83,20 +100,81 @@ class ChannelHub {
     if (members.size === 0) this.channels.delete(channel);
   }
 
-  publish(
+  /** The fan-out of one run's events to the subscribers of `channel` */
+  broadcast(
     channel: string,
-    response: WebSocketResponse,
-    origin: { ws: WebSocketType; userId: string | undefined }
-  ): void {
-    const members = this.channels.get(channel);
+    origin: { ws: WebSocketType; auth: AuthContext | undefined }
+  ): RunBroadcast {
+    return new RunBroadcast(
+      () => this.channels.get(channel),
+      channel,
+      origin,
+      this.authorizeThread
+    );
+  }
+}
+
+/**
+ * Sends one run's events to the subscribers allowed to see them. Whether a subscriber may is
+ * asked of `authorizeThread` once per run, with the run's thread, and its events wait for the
+ * answer in the order they were published. A subscriber the authorizer refuses, or throws for,
+ * gets none of them, and with an authorizer set a run whose thread is not known yet is shown
+ * to nobody.
+ */
+class RunBroadcast {
+  private threadId: string | undefined;
+  private readonly deliveries = new Map<WebSocketType, Promise<boolean>>();
+
+  constructor(
+    private readonly members: () => ReadonlyMap<WebSocketType, AuthContext | undefined> | undefined,
+    private readonly channel: string,
+    private readonly origin: { ws: WebSocketType; auth: AuthContext | undefined },
+    private readonly authorizeThread: AuthorizeThread<AuthContext> | undefined
+  ) {}
+
+  /** Names the thread the run is on, once it is known */
+  onThread(threadId: string): void {
+    this.threadId = threadId;
+  }
+
+  publish(response: WebSocketResponse): void {
+    const members = this.members();
     if (!members) return;
-    for (const [member, userId] of members) {
-      if (member !== origin.ws && userId === origin.userId) {
-        sendResponse(member, { ...response, channel });
-      }
+    for (const [member, auth] of members) {
+      if (member === this.origin.ws || auth?.userId !== this.origin.auth?.userId) continue;
+      const admitted = this.deliveries.get(member) ?? this.admit(auth);
+      this.deliveries.set(
+        member,
+        admitted.then((allowed) => {
+          if (allowed) sendResponse(member, { ...response, channel: this.channel });
+          return allowed;
+        })
+      );
+    }
+  }
+
+  private async admit(auth: AuthContext | undefined): Promise<boolean> {
+    if (!this.authorizeThread) return true;
+    if (this.threadId === undefined) return false;
+    try {
+      return await new Promise<boolean>((resolve, reject) => {
+        const timer = setTimeout(() => resolve(false), SUBSCRIBER_AUTHORIZATION_MS);
+        authorizeThreadAccess(this.authorizeThread, auth, this.threadId)
+          .then((refusal) => resolve(refusal === undefined), reject)
+          .finally(() => clearTimeout(timer));
+      });
+    } catch (error) {
+      console.error('[CogitatorServer] authorizeThread failed for a WebSocket subscriber:', error);
+      return false;
     }
   }
 }
+
+/**
+ * How long `authorizeThread` may take to answer for a subscriber before it counts as a refusal,
+ * so a hook that hangs never holds the run's events for the subscriber in memory
+ */
+const SUBSCRIBER_AUTHORIZATION_MS = 5000;
 
 function parseMessage(raw: string): WebSocketMessage | null {
   let data: unknown;
@@ -148,8 +226,8 @@ function isModuleNotFound(error: unknown): boolean {
  * Attach the Cogitator WebSocket protocol to an HTTP server.
  *
  * When `ctx.config.auth` is set it is called with the upgrade request; connections whose
- * auth function throws are rejected with 401. Returns `null` when the optional `ws`
- * package is not installed.
+ * auth function throws, or that carry no user id under `anonymous: 'deny'`, are rejected
+ * with 401. Returns `null` when the optional `ws` package is not installed.
  */
 export async function setupWebSocket(
   server: HttpServer,
@@ -166,25 +244,31 @@ export async function setupWebSocket(
   }
 
   const authFn = ctx.config.auth;
+  const anonymous = ctx.config.anonymous;
   const authResults = new WeakMap<IncomingMessage, AuthContext | undefined>();
-  const hub = new ChannelHub();
+  const hub = new ChannelHub(ctx.config.authorizeThread);
   const path = config.path || `${ctx.config.basePath}/ws`;
 
   const wss = new wsModule.WebSocketServer({
     server,
     path,
     maxPayload: config.maxPayloadSize || 1024 * 1024,
-    verifyClient: authFn
-      ? (info, callback) => {
-          Promise.resolve()
-            .then(() => authFn(info.req as Request))
-            .then((auth) => {
-              authResults.set(info.req, auth);
-              callback(true);
-            })
-            .catch(() => callback(false, 401, 'Unauthorized'));
-        }
-      : undefined,
+    verifyClient:
+      authFn || anonymous === 'deny'
+        ? (info, callback) => {
+            Promise.resolve()
+              .then(() => authFn?.(info.req as Request))
+              .then((auth) => {
+                if (admitCaller(auth?.userId, anonymous)) {
+                  callback(false, 401, 'Unauthorized');
+                  return;
+                }
+                authResults.set(info.req, auth);
+                callback(true);
+              })
+              .catch(() => callback(false, 401, 'Unauthorized'));
+          }
+        : undefined,
   });
 
   const pingInterval = config.pingInterval || 30000;
@@ -192,6 +276,7 @@ export async function setupWebSocket(
   wss.on('connection', (ws: WebSocketType, req: IncomingMessage) => {
     const clientState: ClientState = {
       id: generateId('ws'),
+      request: req,
       auth: authResults.get(req),
       subscriptions: new Set(),
     };
@@ -217,7 +302,7 @@ export async function setupWebSocket(
         sendResponse(ws, { type: 'error', error: 'Invalid message' });
         return;
       }
-      void handleMessage(ws, message, ctx, clientState, hub);
+      void handleMessage(ws, message, ctx, config, clientState, hub);
     });
 
     const cleanup = () => {
@@ -244,6 +329,7 @@ async function handleMessage(
   ws: WebSocketType,
   message: WebSocketMessage,
   ctx: RouteContext,
+  config: WebSocketConfig,
   state: ClientState,
   hub: ChannelHub
 ): Promise<void> {
@@ -267,7 +353,7 @@ async function handleMessage(
         break;
       }
       state.subscriptions.add(channel);
-      hub.subscribe(ws, channel, state.auth?.userId);
+      hub.subscribe(ws, channel, state.auth);
       sendResponse(ws, { type: 'subscribed', id: message.id, channel });
       break;
     }
@@ -281,11 +367,11 @@ async function handleMessage(
       break;
 
     case 'run':
-      await handleRun(ws, message, ctx, state, hub);
+      await handleRun(ws, message, ctx, config, state, hub);
       break;
 
     case 'resume':
-      await handleResume(ws, message, ctx, state, hub);
+      await handleResume(ws, message, ctx, config, state, hub);
       break;
 
     case 'stop':
@@ -299,6 +385,7 @@ async function handleRun(
   ws: WebSocketType,
   message: WebSocketMessage,
   ctx: RouteContext,
+  config: WebSocketConfig,
   state: ClientState,
   hub: ChannelHub
 ): Promise<void> {
@@ -318,7 +405,7 @@ async function handleRun(
     return;
   }
 
-  await streamAgentRun(ws, message, ctx, state, hub, payload.name, (agent, options) =>
+  await streamAgentRun(ws, message, ctx, config, state, hub, payload, (agent, options) =>
     ctx.cogitator.run(agent, {
       ...options,
       input: payload.input,
@@ -332,6 +419,7 @@ async function handleResume(
   ws: WebSocketType,
   message: WebSocketMessage,
   ctx: RouteContext,
+  config: WebSocketConfig,
   state: ClientState,
   hub: ChannelHub
 ): Promise<void> {
@@ -342,7 +430,7 @@ async function handleResume(
     return;
   }
 
-  await streamAgentRun(ws, message, ctx, state, hub, payload.name, (agent, options) =>
+  await streamAgentRun(ws, message, ctx, config, state, hub, payload, (agent, options) =>
     ctx.cogitator.resume(agent, payload.threadId, {
       ...options,
       decisions: payload.decisions,
@@ -355,11 +443,13 @@ async function streamAgentRun(
   ws: WebSocketType,
   message: WebSocketMessage,
   ctx: RouteContext,
+  config: WebSocketConfig,
   state: ClientState,
   hub: ChannelHub,
-  name: string,
+  target: { name: string; threadId?: string },
   execute: (agent: Agent, options: AgentRunControls) => Promise<RunResult>
 ): Promise<void> {
+  const { name } = target;
   const agent = Object.hasOwn(ctx.agents, name) ? ctx.agents[name] : undefined;
   if (!agent) {
     sendResponse(ws, {
@@ -370,15 +460,37 @@ async function streamAgentRun(
     return;
   }
 
+  let deps: { deps?: unknown };
+  try {
+    const refusal = await authorizeThreadAccess(
+      ctx.config.authorizeThread,
+      state.auth,
+      target.threadId
+    );
+    if (refusal) {
+      sendResponse(ws, { type: 'error', id: message.id, error: refusal.message });
+      return;
+    }
+    deps = config.deps ? { deps: await config.deps(state.request) } : {};
+  } catch (error) {
+    sendResponse(ws, {
+      type: 'error',
+      id: message.id,
+      error: resolveError(error, 'WebSocket run').message,
+    });
+    return;
+  }
+
   state.abortController?.abort();
   const controller = new AbortController();
   state.abortController = controller;
 
-  const channel = `agent:${name}`;
+  const broadcast = hub.broadcast(`agent:${name}`, { ws, auth: state.auth });
+  if (target.threadId !== undefined) broadcast.onThread(target.threadId);
   const emit = (eventPayload: Record<string, unknown>) => {
     const response: WebSocketResponse = { type: 'event', id: message.id, payload: eventPayload };
     sendResponse(ws, response);
-    hub.publish(channel, response, { ws, userId: state.auth?.userId });
+    broadcast.publish(response);
   };
 
   try {
@@ -386,6 +498,10 @@ async function streamAgentRun(
       userId: state.auth?.userId,
       signal: controller.signal,
       stream: true,
+      ...deps,
+      onRunStart: ({ threadId }) => {
+        broadcast.onThread(threadId);
+      },
       onToken: (token) => {
         emit({ type: 'token', delta: token });
       },

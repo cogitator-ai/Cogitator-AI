@@ -1,5 +1,6 @@
 import type { Response, NextFunction, Request } from 'express';
 import type { RateLimitConfig, CogitatorRequest } from '../types.js';
+import { sendFailure } from '../routes/utils.js';
 
 interface RateLimitEntry {
   count: number;
@@ -73,12 +74,11 @@ export function createRateLimitMiddleware(config: RateLimitConfig) {
     res.setHeader('X-RateLimit-Reset', resetSeconds.toString());
 
     if (entry.count > max) {
-      res.setHeader('Retry-After', resetSeconds.toString());
-      res.status(429).json({
-        error: {
-          message,
-          code: 'RATE_LIMIT_EXCEEDED',
-        },
+      sendFailure(res, {
+        status: 429,
+        code: 'RATE_LIMIT_EXCEEDED',
+        message,
+        retryAfter: resetSeconds,
       });
       return;
     }

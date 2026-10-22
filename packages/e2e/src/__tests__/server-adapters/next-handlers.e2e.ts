@@ -101,7 +101,7 @@ describe('Next.js Handlers', () => {
 
     expect(response.status).toBe(400);
     const body = await response.json();
-    expect(body.error).toBe('No user message provided');
+    expect(body.error).toEqual({ message: 'No user message provided', code: 'INVALID_INPUT' });
   });
 
   it('createAgentHandler rejects blank input before calling the model', async () => {

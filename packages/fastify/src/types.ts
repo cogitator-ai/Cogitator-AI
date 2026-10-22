@@ -2,15 +2,19 @@ import type { FastifyRequest } from 'fastify';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
 import {
   MAX_RUN_TIMEOUT_MS,
+  MAX_THREAD_PAGE_LIMIT,
   NON_BLANK_PATTERN,
   RUN_INPUT_SCHEMA,
 } from '@cogitator-ai/server-shared';
 import type {
   AgentRunResponse,
+  AnonymousPolicy,
+  AuthorizeThread,
   ContextPolicy,
   PendingApproval,
   ReadinessCheckStatus,
   ReadinessResponse,
+  RunLimits,
   ThreadMessageRole,
   WorkflowRunRequestBody,
 } from '@cogitator-ai/server-shared';
@@ -127,6 +131,29 @@ export interface CogitatorPluginOptions {
    * `assistant`. A `system` message is read by the model as operator instructions.
    */
   threadMessageRoles?: readonly ThreadMessageRole[];
+  /**
+   * Caps on what a request may ask a run for: a swarm's `timeout`, a workflow's
+   * `maxIterations` and `maxConcurrency`. A request asking for more gets the cap, one asking
+   * for nothing gets the cap too. Checked when the plugin is registered.
+   */
+  limits?: RunLimits;
+  /**
+   * Whether a caller without a user id may use the API. `'allow'` (the default) lets them
+   * in, `'deny'` answers `401 UNAUTHORIZED` on every route but health, ready and the docs.
+   */
+  anonymous?: AnonymousPolicy;
+  /**
+   * Decides whether a caller may touch a thread, on top of the ownership check of core:
+   * called with what `auth` returned and the thread a request names, on every route and
+   * WebSocket run that names one. Answering `false` refuses with `403 THREAD_FORBIDDEN`
+   * before any run starts.
+   */
+  authorizeThread?: AuthorizeThread<AuthContext>;
+  /**
+   * Builds the `deps` an agent run, stream or resume gets for a request (tools read them as
+   * `context.deps`), over HTTP and WebSocket. deps never come from the request body.
+   */
+  deps?: (request: FastifyRequest) => unknown | Promise<unknown>;
 }
 
 export interface CogitatorContext {
@@ -140,6 +167,12 @@ export interface CogitatorContext {
   acceptContext?: ContextPolicy;
   /** The resolved `threadMessageRoles` option. Default: `user` and `assistant` */
   threadMessageRoles?: readonly ThreadMessageRole[];
+  /** The checked `limits` option */
+  limits?: RunLimits;
+  /** The `authorizeThread` option */
+  authorizeThread?: AuthorizeThread<AuthContext>;
+  /** The `deps` option */
+  deps?: (request: FastifyRequest) => unknown | Promise<unknown>;
 }
 
 declare module 'fastify' {
@@ -180,6 +213,13 @@ export interface ThreadResponse {
   metadata?: Record<string, unknown>;
   createdAt: number;
   updatedAt: number;
+  /** Pass as `cursor` to read the page before this one, absent at the start of the thread */
+  nextCursor?: string;
+}
+
+export interface ThreadPageQuery {
+  limit?: number;
+  cursor?: string;
 }
 
 export interface AddMessageRequest {
@@ -424,33 +464,99 @@ export const AddMessageRequestSchema = {
   required: ['role', 'content'],
 } as const;
 
-export const WorkflowRunRequestSchema = {
+/**
+ * A field the operator may cap: a larger value is held to the cap rather than refused, so
+ * the schema gives the cap as the default and says so, without a `maximum`
+ */
+function limitedInteger(cap: number | undefined) {
+  return {
+    type: 'integer',
+    minimum: 1,
+    ...(cap !== undefined && {
+      default: cap,
+      description: `Held to ${cap}, the server's limit, which is also the default`,
+    }),
+  } as const;
+}
+
+/** The workflow run body, with the operator's limits on its options */
+export function workflowRunRequestSchema(limits?: RunLimits) {
+  return {
+    type: 'object',
+    properties: {
+      input: { type: 'object', additionalProperties: true },
+      options: {
+        type: 'object',
+        properties: {
+          maxConcurrency: limitedInteger(limits?.workflowMaxConcurrency),
+          maxIterations: limitedInteger(limits?.workflowMaxIterations),
+          checkpoint: {
+            type: 'boolean',
+            enum: [false],
+            description: 'Only `false`: the server keeps no checkpoint store',
+          },
+        },
+        additionalProperties: false,
+      },
+    },
+  } as const;
+}
+
+export const WorkflowRunRequestSchema = workflowRunRequestSchema();
+
+/** The swarm run body, with the operator's limit on its timeout */
+export function swarmRunRequestSchema(limits?: RunLimits) {
+  return {
+    type: 'object',
+    properties: {
+      input: RUN_INPUT_SCHEMA,
+      context: CONTEXT_SCHEMA,
+      threadId: NON_BLANK_STRING,
+      timeout: {
+        type: 'number',
+        exclusiveMinimum: 0,
+        maximum: MAX_RUN_TIMEOUT_MS,
+        ...(limits?.swarmTimeout !== undefined && {
+          default: limits.swarmTimeout,
+          description: `Held to ${limits.swarmTimeout} ms, the server's limit, which is also the default`,
+        }),
+      },
+    },
+    required: ['input'],
+  } as const;
+}
+
+export const SwarmRunRequestSchema = swarmRunRequestSchema();
+
+export const ThreadPageQuerySchema = {
   type: 'object',
   properties: {
-    input: { type: 'object', additionalProperties: true },
-    options: {
-      type: 'object',
-      properties: {
-        maxConcurrency: { type: 'integer', minimum: 1 },
-        maxIterations: { type: 'integer', minimum: 1 },
-        checkpoint: {
-          type: 'boolean',
-          enum: [false],
-          description: 'Only `false`: the server keeps no checkpoint store',
-        },
-      },
-      additionalProperties: false,
+    limit: {
+      type: 'integer',
+      minimum: 1,
+      maximum: MAX_THREAD_PAGE_LIMIT,
+      description:
+        'Answer the newest `limit` messages of what is left and a `nextCursor`, without it the whole thread',
+    },
+    cursor: {
+      type: 'string',
+      description: 'The `nextCursor` of the page after the one to read',
     },
   },
 } as const;
 
-export const SwarmRunRequestSchema = {
+export const ThreadResponseSchema = {
   type: 'object',
   properties: {
-    input: RUN_INPUT_SCHEMA,
-    context: CONTEXT_SCHEMA,
-    threadId: NON_BLANK_STRING,
-    timeout: { type: 'number', exclusiveMinimum: 0, maximum: MAX_RUN_TIMEOUT_MS },
+    id: { type: 'string' },
+    messages: { type: 'array', items: {} },
+    metadata: { type: 'object', additionalProperties: true },
+    createdAt: { type: 'number' },
+    updatedAt: { type: 'number' },
+    nextCursor: {
+      type: 'string',
+      description: 'Pass as `cursor` to read the page before this one, absent at the start',
+    },
   },
-  required: ['input'],
+  required: ['id', 'messages', 'createdAt', 'updatedAt'],
 } as const;

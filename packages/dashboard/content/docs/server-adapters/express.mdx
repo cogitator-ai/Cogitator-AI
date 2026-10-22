@@ -83,10 +83,17 @@ interface CogitatorServerConfig {
     rateLimit?: RateLimitConfig;
     cors?: CorsConfig;
     swagger?: SwaggerConfig;
-    websocket?: WebSocketConfig; // { path?, pingInterval? (ms, default 30000), maxPayloadSize? (bytes, default 1 MiB) }
+    websocket?: WebSocketConfig; // { path?, pingInterval? (ms, default 30000), maxPayloadSize? (bytes, default 1 MiB), deps? }
     sseHeartbeatMs?: number; // SSE heartbeat interval in ms, default 5000, 0 turns it off
     acceptContext?: boolean | string[]; // context keys clients may send: none by default, a list, or true for any
     threadMessageRoles?: ('user' | 'assistant' | 'system')[]; // roles of POST /threads/:id/messages, default user and assistant
+    limits?: RunLimits; // caps on swarm timeout and workflow iterations and concurrency
+    anonymous?: 'allow' | 'deny'; // default: 'allow'
+    authorizeThread?: (
+      auth: AuthContext | undefined,
+      threadId: string
+    ) => boolean | Promise<boolean>;
+    deps?: (req: Request) => unknown | Promise<unknown>; // deps of HTTP agent runs, built per request
   };
 }
 ```
@@ -97,11 +104,13 @@ interface CogitatorServerConfig {
 
 - Agent and swarm bodies are validated: `input` must contain more than whitespace (`""` and `"   "` are refused before the model is called), `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number of at most `MAX_RUN_TIMEOUT_MS` (2147483647, the longest delay a timer can hold). Invalid or malformed JSON bodies return `400 INVALID_INPUT`.
 - Workflow `options` are limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean); other options are dropped and wrongly typed ones return `400`.
+- With `limits` set, a swarm `timeout` and workflow `maxIterations` and `maxConcurrency` are held to the operator's caps, and a request that asks for nothing gets the cap. See [Limits](#limits).
 - Thread messages need a `role` of `user`, `assistant` or `system` and a non-empty string `content`.
-- A workflow that fails returns `500 WORKFLOW_FAILED`, and its stream ends with an `error` event instead of `workflow_completed`. Without `@cogitator-ai/workflows` or `@cogitator-ai/swarms` installed, those routes return `501 UNIMPLEMENTED`.
-- Unknown agents, workflows, swarms and routes return `404 NOT_FOUND`. `GET /swarms/:name/blackboard` returns the swarm's configured `blackboard.sections`, or `400` when its blackboard is not enabled.
-- The thread routes use `cogitator.getMemory()` and return `503 UNAVAILABLE` when the runtime has no memory. Another user's thread returns `403 THREAD_ACCESS_DENIED`.
-- `CogitatorError`s keep their message, code and mapped status (for example `LLM_RATE_LIMITED` → 429). Any other error is logged and answered as `500` with `{ "error": { "message": "Internal server error", "code": "INTERNAL_ERROR" } }`.
+- A workflow that fails answers the error it failed with, mapped like any run error (a node that hit `LLM_RATE_LIMITED` answers `429` with `Retry-After`, an internal error `500 INTERNAL_ERROR`), and its stream ends with an `error` event carrying that code instead of `workflow_completed`. Without `@cogitator-ai/workflows` or `@cogitator-ai/swarms` installed, those routes return `501 UNIMPLEMENTED`.
+- Unknown agents, workflows, swarms and routes return `404 NOT_FOUND`, except that under `anonymous: 'deny'` an unknown route answers a caller without a `userId` with `401 UNAUTHORIZED`. `GET /swarms/:name/blackboard` returns the swarm's configured `blackboard.sections`, or `400` when its blackboard is not enabled.
+- The thread routes use `cogitator.getMemory()` and return `503 UNAVAILABLE` when the runtime has no memory. Another user's thread returns `403 THREAD_ACCESS_DENIED`, and a thread `authorizeThread` refuses `403 THREAD_FORBIDDEN`.
+- `GET /threads/:id` answers the whole thread, or with `?limit=50` the newest 50 messages and a `nextCursor`, which `?limit=50&cursor=<nextCursor>` follows to the page before. A bad `limit` or `cursor` returns `400 INVALID_INPUT`.
+- `CogitatorError`s keep their message and code and answer with their own `statusCode` (the code's mapped status unless the error carries another, for example `LLM_RATE_LIMITED` → 429), plus `Retry-After` in whole seconds when the error says when to retry. A swarm that runs out of time answers `504 RUN_TIMEOUT`. Any other error is logged and answered as `500` with `{ "error": { "message": "Internal server error", "code": "INTERNAL_ERROR" } }`. Every adapter maps errors with `describeHttpError` of `@cogitator-ai/server-shared`.
 - `GET /agents` exposes each agent's `config.description`, never its `instructions`.
 
 ## Authentication
@@ -128,6 +137,52 @@ const server = new CogitatorServer({
 When `auth` returns `undefined`, the request proceeds as unauthenticated; throw to reject it with `401 UNAUTHORIZED`. The `AuthContext` is attached to `req.cogitator.auth` (next to `requestId` and `startTime`), and its `userId` is passed to agent and swarm runs and scopes the thread routes.
 
 The same function guards WebSocket upgrades. There it receives the raw upgrade request (`http.IncomingMessage`), not an Express request, so read only `headers` and `url` in code that serves both.
+
+### Anonymous callers
+
+`anonymous: 'deny'` answers `401 UNAUTHORIZED` to every caller whose `auth` returned no `userId`, and refuses their WebSocket upgrade. `/health`, `/ready`, `/openapi.json` and `/docs` stay open. Any other path under the base path answers `401` too, known or not, so an anonymous caller cannot probe which routes exist. The default, `'allow'`, lets them in, and an unknown path answers `404 NOT_FOUND` in the error envelope.
+
+### Thread authorization
+
+`authorizeThread(auth, threadId)` decides who may touch a thread, on top of the ownership check of core, for example threads a whole team shares:
+
+```typescript
+config: {
+  auth,
+  authorizeThread: async (auth, threadId) => teams.canAccess(auth?.userId, threadId),
+}
+```
+
+It runs on every route that names a thread: agent run, stream and resume, swarm run and stream, `GET`, `DELETE` and `POST /threads/:id/messages`, and WebSocket runs with a `threadId`. Answering `false` refuses the request with `403 THREAD_FORBIDDEN` before any run starts. It also decides which [WebSocket subscribers](#websocket) see a run's events.
+
+## Limits
+
+`limits` caps what a request may ask a run for:
+
+```typescript
+config: {
+  limits: { swarmTimeout: 120_000, workflowMaxIterations: 50, workflowMaxConcurrency: 4 },
+}
+```
+
+A request is never refused over a limit. It gets the smaller of what it asked for and the cap, or the cap when it asked for nothing, on the run and stream routes alike. The OpenAPI spec gives each cap as the default of its field. Each limit must be a positive integer, or the constructor throws.
+
+## Request Dependencies
+
+`deps` builds what an agent's tools read as `context.deps` for each request, on the server, never from the request body:
+
+```typescript
+config: {
+  deps: async (req) => ({ db: await tenantDb(req.get('x-tenant')) }),
+  websocket: {
+    deps: async (req) => ({ db: await tenantDb(req.headers['x-tenant']) }),
+  },
+}
+```
+
+HTTP agent runs, streams and resumes get what `deps` builds. An error the hook throws is answered like a run error, before a stream starts.
+
+WebSocket runs and resumes get what `websocket.deps` builds from the upgrade request, called for each run. That request is a plain Node `IncomingMessage` that never went through Express, so it has `headers`, `url` and `socket` but no `req.get()` and nothing a middleware adds, which is why it has a hook of its own. Without `websocket.deps` WebSocket runs get no deps. An error it throws, or one `authorizeThread` throws, answers an `error` frame and starts no run.
 
 ## Rate Limiting
 
@@ -201,7 +256,7 @@ await server.attachWebSocket(httpServer); // ws://host/cogitator/ws
 httpServer.listen(3000);
 ```
 
-`attachWebSocket()` returns the `WebSocketServer`; it throws when `enableWebSocket` is off, when `init()` has not run, or when `ws` is not installed. The path is `<basePath>/ws`; `websocket.path` replaces it with a full path. The server pings every `pingInterval` ms and drops clients that stop answering.
+`attachWebSocket()` returns the `WebSocketServer`, and throws when `enableWebSocket` is off, when `init()` has not run, or when `ws` is not installed. A `run` or `resume` on a thread `authorizeThread` refuses answers with an `error` frame and starts nothing. The path is `<basePath>/ws`, and `websocket.path` replaces it with a full path. The server pings every `pingInterval` ms and drops clients that stop answering.
 
 Run an agent (only agent runs are supported; `workflow` and `swarm` runs answer with an error):
 
@@ -215,7 +270,7 @@ Run an agent (only agent runs are supported; `workflow` and `swarm` runs answer 
 
 Events arrive as `{ "type": "event", "id": "req_1", "payload": { "type": "token" | "reasoning" | "tool-call" | "tool-result" | "complete" | "cancelled", ... } }`, and failures as `{ "type": "error", "id": "req_1", "error": "..." }`. Resume a run paused for approval with `{ "type": "resume", "id": "req_2", "payload": { "name": "assistant", "threadId": "t1", "decisions": { "call_1": { "approved": true } } } }`. Send `{ "type": "stop" }` to abort the running agent and `{ "type": "ping" }` to get a `pong`. A new `run` or `resume` aborts the one still running on that connection.
 
-`{ "type": "subscribe", "channel": "agent:assistant" }` (answered with `subscribed`) delivers the events of runs of that agent started from other connections of the same user (the `userId` your `auth` returned), with `channel` set on each frame; `unsubscribe` stops them. Runs of other users never reach the subscriber. Without `auth` every connection counts as the same anonymous user and sees every run of that agent. A connection holds up to 64 subscriptions of at most 256 characters.
+`{ "type": "subscribe", "channel": "agent:assistant" }` (answered with `subscribed`) delivers the events of runs of that agent started from other connections of the same user (the `userId` your `auth` returned), with `channel` set on each frame, and `unsubscribe` stops them. Runs of other users never reach the subscriber. With `authorizeThread` set, a subscriber also sees a run only when `authorizeThread(subscriberAuth, threadId)` allows it on the run's thread (the run's `threadId`, or the one core created for it). It is asked once per subscriber and run, and a subscriber it refuses, or throws for, gets none of the run's events. Without `auth` every connection counts as the same anonymous user, so without `authorizeThread` it sees every run of that agent. A connection holds up to 64 subscriptions of at most 256 characters.
 
 ## Exported Utilities
 
@@ -224,6 +279,7 @@ The package also exports individual building blocks if you need to compose route
 ```typescript
 import {
   createAuthMiddleware,
+  createAnonymousGuard,
   createRateLimitMiddleware,
   createCorsMiddleware,
   createHealthRoutes,

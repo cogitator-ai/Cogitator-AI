@@ -11,6 +11,7 @@ import {
   conformanceContentType,
   conformanceMethod,
   type ConformanceCase,
+  type ConformanceServerOptions,
 } from '@cogitator-ai/server-shared';
 import { cogitatorController } from '../index.js';
 import type { CogitatorDeps } from '../index.js';
@@ -20,6 +21,17 @@ import type { CogitatorDeps } from '../index.js';
  * envelope: `VALIDATION_FAILED`, under the default validation status `422`.
  */
 const TETSU_CONVENTIONS = { codes: { INVALID_INPUT: 'VALIDATION_FAILED' }, statuses: { 400: 422 } };
+
+function serverOptions(server: ConformanceServerOptions = {}): Partial<CogitatorDeps> {
+  const { forbiddenThreads, deps, ...options } = server;
+  return {
+    ...options,
+    ...(forbiddenThreads && {
+      authorizeThread: (_auth, id) => !forbiddenThreads.includes(id),
+    }),
+    ...(deps && { deps: () => deps }),
+  };
+}
 
 async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
   const request = serve(
@@ -38,10 +50,11 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
               [CONFORMANCE_NAMES.workflow]: { name: 'flow', entryPoint: 'a', nodes: new Map() },
             } as unknown as CogitatorDeps['workflows'],
             sseHeartbeatMs: 0,
-            ...testCase.server,
+            ...serverOptions(testCase.server),
           }),
         ],
       }),
+      reportError: () => undefined,
     })
   );
 
@@ -53,13 +66,16 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
   });
   const body = await res.text();
   const code = res.ok ? undefined : (JSON.parse(body) as { error: string }).error;
-  return { status: res.status, code, body };
+  const headers = Object.fromEntries(
+    [...res.headers.entries()].map(([name, value]) => [name.toLowerCase(), value])
+  );
+  return { status: res.status, code, body, headers };
 }
 
 describe('server protocol conformance', () => {
   for (const testCase of CONFORMANCE_CASES) {
     test(testCase.name, async () => {
-      const runtime = new ConformanceRuntime();
+      const runtime = new ConformanceRuntime(testCase);
       const response = await answer(testCase, runtime);
       expect(checkConformance(testCase, response, runtime, TETSU_CONVENTIONS)).toEqual([]);
     });

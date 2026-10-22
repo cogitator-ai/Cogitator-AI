@@ -3,7 +3,10 @@ import type { AgentHandlerOptions, AgentInput } from '../types.js';
 import { parseRunRequest } from '@cogitator-ai/server-shared';
 import {
   exceedsDeclaredSize,
+  depsOf,
   hookErrorResponse,
+  refuseRequest,
+  threadOf,
   jsonError,
   jsonResponse,
   readJsonBody,
@@ -18,7 +21,7 @@ export function createAgentHandler(
 ) {
   return async (req: Request): Promise<Response> => {
     if (exceedsDeclaredSize(req)) {
-      return jsonError('Payload too large', 413);
+      return jsonError('Payload too large', 413, 'PAYLOAD_TOO_LARGE');
     }
 
     let input: AgentInput;
@@ -26,7 +29,7 @@ export function createAgentHandler(
       try {
         input = await options.parseInput(req);
       } catch (err) {
-        return jsonError(err instanceof Error ? err.message : 'Parse error', 400);
+        return jsonError(err instanceof Error ? err.message : 'Parse error', 400, 'INVALID_INPUT');
       }
     } else {
       const body = await readJsonBody(req);
@@ -44,6 +47,14 @@ export function createAgentHandler(
       } catch (err) {
         return hookErrorResponse(err, 'Unauthorized');
       }
+    }
+
+    try {
+      const refused = await refuseRequest(req, threadOf(runContext, input), runContext, options);
+      if (refused) return refused;
+      runContext = { ...(await depsOf(req, options)), ...runContext };
+    } catch (err) {
+      return runErrorResponse(err);
     }
 
     try {

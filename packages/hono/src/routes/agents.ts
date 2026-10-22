@@ -9,15 +9,19 @@ import {
 import { HonoStreamWriter } from '../streaming/hono-stream-writer.js';
 import type { HonoEnv, AgentListResponse } from '../types.js';
 import { getOwn } from '../utils/lookup.js';
-import { resolveError } from '../utils/errors.js';
+import { describeError } from '../utils/errors.js';
 import {
   createRequestAbortController,
   holdConnectionOpen,
   errorResponse,
   invalidInput,
   bodyRefused,
+  notFound,
   readJsonBody,
+  refuseThread,
   requestAborted,
+  runDeps,
+  sendError,
 } from '../utils/request.js';
 
 export function createAgentRoutes(): Hono<HonoEnv> {
@@ -40,16 +44,17 @@ export function createAgentRoutes(): Hono<HonoEnv> {
     const name = c.req.param('name');
     const agent = getOwn(ctx.agents, name);
 
-    if (!agent) {
-      return c.json({ error: { message: `Agent '${name}' not found`, code: 'NOT_FOUND' } }, 404);
-    }
+    if (!agent) return notFound(c, `Agent '${name}' not found`);
 
     const body = await readJsonBody(c);
     if (!body.ok) return bodyRefused(c, body.refusal);
     const parsed = parseRunRequest(body.value, { acceptContext: ctx.acceptContext });
     if (!parsed.ok) return invalidInput(c, parsed.message);
+    const refusal = await refuseThread(c, parsed.value.threadId);
+    if (refusal) return sendError(c, refusal);
 
     const userId = c.get('cogitatorAuth')?.userId;
+    const deps = await runDeps(c);
     holdConnectionOpen(c);
     const abortController = createRequestAbortController(c);
 
@@ -57,6 +62,7 @@ export function createAgentRoutes(): Hono<HonoEnv> {
       const result = await ctx.runtime.run(agent, {
         ...parsed.value,
         userId,
+        ...deps,
         signal: abortController.signal,
       });
 
@@ -72,9 +78,7 @@ export function createAgentRoutes(): Hono<HonoEnv> {
     const name = c.req.param('name');
     const agent = getOwn(ctx.agents, name);
 
-    if (!agent) {
-      return c.json({ error: { message: `Agent '${name}' not found`, code: 'NOT_FOUND' } }, 404);
-    }
+    if (!agent) return notFound(c, `Agent '${name}' not found`);
 
     const body = await readJsonBody(c);
     if (!body.ok) return bodyRefused(c, body.refusal);
@@ -82,13 +86,18 @@ export function createAgentRoutes(): Hono<HonoEnv> {
     if (!parsed.ok) return invalidInput(c, parsed.message);
 
     const { threadId, decisions, defaultDecision } = parsed.value;
+    const refusal = await refuseThread(c, threadId);
+    if (refusal) return sendError(c, refusal);
+
     const userId = c.get('cogitatorAuth')?.userId;
+    const deps = await runDeps(c);
     holdConnectionOpen(c);
     const abortController = createRequestAbortController(c);
 
     try {
       const result = await ctx.runtime.resume(agent, threadId, {
         userId,
+        ...deps,
         decisions,
         defaultDecision,
         signal: abortController.signal,
@@ -106,16 +115,17 @@ export function createAgentRoutes(): Hono<HonoEnv> {
     const name = c.req.param('name');
     const agent = getOwn(ctx.agents, name);
 
-    if (!agent) {
-      return c.json({ error: { message: `Agent '${name}' not found`, code: 'NOT_FOUND' } }, 404);
-    }
+    if (!agent) return notFound(c, `Agent '${name}' not found`);
 
     const body = await readJsonBody(c);
     if (!body.ok) return bodyRefused(c, body.refusal);
     const parsed = parseRunRequest(body.value, { acceptContext: ctx.acceptContext });
     if (!parsed.ok) return invalidInput(c, parsed.message);
+    const refusal = await refuseThread(c, parsed.value.threadId);
+    if (refusal) return sendError(c, refusal);
 
     const userId = c.get('cogitatorAuth')?.userId;
+    const deps = await runDeps(c);
     const abortController = createRequestAbortController(c);
 
     return streamSSE(c, async (stream) => {
@@ -135,6 +145,7 @@ export function createAgentRoutes(): Hono<HonoEnv> {
           ...parsed.value,
           threadId: session.threadId,
           userId,
+          ...deps,
           stream: true,
           signal: abortController.signal,
           ...session.callbacks,
@@ -142,8 +153,8 @@ export function createAgentRoutes(): Hono<HonoEnv> {
         session.complete(result);
       } catch (error) {
         if (abortController.signal.aborted) return;
-        const { body: errorBody } = resolveError(error, 'Agent stream error');
-        session.fail(errorBody.error.message, errorBody.error.code);
+        const failure = describeError(error, 'Agent stream error');
+        session.fail(failure.message, failure.code);
       } finally {
         await writer.flush();
         writer.close();

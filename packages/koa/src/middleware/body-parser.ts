@@ -1,5 +1,6 @@
 import { refuseNonJsonBody } from '@cogitator-ai/server-shared';
 import type { Context, Next } from 'koa';
+import { invalidInput, sendError } from '../utils/errors.js';
 
 export const DEFAULT_BODY_LIMIT = 1024 * 1024;
 
@@ -16,8 +17,7 @@ export function createBodyParser(options: BodyParserOptions = {}) {
     const refusal = refuseNonJsonBody(ctx.method, ctx.headers);
     if (refusal) {
       await discardBody(ctx);
-      ctx.status = refusal.status;
-      ctx.body = { error: { message: refusal.message, code: refusal.code } };
+      sendError(ctx, refusal);
       return;
     }
     if (BODY_METHODS.has(ctx.method) && ctx.is('application/json') && !isBodyConsumed(ctx)) {
@@ -32,8 +32,7 @@ export function createBodyParser(options: BodyParserOptions = {}) {
         try {
           (ctx.request as Context['request'] & { body?: unknown }).body = JSON.parse(raw);
         } catch {
-          ctx.status = 400;
-          ctx.body = { error: { message: 'Invalid JSON body', code: 'INVALID_INPUT' } };
+          invalidInput(ctx, 'Invalid JSON body');
           return;
         }
       }

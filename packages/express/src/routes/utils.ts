@@ -1,9 +1,23 @@
-import type { Response } from 'express';
-import { CogitatorError, ERROR_STATUS_CODES, ErrorCode } from '@cogitator-ai/types';
-import type { ParseResult } from '@cogitator-ai/server-shared';
+import type { Request, Response } from 'express';
+import {
+  INTERNAL_ERROR,
+  authorizeThreadAccess,
+  describeHttpError,
+  errorEnvelope,
+  errorHeaders,
+  type HttpErrorDescription,
+  type ParseResult,
+} from '@cogitator-ai/server-shared';
+import type { CogitatorRequest, RouteContext } from '../types.js';
+
+/** Answers an error with the shared envelope and its `Retry-After` */
+export function sendFailure(res: Response, error: HttpErrorDescription): void {
+  for (const [name, value] of Object.entries(errorHeaders(error))) res.setHeader(name, value);
+  res.status(error.status).json(errorEnvelope(error));
+}
 
 export function sendError(res: Response, status: number, message: string, code: string): void {
-  res.status(status).json({ error: { message, code } });
+  sendFailure(res, { status, code, message });
 }
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -19,34 +33,79 @@ export function isModuleNotFound(error: unknown): boolean {
   );
 }
 
-export interface ResolvedError {
-  status: number;
-  message: string;
-  code: string;
-}
-
-export function resolveError(error: unknown, label: string): ResolvedError {
-  if (CogitatorError.isCogitatorError(error)) {
-    return {
-      status: ERROR_STATUS_CODES[error.code] || 500,
-      message: error.message,
-      code: error.code,
-    };
-  }
+/**
+ * What a client may see of an error: what `describeHttpError` makes of it, or, for an
+ * internal error, `500 Internal server error` after it is logged under `label`
+ */
+export function resolveError(error: unknown, label: string): HttpErrorDescription {
+  const described = describeHttpError(error);
+  if (described) return described;
   console.error(`[CogitatorServer] ${label}:`, error);
-  return { status: 500, message: 'Internal server error', code: ErrorCode.INTERNAL_ERROR };
+  return INTERNAL_ERROR;
 }
 
 export function handleRouteError(res: Response, error: unknown, label: string): void {
   if (res.headersSent) return;
-  const resolved = resolveError(error, label);
-  sendError(res, resolved.status, resolved.message, resolved.code);
+  sendFailure(res, resolveError(error, label));
 }
 
 export function onClientDisconnect(res: Response, handler: () => void): void {
   res.on('close', () => {
     if (!res.writableEnded) handler();
   });
+}
+
+/**
+ * Whether a request may go on to the thread it names: answers the refusal of
+ * `authorizeThread`, or the error it threw, and says `false` then
+ */
+export async function admitThread<P extends Request['params']>(
+  ctx: RouteContext,
+  req: CogitatorRequest<P>,
+  res: Response,
+  threadId: string | undefined,
+  label: string
+): Promise<boolean> {
+  try {
+    const refusal = await authorizeThreadAccess(
+      ctx.config.authorizeThread,
+      req.cogitator?.auth,
+      threadId
+    );
+    if (!refusal) return true;
+    sendFailure(res, refusal);
+  } catch (error) {
+    handleRouteError(res, error, label);
+  }
+  return false;
+}
+
+/** The `deps` an agent run gets for a request from the `deps` hook, none without the hook */
+export async function requestDeps<P extends Request['params']>(
+  ctx: RouteContext,
+  req: Request<P>
+): Promise<{ deps?: unknown }> {
+  return ctx.config.deps ? { deps: await ctx.config.deps(req) } : {};
+}
+
+/**
+ * Admits an agent run, stream or resume on the thread it names and builds its `deps`:
+ * the options to start it with, or `undefined` once the request was answered
+ */
+export async function admitAgentRun<P extends Request['params']>(
+  ctx: RouteContext,
+  req: CogitatorRequest<P>,
+  res: Response,
+  threadId: string | undefined,
+  label: string
+): Promise<{ deps?: unknown } | undefined> {
+  if (!(await admitThread(ctx, req, res, threadId, label))) return undefined;
+  try {
+    return await requestDeps(ctx, req);
+  } catch (error) {
+    handleRouteError(res, error, label);
+    return undefined;
+  }
 }
 
 export type { ParseResult };

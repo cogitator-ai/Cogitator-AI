@@ -29,11 +29,24 @@ export interface ThreadPage {
   nextCursor?: string;
 }
 
-/** Where a page ends: the time of its oldest entry and the entries of that time it holds */
+/**
+ * Where a page ends: the time of its oldest entry and how many entries of that time the pages
+ * so far hold. Entries of one time keep the order they were added in (the memory contract), so
+ * the newest `n` of them are the ones already sent.
+ */
 interface Cursor {
   t: number;
-  ids: string[];
+  n: number;
 }
+
+/** The latest time a `Date` holds, in ms */
+const MAX_DATE_MS = 8_640_000_000_000_000;
+
+/**
+ * Most entries of one time a cursor may say were sent, so a forged one cannot make a page read
+ * the whole thread: live writes keep entries of one time to a few, a bulk import to thousands
+ */
+const MAX_CURSOR_TIES = 100_000;
 
 /** base64url of UTF-8 text, with the globals every runtime has (edge ones have no `Buffer`) */
 function toBase64Url(text: string): string {
@@ -55,10 +68,14 @@ function decodeCursor(raw: string): Cursor | undefined {
   try {
     const value: unknown = JSON.parse(fromBase64Url(raw));
     if (typeof value !== 'object' || value === null) return undefined;
-    const { t, ids } = value as Partial<Cursor>;
-    if (typeof t !== 'number' || !Number.isFinite(t)) return undefined;
-    if (!Array.isArray(ids) || !ids.every((id) => typeof id === 'string')) return undefined;
-    return { t, ids };
+    const { t, n } = value as Partial<Cursor>;
+    if (typeof t !== 'number' || !Number.isSafeInteger(t) || Math.abs(t) >= MAX_DATE_MS) {
+      return undefined;
+    }
+    if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 1 || n > MAX_CURSOR_TIES) {
+      return undefined;
+    }
+    return { t, n };
   } catch {
     return undefined;
   }
@@ -100,8 +117,8 @@ export function parseThreadPageQuery(query: {
 
 /**
  * The page of a thread a query asks for. Entries that share the time of a page's oldest entry
- * are told apart by id, so no message is skipped or sent twice across pages. `thread` (what
- * the access check read) gives the thread's own times; without it they are those of its first
+ * are counted, so no message is skipped or sent twice across pages. `thread` (what
+ * the access check read) gives the thread's own times, without it they are those of its first
  * and last entries.
  *
  * @throws Error when the memory cannot read the thread
@@ -113,8 +130,7 @@ export async function readThreadPage(
   thread?: Pick<Thread, 'createdAt' | 'updatedAt'> | null
 ): Promise<ThreadPage> {
   const cursor = query.cursor === undefined ? undefined : decodeCursor(query.cursor);
-  const seen = new Set(cursor?.ids ?? []);
-  const fetchLimit = query.limit === undefined ? undefined : query.limit + seen.size + 1;
+  const fetchLimit = query.limit === undefined ? undefined : query.limit + (cursor?.n ?? 0) + 1;
   const result = await memory.getEntries({
     threadId,
     ...(cursor && { before: new Date(cursor.t + 1) }),
@@ -122,27 +138,57 @@ export async function readThreadPage(
   });
   if (!result.success) throw new Error(result.error);
 
-  const older = result.data.filter(
-    (entry) => !(cursor && entry.createdAt.getTime() === cursor.t && seen.has(entry.id))
-  );
+  const older = cursor ? withoutSent(result.data, cursor) : result.data;
   const more = query.limit !== undefined && older.length > query.limit;
   const page: MemoryEntry[] = more ? older.slice(older.length - query.limit!) : older;
 
   const first = result.data[0];
-  const last = result.data[result.data.length - 1];
+  const newest = cursor ? await newestEntryTime(memory, threadId) : result.data.at(-1)?.createdAt;
+  const updatedAt = Math.max(thread?.updatedAt.getTime() ?? 0, newest?.getTime() ?? 0);
   return {
     id: threadId,
     messages: page.map((entry) => entry.message),
     createdAt: (thread?.createdAt ?? first?.createdAt ?? new Date()).getTime(),
-    updatedAt: (thread?.updatedAt ?? last?.createdAt ?? new Date()).getTime(),
+    updatedAt: updatedAt > 0 ? updatedAt : Date.now(),
     ...(more && { nextCursor: encodeCursor(nextCursorOf(page, cursor)) }),
   };
 }
 
-/** The cursor that ends the page before `page`: its oldest time and the ids of that time */
+/**
+ * The entries the pages so far did not send: those of the cursor's time come last (they are the
+ * newest read), and the newest `n` of them were sent
+ */
+function withoutSent(entries: readonly MemoryEntry[], cursor: Cursor): MemoryEntry[] {
+  let atTime = 0;
+  for (
+    let at = entries.length - 1;
+    at >= 0 && entries[at]!.createdAt.getTime() === cursor.t;
+    at--
+  ) {
+    atTime++;
+  }
+  return entries.slice(0, entries.length - Math.min(cursor.n, atTime));
+}
+
+/**
+ * When the thread last got an entry: adding entries does not move `updatedAt` of the thread
+ * record, so the thread was last updated by its newest entry or the record, whichever is later
+ */
+async function newestEntryTime(
+  memory: Pick<MemoryAdapter, 'getEntries'>,
+  threadId: string
+): Promise<Date | undefined> {
+  const result = await memory.getEntries({ threadId, limit: 1 });
+  if (!result.success) throw new Error(result.error);
+  return result.data.at(-1)?.createdAt;
+}
+
+/** The cursor that ends the page before `page`: its oldest time and the entries of it sent */
 function nextCursorOf(page: readonly MemoryEntry[], previous: Cursor | undefined): Cursor {
   const t = page[0]!.createdAt.getTime();
-  const ids = page.filter((entry) => entry.createdAt.getTime() === t).map((entry) => entry.id);
-  if (previous && previous.t === t) ids.push(...previous.ids);
-  return { t, ids: [...new Set(ids)] };
+  const onPage = page.filter((entry) => entry.createdAt.getTime() === t).length;
+  return {
+    t,
+    n: Math.min(onPage + (previous && previous.t === t ? previous.n : 0), MAX_CURSOR_TIES),
+  };
 }

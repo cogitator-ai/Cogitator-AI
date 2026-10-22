@@ -1,21 +1,26 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { generateId } from '@cogitator-ai/server-shared';
+import {
+  generateId,
+  parseWorkflowRunRequest,
+  workflowOptionsWithin,
+} from '@cogitator-ai/server-shared';
 import { HonoStreamWriter } from '../streaming/hono-stream-writer.js';
 import type { HonoEnv, WorkflowListResponse } from '../types.js';
 import { getOwn } from '../utils/lookup.js';
-import { isModuleNotFoundError, resolveError } from '../utils/errors.js';
+import { describeError, isModuleNotFoundError } from '../utils/errors.js';
 import {
   createRequestAbortController,
   holdConnectionOpen,
   errorResponse,
   invalidInput,
   bodyRefused,
+  notFound,
+  notInstalled,
   readJsonBody,
   requestAborted,
 } from '../utils/request.js';
 import { toWorkflowRunResponse } from '../utils/results.js';
-import { parseWorkflowRunRequest } from '@cogitator-ai/server-shared';
 
 export function createWorkflowRoutes(): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
@@ -37,9 +42,7 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
     const name = c.req.param('name');
     const workflow = getOwn(ctx.workflows, name);
 
-    if (!workflow) {
-      return c.json({ error: { message: `Workflow '${name}' not found`, code: 'NOT_FOUND' } }, 404);
-    }
+    if (!workflow) return notFound(c, `Workflow '${name}' not found`);
 
     const body = await readJsonBody(c);
     if (!body.ok) return bodyRefused(c, body.refusal);
@@ -53,7 +56,7 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
       const { WorkflowExecutor } = await import('@cogitator-ai/workflows');
       const executor = new WorkflowExecutor(ctx.runtime);
       const result = await executor.execute(workflow, parsed.value.input, {
-        ...parsed.value.options,
+        ...workflowOptionsWithin(parsed.value.options ?? {}, ctx.limits),
         signal: abortController.signal,
       });
 
@@ -64,10 +67,7 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
     } catch (error) {
       if (abortController.signal.aborted) return requestAborted(c);
       if (isModuleNotFoundError(error)) {
-        return c.json(
-          { error: { message: 'Workflows package not installed', code: 'UNIMPLEMENTED' } },
-          501
-        );
+        return notInstalled(c, 'Workflows');
       }
       return errorResponse(c, error, 'Workflow run error');
     }
@@ -78,9 +78,7 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
     const name = c.req.param('name');
     const workflow = getOwn(ctx.workflows, name);
 
-    if (!workflow) {
-      return c.json({ error: { message: `Workflow '${name}' not found`, code: 'NOT_FOUND' } }, 404);
-    }
+    if (!workflow) return notFound(c, `Workflow '${name}' not found`);
 
     const body = await readJsonBody(c);
     if (!body.ok) return bodyRefused(c, body.refusal);
@@ -105,7 +103,7 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
         await writer.start(messageId);
 
         const result = await executor.execute(workflow, parsed.value.input, {
-          ...parsed.value.options,
+          ...workflowOptionsWithin(parsed.value.options ?? {}, ctx.limits),
           signal: abortController.signal,
           onNodeStart: (node: string) => {
             void writer.workflowEvent('node_started', { nodeName: node, timestamp: Date.now() });
@@ -116,7 +114,7 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
           onNodeError: (node: string, error: Error) => {
             void writer.workflowEvent('node_error', {
               nodeName: node,
-              error: resolveError(error, `Workflow node ${node} error`).body.error.message,
+              error: describeError(error, `Workflow node ${node} error`).message,
             });
           },
           onNodeProgress: (node: string, progress: number) => {
@@ -127,8 +125,8 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
         if (abortController.signal.aborted) return;
 
         if (result.error) {
-          const { body: errorBody } = resolveError(result.error, 'Workflow stream error');
-          await writer.error(errorBody.error.message, errorBody.error.code);
+          const failure = describeError(result.error, 'Workflow stream error');
+          await writer.error(failure.message, failure.code);
           return;
         }
 
@@ -142,8 +140,8 @@ export function createWorkflowRoutes(): Hono<HonoEnv> {
         if (isModuleNotFoundError(error)) {
           await writer.error('Workflows package not installed', 'UNIMPLEMENTED');
         } else {
-          const { body: errorBody } = resolveError(error, 'Workflow stream error');
-          await writer.error(errorBody.error.message, errorBody.error.code);
+          const failure = describeError(error, 'Workflow stream error');
+          await writer.error(failure.message, failure.code);
         }
       } finally {
         writer.close();

@@ -204,7 +204,7 @@ describe('createChatHandler', () => {
     const res = await handler(jsonRequest({ messages: [] }));
 
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe('No user message provided');
+    expect((await res.json()).error.message).toBe('No user message provided');
     expect(cog.run).not.toHaveBeenCalled();
   });
 

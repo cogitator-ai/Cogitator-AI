@@ -1,11 +1,8 @@
-import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { CogitatorError, ERROR_STATUS_CODES, ErrorCode } from '@cogitator-ai/types';
-import type { ErrorResponse } from '../types.js';
-
-export interface ResolvedError {
-  status: ContentfulStatusCode;
-  body: ErrorResponse;
-}
+import {
+  INTERNAL_ERROR,
+  describeHttpError,
+  type HttpErrorDescription,
+} from '@cogitator-ai/server-shared';
 
 export function isModuleNotFoundError(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
@@ -13,26 +10,13 @@ export function isModuleNotFoundError(error: unknown): boolean {
   return code === 'MODULE_NOT_FOUND' || code === 'ERR_MODULE_NOT_FOUND';
 }
 
-function isErrorStatus(status: number): status is ContentfulStatusCode {
-  return Number.isInteger(status) && status >= 400 && status <= 599;
-}
-
-export function cogitatorErrorStatus(error: CogitatorError): ContentfulStatusCode {
-  const status = error.statusCode ?? ERROR_STATUS_CODES[error.code] ?? 500;
-  return isErrorStatus(status) ? status : 500;
-}
-
-export function resolveError(error: unknown, label: string): ResolvedError {
-  if (CogitatorError.isCogitatorError(error)) {
-    return {
-      status: cogitatorErrorStatus(error),
-      body: { error: { message: error.message, code: error.code } },
-    };
-  }
-
+/**
+ * How the server answers `error`: {@link describeHttpError}, or {@link INTERNAL_ERROR} for an
+ * error the client is not told about, which is logged under `label`
+ */
+export function describeError(error: unknown, label: string): HttpErrorDescription {
+  const described = describeHttpError(error);
+  if (described) return described;
   console.error(`[CogitatorHono] ${label}:`, error);
-  return {
-    status: 500,
-    body: { error: { message: 'Internal server error', code: ErrorCode.INTERNAL_ERROR } },
-  };
+  return INTERNAL_ERROR;
 }

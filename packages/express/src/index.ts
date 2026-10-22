@@ -3,6 +3,8 @@ export { CogitatorServer } from './server.js';
 export type {
   AuthContext,
   AuthFunction,
+  DepsFunction,
+  WebSocketDepsFunction,
   CogitatorRequest,
   CogitatorServerConfig,
   RateLimitConfig,
@@ -10,6 +12,7 @@ export type {
   SwaggerConfig,
   WebSocketConfig,
   RouteContext,
+  ResolvedServerConfig,
   AgentListResponse,
   AgentRunRequest,
   AgentRunResponse,
@@ -38,6 +41,7 @@ export type {
 
 export {
   createAuthMiddleware,
+  createAnonymousGuard,
   createRateLimitMiddleware,
   createCorsMiddleware,
   errorHandler,

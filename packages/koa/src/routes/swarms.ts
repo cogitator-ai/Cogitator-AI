@@ -5,12 +5,21 @@ import {
   generateId,
   parseSwarmRunRequest,
   swarmAgentNames,
+  swarmTimeoutWithin,
   withSwarm,
 } from '@cogitator-ai/server-shared';
 import type { RunResult, SwarmMessage, SwarmEvent } from '@cogitator-ai/types';
 import { getOwn } from '../utils/lookup.js';
-import { isModuleNotFoundError, resolveError } from '../utils/errors.js';
-import { getRequestBody, onClientDisconnect } from '../utils/request.js';
+import {
+  describeError,
+  invalidInput,
+  isModuleNotFoundError,
+  notFound,
+  notInstalled,
+  respondWithError,
+  sendError,
+} from '../utils/errors.js';
+import { getRequestBody, onClientDisconnect, refuseThread } from '../utils/request.js';
 import { serializeSwarmUsage, toSwarmRunResponse } from '../utils/results.js';
 
 export function createSwarmRoutes(): Router<CogitatorState> {
@@ -38,8 +47,7 @@ export function createSwarmRoutes(): Router<CogitatorState> {
     const swarmConfig = getOwn(swarms, name);
 
     if (!swarmConfig) {
-      ctx.status = 404;
-      ctx.body = { error: { message: `Swarm '${name}' not found`, code: 'NOT_FOUND' } };
+      notFound(ctx, `Swarm '${name}' not found`);
       return;
     }
 
@@ -47,10 +55,15 @@ export function createSwarmRoutes(): Router<CogitatorState> {
       acceptContext: ctx.state.cogitator.acceptContext,
     });
     if (!parsed.ok) {
-      ctx.status = 400;
-      ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };
+      invalidInput(ctx, parsed.message);
       return;
     }
+    const refusal = await refuseThread(ctx, parsed.value.threadId);
+    if (refusal) {
+      sendError(ctx, refusal);
+      return;
+    }
+    const timeout = swarmTimeoutWithin(parsed.value.timeout, ctx.state.cogitator.limits);
 
     let aborted = false;
     let abortSwarm: (() => void) | undefined;
@@ -64,7 +77,11 @@ export function createSwarmRoutes(): Router<CogitatorState> {
       if (aborted) return;
       const response = await withSwarm(new Swarm(runtime, swarmConfig), async (swarm) => {
         abortSwarm = () => swarm.abort();
-        const result = await swarm.run({ ...parsed.value, userId: ctx.state.auth?.userId });
+        const result = await swarm.run({
+          ...parsed.value,
+          timeout,
+          userId: ctx.state.auth?.userId,
+        });
         return toSwarmRunResponse(swarm, result);
       });
       if (aborted) return;
@@ -73,14 +90,11 @@ export function createSwarmRoutes(): Router<CogitatorState> {
     } catch (error) {
       if (aborted) return;
       if (isModuleNotFoundError(error)) {
-        ctx.status = 501;
-        ctx.body = { error: { message: 'Swarms package not installed', code: 'UNIMPLEMENTED' } };
+        notInstalled(ctx, 'Swarms');
         return;
       }
 
-      const { status, body } = resolveError(error, 'Swarm run error');
-      ctx.status = status;
-      ctx.body = body;
+      respondWithError(ctx, error, 'Swarm run error');
     }
   });
 
@@ -90,8 +104,7 @@ export function createSwarmRoutes(): Router<CogitatorState> {
     const swarmConfig = getOwn(swarms, name);
 
     if (!swarmConfig) {
-      ctx.status = 404;
-      ctx.body = { error: { message: `Swarm '${name}' not found`, code: 'NOT_FOUND' } };
+      notFound(ctx, `Swarm '${name}' not found`);
       return;
     }
 
@@ -99,10 +112,15 @@ export function createSwarmRoutes(): Router<CogitatorState> {
       acceptContext: ctx.state.cogitator.acceptContext,
     });
     if (!parsed.ok) {
-      ctx.status = 400;
-      ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };
+      invalidInput(ctx, parsed.message);
       return;
     }
+    const refusal = await refuseThread(ctx, parsed.value.threadId);
+    if (refusal) {
+      sendError(ctx, refusal);
+      return;
+    }
+    const timeout = swarmTimeoutWithin(parsed.value.timeout, ctx.state.cogitator.limits);
 
     setupSSEHeaders(ctx);
     const writer = new KoaStreamWriter(ctx, {
@@ -128,6 +146,7 @@ export function createSwarmRoutes(): Router<CogitatorState> {
 
         const result = await swarm.run({
           ...parsed.value,
+          timeout,
           userId: ctx.state.auth?.userId,
           onAgentStart: (agentName: string) => {
             writer.swarmEvent('agent_start', { agentName, timestamp: Date.now() });
@@ -142,7 +161,7 @@ export function createSwarmRoutes(): Router<CogitatorState> {
           onAgentError: (agentName: string, error: Error) => {
             writer.swarmEvent('agent_error', {
               agentName,
-              error: resolveError(error, `Swarm agent ${agentName} error`).body.error.message,
+              error: describeError(error, `Swarm agent ${agentName} error`).message,
             });
           },
           onMessage: (message: SwarmMessage) => {
@@ -167,8 +186,8 @@ export function createSwarmRoutes(): Router<CogitatorState> {
       if (isModuleNotFoundError(error)) {
         writer.error('Swarms package not installed', 'UNIMPLEMENTED');
       } else {
-        const { body } = resolveError(error, 'Swarm stream error');
-        writer.error(body.error.message, body.error.code);
+        const failure = describeError(error, 'Swarm stream error');
+        writer.error(failure.message, failure.code);
       }
     } finally {
       writer.close();
@@ -181,16 +200,12 @@ export function createSwarmRoutes(): Router<CogitatorState> {
     const swarmConfig = getOwn(swarms, name);
 
     if (!swarmConfig) {
-      ctx.status = 404;
-      ctx.body = { error: { message: `Swarm '${name}' not found`, code: 'NOT_FOUND' } };
+      notFound(ctx, `Swarm '${name}' not found`);
       return;
     }
 
     if (!swarmConfig.blackboard?.enabled) {
-      ctx.status = 400;
-      ctx.body = {
-        error: { message: 'Blackboard not enabled for this swarm', code: 'INVALID_INPUT' },
-      };
+      invalidInput(ctx, 'Blackboard not enabled for this swarm');
       return;
     }
 

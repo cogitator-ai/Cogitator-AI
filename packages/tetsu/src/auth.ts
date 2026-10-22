@@ -1,4 +1,8 @@
 import { hook, HttpError, httpError } from '@tetsujs/core';
+import type { Requires } from '@tetsujs/core';
+import { admitCaller } from '@cogitator-ai/server-shared';
+import type { AnonymousPolicy } from '@cogitator-ai/server-shared';
+import { refusalError } from './errors.js';
 import type { AuthContext, Authenticate, CogitatorDeps } from './types.js';
 
 /** What the caller hook adds to the context of every guarded route. */
@@ -55,4 +59,16 @@ export type CallerHook = ReturnType<typeof callerHook>;
  */
 export function resolveCaller(auth: CogitatorDeps['auth']): CallerHook {
   return typeof auth === 'function' || auth === undefined ? callerHook(auth) : auth;
+}
+
+/**
+ * The `beforeParse` hook that runs after the caller hook and turns away a caller without a
+ * `userId` with `401 UNAUTHORIZED` when `anonymous` is `'deny'`. Under `'allow'` it lets
+ * every caller the caller hook admitted through.
+ */
+export function anonymousHook(anonymous: AnonymousPolicy | undefined) {
+  return hook.beforeParse((ctx: Requires<CallerFields>) => {
+    const refusal = admitCaller(ctx.cogitatorAuth?.userId, anonymous);
+    if (refusal) throw refusalError(refusal);
+  });
 }

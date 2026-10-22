@@ -1,6 +1,18 @@
 import type { FastifyReply, FastifyRequest, preValidationAsyncHookHandler } from 'fastify';
-import { CogitatorError, ERROR_STATUS_CODES, ErrorCode } from '@cogitator-ai/types';
-import type { ParseResult } from '@cogitator-ai/server-shared';
+import {
+  INTERNAL_ERROR,
+  authorizeThreadAccess,
+  describeHttpError,
+  errorEnvelope,
+  errorHeaders,
+  type HttpErrorDescription,
+  type ParseResult,
+} from '@cogitator-ai/server-shared';
+
+/** Answers an error with the shared envelope and its `Retry-After` */
+export function sendFailure(reply: FastifyReply, error: HttpErrorDescription): FastifyReply {
+  return reply.status(error.status).headers(errorHeaders(error)).send(errorEnvelope(error));
+}
 
 export function sendError(
   reply: FastifyReply,
@@ -8,7 +20,7 @@ export function sendError(
   message: string,
   code: string
 ): FastifyReply {
-  return reply.status(status).send({ error: { message, code } });
+  return sendFailure(reply, { status, code, message });
 }
 
 export function isModuleNotFound(error: unknown): boolean {
@@ -20,31 +32,20 @@ export function isModuleNotFound(error: unknown): boolean {
   );
 }
 
-export interface ResolvedError {
-  status: number;
-  message: string;
-  code: string;
-}
-
 /**
- * What a client may see of an error: a `CogitatorError` as it is, anything
- * else as `500 Internal server error`, logged through `source.log` (a request
- * or the server).
+ * What a client may see of an error: what `describeHttpError` makes of it, or, for an
+ * internal error, `500 Internal server error` after it is logged through `source.log`
+ * (a request or the server)
  */
 export function resolveError(
   source: Pick<FastifyRequest, 'log'>,
   error: unknown,
   label: string
-): ResolvedError {
-  if (CogitatorError.isCogitatorError(error)) {
-    return {
-      status: ERROR_STATUS_CODES[error.code] || 500,
-      message: error.message,
-      code: error.code,
-    };
-  }
+): HttpErrorDescription {
+  const described = describeHttpError(error);
+  if (described) return described;
   source.log.error({ err: error }, label);
-  return { status: 500, message: 'Internal server error', code: ErrorCode.INTERNAL_ERROR };
+  return INTERNAL_ERROR;
 }
 
 export function sendRouteError(
@@ -53,8 +54,7 @@ export function sendRouteError(
   error: unknown,
   label: string
 ): FastifyReply {
-  const resolved = resolveError(request, error, label);
-  return sendError(reply, resolved.status, resolved.message, resolved.code);
+  return sendFailure(reply, resolveError(request, error, label));
 }
 
 export function onClientDisconnect(reply: FastifyReply, handler: () => void): void {
@@ -77,4 +77,40 @@ export function validateBody<T>(
     if (!parsed.ok) return sendError(reply, 400, parsed.message, 'INVALID_INPUT');
     request.body = parsed.value;
   };
+}
+
+/** {@link validateBody} for the query string */
+export function validateQuery<T>(
+  parse: (query: Record<string, unknown>) => ParseResult<T>
+): preValidationAsyncHookHandler {
+  return async (request, reply) => {
+    const parsed = parse(request.query as Record<string, unknown>);
+    if (!parsed.ok) return sendError(reply, 400, parsed.message, 'INVALID_INPUT');
+    request.query = parsed.value;
+  };
+}
+
+/**
+ * Answers the refusal `authorizeThread` gives a request on the thread it names, and says
+ * whether it did: `false` when the request may go on
+ */
+export async function refuseThread(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  threadId: string | undefined
+): Promise<boolean> {
+  const refusal = await authorizeThreadAccess(
+    request.server.cogitator.authorizeThread,
+    request.cogitatorAuth,
+    threadId
+  );
+  if (!refusal) return false;
+  sendFailure(reply, refusal);
+  return true;
+}
+
+/** The `deps` an agent run gets for a request from the `deps` hook, none without the hook */
+export async function requestDeps(request: FastifyRequest): Promise<{ deps?: unknown }> {
+  const { deps } = request.server.cogitator;
+  return deps ? { deps: await deps(request) } : {};
 }

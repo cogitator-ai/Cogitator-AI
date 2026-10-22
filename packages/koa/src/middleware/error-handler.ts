@@ -1,5 +1,6 @@
 import type { Context, Next } from 'koa';
-import { CogitatorError, ERROR_STATUS_CODES, ErrorCode } from '@cogitator-ai/types';
+import { INTERNAL_ERROR, describeHttpError } from '@cogitator-ai/server-shared';
+import { sendError } from '../utils/errors.js';
 
 export function createErrorHandler() {
   return async (ctx: Context, next: Next) => {
@@ -8,48 +9,27 @@ export function createErrorHandler() {
     } catch (err) {
       if (ctx.headerSent) return;
 
-      if (CogitatorError.isCogitatorError(err)) {
-        ctx.status = err.statusCode ?? ERROR_STATUS_CODES[err.code] ?? 500;
-        ctx.body = {
-          error: {
-            message: err.message,
-            code: err.code,
-          },
-        };
+      const described = describeHttpError(err);
+      if (described) {
+        sendError(ctx, described);
         return;
       }
 
-      const status = (err as { status?: number }).status;
-      if (status && status >= 400 && status < 600) {
-        ctx.status = status;
-        if (status >= 500) {
-          console.error('[CogitatorKoa] Unhandled error:', err);
-          ctx.body = {
-            error: {
-              message: 'Internal server error',
-              code: ErrorCode.INTERNAL_ERROR,
-            },
-          };
-        } else {
-          ctx.body = {
-            error: {
-              message: err instanceof Error ? err.message : 'HTTP error',
-              code: status === 413 ? 'PAYLOAD_TOO_LARGE' : 'HTTP_ERROR',
-            },
-          };
-        }
+      const status = (err as { status?: number } | null)?.status;
+      if (status && status >= 400 && status < 500) {
+        sendError(ctx, {
+          status,
+          code: status === 413 ? 'PAYLOAD_TOO_LARGE' : 'HTTP_ERROR',
+          message: err instanceof Error ? err.message : 'HTTP error',
+        });
         return;
       }
 
       console.error('[CogitatorKoa] Unhandled error:', err);
-
-      ctx.status = 500;
-      ctx.body = {
-        error: {
-          message: 'Internal server error',
-          code: ErrorCode.INTERNAL_ERROR,
-        },
-      };
+      sendError(ctx, {
+        ...INTERNAL_ERROR,
+        ...(status && status >= 500 && status < 600 && { status }),
+      });
     }
   };
 }

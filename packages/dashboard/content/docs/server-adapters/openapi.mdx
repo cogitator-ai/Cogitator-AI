@@ -100,8 +100,11 @@ interface SwaggerConfig {
     description?: string;
   }>; // default: where the adapter's routes are mounted
   auth?: boolean; // default: whether the adapter has `auth`
+  limits?: RunLimits; // default: the adapter's `limits`
 }
 ```
+
+With `limits`, the capped request fields (`timeout` of a swarm, `maxIterations` and `maxConcurrency` of a workflow) show the cap as their default and say the server holds larger values to it. They get no `maximum`: the server caps a larger value instead of refusing it. Run routes list `429` and `503` with a `Retry-After` header and `504`, and `GET /threads/{id}` lists its `limit` and `cursor` query parameters and the `nextCursor` of its answer.
 
 Example with full configuration:
 

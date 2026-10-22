@@ -977,6 +977,204 @@ describe('setupWebSocket hardening', () => {
     ).toEqual({ type: 'error', id: 'w', error: 'Internal server error' });
   });
 
+  it('refuses runs and resumes on threads authorizeThread keeps the caller from', async () => {
+    swarmRun.mockResolvedValue({ output: 'swarm-done', agentResults: new Map() });
+    const run = vi.fn().mockResolvedValue({
+      output: 'ok',
+      threadId: 'thread-open',
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      toolCalls: [],
+      trace: { traceId: 'trace-1', spans: [] },
+    });
+    const resume = vi.fn();
+    const authorizeThread = vi.fn((_auth: unknown, id: string) => id !== 'thread-locked');
+    const ctx = mockRouteContext({
+      runtime: { run, resume } as unknown as RouteContext['runtime'],
+      agents: { bot: { name: 'bot' } as never },
+      swarms: { team: { strategy: 'round-robin' } as never },
+      authorizeThread,
+    });
+    const { port } = await createTestServer(ctx, { auth: () => ({ userId: 'u1' }) });
+    const ws = createClient(port);
+    await waitForOpen(ws);
+
+    const refused = "Access to thread 'thread-locked' is not allowed";
+    expect(
+      await sendAndWait(ws, {
+        type: 'run',
+        id: 'r1',
+        payload: { type: 'agent', name: 'bot', input: 'hi', threadId: 'thread-locked' },
+      })
+    ).toEqual({ type: 'error', id: 'r1', error: refused });
+    expect(
+      await sendAndWait(ws, {
+        type: 'resume',
+        id: 'r2',
+        payload: { name: 'bot', threadId: 'thread-locked', decisions: {} },
+      })
+    ).toEqual({ type: 'error', id: 'r2', error: refused });
+    expect(
+      await sendAndWait(ws, {
+        type: 'run',
+        id: 'r3',
+        payload: { type: 'swarm', name: 'team', input: 'go', threadId: 'thread-locked' },
+      })
+    ).toEqual({ type: 'error', id: 'r3', error: refused });
+    expect(run).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
+    expect(swarmRun).not.toHaveBeenCalled();
+    expect(authorizeThread).toHaveBeenCalledWith({ userId: 'u1' }, 'thread-locked');
+
+    expect(
+      await sendAndWait(ws, {
+        type: 'run',
+        id: 'r4',
+        payload: { type: 'agent', name: 'bot', input: 'hi', threadId: 'thread-open' },
+      })
+    ).toMatchObject({ id: 'r4', payload: { type: 'complete' } });
+  });
+
+  it('holds workflow and swarm runs to the limits of the route context', async () => {
+    swarmRun.mockResolvedValue({ output: 'swarm-done', agentResults: new Map() });
+    const ctx = mockRouteContext({
+      workflows: { pipeline: { entryPoint: 'start' } as never },
+      swarms: { team: { strategy: 'round-robin' } as never },
+      limits: { swarmTimeout: 1500, workflowMaxIterations: 10, workflowMaxConcurrency: 2 },
+    });
+    const { port } = await createTestServer(ctx);
+    const ws = createClient(port);
+    await waitForOpen(ws);
+
+    await sendAndWait(ws, {
+      type: 'run',
+      id: 'w',
+      payload: { type: 'workflow', name: 'pipeline', input: 'x' },
+    });
+    await sendAndWait(ws, {
+      type: 'run',
+      id: 's',
+      payload: { type: 'swarm', name: 'team', input: 'go' },
+    });
+
+    expect(workflowExecute.mock.calls[0][2]).toMatchObject({
+      maxIterations: 10,
+      maxConcurrency: 2,
+    });
+    expect(swarmRun.mock.calls[0][0]).toMatchObject({ timeout: 1500 });
+  });
+
+  it('refuses limits that are not positive integers', async () => {
+    server = createServer();
+    await expect(
+      setupWebSocket(server, mockRouteContext({ limits: { swarmTimeout: -1 } }))
+    ).rejects.toThrow(/limits\.swarmTimeout/);
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+  });
+
+  it('refuses the upgrade of a connection without a user under anonymous deny', async () => {
+    const { port } = await createTestServer(mockRouteContext(), {
+      anonymous: 'deny',
+      auth: (req) =>
+        req.headers['x-user'] ? { userId: String(req.headers['x-user']) } : undefined,
+    });
+
+    await expectUpgradeStatus(port, '/ws', 401);
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { 'x-user': 'alice' } });
+    clients.push(ws);
+    await waitForOpen(ws);
+    expect(await sendAndWait(ws, { type: 'ping', id: 'p' })).toEqual({ type: 'pong', id: 'p' });
+  });
+
+  it('takes the anonymous policy of the route context when the config sets none', async () => {
+    const { port } = await createTestServer(mockRouteContext({ anonymous: 'deny' }), {
+      auth: (req) =>
+        req.headers['x-user'] ? { userId: String(req.headers['x-user']) } : undefined,
+    });
+
+    await expectUpgradeStatus(port, '/ws', 401);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { 'x-user': 'alice' } });
+    clients.push(ws);
+    await waitForOpen(ws);
+  });
+
+  it('lets the anonymous policy of the config win over the route context', async () => {
+    const { port } = await createTestServer(mockRouteContext({ anonymous: 'deny' }), {
+      anonymous: 'allow',
+    });
+    const ws = createClient(port);
+    await waitForOpen(ws);
+    expect(await sendAndWait(ws, { type: 'ping', id: 'p' })).toEqual({ type: 'pong', id: 'p' });
+  });
+
+  it.each([
+    [
+      'deps',
+      {},
+      {
+        deps: () => {
+          throw new Error('deps exploded');
+        },
+      },
+    ],
+    [
+      'authorizeThread',
+      {
+        authorizeThread: () => {
+          throw new Error('authorizeThread exploded');
+        },
+      },
+      {},
+    ],
+  ] satisfies Array<[string, Partial<RouteContext>, Parameters<typeof setupWebSocket>[2]]>)(
+    'answers a %s hook that throws during a run with an error frame and starts no run',
+    async (_hook, routeHooks, configHooks) => {
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const run = vi.fn().mockResolvedValue({ output: 'ok', threadId: 't' });
+      const ctx = mockRouteContext({
+        runtime: { run } as unknown as RouteContext['runtime'],
+        agents: { bot: { name: 'bot' } as never },
+        ...routeHooks,
+      });
+      const { port } = await createTestServer(ctx, configHooks);
+      const ws = createClient(port);
+      await waitForOpen(ws);
+
+      expect(
+        await sendAndWait(ws, {
+          type: 'run',
+          id: 'r',
+          payload: { type: 'agent', name: 'bot', input: 'hi', threadId: 'thread-1' },
+        })
+      ).toEqual({ type: 'error', id: 'r', error: 'Internal server error' });
+      expect(run).not.toHaveBeenCalled();
+      expect(await sendAndWait(ws, { type: 'ping', id: 'p' })).toEqual({ type: 'pong', id: 'p' });
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      consoleSpy.mockRestore();
+    }
+  );
+
+  it('hands agent runs the deps built from the upgrade request', async () => {
+    const run = vi.fn().mockResolvedValue({ output: 'ok', threadId: 't' });
+    const ctx = mockRouteContext({
+      runtime: { run } as unknown as RouteContext['runtime'],
+      agents: { bot: { name: 'bot' } as never },
+    });
+    const { port } = await createTestServer(ctx, {
+      deps: (req) => ({ tenant: req.headers['x-tenant'] }),
+    });
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { 'x-tenant': 'acme' } });
+    clients.push(ws);
+    await waitForOpen(ws);
+
+    await sendAndWait(ws, {
+      type: 'run',
+      id: 'r',
+      payload: { type: 'agent', name: 'bot', input: 'hi', deps: { tenant: 'evil' } },
+    });
+    expect(run.mock.calls[0][1]).toMatchObject({ deps: { tenant: 'acme' } });
+  });
+
   it('terminates clients that miss the pong deadline', async () => {
     const { port } = await createTestServer(mockRouteContext(), {
       pingInterval: 20,

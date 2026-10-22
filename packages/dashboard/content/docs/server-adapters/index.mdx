@@ -27,7 +27,7 @@ Every adapter registers these routes. Express (`config.basePath`) and Fastify (`
 | `POST`   | `/agents/:name/run`        | Run an agent (JSON response)                                                      |
 | `POST`   | `/agents/:name/stream`     | Run an agent (SSE stream)                                                         |
 | `POST`   | `/agents/:name/resume`     | Resume a run paused for [approvals](/docs/tools/approvals)                        |
-| `GET`    | `/threads/:id`             | Get thread messages                                                               |
+| `GET`    | `/threads/:id`             | Get thread messages, whole or a page at a time (`limit`, `cursor`)                |
 | `POST`   | `/threads/:id/messages`    | Add a message to a thread                                                         |
 | `DELETE` | `/threads/:id`             | Delete a thread                                                                   |
 | `GET`    | `/tools`                   | List the tools of all agents (parameters as JSON Schema)                          |
@@ -49,6 +49,7 @@ Request bodies:
 - Workflow: `{ input?, options? }` with `options` limited to `maxConcurrency` and `maxIterations`. `checkpoint: true` is refused: the server runs each workflow on a fresh executor and keeps no checkpoint store, so a checkpoint would be lost with the request. Run the workflow with `WorkflowExecutor` and a `CheckpointStore` to resume it later.
 - Swarm: `{ input, context?, threadId?, timeout? }`, `timeout` in milliseconds and at most `2147483647`.
 - Thread message: `{ role, content, metadata? }`, `role` one of `user` and `assistant` unless the server accepts more (see below).
+- Thread page: `GET /threads/:id?limit=50` answers the newest 50 messages and a `nextCursor`, and `?limit=50&cursor=<nextCursor>` the 50 before them, until an answer has no `nextCursor`. `limit` is a whole number from 1 to 1000. Without `limit` the route answers the whole thread.
 
 Every adapter reads these bodies with the same validators from `@cogitator-ai/server-shared` (`parseRunRequest`, `parseResumeRequest`, `parseAddMessageRequest`, `parseWorkflowRunRequest`), Fastify before its schema coerces types and Tetsu as refinements of its Zod schemas, so they refuse exactly the same bodies. A conformance suite in `@cogitator-ai/server-shared` (`CONFORMANCE_CASES`) runs the same requests against every adapter in its tests.
 
@@ -84,15 +85,29 @@ A run sends its `context` to the model with the input, as data the application s
 
 A refused request answers `400 INVALID_INPUT` (`422 VALIDATION_FAILED` on Tetsu) and runs nothing, over HTTP and WebSocket alike. Values that do get in are rendered into the prompt as one JSON block labelled as data, so a line break inside a key or value cannot start a line of instructions. Context your server derives from the authenticated user belongs in your own code (an agent per tenant, or `RunOptions.context` set by your route), not in what the client sends.
 
+## Server Contract
+
+Every adapter takes the same options on top of `auth`, from `@cogitator-ai/server-shared`:
+
+| Option            | Meaning                                                                                                                                                                                                                                                                                                                  |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `limits`          | `{ swarmTimeout?, workflowMaxIterations?, workflowMaxConcurrency? }`: a request gets the smaller of what it asked for and the cap, and one that asks for nothing gets the cap, over HTTP, streams and WebSocket. The OpenAPI document shows the caps as defaults                                                         |
+| `authorizeThread` | `(auth, threadId) => boolean \| Promise<boolean>`, asked about every thread a request names (runs, streams, resumes, swarm runs, the thread routes and WebSocket runs) and, on Express and Fastify, about the run events a WebSocket subscription receives. `false` answers `403 THREAD_FORBIDDEN` before any run starts |
+| `anonymous`       | `'allow'` (default) or `'deny'`: `'deny'` answers `401 UNAUTHORIZED` to a caller without a `userId`, on unknown paths too (except on Tetsu), while `/health`, `/ready` and the docs stay open. Under `'allow'` an unknown path answers `404 NOT_FOUND`                                                                   |
+| `deps`            | `(request) => deps`: the `deps` (`context.deps` of the tools) of agent runs, streams and resumes for the request, never read from the body. Over WebSocket, Express and Koa take a separate `websocket.deps(req)` that gets the raw upgrade request, and Tetsu builds them once per connection                           |
+
+Next takes `anonymous`, `authorizeThread(req, threadId)` and `deps(req)` on its route handlers, its caller being the `userId` `beforeRun` returns. The conformance suite runs the same requests for each option against every adapter.
+
 ## Threads and Users
 
 The thread routes use the runtime's memory (`cogitator.getMemory()`); without a memory adapter they answer `503`. A thread belongs to the user who created it — through a run with a `threadId` or `POST /threads/:id/messages` — and another user's thread answers `403 THREAD_ACCESS_DENIED`. The user is the `userId` your `auth` function returns, so set one whenever several people share a server ([Multiple Users](/docs/advanced/multi-user)).
 
 ## Errors
 
-Errors are JSON: `{ "error": { "message": "...", "code": "..." } }` on Express, Fastify, Hono and Koa, and Tetsu's envelope `{ status, message, error }` on Tetsu.
+Errors are JSON: `{ "error": { "message": "...", "code": "..." } }` on Express, Fastify, Hono, Koa and Next, and Tetsu's envelope `{ status, message, error }` on Tetsu. Every adapter maps errors with `describeHttpError` of `@cogitator-ai/server-shared`.
 
-- A `CogitatorError` keeps its message, its code and the status mapped to that code — for example `429 LLM_RATE_LIMITED` or `403 THREAD_ACCESS_DENIED`.
+- A `CogitatorError` keeps its message, its code and its own status, or the one mapped to its code, for example `429 LLM_RATE_LIMITED` or `403 THREAD_ACCESS_DENIED`. When the provider said when to try again, the answer carries `Retry-After` in whole seconds.
+- A swarm that ran out of time answers `504 RUN_TIMEOUT`.
 - Any other error is logged on the server and answered as `500` with the message `Internal server error`, so internals never reach the client.
 - Unknown agents, workflows and swarms answer `404`, invalid bodies answer `400 INVALID_INPUT` (`422 VALIDATION_FAILED` on Tetsu, or the validation status the Tetsu app sets), and a body that is not JSON answers `415 UNSUPPORTED_MEDIA_TYPE`.
 - Workflow and swarm routes need `@cogitator-ai/workflows` and `@cogitator-ai/swarms`; without them they answer `501`.

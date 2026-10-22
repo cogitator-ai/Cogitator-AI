@@ -895,7 +895,7 @@ describe('MongoDBAdapter', () => {
 
       await adapter.getEntries({ threadId: 'thread_123' });
 
-      expect(cursor.sort).toHaveBeenCalledWith({ createdAt: -1, seq: -1 });
+      expect(cursor.sort).toHaveBeenCalledWith({ createdAt: -1, seq: -1, _id: -1 });
     });
 
     it('refuses a limit that is not a whole number of 0 or more', async () => {

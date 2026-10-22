@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { HonoEnv, CogitatorAppOptions } from './types.js';
 import { createContextMiddleware } from './middleware/context.js';
-import { createAuthMiddleware } from './middleware/auth.js';
+import { createAnonymousMiddleware, createAuthMiddleware } from './middleware/auth.js';
 import { createBodyLimitMiddleware } from './middleware/body-limit.js';
 import { errorHandler } from './middleware/error-handler.js';
 import {
@@ -14,7 +14,13 @@ import {
 } from './routes/index.js';
 import { createSwaggerRoutes } from './swagger/index.js';
 import { createWebSocketRoutes } from './websocket/handler.js';
+import { notFound } from './utils/request.js';
 
+/**
+ * The Cogitator API as a Hono app.
+ *
+ * @throws Error when `opts.limits` holds a limit that is not a positive integer
+ */
 export function cogitatorApp(opts: CogitatorAppOptions): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
 
@@ -26,23 +32,31 @@ export function cogitatorApp(opts: CogitatorAppOptions): Hono<HonoEnv> {
   }
 
   app.route('/', createHealthRoutes());
+
+  if (opts.enableSwagger) {
+    app.route(
+      '/',
+      createSwaggerRoutes({
+        ...opts.swagger,
+        auth: opts.swagger?.auth ?? Boolean(opts.auth),
+        ...(opts.limits && { limits: opts.limits }),
+      })
+    );
+  }
+
+  app.use('*', createAnonymousMiddleware(opts.anonymous));
+
   app.route('/', createAgentRoutes());
   app.route('/', createThreadRoutes());
   app.route('/', createToolRoutes());
   app.route('/', createWorkflowRoutes());
   app.route('/', createSwarmRoutes());
 
-  if (opts.enableSwagger) {
-    app.route(
-      '/',
-      createSwaggerRoutes({ ...opts.swagger, auth: opts.swagger?.auth ?? Boolean(opts.auth) })
-    );
-  }
-
   if (opts.enableWebSocket) {
     app.route('/', createWebSocketRoutes(opts.websocket));
   }
 
+  app.notFound((c) => notFound(c, 'Not found'));
   app.onError(errorHandler);
 
   return app;

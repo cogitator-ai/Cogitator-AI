@@ -285,6 +285,56 @@ describe('agent run', () => {
     expect((await res.json()).error.code).toBe(ErrorCode.LLM_RATE_LIMITED);
   });
 
+  it('answers with the status a CogitatorError carries over the one of its code', async () => {
+    const { base } = await start(async () => {
+      throw new CogitatorError({
+        message: 'input too long',
+        code: ErrorCode.VALIDATION_ERROR,
+        statusCode: 422,
+      });
+    });
+    const res = await post(`${base}/agents/bot/run`, { input: 'q' });
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({
+      error: { message: 'input too long', code: ErrorCode.VALIDATION_ERROR },
+    });
+  });
+
+  it('tells a rate limited client when to retry, in whole seconds', async () => {
+    const { base } = await start(async () => {
+      throw new CogitatorError({
+        message: 'slow down',
+        code: ErrorCode.LLM_RATE_LIMITED,
+        retryAfter: 2500,
+      });
+    });
+    const res = await post(`${base}/agents/bot/run`, { input: 'q' });
+    expect(res.status).toBe(429);
+    expect(res.headers.get('retry-after')).toBe('3');
+  });
+
+  it('answers a stream the deps hook refuses as JSON with Retry-After, before streaming', async () => {
+    const { base, run } = await start(async () => runResult(), {
+      config: {
+        deps: () => {
+          throw new CogitatorError({
+            message: 'tenant over quota',
+            code: ErrorCode.LLM_RATE_LIMITED,
+            retryAfter: 1000,
+          });
+        },
+      },
+    });
+    const res = await post(`${base}/agents/bot/stream`, { input: 'q' });
+    expect(res.status).toBe(429);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(res.headers.get('retry-after')).toBe('1');
+    expect(await res.json()).toEqual({
+      error: { message: 'tenant over quota', code: ErrorCode.LLM_RATE_LIMITED },
+    });
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it('passes the authenticated user id and an abort signal to the run', async () => {
     const { base, run } = await start(async () => runResult(), {
       config: { auth: () => ({ userId: 'user-7' }) },
@@ -349,28 +399,59 @@ describe('workflow routes', () => {
     })
     .build();
 
-  const workflows = { failing, ok, refused } as unknown as CogitatorServerConfig['workflows'];
+  const throttled = new WorkflowBuilder('throttled')
+    .addNode('call', async () => {
+      throw new CogitatorError({
+        message: 'Rate limited by provider',
+        code: ErrorCode.LLM_RATE_LIMITED,
+        retryAfter: 30_000,
+      });
+    })
+    .build();
 
-  it('returns 500 when the workflow fails, without the text of internal errors', async () => {
+  const workflows = {
+    failing,
+    ok,
+    refused,
+    throttled,
+  } as unknown as CogitatorServerConfig['workflows'];
+
+  it('answers 500 INTERNAL_ERROR when the workflow fails, without the text of internal errors', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { base } = await start(async () => runResult(), { workflows });
     const res = await post(`${base}/workflows/failing/run`, {});
     expect(res.status).toBe(500);
     expect((await res.json()).error).toEqual({
-      message: 'Workflow failed: Internal server error',
-      code: 'WORKFLOW_FAILED',
+      message: 'Internal server error',
+      code: 'INTERNAL_ERROR',
     });
     expect(error).toHaveBeenCalled();
     error.mockRestore();
   });
 
-  it('keeps the message of a CogitatorError a workflow fails with', async () => {
+  it('answers a CogitatorError a workflow fails with by its status and code', async () => {
     const { base } = await start(async () => runResult(), { workflows });
     const res = await post(`${base}/workflows/refused/run`, {});
-    expect((await res.json()).error.message).toBe('Workflow failed: quota reached');
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toEqual({
+      message: 'quota reached',
+      code: 'VALIDATION_ERROR',
+    });
+  });
+
+  it('answers a workflow failed on a rate limit with 429 and Retry-After', async () => {
+    const { base } = await start(async () => runResult(), { workflows });
+    const res = await post(`${base}/workflows/throttled/run`, {});
+    expect(res.status).toBe(429);
+    expect(res.headers.get('retry-after')).toBe('30');
+    expect((await res.json()).error).toEqual({
+      message: 'Rate limited by provider',
+      code: 'LLM_RATE_LIMITED',
+    });
   });
 
   it('streams an error event instead of workflow_completed when the workflow fails', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { base } = await start(async () => runResult(), { workflows });
     const events = parseEvents(await (await post(`${base}/workflows/failing/stream`, {})).text());
     const types = events.map((e) =>
@@ -378,7 +459,22 @@ describe('workflow routes', () => {
     );
     expect(types).toContain('workflow:node_error');
     expect(types).not.toContain('workflow:workflow_completed');
-    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'WORKFLOW_FAILED' });
+    expect(events.at(-1)).toMatchObject({
+      type: 'error',
+      code: 'INTERNAL_ERROR',
+      message: 'Internal server error',
+    });
+    error.mockRestore();
+  });
+
+  it('streams the described code of the error a workflow fails with', async () => {
+    const { base } = await start(async () => runResult(), { workflows });
+    const events = parseEvents(await (await post(`${base}/workflows/throttled/stream`, {})).text());
+    expect(events.at(-1)).toMatchObject({
+      type: 'error',
+      code: 'LLM_RATE_LIMITED',
+      message: 'Rate limited by provider',
+    });
   });
 
   it('runs a workflow and serializes node results', async () => {

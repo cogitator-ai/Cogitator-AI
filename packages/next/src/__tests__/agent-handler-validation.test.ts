@@ -53,7 +53,7 @@ describe('createAgentHandler validation', () => {
     const { run, handler } = setup();
     const res = await handler(request(body));
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe(error);
+    expect((await res.json()).error.message).toBe(error);
     expect(run).not.toHaveBeenCalled();
   });
 
@@ -92,6 +92,6 @@ describe('createAgentHandler validation', () => {
     );
     const res = await handler(request({ input: 'x' }));
     expect(res.status).toBe(401);
-    expect((await res.json()).error).toBe('Unauthorized');
+    expect((await res.json()).error.message).toBe('Unauthorized');
   });
 });

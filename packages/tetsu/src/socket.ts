@@ -1,7 +1,7 @@
-import { ws } from '@tetsujs/core';
+import { hook, ws } from '@tetsujs/core';
 import type { ValidationIssue } from '@tetsujs/core';
 import type { z } from 'zod';
-import type { callerHook } from './auth.js';
+import type { anonymousHook, CallerHook } from './auth.js';
 import { describeError } from './errors.js';
 import { toAgentRunResponse } from '@cogitator-ai/server-shared';
 import {
@@ -13,10 +13,12 @@ import {
   findWorkflow,
   resumeAgent,
   runAgent,
+  runDepsOf,
   toResumeDecisions,
   toSwarmRunResponse,
   toWorkflowRunResponse,
 } from './operations.js';
+import type { RunDeps } from './operations.js';
 import { requestSchemas, type SocketMessage } from './schemas.js';
 import { resolveSignal } from './streaming.js';
 import type { AgentStreamCallbacks } from './streaming.js';
@@ -36,23 +38,40 @@ interface SocketLike {
 const OPEN = 1;
 const DEFAULT_PATH = '/ws' as const;
 
+/** What the handshake adds to a socket: the `deps` of every agent run on the connection */
+export interface ConnectionDeps {
+  cogitatorDeps: RunDeps;
+}
+
+/**
+ * The `beforeParse` hook of the handshake that builds the connection's `deps` with the `deps`
+ * hook. A Tetsu context belongs to its request, not to the connection that outlives it, so
+ * they are built once, from the handshake, rather than for each run.
+ */
+function connectionDeps(deps: CogitatorDeps) {
+  return hook.beforeParse(async (ctx): Promise<ConnectionDeps> => ({
+    cogitatorDeps: await runDepsOf(deps, ctx),
+  }));
+}
+
 /**
  * The WebSocket endpoint of `cogitatorController()`.
  *
- * The handshake runs the same `auth` as the HTTP routes. Each socket runs one
- * agent, workflow or swarm at a time; `stop` cancels it, and so does closing the
- * socket.
+ * The handshake runs the same `auth` and `anonymous` policy as the HTTP routes. Each
+ * socket runs one agent, workflow or swarm at a time; `stop` cancels it, and so does
+ * closing the socket. Workflow and swarm runs are held to the server's `limits`.
  */
 export function cogitatorSocket(
   deps: CogitatorDeps,
-  caller: ReturnType<typeof callerHook>,
+  caller: CallerHook,
+  admitted: ReturnType<typeof anonymousHook>,
   path: `/${string}` = DEFAULT_PATH
 ) {
   const running = new WeakMap<object, AbortController>();
 
   return ws({
     path,
-    hooks: { beforeParse: [caller] },
+    hooks: { beforeParse: [caller, admitted, connectionDeps(deps)] },
     schema: { message: requestSchemas(deps).SocketMessage },
     docs: {
       summary: 'Run agents, workflows and swarms over a WebSocket',
@@ -81,7 +100,11 @@ export function cogitatorSocket(
           }
           const controller = new AbortController();
           running.set(socket, controller);
-          return handleRun(deps, socket, message, socket.data.cogitatorAuth, {
+          const connection: Caller = {
+            auth: socket.data.cogitatorAuth,
+            runDeps: socket.data.cogitatorDeps,
+          };
+          return handleRun(deps, socket, message, connection, {
             signal: controller.signal,
           }).finally(() => {
             if (running.get(socket) === controller) running.delete(socket);
@@ -103,11 +126,17 @@ export function cogitatorSocket(
   });
 }
 
+/** Who opened a connection, and the `deps` the handshake built for its agent runs */
+interface Caller {
+  auth: AuthContext | undefined;
+  runDeps: RunDeps;
+}
+
 async function handleRun(
   deps: CogitatorDeps,
   socket: SocketLike,
   message: RunMessage,
-  auth: AuthContext | undefined,
+  caller: Caller,
   { signal }: { signal: AbortSignal }
 ): Promise<void> {
   const id = message.id;
@@ -116,8 +145,8 @@ async function handleRun(
   try {
     const result =
       message.type === 'resume'
-        ? await resume(deps, message.payload, auth, signal, emit)
-        : await execute(deps, message.payload, auth, signal, emit);
+        ? await resume(deps, message.payload, caller, signal, emit)
+        : await execute(deps, message.payload, caller, signal, emit);
     emit(signal.aborted ? { type: 'cancelled' } : { type: 'complete', result });
   } catch (error) {
     if (signal.aborted) {
@@ -145,7 +174,7 @@ function agentCallbacks(signal: AbortSignal, emit: Emit): AgentStreamCallbacks {
 async function resume(
   deps: CogitatorDeps,
   payload: ResumePayload,
-  auth: AuthContext | undefined,
+  { auth, runDeps }: Caller,
   signal: AbortSignal,
   emit: Emit
 ): Promise<unknown> {
@@ -156,7 +185,8 @@ async function resume(
     agent,
     payload.threadId,
     { ...toResumeDecisions(payload), ...agentCallbacks(signal, emit) },
-    auth
+    auth,
+    runDeps
   );
   return toAgentRunResponse(result);
 }
@@ -164,7 +194,7 @@ async function resume(
 async function execute(
   deps: CogitatorDeps,
   payload: RunPayload,
-  auth: AuthContext | undefined,
+  { auth, runDeps }: Caller,
   signal: AbortSignal,
   emit: Emit
 ): Promise<unknown> {
@@ -181,7 +211,8 @@ async function execute(
           threadId: payload.threadId,
           ...agentCallbacks(signal, emit),
         },
-        auth
+        auth,
+        runDeps
       );
       return toAgentRunResponse(result);
     }

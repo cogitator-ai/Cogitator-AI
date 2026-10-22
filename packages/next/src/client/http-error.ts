@@ -8,12 +8,20 @@ export class HttpError extends Error {
   }
 }
 
+/**
+ * The message of an error answer: `{ error: { message } }` as every Cogitator adapter answers,
+ * or the flat `{ error: message }` of older servers
+ */
 function extractErrorDetail(text: string): string {
   try {
     const parsed: unknown = JSON.parse(text);
     if (typeof parsed === 'object' && parsed !== null && 'error' in parsed) {
       const { error } = parsed;
       if (typeof error === 'string' && error) return error;
+      if (typeof error === 'object' && error !== null && 'message' in error) {
+        const { message } = error;
+        if (typeof message === 'string' && message) return message;
+      }
     }
   } catch {}
   return text;

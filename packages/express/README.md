@@ -69,12 +69,24 @@ Run/stream body: `{ input: string; context?: object; threadId?: string }`. `inpu
 ### Threads (Memory)
 
 ```
-GET    /api/threads/:id               - Get thread messages
+GET    /api/threads/:id               - Get thread messages, a page at a time with ?limit&cursor
 POST   /api/threads/:id/messages      - Add message to thread
 DELETE /api/threads/:id               - Delete thread
 ```
 
 The routes use `cogitator.getMemory()`, which connects the configured memory adapter on first use, so threads can be read on a fresh server before any agent has run. Only a `Cogitator` without `memory` configured answers `503 UNAVAILABLE`. New messages need `role` (`user` or `assistant`, more with `threadMessageRoles`) and a non-empty string `content`, optional `metadata` is stored on the memory entry.
+
+`GET /threads/:id` answers the whole thread by default. With `?limit=50` it answers the newest 50 messages (oldest first within the page) and a `nextCursor`, and `?limit=50&cursor=<nextCursor>` the 50 before them, until an answer has no `nextCursor`. Messages written in the same millisecond are never skipped or repeated across pages. A `limit` outside 1 to 1000 or a cursor the server never gave is refused with `400 INVALID_INPUT`.
+
+```typescript
+let cursor: string | undefined;
+do {
+  const query = new URLSearchParams({ limit: '50', ...(cursor && { cursor }) });
+  const page = await (await fetch(`/api/threads/${threadId}?${query}`)).json();
+  render(page.messages);
+  cursor = page.nextCursor;
+} while (cursor);
+```
 
 ### Workflows
 
@@ -84,7 +96,7 @@ POST   /api/workflows/:name/run       - Run workflow
 POST   /api/workflows/:name/stream    - Stream workflow events
 ```
 
-Body: `{ input?: object; options?: { maxConcurrency?: number; maxIterations?: number } }`. `maxConcurrency`/`maxIterations` must be positive integers (400 otherwise). Other options are dropped, and `checkpoint: true` is refused, since the server keeps no checkpoint store to resume from. A failed workflow returns `500` with code `WORKFLOW_FAILED` (the stream ends with an `error` event instead of `workflow_completed`). Disconnecting aborts the workflow.
+Body: `{ input?: object; options?: { maxConcurrency?: number; maxIterations?: number } }`. `maxConcurrency`/`maxIterations` must be positive integers (400 otherwise). With `limits.workflowMaxIterations` or `limits.workflowMaxConcurrency` set, a larger value is held to the limit, and a request that asks for nothing gets the limit. Other options are dropped, and `checkpoint: true` is refused, since the server keeps no checkpoint store to resume from. A failed workflow answers the error it failed with, mapped like any other run error (a node that hit `LLM_RATE_LIMITED` answers `429` with `Retry-After`, an internal error `500 INTERNAL_ERROR`), and its stream ends with an `error` event carrying that code instead of `workflow_completed`. Disconnecting aborts the workflow.
 
 The stream sends `{ type: 'workflow', event, data }` events: `node_started`, `node_completed`, `node_error`, `node_progress` and finally `workflow_completed`.
 
@@ -97,7 +109,7 @@ POST   /api/swarms/:name/stream       - Stream swarm events
 GET    /api/swarms/:name/blackboard   - Get configured blackboard sections
 ```
 
-Run/stream body: `{ input: string; context?: object; threadId?: string; timeout?: number }` (`timeout` must be positive, at most `2147483647` ms). Disconnecting aborts the swarm. The stream sends `{ type: 'swarm', event, data }` events (`agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, and finally `swarm_completed` with the output and usage). Each run creates a fresh swarm, so the blackboard endpoint returns the configured initial sections.
+Run/stream body: `{ input: string; context?: object; threadId?: string; timeout?: number }` (`timeout` must be positive, at most `2147483647` ms). With `limits.swarmTimeout` set, a longer timeout is held to it and a run without one gets it, and a swarm that runs out of time answers `504 RUN_TIMEOUT`. Disconnecting aborts the swarm. The stream sends `{ type: 'swarm', event, data }` events (`agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, and finally `swarm_completed` with the output and usage). Each run creates a fresh swarm, so the blackboard endpoint returns the configured initial sections.
 
 ### Tools & Docs
 
@@ -155,6 +167,24 @@ const server = new CogitatorServer({
       description: 'AI-powered API endpoints',
       version: '1.0.0',
     },
+
+    // Caps on what a request may ask a run for. A larger value is held to the cap,
+    // a request without one gets the cap. Checked when the server is created.
+    limits: { swarmTimeout: 120_000, workflowMaxIterations: 50, workflowMaxConcurrency: 4 },
+
+    // 'deny' answers 401 to callers without a userId. Health, ready and the docs stay open.
+    anonymous: 'deny',
+
+    // Called with the auth context and the thread of every request that names one.
+    // false answers 403 THREAD_FORBIDDEN and no run starts.
+    authorizeThread: (auth, threadId) => threadId.startsWith(`${auth?.userId}:`),
+
+    // Dependencies for the tools of HTTP agent runs, streams and resumes (context.deps).
+    // Built from the request on the server, never read from the body.
+    deps: async (req) => ({ db: await tenantDb(req.get('x-tenant')) }),
+
+    // WebSocket runs build theirs from the upgrade request, a plain Node IncomingMessage.
+    websocket: { deps: async (req) => ({ db: await tenantDb(req.headers['x-tenant']) }) },
   },
 });
 ```
@@ -167,6 +197,16 @@ When `auth` returns a `userId`, everything a caller does with threads is scoped 
 - `GET /threads/:id`, `POST /threads/:id/messages` and `DELETE /threads/:id` check the thread's owner first; `POST` to an unknown id creates the thread owned by the caller.
 - Another user's thread answers `403` with code `THREAD_ACCESS_DENIED`, and its messages are neither returned nor changed.
 - Threads created earlier without an owner (no `userId`) stay open only to callers without a `userId`, such as servers with no `auth` configured.
+- `authorizeThread(auth, threadId)` adds your own rule on top of ownership, for shared or team threads. It runs on every route that names a thread (agent run, stream and resume, swarm run and stream, `GET`, `DELETE` and `POST /threads/:id/messages`) and on WebSocket runs with a `threadId`, after the body is validated and before core checks the owner. Answering `false` refuses with `403 THREAD_FORBIDDEN`, and no run starts.
+- `anonymous: 'deny'` refuses every caller whose `auth` gave no `userId` with `401 UNAUTHORIZED`, WebSocket upgrades included. `/health`, `/ready`, `/openapi.json` and `/docs` stay open. An unknown path under the base path answers `401` too, so an anonymous caller cannot probe which routes exist, and `404 NOT_FOUND` once the caller has a `userId`. The default, `'allow'`, lets anonymous callers in as before, and an unknown path answers `404 NOT_FOUND` in the error envelope.
+
+### Limits and deps
+
+`limits` caps what a client may ask a run for: `swarmTimeout` (ms), `workflowMaxIterations` and `workflowMaxConcurrency`. A request is never refused over a limit: it gets the smaller of what it asked for and the limit, or the limit when it asked for nothing, over HTTP and SSE alike. The OpenAPI spec shows each limit as the default of its field. Each limit must be a positive integer, or the constructor throws.
+
+`deps: (req) => deps` builds the dependencies agent tools read as `context.deps` (a database handle, a tenant, a client), and the HTTP run, stream or resume gets them as `deps`. They are built on the server for each request and never come from the body. An error the hook throws is answered like a run error, before a stream starts.
+
+WebSocket runs and resumes take theirs from `websocket.deps: (req) => deps`, called for each run with the upgrade request. That request is a plain Node `IncomingMessage` that never went through Express, so it has `headers`, `url` and `socket` but no `req.get()` and nothing a middleware adds, which is why it gets a hook of its own. Without `websocket.deps` WebSocket runs get no deps. An error it throws (or one `authorizeThread` throws) answers `{ type: 'error', id, error }` and starts no run.
 
 ### Approvals
 
@@ -248,7 +288,7 @@ await server.attachWebSocket(httpServer); // defaults to `${basePath}/ws`
 httpServer.listen(3000);
 ```
 
-`attachWebSocket` throws if `enableWebSocket` is off, `init()` has not run, or `ws` is not installed. The configured `auth` function runs on the upgrade request (rejected with 401 when it throws). For custom setups, `setupWebSocket(httpServer, routeContext, config)` is also exported.
+`attachWebSocket` throws if `enableWebSocket` is off, `init()` has not run, or `ws` is not installed. The configured `auth` function runs on the upgrade request (rejected with 401 when it throws, or when it gives no `userId` under `anonymous: 'deny'`). A `run` or `resume` on a thread `authorizeThread` refuses answers `{ type: 'error', id, error }` without starting, and `websocket.deps` is called with the upgrade request. For custom setups, `setupWebSocket(httpServer, routeContext, config)` is also exported.
 
 Protocol:
 
@@ -257,13 +297,15 @@ Protocol:
 | `{ type: 'run', id, payload: { type: 'agent', name, input, context?, threadId? } }` | Client→Server | Run an agent; events arrive as `{ type: 'event', id, payload }` (`token`, `reasoning`, `tool-call`, `tool-result`, `complete`, `cancelled`) |
 | `{ type: 'resume', id, payload: { name, threadId, decisions?, defaultDecision? } }` | Client→Server | Resume a run paused for tool approvals; events arrive like those of `run`                                                                   |
 | `{ type: 'stop' }`                                                                  | Client→Server | Abort the client's running agent (emits `cancelled`)                                                                                        |
-| `{ type: 'subscribe', channel: 'agent:<name>' }`                                    | Client→Server | Receive events of runs of that agent started by the same user elsewhere                                                                     |
+| `{ type: 'subscribe', channel: 'agent:<name>' }`                                    | Client→Server | Receive events of runs of that agent started by the same user elsewhere, on threads `authorizeThread` allows                                |
 | `{ type: 'unsubscribe', channel }`                                                  | Client→Server | Stop receiving channel events                                                                                                               |
 | `{ type: 'ping' }`                                                                  | Client→Server | Answered with `{ type: 'pong' }`                                                                                                            |
 | `{ type: 'subscribed' \| 'unsubscribed', id, channel }`                             | Server→Client | Subscription confirmed (at most 64 channels per connection)                                                                                 |
 | `{ type: 'error', id?, error }`                                                     | Server→Client | Invalid message or payload, unknown agent, or a failed run                                                                                  |
 
-Only agent runs are supported over WebSocket; use the HTTP endpoints for workflows and swarms. A new `run` from the same connection aborts the previous one. A failed run reports a `CogitatorError`'s message; any other error is logged and sent as `Internal server error`. The server pings every `pingInterval` ms and terminates clients that miss a pong.
+Only agent runs are supported over WebSocket, use the HTTP endpoints for workflows and swarms. A new `run` from the same connection aborts the previous one. A failed run reports a `CogitatorError`'s message, any other error is logged and sent as `Internal server error`. The server pings every `pingInterval` ms and terminates clients that miss a pong.
+
+A subscriber gets the events of a run only when it has the `userId` of the caller who started it and, with `authorizeThread` set, when `authorizeThread(subscriberAuth, threadId)` allows it on the run's thread (the `threadId` of the run, or the one core created for it). The answer is asked once per subscriber and run, and a subscriber it refuses, or throws for, gets none of the run's events. Without `authorizeThread`, callers without a `userId` share the events of each other's runs, so set `authorizeThread` or `anonymous: 'deny'` when anonymous callers must not see each other.
 
 Client usage:
 
@@ -386,7 +428,21 @@ interface CogitatorServerConfig {
     sseHeartbeatMs?: number; // Default: 5000, 0 turns SSE heartbeats off
     acceptContext?: boolean | string[]; // context keys clients may send: none by default, a list, or true for any
     threadMessageRoles?: ('user' | 'assistant' | 'system')[]; // roles of POST /threads/:id/messages, default user and assistant
+    limits?: RunLimits; // { swarmTimeout?, workflowMaxIterations?, workflowMaxConcurrency? }
+    anonymous?: 'allow' | 'deny'; // Default: 'allow'
+    authorizeThread?: (
+      auth: AuthContext | undefined,
+      threadId: string
+    ) => boolean | Promise<boolean>;
+    deps?: (req: Request) => unknown | Promise<unknown>; // HTTP runs, WebSocket runs use websocket.deps
   };
+}
+
+interface WebSocketConfig {
+  path?: string; // Default: `${basePath}/ws`
+  pingInterval?: number; // Default: 30000
+  maxPayloadSize?: number; // Default: 1 MiB
+  deps?: (req: IncomingMessage) => unknown | Promise<unknown>; // deps of WebSocket runs, from the upgrade request
 }
 ```
 
@@ -438,16 +494,17 @@ Error codes map to HTTP status codes:
 - `INVALID_INPUT` → 400 (validation errors and malformed JSON bodies)
 - `UNAUTHORIZED` → 401
 - `THREAD_ACCESS_DENIED` → 403 (another user's thread)
+- `THREAD_FORBIDDEN` → 403 (`authorizeThread` refused the thread)
 - `NOT_FOUND` → 404
 - `RUN_NOT_PAUSED` → 409 (resume of a thread without a paused run)
 - `PAYLOAD_TOO_LARGE` → 413
 - `RATE_LIMIT_EXCEEDED` → 429
-- `WORKFLOW_FAILED` → 500
 - `INTERNAL_ERROR` → 500
 - `UNIMPLEMENTED` → 501 (optional workflows/swarms package missing)
 - `UNAVAILABLE` → 503 (no memory configured)
+- `RUN_TIMEOUT` → 504 (a swarm ran out of time)
 
-A `CogitatorError` keeps its message and code and uses the code's mapped status (for example `LLM_RATE_LIMITED` → 429). Any other error is logged on the server and answered as `500 Internal server error`, so connection strings, file paths and other internals never reach the client. The same masking applies to SSE `error` events, the `node_error`/`agent_error` stream events, `Workflow failed: …` messages and WebSocket run errors.
+A `CogitatorError` keeps its message and code and answers with its own `statusCode`, which is the code's mapped status unless the error was given another (for example `LLM_RATE_LIMITED` → 429). When it says when to retry (`retryAfter`, as provider rate limits do), the answer carries `Retry-After` in whole seconds. The mapping is `describeHttpError` of `@cogitator-ai/server-shared`, so Express, Fastify, Hono, Koa and Next answer the same error the same way. Any other error is logged on the server and answered as `500 Internal server error`, so connection strings, file paths and other internals never reach the client. The same mapping applies to a failed workflow, and the same masking to SSE `error` events, the `node_error`/`agent_error` stream events and WebSocket run errors.
 
 ## Documentation
 

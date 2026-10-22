@@ -111,6 +111,53 @@ describe('plugin validation and errors', () => {
     expect((await res.json()).error.code).toBe('INVALID_INPUT');
   });
 
+  it('answers with the status a CogitatorError carries over the one of its code', async () => {
+    const { base } = await start(async () => {
+      throw new CogitatorError({
+        message: 'input too long',
+        code: ErrorCode.VALIDATION_ERROR,
+        statusCode: 422,
+      });
+    });
+    const res = await post(`${base}/agents/bot/run`, { input: 'q' });
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({
+      error: { message: 'input too long', code: ErrorCode.VALIDATION_ERROR },
+    });
+  });
+
+  it('tells a rate limited client when to retry, in whole seconds', async () => {
+    const { base } = await start(async () => {
+      throw new CogitatorError({
+        message: 'slow down',
+        code: ErrorCode.LLM_RATE_LIMITED,
+        retryAfter: 2500,
+      });
+    });
+    const res = await post(`${base}/agents/bot/run`, { input: 'q' });
+    expect(res.status).toBe(429);
+    expect(res.headers.get('retry-after')).toBe('3');
+  });
+
+  it('answers an error thrown by authorizeThread through the error handler, without its text', async () => {
+    const { base, run } = await start(async () => runResult(), {
+      authorizeThread: () => {
+        throw new Error('acl service at 10.0.0.5 is down');
+      },
+    });
+    const res = await post(`${base}/agents/bot/run`, { input: 'q', threadId: 't1' });
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain('10.0.0.5');
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('answers an unknown route under the prefix with the shared envelope', async () => {
+    const { base } = await start(async () => runResult());
+    const res = await fetch(`${base}/nope`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: { message: 'Not found', code: 'NOT_FOUND' } });
+  });
+
   it('maps CogitatorError codes to their HTTP status', async () => {
     const { base } = await start(async () => {
       throw new CogitatorError({ message: 'slow down', code: ErrorCode.LLM_RATE_LIMITED });
@@ -365,22 +412,50 @@ describe('plugin workflow routes', () => {
       throw new CogitatorError({ message: 'quota reached', code: ErrorCode.VALIDATION_ERROR });
     })
     .build();
-  const workflows = { failing, refused } as unknown as CogitatorPluginOptions['workflows'];
+  const throttled = new WorkflowBuilder('throttled')
+    .addNode('call', async () => {
+      throw new CogitatorError({
+        message: 'Rate limited by provider',
+        code: ErrorCode.LLM_RATE_LIMITED,
+        retryAfter: 30_000,
+      });
+    })
+    .build();
+  const workflows = {
+    failing,
+    refused,
+    throttled,
+  } as unknown as CogitatorPluginOptions['workflows'];
 
-  it('returns 500 WORKFLOW_FAILED without the text of internal errors', async () => {
+  it('answers 500 INTERNAL_ERROR without the text of internal errors', async () => {
     const { base } = await start(async () => runResult(), { workflows });
     const res = await post(`${base}/workflows/failing/run`, {});
     expect(res.status).toBe(500);
     expect((await res.json()).error).toEqual({
-      message: 'Workflow failed: Internal server error',
-      code: 'WORKFLOW_FAILED',
+      message: 'Internal server error',
+      code: 'INTERNAL_ERROR',
     });
   });
 
-  it('keeps the message of a CogitatorError a workflow fails with', async () => {
+  it('answers a CogitatorError a workflow fails with by its status and code', async () => {
     const { base } = await start(async () => runResult(), { workflows });
     const res = await post(`${base}/workflows/refused/run`, {});
-    expect((await res.json()).error.message).toBe('Workflow failed: quota reached');
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toEqual({
+      message: 'quota reached',
+      code: 'VALIDATION_ERROR',
+    });
+  });
+
+  it('answers a workflow failed on a rate limit with 429 and Retry-After', async () => {
+    const { base } = await start(async () => runResult(), { workflows });
+    const res = await post(`${base}/workflows/throttled/run`, {});
+    expect(res.status).toBe(429);
+    expect(res.headers.get('retry-after')).toBe('30');
+    expect((await res.json()).error).toEqual({
+      message: 'Rate limited by provider',
+      code: 'LLM_RATE_LIMITED',
+    });
   });
 
   it('streams an error instead of workflow_completed on failure', async () => {
@@ -389,7 +464,21 @@ describe('plugin workflow routes', () => {
     expect(events.some((e) => e.type === 'workflow' && e.event === 'workflow_completed')).toBe(
       false
     );
-    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'WORKFLOW_FAILED' });
+    expect(events.at(-1)).toMatchObject({
+      type: 'error',
+      code: 'INTERNAL_ERROR',
+      message: 'Internal server error',
+    });
+  });
+
+  it('streams the described code of the error a workflow fails with', async () => {
+    const { base } = await start(async () => runResult(), { workflows });
+    const events = parseEvents(await (await post(`${base}/workflows/throttled/stream`, {})).text());
+    expect(events.at(-1)).toMatchObject({
+      type: 'error',
+      code: 'LLM_RATE_LIMITED',
+      message: 'Rate limited by provider',
+    });
   });
 
   it('rejects invalid workflow options', async () => {
@@ -519,6 +608,24 @@ describe('plugin WebSocket', () => {
     expect(run.mock.calls[0][1].userId).toBe('u-1');
   });
 
+  it('refuses an upgrade without a user id under anonymous deny', async () => {
+    const { ws, run } = await start(async () => ({ output: 'ok' }), {
+      enableWebSocket: true,
+      anonymous: 'deny',
+      auth: (request) =>
+        typeof request.headers['x-user'] === 'string'
+          ? { userId: request.headers['x-user'] }
+          : undefined,
+    });
+
+    await expect(connect(ws)).rejects.toThrow('HTTP 401');
+
+    const client = await connect(ws, { 'x-user': 'alice' });
+    client.send(runMessage('r1'));
+    await vi.waitFor(() => expect(run).toHaveBeenCalled());
+    expect(run.mock.calls[0][1].userId).toBe('alice');
+  });
+
   it('publishes run events to agent channel subscribers', async () => {
     const { ws } = await start(
       async (options) => {
@@ -568,6 +675,100 @@ describe('plugin WebSocket', () => {
     );
     expect(JSON.stringify(aliceTab.messages)).not.toContain('secret of bob');
     expect(alice.messages.some((m) => m.id === 'bob-run')).toBe(false);
+  });
+
+  it('shows a subscriber the run events only on the threads authorizeThread lets it on', async () => {
+    const authorizeThread = vi.fn(
+      (auth: { metadata?: Record<string, unknown> } | undefined, threadId: string) =>
+        auth?.metadata !== undefined || threadId === 'shared'
+    );
+    const { ws } = await start(
+      async (options) => {
+        const threadId = options.threadId ?? 'thread_fresh';
+        options.onRunStart?.({ runId: 'run-1', agentId: 'bot', input: 'hello', threadId });
+        options.onToken?.(`secret on ${threadId}`);
+        return { output: 'done', threadId };
+      },
+      {
+        enableWebSocket: true,
+        auth: (request) => (request.headers['x-admin'] ? { metadata: { admin: true } } : undefined),
+        authorizeThread,
+      }
+    );
+    const refused = await connect(ws);
+    const allowed = await connect(ws, { 'x-admin': '1' });
+    for (const client of [refused, allowed]) {
+      client.send({ type: 'subscribe', channel: 'agent:bot' });
+      await vi.waitFor(() => expect(client.messages[0]).toMatchObject({ type: 'subscribed' }));
+    }
+
+    const runner = await connect(ws, { 'x-admin': '1' });
+    runner.send({
+      type: 'run',
+      id: 'private-run',
+      payload: { type: 'agent', name: 'bot', input: 'hello', threadId: 'private' },
+    });
+    await vi.waitFor(() => expect(runner.messages).toHaveLength(2));
+    runner.send(runMessage('fresh-run'));
+    await vi.waitFor(() => expect(runner.messages).toHaveLength(4));
+
+    await vi.waitFor(() =>
+      expect(
+        allowed.messages.slice(1).map((m) => [m.id, (m.payload as { type: string }).type])
+      ).toEqual([
+        ['private-run', 'token'],
+        ['private-run', 'complete'],
+        ['fresh-run', 'token'],
+        ['fresh-run', 'complete'],
+      ])
+    );
+    expect(refused.messages).toHaveLength(1);
+    expect(authorizeThread).toHaveBeenCalledWith(undefined, 'private');
+    expect(authorizeThread).toHaveBeenCalledWith(undefined, 'thread_fresh');
+    expect(authorizeThread).toHaveBeenCalledWith({ metadata: { admin: true } }, 'private');
+
+    runner.send({
+      type: 'run',
+      id: 'shared-run',
+      payload: { type: 'agent', name: 'bot', input: 'hello', threadId: 'shared' },
+    });
+    await vi.waitFor(() =>
+      expect(refused.messages.slice(1).map((m) => m.id)).toEqual(['shared-run', 'shared-run'])
+    );
+  });
+
+  it('shows a subscriber nothing when authorizeThread throws for it', async () => {
+    const authorizeThread = vi.fn((auth: unknown) => {
+      if (!auth) throw new Error('policy store down');
+      return true;
+    });
+    const { ws } = await start(
+      async (options) => {
+        options.onToken?.('secret');
+        return { output: 'done' };
+      },
+      {
+        enableWebSocket: true,
+        auth: (request) =>
+          request.headers['x-runner'] ? { metadata: { runner: true } } : undefined,
+        authorizeThread,
+      }
+    );
+    const observer = await connect(ws);
+    observer.send({ type: 'subscribe', channel: 'agent:bot' });
+    await vi.waitFor(() => expect(observer.messages[0]).toMatchObject({ type: 'subscribed' }));
+
+    const runner = await connect(ws, { 'x-runner': '1' });
+    runner.send({
+      type: 'run',
+      id: 'r1',
+      payload: { type: 'agent', name: 'bot', input: 'hello', threadId: 'thread-1' },
+    });
+    await vi.waitFor(() => expect(runner.messages).toHaveLength(2));
+    await vi.waitFor(() => expect(authorizeThread).toHaveBeenCalledWith(undefined, 'thread-1'));
+    await tick();
+
+    expect(observer.messages).toHaveLength(1);
   });
 
   it('answers invalid messages and payloads with errors', async () => {

@@ -11,11 +11,23 @@ import {
   conformanceContentType,
   conformanceMethod,
   type ConformanceCase,
+  type ConformanceServerOptions,
 } from '@cogitator-ai/server-shared';
 import { cogitatorApp } from '../app.js';
 import type { CogitatorAppOptions, CogitatorState } from '../types.js';
 
 type Options = CogitatorAppOptions;
+
+function serverOptions(server: ConformanceServerOptions = {}): Partial<Options> {
+  const { forbiddenThreads, deps, ...options } = server;
+  return {
+    ...options,
+    ...(forbiddenThreads && {
+      authorizeThread: (_auth, id) => !forbiddenThreads.includes(id),
+    }),
+    ...(deps && { deps: () => deps }),
+  };
+}
 
 async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
   const app = new Koa<CogitatorState>();
@@ -29,14 +41,21 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
       [CONFORMANCE_NAMES.workflow]: { name: 'flow', entryPoint: 'a', nodes: new Map() },
     } as unknown as Options['workflows'],
     sseHeartbeatMs: 0,
-    ...testCase.server,
+    ...serverOptions(testCase.server),
   });
   app.use(router.routes());
   app.use(router.allowedMethods());
 
   const path = CONFORMANCE_ROUTES[testCase.route];
   const client = request(app.callback());
-  const res = await (conformanceMethod(testCase) === 'GET' ? client.get(path) : client.post(path))
+  const method = conformanceMethod(testCase);
+  const sent =
+    method === 'GET'
+      ? client.get(path)
+      : method === 'DELETE'
+        ? client.delete(path)
+        : client.post(path);
+  const res = await sent
     .set('Content-Type', conformanceContentType(testCase))
     .buffer(true)
     .parse((response, done) => {
@@ -49,14 +68,22 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
   const body = String(res.body);
   const code =
     res.status < 400 ? undefined : (JSON.parse(body) as { error: { code: string } }).error.code;
-  return { status: res.status, code, body };
+  const headers = Object.fromEntries(
+    Object.entries(res.headers as Record<string, string | string[] | undefined>).flatMap(
+      ([name, value]) =>
+        value === undefined
+          ? []
+          : [[name.toLowerCase(), Array.isArray(value) ? value.join(', ') : value]]
+    )
+  );
+  return { status: res.status, code, body, headers };
 }
 
 describe('server protocol conformance', () => {
   it.each(CONFORMANCE_CASES.map((testCase) => [testCase.name, testCase] as const))(
     '%s',
     async (_name, testCase) => {
-      const runtime = new ConformanceRuntime();
+      const runtime = new ConformanceRuntime(testCase);
       const response = await answer(testCase, runtime);
       expect(checkConformance(testCase, response, runtime)).toEqual([]);
     }

@@ -1,5 +1,6 @@
 import type { RequestHandler } from 'express';
 import { refuseNonJsonBody } from '@cogitator-ai/server-shared';
+import { sendFailure } from '../routes/utils.js';
 
 /**
  * Refuses a request whose body is not JSON with `415 UNSUPPORTED_MEDIA_TYPE` before any
@@ -13,6 +14,6 @@ export function createJsonBodyGuard(): RequestHandler {
       next();
       return;
     }
-    res.status(refusal.status).json({ error: { message: refusal.message, code: refusal.code } });
+    sendFailure(res, refusal);
   };
 }

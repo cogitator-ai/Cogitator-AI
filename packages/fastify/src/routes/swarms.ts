@@ -5,13 +5,19 @@ import type {
   SwarmRunResponse,
   BlackboardResponse,
 } from '../types.js';
-import { SwarmRunRequestSchema } from '../types.js';
+import { swarmRunRequestSchema } from '../types.js';
 import { FastifyStreamWriter, generateId } from '../streaming/index.js';
 import type { RunResult, SwarmMessage, SwarmEvent } from '@cogitator-ai/types';
-import { parseSwarmRunRequest, swarmAgentNames, withSwarm } from '@cogitator-ai/server-shared';
+import {
+  parseSwarmRunRequest,
+  swarmAgentNames,
+  swarmTimeoutWithin,
+  withSwarm,
+} from '@cogitator-ai/server-shared';
 import {
   isModuleNotFound,
   onClientDisconnect,
+  refuseThread,
   resolveError,
   sendError,
   sendRouteError,
@@ -52,10 +58,11 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
   const runBody = validateBody((body) =>
     parseSwarmRunRequest(body, { acceptContext: fastify.cogitator.acceptContext })
   );
+  const runSchema = { params: paramsSchema, body: swarmRunRequestSchema(fastify.cogitator.limits) };
 
   fastify.post<{ Params: SwarmParams; Body: SwarmRunRequest }>(
     '/swarms/:name/run',
-    { schema: { params: paramsSchema, body: SwarmRunRequestSchema }, preValidation: runBody },
+    { schema: runSchema, preValidation: runBody },
     async (request, reply) => {
       const { name } = request.params;
       const swarmConfig = findSwarm(name);
@@ -63,6 +70,8 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
       if (!swarmConfig) {
         return sendError(reply, 404, `Swarm '${name}' not found`, 'NOT_FOUND');
       }
+
+      if (await refuseThread(request, reply, request.body.threadId)) return reply;
 
       let disconnected = false;
       let abortSwarm: (() => void) | undefined;
@@ -84,7 +93,7 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
               context: request.body.context,
               threadId: request.body.threadId,
               userId: request.cogitatorAuth?.userId,
-              timeout: request.body.timeout,
+              timeout: swarmTimeoutWithin(request.body.timeout, fastify.cogitator.limits),
             });
 
             const agentResults: Record<string, unknown> = {};
@@ -121,7 +130,7 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post<{ Params: SwarmParams; Body: SwarmRunRequest }>(
     '/swarms/:name/stream',
-    { schema: { params: paramsSchema, body: SwarmRunRequestSchema }, preValidation: runBody },
+    { schema: runSchema, preValidation: runBody },
     async (request, reply) => {
       const { name } = request.params;
       const swarmConfig = findSwarm(name);
@@ -129,6 +138,8 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
       if (!swarmConfig) {
         return sendError(reply, 404, `Swarm '${name}' not found`, 'NOT_FOUND');
       }
+
+      if (await refuseThread(request, reply, request.body.threadId)) return reply;
 
       const writer = new FastifyStreamWriter(reply, {
         heartbeatMs: fastify.cogitator.sseHeartbeatMs,
@@ -156,7 +167,7 @@ export const swarmRoutes: FastifyPluginAsync = async (fastify) => {
             context: request.body.context,
             threadId: request.body.threadId,
             userId: request.cogitatorAuth?.userId,
-            timeout: request.body.timeout,
+            timeout: swarmTimeoutWithin(request.body.timeout, fastify.cogitator.limits),
             onAgentStart: (agentName: string) => {
               writer.swarmEvent('agent_start', { agentName, timestamp: Date.now() });
             },

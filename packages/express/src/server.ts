@@ -1,9 +1,14 @@
 import { Router, json } from 'express';
 import { getLogger } from '@cogitator-ai/core';
-import { DEFAULT_THREAD_MESSAGE_ROLES, resolveSseHeartbeatMs } from '@cogitator-ai/server-shared';
-import type { Server as HttpServer } from 'http';
-import type { CogitatorServerConfig, RouteContext } from './types.js';
 import {
+  DEFAULT_THREAD_MESSAGE_ROLES,
+  checkRunLimits,
+  resolveSseHeartbeatMs,
+} from '@cogitator-ai/server-shared';
+import type { Server as HttpServer } from 'http';
+import type { CogitatorServerConfig, ResolvedServerConfig, RouteContext } from './types.js';
+import {
+  createAnonymousGuard,
   createAuthMiddleware,
   createRateLimitMiddleware,
   createCorsMiddleware,
@@ -34,7 +39,7 @@ export class CogitatorServer {
   private agents: NonNullable<CogitatorServerConfig['agents']>;
   private workflows: NonNullable<CogitatorServerConfig['workflows']>;
   private swarms: NonNullable<CogitatorServerConfig['swarms']>;
-  private config: Required<NonNullable<CogitatorServerConfig['config']>>;
+  private config: ResolvedServerConfig;
   private routeContext: RouteContext | null = null;
   private initialized = false;
 
@@ -57,7 +62,9 @@ export class CogitatorServer {
       sseHeartbeatMs: resolveSseHeartbeatMs(cfg.sseHeartbeatMs),
       acceptContext: cfg.acceptContext ?? false,
       threadMessageRoles: cfg.threadMessageRoles ?? DEFAULT_THREAD_MESSAGE_ROLES,
-    } as Required<NonNullable<CogitatorServerConfig['config']>>;
+      limits: checkRunLimits(cfg.limits),
+      anonymous: cfg.anonymous ?? 'allow',
+    } as ResolvedServerConfig;
   }
 
   async init(): Promise<void> {
@@ -91,15 +98,16 @@ export class CogitatorServer {
     this.routeContext = ctx;
 
     router.use(createHealthRoutes(ctx));
+    if (this.config.enableSwagger) {
+      this.setupSwagger(router, ctx);
+    }
+
+    router.use(createAnonymousGuard(this.config.anonymous));
     router.use(createAgentRoutes(ctx));
     router.use(createThreadRoutes(ctx));
     router.use(createToolRoutes(ctx));
     router.use(createWorkflowRoutes(ctx));
     router.use(createSwarmRoutes(ctx));
-
-    if (this.config.enableSwagger) {
-      this.setupSwagger(router, ctx);
-    }
 
     router.use(notFoundHandler);
     router.use(errorHandler);
@@ -115,6 +123,7 @@ export class CogitatorServer {
       ...this.config.swagger,
       servers: this.config.swagger?.servers ?? [{ url: this.config.basePath }],
       auth: this.config.swagger?.auth ?? Boolean(this.config.auth),
+      limits: this.config.limits,
     });
 
     router.get('/openapi.json', (_req, res) => {
@@ -127,7 +136,8 @@ export class CogitatorServer {
   /**
    * Attach the WebSocket endpoint (`<basePath>/ws` by default) to an HTTP server.
    * Requires `config.enableWebSocket: true` and a prior `init()` call.
-   * The configured `auth` function is applied to the upgrade request.
+   * The configured `auth` function is applied to the upgrade request, and with
+   * `anonymous: 'deny'` an upgrade without a user id is refused with 401.
    */
   async attachWebSocket(server: HttpServer): Promise<import('ws').WebSocketServer> {
     if (!this.config.enableWebSocket) {

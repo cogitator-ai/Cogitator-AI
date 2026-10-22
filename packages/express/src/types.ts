@@ -1,9 +1,13 @@
+import type { IncomingMessage } from 'http';
 import type { Request, Response, NextFunction, Router } from 'express';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
 import type {
   AgentRunResponse,
+  AnonymousPolicy,
+  AuthorizeThread,
   ContextPolicy,
   PendingApproval,
+  RunLimits,
   SwaggerConfig,
   ThreadMessageRole,
   WorkflowRunRequestBody,
@@ -63,6 +67,15 @@ export type AuthFunction = (
   req: Request
 ) => Promise<AuthContext | undefined> | AuthContext | undefined;
 
+/** Builds the `deps` an agent run of an HTTP request passes to its tools */
+export type DepsFunction = (req: Request) => unknown | Promise<unknown>;
+
+/**
+ * Builds the `deps` an agent run on a WebSocket connection passes to its tools, from the
+ * upgrade request
+ */
+export type WebSocketDepsFunction = (req: IncomingMessage) => unknown | Promise<unknown>;
+
 export interface RateLimitConfig {
   windowMs: number;
   max: number;
@@ -87,6 +100,13 @@ export interface WebSocketConfig {
   path?: string;
   pingInterval?: number;
   maxPayloadSize?: number;
+  /**
+   * Builds the `deps` of each agent run and resume on a connection, from its upgrade request.
+   * That request is a plain Node `IncomingMessage` that never went through Express, so it has
+   * `headers`, `url` and `socket` but no `req.get()` and nothing a middleware adds. Default:
+   * WebSocket runs get no deps. deps never come from a message.
+   */
+  deps?: WebSocketDepsFunction;
 }
 
 export interface CogitatorServerConfig {
@@ -121,6 +141,30 @@ export interface CogitatorServerConfig {
      * `assistant`. A `system` message is read by the model as operator instructions.
      */
     threadMessageRoles?: readonly ThreadMessageRole[];
+    /**
+     * Caps on what a request may ask a run for: a swarm's `timeout`, a workflow's
+     * `maxIterations` and `maxConcurrency`. A request asking for more gets the cap, one asking
+     * for nothing gets the cap too. Checked when the server is created.
+     */
+    limits?: RunLimits;
+    /**
+     * Whether a caller without a user id may use the API. `'allow'` (the default) lets them
+     * in, `'deny'` answers `401 UNAUTHORIZED` on every route but health, ready and the docs.
+     */
+    anonymous?: AnonymousPolicy;
+    /**
+     * Decides whether a caller may touch a thread, on top of the ownership check of core:
+     * called with what `auth` returned and the thread a request names, on every route and
+     * WebSocket run that names one. Answering `false` refuses with `403 THREAD_FORBIDDEN`
+     * before any run starts.
+     */
+    authorizeThread?: AuthorizeThread<AuthContext>;
+    /**
+     * Builds the `deps` an agent run, stream or resume gets for an HTTP request (tools read
+     * them as `context.deps`). deps never come from the request body. WebSocket runs use
+     * `websocket.deps`, since their upgrade request is not an Express `Request`.
+     */
+    deps?: DepsFunction;
   };
 }
 
@@ -150,6 +194,8 @@ export interface ThreadResponse {
   metadata?: Record<string, unknown>;
   createdAt: number;
   updatedAt: number;
+  /** Pass as `cursor` to read the page before this one, absent at the start of the thread */
+  nextCursor?: string;
 }
 
 export interface AddMessageRequest {
@@ -252,12 +298,21 @@ export type ExpressMiddleware = (
   next: NextFunction
 ) => void | Promise<void>;
 
+type ServerOptions = NonNullable<CogitatorServerConfig['config']>;
+
+/** The options that stay unset when the server is not given them */
+type UnsetServerOptions = 'limits' | 'authorizeThread' | 'deps';
+
+/** The server's options with their defaults applied */
+export type ResolvedServerConfig = Required<Omit<ServerOptions, UnsetServerOptions>> &
+  Pick<ServerOptions, UnsetServerOptions>;
+
 export interface RouteContext {
   cogitator: Cogitator;
   agents: Record<string, Agent>;
   workflows: Record<string, Workflow<WorkflowState>>;
   swarms: Record<string, SwarmConfig>;
-  config: Required<NonNullable<CogitatorServerConfig['config']>>;
+  config: ResolvedServerConfig;
 }
 
 export interface WebSocketMessage {

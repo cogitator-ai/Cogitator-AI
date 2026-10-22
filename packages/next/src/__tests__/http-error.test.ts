@@ -11,6 +11,15 @@ describe('toHttpError', () => {
     expect(err.message).toBe('Request failed: 400 - Invalid JSON');
   });
 
+  it('reads the message of the error envelope every adapter answers with', async () => {
+    const err = await toHttpError(
+      new Response(JSON.stringify({ error: { message: 'Slow down', code: 'LLM_RATE_LIMITED' } }), {
+        status: 429,
+      })
+    );
+    expect(err.message).toBe('Request failed: 429 - Slow down');
+  });
+
   it('falls back to the raw text body', async () => {
     const err = await toHttpError(new Response('upstream down', { status: 503 }));
     expect(err.message).toBe('Request failed: 503 - upstream down');

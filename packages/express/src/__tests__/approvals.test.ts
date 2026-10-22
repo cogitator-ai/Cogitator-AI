@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import express from 'express';
-import { createServer, type Server } from 'http';
+import { createServer, type IncomingMessage, type Server } from 'http';
 import type { AddressInfo } from 'net';
 import { WebSocket, type WebSocketServer } from 'ws';
 import {
@@ -329,6 +329,182 @@ describe('approvals over WebSocket', () => {
         error: 'Invalid resume payload',
       })
     );
+    expect(resume).not.toHaveBeenCalled();
+  });
+});
+
+describe('request deps and thread authorization', () => {
+  function connect(url: string): Promise<{
+    messages: WebSocketResponse[];
+    send: (message: unknown) => void;
+  }> {
+    return new Promise((resolve, reject) => {
+      const socket = new WebSocket(url, { headers: { 'x-tenant': 'acme' } });
+      sockets.push(socket);
+      const messages: WebSocketResponse[] = [];
+      socket.on('message', (data) =>
+        messages.push(JSON.parse(data.toString()) as WebSocketResponse)
+      );
+      socket.on('open', () =>
+        resolve({ messages, send: (message) => socket.send(JSON.stringify(message)) })
+      );
+      socket.on('error', reject);
+    });
+  }
+
+  const tenantDeps = {
+    deps: (req: express.Request) => ({ tenant: req.headers['x-tenant'] }),
+  };
+
+  it('hands HTTP runs, streams and resumes the deps built for the request, never the body', async () => {
+    const { base, run, resume } = await start({}, tenantDeps);
+    const send = (path: string, body: Record<string, unknown>) =>
+      fetch(`${base}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-tenant': 'acme' },
+        body: JSON.stringify({ ...body, deps: { tenant: 'evil' } }),
+      }).then((res) => res.text());
+
+    await send('/agents/bot/run', { input: 'hi' });
+    await send('/agents/bot/stream', { input: 'hi' });
+    await send('/agents/bot/resume', { threadId: 'thread-1' });
+
+    expect(run.mock.calls.map(([, options]) => options.deps)).toEqual([
+      { tenant: 'acme' },
+      { tenant: 'acme' },
+    ]);
+    expect(resume.mock.calls[0][2].deps).toEqual({ tenant: 'acme' });
+  });
+
+  it('passes no deps without the hook', async () => {
+    const { base, run } = await start();
+    await post(`${base}/agents/bot/run`, { input: 'hi', deps: { tenant: 'evil' } });
+    expect(run.mock.calls[0][1]).not.toHaveProperty('deps');
+  });
+
+  it('hands WebSocket runs and resumes the deps websocket.deps builds from the upgrade request', async () => {
+    const { wsUrl, run, resume } = await start(
+      {},
+      {
+        ...tenantDeps,
+        websocket: {
+          deps: (req: IncomingMessage) => ({ tenant: req.headers['x-tenant'], via: 'ws' }),
+        },
+      }
+    );
+    const client = await connect(wsUrl);
+
+    client.send({ type: 'run', id: 'r1', payload: { type: 'agent', name: 'bot', input: 'go' } });
+    await vi.waitFor(() => expect(client.messages).toHaveLength(1));
+    client.send({ type: 'resume', id: 'r2', payload: { name: 'bot', threadId: 'thread-1' } });
+    await vi.waitFor(() => expect(client.messages).toHaveLength(2));
+
+    expect(run.mock.calls[0][1].deps).toEqual({ tenant: 'acme', via: 'ws' });
+    expect(resume.mock.calls[0][2].deps).toEqual({ tenant: 'acme', via: 'ws' });
+  });
+
+  it('never calls the HTTP deps hook with a WebSocket upgrade request', async () => {
+    const deps = vi.fn((req: express.Request) => ({ tenant: req.get('x-tenant') }));
+    const { wsUrl, run } = await start({}, { deps });
+    const client = await connect(wsUrl);
+
+    client.send({ type: 'run', id: 'r1', payload: { type: 'agent', name: 'bot', input: 'go' } });
+    await vi.waitFor(() => expect(client.messages).toHaveLength(1));
+
+    expect(deps).not.toHaveBeenCalled();
+    expect(run.mock.calls[0][1]).not.toHaveProperty('deps');
+  });
+
+  it.each([
+    [
+      'websocket.deps',
+      {
+        websocket: {
+          deps: () => {
+            throw new Error('tenant lookup failed');
+          },
+        },
+      },
+    ],
+    [
+      'authorizeThread',
+      {
+        authorizeThread: () => {
+          throw new Error('policy store down');
+        },
+      },
+    ],
+  ])(
+    'answers a WebSocket run whose %s hook throws with an error frame and starts no run',
+    async (_hook, config) => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { wsUrl, run } = await start({}, config);
+      const client = await connect(wsUrl);
+
+      client.send({
+        type: 'run',
+        id: 'r1',
+        payload: { type: 'agent', name: 'bot', input: 'go', threadId: 'thread-1' },
+      });
+      await vi.waitFor(() =>
+        expect(client.messages).toEqual([
+          { type: 'error', id: 'r1', error: 'Internal server error' },
+        ])
+      );
+
+      client.send({ type: 'ping', id: 'p1' });
+      await vi.waitFor(() => expect(client.messages.at(-1)).toEqual({ type: 'pong', id: 'p1' }));
+      expect(run).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalled();
+      error.mockRestore();
+    }
+  );
+
+  it('refuses a WebSocket run and resume on a thread authorizeThread keeps the caller from', async () => {
+    const authorizeThread = vi.fn((_auth: unknown, threadId: string) => threadId !== 'private');
+    const { wsUrl, run, resume } = await start(
+      {},
+      { auth: () => ({ userId: 'user-7' }), authorizeThread }
+    );
+    const client = await connect(wsUrl);
+
+    client.send({
+      type: 'run',
+      id: 'r1',
+      payload: { type: 'agent', name: 'bot', input: 'go', threadId: 'private' },
+    });
+    client.send({ type: 'resume', id: 'r2', payload: { name: 'bot', threadId: 'private' } });
+
+    await vi.waitFor(() =>
+      expect(client.messages).toEqual([
+        { type: 'error', id: 'r1', error: "Access to thread 'private' is not allowed" },
+        { type: 'error', id: 'r2', error: "Access to thread 'private' is not allowed" },
+      ])
+    );
+    expect(authorizeThread).toHaveBeenCalledWith({ userId: 'user-7' }, 'private');
+    expect(run).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it('lets a WebSocket run on a thread authorizeThread allows', async () => {
+    const { wsUrl, run } = await start({}, { authorizeThread: () => true });
+    const client = await connect(wsUrl);
+
+    client.send({
+      type: 'run',
+      id: 'r1',
+      payload: { type: 'agent', name: 'bot', input: 'go', threadId: 'mine' },
+    });
+
+    await vi.waitFor(() => expect(client.messages).toHaveLength(1));
+    expect(run.mock.calls[0][1].threadId).toBe('mine');
+  });
+
+  it('refuses an HTTP resume before it reaches core', async () => {
+    const { base, resume } = await start({}, { authorizeThread: () => false });
+    const res = await post(`${base}/agents/bot/resume`, { threadId: 'thread-1' });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('THREAD_FORBIDDEN');
     expect(resume).not.toHaveBeenCalled();
   });
 });

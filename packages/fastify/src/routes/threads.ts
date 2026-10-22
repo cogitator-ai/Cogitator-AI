@@ -1,9 +1,13 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
-import type { ThreadResponse, AddMessageRequest } from '../types.js';
-import { AddMessageRequestSchema } from '../types.js';
-import { parseAddMessageRequest } from '@cogitator-ai/server-shared';
-import { sendError, sendRouteError, validateBody } from './utils.js';
+import type { ThreadResponse, AddMessageRequest, ThreadPageQuery } from '../types.js';
+import { AddMessageRequestSchema, ThreadPageQuerySchema, ThreadResponseSchema } from '../types.js';
+import {
+  parseAddMessageRequest,
+  parseThreadPageQuery,
+  readThreadPage,
+} from '@cogitator-ai/server-shared';
+import { refuseThread, sendError, sendRouteError, validateBody, validateQuery } from './utils.js';
 
 interface ThreadParams {
   id: string;
@@ -14,8 +18,9 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
   const messageBody = validateBody((body) =>
     parseAddMessageRequest(body, { roles: fastify.cogitator.threadMessageRoles })
   );
+  const pageQuery = validateQuery(parseThreadPageQuery);
 
-  fastify.get<{ Params: ThreadParams }>(
+  fastify.get<{ Params: ThreadParams; Querystring: ThreadPageQuery }>(
     '/threads/:id',
     {
       schema: {
@@ -24,7 +29,10 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
           properties: { id: { type: 'string' } },
           required: ['id'],
         },
+        querystring: ThreadPageQuerySchema,
+        response: { 200: ThreadResponseSchema },
       },
+      preValidation: pageQuery,
     },
     async (request, reply) => {
       const memory = await getMemory();
@@ -35,22 +43,11 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
       const { id } = request.params;
       const userId = request.cogitatorAuth?.userId;
 
-      try {
-        await assertThreadAccess(memory, id, userId);
-        const result = await memory.getEntries({ threadId: id });
-        if (!result.success) {
-          return sendRouteError(request, reply, new Error(result.error), 'thread get error');
-        }
+      if (await refuseThread(request, reply, id)) return reply;
 
-        const entries = result.data;
-        const messages = entries.map((entry) => entry.message);
-        const now = Date.now();
-        const response: ThreadResponse = {
-          id,
-          messages,
-          createdAt: entries.length > 0 ? entries[0].createdAt.getTime() : now,
-          updatedAt: entries.length > 0 ? entries[entries.length - 1].createdAt.getTime() : now,
-        };
+      try {
+        const thread = await assertThreadAccess(memory, id, userId);
+        const response: ThreadResponse = await readThreadPage(memory, id, request.query, thread);
         return response;
       } catch (error) {
         return sendRouteError(request, reply, error, 'thread get error');
@@ -80,6 +77,8 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
       const { id } = request.params;
       const body = request.body;
       const userId = request.cogitatorAuth?.userId;
+
+      if (await refuseThread(request, reply, id)) return reply;
 
       try {
         await ensureThreadAccess(memory, id, { agentId: '', userId });
@@ -128,6 +127,8 @@ export const threadRoutes: FastifyPluginAsync = async (fastify) => {
 
       const { id } = request.params;
       const userId = request.cogitatorAuth?.userId;
+
+      if (await refuseThread(request, reply, id)) return reply;
 
       try {
         await assertThreadAccess(memory, id, userId);

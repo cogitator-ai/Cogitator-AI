@@ -1,9 +1,13 @@
 import { Router } from 'express';
 import type { Response } from 'express';
 import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
-import { parseAddMessageRequest } from '@cogitator-ai/server-shared';
+import {
+  parseAddMessageRequest,
+  parseThreadPageQuery,
+  readThreadPage,
+} from '@cogitator-ai/server-shared';
 import type { RouteContext, CogitatorRequest, ThreadResponse } from '../types.js';
-import { handleRouteError, sendError } from './utils.js';
+import { admitThread, handleRouteError, sendError } from './utils.js';
 
 export function createThreadRoutes(ctx: RouteContext): Router {
   const router = Router();
@@ -17,28 +21,20 @@ export function createThreadRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    const page = parseThreadPageQuery(req.query);
+    if (!page.ok) {
+      sendError(res, 400, page.message, 'INVALID_INPUT');
+      return;
+    }
+
     const { id } = req.params;
     const userId = req.cogitator?.auth?.userId;
 
-    try {
-      await assertThreadAccess(memory, id, userId);
-      const result = await memory.getEntries({ threadId: id });
-      if (!result.success) {
-        handleRouteError(res, new Error(result.error), 'Thread get error');
-        return;
-      }
+    if (!(await admitThread(ctx, req, res, id, 'Thread get error'))) return;
 
-      const entries = result.data;
-      const messages = entries.map((entry) => entry.message);
-      const createdAt = entries.length > 0 ? entries[0].createdAt.getTime() : Date.now();
-      const updatedAt =
-        entries.length > 0 ? entries[entries.length - 1].createdAt.getTime() : Date.now();
-      const response: ThreadResponse = {
-        id,
-        messages,
-        createdAt,
-        updatedAt,
-      };
+    try {
+      const thread = await assertThreadAccess(memory, id, userId);
+      const response: ThreadResponse = await readThreadPage(memory, id, page.value, thread);
       res.json(response);
     } catch (error) {
       handleRouteError(res, error, 'Thread get error');
@@ -63,6 +59,8 @@ export function createThreadRoutes(ctx: RouteContext): Router {
       const body = parsed.value;
 
       const userId = req.cogitator?.auth?.userId;
+
+      if (!(await admitThread(ctx, req, res, id, 'Thread add message error'))) return;
 
       try {
         await ensureThreadAccess(memory, id, { agentId: '', userId });
@@ -97,6 +95,8 @@ export function createThreadRoutes(ctx: RouteContext): Router {
 
     const { id } = req.params;
     const userId = req.cogitator?.auth?.userId;
+
+    if (!(await admitThread(ctx, req, res, id, 'Thread delete error'))) return;
 
     try {
       await assertThreadAccess(memory, id, userId);

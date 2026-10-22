@@ -3,10 +3,13 @@ import type { Context } from 'koa';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
 import type {
   AgentRunResponse,
+  AnonymousPolicy,
+  AuthorizeThread,
   ContextPolicy,
   PendingApproval,
   ReadinessCheckStatus,
   ReadinessResponse,
+  RunLimits,
   ThreadMessageRole,
   WorkflowRunRequestBody,
 } from '@cogitator-ai/server-shared';
@@ -45,6 +48,9 @@ export type {
   PendingApproval,
   ReadinessResponse,
   ReadinessCheckStatus,
+  RunLimits,
+  AnonymousPolicy,
+  AuthorizeThread,
 };
 
 export interface AuthContext {
@@ -62,12 +68,29 @@ export type WebSocketAuthFunction = (
   req: IncomingMessage
 ) => Promise<AuthContext | undefined> | AuthContext | undefined;
 
+/** Builds the `deps` an agent run of a request passes to its tools (`RunOptions.deps`) */
+export type DepsFunction = (ctx: Context) => unknown | Promise<unknown>;
+
+/** Builds the `deps` an agent run on a WebSocket connection passes to its tools */
+export type WebSocketDepsFunction = (req: IncomingMessage) => unknown | Promise<unknown>;
+
 export interface WebSocketConfig {
   path?: string;
   pingInterval?: number;
   pingTimeout?: number;
   maxPayloadSize?: number;
   auth?: WebSocketAuthFunction;
+  /**
+   * Whether a connection without a `userId` from `auth` may open: `'allow'` lets it in,
+   * `'deny'` refuses the upgrade with `401`. Default: the `anonymous` of the route context,
+   * else `'allow'`
+   */
+  anonymous?: AnonymousPolicy;
+  /**
+   * Builds the `deps` of the agent runs and resumes on a connection, from its upgrade request,
+   * called for each run. Deps never come from a message.
+   */
+  deps?: WebSocketDepsFunction;
 }
 
 export type { SwaggerConfig } from '@cogitator-ai/server-shared';
@@ -99,6 +122,34 @@ export interface CogitatorAppOptions {
    * `assistant`. A `system` message is read by the model as operator instructions.
    */
   threadMessageRoles?: readonly ThreadMessageRole[];
+  /**
+   * Caps on what a request may ask a run for. A swarm run times out after at most
+   * `swarmTimeout` ms and a workflow run takes at most `workflowMaxIterations` iterations and
+   * `workflowMaxConcurrency` nodes at once, over HTTP and SSE (WebSocket runs take the
+   * `limits` of the `RouteContext` given to `setupWebSocket`). A request that asks for more is
+   * held to the cap, one that asks for nothing gets it. Each limit must be a positive integer,
+   * or creating the router throws.
+   */
+  limits?: RunLimits;
+  /**
+   * Whether a caller without a `userId` may use the API: `'allow'` (the default) lets them
+   * in, `'deny'` answers `401 UNAUTHORIZED`. `/health`, `/ready`, `/openapi.json` and `/docs`
+   * stay open either way.
+   */
+  anonymous?: AnonymousPolicy;
+  /**
+   * Decides whether a caller may touch a thread, on top of the ownership check of core:
+   * called with what `auth` returned and the thread a request names, on agent runs, streams
+   * and resumes, swarm runs and the thread routes. `false` answers `403 THREAD_FORBIDDEN` and
+   * starts no run.
+   */
+  authorizeThread?: AuthorizeThread<AuthContext>;
+  /**
+   * Builds the `deps` of the agent runs and resumes of a request, which tools get as
+   * `context.deps` and the model never sees: a database handle, a tenant, a client. Deps
+   * never come from the request body. WebSocket runs use `WebSocketConfig.deps`.
+   */
+  deps?: DepsFunction;
 }
 
 export interface CogitatorState {
@@ -119,6 +170,25 @@ export interface RouteContext {
   acceptContext?: ContextPolicy;
   /** Roles clients may add to threads. Default: `user` and `assistant` */
   threadMessageRoles?: readonly ThreadMessageRole[];
+  /** Caps on what a request may ask a run for, see `CogitatorAppOptions.limits`. Default: none */
+  limits?: RunLimits;
+  /**
+   * Who may touch a thread, see `CogitatorAppOptions.authorizeThread`. Default: every caller
+   * may touch the threads core lets them
+   */
+  authorizeThread?: AuthorizeThread<AuthContext>;
+  /**
+   * Whether a caller without a `userId` may use the API, see `CogitatorAppOptions.anonymous`.
+   * `setupWebSocket` applies it to the handshake when `WebSocketConfig.anonymous` is not set.
+   * Default: `'allow'`
+   */
+  anonymous?: AnonymousPolicy;
+  /**
+   * Builds the `deps` of HTTP agent runs, see `CogitatorAppOptions.deps`. It gets the Koa
+   * `Context` of a request, which a WebSocket upgrade does not have, so `setupWebSocket` does
+   * not use it: WebSocket runs take `WebSocketConfig.deps`. Default: none
+   */
+  deps?: DepsFunction;
 }
 
 export interface AgentListResponse {
@@ -149,6 +219,8 @@ export interface ThreadResponse {
   metadata?: Record<string, unknown>;
   createdAt: number;
   updatedAt: number;
+  /** Pass as `cursor` to read the page before this one, absent at the thread's start */
+  nextCursor?: string;
 }
 
 export interface AddMessageRequest {

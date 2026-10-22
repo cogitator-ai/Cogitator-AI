@@ -32,7 +32,6 @@ const router = cogitatorApp({
 });
 
 app.use(router.routes());
-app.use(router.allowedMethods());
 
 app.listen(3000);
 ```
@@ -45,21 +44,27 @@ Creates a Koa Router with all Cogitator endpoints.
 
 **Options:**
 
-| Option               | Type                          | Description                                                                                                                            |
-| -------------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `cogitator`          | `Cogitator`                   | **Required.** Cogitator runtime instance                                                                                               |
-| `agents`             | `Record<string, Agent>`       | Named agents to expose                                                                                                                 |
-| `workflows`          | `Record<string, Workflow>`    | Named workflows                                                                                                                        |
-| `swarms`             | `Record<string, SwarmConfig>` | Named swarms                                                                                                                           |
-| `auth`               | `AuthFunction`                | `(ctx) => AuthContext \| undefined` (sync or async), receives the Koa Context, throw to answer `401 UNAUTHORIZED`                      |
-| `enableSwagger`      | `boolean`                     | Serve `/openapi.json` and Swagger UI at `/docs`                                                                                        |
-| `swagger`            | `SwaggerConfig`               | Swagger configuration                                                                                                                  |
-| `bodyLimit`          | `number`                      | Max JSON body size in bytes (default 1 MiB)                                                                                            |
-| `sseHeartbeatMs`     | `number`                      | How often SSE streams write a `: keep-alive` comment while a run is silent (default `5000`, `0` turns it off)                          |
-| `acceptContext`      | `boolean \| string[]`         | Keys of a run `context` clients may send: none by default, a list, or `true` for any (the model reads it as data from the application) |
-| `threadMessageRoles` | `ThreadMessageRole[]`         | Roles `POST /threads/:id/messages` accepts (default `user` and `assistant`)                                                            |
+| Option               | Type                                              | Description                                                                                                                                                      |
+| -------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cogitator`          | `Cogitator`                                       | **Required.** Cogitator runtime instance                                                                                                                         |
+| `agents`             | `Record<string, Agent>`                           | Named agents to expose                                                                                                                                           |
+| `workflows`          | `Record<string, Workflow>`                        | Named workflows                                                                                                                                                  |
+| `swarms`             | `Record<string, SwarmConfig>`                     | Named swarms                                                                                                                                                     |
+| `auth`               | `AuthFunction`                                    | `(ctx) => AuthContext \| undefined` (sync or async), receives the Koa Context, throw to answer `401 UNAUTHORIZED`                                                |
+| `enableSwagger`      | `boolean`                                         | Serve `/openapi.json` and Swagger UI at `/docs`                                                                                                                  |
+| `swagger`            | `SwaggerConfig`                                   | Swagger configuration                                                                                                                                            |
+| `bodyLimit`          | `number`                                          | Max JSON body size in bytes (default 1 MiB)                                                                                                                      |
+| `sseHeartbeatMs`     | `number`                                          | How often SSE streams write a `: keep-alive` comment while a run is silent (default `5000`, `0` turns it off)                                                    |
+| `acceptContext`      | `boolean \| string[]`                             | Keys of a run `context` clients may send: none by default, a list, or `true` for any (the model reads it as data from the application)                           |
+| `threadMessageRoles` | `ThreadMessageRole[]`                             | Roles `POST /threads/:id/messages` accepts (default `user` and `assistant`)                                                                                      |
+| `limits`             | `RunLimits`                                       | `{ swarmTimeout?, workflowMaxIterations?, workflowMaxConcurrency? }`: caps on what a request may ask a swarm or workflow run for (see [Run limits](#run-limits)) |
+| `anonymous`          | `'allow' \| 'deny'`                               | Whether callers without a `userId` may use the API (default `'allow'`), `'deny'` answers `401 UNAUTHORIZED`                                                      |
+| `authorizeThread`    | `(auth, threadId) => boolean \| Promise<boolean>` | Decides whether a caller may touch a thread, on top of the owner check, `false` answers `403 THREAD_FORBIDDEN`                                                   |
+| `deps`               | `(ctx) => unknown \| Promise<unknown>`            | Builds the `deps` agent runs pass to their tools, from the Koa Context (see [Run deps](#run-deps))                                                               |
 
 WebSocket support is attached to the HTTP server with [`setupWebSocket`](#websocket), not through router options.
+
+The router answers `OPTIONS` for its own paths with `204` and the methods they serve in `Allow`, so it needs no `router.allowedMethods()`. A CORS middleware (such as `@koa/cors`) goes before the router, so it answers preflight requests itself.
 
 ## Request Handling
 
@@ -74,7 +79,8 @@ WebSocket support is attached to the HTTP server with [`setupWebSocket`](#websoc
 - The `start` event of an agent stream names the run's thread (the request's `threadId`, or a new one), and `finish` repeats it with the run's outcome, so a client that sent no thread continues the conversation with this one.
 - Swarm routes close each swarm they build once its run ends, so a distributed swarm leaves no Redis connections behind and its state expires. `GET /swarms` lists every agent, the router and pipeline stages included.
 - Thread routes use `cogitator.getMemory()`, which connects the configured memory adapter on first use, so threads can be read on a fresh server before any agent has run. Only a `Cogitator` without `memory` configured answers `503 UNAVAILABLE`.
-- `CogitatorError`s are returned with their HTTP status and code (for example `429 LLM_RATE_LIMITED`). Any other error is logged and returned as `500 Internal server error` (code `INTERNAL_ERROR`) without internal details; the same masking applies to SSE `error` events, `node_error`/`agent_error` stream events and WebSocket errors. A workflow that finishes with an error is answered like a thrown error (its `CogitatorError` status, otherwise `500`), never as a successful result. Missing optional packages (`@cogitator-ai/workflows`, `@cogitator-ai/swarms`) answer `501 UNIMPLEMENTED`.
+- `GET /threads/:id` answers the whole thread, or one page of it with `?limit=50`: the newest 50 messages (oldest first within the page) and a `nextCursor`. Pass it back as `?limit=50&cursor=<nextCursor>` for the 50 before them, until an answer has no `nextCursor`. Messages written in the same millisecond are neither skipped nor repeated across pages. A `limit` outside 1 to 1000 or a cursor the server did not give answers `400 INVALID_INPUT`.
+- Every error answer has the same envelope, `{ error: { message, code } }`, the one Express, Fastify, Hono and Next use. A `CogitatorError` is answered with its HTTP status and code (for example `429 LLM_RATE_LIMITED`), plus a `Retry-After` header in whole seconds when the provider said when to retry. A swarm that ran out of time answers `504 RUN_TIMEOUT`. Any other error is logged and answered as `500 Internal server error` (code `INTERNAL_ERROR`) without internal details, and the same masking applies to SSE `error` events, `node_error` and `agent_error` stream events and WebSocket errors. A workflow that finishes with an error is answered like a thrown error (its `CogitatorError` status, otherwise `500`), never as a successful result. Missing optional packages (`@cogitator-ai/workflows`, `@cogitator-ai/swarms`) answer `501 UNIMPLEMENTED`.
 - When the client disconnects, the running agent, workflow or swarm is aborted, for both JSON and SSE endpoints.
 - `GET /agents` returns each agent's `description` and never exposes its `instructions`.
 - `GET /tools` returns tool parameters as JSON Schema.
@@ -92,11 +98,11 @@ WebSocket support is attached to the HTTP server with [`setupWebSocket`](#websoc
 
 ### Threads (Memory)
 
-| Method   | Path                    | Description           |
-| -------- | ----------------------- | --------------------- |
-| `GET`    | `/threads/:id`          | Get thread messages   |
-| `POST`   | `/threads/:id/messages` | Add message to thread |
-| `DELETE` | `/threads/:id`          | Delete thread         |
+| Method   | Path                    | Description                                      |
+| -------- | ----------------------- | ------------------------------------------------ |
+| `GET`    | `/threads/:id`          | Get thread messages, a page with `?limit&cursor` |
+| `POST`   | `/threads/:id/messages` | Add message to thread                            |
+| `DELETE` | `/threads/:id`          | Delete thread                                    |
 
 ### Workflows
 
@@ -156,6 +162,51 @@ When `auth` returns a `userId`, everything a caller does with threads is scoped 
 - Another user's thread answers `403` with code `THREAD_ACCESS_DENIED`, and its messages are neither returned nor changed.
 - Threads created earlier without an owner (no `userId`) stay open only to callers without a `userId`, such as servers with no `auth` configured.
 
+### Anonymous callers
+
+By default a caller without a `userId` (no `auth`, or `auth` returned none) may use the API as an anonymous user. With `anonymous: 'deny'` such a caller gets `401 UNAUTHORIZED` on every API route. `/health`, `/ready`, `/openapi.json` and `/docs` stay open, so probes and API docs keep working. A path under the router that nothing answers gets `401` under `'deny'` too, so an anonymous caller cannot tell which paths exist, and `404 NOT_FOUND` in the error envelope under `'allow'`. WebSocket connections take the `anonymous` option of `setupWebSocket`, or the `anonymous` of its route context when the option is not set.
+
+### Thread authorization
+
+Core lets a caller touch only threads they own. `authorizeThread` adds your own rule on top, for example a tenant check:
+
+```typescript
+const router = cogitatorApp({
+  cogitator,
+  agents,
+  auth,
+  authorizeThread: (auth, threadId) => tenants.ownsThread(auth?.metadata?.tenant, threadId),
+});
+```
+
+It is called with what `auth` returned and the thread a request names: the body `threadId` of agent runs, streams and resumes and of swarm runs and streams, and the `:id` of `GET`, `DELETE` and `POST /threads/:id/messages`. It runs after the body is validated and before the owner check, and `false` answers `403 THREAD_FORBIDDEN` without starting a run. WebSocket runs and resumes are checked by the `authorizeThread` of the route context given to `setupWebSocket`, and a refusal is an `error` message.
+
+### Run deps
+
+`deps` builds what an agent's tools get as `context.deps` for one request: a database handle, the tenant, a client with the caller's credentials. The model never sees them, and they never come from the request body.
+
+```typescript
+const router = cogitatorApp({
+  cogitator,
+  agents,
+  deps: async (ctx) => ({ db: await pool.connect(), tenant: ctx.get('x-tenant') }),
+});
+```
+
+Agent runs, streams and resumes call it once per run. WebSocket runs take the `deps` option of `setupWebSocket`, called with the upgrade request.
+
+### Run limits
+
+`limits` caps what a request may ask a run for: `swarmTimeout` (ms) for swarm runs, `workflowMaxIterations` and `workflowMaxConcurrency` for workflow runs. A request that asks for more is held to the cap, and one that asks for nothing gets the cap. Each limit must be a positive integer, or `cogitatorApp` throws. The OpenAPI spec shows each limit as the default of its field. WebSocket runs take the `limits` of the route context given to `setupWebSocket`.
+
+```typescript
+const router = cogitatorApp({
+  cogitator,
+  swarms: { research: researchSwarm },
+  limits: { swarmTimeout: 120_000, workflowMaxIterations: 50, workflowMaxConcurrency: 4 },
+});
+```
+
 ### Approvals
 
 A tool with `requiresApproval` (`true`, or a function of the arguments) pauses the run before that turn executes:
@@ -189,7 +240,7 @@ const app = new Koa();
 const main = new Router();
 const api = cogitatorApp({ cogitator, agents });
 
-main.use('/api/v1', api.routes(), api.allowedMethods());
+main.use('/api/v1', api.routes());
 app.use(main.routes());
 ```
 
@@ -204,12 +255,11 @@ import { cogitatorApp, setupWebSocket } from '@cogitator-ai/koa';
 const app = new Koa();
 const router = cogitatorApp({ cogitator, agents });
 app.use(router.routes());
-app.use(router.allowedMethods());
 
 const server = createServer(app.callback());
 await setupWebSocket(
   server,
-  { runtime: cogitator, agents, workflows: {}, swarms: {} },
+  { runtime: cogitator, agents, workflows: {}, swarms: {}, limits: { swarmTimeout: 120_000 } },
   {
     path: '/ws',
     pingInterval: 30000,
@@ -221,13 +271,15 @@ await setupWebSocket(
       }
       return { userId: 'api' };
     },
+    anonymous: 'deny',
+    deps: (req) => ({ tenant: req.headers['x-tenant'] }),
   }
 );
 
 server.listen(3000);
 ```
 
-The router's `auth` option does not cover WebSocket connections, so pass `auth` to `setupWebSocket` to protect them: it receives the upgrade `IncomingMessage`, and throwing rejects the handshake with `401` (or `500` when the error carries a `status >= 500`). Upgrades on other paths are left to other `upgrade` listeners (or rejected with `404` when there are none), so the socket can share the HTTP server with other WebSocket servers. A client that does not answer a ping within `pingTimeout` (defaults to `pingInterval`) is terminated, and closing a connection aborts its active run.
+The router's `auth` option does not cover WebSocket connections, so pass `auth` to `setupWebSocket` to protect them: it receives the upgrade `IncomingMessage`, and throwing rejects the handshake with `401` (or `500` when the error carries a `status >= 500`). With `anonymous: 'deny'` a connection without a `userId` is refused with `401` too. `deps` builds the deps of each agent run on the connection from its upgrade request, called for each run. The route context can carry `limits` and `authorizeThread`, which WebSocket runs and resumes follow like the HTTP routes, and `anonymous`, which the handshake follows when the `anonymous` option is not set (the option wins). Its `deps` builds the deps of HTTP runs from a Koa `Context`, which an upgrade request does not have, so `setupWebSocket` ignores it and takes the `deps` option instead. Upgrades on other paths are left to other `upgrade` listeners (or rejected with `404` when there are none), so the socket can share the HTTP server with other WebSocket servers. A client that does not answer a ping within `pingTimeout` (defaults to `pingInterval`) is terminated, and closing a connection aborts its active run.
 
 **Message types:**
 
@@ -238,11 +290,11 @@ The router's `auth` option does not cover WebSocket connections, so pass `auth` 
 | `stop`       | Cancels the current run                                                        |
 | `ping`       | Answered with `pong` (echoes `id`)                                             |
 
-| Server sends | Description                                                                                            |
-| ------------ | ------------------------------------------------------------------------------------------------------ |
-| `event`      | `token`, `reasoning`, `tool-call`, `tool-result`, `complete` (with the serialized result), `cancelled` |
-| `error`      | Invalid message, unknown resource, run already in progress, or a masked run failure                    |
-| `pong`       | Heartbeat reply                                                                                        |
+| Server sends | Description                                                                                                             |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `event`      | `token`, `reasoning`, `tool-call`, `tool-result`, `complete` (with the serialized result), `cancelled`                  |
+| `error`      | Invalid message, unknown resource, a thread `authorizeThread` refused, run already in progress, or a masked run failure |
+| `pong`       | Heartbeat reply                                                                                                         |
 
 ## SSE Streaming
 
@@ -307,21 +359,28 @@ import {
 
 Built-in middleware stack (applied automatically by `cogitatorApp`):
 
-- **Error handler** — catches errors and returns structured `ErrorResponse`
-- **Body parser** — parses JSON for POST, PUT, PATCH requests (`bodyLimit`, 1 MiB by default, returns `413` above it). A body already parsed by upstream middleware such as `koa-bodyparser` is reused
-- **Context** — injects `RouteContext` with `runtime`, `agents`, `workflows`, `swarms` into Koa state
-- **Auth** — optional authentication via the `auth` callback
+- **Error handler**, catches errors and returns structured `ErrorResponse`
+- **Body parser**, parses JSON for POST, PUT, PATCH requests (`bodyLimit`, 1 MiB by default, returns `413` above it). A body already parsed by upstream middleware such as `koa-bodyparser` is reused
+- **Context**, injects `RouteContext` with `runtime`, `agents`, `workflows`, `swarms` into Koa state
+- **Auth**, optional authentication via the `auth` callback
+- **Anonymous policy**, after the health and docs routes, answers `401` to callers without a `userId` under `anonymous: 'deny'` (`createAnonymousMiddleware`)
+- **Unmatched paths**, a request no route serves skips the middleware above and goes on to the middleware after the router untouched. What nothing answers goes through auth and the anonymous policy and gets `404 NOT_FOUND` in the error envelope, or `401` under `anonymous: 'deny'`. A method a path does not take is answered the same way. Under a prefix, only paths under it are answered
 
 ## Key Types
 
 ```typescript
 import type {
-  RouteContext, // { runtime, agents, workflows, swarms }
+  RouteContext, // { runtime, agents, workflows, swarms, limits?, authorizeThread?, anonymous?, deps? }, deps is for HTTP runs only
   CogitatorAppOptions,
   AuthContext,
   AuthFunction,
+  DepsFunction,
+  RunLimits,
+  AnonymousPolicy,
+  AuthorizeThread,
   WebSocketConfig,
   WebSocketAuthFunction,
+  WebSocketDepsFunction,
   WebSocketRunPayload,
   BodyParserOptions,
   WorkflowStatusResponse,

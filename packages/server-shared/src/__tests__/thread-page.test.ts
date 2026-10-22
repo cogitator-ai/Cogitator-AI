@@ -41,17 +41,26 @@ describe('thread pages', () => {
       cursor = page.nextCursor;
     } while (cursor);
 
-    expect(seen).toEqual([['e', 'f'], ['c', 'd'], ['a', 'b']]);
+    expect(seen).toEqual([
+      ['e', 'f'],
+      ['c', 'd'],
+      ['a', 'b'],
+    ]);
   });
 
   it('answers the whole thread without a limit, with the times of the thread when it has them', async () => {
     const memory = memoryOf([entry('a', 10), entry('b', 20)]);
 
     const all = await readThreadPage(memory, 't1');
-    const withThread = await readThreadPage(memory, 't1', {}, {
-      createdAt: new Date(5),
-      updatedAt: new Date(30),
-    });
+    const withThread = await readThreadPage(
+      memory,
+      't1',
+      {},
+      {
+        createdAt: new Date(5),
+        updatedAt: new Date(30),
+      }
+    );
 
     expect(all).toEqual({
       id: 't1',
@@ -63,6 +72,22 @@ describe('thread pages', () => {
       updatedAt: 20,
     });
     expect([withThread.createdAt, withThread.updatedAt]).toEqual([5, 30]);
+  });
+
+  it('dates the update of a thread by its newest entry when the record is older, on every page', async () => {
+    const memory = memoryOf([entry('a', 10), entry('b', 20), entry('c', 40)]);
+    const thread = { createdAt: new Date(5), updatedAt: new Date(5) };
+
+    const newest = await readThreadPage(memory, 't1', { limit: 1 }, thread);
+    const older = await readThreadPage(
+      memory,
+      't1',
+      { limit: 1, cursor: newest.nextCursor },
+      thread
+    );
+
+    expect(newest.updatedAt).toBe(40);
+    expect(older.updatedAt).toBe(40);
   });
 
   it('gives no cursor on the page that reaches the start of the thread', async () => {
@@ -80,5 +105,36 @@ describe('thread pages', () => {
     expect(parseThreadPageQuery({ limit: '1001' }).ok).toBe(false);
     expect(parseThreadPageQuery({ limit: 'ten' }).ok).toBe(false);
     expect(parseThreadPageQuery({ cursor: 'not-a-cursor' }).ok).toBe(false);
+    const forged = (cursor: unknown) =>
+      btoa(JSON.stringify(cursor)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    expect(parseThreadPageQuery({ cursor: forged({ t: 1.5, n: 1 }) }).ok).toBe(false);
+    expect(parseThreadPageQuery({ cursor: forged({ t: -1, n: 1 }) }).ok).toBe(true);
+    expect(parseThreadPageQuery({ cursor: forged({ t: -9e15, n: 1 }) }).ok).toBe(false);
+    expect(parseThreadPageQuery({ cursor: forged({ t: 9e15, n: 1 }) }).ok).toBe(false);
+    expect(parseThreadPageQuery({ cursor: forged({ t: 1, n: 0 }) }).ok).toBe(false);
+    expect(parseThreadPageQuery({ cursor: forged({ t: 1, n: 100_001 }) }).ok).toBe(false);
+    expect(parseThreadPageQuery({ cursor: forged({ t: 1, n: 3 }) }).ok).toBe(true);
+  });
+
+  it('reads thousands of entries of one time to the end of the thread', async () => {
+    const entries = [
+      entry('first', 1),
+      ...Array.from({ length: 2500 }, (_, at) => entry(`bulk-${at}`, 2)),
+      entry('last', 3),
+    ];
+    const memory = memoryOf(entries);
+    const read: string[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+
+    do {
+      const page = await readThreadPage(memory, 't1', { limit: 100, cursor });
+      read.unshift(...page.messages.map((message) => String(message.content)));
+      cursor = page.nextCursor;
+      pages++;
+    } while (cursor);
+
+    expect(read).toEqual(entries.map((one) => String(one.message.content)));
+    expect(pages).toBe(26);
   });
 });

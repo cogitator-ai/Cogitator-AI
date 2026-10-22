@@ -1,7 +1,16 @@
 import type { Context } from 'hono';
-import { isJsonObject, parseJsonBody, type BodyRefusal } from '@cogitator-ai/server-shared';
+import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import {
+  authorizeThreadAccess,
+  errorEnvelope,
+  errorHeaders,
+  isJsonObject,
+  parseJsonBody,
+  type BodyRefusal,
+  type HttpErrorDescription,
+} from '@cogitator-ai/server-shared';
 import type { HonoEnv } from '../types.js';
-import { resolveError } from './errors.js';
+import { describeError } from './errors.js';
 
 export type { JsonBodyResult } from '@cogitator-ai/server-shared';
 
@@ -15,9 +24,19 @@ export async function readJsonBody(c: Context<HonoEnv>) {
   return parseJsonBody(c.req.header('content-type'), await c.req.text());
 }
 
+function isContentfulErrorStatus(status: number): status is ContentfulStatusCode {
+  return Number.isInteger(status) && status >= 400 && status <= 599;
+}
+
+/** Answers an error with the error envelope and its `Retry-After` */
+export function sendError(c: Context<HonoEnv>, error: HttpErrorDescription): Response {
+  const status = isContentfulErrorStatus(error.status) ? error.status : 500;
+  return c.json(errorEnvelope(error), status, errorHeaders(error));
+}
+
 /** Answers a body that {@link readJsonBody} refused */
 export function bodyRefused(c: Context<HonoEnv>, refusal: BodyRefusal): Response {
-  return c.json({ error: { message: refusal.message, code: refusal.code } }, refusal.status);
+  return sendError(c, refusal);
 }
 
 export function createRequestAbortController(c: Context<HonoEnv>): AbortController {
@@ -61,14 +80,46 @@ export function holdConnectionOpen(c: Context<HonoEnv>): void {
 }
 
 export function invalidInput(c: Context<HonoEnv>, message: string): Response {
-  return c.json({ error: { message, code: 'INVALID_INPUT' } }, 400);
+  return sendError(c, { status: 400, code: 'INVALID_INPUT', message });
+}
+
+export function notFound(c: Context<HonoEnv>, message: string): Response {
+  return sendError(c, { status: 404, code: 'NOT_FOUND', message });
+}
+
+export function notInstalled(c: Context<HonoEnv>, label: 'Swarms' | 'Workflows'): Response {
+  return sendError(c, {
+    status: 501,
+    code: 'UNIMPLEMENTED',
+    message: `${label} package not installed`,
+  });
 }
 
 export function errorResponse(c: Context<HonoEnv>, error: unknown, label: string): Response {
-  const { status, body } = resolveError(error, label);
-  return c.json(body, status);
+  return sendError(c, describeError(error, label));
 }
 
 export function requestAborted(c: Context<HonoEnv>): Response {
-  return c.json({ error: { message: 'Request aborted', code: 'ABORTED' } }, 400);
+  return sendError(c, { status: 400, code: 'ABORTED', message: 'Request aborted' });
+}
+
+/**
+ * The refusal of a request that names a thread the app's `authorizeThread` keeps the caller
+ * from, none when it may go on
+ */
+export function refuseThread(
+  c: Context<HonoEnv>,
+  threadId: string | undefined
+): Promise<HttpErrorDescription | undefined> {
+  return authorizeThreadAccess(
+    c.get('cogitator').authorizeThread,
+    c.get('cogitatorAuth'),
+    threadId
+  );
+}
+
+/** The `deps` a run of this request gets from the app's `deps` hook, none without it */
+export async function runDeps(c: Context<HonoEnv>): Promise<{ deps?: unknown }> {
+  const deps = c.get('cogitator').deps;
+  return deps ? { deps: await deps(c) } : {};
 }

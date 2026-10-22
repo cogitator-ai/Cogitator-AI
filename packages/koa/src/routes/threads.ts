@@ -4,19 +4,23 @@ import type { CogitatorState, ThreadResponse } from '../types.js';
 import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
 import { countMessageTokens } from '@cogitator-ai/memory';
 import type { Message } from '@cogitator-ai/types';
-import { resolveError } from '../utils/errors.js';
-import { getRequestBody } from '../utils/request.js';
-import { parseAddMessageRequest } from '@cogitator-ai/server-shared';
-
-function respondWithError(ctx: Context, error: unknown, label: string): void {
-  const { status, body } = resolveError(error, label);
-  ctx.status = status;
-  ctx.body = body;
-}
+import { invalidInput, respondWithError, sendError } from '../utils/errors.js';
+import { getRequestBody, refuseThread } from '../utils/request.js';
+import {
+  parseAddMessageRequest,
+  parseThreadPageQuery,
+  readThreadPage,
+} from '@cogitator-ai/server-shared';
 
 function respondMemoryUnavailable(ctx: Context): void {
-  ctx.status = 503;
-  ctx.body = { error: { message: 'Memory not configured', code: 'UNAVAILABLE' } };
+  sendError(ctx, { status: 503, code: 'UNAVAILABLE', message: 'Memory not configured' });
+}
+
+/** Answers the refusal `authorizeThread` gives the thread, and says whether there was one */
+async function threadRefused(ctx: Context, threadId: string): Promise<boolean> {
+  const refusal = await refuseThread(ctx, threadId);
+  if (refusal) sendError(ctx, refusal);
+  return refusal !== undefined;
 }
 
 export function createThreadRoutes(): Router<CogitatorState> {
@@ -30,24 +34,18 @@ export function createThreadRoutes(): Router<CogitatorState> {
     }
 
     const { id } = ctx.params;
+    const page = parseThreadPageQuery(ctx.query);
+    if (!page.ok) {
+      invalidInput(ctx, page.message);
+      return;
+    }
+    if (await threadRefused(ctx, id)) return;
+
     const userId = ctx.state.auth?.userId;
 
     try {
-      await assertThreadAccess(memory, id, userId);
-      const result = await memory.getEntries({ threadId: id });
-      if (!result.success) {
-        respondWithError(ctx, new Error(result.error), 'Thread get error');
-        return;
-      }
-
-      const entries = result.data;
-      const now = Date.now();
-      const response: ThreadResponse = {
-        id,
-        messages: entries.map((entry) => entry.message),
-        createdAt: entries.length > 0 ? entries[0].createdAt.getTime() : now,
-        updatedAt: entries.length > 0 ? entries[entries.length - 1].createdAt.getTime() : now,
-      };
+      const thread = await assertThreadAccess(memory, id, userId);
+      const response: ThreadResponse = await readThreadPage(memory, id, page.value, thread);
       ctx.body = response;
     } catch (error) {
       respondWithError(ctx, error, 'Thread get error');
@@ -66,10 +64,10 @@ export function createThreadRoutes(): Router<CogitatorState> {
       roles: ctx.state.cogitator.threadMessageRoles,
     });
     if (!parsed.ok) {
-      ctx.status = 400;
-      ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };
+      invalidInput(ctx, parsed.message);
       return;
     }
+    if (await threadRefused(ctx, id)) return;
 
     const message: Message = { role: parsed.value.role, content: parsed.value.content };
     const userId = ctx.state.auth?.userId;
@@ -103,6 +101,8 @@ export function createThreadRoutes(): Router<CogitatorState> {
     }
 
     const { id } = ctx.params;
+    if (await threadRefused(ctx, id)) return;
+
     const userId = ctx.state.auth?.userId;
 
     try {

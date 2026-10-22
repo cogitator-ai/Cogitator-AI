@@ -1,11 +1,10 @@
 import type { Request, Response, NextFunction } from 'express';
-import { CogitatorError, ERROR_STATUS_CODES, ErrorCode } from '@cogitator-ai/types';
-
-interface HttpLikeError {
-  status: number;
-  message: string;
-  type?: string;
-}
+import {
+  INTERNAL_ERROR,
+  describeHttpError,
+  type HttpErrorDescription,
+} from '@cogitator-ai/server-shared';
+import { sendError, sendFailure } from '../routes/utils.js';
 
 const CLIENT_ERROR_CODES: Record<number, string> = {
   400: 'INVALID_INPUT',
@@ -17,16 +16,22 @@ const CLIENT_ERROR_CODES: Record<number, string> = {
   429: 'RATE_LIMIT_EXCEEDED',
 };
 
-function asClientError(err: unknown): HttpLikeError | null {
-  if (typeof err !== 'object' || err === null) return null;
+/** A 4xx error of Express or its body parser, told to the client as it is */
+function asClientError(err: unknown): HttpErrorDescription | undefined {
+  if (typeof err !== 'object' || err === null) return undefined;
   const rawStatus: unknown = Reflect.get(err, 'status') ?? Reflect.get(err, 'statusCode');
-  if (typeof rawStatus !== 'number' || rawStatus < 400 || rawStatus >= 500) return null;
+  if (typeof rawStatus !== 'number' || rawStatus < 400 || rawStatus >= 500) return undefined;
   const message: unknown = Reflect.get(err, 'message');
   const type: unknown = Reflect.get(err, 'type');
   return {
     status: rawStatus,
-    message: typeof message === 'string' ? message : 'Bad request',
-    type: typeof type === 'string' ? type : undefined,
+    code: CLIENT_ERROR_CODES[rawStatus] ?? 'BAD_REQUEST',
+    message:
+      type === 'entity.parse.failed'
+        ? 'Invalid JSON body'
+        : typeof message === 'string'
+          ? message
+          : 'Bad request',
   };
 }
 
@@ -35,45 +40,16 @@ export function errorHandler(err: Error, _req: Request, res: Response, _next: Ne
     return;
   }
 
-  if (CogitatorError.isCogitatorError(err)) {
-    const statusCode = ERROR_STATUS_CODES[err.code] || 500;
-    res.status(statusCode).json({
-      error: {
-        message: err.message,
-        code: err.code,
-      },
-    });
-    return;
-  }
-
-  const clientError = asClientError(err);
-  if (clientError) {
-    const message =
-      clientError.type === 'entity.parse.failed' ? 'Invalid JSON body' : clientError.message;
-    res.status(clientError.status).json({
-      error: {
-        message,
-        code: CLIENT_ERROR_CODES[clientError.status] ?? 'BAD_REQUEST',
-      },
-    });
+  const described = describeHttpError(err) ?? asClientError(err);
+  if (described) {
+    sendFailure(res, described);
     return;
   }
 
   console.error('[CogitatorServer] Unhandled error:', err);
-
-  res.status(500).json({
-    error: {
-      message: 'Internal server error',
-      code: ErrorCode.INTERNAL_ERROR,
-    },
-  });
+  sendFailure(res, INTERNAL_ERROR);
 }
 
 export function notFoundHandler(_req: Request, res: Response): void {
-  res.status(404).json({
-    error: {
-      message: 'Not found',
-      code: 'NOT_FOUND',
-    },
-  });
+  sendError(res, 404, 'Not found', 'NOT_FOUND');
 }

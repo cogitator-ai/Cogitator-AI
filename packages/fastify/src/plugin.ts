@@ -1,12 +1,14 @@
 import fp from 'fastify-plugin';
 import {
   DEFAULT_THREAD_MESSAGE_ROLES,
+  admitCaller,
+  checkRunLimits,
   refuseNonJsonBody,
   resolveSseHeartbeatMs,
 } from '@cogitator-ai/server-shared';
 import type { FastifyPluginAsync, FastifyError } from 'fastify';
 import type { CogitatorPluginOptions, CogitatorContext } from './types.js';
-import { createAuthHook, errorHandler } from './hooks/index.js';
+import { createAnonymousHook, createAuthHook, errorHandler } from './hooks/index.js';
 import {
   healthRoutes,
   agentRoutes,
@@ -15,7 +17,7 @@ import {
   workflowRoutes,
   swarmRoutes,
 } from './routes/index.js';
-import { isModuleNotFound } from './routes/utils.js';
+import { isModuleNotFound, sendError, sendFailure } from './routes/utils.js';
 
 const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (fastify, opts) => {
   const context: CogitatorContext = {
@@ -26,6 +28,9 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
     sseHeartbeatMs: resolveSseHeartbeatMs(opts.sseHeartbeatMs),
     acceptContext: opts.acceptContext ?? false,
     threadMessageRoles: opts.threadMessageRoles ?? DEFAULT_THREAD_MESSAGE_ROLES,
+    limits: checkRunLimits(opts.limits),
+    authorizeThread: opts.authorizeThread,
+    deps: opts.deps,
   };
 
   fastify.decorate('cogitator', context);
@@ -56,9 +61,7 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
       instance.addHook('onRequest', async (request, reply) => {
         const refusal = refuseNonJsonBody(request.method, request.headers);
         if (!refusal) return;
-        return reply
-          .status(refusal.status)
-          .send({ error: { message: refusal.message, code: refusal.code } });
+        return sendFailure(reply, refusal);
       });
       instance.addHook('onRequest', createAuthHook(opts.auth));
 
@@ -82,6 +85,12 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
 
       instance.setErrorHandler((error: FastifyError, request, reply) => {
         errorHandler(error, request, reply);
+      });
+      instance.setNotFoundHandler((request, reply) => {
+        const refusal = admitCaller(request.cogitatorAuth?.userId, opts.anonymous);
+        return refusal
+          ? sendFailure(reply, refusal)
+          : sendError(reply, 404, 'Not found', 'NOT_FOUND');
       });
       if (opts.enableSwagger) {
         try {
@@ -128,16 +137,21 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
       }
 
       await instance.register(healthRoutes);
-      await instance.register(agentRoutes);
-      await instance.register(threadRoutes);
-      await instance.register(toolRoutes);
-      await instance.register(workflowRoutes);
-      await instance.register(swarmRoutes);
 
-      if (websocketEnabled) {
-        const { websocketRoutes } = await import('./websocket/handler.js');
-        await instance.register(websocketRoutes, { path: opts.websocket?.path });
-      }
+      await instance.register(async (api) => {
+        api.addHook('onRequest', createAnonymousHook(opts.anonymous));
+
+        await api.register(agentRoutes);
+        await api.register(threadRoutes);
+        await api.register(toolRoutes);
+        await api.register(workflowRoutes);
+        await api.register(swarmRoutes);
+
+        if (websocketEnabled) {
+          const { websocketRoutes } = await import('./websocket/handler.js');
+          await api.register(websocketRoutes, { path: opts.websocket?.path });
+        }
+      });
     },
     { prefix }
   );

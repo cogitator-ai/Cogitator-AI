@@ -73,8 +73,7 @@ describe('agent handler with several users', () => {
 
     expect(foreign.status).toBe(403);
     expect(await foreign.json()).toEqual({
-      error: 'Thread t-ada belongs to another user',
-      code: 'THREAD_ACCESS_DENIED',
+      error: { message: 'Thread t-ada belongs to another user', code: 'THREAD_ACCESS_DENIED' },
     });
     expect(chat).toHaveBeenCalledTimes(1);
 
@@ -102,7 +101,7 @@ describe('agent handler with several users', () => {
     const res = await handler(request('/api/agent', 'ada', { input: 'hi' }));
 
     expect(res.status).toBe(429);
-    expect(await res.json()).toEqual({ error: 'Slow down', code: 'LLM_RATE_LIMITED' });
+    expect(await res.json()).toEqual({ error: { message: 'Slow down', code: 'LLM_RATE_LIMITED' } });
   });
 
   it('answers other errors with 500', async () => {
@@ -113,7 +112,9 @@ describe('agent handler with several users', () => {
     const res = await handler(request('/api/agent', 'ada', { input: 'hi' }));
 
     expect(res.status).toBe(500);
-    expect(await res.json()).toEqual({ error: 'Internal server error', code: 'INTERNAL_ERROR' });
+    expect(await res.json()).toEqual({
+      error: { message: 'Internal server error', code: 'INTERNAL_ERROR' },
+    });
   });
 });
 

@@ -45,6 +45,7 @@ export const CONFORMANCE_ROUTES = {
   thread: `/threads/${CONFORMANCE_NAMES.thread}`,
   threadPage: `/threads/${CONFORMANCE_NAMES.thread}?limit=2`,
   threadBadPage: `/threads/${CONFORMANCE_NAMES.thread}?limit=0`,
+  threadForgedPage: `/threads/${CONFORMANCE_NAMES.thread}?limit=2&cursor=bm90LWEtY3Vyc29y`,
 } as const;
 
 export type ConformanceRoute = keyof typeof CONFORMANCE_ROUTES;
@@ -76,7 +77,7 @@ export interface ConformanceCase {
   name: string;
   route: ConformanceRoute;
   /** Default: `POST` */
-  method?: 'GET' | 'POST';
+  method?: 'GET' | 'POST' | 'DELETE';
   server?: ConformanceServerOptions;
   runtime?: ConformanceRuntimeOptions;
   /** The raw request body; none for a `GET` */
@@ -332,6 +333,27 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
     expect: { status: 403, code: 'THREAD_FORBIDDEN' },
   },
   {
+    name: 'refuses to delete a thread the server keeps the caller from',
+    route: 'thread',
+    method: 'DELETE',
+    server: { forbiddenThreads: [CONFORMANCE_NAMES.thread] },
+    expect: { status: 403, code: 'THREAD_FORBIDDEN' },
+  },
+  {
+    name: 'refuses a stream on a thread the server keeps the caller from, before it streams',
+    route: 'agentStream',
+    server: { forbiddenThreads: [CONFORMANCE_NAMES.thread] },
+    body: run({ input: 'hi', threadId: CONFORMANCE_NAMES.thread }),
+    expect: { status: 403, code: 'THREAD_FORBIDDEN' },
+  },
+  {
+    name: 'refuses a thread page cursor the server never gave',
+    route: 'threadForgedPage',
+    method: 'GET',
+    runtime: { threadEntries: 5 },
+    expect: { status: 400, code: 'INVALID_INPUT' },
+  },
+  {
     name: 'reads a whole thread',
     route: 'thread',
     method: 'GET',
@@ -362,7 +384,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
 ];
 
 /** The method a case sends */
-export function conformanceMethod(testCase: ConformanceCase): 'GET' | 'POST' {
+export function conformanceMethod(testCase: ConformanceCase): 'GET' | 'POST' | 'DELETE' {
   return testCase.method ?? 'POST';
 }
 

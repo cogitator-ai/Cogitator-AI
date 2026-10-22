@@ -81,6 +81,10 @@ interface CogitatorPluginOptions {
   sseHeartbeatMs?: number; // SSE heartbeat interval in ms, default 5000, 0 turns it off
   acceptContext?: boolean | string[]; // context keys clients may send: none by default, a list, or true for any
   threadMessageRoles?: ('user' | 'assistant' | 'system')[]; // roles of POST /threads/:id/messages, default user and assistant
+  limits?: RunLimits; // caps on swarm timeout and workflow iterations and concurrency
+  anonymous?: 'allow' | 'deny'; // default: 'allow'
+  authorizeThread?: (auth: AuthContext | undefined, threadId: string) => boolean | Promise<boolean>;
+  deps?: (request: FastifyRequest) => unknown | Promise<unknown>; // deps of agent runs, built per request
 }
 ```
 
@@ -105,6 +109,50 @@ await fastify.register(cogitatorPlugin, {
 ```
 
 Returning `undefined` lets the request through unauthenticated; throwing rejects it with `401 UNAUTHORIZED`. The auth context is available on `request.cogitatorAuth` (with `request.cogitatorRequestId` and `request.cogitatorStartTime`), its `userId` is passed to agent and swarm runs and scopes the thread routes, and — because it is an `onRequest` hook — it also guards the WebSocket upgrade.
+
+### Anonymous callers
+
+`anonymous: 'deny'` answers `401 UNAUTHORIZED` to every caller whose `auth` returned no `userId`, and refuses their WebSocket upgrade. The hook is added to the API routes only, so `/health`, `/ready` and `/docs` stay open. Any other path under the prefix answers `401` too, known or not, so an anonymous caller cannot probe which routes exist. The default, `'allow'`, lets them in, and an unknown path answers `404 NOT_FOUND` in the error envelope.
+
+### Thread authorization
+
+`authorizeThread(auth, threadId)` decides who may touch a thread, on top of the ownership check of core, for example threads a whole team shares:
+
+```typescript
+await fastify.register(cogitatorPlugin, {
+  cogitator,
+  auth,
+  authorizeThread: async (auth, threadId) => teams.canAccess(auth?.userId, threadId),
+});
+```
+
+It runs on every route that names a thread: agent run, stream and resume, swarm run and stream, `GET`, `DELETE` and `POST /threads/:id/messages`, and WebSocket runs with a `threadId`. Answering `false` refuses the request with `403 THREAD_FORBIDDEN` before any run starts. It also decides which [WebSocket subscribers](#websocket) see a run's events.
+
+## Limits
+
+`limits` caps what a request may ask a run for:
+
+```typescript
+await fastify.register(cogitatorPlugin, {
+  cogitator,
+  limits: { swarmTimeout: 120_000, workflowMaxIterations: 50, workflowMaxConcurrency: 4 },
+});
+```
+
+A request is never refused over a limit. It gets the smaller of what it asked for and the cap, or the cap when it asked for nothing, on the run and stream routes alike. The route schemas give each cap as the `default` of its field and say so in its description, without a `maximum`, so Fastify validation does not refuse a larger value. Each limit must be a positive integer, or registering the plugin fails.
+
+## Request Dependencies
+
+`deps` builds what an agent's tools read as `context.deps` for each request, on the server, never from the request body:
+
+```typescript
+await fastify.register(cogitatorPlugin, {
+  cogitator,
+  deps: async (request) => ({ db: await tenantDb(request.headers['x-tenant']) }),
+});
+```
+
+Agent runs, streams and resumes get them as `deps`, over HTTP and WebSocket. The WebSocket upgrade goes through Fastify like any request, so there the hook receives the upgrade's `FastifyRequest`, with your hooks and decorators applied. An error the hook throws is answered like a run error, before a stream starts, and over WebSocket (like an error `authorizeThread` throws) with an `error` frame, starting no run.
 
 ## Rate Limiting
 
@@ -161,7 +209,7 @@ await fastify.register(cogitatorPlugin, {
 
 Run an agent with `{ "type": "run", "id": "r1", "payload": { "type": "agent", "name": "math", "input": "6 * 7?" } }` (add `threadId` to continue a thread). Events arrive as `{ "type": "event", "id": "r1", "payload": { "type": "token" | "reasoning" | "tool-call" | "tool-result" | "complete" | "cancelled", ... } }`, failures as `{ "type": "error", "id": "r1", "error": "..." }`. Resume a run paused for approval with `{ "type": "resume", "id": "r2", "payload": { "name": "math", "threadId": "...", "decisions": { "<toolCallId>": { "approved": true } } } }`, send `{ "type": "stop" }` to abort the run and `{ "type": "ping" }` to get a `pong`.
 
-One run per connection at a time — a second `run` or `resume` answers `A run is already in progress` — and only agent runs are supported. `{ "type": "subscribe", "channel": "agent:math" }` delivers the events of runs of that agent started from the same user's other connections (with `channel` set on each frame) until `unsubscribe`; up to 64 channels per connection. A subscriber never receives another user's runs; without `auth` all connections share one anonymous user and see every run. Closing the socket aborts its run.
+One run per connection at a time (a second `run` or `resume` answers `A run is already in progress`), and only agent runs are supported. A `run` or `resume` on a thread `authorizeThread` refuses answers with an `error` frame and starts nothing. `{ "type": "subscribe", "channel": "agent:math" }` delivers the events of runs of that agent started from the same user's other connections (with `channel` set on each frame) until `unsubscribe`, up to 64 channels per connection. A subscriber never receives another user's runs. With `authorizeThread` set, a subscriber also sees a run only when `authorizeThread(subscriberAuth, threadId)` allows it on the run's thread (the run's `threadId`, or the one core created for it). It is asked once per subscriber and run, and a subscriber it refuses, or throws for, gets none of the run's events. Without `auth` all connections share one anonymous user, so without `authorizeThread` they see every run. Closing the socket aborts its run.
 
 ## Streaming
 
@@ -184,6 +232,22 @@ while (true) {
 }
 ```
 
+## Thread Pages
+
+`GET /threads/:id` answers the whole thread by default. With `?limit=50` it answers the newest 50 messages (oldest first within the page) and a `nextCursor`, and `?limit=50&cursor=<nextCursor>` the 50 before them, until an answer has no `nextCursor`:
+
+```typescript
+let cursor: string | undefined;
+do {
+  const query = new URLSearchParams({ limit: '50', ...(cursor && { cursor }) });
+  const page = await (await fetch(`/cogitator/threads/${threadId}?${query}`)).json();
+  render(page.messages);
+  cursor = page.nextCursor;
+} while (cursor);
+```
+
+A `limit` outside 1 to 1000 or a cursor the server never gave answers `400 INVALID_INPUT`, with the same message as every other adapter.
+
 ## Accessing the Context
 
 Inside custom Fastify routes, the Cogitator context is available via the `cogitator` decorator:
@@ -198,7 +262,7 @@ fastify.get('/custom', async (request, reply) => {
 
 ## Errors
 
-Schema validation failures and malformed JSON return `400 INVALID_INPUT` (with the validation `details`), unknown agents, workflows and swarms `404 NOT_FOUND`, and a failed workflow `500 WORKFLOW_FAILED`. The thread routes return `503 UNAVAILABLE` when the runtime has no memory and `403 THREAD_ACCESS_DENIED` for another user's thread; workflow and swarm routes return `501 UNIMPLEMENTED` without their packages. `CogitatorError`s keep their message, code and mapped status (for example `LLM_RATE_LIMITED` → 429). Any other error is logged through `request.log` and answered as `500` with the message `Internal server error` (code `INTERNAL_ERROR`).
+Schema validation failures and malformed JSON return `400 INVALID_INPUT` (with the validation `details`), unknown agents, workflows, swarms and paths `404 NOT_FOUND` (an unknown path answers a caller without a `userId` with `401 UNAUTHORIZED` under `anonymous: 'deny'`), and a failed workflow the error it failed with, mapped like any run error (a node that hit `LLM_RATE_LIMITED` answers `429` with `Retry-After`), with its stream ending in an `error` event carrying that code. The thread routes return `503 UNAVAILABLE` when the runtime has no memory, `403 THREAD_ACCESS_DENIED` for another user's thread and `403 THREAD_FORBIDDEN` for one `authorizeThread` refuses, and workflow and swarm routes return `501 UNIMPLEMENTED` without their packages. `CogitatorError`s keep their message and code and answer with their own `statusCode` (the code's mapped status unless the error carries another, for example `LLM_RATE_LIMITED` → 429), plus `Retry-After` in whole seconds when the error says when to retry. A swarm that runs out of time answers `504 RUN_TIMEOUT`. Every adapter maps errors with `describeHttpError` of `@cogitator-ai/server-shared`. Any other error is logged through `request.log` and answered as `500` with the message `Internal server error` (code `INTERNAL_ERROR`).
 
 ## Exported Schemas
 
@@ -212,7 +276,11 @@ import {
   AddMessageRequestSchema,
   WorkflowRunRequestSchema,
   SwarmRunRequestSchema,
+  ThreadPageQuerySchema,
+  ThreadResponseSchema,
+  workflowRunRequestSchema,
+  swarmRunRequestSchema,
 } from '@cogitator-ai/fastify';
 ```
 
-`AgentRunRequestSchema` and `SwarmRunRequestSchema` require an `input` with more than whitespace (the `RUN_INPUT_SCHEMA` of `@cogitator-ai/server-shared`), `AgentResumeRequestSchema` a `threadId` with optional `decisions` / `defaultDecision` (the swarm `timeout` must be greater than 0 and at most `MAX_RUN_TIMEOUT_MS`), `AddMessageRequestSchema` requires a non-empty `content` and a `user`/`assistant`/`system` role, and `WorkflowRunRequestSchema.options` only allows `maxConcurrency`/`maxIterations` (integers ≥ 1) and `checkpoint` (`additionalProperties: false`). These can be used in custom Fastify route schemas for native validation.
+`AgentRunRequestSchema` and `SwarmRunRequestSchema` require an `input` with more than whitespace (the `RUN_INPUT_SCHEMA` of `@cogitator-ai/server-shared`), `AgentResumeRequestSchema` a `threadId` with optional `decisions` / `defaultDecision` (the swarm `timeout` must be greater than 0 and at most `MAX_RUN_TIMEOUT_MS`), `AddMessageRequestSchema` requires a non-empty `content` and a `user`/`assistant`/`system` role, and `WorkflowRunRequestSchema.options` only allows `maxConcurrency`/`maxIterations` (integers ≥ 1) and `checkpoint` (`additionalProperties: false`). These can be used in custom Fastify route schemas for native validation. `workflowRunRequestSchema(limits)` and `swarmRunRequestSchema(limits)` build the run schemas with the operator's limits as defaults, and `ThreadPageQuerySchema` and `ThreadResponseSchema` describe a thread page.

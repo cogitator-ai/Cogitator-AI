@@ -247,7 +247,7 @@ describe('createResumeHandler', () => {
     const res = await createResumeHandler(cogitator, fakeAgent)(post('/api/resume', body));
 
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error, code: 'INVALID_INPUT' });
+    expect(await res.json()).toEqual({ error: { message: error, code: 'INVALID_INPUT' } });
     expect(resume).not.toHaveBeenCalled();
   });
 
@@ -259,7 +259,9 @@ describe('createResumeHandler', () => {
     )(post('/api/resume', '{"threadId":'));
 
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Invalid JSON body', code: 'INVALID_INPUT' });
+    expect(await res.json()).toEqual({
+      error: { message: 'Invalid JSON body', code: 'INVALID_INPUT' },
+    });
     expect(resume).not.toHaveBeenCalled();
   });
 
@@ -267,12 +269,12 @@ describe('createResumeHandler', () => {
     const { cogitator, resume } = fakeCogitator();
     const res = await createResumeHandler(cogitator, fakeAgent, {
       beforeRun: async () => {
-        throw new Error('Sign in first');
+        throw Object.assign(new Error('Sign in first'), { status: 401 });
       },
     })(post('/api/resume', { threadId: 'thread_1' }));
 
     expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ error: 'Sign in first' });
+    expect(await res.json()).toEqual({ error: { message: 'Sign in first', code: 'UNAUTHORIZED' } });
     expect(resume).not.toHaveBeenCalled();
   });
 
@@ -297,7 +299,9 @@ describe('createResumeHandler', () => {
     )(post('/api/resume', { threadId: 'thread_1' }));
 
     expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'No paused run', code: 'RUN_NOT_PAUSED' });
+    expect(await res.json()).toEqual({
+      error: { message: 'No paused run', code: 'RUN_NOT_PAUSED' },
+    });
   });
 
   it('streams the rest of the run with stream: true', async () => {
@@ -417,7 +421,9 @@ describe('approvals with the real runtime', () => {
       )
     );
     expect(foreign.status).toBe(403);
-    expect(((await foreign.json()) as { code: string }).code).toBe('THREAD_ACCESS_DENIED');
+    expect(((await foreign.json()) as { error: { code: string } }).error.code).toBe(
+      'THREAD_ACCESS_DENIED'
+    );
     expect(refundImpl).not.toHaveBeenCalled();
 
     const resumed = await resume(
@@ -441,7 +447,7 @@ describe('approvals with the real runtime', () => {
       )
     );
     expect(again.status).toBe(409);
-    expect(((await again.json()) as { code: string }).code).toBe('RUN_NOT_PAUSED');
+    expect(((await again.json()) as { error: { code: string } }).error.code).toBe('RUN_NOT_PAUSED');
     expect(refundImpl).toHaveBeenCalledOnce();
   });
 });

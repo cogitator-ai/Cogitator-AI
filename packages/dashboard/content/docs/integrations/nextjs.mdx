@@ -119,12 +119,20 @@ It is the object every Cogitator adapter answers (`toAgentRunResponse()`), never
 
 ## Errors
 
-Every handler answers request problems before running the agent, as JSON `{ "error": "<message>" }`:
+Every handler answers request problems before running the agent, as JSON `{ "error": { "message": "<message>", "code": "<code>" } }`, the envelope every Cogitator adapter uses:
 
 - `413` for bodies over 1 MB, `415` for a body that is not JSON, `400` for invalid JSON, a body that fails the default parser (with `code: "INVALID_INPUT"`), or an error thrown by `parseInput`.
-- An error thrown by `beforeRun` uses its `status` property (`400`–`599`) and defaults to `401`, with the error's message.
+- An error thrown by `beforeRun` with a client error `status` (`400` to `499`) answers with that status, its message and its `code`. A `CogitatorError` answers as a failed run. Any other error is logged and answered `401 Unauthorized` without its text.
 
-A failed run answers `{ "error": "<message>", "code": "<code>" }` — or, in a stream, an `error` event with the same `message` and `code`. A `CogitatorError` keeps its message, code and status (for example `403 THREAD_ACCESS_DENIED`, `429 LLM_RATE_LIMITED`); any other error is logged on the server and reported as `500` with `Internal server error` and code `INTERNAL_ERROR`, so its text never reaches the client.
+A failed run answers in the same envelope, or, in a stream, with an `error` event carrying the same `message` and `code`. A `CogitatorError` keeps its message, code and status (for example `403 THREAD_ACCESS_DENIED`, `429 LLM_RATE_LIMITED`) and sends `Retry-After` when the provider said when to retry. Any other error is logged on the server and reported as `500` with `Internal server error` and code `INTERNAL_ERROR`, so its text never reaches the client.
+
+Every handler takes the server contract options of the other adapters too:
+
+| Option            | Type                                                              | Description                                                                                   |
+| ----------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `anonymous`       | `'allow' \| 'deny'`                                               | `'deny'` answers `401 UNAUTHORIZED` when `beforeRun` returned no `userId`. Default `'allow'`  |
+| `authorizeThread` | `(req: Request, threadId: string) => boolean \| Promise<boolean>` | Asked about the thread a request names before the run, `false` answers `403 THREAD_FORBIDDEN` |
+| `deps`            | `(req: Request) => unknown`                                       | The run's `deps` for its tools, never read from the body. A `deps` from `beforeRun` wins      |
 
 ## Approvals
 

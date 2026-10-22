@@ -1032,11 +1032,11 @@ export class PostgresAdapter
     }
 
     if (options.limit) {
-      query += ` ORDER BY created_at DESC, seq DESC NULLS LAST LIMIT $${paramIndex}`;
+      query += ` ORDER BY created_at DESC, seq DESC NULLS LAST, (id COLLATE "C") DESC LIMIT $${paramIndex}`;
       params.push(options.limit);
-      query = `SELECT * FROM (${query}) sub ORDER BY created_at ASC, seq ASC NULLS FIRST`;
+      query = `SELECT * FROM (${query}) sub ORDER BY created_at ASC, seq ASC NULLS FIRST, (id COLLATE "C") ASC`;
     } else {
-      query += ' ORDER BY created_at ASC, seq ASC NULLS FIRST';
+      query += ' ORDER BY created_at ASC, seq ASC NULLS FIRST, (id COLLATE "C") ASC';
     }
 
     let result: { rows: Record<string, unknown>[] };

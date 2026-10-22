@@ -7,10 +7,16 @@ import type {
   SwarmRunResponse,
   BlackboardResponse,
 } from '../types.js';
-import { parseSwarmRunRequest, swarmAgentNames, withSwarm } from '@cogitator-ai/server-shared';
+import {
+  parseSwarmRunRequest,
+  swarmAgentNames,
+  swarmTimeoutWithin,
+  withSwarm,
+} from '@cogitator-ai/server-shared';
 import { ExpressStreamWriter, setupSSEHeaders, generateId } from '../streaming/index.js';
 import type { RunResult, SwarmMessage, SwarmEvent } from '@cogitator-ai/types';
 import {
+  admitThread,
   handleRouteError,
   isModuleNotFound,
   onClientDisconnect,
@@ -60,6 +66,8 @@ export function createSwarmRoutes(ctx: RouteContext): Router {
       }
       const body = parsed.value;
 
+      if (!(await admitThread(ctx, req, res, body.threadId, 'Swarm run error'))) return;
+
       let disconnected = false;
       let abortSwarm: (() => void) | undefined;
       onClientDisconnect(res, () => {
@@ -80,7 +88,7 @@ export function createSwarmRoutes(ctx: RouteContext): Router {
               context: body.context,
               threadId: body.threadId,
               userId: req.cogitator?.auth?.userId,
-              timeout: body.timeout,
+              timeout: swarmTimeoutWithin(body.timeout, ctx.config.limits),
             });
 
             const agentResults: Record<string, unknown> = {};
@@ -138,6 +146,8 @@ export function createSwarmRoutes(ctx: RouteContext): Router {
       }
       const body = parsed.value;
 
+      if (!(await admitThread(ctx, req, res, body.threadId, 'Swarm stream error'))) return;
+
       setupSSEHeaders(res);
       const writer = new ExpressStreamWriter(res, { heartbeatMs: ctx.config.sseHeartbeatMs });
       const messageId = generateId('swarm');
@@ -163,7 +173,7 @@ export function createSwarmRoutes(ctx: RouteContext): Router {
             context: body.context,
             threadId: body.threadId,
             userId: req.cogitator?.auth?.userId,
-            timeout: body.timeout,
+            timeout: swarmTimeoutWithin(body.timeout, ctx.config.limits),
             onAgentStart: (agentName: string) => {
               writer.swarmEvent('agent_start', { agentName, timestamp: Date.now() });
             },

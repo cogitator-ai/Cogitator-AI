@@ -1,5 +1,6 @@
 import type { FastifyError, FastifyRequest, FastifyReply } from 'fastify';
-import { CogitatorError, ERROR_STATUS_CODES, ErrorCode } from '@cogitator-ai/types';
+import { INTERNAL_ERROR, describeHttpError, errorEnvelope } from '@cogitator-ai/server-shared';
+import { sendFailure } from '../routes/utils.js';
 
 const CLIENT_ERROR_CODES: Record<number, string> = {
   400: 'INVALID_INPUT',
@@ -20,45 +21,30 @@ export function errorHandler(
     return;
   }
 
-  if (CogitatorError.isCogitatorError(error)) {
-    const statusCode = ERROR_STATUS_CODES[error.code] || 500;
-    reply.status(statusCode).send({
-      error: {
-        message: error.message,
-        code: error.code,
-      },
-    });
+  const described = describeHttpError(error);
+  if (described) {
+    sendFailure(reply, described);
     return;
   }
 
   if (error.validation) {
+    const refusal = { status: 400, code: 'INVALID_INPUT', message: error.message };
     reply.status(400).send({
-      error: {
-        message: error.message,
-        code: 'INVALID_INPUT',
-        details: error.validation,
-      },
+      error: { ...errorEnvelope(refusal).error, details: error.validation },
     });
     return;
   }
 
   const statusCode = error.statusCode;
   if (typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500) {
-    reply.status(statusCode).send({
-      error: {
-        message: error.message,
-        code: CLIENT_ERROR_CODES[statusCode] ?? error.code ?? 'BAD_REQUEST',
-      },
+    sendFailure(reply, {
+      status: statusCode,
+      code: CLIENT_ERROR_CODES[statusCode] ?? error.code ?? 'BAD_REQUEST',
+      message: error.message,
     });
     return;
   }
 
   request.log.error({ err: error }, 'unhandled error in cogitator plugin');
-
-  reply.status(500).send({
-    error: {
-      message: 'Internal server error',
-      code: ErrorCode.INTERNAL_ERROR,
-    },
-  });
+  sendFailure(reply, INTERNAL_ERROR);
 }

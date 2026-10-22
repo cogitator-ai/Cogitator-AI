@@ -4,6 +4,7 @@ import { createAuthMiddleware } from '../middleware/auth.js';
 import { createCorsMiddleware } from '../middleware/cors.js';
 import { createRateLimitMiddleware } from '../middleware/rate-limit.js';
 import { errorHandler, notFoundHandler } from '../middleware/error-handler.js';
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import type { CogitatorRequest } from '../types.js';
 
 function mockReq(overrides: Partial<Request> = {}): CogitatorRequest {
@@ -344,6 +345,28 @@ describe('errorHandler', () => {
 
     expect(res.status).not.toHaveBeenCalled();
     expect(res.json).not.toHaveBeenCalled();
+  });
+
+  it('answers a CogitatorError with its own status and Retry-After', () => {
+    const res = mockRes();
+
+    errorHandler(
+      new CogitatorError({
+        message: 'provider down',
+        code: ErrorCode.LLM_UNAVAILABLE,
+        statusCode: 502,
+        retryAfter: 30_000,
+      }),
+      mockReq(),
+      res,
+      mockNext()
+    );
+
+    expect(res.status).toHaveBeenCalledWith(502);
+    expect(res._headers['Retry-After']).toBe('30');
+    expect(res.json).toHaveBeenCalledWith({
+      error: { message: 'provider down', code: ErrorCode.LLM_UNAVAILABLE },
+    });
   });
 
   it('returns 500 for unknown errors', () => {

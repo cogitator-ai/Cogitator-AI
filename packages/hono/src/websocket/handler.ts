@@ -13,17 +13,21 @@ import type {
 } from '../types.js';
 import type { RunOptions, ToolCall, ToolResult } from '@cogitator-ai/types';
 import {
+  authorizeThreadAccess,
   generateId,
   isJsonObject,
   parseResumeRequest,
   parseRunRequest,
+  swarmTimeoutWithin,
   toAgentRunResponse,
   toAgentToolCall,
   withSwarm,
+  workflowOptionsWithin,
   type ContextPolicy,
 } from '@cogitator-ai/server-shared';
 import { getOwn } from '../utils/lookup.js';
-import { isModuleNotFoundError, resolveError } from '../utils/errors.js';
+import { describeError, isModuleNotFoundError } from '../utils/errors.js';
+import { sendError } from '../utils/request.js';
 import { toSwarmRunResponse, toWorkflowRunResponse } from '../utils/results.js';
 
 type ParsedMessage =
@@ -50,16 +54,12 @@ export function createWebSocketRoutes(config: WebSocketConfig | string = {}): Ho
 
   if (!options.upgradeWebSocket) {
     app.get(path, (c) =>
-      c.json(
-        {
-          error: {
-            message:
-              'WebSocket is not configured: pass websocket.upgradeWebSocket from your runtime adapter',
-            code: 'UNIMPLEMENTED',
-          },
-        },
-        501
-      )
+      sendError(c, {
+        status: 501,
+        code: 'UNIMPLEMENTED',
+        message:
+          'WebSocket is not configured: pass websocket.upgradeWebSocket from your runtime adapter',
+      })
     );
     return app;
   }
@@ -68,7 +68,8 @@ export function createWebSocketRoutes(config: WebSocketConfig | string = {}): Ho
     path,
     options.upgradeWebSocket((c) => {
       const ctx: CogitatorContext = c.get('cogitator');
-      const state = createClientState(c.get('cogitatorAuth'));
+      const deps = ctx.deps;
+      const state = createClientState(c.get('cogitatorAuth'), deps && (() => deps(c)));
 
       return {
         onMessage(event, ws) {
@@ -109,8 +110,15 @@ async function messageToText(data: WSMessageReceive): Promise<string> {
   return new TextDecoder().decode(new Uint8Array(data));
 }
 
-export function createClientState(auth?: AuthContext): WebSocketClientState {
-  return { id: generateId('ws'), ...(auth && { auth }) };
+/**
+ * The state of a new connection: who opened it, and what builds the `deps` of each agent run
+ * on it (the app's `deps` hook, called with the upgrade request)
+ */
+export function createClientState(
+  auth?: AuthContext,
+  deps?: WebSocketClientState['deps']
+): WebSocketClientState {
+  return { id: generateId('ws'), ...(auth && { auth }), ...(deps && { deps }) };
 }
 
 export async function handleWebSocketMessage(
@@ -209,9 +217,10 @@ async function handleRun(
     return;
   }
 
-  await runOverSocket(socket, id, state, 'WebSocket run error', (signal, emit) =>
-    executeRun(payload, ctx, state.auth?.userId, signal, emit)
-  );
+  await runOverSocket(socket, id, state, 'WebSocket run error', async (signal, emit) => {
+    await authorizeThread(ctx, state, payload.threadId);
+    return executeRun(payload, ctx, state, signal, emit);
+  });
 }
 
 async function handleResume(
@@ -227,9 +236,10 @@ async function handleResume(
     return;
   }
 
-  await runOverSocket(socket, id, state, 'WebSocket resume error', (signal, emit) =>
-    executeResume(payload, ctx, state.auth?.userId, signal, emit)
-  );
+  await runOverSocket(socket, id, state, 'WebSocket resume error', async (signal, emit) => {
+    await authorizeThread(ctx, state, payload.threadId);
+    return executeResume(payload, ctx, state, signal, emit);
+  });
 }
 
 async function runOverSocket(
@@ -263,14 +273,28 @@ async function runOverSocket(
     } else if (error instanceof ClientFacingError) {
       sendResponse(socket, { type: 'error', id, error: error.message });
     } else {
-      const { body } = resolveError(error, label);
-      sendResponse(socket, { type: 'error', id, error: body.error.message });
+      sendResponse(socket, { type: 'error', id, error: describeError(error, label).message });
     }
   } finally {
     if (state.abortController === abortController) {
       state.abortController = undefined;
     }
   }
+}
+
+/** Refuses a run on a thread the app's `authorizeThread` keeps the connection's caller from */
+async function authorizeThread(
+  ctx: CogitatorContext,
+  state: WebSocketClientState,
+  threadId: string | undefined
+): Promise<void> {
+  const refusal = await authorizeThreadAccess(ctx.authorizeThread, state.auth, threadId);
+  if (refusal) throw new ClientFacingError(refusal.message);
+}
+
+/** The `deps` an agent run on the connection gets, none without the app's `deps` hook */
+async function runDeps(state: WebSocketClientState): Promise<{ deps?: unknown }> {
+  return state.deps ? { deps: await state.deps() } : {};
 }
 
 function agentStreamCallbacks(
@@ -287,7 +311,7 @@ function agentStreamCallbacks(
 async function executeResume(
   payload: WebSocketResumePayload,
   ctx: CogitatorContext,
-  userId: string | undefined,
+  state: WebSocketClientState,
   signal: AbortSignal,
   emit: EmitEvent
 ): Promise<unknown> {
@@ -295,7 +319,8 @@ async function executeResume(
   if (!agent) throw new ClientFacingError(`Agent '${payload.name}' not found`);
 
   const result = await ctx.runtime.resume(agent, payload.threadId, {
-    userId,
+    userId: state.auth?.userId,
+    ...(await runDeps(state)),
     decisions: payload.decisions,
     defaultDecision: payload.defaultDecision,
     stream: true,
@@ -308,10 +333,11 @@ async function executeResume(
 async function executeRun(
   payload: WebSocketRunPayload,
   ctx: CogitatorContext,
-  userId: string | undefined,
+  state: WebSocketClientState,
   signal: AbortSignal,
   emit: EmitEvent
 ): Promise<unknown> {
+  const userId = state.auth?.userId;
   switch (payload.type) {
     case 'agent': {
       const agent = getOwn(ctx.agents, payload.name);
@@ -322,6 +348,7 @@ async function executeRun(
         context: payload.context,
         threadId: payload.threadId,
         userId,
+        ...(await runDeps(state)),
         stream: true,
         signal,
         ...agentStreamCallbacks(emit),
@@ -338,7 +365,11 @@ async function executeRun(
         'Workflows'
       );
       const executor = new WorkflowExecutor(ctx.runtime);
-      const result = await executor.execute(workflow, { input: payload.input }, { signal });
+      const result = await executor.execute(
+        workflow,
+        { input: payload.input },
+        { ...workflowOptionsWithin({}, ctx.limits), signal }
+      );
       if (result.error) throw result.error;
       return toWorkflowRunResponse(result);
     }
@@ -356,6 +387,7 @@ async function executeRun(
             input: payload.input,
             context: payload.context,
             threadId: payload.threadId,
+            timeout: swarmTimeoutWithin(undefined, ctx.limits),
             userId,
           });
           return toSwarmRunResponse(swarm, result);

@@ -3,16 +3,51 @@ import { ERROR_STATUS_CODES } from '@cogitator-ai/types';
 import {
   DEFAULT_THREAD_MESSAGE_ROLES,
   MAX_RUN_TIMEOUT_MS,
+  MAX_THREAD_PAGE_LIMIT,
   NON_BLANK_PATTERN,
+  isJsonObject,
   parseAddMessageRequest,
   parseRunRequest,
+  parseThreadPageQuery,
 } from '@cogitator-ai/server-shared';
-import type { ContextPolicy, ThreadMessageRole } from '@cogitator-ai/server-shared';
+import type {
+  ContextPolicy,
+  RunLimits,
+  ThreadMessageRole,
+  ThreadPageQuery,
+} from '@cogitator-ai/server-shared';
 
 const JsonObject = z.record(z.string(), z.unknown());
 
 export const NameParams = z.object({ name: z.string().min(1) });
 export const ThreadParams = z.object({ id: z.string().min(1) });
+
+const ThreadPageFields = z.object({
+  limit: z
+    .int()
+    .min(1)
+    .max(MAX_THREAD_PAGE_LIMIT)
+    .optional()
+    .describe('Messages on the page, the newest of what is left. Without it the whole thread'),
+  cursor: z.string().optional().describe('The `nextCursor` of the page after the one to read'),
+});
+
+/**
+ * The page of a thread `GET /threads/:id` reads: the whole thread without `limit`. The query is
+ * read by `parseThreadPageQuery`, as every adapter reads it: an empty parameter counts as absent
+ * and a repeated one by its last value. What it refuses fails validation.
+ */
+export const ThreadQuery = z.preprocess((query, ctx) => {
+  const raw = isJsonObject(query) ? query : {};
+  const page: ThreadPageQuery = {};
+  for (const field of ['limit', 'cursor'] as const) {
+    const parsed = parseThreadPageQuery({ [field]: raw[field] });
+    if (parsed.ok) Object.assign(page, parsed.value);
+    else
+      ctx.addIssue({ code: 'custom', message: parsed.message, path: [field], input: raw[field] });
+  }
+  return page;
+}, ThreadPageFields);
 
 /** Text that must say something: refused when empty or whitespace only, like every adapter */
 const RunInput = z
@@ -51,28 +86,45 @@ export const ResumeBody = z.object({
   ),
 });
 
+const SwarmTimeout = z.number().positive().max(MAX_RUN_TIMEOUT_MS);
+const SWARM_TIMEOUT = 'Run timeout in milliseconds, at most the longest delay a timer can hold';
+
 export const SwarmRunBody = RunBody.extend({
-  timeout: z
-    .number()
-    .positive()
-    .max(MAX_RUN_TIMEOUT_MS)
+  timeout: SwarmTimeout.optional().describe(SWARM_TIMEOUT),
+});
+
+const WorkflowLimit = z.number().int().positive();
+const MAX_CONCURRENCY = 'Most workflow nodes that may run at once';
+const MAX_ITERATIONS = 'Most iterations the workflow may take';
+
+const WorkflowOptions = z.object({
+  maxConcurrency: WorkflowLimit.optional().describe(MAX_CONCURRENCY),
+  maxIterations: WorkflowLimit.optional().describe(MAX_ITERATIONS),
+  checkpoint: z
+    .literal(false)
     .optional()
-    .describe('Run timeout in milliseconds, at most the longest delay a timer can hold'),
+    .describe('Only `false`: the server keeps no checkpoint store to resume from'),
 });
 
 export const WorkflowRunBody = z.object({
   input: JsonObject.optional().describe('Initial workflow state'),
-  options: z
-    .object({
-      maxConcurrency: z.number().int().positive().optional(),
-      maxIterations: z.number().int().positive().optional(),
-      checkpoint: z
-        .literal(false)
-        .optional()
-        .describe('Only `false`: the server keeps no checkpoint store to resume from'),
-    })
-    .optional(),
+  options: WorkflowOptions.optional(),
 });
+
+/**
+ * A field the operator may cap. The cap is no maximum the request is refused over: the server
+ * holds a larger value to it and gives it to a request that asks for nothing, so the schema
+ * shows it as the default and says so.
+ */
+function limited(schema: z.ZodNumber, description: string, cap: number | undefined, unit = '') {
+  return cap === undefined
+    ? schema.optional().describe(description)
+    : schema
+        .default(cap)
+        .describe(
+          `${description}. Held to ${cap}${unit}, the server's limit, which is also the default`
+        );
+}
 
 export const AddMessageBody = z.object({
   role: z
@@ -202,9 +254,13 @@ export const AgentRunResponse = z
 
 export const ThreadResponse = z.object({
   id: z.string(),
-  messages: z.array(MessageSchema),
+  messages: z.array(MessageSchema).describe('The messages of the page, oldest first'),
   createdAt: z.number(),
   updatedAt: z.number(),
+  nextCursor: z
+    .string()
+    .optional()
+    .describe("Pass as `cursor` to read the page before this one, absent at the thread's start"),
 });
 
 export const AddMessageResponse = z.object({ success: z.literal(true) });
@@ -291,10 +347,11 @@ export const SocketMessage = z.discriminatedUnion('type', [
   }),
 ]);
 
-/** What a server accepts from its clients beyond the request schema */
+/** What a server accepts from its clients beyond the request schema, and what it caps */
 export interface ClientTrust {
   acceptContext?: ContextPolicy;
   threadMessageRoles?: readonly ThreadMessageRole[];
+  limits?: RunLimits;
 }
 
 /**
@@ -302,10 +359,12 @@ export interface ClientTrust {
  * policy through the validators every adapter shares. A `context` key the server does not
  * accept, or a thread message role it does not take, fails validation like any other field,
  * with the status and `VALIDATION_FAILED` envelope the application uses for its schemas.
+ * The server's `limits` show as the defaults of the fields they cap.
  */
 export function requestSchemas(trust: ClientTrust) {
   const acceptContext = trust.acceptContext ?? false;
   const roles = trust.threadMessageRoles ?? DEFAULT_THREAD_MESSAGE_ROLES;
+  const limits = trust.limits;
 
   const acceptedContext = (
     body: { input: string; context?: Record<string, unknown> },
@@ -318,7 +377,15 @@ export function requestSchemas(trust: ClientTrust) {
 
   return {
     RunBody: RunBody.superRefine(acceptedContext),
-    SwarmRunBody: SwarmRunBody.superRefine(acceptedContext),
+    SwarmRunBody: SwarmRunBody.extend({
+      timeout: limited(SwarmTimeout, SWARM_TIMEOUT, limits?.swarmTimeout, ' ms'),
+    }).superRefine(acceptedContext),
+    WorkflowRunBody: WorkflowRunBody.extend({
+      options: WorkflowOptions.extend({
+        maxConcurrency: limited(WorkflowLimit, MAX_CONCURRENCY, limits?.workflowMaxConcurrency),
+        maxIterations: limited(WorkflowLimit, MAX_ITERATIONS, limits?.workflowMaxIterations),
+      }).optional(),
+    }),
     AddMessageBody: AddMessageBody.superRefine((body, ctx) => {
       const parsed = parseAddMessageRequest(body, { roles });
       if (!parsed.ok) ctx.addIssue({ code: 'custom', message: parsed.message, path: ['role'] });
@@ -394,6 +461,10 @@ export const RUN_FAILURES = {
   500: failureEnvelope(500, 'A tool, a workflow step or the sandbox failed'),
   502: failureEnvelope(502, 'The model provider answered with something unusable'),
   503: failureEnvelope(503, 'The model provider, the sandbox or a circuit breaker is unavailable'),
-  504: failureEnvelope(504, 'The model, a tool or the sandbox timed out'),
+  504: failureEnvelope(
+    504,
+    'The model, a tool or the sandbox timed out, or a swarm ran past its timeout (`RUN_TIMEOUT`)',
+    ['RUN_TIMEOUT']
+  ),
   507: failureEnvelope(507, 'The sandbox ran out of memory'),
 } as const;

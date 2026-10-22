@@ -28,6 +28,7 @@ export type MemoryAdapterScenario =
   | 'entry-order-ties'
   | 'entry-limit-cuts-ties'
   | 'entry-limit'
+  | 'entry-limit-before'
   | 'entry-time-window'
   | 'tool-calls-on-request'
   | 'missing-not-null'
@@ -242,6 +243,45 @@ const SCENARIOS: Record<MemoryAdapterScenario, (adapter: MemoryAdapter) => Promi
     assert.equal(ok(await adapter.getEntries({ threadId: id, limit: 10 }), 'limit 10').length, 4);
     refused(await adapter.getEntries({ threadId: id, limit: -1 }), 'a negative limit');
     refused(await adapter.getEntries({ threadId: id, limit: 1.5 }), 'a fractional limit');
+  },
+
+  async 'entry-limit-before'(adapter) {
+    const { agentId, threadId } = scope();
+    const id = threadId();
+    await newThread(adapter, agentId, id);
+    const at = (ms: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, 0, ms));
+    const plan: Array<[string, number]> = [
+      ['a', 1],
+      ['b', 2],
+      ['c', 5],
+      ['d', 5],
+      ['e', 5],
+      ['f', 5],
+      ['g', 9],
+    ];
+    for (const [text, ms] of plan) {
+      ok(
+        await adapter.addEntry({
+          threadId: id,
+          message: user(text),
+          tokenCount: 1,
+          createdAt: at(ms),
+        }),
+        'addEntry'
+      );
+    }
+    const page = async (before: number, limit: number) =>
+      contents(
+        ok(await adapter.getEntries({ threadId: id, before: at(before), limit }), 'getEntries')
+      );
+    assert.deepEqual(await page(9, 2), ['e', 'f'], 'the newest entries before the time, oldest first');
+    assert.deepEqual(
+      await page(6, 3),
+      ['d', 'e', 'f'],
+      'a limit before the time keeps the entries added last among those with one creation time'
+    );
+    assert.deepEqual(await page(5, 5), ['a', 'b'], 'only entries created before the time');
+    assert.deepEqual(await page(1, 3), [], 'none before the first entry');
   },
 
   async 'entry-time-window'(adapter) {

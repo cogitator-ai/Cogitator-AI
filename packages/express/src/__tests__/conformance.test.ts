@@ -28,6 +28,17 @@ afterEach(async () => {
   server = undefined;
 });
 
+function serverOptions(testCase: ConformanceCase): CogitatorServerConfig['config'] {
+  const { forbiddenThreads, deps, ...options } = testCase.server ?? {};
+  return {
+    ...options,
+    ...(forbiddenThreads && {
+      authorizeThread: (_auth, threadId) => !forbiddenThreads.includes(threadId),
+    }),
+    ...(deps && { deps: () => deps }),
+  };
+}
+
 async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
   const app = express();
   const cogitatorServer = new CogitatorServer({
@@ -44,7 +55,7 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
       basePath: '/api',
       enableSwagger: false,
       sseHeartbeatMs: 0,
-      ...testCase.server,
+      ...serverOptions(testCase),
     },
   });
   await cogitatorServer.init();
@@ -60,14 +71,14 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
   });
   const body = await res.text();
   const code = res.ok ? undefined : (JSON.parse(body) as { error: { code: string } }).error.code;
-  return { status: res.status, code, body };
+  return { status: res.status, code, body, headers: Object.fromEntries(res.headers) };
 }
 
 describe('server protocol conformance', () => {
   it.each(CONFORMANCE_CASES.map((testCase) => [testCase.name, testCase] as const))(
     '%s',
     async (_name, testCase) => {
-      const runtime = new ConformanceRuntime();
+      const runtime = new ConformanceRuntime(testCase);
       const response = await answer(testCase, runtime);
       expect(checkConformance(testCase, response, runtime)).toEqual([]);
     }

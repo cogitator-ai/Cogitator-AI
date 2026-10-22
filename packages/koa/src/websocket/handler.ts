@@ -11,16 +11,21 @@ import type {
 } from '../types.js';
 import type { RunOptions, ToolCall, ToolResult } from '@cogitator-ai/types';
 import {
+  admitCaller,
+  authorizeThreadAccess,
+  checkRunLimits,
   isJsonObject,
   parseResumeRequest,
   parseRunRequest,
+  swarmTimeoutWithin,
   toAgentRunResponse,
   toAgentToolCall,
   withSwarm,
+  workflowOptionsWithin,
   type ContextPolicy,
 } from '@cogitator-ai/server-shared';
 import { getOwn } from '../utils/lookup.js';
-import { isModuleNotFoundError, resolveError } from '../utils/errors.js';
+import { describeError, isModuleNotFoundError } from '../utils/errors.js';
 import { toSwarmRunResponse, toWorkflowRunResponse } from '../utils/results.js';
 
 type WebSocketType = import('ws').WebSocket;
@@ -29,6 +34,8 @@ type RawData = import('ws').RawData;
 
 interface ClientState {
   auth?: AuthContext;
+  /** Builds the `deps` of each agent run on the connection, from its upgrade request */
+  deps?: () => unknown | Promise<unknown>;
   abortController?: AbortController;
 }
 
@@ -54,11 +61,18 @@ function isRunType(value: unknown): value is WebSocketRunPayload['type'] {
 
 class ClientFacingError extends Error {}
 
+/**
+ * Serves WebSocket runs on `server`, with the agents, workflows, swarms, `limits` and
+ * `authorizeThread` of `ctx`, and its `anonymous` policy when `config` sets none.
+ *
+ * @throws Error when `ctx.limits` holds a limit that is not a positive integer
+ */
 export async function setupWebSocket(
   server: HttpServer,
   ctx: RouteContext,
   config: WebSocketConfig = {}
 ): Promise<WebSocketServerType | null> {
+  checkRunLimits(ctx.limits);
   let wsModule: typeof import('ws');
   try {
     wsModule = await import('ws');
@@ -71,6 +85,7 @@ export async function setupWebSocket(
   const path = config.path ?? DEFAULT_PATH;
   const pingInterval = config.pingInterval ?? DEFAULT_PING_INTERVAL;
   const pingTimeout = config.pingTimeout ?? pingInterval;
+  const anonymous = config.anonymous ?? ctx.anonymous;
   const wss = new wsModule.WebSocketServer({
     noServer: true,
     maxPayload: config.maxPayloadSize ?? DEFAULT_MAX_PAYLOAD,
@@ -86,7 +101,7 @@ export async function setupWebSocket(
     const onSocketError = () => socket.destroy();
     socket.on('error', onSocketError);
 
-    void authorize(config.auth, req).then((outcome) => {
+    void authorize(config.auth, anonymous, req).then((outcome) => {
       if (!outcome.ok) {
         rejectUpgrade(socket, outcome.status);
         return;
@@ -106,7 +121,9 @@ export async function setupWebSocket(
   });
 
   wss.on('connection', (ws: WebSocketType, req: IncomingMessage) => {
-    handleConnection(ws, ctx, authResults.get(req), pingInterval, pingTimeout);
+    const deps = config.deps;
+    const connection = { auth: authResults.get(req), ...(deps && { deps: () => deps(req) }) };
+    handleConnection(ws, ctx, connection, pingInterval, pingTimeout);
   });
 
   return wss;
@@ -122,11 +139,13 @@ function getPathname(req: IncomingMessage): string {
 
 async function authorize(
   auth: WebSocketAuthFunction | undefined,
+  anonymous: WebSocketConfig['anonymous'],
   req: IncomingMessage
 ): Promise<AuthorizeOutcome> {
-  if (!auth) return { ok: true, auth: undefined };
   try {
-    return { ok: true, auth: await auth(req) };
+    const caller = auth ? await auth(req) : undefined;
+    const refusal = admitCaller(caller?.userId, anonymous);
+    return refusal ? { ok: false, status: refusal.status } : { ok: true, auth: caller };
   } catch (error) {
     const status = (error as { status?: number } | null)?.status;
     if (status !== undefined && status >= 500) {
@@ -154,11 +173,12 @@ function rejectUpgrade(socket: Duplex, status: number): void {
 function handleConnection(
   ws: WebSocketType,
   ctx: RouteContext,
-  auth: AuthContext | undefined,
+  connection: Pick<ClientState, 'auth' | 'deps'>,
   pingInterval: number,
   pingTimeout: number
 ): void {
-  const state: ClientState = { ...(auth && { auth }) };
+  const { auth, deps } = connection;
+  const state: ClientState = { ...(auth && { auth }), ...(deps && { deps }) };
   let pongTimer: NodeJS.Timeout | undefined;
 
   const heartbeat = setInterval(() => {
@@ -287,9 +307,10 @@ async function handleRun(
     return;
   }
 
-  await runOverSocket(ws, id, state, 'WebSocket run error', (signal, emit) =>
-    executeRun(payload, ctx, state.auth?.userId, signal, emit)
-  );
+  await runOverSocket(ws, id, state, 'WebSocket run error', async (signal, emit) => {
+    await authorizeThread(ctx, state, payload.threadId);
+    return executeRun(payload, ctx, state, signal, emit);
+  });
 }
 
 async function handleResume(
@@ -305,9 +326,10 @@ async function handleResume(
     return;
   }
 
-  await runOverSocket(ws, id, state, 'WebSocket resume error', (signal, emit) =>
-    executeResume(payload, ctx, state.auth?.userId, signal, emit)
-  );
+  await runOverSocket(ws, id, state, 'WebSocket resume error', async (signal, emit) => {
+    await authorizeThread(ctx, state, payload.threadId);
+    return executeResume(payload, ctx, state, signal, emit);
+  });
 }
 
 async function runOverSocket(
@@ -341,14 +363,28 @@ async function runOverSocket(
     } else if (error instanceof ClientFacingError) {
       sendResponse(ws, { type: 'error', id, error: error.message });
     } else {
-      const { body } = resolveError(error, label);
-      sendResponse(ws, { type: 'error', id, error: body.error.message });
+      sendResponse(ws, { type: 'error', id, error: describeError(error, label).message });
     }
   } finally {
     if (state.abortController === abortController) {
       state.abortController = undefined;
     }
   }
+}
+
+/** Refuses a run on a thread the `authorizeThread` of `ctx` keeps the connection's caller from */
+async function authorizeThread(
+  ctx: RouteContext,
+  state: ClientState,
+  threadId: string | undefined
+): Promise<void> {
+  const refusal = await authorizeThreadAccess(ctx.authorizeThread, state.auth, threadId);
+  if (refusal) throw new ClientFacingError(refusal.message);
+}
+
+/** The `deps` an agent run on the connection gets, none without `WebSocketConfig.deps` */
+async function runDeps(state: ClientState): Promise<{ deps?: unknown }> {
+  return state.deps ? { deps: await state.deps() } : {};
 }
 
 function agentStreamCallbacks(
@@ -365,7 +401,7 @@ function agentStreamCallbacks(
 async function executeResume(
   payload: WebSocketResumePayload,
   ctx: RouteContext,
-  userId: string | undefined,
+  state: ClientState,
   signal: AbortSignal,
   emit: EmitEvent
 ): Promise<unknown> {
@@ -373,7 +409,8 @@ async function executeResume(
   if (!agent) throw new ClientFacingError(`Agent '${payload.name}' not found`);
 
   const result = await ctx.runtime.resume(agent, payload.threadId, {
-    userId,
+    userId: state.auth?.userId,
+    ...(await runDeps(state)),
     decisions: payload.decisions,
     defaultDecision: payload.defaultDecision,
     stream: true,
@@ -386,10 +423,11 @@ async function executeResume(
 async function executeRun(
   payload: WebSocketRunPayload,
   ctx: RouteContext,
-  userId: string | undefined,
+  state: ClientState,
   signal: AbortSignal,
   emit: EmitEvent
 ): Promise<unknown> {
+  const userId = state.auth?.userId;
   switch (payload.type) {
     case 'agent': {
       const agent = getOwn(ctx.agents, payload.name);
@@ -400,6 +438,7 @@ async function executeRun(
         context: payload.context,
         threadId: payload.threadId,
         userId,
+        ...(await runDeps(state)),
         stream: true,
         signal,
         ...agentStreamCallbacks(emit),
@@ -416,7 +455,11 @@ async function executeRun(
         'Workflows'
       );
       const executor = new WorkflowExecutor(ctx.runtime);
-      const result = await executor.execute(workflow, { input: payload.input }, { signal });
+      const result = await executor.execute(
+        workflow,
+        { input: payload.input },
+        { ...workflowOptionsWithin({}, ctx.limits), signal }
+      );
       if (result.error) throw result.error;
       return toWorkflowRunResponse(result);
     }
@@ -434,6 +477,7 @@ async function executeRun(
             input: payload.input,
             context: payload.context,
             threadId: payload.threadId,
+            timeout: swarmTimeoutWithin(undefined, ctx.limits),
             userId,
           });
           return toSwarmRunResponse(swarm, result);

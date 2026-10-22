@@ -429,6 +429,9 @@ const SCAN_BATCH = 500;
 /** Members one page of a backwards read of a thread's entries takes, at least */
 const NEWEST_PAGE = 200;
 
+/** A page of the members of a sorted set below a score, newest first: KEYS[1], max, offset, count */
+const NEWEST_BEFORE = `return redis.call('ZREVRANGEBYSCORE', KEYS[1], ARGV[1], '-inf', 'LIMIT', ARGV[2], ARGV[3])`;
+
 interface StoredThread {
   id: string;
   agentId: string;
@@ -501,8 +504,16 @@ function readEntry(
   };
 }
 
+/**
+ * Orders entries by when they were added: time, then the order of one time (`seq`), then id,
+ * so entries written before `seq` existed keep one order whichever way they were read
+ */
 function byCreation(a: StoredEntry, b: StoredEntry): number {
-  return a.createdAt.getTime() - b.createdAt.getTime() || (a.seq ?? 0) - (b.seq ?? 0);
+  return (
+    a.createdAt.getTime() - b.createdAt.getTime() ||
+    (a.seq ?? 0) - (b.seq ?? 0) ||
+    compareMembers(a.id, b.id)
+  );
 }
 
 /** Orders ids as Redis orders the members of a sorted set with one score: by their UTF-8 bytes. */
@@ -1232,6 +1243,18 @@ export class RedisAdapter
       const setKey = this.key('thread:entries', options.threadId);
       const limit = options.limit || undefined;
       const ranged = Boolean(options.before || options.after);
+      const wanted = (list: StoredEntry[]) =>
+        list.filter((entry) => entryTypeWanted(entry.type, options.types));
+
+      if (options.before && !options.after && limit) {
+        const newest = await this.newestBefore(client, setKey, options.before, limit, wanted);
+        return this.success(
+          wanted(newest)
+            .sort(byCreation)
+            .slice(-limit)
+            .map((entry) => readEntry(entry, options.includeToolCalls === true))
+        );
+      }
 
       const read = async (): Promise<string[]> => {
         if (ranged) {
@@ -1258,8 +1281,6 @@ export class RedisAdapter
       }
 
       let entries = values.map(parseEntry);
-      const wanted = (list: StoredEntry[]) =>
-        list.filter((entry) => entryTypeWanted(entry.type, options.types));
       if (limit && !ranged && wanted(entries).length < limit && keys.length >= limit) {
         entries = await this.newestWanted(client, setKey, limit, wanted, keys, entries);
       } else if (limit && !ranged && entries.length === limit) {
@@ -1317,6 +1338,48 @@ export class RedisAdapter
       this.reportExpiredEntries(expired);
     }
     return found.length > 0 ? this.withEarlierTies(client, setKey, read, found) : [];
+  }
+
+  /**
+   * The newest `limit` entries `wanted` keeps among those created before `before`, read backwards
+   * from it a page of members at a time, so reading a long thread one page after another costs a
+   * page each time rather than everything before the page. Entries that share the time of the
+   * oldest one read come along, so the caller orders ties the same way as a full read would.
+   */
+  private async newestBefore(
+    client: RedisClient,
+    setKey: string,
+    before: Date,
+    limit: number,
+    wanted: (list: StoredEntry[]) => StoredEntry[]
+  ): Promise<StoredEntry[]> {
+    const max = `(${before.getTime()}`;
+    const page = Math.max(limit, NEWEST_PAGE);
+    const keys: string[] = [];
+    const entries: StoredEntry[] = [];
+    const expired: string[] = [];
+    let offset = 0;
+    while (wanted(entries).length < limit) {
+      const chunk = (await client.eval(NEWEST_BEFORE, 1, setKey, max, offset, page)) as string[];
+      if (chunk.length === 0) break;
+      const values = await client.mget(...chunk);
+      chunk.forEach((key, index) => {
+        const value = values[index];
+        if (value === null || value === undefined) {
+          expired.push(key);
+          return;
+        }
+        keys.push(key);
+        entries.push(parseEntry(value));
+      });
+      offset += chunk.length;
+      if (chunk.length < page) break;
+    }
+    if (expired.length > 0) {
+      await client.zrem(setKey, ...expired);
+      this.reportExpiredEntries(expired);
+    }
+    return entries.length === 0 ? entries : this.withEarlierTies(client, setKey, keys, entries);
   }
 
   /**

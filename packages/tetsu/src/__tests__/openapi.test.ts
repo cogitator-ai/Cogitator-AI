@@ -1,11 +1,21 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { createApp, group } from '@tetsujs/core';
 import { serve } from '@tetsujs/core/testing';
 import { openapi, secured } from '@tetsujs/openapi';
 import { assertDescribed } from '@tetsujs/openapi/testing';
+import { Agent } from '@cogitator-ai/core';
+import { Swarm, SwarmTimeoutError } from '@cogitator-ai/swarms';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import { callerHook, cogitatorController } from '../index.js';
-import { chatAgent, fakeCogitator, fakeMemory, json, pausedResult, runResult } from './helpers.js';
+import {
+  chatAgent,
+  fakeCogitator,
+  fakeMemory,
+  json,
+  pagedMemory,
+  pausedResult,
+  runResult,
+} from './helpers.js';
 
 const info = { title: 'Cogitator', version: '1.0.0' };
 
@@ -258,5 +268,103 @@ describe('OpenAPI document of approvals', () => {
       expect(res.status).toBe(status);
       await assertDescribed(document, operation, res);
     }
+  });
+});
+
+describe('OpenAPI document of the server contract', () => {
+  const { cogitator } = fakeCogitator(undefined, pagedMemory(3));
+  const app = createApp({
+    routes: group('/api', {
+      children: [
+        cogitatorController({
+          cogitator,
+          agents: { chat: chatAgent() },
+          swarms: {
+            team: {
+              name: 'team',
+              strategy: 'round-robin',
+              agents: [new Agent({ name: 'alpha', model: 'ollama/qwen3:0.6b', instructions: '' })],
+            },
+          },
+          auth: secured(
+            callerHook((ctx) => {
+              const user = ctx.req.headers.get('x-user');
+              return user ? { userId: user } : {};
+            }),
+            {
+              name: 'bearerAuth',
+              scheme: { type: 'http', scheme: 'bearer' },
+              error: 'UNAUTHORIZED',
+            }
+          ),
+          anonymous: 'deny',
+          limits: { swarmTimeout: 1000, workflowMaxIterations: 10, workflowMaxConcurrency: 2 },
+        }),
+      ],
+    }),
+  });
+  const { document, warnings } = openapi(app, { info });
+  const request = serve(app);
+  const asAda = (init: RequestInit = {}): RequestInit => ({
+    ...init,
+    headers: { ...(init.headers as Record<string, string>), 'x-user': 'ada' },
+  });
+
+  function bodyProperties(path: string): Record<string, Record<string, unknown>> {
+    const body = document.paths?.[path]?.post?.requestBody;
+    const schema = (body as { content: Record<string, { schema: unknown }> }).content[
+      'application/json'
+    ].schema as { properties: Record<string, Record<string, unknown>> };
+    return schema.properties;
+  }
+
+  test('describes every route without warnings', () => {
+    expect(warnings).toEqual([]);
+  });
+
+  test('shows the limits as defaults the server holds a request to, not as maximums', () => {
+    expect(bodyProperties('/api/swarms/{name}/run').timeout).toMatchObject({
+      default: 1000,
+      maximum: 2_147_483_647,
+      description: expect.stringContaining("Held to 1000 ms, the server's limit"),
+    });
+    const options = bodyProperties('/api/workflows/{name}/run').options as {
+      properties: Record<string, Record<string, unknown>>;
+    };
+    expect(options.properties.maxIterations).toMatchObject({
+      default: 10,
+      description: expect.stringContaining("Held to 10, the server's limit"),
+    });
+    expect(options.properties.maxConcurrency).toMatchObject({ default: 2 });
+    expect(options.properties.maxIterations?.maximum).not.toBe(10);
+  });
+
+  test('documents the thread page query and the cursor of the answer', async () => {
+    const parameters = document.paths?.['/api/threads/{id}']?.get?.parameters ?? [];
+    expect(
+      parameters.filter((parameter) => parameter.in === 'query').map((parameter) => parameter.name)
+    ).toEqual(['limit', 'cursor']);
+
+    const res = await request('/api/threads/thread-1?limit=1', asAda());
+    expect(res.status).toBe(200);
+    expect(((await res.clone().json()) as { nextCursor?: string }).nextCursor).toBeString();
+    await assertDescribed(document, 'GET /api/threads/thread-1', res);
+  });
+
+  test('describes a swarm that ran out of time and a refused anonymous caller', async () => {
+    const swarmRun = spyOn(Swarm.prototype, 'run').mockRejectedValue(
+      new SwarmTimeoutError('team', 1000)
+    );
+    try {
+      const timedOut = await request('/api/swarms/team/run', asAda(json({ input: 'go' })));
+      expect(timedOut.status).toBe(504);
+      await assertDescribed(document, 'POST /api/swarms/team/run', timedOut);
+    } finally {
+      swarmRun.mockRestore();
+    }
+
+    const anonymous = await request('/api/agents');
+    expect(anonymous.status).toBe(401);
+    await assertDescribed(document, 'GET /api/agents', anonymous);
   });
 });

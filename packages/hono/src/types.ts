@@ -3,10 +3,13 @@ import type { UpgradeWebSocket } from 'hono/ws';
 import type { Cogitator, Agent } from '@cogitator-ai/core';
 import type {
   AgentRunResponse,
+  AnonymousPolicy,
+  AuthorizeThread,
   ContextPolicy,
   PendingApproval,
   ReadinessCheckStatus,
   ReadinessResponse,
+  RunLimits,
   ThreadMessageRole,
   WorkflowRunRequestBody,
 } from '@cogitator-ai/server-shared';
@@ -45,6 +48,9 @@ export type {
   PendingApproval,
   ReadinessResponse,
   ReadinessCheckStatus,
+  RunLimits,
+  AnonymousPolicy,
+  AuthorizeThread,
 };
 
 export interface AuthContext {
@@ -57,6 +63,9 @@ export interface AuthContext {
 export type AuthFunction = (
   c: HonoContext<HonoEnv>
 ) => Promise<AuthContext | undefined> | AuthContext | undefined;
+
+/** Builds the `deps` an agent run of a request passes to its tools (`RunOptions.deps`) */
+export type DepsFunction = (c: HonoContext<HonoEnv>) => unknown | Promise<unknown>;
 
 export interface WebSocketConfig {
   path?: string;
@@ -96,6 +105,34 @@ export interface CogitatorAppOptions {
    * `assistant`. A `system` message is read by the model as operator instructions.
    */
   threadMessageRoles?: readonly ThreadMessageRole[];
+  /**
+   * Caps on what a request may ask a run for. A swarm run times out after at most
+   * `swarmTimeout` ms and a workflow run takes at most `workflowMaxIterations` iterations and
+   * `workflowMaxConcurrency` nodes at once, over HTTP, SSE and WebSocket alike. A request that
+   * asks for more is held to the cap, one that asks for nothing gets it. Each limit must be a
+   * positive integer, or creating the app throws.
+   */
+  limits?: RunLimits;
+  /**
+   * Whether a caller without a `userId` may use the API: `'allow'` (the default) lets them
+   * in, `'deny'` answers `401 UNAUTHORIZED`. `/health`, `/ready`, `/openapi.json` and `/docs`
+   * stay open either way.
+   */
+  anonymous?: AnonymousPolicy;
+  /**
+   * Decides whether a caller may touch a thread, on top of the ownership check of core:
+   * called with what `auth` returned and the thread a request names, on agent runs, streams
+   * and resumes, swarm runs, the thread routes and WebSocket runs. `false` answers
+   * `403 THREAD_FORBIDDEN` and starts no run.
+   */
+  authorizeThread?: AuthorizeThread<AuthContext>;
+  /**
+   * Builds the `deps` of the agent runs and resumes of a request, which tools get as
+   * `context.deps` and the model never sees: a database handle, a tenant, a client. Called for
+   * each run, over HTTP and WebSocket (with the upgrade request). Deps never come from the
+   * request body.
+   */
+  deps?: DepsFunction;
 }
 
 export interface CogitatorContext {
@@ -109,6 +146,12 @@ export interface CogitatorContext {
   acceptContext?: ContextPolicy;
   /** The resolved `threadMessageRoles` option. Default: `user` and `assistant` */
   threadMessageRoles?: readonly ThreadMessageRole[];
+  /** The checked `limits` option. Default: none */
+  limits?: RunLimits;
+  /** The `authorizeThread` option. Default: every caller may touch the threads core lets them */
+  authorizeThread?: AuthorizeThread<AuthContext>;
+  /** The `deps` option. Default: runs get no deps */
+  deps?: DepsFunction;
 }
 
 export type HonoEnv = {
@@ -148,6 +191,8 @@ export interface ThreadResponse {
   metadata?: Record<string, unknown>;
   createdAt: number;
   updatedAt: number;
+  /** Pass as `cursor` to read the page before this one, absent at the thread's start */
+  nextCursor?: string;
 }
 
 export interface AddMessageRequest {
@@ -265,6 +310,8 @@ export interface WebSocketResumePayload extends AgentResumeRequest {
 export interface WebSocketClientState {
   id: string;
   auth?: AuthContext;
+  /** Builds the `deps` of each agent run on the connection, from its upgrade request */
+  deps?: () => unknown | Promise<unknown>;
   abortController?: AbortController;
 }
 

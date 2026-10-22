@@ -1,10 +1,11 @@
-import { CogitatorError, ERROR_STATUS_CODES, ErrorCode } from '@cogitator-ai/types';
-import type { ErrorResponse } from '../types.js';
-
-export interface ResolvedError {
-  status: number;
-  body: ErrorResponse;
-}
+import type { Context } from 'koa';
+import {
+  INTERNAL_ERROR,
+  describeHttpError,
+  errorEnvelope,
+  errorHeaders,
+  type HttpErrorDescription,
+} from '@cogitator-ai/server-shared';
 
 export function isModuleNotFoundError(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
@@ -12,17 +13,37 @@ export function isModuleNotFoundError(error: unknown): boolean {
   return code === 'MODULE_NOT_FOUND' || code === 'ERR_MODULE_NOT_FOUND';
 }
 
-export function resolveError(error: unknown, label: string): ResolvedError {
-  if (CogitatorError.isCogitatorError(error)) {
-    return {
-      status: error.statusCode ?? ERROR_STATUS_CODES[error.code] ?? 500,
-      body: { error: { message: error.message, code: error.code } },
-    };
-  }
-
+/**
+ * How the server answers `error`: {@link describeHttpError}, or {@link INTERNAL_ERROR} for an
+ * error the client is not told about, which is logged under `label`
+ */
+export function describeError(error: unknown, label: string): HttpErrorDescription {
+  const described = describeHttpError(error);
+  if (described) return described;
   console.error(`[CogitatorKoa] ${label}:`, error);
-  return {
-    status: 500,
-    body: { error: { message: 'Internal server error', code: ErrorCode.INTERNAL_ERROR } },
-  };
+  return INTERNAL_ERROR;
+}
+
+/** Answers an error with the error envelope and its `Retry-After` */
+export function sendError(ctx: Context, error: HttpErrorDescription): void {
+  ctx.status = error.status;
+  ctx.set(errorHeaders(error));
+  ctx.body = errorEnvelope(error);
+}
+
+/** Answers `error` as {@link describeError} describes it */
+export function respondWithError(ctx: Context, error: unknown, label: string): void {
+  sendError(ctx, describeError(error, label));
+}
+
+export function invalidInput(ctx: Context, message: string): void {
+  sendError(ctx, { status: 400, code: 'INVALID_INPUT', message });
+}
+
+export function notFound(ctx: Context, message: string): void {
+  sendError(ctx, { status: 404, code: 'NOT_FOUND', message });
+}
+
+export function notInstalled(ctx: Context, label: 'Swarms' | 'Workflows'): void {
+  sendError(ctx, { status: 501, code: 'UNIMPLEMENTED', message: `${label} package not installed` });
 }

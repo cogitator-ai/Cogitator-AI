@@ -1,18 +1,18 @@
 import { errorBody, hook, HttpError, httpError } from '@tetsujs/core';
 import type { ErrorBody } from '@tetsujs/core';
-import { CogitatorError, ERROR_STATUS_CODES } from '@cogitator-ai/types';
+import { describeHttpError, errorHeaders, INTERNAL_ERROR } from '@cogitator-ai/server-shared';
+import type { HttpErrorDescription } from '@cogitator-ai/server-shared';
+import type { CogitatorError } from '@cogitator-ai/types';
 
 /** The status a request is answered with when its client left before the answer was ready. */
 export const CLIENT_CLOSED_REQUEST = 499;
 
-function isErrorStatus(status: number): boolean {
-  return Number.isInteger(status) && status >= 400 && status <= 599;
-}
-
-/** The HTTP status a `CogitatorError` maps to: its own, the one of its code, or `500`. */
-export function cogitatorErrorStatus(error: CogitatorError): number {
-  const status = error.statusCode ?? ERROR_STATUS_CODES[error.code] ?? 500;
-  return isErrorStatus(status) ? status : 500;
+/** An error the shared taxonomy describes, in the Tetsu envelope `{ status, message, error }` */
+function describedResponse(described: HttpErrorDescription): Response {
+  return Response.json(errorBody(described.status, described.code, described.message), {
+    status: described.status,
+    headers: errorHeaders(described),
+  });
 }
 
 /**
@@ -20,24 +20,26 @@ export function cogitatorErrorStatus(error: CogitatorError): number {
  * with `Retry-After` when the error says when to retry.
  */
 export function cogitatorErrorResponse(error: CogitatorError): Response {
-  const status = cogitatorErrorStatus(error);
-  const headers = new Headers();
-  if (error.retryAfter !== undefined && error.retryAfter > 0) {
-    headers.set('retry-after', String(Math.ceil(error.retryAfter / 1000)));
-  }
-  return Response.json(errorBody(status, error.code, error.message), { status, headers });
+  return describedResponse(describeHttpError(error) ?? INTERNAL_ERROR);
 }
 
 /**
- * An `onError` hook that answers every `CogitatorError` with its status and code.
+ * An `onError` hook that answers every `CogitatorError` with its status, code and
+ * `Retry-After`, and a swarm that ran out of time with `504 RUN_TIMEOUT`.
  *
  * `cogitatorController()` mounts one on each of its routes. Mount another on the
  * application to map errors thrown by your own routes the same way.
  */
 export function cogitatorErrors() {
-  return hook.onError((ctx) =>
-    CogitatorError.isCogitatorError(ctx.error) ? cogitatorErrorResponse(ctx.error) : undefined
-  );
+  return hook.onError((ctx) => {
+    const described = describeHttpError(ctx.error);
+    return described ? describedResponse(described) : undefined;
+  });
+}
+
+/** The `HttpError` a refusal of the shared contract is thrown as, in the Tetsu envelope */
+export function refusalError(refusal: HttpErrorDescription): HttpError {
+  return httpError(refusal.status, refusal.code, refusal.message);
 }
 
 export interface DescribedError {
@@ -47,10 +49,15 @@ export interface DescribedError {
   unexpected: boolean;
 }
 
-/** What a stream or a socket tells its client about an error. */
+/**
+ * What a stream or a socket tells its client about an error. An error the client is not told
+ * about is `INTERNAL_ERROR`, the code the streams and sockets of every adapter send, while the
+ * JSON answer keeps Tetsu's own `500 INTERNAL_SERVER_ERROR`.
+ */
 export function describeError(error: unknown): DescribedError {
-  if (CogitatorError.isCogitatorError(error)) {
-    return { message: error.message, code: error.code, unexpected: false };
+  const described = describeHttpError(error);
+  if (described) {
+    return { message: described.message, code: described.code, unexpected: false };
   }
   if (error instanceof HttpError) {
     const fallback = errorBody(error.status);
@@ -63,7 +70,7 @@ export function describeError(error: unknown): DescribedError {
       unexpected: false,
     };
   }
-  return { message: 'Internal server error', code: 'INTERNAL_SERVER_ERROR', unexpected: true };
+  return { message: INTERNAL_ERROR.message, code: INTERNAL_ERROR.code, unexpected: true };
 }
 
 export function isModuleNotFoundError(error: unknown): boolean {

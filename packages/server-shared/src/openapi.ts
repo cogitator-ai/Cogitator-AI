@@ -224,7 +224,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
           name: 'limit',
           in: 'query',
           description:
-            'Answer the newest `limit` messages of what is left and a `nextCursor`; without it the whole thread',
+            'Answer the newest `limit` messages of what is left and a `nextCursor`, without it the whole thread',
           schema: { type: 'integer', minimum: 1, maximum: MAX_THREAD_PAGE_LIMIT },
         },
         {
@@ -650,7 +650,7 @@ function generateSchemas(limits: RunLimits | undefined): Record<string, unknown>
         updatedAt: { type: 'number' },
         nextCursor: {
           type: 'string',
-          description: 'Pass as `cursor` to read the page before this one; absent at the start',
+          description: 'Pass as `cursor` to read the page before this one, absent at the start',
         },
       },
     },
@@ -756,6 +756,7 @@ function generateSchemas(limits: RunLimits | undefined): Record<string, unknown>
           exclusiveMinimum: 0,
           maximum: MAX_RUN_TIMEOUT_MS,
           ...(limits?.swarmTimeout !== undefined && {
+            default: limits.swarmTimeout,
             description: `Held to ${limits.swarmTimeout} ms, the server's limit, which is also the default`,
           }),
         },

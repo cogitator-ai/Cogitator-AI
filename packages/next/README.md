@@ -131,7 +131,7 @@ export const POST = createChatHandler(cogitator, agent, {
 
 ### `createAgentHandler`
 
-Creates a batch (non-streaming) handler for long-running tasks. The default parser is the validator every Cogitator adapter shares: a non-blank string `input`, an optional object `context` with only the keys `acceptContext` allows (none by default, since the model reads `context` as data the application supplied), and an optional non-blank `threadId` (`400 { error, code: 'INVALID_INPUT' }` otherwise, `415` for a body that is not JSON). A `parseInput` of your own decides for itself. The run is aborted if the client disconnects.
+Creates a batch (non-streaming) handler for long-running tasks. The default parser is the validator every Cogitator adapter shares: a non-blank string `input`, an optional object `context` with only the keys `acceptContext` allows (none by default, since the model reads `context` as data the application supplied), and an optional non-blank `threadId` (`400 { error: { message, code: 'INVALID_INPUT' } }` otherwise, `415` for a body that is not JSON). A `parseInput` of your own decides for itself. The run is aborted if the client disconnects.
 
 ```typescript
 import { createAgentHandler } from '@cogitator-ai/next';
@@ -165,7 +165,7 @@ Response format:
 }
 ```
 
-The answer is the same object every Cogitator adapter returns (`toAgentRunResponse()` of `@cogitator-ai/server-shared`): `reasoning`, `structured`, `structuredError`, `truncated`, `blocked` and `iterationLimitReached` appear when they apply. It never carries the system prompt, the history or trace spans, whose attributes hold raw tool arguments and errors: `traceId` links the answer to your traces, and `afterRun` receives the whole `RunResult`. A run waiting for [approvals](#approvals) answers `"status": "paused"` with its `pendingApprovals`. A run that fails with a `CogitatorError` answers `{ "error": message, "code": code }` with that error's status (for example `429 LLM_RATE_LIMITED`). Any other error is logged on the server and answered as `500 { "error": "Internal server error", "code": "INTERNAL_ERROR" }`, so its text (connection strings, file paths) never reaches the client. The same applies when `afterRun` throws.
+The answer is the same object every Cogitator adapter returns (`toAgentRunResponse()` of `@cogitator-ai/server-shared`): `reasoning`, `structured`, `structuredError`, `truncated`, `blocked` and `iterationLimitReached` appear when they apply. It never carries the system prompt, the history or trace spans, whose attributes hold raw tool arguments and errors: `traceId` links the answer to your traces, and `afterRun` receives the whole `RunResult`. A run waiting for [approvals](#approvals) answers `"status": "paused"` with its `pendingApprovals`. A run that fails with a `CogitatorError` answers `{ "error": { "message": message, "code": code } }` with that error's status (for example `429 LLM_RATE_LIMITED`) and a `Retry-After` header when the provider said when to try again. Any other error is logged on the server and answered as `500 { "error": { "message": "Internal server error", "code": "INTERNAL_ERROR" } }`, so its text (connection strings, file paths) never reaches the client. Every Cogitator adapter answers errors in this envelope. The same applies when `afterRun` throws.
 
 ### Multiple users
 
@@ -182,6 +182,21 @@ export const POST = createChatHandler(cogitator, agent, {
 ```
 
 A `threadId` that belongs to another user is refused before the model is called: `createAgentHandler` answers `403` with `code: "THREAD_ACCESS_DENIED"`, and `createChatHandler` ends the stream with an `error` event carrying that code. Without a `userId`, a caller can use only threads that have no owner.
+
+Every handler also takes the options of the server contract the other Cogitator adapters share:
+
+```typescript
+export const POST = createChatHandler(cogitator, agent, {
+  beforeRun: async (req) => ({ userId: (await getSession(req))?.id }),
+  anonymous: 'deny',
+  authorizeThread: (req, threadId) => threadId.startsWith(`${tenantOf(req)}:`),
+  deps: (req) => ({ db: databaseFor(tenantOf(req)) }),
+});
+```
+
+- `anonymous: 'deny'` answers `401 UNAUTHORIZED` when `beforeRun` returned no `userId` (the default `'allow'` lets such callers in).
+- `authorizeThread(req, threadId)` is asked about the thread a request names before the run starts, and `false` answers `403 THREAD_FORBIDDEN`.
+- `deps(req)` gives the run its `deps` (`context.deps` of its tools), never read from the body. A `deps` that `beforeRun` returns wins over it.
 
 ### Approvals
 
@@ -501,7 +516,7 @@ if (error) {
 
 HTTP failures are thrown as `HttpError` (exported from `@cogitator-ai/next/client`) with a `status` property and a message like `Request failed: 400 - No user message provided`. Stream-level `error` events call `onError` with the event's `message` and skip `onFinish`.
 
-On the server, a `beforeRun` that throws answers with its message and the error's `status` property (default `401`); a `parseInput` that throws answers `400`. Run failures follow the rule above: a `CogitatorError` keeps its message and `code`, anything else becomes `Internal server error` with `code: "INTERNAL_ERROR"`.
+On the server, a `beforeRun` that throws an error with a client error `status` (`400` to `499`) answers with that status, its message and its `code` (default `UNAUTHORIZED` for a `401`), and a `CogitatorError` answers as a failed run. Any other error is logged and answered `401 Unauthorized` without its text, so a session store that is down never shows its address. A `parseInput` that throws answers `400 INVALID_INPUT`. Run failures follow the rule above: a `CogitatorError` keeps its message and `code`, anything else becomes `Internal server error` with `code: "INTERNAL_ERROR"`.
 
 With retry enabled, transient errors (network failures, 408/429/502/503/504) are automatically retried; the backoff wait is cancelled by `stop()`:
 

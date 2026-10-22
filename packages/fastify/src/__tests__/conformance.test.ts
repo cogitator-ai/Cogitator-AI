@@ -23,6 +23,17 @@ afterEach(async () => {
   app = undefined;
 });
 
+function pluginOptions(testCase: ConformanceCase): Partial<Options> {
+  const { forbiddenThreads, deps, ...options } = testCase.server ?? {};
+  return {
+    ...options,
+    ...(forbiddenThreads && {
+      authorizeThread: (_auth, threadId) => !forbiddenThreads.includes(threadId),
+    }),
+    ...(deps && { deps: () => deps }),
+  };
+}
+
 async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
   app = Fastify({ logger: false });
   await app.register(cogitatorPlugin, {
@@ -36,25 +47,30 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
     } as unknown as Options['workflows'],
     prefix: '/api',
     sseHeartbeatMs: 0,
-    ...testCase.server,
+    ...pluginOptions(testCase),
   });
 
   const res = await app.inject({
     method: conformanceMethod(testCase),
     url: `/api${CONFORMANCE_ROUTES[testCase.route]}`,
-    headers: { 'content-type': conformanceContentType(testCase) },
-    payload: testCase.body,
+    ...(testCase.body !== undefined && {
+      headers: { 'content-type': conformanceContentType(testCase) },
+      payload: testCase.body,
+    }),
   });
   const ok = res.statusCode < 400;
   const code = ok ? undefined : (res.json() as { error: { code: string } }).error.code;
-  return { status: res.statusCode, code, body: res.body };
+  const headers = Object.fromEntries(
+    Object.entries(res.headers).map(([name, value]) => [name.toLowerCase(), String(value)])
+  );
+  return { status: res.statusCode, code, body: res.body, headers };
 }
 
 describe('server protocol conformance', () => {
   it.each(CONFORMANCE_CASES.map((testCase) => [testCase.name, testCase] as const))(
     '%s',
     async (_name, testCase) => {
-      const runtime = new ConformanceRuntime();
+      const runtime = new ConformanceRuntime(testCase);
       const response = await answer(testCase, runtime);
       expect(checkConformance(testCase, response, runtime)).toEqual([]);
     }

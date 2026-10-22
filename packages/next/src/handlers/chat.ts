@@ -4,7 +4,11 @@ import { isNonBlankString, parseRunRequest, type ContextPolicy } from '@cogitato
 import { generateId } from '../streaming/encoder.js';
 import {
   exceedsDeclaredSize,
+  depsOf,
   hookErrorResponse,
+  refuseRequest,
+  threadOf,
+  runErrorResponse,
   isPlainObject,
   jsonError,
   readJsonBody,
@@ -86,7 +90,7 @@ export function createChatHandler(
 ) {
   return async (req: Request): Promise<Response> => {
     if (exceedsDeclaredSize(req)) {
-      return jsonError('Payload too large', 413);
+      return jsonError('Payload too large', 413, 'PAYLOAD_TOO_LARGE');
     }
 
     let input: ChatInput;
@@ -94,7 +98,7 @@ export function createChatHandler(
       try {
         input = await options.parseInput(req);
       } catch (err) {
-        return jsonError(err instanceof Error ? err.message : 'Parse error', 400);
+        return jsonError(err instanceof Error ? err.message : 'Parse error', 400, 'INVALID_INPUT');
       }
     } else {
       const body = await readJsonBody(req);
@@ -106,7 +110,7 @@ export function createChatHandler(
 
     const userMessage = getLastUserMessage(input.messages);
     if (userMessage === undefined) {
-      return jsonError('No user message provided', 400);
+      return jsonError('No user message provided', 400, 'INVALID_INPUT');
     }
 
     let runContext: Record<string, unknown> = {};
@@ -117,6 +121,14 @@ export function createChatHandler(
       } catch (err) {
         return hookErrorResponse(err, 'Unauthorized');
       }
+    }
+
+    try {
+      const refused = await refuseRequest(req, threadOf(runContext, input), runContext, options);
+      if (refused) return refused;
+      runContext = { ...(await depsOf(req, options)), ...runContext };
+    } catch (err) {
+      return runErrorResponse(err);
     }
 
     return streamAgentRun({

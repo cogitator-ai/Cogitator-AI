@@ -4,11 +4,22 @@ import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
 import { countMessageTokens } from '@cogitator-ai/memory';
 import type { Message } from '@cogitator-ai/types';
 import type { HonoEnv, ThreadResponse } from '../types.js';
-import { bodyRefused, errorResponse, invalidInput, readJsonBody } from '../utils/request.js';
-import { parseAddMessageRequest } from '@cogitator-ai/server-shared';
+import {
+  bodyRefused,
+  errorResponse,
+  invalidInput,
+  readJsonBody,
+  refuseThread,
+  sendError,
+} from '../utils/request.js';
+import {
+  parseAddMessageRequest,
+  parseThreadPageQuery,
+  readThreadPage,
+} from '@cogitator-ai/server-shared';
 
 function memoryUnavailable(c: Context<HonoEnv>): Response {
-  return c.json({ error: { message: 'Memory not configured', code: 'UNAVAILABLE' } }, 503);
+  return sendError(c, { status: 503, code: 'UNAVAILABLE', message: 'Memory not configured' });
 }
 
 export function createThreadRoutes(): Hono<HonoEnv> {
@@ -19,23 +30,16 @@ export function createThreadRoutes(): Hono<HonoEnv> {
     if (!memory) return memoryUnavailable(c);
 
     const id = c.req.param('id');
+    const page = parseThreadPageQuery(c.req.queries());
+    if (!page.ok) return invalidInput(c, page.message);
+    const refusal = await refuseThread(c, id);
+    if (refusal) return sendError(c, refusal);
+
     const userId = c.get('cogitatorAuth')?.userId;
 
     try {
-      await assertThreadAccess(memory, id, userId);
-      const result = await memory.getEntries({ threadId: id });
-      if (!result.success) {
-        return errorResponse(c, new Error(result.error), 'Thread get error');
-      }
-
-      const entries = result.data;
-      const now = Date.now();
-      const response: ThreadResponse = {
-        id,
-        messages: entries.map((entry) => entry.message),
-        createdAt: entries.length > 0 ? entries[0].createdAt.getTime() : now,
-        updatedAt: entries.length > 0 ? entries[entries.length - 1].createdAt.getTime() : now,
-      };
+      const thread = await assertThreadAccess(memory, id, userId);
+      const response: ThreadResponse = await readThreadPage(memory, id, page.value, thread);
       return c.json(response);
     } catch (error) {
       return errorResponse(c, error, 'Thread get error');
@@ -54,6 +58,8 @@ export function createThreadRoutes(): Hono<HonoEnv> {
       roles: c.get('cogitator').threadMessageRoles,
     });
     if (!parsed.ok) return invalidInput(c, parsed.message);
+    const refusal = await refuseThread(c, id);
+    if (refusal) return sendError(c, refusal);
 
     const message: Message = { role: parsed.value.role, content: parsed.value.content };
     const userId = c.get('cogitatorAuth')?.userId;
@@ -82,6 +88,9 @@ export function createThreadRoutes(): Hono<HonoEnv> {
     if (!memory) return memoryUnavailable(c);
 
     const id = c.req.param('id');
+    const refusal = await refuseThread(c, id);
+    if (refusal) return sendError(c, refusal);
+
     const userId = c.get('cogitatorAuth')?.userId;
 
     try {

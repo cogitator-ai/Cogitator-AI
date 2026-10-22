@@ -142,10 +142,13 @@ export function cogitatorErrorStatus(error: CogitatorError): number {
   return isErrorStatus(status) ? status : 500;
 }
 
-/** The whole seconds of a `retryAfter` in ms, as `Retry-After` carries them */
+/** The longest wait `Retry-After` asks for, a day, whatever the provider said */
+const MAX_RETRY_AFTER_SECONDS = 86_400;
+
+/** The whole seconds of a `retryAfter` in ms, as `Retry-After` carries them, at most a day */
 export function retryAfterSeconds(retryAfterMs: number | undefined): number | undefined {
   return retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0
-    ? Math.ceil(retryAfterMs / 1000)
+    ? Math.min(Math.ceil(retryAfterMs / 1000), MAX_RETRY_AFTER_SECONDS)
     : undefined;
 }
 

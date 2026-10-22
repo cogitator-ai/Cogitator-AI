@@ -14,6 +14,7 @@ export type {
   AgentResumeRequest,
   PendingApproval,
   ThreadResponse,
+  ThreadPageQuery,
   AddMessageRequest,
   ToolListResponse,
   WorkflowListResponse,
@@ -40,6 +41,10 @@ export {
   AddMessageRequestSchema,
   WorkflowRunRequestSchema,
   SwarmRunRequestSchema,
+  ThreadPageQuerySchema,
+  ThreadResponseSchema,
+  workflowRunRequestSchema,
+  swarmRunRequestSchema,
 } from './types.js';
 
 export { FastifyStreamWriter } from './streaming/index.js';

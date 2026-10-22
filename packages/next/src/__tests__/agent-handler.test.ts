@@ -89,7 +89,7 @@ describe('createAgentHandler', () => {
     expect(res.status).toBe(400);
 
     const data = await res.json();
-    expect(data).toEqual({ error: 'Invalid JSON body', code: 'INVALID_INPUT' });
+    expect(data).toEqual({ error: { message: 'Invalid JSON body', code: 'INVALID_INPUT' } });
   });
 
   it.each(['text/plain', 'application/x-www-form-urlencoded'])(
@@ -106,7 +106,7 @@ describe('createAgentHandler', () => {
       );
 
       expect(res.status).toBe(415);
-      expect((await res.json()).code).toBe('UNSUPPORTED_MEDIA_TYPE');
+      expect((await res.json()).error.code).toBe('UNSUPPORTED_MEDIA_TYPE');
       expect(cog.run).not.toHaveBeenCalled();
     }
   );
@@ -136,7 +136,7 @@ describe('createAgentHandler', () => {
     expect(res.status).toBe(400);
 
     const data = await res.json();
-    expect(data.error).toBe('bad input');
+    expect(data.error.message).toBe('bad input');
   });
 
   it('calls beforeRun and merges context', async () => {
@@ -181,7 +181,9 @@ describe('createAgentHandler', () => {
     const res = await handler(jsonRequest({ input: 'hi' }));
 
     expect(res.status).toBe(500);
-    expect(await res.json()).toEqual({ error: 'Internal server error', code: 'INTERNAL_ERROR' });
+    expect(await res.json()).toEqual({
+      error: { message: 'Internal server error', code: 'INTERNAL_ERROR' },
+    });
     expect(logged).toHaveBeenCalled();
     logged.mockRestore();
   });
@@ -192,7 +194,7 @@ describe('createAgentHandler', () => {
 
     const res = await handler(jsonRequest({ input: 123 }));
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe('Field "input" must be a string');
+    expect((await res.json()).error.message).toBe('Field "input" must be a string');
     expect(cog.run).not.toHaveBeenCalled();
   });
 });

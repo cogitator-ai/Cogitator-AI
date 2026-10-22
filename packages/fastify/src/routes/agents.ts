@@ -10,6 +10,8 @@ import {
 import { FastifyStreamWriter } from '../streaming/index.js';
 import {
   onClientDisconnect,
+  refuseThread,
+  requestDeps,
   resolveError,
   sendError,
   sendRouteError,
@@ -57,6 +59,9 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
         return sendError(reply, 404, `Agent '${name}' not found`, 'NOT_FOUND');
       }
 
+      if (await refuseThread(request, reply, request.body.threadId)) return reply;
+      const deps = await requestDeps(request);
+
       const abortController = new AbortController();
       onClientDisconnect(reply, () => abortController.abort());
 
@@ -67,6 +72,7 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
           threadId: request.body.threadId,
           userId: request.cogitatorAuth?.userId,
           signal: abortController.signal,
+          ...deps,
         });
 
         return toAgentRunResponse(result);
@@ -87,6 +93,9 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
         return sendError(reply, 404, `Agent '${name}' not found`, 'NOT_FOUND');
       }
 
+      if (await refuseThread(request, reply, request.body.threadId)) return reply;
+      const deps = await requestDeps(request);
+
       const abortController = new AbortController();
       onClientDisconnect(reply, () => abortController.abort());
 
@@ -96,6 +105,7 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
           decisions: request.body.decisions,
           defaultDecision: request.body.defaultDecision,
           signal: abortController.signal,
+          ...deps,
         });
 
         return toAgentRunResponse(result);
@@ -115,6 +125,9 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
       if (!agent) {
         return sendError(reply, 404, `Agent '${name}' not found`, 'NOT_FOUND');
       }
+
+      if (await refuseThread(request, reply, request.body.threadId)) return reply;
+      const deps = await requestDeps(request);
 
       const writer = new FastifyStreamWriter(reply, {
         heartbeatMs: fastify.cogitator.sseHeartbeatMs,
@@ -139,6 +152,7 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
           signal: abortController.signal,
           stream: true,
           ...session.callbacks,
+          ...deps,
         });
         session.complete(result);
       } catch (error) {

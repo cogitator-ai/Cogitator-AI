@@ -8,8 +8,14 @@ import {
   toAgentRunResponse,
 } from '@cogitator-ai/server-shared';
 import { getOwn } from '../utils/lookup.js';
-import { resolveError } from '../utils/errors.js';
-import { getRequestBody, onClientDisconnect } from '../utils/request.js';
+import {
+  describeError,
+  invalidInput,
+  notFound,
+  respondWithError,
+  sendError,
+} from '../utils/errors.js';
+import { getRequestBody, onClientDisconnect, refuseThread, runDeps } from '../utils/request.js';
 
 export function createAgentRoutes(): Router<CogitatorState> {
   const router = new Router<CogitatorState>();
@@ -32,8 +38,7 @@ export function createAgentRoutes(): Router<CogitatorState> {
     const agent = getOwn(agents, name);
 
     if (!agent) {
-      ctx.status = 404;
-      ctx.body = { error: { message: `Agent '${name}' not found`, code: 'NOT_FOUND' } };
+      notFound(ctx, `Agent '${name}' not found`);
       return;
     }
 
@@ -41,11 +46,16 @@ export function createAgentRoutes(): Router<CogitatorState> {
       acceptContext: ctx.state.cogitator.acceptContext,
     });
     if (!parsed.ok) {
-      ctx.status = 400;
-      ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };
+      invalidInput(ctx, parsed.message);
+      return;
+    }
+    const refusal = await refuseThread(ctx, parsed.value.threadId);
+    if (refusal) {
+      sendError(ctx, refusal);
       return;
     }
 
+    const deps = await runDeps(ctx);
     const abortController = new AbortController();
     onClientDisconnect(ctx, () => abortController.abort());
 
@@ -53,15 +63,14 @@ export function createAgentRoutes(): Router<CogitatorState> {
       const result = await runtime.run(agent, {
         ...parsed.value,
         userId: ctx.state.auth?.userId,
+        ...deps,
         signal: abortController.signal,
       });
 
       ctx.body = toAgentRunResponse(result);
     } catch (error) {
       if (abortController.signal.aborted) return;
-      const { status, body } = resolveError(error, 'Agent run error');
-      ctx.status = status;
-      ctx.body = body;
+      respondWithError(ctx, error, 'Agent run error');
     }
   });
 
@@ -71,25 +80,30 @@ export function createAgentRoutes(): Router<CogitatorState> {
     const agent = getOwn(agents, name);
 
     if (!agent) {
-      ctx.status = 404;
-      ctx.body = { error: { message: `Agent '${name}' not found`, code: 'NOT_FOUND' } };
+      notFound(ctx, `Agent '${name}' not found`);
       return;
     }
 
     const parsed = parseResumeRequest(getRequestBody(ctx));
     if (!parsed.ok) {
-      ctx.status = 400;
-      ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };
+      invalidInput(ctx, parsed.message);
       return;
     }
     const { threadId, decisions, defaultDecision } = parsed.value;
+    const refusal = await refuseThread(ctx, threadId);
+    if (refusal) {
+      sendError(ctx, refusal);
+      return;
+    }
 
+    const deps = await runDeps(ctx);
     const abortController = new AbortController();
     onClientDisconnect(ctx, () => abortController.abort());
 
     try {
       const result = await runtime.resume(agent, threadId, {
         userId: ctx.state.auth?.userId,
+        ...deps,
         decisions,
         defaultDecision,
         signal: abortController.signal,
@@ -98,9 +112,7 @@ export function createAgentRoutes(): Router<CogitatorState> {
       ctx.body = toAgentRunResponse(result);
     } catch (error) {
       if (abortController.signal.aborted) return;
-      const { status, body } = resolveError(error, 'Agent resume error');
-      ctx.status = status;
-      ctx.body = body;
+      respondWithError(ctx, error, 'Agent resume error');
     }
   });
 
@@ -110,8 +122,7 @@ export function createAgentRoutes(): Router<CogitatorState> {
     const agent = getOwn(agents, name);
 
     if (!agent) {
-      ctx.status = 404;
-      ctx.body = { error: { message: `Agent '${name}' not found`, code: 'NOT_FOUND' } };
+      notFound(ctx, `Agent '${name}' not found`);
       return;
     }
 
@@ -119,10 +130,15 @@ export function createAgentRoutes(): Router<CogitatorState> {
       acceptContext: ctx.state.cogitator.acceptContext,
     });
     if (!parsed.ok) {
-      ctx.status = 400;
-      ctx.body = { error: { message: parsed.message, code: 'INVALID_INPUT' } };
+      invalidInput(ctx, parsed.message);
       return;
     }
+    const refusal = await refuseThread(ctx, parsed.value.threadId);
+    if (refusal) {
+      sendError(ctx, refusal);
+      return;
+    }
+    const deps = await runDeps(ctx);
 
     setupSSEHeaders(ctx);
     const writer = new KoaStreamWriter(ctx, {
@@ -145,6 +161,7 @@ export function createAgentRoutes(): Router<CogitatorState> {
         ...parsed.value,
         threadId: session.threadId,
         userId: ctx.state.auth?.userId,
+        ...deps,
         stream: true,
         signal: abortController.signal,
         ...session.callbacks,
@@ -152,8 +169,8 @@ export function createAgentRoutes(): Router<CogitatorState> {
       session.complete(result);
     } catch (error) {
       if (!abortController.signal.aborted) {
-        const { body } = resolveError(error, 'Agent stream error');
-        session.fail(body.error.message, body.error.code);
+        const failure = describeError(error, 'Agent stream error');
+        session.fail(failure.message, failure.code);
       }
     } finally {
       writer.close();

@@ -1,17 +1,38 @@
-import { readJsonRequestBody } from '@cogitator-ai/server-shared';
-import { CogitatorError, ERROR_STATUS_CODES, ErrorCode } from '@cogitator-ai/types';
+import {
+  INTERNAL_ERROR,
+  admitCaller,
+  authorizeThreadAccess,
+  describeHttpError,
+  errorEnvelope,
+  errorHeaders,
+  readJsonRequestBody,
+  type HttpErrorDescription,
+} from '@cogitator-ai/server-shared';
+import type { ServerContractOptions } from '../types.js';
 
 export const MAX_BODY_SIZE = 1024 * 1024;
 
-export function jsonResponse(body: unknown, status = 200): Response {
+export function jsonResponse(
+  body: unknown,
+  status = 200,
+  headers: Record<string, string> = {}
+): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...headers },
   });
 }
 
-export function jsonError(message: string, status: number, code?: string): Response {
-  return jsonResponse(code === undefined ? { error: message } : { error: message, code }, status);
+/**
+ * Answers a refusal in the envelope every Cogitator adapter uses, `{ error: { message, code } }`,
+ * with `Retry-After` when the refusal says when to retry
+ */
+export function errorResponse(error: HttpErrorDescription): Response {
+  return jsonResponse(errorEnvelope(error), error.status, errorHeaders(error));
+}
+
+export function jsonError(message: string, status: number, code: string): Response {
+  return errorResponse({ status, code, message });
 }
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -53,44 +74,92 @@ function readErrorStatus(err: unknown): number | undefined {
   return typeof status === 'number' && status >= 400 && status < 600 ? status : undefined;
 }
 
-export function hookErrorResponse(err: unknown, fallbackMessage: string): Response {
-  return jsonError(
-    err instanceof Error ? err.message : fallbackMessage,
-    readErrorStatus(err) ?? 401
-  );
-}
-
-function isErrorStatus(status: number): boolean {
-  return Number.isInteger(status) && status >= 400 && status < 600;
-}
-
-function cogitatorErrorStatus(error: CogitatorError): number {
-  const status = error.statusCode ?? ERROR_STATUS_CODES[error.code] ?? 500;
-  return isErrorStatus(status) ? status : 500;
-}
-
-export interface RunErrorDescription {
-  message: string;
-  code: string;
-  status: number;
+function readErrorCode(err: unknown): string | undefined {
+  if (typeof err !== 'object' || err === null || !('code' in err)) return undefined;
+  return typeof err.code === 'string' && err.code ? err.code : undefined;
 }
 
 /**
- * What a client may see of a failed run: a `CogitatorError` with its message,
- * `code` and status (for example `403 THREAD_ACCESS_DENIED`); any other error
- * is logged and reported only as `500 Internal server error`, since its text
- * can carry internals such as connection strings.
+ * Answers a hook that threw. A `CogitatorError` answers as a failed run would, and an error that
+ * sets a client error `status` (`400` to `499`) on purpose answers with that status, its message
+ * and its `code`. Anything else, an error the hook did not mean to answer with (a session store
+ * that is down, say), is logged and answered `401 Unauthorized` without its text or code, which
+ * can carry internals such as addresses.
+ */
+export function hookErrorResponse(err: unknown, fallbackMessage: string): Response {
+  const described = describeHttpError(err);
+  if (described) return errorResponse(described);
+  const status = readErrorStatus(err);
+  if (status !== undefined && status < 500) {
+    return jsonError(
+      err instanceof Error && err.message ? err.message : fallbackMessage,
+      status,
+      readErrorCode(err) ?? (status === 401 ? 'UNAUTHORIZED' : 'REQUEST_REFUSED')
+    );
+  }
+  console.error('[cogitator] A request hook failed:', err);
+  return jsonError(fallbackMessage, 401, 'UNAUTHORIZED');
+}
+
+/** What a client may see of a failed run, its status, code and `Retry-After` */
+export type RunErrorDescription = HttpErrorDescription;
+
+/**
+ * What a client may see of a failed run: a `CogitatorError` with its message, `code`, status
+ * (for example `403 THREAD_ACCESS_DENIED`) and `Retry-After`; any other error is logged and
+ * reported only as `500 Internal server error`, since its text can carry internals such as
+ * connection strings.
  */
 export function describeRunError(err: unknown): RunErrorDescription {
-  if (CogitatorError.isCogitatorError(err)) {
-    return { message: err.message, code: err.code, status: cogitatorErrorStatus(err) };
-  }
+  const described = describeHttpError(err);
+  if (described) return described;
   console.error('[cogitator] Run failed:', err);
-  return { message: 'Internal server error', code: ErrorCode.INTERNAL_ERROR, status: 500 };
+  return INTERNAL_ERROR;
 }
 
 /** Answers a failed run as {@link describeRunError} describes it. */
 export function runErrorResponse(err: unknown): Response {
-  const { message, code, status } = describeRunError(err);
-  return jsonResponse({ error: message, code }, status);
+  return errorResponse(describeRunError(err));
+}
+
+/**
+ * The refusal of a request the server contract turns away, none when it may go on: a caller
+ * without a user id (`userId` of what `beforeRun` returned) under `anonymous: 'deny'`, or a
+ * thread `authorizeThread` keeps the caller from
+ */
+export async function refuseRequest(
+  req: Request,
+  threadId: string | undefined,
+  runContext: Record<string, unknown>,
+  options: ServerContractOptions | undefined
+): Promise<Response | undefined> {
+  const userId = typeof runContext.userId === 'string' ? runContext.userId : undefined;
+  const authorize = options?.authorizeThread;
+  const refusal =
+    admitCaller(userId, options?.anonymous) ??
+    (await authorizeThreadAccess(
+      authorize && ((_req: Request | undefined, id: string) => authorize(req, id)),
+      req,
+      threadId
+    ));
+  return refusal && errorResponse(refusal);
+}
+
+/**
+ * The thread a run goes to: the one `beforeRun` returned, which the run options take over the
+ * request's, else the one the request named
+ */
+export function threadOf(
+  runContext: Record<string, unknown>,
+  input: { threadId?: string }
+): string | undefined {
+  return typeof runContext.threadId === 'string' ? runContext.threadId : input.threadId;
+}
+
+/** The run options with the `deps` the server builds for the request, when it builds them */
+export async function depsOf(
+  req: Request,
+  options: ServerContractOptions | undefined
+): Promise<{ deps?: unknown }> {
+  return options?.deps ? { deps: await options.deps(req) } : {};
 }

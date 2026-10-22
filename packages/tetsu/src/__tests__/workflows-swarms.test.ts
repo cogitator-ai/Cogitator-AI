@@ -2,8 +2,8 @@ import { describe, expect, spyOn, test } from 'bun:test';
 import { createApp } from '@tetsujs/core';
 import { serve } from '@tetsujs/core/testing';
 import { Agent } from '@cogitator-ai/core';
-import { WorkflowBuilder } from '@cogitator-ai/workflows';
-import { Swarm } from '@cogitator-ai/swarms';
+import { WorkflowBuilder, WorkflowExecutor } from '@cogitator-ai/workflows';
+import { Swarm, SwarmTimeoutError } from '@cogitator-ai/swarms';
 import type { SwarmConfig, Workflow, WorkflowState } from '@cogitator-ai/types';
 import { cogitatorController } from '../index.js';
 import { fakeCogitator, json, readStream, runResult } from './helpers.js';
@@ -117,7 +117,7 @@ describe('workflows', () => {
     expect(events.some((event) => event.type === 'workflow' && event.event === 'node_error')).toBe(
       true
     );
-    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'INTERNAL_SERVER_ERROR' });
+    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'INTERNAL_ERROR' });
   });
 });
 
@@ -262,5 +262,147 @@ describe('swarms', () => {
     const res = await request('/swarms/ghost/run', json({ input: 'hello' }));
     expect(res.status).toBe(404);
     expect(((await res.json()) as { error: string }).error).toBe('SWARM_NOT_FOUND');
+  });
+});
+
+describe('limits', () => {
+  const { cogitator } = fakeCogitator((runAgent) =>
+    Promise.resolve(runResult({ output: `${runAgent.name} says hi` }))
+  );
+  const team: SwarmConfig = { name: 'team', strategy: 'round-robin', agents: [agent('alpha')] };
+
+  test('refuses limits that are not positive integers when the controller is built', () => {
+    expect(() => cogitatorController({ cogitator, limits: { swarmTimeout: 0 } })).toThrow(
+      /limits\.swarmTimeout/
+    );
+    expect(() =>
+      cogitatorController({ cogitator, limits: { workflowMaxConcurrency: 2.5 } })
+    ).toThrow(/limits\.workflowMaxConcurrency/);
+    expect(() => cogitatorController({ cogitator, limits: { swarmTimeout: 3e9 } })).toThrow(
+      /limits\.swarmTimeout/
+    );
+  });
+
+  test('holds swarm runs and streams to the timeout limit', async () => {
+    const swarmRun = spyOn(Swarm.prototype, 'run');
+    try {
+      const request = serve(
+        createApp({
+          routes: cogitatorController({
+            cogitator,
+            swarms: { team },
+            limits: { swarmTimeout: 1000 },
+          }),
+        })
+      );
+
+      await request('/swarms/team/run', json({ input: 'go', timeout: 60_000 }));
+      await request('/swarms/team/run', json({ input: 'go', timeout: 500 }));
+      await request('/swarms/team/run', json({ input: 'go' }));
+      await readStream(await request('/swarms/team/stream', json({ input: 'go', timeout: 5000 })));
+
+      expect(swarmRun.mock.calls.map(([options]) => options.timeout)).toEqual([
+        1000, 500, 1000, 1000,
+      ]);
+    } finally {
+      swarmRun.mockRestore();
+    }
+  });
+
+  test('holds workflow runs and streams to the iteration and concurrency limits', async () => {
+    const execute = spyOn(WorkflowExecutor.prototype, 'execute');
+    try {
+      const request = serve(
+        createApp({
+          routes: cogitatorController({
+            cogitator,
+            workflows: { counter: counterWorkflow() },
+            limits: { workflowMaxIterations: 10, workflowMaxConcurrency: 2 },
+          }),
+        })
+      );
+
+      await request('/workflows/counter/run', json({ options: { maxIterations: 50 } }));
+      await request('/workflows/counter/run', json({ options: { maxConcurrency: 1 } }));
+      await request('/workflows/counter/run', json({}));
+      await readStream(await request('/workflows/counter/stream', json({})));
+
+      expect(
+        execute.mock.calls.map(([, , options]) => ({
+          maxIterations: options?.maxIterations,
+          maxConcurrency: options?.maxConcurrency,
+        }))
+      ).toEqual([
+        { maxIterations: 10, maxConcurrency: 2 },
+        { maxIterations: 10, maxConcurrency: 1 },
+        { maxIterations: 10, maxConcurrency: 2 },
+        { maxIterations: 10, maxConcurrency: 2 },
+      ]);
+    } finally {
+      execute.mockRestore();
+    }
+  });
+
+  test('leaves runs as the request asks without limits', async () => {
+    const swarmRun = spyOn(Swarm.prototype, 'run');
+    try {
+      const request = serve(
+        createApp({ routes: cogitatorController({ cogitator, swarms: { team } }) })
+      );
+      await request('/swarms/team/run', json({ input: 'go' }));
+      expect(swarmRun.mock.calls[0]?.[0]).not.toHaveProperty('timeout');
+    } finally {
+      swarmRun.mockRestore();
+    }
+  });
+});
+
+describe('a swarm that runs out of time', () => {
+  const { cogitator } = fakeCogitator(
+    (_agent, options) =>
+      new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve(runResult()), 2000);
+        options.signal?.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(new Error('aborted'));
+        });
+      })
+  );
+  const request = serve(
+    createApp({
+      routes: cogitatorController({
+        cogitator,
+        swarms: { slow: { name: 'slow', strategy: 'round-robin', agents: [agent('sloth')] } },
+        limits: { swarmTimeout: 50 },
+      }),
+      reportError: () => undefined,
+    })
+  );
+
+  test('answers 504 RUN_TIMEOUT', async () => {
+    const res = await request('/swarms/slow/run', json({ input: 'go' }));
+    expect(res.status).toBe(504);
+    expect(await res.json()).toMatchObject({ status: 504, error: 'RUN_TIMEOUT' });
+  });
+
+  test('ends a stream with a RUN_TIMEOUT error event', async () => {
+    const { events, done } = await readStream(
+      await request('/swarms/slow/stream', json({ input: 'go' }))
+    );
+    expect(done).toBe(false);
+    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'RUN_TIMEOUT' });
+  });
+
+  test('answers a SwarmTimeoutError thrown by any swarm run with 504', async () => {
+    const swarmRun = spyOn(Swarm.prototype, 'run').mockRejectedValue(
+      new SwarmTimeoutError('slow', 10)
+    );
+    try {
+      const res = await request('/swarms/slow/run', json({ input: 'go' }));
+      expect(res.status).toBe(504);
+      expect(((await res.json()) as { error: string }).error).toBe('RUN_TIMEOUT');
+    } finally {
+      swarmRun.mockRestore();
+    }
   });
 });
