@@ -147,8 +147,8 @@ describe('answerConversation', () => {
     expect(lines.some((line) => line.includes('q1'))).toBe(true);
   });
 
-  it('marks an answer failed when the embeddings fail and the strategy falls back', async () => {
-    stubModel(() => 'Miso');
+  it('fails the questions when the history cannot be indexed, asking nothing', async () => {
+    const requests = stubModel(() => 'Miso');
     const broken: EmbeddingService = {
       model: 'broken',
       dimensions: 4,
@@ -165,7 +165,40 @@ describe('answerConversation', () => {
     });
     await answerConversation(conversation, opts);
     expect(answers).toHaveLength(2);
-    for (const answer of answers) expect(answer.error).toMatch(/^memory: .*fell back/);
+    for (const answer of answers) expect(answer.error).toMatch(/^index: .*quota/);
+    expect(requests).toHaveLength(0);
+  });
+
+  it('fails the questions when only the questions could be embedded, not the history', async () => {
+    const requests = stubModel(() => 'Miso');
+    const inner = new HashedWordsEmbedding();
+    const questions = new Set(conversation.questions.map((question) => question.question));
+    const partial: EmbeddingService = {
+      model: inner.model,
+      dimensions: inner.dimensions,
+      embed: (text) => inner.embed(text),
+      embedBatch: async (texts) => {
+        if (texts.some((text) => !questions.has(text))) throw new Error('spend cap reached');
+        return inner.embedBatch(texts);
+      },
+    };
+    const {
+      options: opts,
+      answers,
+      lines,
+    } = options({
+      strategy: { name: 'relevant', contextTokens: 2000 },
+      embedding: partial,
+    });
+    await answerConversation(conversation, opts);
+
+    expect(answers).toHaveLength(2);
+    for (const answer of answers) {
+      expect(answer.error).toBe('index: spend cap reached');
+      expect(answer.output).toBe('');
+    }
+    expect(requests).toHaveLength(0);
+    expect(lines).toContain(`  ${conversation.id}: index: spend cap reached`);
   });
 
   it('stops when the embedding budget refuses while the context is built', async () => {

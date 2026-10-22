@@ -4,7 +4,7 @@ import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import Anthropic from '@anthropic-ai/sdk';
-import { countTokens, GoogleEmbeddingService } from '@cogitator-ai/memory';
+import { countTokens } from '@cogitator-ai/memory';
 import { PACKAGE_DIR } from '../packages.js';
 import {
   BENCH_MODEL,
@@ -18,7 +18,15 @@ import { cacheDir } from './cache.js';
 import { runCompactionLossSuite } from './compaction-loss.js';
 import { runConsistencySuite, type ConsistencyCheck } from './consistency.js';
 import { DATASETS, loadDataset } from './datasets/index.js';
-import { CachedEmbeddingService, RateLimitedEmbeddingService } from './embeddings.js';
+import {
+  BenchEmbeddingService,
+  CachedEmbeddingService,
+  EMBEDDING_KEYS,
+  EMBEDDING_MODEL,
+  EMBEDDING_PROVIDERS,
+  embeddingProvider,
+  RateLimitedEmbeddingService,
+} from './embeddings.js';
 import { judge, JudgeStore } from './judge.js';
 import { markdownReport, summarize } from './report.js';
 import {
@@ -99,6 +107,10 @@ Usage: pnpm memory-bench [options]
                          A resumed run asks a chain with a turn missing again whole
   --budget <usd>         most the run may spend on embeddings, paid from the project budget
                          (default 5)
+  --embeddings <provider>
+                         who serves ${EMBEDDING_MODEL}: google or openrouter, the same
+                         vectors and one cache (default: google when GOOGLE_API_KEY is
+                         set, openrouter otherwise)
   --anthropic-budget <usd>
                          most the run may spend on answers and the judge (default 30)
   --concurrency <n>      questions answered at once per conversation, four conversations at
@@ -115,8 +127,8 @@ Usage: pnpm memory-bench [options]
   -h, --help             show this help
 
 Environment: ANTHROPIC_API_KEY (answers and judge), ANTHROPIC_WORKSPACE_ID (for a key that is
-not scoped to a workspace), GOOGLE_API_KEY (embeddings for relevant
-and hybrid), MEMORY_BENCH_CACHE (default ~/.cache/cogitator/memory-bench). Read from the
+not scoped to a workspace), GOOGLE_API_KEY or OPENROUTER_API_KEY (embeddings for
+relevant, hybrid and extracted), MEMORY_BENCH_CACHE (default ~/.cache/cogitator/memory-bench). Read from the
 repository's .env too.`;
 
 /**
@@ -158,6 +170,7 @@ async function main(): Promise<number> {
       'recall-share': { type: 'string' },
       turns: { type: 'string', default: '1' },
       budget: { type: 'string', default: '5' },
+      embeddings: { type: 'string' },
       'anthropic-budget': { type: 'string', default: '30' },
       concurrency: { type: 'string', default: '6' },
       seed: { type: 'string', default: '42' },
@@ -283,9 +296,14 @@ async function main(): Promise<number> {
     return 1;
   }
   const anthropicWorkspace = process.env.ANTHROPIC_WORKSPACE_ID;
-  const googleKey = process.env.GOOGLE_API_KEY;
-  if (embedded && !googleKey) {
-    log('GOOGLE_API_KEY is not set: relevant and hybrid need embeddings');
+  const provider = embeddingProvider(values.embeddings);
+  if (!provider) {
+    log(`--embeddings must be one of ${EMBEDDING_PROVIDERS.join(', ')}`);
+    return 1;
+  }
+  const embeddingKey = process.env[EMBEDDING_KEYS[provider]];
+  if (embedded && !embeddingKey) {
+    log(`${EMBEDDING_KEYS[provider]} is not set: relevant, hybrid and extracted need embeddings`);
     return 1;
   }
 
@@ -319,7 +337,7 @@ async function main(): Promise<number> {
   const embeddingBudget = new Budget(embeddingLimit, run, join(cacheDir(), 'ledger.json'));
   const embedding = embedded
     ? new CachedEmbeddingService(
-        new RateLimitedEmbeddingService(new GoogleEmbeddingService({ apiKey: googleKey ?? '' })),
+        new RateLimitedEmbeddingService(new BenchEmbeddingService(provider, embeddingKey ?? '')),
         join(cacheDir(), 'embeddings.sqlite'),
         (tokens) => {
           const usd = (tokens * EMBEDDING_PRICE) / 1e6;
@@ -481,7 +499,7 @@ async function main(): Promise<number> {
       model: BENCH_MODEL,
       price: BENCH_PRICE,
       judge: `${BENCH_MODEL} (thinking off), Message Batches: ${!values['no-batch']}`,
-      embedding: embedding?.model ?? null,
+      embedding: embedding ? { model: embedding.model, provider } : null,
       contextTokens,
       ...(recallShare !== undefined && { recallShare }),
       ...(compacted && {
@@ -508,7 +526,7 @@ async function main(): Promise<number> {
     stopped && `Stopped early: ${stopped}.`,
     unjudged > 0 && `${unjudged} answers are not judged yet and are left out of the tables.`,
   ].filter(Boolean);
-  const markdown = `# Memory benchmarks: ${run}\n\nModel ${BENCH_MODEL}, context budget ${contextTokens} tokens${recallShare !== undefined ? `, hybrid recall share ${recallShare}` : ''}${turns > 1 ? `, ${turns} turns per question` : ''}, spent $${budget.spentUsd.toFixed(3)} on answers${compacted ? ', compaction' : ''}${extracted ? ', extraction' : ''} and the judge and $${embeddingBudget.spentUsd.toFixed(3)} on embeddings.${notes.length > 0 ? ` ${notes.join(' ')}` : ''}\n\n${markdownReport(rows)}`;
+  const markdown = `# Memory benchmarks: ${run}\n\nModel ${BENCH_MODEL}, context budget ${contextTokens} tokens${recallShare !== undefined ? `, hybrid recall share ${recallShare}` : ''}${turns > 1 ? `, ${turns} turns per question` : ''}, spent $${budget.spentUsd.toFixed(3)} on answers${compacted ? ', compaction' : ''}${extracted ? ', extraction' : ''} and the judge and $${embeddingBudget.spentUsd.toFixed(3)} on embeddings${embedding ? ` (${embedding.model} via ${provider})` : ''}.${notes.length > 0 ? ` ${notes.join(' ')}` : ''}\n\n${markdownReport(rows)}`;
   await writeFile(join(reportsDir, `${run}.md`), markdown);
   log(markdown);
   log(`Report: ${join(reportsDir, `${run}.json`)}`);

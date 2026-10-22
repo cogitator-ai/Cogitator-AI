@@ -2,8 +2,68 @@ import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
-import { countTokens } from '@cogitator-ai/memory';
+import { countTokens, GoogleEmbeddingService, OpenAIEmbeddingService } from '@cogitator-ai/memory';
 import type { EmbeddingService } from '@cogitator-ai/types';
+import { OPENROUTER_BASE_URL } from '../llm.js';
+
+/** The model every run embeds with, whichever provider serves it */
+export const EMBEDDING_MODEL = 'gemini-embedding-001';
+export const EMBEDDING_DIMENSIONS = 3072;
+
+export const EMBEDDING_PROVIDERS = ['google', 'openrouter'] as const;
+export type EmbeddingProvider = (typeof EMBEDDING_PROVIDERS)[number];
+
+/** The variable that holds each provider's key */
+export const EMBEDDING_KEYS: Record<EmbeddingProvider, string> = {
+  google: 'GOOGLE_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
+};
+
+/**
+ * The provider `--embeddings` names, or by default Google when its key is set and OpenRouter
+ * otherwise. `undefined` for a name that is no provider.
+ */
+export function embeddingProvider(
+  name: string | undefined,
+  env: NodeJS.ProcessEnv = process.env
+): EmbeddingProvider | undefined {
+  if (name === undefined) return env[EMBEDDING_KEYS.google] ? 'google' : 'openrouter';
+  return EMBEDDING_PROVIDERS.find((provider) => provider === name);
+}
+
+/**
+ * `gemini-embedding-001` from Google's API or through OpenRouter, which returns the same vectors.
+ * The service names the model, not the route, so both share the cache and a run can switch
+ * providers midway.
+ */
+export class BenchEmbeddingService implements EmbeddingService {
+  readonly model = EMBEDDING_MODEL;
+  readonly dimensions = EMBEDDING_DIMENSIONS;
+  private readonly inner: EmbeddingService;
+
+  constructor(
+    readonly provider: EmbeddingProvider,
+    apiKey: string
+  ) {
+    this.inner =
+      provider === 'google'
+        ? new GoogleEmbeddingService({ apiKey, model: EMBEDDING_MODEL })
+        : new OpenAIEmbeddingService({
+            apiKey,
+            baseUrl: OPENROUTER_BASE_URL,
+            model: `google/${EMBEDDING_MODEL}`,
+            dimensions: EMBEDDING_DIMENSIONS,
+          });
+  }
+
+  embed(text: string): Promise<number[]> {
+    return this.inner.embed(text);
+  }
+
+  embedBatch(texts: string[]): Promise<number[][]> {
+    return this.inner.embedBatch(texts);
+  }
+}
 
 interface Deferred {
   promise: Promise<number[]>;

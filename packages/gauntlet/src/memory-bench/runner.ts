@@ -453,14 +453,16 @@ export async function ingest(
  * each strategy's context build is measured on a warm cache, the provider's embedding latency
  * left out alike for all of them (a strategy that runs later must not find the questions cached
  * by an earlier one). The runtime indexes the whole thread (`indexMemory`), so its first search
- * already sees every entry, and the vectors land in the shared embedding cache.
+ * already sees every entry, and the vectors land in the shared embedding cache. Returns why the
+ * index is incomplete, if it is: the questions then fail instead of being answered from part of
+ * the history, which the runtime would only log.
  */
 async function warm(
   cog: Cogitator,
   threadId: string,
   conversation: BenchConversation,
   options: AnswerOptions
-): Promise<void> {
+): Promise<string | undefined> {
   const errors: Error[] = [];
   try {
     await cog.indexMemory(threadId);
@@ -479,8 +481,10 @@ async function warm(
   for (const error of errors) {
     const refusal = budgetRefusal(error);
     if (refusal) throw refusal;
-    options.log(`  warming ${conversation.id}: ${error.message}`);
   }
+  return errors.length > 0
+    ? `index: ${errors.map((error) => error.message).join(', ')}`
+    : undefined;
 }
 
 /**
@@ -722,7 +726,24 @@ export async function answerConversation(
 
   try {
     const thread = await ingest(cog, agent, conversation);
-    if (options.embedding) await warm(cog, thread.threadId, conversation, options);
+    const unindexed = options.embedding
+      ? await warm(cog, thread.threadId, conversation, options)
+      : undefined;
+    if (unindexed) {
+      options.log(`  ${conversation.id}: ${unindexed}`);
+      for (const question of pending) {
+        await options.onAnswer({
+          dataset: conversation.dataset,
+          conversationId: conversation.id,
+          questionId: question.id,
+          category: question.category,
+          strategy,
+          ...unanswered,
+          error: unindexed,
+        });
+      }
+      return;
+    }
     let from = thread.leafId;
     if (watch && strategy === 'extracted') {
       const extracted = await extractConversation(cog, thread.threadId, watch);
