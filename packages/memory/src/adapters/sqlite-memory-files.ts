@@ -171,7 +171,8 @@ export function sqliteMemoryFiles(db: SqliteItemsDatabase): MemoryFileAdapter {
             `SELECT data FROM (
                SELECT data, created_at, sequence, id,
                  ROW_NUMBER() OVER (PARTITION BY file_key ORDER BY sequence DESC) AS rank
-               FROM memory_file_versions WHERE ${conditions.join(' AND ')}
+               FROM memory_file_versions
+               WHERE ${conditions.join(' AND ')} AND json_extract(data, '$.withdrawn') IS NULL
              ) WHERE rank = 1
              ORDER BY created_at, sequence, id`
           )
@@ -202,6 +203,19 @@ export function sqliteMemoryFiles(db: SqliteItemsDatabase): MemoryFileAdapter {
               }),
               id
             );
+          }
+        });
+      }),
+
+    withdrawFileVersions: (ids, at) =>
+      run(() => {
+        const read = db.prepare('SELECT data FROM memory_file_versions WHERE id = ?');
+        const write = db.prepare('UPDATE memory_file_versions SET data = ? WHERE id = ?');
+        atomically(() => {
+          for (const id of new Set(ids)) {
+            const row = read.get(id) as { data: string } | undefined;
+            if (!row) continue;
+            write.run(JSON.stringify({ ...versionFrom(row.data), withdrawn: { at } }), id);
           }
         });
       }),

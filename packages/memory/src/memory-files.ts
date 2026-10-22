@@ -168,6 +168,7 @@ export function fileHeads(
   const onPath = place ? new Set(place.pathIds) : undefined;
   const heads = new Map<string, MemoryFileVersion>();
   for (const version of versions) {
+    if (version.withdrawn) continue;
     const written = version.place;
     if (place && onPath && written && written.threadId === place.threadId) {
       if (!onPath.has(written.entryId)) continue;
@@ -384,7 +385,7 @@ export class MemoryFiles {
     return (await this.list(access, file)).find((found) => found.path === file);
   }
 
-  /** Every version of the file at `path` the access sees, oldest first */
+  /** Every version of the file at `path` on the branch of the access, withdrawn ones too, oldest first */
   async history(access: MemoryFileAccess, path: string): Promise<MemoryFileVersion[]> {
     const file = memoryPath(path);
     const versions = unwrap(
@@ -394,7 +395,7 @@ export class MemoryFiles {
         paths: [file],
       })
     );
-    return versions.filter((version) => this.sees(access, version));
+    return versions.filter((version) => this.onBranch(access, version));
   }
 
   async view(access: MemoryFileAccess, path: string, range?: readonly number[]): Promise<string> {
@@ -700,6 +701,11 @@ export class MemoryFiles {
   }
 
   private sees(access: MemoryFileAccess, version: MemoryFileVersion): boolean {
+    return !version.withdrawn && this.onBranch(access, version);
+  }
+
+  /** Whether `version` lies on the branch of the access, withdrawn or not */
+  private onBranch(access: MemoryFileAccess, version: MemoryFileVersion): boolean {
     const place = access.place;
     const written = version.place;
     if (!place || !written) return true;
@@ -812,9 +818,12 @@ export class MemoryFiles {
    * Checks, once `kept` are kept, that no file the change wrote lies under another file or has
    * files under it that was not there when it was `planned`, which another process writing at the
    * same time could cause, as each change is planned on what stood before it. Files that stood so
-   * already, each on its own branch or in its own scope, are left to be. A change that broke the tree is taken back, its versions
-   * deleted from the store where no later version stands on them (one another writer added since
-   * is left as it is), and refused, so the writer tries again on what stands now.
+   * already, each on its own branch or in its own scope, are left to be. A change that broke the
+   * tree is taken back and refused, so the writer tries again on what stands now: its versions are
+   * withdrawn (`withdrawFileVersions`), which keeps the history whole however others wrote on top,
+   * or on a store without it deleted where no later version stands on them. A deletion whose path
+   * another writer has built on since is kept, so taking it back does not raise a file under a
+   * file.
    */
   private async keepTree(
     access: MemoryFileAccess,
@@ -843,22 +852,40 @@ export class MemoryFiles {
       )
     );
     if (broken === undefined) return;
-    const heads = unwrap(
-      this.adapter.findFileHeads
-        ? await this.adapter.findFileHeads(filter)
-        : await this.adapter.findFileVersions(filter)
-    );
-    const later = (version: MemoryFileVersion) =>
-      heads.some(
+    const ours = new Set(written);
+    const resurrects = (version: MemoryFileVersion) =>
+      version.content === null &&
+      paths.some(
         (other) =>
-          fileKeyOf(other.scope, other.path) === fileKeyOf(version.scope, version.path) &&
-          other.sequence > version.sequence
+          !ours.has(other) &&
+          other !== version.path &&
+          (under(other, version.path) || under(version.path, other))
       );
-    const ours = kept.filter((version) => !later(version));
-    if (ours.length > 0) {
-      unwrap(await this.adapter.deleteFileVersions(ours.map((version) => version.id)));
+    const back = kept.filter((version) => !resurrects(version));
+    const withdraw = this.adapter.withdrawFileVersions?.bind(this.adapter);
+    if (withdraw) {
+      unwrap(
+        await withdraw(
+          back.map((version) => version.id),
+          this.now()
+        )
+      );
+    } else {
+      const heads = unwrap(
+        this.adapter.findFileHeads
+          ? await this.adapter.findFileHeads(filter)
+          : await this.adapter.findFileVersions(filter)
+      );
+      const later = (version: MemoryFileVersion) =>
+        heads.some(
+          (other) =>
+            fileKeyOf(other.scope, other.path) === fileKeyOf(version.scope, version.path) &&
+            other.sequence > version.sequence
+        );
+      const free = back.filter((version) => !later(version)).map((version) => version.id);
+      if (free.length > 0) unwrap(await this.adapter.deleteFileVersions(free));
     }
-    for (const version of ours) {
+    for (const version of back) {
       const now = await this.read(access, version.path);
       access.observe?.(version.path, now?.sha256 ?? null);
     }

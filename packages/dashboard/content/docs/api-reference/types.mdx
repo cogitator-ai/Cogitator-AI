@@ -1108,6 +1108,7 @@ interface MemoryFileAdapter {
     redaction: { content: string; sha256: string; at: Date; reason?: string }
   ): Promise<MemoryResult<void>>;
   deleteFileVersions(ids: string[]): Promise<MemoryResult<void>>;
+  withdrawFileVersions?(ids: string[], at: Date): Promise<MemoryResult<void>>; // optional
   findFileHeads?(filter: MemoryFileHeadFilter): Promise<MemoryResult<MemoryFileVersion[]>>; // optional, oldest first
 }
 ```

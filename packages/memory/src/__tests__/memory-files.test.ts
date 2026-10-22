@@ -148,6 +148,36 @@ describe('MemoryFiles', () => {
     expect((await files.read(access, '/memories/source'))?.content).toBe('mine');
   });
 
+  it('keeps a deletion it takes back when another writer built under its path since', async () => {
+    await files.create(access, '/memories/source', 'mine');
+    const elsewhere = new MemoryFiles({ adapter });
+    const racing = Object.create(adapter) as InMemoryAdapter;
+    let read = 0;
+    racing.findFileVersions = async (filter) => {
+      const found = await adapter.findFileVersions(filter);
+      if (read++ === 0) await elsewhere.create(access, '/memories/a', 'a file');
+      return found;
+    };
+    let put = 0;
+    racing.putFileVersions = async (versions) => {
+      const done = await adapter.putFileVersions(versions);
+      if (put++ === 0) await elsewhere.create(access, '/memories/source/child', 'built since');
+      return done;
+    };
+    const mine = new MemoryFiles({ adapter: racing });
+
+    await expect(mine.rename(access, '/memories/source', '/memories/a/b')).rejects.toThrow(
+      'Another writer changed the memory'
+    );
+
+    expect((await files.list(access)).map((file) => file.path)).toEqual([
+      '/memories/a',
+      '/memories/source/child',
+    ]);
+    const history = await files.history(access, '/memories/source');
+    expect(history.some((version) => version.content === 'mine')).toBe(true);
+  });
+
   it('answers each command as the memory tool does', async () => {
     expect(await files.create(access, '/memories/notes/plan.md', 'one\ntwo\nthree')).toBe(
       'File created successfully at: /memories/notes/plan.md'

@@ -1408,7 +1408,7 @@ export class PostgresAdapter
         `SELECT version FROM (
            SELECT DISTINCT ON (file_key) version, created_at, sequence, id
            FROM ${this.schema}.memory_file_versions
-           WHERE ${conditions.join(' AND ')}
+           WHERE ${conditions.join(' AND ')} AND NOT (version ? 'withdrawn')
            ORDER BY file_key, sequence DESC
          ) heads
          ORDER BY created_at, sequence, (id COLLATE "C")`,
@@ -1419,6 +1419,22 @@ export class PostgresAdapter
           .map((row) => memoryFileVersionFromJson(row.version as StoredMemoryFileVersion))
           .filter((version) => matchesFileFilter(version, rest))
       );
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
+  async withdrawFileVersions(ids: string[], at: Date): Promise<MemoryResult<void>> {
+    if (!this.pool) return this.failure('Not connected');
+    if (ids.length === 0) return this.success(undefined);
+    try {
+      await this.pool.query(
+        `UPDATE ${this.schema}.memory_file_versions
+         SET version = version || jsonb_build_object('withdrawn', jsonb_build_object('at', $2::text))
+         WHERE id = ANY($1::text[])`,
+        [[...new Set(ids)], at.toISOString()]
+      );
+      return this.success(undefined);
     } catch (err) {
       return this.failure((err as Error).message);
     }

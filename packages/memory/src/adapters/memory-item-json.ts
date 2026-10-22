@@ -85,17 +85,22 @@ export function memoryEntityFromJson(stored: StoredMemoryEntity): MemoryEntity {
 }
 
 /** A memory file version as JSON holds it, its dates as ISO text */
-export type StoredMemoryFileVersion = Omit<MemoryFileVersion, 'createdAt' | 'redacted'> & {
+export type StoredMemoryFileVersion = Omit<
+  MemoryFileVersion,
+  'createdAt' | 'redacted' | 'withdrawn'
+> & {
   createdAt: string;
   redacted?: { at: string; reason?: string };
+  withdrawn?: { at: string };
 };
 
 /** The memory file version `stored` holds, its dates as dates and absent fields left absent */
 export function memoryFileVersionFromJson(stored: StoredMemoryFileVersion): MemoryFileVersion {
-  const { createdAt, redacted, ...version } = stored;
+  const { createdAt, redacted, withdrawn, ...version } = stored;
   return {
     ...version,
     createdAt: new Date(createdAt),
+    ...(withdrawn && { withdrawn: { at: new Date(withdrawn.at) } }),
     ...(redacted && {
       redacted: {
         at: new Date(redacted.at),

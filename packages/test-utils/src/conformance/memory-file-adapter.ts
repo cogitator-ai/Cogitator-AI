@@ -28,6 +28,7 @@ export type MemoryFileAdapterScenario =
   | 'file-find-filters'
   | 'file-find-visible-to'
   | 'file-find-heads'
+  | 'file-withdraw'
   | 'file-redact'
   | 'file-delete'
   | 'file-returns-copies';
@@ -308,6 +309,41 @@ const SCENARIOS: Record<MemoryFileAdapterScenario, (adapter: MemoryFileAdapter) 
           `the newest version on the branch of ${pathIds.join(', ') || 'no entry'}`
         );
       }
+    },
+
+    async 'file-withdraw'(adapter) {
+      if (!adapter.withdrawFileVersions) return;
+      const { agentId, id } = scope();
+      const first = version(agentId, id('first'), { sequence: 1, createdAt: at(1) });
+      const second = version(agentId, id('second'), {
+        sequence: 2,
+        previousId: first.id,
+        createdAt: at(2),
+      });
+      ok(await adapter.putFileVersions([first, second]), 'putFileVersions');
+      const when = at(9);
+
+      ok(
+        await adapter.withdrawFileVersions([second.id, `${second.id}-missing`], when),
+        'withdrawFileVersions'
+      );
+
+      const found = ok(await adapter.findFileVersions({ agentId }), 'findFileVersions');
+      assert.deepEqual(
+        found,
+        [first, { ...second, withdrawn: { at: when } }],
+        'kept with when it was withdrawn'
+      );
+      if (adapter.findFileHeads) {
+        const heads = ok(await adapter.findFileHeads({ agentId }), 'findFileHeads');
+        assert.deepEqual(ids(heads), ids([first]), 'a withdrawn version is never a head');
+      }
+      const third = version(agentId, id('third'), { sequence: 2, createdAt: at(3) });
+      const taken = await adapter.putFileVersions([third]);
+      assert.ok(
+        !taken.success && taken.error === MEMORY_FILE_CONFLICT,
+        'a withdrawn version keeps its sequence'
+      );
     },
 
     async 'file-find-visible-to'(adapter) {

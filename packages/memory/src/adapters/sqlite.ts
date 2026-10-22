@@ -770,6 +770,12 @@ export class SQLiteAdapter
       : this.failure('Not connected');
   }
 
+  async withdrawFileVersions(ids: string[], at: Date): Promise<MemoryResult<void>> {
+    return this.files?.withdrawFileVersions
+      ? this.files.withdrawFileVersions(ids, at)
+      : this.failure('Not connected');
+  }
+
   async redactFileVersions(
     ids: string[],
     redaction: { content: string; sha256: string; at: Date; reason?: string }

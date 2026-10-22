@@ -458,6 +458,14 @@ export class InMemoryAdapter
     return this.success(undefined);
   }
 
+  async withdrawFileVersions(ids: string[], at: Date): Promise<MemoryResult<void>> {
+    for (const id of ids) {
+      const version = this.fileVersions.get(id);
+      if (version) this.fileVersions.set(id, { ...version, withdrawn: { at: new Date(at) } });
+    }
+    return this.success(undefined);
+  }
+
   async deleteFileVersions(ids: string[]): Promise<MemoryResult<void>> {
     for (const id of ids) {
       const version = this.fileVersions.get(id);

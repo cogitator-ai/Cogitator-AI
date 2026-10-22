@@ -1476,6 +1476,21 @@ export class MongoDBAdapter
     }
   }
 
+  async withdrawFileVersions(ids: string[], at: Date): Promise<MemoryResult<void>> {
+    if (!this.db) return this.failure('Not connected');
+    if (ids.length === 0) return this.success(undefined);
+    try {
+      await this.fileBatches.updateMany(
+        { ids: { $in: ids } },
+        { $set: { 'versions.$[version].withdrawn': { at } } },
+        { arrayFilters: [{ 'version.id': { $in: ids } }] }
+      );
+      return this.success(undefined);
+    } catch (err) {
+      return this.failure((err as Error).message);
+    }
+  }
+
   async redactFileVersions(
     ids: string[],
     redaction: { content: string; sha256: string; at: Date; reason?: string }

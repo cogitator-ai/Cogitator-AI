@@ -1684,6 +1684,19 @@ export class RedisAdapter
     });
   }
 
+  async withdrawFileVersions(ids: string[], at: Date): Promise<MemoryResult<void>> {
+    return this.run(async (client) => {
+      for (const id of new Set(ids)) {
+        const key = this.key('file', id);
+        const data = await client.eval(READ_FIELD, 1, key, RECORD_DATA);
+        if (typeof data !== 'string') continue;
+        const withdrawn = JSON.stringify({ ...parseFileVersion(data), withdrawn: { at } });
+        await client.eval(SET_IF_PRESENT, 1, key, RECORD_DATA, withdrawn);
+      }
+      return this.success(undefined);
+    });
+  }
+
   async deleteFileVersions(ids: string[]): Promise<MemoryResult<void>> {
     return this.run(async (client) => {
       for (const id of new Set(ids)) {

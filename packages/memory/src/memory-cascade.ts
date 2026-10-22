@@ -665,6 +665,7 @@ export class MemoryCascade {
     if (!adapter || !files) return;
     const byKey = new Map<string, MemoryFileVersion[]>();
     for (const version of unwrap(await adapter.findFileVersions({ agentId }))) {
+      if (version.withdrawn) continue;
       const key = fileKeyOf(version.scope, version.path);
       byKey.set(key, [...(byKey.get(key) ?? []), version]);
     }
@@ -700,7 +701,7 @@ export class MemoryCascade {
     if (!files) return 0;
     const fronts = new Map<string, MemoryFileVersion>();
     for (const version of versions) {
-      if (version.path !== PLAYBOOK_PATH) continue;
+      if (version.path !== PLAYBOOK_PATH || version.withdrawn) continue;
       const key = fileKeyOf(version.scope, version.path);
       const known = fronts.get(key);
       if (!known || version.sequence > known.sequence) fronts.set(key, version);

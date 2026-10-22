@@ -44,6 +44,11 @@ export interface MemoryFileVersion {
   createdAt: Date;
   /** When the content of this version was redacted, and why */
   redacted?: { at: Date; reason?: string };
+  /**
+   * When the change that wrote it was taken back: a withdrawn version is never in front, while it
+   * keeps its place in the history, its sequence and what names it as `previousId`
+   */
+  withdrawn?: { at: Date };
 }
 
 /** Which versions a {@link MemoryFileAdapter} finds: all of the given conditions hold */
@@ -98,8 +103,13 @@ export interface MemoryFileAdapter {
   /** Deletes the versions for good */
   deleteFileVersions(ids: string[]): Promise<MemoryResult<void>>;
   /**
-   * The newest version (highest `sequence`) of each scope and path the filter sees, deletions
-   * included, a version placed in `filter.place.threadId` off its `pathIds` left out, oldest
+   * Marks the versions withdrawn at `at`, and changes nothing else. Missing versions are left
+   * alone. Without it a change that has to be taken back deletes its versions instead.
+   */
+  withdrawFileVersions?(ids: string[], at: Date): Promise<MemoryResult<void>>;
+  /**
+   * The newest version (highest `sequence`) of each scope and path the filter sees, withdrawn
+   * versions left out and deletions included, a version placed in `filter.place.threadId` off its `pathIds` left out, oldest
    * first by `createdAt`, then `sequence`, then `id` as {@link findFileVersions} gives them, so a
    * read of the files that stand reads no history. Without it reads go through
    * {@link findFileVersions}.
