@@ -449,10 +449,14 @@ export function bindJudgeContext(metric: LLMMetricFn, context: JudgeContext): Me
   const name = metric.__judgeName;
   const scoreOf = metric.__judgeScore ?? clampedScore;
   const samples = context.judgeConfig.samples ?? 1;
+  const scorable = (output: string) => {
+    const verdict = parseJudgeOutput(output);
+    return verdict !== undefined && !('error' in scoreOf(verdict));
+  };
 
   const judgeOnce = async (input: string, sample: number): Promise<SampleOutcome> => {
     try {
-      const answered = await context.cogitator.run({ input, sample });
+      const answered = await context.cogitator.run({ input, sample, accept: scorable });
       const usage = usageOf(answered.usage);
       const verdict = parseJudgeOutput(answered.output);
       if (!verdict) return { error: UNPARSEABLE, details: UNPARSEABLE, ...(usage && { usage }) };

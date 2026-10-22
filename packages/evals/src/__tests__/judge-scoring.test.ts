@@ -152,6 +152,33 @@ describe('llmMetric with a rubric', () => {
     }
   });
 
+  it('never caches a level the rubric does not have, so the judge is asked again', async () => {
+    const store = new Map<string, string>();
+    const cache: JudgeCache = {
+      get: (key) => store.get(key),
+      set: (key, value) => void store.set(key, value),
+    };
+    const run = vi
+      .fn()
+      .mockResolvedValueOnce({ output: JSON.stringify({ score: 4, reasoning: 'between' }) })
+      .mockResolvedValue({ output: JSON.stringify({ score: 5, reasoning: 'right' }) });
+    const metric = bindJudgeContext(
+      llmMetric({ name: 'grade', rubric }),
+      judgeContextFor(
+        { run } as unknown as JudgeCogitator,
+        JudgeConfigSchema.parse({ model: 'm', cache })
+      )
+    );
+
+    const first = await metric(caseResult());
+    const again = await metric(caseResult());
+
+    expect(first.error).toBeDefined();
+    expect(again.score).toBe(1);
+    expect(run).toHaveBeenCalledTimes(2);
+    expect([...store.values()]).toEqual([JSON.stringify({ score: 5, reasoning: 'right' })]);
+  });
+
   it('shows the judge every level in order, with the prompt when given', async () => {
     const judge = scriptedJudge([verdict(3)]);
     const metric = llmMetric({
