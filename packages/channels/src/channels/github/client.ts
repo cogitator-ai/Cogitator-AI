@@ -91,12 +91,19 @@ export interface GitHubClientOptions {
   fetch?: typeof fetch;
 }
 
+/** `value` without the slashes it ends with, in linear time, unlike `replace(/\/+$/, '')`. */
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') end--;
+  return value.slice(0, end);
+}
+
 /** Calls the GitHub REST API with a token, turning its errors into `FeedError`s. */
 export class GitHubClient {
   private readonly base: string;
 
   constructor(private readonly options: GitHubClientOptions) {
-    this.base = (options.apiUrl ?? GITHUB_API).replace(/\/+$/, '');
+    this.base = trimTrailingSlashes(options.apiUrl ?? GITHUB_API);
   }
 
   /**
