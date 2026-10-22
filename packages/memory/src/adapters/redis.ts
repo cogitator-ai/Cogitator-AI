@@ -29,6 +29,7 @@ import type {
   MemoryFileFilter,
   MemoryFileVersion,
   EntryRedaction,
+  MemoryFileHeadFilter,
 } from '@cogitator-ai/types';
 import { createRedisClient, type RedisClient } from '@cogitator-ai/redis';
 import { BranchingMemoryAdapter, entryTypeWanted } from './base';
@@ -39,7 +40,7 @@ import {
 } from '@cogitator-ai/types';
 import { matchesListing, threadListing, threadPage, type ThreadCursor } from './thread-listing';
 import { byRecorded, entityNames, matchesEntityFilter, matchesItemFilter } from '../memory-items';
-import { byFileVersion, fileKeyOf, matchesFileFilter } from '../memory-files';
+import { byFileVersion, fileKeyOf, matchesFileFilter, fileHeads } from '../memory-files';
 import {
   memoryEntityFromJson,
   memoryItemFromJson,
@@ -1633,6 +1634,12 @@ export class RedisAdapter
       if (Number(written) !== 1) return this.failure(MEMORY_FILE_CONFLICT);
       return this.success(versions.map((version) => structuredClone(version)));
     });
+  }
+
+  async findFileHeads(filter: MemoryFileHeadFilter): Promise<MemoryResult<MemoryFileVersion[]>> {
+    const { place, ...rest } = filter;
+    const found = await this.findFileVersions(rest);
+    return found.success ? this.success(fileHeads(found.data, place)) : found;
   }
 
   async findFileVersions(filter: MemoryFileFilter): Promise<MemoryResult<MemoryFileVersion[]>> {

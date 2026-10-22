@@ -1094,6 +1094,10 @@ interface MemoryFileFilter {
   scope?: MemoryItemScope;
 }
 
+interface MemoryFileHeadFilter extends Omit<MemoryFileFilter, 'ids'> {
+  place?: { threadId: string; pathIds: readonly string[] }; // the branch a run stands on
+}
+
 const MEMORY_FILE_CONFLICT = 'memory-file-conflict'; // the error of a version whose place is taken
 
 interface MemoryFileAdapter {
@@ -1104,6 +1108,7 @@ interface MemoryFileAdapter {
     redaction: { content: string; sha256: string; at: Date; reason?: string }
   ): Promise<MemoryResult<void>>;
   deleteFileVersions(ids: string[]): Promise<MemoryResult<void>>;
+  findFileHeads?(filter: MemoryFileHeadFilter): Promise<MemoryResult<MemoryFileVersion[]>>; // optional, oldest first
 }
 ```
 

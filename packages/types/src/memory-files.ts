@@ -99,7 +99,9 @@ export interface MemoryFileAdapter {
   deleteFileVersions(ids: string[]): Promise<MemoryResult<void>>;
   /**
    * The newest version (highest `sequence`) of each scope and path the filter sees, deletions
-   * included, so a read of the files that stand reads no history. Without it reads go through
+   * included, a version placed in `filter.place.threadId` off its `pathIds` left out, oldest
+   * first by `createdAt`, then `sequence`, then `id` as {@link findFileVersions} gives them, so a
+   * read of the files that stand reads no history. Without it reads go through
    * {@link findFileVersions}.
    */
   findFileHeads?(filter: MemoryFileHeadFilter): Promise<MemoryResult<MemoryFileVersion[]>>;

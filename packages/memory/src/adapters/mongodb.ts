@@ -220,10 +220,6 @@ function itemDoc(item: MemoryItem): Omit<ItemDoc, '_id'> {
 }
 
 /**
- * The versions one change added, kept in one document so a reader sees all of them or none,
- * beside the fields its filters read
- */
-/**
  * The batches `filter` finds versions in: of its agent, ids and paths, and holding a version of
  * a scope it sees (`visibleTo`) or of its exact `scope`, so a reader of one user's files does
  * not fetch every other user's. Versions are filtered again in process.
@@ -253,6 +249,10 @@ function fileBatchQuery(filter: MemoryFileFilter): Filter<FileBatchDoc> {
   } as Filter<FileBatchDoc>;
 }
 
+/**
+ * The versions one change added, kept in one document so a reader sees all of them or none,
+ * beside the fields its filters read
+ */
 interface FileBatchDoc {
   _id: string;
   agentIds: string[];

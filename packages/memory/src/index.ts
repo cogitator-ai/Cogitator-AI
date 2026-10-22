@@ -325,6 +325,7 @@ export {
   matchesFileFilter,
   byFileVersion,
   fileKeyOf,
+  fileHeads,
   type MemoryFile,
   type MemoryFileAccess,
   type MemoryFileCommand,
