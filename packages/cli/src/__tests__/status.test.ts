@@ -81,7 +81,7 @@ describe('collectStatus', () => {
     const report = await collectStatus();
 
     expect(composePs).toHaveBeenCalledWith(dirname(composePath));
-    expect(report.docker).toEqual({
+    expect(report.docker).toStrictEqual({
       available: true,
       compose: composePath,
       services: [
@@ -101,6 +101,7 @@ describe('collectStatus', () => {
       ],
     });
     expect(report.ollama).toEqual({ url: 'http://localhost:11434', running: true });
+    expect(report.docker.services?.[1]).not.toHaveProperty('health');
   });
 
   it('keeps only the first line when composePs throws a multi-line error', async () => {
@@ -123,6 +124,7 @@ describe('collectStatus', () => {
   });
 
   it('marks Ollama as not running when the helper is unreachable', async () => {
+    vi.stubEnv('OLLAMA_API_KEY', 'k');
     checkDocker.mockReturnValue(false);
     listOllamaModels.mockRejectedValue(new Error('ECONNREFUSED'));
 
@@ -130,8 +132,9 @@ describe('collectStatus', () => {
 
     expect(report.ollama).toEqual({ url: 'http://localhost:11434', running: false });
     expect(listOllamaModels).toHaveBeenCalledWith('http://localhost:11434', {
-      apiKey: process.env.OLLAMA_API_KEY,
+      apiKey: 'k',
       timeoutMs: 3000,
     });
+    vi.unstubAllEnvs();
   });
 });
