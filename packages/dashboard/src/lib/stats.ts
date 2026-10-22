@@ -58,4 +58,4 @@ export const BUILTIN_TOOL_COUNT = 26;
 export const NPM_PACKAGE_COUNT = 33;
 
 /** Runnable examples under `examples/`, counted per category like the root README. */
-export const EXAMPLE_COUNT = 78;
+export const EXAMPLE_COUNT = 89;
