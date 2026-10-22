@@ -433,6 +433,38 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
     body: run({ input: 'hi' }),
     expect: { status: 200, runOptions: { deps: { tenant: 'acme' } } },
   },
+  {
+    name: 'hands a resume stream the dependencies the server builds for the request',
+    route: 'agentResumeStream',
+    server: { deps: { tenant: 'acme' } },
+    body: run({ threadId: CONFORMANCE_NAMES.thread }),
+    expect: {
+      status: 200,
+      streamThread: CONFORMANCE_NAMES.thread,
+      runOptions: { deps: { tenant: 'acme' } },
+    },
+  },
+  ...(['agentStream', 'agentResumeStream'] as const).flatMap((route): ConformanceCase[] => {
+    const body =
+      route === 'agentStream' ? run({ input: 'hi' }) : run({ threadId: CONFORMANCE_NAMES.thread });
+    const label = route === 'agentStream' ? 'a stream' : 'a resume stream';
+    return [
+      {
+        name: `ends ${label} that failed unexpectedly without telling what it was`,
+        route,
+        runtime: { crash: 'database password is hunter2' },
+        body,
+        expect: { status: 200, runs: 1, streamError: 'INTERNAL_ERROR', hides: 'hunter2' },
+      },
+      {
+        name: `refuses ${label} from a caller without identity where the server denies anonymous callers`,
+        route,
+        server: { anonymous: 'deny' },
+        body,
+        expect: { status: 401, code: 'UNAUTHORIZED' },
+      },
+    ];
+  }),
 ];
 
 /** The method a case sends */
