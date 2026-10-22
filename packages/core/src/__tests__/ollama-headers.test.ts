@@ -20,6 +20,29 @@ async function requestChat(backend: LLMBackend, stream: boolean): Promise<void> 
   }
 }
 
+describe('Ollama header validation', () => {
+  beforeEach(() => {
+    fetchSpy.mockReset();
+    vi.stubGlobal('fetch', fetchSpy);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it.each([
+    { name: 'Invalid Header', value: 'secret', message: /invalid header name/i },
+    { name: 'X-Gateway-Key', value: '€', message: /ByteString|255/i },
+  ])('rejects invalid headers at construction (%j)', ({ name, value, message }) => {
+    const createBackend = () =>
+      new OllamaBackend({ baseUrl: 'http://localhost:11434', headers: { [name]: value } });
+
+    expect(createBackend).toThrow(TypeError);
+    expect(createBackend).toThrow(message);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe.each([false, true])('Ollama request headers (stream: %s)', (stream) => {
   beforeEach(() => {
     fetchSpy.mockReset();

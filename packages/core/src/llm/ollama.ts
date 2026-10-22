@@ -35,7 +35,7 @@ import { getLogger } from '../logger';
 interface OllamaConfig {
   baseUrl: string;
   apiKey?: string;
-  /** Headers sent with every request. The API key and JSON content type take precedence. */
+  /** Headers sent with every chat request. The API key and JSON content type take precedence. */
   headers?: Record<string, string>;
 }
 
@@ -84,23 +84,16 @@ interface OllamaChatResponse {
 export class OllamaBackend extends BaseLLMBackend {
   readonly provider = 'ollama' as const;
   private baseUrl: string;
-  private apiKey?: string;
-  private customHeaders?: Record<string, string>;
+  private readonly headers: Headers;
 
   constructor(config: OllamaConfig) {
     super();
     this.baseUrl = trimTrailingSlashes(config.baseUrl);
-    this.apiKey = config.apiKey;
-    this.customHeaders = config.headers;
-  }
-
-  private get headers(): Headers {
-    const headers = new Headers(this.customHeaders);
-    headers.set('Content-Type', 'application/json');
-    if (this.apiKey) {
-      headers.set('Authorization', `Bearer ${this.apiKey}`);
+    this.headers = new Headers(config.headers);
+    this.headers.set('Content-Type', 'application/json');
+    if (config.apiKey) {
+      this.headers.set('Authorization', `Bearer ${config.apiKey}`);
     }
-    return headers;
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {

@@ -318,11 +318,11 @@ llm:
     ollama:
       baseUrl: http://localhost:11434 # default; https://ollama.com when only apiKey is set
       apiKey: xxx # optional, Ollama Cloud or an authenticated server
-      headers: # optional, sent with chat and streaming requests
+      headers: # optional, sent with every chat request
         X-Gateway-Key: xxx
 ```
 
-Ollama keeps `Content-Type: application/json`. When `apiKey` is set, it takes precedence over any custom `Authorization` header, regardless of casing.
+Ollama sends these headers with non-streaming and streaming requests to `/api/chat`. Model discovery, CLI health checks and embeddings do not use them. Ollama keeps `Content-Type: application/json`. When `apiKey` is set, it takes precedence over any custom `Authorization` header, regardless of casing.
 
 ### OpenAI
 

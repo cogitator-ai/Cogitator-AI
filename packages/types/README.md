@@ -356,7 +356,7 @@ const reasoning: ReasoningConfig = { effort: 'high', budgetTokens: 8000, summary
 const promptCache: PromptCacheConfig = { ttl: '1h' }; // '5m' (default) | '1h'
 ```
 
-`OllamaProviderConfig`, `AnthropicProviderConfig` and `GoogleProviderConfig` take `baseUrl` and `headers` (Google's `baseUrl` includes the API version), `VLLMProviderConfig` takes `profile` and `headers`, `OpenRouterProviderConfig` takes `headers`, and `BedrockProviderConfig` takes `endpoint` for a VPC endpoint or a proxy. Ollama keeps the JSON content type and gives `apiKey` precedence over custom authorization headers regardless of casing.
+`OllamaProviderConfig`, `AnthropicProviderConfig` and `GoogleProviderConfig` take `baseUrl` and `headers` (Google's `baseUrl` includes the API version), `VLLMProviderConfig` takes `profile` and `headers`, `OpenRouterProviderConfig` takes `headers`, and `BedrockProviderConfig` takes `endpoint` for a VPC endpoint or a proxy. Ollama sends these headers with non-streaming and streaming chat requests to `/api/chat`, keeps the JSON content type and gives `apiKey` precedence over custom authorization headers regardless of casing.
 
 `LLMRetryConfig` (`maxRetries`, `baseDelay`, `maxDelay`, `maxRetryAfter`, `requestTimeout`, `onRetry`) types `CogitatorConfig.llm.retry`; `ModelRoute` is what `cog.route()` resolves a model string to.
 

@@ -33,10 +33,7 @@ async function main() {
   const cog = new Cogitator({
     llm: {
       providers: {
-        ollama: {
-          baseUrl: OLLAMA_URL,
-          headers: { 'X-Example': '17-provider-surface' },
-        },
+        ollama: { baseUrl: OLLAMA_URL },
         openai: {
           apiKey: 'ollama',
           baseUrl: `${OLLAMA_URL}/v1`,
