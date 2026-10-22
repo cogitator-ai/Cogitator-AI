@@ -103,7 +103,7 @@ describe('forget, redactEntries and rewind', () => {
     expect(await items.get(cityItem!.id)).not.toBeNull();
   });
 
-  it('forgets a user across threads, and needs the agents to go through', async () => {
+  it('forgets a user across threads, with the agents its threads name', async () => {
     const { llm } = backend();
     const { cog, store, items } = await runtime(llm);
     await cog.run(agent, { input: 'My card is 4111.', threadId: 'a', userId: 'ana' });
@@ -111,8 +111,8 @@ describe('forget, redactEntries and rewind', () => {
     await cog.run(agent, { input: 'Hello.', threadId: 'c', userId: 'bob' });
     await items.write([item('Ana has card 4111.', [])]);
 
-    await expect(cog.forget({ userId: 'ana' })).rejects.toThrow('needs the agents');
-    const report = await cog.forget({ userId: 'ana' }, { agents: [agent] });
+    await expect(cog.forget({ userId: 'nobody' })).rejects.toThrow('needs the agents');
+    const report = await cog.forget({ userId: 'ana' });
 
     expect(report.threads.sort()).toEqual(['a', 'b']);
     expect((await store.getThread('c')).success).toBe(true);
@@ -150,6 +150,57 @@ describe('forget, redactEntries and rewind', () => {
     expect(report.items.stale).toEqual([braga!.id]);
     const thread = await store.getThread('t');
     expect(thread.success && thread.data?.activeLeafId).toBe(first);
+  });
+
+  it('finds the agents a thread names, and asks for them for a thread that names none', async () => {
+    const { llm } = backend();
+    const { cog, store, items } = await runtime(llm);
+    await cog.run(agent, { input: 'My card is 4111.', threadId: 'named', userId: 'ana' });
+    const thread = await store.getThread('named');
+    expect(thread.success && thread.data?.metadata.memoryAgentIds).toEqual(['helper']);
+    const path = await store.getEntries({ threadId: 'named' });
+    const asked = path.success ? path.data[0] : undefined;
+    const [card] = await items.write([item('Ana has card 4111.', [asked!.id])]);
+
+    const report = await cog.forget({ entryIds: [asked!.id] });
+    expect(report.items.purged).toEqual([card!.id]);
+
+    await store.createThread('legacy-agent', {}, 'legacy');
+    const [old] = await said(store, 'legacy', ['Old turn.']);
+    await expect(cog.forget({ entryIds: [old!] })).rejects.toThrow('pass agents');
+  });
+
+  it('writes no item from a turn forgotten while the model extracted it', async () => {
+    let cog: Cogitator | undefined;
+    let store: InMemoryAdapter | undefined;
+    const { llm } = backend(async (request) => {
+      if (!String(request.messages[0]?.content).startsWith('You keep the long-term memory')) {
+        return '[]';
+      }
+      const turns = await store!.getEntries({ threadId: 'race' });
+      const asked = turns.success
+        ? turns.data.find((entry) => entry.message.role === 'user')
+        : undefined;
+      if (asked) await cog!.forget({ entryIds: [asked.id] }, { agents: [agent] });
+      return JSON.stringify([
+        {
+          kind: 'fact',
+          content: 'The locker code is 8812.',
+          subject: 'the user',
+          attribute: 'locker code',
+          value: '8812',
+          confidence: 0.95,
+          evidence: [{ message: 0, quote: 'locker code is 8812' }],
+        },
+      ]);
+    });
+    const made = await runtime(llm, { extraction: {} });
+    cog = made.cog;
+    store = made.store;
+
+    await cog.run(agent, { input: 'My locker code is 8812.', threadId: 'race', userId: 'ana' });
+
+    expect(await made.items.query({ scope })).toEqual([]);
   });
 
   it('stops extracting a branch a rewind left, before its next model call', async () => {

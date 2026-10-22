@@ -68,7 +68,10 @@ export interface MemoryCascadeOptions {
   files?: MemoryFileAdapter;
   graph?: GraphAdapter;
   facts?: FactAdapter;
-  /** Vectors of facts, deleted with them */
+  /**
+   * Where vectors are kept: those of the entries and summaries that go, and of the facts, are
+   * deleted from it, whether or not a message index listens to the store
+   */
   embeddings?: EmbeddingAdapter;
   now?: () => Date;
 }
@@ -175,11 +178,11 @@ export class MemoryCascade {
     if (entries.length === 0) return report;
     const gone = new Set(entries.map((entry) => entry.id));
     await this.dropSummaries(entries, gone, report);
+    await this.dropDerived(gone, who, report);
     for (const entry of [...entries].reverse()) {
       unwrap(await this.memory.deleteEntry(entry.id));
       report.entries.deleted.push(entry.id);
     }
-    await this.dropDerived(gone, who, report);
     return report;
   }
 
@@ -200,6 +203,7 @@ export class MemoryCascade {
     if (entries.length === 0) return report;
     const gone = new Set(entries.map((entry) => entry.id));
     await this.dropSummaries(entries, gone, report);
+    await this.dropDerived(gone, who, report);
     for (const entry of entries) {
       if (entry.type !== undefined && entry.type !== 'message' && entry.type !== 'tool_result') {
         unwrap(await this.memory.deleteEntry(entry.id));
@@ -209,7 +213,6 @@ export class MemoryCascade {
       unwrap(await redact(entry.id, redaction));
       report.entries.redacted.push(entry.id);
     }
-    await this.dropDerived(gone, who, report);
     return report;
   }
 
@@ -259,7 +262,8 @@ export class MemoryCascade {
   /**
    * The rewind of `threadId` to `toEntryId` (`MemoryAdapter.rewind`): the entries after it on the
    * active branch stay, on a branch of their own, and the items that stood only on them become
-   * `stale` with `staleBecause: { reason: 'rewound' }`
+   * `stale` with `staleBecause: { reason: 'rewound' }`. Called again once the thread stands at
+   * `toEntryId`, such as after a failure, it marks what stood only on the entries after it.
    */
   async rewind(
     threadId: string,
@@ -272,11 +276,17 @@ export class MemoryCascade {
       throw new Error(`The ${this.memory.provider} memory adapter has no branches to rewind`);
     }
     const report = emptyReport();
-    const before = unwrap(await getPath({ threadId, types: 'all' }));
-    const at = before.findIndex((entry) => entry.id === toEntryId);
-    unwrap(await rewind(threadId, toEntryId));
-    if (at === -1) return report;
-    const cut = new Set(before.slice(at + 1).map((entry) => entry.id));
+    const thread = unwrap(await this.memory.getThread(threadId));
+    let cut: Set<string>;
+    if (thread?.activeLeafId === toEntryId) {
+      cut = await this.descendantsOf(threadId, toEntryId);
+    } else {
+      const before = unwrap(await getPath({ threadId, types: 'all' }));
+      const at = before.findIndex((entry) => entry.id === toEntryId);
+      unwrap(await rewind(threadId, toEntryId));
+      if (at === -1) return report;
+      cut = new Set(before.slice(at + 1).map((entry) => entry.id));
+    }
     if (cut.size === 0 || !this.itemAdapter || !this.items) return report;
     for (const agentId of who.agentIds) {
       const found = unwrap(
@@ -296,8 +306,9 @@ export class MemoryCascade {
   }
 
   /**
-   * `entries` with, unless `who.keepReplies`, the conversation entries that answer each user
-   * message among them: its descendants on every branch up to the next user message
+   * `entries` with, unless `who.keepReplies`, the entries that answer each user message among
+   * them: its descendants on every branch up to the next user message, events such as a model
+   * change or an approval among them, a compaction passed over and left to the summary check
    */
   private async withReplies(
     entries: readonly MemoryEntry[],
@@ -307,25 +318,47 @@ export class MemoryCascade {
     if (who.keepReplies || asked.length === 0) return [...entries];
     const all = new Map(entries.map((entry) => [entry.id, entry]));
     for (const threadId of new Set(asked.map((entry) => entry.threadId))) {
-      const thread = unwrap(await this.memory.getEntries({ threadId, types: 'all' }));
-      const children = new Map<string, MemoryEntry[]>();
-      for (const entry of thread) {
-        if (!entry.parentId) continue;
-        children.set(entry.parentId, [...(children.get(entry.parentId) ?? []), entry]);
-      }
+      const children = await this.childrenOf(threadId);
       const queue = asked.filter((entry) => entry.threadId === threadId).map((entry) => entry.id);
+      const seen = new Set(queue);
       for (let id = queue.pop(); id !== undefined; id = queue.pop()) {
         for (const child of children.get(id) ?? []) {
-          const reply =
-            child.message.role !== 'user' &&
-            (child.type === undefined || child.type === 'message' || child.type === 'tool_result');
-          if (!reply || all.has(child.id)) continue;
-          all.set(child.id, child);
+          if (seen.has(child.id)) continue;
+          seen.add(child.id);
+          const conversation =
+            child.type === undefined || child.type === 'message' || child.type === 'tool_result';
+          if (conversation && child.message.role === 'user') continue;
+          if (child.type !== 'compaction') all.set(child.id, child);
           queue.push(child.id);
         }
       }
     }
     return [...all.values()];
+  }
+
+  /** The ids of the entries after `entryId` on every branch of `threadId` */
+  private async descendantsOf(threadId: string, entryId: string): Promise<Set<string>> {
+    const children = await this.childrenOf(threadId);
+    const found = new Set<string>();
+    const queue = [entryId];
+    for (let id = queue.pop(); id !== undefined; id = queue.pop()) {
+      for (const child of children.get(id) ?? []) {
+        if (found.has(child.id)) continue;
+        found.add(child.id);
+        queue.push(child.id);
+      }
+    }
+    return found;
+  }
+
+  /** The entries of `threadId` by the entry they follow */
+  private async childrenOf(threadId: string): Promise<Map<string, MemoryEntry[]>> {
+    const children = new Map<string, MemoryEntry[]>();
+    for (const entry of unwrap(await this.memory.getEntries({ threadId, types: 'all' }))) {
+      if (!entry.parentId) continue;
+      children.set(entry.parentId, [...(children.get(entry.parentId) ?? []), entry]);
+    }
+    return children;
   }
 
   private async entriesOf(entryIds: readonly string[]): Promise<MemoryEntry[]> {
@@ -373,6 +406,7 @@ export class MemoryCascade {
           if (at.id === event?.firstKeptEntryId) past = true;
         }
         if (!quoted && !covers) continue;
+        if (this.embeddings) unwrap(await this.embeddings.deleteBySource(entry.id));
         unwrap(await this.memory.deleteEntry(entry.id));
         report.summaries.push(entry.id);
       }
@@ -386,6 +420,9 @@ export class MemoryCascade {
     report: MemoryCascadeReport
   ): Promise<void> {
     if (gone.size === 0) return;
+    if (this.embeddings) {
+      for (const entryId of gone) unwrap(await this.embeddings.deleteBySource(entryId));
+    }
     const purged: string[] = [];
     if (this.itemAdapter && this.items) {
       for (const agentId of who.agentIds) {

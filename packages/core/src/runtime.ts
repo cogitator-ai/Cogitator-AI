@@ -78,6 +78,12 @@ import {
   parsePlaybook,
 } from '@cogitator-ai/memory';
 
+/** The memory ids a thread's metadata names, see `MEMORY_AGENTS` */
+function memoryAgentsOf(metadata: Record<string, unknown>): string[] {
+  const named = metadata[MEMORY_AGENTS];
+  return Array.isArray(named) ? named.filter((id): id is string => typeof id === 'string') : [];
+}
+
 /** Whose memory a cascade of {@link Cogitator.forget} goes through */
 export interface MemoryCascadeCall {
   /** Agents (or their memory ids) whose items, files and facts to go through */
@@ -123,6 +129,7 @@ async function playbookNote(
 }
 import { TruncateStrategy } from './context/strategies/index';
 import { sanitizeToolHistory } from './utils/tool-history';
+import { MEMORY_AGENTS } from './cogitator/message-builder';
 import { normalizeTurn } from './llm/turn';
 import { withPiiDecisions, withPiiMasking } from './security/pii';
 import { MiddlewarePipeline } from './middleware/pipeline';
@@ -2996,11 +3003,12 @@ export class Cogitator implements ToolInvoker {
    * observation or a playbook that names an item that went, the playbook in front losing those
    * rules in a new version. See `MemoryCascade` and the report it returns.
    *
-   * Items, files, facts and the graph are kept by agent: `agents` names those whose memory to go
-   * through (their memory ids), the agent of each thread found is always among them. `graph` is a
-   * knowledge graph of your own to go through too.
+   * Items, files, facts and the graph are kept by the memory id of an agent. Each thread names the
+   * agents that ran in it (`metadata.memoryAgentIds`), and their memory is gone through: `agents`
+   * adds others, and is needed for a thread written before threads named them and for a user
+   * without threads. `graph` is a knowledge graph of your own to go through too.
    *
-   * @throws CogitatorError when no memory is configured, or `{ userId }` names no agent
+   * @throws CogitatorError when no memory is configured, or the agents to go through are not known
    */
   async forget(
     target: { entryIds: readonly string[] } | { threadId: string } | { userId: string },
@@ -3008,13 +3016,14 @@ export class Cogitator implements ToolInvoker {
   ): Promise<MemoryCascadeReport> {
     const { cascade, agentIds } = await this.cascadeFor('forget', options);
     if ('userId' in target) {
-      if (agentIds.length === 0) {
+      const users = await this.withUserAgents(agentIds, target.userId);
+      if (users.length === 0) {
         throw new CogitatorError({
           message: 'forget({ userId }) needs the agents whose memory to go through: pass agents',
           code: ErrorCode.VALIDATION_ERROR,
         });
       }
-      return cascade.deleteUser(target.userId, { agentIds });
+      return cascade.deleteUser(target.userId, { agentIds: users });
     }
     if ('threadId' in target) {
       return cascade.deleteThread(target.threadId, {
@@ -3120,7 +3129,11 @@ export class Cogitator implements ToolInvoker {
     return [...threads];
   }
 
-  /** `agentIds` with the agents of `threadIds` */
+  /**
+   * `agentIds` with the agents of `threadIds`: the thread's owner, and the memory ids of the
+   * agents that ran in it (`metadata.memoryAgentIds`). A thread that names none, written before
+   * threads named them, needs `agentIds` from the caller.
+   */
   private async withThreadAgents(
     agentIds: readonly string[],
     threadIds: readonly string[]
@@ -3129,8 +3142,45 @@ export class Cogitator implements ToolInvoker {
     const all = new Set(agentIds);
     for (const threadId of threadIds) {
       const thread = await memory?.getThread(threadId);
-      if (thread?.success && thread.data) all.add(thread.data.agentId);
+      if (!thread?.success || !thread.data) continue;
+      all.add(thread.data.agentId);
+      const named = memoryAgentsOf(thread.data.metadata);
+      if (named.length === 0 && agentIds.length === 0) {
+        throw new CogitatorError({
+          message: `Thread ${threadId} does not name the agents whose memory stands on it: pass agents`,
+          code: ErrorCode.VALIDATION_ERROR,
+        });
+      }
+      for (const id of named) all.add(id);
     }
+    return [...all];
+  }
+
+  /** `agentIds` with the memory ids of the agents that ran in the threads of `userId` */
+  private async withUserAgents(agentIds: readonly string[], userId: string): Promise<string[]> {
+    const memory = this.state.memoryAdapter;
+    const all = new Set(agentIds);
+    let cursor: string | undefined;
+    do {
+      const page = await memory?.listThreads({
+        metadata: { userId },
+        limit: 500,
+        ...(cursor !== undefined && { cursor }),
+      });
+      if (!page?.success) break;
+      for (const thread of page.data.threads) {
+        all.add(thread.agentId);
+        const named = memoryAgentsOf(thread.metadata);
+        if (named.length === 0 && agentIds.length === 0) {
+          throw new CogitatorError({
+            message: `Thread ${thread.id} does not name the agents whose memory stands on it: pass agents`,
+            code: ErrorCode.VALIDATION_ERROR,
+          });
+        }
+        for (const id of named) all.add(id);
+      }
+      cursor = page.data.nextCursor;
+    } while (cursor !== undefined);
     return [...all];
   }
 

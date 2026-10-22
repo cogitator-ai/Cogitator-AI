@@ -14,6 +14,7 @@ import { MemoryCascade } from '../memory-cascade';
 import { OBSERVATIONS_DIRECTORY } from '../memory-observations';
 import { PLAYBOOK_PATH, parsePlaybook, playbookFile } from '../memory-consolidation';
 import { SQLiteGraphAdapter } from '../knowledge-graph/sqlite-graph-adapter';
+import { InMemoryEmbeddingAdapter } from '../adapters/memory-embedding';
 
 const scope: MemoryItemScope = { agentId: 'helper', userId: 'ana' };
 const who = { agentIds: ['helper'] };
@@ -169,6 +170,72 @@ describe('MemoryCascade', () => {
     const report = await cascade.deleteEntries([card!.id], { ...who, keepReplies: true });
     expect(report.entries.deleted).toEqual([card!.id]);
     expect(unwrap(await memory.getEntry(noted!.id))).not.toBeNull();
+  });
+
+  it('takes the replies past an event between the message and its answer', async () => {
+    const asked = await say('My pin is 0000.');
+    const change = unwrap(
+      await memory.addEntry({
+        threadId: 't',
+        type: 'model_change',
+        message: { role: 'system', content: 'model changed' },
+        tokenCount: 1,
+        event: { from: 'a', to: 'b' },
+      })
+    );
+    const answer = await say('Your pin 0000 is noted.', 'assistant');
+    const next = await say('Thanks.');
+
+    const report = await cascade.deleteEntries([asked.id], who);
+
+    expect(report.entries.deleted.sort()).toEqual([asked.id, change.id, answer.id].sort());
+    expect(unwrap(await memory.getEntry(next.id))).not.toBeNull();
+  });
+
+  it('deletes the vectors of the entries that go, with no message index listening', async () => {
+    const embeddings = new InMemoryEmbeddingAdapter();
+    const withVectors = new MemoryCascade({ memory, items: memory, embeddings });
+    const [card] = entries;
+    unwrap(
+      await embeddings.addEmbedding({
+        sourceId: card!.id,
+        sourceType: 'message',
+        vector: [1, 0],
+        content: 'My card number is 4111.',
+      })
+    );
+
+    await withVectors.deleteEntries([card!.id], who);
+
+    const left = unwrap(await embeddings.search({ vector: [1, 0], limit: 5, threshold: 0 }));
+    expect(left).toEqual([]);
+  });
+
+  it('leaves the entries in place when the cascade fails, so it can be run again', async () => {
+    const [card] = entries;
+    const [cardItem] = await items.write([item('Ana has card 4111.', [card!.id])]);
+    const find = memory.findItems.bind(memory);
+    let failing = true;
+    memory.findItems = async (filter) =>
+      failing ? { success: false, error: 'store down' } : find(filter);
+
+    await expect(cascade.deleteEntries([card!.id], who)).rejects.toThrow('store down');
+    expect(unwrap(await memory.getEntry(card!.id))).not.toBeNull();
+
+    failing = false;
+    const report = await cascade.deleteEntries([card!.id], who);
+    expect(report.items.purged).toEqual([cardItem!.id]);
+    expect(unwrap(await memory.getEntry(card!.id))).toBeNull();
+  });
+
+  it('marks what stood after the target when run again on a thread that stands there', async () => {
+    const [, , porto, after] = entries;
+    const [cut] = await items.write([item('Ana said got it.', [after!.id])]);
+    unwrap(await memory.rewind('t', porto!.id));
+
+    const report = await cascade.rewind('t', porto!.id, who);
+
+    expect(report.items.stale).toEqual([cut!.id]);
   });
 
   it('keeps a summary that covers none of what went', async () => {

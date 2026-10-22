@@ -247,6 +247,35 @@ export function memoryExtractionMiddleware(
         entries,
         { scope, timeZone },
         {
+          beforeWrite: async (found) => {
+            const onBranch = await memory.getThread(place.threadId);
+            if (
+              !onBranch.success ||
+              onBranch.data === null ||
+              !(await onActivePath({ getPath }, place.threadId, onBranch.data.activeLeafId, leafId))
+            ) {
+              return [];
+            }
+            const standing = new Map<string, boolean>();
+            const stands = async (entryId: string) => {
+              const known = standing.get(entryId);
+              if (known !== undefined) return known;
+              const read = await memory.getEntry(entryId);
+              const kept = read.success && read.data !== null && !read.data.metadata?.redacted;
+              standing.set(entryId, kept);
+              return kept;
+            };
+            const kept: typeof found = [];
+            for (const item of found) {
+              const ids = item.evidence.flatMap((piece) =>
+                piece.entryId === undefined ? [] : [piece.entryId]
+              );
+              let all = true;
+              for (const id of ids) all &&= await stands(id);
+              if (all) kept.push(item);
+            }
+            return kept;
+          },
           beforeWindow: async () => {
             const now = await memory.getThread(place.threadId);
             return (
