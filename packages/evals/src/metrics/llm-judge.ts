@@ -244,7 +244,8 @@ export function judgeContextFor(cogitator: JudgeCogitator, judgeConfig: JudgeCon
     const key = cacheKey(judgeConfig, call.input, call.format, sample);
     const running = inFlight.get(key);
     if (running) return { output: (await running).output };
-    const verdict = lookup(call, key).finally(() => inFlight.delete(key));
+    const { signal: _signal, ...shared } = call;
+    const verdict = lookup(shared, key).finally(() => inFlight.delete(key));
     inFlight.set(key, verdict);
     return verdict;
   };

@@ -223,7 +223,10 @@ describe('EvalComparison pairwise judging', () => {
     }).run({ signal: controller.signal });
 
     await vi.waitFor(() => expect(run).toHaveBeenCalled());
+    const [, options] = run.mock.calls[0] as unknown as [unknown, { signal?: AbortSignal }];
+    expect(options.signal?.aborted).toBe(false);
     controller.abort(new Error('cancelled'));
+    expect(options.signal?.aborted).toBe(true);
 
     await expect(running).rejects.toThrow('cancelled');
   });

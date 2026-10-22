@@ -338,12 +338,15 @@ describe('gEval steps', () => {
       'Read the question',
       'Check the math',
       'Compare the answer',
-      'Weigh clarity',
+      'Weigh **clarity**',
       'Decide',
       'Note gaps',
       'Score it',
     ]);
     expect(stepsOf('No list here.')).toEqual([]);
+    expect(stepsOf('---\n*Note: be strict*\n* keep `__init__` as written')).toEqual([
+      'keep `__init__` as written',
+    ]);
   });
 
   it('counts what a failed generation cost, once per generation', async () => {

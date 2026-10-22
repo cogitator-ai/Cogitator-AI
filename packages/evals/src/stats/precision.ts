@@ -8,14 +8,19 @@ export function withoutNoise(value: number): number {
 }
 
 /**
- * `a - b` rounded to 12 significant digits, and 0 when it is that small next to `a` and `b`, so
- * `0.7 - 0.4` and `0.6 - 0.9` tie in magnitude and two means of the same trials differ by nothing
+ * `a - b` on a grid of 12 significant digits of the larger of `a` and `b`, where the float noise
+ * of the subtraction lives, so `0.7 - 0.4` and `0.6 - 0.9` tie in magnitude, so do
+ * `12345.9 - 12345.7` and `98765.7 - 98765.5`, and two means of the same trials differ by nothing.
+ * An infinite or NaN difference stays as it is.
  */
 export function pairedDifference(a: number, b: number): number {
   const difference = a - b;
+  if (!Number.isFinite(difference)) return difference;
   const scale = Math.max(Math.abs(a), Math.abs(b));
-  if (Math.abs(difference) <= scale * 10 ** -SIGNIFICANT_DIGITS) return 0;
-  return withoutNoise(difference);
+  if (scale === 0) return 0;
+  const step = 10 ** (Math.floor(Math.log10(scale)) - (SIGNIFICANT_DIGITS - 1));
+  const snapped = Math.round(difference / step) * step;
+  return snapped === 0 ? 0 : withoutNoise(snapped);
 }
 
 /** Whether every value is the same */

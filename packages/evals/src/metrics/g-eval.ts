@@ -26,16 +26,19 @@ const GEvalOptionsSchema = z.object({
     .default([1, 5]),
 });
 
-const STEP_LINE = /^\s*(?:(?:step\s*)?\d+\s*[.):-]|[-*\u2022])\s*(.*\S)\s*$/i;
+const STEP_LINE =
+  /^\s*(?:(\*\*|__)?(?:step\s*)?\d+\s*[.):-]\1?\s*|(?:\*\*|__)?[-*\u2022](?:\*\*|__)?\s+)(.*\S)\s*$/i;
 
 /**
  * The steps of a numbered or bulleted list, in order: `1. ...`, `1) ...`, `Step 1: ...`,
- * `- ...`, with Markdown bold (`**1.** ...`, `**Step 1:** ...`) taken off
+ * `- ...`, a Markdown bold marker (`**1.** ...`, `**Step 1:** ...`) included. A bullet needs a
+ * space after it, so a rule (`---`) or emphasis (`*note*`) is no step, and the text of a step is
+ * kept as written
  */
 export function stepsOf(text: string): string[] {
   return text
     .split('\n')
-    .map((line) => STEP_LINE.exec(line.replace(/\*\*|__/g, ''))?.[1])
+    .map((line) => STEP_LINE.exec(line)?.[2])
     .filter((step): step is string => step !== undefined);
 }
 

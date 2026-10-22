@@ -6,6 +6,7 @@ import { mcnemarExact } from '../stats/mcnemar';
 import { wilcoxonSignedRank } from '../stats/wilcoxon';
 import { pearson, spearman } from '../stats/correlation';
 import { pairedTTest } from '../stats/t-test';
+import { pairedDifference } from '../stats/precision';
 import { seededRandom } from '../stats/random';
 import { averageRanks } from '../stats/ranks';
 
@@ -209,5 +210,20 @@ describe('paired differences without float noise', () => {
     expect(spearman([0.1, 0.1, 0.1], [0.2, 0.2, 0.2])).toBeNaN();
     expect(pearson([0.3, 0.1 + 0.2, 0.3], [0.1, 0.5, 0.9])).toBeNaN();
     expect(spearman([0.3, 0.1 + 0.2, 0.3], [0.1, 0.5, 0.9])).toBeNaN();
+  });
+});
+
+describe('pairedDifference', () => {
+  it('snaps the noise of a subtraction to the grid of its operands', () => {
+    expect(pairedDifference(0.7, 0.4)).toBe(-pairedDifference(0.6, 0.9));
+    expect(pairedDifference(12345.9, 12345.7)).toBe(pairedDifference(98765.7, 98765.5));
+    expect(pairedDifference(0.3, 0.1 + 0.2)).toBe(0);
+  });
+
+  it('keeps real small differences and infinite ones', () => {
+    expect(pairedDifference(10_001, 10_000)).toBe(1);
+    expect(pairedDifference(0.001001, 0.001)).toBeCloseTo(0.000001, 12);
+    expect(pairedDifference(Infinity, 5)).toBe(Infinity);
+    expect(pairedDifference(0, 0)).toBe(0);
   });
 });
