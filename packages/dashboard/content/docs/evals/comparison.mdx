@@ -22,6 +22,7 @@ interface ComparisonResult {
 interface MetricComparison {
   baseline: number; // mean score
   challenger: number; // mean score
+  n: number; // cases compared
   pValue: number; // statistical significance
   significant: boolean; // p < 0.05
   winner: 'baseline' | 'challenger' | 'tie';
@@ -91,7 +92,7 @@ Used for continuous scores (e.g., faithfulness: 0.73, 0.85, 0.91). Tests whether
 
 Used for binary scores (all values are exactly 0 or 1, e.g., exactMatch). Tests whether the proportion of disagreements between baseline and challenger is significantly different from random.
 
-Both tests use p < 0.05 as the significance threshold. A metric's winner is only declared when the difference is statistically significant, and is then the side with the higher mean. With fewer than 2 cases every metric is a tie (`pValue: 1`). Scores are paired by case; a case where a metric is missing counts as 0.
+Both tests use p < 0.05 as the significance threshold. A metric's winner is only declared when the difference is statistically significant, and is then the side with the higher mean. With fewer than 2 cases every metric is a tie (`pValue: 1`). Scores are paired by case. A case that errored on one side, or where one side has no score for the metric, counts as 0 for that side, so a challenger that fails cases loses on them. A case neither side scored is left out, and `n` is the number of cases a metric was compared on.
 
 The tests are exported for your own analyses:
 

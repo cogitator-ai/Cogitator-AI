@@ -1,8 +1,9 @@
 import { writeFileSync } from 'node:fs';
 import type { EvalSuiteResult } from './index';
+import { CASE_FLAGS } from './format';
 
 function escapeField(value: string): string {
-  if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+  if (/[",\r\n]/.test(value)) {
     return `"${value.replace(/"/g, '""')}"`;
   }
   return value;
@@ -16,8 +17,9 @@ export function csvReport(result: EvalSuiteResult, options: { path: string }): v
     }
   }
   const metrics = [...metricNames];
+  const flags = CASE_FLAGS.filter((flag) => result.results.some((r) => r[flag] === true));
 
-  const headers = ['input', 'expected', 'output', 'duration', ...metrics];
+  const headers = ['input', 'expected', 'output', 'duration', ...flags, ...metrics];
   const lines: string[] = [headers.join(',')];
 
   for (const r of result.results) {
@@ -27,6 +29,7 @@ export function csvReport(result: EvalSuiteResult, options: { path: string }): v
       escapeField(r.case.expected ?? ''),
       escapeField(r.output),
       String(r.duration),
+      ...flags.map((flag) => (r[flag] === true ? 'true' : '')),
       ...metrics.map((m) => String(scoreMap.get(m) ?? '')),
     ];
     lines.push(row.join(','));

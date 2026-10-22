@@ -330,4 +330,66 @@ describe('EvalComparison', () => {
       expect(challengerProgress.length).toBeGreaterThan(0);
     });
   });
+
+  describe('errored cases', () => {
+    const many = Dataset.from(
+      Array.from({ length: 12 }, (_, i) => ({ input: `q${i}`, expected: 'ok' }))
+    );
+    const exact = makeMetricFn('exactMatch', (r) => (r.output === 'ok' ? 1 : 0));
+
+    it('counts the cases a side errored on as lost, even when the baseline errored on all', async () => {
+      const comparison = new EvalComparison({
+        dataset: many,
+        targets: {
+          baseline: {
+            fn: async () => {
+              throw new Error('provider down');
+            },
+          },
+          challenger: { fn: async () => 'ok' },
+        },
+        metrics: [exact],
+      });
+
+      const result = await comparison.run();
+
+      expect(result.summary.metrics.exactMatch).toMatchObject({
+        baseline: 0,
+        challenger: 1,
+        n: 12,
+        winner: 'challenger',
+      });
+      expect(result.summary.winner).toBe('challenger');
+    });
+
+    it('leaves out the cases both sides errored on', async () => {
+      const failsOn = (input: string) => input === 'q0' || input === 'q1';
+      const comparison = new EvalComparison({
+        dataset: many,
+        targets: {
+          baseline: {
+            fn: async (input) => {
+              if (failsOn(input)) throw new Error('down');
+              return 'ok';
+            },
+          },
+          challenger: {
+            fn: async (input) => {
+              if (failsOn(input)) throw new Error('down');
+              return 'ok';
+            },
+          },
+        },
+        metrics: [exact],
+      });
+
+      const result = await comparison.run();
+
+      expect(result.summary.metrics.exactMatch).toMatchObject({
+        n: 10,
+        baseline: 1,
+        challenger: 1,
+      });
+    });
+  });
 });

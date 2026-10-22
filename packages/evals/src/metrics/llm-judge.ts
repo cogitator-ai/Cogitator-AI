@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { JudgeCogitator, JudgeConfig } from '../schema';
+import type { JudgeCache, JudgeCogitator, JudgeConfig } from '../schema';
 import type { MetricFn, EvalCaseResult, MetricScore, MetricOptions, MetricUsage } from './types';
 
 export interface JudgeContext {
@@ -104,6 +104,9 @@ function usageOf(value: unknown): MetricUsage | undefined {
  * asking for a `{ score, reasoning }` JSON answer.
  */
 export function judgeContextFor(cogitator: JudgeCogitator, judgeConfig: JudgeConfig): JudgeContext {
+  const cache = judgeConfig.cache === true ? memoryCache() : judgeConfig.cache || undefined;
+  const slots =
+    judgeConfig.concurrency === undefined ? undefined : limiter(judgeConfig.concurrency);
   let judgeAgent: Promise<unknown> | undefined;
   const agent = () =>
     (judgeAgent ??= import('@cogitator-ai/core').then(
@@ -124,19 +127,104 @@ export function judgeContextFor(cogitator: JudgeCogitator, judgeConfig: JudgeCon
       }
     ));
 
+  const judge = async (input: string) => {
+    const result = await cogitator.run(await agent(), { input, useMemory: false });
+    const usage = usageOf(result.usage);
+    return {
+      output: result.structured !== undefined ? JSON.stringify(result.structured) : result.output,
+      ...(usage && { usage }),
+    };
+  };
+
+  const limited = (input: string) => (slots ? slots(() => judge(input)) : judge(input));
+  const inFlight = new Map<string, Promise<{ output: string; usage?: MetricUsage }>>();
+
+  const cached = async (input: string) => {
+    const key = cacheKey(judgeConfig, input);
+    const hit = await cacheRead(cache!, key);
+    if (hit !== undefined) return { output: hit };
+    const running = inFlight.get(key);
+    if (running) return { output: (await running).output };
+    const verdict = limited(input).finally(() => inFlight.delete(key));
+    inFlight.set(key, verdict);
+    const answered = await verdict;
+    if (parseJudgeOutput(answered.output)) await cacheWrite(cache!, key, answered.output);
+    return answered;
+  };
+
   return {
     judgeConfig,
-    cogitator: {
-      run: async ({ input }) => {
-        const result = await cogitator.run(await agent(), { input, useMemory: false });
-        const usage = usageOf(result.usage);
-        return {
-          output:
-            result.structured !== undefined ? JSON.stringify(result.structured) : result.output,
-          ...(usage && { usage }),
-        };
-      },
-    },
+    cogitator: { run: ({ input }) => (cache ? cached(input) : limited(input)) },
+  };
+}
+
+/** A cached verdict, none on a miss or when the cache cannot be read: the judge then runs */
+async function cacheRead(cache: JudgeCache, key: string): Promise<string | undefined> {
+  try {
+    const hit: unknown = await cache.get(key);
+    return typeof hit === 'string' ? hit : undefined;
+  } catch (error) {
+    warnCache('read', error);
+    return undefined;
+  }
+}
+
+/** Keeps a verdict, warning instead of failing the score when the cache cannot be written */
+async function cacheWrite(cache: JudgeCache, key: string, verdict: string): Promise<void> {
+  try {
+    await cache.set(key, verdict);
+  } catch (error) {
+    warnCache('write', error);
+  }
+}
+
+function warnCache(action: 'read' | 'write', error: unknown): void {
+  process.emitWarning(
+    `The judge cache could not ${action} a verdict: ${error instanceof Error ? error.message : String(error)}`,
+    { code: 'COGITATOR_EVALS_JUDGE_CACHE' }
+  );
+}
+
+/** Bumped whenever how the judge is asked changes, so kept verdicts of an older judge go unused */
+const CACHE_KEY_VERSION = 1;
+
+/**
+ * The key of a verdict: what the judge was asked (its instructions and the whole prompt), by
+ * which model and with which settings
+ */
+function cacheKey(judgeConfig: JudgeConfig, input: string): string {
+  return JSON.stringify([
+    CACHE_KEY_VERSION,
+    JUDGE_INSTRUCTIONS,
+    judgeConfig.model,
+    judgeConfig.temperature,
+    judgeConfig.maxTokens ?? null,
+    input,
+  ]);
+}
+
+function memoryCache(): JudgeCache {
+  const verdicts = new Map<string, string>();
+  return {
+    get: (key) => verdicts.get(key),
+    set: (key, verdict) => void verdicts.set(key, verdict),
+  };
+}
+
+/** Runs at most `limit` tasks at once, the rest waiting in order: a task that ends hands its slot on */
+function limiter(limit: number): <T>(task: () => Promise<T>) => Promise<T> {
+  let running = 0;
+  const waiting: Array<() => void> = [];
+  return async <T>(task: () => Promise<T>): Promise<T> => {
+    if (running >= limit) await new Promise<void>((resolve) => waiting.push(resolve));
+    else running++;
+    try {
+      return await task();
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else running--;
+    }
   };
 }
 

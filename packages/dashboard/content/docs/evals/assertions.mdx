@@ -110,6 +110,18 @@ A typical CI workflow:
 3. If the PR improves scores: update the baseline file
 4. If the PR regresses: fix the issue or adjust tolerance
 
+## maxErrorRate
+
+A case whose every attempt failed or timed out has no output, so no metric scores it: the means cover the cases that answered (`aggregated.<metric>.count` says how many). Pair metric thresholds with `maxErrorRate` so a run where the target mostly failed does not pass on the few cases that answered:
+
+```typescript
+import { maxErrorRate, threshold } from '@cogitator-ai/evals';
+
+assertions: [threshold('exactMatch', 0.9), maxErrorRate(0.05)];
+```
+
+`maxErrorRate(rate)` takes a rate from 0 to 1 and passes while `stats.errors / stats.total` stays at or below it.
+
 ## Custom Assertions
 
 Build arbitrary pass/fail logic with the `assertion()` factory:
@@ -161,4 +173,4 @@ assertions: [
 ];
 ```
 
-The `report('ci')` reporter exits with code 1 if any assertion fails, making it straightforward to integrate with CI pipelines. Outside CI, check `result.assertions.every((a) => a.passed)`.
+The `report('ci')` reporter sets `process.exitCode` to 1 if any assertion fails, so the CI job fails once the process ends. Outside CI, check `result.assertions.every((a) => a.passed)`.

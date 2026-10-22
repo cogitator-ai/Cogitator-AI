@@ -31,6 +31,8 @@ export interface EvalComparisonRunOptions {
 export interface MetricComparison {
   baseline: number;
   challenger: number;
+  /** Cases compared: those at least one side scored, an errored side counting as a 0 */
+  n: number;
   pValue: number;
   significant: boolean;
   winner: 'baseline' | 'challenger' | 'tie';
@@ -58,6 +60,7 @@ function compareMetric(baselineScores: number[], challengerScores: number[]): Me
     return {
       baseline: baselineMean,
       challenger: challengerMean,
+      n,
       pValue: 1,
       significant: false,
       winner: 'tie',
@@ -90,7 +93,7 @@ function compareMetric(baselineScores: number[], challengerScores: number[]): Me
     winner = challengerMean > baselineMean ? 'challenger' : 'baseline';
   }
 
-  return { baseline: baselineMean, challenger: challengerMean, pValue, significant, winner };
+  return { baseline: baselineMean, challenger: challengerMean, n, pValue, significant, winner };
 }
 
 function determineOverallWinner(
@@ -166,17 +169,20 @@ export class EvalComparison {
     ]);
 
     const metricNames = new Set<string>();
-    for (const r of baselineResult.results) {
-      for (const s of r.scores) {
-        metricNames.add(s.name);
+    for (const result of [baselineResult, challengerResult]) {
+      for (const r of result.results) {
+        for (const s of r.scores) metricNames.add(s.name);
       }
     }
 
     const metricComparisons: Record<string, MetricComparison> = {};
 
     for (const name of metricNames) {
-      const baselineScores = extractScores(baselineResult, name);
-      const challengerScores = extractScores(challengerResult, name);
+      const [baselineScores, challengerScores] = pairedScores(
+        baselineResult,
+        challengerResult,
+        name
+      );
       metricComparisons[name] = compareMetric(baselineScores, challengerScores);
     }
 
@@ -191,9 +197,26 @@ export class EvalComparison {
   }
 }
 
-function extractScores(result: EvalSuiteResult, metricName: string): number[] {
-  return result.results.map((r) => {
-    const score = r.scores.find((s: MetricScore) => s.name === metricName);
-    return score?.score ?? 0;
-  });
+/**
+ * The scores of a metric for each case, side by side. A case one side errored on counts as a 0
+ * for that side, since a target that fails loses the case, and a case both sides errored on is
+ * left out, telling nothing about either
+ */
+function pairedScores(
+  baseline: EvalSuiteResult,
+  challenger: EvalSuiteResult,
+  metricName: string
+): [number[], number[]] {
+  const scoreOf = (result: EvalSuiteResult, at: number) =>
+    result.results[at]?.scores.find((s: MetricScore) => s.name === metricName)?.score;
+  const baselineScores: number[] = [];
+  const challengerScores: number[] = [];
+  for (let at = 0; at < baseline.results.length; at++) {
+    const b = scoreOf(baseline, at);
+    const c = scoreOf(challenger, at);
+    if (b === undefined && c === undefined) continue;
+    baselineScores.push(b ?? 0);
+    challengerScores.push(c ?? 0);
+  }
+  return [baselineScores, challengerScores];
 }

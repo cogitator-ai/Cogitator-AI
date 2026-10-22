@@ -4,6 +4,10 @@ const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
 const RESET = '\x1b[0m';
 
+/**
+ * Prints a short pass or fail summary and sets `process.exitCode` to 1 when an assertion
+ * failed. It does not end the process, so output flushes and later hooks still run.
+ */
 export function ciReport(result: EvalSuiteResult): void {
   const passed = result.assertions.filter((a) => a.passed).length;
   const failed = result.assertions.filter((a) => !a.passed).length;
@@ -25,6 +29,6 @@ export function ciReport(result: EvalSuiteResult): void {
   console.log(`Result: ${passed} passed, ${failed} failed`);
 
   if (failed > 0) {
-    process.exit(1);
+    process.exitCode = 1;
   }
 }

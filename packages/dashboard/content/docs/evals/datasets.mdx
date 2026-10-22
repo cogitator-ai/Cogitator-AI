@@ -54,7 +54,7 @@ Example JSONL file:
 {"input": "Translate hello to Spanish", "expected": "hola"}
 ```
 
-Each line is validated against the `EvalCase` schema. Invalid JSON or missing `input` fields throw with the line number.
+Each line is validated against the `EvalCase` schema. Invalid JSON or a case the schema refuses throws with the line number and the fields at fault, such as `Invalid case at line 3: input: Invalid input`. The CSV loader names the line of the row too, counting quoted fields that span several lines.
 
 You can also use the standalone loader:
 
@@ -114,7 +114,13 @@ const sample = dataset.sample(10);
 console.log(sample.length); // 10 (or less if dataset is smaller)
 ```
 
-If `n` exceeds the dataset size, all cases are returned (shuffled); `n <= 0` gives an empty dataset.
+If `n` exceeds the dataset size, all cases are returned (shuffled), and `n <= 0` gives an empty dataset.
+
+Pass a `seed` (a number or a string) to pick the same cases on every run, so a sampled eval in CI compares like with like:
+
+```typescript
+const nightly = dataset.sample(50, { seed: 'nightly' });
+```
 
 ## Shuffling
 
@@ -122,6 +128,7 @@ Randomize the order of cases. Returns a new `Dataset`.
 
 ```typescript
 const shuffled = dataset.shuffle();
+const repeatable = dataset.shuffle({ seed: 42 }); // the same order on every run
 ```
 
 ## Iteration

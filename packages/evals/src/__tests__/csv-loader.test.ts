@@ -120,4 +120,28 @@ describe('loadCsv', () => {
       context: { domain: 'general' },
     });
   });
+
+  it('names the line of a row the case schema refuses, past multi-line fields and blank lines', async () => {
+    const rows = ['expected,input', 'ok,"first line', 'second line"', '', 'ok,fine'];
+
+    const loaded = await loadCsv(writeTmpFile('good.csv', rows.join('\n')));
+    expect(loaded.map((c) => c.input)).toEqual(['first line\nsecond line', 'fine']);
+    await expect(loadCsv(writeTmpFile('bad.csv', [...rows, 'only'].join('\n')))).rejects.toThrow(
+      'Invalid case at line 6: input'
+    );
+  });
+
+  it('loads a CSV of a header alone as no cases', async () => {
+    expect(await loadCsv(writeTmpFile('empty.csv', 'input,expected\n'))).toEqual([]);
+  });
+
+  it('counts lines across CRLF breaks, a header spanning lines and a byte order mark', async () => {
+    const crlf = writeTmpFile('crlf.csv', ['expected,input', 'ok,fine', '', 'only'].join('\r\n'));
+    const header = writeTmpFile('header.csv', ['"exp', 'ected",input', 'only'].join('\n'));
+    const bom = writeTmpFile('bom.csv', '\uFEFFinput,expected\nhello,hi\n');
+
+    await expect(loadCsv(crlf)).rejects.toThrow('Invalid case at line 4: input');
+    await expect(loadCsv(header)).rejects.toThrow('Invalid case at line 3: input');
+    expect(await loadCsv(bom)).toEqual([{ input: 'hello', expected: 'hi' }]);
+  });
 });

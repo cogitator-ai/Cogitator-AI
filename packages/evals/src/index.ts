@@ -61,6 +61,7 @@ export type { CustomMetricConfig } from './metrics/custom';
 export { threshold } from './assertions';
 export { noRegression } from './assertions';
 export { assertion } from './assertions';
+export { maxErrorRate } from './assertions';
 export type { AssertionFn, AssertionResult, AggregatedMetric, EvalStats } from './assertions';
 
 export { report } from './reporters';
@@ -77,6 +78,8 @@ export type {
   EvalSuiteConfig,
   JudgeConfig,
   JudgeConfigInput,
+  JudgeCache,
+  JudgeCogitator,
   EvalComparisonConfig,
 } from './schema';
 

@@ -20,6 +20,12 @@ pnpm add papaparse
 pnpm add @cogitator-ai/core
 ```
 
+To run suites as Vitest tests with [`describeEval`](/docs/evals/reporters#vitest) from `@cogitator-ai/evals/vitest`, add `vitest`, an optional peer dependency:
+
+```bash
+pnpm add -D vitest
+```
+
 ## Quick Start
 
 ```typescript
@@ -60,7 +66,7 @@ result.report('console');
                 └───────────┘                   └────────────┘
 ```
 
-**Eval flow:** Load test cases from a Dataset (JSONL, CSV, or programmatic) → EvalSuite runs each case against a Target (agent or function) with concurrency control → Metrics score each response → Scores are aggregated (mean, median, p95, etc.) → Assertions check thresholds and regressions → Reporters output results to console, JSON, CSV, or CI.
+**Eval flow:** Load test cases from a Dataset (JSONL, CSV, or programmatic) → EvalSuite runs each case against a Target (agent or function) with concurrency control → Metrics score each response → Scores are aggregated (mean, median, p95, etc.) → Assertions check thresholds and regressions → Reporters output results to console, JSON, CSV, CI, JUnit XML or a GitHub job summary.
 
 ## EvalSuite
 
@@ -95,7 +101,9 @@ const suite = new EvalSuite({
 | `retries`            | `0`     | Extra attempts for a failed or timed-out case (max 10)                                                                           |
 | `onProgress`         | —       | Called with `{ completed, total, currentCase }` after each case                                                                  |
 
-Errors and timeouts are retried up to `retries` times. If every attempt fails, the case result has an empty `output` and an `error` message (for example `Timed out after 30000ms`), so a failed run is never mistaken for an empty answer. Metrics still score that empty output.
+Errors and timeouts are retried up to `retries` times. If every attempt fails, the case result has an empty `output` and an `error` message (for example `Timed out after 30000ms`), so a failed run is never mistaken for an empty answer. No metric scores it, so it costs no judge calls and does not count as a 0: the aggregates cover the cases that answered (`count` says how many), and `stats.errors` or the [`maxErrorRate`](/docs/evals/assertions#maxerrorrate) assertion catch a run where many cases failed.
+
+An agent target's case result also says how the run ended: `truncated` when the answer stopped at the output token limit, `iterationLimitReached` when tool calls used up `maxIterations`, and `paused` when the run waits for tool approvals. The reporters show them.
 
 A timed-out attempt is cancelled, not abandoned: the suite aborts the attempt's `AbortSignal`, which stops an agent target's run, and waits for the attempt to stop (at most another `timeout`) before it retries. So a cancelled attempt does not keep running and paying in the background, attempts of one case never overlap, and `concurrency` holds. A `fn` target gets the signal as `context.signal` and should pass it on to its model call.
 
@@ -222,4 +230,4 @@ The tool takes an optional `maxCases` and returns `{ success, total, duration, c
 - [Metrics](/docs/evals/metrics) — deterministic, LLM-as-judge, statistical, and custom metrics
 - [Assertions](/docs/evals/assertions) — threshold checks, regression detection, custom assertions
 - [A/B Comparison](/docs/evals/comparison) — compare two targets with statistical significance testing
-- [Reporters](/docs/evals/reporters) — console, JSON, CSV, and CI output formats
+- [Reporters](/docs/evals/reporters) - console, JSON, CSV, JUnit, GitHub Actions and CI output, plus `describeEval` for Vitest

@@ -209,4 +209,32 @@ describe('Dataset', () => {
       expect(ds.length).toBe(5);
     });
   });
+
+  describe('seeded sampling', () => {
+    const dataset = Dataset.from(Array.from({ length: 20 }, (_, i) => ({ input: `case ${i}` })));
+    const inputs = (one: Dataset) => one.cases.map((c) => c.input);
+
+    it('picks and orders the same cases on every run with one seed', () => {
+      expect(inputs(dataset.sample(5, { seed: 42 }))).toEqual(
+        inputs(dataset.sample(5, { seed: 42 }))
+      );
+      expect(inputs(dataset.shuffle({ seed: 'nightly' }))).toEqual(
+        inputs(dataset.shuffle({ seed: 'nightly' }))
+      );
+    });
+
+    it('picks differently with another seed and keeps every case once', () => {
+      expect(inputs(dataset.shuffle({ seed: 1 }))).not.toEqual(
+        inputs(dataset.shuffle({ seed: 2 }))
+      );
+      expect([...inputs(dataset.shuffle({ seed: 7 }))].sort()).toEqual([...inputs(dataset)].sort());
+      expect(new Set(inputs(dataset.sample(20, { seed: 3 }))).size).toBe(20);
+      expect(inputs(dataset.shuffle({ seed: 1.2 }))).not.toEqual(
+        inputs(dataset.shuffle({ seed: 1.7 }))
+      );
+      expect(inputs(dataset.shuffle({ seed: -1 }))).not.toEqual(
+        inputs(dataset.shuffle({ seed: 2 ** 32 - 1 }))
+      );
+    });
+  });
 });

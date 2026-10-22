@@ -1,6 +1,7 @@
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { EvalCaseSchema } from '../schema';
+import { describeIssues } from './issues';
 import type { EvalCase } from '../schema';
 
 export async function loadJsonl(path: string): Promise<EvalCase[]> {
@@ -24,7 +25,11 @@ export async function loadJsonl(path: string): Promise<EvalCase[]> {
       throw new Error(`Invalid JSON at line ${lineNumber}: ${trimmed}`);
     }
 
-    cases.push(EvalCaseSchema.parse(parsed));
+    const checked = EvalCaseSchema.safeParse(parsed);
+    if (!checked.success) {
+      throw new Error(`Invalid case at line ${lineNumber}: ${describeIssues(checked.error)}`);
+    }
+    cases.push(checked.data);
   }
 
   return cases;

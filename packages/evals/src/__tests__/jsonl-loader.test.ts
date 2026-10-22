@@ -108,4 +108,13 @@ describe('loadJsonl', () => {
   it('throws on non-existent file', async () => {
     await expect(loadJsonl('/tmp/does-not-exist-abc123.jsonl')).rejects.toThrow();
   });
+
+  it('names the line of a case the case schema refuses', async () => {
+    const filePath = writeTmpFile(
+      'bad.jsonl',
+      ['{"input": "fine"}', '', '{"input": 5, "expected": "x"}'].join('\n')
+    );
+
+    await expect(loadJsonl(filePath)).rejects.toThrow('Invalid case at line 3: input');
+  });
 });

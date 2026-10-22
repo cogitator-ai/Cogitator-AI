@@ -270,9 +270,12 @@ describe('csvReport', () => {
 describe('ciReport', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
   let logs: string[];
+  let savedExitCode: typeof process.exitCode;
 
   beforeEach(() => {
     logs = [];
+    savedExitCode = process.exitCode;
+    process.exitCode = undefined;
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {}) as never);
     vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
       logs.push(args.map(String).join(' '));
@@ -280,18 +283,20 @@ describe('ciReport', () => {
   });
 
   afterEach(() => {
+    process.exitCode = savedExitCode;
     vi.restoreAllMocks();
   });
 
-  it('does not call process.exit when all assertions pass', () => {
+  it('leaves the exit code alone when all assertions pass', () => {
     const result = makeSuiteResult({
       assertions: [{ name: 'check', passed: true, message: 'ok' }],
     });
     ciReport(result);
+    expect(process.exitCode).toBeUndefined();
     expect(exitSpy).not.toHaveBeenCalled();
   });
 
-  it('calls process.exit(1) when any assertion fails', () => {
+  it('sets process.exitCode to 1 without ending the process when an assertion fails', () => {
     const result = makeSuiteResult({
       assertions: [
         { name: 'check1', passed: true, message: 'ok' },
@@ -299,7 +304,9 @@ describe('ciReport', () => {
       ],
     });
     ciReport(result);
-    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(process.exitCode).toBe(1);
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(logs.at(-1)).toBe('Result: 1 passed, 1 failed');
   });
 
   it('prints summary to stdout', () => {
@@ -308,18 +315,21 @@ describe('ciReport', () => {
     expect(output).toContain('2');
   });
 
-  it('does not call process.exit with empty assertions', () => {
+  it('leaves the exit code alone with empty assertions', () => {
     const result = makeSuiteResult({ assertions: [] });
     ciReport(result);
-    expect(exitSpy).not.toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
   });
 });
 
 describe('report() dispatcher', () => {
   let logs: string[];
+  let savedExitCode: typeof process.exitCode;
 
   beforeEach(() => {
     logs = [];
+    savedExitCode = process.exitCode;
+    process.exitCode = undefined;
     vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
       logs.push(args.map(String).join(' '));
     });
@@ -327,6 +337,7 @@ describe('report() dispatcher', () => {
   });
 
   afterEach(() => {
+    process.exitCode = savedExitCode;
     vi.restoreAllMocks();
   });
 
@@ -360,6 +371,7 @@ describe('report() dispatcher', () => {
     const result = makeSuiteResult({ assertions: [{ name: 'x', passed: true, message: 'ok' }] });
     report(result, 'ci');
     expect(process.exit).not.toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
   });
 
   it('writes each file report next to the shared base path with its own extension', () => {
@@ -389,20 +401,120 @@ describe('report() dispatcher', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('runs ci after the file reporters, since it may end the process', () => {
+  it('runs ci last and keeps the process alive, so every other reporter still runs', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'evals-ci-'));
     const base = join(tempDir, 'eval');
-    const exit = vi.spyOn(process, 'exit').mockImplementation((() => {
-      throw new Error('exit');
-    }) as never);
     const failing = makeSuiteResult({
       assertions: [{ name: 'x', passed: false, message: 'failed' }],
     });
 
-    expect(() => report(failing, ['ci', 'json'], { path: base })).toThrow('exit');
-    expect(() => readFileSync(`${base}.json`, 'utf-8')).not.toThrow();
+    report(failing, ['ci', 'json', 'console', 'junit'], { path: base });
 
-    exit.mockRestore();
+    expect(process.exit).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    expect(() => readFileSync(`${base}.json`, 'utf-8')).not.toThrow();
+    expect(readFileSync(`${base}.xml`, 'utf-8')).toContain('<testsuites');
+    expect(logs.join('\n')).toContain('Summary');
+    expect(logs.at(-1)).toBe('Result: 0 passed, 1 failed');
+
     rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('writes the junit report as <path>.xml, replacing a known extension', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'evals-junit-'));
+
+    report(makeSuiteResult(), 'junit', { path: join(tempDir, 'out.json') });
+
+    expect(readFileSync(join(tempDir, 'out.xml'), 'utf-8')).toMatch(/^<\?xml/);
+
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('delegates to the github reporter', () => {
+    const saved = process.env.GITHUB_STEP_SUMMARY;
+    delete process.env.GITHUB_STEP_SUMMARY;
+    try {
+      report(makeSuiteResult(), 'github');
+    } finally {
+      if (saved !== undefined) process.env.GITHUB_STEP_SUMMARY = saved;
+    }
+    expect(logs).toContain(
+      '::error title=Eval assertion exactMatch >= 0.8::exactMatch mean 0.5 < 0.8'
+    );
+  });
+});
+
+describe('run flags and metric counts', () => {
+  let tempDir: string;
+  let logs: string[];
+
+  function flagged(): EvalSuiteResult {
+    const result = makeSuiteResult();
+    result.results[0] = { ...result.results[0], truncated: true };
+    result.results[1] = { ...result.results[1], paused: true, iterationLimitReached: true };
+    result.aggregated.exactMatch = { ...result.aggregated.exactMatch, count: 2 };
+    return result;
+  }
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'evals-flags-'));
+    logs = [];
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('keeps the flags and the count in the json report', () => {
+    const path = join(tempDir, 'r.json');
+    jsonReport(flagged(), { path });
+
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as EvalSuiteResult;
+    expect(parsed.results[0].truncated).toBe(true);
+    expect(parsed.results[1].paused).toBe(true);
+    expect(parsed.results[1].iterationLimitReached).toBe(true);
+    expect(parsed.aggregated.exactMatch.count).toBe(2);
+  });
+
+  it('adds a csv column for each flag a case carries', () => {
+    const path = join(tempDir, 'r.csv');
+    csvReport(flagged(), { path });
+
+    const [header, row1, row2] = readFileSync(path, 'utf-8').trim().split('\n');
+    expect(header).toBe(
+      'input,expected,output,duration,truncated,iterationLimitReached,paused,exactMatch,relevance'
+    );
+    expect(row1.split(',').slice(4, 7)).toEqual(['true', '', '']);
+    expect(row2.split(',').slice(4, 7)).toEqual(['', 'true', 'true']);
+  });
+
+  it('leaves the flag columns out when no case carries a flag', () => {
+    const path = join(tempDir, 'r.csv');
+    csvReport(makeSuiteResult(), { path });
+
+    expect(readFileSync(path, 'utf-8').split('\n')[0]).toBe(
+      'input,expected,output,duration,exactMatch,relevance'
+    );
+  });
+
+  it('shows how many cases each metric was scored on in the console', () => {
+    consoleReport(flagged());
+
+    const header = logs.find((l) => l.includes('Metric')) ?? '';
+    expect(header).toContain('Cases');
+    const exact = logs.find((l) => l.startsWith('exactMatch')) ?? '';
+    const relevance = logs.find((l) => l.startsWith('relevance')) ?? '';
+    expect(exact.trimEnd().endsWith('2')).toBe(true);
+    expect(relevance.trimEnd().endsWith('-')).toBe(true);
+  });
+
+  it('leaves the cases column out when no metric has a count', () => {
+    consoleReport(makeSuiteResult());
+
+    expect(logs.find((l) => l.includes('Metric'))).not.toContain('Cases');
   });
 });

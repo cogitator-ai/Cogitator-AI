@@ -10,6 +10,7 @@ pnpm add @cogitator-ai/evals
 # Optional dependencies
 pnpm add papaparse  # CSV dataset loading
 pnpm add @cogitator-ai/core  # agent targets and LLM-as-judge metrics
+pnpm add -D vitest  # describeEval from @cogitator-ai/evals/vitest
 ```
 
 Website docs: [Evals](https://cogitator.app/docs/evals), [Datasets](https://cogitator.app/docs/evals/datasets), [Metrics](https://cogitator.app/docs/evals/metrics), [Assertions](https://cogitator.app/docs/evals/assertions), [Comparison](https://cogitator.app/docs/evals/comparison), [Reporters](https://cogitator.app/docs/evals/reporters).
@@ -23,7 +24,8 @@ Website docs: [Evals](https://cogitator.app/docs/evals), [Datasets](https://cogi
 - **Custom Metrics** — `metric()` factory for anything domain-specific
 - **Assertions** — threshold, noRegression, custom assertion with auto-detection of lower-is-better metrics
 - **A/B Testing** — EvalComparison with paired t-test and McNemar's test for statistical significance
-- **4 Reporters** — console (colored table), JSON, CSV, CI (exit code on failure)
+- **6 Reporters** - console (colored table), JSON, CSV, JUnit XML, GitHub Actions annotations and job summary, CI (exit code on failure)
+- **Vitest** - `describeEval` from `@cogitator-ai/evals/vitest` runs a suite as a test file, one test per case plus one for the assertions
 - **Builder API** — Fluent `EvalBuilder` for composable eval pipelines
 - **Baseline Workflow** — Save baselines, compare against them, catch regressions in CI
 - **Zod Validation** — Type-safe configuration with runtime checks
@@ -82,6 +84,8 @@ const suite = new EvalSuite({
 
 `suite.run(options?: EvalRunOptions)` takes `{ maxCases?: number, signal?: AbortSignal }`: with `maxCases` only the first N cases of the dataset run, and the results, aggregates, assertions and `stats.total` cover just those cases. Aborting `signal` cancels the attempts in flight, starts no further case, and `run()` rejects with the signal's reason.
 
+A case whose every attempt failed is not scored: its empty output costs no judge calls and counts as no 0, the aggregates cover the cases that answered (`aggregated.<metric>.count` says how many), and `maxErrorRate(rate)` fails a run where too many cases errored. An agent target's case result carries `truncated`, `iterationLimitReached` and `paused` when the run ended that way.
+
 A failure never drops a case. A metric that throws or returns a score that is not a finite number (such as NaN) scores 0 for that case with the reason in `score.error`, and an `onProgress` callback that throws is reported as a process warning.
 
 `result.stats` holds:
@@ -136,12 +140,15 @@ const dataset = await Dataset.fromCsv('./evals/qa.csv');
 
 CSV must have an `input` column. Optional columns: `expected`, `metadata.*`, `context.*`.
 
+Both loaders name the line of the file a case comes from when the case schema refuses it (`Invalid case at line 3: input: ...`), the CSV loader counting quoted fields that span lines.
+
 ### Transformations
 
 ```typescript
 const filtered = dataset.filter((c) => c.expected !== undefined);
 const sampled = dataset.sample(50);
 const shuffled = dataset.shuffle();
+const nightly = dataset.sample(50, { seed: 'nightly' }); // the same cases on every run
 ```
 
 All transformations return new `Dataset` instances — the original is never mutated.
@@ -240,7 +247,7 @@ The judge reads the case's `context` too, so `faithfulness()` can check a respon
 Dataset.from([{ input: 'Write the lede', context: { dossier: dossierText } }]);
 ```
 
-The `judge` option is a `JudgeConfigInput`: `{ model, temperature?, maxTokens?, cogitator? }`, with `temperature` defaulting to `0`.
+The `judge` option is a `JudgeConfigInput`: `{ model, temperature?, maxTokens?, cogitator?, cache?, concurrency? }`, with `temperature` defaulting to `0`. `cache: true` reuses a verdict for the same model, settings and prompt in memory (a `JudgeCache` with `get` and `set` keeps them across runs), and `concurrency` caps the judge calls running at once.
 
 The judge answers with `{ "score", "reasoning" }` JSON. A verdict in a code fence or with the score as a numeric string is read as well, and an answer without JSON falls back to its last labelled score (`Score: 0.4`, `score is 4/5`), never to a stray number in the prose. When no verdict can be read, or the judge call fails, the metric scores 0 with the reason in `score.error`. The judge's usage is reported on each score and counted in `stats.judgeCost`.
 
@@ -305,6 +312,16 @@ const assertions = [
 ```
 
 Latency, cost and tokenUsage metrics (and names ending in `Duration` or `Latency`) are lower-is-better: the assertion passes when the value is at or below the threshold. `noRegression` uses the same rule.
+
+### maxErrorRate
+
+```typescript
+import { maxErrorRate } from '@cogitator-ai/evals';
+
+const assertions = [threshold('exactMatch', 0.9), maxErrorRate(0.05)];
+```
+
+Passes while at most `rate` (0 to 1) of the cases errored. Errored cases are not scored, so pair metric thresholds with it.
 
 ### noRegression
 
@@ -377,21 +394,44 @@ Access full suite results via `result.baseline` and `result.challenger`. `compar
 
 Call `result.report()` after a suite run to output results.
 
-| Reporter  | Output                                          |
-| --------- | ----------------------------------------------- |
-| `console` | Colored table with metrics, assertions, summary |
-| `json`    | Writes `eval-report.json` (configurable path)   |
-| `csv`     | Writes `eval-report.csv` (configurable path)    |
-| `ci`      | Compact output, `process.exit(1)` on failure    |
+| Reporter  | Output                                                               |
+| --------- | -------------------------------------------------------------------- |
+| `console` | Colored table with metrics, assertions, summary                      |
+| `json`    | Writes `eval-report.json` (configurable path)                        |
+| `csv`     | Writes `eval-report.csv` (configurable path)                         |
+| `junit`   | Writes `eval-report.xml`, a JUnit report (configurable path)         |
+| `github`  | GitHub Actions annotations, plus a job summary in Actions            |
+| `ci`      | Compact verdict, sets `process.exitCode = 1` when an assertion fails |
 
 ```typescript
 const result = await suite.run();
 
 result.report('console');
 result.report('json', { path: './reports/eval.json' });
-result.report(['console', 'json', 'csv']);
-result.report('ci');
+result.report(['console', 'json', 'csv', 'junit'], { path: './reports/eval' });
+result.report(['github', 'ci']);
 ```
+
+The `path` is a base path: each file reporter adds its own extension (`.json`, `.csv`, `.xml`). `ci` runs last and does not end the process, so output flushes and later hooks still run before Node exits with code 1.
+
+- **junit** writes one `<testsuite name="eval">` with a `<testcase>` per case (a `<failure>` when it errored, its scores in `<system-out>`) and a `<testcase>` per assertion (a `<failure>` when it did not pass). Everything is XML-escaped, and characters XML 1.0 does not allow are replaced.
+- **github** prints `::error` for each failed assertion and errored case and `::warning` for each failed metric score. When `GITHUB_STEP_SUMMARY` is set it also appends a Markdown summary with the totals, the aggregated metrics (mean, p50, p95, cases scored) and the assertions.
+
+Agent run flags (`truncated`, `iterationLimitReached`, `paused`) show up per case in the json, csv and junit reports, and each aggregated metric's `count` (cases it was scored on) in the console, json and github output.
+
+### Vitest
+
+```typescript
+// eval/qa.eval.test.ts
+import { afterAll } from 'vitest';
+import { describeEval } from '@cogitator-ai/evals/vitest';
+
+const qa = describeEval('qa agent', { suite, run: { maxCases: 50 }, timeout: 5 * 60_000 });
+
+afterAll(() => qa.result().report('junit', { path: './reports/qa' }));
+```
+
+`describeEval(name, { suite, run?, timeout? })` registers a `describe` block. The suite runs once in `beforeAll` (`timeout` defaults to 10 minutes, after which the run is cancelled), each case of `suite.cases(run?.maxCases)` gets a test that fails with the case error, and an `assertions` test lists every failed assertion. When the run itself fails, every test fails with that cause. `result()` returns the `EvalSuiteResult` once the run has finished.
 
 ---
 
@@ -508,14 +548,27 @@ result.report('ci');
 | Export         | Description                                    |
 | -------------- | ---------------------------------------------- |
 | `threshold`    | Enforce min/max on metric mean                 |
+| `maxErrorRate` | Fail a run where too many cases errored        |
 | `noRegression` | Compare against saved baseline                 |
 | `assertion`    | Custom assertion with arbitrary check function |
 
 ### Reporters
 
-| Export   | Description                            |
-| -------- | -------------------------------------- |
-| `report` | Dispatch to one or more reporter types |
+| Export                           | Description                            |
+| -------------------------------- | -------------------------------------- |
+| `report`                         | Dispatch to one or more reporter types |
+| `describeEval` (`/vitest` entry) | Run a suite as a Vitest describe block |
+
+`report` takes `console`, `json`, `csv`, `junit`, `github` and `ci`. `describeEval` takes `DescribeEvalOptions` and returns a `DescribeEvalHandle`.
+
+### Types
+
+| Export             | Description                                                              |
+| ------------------ | ------------------------------------------------------------------------ |
+| `JudgeConfigInput` | The `judge` option: model, settings, `cogitator`, `cache`, `concurrency` |
+| `JudgeCache`       | Where verdicts are kept across runs: `get(key)` and `set(key, verdict)`  |
+| `AggregatedMetric` | Aggregate of a metric, with `count` for the cases it covers              |
+| `MetricComparison` | A metric of a comparison, with `n` for the cases it was compared on      |
 
 ### Statistics
 

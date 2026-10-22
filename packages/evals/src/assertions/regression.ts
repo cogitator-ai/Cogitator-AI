@@ -43,7 +43,10 @@ export function noRegression(baselinePath: string, opts?: { tolerance?: number }
         return {
           name: 'noRegression',
           passed: false,
-          message: `'${metric}' = ${actual} is not a finite number (baseline ${baselineValue})`,
+          message:
+            agg.count === 0
+              ? `'${metric}' has no scored cases, every case errored (baseline ${baselineValue})`
+              : `'${metric}' = ${actual} is not a finite number (baseline ${baselineValue})`,
           actual,
           expected: baselineValue,
         };

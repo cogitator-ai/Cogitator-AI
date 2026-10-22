@@ -8,6 +8,8 @@ export interface AggregatedMetric {
   p50: number;
   p95: number;
   p99: number;
+  /** Cases the metric was scored on: errored cases are not scored */
+  count?: number;
   /** Extra figures a statistical metric reports, such as the total cost */
   metadata?: Record<string, unknown>;
 }
@@ -46,3 +48,4 @@ export type AssertionFn = (
 export { threshold } from './threshold';
 export { noRegression } from './regression';
 export { assertion } from './custom';
+export { maxErrorRate } from './error-rate';

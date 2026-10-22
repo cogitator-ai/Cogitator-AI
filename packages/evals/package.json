@@ -21,6 +21,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./vitest": {
+      "types": "./dist/vitest.d.ts",
+      "import": "./dist/vitest.js",
+      "default": "./dist/vitest.js"
     }
   },
   "sideEffects": false,
@@ -42,10 +47,14 @@
     "zod": "^4.6.5"
   },
   "peerDependencies": {
-    "@cogitator-ai/core": "workspace:>=0.56.3"
+    "@cogitator-ai/core": "workspace:>=0.56.3",
+    "vitest": ">=3.0.0"
   },
   "peerDependenciesMeta": {
     "@cogitator-ai/core": {
+      "optional": true
+    },
+    "vitest": {
       "optional": true
     }
   },

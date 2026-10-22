@@ -4,6 +4,8 @@ import { consoleReport } from './console';
 import { jsonReport } from './json';
 import { csvReport } from './csv';
 import { ciReport } from './ci';
+import { junitReport } from './junit';
+import { githubReport } from './github';
 import type { EvalStats } from '../assertions';
 
 export interface AggregatedMetric {
@@ -16,6 +18,8 @@ export interface AggregatedMetric {
   p50: number;
   p95: number;
   p99: number;
+  /** Cases the metric was scored on: errored cases are not scored */
+  count?: number;
   /** Extra figures a statistical metric reports, such as the total cost */
   metadata?: Record<string, unknown>;
 }
@@ -35,6 +39,12 @@ export interface EvalSuiteResult {
     duration: number;
     /** Why the case has no output: every attempt failed or timed out */
     error?: string;
+    /** The agent's answer stopped at its output token limit */
+    truncated?: boolean;
+    /** Tool calls used up the agent's `maxIterations` before it answered */
+    iterationLimitReached?: boolean;
+    /** The run paused for tool approvals, so `output` holds no answer */
+    paused?: boolean;
     scores: Array<{ name: string; score: number; details?: string; error?: string }>;
   }>;
   aggregated: Record<string, AggregatedMetric>;
@@ -42,11 +52,11 @@ export interface EvalSuiteResult {
   stats: EvalStats;
 }
 
-export type ReporterType = 'console' | 'json' | 'csv' | 'ci';
+export type ReporterType = 'console' | 'json' | 'csv' | 'ci' | 'junit' | 'github';
 export type ReporterOptions = {
   /**
    * Base path of file reports. Each file reporter writes it with its own
-   * extension, so `./reports/eval` gives `eval.json` and `eval.csv`.
+   * extension, so `./reports/eval` gives `eval.json`, `eval.csv` and `eval.xml`.
    */
   path?: string;
 };
@@ -54,8 +64,8 @@ export type ReporterOptions = {
 const DEFAULT_BASE = 'eval-report';
 
 /** The file a reporter writes: the base path with the reporter's extension. */
-export function reportPath(base: string | undefined, extension: 'json' | 'csv'): string {
-  const stem = (base ?? DEFAULT_BASE).replace(/\.(json|csv)$/i, '');
+export function reportPath(base: string | undefined, extension: 'json' | 'csv' | 'xml'): string {
+  const stem = (base ?? DEFAULT_BASE).replace(/\.(json|csv|xml)$/i, '');
   return `${stem}.${extension}`;
 }
 
@@ -65,8 +75,9 @@ function prepare(path: string): string {
 }
 
 /**
- * Runs the reporters in the order given, except `ci`, which runs last because
- * it ends the process when an assertion failed.
+ * Runs the reporters in the order given, except `ci`, which runs last so its verdict is the
+ * final line of the output. `ci` sets `process.exitCode` to 1 when an assertion failed instead
+ * of ending the process, so output still flushes and later hooks still run.
  */
 export function report(
   result: EvalSuiteResult,
@@ -87,6 +98,12 @@ export function report(
       case 'csv':
         csvReport(result, { path: prepare(reportPath(options?.path, 'csv')) });
         break;
+      case 'junit':
+        junitReport(result, { path: prepare(reportPath(options?.path, 'xml')) });
+        break;
+      case 'github':
+        githubReport(result);
+        break;
       case 'ci':
         ciReport(result);
         break;
@@ -98,3 +115,5 @@ export { consoleReport } from './console';
 export { jsonReport } from './json';
 export { csvReport } from './csv';
 export { ciReport } from './ci';
+export { junitReport } from './junit';
+export { githubReport } from './github';

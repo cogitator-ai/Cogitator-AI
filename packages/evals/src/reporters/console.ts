@@ -18,14 +18,16 @@ export function consoleReport(result: EvalSuiteResult): void {
   const metrics = Object.values(result.aggregated);
 
   if (metrics.length > 0) {
-    const cols = { metric: 14, mean: 10, median: 10, p95: 10, min: 10, max: 10 };
+    const cols = { metric: 14, mean: 10, median: 10, p95: 10, min: 10, max: 10, cases: 8 };
+    const showCount = metrics.some((m) => m.count !== undefined);
     const header =
       pad('Metric', cols.metric) +
       pad('Mean', cols.mean) +
       pad('Median', cols.median) +
       pad('P95', cols.p95) +
       pad('Min', cols.min) +
-      pad('Max', cols.max);
+      pad('Max', cols.max) +
+      (showCount ? pad('Cases', cols.cases) : '');
 
     console.log(`\n${BOLD}${header}${RESET}`);
     console.log(DIM + '─'.repeat(header.length) + RESET);
@@ -37,7 +39,8 @@ export function consoleReport(result: EvalSuiteResult): void {
         pad(fmt(m.median), cols.median) +
         pad(fmt(m.p95), cols.p95) +
         pad(fmt(m.min), cols.min) +
-        pad(fmt(m.max), cols.max);
+        pad(fmt(m.max), cols.max) +
+        (showCount ? pad(m.count === undefined ? '-' : String(m.count), cols.cases) : '');
       console.log(row);
     }
   }

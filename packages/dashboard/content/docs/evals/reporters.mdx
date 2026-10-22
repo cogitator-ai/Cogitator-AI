@@ -1,6 +1,6 @@
 ---
 title: Reporters
-description: Output evaluation results to the console, JSON files, CSV files, or CI-friendly format with automatic failure exit codes.
+description: Output evaluation results to the console, JSON, CSV or JUnit XML files, GitHub Actions annotations, or a CI verdict that sets the exit code, and run suites as Vitest tests.
 ---
 
 ## Overview
@@ -24,11 +24,22 @@ report(result, 'console');
 report(result, ['json', 'csv'], { path: './eval-report' });
 ```
 
-File reporters create missing directories. `result.report()` writes each case as `{ case: { input, expected }, output, duration, scores }`; passing the suite result to the standalone `report()` writes the full case results (including `error`, `usage` and `context`).
+| Reporter  | Output                                                              |
+| --------- | ------------------------------------------------------------------- |
+| `console` | Colored table of metrics, assertions and a summary line             |
+| `json`    | Writes `<path>.json` with every case, score and aggregate           |
+| `csv`     | Writes `<path>.csv` with one row per case                           |
+| `junit`   | Writes `<path>.xml`, a JUnit report CI systems show as test results |
+| `github`  | Prints GitHub Actions annotations and writes the job summary        |
+| `ci`      | Prints a short verdict and sets `process.exitCode` to 1 on failure  |
+
+File reporters create missing directories. `result.report()` writes each case as `{ case: { input, expected }, output, duration, error?, truncated?, iterationLimitReached?, paused?, scores }`, and passing the suite result to the standalone `report()` writes the full case results (including `usage` and `context`).
+
+The run flags come from an agent target's run: `truncated` means the answer stopped at the output token limit, `iterationLimitReached` that tool calls used up `maxIterations`, and `paused` that the run paused for tool approvals. A case carries a flag only when it is set, and the `json`, `csv` and `junit` reports show it.
 
 ## Console Reporter
 
-Prints a formatted table of aggregated metrics, assertion results, and a summary line to stdout.
+Prints a formatted table of aggregated metrics, assertion results, and a summary line to stdout. When the aggregates say how many cases each metric was scored on (`count`), the table gets a `Cases` column: an errored case is not scored, so a metric can cover fewer cases than the run.
 
 ```typescript
 result.report('console');
@@ -37,23 +48,23 @@ result.report('console');
 Example output:
 
 ```
-Metric        Mean      Median    P95       Min       Max
-──────────────────────────────────────────────────────────
-exactMatch    0.9200    1.0000    1.0000    0.0000    1.0000
-contains      0.9600    1.0000    1.0000    0.0000    1.0000
+Metric        Mean      Median    P95       Min       Max       Cases
+──────────────────────────────────────────────────────────────────────
+exactMatch    0.9200    1         1         0         1         48
+contains      0.9600    1         1         0         1         48
 
 Assertions
   ✓ threshold(exactMatch) exactMatch = 0.92 >= 0.9
   ✗ threshold(contains) contains = 0.96, expected >= 0.98
 
-Summary: 50 cases | 12340ms | $0.52 | 1 passed 1 failed
+Summary: 50 cases | 2 errored | 12340ms | $0.52 | 1 passed 1 failed
 ```
 
 Assertions show green check marks for passes and red crosses for failures.
 
 ## JSON Reporter
 
-Writes the full result data to a JSON file. Includes per-case results with scores, aggregated metrics, assertions, and stats.
+Writes the full result data to a JSON file. Includes per-case results with scores and run flags, aggregated metrics with their `count`, assertions, and stats.
 
 ```typescript
 result.report('json', { path: './eval-report.json' });
@@ -77,7 +88,7 @@ The JSON output includes:
     }
   ],
   "aggregated": {
-    "exactMatch": { "name": "exactMatch", "mean": 0.92, "median": 1, "p95": 1, ... }
+    "exactMatch": { "name": "exactMatch", "mean": 0.92, "median": 1, "p95": 1, "count": 50, ... }
   },
   "assertions": [
     { "name": "threshold(exactMatch)", "passed": true, "message": "..." }
@@ -104,11 +115,16 @@ What is 2+2?,4,4,89,1,1
 Capital of France?,Paris,paris,124,0,1
 ```
 
-Fields containing commas, quotes, or newlines are properly escaped.
+Fields containing commas, quotes, or line breaks are quoted. When any case carries a run flag, the report gets a column for that flag (`truncated`, `iterationLimitReached`, `paused`) after `duration`, with `true` on the flagged rows:
+
+```csv
+input,expected,output,duration,truncated,exactMatch
+Summarize the report,...,The report covers,2310,true,0
+```
 
 ## CI Reporter
 
-Minimal output designed for CI pipelines. Prints one line per assertion and exits with code 1 if any assertion fails.
+Minimal output designed for CI pipelines. Prints one line per assertion and sets `process.exitCode = 1` when any assertion fails.
 
 ```typescript
 result.report('ci');
@@ -123,7 +139,7 @@ Eval: 50 cases | 12340ms | $0.52
 Result: 1 passed, 1 failed
 ```
 
-The process exits with code 1 when failures are detected, which causes CI jobs to fail automatically. Use this in your test scripts:
+The reporter does not end the process. Node exits with code 1 once the script finishes, so the CI job fails, while buffered output still flushes and the reporters, `afterAll` hooks and cleanup code that come after it still run. Use it in your eval script:
 
 ```json
 {
@@ -140,6 +156,74 @@ const result = await suite.run();
 result.report('ci');
 ```
 
+## JUnit Reporter
+
+Writes a JUnit XML report, which GitLab, Jenkins, CircleCI, Azure Pipelines and the GitHub test report actions show as test results.
+
+```typescript
+result.report('junit', { path: './reports/eval' });
+```
+
+Default path: `eval-report.xml`
+
+The document holds one `<testsuite name="eval">` inside `<testsuites>`:
+
+- each case is a `<testcase>` named by its index and a shortened input, with a `<failure>` when the case errored and a `<system-out>` listing its scores and run flags,
+- each assertion is a `<testcase>` named after the assertion, with a `<failure>` carrying its message when it did not pass.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="eval" tests="4" failures="2" errors="0" time="2.620">
+  <testsuite name="eval" tests="4" failures="2" errors="0" skipped="0" time="2.620">
+    <testcase name="[1] What is 2+2?" classname="eval.cases" time="0.120">
+      <system-out>exactMatch: 1</system-out>
+    </testcase>
+    <testcase name="[2] Capital of France?" classname="eval.cases" time="2.500">
+      <failure message="Timed out after 2000ms" type="CaseError">Timed out after 2000ms</failure>
+    </testcase>
+    <testcase name="threshold(exactMatch)" classname="eval.assertions" time="0.000">
+      <failure message="exactMatch = 0.5, expected &gt;= 0.9" type="AssertionFailure">exactMatch = 0.5, expected &gt;= 0.9</failure>
+    </testcase>
+    <testcase name="threshold(latency.p95)" classname="eval.assertions" time="0.000"/>
+  </testsuite>
+</testsuites>
+```
+
+`tests` and `failures` count cases and assertions together, and `time` is in seconds. Every value is XML-escaped, and characters XML 1.0 does not allow (control characters, lone surrogates) are replaced with U+FFFD, so model output can never break the report.
+
+## GitHub Reporter
+
+For GitHub Actions. Prints [workflow commands](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands) that GitHub shows as annotations on the run and the pull request:
+
+- `::error` for each failed assertion and each errored case,
+- `::warning` for each metric score that failed (`score.error`).
+
+```typescript
+result.report(['github', 'ci']);
+```
+
+```
+::error title=Eval case [2] Capital of France?::Timed out after 2000ms
+::warning title=Eval metric relevance on case [1] What is 2+2?::judge gave no verdict
+::error title=Eval assertion threshold(exactMatch)::exactMatch = 0.5, expected >= 0.9
+```
+
+Messages escape `%` and line breaks, and titles also escape `:` and `,`, as the workflow command format requires.
+
+When `GITHUB_STEP_SUMMARY` is set, which GitHub does in every job step, the reporter also appends a Markdown summary to the job page: the totals, a table of the aggregated metrics with mean, p50, p95 and the number of cases scored, and every assertion with pass or fail.
+
+```yaml
+# .github/workflows/eval.yml
+- name: Run evals
+  run: pnpm eval:ci
+```
+
+```typescript
+// eval/run-ci.ts
+const result = await suite.run();
+result.report(['github', 'junit', 'ci'], { path: './reports/eval' });
+```
+
 ## Multiple Reporters
 
 Pass an array of reporter types to output in multiple formats at once:
@@ -148,7 +232,42 @@ Pass an array of reporter types to output in multiple formats at once:
 result.report(['console', 'json', 'csv'], { path: './reports/eval' });
 ```
 
-The `path` option is a base path shared across file-based reporters: a trailing `.json` or `.csv` is dropped and each reporter adds its own extension, so `./reports/eval` (or `./reports/eval.json`) gives `./reports/eval.json` and `./reports/eval.csv`. The `ci` reporter always runs last, after the other reporters have written their output, because it may exit the process.
+The `path` option is a base path shared across file-based reporters: a trailing `.json`, `.csv` or `.xml` is dropped and each reporter adds its own extension, so `./reports/eval` (or `./reports/eval.json`) gives `./reports/eval.json`, `./reports/eval.csv` and `./reports/eval.xml`. The other reporters run in the order given, and `ci` always runs last, so its verdict is the final line of the output.
+
+## Vitest
+
+`describeEval` from `@cogitator-ai/evals/vitest` runs a suite as a Vitest test file, so evals sit next to your other tests and show up in the Vitest UI, its reporters and its exit code. Vitest is an optional peer dependency of the package:
+
+```bash
+pnpm add -D vitest
+```
+
+```typescript
+// eval/qa.eval.test.ts
+import { afterAll } from 'vitest';
+import { describeEval } from '@cogitator-ai/evals/vitest';
+import { suite } from './qa-suite';
+
+const qa = describeEval('qa agent', {
+  suite,
+  run: { maxCases: 50 },
+  timeout: 5 * 60_000,
+});
+
+afterAll(() => qa.result().report('junit', { path: './reports/qa' }));
+```
+
+`describeEval(name, { suite, run?, timeout? })` registers a `describe` block:
+
+- `beforeAll` runs the suite once with `run` (`EvalRunOptions`: `maxCases`, `signal`),
+- each case from `suite.cases(run?.maxCases)` gets a test named by its index and shortened input, which fails with the case error when every attempt failed,
+- an `assertions` test fails and lists every assertion that did not pass.
+
+`timeout` is how long the run may take, 10 minutes by default. When it runs out, the run is cancelled through its `AbortSignal`, so no attempt keeps running and paying in the background.
+
+If the run itself fails (a cancelled signal, a timeout, an invalid `maxCases`), every test of the block fails with that cause instead of a confusing follow-up error.
+
+`describeEval` returns `{ result }`. `result()` gives the `EvalSuiteResult` once the run has finished, so call it in a later test or in `afterAll`, for example to write reports or save a baseline. It throws with the cause when the run failed, and before the run has finished.
 
 ## CI Integration Example
 
@@ -179,5 +298,5 @@ const suite = new EvalSuite({
 });
 
 const result = await suite.run();
-result.report(['console', 'json', 'ci'], { path: './eval/report' });
+result.report(['console', 'json', 'junit', 'github', 'ci'], { path: './eval/report' });
 ```

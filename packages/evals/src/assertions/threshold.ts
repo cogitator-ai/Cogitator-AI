@@ -31,10 +31,13 @@ export function threshold(metricName: string, value: number): AssertionFn {
     }
 
     if (!Number.isFinite(actual)) {
+      const unscored = aggregated[metricName.split('.')[0]!]?.count === 0;
       return {
         name: `threshold(${metricName})`,
         passed: false,
-        message: `${metricName} = ${actual} is not a finite number`,
+        message: unscored
+          ? `${metricName} has no scored cases: every case errored`
+          : `${metricName} = ${actual} is not a finite number`,
         actual,
         expected: value,
       };

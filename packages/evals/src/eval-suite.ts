@@ -147,6 +147,26 @@ async function waitAtMost<T>(promise: Promise<T>, ms: number): Promise<T | undef
   }
 }
 
+/**
+ * The aggregate of a metric no case was scored on, every case having errored: its figures are
+ * NaN, so a threshold, a regression check or a baseline over it fails instead of passing on
+ * nothing
+ */
+function unscored(name: string): AggregatedMetric {
+  return {
+    name,
+    mean: Number.NaN,
+    median: Number.NaN,
+    min: Number.NaN,
+    max: Number.NaN,
+    stdDev: Number.NaN,
+    p50: Number.NaN,
+    p95: Number.NaN,
+    p99: Number.NaN,
+    count: 0,
+  };
+}
+
 export class EvalSuite {
   private readonly dataset: Dataset;
   private readonly target: EvalTarget;
@@ -316,6 +336,9 @@ export class EvalSuite {
               output: r.output,
               duration: r.duration,
               ...(r.error !== undefined && { error: r.error }),
+              ...(r.truncated && { truncated: true }),
+              ...(r.iterationLimitReached && { iterationLimitReached: true }),
+              ...(r.paused && { paused: true }),
               scores: r.scores,
             })),
             aggregated,
@@ -364,7 +387,7 @@ export class EvalSuite {
     signal: AbortSignal | undefined
   ): Promise<EvalCaseResult & { scores: MetricScore[] }> {
     const caseResult = await this.executeCase(evalCase, signal);
-    if (signal?.aborted) return { ...caseResult, scores: [] };
+    if (signal?.aborted || caseResult.error !== undefined) return { ...caseResult, scores: [] };
     return { ...caseResult, scores: await this.evaluateCaseMetrics(caseResult) };
   }
 
@@ -480,6 +503,9 @@ export class EvalSuite {
     if (runResult.toolCalls) {
       result.toolCalls = runResult.toolCalls as EvalCaseResult['toolCalls'];
     }
+    if (runResult.truncated === true) result.truncated = true;
+    if (runResult.iterationLimitReached === true) result.iterationLimitReached = true;
+    if (runResult.status === 'paused') result.paused = true;
 
     return result;
   }
@@ -490,9 +516,11 @@ export class EvalSuite {
   }
 
   /**
-   * A metric's score for one case. A metric that throws, or whose score is not a finite number,
-   * scores 0 with the reason in `error`, so one bad metric neither drops the case nor poisons
-   * the aggregate with NaN.
+   * A metric's score for one case. Only cases with an output are scored: a case whose every
+   * attempt failed is left unscored, so its empty output neither costs a judge call nor counts as
+   * a score of 0 (`stats.errors` and the `maxErrorRate` assertion catch those). A metric that
+   * throws, or whose score is not a finite number, scores 0 with the reason in `error`, so one
+   * bad metric neither drops the case nor poisons the aggregate with NaN.
    */
   private async scoreMetric(metric: MetricFn, result: EvalCaseResult): Promise<MetricScore> {
     try {
@@ -535,7 +563,12 @@ export class EvalSuite {
 
     const aggregated: Record<string, AggregatedMetric> = {};
     for (const [name, values] of scoresByMetric) {
-      aggregated[name] = { name, ...aggregate(values) };
+      aggregated[name] = { name, ...aggregate(values), count: values.length };
+    }
+    if (results.length > 0 && results.every((r) => r.error !== undefined)) {
+      for (const metric of this.boundMetrics) {
+        aggregated[metric.metricName] ??= unscored(metric.metricName);
+      }
     }
 
     return aggregated;
