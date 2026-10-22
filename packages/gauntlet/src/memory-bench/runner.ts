@@ -247,16 +247,36 @@ const CHAPTER_ANSWER_TOKENS = 1500;
 export function compactionEstimate(conversation: BenchConversation, contextTokens: number): number {
   const settings = compactionSettings(contextTokens);
   const closing = callCost(contextTokens + countTokens(CLOSING_TURN), 200);
-  const tokens = conversation.turns.reduce((sum, turn) => sum + countTokens(turn.content), 0);
-  if (tokens < settings.threshold) return closing;
-  const chapters = Math.ceil(
-    Math.max(tokens - settings.keepRecentTokens, 0) / settings.chapterTokens
-  );
+  const chapters = compactionChapters(conversation, contextTokens);
+  if (chapters === 0) return closing;
   const chapter = callCost(
     Math.ceil(settings.chapterTokens * CHAPTER_OVERLAP) + CHAPTER_FRAME_TOKENS,
     CHAPTER_ANSWER_TOKENS
   );
   return closing + chapters * chapter;
+}
+
+/**
+ * The chapter calls compacting `conversation` takes: none under the threshold, else one per
+ * `chapterTokens` of what goes before the kept tail
+ */
+function compactionChapters(conversation: BenchConversation, contextTokens: number): number {
+  const settings = compactionSettings(contextTokens);
+  const tokens = conversation.turns.reduce((sum, turn) => sum + countTokens(turn.content), 0);
+  if (tokens < settings.threshold) return 0;
+  return Math.ceil(Math.max(tokens - settings.keepRecentTokens, 0) / settings.chapterTokens);
+}
+
+/** Time one chapter call may take, its rate-limit retries included */
+const CHAPTER_TIMEOUT_MS = 60_000;
+
+/**
+ * Time the closing turn may take: the runtime compacts the thread inside that run, so the run
+ * needs room for every chapter call on top of a question's time, or its timeout stops the
+ * compaction of a long conversation halfway
+ */
+export function closingTimeout(conversation: BenchConversation, contextTokens: number): number {
+  return RUN_TIMEOUT_MS + compactionChapters(conversation, contextTokens) * CHAPTER_TIMEOUT_MS;
 }
 
 /** Tokens of conversation one extraction call reads, the extractor's default */
@@ -545,7 +565,8 @@ type Closed = { leafId: string | null; compacted: boolean } | { error: string };
 async function closeSession(
   cog: Cogitator,
   threadId: string,
-  watch: CompactionWatch
+  watch: CompactionWatch,
+  timeout: number
 ): Promise<Closed> {
   const memoryErrors: Error[] = [];
   watch.charging = true;
@@ -553,6 +574,7 @@ async function closeSession(
     await cog.run(benchAgent(), {
       input: CLOSING_TURN,
       threadId,
+      timeout,
       onMemoryError: (error) => memoryErrors.push(error),
     });
   } catch (error) {
@@ -764,7 +786,12 @@ export async function answerConversation(
       }
       options.log(`  ${conversation.id}: ${extracted.items} memory items`);
     } else if (watch) {
-      const closed = await closeSession(cog, thread.threadId, watch);
+      const closed = await closeSession(
+        cog,
+        thread.threadId,
+        watch,
+        closingTimeout(conversation, options.strategy.contextTokens)
+      );
       if ('error' in closed) {
         options.log(`  ${conversation.id}: ${closed.error}`);
         for (const question of pending) {

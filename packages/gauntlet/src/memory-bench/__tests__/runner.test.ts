@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AnthropicBackend } from '@cogitator-ai/core';
+import { AnthropicBackend, Cogitator } from '@cogitator-ai/core';
 import type { ChatRequest, ChatResponse, EmbeddingService } from '@cogitator-ai/types';
 import { countTokens } from '@cogitator-ai/memory';
 import { Budget, BudgetExceededError, callCost, usageCost } from '../budget.js';
@@ -11,6 +11,7 @@ import {
   answerConversation,
   answerKey,
   CLOSING_TURN,
+  closingTimeout,
   compactionEstimate,
   type AnswerOptions,
 } from '../runner.js';
@@ -335,6 +336,17 @@ describe('answerConversation with the compacted strategy', () => {
     expect(opts.budget.byStage().answers).toBeGreaterThan(0);
   });
 
+  it('gives the closing turn time for every chapter, not only the time of a question', async () => {
+    stubModel((request) => (isChapter(request) ? chapter(request) : 'Miso'));
+    const run = vi.spyOn(Cogitator.prototype, 'run');
+    const { options: opts } = options(compacted);
+    await answerConversation(long, opts);
+
+    const closing = run.mock.calls.find(([, options]) => options.input === CLOSING_TURN);
+    expect(closing?.[1].timeout).toBe(closingTimeout(long, 400));
+    expect(closingTimeout(long, 400)).toBeGreaterThan(closingTimeout(conversation, 400));
+  });
+
   it('fails the questions when the runtime could not compact, asking nothing', async () => {
     const requests = stubModel((request) => (isChapter(request) ? 'no atoms today' : 'Miso'));
     const { options: opts, answers } = options(compacted);
@@ -383,6 +395,19 @@ describe('compaction pricing', () => {
     const larger = compactionEstimate({ ...conversation, turns: [...turns, ...turns] }, 8192);
     expect(large).toBeGreaterThan(small);
     expect(larger).toBeGreaterThan(large * 1.8);
+  });
+
+  it('sizes the closing turn by its chapters', () => {
+    const turns = Array.from({ length: 2000 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      content: `Turn ${i} talks about topic ${i} at some length, with a few more words.`,
+    }));
+    const small = closingTimeout(conversation, 8192);
+    const large = closingTimeout({ ...conversation, turns }, 8192);
+    const larger = closingTimeout({ ...conversation, turns: [...turns, ...turns] }, 8192);
+    expect(small).toBe(600_000);
+    expect(large).toBeGreaterThan(small);
+    expect(larger - small).toBeGreaterThan((large - small) * 1.8);
   });
 
   it('prices a reported usage per token class', () => {
