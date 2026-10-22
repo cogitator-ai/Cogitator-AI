@@ -1,6 +1,6 @@
 import { EvalSuite } from './eval-suite';
 import type { EvalTarget, EvalSuiteResult } from './eval-suite';
-import type { MetricFn, MetricScore, StatisticalMetricFn } from './metrics/types';
+import type { MetricFn, MetricScore, ScoredCaseResult, StatisticalMetricFn } from './metrics/types';
 import type { JudgeConfigInput } from './schema';
 import { EvalComparisonConfigSchema } from './schema';
 import { Dataset } from './datasets';
@@ -20,6 +20,11 @@ export interface EvalComparisonOptions {
   concurrency?: number;
   timeout?: number;
   retries?: number;
+  /**
+   * Runs of each case on each side, as the suite's `trials`. A metric is compared on each case's
+   * mean over its scored trials, and `passAtK()` statistical metrics see every trial
+   */
+  trials?: number;
   onProgress?: (progress: { target: string; completed: number; total: number }) => void;
 }
 
@@ -120,6 +125,7 @@ export class EvalComparison {
       concurrency: opts.concurrency,
       timeout: opts.timeout,
       retries: opts.retries,
+      trials: opts.trials,
     });
     this.opts = opts;
   }
@@ -134,6 +140,7 @@ export class EvalComparison {
       concurrency,
       timeout,
       retries,
+      trials,
       onProgress,
     } = this.opts;
 
@@ -145,6 +152,7 @@ export class EvalComparison {
       concurrency,
       timeout,
       retries,
+      trials,
     };
 
     const baselineSuite = new EvalSuite({
@@ -171,7 +179,9 @@ export class EvalComparison {
     const metricNames = new Set<string>();
     for (const result of [baselineResult, challengerResult]) {
       for (const r of result.results) {
-        for (const s of r.scores) metricNames.add(s.name);
+        for (const trial of r.trials ?? [r]) {
+          for (const s of trial.scores) metricNames.add(s.name);
+        }
       }
     }
 
@@ -197,6 +207,15 @@ export class EvalComparison {
   }
 }
 
+/** A case's score of a metric: the mean over its trials the metric scored, none when it scored none */
+function caseScore(result: ScoredCaseResult | undefined, metricName: string): number | undefined {
+  if (!result) return undefined;
+  const scores = (result.trials ?? [result]).flatMap((trial) =>
+    trial.scores.filter((s: MetricScore) => s.name === metricName).map((s) => s.score)
+  );
+  return scores.length === 0 ? undefined : mean(scores);
+}
+
 /**
  * The scores of a metric for each case, side by side. A case one side errored on counts as a 0
  * for that side, since a target that fails loses the case, and a case both sides errored on is
@@ -208,7 +227,7 @@ function pairedScores(
   metricName: string
 ): [number[], number[]] {
   const scoreOf = (result: EvalSuiteResult, at: number) =>
-    result.results[at]?.scores.find((s: MetricScore) => s.name === metricName)?.score;
+    caseScore(result.results[at], metricName);
   const baselineScores: number[] = [];
   const challengerScores: number[] = [];
   for (let at = 0; at < baseline.results.length; at++) {

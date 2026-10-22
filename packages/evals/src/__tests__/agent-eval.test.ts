@@ -9,6 +9,8 @@ import { EvalBuilder } from '../eval-builder';
 import { toolCalls, trajectory } from '../metrics/tool-calls';
 import { retrievalRecall } from '../metrics/retrieval';
 import { metric } from '../metrics/custom';
+import { cost, latency } from '../metrics/statistical';
+import { githubSummary } from '../reporters/github';
 import type { EvalCaseResult, MetricFn, MetricScore } from '../metrics/types';
 
 interface RunOptions {
@@ -511,5 +513,147 @@ describe('reports of agent runs', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('aborting multi-turn cases', () => {
+  it('starts no further turn of a fn target once the run is aborted', async () => {
+    const controller = new AbortController();
+    const fn = vi.fn(async (input: string) => {
+      controller.abort(new Error('stop'));
+      return input;
+    });
+    const suite = new EvalSuite({
+      dataset: Dataset.from([{ input: 'one', turns: ['two', 'three'] }]),
+      target: { fn },
+    });
+
+    await expect(suite.run({ signal: controller.signal })).rejects.toThrow('stop');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts no further turn of an agent target once the run is aborted', async () => {
+    const controller = new AbortController();
+    const cogitator = fakeCogitator((options) => {
+      controller.abort(new Error('stop'));
+      return { output: options.input };
+    });
+    const suite = new EvalSuite({
+      dataset: Dataset.from([{ input: 'one', turns: ['two', 'three'] }]),
+      target: { agent: {}, cogitator },
+    });
+
+    await expect(suite.run({ signal: controller.signal })).rejects.toThrow('stop');
+    expect(cogitator.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts no further turn after the attempt timed out, keeping the turns so far', async () => {
+    const fn = vi.fn(async (input: string) => {
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+      return input;
+    });
+    const suite = new EvalSuite({
+      dataset: Dataset.from([{ input: 'one', turns: ['two'] }]),
+      target: { fn },
+      timeout: 1000,
+    });
+
+    const [result] = (await suite.run()).results;
+
+    expect(result.error).toBe('Timed out after 1000ms');
+    expect(result.turns).toEqual([{ input: 'one', output: 'one' }]);
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('trials of agent cases', () => {
+  it('gives every trial of a multi-turn case a thread of its own', async () => {
+    const cogitator = fakeCogitator((options) => ({ output: options.input }));
+    const suite = new EvalSuite({
+      dataset: Dataset.from([{ input: 'a', turns: ['b'] }]),
+      target: { agent: {}, cogitator },
+      trials: 2,
+      concurrency: 1,
+    });
+
+    await suite.run();
+
+    const threads = cogitator.run.mock.calls.map(([, options]) => options.threadId);
+    expect(threads).toHaveLength(4);
+    expect(threads[0]).toBe(threads[1]);
+    expect(threads[2]).toBe(threads[3]);
+    expect(threads[0]).not.toBe(threads[2]);
+  });
+
+  it('keeps a case whose first trial errored but others passed', async () => {
+    let call = 0;
+    const suite = new EvalSuite({
+      dataset: Dataset.from([{ input: 'a' }]),
+      target: {
+        fn: async () => {
+          if (call++ === 0) throw new Error('first failed');
+          return 'ok';
+        },
+      },
+      metrics: [namedMetric('m', () => 0.8)],
+      trials: 3,
+      concurrency: 1,
+    });
+
+    const result = await suite.run();
+    const [caseResult] = result.results;
+
+    expect(caseResult.error).toBe('first failed');
+    expect(caseResult.scores).toEqual([]);
+    expect(caseResult.trials?.map((t) => t.error)).toEqual(['first failed', undefined, undefined]);
+    expect(result.aggregated.m.mean).toBe(0.8);
+    expect(result.aggregated.m.count).toBe(1);
+    expect(result.stats.errors).toBe(0);
+  });
+
+  it('counts a case as errored when every trial errored', async () => {
+    const suite = new EvalSuite({
+      dataset: Dataset.from([{ input: 'a' }, { input: 'b' }]),
+      target: {
+        fn: async (input) => {
+          if (input === 'a') throw new Error('always');
+          return 'ok';
+        },
+      },
+      trials: 2,
+    });
+
+    const { stats } = await suite.run();
+
+    expect(stats.errors).toBe(1);
+  });
+
+  it('feeds every trial to latency and cost', async () => {
+    const costs = [1, 9];
+    const cogitator = fakeCogitator((_options, call) => ({ output: 'x', cost: costs[call] }));
+    const suite = new EvalSuite({
+      dataset: Dataset.from([{ input: 'a' }]),
+      target: { agent: {}, cogitator },
+      statisticalMetrics: [cost(), latency()],
+      trials: 2,
+      concurrency: 1,
+    });
+
+    const { aggregated } = await suite.run();
+
+    expect(aggregated.cost.mean).toBe(5);
+    expect(aggregated.cost.metadata?.total).toBe(10);
+    expect(aggregated.latency.metadata).toBeDefined();
+    expect((aggregated.latency.metadata as { mean: number }).mean).toBeGreaterThanOrEqual(0);
+  });
+
+  it('shows the trials per case in the GitHub summary', async () => {
+    const result = await new EvalSuite({
+      dataset: Dataset.from([{ input: 'a' }, { input: 'b' }]),
+      target: { fn: async () => 'ok' },
+      trials: 3,
+    }).run();
+
+    expect(githubSummary(result)).toContain('**2** cases x **3** trials');
   });
 });

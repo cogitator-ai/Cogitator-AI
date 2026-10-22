@@ -86,6 +86,7 @@ export const EvalComparisonConfigSchema = z.object({
   concurrency: z.number().int().min(1).default(5),
   timeout: z.number().int().min(1000).default(30000),
   retries: z.number().int().min(0).max(10).default(0),
+  trials: z.number().int().min(1).default(1),
 });
 
 export type ExpectedToolCall = z.output<typeof ExpectedToolCallSchema>;

@@ -292,14 +292,28 @@ function evidenceBlock(result: EvalCaseResult, preferRetrieved: boolean): string
 }
 
 /**
- * What the judge reads: the input, the case's evidence when it has some (its context, or the
+ * What the response answers. A single-turn case: its input. A multi-turn case: the conversation
+ * before the last user message, each turn's input and answer, then that last message marked as
+ * the one the response replies to.
+ */
+function inputBlock(result: EvalCaseResult): string {
+  const inputs = [result.case.input, ...(result.case.turns ?? [])];
+  if (inputs.length === 1) return `Input: ${result.case.input}`;
+  const earlier = inputs
+    .slice(0, -1)
+    .map((input, i) => `User: ${input}\nAssistant: ${result.turns?.[i]?.output ?? ''}`);
+  return `Conversation so far:\n${earlier.join('\n')}\nInput (the last user message, which the response answers): ${inputs[inputs.length - 1]}`;
+}
+
+/**
+ * What the judge reads: the input (the conversation for a multi-turn case), the case's evidence when it has some (its context, or the
  * retrieved passages for metrics that prefer them), the expected answer and the response.
  */
 function buildUserMessage(result: EvalCaseResult, preferRetrieved = false): string {
   const expected = result.case.expected || 'N/A';
   const evidence = evidenceBlock(result, preferRetrieved);
   const evidenceText = evidence === undefined ? '' : `\n${evidence}`;
-  return `Input: ${result.case.input}${evidenceText}\nExpected: ${expected}\nResponse: ${result.output}`;
+  return `${inputBlock(result)}${evidenceText}\nExpected: ${expected}\nResponse: ${result.output}`;
 }
 
 export function bindJudgeContext(metric: LLMMetricFn, context: JudgeContext): MetricFn {
@@ -363,8 +377,9 @@ export function faithfulness(opts?: MetricOptions): LLMMetricFn {
 }
 
 /**
- * Whether the passages the run retrieved are relevant to the input, judged on the input and the
- * passages alone (the case's `context` when nothing was retrieved). A case with neither scores 0
+ * Whether the passages the run retrieved are relevant to the input, judged on the input (the
+ * conversation for a multi-turn case) and the passages alone (the case's `context` when nothing
+ * was retrieved). A case with neither scores 0
  * without a judge call.
  */
 export function contextRelevance(opts?: MetricOptions): LLMMetricFn {
@@ -374,7 +389,7 @@ export function contextRelevance(opts?: MetricOptions): LLMMetricFn {
     (result) => {
       const evidence = evidenceBlock(result, true);
       if (evidence === undefined) return { skip: 'no retrieved passages or context to judge' };
-      return { message: `Input: ${result.case.input}\n${evidence}` };
+      return { message: `${inputBlock(result)}\n${evidence}` };
     }
   );
 }

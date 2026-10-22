@@ -63,13 +63,22 @@ describe('matching helpers', () => {
     expect(pairs.get(0)).toBe(1);
   });
 
-  it('passageMatches by id or by normalized containment either way', () => {
+  it('passageMatches by id, by equal text, or by containment of three words or more', () => {
     const passage = { id: 'doc-1', content: 'The  Eiffel Tower is in PARIS.' };
     expect(passageMatches(passage, 'doc-1')).toBe(true);
     expect(passageMatches(passage, 'eiffel tower is in paris')).toBe(true);
-    expect(passageMatches({ content: 'Paris' }, 'The capital is Paris, France')).toBe(true);
+    expect(passageMatches({ content: 'Tower in Paris' }, 'The tower in paris is tall')).toBe(true);
+    expect(passageMatches({ content: 'Paris' }, 'paris')).toBe(true);
     expect(passageMatches(passage, 'doc-2')).toBe(false);
     expect(passageMatches({ content: '   ' }, 'anything')).toBe(false);
+  });
+
+  it('never matches a short id or a single word as a part of a longer text', () => {
+    expect(passageMatches({ id: 'c7', content: 'Chunk 1 talks about towers' }, '1')).toBe(false);
+    expect(passageMatches({ content: 'Paris' }, 'Paris is in France. Rome is in Italy.')).toBe(
+      false
+    );
+    expect(passageMatches({ content: 'The tower is in Paris' }, 'tower')).toBe(false);
   });
 });
 
@@ -213,8 +222,15 @@ describe('retrieval metrics', () => {
 
   it('retrievalMRR is the reciprocal rank of the first expected passage', async () => {
     expect((await retrievalMRR()(withPassages(['c2'], retrieved))).score).toBe(0.5);
-    expect((await retrievalMRR()(withPassages(['bananas'], retrieved))).score).toBe(1);
+    expect((await retrievalMRR()(withPassages(['bananas are yellow'], retrieved))).score).toBe(1);
     expect((await retrievalMRR()(withPassages(['nope'], retrieved))).score).toBe(0);
+  });
+
+  it('never matches a short expected id as a part of a passage text', async () => {
+    const result = await retrievalRecall()(
+      withPassages(['c1'], [{ content: 'See c1 and c2 for the details.' }])
+    );
+    expect(result.score).toBe(0);
   });
 
   it('scores 0 without expected passages', async () => {

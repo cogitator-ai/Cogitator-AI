@@ -387,3 +387,45 @@ describe('retrieval-aware judge metrics', () => {
     expect(contextRelevance({ name: 'ctx' }).metricName).toBe('ctx');
   });
 });
+
+describe('judging multi-turn cases', () => {
+  const conversation: EvalCaseResult = {
+    case: {
+      input: 'My name is Ada.',
+      turns: ['I live in Paris.', 'Where do I live?'],
+      expected: 'Paris',
+    },
+    output: 'You live in Paris.',
+    duration: 1,
+    turns: [
+      { input: 'My name is Ada.', output: 'Nice to meet you, Ada.' },
+      { input: 'I live in Paris.', output: 'Paris is lovely.' },
+      { input: 'Where do I live?', output: 'You live in Paris.' },
+    ],
+    retrieved: [{ content: 'Ada lives in Paris.' }],
+  };
+
+  function promptOf(judge: JudgeContext): string {
+    return (judge.cogitator.run as ReturnType<typeof vi.fn>).mock.calls[0][0].input as string;
+  }
+
+  it('shows the judge the conversation and marks the last user message', async () => {
+    const judge = makeJudgeContext('{"score": 1, "reasoning": "ok"}');
+    await bindJudgeContext(relevance(), judge)(conversation);
+
+    expect(promptOf(judge)).toContain(
+      'Conversation so far:\nUser: My name is Ada.\nAssistant: Nice to meet you, Ada.\nUser: I live in Paris.\nAssistant: Paris is lovely.\nInput (the last user message, which the response answers): Where do I live?\nExpected: Paris\nResponse: You live in Paris.'
+    );
+    expect(promptOf(judge)).not.toContain('Input: My name is Ada.');
+  });
+
+  it('gives contextRelevance the conversation with the passages', async () => {
+    const judge = makeJudgeContext('{"score": 1, "reasoning": "ok"}');
+    await bindJudgeContext(contextRelevance(), judge)(conversation);
+
+    expect(promptOf(judge)).toContain(
+      'Input (the last user message, which the response answers): Where do I live?\nRetrieved passages:\n[1] Ada lives in Paris.'
+    );
+    expect(promptOf(judge)).toContain('User: I live in Paris.');
+  });
+});

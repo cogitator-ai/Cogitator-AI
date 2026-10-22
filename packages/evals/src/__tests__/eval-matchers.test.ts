@@ -60,7 +60,8 @@ describe('evalMatchers', () => {
 
   it('toHaveRetrieved matches an id or a text', () => {
     expect(result).toHaveRetrieved('doc:0');
-    expect(result).toHaveRetrieved('book early');
+    expect(result).toHaveRetrieved('book early in');
+    expect(result).not.toHaveRetrieved('book');
     expect(result).not.toHaveRetrieved('Rome');
     expect(failureOf(() => expect(result).toHaveRetrieved('Rome'))).toBe(
       'expected the case to retrieve "Rome", it retrieved 2 passage(s): doc:0, "Book early in summer."'

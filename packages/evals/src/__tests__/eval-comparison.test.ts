@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { EvalComparison } from '../eval-comparison';
 import { Dataset } from '../datasets';
+import { exactMatch } from '../metrics/deterministic';
+import { passAtK } from '../metrics/statistical';
 import type { EvalCaseResult, MetricFn, MetricScore } from '../metrics/types';
 
 function makeMetricFn(name: string, scoreFn: (r: EvalCaseResult) => number): MetricFn {
@@ -391,5 +393,44 @@ describe('EvalComparison', () => {
         challenger: 1,
       });
     });
+  });
+});
+
+describe('EvalComparison with trials', () => {
+  it('runs every case several times on both sides and supports passAtK', async () => {
+    let baselineCalls = 0;
+    const comparison = new EvalComparison({
+      dataset: Dataset.from([
+        { input: 'a', expected: 'yes' },
+        { input: 'b', expected: 'yes' },
+      ]),
+      targets: {
+        baseline: { fn: async () => (baselineCalls++ % 2 === 0 ? 'yes' : 'no') },
+        challenger: { fn: async () => 'yes' },
+      },
+      metrics: [exactMatch()],
+      statisticalMetrics: [passAtK('exactMatch', { k: 2 })],
+      trials: 2,
+      concurrency: 1,
+    });
+
+    const result = await comparison.run();
+
+    expect(result.baseline.results.every((r) => r.trials?.length === 2)).toBe(true);
+    expect(result.challenger.results.every((r) => r.trials?.length === 2)).toBe(true);
+    expect(result.baseline.aggregated['passAtK(exactMatch,2)'].mean).toBe(1);
+    expect(result.summary.metrics.exactMatch.baseline).toBe(0.5);
+    expect(result.summary.metrics.exactMatch.challenger).toBe(1);
+  });
+
+  it('refuses trials that are not a positive integer', () => {
+    expect(
+      () =>
+        new EvalComparison({
+          dataset: Dataset.from([{ input: 'a' }]),
+          targets: { baseline: { fn: async () => 'x' }, challenger: { fn: async () => 'x' } },
+          trials: 0,
+        })
+    ).toThrow();
   });
 });

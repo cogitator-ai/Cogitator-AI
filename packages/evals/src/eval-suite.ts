@@ -87,8 +87,9 @@ export interface EvalSuiteOptions {
   /**
    * Runs of each case, a positive integer, 1 by default. Each trial is scored on its own, the
    * case result is the first trial with every trial in `trials`, and the aggregate of a metric
-   * takes the mean of a case's scored trials as the case's score. Use `passAtK()` to score how
-   * often a case passes
+   * takes the mean of a case's scored trials as the case's score. A case counts as errored in
+   * `stats.errors` when every trial errored, and `latency()`, `cost()` and `tokenUsage()` see
+   * every trial. Use `passAtK()` to score how often a case passes
    */
   trials?: number;
   /**
@@ -429,7 +430,7 @@ export class EvalSuite {
     const aggregated = this.aggregateScores(orderedResults);
 
     for (const statMetric of this.statisticalMetrics) {
-      const score = statMetric(orderedResults);
+      const score = statMetric(isPassAtKMetric(statMetric) ? orderedResults : allTrials);
       aggregated[score.name] = {
         name: score.name,
         ...aggregate(score.values ?? [score.score]),
@@ -444,7 +445,8 @@ export class EvalSuite {
     );
     const stats: EvalSuiteStats = {
       total,
-      errors: orderedResults.filter((r) => r.error !== undefined).length,
+      errors: orderedResults.filter((r) => trialsOf(r).every((trial) => trial.error !== undefined))
+        .length,
       metricErrors: allTrials.reduce(
         (n, r) => n + r.scores.filter((s) => s.error !== undefined).length,
         0
@@ -602,6 +604,9 @@ export class EvalSuite {
     const turns: EvalTurnResult[] = [];
 
     for (const [turn, input] of inputs.entries()) {
+      if (turn > 0 && context.signal.aborted) {
+        throw new TurnFailure(context.signal.reason, [...turns], undefined);
+      }
       const history = turns.map(({ input, output }) => ({ input, output }));
       try {
         const output = await this.target.fn!(input, { ...context, turn, history });
@@ -647,6 +652,9 @@ export class EvalSuite {
     const flags: Pick<EvalCaseResult, 'truncated' | 'iterationLimitReached' | 'paused'> = {};
 
     for (const input of inputs) {
+      if (turns.length > 0 && signal.aborted) {
+        throw new TurnFailure(signal.reason, [...turns], usage);
+      }
       const turnResults: EvalToolResult[] = [];
       let runResult: AgentRunResult;
       try {

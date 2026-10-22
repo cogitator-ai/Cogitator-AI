@@ -13,14 +13,14 @@ pnpm add @cogitator-ai/core  # agent targets and LLM-as-judge metrics
 pnpm add -D vitest  # describeEval from @cogitator-ai/evals/vitest
 ```
 
-Website docs: [Evals](https://cogitator.app/docs/evals), [Datasets](https://cogitator.app/docs/evals/datasets), [Metrics](https://cogitator.app/docs/evals/metrics), [Assertions](https://cogitator.app/docs/evals/assertions), [Comparison](https://cogitator.app/docs/evals/comparison), [Reporters](https://cogitator.app/docs/evals/reporters).
+Website docs: [Evals](https://cogitator.app/docs/evals), [Datasets](https://cogitator.app/docs/evals/datasets), [Metrics](https://cogitator.app/docs/evals/metrics), [Assertions](https://cogitator.app/docs/evals/assertions), [Agents](https://cogitator.app/docs/evals/agents), [Comparison](https://cogitator.app/docs/evals/comparison), [Reporters](https://cogitator.app/docs/evals/reporters).
 
 ## Features
 
 - **EvalSuite** — Run datasets against agents or plain functions with configurable concurrency, timeouts, and retries
 - **7 Deterministic Metrics** - exactMatch, contains, containsAll, containsAny, similarity, regex, jsonSchema (Zod)
-- **5 LLM-as-Judge Metrics** — faithfulness, relevance, coherence, helpfulness, custom llmMetric
-- **3 Statistical Metrics** — latency, cost, tokenUsage with full percentile breakdowns
+- **6 LLM-as-Judge Metrics** - faithfulness, relevance, coherence, helpfulness, contextRelevance, custom llmMetric
+- **4 Statistical Metrics** - latency, cost, tokenUsage with full percentile breakdowns, and passAtK over trials
 - **Custom Metrics** — `metric()` factory for anything domain-specific
 - **Agent Evaluation** - `toolCalls()` and `trajectory()` against expected tool calls, `retrievalRecall()`, `retrievalPrecision()`, `retrievalMRR()` and the `contextRelevance()` judge against expected passages, multi-turn cases on one conversation
 - **Trials and pass@k** - run each case several times and score how often it passes with `passAtK()`
@@ -92,15 +92,15 @@ A failure never drops a case. A metric that throws or returns a score that is no
 
 `result.stats` holds:
 
-| Field          | Meaning                                                                                |
-| -------------- | -------------------------------------------------------------------------------------- |
-| `total`        | Cases run                                                                              |
-| `errors`       | Cases whose every attempt failed or timed out (with several trials, the first trial's) |
-| `metricErrors` | Metric scores that failed and count as 0, over every trial                             |
-| `duration`     | Wall time of the run in ms                                                             |
-| `cost`         | USD spent, `targetCost + judgeCost`                                                    |
-| `targetCost`   | USD the target spent, over every attempt and trial that reported usage                 |
-| `judgeCost`    | USD the LLM judge spent                                                                |
+| Field          | Meaning                                                                                                                |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `total`        | Cases run                                                                                                              |
+| `errors`       | Cases whose every attempt failed or timed out (with several trials, a case counts as errored when every trial errored) |
+| `metricErrors` | Metric scores that failed and count as 0, over every trial                                                             |
+| `duration`     | Wall time of the run in ms                                                                                             |
+| `cost`         | USD spent, `targetCost + judgeCost`                                                                                    |
+| `targetCost`   | USD the target spent, over every attempt and trial that reported usage                                                 |
+| `judgeCost`    | USD the LLM judge spent                                                                                                |
 
 ---
 
@@ -366,7 +366,7 @@ target: {
 },
 ```
 
-A retrieved passage matches an expected one by an equal `id`, or when one text contains the other once case and whitespace are normalized. `retrievalRecall()` scores the share of expected passages retrieved, `retrievalPrecision()` the share of retrieved passages expected, and `retrievalMRR()` the reciprocal rank of the first match (passages rank in the order they came). They score 0 on a case without `expectedPassages`, and a case expecting none scores 1 when nothing was retrieved.
+A retrieved passage matches an expected one by an equal `id`, by an equal text once case and whitespace are normalized, or when one normalized text contains the other and the contained one has at least three words, so a short id or a single word never matches every passage that happens to hold it. `retrievalRecall()` scores the share of expected passages retrieved, `retrievalPrecision()` the share of retrieved passages expected, and `retrievalMRR()` the reciprocal rank of the first match (passages rank in the order they came). They score 0 on a case without `expectedPassages`, and a case expecting none scores 1 when nothing was retrieved.
 
 ### Multi-turn cases
 
@@ -382,7 +382,7 @@ Dataset.from([
 ]);
 ```
 
-An agent case with `turns` runs `input`, then each turn, on one thread of its own (`threadId` `eval-<uuid>`, a fresh one for every attempt and trial). The Cogitator's memory carries the conversation from turn to turn, so it needs a memory adapter. The case `output` is the last answer, `toolCalls`, `toolResults`, `retrieved` and `usage` cover every turn, and `turns` lists each `{ input, output, toolCalls? }`. A turn that fails fails the case with its error, `turns` then ending with the failed one. A `fn` target is called once per turn, with `context.turn` (0 for `input`) and `context.history` (the earlier `{ input, output }` turns).
+An agent case with `turns` runs `input`, then each turn, on one thread of its own (`threadId` `eval-<uuid>`, a fresh one for every attempt and trial). The Cogitator's memory carries the conversation from turn to turn, so it needs a memory adapter. The case `output` is the last answer, `toolCalls`, `toolResults`, `retrieved` and `usage` cover every turn, and `turns` lists each `{ input, output, toolCalls? }`. A turn that fails fails the case with its error, `turns` then ending with the failed one, and a cancelled or timed-out case starts no further turn. LLM judges read a multi-turn case as the conversation, each turn's input and answer, with the last user message marked as the one the response answers. A `fn` target is called once per turn, with `context.turn` (0 for `input`) and `context.history` (the earlier `{ input, output }` turns).
 
 ### Trials and pass@k
 
@@ -399,7 +399,7 @@ const suite = new EvalSuite({
 });
 ```
 
-`trials` (a positive integer, 1 by default) runs each case that many times. Trials share the suite's concurrency, timeout, retries, abort signal and `maxCases`, and each is scored on its own. The case result is the first trial, with every trial in `trials` (each with its `scores`), and the aggregate of a metric takes the mean of a case's scored trials as that case's score. `onProgress` fires once per case, after its last trial.
+`trials` (a positive integer, 1 by default) runs each case that many times. Trials share the suite's concurrency, timeout, retries, abort signal and `maxCases`, and each is scored on its own. The case result is the first trial, with every trial in `trials` (each with its `scores`), and the aggregate of a metric takes the mean of a case's scored trials as that case's score. `stats.errors` counts a case as errored when every trial errored, while costs and `metricErrors` cover every trial. `latency()`, `cost()` and `tokenUsage()` see every trial as one value each, `passAtK()` sees the cases with their trials. `onProgress` fires once per case, after its last trial. `EvalComparison` takes `trials` too, comparing each case's mean over its trials.
 
 `passAtK(metric, { k, threshold = 1 })`, named `passAtK(<metric>,<k>)`, estimates per case the chance that at least one of `k` trials scores `threshold` or more, with the unbiased estimator `1 - C(n - c, k) / C(n, k)` (`n` trials, `c` passing), and averages it over the cases with at least one scored trial. An errored trial counts as a failure. The suite throws when it is created if `k` exceeds `trials` or the metric is not among its `metrics`.
 
@@ -487,6 +487,7 @@ const comparison = new EvalComparison({
   },
   metrics: [exactMatch(), contains()],
   concurrency: 5,
+  trials: 1,
 });
 
 const result = await comparison.run();
@@ -697,11 +698,11 @@ result.report('ci');
 
 ### Reporters
 
-| Export                           | Description                            |
-| -------------------------------- | -------------------------------------- |
-| `report`                         | Dispatch to one or more reporter types |
-| `describeEval` (`/vitest` entry) | Run a suite as a Vitest describe block |
-| `evalMatchers` (`/vitest` entry) | Matchers for `expect.extend()`         |
+| Export                             | Description                              |
+| ---------------------------------- | ---------------------------------------- |
+| `report`                           | Dispatch to one or more reporter types   |
+| `describeEval` (`/vitest` entry)   | Run a suite as a Vitest describe block   |
+| `evalMatchers` (`/matchers` entry) | Matchers for `expect.extend()`, Vitest 5 |
 
 `report` takes `console`, `json`, `csv`, `junit`, `github` and `ci`. `describeEval` takes `DescribeEvalOptions` and returns a `DescribeEvalHandle`.
 

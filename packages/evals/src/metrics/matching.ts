@@ -42,16 +42,26 @@ export function normalizeText(text: string): string {
   return text.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+/** Texts shorter than this many words match only as a whole, never as a part of another */
+const MIN_CONTAINED_WORDS = 3;
+
+function wordCount(text: string): number {
+  return text === '' ? 0 : text.split(' ').length;
+}
+
 /**
- * Whether a retrieved passage is the expected one: the same id, or texts where one contains the
- * other once normalized
+ * Whether a retrieved passage is the expected one: the same id, the same text once normalized,
+ * or texts where one contains the other when the contained one has at least three words, so a
+ * short id or a single word never matches every passage that happens to hold it
  */
 export function passageMatches(passage: Passage, expected: string): boolean {
   if (passage.id !== undefined && passage.id === expected) return true;
   const content = normalizeText(passage.content);
   const target = normalizeText(expected);
   if (content === '' || target === '') return false;
-  return content.includes(target) || target.includes(content);
+  if (content === target) return true;
+  if (wordCount(target) >= MIN_CONTAINED_WORDS && content.includes(target)) return true;
+  return wordCount(content) >= MIN_CONTAINED_WORDS && target.includes(content);
 }
 
 /**

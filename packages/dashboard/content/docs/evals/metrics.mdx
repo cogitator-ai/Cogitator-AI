@@ -200,13 +200,13 @@ Each judge metric sends one prompt per case containing the rubric, the case `inp
 
 ### Built-in Judge Metrics
 
-| Metric               | Evaluates                                                                      |
-| -------------------- | ------------------------------------------------------------------------------ |
-| `faithfulness()`     | Whether the response is faithful to facts in the input and the case context    |
-| `relevance()`        | Whether the response addresses the question asked                              |
-| `coherence()`        | Whether the response is logical and well-structured                            |
-| `helpfulness()`      | Whether the response would be useful to the user                               |
-| `contextRelevance()` | Whether the retrieved passages (or the case context) are relevant to the input |
+| Metric               | Evaluates                                                                                       |
+| -------------------- | ----------------------------------------------------------------------------------------------- |
+| `faithfulness()`     | Whether the response is faithful to the input and the retrieved passages, else the case context |
+| `relevance()`        | Whether the response addresses the question asked                                               |
+| `coherence()`        | Whether the response is logical and well-structured                                             |
+| `helpfulness()`      | Whether the response would be useful to the user                                                |
+| `contextRelevance()` | Whether the retrieved passages (or the case context) are relevant to the input                  |
 
 When the run retrieved passages, `faithfulness()` reads them instead of the case `context`, and `contextRelevance()` judges the input against them alone, falling back to `context` and scoring 0 without a judge call when the case has neither. See [Retrieval](/docs/evals/agents#retrieval).
 
@@ -264,7 +264,7 @@ const suite = new EvalSuite({
 });
 ```
 
-Each statistical metric reports one value per case; `result.aggregated.<name>` holds their mean, median, min, max, standard deviation and p50/p95/p99, so thresholds such as `threshold('latency.p95', 5000)` check real numbers. Extra figures are in `metadata`.
+With several `trials`, `latency()`, `cost()` and `tokenUsage()` see every trial as one value. Each statistical metric reports one value per case (per trial with trials); `result.aggregated.<name>` holds their mean, median, min, max, standard deviation and p50/p95/p99, so thresholds such as `threshold('latency.p95', 5000)` check real numbers. Extra figures are in `metadata`.
 
 ### latency
 

@@ -295,7 +295,7 @@ it('books a table', async () => {
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `toHaveCalledTool(name, args?)`         | The case called `name`, over any turn, with arguments holding `args` (other arguments allowed)                                                         |
 | `toFollowTrajectory(names, { order? })` | `'exact'` (default): exactly those calls in that order. `'in-order'`: in that order, others between allowed. `'any-order'`: each of them, in any order |
-| `toHaveRetrieved(idOrText)`             | A retrieved passage has that id, or its text and `idOrText` contain one another                                                                        |
+| `toHaveRetrieved(idOrText)`             | A retrieved passage has that id or that text, or one of the two texts contains the other and the contained one has at least three words                |
 | `toScoreAtLeast(metric, min)`           | A case result's score of the metric, or a suite result's aggregated mean, is at least `min`                                                            |
 
 A failure names what the case did instead, such as `expected the case to call cancel({"id":1}), it made search({"q":"paris"}), book({})`. `toScoreAtLeast` throws when the case or the suite has no such metric, listing the ones it has, so a typo never passes under `.not`.

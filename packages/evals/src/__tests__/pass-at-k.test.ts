@@ -68,6 +68,19 @@ describe('passAtK()', () => {
     expect(score.metadata).toEqual({ metric: 'exactMatch', k: 2, threshold: 1, cases: 2 });
   });
 
+  it('counts an errored trial as a failure: [1, error, 0] at k 1 is 1/3', () => {
+    const metric = passAtK('exactMatch', { k: 1 });
+    expect(metric([caseWith([trial(1), trial(undefined, 'boom'), trial(0)])]).score).toBeCloseTo(
+      1 / 3
+    );
+  });
+
+  it('fails a trial with an error even when it carries scores', () => {
+    const metric = passAtK('exactMatch', { k: 1 });
+    const errored: ScoredCaseResult = { ...trial(1), error: 'late failure' };
+    expect(metric([caseWith([trial(1), errored])]).score).toBe(0.5);
+  });
+
   it('passes trials at the threshold', () => {
     const metric = passAtK('exactMatch', { k: 1, threshold: 0.5 });
     expect(metric([caseWith([trial(0.5), trial(0.4)])]).score).toBe(0.5);

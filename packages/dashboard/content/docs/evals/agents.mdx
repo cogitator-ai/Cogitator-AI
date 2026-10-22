@@ -132,7 +132,7 @@ const target = {
 };
 ```
 
-An expected passage is an id or a text. A retrieved passage matches it by an equal `id`, or when one text contains the other once case and whitespace are normalized, so a sentence of a chunk finds the chunk.
+An expected passage is an id or a text. A retrieved passage matches it by an equal `id`, by an equal text once case and whitespace are normalized, or when one normalized text contains the other and the contained one has at least three words, so a short id or a single word never matches every passage that happens to hold it. A sentence of three words or more finds the chunk that holds it.
 
 | Metric                 | Score                                                                                                                                       |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -158,7 +158,9 @@ const cogitator = new Cogitator({
 });
 ```
 
-The case result's `output` is the last answer, so `expected` and the output metrics score how the conversation ended. `toolCalls`, `toolResults`, `retrieved` and `usage` are summed over every turn, and `turns` lists each `{ input, output, toolCalls? }`. A turn that fails fails the case with that turn's error, the result keeping the turns run so far with the failed one last.
+The case result's `output` is the last answer, so `expected` and the output metrics score how the conversation ended. `toolCalls`, `toolResults`, `retrieved` and `usage` are summed over every turn, and `turns` lists each `{ input, output, toolCalls? }`. A turn that fails fails the case with that turn's error, the result keeping the turns run so far with the failed one last. A case cancelled through the run's signal or timed out starts no further turn.
+
+LLM judges read a multi-turn case as the conversation: each earlier turn's input and answer, then the last user message, marked as the one the response answers.
 
 A `fn` target is called once per turn, `context.turn` telling which (0 for `input`) and `context.history` holding the earlier `{ input, output }` turns:
 
@@ -192,7 +194,9 @@ result.results[0].trials; // five runs, each with its own scores
 - Trials share the suite's `concurrency`, `timeout`, `retries`, abort signal and `maxCases`, each being one more run in the queue.
 - Every trial is scored on its own. The case result is the first trial, with all of them in `trials`.
 - The aggregate of a metric takes, for each case, the mean of its scored trials, so `aggregated.exactMatch.mean` is the expected pass rate of a single run.
-- `stats.targetCost`, `judgeCost` and `metricErrors` cover every trial. `stats.errors` counts the cases whose first trial errored, the others show in `trials`.
+- `stats.targetCost`, `judgeCost` and `metricErrors` cover every trial. A case counts as errored in `stats.errors` when every trial errored.
+- `latency()`, `cost()` and `tokenUsage()` see every trial as one value each, so `aggregated.cost.mean` is the cost of a single run. `passAtK()` sees the cases with their trials.
+- `EvalComparison` takes `trials` too and compares each case's mean over its trials.
 - `onProgress` fires once per case, after its last trial.
 
 `passAtK(metric, { k, threshold = 1 })` estimates, for each case, the chance that at least one of `k` trials scores `threshold` or more, with the unbiased estimator

@@ -22,7 +22,10 @@ export interface EvalMatchers<R = unknown> {
    * `'any-order'`: each of them, in any order, other calls allowed
    */
   toFollowTrajectory(names: readonly string[], options?: { order?: TrajectoryOrder }): R;
-  /** The case result retrieved a passage with this id, or whose text matches this one */
+  /**
+   * The case result retrieved a passage with this id or this text, or whose text contains this
+   * one or is contained in it when the contained text has at least three words
+   */
   toHaveRetrieved(idOrText: string): R;
   /**
    * A case result scored at least `min` on the metric, or a suite result's mean of the metric
@@ -82,7 +85,7 @@ function negation(context: MatcherContext): string {
  * @example
  * ```ts
  * import { expect } from 'vitest';
- * import { evalMatchers } from '@cogitator-ai/evals/vitest';
+ * import { evalMatchers } from '@cogitator-ai/evals/matchers';
  *
  * expect.extend(evalMatchers);
  *
