@@ -585,7 +585,7 @@ describe('trials of agent cases', () => {
     expect(threads[0]).not.toBe(threads[2]);
   });
 
-  it('keeps a case whose first trial errored but others passed', async () => {
+  it('reports a case whose first trial errored by the first trial that answered', async () => {
     let call = 0;
     const suite = new EvalSuite({
       dataset: Dataset.from([{ input: 'a' }]),
@@ -603,8 +603,9 @@ describe('trials of agent cases', () => {
     const result = await suite.run();
     const [caseResult] = result.results;
 
-    expect(caseResult.error).toBe('first failed');
-    expect(caseResult.scores).toEqual([]);
+    expect(caseResult.error).toBeUndefined();
+    expect(caseResult.output).toBe('ok');
+    expect(caseResult.scores.map((s) => s.score)).toEqual([0.8]);
     expect(caseResult.trials?.map((t) => t.error)).toEqual(['first failed', undefined, undefined]);
     expect(result.aggregated.m.mean).toBe(0.8);
     expect(result.aggregated.m.count).toBe(1);

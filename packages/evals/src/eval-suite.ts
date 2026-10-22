@@ -86,7 +86,8 @@ export interface EvalSuiteOptions {
   retries?: number;
   /**
    * Runs of each case, a positive integer, 1 by default. Each trial is scored on its own, the
-   * case result is the first trial with every trial in `trials`, and the aggregate of a metric
+   * case result is the first trial that answered (the first when all errored) with every trial in
+   * `trials`, and the aggregate of a metric
    * takes the mean of a case's scored trials as the case's score. A case counts as errored in
    * `stats.errors` when every trial errored, and `latency()`, `cost()` and `tokenUsage()` see
    * every trial. Use `passAtK()` to score how often a case passes
@@ -114,8 +115,8 @@ export type EvalSuiteStats = Required<EvalStats>;
 
 export interface EvalSuiteResult {
   /**
-   * One result per case, in dataset order. With several trials it is the first trial, every
-   * trial in its `trials`
+   * One result per case, in dataset order. With several trials it is the first trial that
+   * answered, or the first when every trial errored, with every trial in its `trials`
    */
   results: ScoredCaseResult[];
   aggregated: Record<string, AggregatedMetric>;
@@ -423,7 +424,7 @@ export class EvalSuite {
     signal?.throwIfAborted();
 
     const orderedResults: ScoredCaseResult[] = trialResults.map((caseTrials) =>
-      trials === 1 ? caseTrials[0] : { ...caseTrials[0], trials: caseTrials }
+      trials === 1 ? caseTrials[0] : { ...leadTrial(caseTrials), trials: caseTrials }
     );
     const allTrials = orderedResults.flatMap(trialsOf);
 
@@ -445,8 +446,7 @@ export class EvalSuite {
     );
     const stats: EvalSuiteStats = {
       total,
-      errors: orderedResults.filter((r) => trialsOf(r).every((trial) => trial.error !== undefined))
-        .length,
+      errors: orderedResults.filter((r) => r.error !== undefined).length,
       metricErrors: allTrials.reduce(
         (n, r) => n + r.scores.filter((s) => s.error !== undefined).length,
         0
@@ -801,6 +801,11 @@ function failureDetails(settled: Settled): AttemptOutcome {
 }
 
 /** A case result as the reporters get it, the agent's data and the trials kept */
+/** The trial a case is reported by: the first that answered, the first when every trial errored */
+function leadTrial(trials: ScoredCaseResult[]): ScoredCaseResult {
+  return trials.find((trial) => trial.error === undefined) ?? trials[0];
+}
+
 function reportedCase(r: ScoredCaseResult): ReportedCase {
   return {
     case: { input: r.case.input, expected: r.case.expected },

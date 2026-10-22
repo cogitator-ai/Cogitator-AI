@@ -423,6 +423,30 @@ describe('EvalComparison with trials', () => {
     expect(result.summary.metrics.exactMatch.challenger).toBe(1);
   });
 
+  it('counts an errored trial as a 0 for its side, so a flaky target loses the case', async () => {
+    let baselineCalls = 0;
+    const comparison = new EvalComparison({
+      dataset: Dataset.from([{ input: 'a', expected: 'yes' }]),
+      targets: {
+        baseline: {
+          fn: async () => {
+            if (baselineCalls++ < 2) throw new Error('flaky');
+            return 'yes';
+          },
+        },
+        challenger: { fn: async () => 'yes' },
+      },
+      metrics: [exactMatch()],
+      trials: 3,
+      concurrency: 1,
+    });
+
+    const result = await comparison.run();
+
+    expect(result.summary.metrics.exactMatch.baseline).toBeCloseTo(1 / 3);
+    expect(result.summary.metrics.exactMatch.challenger).toBe(1);
+  });
+
   it('refuses trials that are not a positive integer', () => {
     expect(
       () =>

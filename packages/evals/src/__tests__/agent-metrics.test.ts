@@ -73,6 +73,17 @@ describe('matching helpers', () => {
     expect(passageMatches({ content: '   ' }, 'anything')).toBe(false);
   });
 
+  it('sets punctuation aside and matches whole words only', () => {
+    expect(passageMatches({ content: 'Paris.' }, 'Paris')).toBe(true);
+    expect(passageMatches({ content: 'Book early.' }, 'book early')).toBe(true);
+    expect(passageMatches({ content: 'The capital is Parisville' }, 'capital is paris')).toBe(
+      false
+    );
+    expect(passageMatches({ content: 'Yes, the capital is Paris!' }, 'capital is paris')).toBe(
+      true
+    );
+  });
+
   it('never matches a short id or a single word as a part of a longer text', () => {
     expect(passageMatches({ id: 'c7', content: 'Chunk 1 talks about towers' }, '1')).toBe(false);
     expect(passageMatches({ content: 'Paris' }, 'Paris is in France. Rome is in Italy.')).toBe(

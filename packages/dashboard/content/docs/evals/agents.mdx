@@ -192,7 +192,7 @@ result.results[0].trials; // five runs, each with its own scores
 ```
 
 - Trials share the suite's `concurrency`, `timeout`, `retries`, abort signal and `maxCases`, each being one more run in the queue.
-- Every trial is scored on its own. The case result is the first trial, with all of them in `trials`.
+- Every trial is scored on its own. The case result is the first trial that answered, or the first one when every trial errored, with all of them in `trials`.
 - The aggregate of a metric takes, for each case, the mean of its scored trials, so `aggregated.exactMatch.mean` is the expected pass rate of a single run.
 - `stats.targetCost`, `judgeCost` and `metricErrors` cover every trial. A case counts as errored in `stats.errors` when every trial errored.
 - `latency()`, `cost()` and `tokenUsage()` see every trial as one value each, so `aggregated.cost.mean` is the cost of a single run. `passAtK()` sees the cases with their trials.

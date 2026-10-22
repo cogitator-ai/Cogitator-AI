@@ -37,9 +37,13 @@ export function isSubset(expected: unknown, actual: unknown): boolean {
   return Object.is(expected, actual);
 }
 
-/** Text compared without case and with whitespace runs collapsed */
+/** Text compared without case, punctuation or runs of whitespace */
 export function normalizeText(text: string): string {
-  return text.toLowerCase().replace(/\s+/g, ' ').trim();
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /** Texts shorter than this many words match only as a whole, never as a part of another */
@@ -49,10 +53,16 @@ function wordCount(text: string): number {
   return text === '' ? 0 : text.split(' ').length;
 }
 
+/** Whether `inner` is a run of whole words of `outer`, both normalized */
+function containsWords(outer: string, inner: string): boolean {
+  return ` ${outer} `.includes(` ${inner} `);
+}
+
 /**
- * Whether a retrieved passage is the expected one: the same id, the same text once normalized,
- * or texts where one contains the other when the contained one has at least three words, so a
- * short id or a single word never matches every passage that happens to hold it
+ * Whether a retrieved passage is the expected one: the same id, the same words once case and
+ * punctuation are set aside, or texts where one holds the other's words in a row when that one
+ * has at least three words, so a short id or a single word never matches every passage that
+ * happens to hold it
  */
 export function passageMatches(passage: Passage, expected: string): boolean {
   if (passage.id !== undefined && passage.id === expected) return true;
@@ -60,8 +70,8 @@ export function passageMatches(passage: Passage, expected: string): boolean {
   const target = normalizeText(expected);
   if (content === '' || target === '') return false;
   if (content === target) return true;
-  if (wordCount(target) >= MIN_CONTAINED_WORDS && content.includes(target)) return true;
-  return wordCount(content) >= MIN_CONTAINED_WORDS && target.includes(content);
+  if (wordCount(target) >= MIN_CONTAINED_WORDS && containsWords(content, target)) return true;
+  return wordCount(content) >= MIN_CONTAINED_WORDS && containsWords(target, content);
 }
 
 /**

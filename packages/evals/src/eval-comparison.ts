@@ -210,8 +210,12 @@ export class EvalComparison {
 /** A case's score of a metric: the mean over its trials the metric scored, none when it scored none */
 function caseScore(result: ScoredCaseResult | undefined, metricName: string): number | undefined {
   if (!result) return undefined;
-  const scores = (result.trials ?? [result]).flatMap((trial) =>
-    trial.scores.filter((s: MetricScore) => s.name === metricName).map((s) => s.score)
+  const trials = result.trials ?? [result];
+  if (trials.every((trial) => trial.error !== undefined)) return undefined;
+  const scores = trials.flatMap((trial) =>
+    trial.error !== undefined
+      ? [0]
+      : trial.scores.filter((s: MetricScore) => s.name === metricName).map((s) => s.score)
   );
   return scores.length === 0 ? undefined : mean(scores);
 }
