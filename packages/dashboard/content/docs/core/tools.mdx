@@ -85,14 +85,14 @@ normalizeToolNames(['a.b', 'a_b']); // ['a_b_<hash>', 'a_b']
 
 `execute` receives the validated parameters and a `ToolContext`:
 
-| Field                      | Description                                                                  |
-| -------------------------- | ---------------------------------------------------------------------------- |
-| `agentId`, `runId`         | The agent and run that called the tool                                       |
-| `signal`                   | Aborted when the run is cancelled, times out, or the tool's `timeout` passes |
-| `threadId`                 | The conversation                                                             |
-| `userId`                   | The user the run acts for (`RunOptions.userId`)                              |
-| `channelType`, `channelId` | Where the message came from, for channel gateways                            |
-| `deps`                     | The run's `deps` (`RunOptions.deps`), never shown to the model               |
+| Field                                                   | Description                                                                  |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `agentId`, `runId`                                      | The agent and run that called the tool                                       |
+| `signal`                                                | Aborted when the run is cancelled, times out, or the tool's `timeout` passes |
+| `threadId`                                              | The conversation                                                             |
+| `userId`                                                | The user the run acts for (`RunOptions.userId`)                              |
+| `channelType`, `channelId`, `topicId`, `conversationId` | Where the message came from, for channel gateways                            |
+| `deps`                                                  | The run's `deps` (`RunOptions.deps`), never shown to the model               |
 
 Annotate the context as `ToolContext<YourDeps>` to read `deps` typed, see [Dependencies for Tools](/docs/core/agents#dependencies-for-tools).
 

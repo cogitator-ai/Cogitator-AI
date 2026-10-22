@@ -180,4 +180,35 @@ describe('AssistantConfigSchema', () => {
 
     expect(result.rateLimit?.maxPerMinute).toBe(30);
   });
+
+  it('checks the GitHub channel: repositories, webhook path and numeric owner ids', () => {
+    const base = {
+      name: 'test',
+      personality: 'Bot',
+      llm: { provider: 'openai', model: 'openai/gpt-4o' },
+    };
+    const parsed = AssistantConfigSchema.parse({
+      ...base,
+      channels: {
+        github: {
+          ownerIds: [583231, '42'],
+          repositories: ['acme/widgets', 'tools/*'],
+          associations: ['OWNER', 'CONTRIBUTOR'],
+        },
+      },
+    });
+    expect(parsed.channels.github).toMatchObject({
+      ownerIds: ['583231', '42'],
+      webhook: { port: 8787 },
+      associations: ['OWNER', 'CONTRIBUTOR'],
+    });
+    const valid = (github: Record<string, unknown>) =>
+      AssistantConfigSchema.safeParse({ ...base, channels: { github } }).success;
+    expect(valid({ repositories: ['acme'] })).toBe(false);
+    expect(valid({ repositories: ['acme/widgets/extra'] })).toBe(false);
+    expect(valid({ repositories: ['acme /widgets'] })).toBe(false);
+    expect(valid({ webhook: { path: 'github/webhook' } })).toBe(false);
+    expect(valid({ associations: ['FRIEND'] })).toBe(false);
+    expect(valid({ associations: 'any' })).toBe(true);
+  });
 });

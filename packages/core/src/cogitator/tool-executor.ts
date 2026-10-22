@@ -30,6 +30,8 @@ type ExtraToolContext = Record<string, unknown> & {
   userId?: string;
   channelType?: string;
   channelId?: string;
+  topicId?: string;
+  conversationId?: string;
 };
 
 /** One tool call of a run, or of `invokeTool()`, and what it runs with. */
@@ -193,6 +195,10 @@ export async function executeTool(
       ...(extraContext?.userId !== undefined && { userId: extraContext.userId }),
       ...(extraContext?.channelType !== undefined && { channelType: extraContext.channelType }),
       ...(extraContext?.channelId !== undefined && { channelId: extraContext.channelId }),
+      ...(extraContext?.topicId !== undefined && { topicId: extraContext.topicId }),
+      ...(extraContext?.conversationId !== undefined && {
+        conversationId: extraContext.conversationId,
+      }),
       ...(extraContext?.deps !== undefined && { deps: extraContext.deps }),
     },
   });

@@ -477,9 +477,37 @@ describe('a messaging bot on GitHub', () => {
     expect(file(plan, '.gitignore')).not.toContain('tokens.json');
   });
 
-  it('keeps the WebChat port for deploys when both run', () => {
-    const both = planProject(specFor('channels', 'openai', { channels: ['webchat', 'github'] }));
+  it('serves the GitHub webhook on the WebChat port when both run, so one exposed port takes both', () => {
+    const both = planProject(
+      specFor('channels', 'openai', { channels: ['webchat', 'github'], deploy: 'fly' })
+    );
+    const gateway = file(both, 'src/gateway.ts');
+    expect(gateway).toContain("routes: { '/github/webhook': github.webhookListener() }");
+    expect(gateway).toContain('webhook: { secret: env.GITHUB_WEBHOOK_SECRET }');
+    expect(gateway).not.toContain('GITHUB_WEBHOOK_PORT');
+    expect(gateway.indexOf('const github = githubChannel(')).toBeLessThan(
+      gateway.indexOf('webchatChannel(')
+    );
+    expect(syntaxErrors('src/gateway.ts', gateway)).toEqual([]);
+    expect(file(both, '.env.example')).not.toContain('GITHUB_WEBHOOK_PORT');
     expect(file(both, 'cogitator.yml')).toContain('port: 18789');
+    expect(file(both, 'fly.toml')).toContain('internal_port = 18789');
+    expect(file(both, 'src/index.ts')).toContain('WEBCHAT_PORT ?? 18789}/github/webhook');
+  });
+
+  it('writes no line that is only a comma after a multi-line channel', () => {
+    for (const channels of [
+      ['slack', 'github'],
+      ['bluesky', 'threads', 'webchat', 'github'],
+    ]) {
+      const gateway = file(
+        planProject(
+          specFor('channels', 'openai', { channels: channels as ProjectSpecInput['channels'] })
+        ),
+        'src/gateway.ts'
+      );
+      expect(gateway).not.toMatch(/^\s*,\s*$/m);
+    }
   });
 });
 

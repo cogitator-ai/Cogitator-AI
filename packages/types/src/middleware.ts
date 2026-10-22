@@ -26,6 +26,8 @@ export interface RunMiddlewareContext<TDeps = unknown> {
   /** The channel the run serves, as its tools get it */
   readonly channelType?: string;
   readonly channelId?: string;
+  readonly topicId?: string;
+  readonly conversationId?: string;
   /** The model turn the hook belongs to, from 1, or 0 before the first turn */
   readonly iteration: number;
   /** Aborts when the run is cancelled or times out */

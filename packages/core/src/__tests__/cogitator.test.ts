@@ -10,6 +10,7 @@ import type {
   LLMBackend,
   Message,
   ToolCall,
+  ToolContext,
 } from '@cogitator-ai/types';
 
 const createMockBackend = () => {
@@ -285,6 +286,51 @@ describe('Cogitator', () => {
         expect(result.toolCalls).toHaveLength(1);
         expect(result.toolCalls[0].name).toBe('calculator');
 
+        await cog.close();
+      });
+
+      it('gives tools the channel, topic and conversation of the run', async () => {
+        const cog = new Cogitator();
+        const contexts: ToolContext[] = [];
+        const where = tool({
+          name: 'where',
+          description: 'Say where the run is',
+          parameters: z.object({}),
+          execute: async (_args, context) => {
+            contexts.push(context);
+            return { ok: true };
+          },
+        });
+        mockBackendHelper.setResponses([
+          {
+            id: 'resp_1',
+            content: '',
+            finishReason: 'tool_calls',
+            toolCalls: [{ id: 'call_1', name: 'where', arguments: {} }],
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          },
+          {
+            id: 'resp_2',
+            content: 'Here',
+            finishReason: 'stop',
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          },
+        ]);
+
+        await cog.run(createTestAgent({ tools: [where] }), {
+          input: 'Where am I?',
+          channelType: 'telegram',
+          channelId: '-100',
+          topicId: '7',
+          conversationId: 'thread:root',
+        });
+
+        expect(contexts[0]).toMatchObject({
+          channelType: 'telegram',
+          channelId: '-100',
+          topicId: '7',
+          conversationId: 'thread:root',
+        });
         await cog.close();
       });
 

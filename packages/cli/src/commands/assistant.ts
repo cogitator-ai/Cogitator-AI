@@ -89,12 +89,17 @@ export const assistantCommand = new Command('assistant')
     let stopping = false;
     let stopLiveLog: (() => void) | null = null;
     const shutdown = async () => {
-      if (stopping) return;
+      if (stopping) {
+        log.warn('Stopping now, without waiting for the answers in progress');
+        process.exit(1);
+      }
       stopping = true;
       stopLiveLog?.();
       restoreTerminal();
       console.log();
-      log.info('Shutting down gracefully...');
+      log.info(
+        'Shutting down gracefully, answering what is queued (press Ctrl-C again to quit now)...'
+      );
       try {
         await gateway.stop();
         log.success('All channels stopped');

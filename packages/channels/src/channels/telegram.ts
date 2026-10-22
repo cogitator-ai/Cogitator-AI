@@ -156,6 +156,19 @@ const RICH_LIMIT = 32768;
 const CALLBACK_DATA_BYTES = 64;
 const COMMAND_RE = /^[a-z0-9_]{1,32}$/;
 
+/**
+ * The topic a message belongs to: its thread in a forum or in a private chat. A reply thread of a
+ * plain group also has a `message_thread_id`, but it is no topic, and answers go to the chat.
+ */
+function topicOf(
+  message: Pick<TelegramMessage, 'message_thread_id' | 'is_topic_message'>,
+  chatType: string | undefined
+): string | undefined {
+  const thread = message.message_thread_id;
+  if (thread === undefined) return undefined;
+  return message.is_topic_message || chatType === 'private' ? String(thread) : undefined;
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -328,7 +341,7 @@ export class TelegramChannel implements Channel {
     ctx: GrammyContext
   ): Omit<ChannelMessage, 'text' | 'attachments' | 'raw'> {
     const replyTo = ctx.message.reply_to_message?.message_id;
-    const topic = ctx.message.message_thread_id;
+    const topic = topicOf(ctx.message, ctx.chat.type);
     return {
       id: String(ctx.message.message_id),
       channelType: 'telegram',
@@ -337,9 +350,7 @@ export class TelegramChannel implements Channel {
       userName: ctx.from.first_name + (ctx.from.last_name ? ` ${ctx.from.last_name}` : ''),
       groupId: ctx.chat.type !== 'private' ? String(ctx.chat.id) : undefined,
       ...(replyTo !== undefined ? { replyTo: String(replyTo) } : {}),
-      ...(topic !== undefined && (ctx.message.is_topic_message || ctx.chat.type === 'private')
-        ? { topicId: String(topic) }
-        : {}),
+      ...(topic !== undefined ? { topicId: topic } : {}),
     };
   }
 
@@ -404,7 +415,7 @@ export class TelegramChannel implements Channel {
         return;
       }
       const message = query.message;
-      const topic = message?.message_thread_id;
+      const topic = message ? topicOf(message, message.chat?.type) : undefined;
       await this.actionHandler({
         id: query.id,
         channelType: 'telegram',
@@ -412,7 +423,7 @@ export class TelegramChannel implements Channel {
         userId: String(query.from.id),
         userName: query.from.first_name + (query.from.last_name ? ` ${query.from.last_name}` : ''),
         ...(message ? { messageId: String(message.message_id) } : {}),
-        ...(topic !== undefined ? { topicId: String(topic) } : {}),
+        ...(topic !== undefined ? { topicId: topic } : {}),
         data: query.data,
         raw: ctx,
       });

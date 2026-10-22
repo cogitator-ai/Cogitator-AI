@@ -58,6 +58,23 @@ describe('WebChatChannel', () => {
     ws.close();
   });
 
+  it('serves plain HTTP routes on its port next to the socket', async () => {
+    const port = await freePort();
+    const channel = new WebChatChannel({
+      port,
+      routes: { '/hook': (_req, res) => res.writeHead(200).end('hooked') },
+    });
+    channels.push(channel);
+    channel.onMessage(vi.fn().mockResolvedValue(undefined));
+    await channel.start();
+    const hooked = await fetch(`http://127.0.0.1:${port}/hook`, { method: 'POST' });
+    expect([hooked.status, await hooked.text()]).toEqual([200, 'hooked']);
+    expect((await fetch(`http://127.0.0.1:${port}/elsewhere`)).status).toBe(404);
+    const { ws, messages } = await connect(`ws://127.0.0.1:${port}/ws`);
+    await vi.waitFor(() => expect(messages[0]?.type).toBe('connected'));
+    ws.close();
+  });
+
   it('closes unauthorized connections', async () => {
     const port = await freePort();
     const channel = new WebChatChannel({ port, auth: (t) => t === 'good' });

@@ -79,6 +79,12 @@ export interface GatewayFullConfig extends GatewayConfig {
    * the prompt cache they open with
    */
   brief?: (msg: ChannelMessage) => string | undefined;
+  /**
+   * How long {@link Gateway.stop} waits for the queued messages and the runs in progress to be
+   * answered, in milliseconds (default 30000). What is still running then is aborted, and what
+   * is still waiting is dropped.
+   */
+  drainTimeout?: number;
 }
 
 export interface GatewaySessionInfo {
@@ -136,6 +142,34 @@ const DEFAULT_SUMMARY_PROMPT =
 
 const TYPING_INTERVAL_MS = 4000;
 
+const DEFAULT_DRAIN_TIMEOUT_MS = 30_000;
+
+/** Threads kept in the gateway's own bookkeeping (stats, sessions, envelope times) */
+export const MAX_TRACKED_THREADS = 10_000;
+
+/** Sets `key` as the most recent entry of `map`, dropping the least recent one past the limit */
+function touch<K, V>(map: Map<K, V>, key: K, value: V): void {
+  map.delete(key);
+  map.set(key, value);
+  if (map.size > MAX_TRACKED_THREADS) {
+    const oldest = map.keys().next();
+    if (!oldest.done) map.delete(oldest.value);
+  }
+}
+
+/** Resolves `true` once `promise` settles, or `false` after `ms` */
+async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  try {
+    return await Promise.race([promise.then(() => true), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function messageText(message: Message): string {
   if (typeof message.content === 'string') return message.content;
   return message.content
@@ -175,6 +209,8 @@ export class Gateway {
   private readonly hooks: HookRegistry | null;
   private readonly approvalWords: ApprovalReplyWords;
   private readonly pausedThreads = new Map<string, PausedThread>();
+  /** The stop of every run in progress */
+  private readonly runs = new Set<AbortController>();
   /** The stop of each run, by the signal the run was given */
   private readonly stops = new WeakMap<AbortSignal, AbortController>();
   /** The stop of each run streaming into a draft with a stop button, by channel, chat and draft */
@@ -214,7 +250,9 @@ export class Gateway {
         : new MessageQueue(queueMode, (msg, signal) => this.processMessage(msg, signal));
 
     this.debouncer = config.debounce?.enabled
-      ? new InboundDebouncer(config.debounce, (merged) => this.dispatch(merged))
+      ? new InboundDebouncer(config.debounce, async (merged) => {
+          this.dispatch(merged).catch(() => {});
+        })
       : null;
 
     for (const channel of this.channels) {
@@ -243,11 +281,24 @@ export class Gateway {
     }
   }
 
+  /**
+   * Stops the gateway. Channels have already confirmed the messages they handed over, so it
+   * first lets them be answered: messages held by `debounce` are flushed, and it waits up to
+   * `drainTimeout` for the queues and the runs in progress. Then it aborts the runs still going,
+   * drops the messages still waiting, waits for the aborted runs to settle (up to `drainTimeout`
+   * again) and stops the channels.
+   */
   async stop(): Promise<void> {
     if (!this.running) return;
     this.running = false;
+    const timeout = this.config.drainTimeout ?? DEFAULT_DRAIN_TIMEOUT_MS;
 
     if (this.debouncer) await this.debouncer.flushAll();
+    if (!(await settlesWithin(this.idle(), timeout))) {
+      this.messageQueue?.dispose();
+      for (const run of this.runs) run.abort(new Error('The gateway stopped'));
+      await settlesWithin(this.idle(), timeout);
+    }
     this.messageQueue?.dispose();
 
     await Promise.all(this.channels.map((ch) => ch.stop()));
@@ -283,8 +334,8 @@ export class Gateway {
   /**
    * Resolves once every message the gateway has taken is answered: those waiting in their
    * thread's queue and the runs in progress, including messages that come in while it waits.
-   * Messages held by `debounce` count from the moment they are flushed. Await it before
-   * {@link stop} to let the threads finish what they were given.
+   * Messages held by `debounce` count from the moment they are flushed. {@link stop} waits
+   * for it, up to `drainTimeout`.
    */
   async idle(): Promise<void> {
     while (this.pending.size > 0) {
@@ -446,6 +497,7 @@ export class Gateway {
       ...(action.userName ? { userName: action.userName } : {}),
       ...(action.channelId.startsWith('-') ? { groupId: action.channelId } : {}),
       ...(action.topicId ? { topicId: action.topicId } : {}),
+      ...(action.conversationId ? { conversationId: action.conversationId } : {}),
       text: (approve ? this.approvalWords.approveWords : this.approvalWords.denyWords)[0] ?? '',
       raw: action.raw,
     };
@@ -612,6 +664,7 @@ export class Gateway {
     const stop = new AbortController();
     const runSignal = signal ? AbortSignal.any([signal, stop.signal]) : stop.signal;
     this.stops.set(runSignal, stop);
+    this.runs.add(stop);
 
     try {
       await this.processWithChannel(msg, channel, threadId, runSignal);
@@ -619,6 +672,7 @@ export class Gateway {
       if (runSignal.aborted) return;
       this.config.onError?.(toError(error), msg);
     } finally {
+      this.runs.delete(stop);
       const remaining = (this.inFlight.get(threadId) ?? 1) - 1;
       if (remaining <= 0) this.inFlight.delete(threadId);
       else this.inFlight.set(threadId, remaining);
@@ -655,7 +709,7 @@ export class Gateway {
     this.rollMessageCounter();
     this.messageCount++;
     const known = this.threads.get(threadId);
-    this.threads.set(threadId, {
+    touch(this.threads, threadId, {
       channelType: msg.channelType,
       userId: msg.userId,
       ...(msg.userName || known?.userName ? { userName: msg.userName ?? known?.userName } : {}),
@@ -758,7 +812,7 @@ export class Gateway {
     if (this.config.envelope?.enabled) {
       const prevTime = this.lastMessageTime.get(threadId);
       msg = { ...msg, text: formatEnvelope(msg, this.config.envelope, prevTime) };
-      this.lastMessageTime.set(threadId, Date.now());
+      touch(this.lastMessageTime, threadId, Date.now());
     }
 
     const { input, images } = await this.extractMedia(msg, agent);
@@ -939,6 +993,8 @@ export class Gateway {
       userId: msg.userId,
       channelType: msg.channelType,
       channelId: msg.channelId,
+      ...(msg.topicId && { topicId: msg.topicId }),
+      ...(msg.conversationId && { conversationId: msg.conversationId }),
       ...(signal ? { signal } : {}),
       ...(this.config.runTimeout !== undefined ? { timeout: this.config.runTimeout } : {}),
       ...(tracker

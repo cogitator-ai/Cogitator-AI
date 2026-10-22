@@ -320,6 +320,7 @@ process.on('SIGINT', async () => {
         'Run a `Gateway` with `githubChannel()` on a webhook server of its own',
         'Every issue and pull request is a conversation, and every review thread one of its own, answered with a reply in it',
         'Deliveries are checked against the webhook secret and handled once, even when GitHub sends one again',
+        'Only the repository owner, members and collaborators reach the agent by default (`associations`, `authors`), since what people write steers it',
         "The bot answers mentions of `@login` (or every event with `trigger: 'all'`), skips its own comments and other bots",
       ],
       file: 'github-bot.ts',
@@ -369,6 +370,10 @@ console.log(\`@\${github.login} is listening on http://localhost:8787/github/web
         {
           type: 'tip',
           text: 'Add the webhook in the repository settings with content type `application/json` and the events Issues, Issue comments, Pull requests, Pull request reviews and Pull request review comments. A tunnel to port 8787 is enough to try it.',
+        },
+        {
+          type: 'warning',
+          text: 'Give the bot an account of its own and a fine-grained token scoped to the repositories it answers in. With your own token it posts as you and takes your comments for its own, and a classic `repo` token reaches every private repository you have.',
         },
         {
           type: 'info',

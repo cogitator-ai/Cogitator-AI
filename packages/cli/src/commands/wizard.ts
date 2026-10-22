@@ -29,7 +29,7 @@ export const CHANNEL_TOKEN_ENV: Record<ChannelName, string> = {
   slack: 'SLACK_BOT_TOKEN',
   bluesky: 'BLUESKY_APP_PASSWORD',
   threads: 'THREADS_ACCESS_TOKEN',
-  github: 'GITHUB_TOKEN',
+  github: 'GITHUB_CHANNEL_TOKEN',
 };
 
 const CHANNEL_LABELS: Record<ChannelName, string> = {
@@ -48,7 +48,7 @@ const TOKEN_PROMPTS: Record<ChannelName, string> = {
   bluesky: 'Bluesky app password (create it with direct messages allowed):',
   threads: 'Threads long-lived access token:',
   github:
-    'GitHub token of the bot account (a personal access token with issues and pull requests write):',
+    'GitHub token of a separate bot account, scoped to the repositories it answers in (issues and pull requests write):',
 };
 
 const OWNER_PROMPTS: Record<ChannelName, string> = {

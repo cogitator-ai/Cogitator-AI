@@ -441,25 +441,52 @@ describe('RuntimeBuilder', () => {
           repositories: ['acme/*'],
           login: 'helper[bot]',
           ownerIds: ['583231'],
+          associations: 'any',
+          authors: ['octocat'],
         },
       },
     };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const built = await new RuntimeBuilder(config, {
       GOOGLE_API_KEY: 'test-key',
-      GITHUB_TOKEN: 'ghp_token',
+      GITHUB_TOKEN: 'ghp_capability',
+      GITHUB_CHANNEL_TOKEN: 'ghp_bot',
       GITHUB_WEBHOOK_SECRET: 'hook-secret',
       GITHUB_API_URL: 'https://ghe.example.com/api/v3',
     }).build();
     expect(socialConfigs.github).toEqual([
       {
-        token: 'ghp_token',
+        token: 'ghp_bot',
         webhook: { secret: 'hook-secret', port: 8787 },
         apiUrl: 'https://ghe.example.com/api/v3',
         login: 'helper[bot]',
         trigger: 'all',
         repositories: ['acme/*'],
+        associations: 'any',
+        authors: ['octocat'],
       },
     ]);
+    expect(warn.mock.calls.some((call) => String(call[0]).includes('GITHUB_CHANNEL_TOKEN'))).toBe(
+      false
+    );
+    warn.mockRestore();
+    await built.cleanup();
+  });
+
+  it('falls back to GITHUB_TOKEN for the GitHub channel, saying it should not', async () => {
+    socialConfigs.github.length = 0;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const config: AssistantConfigInput = { ...minimalConfig, channels: { github: {} } };
+    const built = await new RuntimeBuilder(config, {
+      GOOGLE_API_KEY: 'test-key',
+      GITHUB_TOKEN: 'ghp_shared',
+      GITHUB_WEBHOOK_SECRET: 'hook-secret',
+    }).build();
+    expect(socialConfigs.github).toEqual([expect.objectContaining({ token: 'ghp_shared' })]);
+    expect(warn.mock.calls.some((call) => String(call[0]).includes('GITHUB_CHANNEL_TOKEN'))).toBe(
+      true
+    );
+    warn.mockRestore();
     await built.cleanup();
   });
 
@@ -837,7 +864,7 @@ describe('RuntimeBuilder', () => {
     await built.gateway.injectMessage({
       id: 'm1',
       channelType: 'whatsapp',
-      channelId: '15550001111',
+      channelId: '15550001111@s.whatsapp.net',
       userId: '15550001111',
       text: 'delete it',
       raw: {},
@@ -867,7 +894,11 @@ describe('RuntimeBuilder', () => {
     run.mockImplementation(
       () => new Promise((resolve) => releases.push(() => resolve({ output: 'ok' })))
     );
-    const user = { channelType: 'whatsapp', channelId: '15550001111', userId: '15550001111' };
+    const user = {
+      channelType: 'whatsapp',
+      channelId: '15550001111@s.whatsapp.net',
+      userId: '15550001111',
+    };
 
     const answered = Promise.all([
       built.gateway.injectMessage({ ...user, id: 'm1', text: 'one', raw: {} }),
@@ -978,7 +1009,7 @@ describe('RuntimeBuilder', () => {
     const compactThread = vi.spyOn(built.gateway, 'compactThread');
     const owner = {
       channelType: 'whatsapp',
-      channelId: '15550001111',
+      channelId: '15550001111@s.whatsapp.net',
       userId: '15550001111',
       raw: {},
     };
@@ -990,7 +1021,7 @@ describe('RuntimeBuilder', () => {
 
     compactThread.mockResolvedValue('Nothing to compact (3 messages)');
     await built.gateway.injectMessage({ ...owner, id: 'm2', text: '/compact' });
-    expect(compactThread).toHaveBeenCalledWith('whatsapp:15550001111:15550001111');
+    expect(compactThread).toHaveBeenCalledWith('whatsapp:15550001111@s.whatsapp.net:15550001111');
     expect(compactAll).toHaveBeenCalledTimes(1);
     await built.cleanup();
   });

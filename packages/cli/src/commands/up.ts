@@ -94,10 +94,15 @@ async function startFromConfig(configPath: string): Promise<void> {
 
   let stopping = false;
   const shutdown = async (exitCode: number) => {
-    if (stopping) return;
+    if (stopping) {
+      log.warn('Stopping now, without waiting for the answers in progress');
+      process.exit(exitCode || 1);
+    }
     stopping = true;
     console.log();
-    const stopSpinner = ora('Shutting down...').start();
+    const stopSpinner = ora(
+      'Shutting down, answering what is queued (press Ctrl-C again to quit now)...'
+    ).start();
     try {
       await runtime.cleanup();
       stopSpinner.succeed('Stopped');

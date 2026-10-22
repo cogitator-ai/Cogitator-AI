@@ -574,6 +574,8 @@ interface ToolContext {
   userId?: string; // the run's userId
   channelType?: string;
   channelId?: string;
+  topicId?: string; // the topic of the chat, such as a Telegram forum topic or a Slack thread
+  conversationId?: string; // the conversation, when channelId does not name it (Bluesky, Threads)
   deps?: unknown; // the run's deps, typed with ToolContext<YourDeps>
 }
 ```

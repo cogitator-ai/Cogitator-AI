@@ -1,4 +1,4 @@
-import type { IncomingMessage } from 'node:http';
+import { createServer, type IncomingMessage, type RequestListener, type Server } from 'node:http';
 import type { WebSocket, WebSocketServer } from 'ws';
 import type {
   Channel,
@@ -15,6 +15,12 @@ export interface WebChatConfig {
   auth?: (token: string) => boolean;
   /** Maximum size of an incoming frame in bytes. Default: 1 MiB. */
   maxPayload?: number;
+  /**
+   * Plain HTTP routes served on the same port, by path, such as the webhook
+   * of another channel: `{ '/github/webhook': github.webhookListener() }`.
+   * Other paths answer `404`.
+   */
+  routes?: Record<string, RequestListener>;
 }
 
 const WS_OPEN = 1;
@@ -47,6 +53,7 @@ export class WebChatChannel implements Channel {
   readonly type: ChannelType = 'webchat';
   private handler: ((msg: ChannelMessage) => Promise<void>) | null = null;
   private server: WebSocketServer | null = null;
+  private http: Server | null = null;
   private readonly clients = new Map<string, WebSocket>();
 
   constructor(private readonly config: WebChatConfig) {}
@@ -65,24 +72,50 @@ export class WebChatChannel implements Channel {
       throw new Error('ws is required for WebChat support. Install it: pnpm add ws');
     }
 
-    const wss = new ws.WebSocketServer({
-      port: this.config.port,
+    const options = {
       path: this.config.path ?? '/ws',
       maxPayload: this.config.maxPayload ?? DEFAULT_MAX_PAYLOAD,
-    });
-
-    await new Promise<void>((resolve, reject) => {
-      const onError = (err: Error) => {
-        wss.off('listening', onListening);
-        reject(err);
-      };
-      const onListening = () => {
-        wss.off('error', onError);
-        resolve();
-      };
-      wss.once('error', onError);
-      wss.once('listening', onListening);
-    });
+    };
+    const routes = this.config.routes;
+    let wss: WebSocketServer;
+    if (routes && Object.keys(routes).length > 0) {
+      const http = createServer((req, res) => {
+        let pathname: string;
+        try {
+          pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+        } catch {
+          res.writeHead(400).end();
+          return;
+        }
+        const route = Object.hasOwn(routes, pathname) ? routes[pathname] : undefined;
+        if (route) route(req, res);
+        else res.writeHead(404).end();
+      });
+      wss = new ws.WebSocketServer({ ...options, server: http });
+      await new Promise<void>((resolve, reject) => {
+        http.once('error', reject);
+        http.listen(this.config.port, () => {
+          http.off('error', reject);
+          resolve();
+        });
+      });
+      http.on('error', (err) => console.error('[webchat] Server error:', err.message));
+      this.http = http;
+    } else {
+      wss = new ws.WebSocketServer({ ...options, port: this.config.port });
+      await new Promise<void>((resolve, reject) => {
+        const onError = (err: Error) => {
+          wss.off('listening', onListening);
+          reject(err);
+        };
+        const onListening = () => {
+          wss.off('error', onError);
+          resolve();
+        };
+        wss.once('error', onError);
+        wss.once('listening', onListening);
+      });
+    }
 
     wss.on('error', (err) => {
       console.error('[webchat] Server error:', err.message);
@@ -136,6 +169,12 @@ export class WebChatChannel implements Channel {
     this.clients.clear();
 
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    const http = this.http;
+    this.http = null;
+    if (http) {
+      http.closeAllConnections();
+      await new Promise<void>((resolve) => http.close(() => resolve()));
+    }
   }
 
   private send(channelId: string, payload: Record<string, unknown>): boolean {

@@ -1,17 +1,44 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { createServer, type IncomingMessage, type Server } from 'node:http';
+import { createServer, type IncomingMessage, type RequestListener, type Server } from 'node:http';
 import { z } from 'zod';
 import type { Attachment, Channel, ChannelMessage, SendOptions } from '@cogitator-ai/types';
 import { FeedError } from '../../feeds/errors';
 import { chunkMessage } from '../../formatters/markdown';
 import { GitHubClient, type GitHubToken } from './client';
-import { githubInboundOf, isGitHubEventName, type GitHubSender } from './events';
+import {
+  githubInboundOf,
+  isGitHubEventName,
+  type GitHubInbound,
+  type GitHubSender,
+} from './events';
 
 /** The longest comment GitHub takes, in characters. */
 export const GITHUB_COMMENT_LIMIT = 65_536;
 
 const MAX_TRACKED = 1000;
 const MAX_BODY = 1024 * 1024;
+/** The shortest time between two edits of one comment, under GitHub's limit on content changes. */
+export const GITHUB_MIN_EDIT_INTERVAL = 3000;
+/** How long to wait before trying to load the bot's login again for a delivery, in ms. */
+const IDENTIFY_RETRY_DELAYS = [2000, 10_000];
+
+/** How an author is related to a repository, as GitHub's `author_association` says it. */
+export type GitHubAssociation =
+  | 'OWNER'
+  | 'MEMBER'
+  | 'COLLABORATOR'
+  | 'CONTRIBUTOR'
+  | 'FIRST_TIME_CONTRIBUTOR'
+  | 'FIRST_TIMER'
+  | 'MANNEQUIN'
+  | 'NONE';
+
+/** The authors the bot answers by default: the repository's owner, the organization's members and collaborators. */
+export const GITHUB_TRUSTED_ASSOCIATIONS: readonly GitHubAssociation[] = [
+  'OWNER',
+  'MEMBER',
+  'COLLABORATOR',
+];
 
 /**
  * The reactions GitHub has, by the emoji each shows, and the nearest one for
@@ -42,7 +69,10 @@ const UserSchema = z.object({ login: z.string() });
 export interface GitHubWebhookConfig {
   /** The secret set on the webhook, which signs every delivery. Required. */
   secret: string;
-  /** Run an HTTP server of the channel's own on this port. Without it, mount `handleWebhook`. */
+  /**
+   * Run an HTTP server of the channel's own on this port. Without it, mount
+   * `handleWebhook` or `webhookListener()` in a server of yours.
+   */
   port?: number;
   /** The path of the channel's own server (default `/github/webhook`). */
   path?: string;
@@ -67,21 +97,35 @@ export interface GitHubChannelConfig {
   /**
    * Which events the bot answers: `mention` (default) answers only those
    * that mention `@login`, `all` every new issue, pull request, comment and
-   * review in the allowed repositories.
+   * review in the allowed repositories. Once the bot answered someone in a
+   * conversation, their next comment there reaches it without a mention (an
+   * answer to an approval prompt, a follow-up), and so does every comment in
+   * a review thread it replied in.
    */
   trigger?: 'mention' | 'all';
   /**
    * The repositories to answer in, as `owner/repo` or `owner/*` for every
-   * repository of an owner. Default: every repository that sends events.
+   * repository of an owner. Default: every repository that sends events,
+   * which `start()` warns about.
    */
   repositories?: string[];
+  /**
+   * Whose events the bot answers, by their relation to the repository
+   * (`author_association`). Default `OWNER`, `MEMBER` and `COLLABORATOR`,
+   * since what people write steers an agent that holds the token. `'any'`
+   * answers everyone, for a public bot whose agent has nothing to leak.
+   */
+  associations?: readonly GitHubAssociation[] | 'any';
+  /** Logins the bot answers whatever their association, such as private members of an organization. */
+  authors?: string[];
   /** Answer other bots and apps too (default false, so two bots cannot answer each other forever). */
   allowBots?: boolean;
   /**
    * Stream answers into a comment that is edited as the text grows (default
    * false). GitHub notifies subscribers of a comment once, with its first
    * text, and limits how often content may be changed, so answers are sent
-   * once finished unless this is on.
+   * once finished unless this is on. Edits of one comment are at least
+   * `GITHUB_MIN_EDIT_INTERVAL` (3 s) apart, the latest text winning.
    */
   stream?: boolean;
   /** The REST API root, `https://<host>/api/v3` on GitHub Enterprise Server. */
@@ -190,20 +234,48 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** The text a mention counts in: without code and quoted lines, which only repeat a mention. */
+/**
+ * The text a mention counts in: without code (fenced, indented or inline)
+ * and quoted lines, which only repeat a mention.
+ */
 function mentionableText(text: string): string {
   const lines: string[] = [];
   let fence: string | undefined;
+  let blank = true;
+  let indentedCode = false;
+  let inList = false;
   for (const line of text.split('\n')) {
     const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
     if (fence) {
       if (marker?.[0] === fence[0] && marker.length >= fence.length) fence = undefined;
       continue;
     }
+    if (!line.trim()) {
+      blank = true;
+      continue;
+    }
+    if (/^( {4}|\t)/.test(line)) {
+      indentedCode = indentedCode || (blank && !inList);
+      blank = false;
+      if (!indentedCode) lines.push(line.replace(/`[^`]*`/g, ''));
+      continue;
+    }
+    blank = false;
+    indentedCode = false;
+    inList = /^ {0,3}([-*+]|\d+[.)])\s/.test(line);
     if (marker) fence = marker;
     else if (!/^ {0,3}>/.test(line)) lines.push(line.replace(/`[^`]*`/g, ''));
   }
   return lines.join('\n');
+}
+
+/** A login without the `[bot]` an app's login ends with, in lower case. */
+function loginKey(login: string): string {
+  return login.replace(/\[bot\]$/i, '').toLowerCase();
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Keeps a bounded memory: past `MAX_TRACKED` entries the oldest is forgotten. */
@@ -233,6 +305,12 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
   });
 }
 
+interface EditState {
+  text: string;
+  lastAt: number;
+  flight?: Promise<void>;
+}
+
 /**
  * A GitHub channel: an agent answers issues, pull requests, their comments
  * and reviews, in the repositories a webhook sends events from. Each issue or
@@ -252,11 +330,17 @@ export class GitHubChannel implements Channel {
   private readonly client: GitHubClient;
   private handler: ((msg: ChannelMessage) => Promise<void>) | null = null;
   private readonly deliveries = new Set<string>();
+  private readonly handled = new Set<string>();
   private readonly reactions = new Map<string, { id: number; content: string }>();
+  private readonly reacting = new Map<string, Promise<void>>();
+  private readonly edits = new Map<string, EditState>();
+  private readonly askers = new Map<string, string>();
+  private readonly engaged = new Set<string>();
   private server?: Server;
   private identity?: Promise<string>;
   private botLogin?: string;
   private running = false;
+  private stopped = false;
 
   constructor(config: GitHubChannelConfig) {
     if (!config.webhook?.secret) {
@@ -284,7 +368,13 @@ export class GitHubChannel implements Channel {
   async start(): Promise<void> {
     if (this.running) return;
     await this.identify();
+    if (!this.config.repositories?.length) {
+      console.warn(
+        '[github] No repositories set: the bot answers in every repository that sends it events'
+      );
+    }
     this.running = true;
+    this.stopped = false;
     const { port, path, host } = this.config.webhook;
     if (port !== undefined) {
       try {
@@ -298,6 +388,7 @@ export class GitHubChannel implements Channel {
 
   async stop(): Promise<void> {
     this.running = false;
+    this.stopped = true;
     const server = this.server;
     this.server = undefined;
     if (server) {
@@ -309,11 +400,15 @@ export class GitHubChannel implements Channel {
   /**
    * Answers a webhook delivery: checks its signature, answers at once and
    * hands the event to the agent after. Mount it in any HTTP server, with the
-   * raw body unparsed. It works before `start()` too: the first delivery
-   * loads the bot's login when it is not configured. A delivery GitHub sends
-   * again (same `X-GitHub-Delivery`) is answered without being handled twice.
+   * raw body unparsed. It works before `start()` too, and answers `503` once
+   * the channel is stopped. A delivery GitHub sends again is handled once:
+   * by its `X-GitHub-Delivery` and by the comment, issue or review it
+   * carries, which the signature covers. Both are remembered in memory only,
+   * for the latest 1000, so a delivery sent again after a restart is
+   * handled again.
    */
   async handleWebhook(request: GitHubWebhookRequest): Promise<GitHubWebhookResponse> {
+    if (this.stopped) return { status: 503, body: 'The channel is stopped' };
     if (request.method !== 'POST') return { status: 405, body: 'Method not allowed' };
     const raw = request.rawBody ?? '';
     const signature = header(request.headers, 'x-hub-signature-256');
@@ -329,17 +424,8 @@ export class GitHubChannel implements Channel {
     } catch {
       return { status: 400, body: 'Invalid JSON' };
     }
-    const delivery = header(request.headers, 'x-github-delivery');
-    if (delivery !== undefined && this.deliveries.has(delivery)) {
-      return { status: 200, body: 'Already received' };
-    }
     if (!isGitHubEventName(event)) return { status: 200, body: 'Ignored' };
-    try {
-      await this.identify();
-    } catch (error) {
-      console.error('[github] Could not load the bot login for a webhook delivery:', error);
-      return { status: 503, body: 'The bot login could not be loaded' };
-    }
+    const delivery = header(request.headers, 'x-github-delivery');
     if (delivery !== undefined) {
       if (this.deliveries.has(delivery)) return { status: 200, body: 'Already received' };
       this.deliveries.add(delivery);
@@ -349,6 +435,33 @@ export class GitHubChannel implements Channel {
       console.error('[github] Webhook delivery failed:', error)
     );
     return { status: 200, body: 'OK' };
+  }
+
+  /**
+   * A Node request listener that answers webhook deliveries on any path it
+   * is mounted at, such as a route of a server that serves other things too.
+   * Bodies over 1 MB are refused with `413`.
+   */
+  webhookListener(): RequestListener {
+    return (req, res) => {
+      readBody(req)
+        .then((rawBody) =>
+          this.handleWebhook({ method: req.method ?? 'GET', headers: req.headers, rawBody })
+        )
+        .then((response) =>
+          res.writeHead(response.status, { 'content-type': 'text/plain' }).end(response.body)
+        )
+        .catch((error: unknown) => {
+          if (error instanceof BodyTooLarge) {
+            res.writeHead(413, { 'content-type': 'text/plain', connection: 'close' });
+            res.end('Payload too large');
+            return;
+          }
+          console.error('[github] Webhook request failed:', error);
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        });
+    };
   }
 
   /**
@@ -364,18 +477,42 @@ export class GitHubChannel implements Channel {
     if (parts.length === 0) throw new Error('[github] Nothing to send');
     const ids: string[] = [];
     for (const part of parts) ids.push(await this.comment(conversation, part, thread));
+    this.answered(
+      thread === undefined ? channelId : `${channelId}:${thread}`,
+      thread !== undefined
+    );
     return ids[0] ?? '';
   }
 
-  /** Replaces the text of a comment the bot made (`comment:<id>` or `review_comment:<id>`). */
+  /**
+   * Replaces the text of a comment the bot made (`comment:<id>` or
+   * `review_comment:<id>`). Edits of one comment go out at least
+   * `GITHUB_MIN_EDIT_INTERVAL` apart: an edit made sooner waits, and edits
+   * made while it waits are folded into it, the latest text winning.
+   */
   async editText(channelId: string, messageId: string, text: string): Promise<void> {
     const conversation = parseConversation(channelId);
     if (text.length > GITHUB_COMMENT_LIMIT) {
       throw new Error(`[github] A comment holds at most ${GITHUB_COMMENT_LIMIT} characters`);
     }
-    await this.client.request('PATCH', this.commentPath(conversation, messageId, 'edited'), {
-      body: text,
-    });
+    const path = this.commentPath(conversation, messageId, 'edited');
+    const state = this.edits.get(path) ?? { text, lastAt: 0 };
+    state.text = text;
+    if (!this.edits.has(path)) {
+      this.edits.set(path, state);
+      forgetOldest(this.edits);
+    }
+    state.flight ??= this.flushEdit(path, state);
+    return state.flight;
+  }
+
+  /** Sends the latest text of an edit once the comment's last edit is far enough back. */
+  private async flushEdit(path: string, state: EditState): Promise<void> {
+    const wait = state.lastAt + GITHUB_MIN_EDIT_INTERVAL - Date.now();
+    await (wait > 0 ? sleep(wait) : Promise.resolve());
+    state.flight = undefined;
+    state.lastAt = Date.now();
+    await this.client.request('PATCH', path, { body: state.text });
   }
 
   /**
@@ -411,16 +548,27 @@ export class GitHubChannel implements Channel {
    * heart, hooray, rocket, eyes), named or as their emoji, and the status
    * emojis of thinking, a tool and an error become eyes, rocket and
    * confused. Other emojis are skipped, and so are reviews, which take no
-   * reactions.
+   * reactions. Reactions to one message are set one after another, so the
+   * last one called is the one that stays.
    */
-  async setReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
+  setReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
     const content = REACTIONS[emoji] ?? (REACTION_NAMES.has(emoji) ? emoji : undefined);
-    if (!content) return;
-    const conversation = parseConversation(channelId);
-    const ref = parseMessageId(messageId);
-    const path = this.reactionsPath(conversation, ref);
-    if (!path) return;
+    if (!content) return Promise.resolve();
+    const path = this.reactionsPath(parseConversation(channelId), parseMessageId(messageId));
+    if (!path) return Promise.resolve();
     const key = `${channelId}:${messageId}`;
+    const previous = this.reacting.get(key) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(() => this.react(key, path, content));
+    this.reacting.set(key, next);
+    void next
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.reacting.get(key) === next) this.reacting.delete(key);
+      });
+    return next;
+  }
+
+  private async react(key: string, path: string, content: string): Promise<void> {
     const previous = this.reactions.get(key);
     if (previous?.content === content) return;
     const created = ReactionSchema.parse(await this.client.request('POST', path, { content }));
@@ -480,18 +628,57 @@ export class GitHubChannel implements Channel {
     }
   }
 
+  /**
+   * Notes that the bot answered in a conversation: the person it answered
+   * there may write on without a mention, and in a review thread everyone may.
+   */
+  private answered(conversation: string, reviewThread: boolean): void {
+    if (reviewThread) this.remember(this.engaged, conversation);
+    const asker = this.askers.get(conversation);
+    if (asker !== undefined) this.remember(this.engaged, `${conversation}|${asker}`);
+  }
+
+  private remember(set: Set<string>, key: string): void {
+    set.delete(key);
+    set.add(key);
+    forgetOldest(set);
+  }
+
+  /** Whether a message reaches the bot without a mention: in a conversation it answered. */
+  private takesWithoutMention(conversation: string, userId: string): boolean {
+    if (this.engaged.has(conversation)) return true;
+    return this.engaged.delete(`${conversation}|${userId}`);
+  }
+
   private async receive(event: string, payload: unknown): Promise<void> {
     const inbound = githubInboundOf(event, payload);
     if (!inbound || !this.handler) return;
-    if (!this.allowsRepository(inbound.repository) || this.skipsSender(inbound.sender)) return;
-    if (this.config.trigger !== 'all' && !this.mentionsBot(inbound.text)) return;
+    if (!this.allowsRepository(inbound.repository) || !this.trusts(inbound)) return;
+    if (!(await this.loginForDelivery()) || this.stopped) return;
+    if (this.isOwnOrBot(inbound.sender)) return;
+    const channelId = `${inbound.repository}#${inbound.number}`;
+    const conversation = inbound.topicId ? `${channelId}:${inbound.topicId}` : channelId;
+    const userId = String(inbound.sender.id);
+    const mentioned = this.mentionsBot(inbound.text);
+    if (
+      this.config.trigger !== 'all' &&
+      !mentioned &&
+      !this.takesWithoutMention(conversation, userId)
+    ) {
+      return;
+    }
     const text = this.stripMention(inbound.text);
     if (!text) return;
+    const key = `${inbound.repository.toLowerCase()}:${inbound.id}`;
+    if (this.handled.has(key)) return;
+    this.remember(this.handled, key);
+    this.askers.set(conversation, userId);
+    forgetOldest(this.askers);
     const message: ChannelMessage = {
       id: inbound.id,
       channelType: this.type,
-      channelId: `${inbound.repository}#${inbound.number}`,
-      userId: String(inbound.sender.id),
+      channelId,
+      userId,
       userName: inbound.sender.login,
       groupId: inbound.repository,
       text,
@@ -504,6 +691,27 @@ export class GitHubChannel implements Channel {
     } catch (error) {
       console.error('[github] Message handler error:', error);
     }
+  }
+
+  /**
+   * The bot's login for a delivery: loaded when it is not known yet, and
+   * tried again a few times, since GitHub does not send a delivery again by
+   * itself. The delivery is dropped, with an error logged, when it cannot be
+   * loaded.
+   */
+  private async loginForDelivery(): Promise<string | undefined> {
+    let failure: unknown;
+    for (const delay of [0, ...IDENTIFY_RETRY_DELAYS]) {
+      if (delay > 0) await sleep(delay);
+      if (this.stopped) return undefined;
+      try {
+        return await this.identify();
+      } catch (error) {
+        failure = error;
+      }
+    }
+    console.error('[github] Could not load the bot login, a delivery was dropped:', failure);
+    return undefined;
   }
 
   /** Loads the bot's login once, unless it is configured. */
@@ -542,8 +750,16 @@ export class GitHubChannel implements Channel {
     });
   }
 
-  private skipsSender(sender: GitHubSender): boolean {
-    if (sender.login.toLowerCase() === this.botLogin?.toLowerCase()) return true;
+  /** Whether the author may talk to the bot: by their association, or named in `authors`. */
+  private trusts(inbound: GitHubInbound): boolean {
+    const login = loginKey(inbound.sender.login);
+    if (this.config.authors?.some((author) => loginKey(author) === login)) return true;
+    const associations = this.config.associations ?? GITHUB_TRUSTED_ASSOCIATIONS;
+    return associations === 'any' || associations.some((value) => value === inbound.association);
+  }
+
+  private isOwnOrBot(sender: GitHubSender): boolean {
+    if (this.botLogin && loginKey(sender.login) === loginKey(this.botLogin)) return true;
     return sender.type === 'Bot' && this.config.allowBots !== true;
   }
 
@@ -571,28 +787,20 @@ export class GitHubChannel implements Channel {
   }
 
   private listen(port: number, path: string, host?: string): Promise<void> {
+    const listener = this.webhookListener();
     const server = createServer((req, res) => {
-      const url = new URL(req.url ?? '/', 'http://localhost');
-      if (url.pathname !== path) {
+      let pathname: string;
+      try {
+        pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+      } catch {
+        res.writeHead(400, { 'content-type': 'text/plain' }).end('Bad request');
+        return;
+      }
+      if (pathname !== path) {
         res.writeHead(404).end();
         return;
       }
-      readBody(req)
-        .then((rawBody) =>
-          this.handleWebhook({ method: req.method ?? 'GET', headers: req.headers, rawBody })
-        )
-        .then((response) =>
-          res.writeHead(response.status, { 'content-type': 'text/plain' }).end(response.body)
-        )
-        .catch((error: unknown) => {
-          if (error instanceof BodyTooLarge) {
-            res.writeHead(413, { 'content-type': 'text/plain', connection: 'close' });
-            res.end('Payload too large');
-            return;
-          }
-          console.error('[github] Webhook request failed:', error);
-          res.writeHead(500).end();
-        });
+      listener(req, res);
     });
     this.server = server;
     return new Promise((resolve, reject) => {

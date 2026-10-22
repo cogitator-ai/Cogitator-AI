@@ -605,6 +605,8 @@ export class Cogitator implements ToolInvoker {
         ...(options.userId !== undefined && { userId: options.userId }),
         ...(options.channelType !== undefined && { channelType: options.channelType }),
         ...(options.channelId !== undefined && { channelId: options.channelId }),
+        ...(options.topicId !== undefined && { topicId: options.topicId }),
+        ...(options.conversationId !== undefined && { conversationId: options.conversationId }),
         ...(options.deps !== undefined && { deps: options.deps }),
       },
       approved: approvedByUser,
@@ -625,6 +627,8 @@ export class Cogitator implements ToolInvoker {
         ...(options.userId !== undefined && { userId: options.userId }),
         ...(options.channelType !== undefined && { channelType: options.channelType }),
         ...(options.channelId !== undefined && { channelId: options.channelId }),
+        ...(options.topicId !== undefined && { topicId: options.topicId }),
+        ...(options.conversationId !== undefined && { conversationId: options.conversationId }),
         ...(options.deps !== undefined && { deps: options.deps }),
       },
     });
@@ -1136,6 +1140,8 @@ export class Cogitator implements ToolInvoker {
         ...(options.userId !== undefined && { userId: options.userId }),
         ...(options.channelType !== undefined && { channelType: options.channelType }),
         ...(options.channelId !== undefined && { channelId: options.channelId }),
+        ...(options.topicId !== undefined && { topicId: options.topicId }),
+        ...(options.conversationId !== undefined && { conversationId: options.conversationId }),
         ...(options.deps !== undefined && { deps: options.deps }),
       });
 
@@ -1452,6 +1458,8 @@ export class Cogitator implements ToolInvoker {
                   userId: options.userId,
                   channelType: options.channelType,
                   channelId: options.channelId,
+                  topicId: options.topicId,
+                  conversationId: options.conversationId,
                   ...(options.deps !== undefined && { deps: options.deps }),
                 },
                 approved: decision?.approved === true,

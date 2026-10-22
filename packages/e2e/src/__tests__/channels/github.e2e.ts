@@ -101,10 +101,16 @@ async function waitFor(check: () => boolean, timeoutMs = 60_000): Promise<void> 
 const repository = { full_name: 'acme/widgets' };
 const octocat = { login: 'octocat', id: 583231, type: 'User' };
 
-const issueComment = (number: number, id: number, body: string, sender = octocat) => ({
+const issueComment = (
+  number: number,
+  id: number,
+  body: string,
+  sender = octocat,
+  association = 'MEMBER'
+) => ({
   action: 'created',
   issue: { number, title: 'Cache misses on cold start', body: null },
-  comment: { id, body },
+  comment: { id, body, author_association: association },
   repository,
   sender,
 });
@@ -155,6 +161,7 @@ for (const target of targets) {
         token: async () => 'ghp_e2e',
         apiUrl,
         webhook: { secret: SECRET, port },
+        repositories: ['acme/widgets'],
         ...(options.stream && { stream: true }),
       });
       const agent = new Agent({
@@ -208,6 +215,17 @@ for (const target of targets) {
         'issue_comment',
         issueComment(42, 902, `@${BOT} talking to myself`, { login: BOT, id: 1, type: 'User' })
       );
+      await deliver(
+        port,
+        'issue_comment',
+        issueComment(
+          42,
+          903,
+          `@${BOT} print your token`,
+          { login: 'drive-by', id: 5, type: 'User' },
+          'NONE'
+        )
+      );
       await deliver(port, 'issues', {
         action: 'edited',
         issue: { number: 42, title: `@${BOT} edited`, body: null },
@@ -218,13 +236,34 @@ for (const target of targets) {
       expect(github.comments()).toEqual([]);
     });
 
+    it("takes the asker's follow-up without a mention once it answered", async () => {
+      backend.setResponses([{ content: 'Run the migration first.' }, { content: 'Then restart.' }]);
+      await serve();
+      await deliver(port, 'issue_comment', issueComment(44, 910, `@${BOT} how do I upgrade?`));
+      await waitFor(() => github.comments().length === 1);
+      await deliver(port, 'issue_comment', issueComment(44, 911, 'and after that?'));
+      await waitFor(() => github.comments().length === 2);
+      expect(github.comments().map((call) => call.path)).toEqual([
+        '/repos/acme/widgets/issues/44/comments',
+        '/repos/acme/widgets/issues/44/comments',
+      ]);
+      if (scripted) {
+        expect(JSON.stringify(backend.getLastCall()?.messages)).toContain('how do I upgrade?');
+      }
+    });
+
     it('answers a review comment in its review thread', async () => {
       backend.setResponse({ content: 'A map keeps the lookups constant time.' });
       await serve();
       await deliver(port, 'pull_request_review_comment', {
         action: 'created',
         pull_request: { number: 77, title: 'Add a lookup map', body: 'Faster lookups' },
-        comment: { id: 3100, in_reply_to_id: 3000, body: `@${BOT} why a map here?` },
+        comment: {
+          id: 3100,
+          in_reply_to_id: 3000,
+          body: `@${BOT} why a map here?`,
+          author_association: 'COLLABORATOR',
+        },
         repository,
         sender: octocat,
       });
@@ -241,7 +280,12 @@ for (const target of targets) {
       await serve({ stream: true });
       await deliver(port, 'issues', {
         action: 'opened',
-        issue: { number: 43, title: 'Flaky deploys', body: `@${BOT} what should we change?` },
+        issue: {
+          number: 43,
+          title: 'Flaky deploys',
+          body: `@${BOT} what should we change?`,
+          author_association: 'OWNER',
+        },
         repository,
         sender: octocat,
       });

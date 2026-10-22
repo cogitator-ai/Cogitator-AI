@@ -134,7 +134,7 @@ slackChannel({
 });
 ```
 
-Supports: DMs, channel messages (via @mention, the mention is stripped from the text), threads (replies go to the thread root), file shares, Socket Mode (no public URL), streaming via chat.update, reactions. Set `mentionOnly: true` to ignore channel messages that do not mention the bot when the app also subscribes to `message.channels`. In `RuntimeBuilder`, Socket Mode is on when `SLACK_APP_TOKEN` is set; otherwise Slack runs in HTTP mode on `SLACK_PORT` (default 3000). Docs: [Slack](https://cogitator.app/docs/channels/slack).
+Supports: DMs, channel messages (via @mention, the mention is stripped from the text, answered in a new Slack thread that is a conversation of its own without earlier history, `topicId` is the thread's `ts`), threads (replies go to the thread root and continue its conversation), file shares, Socket Mode (no public URL), streaming via chat.update, reactions. Set `mentionOnly: true` to ignore channel messages that do not mention the bot when the app also subscribes to `message.channels`. In `RuntimeBuilder`, Socket Mode is on when `SLACK_APP_TOKEN` is set; otherwise Slack runs in HTTP mode on `SLACK_PORT` (default 3000). Docs: [Slack](https://cogitator.app/docs/channels/slack).
 
 ### WhatsApp
 
@@ -167,6 +167,7 @@ webchatChannel({
   path: '/ws',
   auth: (token) => token === process.env.WEBCHAT_TOKEN,
   maxPayload: 1024 * 1024, // bytes per incoming frame (default 1 MiB)
+  // routes: { '/github/webhook': github.webhookListener() }, // plain HTTP routes on the same port
 });
 ```
 
@@ -230,17 +231,18 @@ The agent answers replies to the bot's posts and mentions of it, from Meta's web
 import { githubChannel } from '@cogitator-ai/channels';
 
 const github = githubChannel({
-  token: process.env.GITHUB_TOKEN!, // or () => a fresh GitHub App installation token
+  token: process.env.GITHUB_TOKEN!, // a bot account's fine-grained token, or () => an App installation token
   webhook: {
     secret: process.env.GITHUB_WEBHOOK_SECRET!, // checked against X-Hub-Signature-256
-    port: 8787, // its own server at /github/webhook, or mount github.handleWebhook
+    port: 8787, // its own server at /github/webhook, or mount github.handleWebhook / webhookListener()
   },
   trigger: 'mention', // or 'all'
-  repositories: ['acme/*'], // default: every repository that sends events
+  repositories: ['acme/*'], // default: every repository that sends events, with a warning
+  associations: ['OWNER', 'MEMBER', 'COLLABORATOR'], // the default, or 'any'
 });
 ```
 
-The agent answers new issues and pull requests, comments on them, reviews with a body and comments on lines of a diff, from a repository or organization webhook. Each issue or pull request is a conversation, `channelId` `owner/repo#number`, and answers are comments on it. A comment on a line is answered in its review thread, which is the message's `topicId`, so each review thread is a conversation of its own. Deliveries are answered at once and handled after, each `X-GitHub-Delivery` once. The bot skips its own comments and other bots (`allowBots` lets them in), and by default answers only mentions of `@login`, outside code and quotes. Answers go out finished (GitHub notifies people of a comment's first text, `stream: true` edits a comment as it grows), as several comments past 65536 characters. Reactions use GitHub's eight. GitHub has no upload API for comments, so `sendFile` links a file with a public `url` and refuses a buffer. A GitHub App installation token cannot read `GET /user`: set `login` to `<app-slug>[bot]`. Docs: [GitHub](https://cogitator.app/docs/channels/github).
+The agent answers new issues and pull requests, comments on them, reviews with a body and comments on lines of a diff, from a repository or organization webhook. Each issue or pull request is a conversation, `channelId` `owner/repo#number`, and answers are comments on it. A comment on a line is answered in its review thread, which is the message's `topicId`, so each review thread is a conversation of its own. Deliveries are answered at once and handled after, each once by its `X-GitHub-Delivery` and the comment it carries (remembered in memory). It answers only the repository's owner, members and collaborators unless `associations` or `authors` say otherwise, since what people write steers an agent that holds the token, so give the bot an account and a token of its own scoped to its repositories. The bot skips its own comments and other bots (`allowBots` lets them in), and by default answers only mentions of `@login`, outside code and quotes, plus the next comment of someone it answered and comments in review threads it replied in. Answers go out finished (GitHub notifies people of a comment's first text, `stream: true` edits a comment as it grows, at most every 3 seconds), as several comments past 65536 characters. Reactions use GitHub's eight. GitHub has no upload API for comments, so `sendFile` links a file with a public `url` and refuses a buffer. A GitHub App installation token cannot read `GET /user`: set `login` to `<app-slug>[bot]`. Docs: [GitHub](https://cogitator.app/docs/channels/github).
 
 ## Platform Comparison
 
@@ -305,7 +307,7 @@ Docs: [Social Feeds](https://cogitator.app/docs/channels/feeds).
 
 Routes incoming messages to your agent. Handles:
 
-- Conversation threads: one per user per conversation (chat, forum topic, Slack thread, Bluesky or Threads post thread), answered one message at a time
+- Conversation threads: one per user per conversation (chat, forum topic, Slack thread, Bluesky or Threads post thread, GitHub issue, pull request or review thread), answered one message at a time
 - Session management (per-user, per-channel) with an optional custom `sessionManager`
 - History compaction, hierarchical into a handoff of grounded atoms or with LLM-written summaries
 - Streaming with `StreamBuffer` when `stream` is set (message editing, splits at the platform limit without losing text); without `stream` the full answer is sent once the run finishes
@@ -339,12 +341,12 @@ const gateway = new Gateway({
 });
 
 gateway.stats; // { uptime, activeSessions, totalSessions, messagesToday, connectedChannels }
-gateway.getSessions(); // [{ threadId, userName, messageCount, lastActiveAt, active }]
+gateway.getSessions(); // [{ threadId: 'telegram:42:42', userName, messageCount, lastActiveAt, active }], one per conversation
 await gateway.compactThread('telegram:42:42'); // force compaction of one conversation
 await gateway.compactAll(); // every thread served since start and of every stored session: "Compacted 2 of 3 threads"
 await gateway.injectMessage(msg); // feed a synthetic message and wait for its answer (used by the scheduler)
-await gateway.idle(); // wait until every queued message is answered, e.g. before stop()
-await gateway.stop();
+await gateway.idle(); // wait until every queued message is answered
+await gateway.stop(); // answers what is queued first, up to drainTimeout (30 s), then aborts the rest
 ```
 
 `GatewayConfig.owner` is deprecated and never read: set owners on `ownerCommands({ ownerIds })` and `dmPolicy({ ownerIds })` (see [Middleware](#middleware)).
@@ -353,17 +355,19 @@ await gateway.stop();
 
 A thread is the conversation memory and the queue of one user in one conversation. The default key is `channelType:conversation:userId`, where the conversation is the message's `conversationId` if it has one, else its `channelId` plus `:topicId` when it has a topic (`defaultThreadKey` computes it):
 
-| Channel           | Conversation                                                  | Example thread                                                 |
-| ----------------- | ------------------------------------------------------------- | -------------------------------------------------------------- |
-| Telegram          | chat, plus the forum topic                                    | `telegram:-100123:7:42`                                        |
-| Slack             | DM, or the Slack thread of a channel message (`topicId`)      | `slack:C123:1712.5:U1`                                         |
-| Discord           | channel, a thread is a channel of its own                     | `discord:98765:1234`                                           |
-| Bluesky, Threads  | the post thread's root (`conversationId`), not the reply post | `bluesky:thread:at://did:plc:a/app.bsky.feed.post/1:did:plc:b` |
-| WhatsApp, WebChat | chat                                                          | `whatsapp:15550001111:15550001111`                             |
+| Channel          | Conversation                                                                | Example thread                                                   |
+| ---------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Telegram         | chat, plus the forum topic                                                  | `telegram:-100123:7:42`                                          |
+| Slack            | DM, or the Slack thread of a channel message (`topicId`, the thread's `ts`) | `slack:C123:1712.5:U1`                                           |
+| Discord          | channel, a thread is a channel of its own                                   | `discord:98765:1234`                                             |
+| Bluesky, Threads | the post thread's root (`conversationId`), not the reply post               | `bluesky:thread:at://did:plc:a/app.bsky.feed.post/1:did:plc:b`   |
+| GitHub           | issue or pull request, plus the review thread (`topicId`)                   | `github:acme/app#12:583231`, `github:acme/app#12:1840022:583231` |
+| WhatsApp         | chat, a chat addressed by LID by the phone-number jid                       | `whatsapp:15550001111@s.whatsapp.net:15550001111`                |
+| WebChat          | client                                                                      | `webchat:c7f2:c7f2`                                              |
 
-So a user keeps a separate thread in their private chat, in each group and in each topic, and every reply in a Bluesky or Threads post thread lands in the same one. Slack puts each top-level channel message in a Slack thread of its own (the reply goes there), and its follow-ups in that thread continue it, while a DM is one conversation.
+So a user keeps a separate thread in their private chat, in each group and in each topic, and every reply in a Bluesky or Threads post thread lands in the same one. In a Slack channel each top-level message is answered in a new Slack thread, a conversation of its own without the history of earlier ones, and its follow-ups in that thread continue it, while a DM is one conversation. On GitHub each issue or pull request is a conversation, and each review thread another one. A WhatsApp chat that reaches a person by LID gets their phone-number jid as its `conversationId` when WhatsApp shares it, so it stays one thread with the chat addressed by phone number.
 
-The gateway keeps the conversations of each user in their session's metadata (`conversations`, up to 50, most recent first). `compactAll()` finds their threads there after a restart, and a scheduled task (which names only its chat) is answered in the topic and thread of the user's most recent conversation in that chat, unless the task's metadata names `topicId` or `conversationId` itself. With a custom `threadKey` none of this applies, and stored sessions are left to it.
+The gateway keeps the conversations of each user in their session's metadata (`conversations`, up to 50, most recent first), and `compactAll()` finds their threads there after a restart. A run gets the `topicId` and `conversationId` of its message, and its tools see them in their context, so `schedule_task` stores them with the task and `HeartbeatScheduler` fires it into the same topic and thread, even when the user has moved on to another one. A task without them is answered in the topic and thread of the user's most recent conversation in its chat. With a custom `threadKey` the gateway keeps no conversations and leaves stored sessions out of `compactAll()`, except with `legacyThreadKey`, whose thread of each stored session it still finds.
 
 Up to 0.15 the key was `channelType:userId`, one thread per user per channel type. Threads stored under it are not found by the new key. To keep them, pass `legacyThreadKey`:
 
@@ -493,7 +497,7 @@ const gateway = new Gateway({
 - **interrupt** - abort the current run (its signal is passed to `cogitator.run`), start the new message
 - **collect** - buffer during processing, merge per chat and topic on idle
 
-With a queue, a channel's message handler returns once the message is queued, so a channel that reads its updates one by one (Telegram long polling, the Bluesky and Threads polls) goes on to other chats, button presses and stop buttons while a thread is busy. `injectMessage` still resolves once the message is answered, and `idle()` waits for every queued message.
+With a queue, a channel's message handler returns once the message is queued, so a channel that reads its updates one by one (Telegram long polling, the Bluesky and Threads polls) goes on to other chats, button presses and stop buttons while a thread is busy. `injectMessage` still resolves once the message is answered, and `idle()` waits for every queued message. Since the channel has confirmed a queued message to its platform already, `stop()` drains the queues before it stops the channels: it waits up to `drainTimeout` (default 30000 ms) for the queued messages and the runs in progress, then aborts the runs still going and drops what still waits.
 
 ## Formatting Pipeline
 
@@ -685,7 +689,7 @@ session:
 
 For a parsed YAML file, validate it first with `new RuntimeBuilder(AssistantConfigSchema.parse(yamlObject), process.env)` (the schema is exported, along with the `AssistantConfigInput` / `AssistantConfigOutput` types).
 
-- **Channels:** the terminal REPL plus `channels.telegram` (`TG_TOKEN` or `TELEGRAM_TOKEN`), `channels.discord` (`DISCORD_TOKEN`) and `channels.slack` (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, optional `SLACK_APP_TOKEN` / `SLACK_PORT`). A configured channel without its token is skipped with a warning. `channels.whatsapp` (`{ ownerIds?, sessionPath? }`, owner ids are phone numbers without `@s.whatsapp.net`, the session defaults to `~/.cogitator/whatsapp-session`) needs `@whiskeysockets/baileys`. `channels.webchat` (`{ port?, path? }`, default `8080` and `/ws`, no `ownerIds`) needs `ws` and starts only with `WEBCHAT_TOKEN` set, and clients connect with `?token=<WEBCHAT_TOKEN>`. `channels.bluesky` (`{ ownerIds?, posts?, directMessages?, pollInterval?, tokenPath? }`, owner ids are DIDs) needs `@atproto/api` and starts with `BLUESKY_HANDLE` and `BLUESKY_APP_PASSWORD`. `channels.threads` (`{ ownerIds?, webhook?: { port, path? }, pollInterval?, tokenPath? }`, owner ids are usernames) starts with `THREADS_ACCESS_TOKEN`, and with `THREADS_APP_SECRET` and `THREADS_VERIFY_TOKEN` for webhooks. Both keep their session or token in `tokenPath` (default `~/.cogitator/tokens.json`). `channels.github` (`{ ownerIds?, webhook?: { port?, path? }, trigger?, repositories?, login?, allowBots?, stream? }`, owner ids are numeric user ids, the webhook server defaults to port `8787` at `/github/webhook`) starts with `GITHUB_TOKEN` and `GITHUB_WEBHOOK_SECRET`, and calls `GITHUB_API_URL` when set (GitHub Enterprise Server).
+- **Channels:** the terminal REPL plus `channels.telegram` (`TG_TOKEN` or `TELEGRAM_TOKEN`), `channels.discord` (`DISCORD_TOKEN`) and `channels.slack` (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, optional `SLACK_APP_TOKEN` / `SLACK_PORT`). A configured channel without its token is skipped with a warning. `channels.whatsapp` (`{ ownerIds?, sessionPath? }`, owner ids are phone numbers without `@s.whatsapp.net`, the session defaults to `~/.cogitator/whatsapp-session`) needs `@whiskeysockets/baileys`. `channels.webchat` (`{ port?, path? }`, default `8080` and `/ws`, no `ownerIds`) needs `ws` and starts only with `WEBCHAT_TOKEN` set, and clients connect with `?token=<WEBCHAT_TOKEN>`. `channels.bluesky` (`{ ownerIds?, posts?, directMessages?, pollInterval?, tokenPath? }`, owner ids are DIDs) needs `@atproto/api` and starts with `BLUESKY_HANDLE` and `BLUESKY_APP_PASSWORD`. `channels.threads` (`{ ownerIds?, webhook?: { port, path? }, pollInterval?, tokenPath? }`, owner ids are usernames) starts with `THREADS_ACCESS_TOKEN`, and with `THREADS_APP_SECRET` and `THREADS_VERIFY_TOKEN` for webhooks. Both keep their session or token in `tokenPath` (default `~/.cogitator/tokens.json`). `channels.github` (`{ ownerIds?, webhook?: { port?, path? }, trigger?, repositories?, associations?, authors?, login?, allowBots?, stream? }`, owner ids are numeric user ids, the webhook server defaults to port `8787` at `/github/webhook`) starts with `GITHUB_CHANNEL_TOKEN` (falling back to `GITHUB_TOKEN` with a warning) and `GITHUB_WEBHOOK_SECRET`, and calls `GITHUB_API_URL` when set (GitHub Enterprise Server).
 
 - **Memory:** `memory.adapter: sqlite` (default, `memory.path`, default `~/.cogitator/memory.db`) or `postgres` (`memory.connectionString`, `DATABASE_URL` or `POSTGRES_URL`, requires `pg`). Core facts always live in the SQLite file, as memory items with their history. The knowledge graph (`memory.knowledgeGraph`) and auto-extraction (`memory.autoExtract`) are on by default, and the memory tools keep memory items in the memory store too: `remember` keeps a fact as the user's (an `active` item, a core fact) only when its `quote` is in one of the run user's own messages on the thread's active branch, else as a suggestion, `recall` searches the items of the user and the thread, and `forget` lets go only the run's own that hold the query as whole words (a run without a user keeps its facts in the thread's memory). The assistant's agent id is its `name`, the same across restarts. `memory.compaction.threshold` enables history compaction, hierarchical, keeping about 4000 tokens of the newest turns verbatim.
 - **Fresh context:** the gateway builds an agent per message: instructions (with known user facts) and the `/model` override are resolved each time. The current date and time go to each run as its `brief`, with the input, so they do not change the instructions and their prompt cache. `runtime.agent` is the base agent.
@@ -730,7 +734,8 @@ THREADS_APP_SECRET=...           # webhooks only
 THREADS_VERIFY_TOKEN=...         # webhooks only
 
 # GitHub (a webhook delivers to port 8787 at /github/webhook)
-GITHUB_TOKEN=ghp_...             # the bot account's token, also used by capabilities.github
+GITHUB_CHANNEL_TOKEN=github_pat_...  # a separate bot account's token, scoped to the repositories it answers in
+GITHUB_TOKEN=ghp_...             # capabilities.github, and the channel's fallback (with a warning)
 GITHUB_WEBHOOK_SECRET=...        # the secret set on the webhook
 GITHUB_API_URL=...               # GitHub Enterprise Server only, https://<host>/api/v3
 

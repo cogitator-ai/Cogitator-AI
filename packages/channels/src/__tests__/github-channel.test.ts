@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
-import { createServer } from 'node:net';
+import { connect, createServer } from 'node:net';
 import type { ChannelMessage } from '@cogitator-ai/types';
 import { FeedError } from '../feeds/errors';
 import {
   GITHUB_COMMENT_LIMIT,
+  GITHUB_MIN_EDIT_INTERVAL,
   GitHubChannel,
   type GitHubChannelConfig,
   verifyGitHubSignature,
@@ -104,16 +105,16 @@ const person = { login: 'octocat', id: 583231, type: 'User' };
 
 const issueOpened = (body: string, extra: Record<string, unknown> = {}) => ({
   action: 'opened',
-  issue: { number: 7, title: 'Crash on start', body, user: person },
+  issue: { number: 7, title: 'Crash on start', body, user: person, author_association: 'OWNER' },
   repository,
   sender: person,
   ...extra,
 });
 
-const issueComment = (body: string, sender = person, id = 501) => ({
+const issueComment = (body: string, sender = person, id = 501, association = 'MEMBER') => ({
   action: 'created',
   issue: { number: 12, title: 'Add caching', body: null, pull_request: { url: 'x' } },
-  comment: { id, body, user: sender },
+  comment: { id, body, user: sender, author_association: association },
   repository,
   sender,
 });
@@ -126,6 +127,7 @@ const reviewComment = (id: number, body: string, inReplyTo?: number) => ({
     body,
     path: 'src/cache.ts',
     user: person,
+    author_association: 'COLLABORATOR',
     ...(inReplyTo !== undefined && { in_reply_to_id: inReplyTo }),
   },
   repository,
@@ -256,6 +258,17 @@ describe('GitHubChannel webhooks', () => {
     await settle();
     expect(received.map((m) => m.text)).toEqual(['Crash on start\n\nover HTTP']);
     expect((await fetch(`http://127.0.0.1:${port}/elsewhere`)).status).toBe(404);
+    const raw = await new Promise<string>((resolve, reject) => {
+      const socket = connect(port, '127.0.0.1', () => {
+        socket.end('POST //% HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n');
+      });
+      let answer = '';
+      socket.on('data', (chunk) => (answer += String(chunk)));
+      socket.on('end', () => resolve(answer));
+      socket.on('error', reject);
+    });
+    expect(raw).toMatch(/^HTTP\/1\.1 400/);
+    expect((await fetch(`http://127.0.0.1:${port}/elsewhere`)).status).toBe(404);
     const huge = await fetch(base, {
       method: 'POST',
       headers: delivery.headers,
@@ -282,7 +295,7 @@ describe('GitHubChannel events', () => {
       signed('pull_request', {
         action: 'opened',
         number: 13,
-        pull_request: { number: 13, title: 'Fix crash', body: null },
+        pull_request: { number: 13, title: 'Fix crash', body: null, author_association: 'MEMBER' },
         repository,
         sender: person,
       })
@@ -296,7 +309,12 @@ describe('GitHubChannel events', () => {
     await channel.handleWebhook(
       signed('pull_request_review', {
         action: 'submitted',
-        review: { id: 77, body: 'Two nits, then ship it', state: 'approved' },
+        review: {
+          id: 77,
+          body: 'Two nits, then ship it',
+          state: 'approved',
+          author_association: 'OWNER',
+        },
         pull_request: { number: 12, title: 'Add caching', body: null },
         repository,
         sender: person,
@@ -365,7 +383,7 @@ describe('GitHubChannel events', () => {
     await settle();
     expect(strict.received).toEqual([]);
 
-    const open = await started(github(), { trigger: 'all', allowBots: true });
+    const open = await started(github(), { trigger: 'all', allowBots: true, associations: 'any' });
     await open.channel.handleWebhook(signed('issue_comment', issueComment('bump', dependabot)));
     await settle();
     expect(open.received.map((m) => m.userName)).toEqual(['dependabot[bot]']);
@@ -424,12 +442,161 @@ describe('GitHubChannel events', () => {
           ? Response.json({ message: 'Resource not accessible by integration' }, { status: 403 })
           : undefined,
     ]);
-    const { channel } = created(api);
+    const { channel, received } = created(api);
     const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await expect(channel.start()).rejects.toThrow(/set `login`/);
-    const response = await channel.handleWebhook(signed('issue_comment', issueComment('@mybot')));
-    expect(response.status).toBe(503);
-    expect(logged).toHaveBeenCalledOnce();
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      const response = await channel.handleWebhook(
+        signed('issue_comment', issueComment('@mybot hi'))
+      );
+      expect(response.status).toBe(200);
+      await vi.advanceTimersByTimeAsync(15_000);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(received).toEqual([]);
+    expect(api.calls.filter((c) => c.path === '/user')).toHaveLength(4);
+    expect(String(logged.mock.calls.at(-1)?.[0])).toMatch(/delivery was dropped/);
+  });
+
+  it('answers a delivery whose login loads only on a later try', async () => {
+    let failures = 1;
+    const api = github([
+      (call) =>
+        call.path === '/user' && failures-- > 0
+          ? Response.json({ message: 'Server Error' }, { status: 502 })
+          : undefined,
+    ]);
+    const { channel, received } = created(api);
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      expect(
+        (await channel.handleWebhook(signed('issue_comment', issueComment('@mybot hi')))).status
+      ).toBe(200);
+      await vi.advanceTimersByTimeAsync(2_500);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(received.map((m) => m.text)).toEqual(['hi']);
+  });
+
+  it('answers the repository owner, members and collaborators unless told otherwise', async () => {
+    const strict = await started(github(), { trigger: 'all', authors: ['Friendly-Dev'] });
+    const stranger = { login: 'stranger', id: 7, type: 'User' };
+    const friend = { login: 'friendly-dev', id: 8, type: 'User' };
+    await strict.channel.handleWebhook(
+      signed('issue_comment', issueComment('from a stranger', stranger, 1, 'NONE'))
+    );
+    await strict.channel.handleWebhook(
+      signed('issue_comment', issueComment('from a contributor', stranger, 2, 'CONTRIBUTOR'))
+    );
+    await strict.channel.handleWebhook(
+      signed('issue_comment', issueComment('from a friend', friend, 3, 'NONE'))
+    );
+    await strict.channel.handleWebhook(
+      signed('issue_comment', { ...issueComment('no association'), comment: { id: 4, body: 'x' } })
+    );
+    await settle();
+    expect(strict.received.map((m) => m.text)).toEqual(['from a friend']);
+
+    const open = await started(github(), { trigger: 'all', associations: 'any' });
+    await open.channel.handleWebhook(
+      signed('issue_comment', issueComment('from a stranger', stranger, 1, 'NONE'))
+    );
+    const contributors = await started(github(), {
+      trigger: 'all',
+      associations: ['CONTRIBUTOR'],
+    });
+    await contributors.channel.handleWebhook(
+      signed('issue_comment', issueComment('from a contributor', stranger, 2, 'CONTRIBUTOR'))
+    );
+    await contributors.channel.handleWebhook(
+      signed('issue_comment', issueComment('from a member', person, 3, 'MEMBER'))
+    );
+    await settle();
+    expect(open.received.map((m) => m.text)).toEqual(['from a stranger']);
+    expect(contributors.received.map((m) => m.text)).toEqual(['from a contributor']);
+  });
+
+  it('warns at start when it answers in every repository', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await started(github());
+    await started(github(), { repositories: ['acme/widgets'] });
+    expect(
+      warn.mock.calls.filter((call) => String(call[0]).includes('No repositories'))
+    ).toHaveLength(1);
+  });
+
+  it('handles the same comment once even when it comes in two deliveries', async () => {
+    const { channel, received } = await started(github(), { trigger: 'all' });
+    await channel.handleWebhook(signed('issue_comment', issueComment('Once', person, 77), 'a'));
+    await channel.handleWebhook(signed('issue_comment', issueComment('Once', person, 77), 'b'));
+    await settle();
+    expect(received).toHaveLength(1);
+  });
+
+  it('takes follow-ups without a mention from the person it answered, and in its review threads', async () => {
+    const { channel, received } = await started(github());
+    const other = { login: 'hubot-fan', id: 99, type: 'User' };
+    await channel.handleWebhook(signed('issue_comment', issueComment('@mybot run it?', person, 1)));
+    await settle();
+    await channel.sendText('acme/widgets#12', 'Approve the deploy? Reply yes or no.');
+    await channel.handleWebhook(signed('issue_comment', issueComment('nice', other, 2)));
+    await channel.handleWebhook(signed('issue_comment', issueComment('yes', person, 3)));
+    await channel.handleWebhook(signed('issue_comment', issueComment('thanks all', person, 4)));
+    await channel.handleWebhook(
+      signed('pull_request_review_comment', reviewComment(900, '@mybot why?'))
+    );
+    await settle();
+    await channel.sendText('acme/widgets#12', 'Because.', { topicId: '900' });
+    await channel.handleWebhook(
+      signed('pull_request_review_comment', reviewComment(901, 'I see', 900))
+    );
+    await channel.handleWebhook(
+      signed('pull_request_review_comment', reviewComment(902, 'and here?', 950))
+    );
+    await settle();
+    expect(received.map((m) => m.text)).toEqual(['run it?', 'yes', 'why?', 'I see']);
+  });
+
+  it('does not count mentions in indented code, but does in an indented list paragraph', async () => {
+    const { channel, received } = await started(github());
+    await channel.handleWebhook(
+      signed('issue_comment', issueComment('Log:\n\n    @mybot was here\n    done', person, 1))
+    );
+    await channel.handleWebhook(
+      signed('issue_comment', issueComment('- step one\n\n    @mybot please check', person, 2))
+    );
+    await settle();
+    expect(received.map((m) => m.id)).toEqual(['comment:2']);
+  });
+
+  it('skips its own app comments when the login is set without [bot]', async () => {
+    const { channel, received } = await started(github(), {
+      login: 'helper-app',
+      trigger: 'all',
+      allowBots: true,
+    });
+    await channel.handleWebhook(
+      signed(
+        'issue_comment',
+        issueComment('my answer', { login: 'helper-app[bot]', id: 9, type: 'Bot' })
+      )
+    );
+    await settle();
+    expect(received).toEqual([]);
+  });
+
+  it('refuses deliveries once stopped', async () => {
+    const { channel, received } = await started(github(), { trigger: 'all' });
+    await channel.stop();
+    expect(await channel.handleWebhook(signed('issue_comment', issueComment('late')))).toEqual({
+      status: 503,
+      body: 'The channel is stopped',
+    });
+    await settle();
+    expect(received).toEqual([]);
   });
 });
 
@@ -537,6 +704,50 @@ describe('GitHubChannel sending', () => {
       ['POST', '/repos/acme/widgets/pulls/comments/900/reactions', 'rocket'],
     ]);
     await channel.sendTyping();
+  });
+});
+
+describe('GitHubChannel pacing', () => {
+  it('sets reactions to one message one after another, so one stays', async () => {
+    const api = github();
+    const slow = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return api.fetch(input, init);
+    });
+    const { channel } = await started({ ...api, fetch: slow as unknown as typeof fetch });
+    await Promise.all([
+      channel.setReaction('acme/widgets#7', 'issue:7', 'eyes'),
+      channel.setReaction('acme/widgets#7', 'issue:7', '+1'),
+      channel.setReaction('acme/widgets#7', 'issue:7', 'rocket'),
+    ]);
+    expect(api.calls.slice(1).map((c) => [c.method, c.path, c.body?.content ?? null])).toEqual([
+      ['POST', '/repos/acme/widgets/issues/7/reactions', 'eyes'],
+      ['POST', '/repos/acme/widgets/issues/7/reactions', '+1'],
+      ['DELETE', '/repos/acme/widgets/issues/7/reactions/1001', null],
+      ['POST', '/repos/acme/widgets/issues/7/reactions', 'rocket'],
+      ['DELETE', '/repos/acme/widgets/issues/7/reactions/1002', null],
+    ]);
+  });
+
+  it('edits one comment at most every few seconds, sending the latest text', async () => {
+    const api = github();
+    const { channel } = await started(api, { stream: true });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    try {
+      await channel.editText('acme/widgets#7', 'comment:1', 'one');
+      const second = channel.editText('acme/widgets#7', 'comment:1', 'one two');
+      const third = channel.editText('acme/widgets#7', 'comment:1', 'one two three');
+      await vi.advanceTimersByTimeAsync(GITHUB_MIN_EDIT_INTERVAL - 100);
+      expect(api.calls.filter((c) => c.method === 'PATCH')).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(200);
+      await Promise.all([second, third]);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(api.calls.filter((c) => c.method === 'PATCH').map((c) => c.body?.body)).toEqual([
+      'one',
+      'one two three',
+    ]);
   });
 });
 

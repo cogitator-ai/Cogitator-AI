@@ -158,7 +158,12 @@ describe('TelegramChannel', () => {
           id: 'q1',
           from: { id: 5, first_name: 'Ann' },
           data: 'pick:2',
-          message: { message_id: 30, message_thread_id: 8, chat: { id: -100200, type: 'group' } },
+          message: {
+            message_id: 30,
+            message_thread_id: 8,
+            is_topic_message: true,
+            chat: { id: -100200, type: 'supergroup' },
+          },
         },
       };
 
@@ -188,6 +193,42 @@ describe('TelegramChannel', () => {
         text: 'Done',
         show_alert: true,
       });
+    });
+
+    it('gives a press in a plain group reply thread no topic, as its messages have none', async () => {
+      const { channel, bot } = await started();
+      const actions: ChannelAction[] = [];
+      channel.onAction((action) => {
+        actions.push(action);
+        return Promise.resolve();
+      });
+      const handlers: ChannelMessage[] = [];
+      channel.onMessage((msg) => {
+        handlers.push(msg);
+        return Promise.resolve();
+      });
+      const inReplyThread = {
+        message_id: 31,
+        message_thread_id: 12,
+        chat: { id: -100300, type: 'supergroup' },
+      };
+
+      await bot.handlers.get('message:text')!({
+        message: { ...inReplyThread, text: 'hi' },
+        chat: inReplyThread.chat,
+        from: { id: 5, first_name: 'Ann' },
+      });
+      await bot.handlers.get('callback_query:data')!({
+        callbackQuery: {
+          id: 'q2',
+          from: { id: 5, first_name: 'Ann' },
+          data: 'pick:1',
+          message: inReplyThread,
+        },
+      });
+
+      expect(handlers[0]?.topicId).toBeUndefined();
+      expect(actions[0]?.topicId).toBeUndefined();
     });
 
     it('reports a stopped draft and lets every other update through', async () => {

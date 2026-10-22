@@ -79,6 +79,8 @@ export function createSchedulerTools(config: SchedulerToolsConfig) {
           description,
           channel: channel ?? context.channelType ?? defaultChannel,
           channelId: context.channelId,
+          ...(context.topicId !== undefined && { topicId: context.topicId }),
+          ...(context.conversationId !== undefined && { conversationId: context.conversationId }),
           userId: userId ?? context.userId ?? defaultUserId,
           ...(bestEffort ? { bestEffort: true } : {}),
         },

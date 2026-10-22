@@ -147,15 +147,15 @@ const archive: RunMiddleware = {
 
 ## The Run Context
 
-| Field                                | What it is                                                                  |
-| ------------------------------------ | --------------------------------------------------------------------------- |
-| `runId`, `threadId`                  | The run and its thread (`threadId` is unset for `invokeTool()` without one) |
-| `agentId`, `agentName`               | The agent whose turn it is, after a handoff the one the run went on as      |
-| `userId`, `channelType`, `channelId` | Who and where the run serves                                                |
-| `iteration`                          | The model turn the hook belongs to, from 1, or 0 before the first turn      |
-| `signal`                             | Aborts when the run is cancelled or times out                               |
-| `deps`                               | The run's [tool deps](/docs/core/agents#dependencies-for-tools)             |
-| `state`                              | A `Map` the run's middleware share. Not kept in a paused run's checkpoint   |
+| Field                                                             | What it is                                                                  |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `runId`, `threadId`                                               | The run and its thread (`threadId` is unset for `invokeTool()` without one) |
+| `agentId`, `agentName`                                            | The agent whose turn it is, after a handoff the one the run went on as      |
+| `userId`, `channelType`, `channelId`, `topicId`, `conversationId` | Who and where the run serves                                                |
+| `iteration`                                                       | The model turn the hook belongs to, from 1, or 0 before the first turn      |
+| `signal`                                                          | Aborts when the run is cancelled or times out                               |
+| `deps`                                                            | The run's [tool deps](/docs/core/agents#dependencies-for-tools)             |
+| `state`                                                           | A `Map` the run's middleware share. Not kept in a paused run's checkpoint   |
 
 ## Tripwires
 

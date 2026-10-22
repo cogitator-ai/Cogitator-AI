@@ -189,24 +189,39 @@ describe('MessageQueue', () => {
   describe('the promise of push', () => {
     it('settles in sequential mode once the message is processed, after those before it', async () => {
       const d1 = defer();
-      const done: string[] = [];
+      const events: string[] = [];
       const queue = new MessageQueue('sequential', async (msg) => {
+        events.push(`start:${msg.text}`);
         if (msg.text === 'first') await d1.promise;
+        events.push(`end:${msg.text}`);
         if (msg.text === 'second') throw new Error('failed');
       });
 
-      const first = queue
-        .push(makeMsg({ text: 'first' }), 'thread1')
-        .then(() => done.push('first'));
-      const second = queue
-        .push(makeMsg({ text: 'second' }), 'thread1')
-        .then(() => done.push('second'));
+      const settled = ['first', 'second', 'third'].map((text) =>
+        queue.push(makeMsg({ text }), 'thread1').then(() => events.push(`settled:${text}`))
+      );
       await new Promise((r) => setTimeout(r, 5));
-      expect(done).toEqual([]);
+      expect(events).toEqual(['start:first']);
 
       d1.resolve();
-      await Promise.all([first, second]);
-      expect(done).toEqual(['first', 'second']);
+      await Promise.all(settled);
+      const at = (event: string) => events.indexOf(event);
+      expect(events.filter((e) => !e.startsWith('settled:'))).toEqual([
+        'start:first',
+        'end:first',
+        'start:second',
+        'end:second',
+        'start:third',
+        'end:third',
+      ]);
+      expect(events.filter((e) => e.startsWith('settled:'))).toEqual([
+        'settled:first',
+        'settled:second',
+        'settled:third',
+      ]);
+      for (const text of ['first', 'second', 'third']) {
+        expect(at(`settled:${text}`)).toBeGreaterThan(at(`end:${text}`));
+      }
     });
 
     it('settles every message of a collected batch once the batch is processed', async () => {

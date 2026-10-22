@@ -198,6 +198,8 @@ function toolContextOf(context: RunMiddlewareContext): ToolContext {
     ...(context.userId !== undefined && { userId: context.userId }),
     ...(context.channelType !== undefined && { channelType: context.channelType }),
     ...(context.channelId !== undefined && { channelId: context.channelId }),
+    ...(context.topicId !== undefined && { topicId: context.topicId }),
+    ...(context.conversationId !== undefined && { conversationId: context.conversationId }),
     ...(context.deps !== undefined && { deps: context.deps }),
   };
 }

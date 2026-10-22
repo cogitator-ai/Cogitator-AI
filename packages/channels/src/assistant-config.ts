@@ -53,23 +53,53 @@ const AssistantChannelsSchema = z.object({
     .optional(),
   github: z
     .object({
-      /** GitHub user ids (numbers, as `https://api.github.com/users/<login>` shows them) */
-      ownerIds: OwnerIdsSchema,
+      /**
+       * GitHub user ids (numbers, as `https://api.github.com/users/<login>` shows them), written
+       * as strings or numbers
+       */
+      ownerIds: z
+        .array(z.union([z.string(), z.number().int().nonnegative().transform(String)]))
+        .optional(),
       /** The server GitHub's webhook delivers to (default port 8787, path `/github/webhook`) */
       webhook: z
         .object({
           port: z.number().int().positive().default(8787),
-          path: z.string().optional(),
+          path: z
+            .string()
+            .regex(/^\//, 'The webhook path starts with /, such as /github/webhook')
+            .optional(),
         })
         .default({ port: 8787 }),
       /** `mention` (default) answers only when `@login` is mentioned, `all` every new event */
       trigger: z.enum(['mention', 'all']).optional(),
       /** The repositories to answer in, `owner/repo` or `owner/*` (default every one) */
-      repositories: z.array(z.string()).optional(),
+      repositories: z
+        .array(z.string().regex(/^[^/\s]+\/([^/\s]+|\*)$/, 'A repository is owner/repo or owner/*'))
+        .optional(),
+      /** Whose events to answer by `author_association` (default OWNER, MEMBER, COLLABORATOR), or `any` */
+      associations: z
+        .union([
+          z.array(
+            z.enum([
+              'OWNER',
+              'MEMBER',
+              'COLLABORATOR',
+              'CONTRIBUTOR',
+              'FIRST_TIME_CONTRIBUTOR',
+              'FIRST_TIMER',
+              'MANNEQUIN',
+              'NONE',
+            ])
+          ),
+          z.literal('any'),
+        ])
+        .optional(),
+      /** Logins answered whatever their association */
+      authors: z.array(z.string()).optional(),
       /** The bot's login, needed for a GitHub App installation token (`<app-slug>[bot]`) */
       login: z.string().optional(),
       allowBots: z.boolean().optional(),
-      /** Stream answers into a comment it edits (default false) */
+      /** Stream answers into a comment it edits, at most every 3 seconds (default false) */
       stream: z.boolean().optional(),
     })
     .optional(),

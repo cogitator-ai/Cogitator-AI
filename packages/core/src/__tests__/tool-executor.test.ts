@@ -177,6 +177,8 @@ describe('executeTool', () => {
           userId: 'user_1',
           channelType: 'web',
           channelId: 'channel_1',
+          topicId: 'topic_1',
+          conversationId: 'conversation_1',
         }
       );
 
@@ -190,6 +192,8 @@ describe('executeTool', () => {
         userId: 'user_1',
         channelType: 'web',
         channelId: 'channel_1',
+        topicId: 'topic_1',
+        conversationId: 'conversation_1',
       });
     } finally {
       warnSpy.mockRestore();

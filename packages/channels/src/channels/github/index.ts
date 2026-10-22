@@ -11,6 +11,9 @@ export {
 export { GITHUB_EVENTS, type GitHubEventName } from './events';
 export {
   GITHUB_COMMENT_LIMIT,
+  GITHUB_MIN_EDIT_INTERVAL,
+  GITHUB_TRUSTED_ASSOCIATIONS,
+  type GitHubAssociation,
   GitHubChannel,
   githubChannel,
   verifyGitHubSignature,

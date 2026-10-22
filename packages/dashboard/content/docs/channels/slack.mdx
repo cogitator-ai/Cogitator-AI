@@ -62,20 +62,24 @@ With `RuntimeBuilder` (`cogitator.yml`), the tokens come from `SLACK_BOT_TOKEN`,
 
 ## Features
 
-| Feature          | Support                                                                        |
-| ---------------- | ------------------------------------------------------------------------------ |
-| DMs              | ✅                                                                             |
-| Channel messages | ✅ (via @mention, `groupId` set so DM policies apply correctly)                |
-| Threads          | ✅ replies go to the thread root                                               |
-| Incoming files   | ✅ downloaded with the bot token (images → vision, audio → STT)                |
-| Reactions        | ✅ via `reactions.add`                                                         |
-| User names       | ✅ resolved via `users.info` (cached)                                          |
-| Socket Mode      | ✅ (no public URL needed)                                                      |
-| HTTP Mode        | ✅ (needs public endpoint)                                                     |
-| Streaming (edit) | ✅ via `chat.update`                                                           |
-| File uploads     | ✅ via `files.uploadV2` (buffers or URLs)                                      |
-| Typing indicator | ❌ (no-op, Slack API doesn't support it)                                       |
-| Markdown         | ✅ converted to mrkdwn (`**b**` → `*b*`, links → `<url\|text>`, `&<>` escaped) |
+| Feature          | Support                                                                                                                                                            |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| DMs              | ✅                                                                                                                                                                 |
+| Channel messages | ✅ (via @mention, `groupId` set so DM policies apply correctly), answered in a new Slack thread                                                                    |
+| Threads          | ✅ replies go to the thread root, `topicId` is the thread's `ts`, so each Slack thread is a [conversation](/docs/channels/gateway#conversation-threads) of its own |
+| Incoming files   | ✅ downloaded with the bot token (images → vision, audio → STT)                                                                                                    |
+| Reactions        | ✅ via `reactions.add`                                                                                                                                             |
+| User names       | ✅ resolved via `users.info` (cached)                                                                                                                              |
+| Socket Mode      | ✅ (no public URL needed)                                                                                                                                          |
+| HTTP Mode        | ✅ (needs public endpoint)                                                                                                                                         |
+| Streaming (edit) | ✅ via `chat.update`                                                                                                                                               |
+| File uploads     | ✅ via `files.uploadV2` (buffers or URLs)                                                                                                                          |
+| Typing indicator | ❌ (no-op, Slack API doesn't support it)                                                                                                                           |
+| Markdown         | ✅ converted to mrkdwn (`**b**` → `*b*`, links → `<url\|text>`, `&<>` escaped)                                                                                     |
+
+### Conversations
+
+The Gateway keys a thread per user per conversation. A message in a channel carries the Slack thread it belongs to as `topicId` (the `ts` of its first message), and a top-level message opens one of its own: the answer goes into a new Slack thread under it, and that Slack thread is a new conversation without the history of earlier ones. Follow-ups inside it continue that conversation. A DM is one conversation whatever Slack threads it has. `sendText` with a `topicId` and no `replyTo` posts into that Slack thread, so scheduled messages and approval prompts land there too.
 
 ## Socket Mode vs HTTP
 

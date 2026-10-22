@@ -144,6 +144,24 @@ const CHANNEL_SETUP: Record<ChannelKind, ChannelSetup> = {
   },
 };
 
+/**
+ * GitHub's webhook when WebChat runs too: served as a route of the WebChat
+ * server, so one port takes both and a deploy that exposes one port reaches both.
+ */
+const GITHUB_ON_WEBCHAT = code`
+  githubChannel({
+    token: env.GITHUB_TOKEN,
+    webhook: { secret: env.GITHUB_WEBHOOK_SECRET },
+  })
+`;
+
+const WEBCHAT_WITH_GITHUB = code`
+  webchatChannel({
+    port: Number(env.WEBCHAT_PORT ?? ${WEBCHAT_PORT}),
+    routes: { '/github/webhook': github.webhookListener() },
+  })
+`;
+
 /** A messaging bot: one Gateway that answers on every chosen channel with the assistant. */
 export const appChannelsFeature: FeatureModule = {
   id: 'app:channels',
@@ -172,7 +190,7 @@ export const appChannelsFeature: FeatureModule = {
       });
       project.deploy.port = WEBCHAT_PORT;
     }
-    if (spec.channels.includes('github')) {
+    if (spec.channels.includes('github') && !spec.channels.includes('webchat')) {
       project.envVar({
         name: 'GITHUB_WEBHOOK_PORT',
         description: 'Port GitHub delivers webhook events to, at /github/webhook',
@@ -180,7 +198,7 @@ export const appChannelsFeature: FeatureModule = {
         required: false,
         secret: false,
       });
-      project.deploy.port ??= GITHUB_WEBHOOK_PORT;
+      project.deploy.port = GITHUB_WEBHOOK_PORT;
     }
 
     project
@@ -199,6 +217,18 @@ export const appChannelsFeature: FeatureModule = {
     const { spec } = project;
     const channels = spec.channels.map((channel) => CHANNEL_SETUP[channel]);
     const memory = spec.memory !== 'none';
+    const webchat = spec.channels.includes('webchat');
+    const github = spec.channels.includes('github');
+    const declarations: string[] = [];
+    const entries = spec.channels.map((channel) => {
+      if (channel === 'github') {
+        const expression = webchat ? GITHUB_ON_WEBCHAT : CHANNEL_SETUP.github.expression;
+        declarations.push(`const github = ${expression.trim()};`);
+        return 'github';
+      }
+      if (channel === 'webchat' && github) return WEBCHAT_WITH_GITHUB.trim();
+      return CHANNEL_SETUP[channel].expression.trim();
+    });
 
     project.file(
       'src/gateway.ts',
@@ -211,6 +241,7 @@ export const appChannelsFeature: FeatureModule = {
         const env = loadEnv();
         ${startupStatements(project)}
         ${memory && 'const memory = await cogitator.getMemory();'}
+        ${declarations.join('\n')}
 
         /**
          * The assistant on its channels. \`src/index.ts\` starts it, and so do
@@ -221,7 +252,7 @@ export const appChannelsFeature: FeatureModule = {
           cogitator,
           agent: agents.assistant,
           channels: [
-            ${channels.map((c) => `${c.expression},`).join('\n')}
+            ${entries.map((entry) => `${entry},`).join('\n')}
           ],
           ${
             memory &&
@@ -240,8 +271,6 @@ export const appChannelsFeature: FeatureModule = {
       `
     );
 
-    const webchat = spec.channels.includes('webchat');
-    const github = spec.channels.includes('github');
     project.file(
       'src/index.ts',
       code`
@@ -253,7 +282,8 @@ export const appChannelsFeature: FeatureModule = {
         await gateway.start();
         console.log(\`The assistant is listening on \${gateway.stats.connectedChannels.join(', ')}\`);
         ${webchat && `console.log(\`WebChat: ws://localhost:\${loadEnv().WEBCHAT_PORT ?? ${WEBCHAT_PORT}}/ws\`);`}
-        ${github && `console.log(\`GitHub webhook: http://localhost:\${loadEnv().GITHUB_WEBHOOK_PORT ?? ${GITHUB_WEBHOOK_PORT}}/github/webhook\`);`}
+        ${github && !webchat && `console.log(\`GitHub webhook: http://localhost:\${loadEnv().GITHUB_WEBHOOK_PORT ?? ${GITHUB_WEBHOOK_PORT}}/github/webhook\`);`}
+        ${github && webchat && `console.log(\`GitHub webhook: http://localhost:\${loadEnv().WEBCHAT_PORT ?? ${WEBCHAT_PORT}}/github/webhook\`);`}
 
         onShutdown(async () => {
           await gateway.stop();

@@ -371,6 +371,10 @@ export interface RunOptions<TDeps = unknown> {
   threadAccess?: 'owner' | 'shared';
   channelType?: string;
   channelId?: string;
+  /** The topic of the chat the run serves (`ChannelMessage.topicId`), as its tools get it */
+  topicId?: string;
+  /** The conversation the run serves (`ChannelMessage.conversationId`), as its tools get it */
+  conversationId?: string;
 }
 
 /**
@@ -453,6 +457,8 @@ export interface ToolInvocationOptions {
   userId?: string;
   channelType?: string;
   channelId?: string;
+  topicId?: string;
+  conversationId?: string;
   /**
    * More fields for the tool's context, e.g. an MCP server's `elicit`. They cannot replace
    * `agentId`, `runId` or `signal`

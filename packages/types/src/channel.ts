@@ -41,15 +41,18 @@ export interface ChannelMessage {
   attachments?: Attachment[];
   replyTo?: string;
   /**
-   * The topic or thread inside the chat the message was posted in, such as a Telegram forum
-   * topic or a topic of a private chat. Replies go to the same topic.
+   * The topic or thread inside the chat the message was posted in: a Telegram forum topic or a
+   * topic of a private chat, the `ts` of the Slack thread of a channel message, the first comment
+   * of a GitHub review thread. Replies go to the same topic.
    */
   topicId?: string;
   /**
    * The conversation the message belongs to, for channels whose `channelId` does not name it:
    * on Bluesky and Threads `channelId` is the post to reply to and the conversation is the
    * thread's root post. The gateway's default thread key uses it in place of `channelId` and
-   * `topicId`.
+   * `topicId`, so it shares their namespace: it must never equal a `channelId` or
+   * `channelId:topicId` of the same channel, which is why Bluesky and Threads write it as
+   * `thread:<root>` while their `channelId` is `post:<id>` or `dm:<id>`.
    */
   conversationId?: string;
   raw: unknown;
@@ -114,7 +117,10 @@ export interface ChannelAction {
   userName?: string;
   /** The message the button is under */
   messageId?: string;
+  /** The topic of the message the button is under (`ChannelMessage.topicId`) */
   topicId?: string;
+  /** The conversation of the message the button is under (`ChannelMessage.conversationId`) */
+  conversationId?: string;
   data: string;
   raw: unknown;
 }
@@ -124,7 +130,10 @@ export interface ChannelStop {
   readonly channelType: ChannelType;
   readonly channelId: string;
   readonly draftId: number;
+  /** The topic of the draft (`ChannelMessage.topicId`) */
   topicId?: string;
+  /** The conversation of the draft (`ChannelMessage.conversationId`) */
+  conversationId?: string;
 }
 
 /** A command in a channel's command menu */

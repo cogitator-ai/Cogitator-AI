@@ -115,6 +115,19 @@ async function loadOptional<T>(specifier: string): Promise<T | null> {
   }
 }
 
+const PHONE_SUFFIX = '@s.whatsapp.net';
+
+/**
+ * The phone-number jid among a jid and its alternate, else the first one given. Baileys 7 may
+ * address a person by LID and share the phone number as the alternate, or the other way round.
+ * A direct chat addressed by LID keeps that phone-number jid as its `conversationId`, so it is
+ * one thread with the chat addressed by phone number, whose `channelId` that jid is.
+ */
+function phoneFirst(...jids: (string | null | undefined)[]): string | undefined {
+  const known = jids.filter((jid): jid is string => typeof jid === 'string' && jid.length > 0);
+  return known.find((jid) => jid.endsWith(PHONE_SUFFIX)) ?? known[0];
+}
+
 export class WhatsAppChannel implements Channel {
   readonly type = 'whatsapp';
   private handler: MessageHandler | null = null;
@@ -281,9 +294,10 @@ export class WhatsAppChannel implements Channel {
 
     const isGroup = jid.endsWith('@g.us');
     const sender = isGroup
-      ? (msg.key.participantAlt ?? msg.key.participant ?? jid)
-      : (msg.key.remoteJidAlt ?? jid);
+      ? (phoneFirst(msg.key.participantAlt, msg.key.participant) ?? jid)
+      : (phoneFirst(jid, msg.key.remoteJidAlt) ?? jid);
     const userId = sender.split('@')[0];
+    const addressedByLid = !isGroup && sender !== jid;
 
     await this.handler({
       id,
@@ -294,6 +308,7 @@ export class WhatsAppChannel implements Channel {
       text,
       raw: msg,
       ...(isGroup ? { groupId: jid } : {}),
+      ...(addressedByLid ? { conversationId: sender } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
     });
   }

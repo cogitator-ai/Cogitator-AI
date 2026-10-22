@@ -1,8 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { InMemoryAdapter } from '@cogitator-ai/memory';
-import type { Channel, ChannelMessage, GatewayConfig, RunOptions } from '@cogitator-ai/types';
+import type { Channel, ChannelMessage, RunOptions } from '@cogitator-ai/types';
 import { Gateway } from '../gateway';
 import type { GatewayFullConfig } from '../gateway';
+import { createSchedulerTools } from '@cogitator-ai/core';
+import { HeartbeatScheduler } from '../heartbeat';
+import { SimpleTimerStore } from '../simple-timer-store';
 import { defaultThreadKey, legacyThreadKey, readConversations } from '../thread-key';
 
 const agent = { name: 'bot', id: 'a1', instructions: 'hi', tools: [], config: {} } as never;
@@ -45,7 +48,7 @@ function controlledRun() {
   let maxActive = 0;
   const run = vi.fn(
     (_agent: unknown, options: RunOptions) =>
-      new Promise<{ output: string }>((resolve) => {
+      new Promise<{ output: string }>((resolve, reject) => {
         const input = options.input;
         started.push(input);
         active++;
@@ -53,6 +56,10 @@ function controlledRun() {
         releases.set(input, () => {
           active--;
           resolve({ output: `re: ${input}` });
+        });
+        options.signal?.addEventListener('abort', () => {
+          active--;
+          reject(new Error('aborted'));
         });
       })
   );
@@ -93,11 +100,6 @@ describe('thread keys', () => {
       )
     ).toBe('test:thread:root:u1');
     expect(legacyThreadKey(message({ topicId: '7' }))).toBe('test:u1');
-  });
-
-  it('fits session.threadKey', () => {
-    const session: GatewayConfig['session'] = { threadKey: legacyThreadKey };
-    expect(session.threadKey?.(message())).toBe('test:u1');
   });
 });
 
@@ -166,7 +168,7 @@ describe('Gateway thread order', () => {
     expect(channel.sendText).toHaveBeenCalledWith('chat', 'done', expect.anything());
   });
 
-  it('drops the messages still waiting when it stops', async () => {
+  it('answers what it was given before it stops the channels', async () => {
     const channel = createChannel();
     const control = controlledRun();
     const gateway = await startGateway(channel, control);
@@ -174,11 +176,51 @@ describe('Gateway thread order', () => {
     await channel.trigger(message({ id: 'm1', text: 'first' }));
     await channel.trigger(message({ id: 'm2', text: 'second' }));
     await vi.waitFor(() => expect(control.started).toEqual(['first']));
-    await gateway.stop();
+    const stopped = gateway.stop();
     control.release('first');
-    await gateway.idle();
+    await vi.waitFor(() => expect(control.started).toEqual(['first', 'second']));
+    expect(channel.stop).not.toHaveBeenCalled();
+    control.release('second');
+    await stopped;
 
+    expect(channel.sendText.mock.calls.map((call) => call[1])).toEqual(['re: first', 're: second']);
+    expect(channel.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('aborts the runs and drops the waiting messages past drainTimeout', async () => {
+    const channel = createChannel();
+    const control = controlledRun();
+    const onError = vi.fn();
+    const gateway = await startGateway(channel, control, { drainTimeout: 20, onError });
+
+    await channel.trigger(message({ id: 'm1', text: 'first' }));
+    await channel.trigger(message({ id: 'm2', text: 'second' }));
+    await vi.waitFor(() => expect(control.started).toEqual(['first']));
+    await gateway.stop();
+
+    const signal = control.run.mock.calls[0]?.[1].signal;
+    expect(signal?.aborted).toBe(true);
     expect(control.started).toEqual(['first']);
+    expect(channel.sendText).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+    expect(channel.stop).toHaveBeenCalledTimes(1);
+    expect(gateway.stats.activeSessions).toBe(0);
+  });
+
+  it('answers messages held by debounce before it stops', async () => {
+    const channel = createChannel();
+    const cogitator = { run: vi.fn().mockResolvedValue({ output: 'ok' }) };
+    const gateway = await startGateway(channel, cogitator, {
+      debounce: { enabled: true, delayMs: 60_000 },
+    });
+
+    await channel.trigger(message({ text: 'one' }));
+    await channel.trigger(message({ id: 'm2', text: 'two' }));
+    await gateway.stop();
+
+    expect(cogitator.run).toHaveBeenCalledTimes(1);
+    expect(cogitator.run.mock.calls[0]?.[1]).toMatchObject({ input: 'one\ntwo' });
+    expect(channel.sendText).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -308,6 +350,80 @@ describe('Gateway conversations', () => {
       'ok',
       expect.objectContaining({ topicId: '7' }),
     ]);
+  });
+
+  it('fires a reminder in the topic it was set in, though the user moved to another', async () => {
+    const memory = new InMemoryAdapter();
+    const store = new SimpleTimerStore();
+    const [scheduleTask] = createSchedulerTools({ store });
+    const channel = createChannel('telegram');
+    const run = vi.fn(async (_agent: unknown, options: RunOptions) => {
+      if (options.input === 'remind me') {
+        await scheduleTask.execute(
+          { description: 'Stretch', at: new Date(Date.now() - 1000).toISOString() },
+          {
+            agentId: 'bot',
+            runId: 'r1',
+            signal: new AbortController().signal,
+            channelType: options.channelType,
+            channelId: options.channelId,
+            topicId: options.topicId,
+            conversationId: options.conversationId,
+            userId: options.userId,
+          }
+        );
+      }
+      return { output: 'ok' };
+    });
+    const gateway = await startGateway(channel, { run }, { memory });
+    const inTopic = (topicId: string, id: string, text: string) =>
+      message({ id, channelType: 'telegram', channelId: '-100', topicId, text });
+
+    await channel.trigger(inTopic('7', 'm1', 'remind me'));
+    await gateway.idle();
+    await channel.trigger(inTopic('9', 'm2', 'something else'));
+    await gateway.idle();
+
+    const fired: ChannelMessage[] = [];
+    const scheduler = new HeartbeatScheduler(store, {
+      onFire: async (msg) => {
+        fired.push(msg);
+        await gateway.injectMessage(msg);
+      },
+      pollInterval: 10,
+    });
+    scheduler.start();
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(3));
+    scheduler.stop();
+    await gateway.idle();
+
+    expect(fired[0]).toMatchObject({ channelId: '-100', topicId: '7' });
+    expect(threadIds(run)).toEqual([
+      'telegram:-100:7:u1',
+      'telegram:-100:9:u1',
+      'telegram:-100:7:u1',
+    ]);
+    expect(channel.sendText.mock.calls[2]?.[2]).toMatchObject({ topicId: '7' });
+  });
+
+  it('fires a Bluesky reminder in the post thread it was set in', async () => {
+    const memory = new InMemoryAdapter();
+    const channel = createChannel('bluesky');
+    const cogitator = { run: vi.fn().mockResolvedValue({ output: 'ok' }) };
+    const gateway = await startGateway(channel, cogitator, { memory });
+
+    await gateway.injectMessage(
+      message({
+        id: 'heartbeat_1',
+        channelType: 'bluesky',
+        channelId: 'post:p1',
+        conversationId: 'thread:root',
+        raw: { scheduled: true, taskId: '1' },
+      })
+    );
+
+    expect(threadIds(cogitator.run)).toEqual(['bluesky:thread:root:u1']);
+    expect(cogitator.run.mock.calls[0]?.[1]).toMatchObject({ conversationId: 'thread:root' });
   });
 
   it('leaves a scheduled task as it is when threads are keyed by session.threadKey', async () => {

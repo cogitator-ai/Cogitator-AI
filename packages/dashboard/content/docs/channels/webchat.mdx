@@ -46,7 +46,18 @@ interface WebChatConfig {
   path?: string; // default: '/ws'
   auth?: (token: string) => boolean;
   maxPayload?: number; // max incoming frame size in bytes, default 1 MiB
+  routes?: Record<string, RequestListener>; // plain HTTP routes on the same port, by path
 }
+```
+
+`routes` serves plain HTTP requests on the WebChat port next to the socket, such as the webhook of the [GitHub channel](/docs/channels/github), so one exposed port takes both. Other paths answer `404`:
+
+```typescript
+const github = githubChannel({ token, webhook: { secret } });
+const webchat = webchatChannel({
+  port: 8080,
+  routes: { '/github/webhook': github.webhookListener() },
+});
 ```
 
 ## Connecting

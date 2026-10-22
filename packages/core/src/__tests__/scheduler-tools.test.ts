@@ -242,6 +242,38 @@ describe('scheduler tools', () => {
     expect(entry.metadata.channel).toBe('slack');
   });
 
+  it('schedule_task stores the topic and conversation of the run, for the task to fire there', async () => {
+    const tools = createSchedulerTools({ store: mockStore });
+    const scheduleTool = byName(tools).schedule;
+
+    await scheduleTool.execute(
+      { description: 'Topic test', delay: '1m' },
+      {
+        agentId: 'a1',
+        runId: 'r1',
+        signal: new AbortController().signal,
+        channelType: 'telegram',
+        channelId: '-100',
+        topicId: '7',
+        conversationId: 'thread:root',
+        userId: 'u1',
+      }
+    );
+    await scheduleTool.execute(
+      { description: 'No topic', delay: '1m' },
+      { agentId: 'a1', runId: 'r1', signal: new AbortController().signal, channelId: 'c' }
+    );
+
+    const [withTopic, plain] = mockStore.schedule.mock.calls.map(([entry]) => entry.metadata);
+    expect(withTopic).toMatchObject({
+      channelId: '-100',
+      topicId: '7',
+      conversationId: 'thread:root',
+    });
+    expect(plain).not.toHaveProperty('topicId');
+    expect(plain).not.toHaveProperty('conversationId');
+  });
+
   it('schedule_task stores bestEffort in metadata', async () => {
     const tools = createSchedulerTools({ store: mockStore });
     const scheduleTool = byName(tools).schedule;

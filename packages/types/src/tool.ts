@@ -132,6 +132,10 @@ export interface BaseToolContext<TDeps = unknown> {
   userId?: string;
   channelType?: string;
   channelId?: string;
+  /** The topic of the chat the run serves (`ChannelMessage.topicId`) */
+  topicId?: string;
+  /** The conversation the run serves (`ChannelMessage.conversationId`) */
+  conversationId?: string;
   /**
    * The run's `deps` (`RunOptions.deps`): your own values, such as a database client or the
    * signed-in user, for tools to use. They never reach the model, the run checkpoint, spans or

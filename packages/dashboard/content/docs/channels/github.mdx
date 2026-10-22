@@ -7,7 +7,7 @@ description: Answer issues, pull requests, comments and code reviews with your a
 
 GitHub needs no SDK: the channel calls the REST API with `fetch` and takes events from a webhook.
 
-1. **A token for the bot.** A personal access token of the bot's account (a fine-grained one with read and write access to **Issues** and **Pull requests** of the repositories, or a classic one with `repo`), or a GitHub App installation token. Save it as `GITHUB_TOKEN=...`
+1. **A token for the bot.** Give the bot an account of its own (or a GitHub App) and a token that reaches only the repositories it answers in: a fine-grained personal access token with read and write access to **Issues** and **Pull requests** of those repositories, or a GitHub App installation token. Avoid a classic token with `repo`, which reaches every private repository of the account, and avoid your own token: the bot would post as you and take your comments for its own. Save it as `GITHUB_TOKEN=...` (`GITHUB_CHANNEL_TOKEN` with `cogitator up`, see [below](#configuration))
 2. **A webhook.** In the repository (or organization) settings, add a webhook with the payload URL `https://<your host>/github/webhook`, content type `application/json` and a secret of your choice, saved as `GITHUB_WEBHOOK_SECRET=...`. Pick the events **Issues**, **Issue comments**, **Pull requests**, **Pull request reviews** and **Pull request review comments**.
 
 GitHub only pushes events, so the bot needs a URL GitHub can reach. To try it on your machine, a tunnel such as `cloudflared tunnel --url http://localhost:8787` or `ngrok http 8787` is enough.
@@ -24,6 +24,7 @@ const github = githubChannel({
     secret: process.env.GITHUB_WEBHOOK_SECRET!,
     port: 8787, // its own server, at /github/webhook unless `path` says otherwise
   },
+  repositories: ['acme/widgets'],
 });
 
 const cogitator = new Cogitator({
@@ -47,7 +48,7 @@ const gateway = new Gateway({
 await gateway.start();
 ```
 
-With `start()` the channel loads the bot's login (`GET /user`) and opens its webhook server.
+With `start()` the channel loads the bot's login (`GET /user`) and opens its webhook server. It warns when `repositories` is not set, since the bot then answers in every repository that sends it events.
 
 ## What It Answers
 
@@ -62,15 +63,19 @@ With `start()` the channel loads the bot's login (`GET /user`) and opens its web
 Other events and actions (edits, closes, labels) are answered `200` and left alone, a review without a body is skipped, and the `ping` GitHub sends when the webhook is created is answered `pong`.
 
 - **Conversations.** A message's `channelId` is `owner/repo#number`, the same for every comment of an issue or pull request, so the [Gateway](/docs/channels/gateway) keeps one conversation per issue or pull request and person. A review comment's `topicId` is the id of its review thread's first comment: each review thread is a conversation of its own, and its answer is a reply in it. `groupId` is the repository.
-- **Who it answers.** By default (`trigger: 'mention'`) only events that mention `@<login>`, outside code and quoted lines, which only repeat a mention. The mention at the start is taken out of the text. `trigger: 'all'` answers every event of the table. `repositories` limits the bot to `owner/repo` names or `owner/*`.
-- **What it skips.** Its own comments (by login), and other bots and apps (`sender.type` `Bot`), so two bots cannot answer each other forever. `allowBots: true` lets bots in.
+- **Whose events.** Only those of the repository's owner, the organization's members and collaborators (`author_association` `OWNER`, `MEMBER`, `COLLABORATOR`), whatever the trigger. `associations` names others (`['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR']`), `'any'` answers everyone, and `authors` lists logins answered whatever their association. GitHub may show a member whose membership is private as `CONTRIBUTOR`: list them in `authors`, or make the membership public.
+- **Which events.** By default (`trigger: 'mention'`) those that mention `@<login>`, outside code (fenced, indented or inline) and quoted lines, which only repeat a mention. The mention at the start is taken out of the text. `trigger: 'all'` answers every event of the table. `repositories` limits the bot to `owner/repo` names or `owner/*`.
+- **Follow-ups.** Once the bot answered someone in a conversation, their next comment there reaches it without a mention, such as the `yes` that answers a [tool approval](/docs/channels/gateway#approvals) prompt, and every comment in a review thread the bot replied in does too. The channel remembers the latest 1000 of these in memory.
+- **What it skips.** Its own comments (by login, with or without an app's `[bot]`), and other bots and apps (`sender.type` `Bot`), so two bots cannot answer each other forever. `allowBots: true` lets bots in.
 - **Users.** `userId` is the sender's numeric GitHub id, which stays the same when they rename, and `userName` their login.
 
 ## Webhook Deliveries
 
-Every delivery must carry an `X-Hub-Signature-256` that is the HMAC SHA-256 of the body with the webhook secret, compared in constant time. A delivery without it, or signed with another secret, is refused with `401`. A signed delivery is answered `200` at once and handled after, within GitHub's 10-second limit however long the agent takes. Each `X-GitHub-Delivery` is handled once, so a delivery redelivered from the webhook settings is not answered twice. Deliveries sent as `application/x-www-form-urlencoded` are read too.
+Every delivery must carry an `X-Hub-Signature-256` that is the HMAC SHA-256 of the body with the webhook secret, compared in constant time. A delivery without it, or signed with another secret, is refused with `401`. A signed delivery is answered `200` at once and handled after, within GitHub's 10-second limit however long the agent takes. A delivery GitHub sends again is handled once: by its `X-GitHub-Delivery`, and by the issue, comment or review it carries, which the signature covers (the header is not). Both are remembered in memory for the latest 1000, so after a restart a redelivered event is answered again. Deliveries sent as `application/x-www-form-urlencoded` are read too.
 
-Without `port`, mount `handleWebhook` in your own server. It needs the body exactly as received, which the signature covers, and works before `start()` too: the first delivery loads the bot's login.
+When the bot's login is not known yet and `GET /user` fails, the delivery is still answered `200`, since GitHub does not send it again by itself: the channel tries to load the login twice more, 2 and 10 seconds later, and drops the event with a logged error if it still cannot. Once `stop()` was called, deliveries are answered `503`.
+
+Without `port`, mount `handleWebhook` in your own server. It needs the body exactly as received, which the signature covers, and works before `start()` too: the first delivery loads the bot's login. `webhookListener()` is the same as a Node request listener, which reads the body itself. A [WebChat](/docs/channels/webchat) server takes it as a route, so one port serves both: `webchatChannel({ port, routes: { '/github/webhook': github.webhookListener() } })`.
 
 ```typescript
 import express from 'express';
@@ -86,17 +91,17 @@ app.post('/github/webhook', express.raw({ type: '*/*' }), async (req, res) => {
 });
 ```
 
-The channel's own server takes bodies up to 1 MB (`413` beyond) and answers `404` on other paths.
+The channel's own server takes bodies up to 1 MB (`413` beyond), and answers `404` on other paths and `400` to a request line it cannot read.
 
 ## Answers
 
 GitHub renders Markdown, so answers are sent as the agent writes them (`nativeMarkdown`). A comment holds 65536 characters, and a longer answer goes out as several comments, split at a line break where it can, with a code block cut in two closed and reopened.
 
-GitHub notifies the people subscribed to an issue once, with a comment's first text, and limits how often content may be created and edited. So answers are sent once finished (`editable: false`). With `stream: true` the channel says it is editable and the Gateway [streams](/docs/channels/streaming) answers into a comment it edits as the text grows.
+GitHub notifies the people subscribed to an issue once, with a comment's first text, and limits how often content may be created and edited. So answers are sent once finished (`editable: false`). With `stream: true` the channel says it is editable and the Gateway [streams](/docs/channels/streaming) answers into a comment it edits as the text grows. Edits of one comment go out at least 3 seconds apart (`GITHUB_MIN_EDIT_INTERVAL`), whatever the Gateway's `flushInterval`, with the latest text: about 20 a minute, under GitHub's limit of 80 content changes a minute.
 
 `sendText(channelId, text, options)` comments on the issue or pull request, or replies in the review thread of `options.topicId`, or of a `replyTo` that is a `review_comment:<id>`. It resolves with `comment:<id>` or `review_comment:<id>`, which `editText` and `deleteMessage` take. Issues, pull requests and reviews cannot be edited through it.
 
-- **Reactions.** `setReaction` uses GitHub's eight reactions (`+1`, `-1`, `laugh`, `confused`, `heart`, `hooray`, `rocket`, `eyes`), by name or emoji, and replaces the bot's earlier reaction on the same message. The emojis of status reactions become the nearest GitHub has: 🤔 eyes, 🔥 rocket, 😱 confused. Other emojis are skipped, and so are reviews, which take no reactions. With `reactions: { enabled: true }` in the Gateway, a mention gets 👀 while the agent works and 👍 once it answered.
+- **Reactions.** `setReaction` uses GitHub's eight reactions (`+1`, `-1`, `laugh`, `confused`, `heart`, `hooray`, `rocket`, `eyes`), by name or emoji, and replaces the bot's earlier reaction on the same message. Reactions to one message are set one after another, so the last one stays. The emojis of status reactions become the nearest GitHub has: 🤔 eyes, 🔥 rocket, 😱 confused. Other emojis are skipped, and so are reviews, which take no reactions. With `reactions: { enabled: true }` in the Gateway, a mention gets 👀 while the agent works and 👍 once it answered.
 - **Files.** GitHub has no API to upload files to comments. `sendFile` sends a file that has a public `url` as a comment that links it (an image shows inline), with its caption, and refuses a file that only has a `buffer`.
 - **Typing.** GitHub has no typing indicator, so `sendTyping` does nothing.
 
@@ -114,6 +119,15 @@ REST calls fail with a `FeedError` (feed `github`) whose `code` says what happen
 | `5xx`, network errors                                     | `unavailable`  |                                       |
 
 The message carries GitHub's own, with the validation errors it lists.
+
+## Security
+
+Everyone who can comment on an issue or pull request writes text the agent reads, and an agent holds the bot's token and its tools. Treat what arrives as untrusted input:
+
+- **Who may talk to it.** Keep the default `associations`, or list `authors`. Open it with `associations: 'any'` only for an agent that has nothing to leak and no tool that changes anything.
+- **What the token reaches.** A fine-grained token or an App installation, scoped to the repositories the bot answers in, never your own token or a classic `repo` token. With `cogitator up`, the channel reads `GITHUB_CHANNEL_TOKEN`, apart from the `GITHUB_TOKEN` of the `github_api` tool.
+- **Where it answers.** Set `repositories`, so a webhook added to another repository does not reach the agent.
+- **Prompt injection.** A comment can tell the agent to ignore its instructions, to read a secret or to call a tool. Give the agent only the tools the bot needs, ask [approval](/docs/channels/gateway#approvals) for tools that write or delete, and keep secrets out of what it can read. Text quoted from an issue is no instruction to the agent: say so in its instructions.
 
 ## GitHub Apps and Enterprise
 
@@ -138,6 +152,8 @@ interface GitHubChannelConfig {
   login?: string; // default from GET /user
   trigger?: 'mention' | 'all'; // default 'mention'
   repositories?: string[]; // 'owner/repo' or 'owner/*', default every repository
+  associations?: GitHubAssociation[] | 'any'; // default ['OWNER', 'MEMBER', 'COLLABORATOR']
+  authors?: string[]; // logins answered whatever their association
   allowBots?: boolean; // default false
   stream?: boolean; // default false
   apiUrl?: string; // default https://api.github.com
@@ -145,14 +161,15 @@ interface GitHubChannelConfig {
 }
 ```
 
-In `cogitator.yml`, `channels.github` takes `ownerIds` (numeric user ids, from `https://api.github.com/users/<login>`), `webhook` (`port`, default `8787`, and `path`), `trigger`, `repositories`, `login`, `allowBots` and `stream`, and reads `GITHUB_TOKEN`, `GITHUB_WEBHOOK_SECRET` and, for GitHub Enterprise Server, `GITHUB_API_URL`.
+In `cogitator.yml`, `channels.github` takes `ownerIds` (numeric user ids, from `https://api.github.com/users/<login>`, as numbers or strings), `webhook` (`port`, default `8787`, and `path`, starting with `/`), `trigger`, `repositories` (each `owner/repo` or `owner/*`), `associations`, `authors`, `login`, `allowBots` and `stream`. It reads `GITHUB_CHANNEL_TOKEN`, `GITHUB_WEBHOOK_SECRET` and, for GitHub Enterprise Server, `GITHUB_API_URL`. Without `GITHUB_CHANNEL_TOKEN` it falls back to `GITHUB_TOKEN`, the token of the `github_api` tool, and warns: that token is often your own.
 
 ```yaml title="cogitator.yml"
 channels:
   github:
-    ownerIds: ['583231']
+    ownerIds: [583231]
     trigger: mention
     repositories: ['acme/*']
+    associations: [OWNER, MEMBER, COLLABORATOR]
 ```
 
-The scaffolder makes a bot on GitHub with `npx create-cogitator-app my-bot --preset channels --channels github`, and `cogitator init` and `cogitator wizard` offer it too.
+The scaffolder makes a bot on GitHub with `npx create-cogitator-app my-bot --preset channels --channels github`, and `cogitator init` and `cogitator wizard` offer it too. With WebChat in the same project, the webhook is a route of the WebChat server, so a deploy that exposes one port reaches both.

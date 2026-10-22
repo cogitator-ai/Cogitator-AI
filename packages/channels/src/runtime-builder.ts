@@ -1009,9 +1009,15 @@ export class RuntimeBuilder {
 
     const github = this.config.channels.github;
     if (github) {
-      const token = this.env.GITHUB_TOKEN;
+      const channelToken = this.env.GITHUB_CHANNEL_TOKEN;
+      const token = channelToken ?? this.env.GITHUB_TOKEN;
       const secret = this.env.GITHUB_WEBHOOK_SECRET;
       if (token && secret) {
+        if (!channelToken) {
+          console.warn(
+            '[RuntimeBuilder] GitHub channel uses GITHUB_TOKEN: set GITHUB_CHANNEL_TOKEN to a token of a separate bot account, scoped to the repositories it answers in. With your own token the bot posts as you and takes your comments for its own'
+          );
+        }
         channels.push(
           githubChannel({
             token,
@@ -1024,13 +1030,15 @@ export class RuntimeBuilder {
             ...(github.login && { login: github.login }),
             ...(github.trigger && { trigger: github.trigger }),
             ...(github.repositories && { repositories: github.repositories }),
+            ...(github.associations && { associations: github.associations }),
+            ...(github.authors && { authors: github.authors }),
             ...(github.allowBots !== undefined && { allowBots: github.allowBots }),
             ...(github.stream !== undefined && { stream: github.stream }),
           })
         );
       } else {
         console.warn(
-          '[RuntimeBuilder] GitHub configured but GITHUB_TOKEN/GITHUB_WEBHOOK_SECRET not found in env'
+          '[RuntimeBuilder] GitHub configured but GITHUB_CHANNEL_TOKEN (or GITHUB_TOKEN) and GITHUB_WEBHOOK_SECRET not found in env'
         );
       }
     }
@@ -1131,7 +1139,7 @@ Required env vars per provider:
 - ollama (local): none
 - ollama (cloud): OLLAMA_URL=https://ollama.com, OLLAMA_API_KEY
 
-Other env vars: GITHUB_TOKEN (for the GitHub capability and channel), GITHUB_WEBHOOK_SECRET (GitHub channel), TG_TOKEN, DISCORD_TOKEN, SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET, SLACK_APP_TOKEN (Slack Socket Mode), WEBCHAT_TOKEN (WebChat).`;
+Other env vars: GITHUB_TOKEN (for the GitHub capability), GITHUB_CHANNEL_TOKEN and GITHUB_WEBHOOK_SECRET (GitHub channel), TG_TOKEN, DISCORD_TOKEN, SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET, SLACK_APP_TOKEN (Slack Socket Mode), WEBCHAT_TOKEN (WebChat).`;
     }
 
     if (this.config.capabilities.selfTools) {

@@ -1,4 +1,4 @@
-export { Gateway } from './gateway';
+export { Gateway, MAX_TRACKED_THREADS } from './gateway';
 export type { GatewayFullConfig, GatewaySessionInfo } from './gateway';
 
 export {

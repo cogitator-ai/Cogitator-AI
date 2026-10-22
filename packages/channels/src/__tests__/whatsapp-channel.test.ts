@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ChannelMessage } from '@cogitator-ai/types';
+import { defaultThreadKey } from '../thread-key';
 
 type Listener = (payload: unknown) => void;
 
@@ -112,12 +113,30 @@ describe('WhatsAppChannel', () => {
       key: { remoteJid: '9003@lid', id: 'd2' },
       message: { conversation: 'no phone shared' },
     });
-    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(3));
+    upsert(0, {
+      key: { remoteJid: '79990001122@s.whatsapp.net', remoteJidAlt: '9001@lid', id: 'd3' },
+      message: { conversation: 'by phone' },
+    });
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(4));
 
-    const [direct, group, hidden] = handler.mock.calls.map(([msg]) => msg as ChannelMessage);
-    expect(direct).toMatchObject({ userId: '79990001122', channelId: '9001@lid' });
+    const [direct, group, hidden, byPhone] = handler.mock.calls.map(
+      ([msg]) => msg as ChannelMessage
+    );
+    expect(direct).toMatchObject({
+      userId: '79990001122',
+      channelId: '9001@lid',
+      conversationId: '79990001122@s.whatsapp.net',
+    });
     expect(group).toMatchObject({ userId: '79990003344', channelId: '123@g.us' });
+    expect(group.conversationId).toBeUndefined();
     expect(hidden).toMatchObject({ userId: '9003', channelId: '9003@lid' });
+    expect(hidden.conversationId).toBeUndefined();
+    expect(byPhone).toMatchObject({
+      userId: '79990001122',
+      channelId: '79990001122@s.whatsapp.net',
+    });
+    expect(byPhone.conversationId).toBeUndefined();
+    expect(defaultThreadKey(direct)).toBe(defaultThreadKey(byPhone));
   });
 
   it('extracts captions and media attachments', async () => {

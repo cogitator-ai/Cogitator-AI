@@ -166,6 +166,22 @@ describe('Gateway buttons', () => {
     expect(vi.mocked(channel.sendText).mock.calls.at(-1)![1]).toBe('Published.');
   });
 
+  it('answers a press in a conversation the channel names, as its messages are keyed', async () => {
+    await startGateway();
+    await channel.trigger(message('Publish the noon edition', { conversationId: 'thread:root' }));
+    await gateway.idle();
+
+    await channel.press({ data: APPROVE_ACTION, conversationId: 'thread:root' });
+    await gateway.idle();
+
+    expect(channel.answerAction).toHaveBeenCalledWith('press_1', undefined);
+    expect(cogitator.resume).toHaveBeenCalledWith(
+      agent,
+      'telegram:thread:root:42',
+      expect.objectContaining({ defaultDecision: { approved: true } })
+    );
+  });
+
   it('declines when Deny is pressed', async () => {
     await startGateway();
     await channel.trigger(message('Publish the noon edition'));

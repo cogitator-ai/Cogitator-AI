@@ -8,15 +8,19 @@ const UserSchema = z.object({
 
 const RepositorySchema = z.object({ full_name: z.string() });
 
+const AssociationSchema = z.string().nullish();
+
 const IssueSchema = z.object({
   number: z.number(),
   title: z.string(),
   body: z.string().nullish(),
+  author_association: AssociationSchema,
 });
 
 const CommentSchema = z.object({
   id: z.number(),
   body: z.string().nullish(),
+  author_association: AssociationSchema,
 });
 
 const ReviewCommentSchema = CommentSchema.extend({
@@ -26,6 +30,7 @@ const ReviewCommentSchema = CommentSchema.extend({
 const ReviewSchema = z.object({
   id: z.number(),
   body: z.string().nullish(),
+  author_association: AssociationSchema,
 });
 
 const base = {
@@ -76,6 +81,11 @@ export interface GitHubInbound {
   id: string;
   text: string;
   sender: GitHubSender;
+  /**
+   * How the author is related to the repository, as GitHub says
+   * (`OWNER`, `MEMBER`, `COLLABORATOR`, `CONTRIBUTOR`, `NONE` and others).
+   */
+  association: string;
   /** The review thread a review comment is in: the id of its first comment. */
   topicId?: string;
   /** The comment a review comment replies to. */
@@ -109,6 +119,7 @@ export function githubInboundOf(name: string, payload: unknown): GitHubInbound |
         id: `issue:${issue.number}`,
         text: issueText(issue),
         sender,
+        association: issue.author_association ?? 'NONE',
       };
     }
     case 'pull_request': {
@@ -121,6 +132,7 @@ export function githubInboundOf(name: string, payload: unknown): GitHubInbound |
         id: `issue:${pull.number}`,
         text: issueText(pull),
         sender,
+        association: pull.author_association ?? 'NONE',
       };
     }
     case 'issue_comment': {
@@ -133,6 +145,7 @@ export function githubInboundOf(name: string, payload: unknown): GitHubInbound |
         id: `comment:${comment.id}`,
         text: comment.body ?? '',
         sender,
+        association: comment.author_association ?? 'NONE',
       };
     }
     case 'pull_request_review_comment': {
@@ -146,6 +159,7 @@ export function githubInboundOf(name: string, payload: unknown): GitHubInbound |
         id: `review_comment:${comment.id}`,
         text: comment.body ?? '',
         sender,
+        association: comment.author_association ?? 'NONE',
         topicId: String(root),
         ...(comment.in_reply_to_id != null && {
           replyTo: `review_comment:${comment.in_reply_to_id}`,
@@ -162,6 +176,7 @@ export function githubInboundOf(name: string, payload: unknown): GitHubInbound |
         id: `review:${review.id}`,
         text: review.body ?? '',
         sender,
+        association: review.author_association ?? 'NONE',
       };
     }
   }
