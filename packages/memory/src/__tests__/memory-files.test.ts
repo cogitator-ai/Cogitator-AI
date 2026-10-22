@@ -111,6 +111,43 @@ describe('MemoryFiles', () => {
     expect(forAgent?.content).toBe('written again by another writer');
   });
 
+  it('still edits files that stood under a file already, each in its own scope', async () => {
+    const agentWide: MemoryFileAccess = { scope: { agentId: 'a' } };
+    await files.create(access, '/memories/x', 'user file');
+    await files.create(agentWide, '/memories/x/y.md', 'agent file');
+
+    await files.strReplace(access, '/memories/x', 'user file', 'user file, edited');
+
+    expect((await files.read(access, '/memories/x'))?.content).toBe('user file, edited');
+  });
+
+  it('keeps its own version another writer wrote on top of, and takes back the rest', async () => {
+    await files.create(access, '/memories/source', 'mine');
+    const elsewhere = new MemoryFiles({ adapter });
+    const racing = Object.create(adapter) as InMemoryAdapter;
+    let read = 0;
+    racing.findFileVersions = async (filter) => {
+      const found = await adapter.findFileVersions(filter);
+      if (read++ === 0) await elsewhere.create(access, '/memories/a', 'a file');
+      return found;
+    };
+    let put = 0;
+    racing.putFileVersions = async (versions) => {
+      const done = await adapter.putFileVersions(versions);
+      if (put++ === 0) await elsewhere.put(access, '/memories/a/b', 'on top of mine');
+      return done;
+    };
+    const mine = new MemoryFiles({ adapter: racing });
+
+    await expect(mine.rename(access, '/memories/source', '/memories/a/b')).rejects.toThrow(
+      'Another writer changed the memory'
+    );
+
+    const history = await files.history(access, '/memories/a/b');
+    expect(history.map((version) => version.content)).toEqual(['mine', 'on top of mine']);
+    expect((await files.read(access, '/memories/source'))?.content).toBe('mine');
+  });
+
   it('answers each command as the memory tool does', async () => {
     expect(await files.create(access, '/memories/notes/plan.md', 'one\ntwo\nthree')).toBe(
       'File created successfully at: /memories/notes/plan.md'

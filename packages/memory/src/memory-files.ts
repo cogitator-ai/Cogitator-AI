@@ -796,7 +796,7 @@ export class MemoryFiles {
         const sequences = this.nextSequences(snapshot, writes);
         const kept = await this.write(access, writes, current, sequences);
         if (kept) {
-          await this.keepTree(access, kept);
+          await this.keepTree(access, kept, current);
           return;
         }
         if (attempt >= WRITE_ATTEMPTS) {
@@ -810,40 +810,57 @@ export class MemoryFiles {
 
   /**
    * Checks, once `kept` are kept, that no file the change wrote lies under another file or has
-   * files under it, which another process writing at the same time could cause, as each change is
-   * planned on what stood before it. A change that broke the tree is taken back, its versions
+   * files under it that was not there when it was `planned`, which another process writing at the
+   * same time could cause, as each change is planned on what stood before it. Files that stood so
+   * already, each on its own branch or in its own scope, are left to be. A change that broke the tree is taken back, its versions
    * deleted from the store where no later version stands on them (one another writer added since
    * is left as it is), and refused, so the writer tries again on what stands now.
    */
   private async keepTree(
     access: MemoryFileAccess,
-    kept: readonly MemoryFileVersion[]
+    kept: readonly MemoryFileVersion[],
+    planned: ReadonlyMap<string, MemoryFile>
   ): Promise<void> {
     const written = kept
       .filter((version) => version.content !== null)
       .map((version) => version.path);
     if (written.length === 0) return;
-    const snapshot = unwrap(
-      await this.adapter.findFileVersions({
-        agentId: access.scope.agentId,
-        visibleTo: access.visibleTo ?? access.scope,
-      })
+    const filter = { agentId: access.scope.agentId, visibleTo: access.visibleTo ?? access.scope };
+    const place = access.place;
+    const standing = unwrap(
+      this.adapter.findFileHeads
+        ? await this.adapter.findFileHeads({
+            ...filter,
+            ...(place && { place: { threadId: place.threadId, pathIds: [...place.pathIds] } }),
+          })
+        : await this.adapter.findFileVersions(filter)
     );
-    const paths = this.filesOf(access, snapshot).map((file) => file.path);
+    const paths = this.filesOf(access, standing).map((file) => file.path);
     const broken = written.find((path) =>
-      paths.some((other) => other !== path && (under(other, path) || under(path, other)))
+      paths.some(
+        (other) =>
+          other !== path && !planned.has(other) && (under(other, path) || under(path, other))
+      )
     );
     if (broken === undefined) return;
+    const heads = unwrap(
+      this.adapter.findFileHeads
+        ? await this.adapter.findFileHeads(filter)
+        : await this.adapter.findFileVersions(filter)
+    );
     const later = (version: MemoryFileVersion) =>
-      snapshot.some(
+      heads.some(
         (other) =>
           fileKeyOf(other.scope, other.path) === fileKeyOf(version.scope, version.path) &&
           other.sequence > version.sequence
       );
-    const ours = kept.filter((version) => !later(version)).map((version) => version.id);
-    if (ours.length > 0) unwrap(await this.adapter.deleteFileVersions(ours));
-    for (const version of kept) {
-      if (!later(version)) access.observe?.(version.path, null);
+    const ours = kept.filter((version) => !later(version));
+    if (ours.length > 0) {
+      unwrap(await this.adapter.deleteFileVersions(ours.map((version) => version.id)));
+    }
+    for (const version of ours) {
+      const now = await this.read(access, version.path);
+      access.observe?.(version.path, now?.sha256 ?? null);
     }
     throw new MemoryFileError(
       `Another writer changed the memory around ${broken} at the same time. View it again and try again.`

@@ -274,6 +274,40 @@ const SCENARIOS: Record<MemoryFileAdapterScenario, (adapter: MemoryFileAdapter) 
         ids([onMine, wide]),
         'a version of t2 placed off its branch is not seen, the newest seen one stands'
       );
+
+      const t1Only = ok(
+        await adapter.findFileHeads({
+          agentId,
+          visibleTo: { agentId, userId: 'u1' },
+          paths: ['/memories/notes.md'],
+          scope: user,
+          place: { threadId: 't1', pathIds: ['e-mine'] },
+        }),
+        'findFileHeads on the branch of e-mine'
+      );
+      assert.deepEqual(ids(t1Only), ids([elsewhere]), 'a version of another thread is seen');
+      ok(await adapter.deleteFileVersions([elsewhere.id]), 'deleteFileVersions');
+      for (const [pathIds, head] of [
+        [['e-mine'], onMine],
+        [['e-other'], onOther],
+        [[], second],
+      ] as const) {
+        const found: MemoryFileVersion[] = ok(
+          await adapter.findFileHeads({
+            agentId,
+            visibleTo: { agentId, userId: 'u1' },
+            paths: ['/memories/notes.md'],
+            scope: user,
+            place: { threadId: 't1', pathIds },
+          }),
+          'findFileHeads on a branch of t1'
+        );
+        assert.deepEqual(
+          ids(found),
+          ids([head]),
+          `the newest version on the branch of ${pathIds.join(', ') || 'no entry'}`
+        );
+      }
     },
 
     async 'file-find-visible-to'(adapter) {
