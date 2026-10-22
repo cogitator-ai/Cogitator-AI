@@ -86,7 +86,9 @@ const targets: BackendConformanceTarget[] = [
     name: 'Ollama',
     wire: ollamaWire,
     model: 'llama-conformance',
-    createBackend: (url) => createLLMBackend('ollama', { providers: { ollama: { baseUrl: url } } }),
+    headers,
+    createBackend: (url) =>
+      createLLMBackend('ollama', { providers: { ollama: { baseUrl: url, headers } } }),
   },
   {
     name: 'Bedrock',

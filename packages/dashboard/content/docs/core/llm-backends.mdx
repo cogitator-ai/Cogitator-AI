@@ -56,9 +56,12 @@ providers: {
   ollama: {
     baseUrl: 'http://localhost:11434', // default
     apiKey: process.env.OLLAMA_API_KEY, // optional: Ollama Cloud (https://ollama.com) or an authenticated server
+    headers: { 'X-Gateway-Key': process.env.GATEWAY_KEY! }, // optional, sent with every request
   },
 }
 ```
+
+Custom headers are sent with both chat and streaming requests, for example when Ollama runs behind an authentication proxy. `Content-Type` stays `application/json`. If `apiKey` is set, its `Authorization: Bearer ...` replaces any custom authorization header, regardless of header-name casing. Without `apiKey`, a custom authorization header is preserved. Trailing slashes on `baseUrl` are removed before adding `/api/chat`.
 
 ```typescript
 model: 'ollama/llama3.3:latest';

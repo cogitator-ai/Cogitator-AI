@@ -80,6 +80,36 @@ describe('CogitatorConfigSchema', () => {
     expect(result.llm?.providers?.google?.headers).toEqual({ 'x-team': 'research' });
   });
 
+  it.each([
+    { baseUrl: 'https://gateway.example.com/ollama', apiKey: 'ollama-secret' },
+    { apiKey: 'ollama-secret' },
+    {},
+  ])('preserves Ollama headers while applying URL defaults (%j)', (options) => {
+    const headers = { 'X-Gateway-Key': 'gateway-secret' };
+    const result = CogitatorConfigSchema.parse({
+      llm: { providers: { ollama: { ...options, headers } } },
+    });
+
+    expect(result.llm?.providers?.ollama).toEqual({
+      ...options,
+      baseUrl:
+        options.baseUrl ?? (options.apiKey ? 'https://ollama.com' : 'http://localhost:11434'),
+      headers,
+    });
+  });
+
+  it.each([
+    { 'X-Key': 'secret\nInjected: value' },
+    { 'X-Key': 'secret\rInjected: value' },
+    { 'X-Retries': 3 },
+  ])('rejects invalid Ollama headers (%j)', (headers) => {
+    const result = CogitatorConfigSchema.safeParse({
+      llm: { providers: { ollama: { headers } } },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it('accepts prices of your own per million tokens and rejects negative ones', () => {
     const pricing = {
       'ollama/llama3.3:70b': { input: 0.1, output: 0.1 },

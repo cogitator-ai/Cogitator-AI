@@ -253,6 +253,8 @@ export interface ModelPriceConfig {
 export interface OllamaProviderConfig {
   baseUrl: string;
   apiKey?: string;
+  /** Headers sent with every request, for a gateway that needs its own (auth, routing, tracing). */
+  headers?: Record<string, string>;
 }
 
 export interface OpenAIProviderConfig {

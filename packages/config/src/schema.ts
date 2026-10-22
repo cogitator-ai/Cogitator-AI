@@ -53,10 +53,15 @@ export const OpenAICompatibleProfileSchema = z.union([
 
 export const ProvidersConfigSchema = z.object({
   ollama: z
-    .object({ baseUrl: z.string().optional(), apiKey: z.string().optional() })
-    .transform(({ baseUrl, apiKey }) => ({
+    .object({
+      baseUrl: z.string().optional(),
+      apiKey: z.string().optional(),
+      headers: ProviderHeadersSchema.optional(),
+    })
+    .transform(({ baseUrl, apiKey, headers }) => ({
       baseUrl: baseUrl ?? (apiKey ? OLLAMA_CLOUD_URL : OLLAMA_LOCAL_URL),
       ...(apiKey ? { apiKey } : {}),
+      ...(headers ? { headers } : {}),
     }))
     .optional(),
   openai: z

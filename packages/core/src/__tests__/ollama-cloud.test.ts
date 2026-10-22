@@ -36,10 +36,9 @@ describe('OllamaBackend Cloud Support', () => {
 
     expect(fetchSpy).toHaveBeenCalledOnce();
     const [, options] = fetchSpy.mock.calls[0];
-    expect(options.headers).toMatchObject({
-      'Content-Type': 'application/json',
-      Authorization: 'Bearer test-key-123',
-    });
+    const headers = new Headers(options.headers as HeadersInit);
+    expect(headers.get('content-type')).toBe('application/json');
+    expect(headers.get('authorization')).toBe('Bearer test-key-123');
   });
 
   it('does not send Authorization header without apiKey', async () => {
@@ -53,6 +52,6 @@ describe('OllamaBackend Cloud Support', () => {
     });
 
     const [, options] = fetchSpy.mock.calls[0];
-    expect(options.headers).not.toHaveProperty('Authorization');
+    expect(new Headers(options.headers as HeadersInit).has('authorization')).toBe(false);
   });
 });

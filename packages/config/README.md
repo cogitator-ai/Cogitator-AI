@@ -25,6 +25,8 @@ llm:
       apiKey: sk-xxx
     ollama:
       baseUrl: http://localhost:11434
+      headers: # optional, sent with chat and streaming requests
+        X-Gateway-Key: xxx
 
 memory:
   adapter: redis
@@ -88,6 +90,8 @@ llm:
   providers:
     ollama:
       baseUrl: http://localhost:11434
+      headers: # optional, sent with chat and streaming requests
+        X-Gateway-Key: xxx
     openai:
       apiKey: sk-xxx
       baseUrl: https://api.openai.com/v1 # optional, for proxies
@@ -608,6 +612,8 @@ Configuration is deep-merged in this order (later overrides earlier):
 3. **Programmatic overrides** (highest priority)
 
 Fields nobody sets stay unset, and the runtime applies its own defaults. The one default the schema fills in is the Ollama `baseUrl` (see above). Unknown top-level keys are dropped by validation.
+
+Ollama accepts `llm.providers.ollama.headers` for gateways that require extra HTTP headers. The runtime keeps `Content-Type: application/json`, and an `apiKey` takes precedence over custom `Authorization` headers regardless of casing. Without an `apiKey`, custom authorization is preserved.
 
 ---
 

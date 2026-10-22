@@ -95,6 +95,7 @@ export function createLLMBackend(
       return new OllamaBackend({
         baseUrl: providers.ollama?.baseUrl ?? 'http://localhost:11434',
         apiKey: providers.ollama?.apiKey,
+        headers: providers.ollama?.headers,
       });
 
     case 'openai':
