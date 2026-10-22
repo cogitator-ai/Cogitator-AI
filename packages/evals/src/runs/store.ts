@@ -61,7 +61,15 @@ export interface RunStoreOptions {
   onSkip?: (skipped: SkippedRunFile) => void;
 }
 
-type FileRead = { kind: 'run'; run: EvalRun } | { kind: 'other' } | { kind: 'bad'; reason: string };
+type FileRead =
+  | { kind: 'run'; run: EvalRun }
+  | { kind: 'other' }
+  | { kind: 'gone' }
+  | { kind: 'bad'; reason: string };
+
+function isGone(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -79,6 +87,7 @@ function readRunFile(path: string): FileRead {
   try {
     text = readFileSync(path, 'utf-8');
   } catch (error) {
+    if (isGone(error)) return { kind: 'gone' };
     return { kind: 'bad', reason: errorMessage(error) };
   }
   let value: unknown;
@@ -97,11 +106,13 @@ function readRunFile(path: string): FileRead {
   }
 }
 
-function isFile(path: string): boolean {
+/** Whether a listed entry is still a file: `null` when it is, the reason to skip it otherwise */
+function notAFile(path: string): FileRead | null {
   try {
-    return statSync(path).isFile();
-  } catch {
-    return false;
+    return statSync(path).isFile() ? null : { kind: 'bad', reason: 'not a file' };
+  } catch (error) {
+    if (isGone(error)) return { kind: 'gone' };
+    return { kind: 'bad', reason: errorMessage(error) };
   }
 }
 
@@ -157,18 +168,14 @@ export class RunStore {
     try {
       files = readdirSync(this.directory);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      if (isGone(error)) return [];
       throw error;
     }
     const entries: Array<{ run: EvalRun; path: string }> = [];
     for (const file of files.sort()) {
       if (!file.endsWith('.json')) continue;
       const path = join(this.directory, file);
-      if (!isFile(path)) {
-        this.onSkip({ path, reason: 'not a file' });
-        continue;
-      }
-      const read = readRunFile(path);
+      const read = notAFile(path) ?? readRunFile(path);
       if (read.kind === 'run') entries.push({ run: read.run, path });
       else if (read.kind === 'bad') this.onSkip({ path, reason: read.reason });
     }

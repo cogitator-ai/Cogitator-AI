@@ -45,6 +45,9 @@ describe('RunStore', () => {
     expect(path).toBe(join(dir, 'runs', `${result.runId}.json`));
     expect(second).toBe(join(dir, 'runs', 'second.json'));
     expect(store.load(result.runId)).toEqual(result.toRun());
+    expect(readdirSync(join(dir, 'runs')).sort()).toEqual(
+      [`${result.runId}.json`, 'second.json'].sort()
+    );
   });
 
   it('lists the runs newest first with their metric means', async () => {

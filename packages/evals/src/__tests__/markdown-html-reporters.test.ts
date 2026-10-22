@@ -91,7 +91,7 @@ describe('markdown reporter', () => {
       '| threshold(exactMatch) | **fail** | exactMatch = 0.5, expected >= 0.9 |'
     );
     expect(md).toContain('| maxErrorRate(0.5) | pass | ok |');
-    expect(md).toContain('**Failed cases** (2)');
+    expect(md).toContain('**Failures** (2)');
     expect(md).toContain('| [3] Timeout case | error: Timed out after 3000ms |');
     expect(md).toContain('metric exactMatch failed: judge &lt;b>broke&lt;/b>');
     expect(md).not.toContain('<script>');
@@ -111,7 +111,7 @@ describe('markdown reporter', () => {
     expect(md).toContain('### Eval results\n');
     expect(md).toContain('**1** cases x **3** trials | **0** errored | 10 ms | 0 USD');
     expect(md).not.toContain('assertions:');
-    expect(md).not.toContain('Failed cases');
+    expect(md).not.toContain('**Failures**');
   });
 
   it('lists the failures of every trial', () => {
@@ -126,7 +126,7 @@ describe('markdown reporter', () => {
     const md = markdownSummary(result);
     const html = htmlPage(result);
 
-    expect(md).toContain('**Failed cases** (2)');
+    expect(md).toContain('**Failures** (2)');
     expect(md).toContain(
       '| [1] What is 2+2? | trial 2: metric exactMatch failed: judge gave no verdict |'
     );
@@ -134,6 +134,15 @@ describe('markdown reporter', () => {
     expect(html).toContain('2 of 3 trials answered');
     expect(html).toContain('trial 2: metric exactMatch failed: judge gave no verdict');
     expect(html).toContain('trial 3: error: Timed out');
+  });
+
+  it('escapes the failures of a trial in the page', () => {
+    const first = makeResult().results[0];
+    const second = { ...first, output: '', error: '<img src=x onerror=alert(1)>', scores: [] };
+    const html = htmlPage(makeResult({ results: [{ ...first, trials: [first, second] }] }));
+
+    expect(html).not.toContain('<img src=x');
+    expect(html).toContain('trial 2: error: &lt;img src=x onerror=alert(1)&gt;');
   });
 
   it('counts the failures it does not list', () => {

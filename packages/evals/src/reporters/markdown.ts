@@ -58,12 +58,7 @@ export function markdownSummary(result: EvalSuiteResult): string {
 
   const failedCases = failures(result);
   if (failedCases.length > 0) {
-    lines.push(
-      `**Failed cases** (${failedCases.length})`,
-      '',
-      '| Case | Problem |',
-      '| --- | --- |'
-    );
+    lines.push(`**Failures** (${failedCases.length})`, '', '| Case | Problem |', '| --- | --- |');
     for (const { label, problem } of failedCases.slice(0, MARKDOWN_MAX_FAILURES)) {
       lines.push(`| ${cell(label)} | ${cell(problem)} |`);
     }

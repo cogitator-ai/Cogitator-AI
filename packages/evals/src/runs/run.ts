@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 import type { EvalCase } from '../schema';
 import type { EvalPrompt, ScoredCaseResult } from '../metrics/types';
@@ -155,6 +155,13 @@ export function writeRun(run: EvalRun, target: string): string {
   const intoDirectory = target.endsWith('/') || target.endsWith(sep) || isDirectory(target);
   const path = intoDirectory ? join(target, `${checked.data.runId}.json`) : target;
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(checked.data, null, 2)}\n`, 'utf-8');
+  const partial = `${path}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    writeFileSync(partial, `${JSON.stringify(checked.data, null, 2)}\n`, 'utf-8');
+    renameSync(partial, path);
+  } catch (error) {
+    rmSync(partial, { force: true });
+    throw error;
+  }
   return path;
 }
