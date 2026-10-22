@@ -275,12 +275,32 @@ export interface CogitatorProviderConfig<
   specificationVersion?: V;
 }
 
-export interface CogitatorProvider<
+/** A provider member a Cogitator provider does not serve: it throws `NoSuchModelError` */
+export type CogitatorUnservedModel = (modelId: string) => never;
+
+/** What a provider of each specification has besides its language models */
+export type CogitatorProviderMembers<V extends CogitatorSpecificationVersion> = V extends 'v1'
+  ? { textEmbeddingModel: CogitatorUnservedModel }
+  : V extends 'v2'
+    ? { textEmbeddingModel: CogitatorUnservedModel; imageModel: CogitatorUnservedModel }
+    : {
+        readonly specificationVersion: V;
+        embeddingModel: CogitatorUnservedModel;
+        imageModel: CogitatorUnservedModel;
+      };
+
+/** A Cogitator provider of one specification, a union of them for a union of versions */
+export type CogitatorProvider<
   V extends CogitatorSpecificationVersion = DefaultSpecificationVersion,
-> {
-  (agentName: string, options?: CogitatorProviderOptions): CogitatorLanguageModel<V>;
-  languageModel(agentName: string, options?: CogitatorProviderOptions): CogitatorLanguageModel<V>;
-}
+> = V extends CogitatorSpecificationVersion
+  ? {
+      (agentName: string, options?: CogitatorProviderOptions): CogitatorLanguageModel<V>;
+      languageModel(
+        agentName: string,
+        options?: CogitatorProviderOptions
+      ): CogitatorLanguageModel<V>;
+    } & CogitatorProviderMembers<V>
+  : never;
 
 export type CogitatorTool<TParams = unknown, TResult = unknown> = Tool<TParams, TResult>;
 

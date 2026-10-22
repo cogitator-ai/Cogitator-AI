@@ -8,6 +8,8 @@ import type {
 import { Agent, tool, type Cogitator } from '@cogitator-ai/core';
 import type { RunOptions, RunResult } from '@cogitator-ai/types';
 import { z } from 'zod';
+import { createProviderRegistry, generateText } from 'ai';
+import { NoSuchModelError } from '@ai-sdk/provider';
 import { createCogitatorProvider, cogitatorModel } from '../provider';
 import type { LanguageModelV1CallOptions } from '../v1-types';
 import { collect, createAgent, createFakeCogitator, modelOf } from './helpers';
@@ -72,6 +74,51 @@ describe('createCogitatorProvider', () => {
     expect(() => provider('gamma')).toThrow(
       'Agent "gamma" not found. Available agents: alpha, beta'
     );
+    try {
+      provider('gamma');
+    } catch (error) {
+      expect(NoSuchModelError.isInstance(error)).toBe(true);
+      expect(error).toMatchObject({ modelId: 'gamma', modelType: 'languageModel' });
+    }
+  });
+
+  it('carries the members of its specification, serving no embedding or image models', () => {
+    const { cogitator } = createFakeCogitator();
+    const agents = [createAgent('writer')];
+    const v4 = createCogitatorProvider(cogitator, { agents, specificationVersion: 'v4' });
+    const v3 = createCogitatorProvider(cogitator, { agents, specificationVersion: 'v3' });
+    const v2 = createCogitatorProvider(cogitator, { agents, specificationVersion: 'v2' });
+    const v1 = createCogitatorProvider(cogitator, { agents, specificationVersion: 'v1' });
+
+    expect(v4.specificationVersion).toBe('v4');
+    expect(v3.specificationVersion).toBe('v3');
+    expect(v2).not.toHaveProperty('specificationVersion');
+    for (const unserved of [
+      () => v4.embeddingModel('e'),
+      () => v4.imageModel('i'),
+      () => v3.embeddingModel('e'),
+      () => v2.textEmbeddingModel('e'),
+      () => v2.imageModel('i'),
+      () => v1.textEmbeddingModel('e'),
+    ]) {
+      expect(unserved).toThrow(NoSuchModelError);
+    }
+  });
+
+  it('serves its agents through an AI SDK provider registry', async () => {
+    const { cogitator, run } = createFakeCogitator();
+    const registry = createProviderRegistry({
+      cogitator: createCogitatorProvider(cogitator, { agents: [createAgent('writer')] }),
+    });
+
+    const { text } = await generateText({
+      model: registry.languageModel('cogitator:writer'),
+      prompt: 'Hi',
+    });
+
+    expect(text.length).toBeGreaterThan(0);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(() => registry.embeddingModel('cogitator:writer')).toThrow(NoSuchModelError);
   });
 
   it('defaults to the specification of the installed ai package', () => {

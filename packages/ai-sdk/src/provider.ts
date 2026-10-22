@@ -1,4 +1,5 @@
 import type { Cogitator, Agent } from '@cogitator-ai/core';
+import { NoSuchModelError } from '@ai-sdk/provider';
 import { defaultSpecificationVersion } from './ai-version.js';
 import { AgentLanguageModelV1 } from './language-model-v1.js';
 import {
@@ -58,11 +59,53 @@ function buildAgentMap(
   return new Map(Object.entries(agents));
 }
 
+/** What a Cogitator provider does not serve: agents are language models only */
+function noSuchModel(modelType: 'embeddingModel' | 'imageModel') {
+  return (modelId: string): never => {
+    throw new NoSuchModelError({
+      modelId,
+      modelType,
+      message: `Cogitator serves agents as language models, so it has no ${modelType} '${modelId}'`,
+    });
+  };
+}
+
+/**
+ * The members of a provider of `version` besides `languageModel`, as the specification of that
+ * version names them: what an AI SDK `createProviderRegistry` looks for
+ */
+function providerMembers(version: CogitatorSpecificationVersion): Record<string, unknown> {
+  switch (version) {
+    case 'v4':
+    case 'v3':
+      return {
+        specificationVersion: version,
+        embeddingModel: noSuchModel('embeddingModel'),
+        imageModel: noSuchModel('imageModel'),
+      };
+    case 'v2':
+      return {
+        textEmbeddingModel: noSuchModel('embeddingModel'),
+        imageModel: noSuchModel('imageModel'),
+      };
+    case 'v1':
+      return { textEmbeddingModel: noSuchModel('embeddingModel') };
+  }
+}
+
 /**
  * Create an AI SDK provider that resolves Cogitator agents by name.
  *
  * Models implement the specification of the installed `ai` package (ai@4 → v1, ai@5 → v2,
- * ai@6 → v3, ai@7 → v4) unless `specificationVersion` selects one explicitly.
+ * ai@6 → v3, ai@7 → v4) unless `specificationVersion` selects one explicitly. The provider
+ * follows the same specification, so `createProviderRegistry` takes it: agents are its language
+ * models, and its embedding and image models throw `NoSuchModelError`.
+ *
+ * @example
+ * ```ts
+ * const registry = createProviderRegistry({ cogitator: createCogitatorProvider(cog, { agents }) });
+ * const model = registry.languageModel('cogitator:support');
+ * ```
  */
 export function createCogitatorProvider<
   V extends CogitatorSpecificationVersion = DefaultSpecificationVersion,
@@ -76,14 +119,20 @@ export function createCogitatorProvider<
   ): CogitatorLanguageModel<V> => {
     const agent = agentMap.get(agentName);
     if (!agent) {
-      throw new Error(
-        `Agent "${agentName}" not found. Available agents: ${[...agentMap.keys()].join(', ')}`
-      );
+      throw new NoSuchModelError({
+        modelId: agentName,
+        modelType: 'languageModel',
+        message: `Agent "${agentName}" not found. Available agents: ${[...agentMap.keys()].join(', ')}`,
+      });
     }
     return createLanguageModel(version as V, cogitator, agent, agentName, options);
   };
 
-  return Object.assign(languageModel, { languageModel });
+  return Object.assign(
+    languageModel,
+    { languageModel },
+    providerMembers(version)
+  ) as CogitatorProvider<V>;
 }
 
 /**

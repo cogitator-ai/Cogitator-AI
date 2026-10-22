@@ -1,4 +1,4 @@
-import { generateText, streamText, type LanguageModelV1 } from 'ai';
+import { createProviderRegistry, generateText, streamText, type LanguageModelV1 } from 'ai';
 import type { Agent, Cogitator } from '@cogitator-ai/core';
 import { cogitatorModel, createCogitatorProvider } from '../src/index.js';
 
@@ -15,3 +15,10 @@ export async function defaultModels(): Promise<void> {
 }
 
 export const explicit: LanguageModelV1 = cogitatorModel(cog, agent, { specificationVersion: 'v1' });
+
+export const registry = createProviderRegistry({
+  cogitator: createCogitatorProvider(cog, { agents: [agent] }),
+});
+export function registryModel(): void {
+  void registry.languageModel('cogitator:assistant');
+}
