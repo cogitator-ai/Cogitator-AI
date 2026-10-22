@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { AddressInfo } from 'net';
 import { cogitatorPlugin } from '../plugin.js';
@@ -178,8 +178,29 @@ describe('SSE heartbeat', () => {
     return vi.fn(() => new Promise((resolve) => setTimeout(() => resolve(runResult()), ms)));
   }
 
+  function afterHeartbeats(intervalMs: number, beats: number): Promise<void> {
+    const realSetInterval = globalThis.setInterval;
+    let ticks = 0;
+    return new Promise((resolve) => {
+      const spy = vi.spyOn(globalThis, 'setInterval').mockImplementation((callback, ms, ...args) =>
+        ms === intervalMs
+          ? realSetInterval(() => {
+              callback(...args);
+              if (++ticks === beats) resolve();
+            }, ms)
+          : realSetInterval(callback, ms, ...args)
+      );
+      onTestFinished(() => spy.mockRestore());
+    });
+  }
+
   it('writes comments while a run is silent, so proxies do not cut the stream', async () => {
-    const { base } = await start(slowRun(120), { sseHeartbeatMs: 20 });
+    const heartbeats = afterHeartbeats(20, 3);
+    const run = vi.fn(async () => {
+      await heartbeats;
+      return runResult();
+    });
+    const { base } = await start(run, { sseHeartbeatMs: 20 });
     const text = await (await post(`${base}/agents/bot/stream`, { input: 'hi' })).text();
     expect(text.match(/^: keep-alive$/gm)?.length).toBeGreaterThanOrEqual(3);
     expect(text.trimEnd().endsWith('data: [DONE]')).toBe(true);

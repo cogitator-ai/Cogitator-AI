@@ -40,12 +40,24 @@ describe('blank input', () => {
 
 describe('SSE heartbeat', () => {
   test('writes comments while a run is silent', async () => {
-    const { cogitator } = fakeCogitator(slowRun(120));
+    let release = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { cogitator } = fakeCogitator(async () => {
+      await released;
+      return runResult();
+    });
     const request = serve(app({ cogitator, agents: { chat: chatAgent() }, sseHeartbeatMs: 20 }));
-    const text = await (
-      await request('/cogitator/agents/chat/stream', json({ input: 'hi' }))
-    ).text();
-    expect(text.match(/^:.*$/gm)?.length).toBeGreaterThanOrEqual(3);
+    const res = await request('/cogitator/agents/chat/stream', json({ input: 'hi' }));
+    const pings = (text: string) => text.match(/^: ping$/gm)?.length ?? 0;
+    const decoder = new TextDecoder();
+    let text = '';
+    for await (const chunk of res.body ?? []) {
+      text += decoder.decode(chunk, { stream: true });
+      if (pings(text) >= 3) release();
+    }
+    expect(pings(text)).toBeGreaterThanOrEqual(3);
     expect(text.trimEnd().endsWith('data: [DONE]')).toBe(true);
   });
 

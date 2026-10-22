@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, onTestFinished } from 'vitest';
 import OpenAI from 'openai';
 import type { Cogitator } from '@cogitator-ai/core';
 import {
@@ -792,6 +792,22 @@ describe('OpenAIServer exposure', () => {
 });
 
 describe('OpenAIServer run stream heartbeat', () => {
+  function afterHeartbeats(intervalMs: number, beats: number): Promise<void> {
+    const realSetInterval = globalThis.setInterval;
+    let ticks = 0;
+    return new Promise((resolve) => {
+      const spy = vi.spyOn(globalThis, 'setInterval').mockImplementation((callback, ms, ...args) =>
+        ms === intervalMs
+          ? realSetInterval(() => {
+              callback(...args);
+              if (++ticks === beats) resolve();
+            }, ms)
+          : realSetInterval(callback, ms, ...args)
+      );
+      onTestFinished(() => spy.mockRestore());
+    });
+  }
+
   it('writes comments while a run is silent, so proxies do not cut the stream', async () => {
     const server = new OpenAIServer(cogitator, {
       port: 0,
@@ -800,7 +816,11 @@ describe('OpenAIServer run stream heartbeat', () => {
     });
     await server.start();
     try {
-      handler = () => new Promise((resolve) => setTimeout(() => resolve({ output: 'late' }), 150));
+      const heartbeats = afterHeartbeats(20, 3);
+      handler = async () => {
+        await heartbeats;
+        return { output: 'late' };
+      };
       const base = server.getBaseUrl();
       const post = (path: string, body: unknown) =>
         fetch(`${base}${path}`, {

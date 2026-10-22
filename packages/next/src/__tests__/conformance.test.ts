@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, onTestFinished } from 'vitest';
 import {
   CONFORMANCE_CASES,
   ConformanceRuntime,
@@ -114,11 +114,30 @@ describe('chat stream conformance', () => {
 });
 
 describe('chat stream heartbeat', () => {
+  function afterHeartbeats(intervalMs: number, beats: number): Promise<void> {
+    const realSetInterval = globalThis.setInterval;
+    let ticks = 0;
+    return new Promise((resolve) => {
+      const spy = vi.spyOn(globalThis, 'setInterval').mockImplementation((callback, ms, ...args) =>
+        ms === intervalMs
+          ? realSetInterval(() => {
+              callback(...args);
+              if (++ticks === beats) resolve();
+            }, ms)
+          : realSetInterval(callback, ms, ...args)
+      );
+      onTestFinished(() => spy.mockRestore());
+    });
+  }
+
   it('writes comments while a run is silent, so idle timeouts do not cut the stream', async () => {
     const runtime = new ConformanceRuntime();
+    const heartbeats = afterHeartbeats(20, 3);
     const slow = {
-      run: (agentArg: unknown, options: Parameters<ConformanceRuntime['run']>[1]) =>
-        new Promise((resolve) => setTimeout(() => resolve(runtime.run(agentArg, options)), 120)),
+      run: async (agentArg: unknown, options: Parameters<ConformanceRuntime['run']>[1]) => {
+        await heartbeats;
+        return runtime.run(agentArg, options);
+      },
     };
     const handler = createChatHandler(slow as unknown as Cogitator, agent, {
       sseHeartbeatMs: 20,

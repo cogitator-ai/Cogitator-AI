@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest';
 import { cogitatorApp } from '../app.js';
 import { createClientState, handleWebSocketMessage } from '../websocket/handler.js';
 import type { CogitatorAppOptions, CogitatorContext } from '../types.js';
@@ -159,8 +159,29 @@ describe('SSE heartbeat', () => {
     return vi.fn(() => new Promise((resolve) => setTimeout(() => resolve(runResult()), ms)));
   }
 
+  function afterHeartbeats(intervalMs: number, beats: number): Promise<void> {
+    const realSetInterval = globalThis.setInterval;
+    let ticks = 0;
+    return new Promise((resolve) => {
+      const spy = vi.spyOn(globalThis, 'setInterval').mockImplementation((callback, ms, ...args) =>
+        ms === intervalMs
+          ? realSetInterval(() => {
+              callback(...args);
+              if (++ticks === beats) resolve();
+            }, ms)
+          : realSetInterval(callback, ms, ...args)
+      );
+      onTestFinished(() => spy.mockRestore());
+    });
+  }
+
   it('writes comments while a run is silent, so idle timeouts do not cut the stream', async () => {
-    const { app } = buildApp(slowRun(120), { sseHeartbeatMs: 20 });
+    const heartbeats = afterHeartbeats(20, 3);
+    const run = vi.fn(async () => {
+      await heartbeats;
+      return runResult();
+    });
+    const { app } = buildApp(run, { sseHeartbeatMs: 20 });
     const res = await app.request('/agents/bot/stream', post({ input: 'hi' }));
     const text = await res.text();
     expect(text.match(/^: keep-alive$/gm)?.length).toBeGreaterThanOrEqual(3);
