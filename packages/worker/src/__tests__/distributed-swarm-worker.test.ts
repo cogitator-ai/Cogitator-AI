@@ -75,12 +75,15 @@ class MockRedis {
   }
 
   async eval(
-    _script: string,
+    script: string,
     _keys: number,
     from: string,
     to: string,
     raw: string
   ): Promise<number> {
+    if (script.includes('SREM')) {
+      return (await this.exists(from)) === 0 ? this.srem(to, raw) : 0;
+    }
     if ((await this.lrem(from, 1, raw)) !== 1) return 0;
     const target = queues.get(to) ?? [];
     queues.set(to, target);
@@ -501,5 +504,30 @@ describe('DistributedSwarmWorker', () => {
 
     expect(redisTiming.lranges).toBeGreaterThan(beatsBefore + 2);
     expect(published).toHaveLength(1);
+  });
+
+  it('keeps a worker that beat again while its turns went back to the queue', async () => {
+    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
+    executeSwarmAgentJob.mockImplementation(async (payload: SwarmAgentJobPayload) =>
+      result(payload)
+    );
+    const worker = new DistributedSwarmWorker({ pollTimeout: 0.1 });
+    sets.set(`${QUEUE}:workers`, new Set(['revived']));
+    queues.set(`${QUEUE}:processing:revived`, [JSON.stringify(job('stalled'))]);
+    const lmove = MockRedis.prototype.lmove;
+    const spy = vi.spyOn(MockRedis.prototype, 'lmove').mockImplementation(async function (
+      this: MockRedis,
+      ...args: Parameters<typeof lmove>
+    ) {
+      strings.set(`${QUEUE}:heartbeat:revived`, { value: 'back' });
+      return lmove.apply(this, args);
+    });
+
+    await worker.start();
+    await waitFor(() => published.length === 1);
+    spy.mockRestore();
+
+    expect(sets.get(`${QUEUE}:workers`)?.has('revived')).toBe(true);
+    await worker.stop();
   });
 });

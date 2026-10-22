@@ -74,6 +74,15 @@ const HAND_BACK = `if redis.call('LREM', KEYS[1], 1, ARGV[1]) == 1 then
 end
 return 0`;
 
+/**
+ * Drop a worker from the queue's workers only while its heartbeat is still gone, at once: a
+ * worker that came back and beat meanwhile keeps its place, so its list stays found
+ */
+const FORGET_WORKER = `if redis.call('EXISTS', KEYS[1]) == 0 then
+  return redis.call('SREM', KEYS[2], ARGV[1])
+end
+return 0`;
+
 function isSwarmAgentJob(value: unknown): value is SwarmAgentJobPayload {
   if (typeof value !== 'object' || value === null) return false;
   const job = value as Partial<SwarmAgentJobPayload>;
@@ -316,7 +325,13 @@ export class DistributedSwarmWorker {
       if (workerId === this.workerId) continue;
       if ((await publisher.exists(this.keys.heartbeat(workerId))) === 1) continue;
       const count = await this.requeue(workerId);
-      await publisher.srem(this.keys.workers, workerId);
+      await publisher.eval(
+        FORGET_WORKER,
+        2,
+        this.keys.heartbeat(workerId),
+        this.keys.workers,
+        workerId
+      );
       if (count > 0) this.events.onJobsRecovered?.(workerId, count);
     }
   }
