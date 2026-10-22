@@ -51,4 +51,13 @@ export {
   llmMetric,
   bindJudgeContext,
 } from './llm-judge';
-export type { JudgeContext, LLMMetricFn } from './llm-judge';
+export type {
+  JudgeContext,
+  LLMMetricFn,
+  LLMMetricOptions,
+  PromptMetricOptions,
+  RubricMetricOptions,
+  RubricLevel,
+} from './llm-judge';
+export { gEval } from './g-eval';
+export type { GEvalOptions } from './g-eval';

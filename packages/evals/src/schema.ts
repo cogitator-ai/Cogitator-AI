@@ -80,6 +80,17 @@ export const JudgeConfigSchema = z.object({
    * metrics. Default: no limit of its own
    */
   concurrency: z.number().int().positive().optional(),
+  /**
+   * Verdicts per case and judge metric, a positive integer, 1 by default. The score is the mean
+   * of the verdicts the judge gave, their spread is in the score's `details`. Each verdict is
+   * cached on its own, so use a `temperature` above 0 for verdicts that differ
+   */
+  samples: z.number().int().positive().optional(),
+});
+
+export const PairwiseOptionsSchema = z.object({
+  criteria: z.string().trim().min(1, 'criteria must not be empty').optional(),
+  name: z.string().trim().min(1, 'name must not be empty').optional(),
 });
 
 export const EvalComparisonConfigSchema = z.object({
@@ -87,6 +98,13 @@ export const EvalComparisonConfigSchema = z.object({
   timeout: z.number().int().min(1000).default(30000),
   retries: z.number().int().min(0).max(10).default(0),
   trials: z.number().int().min(1).default(1),
+  /** Significance level, after Holm's correction across the compared metrics */
+  alpha: z.number().gt(0).lt(1).default(0.05),
+  /** Test for metrics that are not binary, and for latency and cost */
+  test: z.enum(['t', 'wilcoxon']).default('t'),
+  /** Seeds the bootstrap of the confidence intervals, so they are the same on every run */
+  seed: z.union([z.number(), z.string()]).optional(),
+  pairwise: PairwiseOptionsSchema.optional(),
 });
 
 export type ExpectedToolCall = z.output<typeof ExpectedToolCallSchema>;

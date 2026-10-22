@@ -1,6 +1,6 @@
 import { createCogitator, DEFAULT_MODEL, header, section } from '../_shared/setup.js';
 import { Agent } from '@cogitator-ai/core';
-import { Dataset, EvalSuite, faithfulness, relevance } from '@cogitator-ai/evals';
+import { Dataset, EvalSuite, faithfulness, gEval, llmMetric, relevance } from '@cogitator-ai/evals';
 
 const QUESTIONS = [
   {
@@ -42,7 +42,24 @@ async function main() {
   const suite = new EvalSuite({
     dataset,
     target: { agent, cogitator: cog },
-    metrics: [faithfulness(), relevance()],
+    metrics: [
+      faithfulness(),
+      relevance(),
+      llmMetric({
+        name: 'accuracy',
+        prompt: 'Grade the technical accuracy of the explanation.',
+        rubric: [
+          { score: 1, description: 'wrong or misleading' },
+          { score: 2, description: 'partly right, with an error' },
+          { score: 3, description: 'right but missing a key point' },
+          { score: 4, description: 'right and complete' },
+        ],
+      }),
+      gEval({
+        name: 'clarity',
+        criteria: 'A beginner can follow the explanation, and it names the key idea first.',
+      }),
+    ],
     judge: { model: DEFAULT_MODEL, temperature: 0 },
     concurrency: 1,
     onProgress: (p) => {

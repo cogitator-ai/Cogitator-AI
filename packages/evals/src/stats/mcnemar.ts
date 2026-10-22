@@ -1,23 +1,9 @@
+import { erfc } from './normal';
+
 export interface McNemarResult {
   chiSquare: number;
   pValue: number;
   significant: boolean;
-}
-
-function erfc(x: number): number {
-  const a1 = 0.254829592;
-  const a2 = -0.284496736;
-  const a3 = 1.421413741;
-  const a4 = -1.453152027;
-  const a5 = 1.061405429;
-  const p = 0.3275911;
-
-  const sign = x < 0 ? -1 : 1;
-  const absX = Math.abs(x);
-  const t = 1.0 / (1.0 + p * absX);
-  const y = 1.0 - ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t * Math.exp(-absX * absX);
-
-  return 1.0 - sign * y;
 }
 
 function chiSquareSurvival(x: number): number {
@@ -45,4 +31,35 @@ export function mcnemarsTest(
     pValue,
     significant: pValue < 0.05,
   };
+}
+
+export interface McNemarExactResult {
+  pValue: number;
+  significant: boolean;
+}
+
+/**
+ * Exact McNemar test: the two-sided binomial test of `b` against `b + c` discordant pairs at
+ * one half. Preferred over `mcnemarsTest` when there are few discordant pairs (below 25)
+ */
+export function mcnemarExact(b: number, c: number): McNemarExactResult {
+  for (const [label, count] of [
+    ['b', b],
+    ['c', c],
+  ] as const) {
+    if (!Number.isInteger(count) || count < 0) {
+      throw new Error(`${label} must be a non-negative integer, got ${count}`);
+    }
+  }
+  const n = b + c;
+  if (n === 0) return { pValue: 1, significant: false };
+  const k = Math.min(b, c);
+  let logPmf = -n * Math.LN2;
+  let tail = 0;
+  for (let i = 0; i <= k; i++) {
+    tail += Math.exp(logPmf);
+    logPmf += Math.log((n - i) / (i + 1));
+  }
+  const pValue = Math.min(1, 2 * tail);
+  return { pValue, significant: pValue < 0.05 };
 }

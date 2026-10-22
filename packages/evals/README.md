@@ -19,13 +19,13 @@ Website docs: [Evals](https://cogitator.app/docs/evals), [Datasets](https://cogi
 
 - **EvalSuite** — Run datasets against agents or plain functions with configurable concurrency, timeouts, and retries
 - **8 Deterministic Metrics** - exactMatch, contains, containsAll, containsAny, similarity, tokenF1, regex, jsonSchema (Zod)
-- **6 LLM-as-Judge Metrics** - faithfulness, relevance, coherence, helpfulness, contextRelevance, custom llmMetric
+- **7 LLM-as-Judge Metrics** - faithfulness, relevance, coherence, helpfulness, contextRelevance, gEval, custom llmMetric with a free prompt or a discrete rubric. Prompts keep every untrusted value in escaped tags, `judge.samples` averages several verdicts, and `calibrateJudge()` checks a judge against labels
 - **4 Statistical Metrics** - latency, cost, tokenUsage with full percentile breakdowns, and passAtK over trials
 - **Custom Metrics** — `metric()` factory for anything domain-specific
 - **Agent Evaluation** - `toolCalls()` and `trajectory()` against expected tool calls, `retrievalRecall()`, `retrievalPrecision()`, `retrievalMRR()` and the `contextRelevance()` judge against expected passages, multi-turn cases on one conversation
 - **Trials and pass@k** - run each case several times and score how often it passes with `passAtK()`
 - **Assertions** — threshold, noRegression, custom assertion with auto-detection of lower-is-better metrics
-- **A/B Testing** — EvalComparison with paired t-test and McNemar's test for statistical significance
+- **A/B Testing** - EvalComparison with McNemar's test (exact for few discordant pairs), the paired t-test or Wilcoxon signed-rank, Holm's correction across metrics, bootstrap confidence intervals, effect sizes, latency and cost comparisons and pairwise judging
 - **6 Reporters** - console (colored table), JSON, CSV, JUnit XML, GitHub Actions annotations and job summary, CI (exit code on failure)
 - **Vitest** - `describeEval` from `@cogitator-ai/evals/vitest` runs a suite as a test file, one test per case plus one for the assertions, and `evalMatchers` from `@cogitator-ai/evals/matchers` (Vitest 5) adds `toHaveCalledTool`, `toFollowTrajectory`, `toHaveRetrieved` and `toScoreAtLeast`
 - **Builder API** — Fluent `EvalBuilder` for composable eval pipelines
@@ -235,7 +235,8 @@ Metrics scored by an LLM judge (0.0 to 1.0). They require a `judge` config on th
 | `coherence`        | Logical structure and readability            |
 | `helpfulness`      | Practical usefulness to the user             |
 | `contextRelevance` | Whether the retrieved passages fit the input |
-| `llmMetric`        | Custom prompt, you define the criteria       |
+| `gEval`            | G-Eval: evaluation steps, then a scale       |
+| `llmMetric`        | Custom prompt or rubric, your criteria       |
 
 ```typescript
 import { faithfulness, relevance, llmMetric } from '@cogitator-ai/evals';
@@ -263,7 +264,43 @@ Dataset.from([{ input: 'Write the lede', context: { dossier: dossierText } }]);
 
 When the run retrieved passages (see [Retrieval](#retrieval)), `faithfulness()` checks the response against them instead of `context`. `contextRelevance()` judges the input against the retrieved passages alone, or against `context` when nothing was retrieved, and scores 0 without a judge call when the case has neither.
 
-The `judge` option is a `JudgeConfigInput`: `{ model, temperature?, maxTokens?, cogitator?, cache?, concurrency? }`, with `temperature` defaulting to `0`. `cache: true` reuses a verdict for the same model, settings and prompt in memory (a `JudgeCache` with `get` and `set` keeps them across runs), and `concurrency` caps the judge calls running at once.
+The `judge` option is a `JudgeConfigInput`: `{ model, temperature?, maxTokens?, cogitator?, cache?, concurrency?, samples? }`, with `temperature` defaulting to `0`. `cache: true` reuses a verdict for the same model, settings and prompt in memory (a `JudgeCache` with `get` and `set` keeps them across runs), and `concurrency` caps the judge calls running at once.
+
+`llmMetric` also takes a discrete `rubric` instead of a free prompt: the judge picks one level, and the score is normalized to 0 - 1 by the lowest and highest level. A rubric needs at least two levels with distinct scores, and a verdict that is not a level counts as a judge error.
+
+```typescript
+llmMetric({
+  name: 'correctness',
+  prompt: 'Grade whether the response answers the question correctly.', // optional with a rubric
+  rubric: [
+    { score: 1, description: 'wrong, or does not answer' },
+    { score: 3, description: 'partly correct' },
+    { score: 5, description: 'fully correct' },
+  ],
+});
+```
+
+`gEval({ name, criteria, steps?, scale? })` follows G-Eval: the judge scores each case on `scale` (`[1, 5]` by default, normalized to 0 - 1) following evaluation steps. Without `steps`, the judge writes them from `criteria` once per metric instance, before the first case, and every later case reuses them. A failed generation scores the cases waiting on it as judge errors, and the next case tries again. The original G-Eval weights each score by the probability of its token, which not every provider exposes, so set `judge.samples` (with a `temperature` above 0) to average several verdicts instead.
+
+```typescript
+gEval({
+  name: 'clarity',
+  criteria: 'A beginner can follow the explanation, and it names the key idea first.',
+});
+```
+
+Every judge prompt keeps the untrusted values of a case (input, response, expected answer, context, retrieved passages, the turns of a conversation) inside XML-like tags such as `<input>` and `<response>`, with `<`, `>` and `&` escaped, so an answer cannot close its tag or open another, and the judge is told that tag contents are data to evaluate, never instructions. An answer that tells the judge to give it full marks is judged as content.
+
+`judge.samples` asks the judge that many times per case and metric (1 by default) and scores the mean of the verdicts it could read. The score's `details` give the spread (`mean of 3 verdicts, spread 0.6..0.9`), `metadata.samples` each verdict, and `usage` the summed cost. With `cache`, each sample is cached under its own key.
+
+`calibrateJudge(metric, examples, options?)` checks a judge against labels people gave: it scores each `{ input, output, expected?, context?, label }` (labels from 0 to 1) and returns `{ n, errors, pearson, spearman, mae, kappa, perCase }`, `kappa` being Cohen's kappa of pass and fail at `threshold` (0.5 by default). Pass a metric bound with `bindJudgeContext`, or `judge` with a `cogitator` to bind it. Examples the metric fails on are reported in `perCase` and left out of the figures.
+
+```typescript
+const calibration = await calibrateJudge(correctness, labelled, {
+  judge: { model: 'openai/gpt-6.1-sol', cogitator: cog },
+});
+console.log(calibration.spearman, calibration.kappa);
+```
 
 The judge answers with `{ "score", "reasoning" }` JSON. A verdict in a code fence or with the score as a numeric string is read as well, and an answer without JSON falls back to its last labelled score (`Score: 0.4`, `score is 4/5`), never to a stray number in the prose. When no verdict can be read, or the judge call fails, the metric scores 0 with the reason in `score.error`. The judge's usage is reported on each score and counted in `stats.judgeCost`.
 
@@ -505,6 +542,30 @@ for (const [name, mc] of Object.entries(result.summary.metrics)) {
 }
 ```
 
+Binary metrics (every score 0 or 1) take McNemar's test, exact below 25 discordant pairs and chi-square with continuity correction from 25. Other metrics take the paired t-test, or Wilcoxon's signed-rank test with `test: 'wilcoxon'` (zero differences dropped, exact up to 20 pairs, normal approximation above). The p-values are corrected with Holm's method across the compared metrics: `pValue` is the test's own, `adjustedPValue` the corrected one, and `significant` means `adjustedPValue < alpha` (`alpha` 0.05 by default). Each metric also reports `difference` (the mean of challenger minus baseline), `ci` (a percentile bootstrap interval of the paired differences at `1 - alpha`, the same on every run with `seed`), `effectSize` (Cohen's d of the paired differences) and the `test` it ran.
+
+`result.summary.latency` and `result.summary.cost` compare milliseconds and USD per case, paired over the cases both sides answered, where lower is better: means, `difference`, `pValue` and `winner`. `cost` is there only when both sides reported usage. Neither takes part in the metrics' vote on the overall winner.
+
+With `pairwise`, the judge also reads both answers of each case and says which is better, twice, the second time with the answers swapped. Agreeing verdicts give the case to that side, disagreeing ones or a tie make it a tie, a side that errored loses the case without a judge call, and a case both sides errored on is left out. A judge failure counts as a tie and is reported.
+
+```typescript
+const comparison = new EvalComparison({
+  dataset,
+  targets: { baseline, challenger },
+  metrics: [exactMatch()],
+  judge: { model: 'openai/gpt-6.1-sol', cogitator: cog },
+  pairwise: { criteria: 'Which answer is more accurate.' },
+  test: 'wilcoxon',
+  alpha: 0.05,
+  seed: 42,
+});
+
+const { pairwise } = await comparison.run();
+// { name, wins: { baseline, challenger }, ties, cases, winRate, judgeErrors, cost, perCase }
+```
+
+`winRate` is the challenger's wins over the decided cases, NaN when none was decided.
+
 Access full suite results via `result.baseline` and `result.challenger`. `comparison.run({ signal })` cancels both runs.
 
 ---
@@ -657,6 +718,7 @@ result.report('ci');
 | ---------------- | ------------------------------------------------------------------- |
 | `EvalSuite`      | Main evaluation runner                                              |
 | `EvalComparison` | A/B testing runner with statistical significance                    |
+| `calibrateJudge` | Agreement of a judge metric with labelled examples                  |
 | `EvalBuilder`    | Fluent builder for EvalSuite                                        |
 | `Dataset`        | Immutable dataset with from/fromJsonl/fromCsv/filter/sample/shuffle |
 | `loadJsonl`      | Low-level JSONL file loader                                         |
@@ -680,7 +742,8 @@ result.report('ci');
 | `coherence`          | LLM Judge     | Logical structure                                                  |
 | `helpfulness`        | LLM Judge     | Practical usefulness                                               |
 | `contextRelevance`   | LLM Judge     | Relevance of the retrieved passages to the input                   |
-| `llmMetric`          | LLM Judge     | Custom judge prompt                                                |
+| `gEval`              | LLM Judge     | Evaluation steps from criteria, then a score on a scale            |
+| `llmMetric`          | LLM Judge     | Custom judge prompt or discrete rubric                             |
 | `toolCalls`          | Agent         | Tool calls against `expectedToolCalls`, F1, recall or precision    |
 | `trajectory`         | Agent         | Sequence of tool names, exact, in-order or any-order               |
 | `retrievalRecall`    | Agent         | Share of `expectedPassages` retrieved                              |
@@ -726,15 +789,22 @@ result.report('ci');
 
 ### Statistics
 
-| Export         | Description                                               |
-| -------------- | --------------------------------------------------------- |
-| `pairedTTest`  | Paired t-test for continuous metric comparison            |
-| `mcnemarsTest` | McNemar's test for binary metric comparison               |
-| `mean`         | Arithmetic mean                                           |
-| `median`       | Median value                                              |
-| `stdDev`       | Sample standard deviation                                 |
-| `percentile`   | Arbitrary percentile                                      |
-| `aggregate`    | Full stats: mean, median, min, max, stdDev, p50, p95, p99 |
+| Export               | Description                                                     |
+| -------------------- | --------------------------------------------------------------- |
+| `pairedTTest`        | Paired t-test for continuous metric comparison                  |
+| `wilcoxonSignedRank` | Wilcoxon signed-rank test, zeros dropped, exact up to 20 pairs  |
+| `mcnemarsTest`       | McNemar's test (chi-square, continuity corrected) for binary    |
+| `mcnemarExact`       | Exact McNemar's test, the binomial test of the discordant pairs |
+| `holm`               | Holm-Bonferroni adjusted p-values                               |
+| `bootstrapCI`        | Seeded percentile bootstrap confidence interval of the mean     |
+| `cohensD`            | Cohen's d of paired differences (dz)                            |
+| `pearson`            | Pearson's correlation                                           |
+| `spearman`           | Spearman's rank correlation                                     |
+| `mean`               | Arithmetic mean                                                 |
+| `median`             | Median value                                                    |
+| `stdDev`             | Sample standard deviation                                       |
+| `percentile`         | Arbitrary percentile                                            |
+| `aggregate`          | Full stats: mean, median, min, max, stdDev, p50, p95, p99       |
 
 ### Agent Tools
 

@@ -111,16 +111,16 @@ describe('LLM judge metrics', () => {
       });
 
       const call = (ctx.cogitator.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      expect(call.input).toContain('Context:\ndossier: The council voted 7 to 2.');
+      expect(call.input).toContain('<context>\ndossier: The council voted 7 to 2.');
       expect(call.input).toContain('"minutes"');
-      expect(call.input.indexOf('Context:')).toBeLessThan(call.input.indexOf('Response:'));
+      expect(call.input.indexOf('<context>')).toBeLessThan(call.input.indexOf('<response>'));
     });
 
     it('leaves the context block out when a case has none', async () => {
       const ctx = makeJudgeContext('{"score": 1, "reasoning": "ok"}');
       await bindJudgeContext(faithfulness(), ctx)(makeResult('out'));
       const call = (ctx.cogitator.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      expect(call.input).not.toContain('Context:');
+      expect(call.input).not.toContain('</context>');
     });
 
     it('returns correct score', async () => {
@@ -267,13 +267,13 @@ describe('LLM judge metrics', () => {
   });
 
   describe('judge message formatting', () => {
-    it('includes N/A when expected is not provided', async () => {
+    it('leaves the expected block out when expected is not provided', async () => {
       const ctx = makeJudgeContext('{"score": 0.9, "reasoning": "ok"}');
       const bound = bindJudgeContext(faithfulness(), ctx);
       await bound(makeResult('output', 'input'));
 
       const call = (ctx.cogitator.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      expect(call.input).toContain('N/A');
+      expect(call.input).not.toContain('</expected>');
     });
 
     it('includes expected value when provided', async () => {
@@ -282,8 +282,7 @@ describe('LLM judge metrics', () => {
       await bound(makeResult('output', 'input', 'the expected'));
 
       const call = (ctx.cogitator.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      expect(call.input).toContain('the expected');
-      expect(call.input).not.toContain('N/A');
+      expect(call.input).toContain('<expected>\nthe expected\n</expected>');
     });
   });
 
@@ -334,10 +333,10 @@ describe('retrieval-aware judge metrics', () => {
     expect(score).toEqual({ name: 'contextRelevance', score: 0.8, details: 'on topic' });
     const prompt = promptOf(judge);
     expect(prompt).toContain(
-      'Input: capital of France?\nRetrieved passages:\n[1] (facts.txt) Paris is the capital of France.\n[2] France is in Europe.'
+      '<input>\ncapital of France?\n</input>\n<passages>\n<passage index="1" source="facts.txt">\nParis is the capital of France.\n</passage>\n<passage index="2">\nFrance is in Europe.\n</passage>\n</passages>'
     );
     expect(prompt).not.toContain('ignored');
-    expect(prompt).not.toContain('Response:');
+    expect(prompt).not.toContain('</response>');
   });
 
   it('contextRelevance falls back to the case context, and skips a case with neither', async () => {
@@ -345,7 +344,7 @@ describe('retrieval-aware judge metrics', () => {
     const bound = bindJudgeContext(contextRelevance(), judge);
 
     await bound({ case: { input: 'q', context: { doc: 'some text' } }, output: 'a', duration: 1 });
-    expect(promptOf(judge)).toContain('Context:\ndoc: some text');
+    expect(promptOf(judge)).toContain('<context>\ndoc: some text\n</context>');
 
     const skipped = await bound({ case: { input: 'q' }, output: 'a', duration: 1 });
     expect(skipped).toEqual({
@@ -359,9 +358,9 @@ describe('retrieval-aware judge metrics', () => {
   it('faithfulness reads the retrieved passages when there are some, the context otherwise', async () => {
     const withPassages = makeJudgeContext('{"score": 1, "reasoning": "ok"}');
     await bindJudgeContext(faithfulness(), withPassages)(withRetrieval({ notes: 'case context' }));
-    expect(promptOf(withPassages)).toContain('Retrieved passages:\n[1] (facts.txt) Paris');
+    expect(promptOf(withPassages)).toContain('<passage index="1" source="facts.txt">\nParis');
     expect(promptOf(withPassages)).not.toContain('case context');
-    expect(promptOf(withPassages)).toContain('Response: Paris');
+    expect(promptOf(withPassages)).toContain('<response>\nParis\n</response>');
 
     const withContext = makeJudgeContext('{"score": 1, "reasoning": "ok"}');
     await bindJudgeContext(
@@ -372,14 +371,14 @@ describe('retrieval-aware judge metrics', () => {
       output: 'a',
       duration: 1,
     });
-    expect(promptOf(withContext)).toContain('Context:\nnotes: case context');
+    expect(promptOf(withContext)).toContain('<context>\nnotes: case context\n</context>');
   });
 
   it('relevance keeps judging with the case context', async () => {
     const judge = makeJudgeContext('{"score": 1, "reasoning": "ok"}');
     await bindJudgeContext(relevance(), judge)(withRetrieval({ notes: 'case context' }));
-    expect(promptOf(judge)).toContain('Context:\nnotes: case context');
-    expect(promptOf(judge)).not.toContain('Retrieved passages');
+    expect(promptOf(judge)).toContain('<context>\nnotes: case context\n</context>');
+    expect(promptOf(judge)).not.toContain('</passages>');
   });
 
   it('contextRelevance is a judge metric with its own name', () => {
@@ -414,9 +413,10 @@ describe('judging multi-turn cases', () => {
     await bindJudgeContext(relevance(), judge)(conversation);
 
     expect(promptOf(judge)).toContain(
-      'Conversation so far:\nUser: My name is Ada.\nAssistant: Nice to meet you, Ada.\nUser: I live in Paris.\nAssistant: Paris is lovely.\nInput (the last user message, which the response answers): Where do I live?\nExpected: Paris\nResponse: You live in Paris.'
+      '<conversation>\n<turn role="user">\nMy name is Ada.\n</turn>\n<turn role="assistant">\nNice to meet you, Ada.\n</turn>\n<turn role="user">\nI live in Paris.\n</turn>\n<turn role="assistant">\nParis is lovely.\n</turn>\n</conversation>\n<input>\nWhere do I live?\n</input>\n<expected>\nParis\n</expected>\n<response>\nYou live in Paris.\n</response>'
     );
-    expect(promptOf(judge)).not.toContain('Input: My name is Ada.');
+    expect(promptOf(judge)).toContain('which is the <input> the response answers');
+    expect(promptOf(judge)).not.toContain('<input>\nMy name is Ada.');
   });
 
   it('gives contextRelevance the conversation with the passages', async () => {
@@ -424,8 +424,8 @@ describe('judging multi-turn cases', () => {
     await bindJudgeContext(contextRelevance(), judge)(conversation);
 
     expect(promptOf(judge)).toContain(
-      'Input (the last user message, which the response answers): Where do I live?\nRetrieved passages:\n[1] Ada lives in Paris.'
+      '<input>\nWhere do I live?\n</input>\n<passages>\n<passage index="1">\nAda lives in Paris.\n</passage>\n</passages>'
     );
-    expect(promptOf(judge)).toContain('User: I live in Paris.');
+    expect(promptOf(judge)).toContain('<turn role="user">\nI live in Paris.\n</turn>');
   });
 });

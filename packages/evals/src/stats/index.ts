@@ -1,5 +1,13 @@
 export { percentile, mean, median, stdDev, aggregate } from './percentiles';
 export { pairedTTest } from './t-test';
 export type { TTestResult } from './t-test';
-export { mcnemarsTest } from './mcnemar';
-export type { McNemarResult } from './mcnemar';
+export { mcnemarsTest, mcnemarExact } from './mcnemar';
+export type { McNemarResult, McNemarExactResult } from './mcnemar';
+export { wilcoxonSignedRank } from './wilcoxon';
+export type { WilcoxonResult } from './wilcoxon';
+export { bootstrapCI } from './bootstrap';
+export type { BootstrapOptions, BootstrapInterval } from './bootstrap';
+export { cohensD } from './effect-size';
+export { holm } from './holm';
+export { pearson, spearman } from './correlation';
+export { seededRandom } from './random';

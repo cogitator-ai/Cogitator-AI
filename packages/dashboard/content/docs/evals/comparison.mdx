@@ -1,30 +1,38 @@
 ---
 title: A/B Comparison
-description: Compare two agent configurations with statistical significance testing using paired t-tests and McNemar's test.
+description: Compare two agent configurations with McNemar's test, the paired t-test or Wilcoxon signed-rank, Holm's correction, bootstrap intervals, effect sizes and pairwise judging.
 ---
 
 ## Overview
 
-`EvalComparison` runs the same dataset against two targets (baseline and challenger) and determines which performs better — with statistical significance. It uses paired t-tests for continuous metrics and McNemar's test for binary metrics (0 or 1 scores).
+`EvalComparison` runs the same dataset against two targets (baseline and challenger) and determines which performs better, with statistical significance. Binary metrics (0 or 1 scores) take McNemar's test, other metrics the paired t-test or Wilcoxon's signed-rank test, and the p-values are corrected with Holm's method across the metrics.
 
-Only per-case `metrics` are compared, and a higher mean is better. `statisticalMetrics` (latency, cost, tokens) are computed for each side and available in `result.baseline.aggregated` / `result.challenger.aggregated`, but they do not take part in the comparison.
+Per-case `metrics` are compared, a higher mean being better, and they alone vote on the winner. Latency and cost per case are compared too, a lower mean being better, in `summary.latency` and `summary.cost`. `statisticalMetrics` (latency, cost, tokens) are computed for each side and available in `result.baseline.aggregated` / `result.challenger.aggregated`. With `pairwise`, the judge also reads both answers of each case and says which is better.
 
 ```typescript
 interface ComparisonResult {
   summary: {
     winner: 'baseline' | 'challenger' | 'tie';
     metrics: Record<string, MetricComparison>;
+    latency: ResourceComparison; // ms per case
+    cost?: ResourceComparison; // USD per case, when both sides reported usage
   };
   baseline: EvalSuiteResult;
   challenger: EvalSuiteResult;
+  pairwise?: PairwiseResult; // with the pairwise option
 }
 
 interface MetricComparison {
   baseline: number; // mean score
   challenger: number; // mean score
   n: number; // cases compared
-  pValue: number; // statistical significance
-  significant: boolean; // p < 0.05
+  difference: number; // mean of challenger - baseline
+  ci: { low: number; high: number }; // bootstrap interval of the difference
+  effectSize: number; // Cohen's d of the paired differences
+  test: 'mcnemar' | 'mcnemar-exact' | 't' | 'wilcoxon' | 'none';
+  pValue: number; // the test's own p-value
+  adjustedPValue: number; // after Holm's correction across the metrics
+  significant: boolean; // adjustedPValue < alpha
   winner: 'baseline' | 'challenger' | 'tie';
 }
 ```
@@ -69,7 +77,8 @@ for (const [metric, comp] of Object.entries(summary.metrics)) {
   console.log(
     `${metric}: baseline=${comp.baseline.toFixed(3)} ` +
       `challenger=${comp.challenger.toFixed(3)} ` +
-      `p=${comp.pValue.toFixed(4)} ` +
+      `diff=${comp.difference.toFixed(3)} [${comp.ci.low.toFixed(3)}, ${comp.ci.high.toFixed(3)}] ` +
+      `p=${comp.pValue.toFixed(4)} adjusted=${comp.adjustedPValue.toFixed(4)} ` +
       `significant=${comp.significant} ` +
       `winner=${comp.winner}`
   );
@@ -82,28 +91,122 @@ challenger.report('console');
 
 ## Statistical Tests
 
-The comparison automatically selects the right test based on the data:
-
-### Paired t-Test
-
-Used for continuous scores (e.g., faithfulness: 0.73, 0.85, 0.91). Tests whether the mean difference between paired observations is significantly different from zero.
+The comparison selects the test from the data and reports it in `test`:
 
 ### McNemar's Test
 
-Used for binary scores (all values are exactly 0 or 1, e.g., exactMatch). Tests whether the proportion of disagreements between baseline and challenger is significantly different from random.
+Used for binary scores (all values exactly 0 or 1, e.g. exactMatch). It looks at the discordant pairs, the cases one side got right and the other wrong. Below 25 discordant pairs it is exact (`mcnemar-exact`, the two-sided binomial test of the pairs at one half), from 25 it is the chi-square test with continuity correction (`mcnemar`).
 
-Both tests use p < 0.05 as the significance threshold. A metric's winner is only declared when the difference is statistically significant, and is then the side with the higher mean. With fewer than 2 cases every metric is a tie (`pValue: 1`). Scores are paired by case. A case that errored on one side, or where one side has no score for the metric, counts as 0 for that side, so a challenger that fails cases loses on them. A case neither side scored is left out, and `n` is the number of cases a metric was compared on.
+### Paired t-Test
+
+The default for continuous scores (e.g. faithfulness: 0.73, 0.85, 0.91). Tests whether the mean difference between paired observations is different from zero.
+
+### Wilcoxon Signed-Rank Test
+
+With `test: 'wilcoxon'`, continuous scores take Wilcoxon's signed-rank test instead, which does not assume the differences are normal. Zero differences are dropped (Wilcoxon's handling, not Pratt's), tied differences share their mean rank, and the p-value is exact up to 20 nonzero pairs and from the normal approximation (with tie and continuity corrections) above.
+
+### Multiple Metrics
+
+Comparing several metrics at once raises the chance that one of them looks significant by luck. The p-values are corrected with Holm's method across the compared metrics: `pValue` is the test's own, `adjustedPValue` the corrected one, and a metric is `significant` when `adjustedPValue` is below `alpha` (0.05 by default). A metric's winner is only declared when it is significant, and is then the side with the higher mean. With fewer than 2 cases every metric is a tie (`test: 'none'`, `pValue: 1`).
+
+### Difference, Interval and Effect Size
+
+Each metric reports `difference`, the mean of the paired differences (challenger minus baseline), with `ci`, a percentile bootstrap confidence interval of it at `1 - alpha` (2000 resamples). Pass `seed` for intervals that are the same on every run. `effectSize` is Cohen's d of the paired differences (dz), their mean over their standard deviation, NaN with fewer than 2 cases.
+
+Scores are paired by case. A case that errored on one side, or where one side has no score for the metric, counts as 0 for that side, so a challenger that fails cases loses on them. A case neither side scored is left out, and `n` is the number of cases a metric was compared on.
+
+## Latency and Cost
+
+`summary.latency` and `summary.cost` compare milliseconds and USD per case, paired over the cases both sides answered (with trials, the mean over a case's answered trials), and here lower is better:
+
+```typescript
+interface ResourceComparison {
+  baseline: number; // mean per case
+  challenger: number;
+  n: number;
+  difference: number; // challenger - baseline, below 0 when the challenger is cheaper or faster
+  test: 't' | 'wilcoxon' | 'none';
+  pValue: number;
+  significant: boolean; // pValue < alpha
+  winner: 'baseline' | 'challenger' | 'tie';
+}
+```
+
+They take the same `test` as continuous metrics, are not corrected with the metrics and do not vote on the overall winner. `summary.cost` is there only when both sides reported usage on some case, as agent targets do (a `fn` target records none).
+
+## Pairwise Judging
+
+Scores on an absolute scale miss differences two answers show side by side. With `pairwise`, the judge reads both answers of each case and says which is better:
+
+```typescript
+const comparison = new EvalComparison({
+  dataset,
+  targets: {
+    baseline: { agent: currentAgent, cogitator },
+    challenger: { agent: newAgent, cogitator },
+  },
+  judge: { model: 'openai/gpt-6.1-sol', temperature: 0, cogitator },
+  pairwise: { criteria: 'Which answer is more accurate and more useful.' },
+});
+
+const { pairwise } = await comparison.run();
+console.log(
+  `${pairwise.wins.challenger} wins, ${pairwise.wins.baseline} losses, ${pairwise.ties} ties`
+);
+console.log(`win rate ${(pairwise.winRate * 100).toFixed(0)}%`);
+```
+
+The judge is asked twice per case, the second time with the answers swapped, since judges tend to favor the answer they read first. Agreeing verdicts give the case to that side, disagreeing ones or a verdict of a tie make the case a tie. A side that errored loses the case without a judge call, and a case both sides errored on is left out. A judge failure in either order makes the case a tie and is reported in its `error` and in `judgeErrors`. As in judge metrics, the answers sit in escaped tags, so an answer cannot talk the judge into preferring it. A multi-turn case shows each side's whole conversation.
+
+```typescript
+interface PairwiseResult {
+  name: string; // pairwise.name, 'pairwise' by default
+  wins: { baseline: number; challenger: number };
+  ties: number;
+  cases: number; // cases at least one side answered
+  winRate: number; // challenger wins / decided cases, NaN when none was decided
+  judgeErrors: number;
+  cost: number; // USD of the judge calls
+  perCase: PairwiseCase[]; // { index, input, winner, verdicts, errored?, error? }
+}
+```
+
+Pairwise judging needs `judge`, run by `judge.cogitator` or, when it is not set, the `cogitator` of an agent target. Each order is asked once, `judge.samples` applies to judge metrics only. It runs after both suites, at most `concurrency` cases at once, and is not part of the metrics' vote on the overall winner.
+
+## Exported Tests
 
 The tests are exported for your own analyses:
 
 ```typescript
-import { pairedTTest, mcnemarsTest, aggregate } from '@cogitator-ai/evals';
+import {
+  pairedTTest,
+  wilcoxonSignedRank,
+  mcnemarsTest,
+  mcnemarExact,
+  holm,
+  bootstrapCI,
+  cohensD,
+  pearson,
+  spearman,
+  aggregate,
+} from '@cogitator-ai/evals';
 
 const t = pairedTTest([0.7, 0.8, 0.9], [0.75, 0.9, 0.95]);
 // { tStatistic, degreesOfFreedom, pValue, significant, confidenceInterval }
 
+const w = wilcoxonSignedRank([0.7, 0.8, 0.9, 0.6], [0.75, 0.9, 0.95, 0.8]);
+// { statistic (W+), n (nonzero pairs), pValue, significant, method: 'exact' | 'normal' }
+
 const m = mcnemarsTest(3, 12); // A right & B wrong, A wrong & B right
 // { chiSquare, pValue, significant }
+const exact = mcnemarExact(3, 12); // { pValue, significant }
+
+holm([0.01, 0.04, 0.03]); // [0.03, 0.06, 0.06]
+
+bootstrapCI([0.1, 0.3, 0.2, 0.4], { confidence: 0.95, resamples: 2000, seed: 1 });
+// { low, high, mean }
+
+cohensD([0.1, 0.2, 0.15]); // mean / standard deviation of the differences
 
 const stats = aggregate([120, 340, 95]);
 // { mean, median, min, max, stdDev, p50, p95, p99 }
@@ -180,30 +283,35 @@ for (const [name, mc] of Object.entries(result.summary.metrics)) {
   const sig = mc.significant ? '***' : '';
   console.log(
     `  ${name}: ${mc.baseline.toFixed(3)} vs ${mc.challenger.toFixed(3)} ` +
-      `(p=${mc.pValue.toFixed(4)}) ${mc.winner}${sig}`
+      `(adjusted p=${mc.adjustedPValue.toFixed(4)}) ${mc.winner}${sig}`
   );
 }
 ```
 
 ## Options
 
-| Option               | Type                  | Default | Description                                                                                                                                                                               |
-| -------------------- | --------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dataset`            | Dataset               | -       | Test cases to run                                                                                                                                                                         |
-| `targets.baseline`   | EvalTarget            | -       | Baseline target                                                                                                                                                                           |
-| `targets.challenger` | EvalTarget            | -       | Challenger target                                                                                                                                                                         |
-| `metrics`            | MetricFn[]            | -       | Per-case metrics                                                                                                                                                                          |
-| `statisticalMetrics` | StatisticalMetricFn[] | -       | Aggregate metrics                                                                                                                                                                         |
-| `judge`              | JudgeConfigInput      | -       | Required for LLM metrics (`temperature` defaults to `0`), with `fn` targets it needs `cogitator`                                                                                          |
-| `concurrency`        | number                | 5       | Parallel case execution per target                                                                                                                                                        |
-| `timeout`            | number                | 30000   | Per-case timeout in ms                                                                                                                                                                    |
-| `retries`            | number                | 0       | Retry count for failed cases                                                                                                                                                              |
-| `trials`             | number                | 1       | Runs of each case per target, see [Trials and pass@k](/docs/evals/agents#trials-and-passk). Each case is compared on its mean over its scored trials, and `passAtK()` works on both sides |
-| `onProgress`         | function              | -       | Progress callback with target label                                                                                                                                                       |
+| Option               | Type                   | Default | Description                                                                                                                                                                               |
+| -------------------- | ---------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dataset`            | Dataset                | -       | Test cases to run                                                                                                                                                                         |
+| `targets.baseline`   | EvalTarget             | -       | Baseline target                                                                                                                                                                           |
+| `targets.challenger` | EvalTarget             | -       | Challenger target                                                                                                                                                                         |
+| `metrics`            | MetricFn[]             | -       | Per-case metrics                                                                                                                                                                          |
+| `statisticalMetrics` | StatisticalMetricFn[]  | -       | Aggregate metrics                                                                                                                                                                         |
+| `judge`              | JudgeConfigInput       | -       | Required for LLM metrics (`temperature` defaults to `0`), with `fn` targets it needs `cogitator`                                                                                          |
+| `concurrency`        | number                 | 5       | Parallel case execution per target                                                                                                                                                        |
+| `timeout`            | number                 | 30000   | Per-case timeout in ms                                                                                                                                                                    |
+| `retries`            | number                 | 0       | Retry count for failed cases                                                                                                                                                              |
+| `trials`             | number                 | 1       | Runs of each case per target, see [Trials and pass@k](/docs/evals/agents#trials-and-passk). Each case is compared on its mean over its scored trials, and `passAtK()` works on both sides |
+| `alpha`              | number                 | 0.05    | Significance level, compared with the Holm-adjusted p-values, and the `ci` level `1 - alpha`                                                                                              |
+| `test`               | `'t' \| 'wilcoxon'`    | `'t'`   | Test for continuous metrics, latency and cost                                                                                                                                             |
+| `seed`               | number \| string       | -       | Seeds the bootstrap of the confidence intervals                                                                                                                                           |
+| `pairwise`           | `{ criteria?, name? }` | -       | Ask the judge which answer is better, both ways round. Needs `judge`                                                                                                                      |
+| `onProgress`         | function               | -       | Progress callback with target label                                                                                                                                                       |
 
 ## Tips for Meaningful Comparisons
 
 - **Use enough data.** Statistical tests need sample sizes to detect real differences. 30+ cases is a minimum; 100+ is better.
 - **Control variables.** Change one thing at a time — model, prompt, temperature — so you know what caused the difference.
-- **Check p-values.** A metric showing `significant: false` means the observed difference could be due to random variation.
+- **Check p-values and intervals.** A metric showing `significant: false` means the observed difference could be due to random variation. A `ci` that spans 0 says the same, and its width shows how much more data would help.
+- **Compare few metrics.** Holm's correction grows with the number of metrics, so a long list of loosely related metrics makes each one harder to call significant.
 - **Run both targets concurrently.** `EvalComparison` runs baseline and challenger in parallel, so external factors (API latency, rate limits) affect both equally.

@@ -88,19 +88,19 @@ const suite = new EvalSuite({
 });
 ```
 
-| Option               | Default | Description                                                                                                                      |
-| -------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `dataset`            | —       | [`Dataset`](/docs/evals/datasets) of cases                                                                                       |
-| `target`             | —       | What to evaluate — see [Target](#target)                                                                                         |
-| `metrics`            | `[]`    | Per-case [metrics](/docs/evals/metrics)                                                                                          |
-| `statisticalMetrics` | `[]`    | Metrics over the whole run (`latency()`, `cost()`, `tokenUsage()`, `passAtK()`)                                                  |
-| `judge`              | —       | `{ model, temperature?, maxTokens?, cogitator? }` (`JudgeConfigInput`; `temperature` defaults to `0`) — required for LLM metrics |
-| `assertions`         | `[]`    | [Pass/fail checks](/docs/evals/assertions)                                                                                       |
-| `concurrency`        | `5`     | Cases run in parallel                                                                                                            |
-| `timeout`            | `30000` | Per-attempt timeout in ms (minimum 1000)                                                                                         |
-| `retries`            | `0`     | Extra attempts for a failed or timed-out case (max 10)                                                                           |
-| `trials`             | `1`     | Runs of each case, each scored on its own, see [Trials and pass@k](/docs/evals/agents#trials-and-passk)                          |
-| `onProgress`         | —       | Called with `{ completed, total, currentCase }` after each case                                                                  |
+| Option               | Default | Description                                                                                                                                                                                                 |
+| -------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dataset`            | —       | [`Dataset`](/docs/evals/datasets) of cases                                                                                                                                                                  |
+| `target`             | —       | What to evaluate — see [Target](#target)                                                                                                                                                                    |
+| `metrics`            | `[]`    | Per-case [metrics](/docs/evals/metrics)                                                                                                                                                                     |
+| `statisticalMetrics` | `[]`    | Metrics over the whole run (`latency()`, `cost()`, `tokenUsage()`, `passAtK()`)                                                                                                                             |
+| `judge`              | —       | `{ model, temperature?, maxTokens?, cogitator?, cache?, concurrency?, samples? }` (`JudgeConfigInput`, `temperature` defaults to `0`), required for [LLM metrics](/docs/evals/metrics#llm-as-judge-metrics) |
+| `assertions`         | `[]`    | [Pass/fail checks](/docs/evals/assertions)                                                                                                                                                                  |
+| `concurrency`        | `5`     | Cases run in parallel                                                                                                                                                                                       |
+| `timeout`            | `30000` | Per-attempt timeout in ms (minimum 1000)                                                                                                                                                                    |
+| `retries`            | `0`     | Extra attempts for a failed or timed-out case (max 10)                                                                                                                                                      |
+| `trials`             | `1`     | Runs of each case, each scored on its own, see [Trials and pass@k](/docs/evals/agents#trials-and-passk)                                                                                                     |
+| `onProgress`         | —       | Called with `{ completed, total, currentCase }` after each case                                                                                                                                             |
 
 Errors and timeouts are retried up to `retries` times. If every attempt fails, the case result has an empty `output` and an `error` message (for example `Timed out after 30000ms`), so a failed run is never mistaken for an empty answer. No metric scores it, so it costs no judge calls and does not count as a 0: the aggregates cover the cases that answered (`count` says how many), and `stats.errors` or the [`maxErrorRate`](/docs/evals/assertions#maxerrorrate) assertion catch a run where many cases failed.
 

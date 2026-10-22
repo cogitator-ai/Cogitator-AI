@@ -50,6 +50,9 @@ async function main() {
       challenger: { agent: creativeAgent, cogitator: cog },
     },
     metrics: [exactMatch(), contains()],
+    judge: { model: DEFAULT_MODEL, cogitator: cog, temperature: 0 },
+    pairwise: { criteria: 'Which answer gives the correct number most directly.' },
+    seed: 42,
     concurrency: 1,
     onProgress: (p) => {
       console.log(`  [${p.target}] ${p.completed}/${p.total}`);
@@ -63,16 +66,41 @@ async function main() {
     console.log(`${name}:`);
     console.log(`  Baseline:   ${mc.baseline.toFixed(3)}`);
     console.log(`  Challenger: ${mc.challenger.toFixed(3)}`);
-    console.log(`  p-value:    ${mc.pValue.toFixed(4)}`);
+    console.log(
+      `  Difference: ${mc.difference.toFixed(3)} [${mc.ci.low.toFixed(3)}, ${mc.ci.high.toFixed(3)}]`
+    );
+    console.log(`  Effect size: ${mc.effectSize.toFixed(2)}`);
+    console.log(`  Test:       ${mc.test}`);
+    console.log(
+      `  p-value:    ${mc.pValue.toFixed(4)} (Holm-adjusted ${mc.adjustedPValue.toFixed(4)})`
+    );
     console.log(`  Significant: ${mc.significant}`);
     console.log(`  Winner:     ${mc.winner}`);
     console.log();
   }
 
-  section('5. Overall winner');
+  section('5. Latency and cost (lower is better)');
+  const { latency, cost } = result.summary;
+  console.log(
+    `Latency: ${latency.baseline.toFixed(0)}ms vs ${latency.challenger.toFixed(0)}ms, p=${latency.pValue.toFixed(4)}, winner ${latency.winner}`
+  );
+  if (cost) {
+    console.log(
+      `Cost:    $${cost.baseline.toFixed(6)} vs $${cost.challenger.toFixed(6)}, p=${cost.pValue.toFixed(4)}, winner ${cost.winner}`
+    );
+  }
+
+  section('6. Pairwise judge');
+  const pairwise = result.pairwise!;
+  console.log(
+    `Wins: baseline ${pairwise.wins.baseline}, challenger ${pairwise.wins.challenger}, ties ${pairwise.ties}`
+  );
+  console.log(`Challenger win rate: ${(pairwise.winRate * 100).toFixed(0)}%`);
+
+  section('7. Overall winner');
   console.log(`Winner: ${result.summary.winner}`);
 
-  section('6. Individual results');
+  section('8. Individual results');
   console.log('Baseline:');
   result.baseline.report('console');
   console.log('\nChallenger:');
