@@ -32,6 +32,17 @@ function headerParameter(header: string, name: string): string | undefined {
   return value?.replace(/\\(.)/g, '$1');
 }
 
+/** The trimmed value of the part header `name` (lower case), scanned line by line */
+function partHeader(headers: string, name: string): string | undefined {
+  for (const line of headers.split('\r\n')) {
+    const colon = line.indexOf(':');
+    if (colon !== -1 && line.slice(0, colon).trim().toLowerCase() === name) {
+      return line.slice(colon + 1).trim();
+    }
+  }
+  return undefined;
+}
+
 /**
  * A `multipart/form-data` body split into its parts, keeping each part's bytes, so a field sent
  * in another character set than UTF-8 (as SendGrid's Inbound Parse does) can be decoded in its
@@ -52,11 +63,11 @@ export function parseMultipart(body: Buffer, boundary: string): FormPart[] {
     if (next === -1) break;
     const contentEnd = body[next - 2] === 0x0d && body[next - 1] === 0x0a ? next - 2 : next;
     const headers = body.subarray(headersStart + 2, headersEnd).toString('utf-8');
-    const disposition = /^content-disposition:(.*)$/im.exec(headers)?.[1] ?? '';
+    const disposition = partHeader(headers, 'content-disposition') ?? '';
     const name = headerParameter(disposition, 'name');
     if (name !== undefined) {
       const filename = headerParameter(disposition, 'filename');
-      const contentType = /^content-type:\s*(.*)$/im.exec(headers)?.[1]?.trim();
+      const contentType = partHeader(headers, 'content-type');
       parts.push({
         name,
         ...(filename !== undefined && { filename }),
