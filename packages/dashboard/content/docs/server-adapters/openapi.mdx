@@ -75,7 +75,7 @@ await fastify.register(cogitatorPlugin, {
 
 Its document is generated from the Fastify route schemas: it describes the generic routes (`/cogitator/agents/{name}/run`, …) and their validated bodies, not one path per agent. The stream components and the `StreamEvent` body of every `/stream` route are added to it with `documentStreamEvents`. Swagger UI is at `<prefix>/docs` and the JSON at `<prefix>/docs/json`.
 
-Tetsu describes each route of `cogitatorController` with its Zod schemas and error responses; mount `docs()` from `@tetsujs/openapi` next to it to serve `/openapi.json` and `/docs` ([Tetsu Adapter](/docs/server-adapters/tetsu)). `@tetsujs/openapi` cannot give an SSE route a body schema yet, so its document leaves the stream bodies out, and a client takes the events from `StreamEventSchema`.
+Tetsu describes each route of `cogitatorController` with its Zod schemas and error responses. Mount `docs()` from `@tetsujs/openapi` next to it to serve `/openapi.json` and `/docs` ([Tetsu Adapter](/docs/server-adapters/tetsu)). `@tetsujs/openapi` cannot give a route a `text/event-stream` body yet, so that document leaves the stream bodies out. A document built with `openapi()` can get them from `documentStreamEvents(openapi(app, { info }).document)`.
 
 ## SwaggerConfig
 

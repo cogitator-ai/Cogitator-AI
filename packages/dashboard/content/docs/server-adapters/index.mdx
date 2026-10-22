@@ -39,7 +39,7 @@ Every adapter registers these routes. Express (`config.basePath`) and Fastify (`
 | `POST`   | `/swarms/:name/run`           | Execute a swarm                                                                   |
 | `POST`   | `/swarms/:name/stream`        | Stream swarm execution                                                            |
 | `GET`    | `/swarms/:name/blackboard`    | The swarm's configured blackboard sections (only when it is enabled)              |
-| `GET`    | `/openapi.json`, `/docs`      | OpenAPI spec and Swagger UI — see [OpenAPI](/docs/server-adapters/openapi)        |
+| `GET`    | `/openapi.json`, `/docs`      | OpenAPI spec and Swagger UI, see [OpenAPI](/docs/server-adapters/openapi)         |
 
 Fastify serves its spec at `/docs/json` instead of `/openapi.json`, and Tetsu's document comes from `docs()` of `@tetsujs/openapi`.
 
@@ -180,7 +180,7 @@ const event = StreamEventSchema.parse(JSON.parse(data));
 if (event.type === 'text-delta') render(event.delta);
 ```
 
-`StreamEventSchema` refuses an unknown event type and drops a field a newer server adds. The OpenAPI document of every adapter but Tetsu has the same schemas as components, `StreamEvent` among them (see [OpenAPI](/docs/server-adapters/openapi)).
+`StreamEventSchema` refuses an unknown event type and drops a field a newer server adds. The OpenAPI documents of the adapters have the same schemas as components, `StreamEvent` among them. Tetsu's gets them from `documentStreamEvents` (see [OpenAPI](/docs/server-adapters/openapi)).
 
 ## Long-Running Runs
 

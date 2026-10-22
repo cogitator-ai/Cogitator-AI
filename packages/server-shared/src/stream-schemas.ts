@@ -87,7 +87,7 @@ export const ToolResultEventSchema = z
     type: z.literal('tool-result'),
     id: z.string(),
     toolCallId: z.string(),
-    result: z.unknown(),
+    result: z.unknown().optional(),
   })
   .describe('What the tool call `toolCallId` returned');
 
@@ -143,13 +143,13 @@ export const FinishEventSchema = z
   );
 
 export const WorkflowEventSchema = z
-  .object({ type: z.literal('workflow'), event: z.string(), data: z.unknown() })
+  .object({ type: z.literal('workflow'), event: z.string(), data: z.unknown().optional() })
   .describe(
     'An event of a workflow run, named by `event`, such as `node_started`, `node_completed` or `workflow_completed`'
   );
 
 export const SwarmEventSchema = z
-  .object({ type: z.literal('swarm'), event: z.string(), data: z.unknown() })
+  .object({ type: z.literal('swarm'), event: z.string(), data: z.unknown().optional() })
   .describe('An event of a swarm run, named by `event`');
 
 /**

@@ -101,7 +101,8 @@ export interface ToolResultEvent {
   type: 'tool-result';
   id: string;
   toolCallId: string;
-  result: unknown;
+  /** What the tool returned, absent when it returned nothing */
+  result?: unknown;
 }
 
 /** A tool call waiting for approval; the shape of core's `ToolApprovalRequest` */
@@ -146,13 +147,13 @@ export interface FinishDetails extends Partial<AgentRunOutcome> {
 export interface WorkflowEvent {
   type: 'workflow';
   event: string;
-  data: unknown;
+  data?: unknown;
 }
 
 export interface SwarmEvent {
   type: 'swarm';
   event: string;
-  data: unknown;
+  data?: unknown;
 }
 
 export function createStartEvent(messageId: string, threadId?: string): StartEvent {

@@ -576,6 +576,7 @@ const RUN_OUTCOME_PROPERTIES = {
   },
   truncated: {
     type: 'boolean',
+    enum: [true],
     description: 'The answer stopped at the output token limit and may be cut off',
   },
   blocked: {
@@ -585,6 +586,7 @@ const RUN_OUTCOME_PROPERTIES = {
   },
   iterationLimitReached: {
     type: 'boolean',
+    enum: [true],
     description: "Tool calls used up the agent's maxIterations before the model answered",
   },
 } as const;

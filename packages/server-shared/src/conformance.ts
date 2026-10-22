@@ -641,13 +641,18 @@ export interface ConformanceResponse {
   headers?: Readonly<Record<string, string>>;
 }
 
-/** What the conformance runtime streams: a reasoning part, text, a tool call and its result */
+/**
+ * What the conformance runtime streams: a reasoning part, text, a tool call and its result, and
+ * a call of a tool that returned nothing
+ */
 function streamParts(options: RunOptions | ResumeOptions): void {
   options.onReasoning?.('thinking');
   options.onToken?.('Hel');
   options.onToken?.('lo');
   options.onToolCall?.({ id: 'call_1', name: 'lookup', arguments: { query: 'order 42' } });
   options.onToolResult?.({ callId: 'call_1', name: 'lookup', result: { found: true } });
+  options.onToolCall?.({ id: 'call_3', name: 'notify', arguments: {} });
+  options.onToolResult?.({ callId: 'call_3', name: 'notify', result: undefined });
   options.onToken?.(' again');
 }
 

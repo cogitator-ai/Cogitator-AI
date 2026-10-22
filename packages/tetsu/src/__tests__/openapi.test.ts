@@ -6,6 +6,7 @@ import { assertDescribed } from '@tetsujs/openapi/testing';
 import { Agent } from '@cogitator-ai/core';
 import { Swarm, SwarmTimeoutError } from '@cogitator-ai/swarms';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
+import { documentStreamEvents } from '@cogitator-ai/server-shared';
 import { callerHook, cogitatorController } from '../index.js';
 import {
   chatAgent,
@@ -366,5 +367,28 @@ describe('OpenAPI document of the server contract', () => {
     const anonymous = await request('/api/agents');
     expect(anonymous.status).toBe(401);
     await assertDescribed(document, 'GET /api/agents', anonymous);
+  });
+});
+
+describe('stream events in the OpenAPI document', () => {
+  const { cogitator } = fakeCogitator(async () => runResult());
+  const app = createApp({
+    routes: group('/api', {
+      children: [cogitatorController({ cogitator, agents: { chat: chatAgent() } })],
+    }),
+  });
+  const document = documentStreamEvents(openapi(app, { info }).document);
+
+  test('gives every stream route the StreamEvent body once documentStreamEvents adds it', () => {
+    const streams = Object.keys(document.paths ?? {}).filter((path) => path.endsWith('/stream'));
+    expect(streams).toContain('/api/agents/{name}/resume/stream');
+    for (const path of streams) {
+      expect(document.paths?.[path]?.post?.responses?.['200'], path).toMatchObject({
+        content: {
+          'text/event-stream': { schema: { $ref: '#/components/schemas/StreamEvent' } },
+        },
+      });
+    }
+    expect(document.components?.schemas).toHaveProperty('StreamEvent');
   });
 });

@@ -84,6 +84,7 @@ const everyEvent: StreamEvent[] = [
   createToolCallDeltaEvent('call-1', '{"q":'),
   createToolCallEndEvent('call-1'),
   createToolResultEvent('result-1', 'call-1', { hits: [1, 2] }),
+  createToolResultEvent('result-2', 'call-2', undefined),
   createApprovalRequiredEvent('thread-1', [approval]),
   createErrorEvent('Run aborted', 'RUN_ABORTED'),
   createErrorEvent('Something broke'),
@@ -109,6 +110,8 @@ const everyEvent: StreamEvent[] = [
   ),
   createFinishEvent('msg-1'),
   createWorkflowEvent('node_started', { nodeName: 'fetch' }),
+  createWorkflowEvent('workflow_completed', undefined),
+  createSwarmEvent('swarm:start', undefined),
   createSwarmEvent('agent:complete', { agent: 'writer' }),
 ];
 
@@ -142,6 +145,16 @@ describe('stream event schemas', () => {
       const sent = JSON.parse(JSON.stringify(event)) as unknown;
       expect(StreamEventSchema.parse(sent)).toEqual(sent);
     }
+  });
+
+  it('parse the result of a tool that returned nothing, which the wire leaves out', () => {
+    const sent = JSON.parse(JSON.stringify(createToolResultEvent('result-1', 'call-1', undefined)));
+    expect(sent).not.toHaveProperty('result');
+    expect(StreamEventSchema.parse(sent)).toEqual({
+      type: 'tool-result',
+      id: 'result-1',
+      toolCallId: 'call-1',
+    });
   });
 
   it('drop a field a newer server adds instead of failing', () => {
@@ -240,6 +253,20 @@ describe('the SSE routes of the OpenAPI document', () => {
       '/swarms/team/stream',
     ]) {
       expect(sseSchema(path), path).toEqual({ $ref: '#/components/schemas/StreamEvent' });
+    }
+  });
+
+  it('describes the outcome flags of the JSON answer and of finish alike', () => {
+    const schemas = (spec.components as { schemas: Record<string, { properties: object }> })
+      .schemas;
+    for (const flag of ['truncated', 'iterationLimitReached', 'status', 'blocked']) {
+      const { description: _json, ...json } = (
+        schemas.AgentRunResponse?.properties as Record<string, Record<string, unknown>>
+      )[flag]!;
+      const { description: _stream, ...stream } = (
+        schemas.StreamFinishEvent?.properties as Record<string, Record<string, unknown>>
+      )[flag]!;
+      expect(stream, flag).toEqual(json);
     }
   });
 
