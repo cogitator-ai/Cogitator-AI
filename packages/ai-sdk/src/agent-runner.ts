@@ -6,8 +6,10 @@ import type {
   RunResult,
   ToolApprovalDecision,
   ToolCall,
+  ToolCallMessage,
   ToolChoice,
   ToolResult,
+  ToolResultMessage,
 } from '@cogitator-ai/types';
 import { isRecord, toJSONValue, type JSONObject, type JSONValue } from './json.js';
 import type { CogitatorFinishReasonV3, CogitatorProviderOptions } from './types.js';
@@ -59,6 +61,21 @@ export interface AgentCall {
   /** Overrides the effort of the agent's `reasoning`, keeping its other settings */
   reasoningEffort?: ReasoningEffort;
   abortSignal?: AbortSignal;
+  /** `providerOptions.cogitator` of the call (`providerMetadata.cogitator` on ai@4) */
+  providerOptions?: unknown;
+}
+
+/** What a call may set in `providerOptions.cogitator` */
+export interface CogitatorCallOptions {
+  /**
+   * The memory thread of the run: its history comes from memory, so the prompt gives only the
+   * new turn. Without it, the prompt is the whole conversation
+   */
+  threadId?: string;
+  /** The user the run belongs to: memory, tools (`context.userId`) and resumes see it */
+  userId?: string;
+  /** Save the turn to memory. Default: `true` with a `threadId`, `false` without */
+  saveHistory?: boolean;
 }
 
 export type CallWarning =
@@ -90,6 +107,10 @@ export interface PreparedAgentCall {
   resume?: AgentCallResume;
   /** The run's `toolChoice` when the call forces a tool: `'required'` or one of the agent's */
   toolChoice?: ToolChoice;
+  /** The conversation before the new turn, when the prompt carries it (no `threadId`) */
+  history?: Message[];
+  /** The `providerOptions.cogitator` of the call */
+  options: CogitatorCallOptions;
 }
 
 /** The warning of a model that cannot ask for the tool approvals its agent's run waits on. */
@@ -196,7 +217,14 @@ export class AgentRunner {
   ) {}
 
   prepare(call: AgentCall): PreparedAgentCall {
-    const { input, warnings } = buildAgentInput(call.prompt);
+    const options = callOptions(call.providerOptions);
+    const { input, history, warnings } = splitPrompt(call.prompt);
+    const resume = findResume(call.prompt);
+    if (input === undefined && !resume) {
+      throw new Error(
+        'The prompt must end with a user message: it is the turn the Cogitator agent answers'
+      );
+    }
 
     for (const setting of call.unsupportedSettings) {
       warnings.push({ type: 'setting', setting });
@@ -223,14 +251,13 @@ export class AgentRunner {
       overrides.reasoning = { ...this.agent.config.reasoning, effort: call.reasoningEffort };
     }
 
-    let finalInput = input;
+    let finalInput = input ?? '';
     const jsonMode = call.responseFormat?.type === 'json';
     if (call.responseFormat?.type === 'json') {
       overrides.responseFormat = { type: 'json' };
-      finalInput = `${input}\n\n${jsonInstruction(call.responseFormat.schema)}`;
+      finalInput = `${finalInput}\n\n${jsonInstruction(call.responseFormat.schema)}`;
     }
 
-    const resume = findResume(call.prompt);
     const toolChoice = call.toolChoice?.type;
     let forcedToolChoice: ToolChoice | undefined;
     if (toolChoice === 'required') {
@@ -270,6 +297,8 @@ export class AgentRunner {
       jsonMode,
       ...(resume && { resume }),
       ...(forcedToolChoice && { toolChoice: forcedToolChoice }),
+      ...(options.threadId === undefined && history.length > 0 && { history }),
+      options,
     };
   }
 
@@ -295,17 +324,23 @@ export class AgentRunner {
       onToolResult: listener.onToolResult,
     };
     const resume = prepared.resume;
+    const { threadId, userId, saveHistory } = prepared.options;
     if (!resume) {
       return this.cogitator.run(prepared.agent, {
         ...callbacks,
         input: prepared.input,
         ...(prepared.toolChoice && { toolChoice: prepared.toolChoice }),
+        ...(prepared.history && { history: prepared.history }),
+        ...(threadId !== undefined && { threadId }),
+        ...(userId !== undefined && { userId }),
+        saveHistory: saveHistory ?? threadId !== undefined,
       });
     }
 
     const reported = new Set<string>();
     return this.cogitator.resume(prepared.agent, resume.threadId, {
       ...callbacks,
+      ...(userId !== undefined && { userId }),
       decisions: resume.decisions,
       onToolCall: (call) => {
         reported.add(call.id);
@@ -328,43 +363,62 @@ export class AgentRunner {
   }
 }
 
-type TranscriptRole = 'user' | 'assistant' | 'tool';
-
-const TRANSCRIPT_LABELS: Record<TranscriptRole, string> = {
-  user: 'User',
-  assistant: 'Assistant',
-  tool: 'Tool',
-};
+/**
+ * The `providerOptions.cogitator` of a call, checked
+ *
+ * @throws Error when a field has the wrong type, or `threadId` is empty
+ */
+function callOptions(raw: unknown): CogitatorCallOptions {
+  if (raw === undefined) return {};
+  if (!isRecord(raw)) throw new Error('providerOptions.cogitator must be an object');
+  const { threadId, userId, saveHistory } = raw;
+  if (threadId !== undefined && (typeof threadId !== 'string' || !threadId.trim())) {
+    throw new Error('providerOptions.cogitator.threadId must be a non-empty string');
+  }
+  if (userId !== undefined && typeof userId !== 'string') {
+    throw new Error('providerOptions.cogitator.userId must be a string');
+  }
+  if (saveHistory !== undefined && typeof saveHistory !== 'boolean') {
+    throw new Error('providerOptions.cogitator.saveHistory must be a boolean');
+  }
+  return {
+    ...(threadId !== undefined && { threadId }),
+    ...(userId !== undefined && { userId }),
+    ...(saveHistory !== undefined && { saveHistory }),
+  };
+}
 
 /**
- * The prompt as the agent's input: a single user message as it is, a conversation as a
- * transcript. Tool calls and their results in the history are written into the transcript, so
- * the agent knows what its tools returned in earlier turns.
+ * The prompt as the agent's turn and the conversation before it: the trailing user messages
+ * are the input, and everything before them becomes run history as messages, tool calls and
+ * their results included. System messages are left out, the agent's instructions being its
+ * system prompt, and so is user content other than text.
  */
-function buildAgentInput(prompt: ReadonlyArray<PromptMessageLike>): {
-  input: string;
+function splitPrompt(prompt: ReadonlyArray<PromptMessageLike>): {
+  input: string | undefined;
+  history: Message[];
   warnings: CallWarning[];
 } {
   const warnings: CallWarning[] = [];
-  const turns: { role: TranscriptRole; text: string }[] = [];
   const droppedUserParts = new Set<string>();
   let hasSystem = false;
+  const messages = prompt.filter((message) => {
+    if (message.role !== 'system') return true;
+    if (textOf(message.content).trim()) hasSystem = true;
+    return false;
+  });
 
-  for (const message of prompt) {
-    if (message.role === 'system') {
-      if (textOf(message.content).trim()) hasSystem = true;
-      continue;
-    }
+  let turnStart = messages.length;
+  while (turnStart > 0 && messages[turnStart - 1]?.role === 'user') turnStart--;
 
-    if (message.role === 'user' && typeof message.content !== 'string') {
-      for (const part of message.content) {
-        if (part.type !== 'text') droppedUserParts.add(part.type);
-      }
-    }
-
-    const text = message.role === 'user' ? textOf(message.content) : transcriptOf(message.content);
-    if (text.trim()) turns.push({ role: message.role, text });
+  const history: Message[] = [];
+  for (const message of messages.slice(0, turnStart)) {
+    history.push(...historyMessages(message, droppedUserParts));
   }
+  const turn = messages.slice(turnStart).map((message) => {
+    collectDroppedParts(message, droppedUserParts);
+    return textOf(message.content);
+  });
 
   if (hasSystem) warnings.push({ type: 'other', message: SYSTEM_PROMPT_WARNING });
   if (droppedUserParts.size > 0) {
@@ -374,29 +428,93 @@ function buildAgentInput(prompt: ReadonlyArray<PromptMessageLike>): {
     });
   }
 
-  const input =
-    turns.length === 1 && turns[0].role === 'user'
-      ? turns[0].text
-      : turns.map((turn) => `${TRANSCRIPT_LABELS[turn.role]}: ${turn.text}`).join('\n\n');
-
-  return { input, warnings };
+  return {
+    input: turn.length === 0 ? undefined : turn.join('\n\n'),
+    history,
+    warnings,
+  };
 }
 
-/** An assistant or tool message as transcript text: its text, tool calls and tool results. */
-function transcriptOf(content: string | ReadonlyArray<PromptPartLike>): string {
-  if (typeof content === 'string') return content;
-  const lines: string[] = [];
+function collectDroppedParts(message: PromptMessageLike, dropped: Set<string>): void {
+  if (message.role !== 'user' || typeof message.content === 'string') return;
+  for (const part of message.content) {
+    if (part.type !== 'text') dropped.add(part.type);
+  }
+}
+
+/** A tool result part of the prompt as a Cogitator tool message, an error as core writes one */
+function toolMessage(part: PromptPartLike): ToolResultMessage | undefined {
+  if (!part.toolCallId || !part.toolName) return undefined;
+  const { text, failed } = toolOutputText(part);
+  return {
+    role: 'tool',
+    content: failed ? JSON.stringify({ error: text }) : text,
+    toolCallId: part.toolCallId,
+    name: part.toolName,
+  };
+}
+
+/**
+ * An assistant message of the prompt as Cogitator messages, in the order of its parts: text and
+ * tool calls up to a result make one assistant message, each result of a call the provider ran
+ * is a tool message, and text after it starts the next assistant message
+ */
+function assistantMessages(content: ReadonlyArray<PromptPartLike>): Message[] {
+  const messages: Message[] = [];
+  let text = '';
+  let toolCalls: ToolCall[] = [];
+  const flush = () => {
+    if (!text && toolCalls.length === 0) return;
+    const message: Message | ToolCallMessage =
+      toolCalls.length === 0
+        ? { role: 'assistant', content: text }
+        : { role: 'assistant', content: text, toolCalls };
+    messages.push(message);
+    text = '';
+    toolCalls = [];
+  };
   for (const part of content) {
     if (part.type === 'text' && typeof part.text === 'string') {
-      lines.push(part.text);
-    } else if (part.type === 'tool-call' && part.toolName) {
-      lines.push(`[called tool ${part.toolName} with ${inputText(part.input ?? part.args)}]`);
-    } else if (part.type === 'tool-result' && part.toolName) {
-      const { text, failed } = toolOutputText(part);
-      lines.push(`[tool ${part.toolName} ${failed ? 'failed' : 'returned'}: ${text}]`);
+      if (toolCalls.length > 0) flush();
+      text += part.text;
+    } else if (part.type === 'tool-call' && part.toolCallId && part.toolName) {
+      toolCalls.push({
+        id: part.toolCallId,
+        name: part.toolName,
+        arguments: parseArguments(inputText(part.input ?? part.args)),
+      });
+    } else if (part.type === 'tool-result') {
+      const result = toolMessage(part);
+      if (!result) continue;
+      flush();
+      messages.push(result);
     }
   }
-  return lines.join('\n');
+  flush();
+  return messages;
+}
+
+/** A message of the prompt as Cogitator messages */
+function historyMessages(message: PromptMessageLike, dropped: Set<string>): Message[] {
+  const { content } = message;
+  switch (message.role) {
+    case 'user':
+      collectDroppedParts(message, dropped);
+      return [{ role: 'user', content: textOf(content) }];
+    case 'assistant':
+      return typeof content === 'string'
+        ? [{ role: 'assistant', content }]
+        : assistantMessages(content);
+    case 'tool':
+      return typeof content === 'string'
+        ? []
+        : content.flatMap((part) => {
+            const result = part.type === 'tool-result' ? toolMessage(part) : undefined;
+            return result ? [result] : [];
+          });
+    default:
+      return [];
+  }
 }
 
 function inputText(input: unknown): string {

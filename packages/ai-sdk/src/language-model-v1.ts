@@ -48,6 +48,7 @@ function toV1Call(options: LanguageModelV1CallOptions): V1Call {
       (setting) => options[setting] !== undefined
     ),
     abortSignal: options.abortSignal,
+    providerOptions: options.providerMetadata?.cogitator,
   };
 
   switch (options.mode.type) {

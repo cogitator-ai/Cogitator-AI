@@ -56,6 +56,8 @@ interface ModernCallOptions {
   responseFormat?: AgentCallResponseFormat;
   tools?: ReadonlyArray<{ name: string }>;
   toolChoice?: AgentCallToolChoice;
+  /** `providerOptions` of the call: what a provider reads under its own name */
+  providerOptions?: Readonly<Record<string, unknown>>;
   abortSignal?: AbortSignal;
 }
 
@@ -328,6 +330,7 @@ abstract class AgentLanguageModel<
       unsupportedSettings: this.unsupportedSettings(options),
       reasoningEffort: this.reasoningEffort(options),
       abortSignal: options.abortSignal,
+      providerOptions: options.providerOptions?.cogitator,
     });
   }
 }

@@ -229,7 +229,7 @@ describe('LanguageModelV2', () => {
     expect(result.content[1]).toMatchObject({ type: 'tool-result', result: 'boom', isError: true });
   });
 
-  it('turns a multi-turn prompt into a labelled transcript and ignores system messages', async () => {
+  it('passes earlier turns as the run history and leaves system messages out', async () => {
     const { cogitator, run } = createFakeCogitator();
     const model = cogitatorModel(cogitator, createAgent('test'), V2);
 
@@ -244,10 +244,85 @@ describe('LanguageModelV2', () => {
       })
     );
 
-    expect(run.mock.calls[0][1].input).toBe('User: What is 2+2?\n\nAssistant: 4\n\nUser: And 3+3?');
+    expect(run.mock.calls[0][1]).toMatchObject({
+      input: 'And 3+3?',
+      history: [
+        { role: 'user', content: 'What is 2+2?' },
+        { role: 'assistant', content: '4' },
+      ],
+      saveHistory: false,
+    });
+    expect(run.mock.calls[0][1].threadId).toBeUndefined();
     expect(result.warnings).toEqual([
       { type: 'other', message: expect.stringContaining('System messages are not forwarded') },
     ]);
+  });
+
+  it('runs on the thread providerOptions.cogitator names, with its memory as the history', async () => {
+    const { cogitator, run } = createFakeCogitator();
+    const model = cogitatorModel(cogitator, createAgent('test'), V2);
+
+    await model.doGenerate(
+      v2Call({
+        prompt: [
+          { role: 'user', content: [{ type: 'text', text: 'What is 2+2?' }] },
+          { role: 'assistant', content: [{ type: 'text', text: '4' }] },
+          { role: 'user', content: [{ type: 'text', text: 'And 3+3?' }] },
+        ],
+        providerOptions: { cogitator: { threadId: 'thread-7', userId: 'ada' } },
+      })
+    );
+
+    const options = run.mock.calls[0][1];
+    expect(options).toMatchObject({
+      input: 'And 3+3?',
+      threadId: 'thread-7',
+      userId: 'ada',
+      saveHistory: true,
+    });
+    expect(options.history).toBeUndefined();
+  });
+
+  it('takes saveHistory from providerOptions.cogitator', async () => {
+    const { cogitator, run } = createFakeCogitator();
+    const model = cogitatorModel(cogitator, createAgent('test'), V2);
+
+    await model.doGenerate(
+      v2Call({ providerOptions: { cogitator: { threadId: 't', saveHistory: false } } })
+    );
+    await model.doGenerate(v2Call({ providerOptions: { cogitator: { saveHistory: true } } }));
+
+    expect(run.mock.calls[0][1].saveHistory).toBe(false);
+    expect(run.mock.calls[1][1].saveHistory).toBe(true);
+  });
+
+  it('refuses providerOptions.cogitator fields of the wrong type and a prompt without a user turn', async () => {
+    const { cogitator, run } = createFakeCogitator();
+    const model = cogitatorModel(cogitator, createAgent('test'), V2);
+
+    await expect(
+      model.doGenerate(v2Call({ providerOptions: { cogitator: { threadId: '  ' } } }))
+    ).rejects.toThrow('threadId must be a non-empty string');
+    await expect(
+      model.doGenerate(v2Call({ providerOptions: { cogitator: { saveHistory: 'yes' } } }))
+    ).rejects.toThrow('saveHistory must be a boolean');
+    await expect(
+      model.doGenerate(
+        v2Call({ prompt: [{ role: 'assistant', content: [{ type: 'text', text: 'Hi' }] }] })
+      )
+    ).rejects.toThrow('The prompt must end with a user message');
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('reads providerOptions.cogitator from providerMetadata on ai@4', async () => {
+    const { cogitator, run } = createFakeCogitator();
+    const model = cogitatorModel(cogitator, createAgent('test'), { specificationVersion: 'v1' });
+
+    await model.doGenerate(
+      v1Call({ providerMetadata: { cogitator: { threadId: 'thread-4', userId: 'grace' } } })
+    );
+
+    expect(run.mock.calls[0][1]).toMatchObject({ threadId: 'thread-4', userId: 'grace' });
   });
 
   it('warns about dropped non-text user content', async () => {

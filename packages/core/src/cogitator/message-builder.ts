@@ -138,10 +138,12 @@ export async function buildInitialMessages(
     userContent,
     formatTurnContext(options.brief === undefined ? [] : [options.brief])
   );
+  const history = givenHistory(options.history);
 
   if (!memoryAdapter || options.useMemory === false) {
     return [
       { role: 'system', content: agent.instructions },
+      ...(history ?? []),
       { role: 'user', content: turnInput },
     ];
   }
@@ -198,6 +200,14 @@ export async function buildInitialMessages(
   }
 
   const index = await indexOf(memoryIndex, threadId, options);
+
+  if (history) {
+    return [
+      { role: 'system', content: agent.instructions },
+      ...history,
+      { role: 'user', content: withIndex(turnInput, userContent, index, options) },
+    ];
+  }
 
   if (contextBuilder && options.loadHistory !== false) {
     const brief = briefWith(index, options);
@@ -268,6 +278,25 @@ export async function buildInitialMessages(
     { role: 'system', content: agent.instructions },
     { role: 'user', content: withIndex(turnInput, userContent, index, options) },
   ];
+}
+
+/**
+ * The conversation the caller gave the run (`history`), cleaned of tool calls without results
+ * like a history from memory, or undefined when it gave none
+ *
+ * @throws CogitatorError when it holds a system message: the agent's instructions are the
+ * system prompt
+ */
+function givenHistory(history: RunOptions['history']): Message[] | undefined {
+  if (history === undefined) return undefined;
+  if (history.some((message) => message.role === 'system')) {
+    throw new CogitatorError({
+      message:
+        'history must not hold system messages: the agent instructions are the system prompt',
+      code: ErrorCode.VALIDATION_ERROR,
+    });
+  }
+  return sanitizeToolHistory(history);
 }
 
 /** What memory holds for the run, such as its memory files, or nothing when it fails to load */

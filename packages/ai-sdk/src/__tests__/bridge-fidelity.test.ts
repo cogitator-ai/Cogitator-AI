@@ -230,7 +230,7 @@ describe('toolChoice', () => {
 });
 
 describe('conversation history', () => {
-  it('passes tool calls and results of earlier turns to the agent', async () => {
+  it('passes earlier turns as messages, tool calls and their results included', async () => {
     const { model, requests } = modelWith('It found 3 orders.');
     await model.doGenerate({
       prompt: [
@@ -269,12 +269,22 @@ describe('conversation history', () => {
       ],
     });
 
-    const input = requests[0].messages.filter((m) => m.role === 'user').at(-1)?.content;
-    expect(input).toContain('[called tool search with {"q":"orders"}]');
-    expect(input).toContain('[tool search returned: {"ids":["A-1","A-2","A-3"]}]');
-    expect(input).toContain('Found it.');
-    expect(input).toContain('Tool: [tool count failed: quota exceeded]');
-    expect(input).toContain('User: What exactly did the search return?');
+    expect(requests[0].messages.slice(1, 6)).toEqual([
+      { role: 'user', content: 'Find my orders' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'old_1', name: 'search', arguments: { q: 'orders' } }],
+      },
+      {
+        role: 'tool',
+        content: '{"ids":["A-1","A-2","A-3"]}',
+        toolCallId: 'old_1',
+        name: 'search',
+      },
+      { role: 'assistant', content: 'Found it.' },
+      { role: 'user', content: 'What exactly did the search return?' },
+    ]);
   });
 });
 

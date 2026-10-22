@@ -2,7 +2,7 @@
  * Runtime types for Cogitator
  */
 
-import type { Message, ToolCall, ToolResult } from './message';
+import type { Message, ToolCall, ToolCallMessage, ToolResult, ToolResultMessage } from './message';
 import type { Tool } from './tool';
 import type {
   LLMBackend,
@@ -290,6 +290,12 @@ export interface RunOptions<TDeps = unknown> {
   useMemory?: boolean;
   /** Load conversation history from memory. Default: true */
   loadHistory?: boolean;
+  /**
+   * The conversation before `input`, as the caller holds it: the run reads it instead of the
+   * thread's history in memory. User, assistant and tool messages only, since the agent's
+   * instructions are the system prompt. `saveHistory` still saves only the new turn, never these.
+   */
+  history?: Array<Message | ToolCallMessage | ToolResultMessage>;
   /** Save messages to memory after each turn. Default: true */
   saveHistory?: boolean;
 
