@@ -46,51 +46,54 @@ curl -X POST http://localhost:3000/cogitator/agents/chat/run \
   -H 'Content-Type: application/json' -d '{"input": "Hello"}'
 ```
 
-A run that waits on a slow tool or model can stay silent for longer than the `idleTimeout` of `Bun.serve` (10 seconds by default), after which Bun closes the connection. The controller keeps both kinds of answer open without any setting: the JSON routes (`run`, `resume`, workflow and swarm `run`) lift the idle timeout for their own request once its body is validated (`ctx.server.timeout(ctx.req, 0)`), and SSE streams write a heartbeat comment every `sseHeartbeatMs` (5 seconds by default). If you change `idleTimeout`, keep it above `sseHeartbeatMs` and at 5 seconds or more, since Bun cuts connections at once below that whatever is written.
+A run that waits on a slow tool or model can stay silent for longer than the `idleTimeout` of `Bun.serve` (10 seconds by default), after which Bun closes the connection. The controller keeps both kinds of answer open without any setting: the JSON routes (`run`, `resume`, workflow `run` and `resume`, swarm `run`) lift the idle timeout for their own request once its body is validated (`ctx.server.timeout(ctx.req, 0)`), and SSE streams write a heartbeat comment every `sseHeartbeatMs` (5 seconds by default). If you change `idleTimeout`, keep it above `sseHeartbeatMs` and at 5 seconds or more, since Bun cuts connections at once below that whatever is written.
 
 ## `cogitatorController(deps)`
 
 A Tetsu controller named `Cogitator`: `operationId`s in the OpenAPI document are `cogitatorRunAgent`, `cogitatorGetThread` and so on.
 
-| Option               | Type                                                | Description                                                                                                                            |
-| -------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `cogitator`          | `Cogitator`                                         | **Required.** The runtime                                                                                                              |
-| `agents`             | `Record<string, Agent>`                             | Agents by name                                                                                                                         |
-| `workflows`          | `Record<string, Workflow>`                          | Workflows by name                                                                                                                      |
-| `swarms`             | `Record<string, SwarmConfig>`                       | Swarms by name                                                                                                                         |
-| `auth`               | `(ctx) => AuthContext \| undefined` or hook         | Establishes the caller, see [Authentication](#authentication)                                                                          |
-| `anonymous`          | `'allow' \| 'deny'`                                 | Whether callers without a `userId` may use the API (default `'allow'`), see [Anonymous callers](#anonymous-callers)                    |
-| `authorizeThread`    | `(auth, threadId) => boolean`                       | Decides who may use a memory thread, see [Users and threads](#users-and-threads)                                                       |
-| `limits`             | `RunLimits`                                         | Caps on what a request may ask a swarm or workflow run for, see [Run limits](#run-limits)                                              |
-| `deps`               | `(ctx) => unknown \| Promise<unknown>`              | Builds the `deps` agent runs pass to their tools, see [Run deps](#run-deps)                                                            |
-| `websocket`          | `boolean \| { path?, maxRuns?, maxBufferedBytes? }` | Serve the WebSocket endpoint (default path `/ws`), see [WebSocket](#websocket)                                                         |
-| `until`              | `AbortSignal \| (() => AbortSignal)`                | Ends open streams and sockets, such as `draining` from `@tetsujs/lifecycle`                                                            |
-| `sseHeartbeatMs`     | `number`                                            | Heartbeat comment interval of SSE streams (default `5000`, `0` turns it off)                                                           |
-| `acceptContext`      | `boolean \| string[]`                               | Keys of a run `context` clients may send: none by default, a list, or `true` for any (the model reads it as data from the application) |
-| `threadMessageRoles` | `ThreadMessageRole[]`                               | Roles `POST /threads/:id/messages` accepts (default `user` and `assistant`)                                                            |
+| Option                | Type                                                | Description                                                                                                                               |
+| --------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `cogitator`           | `Cogitator`                                         | **Required.** The runtime                                                                                                                 |
+| `agents`              | `Record<string, Agent>`                             | Agents by name                                                                                                                            |
+| `workflows`           | `Record<string, Workflow>`                          | Workflows by name                                                                                                                         |
+| `swarms`              | `Record<string, SwarmConfig>`                       | Swarms by name                                                                                                                            |
+| `auth`                | `(ctx) => AuthContext \| undefined` or hook         | Establishes the caller, see [Authentication](#authentication)                                                                             |
+| `anonymous`           | `'allow' \| 'deny'`                                 | Whether callers without a `userId` may use the API (default `'allow'`), see [Anonymous callers](#anonymous-callers)                       |
+| `authorizeThread`     | `(auth, threadId) => boolean`                       | Decides who may use a memory thread, see [Users and threads](#users-and-threads)                                                          |
+| `limits`              | `RunLimits`                                         | Caps on what a request may ask a swarm or workflow run for, see [Run limits](#run-limits)                                                 |
+| `deps`                | `(ctx) => unknown \| Promise<unknown>`              | Builds the `deps` agent runs pass to their tools, see [Run deps](#run-deps)                                                               |
+| `websocket`           | `boolean \| { path?, maxRuns?, maxBufferedBytes? }` | Serve the WebSocket endpoint (default path `/ws`), see [WebSocket](#websocket)                                                            |
+| `until`               | `AbortSignal \| (() => AbortSignal)`                | Ends open streams and sockets, such as `draining` from `@tetsujs/lifecycle`                                                               |
+| `sseHeartbeatMs`      | `number`                                            | Heartbeat comment interval of SSE streams (default `5000`, `0` turns it off)                                                              |
+| `acceptContext`       | `boolean \| string[]`                               | Keys of a run `context` clients may send: none by default, a list, or `true` for any (the model reads it as data from the application)    |
+| `threadMessageRoles`  | `ThreadMessageRole[]`                               | Roles `POST /threads/:id/messages` accepts (default `user` and `assistant`)                                                               |
+| `workflowCheckpoints` | `CheckpointStore`                                   | Where workflow runs keep their checkpoints, for `options.checkpoint` and `/resume`, see [Checkpoints and resume](#checkpoints-and-resume) |
 
 ## Endpoints
 
-| Method   | Path                          | Description                                       |
-| -------- | ----------------------------- | ------------------------------------------------- |
-| `GET`    | `/health`, `/ready`           | Liveness and readiness, without `auth`            |
-| `GET`    | `/agents`                     | Agents with their description and tools           |
-| `POST`   | `/agents/:name/run`           | Run an agent and wait for the answer              |
-| `POST`   | `/agents/:name/stream`        | Run an agent over SSE                             |
-| `POST`   | `/agents/:name/resume`        | Resume a run paused for approvals                 |
-| `POST`   | `/agents/:name/resume/stream` | Resume a paused run over SSE                      |
-| `GET`    | `/tools`                      | Tools of every agent, as JSON Schema              |
-| `GET`    | `/threads/:id`                | Messages of a thread, a page with `?limit&cursor` |
-| `POST`   | `/threads/:id/messages`       | Append a message                                  |
-| `DELETE` | `/threads/:id`                | Delete a thread                                   |
-| `GET`    | `/workflows`                  | Workflows with their nodes                        |
-| `POST`   | `/workflows/:name/run`        | Run a workflow                                    |
-| `POST`   | `/workflows/:name/stream`     | Run a workflow over SSE                           |
-| `GET`    | `/swarms`                     | Swarms with their agents                          |
-| `POST`   | `/swarms/:name/run`           | Run a swarm                                       |
-| `POST`   | `/swarms/:name/stream`        | Run a swarm over SSE                              |
-| `GET`    | `/swarms/:name/blackboard`    | Configured blackboard sections                    |
-| `GET`    | `/ws`                         | WebSocket, when `websocket` is set                |
+| Method   | Path                             | Description                                       |
+| -------- | -------------------------------- | ------------------------------------------------- |
+| `GET`    | `/health`, `/ready`              | Liveness and readiness, without `auth`            |
+| `GET`    | `/agents`                        | Agents with their description and tools           |
+| `POST`   | `/agents/:name/run`              | Run an agent and wait for the answer              |
+| `POST`   | `/agents/:name/stream`           | Run an agent over SSE                             |
+| `POST`   | `/agents/:name/resume`           | Resume a run paused for approvals                 |
+| `POST`   | `/agents/:name/resume/stream`    | Resume a paused run over SSE                      |
+| `GET`    | `/tools`                         | Tools of every agent, as JSON Schema              |
+| `GET`    | `/threads/:id`                   | Messages of a thread, a page with `?limit&cursor` |
+| `POST`   | `/threads/:id/messages`          | Append a message                                  |
+| `DELETE` | `/threads/:id`                   | Delete a thread                                   |
+| `GET`    | `/workflows`                     | Workflows with their nodes                        |
+| `POST`   | `/workflows/:name/run`           | Run a workflow                                    |
+| `POST`   | `/workflows/:name/stream`        | Run a workflow over SSE                           |
+| `POST`   | `/workflows/:name/resume`        | Resume a workflow from a checkpoint               |
+| `POST`   | `/workflows/:name/resume/stream` | Resume a workflow over SSE                        |
+| `GET`    | `/swarms`                        | Swarms with their agents                          |
+| `POST`   | `/swarms/:name/run`              | Run a swarm                                       |
+| `POST`   | `/swarms/:name/stream`           | Run a swarm over SSE                              |
+| `GET`    | `/swarms/:name/blackboard`       | Configured blackboard sections                    |
+| `GET`    | `/ws`                            | WebSocket, when `websocket` is set                |
 
 Request bodies:
 
@@ -109,17 +112,37 @@ Request bodies:
 { input: string; context?: Record<string, unknown>; threadId?: string; timeout?: number } // timeout at most 2147483647 ms, held to limits.swarmTimeout
 
 // POST /workflows/:name/run, /workflows/:name/stream
-{ input?: Record<string, unknown>; options?: { maxConcurrency?: number; maxIterations?: number; checkpoint?: false } } // held to limits
+{ input?: Record<string, unknown>; options?: { maxConcurrency?: number; maxIterations?: number; checkpoint?: boolean } } // held to limits, checkpoint: true only with workflowCheckpoints
+
+// POST /workflows/:name/resume, /workflows/:name/resume/stream
+{ checkpointId: string; options?: { maxConcurrency?: number; maxIterations?: number } } // held to limits
 
 // POST /threads/:id/messages
 { role: 'user' | 'assistant' | 'system'; content: string; metadata?: Record<string, unknown> } // system only with threadMessageRoles
 ```
 
-The schemas are refined with the validators every Cogitator adapter shares (`@cogitator-ai/server-shared`), so Tetsu refuses the same bodies as Express, Fastify, Hono, Koa and Next, under its own `VALIDATION_FAILED` envelope. A run sends `context` to the model as data the application supplied and the model reads a `system` thread message as operator instructions, so both are refused unless the controller accepts them: `acceptContext` lists the `context` keys clients may send (or `true` for any), and `threadMessageRoles` the roles they may add (`user` and `assistant` by default). A body that is not JSON (`text/plain`, a form) is refused with `415 UNSUPPORTED_MEDIA_TYPE` before it is read, since browsers send those across origins without a CORS preflight. `options.checkpoint: true` is refused: the controller runs each workflow on a fresh executor and keeps no checkpoint store to resume from.
+The schemas are refined with the validators every Cogitator adapter shares (`@cogitator-ai/server-shared`), so Tetsu refuses the same bodies as Express, Fastify, Hono, Koa and Next, under its own `VALIDATION_FAILED` envelope. A run sends `context` to the model as data the application supplied and the model reads a `system` thread message as operator instructions, so both are refused unless the controller accepts them: `acceptContext` lists the `context` keys clients may send (or `true` for any), and `threadMessageRoles` the roles they may add (`user` and `assistant` by default). A body that is not JSON (`text/plain`, a form) is refused with `415 UNSUPPORTED_MEDIA_TYPE` before it is read, since browsers send those across origins without a CORS preflight. `options.checkpoint: true` fails validation unless the controller has `workflowCheckpoints`, see [Checkpoints and resume](#checkpoints-and-resume).
 
 `GET /threads/:id` answers the whole thread, or one page of it with `?limit=50`: the newest 50 messages (oldest first within the page) and a `nextCursor`. Pass it back as `?limit=50&cursor=<nextCursor>` for the 50 before them, until an answer has no `nextCursor`. Messages written in the same millisecond are neither skipped nor repeated across pages. A `limit` outside 1 to 1000 or a cursor the server did not give answers `422 VALIDATION_FAILED`.
 
 `POST /agents/:name/run` and `/resume` answer `{ output, threadId, usage, toolCalls, status, traceId }` plus, when they apply, `reasoning`, `pendingApprovals`, `structured`, `structuredError`, `truncated`, `blocked` and `iterationLimitReached`: the same object as every other adapter, built by `toAgentRunResponse()` of `@cogitator-ai/server-shared`. It never carries the system prompt, the history, trace spans or the checkpoint of a paused run. Swarm routes close the swarm they build once the run ends, so a distributed swarm leaves no Redis connections behind, and `GET /swarms` lists every agent, a router and pipeline stages included.
+
+### Checkpoints and resume
+
+`workflowCheckpoints` takes any `CheckpointStore` of `@cogitator-ai/workflows`, such as `PostgresCheckpointStore` or `RedisCheckpointStore`. With it, a run with `options.checkpoint: true` saves its checkpoints there as the caller's, the `userId` that `auth` returned (none for an anonymous caller), and its answer and `workflow_completed` event carry the last one as `checkpointId`. Without it such a run is refused with `422 VALIDATION_FAILED`.
+
+`POST /workflows/:name/resume` takes `{ checkpointId: string; options?: { maxConcurrency?: number; maxIterations?: number } }`, passes over the nodes the checkpoint completed and runs the rest. It answers like `/run`, and `/resume/stream` streams like `/stream`. The `limits` hold as on `/run`, and the resumed run keeps saving checkpoints, so it can be resumed again. A checkpoint that is missing, belongs to another user or to another workflow answers `404 CHECKPOINT_NOT_FOUND` before anything runs, on `/resume/stream` before the stream opens. Without `workflowCheckpoints` every resume answers `404 CHECKPOINT_NOT_FOUND`. A run that fails answers its error with the last checkpoint it saved as `checkpointId`, next to `error` and `message` (`{ status, message, error, checkpointId }`), and a failed stream sends a `workflow_failed` event with `{ checkpointId }` right before its `error` event, so the client resumes the failed run from there. A resume that fails again names the checkpoint to resume from, its own last one or, when it saved none, the one it started from.
+
+```typescript
+import { PostgresCheckpointStore } from '@cogitator-ai/workflows';
+
+cogitatorController({
+  cogitator,
+  workflows: { shipping },
+  auth,
+  workflowCheckpoints: new PostgresCheckpointStore({ client: pool }),
+});
+```
 
 ## Errors
 
@@ -136,6 +159,7 @@ Every error is answered in Tetsu's envelope:
 | 403     | `THREAD_ACCESS_DENIED`                                     | The thread belongs to another user                                                                                                                       |
 | 403     | `THREAD_FORBIDDEN`                                         | `authorizeThread` refused the thread                                                                                                                     |
 | 404     | `AGENT_NOT_FOUND`, `WORKFLOW_NOT_FOUND`, `SWARM_NOT_FOUND` | No such name                                                                                                                                             |
+| 404     | `CHECKPOINT_NOT_FOUND`                                     | A workflow resume named a checkpoint that is missing, of another user or of another workflow                                                             |
 | 409     | `BLACKBOARD_DISABLED`                                      | The swarm has no blackboard                                                                                                                              |
 | 409     | `RUN_NOT_PAUSED`                                           | A resume named a thread without a paused run                                                                                                             |
 | 413     | `BODY_TOO_LARGE`                                           | The body is over the application's body limit                                                                                                            |
@@ -335,7 +359,7 @@ Each event matches `StreamEventSchema` from `@cogitator-ai/server-shared`, which
 
 An agent with `reasoning: { summary: true }` also streams its reasoning summary as `reasoning-start`, `reasoning-delta` and `reasoning-end` events. A text or reasoning part opens with its first delta and is closed before a part of the other kind, a tool call or `finish`, so parts never overlap and text after a tool call starts a new part. An answer the model gave in one piece arrives as one text part before `finish`, and a resumed run that pauses again sends `approval-required` before `finish`. `POST /agents/:name/run` returns the summary as `reasoning`, and `usage` gains `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the provider reports them. The `finish` event of an agent stream carries the same `usage` as the JSON answer, these counts included.
 
-A run that fails ends with `{"type":"error","message":"…","code":"…"}` instead of `finish`. A `CogitatorError` keeps its message and code, anything else is sent as `"message":"Internal server error","code":"INTERNAL_ERROR"` and reported to the application's `reportError` with `source: "stream"`. Workflow streams send `workflow` events (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`), swarm streams send `swarm` events (`agent_start`, `agent_complete`, `agent_error`, `message`, every event the swarm itself emits under its own name, such as `swarm:start` or `agent:message`, and `swarm_completed`).
+A run that fails ends with `{"type":"error","message":"…","code":"…"}` instead of `finish`. A `CogitatorError` keeps its message and code, anything else is sent as `"message":"Internal server error","code":"INTERNAL_ERROR"` and reported to the application's `reportError` with `source: "stream"`. Workflow streams send `workflow` events (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`, and `workflow_failed` with `{ checkpointId? }` right before the `error` event of a failed run), swarm streams send `swarm` events (`agent_start`, `agent_complete`, `agent_error`, `message`, every event the swarm itself emits under its own name, such as `swarm:start` or `agent:message`, and `swarm_completed`).
 
 Validation (`415`, `422`), `401`, `404` and the `403 THREAD_FORBIDDEN` of `authorizeThread` are answered as JSON before the stream opens. Whether the thread belongs to the caller is checked by the run itself, so another user's thread ends an open stream with an `error` event, `"code":"THREAD_ACCESS_DENIED"`, instead of `finish`.
 

@@ -44,31 +44,32 @@ Creates a Hono sub-application with all Cogitator endpoints.
 
 **Options:**
 
-| Option               | Type                                              | Description                                                                                                                                                      |
-| -------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cogitator`          | `Cogitator`                                       | **Required.** Cogitator runtime instance                                                                                                                         |
-| `agents`             | `Record<string, Agent>`                           | Named agents to expose                                                                                                                                           |
-| `workflows`          | `Record<string, Workflow>`                        | Named workflows                                                                                                                                                  |
-| `swarms`             | `Record<string, SwarmConfig>`                     | Named swarms                                                                                                                                                     |
-| `auth`               | `AuthFunction`                                    | `(c) => AuthContext \| undefined` (sync or async), receives the Hono Context, throw to answer `401 UNAUTHORIZED`                                                 |
-| `enableSwagger`      | `boolean`                                         | Serve `/openapi.json` and Swagger UI at `/docs`                                                                                                                  |
-| `swagger`            | `SwaggerConfig`                                   | Swagger configuration                                                                                                                                            |
-| `enableWebSocket`    | `boolean`                                         | Enable the WebSocket endpoint                                                                                                                                    |
-| `websocket`          | `WebSocketConfig`                                 | `{ path?, maxPayloadSize?, upgradeWebSocket? }` (see below)                                                                                                      |
-| `bodyLimit`          | `number`                                          | Max request body size in bytes (default 1 MiB)                                                                                                                   |
-| `sseHeartbeatMs`     | `number`                                          | How often SSE streams write a `: keep-alive` comment while a run is silent (default `5000`, `0` turns it off)                                                    |
-| `acceptContext`      | `boolean \| string[]`                             | Keys of a run `context` clients may send: none by default, a list, or `true` for any (the model reads it as data from the application)                           |
-| `threadMessageRoles` | `ThreadMessageRole[]`                             | Roles `POST /threads/:id/messages` accepts (default `user` and `assistant`)                                                                                      |
-| `limits`             | `RunLimits`                                       | `{ swarmTimeout?, workflowMaxIterations?, workflowMaxConcurrency? }`: caps on what a request may ask a swarm or workflow run for (see [Run limits](#run-limits)) |
-| `anonymous`          | `'allow' \| 'deny'`                               | Whether callers without a `userId` may use the API (default `'allow'`), `'deny'` answers `401 UNAUTHORIZED`                                                      |
-| `authorizeThread`    | `(auth, threadId) => boolean \| Promise<boolean>` | Decides whether a caller may touch a thread, on top of the owner check, `false` answers `403 THREAD_FORBIDDEN`                                                   |
-| `deps`               | `(c) => unknown \| Promise<unknown>`              | Builds the `deps` agent runs pass to their tools, from the Hono Context (see [Run deps](#run-deps))                                                              |
+| Option                | Type                                              | Description                                                                                                                                                      |
+| --------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cogitator`           | `Cogitator`                                       | **Required.** Cogitator runtime instance                                                                                                                         |
+| `agents`              | `Record<string, Agent>`                           | Named agents to expose                                                                                                                                           |
+| `workflows`           | `Record<string, Workflow>`                        | Named workflows                                                                                                                                                  |
+| `swarms`              | `Record<string, SwarmConfig>`                     | Named swarms                                                                                                                                                     |
+| `auth`                | `AuthFunction`                                    | `(c) => AuthContext \| undefined` (sync or async), receives the Hono Context, throw to answer `401 UNAUTHORIZED`                                                 |
+| `enableSwagger`       | `boolean`                                         | Serve `/openapi.json` and Swagger UI at `/docs`                                                                                                                  |
+| `swagger`             | `SwaggerConfig`                                   | Swagger configuration                                                                                                                                            |
+| `enableWebSocket`     | `boolean`                                         | Enable the WebSocket endpoint                                                                                                                                    |
+| `websocket`           | `WebSocketConfig`                                 | `{ path?, maxPayloadSize?, upgradeWebSocket? }` (see below)                                                                                                      |
+| `bodyLimit`           | `number`                                          | Max request body size in bytes (default 1 MiB)                                                                                                                   |
+| `sseHeartbeatMs`      | `number`                                          | How often SSE streams write a `: keep-alive` comment while a run is silent (default `5000`, `0` turns it off)                                                    |
+| `acceptContext`       | `boolean \| string[]`                             | Keys of a run `context` clients may send: none by default, a list, or `true` for any (the model reads it as data from the application)                           |
+| `threadMessageRoles`  | `ThreadMessageRole[]`                             | Roles `POST /threads/:id/messages` accepts (default `user` and `assistant`)                                                                                      |
+| `limits`              | `RunLimits`                                       | `{ swarmTimeout?, workflowMaxIterations?, workflowMaxConcurrency? }`: caps on what a request may ask a swarm or workflow run for (see [Run limits](#run-limits)) |
+| `anonymous`           | `'allow' \| 'deny'`                               | Whether callers without a `userId` may use the API (default `'allow'`), `'deny'` answers `401 UNAUTHORIZED`                                                      |
+| `authorizeThread`     | `(auth, threadId) => boolean \| Promise<boolean>` | Decides whether a caller may touch a thread, on top of the owner check, `false` answers `403 THREAD_FORBIDDEN`                                                   |
+| `deps`                | `(c) => unknown \| Promise<unknown>`              | Builds the `deps` agent runs pass to their tools, from the Hono Context (see [Run deps](#run-deps))                                                              |
+| `workflowCheckpoints` | `CheckpointStore`                                 | Where workflow runs keep their checkpoints, for `options.checkpoint` and `/resume` (see [Checkpoints and resume](#checkpoints-and-resume))                       |
 
 ## Request Handling
 
 - Request bodies are validated before anything reaches the runtime: `input` must contain more than whitespace (`""` and `"   "` are refused before the model is called), `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number. Invalid bodies return `400 INVALID_INPUT` with the offending field in the message. The validator comes from `@cogitator-ai/server-shared`, so Express, Fastify, Hono and Koa refuse exactly the same bodies.
 - The `usage` of a run answer carries `inputTokens`, `outputTokens` and `totalTokens`, plus `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them, the same shape as every other adapter. The `finish` event of an agent stream carries the same `usage` (never the run's cost or duration).
-- Workflow runs accept an optional body. `options` is limited to `maxConcurrency` and `maxIterations` (positive integers). Any other option is dropped and a wrongly typed one returns `400 INVALID_INPUT`. `checkpoint: true` is refused, since the server runs each workflow on a fresh executor and keeps no checkpoint store to resume from.
+- Workflow runs accept an optional body. `options` is limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint`. Any other option is dropped and a wrongly typed one returns `400 INVALID_INPUT`. `checkpoint: true` is refused unless the app has `workflowCheckpoints` (see [Checkpoints and resume](#checkpoints-and-resume)).
 - Thread messages accept `role` of `user` or `assistant` (more with `threadMessageRoles`), `metadata` is stored with the entry and a token estimate is recorded.
 - A run sends `context` to the model as data the application supplied, and the model reads a `system` thread message as operator instructions, so clients may set neither unless the server allows it: `acceptContext` lists the `context` keys clients may send (`true` accepts any key, for clients trusted like your own code), and `threadMessageRoles` the roles of `POST /threads/:id/messages` (`user` and `assistant` by default). Anything else is refused with `400 INVALID_INPUT`, over HTTP and WebSocket alike.
 - A `POST` body that is not JSON (`text/plain`, a form) is refused with `415 UNSUPPORTED_MEDIA_TYPE` before it is parsed: browsers send those across origins without a CORS preflight.
@@ -105,11 +106,30 @@ Creates a Hono sub-application with all Cogitator endpoints.
 
 ### Workflows
 
-| Method | Path                      | Description            |
-| ------ | ------------------------- | ---------------------- |
-| `GET`  | `/workflows`              | List workflows         |
-| `POST` | `/workflows/:name/run`    | Execute workflow       |
-| `POST` | `/workflows/:name/stream` | Stream workflow events |
+| Method | Path                             | Description                       |
+| ------ | -------------------------------- | --------------------------------- |
+| `GET`  | `/workflows`                     | List workflows                    |
+| `POST` | `/workflows/:name/run`           | Execute workflow                  |
+| `POST` | `/workflows/:name/stream`        | Stream workflow events            |
+| `POST` | `/workflows/:name/resume`        | Resume from a checkpoint          |
+| `POST` | `/workflows/:name/resume/stream` | Resume and stream workflow events |
+
+#### Checkpoints and resume
+
+`workflowCheckpoints` takes any `CheckpointStore` of `@cogitator-ai/workflows`, such as `PostgresCheckpointStore` or `RedisCheckpointStore`. With it, a run with `options.checkpoint: true` saves its checkpoints there as the caller's, the `userId` that `auth` returned (none for an anonymous caller), and its answer and `workflow_completed` event carry the last one as `checkpointId`. Without it such a run is refused with `400 INVALID_INPUT`.
+
+`POST /workflows/:name/resume` takes `{ checkpointId: string; options?: { maxConcurrency?: number; maxIterations?: number } }`, passes over the nodes the checkpoint completed and runs the rest. It answers like `/run`, and `/resume/stream` streams like `/stream`. The `limits` hold as on `/run`, and the resumed run keeps saving checkpoints, so it can be resumed again. A checkpoint that is missing, belongs to another user or to another workflow answers `404 CHECKPOINT_NOT_FOUND` before anything runs, on `/resume/stream` before the stream opens. Without `workflowCheckpoints` every resume answers `404 CHECKPOINT_NOT_FOUND`. A run that fails answers its error with the last checkpoint it saved as `checkpointId`, next to `code` and `message` (`{ error: { message, code, checkpointId } }`), and a failed stream sends a `workflow_failed` event with `{ checkpointId }` right before its `error` event, so the client resumes the failed run from there. A resume that fails again names the checkpoint to resume from, its own last one or, when it saved none, the one it started from.
+
+```typescript
+import { PostgresCheckpointStore } from '@cogitator-ai/workflows';
+
+const api = cogitatorApp({
+  cogitator,
+  workflows: { shipping },
+  auth,
+  workflowCheckpoints: new PostgresCheckpointStore({ client: pool }),
+});
+```
 
 ### Swarms
 
@@ -245,7 +265,7 @@ export default app;
 Deno.serve(app.fetch);
 ```
 
-On Bun, `Bun.serve` closes a connection that stays silent for `idleTimeout` seconds (10 by default), and a run that waits on a slow tool or model is silent for longer. The adapter handles both kinds of answer: SSE streams write a heartbeat comment every `sseHeartbeatMs` (5 s by default, keep it under `idleTimeout`), and the JSON routes (`run`, `resume`, workflow and swarm `run`) lift the idle timeout for their own request once its body is read, through the server Bun hands to `fetch`. Serve the app with `fetch: app.fetch` (or `export default app`) so Hono receives that server. Keep `idleTimeout` at its default or above, since Bun cuts connections at once below 5 s whatever is written.
+On Bun, `Bun.serve` closes a connection that stays silent for `idleTimeout` seconds (10 by default), and a run that waits on a slow tool or model is silent for longer. The adapter handles both kinds of answer: SSE streams write a heartbeat comment every `sseHeartbeatMs` (5 s by default, keep it under `idleTimeout`), and the JSON routes (`run`, `resume`, workflow `run` and `resume`, swarm `run`) lift the idle timeout for their own request once its body is read, through the server Bun hands to `fetch`. Serve the app with `fetch: app.fetch` (or `export default app`) so Hono receives that server. Keep `idleTimeout` at its default or above, since Bun cuts connections at once below 5 s whatever is written.
 
 On Cloudflare Workers use a `compatibility_date` of 2026-08-04 or later (or the `nodejs_compat` flag); with database memory create the `Cogitator` per request, since Workers do not share connections between requests. Deno needs only `--allow-net` and `--allow-env`. Complete projects: [`09-deno-server.ts`](https://github.com/cogitator-ai/Cogitator-AI/blob/main/examples/integrations/09-deno-server.ts), [`10-cloudflare-worker`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/examples/integrations/10-cloudflare-worker). See also [cogitator.app/docs/deployment/edge](https://cogitator.app/docs/deployment/edge).
 
@@ -257,7 +277,7 @@ Agent streams emit `tool-call-start`, `tool-call-delta` (the JSON arguments) and
 
 When the agent sets `reasoning: { summary: true }` and the provider returns a reasoning summary, agent streams also emit it as its own `reasoning-start`/`reasoning-delta`/`reasoning-end` part, closed before text or a tool call starts, so reasoning and text parts never interleave.
 
-Workflow streams send `{ type: 'workflow', event, data }` (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`); swarm streams send `{ type: 'swarm', event, data }` (`agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, `swarm_completed`). Every stream ends with `finish` and `data: [DONE]`, or with an `error` event.
+Workflow streams send `{ type: 'workflow', event, data }` (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`, and `workflow_failed` with `{ checkpointId? }` right before the `error` event of a failed run); swarm streams send `{ type: 'swarm', event, data }` (`agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, `swarm_completed`). Every stream ends with `finish` and `data: [DONE]`, or with an `error` event.
 
 While a stream is open, every `sseHeartbeatMs` (5 s by default) it also writes an SSE comment, `: keep-alive`, which SSE clients skip. It keeps a stream that waits on a slow tool or model from being closed by Bun's `idleTimeout` or by a proxy (nginx closes a connection silent for 60 s).
 

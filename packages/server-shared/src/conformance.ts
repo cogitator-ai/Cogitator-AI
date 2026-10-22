@@ -1,5 +1,11 @@
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
-import type { MemoryQueryOptions, ResumeOptions, RunOptions, RunResult } from '@cogitator-ai/types';
+import type {
+  CheckpointStore,
+  MemoryQueryOptions,
+  ResumeOptions,
+  RunOptions,
+  RunResult,
+} from '@cogitator-ai/types';
 import type { AnonymousPolicy, RunLimits } from './contract.js';
 import type { StreamEvent } from './protocol.js';
 import { toAgentRunResponse } from './response.js';
@@ -43,6 +49,8 @@ export const CONFORMANCE_ROUTES = {
   agentResumeStream: `/agents/${CONFORMANCE_NAMES.agent}/resume/stream`,
   swarmRun: `/swarms/${CONFORMANCE_NAMES.swarm}/run`,
   workflowRun: `/workflows/${CONFORMANCE_NAMES.workflow}/run`,
+  workflowResume: `/workflows/${CONFORMANCE_NAMES.workflow}/resume`,
+  workflowResumeStream: `/workflows/${CONFORMANCE_NAMES.workflow}/resume/stream`,
   threadMessages: `/threads/${CONFORMANCE_NAMES.thread}/messages`,
   thread: `/threads/${CONFORMANCE_NAMES.thread}`,
   threadPage: `/threads/${CONFORMANCE_NAMES.thread}?limit=2`,
@@ -63,7 +71,20 @@ export interface ConformanceServerOptions {
   forbiddenThreads?: readonly string[];
   /** What the adapter's `deps` hook returns for every request */
   deps?: Readonly<Record<string, unknown>>;
+  /** The adapter's workflow checkpoint store */
+  workflowCheckpoints?: CheckpointStore;
 }
+
+/**
+ * The checkpoint store the cases give an adapter: it holds no checkpoint, and the cases never
+ * save one, so it can be shared between them
+ */
+const EMPTY_CHECKPOINTS: CheckpointStore = {
+  save: () => Promise.reject(new Error('The conformance cases save no workflow checkpoints')),
+  load: () => Promise.resolve(null),
+  list: () => Promise.resolve([]),
+  delete: () => Promise.resolve(),
+};
 
 /** How the conformance runtime behaves for a case */
 export interface ConformanceRuntimeOptions {
@@ -295,6 +316,33 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
     name: 'refuses a workflow checkpoint the server cannot keep',
     route: 'workflowRun',
     body: run({ options: { checkpoint: true } }),
+    expect: { status: 400, code: 'INVALID_INPUT' },
+  },
+  {
+    name: 'answers the resume of an unknown workflow checkpoint with 404',
+    route: 'workflowResume',
+    server: { workflowCheckpoints: EMPTY_CHECKPOINTS },
+    body: run({ checkpointId: 'cp_missing' }),
+    expect: { status: 404, code: 'CHECKPOINT_NOT_FOUND' },
+  },
+  {
+    name: 'answers a workflow resume with 404 where the server keeps no checkpoints',
+    route: 'workflowResume',
+    body: run({ checkpointId: 'cp_missing' }),
+    expect: { status: 404, code: 'CHECKPOINT_NOT_FOUND' },
+  },
+  {
+    name: 'answers the streamed resume of an unknown workflow checkpoint with 404 before streaming',
+    route: 'workflowResumeStream',
+    server: { workflowCheckpoints: EMPTY_CHECKPOINTS },
+    body: run({ checkpointId: 'cp_missing' }),
+    expect: { status: 404, code: 'CHECKPOINT_NOT_FOUND' },
+  },
+  {
+    name: 'refuses a whitespace checkpointId',
+    route: 'workflowResume',
+    server: { workflowCheckpoints: EMPTY_CHECKPOINTS },
+    body: run({ checkpointId: '   ' }),
     expect: { status: 400, code: 'INVALID_INPUT' },
   },
   {

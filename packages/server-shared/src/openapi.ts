@@ -116,6 +116,11 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
       'The thread belongs to another user (THREAD_ACCESS_DENIED), or the server keeps the caller from it (THREAD_FORBIDDEN)',
     content: errorContent,
   };
+  const checkpointNotFound = {
+    description:
+      'No workflow of this name (NOT_FOUND), or no checkpoint of it that belongs to the caller (CHECKPOINT_NOT_FOUND)',
+    content: errorContent,
+  };
   const refusals = {
     400: {
       description: 'The body breaks the request schema (INVALID_INPUT)',
@@ -363,9 +368,55 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
         summary: `Stream workflow: ${name}`,
         responses: {
           200: {
-            description: 'SSE stream of protocol events (StreamEvent), ending with `data: [DONE]`',
+            description:
+              'SSE stream of protocol events (StreamEvent), ending with `data: [DONE]`. A failed run sends a `workflow_failed` event, with the `checkpointId` to resume from when the run saved one, right before its `error` event',
             content: SSE_CONTENT,
           },
+        },
+      },
+    };
+
+    spec.paths[`/workflows/${name}/resume`] = {
+      post: {
+        tags: ['workflows'],
+        summary: `Resume workflow ${name} from a checkpoint`,
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': { schema: { $ref: '#/components/schemas/WorkflowResumeRequest' } },
+          },
+        },
+        responses: {
+          200: {
+            description: 'Workflow result',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/WorkflowRunResponse' } },
+            },
+          },
+          ...refusals,
+          ...runFailures,
+          404: checkpointNotFound,
+        },
+      },
+    };
+
+    spec.paths[`/workflows/${name}/resume/stream`] = {
+      post: {
+        tags: ['workflows'],
+        summary: `Resume workflow ${name} from a checkpoint and stream the rest of it`,
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': { schema: { $ref: '#/components/schemas/WorkflowResumeRequest' } },
+          },
+        },
+        responses: {
+          200: {
+            description: 'SSE stream of protocol events, as on /stream, `workflow_failed` included',
+            content: SSE_CONTENT,
+          },
+          ...refusals,
+          404: checkpointNotFound,
         },
       },
     };
@@ -749,9 +800,28 @@ function generateSchemas(limits: RunLimits | undefined): Record<string, unknown>
             maxIterations: limitedInteger(limits?.workflowMaxIterations),
             checkpoint: {
               type: 'boolean',
-              enum: [false],
-              description: 'Only `false`: the server keeps no checkpoint store',
+              description:
+                'Save checkpoints of the run to resume it from. Accepted when the server has a checkpoint store (`workflowCheckpoints`), refused otherwise',
             },
+          },
+        },
+      },
+    },
+    WorkflowResumeRequest: {
+      type: 'object',
+      required: ['checkpointId'],
+      properties: {
+        checkpointId: {
+          type: 'string',
+          minLength: 1,
+          pattern: NON_BLANK_PATTERN,
+          description: 'A checkpoint of this workflow that belongs to the caller',
+        },
+        options: {
+          type: 'object',
+          properties: {
+            maxConcurrency: limitedInteger(limits?.workflowMaxConcurrency),
+            maxIterations: limitedInteger(limits?.workflowMaxIterations),
           },
         },
       },
@@ -764,6 +834,11 @@ function generateSchemas(limits: RunLimits | undefined): Record<string, unknown>
         state: { type: 'object' },
         duration: { type: 'number' },
         nodeResults: { type: 'object' },
+        checkpointId: {
+          type: 'string',
+          description:
+            'The last checkpoint of a run with `options.checkpoint` or of a resume: pass it to /resume',
+        },
       },
     },
     SwarmListResponse: {
@@ -832,6 +907,11 @@ function generateSchemas(limits: RunLimits | undefined): Record<string, unknown>
           properties: {
             message: { type: 'string' },
             code: { type: 'string' },
+            checkpointId: {
+              type: 'string',
+              description:
+                'The last checkpoint a failed workflow run saved: pass it to /workflows/{name}/resume',
+            },
           },
         },
       },

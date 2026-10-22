@@ -3,12 +3,17 @@ import type { BaseCtx } from '@tetsujs/core';
 import type { Agent } from '@cogitator-ai/core';
 import {
   authorizeThreadAccess,
+  checkpointNotFound,
+  findOwnedCheckpoint,
+  ownedCheckpoints,
   swarmAgentNames,
   swarmTimeoutWithin,
+  withResumedCheckpoint,
   withSwarm,
   workflowOptionsWithin,
 } from '@cogitator-ai/server-shared';
 import type {
+  CheckpointStore,
   ResumeOptions,
   RunOptions,
   RunResult,
@@ -23,7 +28,7 @@ import type {
   WorkflowState,
 } from '@cogitator-ai/types';
 import type { z } from 'zod';
-import { importOptional, refusalError } from './errors.js';
+import { importOptional, refusalError, WorkflowRunFailedError } from './errors.js';
 import type { ResumeBody } from './schemas.js';
 import type {
   AgentListResponseBody,
@@ -152,6 +157,7 @@ export function toWorkflowRunResponse(
     state: result.state,
     duration: result.duration,
     nodeResults: Object.fromEntries(result.nodeResults),
+    ...(result.checkpointId !== undefined && { checkpointId: result.checkpointId }),
   };
 }
 
@@ -233,23 +239,83 @@ export function resumeAgent(
   });
 }
 
-/** Runs a workflow with `maxIterations` and `maxConcurrency` held to the server's limits */
+async function workflowExecutor(deps: CogitatorDeps, checkpoints: CheckpointStore | undefined) {
+  const { WorkflowExecutor } = await importOptional(
+    () => import('@cogitator-ai/workflows'),
+    '@cogitator-ai/workflows'
+  );
+  return new WorkflowExecutor(deps.cogitator, checkpoints);
+}
+
+/**
+ * Runs a workflow with `maxIterations` and `maxConcurrency` held to the server's limits. A run
+ * with `checkpoint` saves its checkpoints to `workflowCheckpoints` as the caller's.
+ */
 export async function executeWorkflow(
   deps: CogitatorDeps,
   workflow: Workflow<WorkflowState>,
   input: Record<string, unknown> | undefined,
   options: WorkflowExecuteOptions,
-  signal: AbortSignal
+  signal: AbortSignal,
+  auth?: AuthContext
 ): Promise<WorkflowResult<WorkflowState>> {
-  const { WorkflowExecutor } = await importOptional(
-    () => import('@cogitator-ai/workflows'),
-    '@cogitator-ai/workflows'
-  );
-  const result = await new WorkflowExecutor(deps.cogitator).execute(workflow, input, {
+  const store = deps.workflowCheckpoints;
+  const checkpoints =
+    options.checkpoint && store ? ownedCheckpoints(store, auth?.userId) : undefined;
+  const executor = await workflowExecutor(deps, checkpoints);
+  const result = await executor.execute(workflow, input, {
     ...workflowOptionsWithin(options, deps.limits),
     signal,
   });
-  if (result.error) throw result.error;
+  if (result.error) throw new WorkflowRunFailedError(result.error, result.checkpointId);
+  return result;
+}
+
+/**
+ * Throws `404 CHECKPOINT_NOT_FOUND` unless `checkpointId` is a checkpoint of `workflow` that
+ * belongs to the caller, so a resume of a checkpoint that is missing, of another user or of
+ * another workflow is refused before anything runs
+ */
+export async function checkWorkflowCheckpoint(
+  deps: CogitatorDeps,
+  workflow: Workflow<WorkflowState>,
+  checkpointId: string,
+  auth: AuthContext | undefined
+): Promise<void> {
+  const found = await findOwnedCheckpoint(
+    deps.workflowCheckpoints,
+    auth?.userId,
+    workflow.name,
+    checkpointId
+  );
+  if (!found) throw refusalError(checkpointNotFound(checkpointId));
+}
+
+/**
+ * Resumes a workflow from a checkpoint of the caller, with `maxIterations` and `maxConcurrency`
+ * held to the server's limits. The resumed run saves its checkpoints too, so it can be resumed
+ * again.
+ */
+export async function resumeWorkflow(
+  deps: CogitatorDeps,
+  workflow: Workflow<WorkflowState>,
+  checkpointId: string,
+  options: WorkflowExecuteOptions,
+  signal: AbortSignal,
+  auth: AuthContext | undefined
+): Promise<WorkflowResult<WorkflowState>> {
+  const store = deps.workflowCheckpoints;
+  if (!store) throw refusalError(checkpointNotFound(checkpointId));
+  const executor = await workflowExecutor(deps, ownedCheckpoints(store, auth?.userId));
+  const result = withResumedCheckpoint(
+    await executor.resume(workflow, checkpointId, {
+      ...workflowOptionsWithin(options, deps.limits),
+      checkpoint: true,
+      signal,
+    }),
+    checkpointId
+  );
+  if (result.error) throw new WorkflowRunFailedError(result.error, result.checkpointId);
   return result;
 }
 

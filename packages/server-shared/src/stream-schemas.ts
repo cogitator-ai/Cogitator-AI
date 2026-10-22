@@ -145,7 +145,7 @@ export const FinishEventSchema = z
 export const WorkflowEventSchema = z
   .object({ type: z.literal('workflow'), event: z.string(), data: z.unknown().optional() })
   .describe(
-    'An event of a workflow run, named by `event`, such as `node_started`, `node_completed` or `workflow_completed`'
+    'An event of a workflow run, named by `event`, such as `node_started`, `node_completed`, `workflow_completed` or `workflow_failed`'
   );
 
 export const SwarmEventSchema = z

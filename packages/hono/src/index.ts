@@ -22,6 +22,7 @@ export type {
   WorkflowListResponse,
   WorkflowRunRequest,
   WorkflowRunResponse,
+  WorkflowResumeRequest,
   WorkflowStatusResponse,
   SwarmListResponse,
   SwarmRunRequest,

@@ -1,4 +1,10 @@
-import type { RunBlockReason, RunResult, ToolApprovalRequest, ToolCall } from '@cogitator-ai/types';
+import type {
+  RunBlockReason,
+  RunResult,
+  ToolApprovalRequest,
+  ToolCall,
+  WorkflowResult,
+} from '@cogitator-ai/types';
 import type { PendingApproval } from './protocol.js';
 import { toRunUsage, type RunUsage } from './usage.js';
 
@@ -89,4 +95,48 @@ export function toAgentRunResponse(result: RunResult): AgentRunResponse {
     ...toAgentRunOutcome(result),
     traceId: result.trace.traceId,
   };
+}
+
+/** The data of the `workflow_completed` event that ends a workflow stream */
+export interface WorkflowCompletedData {
+  workflowId: string;
+  duration: number;
+  /** The last checkpoint of a run with `options.checkpoint` or of a resume */
+  checkpointId?: string;
+}
+
+/** What the `workflow_completed` event of every adapter says about a finished workflow run */
+export function toWorkflowCompletedData(
+  result: Pick<WorkflowResult<unknown>, 'workflowId' | 'duration' | 'checkpointId'>
+): WorkflowCompletedData {
+  return {
+    workflowId: result.workflowId,
+    duration: result.duration,
+    ...(result.checkpointId !== undefined && { checkpointId: result.checkpointId }),
+  };
+}
+
+/** The data of the `workflow_failed` event a workflow stream sends right before its `error` */
+export interface WorkflowFailedData {
+  /** The last checkpoint the failed run saved: resume the run from it */
+  checkpointId?: string;
+}
+
+/** What the `workflow_failed` event of every adapter says about a failed workflow run */
+export function toWorkflowFailedData(
+  result: Pick<WorkflowResult<unknown>, 'checkpointId'>
+): WorkflowFailedData {
+  return result.checkpointId === undefined ? {} : { checkpointId: result.checkpointId };
+}
+
+/**
+ * The result of a workflow resume, naming the checkpoint it resumed from when the resumed run
+ * saved none of its own, as a run that fails before its first checkpoint does: resuming that
+ * checkpoint again starts over from the same place
+ */
+export function withResumedCheckpoint<R extends { checkpointId?: string }>(
+  result: R,
+  checkpointId: string
+): R {
+  return result.checkpointId === undefined ? { ...result, checkpointId } : result;
 }

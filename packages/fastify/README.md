@@ -92,11 +92,30 @@ Request bodies go through the validators of `@cogitator-ai/server-shared` in a `
 
 ```
 GET    /api/workflows                 - List all workflows
-POST   /api/workflows/:name/run       - Run workflow
-POST   /api/workflows/:name/stream    - Stream workflow events
+POST   /api/workflows/:name/run            - Run workflow
+POST   /api/workflows/:name/stream         - Stream workflow events
+POST   /api/workflows/:name/resume         - Resume a workflow from a checkpoint
+POST   /api/workflows/:name/resume/stream  - Resume a workflow and stream its events
 ```
 
-Options are limited to `maxConcurrency`/`maxIterations` (positive integers, held to `limits.workflowMaxConcurrency` and `limits.workflowMaxIterations` when set, which a request that asks for nothing gets), and `checkpoint: true` is refused, since the server keeps no checkpoint store to resume from. A failed workflow answers the error it failed with, mapped like any other run error (a node that hit `LLM_RATE_LIMITED` answers `429` with `Retry-After`, an internal error `500 INTERNAL_ERROR`), and its stream ends with an `error` event carrying that code instead of `workflow_completed`. Disconnecting aborts the workflow. Stream events are `{ type: 'workflow', event, data }` with `event` one of `node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`.
+Options are limited to `maxConcurrency`/`maxIterations` (positive integers, held to `limits.workflowMaxConcurrency` and `limits.workflowMaxIterations` when set, which a request that asks for nothing gets) and `checkpoint`, refused as `true` unless the plugin has `workflowCheckpoints` (see [Checkpoints and resume](#checkpoints-and-resume)). A failed workflow answers the error it failed with, mapped like any other run error (a node that hit `LLM_RATE_LIMITED` answers `429` with `Retry-After`, an internal error `500 INTERNAL_ERROR`), and its stream ends with an `error` event carrying that code instead of `workflow_completed`. Disconnecting aborts the workflow. Stream events are `{ type: 'workflow', event, data }` with `event` one of `node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed` (`{ workflowId, duration, checkpointId? }`), `workflow_failed` (`{ checkpointId? }`, right before the `error` event of a failed run).
+
+#### Checkpoints and resume
+
+`workflowCheckpoints` takes any `CheckpointStore` of `@cogitator-ai/workflows`, such as `PostgresCheckpointStore` or `RedisCheckpointStore`. With it, a run with `options.checkpoint: true` saves its checkpoints there as the caller's, the `userId` that `auth` returned (none for an anonymous caller), and its answer and `workflow_completed` event carry the last one as `checkpointId`. Without it such a run is refused with `400`.
+
+`POST /workflows/:name/resume` takes `{ checkpointId: string; options?: { maxConcurrency?: number; maxIterations?: number } }`, passes over the nodes the checkpoint completed and runs the rest. It answers like `/run`, and `/resume/stream` streams like `/stream`. The `limits` hold as on `/run`, and the resumed run keeps saving checkpoints, so it can be resumed again. A checkpoint that is missing, belongs to another user or to another workflow answers `404 CHECKPOINT_NOT_FOUND` before anything runs, on `/resume/stream` before the stream opens. Without `workflowCheckpoints` every resume answers `404 CHECKPOINT_NOT_FOUND`. A run that fails answers its error with the last checkpoint it saved as `checkpointId`, next to `code` and `message` (`{ error: { message, code, checkpointId } }`), and a failed stream sends a `workflow_failed` event with `{ checkpointId }` right before its `error` event, so the client resumes the failed run from there. A resume that fails again names the checkpoint to resume from, its own last one or, when it saved none, the one it started from.
+
+```typescript
+import { PostgresCheckpointStore } from '@cogitator-ai/workflows';
+
+await fastify.register(cogitatorPlugin, {
+  cogitator,
+  workflows: { shipping },
+  auth,
+  workflowCheckpoints: new PostgresCheckpointStore({ client: pool }),
+});
+```
 
 ### Swarms
 
@@ -416,6 +435,7 @@ interface CogitatorPluginOptions {
   anonymous?: 'allow' | 'deny'; // Default: 'allow'
   authorizeThread?: (auth: AuthContext | undefined, threadId: string) => boolean | Promise<boolean>;
   deps?: (request: FastifyRequest) => unknown | Promise<unknown>;
+  workflowCheckpoints?: CheckpointStore; // workflow checkpoints and /resume, none by default
 }
 ```
 
@@ -504,15 +524,17 @@ import {
   AgentResumeRequestSchema,
   AddMessageRequestSchema,
   WorkflowRunRequestSchema,
+  WorkflowResumeRequestSchema,
   SwarmRunRequestSchema,
   ThreadPageQuerySchema,
   ThreadResponseSchema,
   workflowRunRequestSchema,
+  workflowResumeRequestSchema,
   swarmRunRequestSchema,
 } from '@cogitator-ai/fastify';
 ```
 
-`AgentResumeRequestSchema` requires a non-blank `threadId` and validates each decision as `{ approved: boolean, reason?: string }`. `AgentRunRequestSchema` and `SwarmRunRequestSchema` require a non-blank `input` (the swarm `timeout` must be greater than 0), `AddMessageRequestSchema` requires a non-blank `content` and a `user`/`assistant`/`system` role (the routes accept `system` only with `threadMessageRoles`), and `WorkflowRunRequestSchema.options` only allows `maxConcurrency`/`maxIterations` (integers ≥ 1) and `checkpoint: false` (`additionalProperties: false`). The routes validate bodies with the shared validators first, so the schemas describe what they accept. `workflowRunRequestSchema(limits)` and `swarmRunRequestSchema(limits)` build the same schemas with the operator's limits as defaults, as the routes use them. `ThreadPageQuerySchema` and `ThreadResponseSchema` describe `GET /threads/:id`.
+`AgentResumeRequestSchema` requires a non-blank `threadId` and validates each decision as `{ approved: boolean, reason?: string }`. `AgentRunRequestSchema` and `SwarmRunRequestSchema` require a non-blank `input` (the swarm `timeout` must be greater than 0), `AddMessageRequestSchema` requires a non-blank `content` and a `user`/`assistant`/`system` role (the routes accept `system` only with `threadMessageRoles`), and `WorkflowRunRequestSchema.options` only allows `maxConcurrency`/`maxIterations` (integers ≥ 1) and `checkpoint: false` (`additionalProperties: false`), and `WorkflowResumeRequestSchema` requires a non-blank `checkpointId` with the same `maxConcurrency`/`maxIterations` options. The routes validate bodies with the shared validators first, so the schemas describe what they accept. `workflowRunRequestSchema(limits, checkpoints)`, `workflowResumeRequestSchema(limits)` and `swarmRunRequestSchema(limits)` build the same schemas with the operator's limits as defaults, as the routes use them, and `checkpoints: true` lets `checkpoint` be `true`, as on a plugin with `workflowCheckpoints`. `ThreadPageQuerySchema` and `ThreadResponseSchema` describe `GET /threads/:id`.
 
 ## Documentation
 

@@ -286,6 +286,10 @@ const result = await executor.resume(workflow, checkpointId, {
 
 The executor loads the checkpoint, restores state and completed node set, then continues execution from where it left off.
 
+### Over HTTP
+
+The server adapters run checkpointed workflows too: give one a `CheckpointStore` as `workflowCheckpoints`, and a run with `options.checkpoint: true` answers its last `checkpointId`, which `POST /workflows/:name/resume` resumes for the user who started the run. A run that fails carries it too: in its error answer next to `code` and `message`, and in the `workflow_failed` event its stream sends right before the `error` event, so a client resumes a failed run from where it stopped. See [Workflow checkpoints](/docs/server-adapters#workflow-checkpoints).
+
 ### Checkpoint Data
 
 ```typescript
@@ -296,7 +300,9 @@ interface WorkflowCheckpoint {
   state: unknown;
   completedNodes: string[];
   nodeResults: Record<string, unknown>;
+  nodeVisits?: Record<string, number>;
   timestamp: number;
+  owner?: string; // the user the checkpoint belongs to, set by servers
 }
 ```
 

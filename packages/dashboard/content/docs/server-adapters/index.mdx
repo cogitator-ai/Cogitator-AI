@@ -19,27 +19,29 @@ Cogitator ships five server adapters that turn your agent runtime into an HTTP A
 
 Every adapter registers these routes. Express (`config.basePath`) and Fastify (`prefix`) mount them under `/cogitator` by default; Hono, Koa and Tetsu serve them where you mount the app, router or controller.
 
-| Method   | Path                          | Description                                                                       |
-| -------- | ----------------------------- | --------------------------------------------------------------------------------- |
-| `GET`    | `/health`                     | Health check: `{ status, uptime, timestamp }`                                     |
-| `GET`    | `/ready`                      | Readiness probe: `{ status, checks }` (200 when ready, 503 on dependency failure) |
-| `GET`    | `/agents`                     | List agents: name, `description`, tool names (never `instructions`)               |
-| `POST`   | `/agents/:name/run`           | Run an agent (JSON response)                                                      |
-| `POST`   | `/agents/:name/stream`        | Run an agent (SSE stream)                                                         |
-| `POST`   | `/agents/:name/resume`        | Resume a run paused for [approvals](/docs/tools/approvals)                        |
-| `POST`   | `/agents/:name/resume/stream` | Resume a paused run and stream the rest of it (SSE stream)                        |
-| `GET`    | `/threads/:id`                | Get thread messages, whole or a page at a time (`limit`, `cursor`)                |
-| `POST`   | `/threads/:id/messages`       | Add a message to a thread                                                         |
-| `DELETE` | `/threads/:id`                | Delete a thread                                                                   |
-| `GET`    | `/tools`                      | List the tools of all agents (parameters as JSON Schema)                          |
-| `GET`    | `/workflows`                  | List workflows                                                                    |
-| `POST`   | `/workflows/:name/run`        | Execute a workflow                                                                |
-| `POST`   | `/workflows/:name/stream`     | Stream workflow execution                                                         |
-| `GET`    | `/swarms`                     | List swarms                                                                       |
-| `POST`   | `/swarms/:name/run`           | Execute a swarm                                                                   |
-| `POST`   | `/swarms/:name/stream`        | Stream swarm execution                                                            |
-| `GET`    | `/swarms/:name/blackboard`    | The swarm's configured blackboard sections (only when it is enabled)              |
-| `GET`    | `/openapi.json`, `/docs`      | OpenAPI spec and Swagger UI, see [OpenAPI](/docs/server-adapters/openapi)         |
+| Method   | Path                             | Description                                                                            |
+| -------- | -------------------------------- | -------------------------------------------------------------------------------------- |
+| `GET`    | `/health`                        | Health check: `{ status, uptime, timestamp }`                                          |
+| `GET`    | `/ready`                         | Readiness probe: `{ status, checks }` (200 when ready, 503 on dependency failure)      |
+| `GET`    | `/agents`                        | List agents: name, `description`, tool names (never `instructions`)                    |
+| `POST`   | `/agents/:name/run`              | Run an agent (JSON response)                                                           |
+| `POST`   | `/agents/:name/stream`           | Run an agent (SSE stream)                                                              |
+| `POST`   | `/agents/:name/resume`           | Resume a run paused for [approvals](/docs/tools/approvals)                             |
+| `POST`   | `/agents/:name/resume/stream`    | Resume a paused run and stream the rest of it (SSE stream)                             |
+| `GET`    | `/threads/:id`                   | Get thread messages, whole or a page at a time (`limit`, `cursor`)                     |
+| `POST`   | `/threads/:id/messages`          | Add a message to a thread                                                              |
+| `DELETE` | `/threads/:id`                   | Delete a thread                                                                        |
+| `GET`    | `/tools`                         | List the tools of all agents (parameters as JSON Schema)                               |
+| `GET`    | `/workflows`                     | List workflows                                                                         |
+| `POST`   | `/workflows/:name/run`           | Execute a workflow                                                                     |
+| `POST`   | `/workflows/:name/stream`        | Stream workflow execution                                                              |
+| `POST`   | `/workflows/:name/resume`        | Resume a workflow from a checkpoint, see [Workflow checkpoints](#workflow-checkpoints) |
+| `POST`   | `/workflows/:name/resume/stream` | Resume a workflow and stream the rest of it (SSE stream)                               |
+| `GET`    | `/swarms`                        | List swarms                                                                            |
+| `POST`   | `/swarms/:name/run`              | Execute a swarm                                                                        |
+| `POST`   | `/swarms/:name/stream`           | Stream swarm execution                                                                 |
+| `GET`    | `/swarms/:name/blackboard`       | The swarm's configured blackboard sections (only when it is enabled)                   |
+| `GET`    | `/openapi.json`, `/docs`         | OpenAPI spec and Swagger UI, see [OpenAPI](/docs/server-adapters/openapi)              |
 
 Fastify serves its spec at `/docs/json` instead of `/openapi.json`, and Tetsu's document comes from `docs()` of `@tetsujs/openapi`.
 
@@ -47,12 +49,13 @@ Request bodies:
 
 - Agent run and stream: `{ input, context?, threadId? }`. `input` must contain more than whitespace (`""` and `"   "` are refused before the model is called), and so must `threadId`. Without a `threadId` the run opens a new thread and names it in the answer (and in the `start` event of a stream).
 - Resume: `{ threadId, decisions?, defaultDecision? }`, where a decision is `{ approved: boolean, reason?: string }` keyed by tool call id.
-- Workflow: `{ input?, options? }` with `options` limited to `maxConcurrency` and `maxIterations`. `checkpoint: true` is refused: the server runs each workflow on a fresh executor and keeps no checkpoint store, so a checkpoint would be lost with the request. Run the workflow with `WorkflowExecutor` and a `CheckpointStore` to resume it later.
+- Workflow: `{ input?, options? }` with `options` limited to `maxConcurrency`, `maxIterations` and `checkpoint`. `checkpoint: true` is accepted only by a server with `workflowCheckpoints` and refused otherwise, since a checkpoint would be lost with the request.
+- Workflow resume: `{ checkpointId, options? }`, `checkpointId` non-blank and `options` limited to `maxConcurrency` and `maxIterations`.
 - Swarm: `{ input, context?, threadId?, timeout? }`, `timeout` in milliseconds and at most `2147483647`.
 - Thread message: `{ role, content, metadata? }`, `role` one of `user` and `assistant` unless the server accepts more (see below).
 - Thread page: `GET /threads/:id?limit=50` answers the newest 50 messages and a `nextCursor`, and `?limit=50&cursor=<nextCursor>` the 50 before them, until an answer has no `nextCursor`. `limit` is a whole number from 1 to 1000. Without `limit` the route answers the whole thread.
 
-Every adapter reads these bodies with the same validators from `@cogitator-ai/server-shared` (`parseRunRequest`, `parseResumeRequest`, `parseAddMessageRequest`, `parseWorkflowRunRequest`), Fastify before its schema coerces types and Tetsu as refinements of its Zod schemas, so they refuse exactly the same bodies. A conformance suite in `@cogitator-ai/server-shared` (`CONFORMANCE_CASES`) runs the same requests against every adapter in its tests.
+Every adapter reads these bodies with the same validators from `@cogitator-ai/server-shared` (`parseRunRequest`, `parseResumeRequest`, `parseAddMessageRequest`, `parseWorkflowRunRequest`, `parseWorkflowResumeRequest`), Fastify before its schema coerces types and Tetsu as refinements of its Zod schemas, so they refuse exactly the same bodies. A conformance suite in `@cogitator-ai/server-shared` (`CONFORMANCE_CASES`) runs the same requests against every adapter in its tests.
 
 JSON endpoints read only JSON bodies: a `POST` whose body is not `application/json` (or another `+json` type) is answered `415 UNSUPPORTED_MEDIA_TYPE` before it is parsed. Browsers send `text/plain` and form bodies across origins without a CORS preflight, so reading them as JSON would let any web page start a run on a server without auth, or with the visitor's cookies.
 
@@ -74,6 +77,28 @@ JSON endpoints read only JSON bodies: a `POST` whose body is not `application/js
 | `traceId`               | always: links the answer to the server's traces                                                        |
 
 The answer never carries the system prompt, the history, trace spans (with raw tool arguments and errors) or the checkpoint of a paused run, which stays on the server and is resumed by thread id. The WebSocket `complete` event carries the same object, and the `finish` event of an agent stream the same `usage`, `threadId` and outcome fields. None includes the run's cost or duration.
+
+## Workflow checkpoints
+
+Give an adapter a `CheckpointStore` of `@cogitator-ai/workflows` as `workflowCheckpoints` (under `config` for Express) to run workflows with checkpoints over HTTP:
+
+```typescript
+import { PostgresCheckpointStore } from '@cogitator-ai/workflows';
+
+const api = cogitatorApp({
+  cogitator,
+  workflows: { shipping },
+  auth,
+  workflowCheckpoints: new PostgresCheckpointStore({ client: pool }),
+});
+```
+
+- A run or stream with `options.checkpoint: true` saves its checkpoints in the store as the caller's: each one gets the `userId` that `auth` returned as its `owner`, or none for an anonymous caller. The JSON answer and the `workflow_completed` stream event carry the last one as `checkpointId`.
+- `POST /workflows/:name/resume` with `{ checkpointId }` passes over the nodes the checkpoint completed and runs the rest, answered like `/run`, and `/resume/stream` streams it like `/stream`. The run limits hold as on `/run`, and the resumed run keeps saving checkpoints, so it can be resumed again.
+- A checkpoint that is missing, belongs to another user or to another workflow answers `404 CHECKPOINT_NOT_FOUND` before anything runs, on `/resume/stream` before the stream opens. An anonymous caller reaches only checkpoints saved without an owner. Without `workflowCheckpoints` the resume routes still exist and answer `404 CHECKPOINT_NOT_FOUND`, and `checkpoint: true` is refused.
+- A run that fails answers its error with the last checkpoint it saved as `checkpointId`, next to `code` and `message` (`{ error: { message, code, checkpointId } }`, Tetsu `{ status, message, error, checkpointId }`). Its stream sends a `workflow_failed` event with `{ checkpointId }` right before the `error` event. That is how a client gets the checkpoint of a failed run and resumes it. A resume that fails again names the checkpoint to resume from, its own last one or, when it saved none, the one it started from.
+
+`ownedCheckpoints(store, userId)` of `@cogitator-ai/server-shared` is the per-user view the adapters run the executor with, for routes of your own.
 
 ## Trusting Clients
 
@@ -169,7 +194,7 @@ Every stream also writes a heartbeat comment, `: keep-alive`, every 5 seconds wh
 
 Swarm routes close the swarm they build once the run ends, succeeded, failed or aborted: a distributed swarm holds two Redis connections and keeps its state in Redis until it is closed, which also gives that state its expiry. `GET /swarms` lists every agent of a swarm, its router and pipeline stages included.
 
-Workflow streams send `workflow` events named `node_started`, `node_completed`, `node_error`, `node_progress` and `workflow_completed`; swarm streams send `swarm` events named `agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, and `swarm_completed`. Disconnecting the client aborts the run.
+Workflow streams send `workflow` events named `node_started`, `node_completed`, `node_error`, `node_progress` and `workflow_completed`, or `workflow_failed` (with the `checkpointId` of a checkpointed run) right before the `error` event of a failed run; swarm streams send `swarm` events named `agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, and `swarm_completed`. Disconnecting the client aborts the run.
 
 The event types (`StreamEvent`, `TextDeltaEvent`, …), their factories (`createTextDeltaEvent`, `createFinishEvent`, …) and the `encodeSSE` / `encodeDone` helpers are exported from `@cogitator-ai/server-shared`, and the adapters re-export the event types. So are Zod schemas of the same shapes, for a client that checks what it receives:
 

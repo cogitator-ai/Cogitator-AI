@@ -14,6 +14,8 @@ import {
   readThreadPage,
   resolveSseHeartbeatMs,
   toAgentRunResponse,
+  toWorkflowCompletedData,
+  toWorkflowFailedData,
 } from '@cogitator-ai/server-shared';
 import type { StreamEvent } from '@cogitator-ai/server-shared';
 import { assertThreadAccess, ensureThreadAccess } from '@cogitator-ai/core';
@@ -21,7 +23,7 @@ import type {
   Message,
   RunResult,
   SwarmConfig,
-  Workflow,
+  WorkflowExecuteOptions,
   WorkflowResult,
   WorkflowState,
 } from '@cogitator-ai/types';
@@ -29,9 +31,15 @@ import { httpError } from '@tetsujs/core';
 import type { z } from 'zod';
 import { anonymousHook, resolveCaller } from './auth.js';
 import { holdConnection, jsonBody } from './connection.js';
-import { clientClosedRequest, cogitatorErrors, describeError } from './errors.js';
+import {
+  clientClosedRequest,
+  cogitatorErrors,
+  describeError,
+  WorkflowRunFailedError,
+} from './errors.js';
 import {
   checkThreadAccess,
+  checkWorkflowCheckpoint,
   executeSwarm,
   executeWorkflow,
   findAgent,
@@ -42,6 +50,7 @@ import {
   listTools,
   listWorkflows,
   resumeAgent,
+  resumeWorkflow,
   runAgent,
   runDepsOf,
   serializeSwarmUsage,
@@ -63,6 +72,7 @@ import {
   ResumeBody,
   RUN_FAILURES,
   requestSchemas,
+  WORKFLOW_RUN_FAILURES,
   SwarmListResponse,
   SwarmRunResponse,
   ThreadParams,
@@ -81,6 +91,14 @@ const AgentNotFound = errorEnvelope('AGENT_NOT_FOUND', 'No agent is registered u
 const WorkflowNotFound = errorEnvelope(
   'WORKFLOW_NOT_FOUND',
   'No workflow is registered under this name'
+);
+const WorkflowResumeNotFound = failureEnvelope(
+  404,
+  'No workflow is registered under this name, no checkpoint of it belongs to the caller (`CHECKPOINT_NOT_FOUND`), or a node called an agent or tool that does not exist'
+);
+const WorkflowStreamResumeNotFound = errorsEnvelope(
+  ['WORKFLOW_NOT_FOUND', 'CHECKPOINT_NOT_FOUND'],
+  'No workflow is registered under this name, or no checkpoint of it belongs to the caller'
 );
 const SwarmNotFound = errorEnvelope('SWARM_NOT_FOUND', 'No swarm is registered under this name');
 const RunNotFound = failureEnvelope(
@@ -131,10 +149,14 @@ const AGENT_STREAM_DESCRIPTION = `${STREAM_DESCRIPTION} The \`finish\` event car
 
 type RequestSchemas = ReturnType<typeof requestSchemas>;
 type SwarmRunRequest = z.output<RequestSchemas['SwarmRunBody']>;
-type WorkflowRunRequest = z.output<RequestSchemas['WorkflowRunBody']>;
 
 /** Starts or resumes an agent run on `threadId` with the callbacks of a stream. */
 type StreamedRun = (callbacks: AgentStreamCallbacks, threadId: string) => Promise<RunResult>;
+
+/** Runs or resumes a workflow with the node callbacks of a stream. */
+type StreamedWorkflow = (
+  callbacks: WorkflowExecuteOptions
+) => Promise<WorkflowResult<WorkflowState>>;
 
 const NotJson = errorEnvelope(
   'UNSUPPORTED_MEDIA_TYPE',
@@ -168,7 +190,8 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
   const admitted = anonymousHook(deps.anonymous);
   const errors = cogitatorErrors();
   const heartbeatMs = resolveSseHeartbeatMs(deps.sseHeartbeatMs);
-  const { RunBody, SwarmRunBody, WorkflowRunBody, AddMessageBody } = requestSchemas(deps);
+  const { RunBody, SwarmRunBody, WorkflowRunBody, WorkflowResumeBody, AddMessageBody } =
+    requestSchemas(deps);
   const streamOptions = () => ({ until: resolveSignal(deps.until), heartbeatMs });
 
   const memoryOf = async () => {
@@ -488,7 +511,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         body: WorkflowRunBody,
         response: {
           415: NotJson,
-          ...RUN_FAILURES,
+          ...WORKFLOW_RUN_FAILURES,
           200: WorkflowRunResponse,
           404: RunNotFound,
           501: NotImplemented,
@@ -509,7 +532,8 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
             workflow,
             ctx.body.input,
             ctx.body.options ?? {},
-            signal
+            signal,
+            ctx.cogitatorAuth
           );
           return toWorkflowRunResponse(result);
         } catch (error) {
@@ -535,8 +559,105 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       },
       handler: (ctx) => {
         const workflow = findWorkflow(deps, ctx.params.name);
-        const body = ctx.body;
-        return sse(ctx, (signal) => workflowEvents(deps, workflow, body, signal), streamOptions());
+        const { input, options } = ctx.body;
+        const auth = ctx.cogitatorAuth;
+        return sse(
+          ctx,
+          (signal) =>
+            workflowEvents(
+              (callbacks) =>
+                executeWorkflow(deps, workflow, input, { ...options, ...callbacks }, signal, auth),
+              signal
+            ),
+          streamOptions()
+        );
+      },
+    }),
+
+    resumeWorkflow: route({
+      method: 'POST',
+      path: '/workflows/:name/resume',
+      schema: {
+        params: NameParams,
+        body: WorkflowResumeBody,
+        response: {
+          415: NotJson,
+          ...WORKFLOW_RUN_FAILURES,
+          200: WorkflowRunResponse,
+          404: WorkflowResumeNotFound,
+          501: NotImplemented,
+        },
+      },
+      hooks: {
+        beforeParse: [caller, admitted, jsonBody],
+        beforeHandle: [holdConnection],
+        onError: [errors],
+      },
+      docs: {
+        summary: 'Resume a workflow from a checkpoint and wait for its final state',
+        description:
+          'The nodes the checkpoint completed are passed over, the rest run. Only a checkpoint of this workflow saved for the caller resumes, any other answers `404 CHECKPOINT_NOT_FOUND`.',
+        tags: ['workflows'],
+      },
+      handler: async (ctx) => {
+        const workflow = findWorkflow(deps, ctx.params.name);
+        const { checkpointId, options } = ctx.body;
+        const auth = ctx.cogitatorAuth;
+        await checkWorkflowCheckpoint(deps, workflow, checkpointId, auth);
+        const signal = ctx.req.signal;
+        try {
+          const result = await resumeWorkflow(
+            deps,
+            workflow,
+            checkpointId,
+            options ?? {},
+            signal,
+            auth
+          );
+          return toWorkflowRunResponse(result);
+        } catch (error) {
+          if (signal.aborted) throw clientClosedRequest();
+          throw error;
+        }
+      },
+    }),
+
+    streamResumeWorkflow: route({
+      method: 'POST',
+      path: '/workflows/:name/resume/stream',
+      schema: {
+        params: NameParams,
+        body: WorkflowResumeBody,
+        response: { 200: StreamOpened, 404: WorkflowStreamResumeNotFound, 415: NotJson },
+      },
+      hooks: { beforeParse: [caller, admitted, jsonBody], onError: [errors] },
+      docs: {
+        summary: 'Resume a workflow from a checkpoint and stream node events',
+        description: `${STREAM_DESCRIPTION} A checkpoint that is not one of this workflow saved for the caller answers \`404 CHECKPOINT_NOT_FOUND\` before the stream opens.`,
+        tags: ['workflows'],
+      },
+      handler: async (ctx) => {
+        const workflow = findWorkflow(deps, ctx.params.name);
+        const { checkpointId, options } = ctx.body;
+        const auth = ctx.cogitatorAuth;
+        await checkWorkflowCheckpoint(deps, workflow, checkpointId, auth);
+        return sse(
+          ctx,
+          (signal) =>
+            workflowEvents(
+              (callbacks) =>
+                resumeWorkflow(
+                  deps,
+                  workflow,
+                  checkpointId,
+                  { ...options, ...callbacks },
+                  signal,
+                  auth
+                ),
+              signal
+            ),
+          streamOptions()
+        );
       },
     }),
 
@@ -688,9 +809,7 @@ async function* agentEvents(
 }
 
 async function* workflowEvents(
-  deps: CogitatorDeps,
-  workflow: Workflow<WorkflowState>,
-  body: WorkflowRunRequest,
+  start: StreamedWorkflow,
   signal: AbortSignal
 ): AsyncGenerator<ServerSentEvent, void, undefined> {
   const messageId = generateId('wf');
@@ -702,35 +821,28 @@ async function* workflowEvents(
     yield* eventsOf<ServerSentEvent>(signal, async (emit) => {
       const event = (name: string, data: unknown) =>
         emit(sseEvent(createWorkflowEvent(name, data)));
-      result = await executeWorkflow(
-        deps,
-        workflow,
-        body.input,
-        {
-          ...body.options,
-          onNodeStart: (nodeName) => event('node_started', { nodeName, timestamp: Date.now() }),
-          onNodeComplete: (nodeName, output, duration) =>
-            event('node_completed', { nodeName, output, duration }),
-          onNodeError: (nodeName, error) =>
-            event('node_error', { nodeName, error: describeError(error).message }),
-          onNodeProgress: (nodeName, progress) => event('node_progress', { nodeName, progress }),
-        },
-        signal
-      );
+      result = await start({
+        onNodeStart: (nodeName) => event('node_started', { nodeName, timestamp: Date.now() }),
+        onNodeComplete: (nodeName, output, duration) =>
+          event('node_completed', { nodeName, output, duration }),
+        onNodeError: (nodeName, error) =>
+          event('node_error', { nodeName, error: describeError(error).message }),
+        onNodeProgress: (nodeName, progress) => event('node_progress', { nodeName, progress }),
+      });
     });
   } catch (error) {
     if (signal.aborted) return;
+    if (error instanceof WorkflowRunFailedError) {
+      yield sseEvent(createWorkflowEvent('workflow_failed', toWorkflowFailedData(error)));
+      yield* failure(error.failure);
+      return;
+    }
     yield* failure(error);
     return;
   }
 
   if (signal.aborted || !result) return;
-  yield sseEvent(
-    createWorkflowEvent('workflow_completed', {
-      workflowId: result.workflowId,
-      duration: result.duration,
-    })
-  );
+  yield sseEvent(createWorkflowEvent('workflow_completed', toWorkflowCompletedData(result)));
   yield sseEvent(createFinishEvent(messageId));
   yield DONE_EVENT;
 }

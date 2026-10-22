@@ -5,6 +5,9 @@ import {
   conformanceRunResult,
   swarmAgentNames,
   toAgentRunResponse,
+  toWorkflowCompletedData,
+  toWorkflowFailedData,
+  withResumedCheckpoint,
   withSwarm,
   type StreamEvent,
 } from '../index';
@@ -178,5 +181,40 @@ describe('swarmAgentNames', () => {
         pipeline: { stages: [{ agent: { name: 'review' } }] },
       })
     ).toEqual(['lead', 'a', 'b', 'mod', 'router', 'draft', 'review']);
+  });
+});
+
+describe('toWorkflowCompletedData', () => {
+  it('names the checkpoint of a run that saved one', () => {
+    expect(
+      toWorkflowCompletedData({ workflowId: 'wf_1', duration: 5, checkpointId: 'cp_1' })
+    ).toEqual({ workflowId: 'wf_1', duration: 5, checkpointId: 'cp_1' });
+  });
+
+  it('leaves the checkpoint out of a run without one', () => {
+    expect(toWorkflowCompletedData({ workflowId: 'wf_1', duration: 5 })).toEqual({
+      workflowId: 'wf_1',
+      duration: 5,
+    });
+  });
+});
+
+describe('toWorkflowFailedData', () => {
+  it('names the checkpoint a failed run saved, and nothing for one that saved none', () => {
+    expect(toWorkflowFailedData({ checkpointId: 'cp_1' })).toEqual({ checkpointId: 'cp_1' });
+    expect(toWorkflowFailedData({})).toEqual({});
+  });
+});
+
+describe('withResumedCheckpoint', () => {
+  it('names the checkpoint a resume started from when the resumed run saved none', () => {
+    const result: { workflowId: string; checkpointId?: string } = { workflowId: 'wf_1' };
+    expect(withResumedCheckpoint(result, 'cp_1')).toEqual({
+      workflowId: 'wf_1',
+      checkpointId: 'cp_1',
+    });
+    expect(withResumedCheckpoint({ checkpointId: 'cp_2' }, 'cp_1')).toEqual({
+      checkpointId: 'cp_2',
+    });
   });
 });

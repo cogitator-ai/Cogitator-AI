@@ -2,7 +2,7 @@ import type { BaseCtx } from '@tetsujs/core';
 import type { CallerHook } from './auth.js';
 import type { z } from 'zod';
 import type { Agent, Cogitator } from '@cogitator-ai/core';
-import type { SwarmConfig, Workflow, WorkflowState } from '@cogitator-ai/types';
+import type { CheckpointStore, SwarmConfig, Workflow, WorkflowState } from '@cogitator-ai/types';
 import type {
   AnonymousPolicy,
   AuthorizeThread as SharedAuthorizeThread,
@@ -25,6 +25,7 @@ import type {
   ThreadResponse,
   ToolListResponse,
   WorkflowListResponse,
+  WorkflowResumeBody,
   WorkflowRunBody,
   WorkflowRunResponse,
 } from './schemas.js';
@@ -150,12 +151,21 @@ export interface CogitatorDeps {
    * `assistant`. A `system` message is read by the model as operator instructions.
    */
   threadMessageRoles?: readonly ThreadMessageRole[];
+  /**
+   * Where workflow runs keep their checkpoints. With a store, a run with
+   * `options.checkpoint: true` saves checkpoints owned by the caller, its answer names the
+   * last one as `checkpointId`, and `POST /workflows/:name/resume` (and `/resume/stream`)
+   * resumes from one of them. Without it such a run fails validation and every resume answers
+   * `404 CHECKPOINT_NOT_FOUND`.
+   */
+  workflowCheckpoints?: CheckpointStore;
 }
 
 export type AgentRunRequest = z.input<typeof RunBody>;
 export type AgentResumeRequest = z.input<typeof ResumeBody>;
 export type SwarmRunRequest = z.input<typeof SwarmRunBody>;
 export type WorkflowRunRequest = z.input<typeof WorkflowRunBody>;
+export type WorkflowResumeRequest = z.input<typeof WorkflowResumeBody>;
 export type AddMessageRequest = z.input<typeof AddMessageBody>;
 export type HealthResponseBody = z.output<typeof HealthResponse>;
 export type AgentListResponseBody = z.output<typeof AgentListResponse>;

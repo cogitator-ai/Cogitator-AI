@@ -32,6 +32,7 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
     limits: checkRunLimits(opts.limits),
     authorizeThread: opts.authorizeThread,
     deps: opts.deps,
+    workflowCheckpoints: opts.workflowCheckpoints,
   };
 
   fastify.decorate('cogitator', context);

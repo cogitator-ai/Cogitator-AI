@@ -11,9 +11,11 @@ import type {
   ReadinessResponse,
   RunLimits,
   ThreadMessageRole,
+  WorkflowResumeRequestBody,
   WorkflowRunRequestBody,
 } from '@cogitator-ai/server-shared';
 import type {
+  CheckpointStore,
   Message,
   ToolCall,
   ToolResult,
@@ -133,6 +135,14 @@ export interface CogitatorAppOptions {
    * request body.
    */
   deps?: DepsFunction;
+  /**
+   * Where workflow runs keep their checkpoints. With a store, a run with
+   * `options.checkpoint: true` saves checkpoints owned by the caller, its answer names the
+   * last one as `checkpointId`, and `POST /workflows/:name/resume` (and `/resume/stream`)
+   * resumes from one of them. Without it such a run is refused with 400 and every resume
+   * answers 404 `CHECKPOINT_NOT_FOUND`.
+   */
+  workflowCheckpoints?: CheckpointStore;
 }
 
 export interface CogitatorContext {
@@ -152,6 +162,8 @@ export interface CogitatorContext {
   authorizeThread?: AuthorizeThread<AuthContext>;
   /** The `deps` option. Default: runs get no deps */
   deps?: DepsFunction;
+  /** The `workflowCheckpoints` option. Default: none, workflow runs keep no checkpoints */
+  workflowCheckpoints?: CheckpointStore;
 }
 
 export type HonoEnv = {
@@ -225,7 +237,11 @@ export interface WorkflowRunResponse {
   state: WorkflowState;
   duration: number;
   nodeResults: Record<string, { output: unknown; duration: number }>;
+  /** The last checkpoint of a run with `options.checkpoint` or of a resume */
+  checkpointId?: string;
 }
+
+export type WorkflowResumeRequest = WorkflowResumeRequestBody;
 
 export interface WorkflowStatusResponse {
   runId: string;

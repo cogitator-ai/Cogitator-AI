@@ -84,6 +84,7 @@ export {
   parseResumeRequest,
   parseRunRequest,
   parseSwarmRunRequest,
+  parseWorkflowResumeRequest,
   parseWorkflowRunRequest,
 } from './validation.js';
 
@@ -97,8 +98,13 @@ export type {
   RunRequestOptions,
   SwarmRunRequestBody,
   ThreadMessageRole,
+  WorkflowResumeRequestBody,
+  WorkflowRunLimitsBody,
   WorkflowRunRequestBody,
+  WorkflowRunRequestOptions,
 } from './validation.js';
+
+export { checkpointNotFound, findOwnedCheckpoint, ownedCheckpoints } from './checkpoints.js';
 
 export {
   DEFAULT_JSON_BODY_LIMIT,
@@ -118,9 +124,18 @@ export {
   toAgentRunResponse,
   toAgentToolCall,
   toPendingApprovals,
+  toWorkflowCompletedData,
+  toWorkflowFailedData,
+  withResumedCheckpoint,
 } from './response.js';
 
-export type { AgentRunOutcome, AgentRunResponse, AgentToolCall } from './response.js';
+export type {
+  AgentRunOutcome,
+  AgentRunResponse,
+  AgentToolCall,
+  WorkflowCompletedData,
+  WorkflowFailedData,
+} from './response.js';
 
 export { AgentStreamSession, createThreadId } from './stream-session.js';
 
@@ -187,6 +202,7 @@ export {
   swarmTimeoutWithin,
   threadForbidden,
   workflowOptionsWithin,
+  workflowRunFailure,
 } from './contract.js';
 
 export type {

@@ -25,6 +25,7 @@ export function createContextMiddleware(opts: CogitatorAppOptions) {
     authorizeThread: opts.authorizeThread,
     anonymous: opts.anonymous,
     deps: opts.deps,
+    workflowCheckpoints: opts.workflowCheckpoints,
   };
 
   return async (ctx: Context, next: Next) => {

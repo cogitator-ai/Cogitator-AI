@@ -92,6 +92,8 @@ export interface HttpErrorDescription {
   message: string;
   /** Seconds the client should wait before it tries again, sent as `Retry-After` */
   retryAfter?: number;
+  /** The last checkpoint a failed workflow run saved, to resume it from */
+  checkpointId?: string;
 }
 
 /** A caller the anonymous policy turns away */
@@ -182,12 +184,34 @@ export const INTERNAL_ERROR: HttpErrorDescription = {
 
 /** The error envelope every adapter but Tetsu answers with */
 export interface ErrorEnvelope {
-  error: { message: string; code: string };
+  error: {
+    message: string;
+    code: string;
+    /** The last checkpoint a failed workflow run saved: resume the run from it */
+    checkpointId?: string;
+  };
 }
 
 /** The body of an answer to an error */
 export function errorEnvelope(error: HttpErrorDescription): ErrorEnvelope {
-  return { error: { message: error.message, code: error.code } };
+  return {
+    error: {
+      message: error.message,
+      code: error.code,
+      ...(error.checkpointId !== undefined && { checkpointId: error.checkpointId }),
+    },
+  };
+}
+
+/**
+ * How a failed workflow run is answered: as `described`, with the last checkpoint the run saved
+ * when it saved one, so the client can resume it with `/workflows/:name/resume`
+ */
+export function workflowRunFailure(
+  described: HttpErrorDescription,
+  checkpointId: string | undefined
+): HttpErrorDescription {
+  return checkpointId === undefined ? described : { ...described, checkpointId };
 }
 
 /** The headers of an answer to an error: `Retry-After` when the error says when to retry */

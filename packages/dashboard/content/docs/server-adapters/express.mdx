@@ -94,6 +94,7 @@ interface CogitatorServerConfig {
       threadId: string
     ) => boolean | Promise<boolean>;
     deps?: (req: Request) => unknown | Promise<unknown>; // deps of HTTP agent runs, built per request
+    workflowCheckpoints?: CheckpointStore; // workflow checkpoints and /workflows/:name/resume, none by default
   };
 }
 ```
@@ -103,10 +104,10 @@ interface CogitatorServerConfig {
 ## Request Handling
 
 - Agent and swarm bodies are validated: `input` must contain more than whitespace (`""` and `"   "` are refused before the model is called), `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number of at most `MAX_RUN_TIMEOUT_MS` (2147483647, the longest delay a timer can hold). Invalid or malformed JSON bodies return `400 INVALID_INPUT`.
-- Workflow `options` are limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean); other options are dropped and wrongly typed ones return `400`.
+- Workflow `options` are limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean), other options are dropped and wrongly typed ones return `400`. `checkpoint: true` needs `config.workflowCheckpoints`, which also serves `POST /workflows/:name/resume` and `/resume/stream`, see [Workflow checkpoints](/docs/server-adapters#workflow-checkpoints).
 - With `limits` set, a swarm `timeout` and workflow `maxIterations` and `maxConcurrency` are held to the operator's caps, and a request that asks for nothing gets the cap. See [Limits](#limits).
 - Thread messages need a `role` of `user`, `assistant` or `system` and a non-empty string `content`.
-- A workflow that fails answers the error it failed with, mapped like any run error (a node that hit `LLM_RATE_LIMITED` answers `429` with `Retry-After`, an internal error `500 INTERNAL_ERROR`), and its stream ends with an `error` event carrying that code instead of `workflow_completed`. Without `@cogitator-ai/workflows` or `@cogitator-ai/swarms` installed, those routes return `501 UNIMPLEMENTED`.
+- A workflow that fails answers the error it failed with, mapped like any run error (a node that hit `LLM_RATE_LIMITED` answers `429` with `Retry-After`, an internal error `500 INTERNAL_ERROR`), and its stream ends with a `workflow_failed` event and an `error` event carrying that code instead of `workflow_completed`. A run with `options.checkpoint` names the last checkpoint it saved as `checkpointId` in both, to resume it from. Without `@cogitator-ai/workflows` or `@cogitator-ai/swarms` installed, those routes return `501 UNIMPLEMENTED`.
 - Unknown agents, workflows, swarms and routes return `404 NOT_FOUND`, except that under `anonymous: 'deny'` an unknown route answers a caller without a `userId` with `401 UNAUTHORIZED`. `GET /swarms/:name/blackboard` returns the swarm's configured `blackboard.sections`, or `400` when its blackboard is not enabled.
 - The thread routes use `cogitator.getMemory()` and return `503 UNAVAILABLE` when the runtime has no memory. Another user's thread returns `403 THREAD_ACCESS_DENIED`, and a thread `authorizeThread` refuses `403 THREAD_FORBIDDEN`.
 - `GET /threads/:id` answers the whole thread, or with `?limit=50` the newest 50 messages and a `nextCursor`, which `?limit=50&cursor=<nextCursor>` follows to the page before. A bad `limit` or `cursor` returns `400 INVALID_INPUT`.

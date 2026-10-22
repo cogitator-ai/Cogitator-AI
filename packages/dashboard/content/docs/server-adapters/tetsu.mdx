@@ -44,7 +44,7 @@ Bun.serve({ ...app, port: 3000 });
 
 ### Long runs on Bun
 
-`Bun.serve` closes a connection that stays silent for `idleTimeout` seconds, 10 by default, so without help a run that waits on a slow tool or model for longer ends with the connection closed. The controller keeps both kinds of answer open without any setting: the JSON routes (`run`, `resume`, workflow and swarm `run`) lift the idle timeout for their own request once its body is validated, and SSE streams write a heartbeat comment every `sseHeartbeatMs` (5 s by default). If you set `idleTimeout`, keep it above `sseHeartbeatMs` and at 5 seconds or more, since Bun cuts connections at once below that whatever is written. See [Long-Running Runs](/docs/server-adapters#long-running-runs) for proxies and load balancers.
+`Bun.serve` closes a connection that stays silent for `idleTimeout` seconds, 10 by default, so without help a run that waits on a slow tool or model for longer ends with the connection closed. The controller keeps both kinds of answer open without any setting: the JSON routes (`run`, `resume`, workflow `run` and `resume`, swarm `run`) lift the idle timeout for their own request once its body is validated, and SSE streams write a heartbeat comment every `sseHeartbeatMs` (5 s by default). If you set `idleTimeout`, keep it above `sseHeartbeatMs` and at 5 seconds or more, since Bun cuts connections at once below that whatever is written. See [Long-Running Runs](/docs/server-adapters#long-running-runs) for proxies and load balancers.
 
 The routes are the [common endpoints](/docs/server-adapters#common-endpoints) under the group's prefix. The document is at `/openapi.json` and the page at `/docs`.
 
@@ -66,6 +66,7 @@ interface CogitatorDeps {
   sseHeartbeatMs?: number; // SSE heartbeat interval in ms, default 5000, 0 turns it off
   acceptContext?: boolean | string[]; // context keys clients may send: none by default, a list, or true for any
   threadMessageRoles?: ('user' | 'assistant' | 'system')[]; // roles of POST /threads/:id/messages, default user and assistant
+  workflowCheckpoints?: CheckpointStore; // workflow checkpoints and /workflows/:name/resume, none by default
 }
 ```
 
@@ -80,6 +81,7 @@ Every error is answered in Tetsu's envelope `{ status, message, error }`. A requ
 | 403    | `THREAD_ACCESS_DENIED`   | The thread belongs to another user                                                                            |
 | 403    | `THREAD_FORBIDDEN`       | `authorizeThread` refused the thread                                                                          |
 | 404    | `AGENT_NOT_FOUND`, …     | No agent, workflow or swarm with that name                                                                    |
+| 404    | `CHECKPOINT_NOT_FOUND`   | A workflow resume named a checkpoint that is missing, of another user or of another workflow                  |
 | 409    | `BLACKBOARD_DISABLED`    | The swarm has no blackboard                                                                                   |
 | 409    | `RUN_NOT_PAUSED`         | A resume named a thread without a paused run                                                                  |
 | 413    | `BODY_TOO_LARGE`         | The body is over the application's limit                                                                      |
@@ -184,6 +186,10 @@ cogitatorController({
 ```
 
 The request schemas show each limit as the default of the field it caps, with a description, and not as a `maximum`, since a larger value is held to the limit rather than refused.
+
+## Workflow Checkpoints
+
+With `workflowCheckpoints`, a workflow run with `options.checkpoint: true` saves its checkpoints as the caller's and answers the last one as `checkpointId`. A run that fails answers its error envelope with that `checkpointId` (`{ status, message, error, checkpointId }`), and its stream sends `workflow_failed` with `{ checkpointId }` right before the `error` event. Then `POST /workflows/:name/resume` (or `/resume/stream`) with `{ checkpointId, options? }` runs the nodes the checkpoint left. A checkpoint that is missing, of another user or of another workflow answers `404 CHECKPOINT_NOT_FOUND` before anything runs. Without it `checkpoint: true` fails validation with `422 VALIDATION_FAILED` and every resume answers `404 CHECKPOINT_NOT_FOUND`, see [Workflow checkpoints](/docs/server-adapters#workflow-checkpoints).
 
 ## Approvals
 

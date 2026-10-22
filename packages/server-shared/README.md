@@ -87,7 +87,7 @@ Standardized Server-Sent Events protocol for agent runs, workflow runs, swarm ru
 - `createApprovalRequiredEvent(threadId, approvals)`: Emits an `approval-required` event when tool calls require human-in-the-loop review, pausing the run.
 - `createErrorEvent(message, code?)`: Builds an `error` stream event (`{ type: 'error', message, code }`).
 - `createFinishEvent(messageId, usage?, details?)`: Emits the terminal `finish` event containing sanitized token counts and run completion details (`AgentRunOutcome`).
-- `createWorkflowEvent(event, data)`: Emits workflow execution events (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`).
+- `createWorkflowEvent(event, data)`: Emits workflow execution events (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`, `workflow_failed`).
 - `createSwarmEvent(event, data)`: Emits multi-agent swarm coordination events (`agent_start`, `agent_complete`, `agent_error`, `message`, `swarm_completed`).
 
 #### Protocol Types
@@ -167,7 +167,8 @@ Uniform validation logic across all adapters to reject malformed payloads with H
 - `parseSwarmRunRequest(body, options?)`: Extends `parseRunRequest` with positive finite `timeout` validation up to `MAX_RUN_TIMEOUT_MS`.
 - `parseResumeRequest(body)`: Validates `POST /agents/:name/resume` payloads (`threadId`, `decisions` map, and `defaultDecision`).
 - `parseAddMessageRequest(body, options?)`: Validates `POST /threads/:id/messages` payloads (`role`, non-blank `content`, optional `metadata`).
-- `parseWorkflowRunRequest(body)`: Validates `POST /workflows/:name/run` payloads (`input` object, integer `maxConcurrency`, integer `maxIterations`; rejects `checkpoint: true` since servers run stateless executors).
+- `parseWorkflowRunRequest(body, options?)`: Validates `POST /workflows/:name/run` payloads (`input` object, integer `maxConcurrency`, integer `maxIterations`, boolean `checkpoint`). `checkpoint: true` is accepted only with `{ checkpoints: true }`, for a server that keeps a checkpoint store, and refused otherwise.
+- `parseWorkflowResumeRequest(body)`: Validates `POST /workflows/:name/resume` payloads (non-blank `checkpointId`, the same `maxConcurrency` and `maxIterations` options).
 - `isNonBlankString(value)`: Type guard ensuring value is a string with at least one non-whitespace character.
 - `isJsonObject(value)`: Type guard ensuring value is a non-null, non-array plain object.
 - `NON_BLANK_PATTERN`: Regex pattern string (`"\\S"`) for schema-driven adapters (e.g., Fastify, Tetsu).
@@ -187,6 +188,9 @@ Uniform validation logic across all adapters to reject malformed payloads with H
 - `AddMessageRequestOptions`: Options configuring permitted thread message roles.
 - `ThreadMessageRole`: Supported message roles (`'user' | 'assistant' | 'system'`).
 - `WorkflowRunRequestBody`: Validated workflow run request body.
+- `WorkflowRunRequestOptions`: Whether the server keeps a checkpoint store (`checkpoints`), so a run may ask for checkpoints.
+- `WorkflowResumeRequestBody`: Validated workflow resume request body.
+- `WorkflowRunLimitsBody`: The `maxConcurrency` and `maxIterations` options of a workflow run or resume.
 
 ### 6. Request Body Parsing & Media Type Validation
 
@@ -219,6 +223,9 @@ Sanitizes runtime results into safe client-facing JSON responses without leaking
 - `toAgentToolCall(call)`: Sanitizes tool calls into `{ id, name, arguments }`, stripping provider internal state.
 - `toPendingApprovals(requests)`: Sanitizes pending tool approval requests for human review.
 - `toRunUsage(usage)`: Filters runtime usage down to client-facing token counts (`RunUsage`), omitting server-side cost and duration.
+- `toWorkflowCompletedData(result)`: The data of the `workflow_completed` stream event, `{ workflowId, duration, checkpointId? }` (`WorkflowCompletedData`).
+- `toWorkflowFailedData(result)`: The data of the `workflow_failed` event a workflow stream sends right before its `error` event, `{ checkpointId? }` (`WorkflowFailedData`).
+- `withResumedCheckpoint(result, checkpointId)`: The result of a workflow resume, naming the checkpoint it started from when the resumed run saved none of its own, so a resume that fails at once can be resumed again.
 
 #### Types
 
@@ -268,7 +275,7 @@ Shared conformance test cases and mock runtime ensuring all adapters behave iden
 - `ConformanceCheckOptions`: Custom status code and error code mapping options for `checkConformance` (e.g. for adapters following framework-specific error conventions).
 - `ConformanceResponse`: Standardized response representation for adapter fetchers, with the answer's `headers` (names in lower case) for the cases that check `Retry-After`.
 - `ConformanceRoute`: Union of supported conformance route names.
-- `ConformanceServerOptions`: Adapter server options required by specific conformance test cases: `acceptContext`, `threadMessageRoles`, `limits`, `anonymous`, `forbiddenThreads` (threads the adapter's `authorizeThread` refuses) and `deps` (what its `deps` hook returns).
+- `ConformanceServerOptions`: Adapter server options required by specific conformance test cases: `acceptContext`, `threadMessageRoles`, `limits`, `anonymous`, `forbiddenThreads` (threads the adapter's `authorizeThread` refuses), `deps` (what its `deps` hook returns) and `workflowCheckpoints` (the adapter's workflow checkpoint store, an empty one in the cases).
 
 ### 11. Server Contract
 
@@ -276,10 +283,13 @@ What every adapter keeps the same, so an application behaves alike on any of the
 
 - `RunLimits`, `checkRunLimits(limits)`: The operator's caps on a run (`swarmTimeout`, `workflowMaxIterations`, `workflowMaxConcurrency`), checked to be positive integers.
 - `swarmTimeoutWithin(requested, limits)`, `workflowOptionsWithin(options, limits)`: What a run gets, the smaller of what the request asked and the cap, the cap when it asked for nothing.
+- `ownedCheckpoints(store, owner)`: A `CheckpointStore` of one user in a store servers share: `save` writes the checkpoint with `owner` (no `owner` key for `undefined`), `load` answers `null` for a checkpoint of anyone else, `list` keeps only the owner's, and `delete` removes only an owned one. A caller without a user id owns only checkpoints saved without one. Adapters run workflows with `new WorkflowExecutor(cogitator, ownedCheckpoints(store, userId))`.
+- `findOwnedCheckpoint(store, owner, workflowName, checkpointId)`, `checkpointNotFound(checkpointId)`: The checkpoint a workflow resume names, when it is one of that workflow owned by the caller, and the `404 CHECKPOINT_NOT_FOUND` the adapter answers otherwise, also when it keeps no store.
 - `AuthorizeThread`, `authorizeThreadAccess(authorize, auth, threadId)`, `threadForbidden(threadId)`: The hook an adapter asks about every thread a request names, and the `403 THREAD_FORBIDDEN` it answers when the hook says no.
 - `AnonymousPolicy`, `admitCaller(userId, policy)`, `UNAUTHORIZED`: `'deny'` turns away a caller without a user id with `401 UNAUTHORIZED`.
 - `describeHttpError(error)`: The status, code, message and `retryAfter` (whole seconds) an error is answered with: a `CogitatorError` its own status or the one of its code, a `SwarmTimeoutError` `504 RUN_TIMEOUT`, anything else `undefined`, which the adapter logs and answers with `INTERNAL_ERROR` without its text. `cogitatorErrorStatus` and `retryAfterSeconds` are the parts of it.
-- `errorEnvelope(error)`, `errorHeaders(error)`: The `{ error: { message, code } }` body and the `Retry-After` header of an error answer.
+- `errorEnvelope(error)`, `errorHeaders(error)`: The `{ error: { message, code, checkpointId? } }` body and the `Retry-After` header of an error answer.
+- `workflowRunFailure(described, checkpointId)`: How a failed workflow run is answered: as the error it failed with, plus the `checkpointId` of the last checkpoint it saved, which `errorEnvelope` carries next to `code` and `message`. A run that saved none is answered as any other error.
 - `parseThreadPageQuery(query)`, `readThreadPage(memory, threadId, page, thread?)`, `MAX_THREAD_PAGE_LIMIT`: `GET /threads/:id?limit&cursor`, the newest `limit` messages of what is left and a `nextCursor` for the page before them. The cursor tells apart entries that share a time, so no message is skipped or repeated across pages.
 
 ## Packages Built on `@cogitator-ai/server-shared`

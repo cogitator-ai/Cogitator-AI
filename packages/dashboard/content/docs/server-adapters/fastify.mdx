@@ -85,6 +85,7 @@ interface CogitatorPluginOptions {
   anonymous?: 'allow' | 'deny'; // default: 'allow'
   authorizeThread?: (auth: AuthContext | undefined, threadId: string) => boolean | Promise<boolean>;
   deps?: (request: FastifyRequest) => unknown | Promise<unknown>; // deps of agent runs, built per request
+  workflowCheckpoints?: CheckpointStore; // workflow checkpoints and /workflows/:name/resume, none by default
 }
 ```
 
@@ -275,12 +276,14 @@ import {
   AgentResumeRequestSchema,
   AddMessageRequestSchema,
   WorkflowRunRequestSchema,
+  WorkflowResumeRequestSchema,
   SwarmRunRequestSchema,
   ThreadPageQuerySchema,
   ThreadResponseSchema,
   workflowRunRequestSchema,
+  workflowResumeRequestSchema,
   swarmRunRequestSchema,
 } from '@cogitator-ai/fastify';
 ```
 
-`AgentRunRequestSchema` and `SwarmRunRequestSchema` require an `input` with more than whitespace (the `RUN_INPUT_SCHEMA` of `@cogitator-ai/server-shared`), `AgentResumeRequestSchema` a `threadId` with optional `decisions` / `defaultDecision` (the swarm `timeout` must be greater than 0 and at most `MAX_RUN_TIMEOUT_MS`), `AddMessageRequestSchema` requires a non-empty `content` and a `user`/`assistant`/`system` role, and `WorkflowRunRequestSchema.options` only allows `maxConcurrency`/`maxIterations` (integers ≥ 1) and `checkpoint` (`additionalProperties: false`). These can be used in custom Fastify route schemas for native validation. `workflowRunRequestSchema(limits)` and `swarmRunRequestSchema(limits)` build the run schemas with the operator's limits as defaults, and `ThreadPageQuerySchema` and `ThreadResponseSchema` describe a thread page.
+`AgentRunRequestSchema` and `SwarmRunRequestSchema` require an `input` with more than whitespace (the `RUN_INPUT_SCHEMA` of `@cogitator-ai/server-shared`), `AgentResumeRequestSchema` a `threadId` with optional `decisions` / `defaultDecision` (the swarm `timeout` must be greater than 0 and at most `MAX_RUN_TIMEOUT_MS`), `AddMessageRequestSchema` requires a non-empty `content` and a `user`/`assistant`/`system` role, and `WorkflowRunRequestSchema.options` only allows `maxConcurrency`/`maxIterations` (integers ≥ 1) and `checkpoint` (`additionalProperties: false`), `true` only from `workflowRunRequestSchema(limits, true)`, as on a plugin with `workflowCheckpoints` (see [Workflow checkpoints](/docs/server-adapters#workflow-checkpoints)), and `WorkflowResumeRequestSchema` requires a non-blank `checkpointId`. These can be used in custom Fastify route schemas for native validation. `workflowRunRequestSchema(limits, checkpoints)`, `workflowResumeRequestSchema(limits)` and `swarmRunRequestSchema(limits)` build the schemas with the operator's limits as defaults, and `ThreadPageQuerySchema` and `ThreadResponseSchema` describe a thread page.

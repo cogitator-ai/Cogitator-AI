@@ -65,13 +65,14 @@ interface CogitatorAppOptions {
   anonymous?: 'allow' | 'deny'; // callers without a userId, default 'allow', 'deny' answers 401 UNAUTHORIZED
   authorizeThread?: (auth, threadId) => boolean | Promise<boolean>; // false answers 403 THREAD_FORBIDDEN
   deps?: (c) => unknown | Promise<unknown>; // the deps agent runs pass to their tools, never from the body
+  workflowCheckpoints?: CheckpointStore; // workflow checkpoints and /workflows/:name/resume, none by default
 }
 ```
 
 ## Request Handling
 
 - Bodies are validated before anything reaches the runtime: `input` must contain more than whitespace (`""` and `"   "` are refused before the model is called), `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number of at most `MAX_RUN_TIMEOUT_MS` (2147483647, the longest delay a timer can hold). Invalid bodies return `400 INVALID_INPUT`; bodies above `bodyLimit` return `413 PAYLOAD_TOO_LARGE`.
-- Workflow `options` are limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean); other options are dropped and wrongly typed ones return `400 INVALID_INPUT`. The body itself is optional.
+- Workflow `options` are limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint` (boolean), other options are dropped and wrongly typed ones return `400 INVALID_INPUT`. The body itself is optional. `checkpoint: true` needs `workflowCheckpoints`, which also serves `POST /workflows/:name/resume` and `/resume/stream`, see [Workflow checkpoints](/docs/server-adapters#workflow-checkpoints).
 - Thread messages accept the roles `user`, `assistant` and `system`; `metadata` is stored with the entry.
 - Unknown agents, workflows and swarms return `404 NOT_FOUND`; workflow and swarm routes return `501 UNIMPLEMENTED` when `@cogitator-ai/workflows` or `@cogitator-ai/swarms` is not installed. `GET /swarms/:name/blackboard` returns the configured `blackboard.sections`, or `400` when the blackboard is disabled.
 - The thread routes use `cogitator.getMemory()` and return `503 UNAVAILABLE` without memory; another user's thread returns `403 THREAD_ACCESS_DENIED`.
@@ -102,7 +103,7 @@ export default { fetch: app.fetch, port: 3000 };
 
 #### Long runs on Bun
 
-`Bun.serve` closes a connection that stays silent for `idleTimeout` seconds, 10 by default, so without help a run that waits on a slow tool or model for longer ends with the connection closed. The adapter keeps both kinds of answer open: SSE streams write a heartbeat comment every `sseHeartbeatMs` (5 s by default), and the JSON routes (`run`, `resume`, workflow and swarm `run`) lift the idle timeout for their own request once its body is read, through the server Bun passes to `fetch`. If you set `idleTimeout`, keep it above `sseHeartbeatMs` and at 5 seconds or more, since Bun cuts connections at once below that whatever is written. See [Long-Running Runs](/docs/server-adapters#long-running-runs) for proxies and load balancers.
+`Bun.serve` closes a connection that stays silent for `idleTimeout` seconds, 10 by default, so without help a run that waits on a slow tool or model for longer ends with the connection closed. The adapter keeps both kinds of answer open: SSE streams write a heartbeat comment every `sseHeartbeatMs` (5 s by default), and the JSON routes (`run`, `resume`, workflow `run` and `resume`, swarm `run`) lift the idle timeout for their own request once its body is read, through the server Bun passes to `fetch`. If you set `idleTimeout`, keep it above `sseHeartbeatMs` and at 5 seconds or more, since Bun cuts connections at once below that whatever is written. See [Long-Running Runs](/docs/server-adapters#long-running-runs) for proxies and load balancers.
 
 ### Deno
 

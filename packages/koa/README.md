@@ -44,23 +44,24 @@ Creates a Koa Router with all Cogitator endpoints.
 
 **Options:**
 
-| Option               | Type                                              | Description                                                                                                                                                      |
-| -------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cogitator`          | `Cogitator`                                       | **Required.** Cogitator runtime instance                                                                                                                         |
-| `agents`             | `Record<string, Agent>`                           | Named agents to expose                                                                                                                                           |
-| `workflows`          | `Record<string, Workflow>`                        | Named workflows                                                                                                                                                  |
-| `swarms`             | `Record<string, SwarmConfig>`                     | Named swarms                                                                                                                                                     |
-| `auth`               | `AuthFunction`                                    | `(ctx) => AuthContext \| undefined` (sync or async), receives the Koa Context, throw to answer `401 UNAUTHORIZED`                                                |
-| `enableSwagger`      | `boolean`                                         | Serve `/openapi.json` and Swagger UI at `/docs`                                                                                                                  |
-| `swagger`            | `SwaggerConfig`                                   | Swagger configuration                                                                                                                                            |
-| `bodyLimit`          | `number`                                          | Max JSON body size in bytes (default 1 MiB)                                                                                                                      |
-| `sseHeartbeatMs`     | `number`                                          | How often SSE streams write a `: keep-alive` comment while a run is silent (default `5000`, `0` turns it off)                                                    |
-| `acceptContext`      | `boolean \| string[]`                             | Keys of a run `context` clients may send: none by default, a list, or `true` for any (the model reads it as data from the application)                           |
-| `threadMessageRoles` | `ThreadMessageRole[]`                             | Roles `POST /threads/:id/messages` accepts (default `user` and `assistant`)                                                                                      |
-| `limits`             | `RunLimits`                                       | `{ swarmTimeout?, workflowMaxIterations?, workflowMaxConcurrency? }`: caps on what a request may ask a swarm or workflow run for (see [Run limits](#run-limits)) |
-| `anonymous`          | `'allow' \| 'deny'`                               | Whether callers without a `userId` may use the API (default `'allow'`), `'deny'` answers `401 UNAUTHORIZED`                                                      |
-| `authorizeThread`    | `(auth, threadId) => boolean \| Promise<boolean>` | Decides whether a caller may touch a thread, on top of the owner check, `false` answers `403 THREAD_FORBIDDEN`                                                   |
-| `deps`               | `(ctx) => unknown \| Promise<unknown>`            | Builds the `deps` agent runs pass to their tools, from the Koa Context (see [Run deps](#run-deps))                                                               |
+| Option                | Type                                              | Description                                                                                                                                                      |
+| --------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cogitator`           | `Cogitator`                                       | **Required.** Cogitator runtime instance                                                                                                                         |
+| `agents`              | `Record<string, Agent>`                           | Named agents to expose                                                                                                                                           |
+| `workflows`           | `Record<string, Workflow>`                        | Named workflows                                                                                                                                                  |
+| `swarms`              | `Record<string, SwarmConfig>`                     | Named swarms                                                                                                                                                     |
+| `auth`                | `AuthFunction`                                    | `(ctx) => AuthContext \| undefined` (sync or async), receives the Koa Context, throw to answer `401 UNAUTHORIZED`                                                |
+| `enableSwagger`       | `boolean`                                         | Serve `/openapi.json` and Swagger UI at `/docs`                                                                                                                  |
+| `swagger`             | `SwaggerConfig`                                   | Swagger configuration                                                                                                                                            |
+| `bodyLimit`           | `number`                                          | Max JSON body size in bytes (default 1 MiB)                                                                                                                      |
+| `sseHeartbeatMs`      | `number`                                          | How often SSE streams write a `: keep-alive` comment while a run is silent (default `5000`, `0` turns it off)                                                    |
+| `acceptContext`       | `boolean \| string[]`                             | Keys of a run `context` clients may send: none by default, a list, or `true` for any (the model reads it as data from the application)                           |
+| `threadMessageRoles`  | `ThreadMessageRole[]`                             | Roles `POST /threads/:id/messages` accepts (default `user` and `assistant`)                                                                                      |
+| `limits`              | `RunLimits`                                       | `{ swarmTimeout?, workflowMaxIterations?, workflowMaxConcurrency? }`: caps on what a request may ask a swarm or workflow run for (see [Run limits](#run-limits)) |
+| `anonymous`           | `'allow' \| 'deny'`                               | Whether callers without a `userId` may use the API (default `'allow'`), `'deny'` answers `401 UNAUTHORIZED`                                                      |
+| `authorizeThread`     | `(auth, threadId) => boolean \| Promise<boolean>` | Decides whether a caller may touch a thread, on top of the owner check, `false` answers `403 THREAD_FORBIDDEN`                                                   |
+| `deps`                | `(ctx) => unknown \| Promise<unknown>`            | Builds the `deps` agent runs pass to their tools, from the Koa Context (see [Run deps](#run-deps))                                                               |
+| `workflowCheckpoints` | `CheckpointStore`                                 | Where workflow runs keep their checkpoints, for `options.checkpoint` and `/resume` (see [Checkpoints and resume](#checkpoints-and-resume))                       |
 
 WebSocket support is attached to the HTTP server with [`setupWebSocket`](#websocket), not through router options.
 
@@ -71,7 +72,7 @@ The router answers `OPTIONS` for its own paths with `204` and the methods they s
 - Request bodies are validated before anything reaches the runtime: `input` must contain more than whitespace (`""` and `"   "` are refused before the model is called), `context` an object, `threadId` a non-empty string, swarm `timeout` a positive number. Invalid bodies return `400 INVALID_INPUT` with the offending field in the message. The validator comes from `@cogitator-ai/server-shared`, so Express, Fastify, Hono and Koa refuse exactly the same bodies.
 - The `usage` of a run answer carries `inputTokens`, `outputTokens` and `totalTokens`, plus `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them, the same shape as every other adapter. The `finish` event of an agent stream carries the same `usage` (never the run's cost or duration).
 - While an SSE stream is open it writes a `: keep-alive` comment every `sseHeartbeatMs` (5 s by default, `0` turns it off), which SSE clients skip, so a proxy or load balancer does not close a stream that waits on a slow tool or model (nginx closes a connection silent for 60 s).
-- Workflow runs accept an optional body. `options` is limited to `maxConcurrency` and `maxIterations` (positive integers). Any other option is dropped and a wrongly typed one returns `400 INVALID_INPUT`. `checkpoint: true` is refused, since the server runs each workflow on a fresh executor and keeps no checkpoint store to resume from.
+- Workflow runs accept an optional body. `options` is limited to `maxConcurrency`, `maxIterations` (positive integers) and `checkpoint`. Any other option is dropped and a wrongly typed one returns `400 INVALID_INPUT`. `checkpoint: true` is refused unless the app has `workflowCheckpoints` (see [Checkpoints and resume](#checkpoints-and-resume)).
 - Thread messages accept `role` of `user` or `assistant` (more with `threadMessageRoles`), `metadata` is stored with the entry and a token estimate is recorded.
 - A run sends `context` to the model as data the application supplied, and the model reads a `system` thread message as operator instructions, so clients may set neither unless the server allows it: `acceptContext` lists the `context` keys clients may send (`true` accepts any key, for clients trusted like your own code), and `threadMessageRoles` the roles of `POST /threads/:id/messages` (`user` and `assistant` by default). Anything else is refused with `400 INVALID_INPUT`, over HTTP and WebSocket alike.
 - A `POST` body that is not JSON (`text/plain`, a form) is refused with `415 UNSUPPORTED_MEDIA_TYPE` before it is parsed: browsers send those across origins without a CORS preflight.
@@ -107,11 +108,30 @@ The router answers `OPTIONS` for its own paths with `204` and the methods they s
 
 ### Workflows
 
-| Method | Path                      | Description            |
-| ------ | ------------------------- | ---------------------- |
-| `GET`  | `/workflows`              | List workflows         |
-| `POST` | `/workflows/:name/run`    | Execute workflow       |
-| `POST` | `/workflows/:name/stream` | Stream workflow events |
+| Method | Path                             | Description                       |
+| ------ | -------------------------------- | --------------------------------- |
+| `GET`  | `/workflows`                     | List workflows                    |
+| `POST` | `/workflows/:name/run`           | Execute workflow                  |
+| `POST` | `/workflows/:name/stream`        | Stream workflow events            |
+| `POST` | `/workflows/:name/resume`        | Resume from a checkpoint          |
+| `POST` | `/workflows/:name/resume/stream` | Resume and stream workflow events |
+
+#### Checkpoints and resume
+
+`workflowCheckpoints` takes any `CheckpointStore` of `@cogitator-ai/workflows`, such as `PostgresCheckpointStore` or `RedisCheckpointStore`. With it, a run with `options.checkpoint: true` saves its checkpoints there as the caller's, the `userId` that `auth` returned (none for an anonymous caller), and its answer and `workflow_completed` event carry the last one as `checkpointId`. Without it such a run is refused with `400 INVALID_INPUT`.
+
+`POST /workflows/:name/resume` takes `{ checkpointId: string; options?: { maxConcurrency?: number; maxIterations?: number } }`, passes over the nodes the checkpoint completed and runs the rest. It answers like `/run`, and `/resume/stream` streams like `/stream`. The `limits` hold as on `/run`, and the resumed run keeps saving checkpoints, so it can be resumed again. A checkpoint that is missing, belongs to another user or to another workflow answers `404 CHECKPOINT_NOT_FOUND` before anything runs, on `/resume/stream` before the stream opens. Without `workflowCheckpoints` every resume answers `404 CHECKPOINT_NOT_FOUND`. A run that fails answers its error with the last checkpoint it saved as `checkpointId`, next to `code` and `message` (`{ error: { message, code, checkpointId } }`), and a failed stream sends a `workflow_failed` event with `{ checkpointId }` right before its `error` event, so the client resumes the failed run from there. A resume that fails again names the checkpoint to resume from, its own last one or, when it saved none, the one it started from.
+
+```typescript
+import { PostgresCheckpointStore } from '@cogitator-ai/workflows';
+
+const api = cogitatorApp({
+  cogitator,
+  workflows: { shipping },
+  auth,
+  workflowCheckpoints: new PostgresCheckpointStore({ client: pool }),
+});
+```
 
 ### Swarms
 
@@ -301,7 +321,7 @@ The router's `auth` option does not cover WebSocket connections, so pass `auth` 
 
 ## SSE Streaming
 
-The adapter includes `KoaStreamWriter` for Server-Sent Events with structured event types (text deltas, tool calls, approvals, workflow/swarm events). Workflow streams send `{ type: 'workflow', event, data }` (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`); swarm streams send `{ type: 'swarm', event, data }` (`agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, `swarm_completed`). Every stream ends with `finish` and `data: [DONE]`, or with an `error` event. Agent streams emit `tool-call-start`, `tool-call-delta` (the JSON arguments) and `tool-call-end` with the provider's tool call id, so `tool-result.toolCallId` always matches the call it belongs to.
+The adapter includes `KoaStreamWriter` for Server-Sent Events with structured event types (text deltas, tool calls, approvals, workflow/swarm events). Workflow streams send `{ type: 'workflow', event, data }` (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`, and `workflow_failed` with `{ checkpointId? }` right before the `error` event of a failed run); swarm streams send `{ type: 'swarm', event, data }` (`agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, `swarm_completed`). Every stream ends with `finish` and `data: [DONE]`, or with an `error` event. Agent streams emit `tool-call-start`, `tool-call-delta` (the JSON arguments) and `tool-call-end` with the provider's tool call id, so `tool-result.toolCallId` always matches the call it belongs to.
 
 When the agent sets `reasoning: { summary: true }` and the provider returns a reasoning summary, agent streams also emit it as its own `reasoning-start`/`reasoning-delta`/`reasoning-end` part, closed before text or a tool call starts, so reasoning and text parts never interleave.
 

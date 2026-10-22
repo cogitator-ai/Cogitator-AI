@@ -20,6 +20,7 @@ export type {
   WorkflowListResponse,
   WorkflowRunRequest,
   WorkflowRunResponse,
+  WorkflowResumeRequest,
   WorkflowStatusResponse,
   SwarmListResponse,
   SwarmRunRequest,
@@ -40,10 +41,12 @@ export {
   AgentResumeRequestSchema,
   AddMessageRequestSchema,
   WorkflowRunRequestSchema,
+  WorkflowResumeRequestSchema,
   SwarmRunRequestSchema,
   ThreadPageQuerySchema,
   ThreadResponseSchema,
   workflowRunRequestSchema,
+  workflowResumeRequestSchema,
   swarmRunRequestSchema,
 } from './types.js';
 

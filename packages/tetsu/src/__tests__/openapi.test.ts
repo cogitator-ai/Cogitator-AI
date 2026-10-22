@@ -82,6 +82,8 @@ describe('OpenAPI document', () => {
       '/api/threads/{id}/messages',
       '/api/tools',
       '/api/workflows',
+      '/api/workflows/{name}/resume',
+      '/api/workflows/{name}/resume/stream',
       '/api/workflows/{name}/run',
       '/api/workflows/{name}/stream',
     ]);
@@ -101,6 +103,7 @@ describe('OpenAPI document', () => {
       '/api/agents/{name}/stream',
       '/api/agents/{name}/resume/stream',
       '/api/workflows/{name}/stream',
+      '/api/workflows/{name}/resume/stream',
       '/api/swarms/{name}/stream',
     ]) {
       expect(Object.keys(document.paths?.[path]?.post?.responses ?? {})).toContain('200');
@@ -136,6 +139,11 @@ describe('OpenAPI document', () => {
       ],
       ['GET /api/workflows', '/api/workflows'],
       ['POST /api/workflows/ghost/run', '/api/workflows/ghost/run', json({})],
+      [
+        'POST /api/workflows/ghost/resume',
+        '/api/workflows/ghost/resume',
+        json({ checkpointId: 'cp_1' }),
+      ],
       ['GET /api/swarms', '/api/swarms'],
       ['GET /api/swarms/ghost/blackboard', '/api/swarms/ghost/blackboard'],
     ];

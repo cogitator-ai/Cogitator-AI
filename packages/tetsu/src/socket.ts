@@ -2,7 +2,7 @@ import { hook, ws } from '@tetsujs/core';
 import type { ValidationIssue } from '@tetsujs/core';
 import type { z } from 'zod';
 import type { anonymousHook, CallerHook } from './auth.js';
-import { describeError } from './errors.js';
+import { describeError, unwrapWorkflowFailure } from './errors.js';
 import { toAgentRunResponse } from '@cogitator-ai/server-shared';
 import {
   checkThreadAccess,
@@ -230,7 +230,7 @@ async function handleRun(
     if (signal.aborted) return;
     const described = describeError(error);
     outbox.send({ type: 'error', id, error: described.message, code: described.code });
-    if (described.unexpected) throw error;
+    if (described.unexpected) throw unwrapWorkflowFailure(error);
   } finally {
     signal.removeEventListener('abort', cancel);
   }

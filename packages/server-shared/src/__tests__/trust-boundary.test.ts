@@ -5,6 +5,7 @@ import {
   parseResumeRequest,
   parseRunRequest,
   parseSwarmRunRequest,
+  parseWorkflowResumeRequest,
   parseWorkflowRunRequest,
 } from '../index';
 
@@ -164,5 +165,58 @@ describe('parseWorkflowRunRequest', () => {
     ['text', 'Request body must be a JSON object'],
   ])('refuses %j', (body, message) => {
     expect(parseWorkflowRunRequest(body)).toEqual({ ok: false, message });
+  });
+
+  it('accepts a checkpoint on a server with a checkpoint store', () => {
+    expect(
+      parseWorkflowRunRequest({ options: { checkpoint: true } }, { checkpoints: true })
+    ).toEqual({ ok: true, value: { options: { checkpoint: true } } });
+    expect(
+      parseWorkflowRunRequest({ options: { checkpoint: false } }, { checkpoints: true })
+    ).toEqual({ ok: true, value: { options: {} } });
+  });
+
+  it('refuses a checkpoint that is not a boolean on a server with a checkpoint store', () => {
+    expect(
+      parseWorkflowRunRequest({ options: { checkpoint: 'yes' } }, { checkpoints: true })
+    ).toEqual({ ok: false, message: 'Field "options.checkpoint" must be a boolean' });
+  });
+});
+
+describe('parseWorkflowResumeRequest', () => {
+  it('reads the checkpoint and the run options', () => {
+    expect(
+      parseWorkflowResumeRequest({
+        checkpointId: 'cp_1',
+        options: { maxIterations: 3, maxConcurrency: 2, checkpoint: false },
+      })
+    ).toEqual({
+      ok: true,
+      value: { checkpointId: 'cp_1', options: { maxIterations: 3, maxConcurrency: 2 } },
+    });
+    expect(parseWorkflowResumeRequest({ checkpointId: 'cp_1' })).toEqual({
+      ok: true,
+      value: { checkpointId: 'cp_1' },
+    });
+  });
+
+  it.each([
+    [undefined, 'Missing required field: checkpointId'],
+    [{}, 'Missing required field: checkpointId'],
+    [{ checkpointId: null }, 'Missing required field: checkpointId'],
+    [{ checkpointId: '' }, 'Field "checkpointId" must be a non-empty string'],
+    [{ checkpointId: ' \t ' }, 'Field "checkpointId" must be a non-empty string'],
+    [{ checkpointId: 7 }, 'Field "checkpointId" must be a non-empty string'],
+    [{ checkpointId: 'cp_1', options: [] }, 'Field "options" must be an object'],
+    [
+      { checkpointId: 'cp_1', options: { maxConcurrency: 0 } },
+      'Field "options.maxConcurrency" must be a positive integer',
+    ],
+    [
+      { checkpointId: 'cp_1', options: { maxIterations: 1.5 } },
+      'Field "options.maxIterations" must be a positive integer',
+    ],
+  ])('refuses %j', (body, message) => {
+    expect(parseWorkflowResumeRequest(body)).toEqual({ ok: false, message });
   });
 });

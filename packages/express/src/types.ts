@@ -10,9 +10,11 @@ import type {
   RunLimits,
   SwaggerConfig,
   ThreadMessageRole,
+  WorkflowResumeRequestBody,
   WorkflowRunRequestBody,
 } from '@cogitator-ai/server-shared';
 import type {
+  CheckpointStore,
   Message,
   ToolCall,
   ToolResult,
@@ -165,6 +167,14 @@ export interface CogitatorServerConfig {
      * `websocket.deps`, since their upgrade request is not an Express `Request`.
      */
     deps?: DepsFunction;
+    /**
+     * Where workflow runs keep their checkpoints. With a store, a run with
+     * `options.checkpoint: true` saves checkpoints owned by the caller, its answer names the
+     * last one as `checkpointId`, and `POST /workflows/:name/resume` (and `/resume/stream`)
+     * resumes from one of them. Without it such a run is refused with 400 and every resume
+     * answers 404 `CHECKPOINT_NOT_FOUND`.
+     */
+    workflowCheckpoints?: CheckpointStore;
   };
 }
 
@@ -228,7 +238,11 @@ export interface WorkflowRunResponse {
   state: WorkflowState;
   duration: number;
   nodeResults: Record<string, { output: unknown; duration: number }>;
+  /** The last checkpoint of a run with `options.checkpoint` or of a resume */
+  checkpointId?: string;
 }
+
+export type WorkflowResumeRequest = WorkflowResumeRequestBody;
 
 export interface WorkflowStatusResponse {
   runId: string;
@@ -301,7 +315,7 @@ export type ExpressMiddleware = (
 type ServerOptions = NonNullable<CogitatorServerConfig['config']>;
 
 /** The options that stay unset when the server is not given them */
-type UnsetServerOptions = 'limits' | 'authorizeThread' | 'deps';
+type UnsetServerOptions = 'limits' | 'authorizeThread' | 'deps' | 'workflowCheckpoints';
 
 /** The server's options with their defaults applied */
 export type ResolvedServerConfig = Required<Omit<ServerOptions, UnsetServerOptions>> &

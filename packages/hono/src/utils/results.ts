@@ -20,6 +20,7 @@ export function toWorkflowRunResponse(result: WorkflowResult<WorkflowState>): Wo
     state: result.state,
     duration: result.duration,
     nodeResults: Object.fromEntries(result.nodeResults),
+    ...(result.checkpointId !== undefined && { checkpointId: result.checkpointId }),
   };
 }
 

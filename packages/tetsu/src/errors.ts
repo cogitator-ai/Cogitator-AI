@@ -1,5 +1,5 @@
-import { errorBody, hook, HttpError, httpError } from '@tetsujs/core';
-import type { ErrorBody } from '@tetsujs/core';
+import { errorBody, hook, HttpError, httpError, reportFailure } from '@tetsujs/core';
+import type { BaseCtx, ErrorBody } from '@tetsujs/core';
 import { describeHttpError, errorHeaders, INTERNAL_ERROR } from '@cogitator-ai/server-shared';
 import type { HttpErrorDescription } from '@cogitator-ai/server-shared';
 import type { CogitatorError } from '@cogitator-ai/types';
@@ -24,14 +24,55 @@ export function cogitatorErrorResponse(error: CogitatorError): Response {
 }
 
 /**
+ * The error of a workflow run that failed, with the last checkpoint it saved when it saved one,
+ * so the answer can tell the client where to resume it from
+ */
+export class WorkflowRunFailedError extends Error {
+  constructor(
+    readonly failure: Error,
+    readonly checkpointId: string | undefined
+  ) {
+    super(failure.message, { cause: failure });
+    this.name = 'WorkflowRunFailedError';
+  }
+}
+
+/** The error a workflow run failed with, or `error` itself when it is not a failed run */
+export function unwrapWorkflowFailure(error: unknown): unknown {
+  return error instanceof WorkflowRunFailedError ? error.failure : error;
+}
+
+/**
+ * Answers a failed workflow run like the error it failed with, plus the `checkpointId` to resume
+ * it from. An error the client is not told about is reported to the application and answered
+ * with Tetsu's own `500 INTERNAL_SERVER_ERROR`, as without the checkpoint.
+ */
+function workflowFailureResponse(ctx: BaseCtx, error: WorkflowRunFailedError): Response {
+  const checkpoint = error.checkpointId === undefined ? {} : { checkpointId: error.checkpointId };
+  const described = describeHttpError(error.failure);
+  if (described) {
+    return Response.json(
+      { ...errorBody(described.status, described.code, described.message), ...checkpoint },
+      { status: described.status, headers: errorHeaders(described) }
+    );
+  }
+  reportFailure(ctx, 'unhandled', error.failure);
+  return Response.json({ ...errorBody(500), ...checkpoint }, { status: 500 });
+}
+
+/**
  * An `onError` hook that answers every `CogitatorError` with its status, code and
- * `Retry-After`, and a swarm that ran out of time with `504 RUN_TIMEOUT`.
+ * `Retry-After`, a swarm that ran out of time with `504 RUN_TIMEOUT`, and a failed workflow run
+ * like its error, with the `checkpointId` to resume it from.
  *
  * `cogitatorController()` mounts one on each of its routes. Mount another on the
  * application to map errors thrown by your own routes the same way.
  */
 export function cogitatorErrors() {
   return hook.onError((ctx) => {
+    if (ctx.error instanceof WorkflowRunFailedError) {
+      return workflowFailureResponse(ctx, ctx.error);
+    }
     const described = describeHttpError(ctx.error);
     return described ? describedResponse(described) : undefined;
   });
@@ -54,7 +95,8 @@ export interface DescribedError {
  * about is `INTERNAL_ERROR`, the code the streams and sockets of every adapter send, while the
  * JSON answer keeps Tetsu's own `500 INTERNAL_SERVER_ERROR`.
  */
-export function describeError(error: unknown): DescribedError {
+export function describeError(thrown: unknown): DescribedError {
+  const error = unwrapWorkflowFailure(thrown);
   const described = describeHttpError(error);
   if (described) {
     return { message: described.message, code: described.code, unexpected: false };

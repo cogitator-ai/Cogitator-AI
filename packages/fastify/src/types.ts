@@ -16,9 +16,11 @@ import type {
   ReadinessResponse,
   RunLimits,
   ThreadMessageRole,
+  WorkflowResumeRequestBody,
   WorkflowRunRequestBody,
 } from '@cogitator-ai/server-shared';
 import type {
+  CheckpointStore,
   Message,
   ToolCall,
   ToolResult,
@@ -154,6 +156,14 @@ export interface CogitatorPluginOptions {
    * `context.deps`), over HTTP and WebSocket. deps never come from the request body.
    */
   deps?: (request: FastifyRequest) => unknown | Promise<unknown>;
+  /**
+   * Where workflow runs keep their checkpoints. With a store, a run with
+   * `options.checkpoint: true` saves checkpoints owned by the caller, its answer names the
+   * last one as `checkpointId`, and `POST /workflows/:name/resume` (and `/resume/stream`)
+   * resumes from one of them. Without it such a run is refused with 400 and every resume
+   * answers 404 `CHECKPOINT_NOT_FOUND`.
+   */
+  workflowCheckpoints?: CheckpointStore;
 }
 
 export interface CogitatorContext {
@@ -173,6 +183,8 @@ export interface CogitatorContext {
   authorizeThread?: AuthorizeThread<AuthContext>;
   /** The `deps` option */
   deps?: (request: FastifyRequest) => unknown | Promise<unknown>;
+  /** The `workflowCheckpoints` option */
+  workflowCheckpoints?: CheckpointStore;
 }
 
 declare module 'fastify' {
@@ -252,7 +264,11 @@ export interface WorkflowRunResponse {
   state: WorkflowState;
   duration: number;
   nodeResults: Record<string, { output: unknown; duration: number }>;
+  /** The last checkpoint of a run with `options.checkpoint` or of a resume */
+  checkpointId?: string;
 }
+
+export type WorkflowResumeRequest = WorkflowResumeRequestBody;
 
 export interface WorkflowStatusResponse {
   runId: string;
@@ -479,8 +495,22 @@ function limitedInteger(cap: number | undefined) {
   } as const;
 }
 
-/** The workflow run body, with the operator's limits on its options */
-export function workflowRunRequestSchema(limits?: RunLimits) {
+const CHECKPOINT_SCHEMA = {
+  type: 'boolean',
+  description: 'Save checkpoints of the run to resume it from with `/resume`',
+} as const;
+
+const NO_CHECKPOINT_SCHEMA = {
+  type: 'boolean',
+  enum: [false],
+  description: 'Only `false`: the server keeps no checkpoint store (`workflowCheckpoints`)',
+} as const;
+
+/**
+ * The workflow run body, with the operator's limits on its options. `checkpoints` says the
+ * server keeps a checkpoint store, so `options.checkpoint` may be `true`
+ */
+export function workflowRunRequestSchema(limits?: RunLimits, checkpoints = false) {
   return {
     type: 'object',
     properties: {
@@ -490,11 +520,7 @@ export function workflowRunRequestSchema(limits?: RunLimits) {
         properties: {
           maxConcurrency: limitedInteger(limits?.workflowMaxConcurrency),
           maxIterations: limitedInteger(limits?.workflowMaxIterations),
-          checkpoint: {
-            type: 'boolean',
-            enum: [false],
-            description: 'Only `false`: the server keeps no checkpoint store',
-          },
+          checkpoint: checkpoints ? CHECKPOINT_SCHEMA : NO_CHECKPOINT_SCHEMA,
         },
         additionalProperties: false,
       },
@@ -503,6 +529,30 @@ export function workflowRunRequestSchema(limits?: RunLimits) {
 }
 
 export const WorkflowRunRequestSchema = workflowRunRequestSchema();
+
+/** The workflow resume body, with the operator's limits on its options */
+export function workflowResumeRequestSchema(limits?: RunLimits) {
+  return {
+    type: 'object',
+    properties: {
+      checkpointId: {
+        ...NON_BLANK_STRING,
+        description: 'A checkpoint of this workflow that belongs to the caller',
+      },
+      options: {
+        type: 'object',
+        properties: {
+          maxConcurrency: limitedInteger(limits?.workflowMaxConcurrency),
+          maxIterations: limitedInteger(limits?.workflowMaxIterations),
+        },
+        additionalProperties: false,
+      },
+    },
+    required: ['checkpointId'],
+  } as const;
+}
+
+export const WorkflowResumeRequestSchema = workflowResumeRequestSchema();
 
 /** The swarm run body, with the operator's limit on its timeout */
 export function swarmRunRequestSchema(limits?: RunLimits) {

@@ -829,6 +829,9 @@ importers:
       '@tetsujs/sse':
         specifier: ^0.6.1
         version: 0.6.1(@tetsujs/core@0.6.1)
+      ai:
+        specifier: ^7.0.127
+        version: 7.0.127(zod@4.6.5)
       create-cogitator-app:
         specifier: workspace:*
         version: link:../create-cogitator-app

@@ -93,13 +93,32 @@ do {
 
 ```
 GET    /api/workflows                 - List all workflows
-POST   /api/workflows/:name/run       - Run workflow
-POST   /api/workflows/:name/stream    - Stream workflow events
+POST   /api/workflows/:name/run            - Run workflow
+POST   /api/workflows/:name/stream         - Stream workflow events
+POST   /api/workflows/:name/resume         - Resume a workflow from a checkpoint
+POST   /api/workflows/:name/resume/stream  - Resume a workflow and stream its events
 ```
 
-Body: `{ input?: object; options?: { maxConcurrency?: number; maxIterations?: number } }`. `maxConcurrency`/`maxIterations` must be positive integers (400 otherwise). With `limits.workflowMaxIterations` or `limits.workflowMaxConcurrency` set, a larger value is held to the limit, and a request that asks for nothing gets the limit. Other options are dropped, and `checkpoint: true` is refused, since the server keeps no checkpoint store to resume from. A failed workflow answers the error it failed with, mapped like any other run error (a node that hit `LLM_RATE_LIMITED` answers `429` with `Retry-After`, an internal error `500 INTERNAL_ERROR`), and its stream ends with an `error` event carrying that code instead of `workflow_completed`. Disconnecting aborts the workflow.
+Body: `{ input?: object; options?: { maxConcurrency?: number; maxIterations?: number; checkpoint?: boolean } }`. `maxConcurrency`/`maxIterations` must be positive integers (400 otherwise). With `limits.workflowMaxIterations` or `limits.workflowMaxConcurrency` set, a larger value is held to the limit, and a request that asks for nothing gets the limit. Other options are dropped, and `checkpoint: true` is refused with 400 unless the server has `workflowCheckpoints` (see [Checkpoints and resume](#checkpoints-and-resume)). A failed workflow answers the error it failed with, mapped like any other run error (a node that hit `LLM_RATE_LIMITED` answers `429` with `Retry-After`, an internal error `500 INTERNAL_ERROR`), and its stream ends with an `error` event carrying that code instead of `workflow_completed`. Disconnecting aborts the workflow.
 
-The stream sends `{ type: 'workflow', event, data }` events: `node_started`, `node_completed`, `node_error`, `node_progress` and finally `workflow_completed`.
+The stream sends `{ type: 'workflow', event, data }` events: `node_started`, `node_completed`, `node_error`, `node_progress` and finally `workflow_completed` (`{ workflowId, duration, checkpointId? }`), or, when the run fails, `workflow_failed` (`{ checkpointId? }`) right before the `error` event.
+
+#### Checkpoints and resume
+
+`config.workflowCheckpoints` takes any `CheckpointStore` of `@cogitator-ai/workflows`, such as `PostgresCheckpointStore` or `RedisCheckpointStore`. With it, a run with `options.checkpoint: true` saves its checkpoints there as the caller's, the `userId` that `auth` returned (none for an anonymous caller), and its answer and `workflow_completed` event carry the last one as `checkpointId`.
+
+`POST /workflows/:name/resume` takes `{ checkpointId: string; options?: { maxConcurrency?: number; maxIterations?: number } }`, passes over the nodes the checkpoint completed and runs the rest. It answers like `/run`, and `/resume/stream` streams like `/stream`. The `limits` hold as on `/run`, and the resumed run keeps saving checkpoints, so it can be resumed again. A checkpoint that is missing, belongs to another user or to another workflow answers `404 CHECKPOINT_NOT_FOUND` before anything runs, on `/resume/stream` before the stream opens. Without `workflowCheckpoints` every resume answers `404 CHECKPOINT_NOT_FOUND`. A run that fails answers its error with the last checkpoint it saved as `checkpointId`, next to `code` and `message` (`{ error: { message, code, checkpointId } }`), and a failed stream sends a `workflow_failed` event with `{ checkpointId }` right before its `error` event, so the client resumes the failed run from there. A resume that fails again names the checkpoint to resume from, its own last one or, when it saved none, the one it started from.
+
+```typescript
+import { PostgresCheckpointStore } from '@cogitator-ai/workflows';
+
+const server = new CogitatorServer({
+  app,
+  cogitator,
+  workflows: { shipping },
+  config: { auth, workflowCheckpoints: new PostgresCheckpointStore({ client: pool }) },
+});
+```
 
 ### Swarms
 
@@ -438,6 +457,7 @@ interface CogitatorServerConfig {
       threadId: string
     ) => boolean | Promise<boolean>;
     deps?: (req: Request) => unknown | Promise<unknown>; // HTTP runs, WebSocket runs use websocket.deps
+    workflowCheckpoints?: CheckpointStore; // workflow checkpoints and /resume, none by default
   };
 }
 

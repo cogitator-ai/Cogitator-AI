@@ -233,28 +233,66 @@ export function parseAddMessageRequest(
   };
 }
 
+/** The options of a workflow run or resume that a client may set */
+export interface WorkflowRunLimitsBody {
+  maxConcurrency?: number;
+  maxIterations?: number;
+}
+
 /** The body of `POST /workflows/:name/run` and `/workflows/:name/stream` */
 export interface WorkflowRunRequestBody {
   /** The initial workflow state */
   input?: Record<string, unknown>;
-  options?: {
-    maxConcurrency?: number;
-    maxIterations?: number;
+  options?: WorkflowRunLimitsBody & {
+    /** Save checkpoints of the run, so it can be resumed. Only on a server with a checkpoint store */
+    checkpoint?: boolean;
   };
+}
+
+/** How a server reads workflow runs */
+export interface WorkflowRunRequestOptions {
+  /** The server keeps a checkpoint store, so a run may ask for checkpoints. Default: `false` */
+  checkpoints?: boolean;
+}
+
+/** The body of `POST /workflows/:name/resume` and `/workflows/:name/resume/stream` */
+export interface WorkflowResumeRequestBody {
+  /** The checkpoint to resume from, as a run with `options.checkpoint` answered it */
+  checkpointId: string;
+  options?: WorkflowRunLimitsBody;
 }
 
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
 
+function parseWorkflowLimits(options: Record<string, unknown>): ParseResult<WorkflowRunLimitsBody> {
+  const { maxConcurrency, maxIterations } = options;
+  if (maxConcurrency !== undefined && !isPositiveInteger(maxConcurrency)) {
+    return fail('Field "options.maxConcurrency" must be a positive integer');
+  }
+  if (maxIterations !== undefined && !isPositiveInteger(maxIterations)) {
+    return fail('Field "options.maxIterations" must be a positive integer');
+  }
+  return {
+    ok: true,
+    value: {
+      ...(maxConcurrency !== undefined && { maxConcurrency }),
+      ...(maxIterations !== undefined && { maxIterations }),
+    },
+  };
+}
+
 /**
  * Validates the body of a workflow run; no body at all runs the workflow from an empty state.
  *
- * `options.checkpoint: true` is refused: a server runs each workflow on a fresh executor and
- * keeps no checkpoint store, so a checkpoint would be lost with the request. Run the
- * workflow with `WorkflowExecutor` and a `CheckpointStore` to resume it later.
+ * `options.checkpoint: true` is accepted only by a server that keeps a checkpoint store
+ * (`checkpoints`): elsewhere a checkpoint would be lost with the request, so it is refused.
  */
-export function parseWorkflowRunRequest(body: unknown): ParseResult<WorkflowRunRequestBody> {
+export function parseWorkflowRunRequest(
+  body: unknown,
+  options: WorkflowRunRequestOptions = {}
+): ParseResult<WorkflowRunRequestBody> {
   if (body === undefined || body === null) return { ok: true, value: {} };
   if (!isJsonObject(body)) return fail('Request body must be a JSON object');
   if (body.input !== undefined && !isJsonObject(body.input)) {
@@ -266,22 +304,39 @@ export function parseWorkflowRunRequest(body: unknown): ParseResult<WorkflowRunR
 
   if (body.options !== undefined) {
     if (!isJsonObject(body.options)) return fail('Field "options" must be an object');
-    const { maxConcurrency, maxIterations, checkpoint } = body.options;
-    if (maxConcurrency !== undefined && !isPositiveInteger(maxConcurrency)) {
-      return fail('Field "options.maxConcurrency" must be a positive integer');
-    }
-    if (maxIterations !== undefined && !isPositiveInteger(maxIterations)) {
-      return fail('Field "options.maxIterations" must be a positive integer');
-    }
-    if (checkpoint !== undefined && checkpoint !== false) {
+    const limits = parseWorkflowLimits(body.options);
+    if (!limits.ok) return limits;
+    const { checkpoint } = body.options;
+    if (options.checkpoints === true) {
+      if (checkpoint !== undefined && typeof checkpoint !== 'boolean') {
+        return fail('Field "options.checkpoint" must be a boolean');
+      }
+    } else if (checkpoint !== undefined && checkpoint !== false) {
       return fail(
         'Field "options.checkpoint" is not supported: the server keeps no checkpoint store'
       );
     }
-    request.options = {
-      ...(maxConcurrency !== undefined && { maxConcurrency }),
-      ...(maxIterations !== undefined && { maxIterations }),
-    };
+    request.options = { ...limits.value, ...(checkpoint === true && { checkpoint: true }) };
+  }
+
+  return { ok: true, value: request };
+}
+
+/** Validates the body of a workflow resume: the checkpoint to resume from and the run options */
+export function parseWorkflowResumeRequest(body: unknown): ParseResult<WorkflowResumeRequestBody> {
+  if (!isJsonObject(body) || body.checkpointId === undefined || body.checkpointId === null) {
+    return fail('Missing required field: checkpointId');
+  }
+  if (!isNonBlankString(body.checkpointId)) {
+    return fail('Field "checkpointId" must be a non-empty string');
+  }
+
+  const request: WorkflowResumeRequestBody = { checkpointId: body.checkpointId };
+  if (body.options !== undefined) {
+    if (!isJsonObject(body.options)) return fail('Field "options" must be an object');
+    const limits = parseWorkflowLimits(body.options);
+    if (!limits.ok) return limits;
+    request.options = limits.value;
   }
 
   return { ok: true, value: request };

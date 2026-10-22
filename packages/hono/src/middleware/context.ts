@@ -27,6 +27,7 @@ export function createContextMiddleware(opts: CogitatorAppOptions) {
       limits,
       authorizeThread: opts.authorizeThread,
       deps: opts.deps,
+      workflowCheckpoints: opts.workflowCheckpoints,
     });
     c.set('cogitatorRequestId', generateId('req'));
     c.set('cogitatorStartTime', Date.now());

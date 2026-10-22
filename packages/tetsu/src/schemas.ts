@@ -16,6 +16,7 @@ import type {
   ThreadMessageRole,
   ThreadPageQuery,
 } from '@cogitator-ai/server-shared';
+import type { CheckpointStore } from '@cogitator-ai/types';
 
 const JsonObject = z.record(z.string(), z.unknown());
 
@@ -97,18 +98,36 @@ const WorkflowLimit = z.number().int().positive();
 const MAX_CONCURRENCY = 'Most workflow nodes that may run at once';
 const MAX_ITERATIONS = 'Most iterations the workflow may take';
 
-const WorkflowOptions = z.object({
+const WorkflowLimits = z.object({
   maxConcurrency: WorkflowLimit.optional().describe(MAX_CONCURRENCY),
   maxIterations: WorkflowLimit.optional().describe(MAX_ITERATIONS),
-  checkpoint: z
-    .literal(false)
-    .optional()
-    .describe('Only `false`: the server keeps no checkpoint store to resume from'),
 });
+
+const Checkpoint = z
+  .boolean()
+  .optional()
+  .describe(
+    'Save checkpoints of the run to resume it from. Accepted when the server has a checkpoint store (`workflowCheckpoints`), refused otherwise'
+  );
+
+const NoCheckpoint = z
+  .literal(false)
+  .optional()
+  .describe('Only `false`: the server keeps no checkpoint store to resume from');
+
+const WorkflowOptions = WorkflowLimits.extend({ checkpoint: Checkpoint });
 
 export const WorkflowRunBody = z.object({
   input: JsonObject.optional().describe('Initial workflow state'),
   options: WorkflowOptions.optional(),
+});
+
+export const WorkflowResumeBody = z.object({
+  checkpointId: z
+    .string()
+    .regex(new RegExp(NON_BLANK_PATTERN), 'must not be blank')
+    .describe('A checkpoint of this workflow that belongs to the caller'),
+  options: WorkflowLimits.optional(),
 });
 
 /**
@@ -291,6 +310,12 @@ export const WorkflowRunResponse = z.object({
   state: JsonObject,
   duration: z.number(),
   nodeResults: z.record(z.string(), z.object({ output: z.unknown(), duration: z.number() })),
+  checkpointId: z
+    .string()
+    .optional()
+    .describe(
+      'The last checkpoint of a run with `options.checkpoint` or of a resume: pass it to `/resume`'
+    ),
 });
 
 export const SwarmListResponse = z.object({
@@ -352,6 +377,8 @@ export interface ClientTrust {
   acceptContext?: ContextPolicy;
   threadMessageRoles?: readonly ThreadMessageRole[];
   limits?: RunLimits;
+  /** A workflow run may ask for checkpoints only where the server keeps them */
+  workflowCheckpoints?: CheckpointStore;
 }
 
 /**
@@ -359,7 +386,8 @@ export interface ClientTrust {
  * policy through the validators every adapter shares. A `context` key the server does not
  * accept, or a thread message role it does not take, fails validation like any other field,
  * with the status and `VALIDATION_FAILED` envelope the application uses for its schemas.
- * The server's `limits` show as the defaults of the fields they cap.
+ * The server's `limits` show as the defaults of the fields they cap, and a workflow run may
+ * ask for checkpoints only when the server has `workflowCheckpoints`.
  */
 export function requestSchemas(trust: ClientTrust) {
   const acceptContext = trust.acceptContext ?? false;
@@ -375,16 +403,25 @@ export function requestSchemas(trust: ClientTrust) {
     if (!parsed.ok) ctx.addIssue({ code: 'custom', message: parsed.message, path: ['context'] });
   };
 
+  const limitedWorkflowOptions = WorkflowLimits.extend({
+    maxConcurrency: limited(WorkflowLimit, MAX_CONCURRENCY, limits?.workflowMaxConcurrency),
+    maxIterations: limited(WorkflowLimit, MAX_ITERATIONS, limits?.workflowMaxIterations),
+  });
+
   return {
     RunBody: RunBody.superRefine(acceptedContext),
     SwarmRunBody: SwarmRunBody.extend({
       timeout: limited(SwarmTimeout, SWARM_TIMEOUT, limits?.swarmTimeout, ' ms'),
     }).superRefine(acceptedContext),
     WorkflowRunBody: WorkflowRunBody.extend({
-      options: WorkflowOptions.extend({
-        maxConcurrency: limited(WorkflowLimit, MAX_CONCURRENCY, limits?.workflowMaxConcurrency),
-        maxIterations: limited(WorkflowLimit, MAX_ITERATIONS, limits?.workflowMaxIterations),
-      }).optional(),
+      options: limitedWorkflowOptions
+        .extend({
+          checkpoint: trust.workflowCheckpoints ? Checkpoint : NoCheckpoint,
+        })
+        .optional(),
+    }),
+    WorkflowResumeBody: WorkflowResumeBody.extend({
+      options: limitedWorkflowOptions.optional(),
     }),
     AddMessageBody: AddMessageBody.superRefine((body, ctx) => {
       const parsed = parseAddMessageRequest(body, { roles });
@@ -407,12 +444,24 @@ export function requestSchemas(trust: ClientTrust) {
   };
 }
 
+/**
+ * The `checkpointId` of an error answer: only a failed workflow run that saved a checkpoint
+ * answers it, every envelope documents it so each error code has one definition
+ */
+const FailedRunCheckpoint = z
+  .string()
+  .optional()
+  .describe(
+    'Only on a failed workflow run that saved a checkpoint: resume the run from it with `/resume`'
+  );
+
 export function errorEnvelope<const E extends string>(error: E, description: string) {
   return z
     .object({
       status: z.number().int(),
       message: z.string(),
       error: z.literal(error),
+      checkpointId: FailedRunCheckpoint,
     })
     .describe(description);
 }
@@ -432,6 +481,7 @@ export function errorsEnvelope(codes: readonly string[], description: string) {
       status: z.number().int(),
       message: z.string(),
       error: z.enum([first, ...rest]),
+      checkpointId: FailedRunCheckpoint,
     })
     .describe(description);
 }
@@ -467,4 +517,18 @@ export const RUN_FAILURES = {
     ['RUN_TIMEOUT']
   ),
   507: failureEnvelope(507, 'The sandbox ran out of memory'),
+} as const;
+
+/**
+ * What a workflow run or resume can fail with: the failures of any run, and Tetsu's own
+ * `500 INTERNAL_SERVER_ERROR` for an error the client is not told about, which a failed
+ * workflow run answers itself to add the `checkpointId` to resume from
+ */
+export const WORKFLOW_RUN_FAILURES = {
+  ...RUN_FAILURES,
+  500: failureEnvelope(
+    500,
+    'A tool, a workflow step or the sandbox failed, or the server did (`INTERNAL_SERVER_ERROR`)',
+    ['INTERNAL_SERVER_ERROR']
+  ),
 } as const;

@@ -9,6 +9,7 @@ import {
   errorHeaders,
   swarmTimeoutWithin,
   workflowOptionsWithin,
+  workflowRunFailure,
 } from '../contract';
 
 describe('run limits', () => {
@@ -105,5 +106,22 @@ describe('errors', () => {
 
     expect(describeHttpError(timeout)).toMatchObject({ status: 504, code: 'RUN_TIMEOUT' });
     expect(describeHttpError(new Error('database password is hunter2'))).toBeUndefined();
+  });
+});
+
+describe('workflowRunFailure', () => {
+  const described = { status: 500, code: 'INTERNAL_ERROR', message: 'Internal server error' };
+
+  it('answers a failed run with the checkpoint it saved', () => {
+    expect(errorEnvelope(workflowRunFailure(described, 'cp_1'))).toEqual({
+      error: { message: 'Internal server error', code: 'INTERNAL_ERROR', checkpointId: 'cp_1' },
+    });
+  });
+
+  it('answers a failed run without a checkpoint as any other error', () => {
+    expect(workflowRunFailure(described, undefined)).toBe(described);
+    expect(errorEnvelope(workflowRunFailure(described, undefined))).toEqual({
+      error: { message: 'Internal server error', code: 'INTERNAL_ERROR' },
+    });
   });
 });

@@ -173,6 +173,8 @@ export interface WorkflowCheckpoint {
    */
   nodeVisits?: Record<string, number>;
   timestamp: number;
+  /** The user the checkpoint belongs to, set by servers */
+  owner?: string;
 }
 
 export interface CheckpointStore {

@@ -134,14 +134,14 @@ const swagger: SwaggerConfig = {
 
 The spec organizes endpoints into six tags:
 
-| Tag         | Endpoints                                                                                                         |
-| ----------- | ----------------------------------------------------------------------------------------------------------------- |
-| `health`    | `/health`, `/ready`                                                                                               |
-| `agents`    | `/agents`, `/agents/{name}/run`, `/agents/{name}/resume`, `/agents/{name}/stream`, `/agents/{name}/resume/stream` |
-| `threads`   | `/threads/{id}` (GET, DELETE), `/threads/{id}/messages`                                                           |
-| `tools`     | `/tools`                                                                                                          |
-| `workflows` | `/workflows`, `/workflows/{name}/run`, `/workflows/{name}/stream`                                                 |
-| `swarms`    | `/swarms`, `/swarms/{name}/run`, `/swarms/{name}/stream`, `/swarms/{name}/blackboard`                             |
+| Tag         | Endpoints                                                                                                                        |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `health`    | `/health`, `/ready`                                                                                                              |
+| `agents`    | `/agents`, `/agents/{name}/run`, `/agents/{name}/resume`, `/agents/{name}/stream`, `/agents/{name}/resume/stream`                |
+| `threads`   | `/threads/{id}` (GET, DELETE), `/threads/{id}/messages`                                                                          |
+| `tools`     | `/tools`                                                                                                                         |
+| `workflows` | `/workflows`, `/workflows/{name}/run`, `/workflows/{name}/stream`, `/workflows/{name}/resume`, `/workflows/{name}/resume/stream` |
+| `swarms`    | `/swarms`, `/swarms/{name}/run`, `/swarms/{name}/stream`, `/swarms/{name}/blackboard`                                            |
 
 Agent, workflow, and swarm endpoints are listed per registered name. If you register agents named `assistant` and `coder`, the spec includes `/agents/assistant/run`, `/agents/assistant/resume`, `/agents/assistant/stream`, `/agents/assistant/resume/stream` and the same four for `coder`. Paths are relative to `servers`.
 
@@ -164,8 +164,9 @@ The generated spec includes schemas for all request and response types:
 - `AddMessageRequest` — role, content, metadata
 - `ToolListResponse` — tool names, descriptions, parameters
 - `WorkflowListResponse` — workflow names, entry points, node lists
-- `WorkflowRunRequest` — input, options (maxConcurrency, maxIterations, checkpoint)
-- `WorkflowRunResponse` — workflowId, state, duration, nodeResults
+- `WorkflowRunRequest` - input, options (maxConcurrency, maxIterations, checkpoint, accepted as `true` when the server has `workflowCheckpoints`)
+- `WorkflowResumeRequest` - checkpointId, options (maxConcurrency, maxIterations)
+- `WorkflowRunResponse` - workflowId, state, duration, nodeResults, checkpointId
 - `SwarmListResponse` — swarm names, strategies, agent lists
 - `SwarmRunRequest` — input (required), context, threadId, timeout
 - `SwarmRunResponse` — swarmId, strategy, output, agentResults, usage

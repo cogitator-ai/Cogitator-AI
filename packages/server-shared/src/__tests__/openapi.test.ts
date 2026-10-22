@@ -92,4 +92,35 @@ describe('generateOpenAPISpec', () => {
       additionalProperties: { type: 'string', enum: ['ok', 'error', 'unchecked'] },
     });
   });
+
+  it('documents the resume of a workflow from a checkpoint', () => {
+    const withFlow = generateOpenAPISpec(
+      { agents: {}, workflows: { flow: { entryPoint: 'a', nodes: new Map() } }, swarms: {} },
+      {}
+    );
+    const resume = withFlow.paths['/workflows/flow/resume']?.post as {
+      requestBody: unknown;
+      responses: Record<string, { description: string; content?: object }>;
+    };
+    const stream = withFlow.paths['/workflows/flow/resume/stream']?.post as {
+      responses: Record<string, { description: string; content?: object }>;
+    };
+    const request = {
+      'application/json': { schema: { $ref: '#/components/schemas/WorkflowResumeRequest' } },
+    };
+
+    expect(resume.requestBody).toEqual({ required: true, content: request });
+    expect(resume.responses['404']?.description).toContain('CHECKPOINT_NOT_FOUND');
+    expect(stream.responses['404']?.description).toContain('CHECKPOINT_NOT_FOUND');
+    expect(stream.responses['200']?.content).toEqual({
+      'text/event-stream': { schema: { $ref: '#/components/schemas/StreamEvent' } },
+    });
+    expect(property('WorkflowResumeRequest', 'required')).toEqual(['checkpointId']);
+    expect(property('WorkflowRunResponse', 'properties', 'checkpointId')).toMatchObject({
+      type: 'string',
+    });
+    expect(
+      property('WorkflowRunRequest', 'properties', 'options', 'properties', 'checkpoint')
+    ).toMatchObject({ type: 'boolean' });
+  });
 });
