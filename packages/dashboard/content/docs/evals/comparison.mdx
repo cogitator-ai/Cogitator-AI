@@ -103,11 +103,11 @@ The default for continuous scores (e.g. faithfulness: 0.73, 0.85, 0.91). Tests w
 
 ### Wilcoxon Signed-Rank Test
 
-With `test: 'wilcoxon'`, continuous scores take Wilcoxon's signed-rank test instead, which does not assume the differences are normal. Zero differences are dropped (Wilcoxon's handling, not Pratt's), tied differences share their mean rank, and the p-value is exact up to 20 nonzero pairs and from the normal approximation (with tie and continuity corrections) above.
+With `test: 'wilcoxon'`, continuous scores take Wilcoxon's signed-rank test instead, which does not assume the differences are normal. The differences are rounded to 12 significant digits first, so float noise neither splits ties (`0.7 - 0.4` and `0.6 - 0.9`) nor hides a zero, and the paired t-test and `effectSize` do the same. Zero differences are dropped (Wilcoxon's handling, not Pratt's), tied differences share their mean rank, and the p-value is exact up to 20 nonzero pairs and from the normal approximation (with tie and continuity corrections) above.
 
 ### Multiple Metrics
 
-Comparing several metrics at once raises the chance that one of them looks significant by luck. The p-values are corrected with Holm's method across the compared metrics: `pValue` is the test's own, `adjustedPValue` the corrected one, and a metric is `significant` when `adjustedPValue` is below `alpha` (0.05 by default). A metric's winner is only declared when it is significant, and is then the side with the higher mean. With fewer than 2 cases every metric is a tie (`test: 'none'`, `pValue: 1`).
+Comparing several metrics at once raises the chance that one of them looks significant by luck. The p-values are corrected with Holm's method across the compared metrics: `pValue` is the test's own, `adjustedPValue` the corrected one, and a metric is `significant` when `adjustedPValue` is below `alpha` (0.05 by default). A metric's winner is only declared when it is significant, and is then the side the test finds higher: the side with the higher mean for McNemar's and the t-test, the side with the larger rank sum for Wilcoxon's test. With Wilcoxon, the winner can disagree with the sign of `difference`, which stays the mean difference: one large outlier can pull the mean one way while most cases favor the other side. With fewer than 2 cases every metric is a tie (`test: 'none'`, `pValue: 1`).
 
 ### Difference, Interval and Effect Size
 
@@ -132,7 +132,7 @@ interface ResourceComparison {
 }
 ```
 
-They take the same `test` as continuous metrics, are not corrected with the metrics and do not vote on the overall winner. `summary.cost` is there only when both sides reported usage on some case, as agent targets do (a `fn` target records none).
+They take the same `test` as continuous metrics, and the winner follows the test's direction as for metrics, are not corrected with the metrics and do not vote on the overall winner. `summary.cost` is there only when both sides reported usage on some case, as agent targets do (a `fn` target records none).
 
 ## Pairwise Judging
 
@@ -156,7 +156,7 @@ console.log(
 console.log(`win rate ${(pairwise.winRate * 100).toFixed(0)}%`);
 ```
 
-The judge is asked twice per case, the second time with the answers swapped, since judges tend to favor the answer they read first. Agreeing verdicts give the case to that side, disagreeing ones or a verdict of a tie make the case a tie. A side that errored loses the case without a judge call, and a case both sides errored on is left out. A judge failure in either order makes the case a tie and is reported in its `error` and in `judgeErrors`. As in judge metrics, the answers sit in escaped tags, so an answer cannot talk the judge into preferring it. A multi-turn case shows each side's whole conversation.
+The judge is asked twice per case, the second time with the answers swapped, since judges tend to favor the answer they read first. Agreeing verdicts give the case to that side, disagreeing ones or a verdict of a tie make the case a tie. A side that errored loses the case without a judge call, and a case both sides errored on is left out. A judge failure in either order makes the case a tie and is reported in its `error` and in `judgeErrors`. Cancelling the run with `comparison.run({ signal })` also cancels the judge calls in flight, and `run()` rejects right away. As in judge metrics, the answers sit in escaped tags, so an answer cannot talk the judge into preferring it. A multi-turn case shows each side's whole conversation.
 
 ```typescript
 interface PairwiseResult {

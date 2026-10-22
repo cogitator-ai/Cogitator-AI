@@ -211,4 +211,20 @@ describe('EvalComparison pairwise judging', () => {
     }).run();
     expect(result.pairwise).toBeUndefined();
   });
+
+  it('stops waiting for the judge as soon as the run is cancelled', async () => {
+    const run = vi.fn(() => new Promise<never>(() => {}));
+    const controller = new AbortController();
+    const running = new EvalComparison({
+      dataset,
+      targets: { baseline: target(() => 'a'), challenger: target(() => 'b') },
+      judge: { model: 'judge', cogitator: { run } as unknown as JudgeCogitator },
+      pairwise: {},
+    }).run({ signal: controller.signal });
+
+    await vi.waitFor(() => expect(run).toHaveBeenCalled());
+    controller.abort(new Error('cancelled'));
+
+    await expect(running).rejects.toThrow('cancelled');
+  });
 });

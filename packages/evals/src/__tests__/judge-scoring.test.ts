@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { bindJudgeContext, judgeContextFor, llmMetric, relevance } from '../metrics/llm-judge';
 import type { JudgeContext, JudgeRunOptions } from '../metrics/llm-judge';
-import { gEval } from '../metrics/g-eval';
+import { gEval, stepsOf } from '../metrics/g-eval';
 import { JudgeConfigSchema } from '../schema';
 import type { JudgeCache, JudgeCogitator } from '../schema';
 import type { EvalCaseResult } from '../metrics/types';
@@ -325,5 +325,84 @@ describe('gEval', () => {
       'scale must be [min, max] with min below max'
     );
     expect(gEval({ name: 'g', criteria: 'c' }).requiresJudge).toBe(true);
+  });
+});
+
+describe('gEval steps', () => {
+  it('reads numbered, "Step N:" and bold list styles', () => {
+    expect(
+      stepsOf(
+        'Here are the steps:\n1. Read the question\n2) Check the math\nStep 3: Compare the answer\n**4.** Weigh **clarity**\n**Step 5:** Decide\n- Note gaps\n* Score it'
+      )
+    ).toEqual([
+      'Read the question',
+      'Check the math',
+      'Compare the answer',
+      'Weigh clarity',
+      'Decide',
+      'Note gaps',
+      'Score it',
+    ]);
+    expect(stepsOf('No list here.')).toEqual([]);
+  });
+
+  it('counts what a failed generation cost, once per generation', async () => {
+    const run = vi.fn(async (opts: JudgeRunOptions) =>
+      opts.format === 'text'
+        ? { output: 'Sorry, no list.', usage: spent(0.5) }
+        : { output: '{"score": 3}' }
+    );
+    const context: JudgeContext = {
+      cogitator: { run },
+      judgeConfig: { model: 'j', temperature: 0 },
+    };
+    const metric = bindJudgeContext(gEval({ name: 'g', criteria: 'c' }), context);
+
+    const first = await metric(caseResult());
+    const second = await metric(caseResult());
+    expect([first.usage?.cost, second.usage?.cost]).toEqual([0.5, 0.5]);
+    expect(first.error).toContain('gEval could not generate its evaluation steps');
+
+    const together = await Promise.all([metric(caseResult('a')), metric(caseResult('b'))]);
+    expect(together.map((score) => score.error !== undefined)).toEqual([true, true]);
+    expect(together.reduce((sum, score) => sum + (score.usage?.cost ?? 0), 0)).toBe(0.5);
+  });
+
+  describe('with the judge cache', () => {
+    beforeAll(async () => {
+      await import('@cogitator-ai/core');
+    }, 60_000);
+
+    it('never caches a steps answer without steps, and reuses a good one across runs', async () => {
+      const store = new Map<string, string>();
+      const cache: JudgeCache = {
+        get: (key) => store.get(key),
+        set: (key, value) => void store.set(key, value),
+      };
+      let stepCalls = 0;
+      const run = vi.fn(async (_agent: unknown, { input }: { input: string }) => {
+        if (input.includes('Write the evaluation steps')) {
+          stepCalls++;
+          return { output: stepCalls === 1 ? 'I would rather not.' : '**Step 1:** Check it' };
+        }
+        return { output: '{"score": 5, "reasoning": "r"}' };
+      });
+      const cogitator = { run } as unknown as JudgeCogitator;
+      const config = JudgeConfigSchema.parse({ model: 'm', cache });
+      const runOnce = () =>
+        bindJudgeContext(
+          gEval({ name: 'g', criteria: 'Correct.' }),
+          judgeContextFor(cogitator, config)
+        );
+
+      const metric = runOnce();
+      expect((await metric(caseResult())).error).toBeDefined();
+      expect((await metric(caseResult())).score).toBe(1);
+      expect(await runOnce()(caseResult())).toMatchObject({ score: 1 });
+
+      expect(stepCalls).toBe(2);
+      expect([...store.values()]).not.toContain('I would rather not.');
+      expect([...store.values()]).toContain('**Step 1:** Check it');
+    });
   });
 });

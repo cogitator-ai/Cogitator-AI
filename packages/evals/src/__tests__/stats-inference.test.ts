@@ -5,6 +5,7 @@ import { holm } from '../stats/holm';
 import { mcnemarExact } from '../stats/mcnemar';
 import { wilcoxonSignedRank } from '../stats/wilcoxon';
 import { pearson, spearman } from '../stats/correlation';
+import { pairedTTest } from '../stats/t-test';
 import { seededRandom } from '../stats/random';
 import { averageRanks } from '../stats/ranks';
 
@@ -170,5 +171,43 @@ describe('seededRandom', () => {
     expect(Array.from({ length: 100 }, () => b())).toEqual(values);
     expect(values.every((v) => v >= 0 && v < 1)).toBe(true);
     expect(seededRandom(undefined)).toBe(Math.random);
+  });
+});
+
+describe('paired differences without float noise', () => {
+  it('ties 0.7 - 0.4 with 0.6 - 0.9 in the signed-rank test', () => {
+    const b = [0.7, 0.1, 0.7, 0.6, 0.7, 0.7, 0.7];
+    const c = [0.4, 0, 0.4, 0.9, 0.8, 1, 1];
+    const result = wilcoxonSignedRank(b, c);
+    expect(result).toMatchObject({ statistic: 11.5, n: 7, method: 'exact' });
+    expect(result.pValue).toBeCloseTo(0.84375, 10);
+  });
+
+  it('drops a difference that is only float noise as a zero', () => {
+    expect(wilcoxonSignedRank([0.1 + 0.2, 0.5], [0.3, 0.5])).toMatchObject({ n: 0, pValue: 1 });
+  });
+
+  it('reads trial means mirrored around each other as no effect', () => {
+    const a = [0.1, 0.2, 0.3];
+    const b = [0.3, 0.2, 0.1];
+    expect(wilcoxonSignedRank(a, b)).toMatchObject({ statistic: 1.5, n: 2, pValue: 1 });
+    expect(pairedTTest(a, b).pValue).toBeCloseTo(1, 10);
+    expect(cohensD(a.map((x, i) => b[i] - x))).toBe(0);
+  });
+
+  it('treats a constant difference with float noise as constant', () => {
+    const differences = [0.7 - 0.4, 0.6 - 0.3, 0.9 - 0.6];
+    expect(new Set(differences).size).toBeGreaterThan(1);
+    expect(cohensD(differences)).toBe(Number.POSITIVE_INFINITY);
+    const t = pairedTTest([0.7, 0.6, 0.9], [0.4, 0.3, 0.6]);
+    expect(t.pValue).toBe(0);
+    expect(t.confidenceInterval).toEqual([0.3, 0.3]);
+  });
+
+  it('finds no correlation for a series that does not vary, float noise included', () => {
+    expect(pearson([0.1, 0.1, 0.1], [0.2, 0.2, 0.2])).toBeNaN();
+    expect(spearman([0.1, 0.1, 0.1], [0.2, 0.2, 0.2])).toBeNaN();
+    expect(pearson([0.3, 0.1 + 0.2, 0.3], [0.1, 0.5, 0.9])).toBeNaN();
+    expect(spearman([0.3, 0.1 + 0.2, 0.3], [0.1, 0.5, 0.9])).toBeNaN();
   });
 });

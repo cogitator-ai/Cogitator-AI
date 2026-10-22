@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { parseOptions } from '../options';
-import { createJudgeMetric, usageOf } from './llm-judge';
+import { JudgeUsageError, createJudgeMetric, usageOf } from './llm-judge';
 import type { JudgeContext, JudgeSetup, JudgeVerdict, JudgeScore, LLMMetricFn } from './llm-judge';
 
 export interface GEvalOptions {
@@ -26,15 +26,20 @@ const GEvalOptionsSchema = z.object({
     .default([1, 5]),
 });
 
-const STEP_LINE = /^\s*(?:\d+\s*[.):]|[-*])\s+(.*\S)\s*$/;
+const STEP_LINE = /^\s*(?:(?:step\s*)?\d+\s*[.):-]|[-*\u2022])\s*(.*\S)\s*$/i;
 
-/** The steps of a numbered or bulleted list, in order */
-function stepsOf(text: string): string[] {
+/**
+ * The steps of a numbered or bulleted list, in order: `1. ...`, `1) ...`, `Step 1: ...`,
+ * `- ...`, with Markdown bold (`**1.** ...`, `**Step 1:** ...`) taken off
+ */
+export function stepsOf(text: string): string[] {
   return text
     .split('\n')
-    .map((line) => STEP_LINE.exec(line)?.[1])
+    .map((line) => STEP_LINE.exec(line.replace(/\*\*|__/g, ''))?.[1])
     .filter((step): step is string => step !== undefined);
 }
+
+const hasSteps = (output: string) => stepsOf(output).length > 0;
 
 function stepsRequest(criteria: string): string {
   return `Criteria for evaluating an assistant's response to an input:\n${criteria}\n\nWrite the evaluation steps a careful grader follows to score a response on these criteria, 3 to 6 short steps. Reply with a numbered list, one step per line, and nothing else.`;
@@ -64,24 +69,36 @@ export function gEval(opts: GEvalOptions): LLMMetricFn {
     const answered = await context.cogitator.run({
       input: stepsRequest(criteria),
       format: 'text',
+      accept: hasSteps,
     });
+    const usage = usageOf(answered.usage);
     const written = stepsOf(answered.output);
     if (written.length === 0) {
-      throw new Error('could not read evaluation steps from the judge, it gave no numbered list');
+      throw new JudgeUsageError(
+        'could not read evaluation steps from the judge, it gave no numbered list',
+        usage
+      );
     }
-    const usage = usageOf(answered.usage);
     return { systemPrompt: scoringPrompt(criteria, written, scale), ...(usage && { usage }) };
   };
 
   const setup = async (context: JudgeContext): Promise<JudgeSetup> => {
     if (steps) return { systemPrompt: scoringPrompt(criteria, steps, scale) };
-    if (generating) return { systemPrompt: (await generating).systemPrompt };
+    if (generating) {
+      try {
+        return { systemPrompt: (await generating).systemPrompt };
+      } catch (error) {
+        throw new Error(error instanceof Error ? error.message : String(error), { cause: error });
+      }
+    }
     const started = generate(context).catch((error: unknown) => {
       if (generating === started) generating = undefined;
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`gEval could not generate its evaluation steps: ${message}`, {
-        cause: error,
-      });
+      throw new JudgeUsageError(
+        `gEval could not generate its evaluation steps: ${message}`,
+        error instanceof JudgeUsageError ? error.usage : undefined,
+        { cause: error }
+      );
     });
     generating = started;
     return started;

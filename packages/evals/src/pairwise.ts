@@ -1,7 +1,13 @@
 import type { EvalSuiteResult } from './eval-suite';
 import type { MetricUsage, ScoredCaseResult } from './metrics/types';
 import type { JudgeContext } from './metrics/llm-judge';
-import { judgePrompt, parseJudgeOutput, sumUsage, usageOf } from './metrics/llm-judge';
+import {
+  judgePrompt,
+  parseJudgeOutput,
+  sumUsage,
+  untilAborted,
+  usageOf,
+} from './metrics/llm-judge';
 import { conversationBlock, evidenceBlock, tagged, wrapped } from './metrics/judge-prompt';
 
 export interface PairwiseOptions {
@@ -90,12 +96,17 @@ async function ask(
   instructions: string,
   first: PairwiseSide,
   a: ScoredCaseResult,
-  b: ScoredCaseResult
+  b: ScoredCaseResult,
+  signal: AbortSignal | undefined
 ): Promise<Asked> {
   try {
-    const answered = await judge.cogitator.run({
-      input: judgePrompt(instructions, pairwiseMessage(a, b)),
-    });
+    const answered = await untilAborted(
+      judge.cogitator.run({
+        input: judgePrompt(instructions, pairwiseMessage(a, b)),
+        ...(signal && { signal }),
+      }),
+      signal
+    );
     const usage = usageOf(answered.usage);
     const verdict = parseJudgeOutput(answered.output);
     if (!verdict) return { error: 'could not parse judge response', ...(usage && { usage }) };
@@ -123,7 +134,8 @@ async function judgeCase(
   instructions: string,
   index: number,
   baseline: ScoredCaseResult,
-  challenger: ScoredCaseResult
+  challenger: ScoredCaseResult,
+  signal: AbortSignal | undefined
 ): Promise<{ result: PairwiseCase; usage?: MetricUsage }> {
   const input = baseline.case.input;
   if (baseline.error !== undefined || challenger.error !== undefined) {
@@ -131,8 +143,8 @@ async function judgeCase(
     return { result: { index, input, winner: other(errored), verdicts: [], errored } };
   }
   const asked = await Promise.all([
-    ask(judge, instructions, 'baseline', baseline, challenger),
-    ask(judge, instructions, 'challenger', challenger, baseline),
+    ask(judge, instructions, 'baseline', baseline, challenger, signal),
+    ask(judge, instructions, 'challenger', challenger, baseline, signal),
   ]);
   const usage = sumUsage(asked.map((one) => one.usage));
   const verdicts = asked.flatMap((one) => (one.verdict ? [one.verdict] : []));
@@ -176,7 +188,7 @@ export async function judgePairwise(
     while (next < pairs.length && !signal?.aborted) {
       const at = next++;
       const { index, b, c } = pairs[at];
-      judged[at] = await judgeCase(judge, instructions, index, b, c);
+      judged[at] = await judgeCase(judge, instructions, index, b, c, signal);
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, pairs.length) }, worker));

@@ -183,4 +183,58 @@ describe('EvalComparison statistics', () => {
     expect(result.summary.cost!.difference).toBeCloseTo(-0.01, 10);
     expect(result.summary.latency.n).toBe(5);
   });
+
+  describe("winner by the direction of Wilcoxon's test", () => {
+    it('crowns the side most cases favor, not the one a single outlier favors', async () => {
+      const outlier = metric({
+        name: 'quality',
+        evaluate: ({ input, output }) => ({
+          score: input === 'q0' ? (output === 'base' ? 1 : 0) : output === 'base' ? 0.5 : 0.51,
+        }),
+      });
+      const result = await new EvalComparison({
+        dataset: cases(20),
+        targets: { baseline: { fn: async () => 'base' }, challenger: { fn: async () => 'chal' } },
+        metrics: [outlier],
+        test: 'wilcoxon',
+      }).run();
+
+      const quality = result.summary.metrics.quality;
+      expect(quality.difference).toBeLessThan(0);
+      expect(quality.significant).toBe(true);
+      expect(quality.winner).toBe('challenger');
+    });
+
+    it('does the same for cost, where lower is better', async () => {
+      const agentTarget = (costOf: (input: string) => number) => ({
+        agent: {},
+        cogitator: {
+          run: async (_agent: unknown, { input }: { input: string }) => ({
+            output: input,
+            usage: {
+              inputTokens: 1,
+              outputTokens: 1,
+              totalTokens: 2,
+              cost: costOf(input),
+              duration: 1,
+            },
+          }),
+        },
+      });
+      const result = await new EvalComparison({
+        dataset: cases(20),
+        targets: {
+          baseline: agentTarget(() => 0.1),
+          challenger: agentTarget((input) => (input === 'q0' ? 1.1 : 0.09)),
+        },
+        test: 'wilcoxon',
+      }).run();
+
+      const cost = result.summary.cost!;
+      expect(cost.test).toBe('wilcoxon');
+      expect(cost.difference).toBeGreaterThan(0);
+      expect(cost.significant).toBe(true);
+      expect(cost.winner).toBe('challenger');
+    });
+  });
 });

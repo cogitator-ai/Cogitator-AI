@@ -33,7 +33,7 @@ export const EvalSuiteConfigSchema = z.object({
 export interface JudgeCogitator {
   run(
     agent: unknown,
-    options: { input: string; useMemory?: boolean }
+    options: { input: string; useMemory?: boolean; signal?: AbortSignal }
   ): Promise<{ output: string; structured?: unknown; usage?: { cost: number } }>;
 }
 

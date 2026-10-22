@@ -1,4 +1,5 @@
 import { mean, stdDev } from './percentiles';
+import { isConstant, pairedDifference } from './precision';
 
 export interface TTestResult {
   tStatistic: number;
@@ -104,6 +105,10 @@ function tDistQuantile(p: number, df: number): number {
   return (lo + hi) / 2;
 }
 
+/**
+ * Paired t-test, two-sided. The differences `a - b` are rounded to 12 significant digits first,
+ * so a constant difference with float noise counts as constant
+ */
 export function pairedTTest(samplesA: number[], samplesB: number[]): TTestResult {
   if (samplesA.length !== samplesB.length) {
     throw new Error('Sample arrays must have equal length');
@@ -115,11 +120,12 @@ export function pairedTTest(samplesA: number[], samplesB: number[]): TTestResult
   const n = samplesA.length;
   const diffs = new Array<number>(n);
   for (let i = 0; i < n; i++) {
-    diffs[i] = samplesA[i] - samplesB[i];
+    diffs[i] = pairedDifference(samplesA[i], samplesB[i]);
   }
 
-  const meanD = mean(diffs);
-  const sdD = stdDev(diffs);
+  const constant = isConstant(diffs);
+  const meanD = constant ? diffs[0] : mean(diffs);
+  const sdD = constant ? 0 : stdDev(diffs);
   const df = n - 1;
 
   if (sdD === 0) {

@@ -1,5 +1,6 @@
 import { normalTwoSidedP } from './normal';
 import { averageRanks, tieGroups } from './ranks';
+import { pairedDifference } from './precision';
 
 export interface WilcoxonResult {
   /** W+: the sum of the ranks of the positive differences `a - b` */
@@ -15,7 +16,8 @@ export interface WilcoxonResult {
 const EXACT_UP_TO = 20;
 
 /**
- * Wilcoxon signed-rank test of paired samples, two-sided. Zero differences are dropped
+ * Wilcoxon signed-rank test of paired samples, two-sided. The differences `a - b` are rounded to
+ * 12 significant digits first, so float noise neither splits ties nor hides a zero. Zero differences are dropped
  * (Wilcoxon's handling, not Pratt's), tied absolute differences share their mean rank. The
  * p-value is exact for up to 20 nonzero pairs, ties included, and from the normal approximation
  * with tie and continuity corrections above
@@ -27,7 +29,9 @@ export function wilcoxonSignedRank(
   if (samplesA.length !== samplesB.length) {
     throw new Error('Sample arrays must have equal length');
   }
-  const differences = samplesA.map((a, i) => a - samplesB[i]).filter((d) => d !== 0);
+  const differences = samplesA
+    .map((a, i) => pairedDifference(a, samplesB[i]))
+    .filter((d) => d !== 0);
   const n = differences.length;
   if (n === 0) return { statistic: 0, n: 0, pValue: 1, significant: false, method: 'exact' };
 

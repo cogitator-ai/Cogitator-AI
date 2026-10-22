@@ -1,5 +1,6 @@
 import { mean } from './percentiles';
 import { averageRanks } from './ranks';
+import { isConstant, withoutNoise } from './precision';
 
 function assertPaired(x: readonly number[], y: readonly number[]): void {
   if (x.length !== y.length) throw new Error('Sample arrays must have equal length');
@@ -12,6 +13,7 @@ function assertPaired(x: readonly number[], y: readonly number[]): void {
 export function pearson(x: readonly number[], y: readonly number[]): number {
   assertPaired(x, y);
   if (x.length < 2) return Number.NaN;
+  if (isConstant(x.map(withoutNoise)) || isConstant(y.map(withoutNoise))) return Number.NaN;
   const mx = mean([...x]);
   const my = mean([...y]);
   let sxy = 0;
@@ -34,5 +36,5 @@ export function pearson(x: readonly number[], y: readonly number[]): number {
  */
 export function spearman(x: readonly number[], y: readonly number[]): number {
   assertPaired(x, y);
-  return pearson(averageRanks(x), averageRanks(y));
+  return pearson(averageRanks(x.map(withoutNoise)), averageRanks(y.map(withoutNoise)));
 }

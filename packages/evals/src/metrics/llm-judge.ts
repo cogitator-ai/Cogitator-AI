@@ -14,6 +14,13 @@ export interface JudgeRunOptions {
   sample?: number;
   /** Default: `verdict` */
   format?: JudgeFormat;
+  /**
+   * Whether an answer is usable beyond being readable, such as G-Eval's steps parsing into a
+   * list. Only accepted answers are cached, so a bad one is asked again instead of reused
+   */
+  accept?: (output: string) => boolean;
+  /** Cancels the call: the judge run is aborted and `run` rejects with the signal's reason */
+  signal?: AbortSignal;
 }
 
 export interface JudgeContext {
@@ -152,6 +159,18 @@ export function sumUsage(usages: ReadonlyArray<MetricUsage | undefined>): Metric
   return total;
 }
 
+/** A judge failure that still cost something, such as a G-Eval steps answer without steps */
+export class JudgeUsageError extends Error {
+  constructor(
+    message: string,
+    readonly usage: MetricUsage | undefined,
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+    this.name = 'JudgeUsageError';
+  }
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -195,8 +214,12 @@ export function judgeContextFor(cogitator: JudgeCogitator, judgeConfig: JudgeCon
     return created;
   };
 
-  const judge = async (input: string, format: JudgeFormat) => {
-    const result = await cogitator.run(await agent(format), { input, useMemory: false });
+  const judge = async ({ input, format, signal }: JudgeCall) => {
+    const result = await cogitator.run(await agent(format), {
+      input,
+      useMemory: false,
+      ...(signal && { signal }),
+    });
     const usage = usageOf(result.usage);
     return {
       output: result.structured !== undefined ? JSON.stringify(result.structured) : result.output,
@@ -204,23 +227,24 @@ export function judgeContextFor(cogitator: JudgeCogitator, judgeConfig: JudgeCon
     };
   };
 
-  const limited = (input: string, format: JudgeFormat) =>
-    slots ? slots(() => judge(input, format)) : judge(input, format);
+  const limited = (call: JudgeCall) => (slots ? slots(() => judge(call)) : judge(call));
   const inFlight = new Map<string, Promise<{ output: string; usage?: MetricUsage }>>();
 
-  const lookup = async (input: string, format: JudgeFormat, key: string) => {
+  const lookup = async (call: JudgeCall, key: string) => {
+    const usable = (output: string) =>
+      readable(call.format, output) && (call.accept?.(output) ?? true);
     const hit = await cacheRead(cache!, key);
-    if (hit !== undefined && readable(format, hit)) return { output: hit };
-    const answered = await limited(input, format);
-    if (readable(format, answered.output)) await cacheWrite(cache!, key, answered.output);
+    if (hit !== undefined && usable(hit)) return { output: hit };
+    const answered = await limited(call);
+    if (usable(answered.output)) await cacheWrite(cache!, key, answered.output);
     return answered;
   };
 
-  const cached = async (input: string, format: JudgeFormat, sample: number) => {
-    const key = cacheKey(judgeConfig, input, format, sample);
+  const cached = async (call: JudgeCall, sample: number) => {
+    const key = cacheKey(judgeConfig, call.input, call.format, sample);
     const running = inFlight.get(key);
     if (running) return { output: (await running).output };
-    const verdict = lookup(input, format, key).finally(() => inFlight.delete(key));
+    const verdict = lookup(call, key).finally(() => inFlight.delete(key));
     inFlight.set(key, verdict);
     return verdict;
   };
@@ -228,10 +252,33 @@ export function judgeContextFor(cogitator: JudgeCogitator, judgeConfig: JudgeCon
   return {
     judgeConfig,
     cogitator: {
-      run: ({ input, sample = 0, format = 'verdict' }) =>
-        cache ? cached(input, format, sample) : limited(input, format),
+      run: ({ sample = 0, format = 'verdict', ...rest }) => {
+        const call: JudgeCall = { ...rest, format };
+        return untilAborted(cache ? cached(call, sample) : limited(call), call.signal);
+      },
     },
   };
+}
+
+interface JudgeCall {
+  input: string;
+  format: JudgeFormat;
+  accept?: (output: string) => boolean;
+  signal?: AbortSignal;
+}
+
+/** `promise`, or a rejection with the signal's reason as soon as `signal` aborts */
+export function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason as Error);
+  let onAbort = () => {};
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason as Error);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  return Promise.race([promise, aborted]).finally(() =>
+    signal.removeEventListener('abort', onAbort)
+  );
 }
 
 /** A cached verdict, none on a miss or when the cache cannot be read: the judge then runs */
@@ -439,7 +486,14 @@ export function bindJudgeContext(metric: LLMMetricFn, context: JudgeContext): Me
       return { name, ...combineSamples(outcomes), ...(usage && { usage }) };
     } catch (err) {
       const message = errorMessage(err);
-      return { name, score: 0, details: `judge error: ${message}`, error: message };
+      const usage = err instanceof JudgeUsageError ? err.usage : undefined;
+      return {
+        name,
+        score: 0,
+        details: `judge error: ${message}`,
+        error: message,
+        ...(usage && { usage }),
+      };
     }
   }) as MetricFn;
 

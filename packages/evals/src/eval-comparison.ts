@@ -16,6 +16,7 @@ import { bootstrapCI } from './stats/bootstrap';
 import { cohensD } from './stats/effect-size';
 import { holm } from './stats/holm';
 import { mean } from './stats/percentiles';
+import { pairedDifference } from './stats/precision';
 
 export interface EvalComparisonOptions {
   dataset: Dataset;
@@ -87,6 +88,10 @@ export interface MetricComparison {
   adjustedPValue: number;
   /** `adjustedPValue` is below `alpha` */
   significant: boolean;
+  /**
+   * The higher side when significant, by the test's direction: the sign of `difference`, except
+   * for Wilcoxon's test, where it is the side with the larger rank sum and may differ from it
+   */
   winner: ComparisonWinner;
 }
 
@@ -104,6 +109,7 @@ export interface ResourceComparison {
   test: ComparisonTest;
   pValue: number;
   significant: boolean;
+  /** The lower side when significant, by the test's direction as for `MetricComparison.winner` */
   winner: ComparisonWinner;
 }
 
@@ -129,13 +135,24 @@ function isBinary(scores: number[]): boolean {
 /** Below this many discordant pairs McNemar's test is exact */
 const EXACT_MCNEMAR_BELOW = 25;
 
+interface PairedTest {
+  test: ComparisonTest;
+  pValue: number;
+  /**
+   * Which side the test finds higher: 1 the challenger, -1 the baseline, 0 neither. The sign of
+   * the mean difference, except for Wilcoxon's test, where it is the side with the larger rank sum
+   */
+  direction: number;
+}
+
 function pairedTest(
   baseline: number[],
   challenger: number[],
   continuous: 't' | 'wilcoxon',
   binaryAllowed: boolean
-): { test: ComparisonTest; pValue: number } {
-  if (baseline.length < 2) return { test: 'none', pValue: 1 };
+): PairedTest {
+  const direction = Math.sign(mean(differencesOf(baseline, challenger)));
+  if (baseline.length < 2) return { test: 'none', pValue: 1, direction };
   if (binaryAllowed && isBinary(baseline) && isBinary(challenger)) {
     let b = 0;
     let c = 0;
@@ -144,18 +161,24 @@ function pairedTest(
       if (baseline[i] === 0 && challenger[i] === 1) c++;
     }
     return b + c < EXACT_MCNEMAR_BELOW
-      ? { test: 'mcnemar-exact', pValue: mcnemarExact(b, c).pValue }
-      : { test: 'mcnemar', pValue: mcnemarsTest(b, c).pValue };
+      ? { test: 'mcnemar-exact', pValue: mcnemarExact(b, c).pValue, direction }
+      : { test: 'mcnemar', pValue: mcnemarsTest(b, c).pValue, direction };
   }
   if (continuous === 'wilcoxon') {
-    return { test: 'wilcoxon', pValue: wilcoxonSignedRank(baseline, challenger).pValue };
+    const { statistic, n, pValue } = wilcoxonSignedRank(baseline, challenger);
+    return { test: 'wilcoxon', pValue, direction: Math.sign((n * (n + 1)) / 4 - statistic) };
   }
-  return { test: 't', pValue: pairedTTest(baseline, challenger).pValue };
+  return { test: 't', pValue: pairedTTest(baseline, challenger).pValue, direction };
 }
 
+/** Challenger minus baseline per case, without float noise */
 function differencesOf(baseline: number[], challenger: number[]): number[] {
-  return challenger.map((score, i) => score - baseline[i]);
+  return challenger.map((score, i) => pairedDifference(score, baseline[i]));
 }
+
+type ComparedMetric = Omit<MetricComparison, 'adjustedPValue' | 'significant' | 'winner'> & {
+  direction: number;
+};
 
 function meanOrNaN(values: number[]): number {
   return values.length === 0 ? Number.NaN : mean(values);
@@ -166,7 +189,7 @@ function compareMetric(
   baselineScores: number[],
   challengerScores: number[],
   config: EvalComparisonConfig
-): Omit<MetricComparison, 'adjustedPValue' | 'significant' | 'winner'> {
+): ComparedMetric {
   const differences = differencesOf(baselineScores, challengerScores);
   const { low, high } = bootstrapCI(differences, {
     confidence: 1 - config.alpha,
@@ -185,20 +208,20 @@ function compareMetric(
 
 /** Each metric's verdict once its p-value is adjusted with Holm's correction over all metrics */
 function decideMetrics(
-  compared: Record<string, Omit<MetricComparison, 'adjustedPValue' | 'significant' | 'winner'>>,
+  compared: Record<string, ComparedMetric>,
   alpha: number
 ): Record<string, MetricComparison> {
   const names = Object.keys(compared);
   const adjusted = holm(names.map((name) => compared[name].pValue));
   const decided: Record<string, MetricComparison> = {};
   for (const [at, name] of names.entries()) {
-    const metric = compared[name];
-    const significant = adjusted[at] < alpha && metric.difference !== 0;
+    const { direction, ...metric } = compared[name];
+    const significant = adjusted[at] < alpha && direction !== 0;
     decided[name] = {
       ...metric,
       adjustedPValue: adjusted[at],
       significant,
-      winner: !significant ? 'tie' : metric.difference > 0 ? 'challenger' : 'baseline',
+      winner: !significant ? 'tie' : direction > 0 ? 'challenger' : 'baseline',
     };
   }
   return decided;
@@ -210,8 +233,8 @@ function compareResource(
   config: EvalComparisonConfig
 ): ResourceComparison {
   const difference = meanOrNaN(differencesOf(baseline, challenger));
-  const { test, pValue } = pairedTest(baseline, challenger, config.test, false);
-  const significant = pValue < config.alpha && difference !== 0;
+  const { test, pValue, direction } = pairedTest(baseline, challenger, config.test, false);
+  const significant = pValue < config.alpha && direction !== 0;
   return {
     baseline: meanOrNaN(baseline),
     challenger: meanOrNaN(challenger),
@@ -220,7 +243,7 @@ function compareResource(
     test,
     pValue,
     significant,
-    winner: !significant ? 'tie' : difference < 0 ? 'challenger' : 'baseline',
+    winner: !significant ? 'tie' : direction < 0 ? 'challenger' : 'baseline',
   };
 }
 
@@ -331,10 +354,7 @@ export class EvalComparison {
       }
     }
 
-    const compared: Record<
-      string,
-      Omit<MetricComparison, 'adjustedPValue' | 'significant' | 'winner'>
-    > = {};
+    const compared: Record<string, ComparedMetric> = {};
     for (const name of metricNames) {
       const [baselineScores, challengerScores] = pairedScores(
         baselineResult,
