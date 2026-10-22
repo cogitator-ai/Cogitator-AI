@@ -87,7 +87,11 @@ describe('errors', () => {
       code: ErrorCode.INTERNAL_ERROR,
       statusCode: 409,
     });
-    const odd = new CogitatorError({ message: 'x', code: ErrorCode.INTERNAL_ERROR, statusCode: 200 });
+    const odd = new CogitatorError({
+      message: 'x',
+      code: ErrorCode.INTERNAL_ERROR,
+      statusCode: 200,
+    });
 
     expect(describeHttpError(own)?.status).toBe(409);
     expect(describeHttpError(odd)?.status).toBe(500);

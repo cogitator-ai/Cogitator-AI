@@ -57,10 +57,9 @@ export function swarmTimeoutWithin(
 }
 
 /** Workflow run options with `maxIterations` and `maxConcurrency` held to the limits */
-export function workflowOptionsWithin<T extends { maxIterations?: number; maxConcurrency?: number }>(
-  options: T,
-  limits: RunLimits | undefined
-): T {
+export function workflowOptionsWithin<
+  T extends { maxIterations?: number; maxConcurrency?: number },
+>(options: T, limits: RunLimits | undefined): T {
   const maxIterations = capped(options.maxIterations, limits?.workflowMaxIterations);
   const maxConcurrency = capped(options.maxConcurrency, limits?.workflowMaxConcurrency);
   return {

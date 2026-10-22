@@ -62,6 +62,8 @@ type MongoCursor<T extends Document> = Pick<
 interface MongoCollection<T extends Document> extends Pick<
   Collection<T>,
   | 'createIndex'
+  | 'indexExists'
+  | 'dropIndex'
   | 'insertOne'
   | 'updateOne'
   | 'updateMany'
@@ -527,7 +529,8 @@ export class MongoDBAdapter
       await threads.createIndex({ agentId: 1, updatedAt: 1, _id: 1 });
       await threads.createIndex({ updatedAt: 1, _id: 1 });
       const entries = db.collection<EntryDoc>(`${this.prefix}entries`);
-      await entries.createIndex({ threadId: 1, createdAt: 1, seq: 1 });
+      await entries.createIndex({ threadId: 1, createdAt: 1, seq: 1, _id: 1 });
+      await dropIndexIfPresent(entries, 'threadId_1_createdAt_1_seq_1');
       await entries.createIndex({ threadId: 1, parentId: 1 });
       const items = db.collection<ItemDoc>(`${this.prefix}items`);
       await items.createIndex({ agentId: 1, slot: 1 });
@@ -1612,4 +1615,17 @@ export class MongoDBAdapter
       return this.failure((err as Error).message);
     }
   }
+}
+
+/**
+ * Drops an index an older version of the adapter created, when it is still there: the entry
+ * index without `_id` is a prefix of the one that orders entries of one time, so it only costs
+ * writes
+ */
+async function dropIndexIfPresent(
+  collection: MongoCollection<EntryDoc>,
+  name: string
+): Promise<void> {
+  if (!(await collection.indexExists(name))) return;
+  await collection.dropIndex(name);
 }

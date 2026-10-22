@@ -274,7 +274,11 @@ const SCENARIOS: Record<MemoryAdapterScenario, (adapter: MemoryAdapter) => Promi
       contents(
         ok(await adapter.getEntries({ threadId: id, before: at(before), limit }), 'getEntries')
       );
-    assert.deepEqual(await page(9, 2), ['e', 'f'], 'the newest entries before the time, oldest first');
+    assert.deepEqual(
+      await page(9, 2),
+      ['e', 'f'],
+      'the newest entries before the time, oldest first'
+    );
     assert.deepEqual(
       await page(6, 3),
       ['d', 'e', 'f'],

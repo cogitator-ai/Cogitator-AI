@@ -23,6 +23,8 @@ type CursorSurface = Pick<
 type CollectionSurface = Pick<
   Collection<StoredDoc>,
   | 'createIndex'
+  | 'indexExists'
+  | 'dropIndex'
   | 'insertOne'
   | 'updateOne'
   | 'updateMany'
@@ -50,6 +52,8 @@ const deleted = { acknowledged: true, deletedCount: 1 };
 
 const mockCollection = {
   createIndex: vi.fn<CollectionSurface['createIndex']>().mockResolvedValue('index_name'),
+  indexExists: vi.fn<CollectionSurface['indexExists']>().mockResolvedValue(false),
+  dropIndex: vi.fn<CollectionSurface['dropIndex']>().mockResolvedValue({}),
   insertOne: vi
     .fn<CollectionSurface['insertOne']>()
     .mockResolvedValue({ acknowledged: true, insertedId: 'test-id' }),
@@ -191,6 +195,7 @@ describe('MongoDBAdapter', () => {
         threadId: 1,
         createdAt: 1,
         seq: 1,
+        _id: 1,
       });
       expect(mockCollection.createIndex).toHaveBeenCalledWith({ threadId: 1, parentId: 1 });
     });
@@ -237,6 +242,22 @@ describe('MongoDBAdapter', () => {
       await adapter.disconnect();
 
       expect(mockClient.close).toHaveBeenCalled();
+    });
+
+    it('indexes entries by thread, time, order and id, dropping the index without the id', async () => {
+      mockCollection.indexExists.mockResolvedValueOnce(true);
+      const adapter = new MongoDBAdapter({ provider: 'mongodb', uri: 'mongodb://localhost' });
+
+      await adapter.connect();
+
+      expect(mockCollection.createIndex).toHaveBeenCalledWith({
+        threadId: 1,
+        createdAt: 1,
+        seq: 1,
+        _id: 1,
+      });
+      expect(mockCollection.dropIndex).toHaveBeenCalledWith('threadId_1_createdAt_1_seq_1');
+      await adapter.disconnect();
     });
 
     it('handles multiple connect calls', async () => {

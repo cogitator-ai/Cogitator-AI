@@ -460,6 +460,10 @@ async function streamAgentRun(
     return;
   }
 
+  state.abortController?.abort();
+  const controller = new AbortController();
+  state.abortController = controller;
+
   let deps: { deps?: unknown };
   try {
     const refusal = await authorizeThreadAccess(
@@ -480,10 +484,7 @@ async function streamAgentRun(
     });
     return;
   }
-
-  state.abortController?.abort();
-  const controller = new AbortController();
-  state.abortController = controller;
+  if (controller.signal.aborted || ws.readyState !== WS_OPEN) return;
 
   const broadcast = hub.broadcast(`agent:${name}`, { ws, auth: state.auth });
   if (target.threadId !== undefined) broadcast.onThread(target.threadId);

@@ -125,12 +125,14 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
   };
   const runFailures = {
     429: {
-      description: 'The provider limited the rate or the budget ran out (LLM_RATE_LIMITED, BUDGET_EXCEEDED)',
+      description:
+        'The provider limited the rate or the budget ran out (LLM_RATE_LIMITED, BUDGET_EXCEEDED)',
       headers: retryAfter,
       content: errorContent,
     },
     503: {
-      description: 'The provider or a circuit breaker is unavailable (LLM_UNAVAILABLE, CIRCUIT_OPEN)',
+      description:
+        'The provider or a circuit breaker is unavailable (LLM_UNAVAILABLE, CIRCUIT_OPEN)',
       headers: retryAfter,
       content: errorContent,
     },

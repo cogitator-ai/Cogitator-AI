@@ -158,6 +158,27 @@ describe('WebSocket', () => {
     );
   });
 
+  it('starts no run when the client stops or leaves while the run hooks are pending', async () => {
+    let release: () => void = () => {};
+    const pending = new Promise<void>((resolve) => (release = resolve));
+    const { runMock, url } = await start(async () => ({ output: 'done' }), {
+      websocket: { deps: () => pending.then(() => ({ tenant: 'acme' })) },
+    });
+
+    const stopping = await connect(url);
+    stopping.send(runMessage('stopped'));
+    stopping.send({ type: 'stop' });
+    const leaving = await connect(url);
+    leaving.send(runMessage('left'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    leaving.socket.close();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(runMock).not.toHaveBeenCalled();
+  });
+
   it('applies the auth function to the upgrade request', async () => {
     const { url, runMock } = await start(async () => ({ output: 'ok' }), {
       auth: (req) => {
