@@ -144,7 +144,7 @@ Options shared by both providers:
 | `format`       | `VoiceAudioFormat` | Output format: `"mp3"` (default), `"pcm16"` (raw PCM16 mono **24kHz** for both providers), etc. |
 | `instructions` | `string`           | Voice style instructions (OpenAI `gpt-4o-mini-tts` only)                                        |
 
-`VoicePipeline` and pipeline-mode `VoiceAgent` pass their `ttsOptions` to every call (see [TTS options](/docs/voice/pipeline#tts-options)).
+`VoicePipeline` and pipeline-mode `VoiceAgent` pass their `ttsOptions` to every call (see [TTS options](/docs/voice/pipeline#tts-options)). With a streaming runner a session calls `streamSynthesize` once per sentence of the answer, in order, so a provider with a low time to first byte matters more than one with high throughput (see [Streaming replies](/docs/voice/pipeline#streaming-replies)).
 
 ## Custom TTS Provider
 

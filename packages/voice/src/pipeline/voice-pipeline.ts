@@ -16,7 +16,9 @@ export class VoicePipeline {
 
   /**
    * One-shot STT -> Agent -> TTS. Silent input (empty transcript) skips the agent and TTS
-   * and returns empty strings with an empty audio buffer.
+   * and returns empty strings with an empty audio buffer. It returns the answer's audio as one
+   * buffer, so it runs the agent with `run` and synthesizes the whole answer at once, also for a
+   * runner that streams: use a session (`createSession`) to speak while the answer is generated.
    */
   async process(audio: Buffer, options: PipelineSessionOptions = {}): Promise<VoicePipelineResult> {
     const { text: transcript } = await this.config.stt.transcribe(audio);

@@ -142,6 +142,7 @@ session.close();`,
       problem: 'Browsers or phones should stream audio to your agent and hear it answer.',
       points: [
         'Serve a `VoiceAgent` over WebSocket with Deepgram STT, ElevenLabs TTS and energy-based VAD',
+        'Speak the reply sentence by sentence while the model generates it',
       ],
       file: 'voice-agent.ts',
       code: `import { Agent, Cogitator } from '@cogitator-ai/core';
@@ -195,6 +196,10 @@ process.on('SIGINT', async () => {
           type: 'info',
           text: 'Clients send PCM16 16 kHz mono binary frames and JSON control messages: `interrupt`, `end_of_speech` or `{ "type": "text", "text": "..." }`.',
         },
+        {
+          type: 'info',
+          text: 'An interrupted reply leaves only the sentences whose audio was sent in the agent memory, marked `metadata.interrupted`. Add `bargeIn: true` to stop the reply when the user talks over it, once the client cancels its own echo.',
+        },
       ],
       example: 'voice/03-voice-agent.ts',
       docs: [
@@ -212,12 +217,12 @@ process.on('SIGINT', async () => {
       problem: 'The same WebSocket server, but backed by a realtime model with server-side tools.',
       points: [
         'Run `VoiceAgent` in `realtime` mode on Gemini Live',
-        'Give it Cogitator tools with `createRealtimeTools`, approval included',
+        "Give the model the agent's own tools through `createCogitatorRunner`, approval included",
         'Talk to it from a WebSocket client',
       ],
       file: 'realtime-voice-agent.ts',
-      code: `import { Cogitator, tool } from '@cogitator-ai/core';
-import { createRealtimeTools, VoiceAgent } from '@cogitator-ai/voice';
+      code: `import { Agent, Cogitator, tool } from '@cogitator-ai/core';
+import { createCogitatorRunner, VoiceAgent } from '@cogitator-ai/voice';
 import { WebSocket } from 'ws';
 import { z } from 'zod';
 
@@ -244,21 +249,23 @@ const bookRoom = tool({
 });
 
 const cogitator = new Cogitator();
+const concierge = new Agent({
+  name: 'concierge',
+  instructions: 'You are a concise voice concierge. Use tools when they help.',
+  tools: [openingHours, bookRoom],
+});
 const voiceAgent = new VoiceAgent({
   mode: 'realtime',
-  agent: {
-    run: async () => ({ content: '' }),
-    instructions: 'You are a concise voice concierge. Use tools when they help.',
-  },
+  agent: createCogitatorRunner(cogitator, concierge),
   realtimeProvider: 'gemini',
   realtimeApiKey: apiKey,
   voice: 'Puck',
-  tools: createRealtimeTools(cogitator, [openingHours, bookRoom], {
+  agentTools: {
     onApproval: async (request) => {
       console.log(\`Approving \${request.toolName}(\${JSON.stringify(request.arguments)})\`);
       return { approved: true };
     },
-  }),
+  },
 });
 voiceAgent.on('error', (error) => console.error(error.message));
 await voiceAgent.listen(0);

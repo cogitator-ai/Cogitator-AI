@@ -14,7 +14,7 @@ import type {
   ReasoningConfig,
   ToolChoice,
 } from './llm';
-import type { MemoryConfig } from './memory';
+import type { MemoryConfig, MemoryEntry } from './memory';
 import type { SandboxManagerConfig } from './sandbox';
 import type { ReflectionConfig, Reflection, ReflectionSummary } from './reflection';
 import type { GuardrailConfig } from './constitutional';
@@ -317,6 +317,13 @@ export interface RunOptions<TDeps = unknown> {
   trace?: TraceParent;
   /** Callback when memory operation fails */
   onMemoryError?: (error: Error, operation: 'save' | 'load') => void;
+  /**
+   * Called with each entry the run saved to its thread, once the write succeeded: the input, each
+   * model turn, tool results and session events such as an `interrupt`. An aborted or failed run
+   * reports what it wrote too, before its promise rejects, so a caller knows the run's place in
+   * the thread without a `RunResult`.
+   */
+  onMemoryEntry?: (entry: MemoryEntry) => void;
   /**
    * Runs on a branch of the thread: history is read along the branch ending at `fromEntryId`
    * (null for none, a new root), and the run's entries go after it, one after another. With

@@ -16,6 +16,8 @@ export type {
   VoicePipelineConfig,
   VoiceAgentRunner,
   VoiceRunContext,
+  VoiceTurn,
+  VoiceTurnOutcome,
   RealtimeSessionConfig,
   RealtimeTool,
   RealtimeToolContext,
@@ -50,8 +52,10 @@ export { SileroVAD, type SileroVADConfig } from './vad/index.js';
 export {
   VoicePipeline,
   PipelineSession,
+  SentenceSplitter,
   type VoicePipelineResult,
   type PipelineSessionOptions,
+  type SentenceSplitterOptions,
 } from './pipeline/index.js';
 
 export { OpenAIRealtimeAdapter } from './realtime/index.js';
@@ -70,7 +74,9 @@ export { VoiceAgent } from './voice-agent.js';
 export {
   createCogitatorRunner,
   type CogitatorLike,
+  type CogitatorRunnerAgent,
   type CogitatorRunnerOptions,
+  type CogitatorRunnerRunOptions,
 } from './cogitator-runner.js';
 
 export { transcribeTool, speakTool, voiceTools, type VoiceTool } from './tools.js';

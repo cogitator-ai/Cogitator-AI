@@ -1809,6 +1809,9 @@ importers:
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
+      '@cogitator-ai/test-utils':
+        specifier: workspace:*
+        version: link:../test-utils
       '@types/ws':
         specifier: ^8.18.2
         version: 8.18.2

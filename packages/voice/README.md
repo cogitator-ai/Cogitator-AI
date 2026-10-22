@@ -21,15 +21,17 @@ Full documentation: [cogitator.app/docs/voice](https://cogitator.app/docs/voice)
 
 ## Features
 
-- **Pipeline Mode** — STT -> Agent -> TTS, works with any Cogitator agent and LLM backend
-- **Realtime Mode** — Native speech-to-speech via OpenAI Realtime API or Gemini Live API
-- **2 STT Providers** — OpenAI (gpt-transcribe) and Deepgram (nova-3, real-time streaming)
-- **2 TTS Providers** — OpenAI (gpt-4o-mini-tts) and ElevenLabs (eleven_flash_v2_5, ~75ms latency)
-- **2 VAD Providers** — Energy-based (zero deps) and Silero (ONNX neural network)
-- **WebSocket Transport** — Built-in server for browser/mobile clients
-- **Agent Tools** — Drop-in `transcribe_audio` and `speak_text` tools for any Cogitator agent
-- **Interruption Handling** — Barge-in support in both pipeline and realtime modes
-- **Audio Utilities** — PCM/WAV conversion, resampling, RMS calculation
+- **Pipeline Mode** - STT -> Agent -> TTS, works with any Cogitator agent and LLM backend
+- **Streaming Replies** - the answer is spoken sentence by sentence while the model still generates it
+- **Spoken-only Memory** - an interrupted reply leaves only what the user heard in the conversation
+- **Realtime Mode** - Native speech-to-speech via OpenAI Realtime API or Gemini Live API, with the agent's own tools run through approvals, guardrails and the sandbox
+- **2 STT Providers** - OpenAI (gpt-transcribe) and Deepgram (nova-3, real-time streaming)
+- **2 TTS Providers** - OpenAI (gpt-4o-mini-tts) and ElevenLabs (eleven_flash_v2_5, ~75ms latency)
+- **2 VAD Providers** - Energy-based (zero deps) and Silero (ONNX neural network)
+- **WebSocket Transport** - Built-in server for browser/mobile clients
+- **Agent Tools** - Drop-in `transcribe_audio` and `speak_text` tools for any Cogitator agent
+- **Interruption Handling** - explicit interrupts, opt-in barge-in in pipeline mode (`bargeIn`) and provider VAD in realtime mode
+- **Audio Utilities** - PCM/WAV conversion, resampling, RMS calculation
 
 ---
 
@@ -65,7 +67,7 @@ await voiceAgent.listen(8080);
 
 Connect from any WebSocket client at `ws://localhost:8080/voice` — send binary PCM16 frames, receive binary audio + JSON events (see [WebSocket Protocol](#websocket-protocol)).
 
-`createCogitatorRunner()` adapts a `Cogitator` runtime + `Agent` to the `VoiceAgentRunner` interface (`run(input, { sessionId, signal })`). Each voice session gets its own memory thread (`voice:<sessionId>`, override with `createCogitatorRunner(cogitator, agent, { threadId: ({ sessionId }) => ... })`), and interrupted turns abort the underlying run. Any object with a compatible `run()` works as well.
+`createCogitatorRunner()` adapts a `Cogitator` runtime + `Agent` to the `VoiceAgentRunner` interface (`run(input, { sessionId, signal })` and `stream(input, { sessionId, signal })`). Each voice session gets its own memory thread (`voice:<sessionId>`, override with `createCogitatorRunner(cogitator, agent, { threadId: ({ sessionId }) => ... })`), interrupted turns abort the underlying run, and the reply is spoken while it is generated (see [Streaming replies](#streaming-replies)). Any object with a compatible `run()` works as well.
 
 ---
 
@@ -326,6 +328,56 @@ await session.close();
 
 Without a VAD, audio is buffered until `endAudio()`. `interrupt()` cancels the in-flight turn (the agent receives an aborted `signal`), and `close()` returns without waiting for hung providers. Empty transcripts never reach the agent.
 
+### Streaming replies
+
+When the runner has a `stream(input, context)` method, as `createCogitatorRunner()` does, a session speaks the answer while the model is still generating it. The text deltas are split into sentences and each sentence goes to `tts.streamSynthesize` in order, so the first audio leaves before the answer is complete. The splitter knows abbreviations (`Dr.`, `e.g.`), decimals (`3.14`), ellipses, `?!`, CJK full stops and list items on their own lines, flushes a tail without punctuation at the end, and cuts a sentence without a break at `maxSentenceLength` characters (default 250) on whitespace.
+
+```typescript
+const pipeline = new VoicePipeline({
+  stt,
+  tts,
+  vad: new EnergyVAD(),
+  agent: createCogitatorRunner(cogitator, agent),
+  maxSentenceLength: 200,
+});
+
+const session = pipeline.createSession();
+session.on('agent_response_delta', (delta) => showCaption(delta));
+session.on('agent_response', (text) => console.log('Full answer:', text));
+```
+
+`agent_response_delta` carries each piece of text as it arrives and `agent_response` still carries the whole answer once it is generated, so existing listeners keep working. A runner without `stream` is used exactly as before: `run()` answers, then the whole text is synthesized at once. `VoicePipeline.process()` returns one audio buffer, so it always uses `run()` and a single `synthesize()` call. `SentenceSplitter` is exported for your own streaming code.
+
+A streaming runner returns a `VoiceTurn`: an `AsyncIterable<string>` of deltas that stops when `context.signal` aborts, with an optional `settle({ spoken, interrupted })` the session calls once the turn is over. The next streamed turn of the session starts only after the previous one settled.
+
+### Interruption and spoken-only memory
+
+A reply can be cut short by `interrupt()`, the `{ type: 'interrupt' }` control message, `sendText()` during a turn, a barge-in, the session closing, or a model or TTS error. The session then settles the turn with `spoken`: the sentences whose audio was sent to the client in full. A sentence whose audio was only partly sent does not count. The server cannot know how much of the sent audio the client actually played, so a client that buffers a lot of audio should keep its buffer short or send `interrupt` as soon as the user starts talking.
+
+With `createCogitatorRunner()` the thread then holds what the user heard:
+
+- the answer was spoken in full: the thread is exactly what a plain run leaves
+- interrupted while speaking: the assistant message holds only the spoken part, with `metadata.interrupted: true`
+- interrupted while the model was still generating: the spoken part is saved after the run's `interrupt` event, marked the same way, since the run itself saves no partial answer
+- nothing was spoken: no assistant message for the answer
+
+Text the model said alongside tool calls (for example "Let me check") stays as the run saved it, only the final answer is trimmed. When something else wrote to the thread after the turn, the spoken part goes on the turn's branch without moving the thread's active leaf. Keeping the thread needs a runtime with `getMemory()`, as a `Cogitator` with `memory` configured has.
+
+### Barge-in
+
+`bargeIn: true` (on `VoicePipeline` or a pipeline-mode `VoiceAgent`) stops the reply when the VAD hears speech while the agent is thinking or speaking, and starts listening to the new utterance right away. The session emits `speech_start`, which tells a client to drop the audio it still has queued. It needs a `vad` and is off by default: without echo cancellation on the client, the agent's own voice coming back through the microphone would interrupt it.
+
+```typescript
+const voiceAgent = new VoiceAgent({
+  mode: 'pipeline',
+  agent: createCogitatorRunner(cogitator, agent),
+  stt,
+  tts,
+  vad: new EnergyVAD(),
+  bargeIn: true,
+});
+```
+
 ---
 
 ## Realtime Mode
@@ -341,7 +393,7 @@ Audio and text sent before `connect()` resolves are queued and flushed once the 
 
 ### Cogitator tools in a realtime session
 
-`createRealtimeTools(cogitator, tools, options)` turns Cogitator tools into realtime tools whose calls run through `cogitator.invokeTool`, the way an agent run executes them: arguments checked against the tool's schema, approval asked for calls that need it, the guardrails applied, sandboxed tools run in the sandbox and `tool.timeout` kept. A call that needs approval goes to `options.onApproval`, then to `guardrails.onToolApproval`, and one nobody approves does not run: the model gets an error saying it needs approval and can tell the user.
+A `VoiceAgent` built with `createCogitatorRunner()` gives the realtime model the agent's own tools by default (see [Realtime mode with VoiceAgent](#realtime-mode-with-voiceagent)). For a bare `RealtimeSession`, `createRealtimeTools(cogitator, tools, options)` turns Cogitator tools into realtime tools whose calls run through `cogitator.invokeTool`, the way an agent run executes them: arguments checked against the tool's schema, approval asked for calls that need it, the guardrails applied, sandboxed tools run in the sandbox and `tool.timeout` kept. A call that needs approval goes to `options.onApproval`, then to `guardrails.onToolApproval`, and one nobody approves does not run: the model gets an error saying it needs approval and can tell the user.
 
 ```typescript
 import { Cogitator, tool } from '@cogitator-ai/core';
@@ -477,12 +529,12 @@ When attached to an existing server, upgrade requests for other paths are left u
 
 ### WebSocket Protocol
 
-| Direction        | Format      | Content                                                                                                |
-| ---------------- | ----------- | ------------------------------------------------------------------------------------------------------ |
-| Client -> Server | Binary      | PCM16 mono 16-bit LE (16kHz for pipeline and Gemini, 24kHz for OpenAI realtime)                        |
-| Client -> Server | Text (JSON) | `{ type: 'interrupt' }`, `{ type: 'end_of_speech' }`, `{ type: 'text', text }`                         |
-| Server -> Client | Binary      | Response audio (TTS output format in pipeline mode, PCM16 24kHz in realtime mode)                      |
-| Server -> Client | Text (JSON) | `transcript` (`text`, `isFinal` or `role`), `agent_response`, `speech_start`, `speech_end`, `turn_end` |
+| Direction        | Format      | Content                                                                                                                        |
+| ---------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Client -> Server | Binary      | PCM16 mono 16-bit LE (16kHz for pipeline and Gemini, 24kHz for OpenAI realtime)                                                |
+| Client -> Server | Text (JSON) | `{ type: 'interrupt' }`, `{ type: 'end_of_speech' }`, `{ type: 'text', text }`                                                 |
+| Server -> Client | Binary      | Response audio (TTS output format in pipeline mode, PCM16 24kHz in realtime mode)                                              |
+| Server -> Client | Text (JSON) | `transcript` (`text`, `isFinal` or `role`), `agent_response`, `agent_response_delta`, `speech_start`, `speech_end`, `turn_end` |
 
 `end_of_speech` commits buffered audio when no VAD is configured (pipeline mode). `interrupt` cancels the current turn. `text` runs a turn from text input in both modes. Unknown control message types are reported through the `error` event. If the realtime provider cannot be reached or disconnects, the client is closed with code `1011`.
 
@@ -526,7 +578,9 @@ const voiceAgent = new VoiceAgent({
   realtimeProvider: 'gemini',
   realtimeApiKey: process.env.GOOGLE_API_KEY!,
   voice: 'Puck',
-  tools: createRealtimeTools(cogitator, agent.tools),
+  agentTools: {
+    onApproval: async (request) => ({ approved: await askOperator(request) }),
+  },
 });
 
 await voiceAgent.listen(8080);
@@ -534,9 +588,18 @@ await voiceAgent.listen(8080);
 
 In realtime mode the agent's `instructions` are used as the session instructions unless `instructions` is set explicitly.
 
+Without `tools`, the model gets the agent's own tools from `agent.realtimeTools()`. A `createCogitatorRunner()` runner builds them with `createRealtimeTools(cogitator, agent.tools)`, so each call goes through `cogitator.invokeTool`: schema validation, approvals, guardrails, the sandbox and `tool.timeout`, with the agent's id and the session's thread id (`voice:<sessionId>`, or the runner's `threadId` resolver) in the tool context. `agentTools` takes the options of `createRealtimeTools` (`onApproval`, `userId`, ...), and `agentTools: false` turns the bridge off. Explicit `tools` always win, and `tools: []` gives the model no tools.
+
 ---
 
 ## Agent Integration
+
+`createCogitatorRunner(cogitator, agent, options?)` connects a Cogitator agent to the voice pipeline and to `VoiceAgent`. Its runner offers:
+
+- `run(input, context)`: a plain run of the agent in the session's thread
+- `stream(input, context)`: a run with `stream: true`, yielding the answer's tokens, whose `settle` keeps only the spoken part of an interrupted answer in the thread (see [Interruption and spoken-only memory](#interruption-and-spoken-only-memory))
+- `realtimeTools(options)`: the agent's tools as realtime tools, when the runtime has `invokeTool`
+- `instructions`: the agent's instructions, for realtime mode
 
 Give any Cogitator agent the ability to transcribe audio or synthesize speech:
 
@@ -609,22 +672,25 @@ if (format) audioMimeType(format); // e.g. 'audio/wav'
 
 ### `VoiceAgentConfig`
 
-| Field              | Type                       | Required      | Description                                               |
-| ------------------ | -------------------------- | ------------- | --------------------------------------------------------- |
-| `agent`            | `VoiceAgentRunner`         | Yes           | `createCogitatorRunner(...)` or any `{ run(input, ctx) }` |
-| `mode`             | `'pipeline' \| 'realtime'` | Yes           | Processing mode                                           |
-| `stt`              | `STTProvider`              | Pipeline only | Speech-to-text provider                                   |
-| `tts`              | `TTSProvider`              | Pipeline only | Text-to-speech provider                                   |
-| `vad`              | `VADProvider`              | No            | Voice activity detection                                  |
-| `ttsOptions`       | `TTSOptions`               | No            | Pipeline only: options passed to every TTS call           |
-| `realtimeProvider` | `'openai' \| 'gemini'`     | Realtime only | Realtime API provider                                     |
-| `realtimeApiKey`   | `string`                   | Realtime only | API key for realtime provider                             |
-| `realtimeModel`    | `string`                   | No            | Model override                                            |
-| `instructions`     | `string`                   | No            | Realtime instructions (defaults to `agent.instructions`)  |
-| `tools`            | `RealtimeTool[]`           | No            | Realtime tools, e.g. from `createRealtimeTools(...)`      |
-| `toolImages`       | `boolean`                  | No            | Realtime: send images tools return to the model           |
-| `voice`            | `string`                   | No            | Voice for realtime                                        |
-| `transport`        | `WebSocketTransportConfig` | No            | Transport options                                         |
+| Field               | Type                              | Required      | Description                                                            |
+| ------------------- | --------------------------------- | ------------- | ---------------------------------------------------------------------- |
+| `agent`             | `VoiceAgentRunner`                | Yes           | `createCogitatorRunner(...)` or any `{ run(input, ctx) }`              |
+| `mode`              | `'pipeline' \| 'realtime'`        | Yes           | Processing mode                                                        |
+| `stt`               | `STTProvider`                     | Pipeline only | Speech-to-text provider                                                |
+| `tts`               | `TTSProvider`                     | Pipeline only | Text-to-speech provider                                                |
+| `vad`               | `VADProvider`                     | No            | Voice activity detection                                               |
+| `ttsOptions`        | `TTSOptions`                      | No            | Pipeline only: options passed to every TTS call                        |
+| `bargeIn`           | `boolean`                         | No            | Pipeline only: user speech stops the reply (default false)             |
+| `maxSentenceLength` | `number`                          | No            | Pipeline only: longest streamed piece sent to TTS (250)                |
+| `realtimeProvider`  | `'openai' \| 'gemini'`            | Realtime only | Realtime API provider                                                  |
+| `realtimeApiKey`    | `string`                          | Realtime only | API key for realtime provider                                          |
+| `realtimeModel`     | `string`                          | No            | Model override                                                         |
+| `instructions`      | `string`                          | No            | Realtime instructions (defaults to `agent.instructions`)               |
+| `tools`             | `RealtimeTool[]`                  | No            | Realtime tools, replace the agent's own (`[]` for none)                |
+| `agentTools`        | `boolean \| RealtimeToolsOptions` | No            | Realtime: the agent's own tools when `tools` is not set (default true) |
+| `toolImages`        | `boolean`                         | No            | Realtime: send images tools return to the model                        |
+| `voice`             | `string`                          | No            | Voice for realtime                                                     |
+| `transport`         | `WebSocketTransportConfig`        | No            | Transport options                                                      |
 
 ### `OpenAISTTConfig`
 

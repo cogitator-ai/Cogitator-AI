@@ -214,7 +214,7 @@ session.pushAudio(pcm16Chunk);
 Use `VoiceAgent` to expose a realtime session over WebSocket transport:
 
 ```typescript
-import { VoiceAgent, createCogitatorRunner, createRealtimeTools } from '@cogitator-ai/voice';
+import { VoiceAgent, createCogitatorRunner } from '@cogitator-ai/voice';
 
 const voiceAgent = new VoiceAgent({
   agent: createCogitatorRunner(cogitator, agent),
@@ -223,13 +223,17 @@ const voiceAgent = new VoiceAgent({
   realtimeApiKey: process.env.OPENAI_API_KEY!,
   realtimeModel: 'gpt-realtime-2.1-mini',
   voice: 'marin',
-  tools: createRealtimeTools(cogitator, agent.tools),
+  agentTools: {
+    onApproval: async (request) => ({ approved: await askOperator(request) }),
+  },
 });
 
 await voiceAgent.listen(8080);
 ```
 
-Each WebSocket client gets its own `RealtimeSession`. The session instructions come from `instructions` or, if unset, from `agent.instructions`, and `tools` are executed server-side. The model talks to the user directly - `agent.run()` is not called in realtime mode, so the Cogitator agent's tools and memory are not used. Give the session its own `tools`, such as the agent's tools through [`createRealtimeTools`](#cogitator-tools). Audio from the client is forwarded to the realtime API, and audio/`transcript`/`speech_start`/`turn_end` events are forwarded back. Clients can send `{ type: 'text', text }` and `{ type: 'interrupt' }` control messages. If the provider connection fails or drops, the client is closed with code `1011`.
+Each WebSocket client gets its own `RealtimeSession`. The session instructions come from `instructions` or, if unset, from `agent.instructions`, and tools are executed server-side. The model talks to the user directly - `agent.run()` is not called in realtime mode, so the Cogitator agent's memory is not used.
+
+Without `tools`, the model gets the agent's own tools from `agent.realtimeTools()`. A `createCogitatorRunner()` runner builds them with [`createRealtimeTools`](#cogitator-tools), so every call goes through `cogitator.invokeTool` with approvals, guardrails, the sandbox and `tool.timeout`, and the tools see the agent's id and the session's thread (`voice:<sessionId>`, or the runner's `threadId` resolver). `agentTools` takes the options of `createRealtimeTools` (`onApproval`, `userId`, ...), and `agentTools: false` turns the bridge off. Explicit `tools` always win, and `tools: []` gives the model none. Audio from the client is forwarded to the realtime API, and audio/`transcript`/`speech_start`/`turn_end` events are forwarded back. Clients can send `{ type: 'text', text }` and `{ type: 'interrupt' }` control messages. If the provider connection fails or drops, the client is closed with code `1011`.
 
 ## RealtimeSessionConfig
 

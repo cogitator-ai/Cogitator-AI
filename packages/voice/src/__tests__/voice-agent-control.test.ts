@@ -124,6 +124,35 @@ describe('VoiceAgent control protocol and realtime wiring', () => {
     expect(received.audio.map((b) => b.toString())).toEqual(['pcm:hello back']);
   });
 
+  it('streams a reply from a streaming runner with text deltas', async () => {
+    const agent = {
+      run: vi.fn(),
+      stream: vi.fn(() => ({
+        async *[Symbol.asyncIterator]() {
+          yield 'One. ';
+          yield 'Two.';
+        },
+      })),
+    };
+    const { ws, received } = await start({
+      mode: 'pipeline',
+      agent,
+      stt: createSTT(),
+      tts: createTTS(),
+    });
+
+    ws.send(JSON.stringify({ type: 'text', text: 'count' }));
+
+    await vi.waitFor(() => expect(received.messages).toContainEqual({ type: 'turn_end' }));
+    expect(received.messages.filter((m) => m.type === 'agent_response_delta')).toEqual([
+      { type: 'agent_response_delta', text: 'One. ' },
+      { type: 'agent_response_delta', text: 'Two.' },
+    ]);
+    expect(received.messages).toContainEqual({ type: 'agent_response', text: 'One. Two.' });
+    expect(received.audio.map((b) => b.toString())).toEqual(['pcm:One.', 'pcm:Two.']);
+    expect(agent.run).not.toHaveBeenCalled();
+  });
+
   it('commits buffered audio on { type: "end_of_speech" } without a VAD', async () => {
     const agent = { run: vi.fn().mockResolvedValue({ content: 'ok' }) };
     const { ws, received } = await start({
@@ -277,6 +306,69 @@ describe('VoiceAgent control protocol and realtime wiring', () => {
         sessionId: expect.any(String),
         toolImages: true,
       });
+    });
+
+    it("bridges the agent's own tools when no tools are given", async () => {
+      const bridged = [{ name: 'own', description: 'd', parameters: {}, execute: vi.fn() }];
+      const realtimeTools = vi.fn(() => bridged);
+      await start({
+        mode: 'realtime',
+        agent: { run: vi.fn(), realtimeTools },
+        realtimeProvider: 'openai',
+        realtimeApiKey: 'key',
+      });
+      await vi.waitFor(() => expect(realtimeSessions).toHaveLength(1));
+
+      expect(realtimeSessions[0]!.config.tools).toBe(bridged);
+      expect(realtimeTools).toHaveBeenCalledWith(undefined);
+    });
+
+    it('passes agentTools options to the bridge', async () => {
+      const onApproval = vi.fn();
+      const realtimeTools = vi.fn(() => [
+        { name: 'own', description: 'd', parameters: {}, execute: vi.fn() },
+      ]);
+      await start({
+        mode: 'realtime',
+        agent: { run: vi.fn(), realtimeTools },
+        agentTools: { onApproval, userId: 'u1' },
+        realtimeProvider: 'openai',
+        realtimeApiKey: 'key',
+      });
+      await vi.waitFor(() => expect(realtimeSessions).toHaveLength(1));
+      expect(realtimeTools).toHaveBeenCalledWith({ onApproval, userId: 'u1' });
+    });
+
+    it('prefers explicit tools, an empty list included, over the bridge', async () => {
+      const realtimeTools = vi.fn(() => [
+        { name: 'own', description: 'd', parameters: {}, execute: vi.fn() },
+      ]);
+      await start({
+        mode: 'realtime',
+        agent: { run: vi.fn(), realtimeTools },
+        tools: [],
+        realtimeProvider: 'openai',
+        realtimeApiKey: 'key',
+      });
+      await vi.waitFor(() => expect(realtimeSessions).toHaveLength(1));
+      expect(realtimeSessions[0]!.config.tools).toEqual([]);
+      expect(realtimeTools).not.toHaveBeenCalled();
+    });
+
+    it('turns the bridge off with agentTools: false', async () => {
+      const realtimeTools = vi.fn(() => [
+        { name: 'own', description: 'd', parameters: {}, execute: vi.fn() },
+      ]);
+      await start({
+        mode: 'realtime',
+        agent: { run: vi.fn(), realtimeTools },
+        agentTools: false,
+        realtimeProvider: 'openai',
+        realtimeApiKey: 'key',
+      });
+      await vi.waitFor(() => expect(realtimeSessions).toHaveLength(1));
+      expect(realtimeSessions[0]!.config.tools).toBeUndefined();
+      expect(realtimeTools).not.toHaveBeenCalled();
     });
 
     it('prefers explicit instructions over agent.instructions', async () => {

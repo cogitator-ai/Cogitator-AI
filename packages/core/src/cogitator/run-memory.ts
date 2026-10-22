@@ -1,5 +1,6 @@
 import type {
   MemoryAdapter,
+  MemoryEntry,
   Message,
   RunCheckpoint,
   RunMemoryPlace,
@@ -7,6 +8,7 @@ import type {
   ToolCall,
   ToolResult,
 } from '@cogitator-ai/types';
+import { getLogger } from '../logger';
 import { saveEntry, type EntryEvent, type EntryPlacement } from './message-builder';
 
 /**
@@ -153,8 +155,21 @@ export class RunMemory {
       if (this.branchPoint === undefined) this.branchPoint = entry.parentId ?? null;
       this.leafId = entry.id;
       if (this.place.parentId !== undefined) this.place.parentId = entry.id;
+      reportEntry(entry, options.onMemoryEntry);
     });
     this.queue = written.catch(() => undefined);
     return written;
+  }
+}
+
+/** Hands a saved entry to `onMemoryEntry`, whose failure does not fail the write or the run */
+function reportEntry(entry: MemoryEntry, onMemoryEntry: RunOptions['onMemoryEntry']): void {
+  if (!onMemoryEntry) return;
+  try {
+    onMemoryEntry(entry);
+  } catch (error) {
+    getLogger().warn('onMemoryEntry failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }

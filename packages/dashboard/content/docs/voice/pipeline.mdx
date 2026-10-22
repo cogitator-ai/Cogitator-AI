@@ -105,6 +105,10 @@ session.on('transcript', (text: string, isFinal: boolean) => {
   }
 });
 
+session.on('agent_response_delta', (delta: string) => {
+  showCaption(delta); // a streaming runner's text as it is generated
+});
+
 session.on('agent_response', (text: string) => {
   console.log('Agent:', text);
 });
@@ -123,19 +127,30 @@ session.on('error', (error: Error) => {
 });
 ```
 
-| Event            | Payload           | Description                              |
-| ---------------- | ----------------- | ---------------------------------------- |
-| `speech_start`   | —                 | VAD detected speech beginning (VAD only) |
-| `speech_end`     | —                 | VAD detected speech ending (VAD only)    |
-| `transcript`     | `(text, isFinal)` | STT result (interim or final)            |
-| `agent_response` | `(text)`          | Agent's text response                    |
-| `audio`          | `(chunk: Buffer)` | Streamed TTS audio chunk                 |
-| `turn_end`       | —                 | Response fully spoken (or empty)         |
-| `error`          | `(error: Error)`  | Processing error (STT, VAD, agent, TTS)  |
+| Event                  | Payload           | Description                              |
+| ---------------------- | ----------------- | ---------------------------------------- |
+| `speech_start`         | -                 | VAD detected speech beginning (VAD only) |
+| `speech_end`           | -                 | VAD detected speech ending (VAD only)    |
+| `transcript`           | `(text, isFinal)` | STT result (interim or final)            |
+| `agent_response`       | `(text)`          | Agent's whole text response              |
+| `agent_response_delta` | `(delta)`         | A piece of a streamed response           |
+| `audio`                | `(chunk: Buffer)` | Streamed TTS audio chunk                 |
+| `turn_end`             | -                 | Response fully spoken (or empty)         |
+| `error`                | `(error: Error)`  | Processing error (STT, VAD, agent, TTS)  |
+
+### Streaming replies
+
+When the runner has `stream(input, context)`, as `createCogitatorRunner()` does, the session speaks the answer while the model is still generating it. The text deltas are split into sentences and each sentence goes to `tts.streamSynthesize` in order, so the first audio leaves before the answer is complete.
+
+The splitter keeps abbreviations (`Dr.`, `e.g.`, `U.S.`), decimals (`3.14`) and list numbers (`1.`) inside their sentence, splits after `?!`, an ellipsis before a new sentence, CJK full stops and line breaks, flushes a tail without punctuation at the end, and cuts a sentence without a break at `maxSentenceLength` characters (default 250) on whitespace. `SentenceSplitter` is exported for your own code.
+
+`agent_response_delta` carries each piece of text and `agent_response` the whole answer once it is generated, which can be while its first sentences are still being spoken. A runner without `stream` works as before: `run()` answers, then the whole text is synthesized at once.
+
+A streaming runner returns a `VoiceTurn`, an `AsyncIterable<string>` of deltas that stops when `context.signal` aborts, with an optional `settle({ spoken, interrupted })`. The session calls `settle` once the turn is over, and starts the next streamed turn only after it resolved.
 
 ### Interruption
 
-Interrupt the current processing at any stage — discards the STT stream, aborts the agent run (its `signal` fires) and stops TTS streaming. A stale turn never emits events or changes state after an interruption:
+Interrupt the current processing at any stage - discards the STT stream, aborts the agent run (its `signal` fires) and stops TTS streaming. A stale turn never emits events or changes state after an interruption:
 
 ```typescript
 session.interrupt();
@@ -143,13 +158,25 @@ session.interrupt();
 
 After interruption, the session returns to idle and is ready for new audio input.
 
+A streamed turn that stops early (an interruption, `sendText()` during a turn, a barge-in, closing, or a model or TTS error) is settled with `spoken`: the sentences whose audio was sent in full. The server cannot know how much of that audio the client played, so keep the client's playback buffer short.
+
+With `createCogitatorRunner()` the thread then holds what the user heard. A fully spoken answer leaves the thread as a plain run does. An answer interrupted while it was spoken is replaced by its spoken part, with `metadata.interrupted: true`. When the model was still generating, the spoken part is saved after the run's `interrupt` event, marked the same way. When nothing was spoken, there is no assistant message for the answer. Text said alongside tool calls stays as the run saved it.
+
+### Barge-in
+
+With `bargeIn: true` and a `vad`, speech heard while the agent is thinking or speaking stops the reply and starts listening right away, emitting `speech_start` (a client should drop the audio it still has queued). It is off by default, because without echo cancellation on the client the agent's own voice would interrupt it.
+
+```typescript
+const pipeline = new VoicePipeline({ stt, tts, vad: new EnergyVAD(), agent, bargeIn: true });
+```
+
 ### Closing
 
 ```typescript
 await session.close();
 ```
 
-Aborts any in-progress turn (without waiting for hung providers), releases the STT stream and removes event listeners.
+Aborts any in-progress turn (without waiting for hung providers), waits for a streamed turn to settle, releases the STT stream and removes event listeners.
 
 ## Pipeline with VAD
 
@@ -235,22 +262,24 @@ Browsers cannot set headers on a WebSocket, so pass credentials in the query str
 
 ### WebSocket protocol
 
-| Direction        | Format | Content                                                                                             |
-| ---------------- | ------ | --------------------------------------------------------------------------------------------------- |
-| Client -> Server | Binary | PCM16 mono (16kHz pipeline / Gemini, 24kHz OpenAI realtime)                                         |
-| Client -> Server | JSON   | `{ type: 'interrupt' }`, `{ type: 'end_of_speech' }` (pipeline), `{ type: 'text', text }`           |
-| Server -> Client | Binary | Response audio (TTS output format in pipeline mode, MP3 by default; PCM16 24kHz in realtime mode)   |
-| Server -> Client | JSON   | `{ type: 'transcript', text, isFinal }`, `agent_response`, `speech_start`, `speech_end`, `turn_end` |
+| Direction        | Format | Content                                                                                                                     |
+| ---------------- | ------ | --------------------------------------------------------------------------------------------------------------------------- |
+| Client -> Server | Binary | PCM16 mono (16kHz pipeline / Gemini, 24kHz OpenAI realtime)                                                                 |
+| Client -> Server | JSON   | `{ type: 'interrupt' }`, `{ type: 'end_of_speech' }` (pipeline), `{ type: 'text', text }`                                   |
+| Server -> Client | Binary | Response audio (TTS output format in pipeline mode, MP3 by default; PCM16 24kHz in realtime mode)                           |
+| Server -> Client | JSON   | `{ type: 'transcript', text, isFinal }`, `agent_response`, `agent_response_delta`, `speech_start`, `speech_end`, `turn_end` |
 
-In realtime mode `transcript` carries `role` (`'user'` or `'assistant'`) instead of `isFinal`, and there is no `agent_response` or `speech_end`. Invalid JSON and unknown control types are reported through the `error` event and otherwise ignored.
+In realtime mode `transcript` carries `role` (`'user'` or `'assistant'`) instead of `isFinal`, and there is no `agent_response`, `agent_response_delta` or `speech_end`. Invalid JSON and unknown control types are reported through the `error` event and otherwise ignored.
 
 ### VoicePipelineConfig
 
-| Field        | Type               | Required | Description                                                             |
-| ------------ | ------------------ | -------- | ----------------------------------------------------------------------- |
-| `stt`        | `STTProvider`      | Yes      | Speech-to-text provider                                                 |
-| `tts`        | `TTSProvider`      | Yes      | Text-to-speech provider                                                 |
-| `vad`        | `VADProvider`      | No       | Voice activity detection                                                |
-| `ttsOptions` | `TTSOptions`       | No       | Options for every TTS call (`format`, `voice`, `speed`, `instructions`) |
-| `agent`      | `VoiceAgentRunner` | Yes      | `createCogitatorRunner(...)` or any `{ run(input, ctx) }`               |
-| `sampleRate` | `number`           | No       | Deprecated, unused (configure the STT/VAD providers instead)            |
+| Field               | Type               | Required | Description                                                             |
+| ------------------- | ------------------ | -------- | ----------------------------------------------------------------------- |
+| `stt`               | `STTProvider`      | Yes      | Speech-to-text provider                                                 |
+| `tts`               | `TTSProvider`      | Yes      | Text-to-speech provider                                                 |
+| `vad`               | `VADProvider`      | No       | Voice activity detection                                                |
+| `ttsOptions`        | `TTSOptions`       | No       | Options for every TTS call (`format`, `voice`, `speed`, `instructions`) |
+| `agent`             | `VoiceAgentRunner` | Yes      | `createCogitatorRunner(...)` or any `{ run(input, ctx) }`               |
+| `bargeIn`           | `boolean`          | No       | Speech heard during a reply stops it (default false, needs a `vad`)     |
+| `maxSentenceLength` | `number`           | No       | Longest streamed piece sent to TTS at once (default 250)                |
+| `sampleRate`        | `number`           | No       | Deprecated, unused (configure the STT/VAD providers instead)            |

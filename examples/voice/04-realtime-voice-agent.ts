@@ -1,8 +1,8 @@
 import { WebSocket } from 'ws';
 import { z } from 'zod';
-import { Cogitator, tool } from '@cogitator-ai/core';
+import { Agent, Cogitator, tool } from '@cogitator-ai/core';
 import { header, section } from '../_shared/setup.js';
-import { createRealtimeTools, VoiceAgent } from '@cogitator-ai/voice';
+import { createCogitatorRunner, VoiceAgent } from '@cogitator-ai/voice';
 
 const openingHours = tool({
   name: 'get_opening_hours',
@@ -34,21 +34,23 @@ async function main() {
 
   section('1. Start a realtime VoiceAgent');
   const cogitator = new Cogitator();
+  const concierge = new Agent({
+    name: 'concierge',
+    instructions: 'You are a concise voice concierge. Use tools when they help.',
+    tools: [openingHours, bookRoom],
+  });
   const voiceAgent = new VoiceAgent({
     mode: 'realtime',
-    agent: {
-      run: async () => ({ content: '' }),
-      instructions: 'You are a concise voice concierge. Use tools when they help.',
-    },
+    agent: createCogitatorRunner(cogitator, concierge),
     realtimeProvider: 'gemini',
     realtimeApiKey: apiKey,
     voice: 'Puck',
-    tools: createRealtimeTools(cogitator, [openingHours, bookRoom], {
+    agentTools: {
       onApproval: async (request) => {
         console.log(`  Approving ${request.toolName}(${JSON.stringify(request.arguments)})`);
         return { approved: true };
       },
-    }),
+    },
   });
   voiceAgent.on('error', (err) => console.error(`  Error: ${err.message}`));
   await voiceAgent.listen(0);

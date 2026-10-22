@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type http from 'node:http';
-import type { VoiceAgentConfig } from './types.js';
+import type { RealtimeTool, VoiceAgentConfig } from './types.js';
 import { WebSocketTransport, VoiceClient } from './transport/ws-transport.js';
 import { VoicePipeline } from './pipeline/voice-pipeline.js';
 import { PipelineSession } from './pipeline/pipeline-session.js';
@@ -37,13 +37,19 @@ function closeReason(message: string): string {
  * Client -> server: binary frames carry PCM16 audio; JSON text frames carry control
  * messages `{ type: 'interrupt' }`, `{ type: 'end_of_speech' }` and `{ type: 'text', text }`.
  * Server -> client: binary audio frames and JSON events (`transcript`, `agent_response`,
- * `speech_start`, `speech_end`, `turn_end`).
+ * `agent_response_delta` with a streaming runner, `speech_start`, `speech_end`, `turn_end`).
+ * With `bargeIn`, a `speech_start` while the agent is speaking means its reply was stopped:
+ * the client should drop the audio it still has queued.
+ *
+ * In realtime mode the model gets `tools`, or else the agent's own tools from
+ * `agent.realtimeTools()` (see `agentTools`).
  */
 export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
   private readonly config: VoiceAgentConfig;
   private transport: WebSocketTransport | null = null;
   private readonly sessions = new Map<string, SessionEntry>();
   private pipeline: VoicePipeline | null = null;
+  private readonly realtimeTools: RealtimeTool[] | undefined;
 
   constructor(config: VoiceAgentConfig) {
     super();
@@ -57,8 +63,11 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
         vad: config.vad,
         agent: config.agent,
         ttsOptions: config.ttsOptions,
+        bargeIn: config.bargeIn,
+        maxSentenceLength: config.maxSentenceLength,
       });
     }
+    this.realtimeTools = config.mode === 'realtime' ? resolveRealtimeTools(config) : undefined;
   }
 
   get port(): number | undefined {
@@ -198,6 +207,10 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
       entry.client.sendMessage({ type: 'agent_response', text });
     });
 
+    session.on('agent_response_delta', (text: string) => {
+      entry.client.sendMessage({ type: 'agent_response_delta', text });
+    });
+
     session.on('speech_start', () => {
       entry.client.sendMessage({ type: 'speech_start' });
     });
@@ -222,7 +235,7 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
       model: this.config.realtimeModel,
       voice: this.config.voice,
       instructions: this.config.instructions ?? this.config.agent.instructions,
-      tools: this.config.tools,
+      tools: this.realtimeTools,
       sessionId: entry.client.id,
       toolImages: this.config.toolImages,
     });
@@ -283,4 +296,14 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
       await entry.pipelineSession.close();
     }
   }
+}
+
+/** `config.tools`, or the agent's own tools unless `agentTools` is false */
+function resolveRealtimeTools(config: VoiceAgentConfig): RealtimeTool[] | undefined {
+  if (config.tools) return config.tools;
+  if (config.agentTools === false || !config.agent.realtimeTools) return undefined;
+  const tools = config.agent.realtimeTools(
+    typeof config.agentTools === 'object' ? config.agentTools : undefined
+  );
+  return tools.length > 0 ? tools : undefined;
 }

@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
 import { Cogitator, Agent } from '@cogitator-ai/core';
+import { MockLLMBackend } from '@cogitator-ai/test-utils';
+import type { MemoryEntry } from '@cogitator-ai/types';
 import {
   VoiceAgent,
   EnergyVAD,
@@ -75,15 +77,23 @@ function tone(ms: number, amplitude: number): Buffer[] {
 interface ClientLog {
   messages: Array<Record<string, unknown>>;
   audio: string;
+  /** What arrived, in order: `audio` for a binary frame, else the message type */
+  order: string[];
 }
 
 function connectClient(port: number): Promise<{ ws: WebSocket; log: ClientLog }> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/voice`);
-    const log: ClientLog = { messages: [], audio: '' };
+    const log: ClientLog = { messages: [], audio: '', order: [] };
     ws.on('message', (data, isBinary) => {
-      if (isBinary) log.audio += (data as Buffer).toString();
-      else log.messages.push(JSON.parse(data.toString()) as Record<string, unknown>);
+      if (isBinary) {
+        log.audio += (data as Buffer).toString();
+        log.order.push('audio');
+        return;
+      }
+      const message = JSON.parse(data.toString()) as Record<string, unknown>;
+      log.messages.push(message);
+      log.order.push(String(message.type));
     });
     ws.on('open', () => resolve({ ws, log }));
     ws.on('error', reject);
@@ -299,3 +309,178 @@ describeLLM('Voice: VoiceAgent pipeline with a real Cogitator agent', () => {
     expect(client.log.audio.toLowerCase()).toContain('teal');
   });
 });
+
+/**
+ * Echoes text as audio like `textEchoTTS`, but holds the second piece it is asked to speak until
+ * `release`, so a test can interrupt a reply after its first piece was spoken
+ */
+function holdingTTS(): { tts: TTSProvider; spoken: string[]; release: () => void } {
+  const spoken: string[] = [];
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    spoken,
+    release,
+    tts: {
+      name: 'holding',
+      synthesize: async (text) => Buffer.from(text),
+      async *streamSynthesize(text) {
+        spoken.push(text);
+        if (spoken.length > 1) await held;
+        yield Buffer.from(`${text} `);
+      },
+    },
+  };
+}
+
+async function threadOf(cogitator: Cogitator, sessionId: string): Promise<MemoryEntry[]> {
+  const memory = await cogitator.getMemory();
+  const path = await memory!.getPath!({ threadId: `voice:${sessionId}` });
+  if (!path.success) throw new Error(path.error);
+  return path.data;
+}
+
+const ollamaReason = await ollamaSkipReason();
+const streamingTargets = [
+  { label: 'MockLLMBackend', model: 'mock/scripted', skip: false },
+  {
+    label: `Ollama ${getTestModel()}`,
+    model: `ollama/${getTestModel()}`,
+    skip: ollamaReason !== null,
+  },
+];
+
+for (const target of streamingTargets) {
+  describe.skipIf(target.skip)(
+    `Voice: streamed replies with a Cogitator agent (${target.label})`,
+    () => {
+      const scripted = target.model.startsWith('mock/');
+      let cogitator: Cogitator;
+      let backend: MockLLMBackend;
+      let voice: VoiceAgent | undefined;
+      let ws: WebSocket | undefined;
+      let release: (() => void) | undefined;
+
+      beforeAll(() => {
+        backend = new MockLLMBackend();
+        cogitator = new Cogitator({
+          llm: { ...(scripted && { backends: { mock: backend } }), retry: false },
+          memory: { adapter: 'memory' },
+        });
+      });
+
+      afterAll(async () => {
+        await cogitator.close();
+      });
+
+      afterEach(async () => {
+        release?.();
+        ws?.terminate();
+        await voice?.close();
+        ws = undefined;
+        voice = undefined;
+        release = undefined;
+      });
+
+      async function serve(
+        tts: TTSProvider,
+        instructions: string,
+        maxSentenceLength?: number
+      ): Promise<{ log: ClientLog; sessionId: () => string }> {
+        const agent = new Agent({ name: 'voice-stream-e2e', model: target.model, instructions });
+        const sessions: string[] = [];
+        voice = new VoiceAgent({
+          mode: 'pipeline',
+          agent: createCogitatorRunner(cogitator, agent),
+          stt: scriptedSTT('unused'),
+          tts,
+          ...(maxSentenceLength !== undefined && { maxSentenceLength }),
+        });
+        voice.on('session_start', (id) => sessions.push(id));
+        await voice.listen(0);
+        const client = await connectClient(voice.port!);
+        ws = client.ws;
+        await waitUntil(() => sessions.length === 1, 5_000);
+        return { log: client.log, sessionId: () => sessions[0]! };
+      }
+
+      it(
+        'speaks the first sentence before the answer is generated',
+        { timeout: 120_000 },
+        async () => {
+          backend.setStreamChunks([
+            { content: 'The ocean is vast. ' },
+            { content: 'It covers most of the planet. ', delay: 300 },
+            { content: 'Its waves never stop.', delay: 300 },
+          ]);
+          const { log, sessionId } = await serve(
+            textEchoTTS(),
+            'You are a voice assistant. Answer in exactly three short sentences.'
+          );
+
+          ws!.send(JSON.stringify({ type: 'text', text: 'Tell me about the ocean.' }));
+          await waitUntil(() => log.order.includes('turn_end'), 90_000);
+
+          const response = String(log.messages.find((m) => m.type === 'agent_response')?.text);
+          expect(response.trim().length).toBeGreaterThan(0);
+          expect(log.audio.split(/\s+/).join(' ').trim()).toBe(
+            response.split(/\s+/).filter(Boolean).join(' ')
+          );
+          const deltas = log.messages.filter((m) => m.type === 'agent_response_delta');
+          expect(deltas.map((m) => String(m.text)).join('')).toBe(response);
+          if (scripted) {
+            expect(log.order.indexOf('audio')).toBeLessThan(log.order.indexOf('agent_response'));
+          }
+
+          const thread = await threadOf(cogitator, sessionId());
+          expect(thread.map((e) => [e.message.role, String(e.message.content)])).toEqual([
+            ['user', 'Tell me about the ocean.'],
+            ['assistant', response],
+          ]);
+          expect(thread[1]!.metadata?.interrupted).toBeUndefined();
+        }
+      );
+
+      it(
+        'keeps only the spoken part of an interrupted reply in memory',
+        { timeout: 120_000 },
+        async () => {
+          backend.setStreamChunks([
+            { content: 'First, the ocean is deep. Second' },
+            { content: ', it is salty. Third', delay: 200 },
+            { content: ', it is cold.', delay: 5_000 },
+          ]);
+          const holding = holdingTTS();
+          release = holding.release;
+          const { log, sessionId } = await serve(
+            holding.tts,
+            'You are a voice assistant. Describe the ocean in three long sentences.',
+            scripted ? undefined : 24
+          );
+
+          ws!.send(JSON.stringify({ type: 'text', text: 'Describe the ocean.' }));
+          await waitUntil(() => holding.spoken.length >= 2, 90_000);
+          expect(log.audio.trim()).toBe(holding.spoken[0]);
+          ws!.send(JSON.stringify({ type: 'interrupt' }));
+
+          let thread: MemoryEntry[] = [];
+          await waitUntil(() => {
+            void threadOf(cogitator, sessionId()).then((entries) => {
+              thread = entries;
+            });
+            return thread.some((e) => e.metadata?.interrupted === true);
+          }, 30_000);
+
+          expect(thread.map((e) => [e.message.role, String(e.message.content)])).toEqual([
+            ['user', 'Describe the ocean.'],
+            ['assistant', holding.spoken[0]],
+          ]);
+          expect(thread[1]!.metadata).toEqual({ interrupted: true });
+          expect(log.order).not.toContain('turn_end');
+        }
+      );
+    }
+  );
+}

@@ -69,6 +69,23 @@ describe('VoicePipeline', () => {
       expect(tts.synthesize).toHaveBeenCalledWith('Hi there!', undefined);
     });
 
+    it('answers with run() and one synthesis even when the runner streams', async () => {
+      const stream = vi.fn();
+      const p = new VoicePipeline({ stt, tts, agent: { ...agent, stream } });
+
+      const result = await p.process(Buffer.from('test-audio'));
+
+      expect(result.response).toBe('Hi there!');
+      expect(stream).not.toHaveBeenCalled();
+      expect(tts.synthesize).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a maxSentenceLength that is not a positive integer', () => {
+      expect(() =>
+        new VoicePipeline({ stt, tts, agent, maxSentenceLength: 0 }).createSession()
+      ).toThrow(RangeError);
+    });
+
     it('passes ttsOptions to synthesize', async () => {
       const ttsOptions = { format: 'pcm16' as const, voice: 'nova' };
       const p = new VoicePipeline({ stt, tts, agent, ttsOptions });

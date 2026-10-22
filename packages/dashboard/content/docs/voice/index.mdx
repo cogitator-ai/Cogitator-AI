@@ -65,7 +65,7 @@ await voiceAgent.listen(8080);
 
 Connect from any WebSocket client at `ws://localhost:8080/voice` — send binary PCM16 audio frames, receive audio and JSON events back (see [WebSocket protocol](/docs/voice/pipeline#websocket-protocol)).
 
-`createCogitatorRunner()` adapts a `Cogitator` runtime and `Agent` to the `VoiceAgentRunner` interface (`run(input, { sessionId, signal })`): each voice session gets its own memory thread (`voice:<sessionId>`) and interrupted turns abort the run. Pass `{ threadId: (ctx) => ... }` as the third argument to choose threads yourself, e.g. to continue a user's chat history:
+`createCogitatorRunner()` adapts a `Cogitator` runtime and `Agent` to the `VoiceAgentRunner` interface (`run(input, { sessionId, signal })` and `stream(input, { sessionId, signal })`): each voice session gets its own memory thread (`voice:<sessionId>`), the reply is spoken sentence by sentence while the model generates it, interrupted turns abort the run, and the thread keeps only the part of an interrupted reply the user heard (see [Streaming replies](/docs/voice/pipeline#streaming-replies)). Pass `{ threadId: (ctx) => ... }` as the third argument to choose threads yourself, e.g. to continue a user's chat history:
 
 ```typescript
 const runner = createCogitatorRunner(cogitator, agent, {
@@ -91,7 +91,7 @@ const voiceAgent = new VoiceAgent({
 await voiceAgent.listen(8080);
 ```
 
-Give the session its own `tools`, such as Cogitator tools through [`createRealtimeTools`](/docs/voice/realtime#cogitator-tools), which keeps approval, guardrails and timeouts: they run in the session, and results made of parts (such as screenshots) reach the model as text, with the images themselves only when `toolImages: true`. See [Realtime](/docs/voice/realtime#tool-results).
+The realtime model gets the agent's own tools, run through [`createRealtimeTools`](/docs/voice/realtime#cogitator-tools), which keeps approval, guardrails and timeouts. Pass `agentTools: { onApproval }` to decide approvals, `agentTools: false` to turn this off, or your own `tools` to replace them. Results made of parts (such as screenshots) reach the model as text, with the images themselves only when `toolImages: true`. See [Realtime](/docs/voice/realtime#tool-results).
 
 ## Components
 

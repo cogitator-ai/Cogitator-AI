@@ -1,23 +1,7 @@
-import type { Tool, ToolInvocationOptions, ToolInvoker } from '@cogitator-ai/types';
-import type { RealtimeTool, RealtimeToolContext } from '../types.js';
+import type { Tool, ToolInvoker } from '@cogitator-ai/types';
+import type { RealtimeTool, RealtimeToolContext, RealtimeToolsOptions } from '../types.js';
 
-export interface RealtimeToolsOptions {
-  /**
-   * Decides a call that needs approval (`requiresApproval`, or the guardrails), as
-   * `RunOptions.onApproval` does in a run. Without it `guardrails.onToolApproval` decides, and a
-   * call nobody approves does not run: the model gets an error saying it needs approval
-   */
-  onApproval?: ToolInvocationOptions['onApproval'];
-  /** Agent id the tools see in their context (default `'voice'`) */
-  agentId?: string;
-  /**
-   * Thread id the tools see in their context. Defaults to `voice:<sessionId>`, the thread
-   * `createCogitatorRunner` gives the session's agent runs
-   */
-  threadId?: (context: RealtimeToolContext) => string | undefined;
-  /** The user the calls act for */
-  userId?: string;
-}
+export type { RealtimeToolsOptions };
 
 /**
  * Cogitator tools in the shape a realtime session takes, each call run through

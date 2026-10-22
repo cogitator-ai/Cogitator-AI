@@ -1,5 +1,9 @@
 import type { IncomingMessage } from 'node:http';
-import type { TranscribeResult, VoiceAudioFormat } from '@cogitator-ai/types';
+import type {
+  ToolInvocationOptions,
+  TranscribeResult,
+  VoiceAudioFormat,
+} from '@cogitator-ai/types';
 
 export type { TranscribeResult, VoiceAudioFormat };
 
@@ -63,8 +67,47 @@ export interface VoiceRunContext {
   signal?: AbortSignal;
 }
 
+/** How a streamed voice turn ended, as `VoiceTurn.settle` hears it. */
+export interface VoiceTurnOutcome {
+  /**
+   * The text whose audio was sent to the client in full, a prefix of the text the turn yielded.
+   * The server cannot know how much of that audio the client played before it stopped.
+   */
+  spoken: string;
+  /**
+   * True when the turn stopped before all of its answer was spoken: an interruption, a barge-in,
+   * the session closing, or a failure of the model or of speech synthesis
+   */
+  interrupted: boolean;
+}
+
+/**
+ * A turn a streaming runner answers: the text of the answer as it is generated, and an optional
+ * `settle` the session calls once the turn is over, with what was spoken.
+ */
+export interface VoiceTurn extends AsyncIterable<string> {
+  /**
+   * Called once after the turn, whether it completed, was interrupted or failed, before the
+   * session starts the next streamed turn. A runner that keeps a conversation records there what
+   * the user actually heard.
+   */
+  settle?(outcome: VoiceTurnOutcome): Promise<void>;
+}
+
 export interface VoiceAgentRunner {
   run(input: string, context?: VoiceRunContext): Promise<{ content: string }>;
+  /**
+   * Answers a turn as a stream of text deltas. When present, `PipelineSession` uses it instead of
+   * `run`: it speaks the answer sentence by sentence while it is generated, and settles the turn
+   * with what was spoken. The turn must stop when `context.signal` aborts.
+   */
+  stream?(input: string, context: VoiceRunContext): VoiceTurn;
+  /**
+   * The agent's own tools as realtime tools, for a `VoiceAgent` in realtime mode without
+   * `tools` (see `VoiceAgentConfig.agentTools`). `createCogitatorRunner` builds them with
+   * `createRealtimeTools`.
+   */
+  realtimeTools?(options?: RealtimeToolsOptions): RealtimeTool[];
   /** Used as realtime-mode instructions when `VoiceAgentConfig.instructions` is not set. */
   readonly instructions?: string;
 }
@@ -79,6 +122,17 @@ export interface VoicePipelineConfig {
    * `{ format: 'pcm16' }` for raw audio or a per-pipeline `voice`, `speed` or `instructions`.
    */
   ttsOptions?: TTSOptions;
+  /**
+   * Stop the reply and start listening when the VAD hears speech while the agent is thinking or
+   * speaking. Off by default: without echo cancellation on the client, the agent's own voice
+   * coming back through the microphone would interrupt it. Needs a `vad`.
+   */
+  bargeIn?: boolean;
+  /**
+   * Longest piece of a streamed answer sent to TTS at once, in characters (default 250). A
+   * sentence without a break before it is cut at the last whitespace.
+   */
+  maxSentenceLength?: number;
   /** @deprecated Not used by the pipeline. Audio is processed at provider-native rates. */
   sampleRate?: number;
 }
@@ -112,6 +166,24 @@ export interface RealtimeTool {
   execute: (args: unknown, context: RealtimeToolContext) => Promise<unknown>;
   /** Most characters of the tool's result the model reads (default 100 000) */
   maxResultLength?: number;
+}
+
+export interface RealtimeToolsOptions {
+  /**
+   * Decides a call that needs approval (`requiresApproval`, or the guardrails), as
+   * `RunOptions.onApproval` does in a run. Without it `guardrails.onToolApproval` decides, and a
+   * call nobody approves does not run: the model gets an error saying it needs approval
+   */
+  onApproval?: ToolInvocationOptions['onApproval'];
+  /** Agent id the tools see in their context (default `'voice'`) */
+  agentId?: string;
+  /**
+   * Thread id the tools see in their context. Defaults to `voice:<sessionId>`, the thread
+   * `createCogitatorRunner` gives the session's agent runs
+   */
+  threadId?: (context: RealtimeToolContext) => string | undefined;
+  /** The user the calls act for */
+  userId?: string;
 }
 
 export interface RealtimeSessionConfig {
@@ -153,17 +225,29 @@ export interface VoiceAgentConfig {
   vad?: VADProvider;
   /** Pipeline-mode options passed to every TTS call (see `VoicePipelineConfig.ttsOptions`). */
   ttsOptions?: TTSOptions;
+  /** Pipeline mode: interrupt the reply when the user starts speaking (see `VoicePipelineConfig.bargeIn`). */
+  bargeIn?: boolean;
+  /** Pipeline mode: see `VoicePipelineConfig.maxSentenceLength`. */
+  maxSentenceLength?: number;
   realtimeProvider?: 'openai' | 'gemini';
   realtimeApiKey?: string;
   realtimeModel?: string;
   /** Realtime-mode system instructions. Falls back to `agent.instructions`. */
   instructions?: string;
   /**
-   * Realtime-mode tools executed by the session on behalf of the model. Build them with
+   * Realtime-mode tools executed by the session on behalf of the model. They replace the agent's
+   * own tools (see `agentTools`), and `[]` gives the model none. Build them with
    * `createRealtimeTools(cogitator, tools)` so calls get approval, guardrails, the sandbox and
    * timeouts like in an agent run.
    */
   tools?: RealtimeTool[];
+  /**
+   * Realtime mode without `tools`: give the model the agent's own tools, from
+   * `agent.realtimeTools()` (a `createCogitatorRunner` runner builds them with
+   * `createRealtimeTools`, so calls go through approvals, guardrails and the sandbox). Default
+   * true. Pass options, such as `onApproval`, to configure them, or `false` to turn it off.
+   */
+  agentTools?: boolean | RealtimeToolsOptions;
   /** Realtime mode: send the images tools return to the model (see `RealtimeSessionConfig.toolImages`). */
   toolImages?: boolean;
   voice?: string;
