@@ -356,6 +356,7 @@ export class AgentRunner {
     return this.cogitator.resume(prepared.agent, resume.threadId, {
       ...callbacks,
       ...(userId !== undefined && { userId }),
+      saveHistory: saveHistory ?? threadId !== undefined,
       decisions: resume.decisions,
       onToolCall: (call) => {
         reported.add(call.id);
@@ -471,8 +472,9 @@ function toolMessage(part: PromptPartLike): ToolResultMessage | undefined {
 
 /**
  * An assistant message of the prompt as Cogitator messages, in the order of its parts: text and
- * tool calls up to a result make one assistant message, each result of a call the provider ran
- * is a tool message, and text after it starts the next assistant message
+ * tool calls up to a result make one assistant message, also text after a call whose result
+ * comes in a later tool message, each result of a call the provider ran is a tool message, and
+ * text after it starts the next assistant message
  */
 function assistantMessages(content: ReadonlyArray<PromptPartLike>): Message[] {
   const messages: Message[] = [];
@@ -490,7 +492,6 @@ function assistantMessages(content: ReadonlyArray<PromptPartLike>): Message[] {
   };
   for (const part of content) {
     if (part.type === 'text' && typeof part.text === 'string') {
-      if (toolCalls.length > 0) flush();
       text += part.text;
     } else if (part.type === 'tool-call' && part.toolCallId && part.toolName) {
       toolCalls.push({
@@ -513,9 +514,11 @@ function assistantMessages(content: ReadonlyArray<PromptPartLike>): Message[] {
 function historyMessages(message: PromptMessageLike, dropped: Set<string>): Message[] {
   const { content } = message;
   switch (message.role) {
-    case 'user':
+    case 'user': {
       collectDroppedParts(message, dropped);
-      return [{ role: 'user', content: textOf(content) }];
+      const text = textOf(content);
+      return text.trim() ? [{ role: 'user', content: text }] : [];
+    }
     case 'assistant':
       return typeof content === 'string'
         ? [{ role: 'assistant', content }]

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
-import { createApp } from '@tetsujs/core';
+import { createApp, httpError } from '@tetsujs/core';
 import { serve } from '@tetsujs/core/testing';
 import { openapi } from '@tetsujs/openapi';
 import { assertDescribed } from '@tetsujs/openapi/testing';
@@ -111,7 +111,7 @@ describe('workflow checkpoints', () => {
     await assertDescribed(document, 'POST /workflows/other/run', res);
     const body = (await res.json()) as { checkpointId?: string };
     expect(body.checkpointId).toEqual(expect.any(String));
-    expect(await store.load(body.checkpointId!)).toMatchObject({ owner: 'alice' });
+    expect(await store.load(String(body.checkpointId))).toMatchObject({ owner: 'alice' });
   });
 
   test('answers a failed run with its checkpoint, and resuming it finishes the nodes left', async () => {
@@ -132,6 +132,7 @@ describe('workflow checkpoints', () => {
     const body = (await res.json()) as { state: Steps; checkpointId?: string };
     expect(body.state.steps).toEqual(['a', 'b', 'c']);
     expect(body.checkpointId).toEqual(expect.any(String));
+    expect(await store.load(String(body.checkpointId))).toMatchObject({ owner: 'alice' });
     expect(ran).toEqual(['a', 'b', 'b', 'c']);
   });
 
@@ -169,6 +170,47 @@ describe('workflow checkpoints', () => {
     const completed = events.find((event) => event.event === 'workflow_completed');
     expect(completed?.data).toMatchObject({ checkpointId: expect.any(String) });
     expect(events.at(-1)?.type).toBe('finish');
+  });
+
+  test('answers an HttpError a node throws with its own status, plus the checkpoint', async () => {
+    const conflict = new WorkflowBuilder<Steps>('conflict')
+      .initialState({ steps: [] })
+      .addNode('a', async () => ({ state: { steps: ['a'] } }))
+      .addNode(
+        'b',
+        async () => {
+          throw httpError(409, 'CONFLICT', 'The order changed meanwhile');
+        },
+        { after: ['a'] }
+      )
+      .build() as unknown as Workflow<WorkflowState>;
+    const request = (store?: InMemoryCheckpointStore) =>
+      serve(
+        createApp({
+          routes: cogitatorController({
+            cogitator: fakeCogitator().cogitator,
+            workflows: { conflict },
+            ...(store && { workflowCheckpoints: store }),
+          }),
+          reportError: () => undefined,
+        })
+      )('/workflows/conflict/run', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(store ? { options: { checkpoint: true } } : {}),
+      });
+
+    const plain = await request();
+    expect(plain.status).toBe(409);
+    expect(await plain.json()).toMatchObject({ error: 'CONFLICT' });
+
+    const checkpointed = await request(new InMemoryCheckpointStore());
+    expect(checkpointed.status).toBe(409);
+    expect(await checkpointed.json()).toMatchObject({
+      error: 'CONFLICT',
+      message: 'The order changed meanwhile',
+      checkpointId: expect.any(String),
+    });
   });
 
   test('names no checkpoint for a failed run that saved none', async () => {

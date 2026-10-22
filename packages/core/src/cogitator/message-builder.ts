@@ -201,14 +201,6 @@ export async function buildInitialMessages(
 
   const index = await indexOf(memoryIndex, threadId, options);
 
-  if (history) {
-    return [
-      { role: 'system', content: agent.instructions },
-      ...history,
-      { role: 'user', content: withIndex(turnInput, userContent, index, options) },
-    ];
-  }
-
   if (contextBuilder && options.loadHistory !== false) {
     const brief = briefWith(index, options);
     const ctx = await contextBuilder.build({
@@ -237,10 +229,23 @@ export async function buildInitialMessages(
         options.onMemoryError
       );
     }
-    const history = ctx.memoryContext ? ctx.messages.slice(0, -1) : ctx.messages;
+    const turn: Message = {
+      role: 'user',
+      content: withMemoryContext(userContent, ctx.memoryContext),
+    };
+    if (history) return [{ role: 'system', content: agent.instructions }, ...history, turn];
+    const recalled = ctx.memoryContext ? ctx.messages.slice(0, -1) : ctx.messages;
     return [
-      ...withInstructions(cacheEndOnLast(sanitizeToolHistory(history)), agent.instructions),
-      { role: 'user', content: withMemoryContext(userContent, ctx.memoryContext) },
+      ...withInstructions(cacheEndOnLast(sanitizeToolHistory(recalled)), agent.instructions),
+      turn,
+    ];
+  }
+
+  if (history) {
+    return [
+      { role: 'system', content: agent.instructions },
+      ...history,
+      { role: 'user', content: withIndex(turnInput, userContent, index, options) },
     ];
   }
 

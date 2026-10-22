@@ -228,6 +228,36 @@ describe('agent models whose run pauses for approval', () => {
     expect(done.text).toContain('refunded');
   });
 
+  it('resumes with the saveHistory the call asked for, saving nothing without a thread', async () => {
+    const resume = vi.spyOn(cogitator, 'resume');
+    const model = cogitatorModel(cogitator, clerk, { specificationVersion: 'v4' });
+    const paused = await ai7.generateText({ model, prompt: 'Refund A-1' });
+    const request = paused.content.find((part) => part.type === 'tool-approval-request');
+    if (request?.type !== 'tool-approval-request') throw new Error('no approval request');
+
+    await ai7.generateText({
+      model,
+      messages: [
+        { role: 'user', content: 'Refund A-1' },
+        ...paused.response.messages,
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-approval-response',
+              approvalId: request.approvalId,
+              approved: true,
+              providerExecuted: true,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(resume.mock.calls[0]?.[2]).toMatchObject({ saveHistory: false });
+    resume.mockRestore();
+  });
+
   it('decline when the user denies the approval (ai@6, v3)', async () => {
     const model = cogitatorModel(cogitator, clerk, { specificationVersion: 'v3' });
 

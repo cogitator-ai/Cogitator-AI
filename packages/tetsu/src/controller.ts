@@ -36,6 +36,7 @@ import {
   cogitatorErrors,
   describeError,
   WorkflowRunFailedError,
+  workflowRouteError,
 } from './errors.js';
 import {
   checkThreadAccess,
@@ -538,7 +539,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
           return toWorkflowRunResponse(result);
         } catch (error) {
           if (signal.aborted) throw clientClosedRequest();
-          throw error;
+          throw workflowRouteError(error);
         }
       },
     }),
@@ -617,7 +618,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
           return toWorkflowRunResponse(result);
         } catch (error) {
           if (signal.aborted) throw clientClosedRequest();
-          throw error;
+          throw workflowRouteError(error);
         }
       },
     }),

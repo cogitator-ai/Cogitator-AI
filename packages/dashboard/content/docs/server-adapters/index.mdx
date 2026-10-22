@@ -194,7 +194,7 @@ Every stream also writes a heartbeat comment, `: keep-alive`, every 5 seconds wh
 
 Swarm routes close the swarm they build once the run ends, succeeded, failed or aborted: a distributed swarm holds two Redis connections and keeps its state in Redis until it is closed, which also gives that state its expiry. `GET /swarms` lists every agent of a swarm, its router and pipeline stages included.
 
-Workflow streams send `workflow` events named `node_started`, `node_completed`, `node_error`, `node_progress` and `workflow_completed`, or `workflow_failed` (with the `checkpointId` of a checkpointed run) right before the `error` event of a failed run; swarm streams send `swarm` events named `agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, and `swarm_completed`. Disconnecting the client aborts the run.
+Workflow streams send `workflow` events named `node_started`, `node_completed`, `node_error`, `node_progress` and `workflow_completed`, or `workflow_failed` (with the `checkpointId` of a checkpointed run) right before the `error` event of a failed run. Swarm streams send `swarm` events named `agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, and `swarm_completed`. Disconnecting the client aborts the run.
 
 The event types (`StreamEvent`, `TextDeltaEvent`, …), their factories (`createTextDeltaEvent`, `createFinishEvent`, …) and the `encodeSSE` / `encodeDone` helpers are exported from `@cogitator-ai/server-shared`, and the adapters re-export the event types. So are Zod schemas of the same shapes, for a client that checks what it receives:
 

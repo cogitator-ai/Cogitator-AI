@@ -235,6 +235,46 @@ describe('buildInitialMessages with a context builder', () => {
       { role: 'user', content: 'Memory for this turn: likes tea\n\nwhat to drink?' },
     ]);
   });
+
+  it('keeps what memory recalled for the turn when the caller gives the history', async () => {
+    const { buildInitialMessages } = await import('../cogitator/message-builder');
+    const { InMemoryAdapter } = await import('@cogitator-ai/memory');
+    const memory = new InMemoryAdapter({ provider: 'memory' });
+    await memory.connect();
+    const build = vi.fn(async () => ({
+      messages: [
+        { role: 'system' as const, content: 'sys' },
+        { role: 'user' as const, content: 'from the thread' },
+        { role: 'user' as const, content: 'Known facts: likes tea' },
+      ],
+      memoryContext: 'Known facts: likes tea',
+    }));
+    const onContext = vi.fn();
+
+    const messages = await buildInitialMessages(
+      { id: 'a1', name: 'a', instructions: 'sys', config: { id: 'a1' } } as never,
+      {
+        input: 'what to drink?',
+        history: [
+          { role: 'user', content: 'hi' },
+          { role: 'assistant', content: 'hello' },
+        ],
+      },
+      'thread_1',
+      memory,
+      { build } as never,
+      undefined,
+      onContext
+    );
+
+    expect(onContext).toHaveBeenCalledTimes(1);
+    expect(messages).toEqual([
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'hello' },
+      { role: 'user', content: 'Known facts: likes tea\n\nwhat to drink?' },
+    ]);
+  });
 });
 
 describe('buildInitialMessages with a brief', () => {

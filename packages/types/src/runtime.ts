@@ -294,6 +294,8 @@ export interface RunOptions<TDeps = unknown> {
    * The conversation before `input`, as the caller holds it: the run reads it instead of the
    * thread's history in memory. User, assistant and tool messages only, since the agent's
    * instructions are the system prompt. `saveHistory` still saves only the new turn, never these.
+   * What memory recalls for the turn (facts, retrieved items) still comes with the input, and the
+   * history is sent as given: trim a long one yourself, the context budget applies to memory only.
    */
   history?: Array<Message | ToolCallMessage | ToolResultMessage>;
   /** Save messages to memory after each turn. Default: true */

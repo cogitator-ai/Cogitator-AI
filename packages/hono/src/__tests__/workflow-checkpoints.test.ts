@@ -97,7 +97,7 @@ describe('workflow checkpoints', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { checkpointId?: string };
     expect(body.checkpointId).toEqual(expect.any(String));
-    expect(await store.load(body.checkpointId!)).toMatchObject({ owner: 'alice' });
+    expect(await store.load(String(body.checkpointId))).toMatchObject({ owner: 'alice' });
   });
 
   it('answers a failed run with its checkpoint, and resuming it finishes the nodes left', async () => {
@@ -116,6 +116,7 @@ describe('workflow checkpoints', () => {
     const body = (await res.json()) as { state: Steps; checkpointId?: string };
     expect(body.state.steps).toEqual(['a', 'b', 'c']);
     expect(body.checkpointId).toEqual(expect.any(String));
+    expect(await store.load(String(body.checkpointId))).toMatchObject({ owner: 'alice' });
     expect(ran).toEqual(['a', 'b', 'b', 'c']);
   });
 

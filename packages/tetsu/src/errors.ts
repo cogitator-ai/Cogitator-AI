@@ -37,18 +37,40 @@ export class WorkflowRunFailedError extends Error {
   }
 }
 
+/**
+ * What a JSON workflow route throws for `error`: the error a run that saved no checkpoint
+ * failed with, so the application's own `onError` hooks see it as it was, and a failure with a
+ * checkpoint as it is, for {@link cogitatorErrors} to answer with its `checkpointId`
+ */
+export function workflowRouteError(error: unknown): unknown {
+  return error instanceof WorkflowRunFailedError && error.checkpointId === undefined
+    ? error.failure
+    : error;
+}
+
 /** The error a workflow run failed with, or `error` itself when it is not a failed run */
 export function unwrapWorkflowFailure(error: unknown): unknown {
   return error instanceof WorkflowRunFailedError ? error.failure : error;
 }
 
 /**
- * Answers a failed workflow run like the error it failed with, plus the `checkpointId` to resume
- * it from. An error the client is not told about is reported to the application and answered
- * with Tetsu's own `500 INTERNAL_SERVER_ERROR`, as without the checkpoint.
+ * Answers a failed workflow run that saved a checkpoint like the error it failed with, plus the
+ * `checkpointId` to resume it from: a `CogitatorError` with its status and code, an `HttpError` a
+ * node threw with its own status and body. Any other error is reported to the application and
+ * answered with Tetsu's own `500 INTERNAL_SERVER_ERROR`. A JSON route throws the error of a run
+ * without a checkpoint as it is (see {@link workflowRouteError}).
  */
 function workflowFailureResponse(ctx: BaseCtx, error: WorkflowRunFailedError): Response {
   const checkpoint = error.checkpointId === undefined ? {} : { checkpointId: error.checkpointId };
+  if (error.failure instanceof HttpError) {
+    const body = error.failure.body ?? errorBody(error.failure.status);
+    return Response.json(
+      typeof body === 'object' && body !== null && !Array.isArray(body)
+        ? { ...body, ...checkpoint }
+        : body,
+      { status: error.failure.status }
+    );
+  }
   const described = describeHttpError(error.failure);
   if (described) {
     return Response.json(
