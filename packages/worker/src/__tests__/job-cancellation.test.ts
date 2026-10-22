@@ -215,6 +215,59 @@ describe('WorkerPool cancellation', () => {
     await pool.forceStop();
   });
 
+  it('lets the checkpoint of a cancelled workflow job go, and keeps one a shutdown stopped', async () => {
+    const { InMemoryCheckpointStore } = await import('@cogitator-ai/workflows');
+    const { workflowCheckpointId } = await import('../processors/workflow');
+    const { WorkerPool } = await import('../worker');
+
+    const run = async (stop: (pool: InstanceType<typeof WorkerPool>) => Promise<void>) => {
+      workerInstances.length = 0;
+      const { cogitator, signals, agent } = setup();
+      const checkpoints = new InMemoryCheckpointStore();
+      const pool = new WorkerPool({ redis: { host: 'h', port: 1 }, cogitator, checkpoints });
+      await pool.start();
+      const data = {
+        type: 'workflow' as const,
+        jobId: 'job_1',
+        runId: 'run_1',
+        input: { topic: ' rust ' },
+        workflowConfig: {
+          id: 'wf',
+          name: 'wf',
+          nodes: [
+            {
+              id: 'prep',
+              type: 'transform' as const,
+              config: { transform: 'trim', inputKey: 'topic' },
+            },
+            { id: 'slow', type: 'agent' as const, config: { agentConfig: agent } },
+          ],
+          edges: [{ from: 'prep', to: 'slow' }],
+        },
+      };
+      const job = { id: 'job_1', data, attemptsMade: 0, opts: { attempts: 3 } };
+      const controller = new AbortController();
+      const running = workerInstances[0]
+        .processor(job as unknown as Job<JobPayload>, 'token', controller.signal)
+        .catch((e: unknown) => e);
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      expect(await checkpoints.load(workflowCheckpointId(data))).not.toBeNull();
+      await stop(pool);
+      controller.abort(new Error('stopped'));
+      const error = await running;
+      await pool.forceStop();
+      return { error, kept: await checkpoints.load(workflowCheckpointId(data)) };
+    };
+
+    const cancelled = await run(async () => {});
+    expect(cancelled.error).toBeInstanceOf(UnrecoverableError);
+    expect(cancelled.kept).toBeNull();
+
+    const shutDown = await run((pool) => pool.forceStop());
+    expect(shutDown.error).not.toBeInstanceOf(UnrecoverableError);
+    expect(shutDown.kept?.completedNodes).toEqual(['prep']);
+  });
+
   it('cancels a job on whichever worker runs it', async () => {
     const { WorkerPool } = await import('../worker');
     const pool = new WorkerPool({ redis: { host: 'h', port: 1 }, workerCount: 2 });

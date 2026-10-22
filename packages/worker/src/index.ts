@@ -56,6 +56,7 @@ export type {
   AgentJobResult,
   WorkflowJobResult,
   SwarmJobResult,
+  JobUsage,
   SwarmAgentJobResult,
   QueueConfig,
   WorkerConfig,

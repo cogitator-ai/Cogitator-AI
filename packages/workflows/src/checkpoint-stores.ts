@@ -16,12 +16,23 @@ export interface CheckpointRedisClient {
   zadd(key: string, score: number, member: string): Promise<unknown>;
   zrange(key: string, start: number, stop: number): Promise<string[]>;
   zrem(key: string, ...members: string[]): Promise<unknown>;
+  /** Needed for `ttl` */
+  expire?(key: string, seconds: number): Promise<unknown>;
+  /** Needed for `ttl` */
+  zrangebyscore?(key: string, min: number | string, max: number | string): Promise<string[]>;
 }
 
 export interface RedisCheckpointStoreOptions {
   client: CheckpointRedisClient;
   /** Prefix of every key (default `cogitator:workflow-checkpoints`) */
   keyPrefix?: string;
+  /**
+   * Seconds a checkpoint is kept after it was last saved, and the index of its workflow after
+   * the last save into it: a run nobody resumes or deletes goes on its own, and each save drops
+   * the index entries of checkpoints older than that. Needs `expire` and `zrangebyscore` on the
+   * client. Default: kept until deleted
+   */
+  ttl?: number;
 }
 
 /**
@@ -31,10 +42,20 @@ export interface RedisCheckpointStoreOptions {
 export class RedisCheckpointStore implements CheckpointStore {
   private readonly client: CheckpointRedisClient;
   private readonly prefix: string;
+  private readonly ttl?: number;
 
   constructor(options: RedisCheckpointStoreOptions) {
+    if (options.ttl !== undefined) {
+      if (!Number.isInteger(options.ttl) || options.ttl <= 0) {
+        throw new Error(`Checkpoint ttl must be a positive number of seconds, got ${options.ttl}`);
+      }
+      if (!options.client.expire || !options.client.zrangebyscore) {
+        throw new Error('A checkpoint ttl needs a Redis client with expire() and zrangebyscore()');
+      }
+    }
     this.client = options.client;
     this.prefix = options.keyPrefix ?? 'cogitator:workflow-checkpoints';
+    this.ttl = options.ttl;
   }
 
   async save(checkpoint: WorkflowCheckpoint): Promise<void> {
@@ -48,6 +69,14 @@ export class RedisCheckpointStore implements CheckpointStore {
       checkpoint.timestamp,
       checkpoint.id
     );
+    if (this.ttl !== undefined) {
+      const index = this.indexKey(checkpoint.workflowName);
+      await this.client.expire?.(this.checkpointKey(checkpoint.id), this.ttl);
+      await this.client.expire?.(index, this.ttl);
+      const expired =
+        (await this.client.zrangebyscore?.(index, '-inf', Date.now() - this.ttl * 1000)) ?? [];
+      if (expired.length > 0) await this.client.zrem(index, ...expired);
+    }
   }
 
   async load(id: string): Promise<WorkflowCheckpoint | null> {

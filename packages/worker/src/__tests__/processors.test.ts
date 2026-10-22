@@ -358,7 +358,7 @@ describe('processors/workflow', () => {
       if (agent.name === 'reviewer' && failing) throw new Error('provider down');
       return runResult(`${agent.name} on ${options.input}`);
     });
-    const { processWorkflowJob } = await import('../processors/workflow');
+    const { processWorkflowJob, workflowCheckpointId } = await import('../processors/workflow');
     const job = {
       type: 'workflow' as const,
       jobId: 'j',
@@ -392,13 +392,19 @@ describe('processors/workflow', () => {
     };
 
     await expect(
-      processWorkflowJob(job, { checkpoints }, { isFinalAttempt: false })
+      processWorkflowJob(job, { checkpoints }, { willRetry: () => true })
     ).rejects.toThrow('provider down');
     expect(runMock).toHaveBeenCalledTimes(2);
-    expect((await checkpoints.list('test')).length).toBeGreaterThan(0);
+    expect((await checkpoints.list('test')).map((one) => one.id)).toEqual([
+      workflowCheckpointId(job),
+    ]);
+    expect((await checkpoints.load(workflowCheckpointId(job)))?.completedNodes).toEqual([
+      'write',
+      'check',
+    ]);
 
     failing = false;
-    const result = await processWorkflowJob(job, { checkpoints }, { isFinalAttempt: true });
+    const result = await processWorkflowJob(job, { checkpoints }, { willRetry: () => false });
 
     expect(runMock.mock.calls.map(([agent]) => (agent as { name: string }).name)).toEqual([
       'writer',
@@ -450,7 +456,7 @@ describe('processors/workflow', () => {
           }),
         },
         { checkpoints },
-        { isFinalAttempt: true }
+        { willRetry: () => false }
       )
     ).rejects.toThrow('provider down');
     expect(await checkpoints.list('test')).toEqual([]);
@@ -559,6 +565,312 @@ describe('processors/workflow', () => {
 
     expect(peak).toBe(2);
     expect(result.output).toMatchObject({ join: 'a+b' });
+  });
+
+  it('never resumes a job from the checkpoint of another job with the same runId', async () => {
+    const { InMemoryCheckpointStore } = await import('@cogitator-ai/workflows');
+    const checkpoints = new InMemoryCheckpointStore();
+    runMock.mockImplementation(async (agent: { name: string }, options: RunOptions) => {
+      if (agent.name === 'reviewer') throw new Error('provider down');
+      return runResult(`${agent.name} on ${options.input}`);
+    });
+    const { processWorkflowJob } = await import('../processors/workflow');
+    const job = (jobId: string, secret: string) => ({
+      type: 'workflow' as const,
+      jobId,
+      runId: 'shared',
+      input: { secret },
+      workflowConfig: workflow({
+        nodes: [
+          {
+            id: 'a',
+            type: 'agent',
+            config: { agentConfig: agentConfig(), prompt: '{{secret}}', outputKey: 'seen' },
+          },
+          { id: 'b', type: 'agent', config: { agentConfig: agentConfig({ name: 'reviewer' }) } },
+        ],
+        edges: [{ from: 'a', to: 'b' }],
+      }),
+    });
+
+    await expect(
+      processWorkflowJob(job('one', 'A-SECRET'), { checkpoints }, { willRetry: () => true })
+    ).rejects.toThrow('provider down');
+    runMock.mockImplementation(async (agent: { name: string }, options: RunOptions) =>
+      runResult(`${agent.name} on ${options.input}`)
+    );
+    const other = await processWorkflowJob(job('two', 'B-secret'), { checkpoints });
+
+    expect(other.output).toMatchObject({ secret: 'B-secret', seen: 'writer on B-secret' });
+    expect(await checkpoints.list('test')).toHaveLength(1);
+  });
+
+  it('refuses input keys and output keys under the prefix the run keeps for itself', async () => {
+    const { processWorkflowJob, validateWorkflow } = await import('../processors/workflow');
+
+    await expect(
+      processWorkflowJob({
+        type: 'workflow',
+        jobId: 'j',
+        runId: 'r',
+        input: { '__cogitator:usage:x': { totalTokens: -5000, cost: -12.5, runs: -1 } },
+        workflowConfig: workflow({
+          nodes: [{ id: 'a', type: 'transform', config: { transform: 'trim' } }],
+        }),
+      })
+    ).rejects.toThrow("input key '__cogitator:usage:x'");
+    expect(() =>
+      validateWorkflow(
+        workflow({
+          nodes: [
+            {
+              id: 'a',
+              type: 'transform',
+              config: { transform: 'trim', outputKey: '__cogitator:done:b' },
+            },
+          ],
+        })
+      )
+    ).toThrow("Output key '__cogitator:done:b'");
+    expect(() =>
+      validateWorkflow(
+        workflow({ nodes: [{ id: '__cogitator:start', type: 'parallel', config: {} }] })
+      )
+    ).toThrow("node id '__cogitator:start'");
+  });
+
+  it('gives a join after a condition the output of the branch that ran, once', async () => {
+    const { processWorkflowJob } = await import('../processors/workflow');
+
+    const result = await processWorkflowJob({
+      type: 'workflow',
+      jobId: 'j',
+      runId: 'r',
+      input: { score: 2 },
+      workflowConfig: workflow({
+        nodes: [
+          { id: 'check', type: 'condition', config: { key: 'score', operator: 'gt', value: 5 } },
+          { id: 'high', type: 'transform', config: { transform: 'template', template: 'HIGH' } },
+          { id: 'low', type: 'transform', config: { transform: 'template', template: ' low ' } },
+          { id: 'join', type: 'transform', config: { transform: 'trim' } },
+        ],
+        edges: [
+          { from: 'check', to: 'high', condition: 'true' },
+          { from: 'check', to: 'low', condition: 'false' },
+          { from: 'high', to: 'join' },
+          { from: 'low', to: 'join' },
+        ],
+      }),
+    });
+
+    expect(result.output.join).toBe('low');
+    expect(result.nodeResults.high).toEqual({ skipped: true });
+  });
+
+  it('runs every branch of a wide fan-out at once and a long chain to its end', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    runMock.mockImplementation(async (agent: { name: string }) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 10));
+      inFlight--;
+      return runResult(agent.name);
+    });
+    const { processWorkflowJob } = await import('../processors/workflow');
+    const branches = ['a', 'b', 'c', 'd', 'e', 'f'];
+
+    await processWorkflowJob({
+      type: 'workflow',
+      jobId: 'j',
+      runId: 'r',
+      input: {},
+      workflowConfig: workflow({
+        nodes: [
+          { id: 'fan', type: 'parallel', config: {} },
+          ...branches.map((name) => ({
+            id: name,
+            type: 'agent' as const,
+            config: { agentConfig: agentConfig({ name }) },
+          })),
+        ],
+        edges: branches.map((name) => ({ from: 'fan', to: name })),
+      }),
+    });
+    expect(peak).toBe(6);
+
+    const chain = Array.from({ length: 120 }, (_, at) => `n${at}`);
+    const long = await processWorkflowJob({
+      type: 'workflow',
+      jobId: 'j',
+      runId: 'r',
+      input: { text: ' x ' },
+      workflowConfig: workflow({
+        nodes: chain.map((id, at) => ({
+          id,
+          type: 'transform' as const,
+          config: at === 0 ? { transform: 'trim', inputKey: 'text' } : { transform: 'trim' },
+        })),
+        edges: chain.slice(1).map((id, at) => ({ from: chain[at]!, to: id })),
+      }),
+    });
+    expect(long.output.n119).toBe('x');
+  });
+
+  it('aborts the agent runs next to a failing node and fails once they settled', async () => {
+    const { InMemoryCheckpointStore } = await import('@cogitator-ai/workflows');
+    let slowAborted = false;
+    let slowSettled = false;
+    runMock.mockImplementation(async (agent: { name: string }, options: RunOptions) => {
+      if (agent.name === 'bad') throw new Error('bad node');
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 200);
+        options.signal?.addEventListener('abort', () => {
+          slowAborted = true;
+          clearTimeout(timer);
+          setTimeout(resolve, 20);
+        });
+      });
+      slowSettled = true;
+      return runResult('slow');
+    });
+    const { processWorkflowJob } = await import('../processors/workflow');
+
+    await expect(
+      processWorkflowJob(
+        {
+          type: 'workflow',
+          jobId: 'j',
+          runId: 'r',
+          input: {},
+          workflowConfig: workflow({
+            nodes: [
+              { id: 'fan', type: 'parallel', config: {} },
+              { id: 'bad', type: 'agent', config: { agentConfig: agentConfig({ name: 'bad' }) } },
+              { id: 'slow', type: 'agent', config: { agentConfig: agentConfig({ name: 'slow' }) } },
+            ],
+            edges: [
+              { from: 'fan', to: 'bad' },
+              { from: 'fan', to: 'slow' },
+            ],
+          }),
+        },
+        { checkpoints: new InMemoryCheckpointStore() }
+      )
+    ).rejects.toThrow('bad node');
+    expect(slowAborted).toBe(true);
+    expect(slowSettled).toBe(true);
+  });
+
+  it('aborts the agent runs in flight when a checkpoint cannot be saved', async () => {
+    const { InMemoryCheckpointStore } = await import('@cogitator-ai/workflows');
+    const checkpoints = new InMemoryCheckpointStore();
+    const save = checkpoints.save.bind(checkpoints);
+    let saves = 0;
+    checkpoints.save = async (checkpoint) => {
+      if (++saves > 1) throw new Error('redis down');
+      await save(checkpoint);
+    };
+    let slowAborted = false;
+    runMock.mockImplementation(async (agent: { name: string }, options: RunOptions) => {
+      if (agent.name === 'slow') {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 500);
+          options.signal?.addEventListener('abort', () => {
+            slowAborted = true;
+            clearTimeout(timer);
+            resolve();
+          });
+        });
+      }
+      return runResult(agent.name);
+    });
+    const { processWorkflowJob } = await import('../processors/workflow');
+
+    await expect(
+      processWorkflowJob(
+        {
+          type: 'workflow',
+          jobId: 'j',
+          runId: 'r',
+          input: {},
+          workflowConfig: workflow({
+            nodes: [
+              { id: 'fan', type: 'parallel', config: {} },
+              { id: 'fast', type: 'agent', config: { agentConfig: agentConfig({ name: 'fast' }) } },
+              { id: 'slow', type: 'agent', config: { agentConfig: agentConfig({ name: 'slow' }) } },
+            ],
+            edges: [
+              { from: 'fan', to: 'fast' },
+              { from: 'fan', to: 'slow' },
+            ],
+          }),
+        },
+        { checkpoints }
+      )
+    ).rejects.toThrow('redis down');
+    expect(slowAborted).toBe(true);
+  });
+
+  it('reports a node that ran with no output as run after a resume from a JSON store', async () => {
+    const { InMemoryCheckpointStore } = await import('@cogitator-ai/workflows');
+    const checkpoints = new InMemoryCheckpointStore();
+    const save = checkpoints.save.bind(checkpoints);
+    checkpoints.save = async (checkpoint) => {
+      await save(JSON.parse(JSON.stringify(checkpoint)) as typeof checkpoint);
+    };
+    let failing = true;
+    runMock.mockImplementation(async () => {
+      if (failing) throw new Error('provider down');
+      return runResult('done');
+    });
+    const { processWorkflowJob } = await import('../processors/workflow');
+    const job = {
+      type: 'workflow' as const,
+      jobId: 'j',
+      runId: 'r',
+      input: {},
+      workflowConfig: workflow({
+        nodes: [
+          { id: 'parse', type: 'transform', config: { transform: 'json-parse', inputKey: 'none' } },
+          { id: 'agent', type: 'agent', config: { agentConfig: agentConfig() } },
+        ],
+        edges: [{ from: 'parse', to: 'agent' }],
+      }),
+    };
+
+    await expect(
+      processWorkflowJob(job, { checkpoints }, { willRetry: () => true })
+    ).rejects.toThrow('provider down');
+    failing = false;
+    const result = await processWorkflowJob(job, { checkpoints });
+
+    expect(result.nodeResults).toEqual({ parse: undefined, agent: 'done' });
+  });
+
+  it('finishes a run whose checkpoint cannot be deleted at its end', async () => {
+    const { InMemoryCheckpointStore } = await import('@cogitator-ai/workflows');
+    const checkpoints = new InMemoryCheckpointStore();
+    checkpoints.delete = async () => {
+      throw new Error('redis down');
+    };
+    runMock.mockImplementation(async () => runResult('done'));
+    const { processWorkflowJob } = await import('../processors/workflow');
+
+    const result = await processWorkflowJob(
+      {
+        type: 'workflow',
+        jobId: 'j',
+        runId: 'r',
+        input: {},
+        workflowConfig: workflow({
+          nodes: [{ id: 'a', type: 'agent', config: { agentConfig: agentConfig() } }],
+        }),
+      },
+      { checkpoints }
+    );
+
+    expect(result.output).toEqual({ a: 'done' });
   });
 
   it('rejects invalid graphs before running anything', async () => {

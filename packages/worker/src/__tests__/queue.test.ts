@@ -103,19 +103,50 @@ describe('JobQueue', () => {
     });
 
     it('adds a job under the id given, and gives back the job it holds for an id added again', async () => {
-      const held = { id: 'order-42', data: { type: 'agent' } };
-      mockGetJob.mockResolvedValueOnce(undefined).mockResolvedValueOnce(held);
+      const held = { id: 'order-42', data: { type: 'agent', jobId: 'order-42', input: 'Hello' } };
+      mockAdd.mockImplementation(async (_name: string, data: unknown) => ({
+        id: 'order-42',
+        data,
+      }));
+      mockGetJob.mockResolvedValue(held);
 
-      await queue.addAgentJob(mockAgentConfig, 'Hello', { jobId: 'order-42' });
-      const again = await queue.addAgentJob(mockAgentConfig, 'Hello', { jobId: 'order-42' });
+      const first = await queue.addAgentJob(mockAgentConfig, 'Hello', { jobId: 'order-42' });
+      const again = await queue.addAgentJob(mockAgentConfig, 'Hello again', { jobId: 'order-42' });
 
-      expect(mockAdd).toHaveBeenCalledTimes(1);
       expect(mockAdd).toHaveBeenCalledWith(
         'agent',
         expect.objectContaining({ jobId: 'order-42' }),
         expect.objectContaining({ jobId: 'order-42' })
       );
+      expect(mockGetJob).toHaveBeenCalledWith('order-42');
+      expect(first).toBe(held);
       expect(again).toBe(held);
+    });
+
+    it('gives back the job it adds when the queue no longer holds it', async () => {
+      const added = { id: 'order-7', data: { type: 'agent' } };
+      mockAdd.mockResolvedValue(added);
+      mockGetJob.mockResolvedValue(undefined);
+
+      expect(await queue.addAgentJob(mockAgentConfig, 'Hello', { jobId: 'order-7' })).toBe(added);
+    });
+
+    it('reads nothing back for a job without an id given', async () => {
+      await queue.addAgentJob(mockAgentConfig, 'Hello');
+
+      expect(mockGetJob).not.toHaveBeenCalled();
+    });
+
+    it('refuses an id the queue holds as another kind of job', async () => {
+      mockAdd.mockImplementation(async (_name: string, data: unknown) => ({ id: 'x', data }));
+      mockGetJob.mockResolvedValue({ id: 'x', data: { type: 'agent', jobId: 'x' } });
+
+      await expect(queue.addWorkflowJob(mockWorkflowConfig, {}, { jobId: 'x' })).rejects.toThrow(
+        "holds job 'x' as an agent job, not as a workflow job"
+      );
+      await expect(
+        queue.resumeAgentJob(mockAgentConfig, { status: 'paused', threadId: 't' }, { jobId: 'x' })
+      ).rejects.toThrow('not as a resumed agent job');
     });
 
     it('refuses a job id the queue cannot keep', async () => {
@@ -125,6 +156,15 @@ describe('JobQueue', () => {
       await expect(
         queue.addWorkflowJob({ id: 'w', name: 'w', nodes: [], edges: [] }, {}, { jobId: 'a:b' })
       ).rejects.toThrow("without ':'");
+      await expect(queue.addAgentJob(mockAgentConfig, 'Hello', { jobId: '42' })).rejects.toThrow(
+        'must not be an integer'
+      );
+      for (const jobId of ['meta', 'stalled-check', 'id', 'events']) {
+        await expect(queue.addAgentJob(mockAgentConfig, 'Hello', { jobId })).rejects.toThrow(
+          'a key the queue keeps for itself'
+        );
+      }
+      expect(mockAdd).not.toHaveBeenCalled();
     });
 
     it('carries the user the job runs for', async () => {

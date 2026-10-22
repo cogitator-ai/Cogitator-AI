@@ -218,7 +218,12 @@ const job = await queue.addAgentJob(serializedAgent, 'Analyze this data', {
   metadata: { source: 'api' },
 });
 
-await queue.addWorkflowJob(serializedWorkflow, { topic: 'quarterly report' });
+// jobId: adding it again gives the job the queue holds back instead of a second one
+await queue.addWorkflowJob(
+  serializedWorkflow,
+  { topic: 'quarterly report' },
+  { jobId: 'report-2026-q3' }
+);
 await queue.addSwarmJob(serializedSwarm, 'Process batch');
 
 // Consumer side: process jobs
@@ -233,7 +238,7 @@ const pool = new WorkerPool({
 await pool.start();
 ```
 
-Serialized agents carry tool schemas only; a job whose agent references a tool missing from the worker's `tools` fails instead of running with a stub. `SerializedWorkflow` (agent, transform, condition and parallel nodes) and `SerializedSwarm` (`sequential`, `hierarchical`, `collaborative`, `debate`, `voting`) are the worker's own JSON formats, not `@cogitator-ai/workflows` or `@cogitator-ai/swarms` objects. Swarms can also run one agent per job with `DistributedSwarmWorker` — see [Worker Queues](https://cogitator.app/docs/deployment/worker-queues) and [Distributed Swarms](https://cogitator.app/docs/swarms/distributed).
+Serialized agents carry tool schemas only, and a job whose agent references a tool missing from the worker's `tools` fails instead of running with a stub. `SerializedWorkflow` (agent, transform, condition and parallel nodes) and `SerializedSwarm` (`sequential`, `hierarchical`, `collaborative`, `debate`, `voting`) are the worker's own JSON formats, not `@cogitator-ai/workflows` or `@cogitator-ai/swarms` objects. A workflow job runs its graph on the `WorkflowExecutor` of `@cogitator-ai/workflows`, with one checkpoint saved over after every node under the job's id and `runId` (by default in the pool's Redis under `<queue prefix>:<queue name>:workflow-checkpoints` for `checkpointTtl` seconds, 7 days by default, or the `CheckpointStore` passed as `checkpoints`), so an attempt BullMQ retries goes on from it instead of running its finished agent nodes again. The checkpoint is deleted once the run finished, and once no attempt follows a failure (the last attempt, a cancelled job, a paused agent run), a job a shutdown stopped keeping it for the worker that takes the job up. Workflow and swarm results carry `usage` (tokens, cost, agent runs, by agent for swarms). Swarms can also run one agent per job with `DistributedSwarmWorker`, see [Worker Queues](https://cogitator.app/docs/deployment/worker-queues) and [Distributed Swarms](https://cogitator.app/docs/swarms/distributed).
 
 #### Queue Metrics (for HPA)
 
@@ -736,10 +741,10 @@ Full attribute list, Langfuse wiring and cost tracking: [Observability](https://
 
 The runtime does not export Prometheus metrics for agent runs; use spans for those. Prometheus text comes from two places:
 
-| Source                                                                      | Metrics                                                                                                                                                                                                                                                                                                                                                                           |
-| --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@cogitator-ai/worker` (`formatPrometheusMetrics`, `pool.metrics.format`)   | `cogitator_queue_depth`, `cogitator_queue_waiting`, `cogitator_queue_active`, `cogitator_queue_delayed`, `cogitator_queue_completed`, `cogitator_queue_failed` (gauges of jobs BullMQ still retains), `cogitator_workers_total`, `cogitator_jobs_by_type_total`, `cogitator_jobs_failed_total` (counter of jobs that failed their last attempt), `cogitator_job_duration_seconds` |
-| `@cogitator-ai/workflows` (`WorkflowMetricsCollector.toPrometheusFormat()`) | Workflow and node counters, latencies, token and cost histograms, prefixed `cogitator_workflow_`                                                                                                                                                                                                                                                                                  |
+| Source                                                                      | Metrics                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@cogitator-ai/worker` (`formatPrometheusMetrics`, `pool.metrics.format`)   | `cogitator_queue_depth`, `cogitator_queue_waiting`, `cogitator_queue_active`, `cogitator_queue_delayed`, `cogitator_queue_completed`, `cogitator_queue_failed` (gauges of jobs BullMQ still retains), `cogitator_workers_total`, `cogitator_jobs_by_type_total`, `cogitator_jobs_failed_total` (counter of jobs that failed their last attempt), `cogitator_job_duration_seconds`, `cogitator_job_tokens_total`, `cogitator_job_input_tokens_total`, `cogitator_job_output_tokens_total`, `cogitator_job_cost_usd_total` (usage of completed jobs, by `type`) |
+| `@cogitator-ai/workflows` (`WorkflowMetricsCollector.toPrometheusFormat()`) | Workflow and node counters, latencies, token and cost histograms, prefixed `cogitator_workflow_`                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 ---
 

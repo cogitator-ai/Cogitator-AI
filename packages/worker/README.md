@@ -8,7 +8,7 @@ Distributed job queue for Cogitator agent execution. Built on BullMQ for reliabl
 pnpm add @cogitator-ai/worker @cogitator-ai/core ioredis
 ```
 
-BullMQ and `@cogitator-ai/swarms` come as dependencies; `ioredis` is a peer dependency. Website docs: [Worker Queues](https://cogitator.app/docs/deployment/worker-queues), [Distributed Swarms](https://cogitator.app/docs/swarms/distributed).
+BullMQ, `@cogitator-ai/swarms` and `@cogitator-ai/workflows` come as dependencies, `ioredis` is a peer dependency. Website docs: [Worker Queues](https://cogitator.app/docs/deployment/worker-queues), [Distributed Swarms](https://cogitator.app/docs/swarms/distributed).
 
 ## Features
 
@@ -16,7 +16,9 @@ BullMQ and `@cogitator-ai/swarms` come as dependencies; `ioredis` is a peer depe
 - **Job Types** - Agents, workflow graphs, swarms and distributed swarm turns
 - **Worker Runtime** - Run jobs with your own `Cogitator` (provider keys, memory) and tool implementations
 - **Distributed Swarms** - `DistributedSwarmWorker` executes agent turns for `@cogitator-ai/swarms`
-- **Auto-Retry** - Exponential backoff for failed jobs
+- **Auto-Retry** - Exponential backoff for failed jobs, a retried workflow job goes on from its last checkpoint
+- **Job Ids** - Adding a job under an id the queue holds gives that job back, so producers can retry an add
+- **Usage** - Workflow and swarm results carry tokens and cost, the metrics count them by job type
 - **Priority Queue** - Process important jobs first
 - **Delayed Jobs** - Schedule jobs for later execution
 - **Prometheus Metrics** - Built-in HPA support
@@ -188,7 +190,7 @@ The worker routes `model` exactly like the same agent in-process: a prefix that 
 
 **Workflow Jobs:**
 
-Workflow jobs run a DAG over a shared state object initialised from the job input. Nodes run as soon as their predecessors settle; independent branches run concurrently.
+Workflow jobs run on the `WorkflowExecutor` of `@cogitator-ai/workflows`, over a shared state object initialised from the job input. Nodes run in rounds, each running at once every node whose nodes before it all settled, and a graph with many roots starts at all of them.
 
 ```typescript
 const workflowConfig: SerializedWorkflow = {
@@ -233,7 +235,9 @@ await queue.addWorkflowJob(workflowConfig, { ticket: 'App crashes on login' });
 | `condition` | `{ key, operator, value? }` — `equals`, `not-equals`, `contains`, `exists`, `gt`, `lt`; outgoing edges use `condition: 'true' \| 'false'` |
 | `parallel`  | `{}` — fan-out marker; successors run concurrently                                                                                        |
 
-Node outputs are stored in the state under `outputKey` (default: node id). Nodes reachable only through untaken condition branches are skipped (`{ skipped: true }` in `nodeResults`). Graphs are validated before execution (unknown nodes, invalid configs, cycles).
+Node outputs are stored in the state under `outputKey` (default: node id). Nodes reachable only through untaken condition branches are skipped (`{ skipped: true }` in `nodeResults`). Graphs are validated before execution (unknown nodes, invalid configs, cycles). The run keeps its own bookkeeping (which nodes ran, the branch a condition took, the usage of each agent node) in state keys starting with `__cogitator:`, which are left out of the job's `output`. Input keys, node ids and output keys starting with `__cogitator:` are refused.
+
+A workflow job keeps one checkpoint, saved over after every node under the job's id and `runId`, so jobs sharing a `runId` never resume from each other. A job BullMQ retries (`attempts`) goes on from it instead of running its finished agent nodes again. The checkpoint is deleted once the run finished, and once no attempt follows a failure: after the last attempt, a cancelled job or a paused agent run. A job a shutdown stopped keeps it for the worker that takes the job up. `WorkerPool` keeps the checkpoints in its Redis under `<queue prefix>:<queue name>:workflow-checkpoints` (`cogitator`, or `{cogitator}` in cluster mode) for `checkpointTtl` seconds after the last save (7 days by default), so the checkpoint of a run whose worker crashed goes on its own. `checkpoints` in the worker config takes a `CheckpointStore` of your own.
 
 **Swarm Jobs:**
 
@@ -259,6 +263,18 @@ await queue.addSwarmJob(swarmConfig, 'Write an article about AI', {
 | `collaborative` | `pipeline`     | Every agent contributes in each of `maxRounds` rounds (default 3), seeing all contributions so far, `coordinator` combines them, otherwise the last contribution is the answer |
 | `debate`        | `debate`       | `maxRounds` rounds, `coordinator` moderates                                                                                                                                    |
 | `voting`        | `consensus`    | `consensusThreshold`, `maxRounds`, `coordinator` breaks ties                                                                                                                   |
+
+**Job Ids:**
+
+`addAgentJob`, `resumeAgentJob`, `addWorkflowJob`, `addSwarmJob` and `addSwarmAgentJob` take a `jobId`, and the job is added under it. Adding a job whose id the queue holds already gives that job back instead of adding a second one, so a producer can retry an add, such as after a timeout, without running the work twice:
+
+```typescript
+const job = await queue.addWorkflowJob(workflowConfig, input, { jobId: `triage-${ticketId}` });
+const again = await queue.addWorkflowJob(workflowConfig, input, { jobId: `triage-${ticketId}` });
+// again.id === job.id, one job runs
+```
+
+Two adds racing with the same id both get the job the queue holds. A job the queue removed (past `removeOnComplete` or `removeOnFail`) is gone, and its id adds a new job. BullMQ builds Redis keys from the id, so an empty id, one with `:`, an integer and a name of the queue's own keys (`meta`, `id`, `events`, `stalled-check` and the like) are refused, and an id the queue holds as another kind of job (an agent job for `addWorkflowJob`, say) throws. Without `jobId` every add gets a new id.
 
 ### Queue Methods
 
@@ -335,6 +351,8 @@ interface WorkerConfig extends QueueConfig {
   stalledInterval?: number; // Default: 30000ms
   cogitator?: Cogitator; // Default: new Cogitator()
   tools?: Tool[]; // Tool implementations, resolved by name
+  checkpoints?: CheckpointStore; // Where workflow jobs keep their checkpoints. Default: the pool's Redis
+  checkpointTtl?: number; // Seconds the default store keeps a checkpoint after its last save. Default: 7 days
 }
 ```
 
@@ -391,7 +409,7 @@ Built-in processors handle each job type.
 
 ### Using Processors Directly
 
-Processors take the job payload and an optional runtime (`{ cogitator, tools }`):
+Processors take the job payload and an optional runtime (`{ cogitator, tools, checkpoints }`):
 
 ```typescript
 import { processAgentJob, processWorkflowJob, processSwarmJob } from '@cogitator-ai/worker';
@@ -413,6 +431,8 @@ const swarmResult = await processSwarmJob(
   runtime
 );
 ```
+
+`processWorkflowJob` called on its own runs without checkpoints unless the runtime has `checkpoints` (a `CheckpointStore`). With them, pass `{ willRetry }` as the third argument: a run whose failure another attempt follows (`willRetry(error)` returns `true`) keeps its checkpoint for it, any other failure deletes it.
 
 `processSwarmAgentJob(payload, { publisher, isFinalAttempt, ...runtime })` executes one distributed swarm turn and publishes the result (tagged with the job id) to `payload.stateKeys.results`; `executeSwarmAgentJob` returns the result without publishing.
 
@@ -508,7 +528,16 @@ interface WorkflowJobResult {
   type: 'workflow';
   output: Record<string, unknown>;
   nodeResults: Record<string, unknown>;
+  usage: JobUsage; // what the agent nodes used and cost
   duration: number;
+}
+
+interface JobUsage {
+  inputTokens?: number; // absent where the runs reported only their totals
+  outputTokens?: number;
+  totalTokens: number;
+  cost: number; // USD
+  runs: number; // agent runs counted
 }
 ```
 
@@ -519,12 +548,16 @@ interface SwarmJobResult {
   type: 'swarm';
   output: string;
   rounds: number;
+  // what the swarm's agent runs used and cost, in all and by agent
+  usage: JobUsage & { byAgent: Record<string, { tokens: number; cost: number; runs: number }> };
   agentOutputs: {
     agent: string;
     output: string;
   }[];
 }
 ```
+
+A swarm reports only total tokens, so its `usage` has no `inputTokens` or `outputTokens`.
 
 ---
 
@@ -554,20 +587,24 @@ app.listen(9090);
 
 ### Available Metrics
 
-| Metric                           | Type      | Description                                                 |
-| -------------------------------- | --------- | ----------------------------------------------------------- |
-| `cogitator_queue_depth`          | gauge     | Total waiting + delayed jobs                                |
-| `cogitator_queue_waiting`        | gauge     | Jobs ready to run, prioritized jobs included                |
-| `cogitator_queue_active`         | gauge     | Jobs currently being processed                              |
-| `cogitator_queue_completed`      | gauge     | Completed jobs kept in Redis (capped by `removeOnComplete`) |
-| `cogitator_queue_failed`         | gauge     | Failed jobs kept in Redis (capped by `removeOnFail`)        |
-| `cogitator_queue_delayed`        | gauge     | Scheduled/delayed jobs                                      |
-| `cogitator_workers_total`        | gauge     | Workers connected to the queue                              |
-| `cogitator_job_duration_seconds` | histogram | Job processing time                                         |
-| `cogitator_jobs_by_type_total`   | counter   | Jobs by type                                                |
-| `cogitator_jobs_failed_total`    | counter   | Jobs that failed their last attempt, by `type`              |
+| Metric                              | Type      | Description                                                 |
+| ----------------------------------- | --------- | ----------------------------------------------------------- |
+| `cogitator_queue_depth`             | gauge     | Total waiting + delayed jobs                                |
+| `cogitator_queue_waiting`           | gauge     | Jobs ready to run, prioritized jobs included                |
+| `cogitator_queue_active`            | gauge     | Jobs currently being processed                              |
+| `cogitator_queue_completed`         | gauge     | Completed jobs kept in Redis (capped by `removeOnComplete`) |
+| `cogitator_queue_failed`            | gauge     | Failed jobs kept in Redis (capped by `removeOnFail`)        |
+| `cogitator_queue_delayed`           | gauge     | Scheduled/delayed jobs                                      |
+| `cogitator_workers_total`           | gauge     | Workers connected to the queue                              |
+| `cogitator_job_duration_seconds`    | histogram | Job processing time                                         |
+| `cogitator_jobs_by_type_total`      | counter   | Jobs by type                                                |
+| `cogitator_jobs_failed_total`       | counter   | Jobs that failed their last attempt, by `type`              |
+| `cogitator_job_tokens_total`        | counter   | Tokens the agent runs of completed jobs used, by `type`     |
+| `cogitator_job_input_tokens_total`  | counter   | Input tokens of completed jobs, by `type`                   |
+| `cogitator_job_output_tokens_total` | counter   | Output tokens of completed jobs, by `type`                  |
+| `cogitator_job_cost_usd_total`      | counter   | USD the agent runs of completed jobs cost, by `type`        |
 
-`cogitator_queue_completed` and `cogitator_queue_failed` can go down as BullMQ trims old jobs, so alert on `cogitator_jobs_failed_total` instead (for example `increase(cogitator_jobs_failed_total[5m]) > 5`). The per-type counters appear after the first job of that kind.
+`cogitator_queue_completed` and `cogitator_queue_failed` can go down as BullMQ trims old jobs, so alert on `cogitator_jobs_failed_total` instead (for example `increase(cogitator_jobs_failed_total[5m]) > 5`). The per-type counters appear after the first job of that kind. The usage counters take the `usage` of completed agent, workflow, swarm and swarm-agent jobs, input and output tokens only where the job reported them apart (swarm jobs do not).
 
 ### Duration Histogram
 
@@ -587,7 +624,7 @@ histogram.reset();
 
 ### Metrics Collector
 
-`WorkerPool` keeps one in `pool.metrics`: it calls `recordJob(type, durationMs)` for each completed job and `recordFailure(type)` for each job that failed its last attempt (retried attempts are not counted). Use your own collector when you process jobs outside the pool.
+`WorkerPool` keeps one in `pool.metrics`: it calls `recordJob(type, durationMs)` and `recordUsage(type, result.usage)` for each completed job and `recordFailure(type)` for each job that failed its last attempt (retried attempts are not counted). Use your own collector when you process jobs outside the pool.
 
 ```typescript
 import { MetricsCollector } from '@cogitator-ai/worker';
@@ -596,6 +633,7 @@ const collector = new MetricsCollector();
 
 collector.recordJob('agent', 1500);
 collector.recordJob('workflow', 3200);
+collector.recordUsage('workflow', workflowResult.usage); // { inputTokens?, outputTokens?, totalTokens, cost }
 collector.recordFailure('agent');
 
 const output = collector.format(queueMetrics, { queue: 'main' });
@@ -885,6 +923,7 @@ import type {
   AgentJobResult,
   WorkflowJobResult,
   SwarmJobResult,
+  JobUsage,
   SwarmAgentJobResult,
 
   // Configuration

@@ -10,6 +10,7 @@ const redisUrl =
     ? (process.env.TEST_REDIS_URL ?? 'redis://localhost:6379')
     : undefined;
 const describeLive = redisUrl && process.env.GOOGLE_API_KEY ? describe : describe.skip;
+const describeRedis = redisUrl ? describe : describe.skip;
 
 const MODEL = 'google/gemini-3.5-flash-lite';
 
@@ -136,7 +137,7 @@ describeLive('Worker: workflow jobs on the workflow executor', () => {
           zrange: (key, start, stop) => client.zrange(key, String(start), String(stop)),
           zrem: (key, ...members) => client.zrem(key, ...members),
         },
-        keyPrefix: 'cogitator:workflow-checkpoints',
+        keyPrefix: `cogitator:${name}:workflow-checkpoints`,
       });
       expect(await store.list(workflowConfig.name)).toEqual([]);
       client.disconnect();
@@ -153,4 +154,40 @@ describeLive('Worker: workflow jobs on the workflow executor', () => {
       expect(metrics).toMatch(/cogitator_job_tokens_total\{type="workflow"\} [1-9]/);
     }
   );
+});
+
+describeRedis('Worker: job ids on a live queue', () => {
+  const name = `e2e-job-ids-${Date.now()}`;
+  const queue = new JobQueue({ name, redis: { url: redisUrl! } });
+  const workflowConfig = { id: 'w', name: 'w', nodes: [], edges: [] };
+
+  afterAll(async () => {
+    const client = new Redis(redisUrl!);
+    const keys = await client.keys(`*${name}*`);
+    if (keys.length > 0) await client.del(...keys);
+    client.disconnect();
+    await queue.close();
+  });
+
+  it('gives both of two racing adds the one job the queue holds', async () => {
+    const [first, second] = await Promise.all([
+      queue.addWorkflowJob(workflowConfig, { v: 1 }, { jobId: 'race' }),
+      queue.addWorkflowJob(workflowConfig, { v: 2 }, { jobId: 'race' }),
+    ]);
+
+    expect(first.data.runId).toBe(second.data.runId);
+    expect(first.data.input).toEqual(second.data.input);
+    expect((await queue.getJob('race'))?.data).toEqual(first.data);
+  });
+
+  it('refuses ids that would clash with the keys of the queue', async () => {
+    await expect(queue.addWorkflowJob(workflowConfig, {}, { jobId: 'meta' })).rejects.toThrow(
+      'a key the queue keeps for itself'
+    );
+    await expect(
+      queue.addAgentJob({ name: 'a', instructions: 'x', model: 'm', tools: [] }, 'hi', {
+        jobId: 'race',
+      })
+    ).rejects.toThrow("holds job 'race' as a workflow job, not as an agent job");
+  });
 });

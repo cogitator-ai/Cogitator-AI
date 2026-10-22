@@ -20,6 +20,7 @@ vi.mock('../processors/agent.js', () => ({
 
 vi.mock('../processors/workflow.js', () => ({
   processWorkflowJob: vi.fn().mockResolvedValue({ success: true, output: {} }),
+  forgetWorkflowRun: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../processors/swarm.js', () => ({
@@ -202,6 +203,22 @@ describe('WorkerPool', () => {
         workerCount: 2,
       });
       expect(output).toContain('cogitator_jobs_failed_total{type="agent"} 1');
+    });
+
+    it('lets the checkpoint of a workflow job go once its last attempt failed', async () => {
+      const { forgetWorkflowRun } = await import('../processors/workflow.js');
+      const { InMemoryCheckpointStore } = await import('@cogitator-ai/workflows');
+      const checkpoints = new InMemoryCheckpointStore();
+      pool = new WorkerPool({ ...defaultConfig, checkpoints });
+      await pool.start();
+
+      const handler = mockWorkerOn.mock.calls.find((call) => call[0] === 'failed')![1];
+      const data = { jobId: 'job_1', type: 'workflow', runId: 'run_1' };
+      handler({ id: 'job_1', data }, new Error('retrying'));
+      expect(forgetWorkflowRun).not.toHaveBeenCalled();
+
+      handler({ id: 'job_1', data, finishedOn: 2000 }, new Error('stalled too often'));
+      expect(forgetWorkflowRun).toHaveBeenCalledWith(data, checkpoints);
     });
 
     it('calls onWorkerError callback', async () => {

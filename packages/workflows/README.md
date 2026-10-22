@@ -87,7 +87,8 @@ const workflow = new WorkflowBuilder<{ count: number }>('counter')
 - State types must satisfy `WorkflowState` (`Record<string, unknown>`): declare them with `type`, or as `interface MyState extends WorkflowState { ... }` (`import type { WorkflowState } from '@cogitator-ai/types'`). A plain `interface` does not satisfy the constraint.
 - `addNode(name, fnOrNode, { after, config })` accepts a node function or a node created by a factory.
 - The entry point is the single node (or conditional/parallel/loop construct) without `after`. Independent roots are rejected — add a parallel fan-out or call `.entryPoint(name)`.
-- Node functions receive `ctx.state` (a copy), `ctx.input` (outputs of upstream nodes), `ctx.nodeId`, `ctx.workflowId`, `ctx.step`, `ctx.reportProgress()` and — for built-in nodes — `cogitator`, `signal` (run cancellation) and `depth` (subworkflow nesting).
+- Node functions receive `ctx.state` (a copy), `ctx.input` (outputs of upstream nodes), `ctx.nodeId`, `ctx.workflowId`, `ctx.step`, `ctx.idempotencyKey`, `ctx.reportProgress()` and, for built-in nodes, `cogitator`, `signal` (run cancellation) and `depth` (subworkflow nesting).
+- `ctx.idempotencyKey` (`workflow:<workflowId>:node:<name>:visit:<n>`) names this visit of the node: the same when the node is retried or its run resumed, a new one when the workflow comes back to the node. Pass it to an external API that takes an idempotency key, so a node that runs again does not charge a card or send a message twice.
 - Return `{ state }` to merge into the workflow state, `{ output }` for downstream nodes and `{ next }` to route dynamically.
 
 ### WorkflowExecutor
@@ -265,6 +266,12 @@ import { RedisCheckpointStore, PostgresCheckpointStore } from '@cogitator-ai/wor
 
 new RedisCheckpointStore({ client: redis, keyPrefix: 'myapp:checkpoints' });
 new PostgresCheckpointStore({ client: pool, table: 'workflow_checkpoints' }); // created on first use
+```
+
+`ttl` (seconds) makes Redis drop a checkpoint, and the index of its workflow, that long after the last save into it, for runs nobody resumes or deletes. It needs `expire` and `zrangebyscore` on the client, which both clients have, and each save also drops the index entries of checkpoints older than the ttl:
+
+```typescript
+new RedisCheckpointStore({ client: redis, keyPrefix: 'myapp:checkpoints', ttl: 7 * 24 * 3600 });
 ```
 
 Resuming runs only the nodes that did not finish, and the nodes after them get the finished nodes' outputs as input.

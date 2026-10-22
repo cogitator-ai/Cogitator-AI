@@ -878,6 +878,9 @@ interface NodeContext<S = WorkflowState> {
   nodeId: string;
   workflowId: string;
   step: number;
+  // 'workflow:<workflowId>:node:<name>:visit:<n>': the same when the node is retried or its run
+  // resumed, a new one when the workflow comes back to the node. Pass it to external APIs
+  idempotencyKey?: string;
   reportProgress?: (progress: number) => void;
 }
 

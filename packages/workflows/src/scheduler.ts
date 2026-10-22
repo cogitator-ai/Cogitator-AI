@@ -271,51 +271,38 @@ export class WorkflowScheduler {
   }
 
   /**
-   * Run parallel tasks with per-completion callback
-   * Uses pool-based execution to respect concurrency while allowing immediate callbacks
+   * Run tasks with at most `maxConcurrency` in flight, calling `onComplete` as each one finishes;
+   * results keep the task order. A failing task or callback stops new tasks from starting, and
+   * the first failure rejects once the tasks and callbacks in flight settled.
    */
   async runParallelWithCallback<T>(
     tasks: (() => Promise<T>)[],
     maxConcurrency: number,
     onComplete: (result: T, index: number) => Promise<void>
   ): Promise<T[]> {
-    if (tasks.length === 0) return [];
-
-    const results: T[] = new Array(tasks.length);
+    const results: T[] = new Array<T>(tasks.length);
     let nextIndex = 0;
-    let completedCount = 0;
-    let settled = false;
+    let failure: { error: unknown } | undefined;
 
-    return new Promise((resolve, reject) => {
-      const startNext = () => {
-        if (settled) return;
-
-        while (nextIndex < tasks.length && nextIndex - completedCount < maxConcurrency) {
-          const index = nextIndex++;
-
-          tasks[index]()
-            .then(async (result) => {
-              if (settled) return;
-              results[index] = result;
-              await onComplete(result, index);
-              completedCount++;
-
-              if (completedCount === tasks.length) {
-                settled = true;
-                resolve(results);
-              } else {
-                startNext();
-              }
-            })
-            .catch((error: unknown) => {
-              if (settled) return;
-              settled = true;
-              reject(error instanceof Error ? error : new Error(String(error)));
-            });
+    const worker = async (): Promise<void> => {
+      while (nextIndex < tasks.length && !failure) {
+        const index = nextIndex++;
+        try {
+          const result = await tasks[index]();
+          results[index] = result;
+          await onComplete(result, index);
+        } catch (error) {
+          failure ??= { error };
         }
-      };
+      }
+    };
 
-      startNext();
-    });
+    const workers = Math.min(Math.max(1, maxConcurrency), tasks.length);
+    await Promise.all(Array.from({ length: workers }, () => worker()));
+
+    if (failure) {
+      throw failure.error instanceof Error ? failure.error : new Error(String(failure.error));
+    }
+    return results;
   }
 }

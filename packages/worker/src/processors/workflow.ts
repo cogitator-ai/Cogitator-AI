@@ -11,7 +11,15 @@ import {
   parseAgentWire,
 } from '@cogitator-ai/core';
 import { WorkflowExecutor } from '@cogitator-ai/workflows';
-import type { Edge, NodeContext, NodeResult, Workflow, WorkflowNode } from '@cogitator-ai/types';
+import type {
+  CheckpointStore,
+  Edge,
+  NodeContext,
+  NodeResult,
+  Workflow,
+  WorkflowCheckpoint,
+  WorkflowNode,
+} from '@cogitator-ai/types';
 import type {
   ConditionNodeConfig,
   JobUsage,
@@ -73,6 +81,14 @@ export function renderTemplate(template: string, state: WorkflowState): string {
   );
 }
 
+/** Prefix of the state keys a run keeps its own bookkeeping under, left out of the output */
+const RUN_KEY = '__cogitator:';
+const doneKey = (id: string) => `${RUN_KEY}done:${id}`;
+const branchKey = (id: string) => `${RUN_KEY}branch:${id}`;
+const usageKey = (id: string) => `${RUN_KEY}usage:${id}`;
+/** The node a graph with many roots starts from, never one of its own */
+const START = `${RUN_KEY}start`;
+
 function parseNodeConfig<T>(node: SerializedWorkflowNode, schema: z.ZodType<T>): T {
   const parsed = schema.safeParse(node.config);
   if (!parsed.success) {
@@ -87,13 +103,17 @@ function parseNodeConfig<T>(node: SerializedWorkflowNode, schema: z.ZodType<T>):
 
 /**
  * Check the graph before running anything: unique ids, known edge endpoints, branch labels
- * only on condition nodes, valid node configs and no cycles.
+ * only on condition nodes, valid node configs and no cycles. Node ids and output keys must not
+ * start with `__cogitator:`, the prefix of the run's own state keys.
  */
 export function validateWorkflow(workflow: SerializedWorkflow): void {
   const nodes = new Map<string, SerializedWorkflowNode>();
   for (const node of workflow.nodes) {
     if (nodes.has(node.id)) {
       throw new Error(`Duplicate workflow node id '${node.id}'`);
+    }
+    if (node.id.startsWith(RUN_KEY)) {
+      throw new Error(`Workflow node id '${node.id}' starts with '${RUN_KEY}', kept for the run`);
     }
     nodes.set(node.id, node);
   }
@@ -120,6 +140,7 @@ export function validateWorkflow(workflow: SerializedWorkflow): void {
     switch (node.type) {
       case 'agent': {
         const config = parseNodeConfig(node, agentNodeSchema);
+        refuseRunKey(node, config.outputKey);
         try {
           parseAgentWire(config.agentConfig);
         } catch (error) {
@@ -132,6 +153,7 @@ export function validateWorkflow(workflow: SerializedWorkflow): void {
       }
       case 'transform': {
         const config = parseNodeConfig(node, transformNodeSchema);
+        refuseRunKey(node, config.outputKey);
         if (config.transform === 'template' && config.template === undefined) {
           throw new Error(`Transform node '${node.id}' uses 'template' but has no template`);
         }
@@ -162,6 +184,14 @@ export function validateWorkflow(workflow: SerializedWorkflow): void {
   }
   if (visited !== workflow.nodes.length) {
     throw new Error(`Workflow '${workflow.name}' contains a cycle`);
+  }
+}
+
+function refuseRunKey(node: SerializedWorkflowNode, outputKey: string | undefined): void {
+  if (outputKey?.startsWith(RUN_KEY)) {
+    throw new Error(
+      `Output key '${outputKey}' of node '${node.id}' starts with '${RUN_KEY}', kept for the run`
+    );
   }
 }
 
@@ -216,14 +246,6 @@ function applyTransform(
   }
 }
 
-/** Prefix of the state keys a run keeps its own bookkeeping under, left out of the output */
-const RUN_KEY = '__cogitator:';
-const doneKey = (id: string) => `${RUN_KEY}done:${id}`;
-const branchKey = (id: string) => `${RUN_KEY}branch:${id}`;
-const usageKey = (id: string) => `${RUN_KEY}usage:${id}`;
-/** The node a graph with many roots starts from, never one of its own */
-const START = `${RUN_KEY}start`;
-
 function outputKeyOf(node: SerializedWorkflowNode): string | undefined {
   if (node.type === 'agent') return parseNodeConfig(node, agentNodeSchema).outputKey ?? node.id;
   if (node.type === 'transform') {
@@ -236,12 +258,13 @@ function outputKeyOf(node: SerializedWorkflowNode): string | undefined {
  * The serialized graph as a workflow of `@cogitator-ai/workflows`. Each node keeps in the state
  * that it ran (`__cogitator:done:<id>`), the branch a condition took (`__cogitator:branch:<id>`)
  * and the usage of an agent run (`__cogitator:usage:<id>`), so a run resumed from a checkpoint
- * knows them too. `abort` stops the agent runs still in flight once a node fails.
+ * knows them too. Agent runs stop on `ctx.signal` and on `siblings`, which a failing node aborts
+ * so the runs still in flight next to it stop too.
  */
 function workflowOf(
   serialized: SerializedWorkflow,
   runtime: ResolvedRuntime,
-  abort: (reason: unknown) => void
+  siblings: AbortController
 ): Workflow<WorkflowState> {
   const byId = new Map(serialized.nodes.map((node) => [node.id, node]));
   const incomingOf = (id: string) => serialized.edges.filter((edge) => edge.to === id);
@@ -273,7 +296,7 @@ function workflowOf(
           : JSON.stringify(withoutRunKeys(state));
         const result = await runtime.cogitator.run(agent, {
           input: prompt,
-          ...(ctx.signal && { signal: ctx.signal }),
+          signal: ctx.signal ? AbortSignal.any([ctx.signal, siblings.signal]) : siblings.signal,
         });
         if (isPausedRun(result)) {
           throw new AgentRunPausedError(
@@ -327,7 +350,7 @@ function workflowOf(
         try {
           return await run(node, ctx as NodeContext<WorkflowState> & { signal?: AbortSignal });
         } catch (error) {
-          abort(error);
+          if (!siblings.signal.aborted) siblings.abort(error);
           throw error;
         }
       },
@@ -379,24 +402,70 @@ function usageOf(state: WorkflowState): JobUsage {
     cost: 0,
     runs: 0,
   };
+  const count = (value: unknown) =>
+    typeof value === 'number' && Number.isFinite(value) ? value : 0;
   for (const [key, value] of Object.entries(state)) {
-    if (!key.startsWith(`${RUN_KEY}usage:`)) continue;
-    const one = value as JobUsage;
-    usage.inputTokens += one.inputTokens ?? 0;
-    usage.outputTokens += one.outputTokens ?? 0;
-    usage.totalTokens += one.totalTokens;
-    usage.cost += one.cost;
-    usage.runs += one.runs;
+    if (!key.startsWith(`${RUN_KEY}usage:`) || typeof value !== 'object' || value === null)
+      continue;
+    const one = value as Partial<Record<keyof JobUsage, unknown>>;
+    usage.inputTokens += count(one.inputTokens);
+    usage.outputTokens += count(one.outputTokens);
+    usage.totalTokens += count(one.totalTokens);
+    usage.cost += count(one.cost);
+    usage.runs += count(one.runs);
   }
   return usage;
 }
 
 /**
- * Runs a workflow job on the workflow executor of `@cogitator-ai/workflows`: nodes run as soon
- * as the nodes before them settled, independent branches at once, a condition taking its
- * `'true'` or `'false'` edges. With `checkpoints` the run is checkpointed after every node under
- * the job's `runId`, so a retried job (BullMQ attempts) goes on from the last checkpoint instead
- * of running its agents again, and the checkpoints go once the run finished or failed for good.
+ * Id of the one checkpoint a workflow job keeps, saved over after every node: the job's id and
+ * its `runId`, so jobs sharing a `runId` never resume from each other
+ */
+export function workflowCheckpointId(payload: Pick<WorkflowJobPayload, 'jobId' | 'runId'>): string {
+  return `workflow-job:${payload.jobId}:run:${payload.runId}`;
+}
+
+/** Delete the checkpoint of a workflow job, for a run no attempt goes on from */
+export async function forgetWorkflowRun(
+  payload: Pick<WorkflowJobPayload, 'jobId' | 'runId'>,
+  store: CheckpointStore
+): Promise<void> {
+  await store.delete(workflowCheckpointId(payload));
+}
+
+/**
+ * The store as the executor of one job sees it: every checkpoint saved under the job's id, one
+ * after the other so the last one saved is the newest, and a failed save aborts the agent runs
+ * in flight before it fails the job
+ */
+function storeOfJob(
+  store: CheckpointStore,
+  id: string,
+  siblings: AbortController
+): CheckpointStore {
+  let saving: Promise<void> = Promise.resolve();
+  return {
+    save(checkpoint: WorkflowCheckpoint) {
+      const saved = saving.then(() => store.save({ ...checkpoint, id }));
+      saving = saved.catch(() => undefined);
+      return saved.catch((error: unknown) => {
+        if (!siblings.signal.aborted) siblings.abort(error);
+        throw error;
+      });
+    },
+    load: (checkpointId) => store.load(checkpointId),
+    list: (name) => store.list(name),
+    delete: (checkpointId) => store.delete(checkpointId),
+  };
+}
+
+/**
+ * Runs a workflow job on the workflow executor of `@cogitator-ai/workflows`, over a shared state:
+ * in rounds, each running at once the nodes whose nodes before them all settled, a condition
+ * taking its `'true'` or `'false'` edges. Input keys starting with `__cogitator:` are refused,
+ * the run keeps its own bookkeeping under them. With `checkpoints` the job keeps one checkpoint,
+ * saved after every node, so an attempt that comes after a failure (`willRetry`) goes on from it
+ * instead of running its agents again, and the checkpoint goes once no attempt follows.
  */
 export async function processWorkflowJob(
   payload: WorkflowJobPayload,
@@ -405,55 +474,50 @@ export async function processWorkflowJob(
 ): Promise<WorkflowJobResult> {
   const started = Date.now();
   validateWorkflow(payload.workflowConfig);
+  const reserved = Object.keys(payload.input).find((key) => key.startsWith(RUN_KEY));
+  if (reserved !== undefined) {
+    throw new Error(`Workflow input key '${reserved}' starts with '${RUN_KEY}', kept for the run`);
+  }
   const resolved = resolveRuntime(runtime);
-  const controller = new AbortController();
-  const forward = () => controller.abort(execution.signal?.reason);
-  if (execution.signal?.aborted) forward();
-  execution.signal?.addEventListener('abort', forward, { once: true });
-  const workflow = workflowOf(payload.workflowConfig, resolved, (reason) => {
-    if (!controller.signal.aborted) controller.abort(reason);
-  });
-  const store = runtime.checkpoints;
+  const siblings = new AbortController();
+  const workflow = workflowOf(payload.workflowConfig, resolved, siblings);
+  const id = workflowCheckpointId(payload);
+  const store = runtime.checkpoints && storeOfJob(runtime.checkpoints, id, siblings);
   const executor = new WorkflowExecutor(resolved.cogitator, store);
   const options = {
     workflowId: payload.runId,
-    signal: controller.signal,
+    maxConcurrency: workflow.nodes.size,
+    maxIterations: 2 * workflow.nodes.size + 2,
+    ...(execution.signal && { signal: execution.signal }),
     ...(store && { checkpoint: true, checkpointStrategy: 'per-node' as const }),
-  };
-  const ofRun = async () =>
-    store
-      ? (await store.list(workflow.name))
-          .filter((checkpoint) => checkpoint.workflowId === payload.runId)
-          .sort((a, b) => a.timestamp - b.timestamp)
-      : [];
-  const forget = async () => {
-    for (const checkpoint of await ofRun()) await store?.delete(checkpoint.id);
   };
 
   try {
-    const latest = (await ofRun()).at(-1);
+    const latest = store ? await store.load(id) : null;
     const result = latest
-      ? await executor.resume(workflow, latest.id, options)
+      ? await executor.resume(workflow, id, options)
       : await executor.execute(workflow, payload.input, options);
     if (result.error) throw result.error;
-    controller.signal.throwIfAborted();
-    await forget();
+    execution.signal?.throwIfAborted();
     const nodeResults: Record<string, unknown> = {};
     for (const node of payload.workflowConfig.nodes) {
-      const ran = result.nodeResults.get(node.id);
-      nodeResults[node.id] = ran ? ran.output : { skipped: true };
+      nodeResults[node.id] =
+        result.state[doneKey(node.id)] === true
+          ? result.nodeResults.get(node.id)?.output
+          : { skipped: true };
     }
-    return {
+    const done: WorkflowJobResult = {
       type: 'workflow',
       output: withoutRunKeys(result.state),
       nodeResults,
       usage: usageOf(result.state),
       duration: Date.now() - started,
     };
+    await store?.delete(id).catch(() => undefined);
+    return done;
   } catch (error) {
-    if (execution.isFinalAttempt !== false) await forget().catch(() => undefined);
+    if (!siblings.signal.aborted) siblings.abort(error);
+    if (store && !execution.willRetry?.(error)) await store.delete(id).catch(() => undefined);
     throw error;
-  } finally {
-    execution.signal?.removeEventListener('abort', forward);
   }
 }

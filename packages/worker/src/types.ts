@@ -286,10 +286,12 @@ export interface JobExecutionOptions {
    */
   signal?: AbortSignal;
   /**
-   * Whether no attempt of the job comes after this one: a workflow job that fails on its last
-   * attempt lets its checkpoints go, one that fails earlier keeps them for the next attempt
+   * Whether the queue runs the job again after it failed with `error`: a workflow job keeps its
+   * checkpoint for that attempt, and lets it go when none follows. `WorkerPool` answers no for
+   * the last attempt, a cancelled job and a paused agent run, and yes for a job a shutdown
+   * stopped, which another worker takes up. Default: no attempt follows
    */
-  isFinalAttempt?: boolean;
+  willRetry?: (error: unknown) => boolean;
 }
 
 /**
@@ -304,9 +306,9 @@ export interface WorkerRuntime {
    */
   tools?: Tool[];
   /**
-   * Where workflow jobs keep their checkpoints, after every node, so a retried job goes on from
-   * the last one. `WorkerPool` keeps them in its Redis by default, a processor called on its own
-   * runs without them.
+   * Where workflow jobs keep their checkpoint, saved after every node, so a retried job goes on
+   * from it. `WorkerPool` keeps them in its Redis by default, a processor called on its own runs
+   * without them.
    */
   checkpoints?: CheckpointStore;
 }
@@ -320,6 +322,12 @@ export interface WorkerConfig extends QueueConfig, WorkerRuntime {
   lockDuration?: number;
   /** Stalled job check interval */
   stalledInterval?: number;
+  /**
+   * Seconds the default Redis store keeps a workflow checkpoint after its last save, for a run
+   * that is never resumed or let go, such as one whose worker crashed on its last attempt.
+   * Ignored with `checkpoints`. Default: 7 days
+   */
+  checkpointTtl?: number;
 }
 
 /**

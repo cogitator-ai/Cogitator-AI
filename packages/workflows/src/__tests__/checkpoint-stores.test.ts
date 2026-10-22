@@ -36,6 +36,14 @@ function fakeRedis(): CheckpointRedisClient {
       for (const member of members) sets.get(key)?.delete(member);
       return members.length;
     },
+    zrangebyscore: async (key, min, max) =>
+      [...(sets.get(key) ?? new Map<string, number>()).entries()]
+        .filter(([, score]) => {
+          const bound = (value: number | string) =>
+            value === '-inf' ? -Infinity : value === '+inf' ? Infinity : Number(value);
+          return score >= bound(min) && score <= bound(max);
+        })
+        .map(([member]) => member),
   };
 }
 
@@ -109,6 +117,45 @@ describe.each<[string, () => CheckpointStore]>([
     expect((await store.load('c1'))?.completedNodes).toEqual(['a', 'b']);
     expect(await store.list('orders')).toEqual([]);
     expect((await store.list('refunds')).map((c) => c.id)).toEqual(['c1']);
+  });
+});
+
+describe('RedisCheckpointStore ttl', () => {
+  it('sets the ttl on the checkpoint and its workflow index at every save', async () => {
+    const expired: [string, number][] = [];
+    const client: CheckpointRedisClient = {
+      ...fakeRedis(),
+      expire: async (key, seconds) => {
+        expired.push([key, seconds]);
+        return 1;
+      },
+    };
+    const store = new RedisCheckpointStore({ client, keyPrefix: 'p', ttl: 60 });
+
+    await store.save(checkpoint('c1', 'orders', Date.now()));
+
+    expect(expired).toEqual([
+      ['p:checkpoint:c1', 60],
+      ['p:workflow:orders', 60],
+    ]);
+  });
+
+  it('drops the index entries of checkpoints older than the ttl', async () => {
+    const client: CheckpointRedisClient = { ...fakeRedis(), expire: async () => 1 };
+    const store = new RedisCheckpointStore({ client, keyPrefix: 'p', ttl: 60 });
+    await client.zadd('p:workflow:orders', Date.now() - 120_000, 'gone');
+
+    await store.save(checkpoint('c1', 'orders', Date.now()));
+
+    expect(await client.zrange('p:workflow:orders', 0, -1)).toEqual(['c1']);
+  });
+
+  it('refuses a ttl without expire on the client, or one that is not whole seconds', () => {
+    const { expire: _expire, ...withoutExpire } = { ...fakeRedis(), expire: async () => 1 };
+    expect(() => new RedisCheckpointStore({ client: withoutExpire, ttl: 60 })).toThrow('expire');
+    const client = { ...fakeRedis(), expire: async () => 1 };
+    expect(() => new RedisCheckpointStore({ client, ttl: 0 })).toThrow('positive');
+    expect(() => new RedisCheckpointStore({ client, ttl: 1.5 })).toThrow('positive');
   });
 });
 

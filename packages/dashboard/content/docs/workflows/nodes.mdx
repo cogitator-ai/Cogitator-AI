@@ -22,6 +22,7 @@ interface NodeContext<S> {
   workflowId: string;
   step: number;
   input?: unknown;
+  idempotencyKey?: string;
   reportProgress?: (progress: number) => void;
 }
 ```
@@ -29,6 +30,7 @@ interface NodeContext<S> {
 - **`state`** -- Current workflow state snapshot
 - **`input`** -- Output from upstream dependency nodes (single value if one dep, array if multiple)
 - **`step`** -- The executor iteration the node runs in
+- **`idempotencyKey`** -- `workflow:<workflowId>:node:<name>:visit:<n>`, the key of this visit of the node: the same when the node is retried or its run resumed, a new one when the workflow comes back to the node (the next pass of a loop). Pass it to an external API that takes an idempotency key, so a node that runs again does not charge a card or send a message twice. The executor always sets it, the type marks it optional
 - **`reportProgress`** -- Report 0-100 progress (clamped) for `onNodeProgress` and `node_progress` stream events; the executor always sets it, the type marks it optional
 
 At run time the executor passes an `ExtendedNodeContext<S>` (exported from `@cogitator-ai/workflows`) that adds `cogitator`, `signal` (the run's `AbortSignal`, or a per-attempt signal when the node has a `timeout`), `depth` (subworkflow nesting) and the run-level `approvalStore`, `approvalNotifier`, `timerStore`, `onApprovalRequired` and `onTimerScheduled`. Cast to it in a custom node when you need them.

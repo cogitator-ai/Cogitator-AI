@@ -165,4 +165,67 @@ describe('WorkflowScheduler', () => {
       expect(maxConcurrent).toBeLessThanOrEqual(2);
     });
   });
+
+  describe('runParallelWithCallback', () => {
+    it('calls back as each task finishes, keeping the task order in the results', async () => {
+      const finished: number[] = [];
+      const tasks = [30, 10, 20].map((ms) => async () => {
+        await new Promise((r) => setTimeout(r, ms));
+        return ms;
+      });
+
+      const output = await scheduler.runParallelWithCallback(tasks, 3, async (ms) => {
+        finished.push(ms);
+      });
+
+      expect(output).toEqual([30, 10, 20]);
+      expect(finished).toEqual([10, 20, 30]);
+    });
+
+    it('rejects with the first failure only once the tasks in flight settled', async () => {
+      let slowSettled = false;
+      let started = 0;
+      const tasks = [
+        async () => {
+          started++;
+          throw new Error('bad');
+        },
+        async () => {
+          started++;
+          await new Promise((r) => setTimeout(r, 30));
+          slowSettled = true;
+          return 'slow';
+        },
+        async () => {
+          started++;
+          return 'never';
+        },
+      ];
+
+      await expect(scheduler.runParallelWithCallback(tasks, 2, async () => {})).rejects.toThrow(
+        'bad'
+      );
+      expect(slowSettled).toBe(true);
+      expect(started).toBe(2);
+    });
+
+    it('stops at a failing callback and waits for the tasks in flight', async () => {
+      let otherSettled = false;
+      const tasks = [
+        async () => 'first',
+        async () => {
+          await new Promise((r) => setTimeout(r, 30));
+          otherSettled = true;
+          return 'second';
+        },
+      ];
+
+      await expect(
+        scheduler.runParallelWithCallback(tasks, 2, async (result) => {
+          if (result === 'first') throw new Error('save failed');
+        })
+      ).rejects.toThrow('save failed');
+      expect(otherSettled).toBe(true);
+    });
+  });
 });

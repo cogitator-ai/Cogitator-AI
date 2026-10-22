@@ -221,6 +221,12 @@ const redisStore = new RedisCheckpointStore({ client: redis, keyPrefix: 'myapp:c
 const pgStore = new PostgresCheckpointStore({ client: pool }); // creates cogitator_workflow_checkpoints on first use
 ```
 
+`ttl` (seconds) makes Redis drop a checkpoint, and the index of its workflow, that long after the last save into it, for runs nobody resumes or deletes. It needs `expire` and `zrangebyscore` on the client, which both clients have, and each save also drops the index entries of checkpoints older than the ttl:
+
+```typescript
+const expiring = new RedisCheckpointStore({ client: redis, ttl: 7 * 24 * 3600 });
+```
+
 A checkpoint saved by one process resumes in any other that reads the same store. A `WorkflowManager` with a `checkpointStore` checkpoints every run it starts — with `execute()`, from its schedule or on `resume()` — so `replay(workflow, runId, node)` can run that node and everything after it again, while the nodes before it keep their results, and a paused run can [resume](/docs/workflows/scheduling#pause-and-resume) from its last checkpoint.
 
 ### Runs, approvals and timers in Redis or Postgres
