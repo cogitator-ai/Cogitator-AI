@@ -131,7 +131,7 @@ describe('MemoryCascade', () => {
       content: 'card 4111',
       category: 'fact',
       confidence: 1,
-      source: 'extracted',
+      source: 'inferred',
       evidence: [{ entryId: card!.id, quote: 'card' }],
     });
     const node = unwrap(
@@ -260,6 +260,88 @@ describe('MemoryCascade', () => {
     expect(report.summaries).toHaveLength(1);
   });
 
+  it('forgets the copies of an entry in the threads forked from its thread', async () => {
+    const [card] = entries;
+    unwrap(await memory.updateThread('t', { pausedRun: { version: 1, threadId: 't' } }));
+    const fork = unwrap(await memory.forkThread('t', entries[3]!.id, 'f'));
+    expect(fork.metadata.pausedRun).toBeUndefined();
+    const forked = unwrap(await memory.getEntries({ threadId: 'f' }));
+    expect(JSON.stringify(forked)).toContain('4111');
+
+    const report = await cascade.deleteEntries([card!.id], who);
+
+    const left = unwrap(await memory.getEntries({ threadId: 'f' }));
+    expect(JSON.stringify(left)).not.toContain('4111');
+    expect(report.threadsChanged.sort()).toEqual(['f', 't']);
+  });
+
+  it('forgets what a user wrote in a thread of someone else, leaving the rest', async () => {
+    unwrap(
+      await memory.createThread('helper', { userId: 'ana', memoryUserIds: ['ana', 'bob'] }, 'group')
+    );
+    unwrap(
+      await memory.addEntry({
+        threadId: 'group',
+        message: { role: 'user', content: 'Ana here.' },
+        tokenCount: 2,
+        metadata: { userId: 'ana' },
+      })
+    );
+    const bob = unwrap(
+      await memory.addEntry({
+        threadId: 'group',
+        message: { role: 'user', content: 'Bob here, my phone is 555-0199.' },
+        tokenCount: 5,
+        metadata: { userId: 'bob' },
+      })
+    );
+
+    const report = await cascade.deleteUser('bob', who);
+
+    expect(report.entries.deleted).toContain(bob.id);
+    const left = unwrap(await memory.getEntries({ threadId: 'group' }));
+    expect(left.map((entry) => entry.message.content)).toEqual(['Ana here.']);
+  });
+
+  it('still redacts the observation that names an item when made again after a failure', async () => {
+    const [card] = entries;
+    const [cardFact] = await items.write([item('Ana has card 4111.', [card!.id])]);
+    await files.put(
+      { scope, author: 'system' },
+      `${OBSERVATIONS_DIRECTORY}/ana.md`,
+      `# Ana\n<!-- memory observation: entity ent_x items 0123456789abcdef -->\n\n- Card 4111 [item:${cardFact!.id}]\n`
+    );
+    const redactVersions = memory.redactFileVersions.bind(memory);
+    let failing = true;
+    memory.redactFileVersions = async (ids, redaction) =>
+      failing ? { success: false, error: 'store down' } : redactVersions(ids, redaction);
+
+    await expect(cascade.deleteEntries([card!.id], who)).rejects.toThrow('store down');
+    failing = false;
+    await cascade.deleteEntries([card!.id], who);
+
+    const history = await files.history({ scope }, `${OBSERVATIONS_DIRECTORY}/ana.md`);
+    expect(history.filter((version) => version.content?.includes('4111'))).toEqual([]);
+    expect(await items.get(cardFact!.id)).toBeNull();
+  });
+
+  it('purges an item written from the entries while the cascade ran', async () => {
+    const [card] = entries;
+    const remove = memory.deleteEntry.bind(memory);
+    let late: string | undefined;
+    memory.deleteEntry = async (entryId) => {
+      if (entryId === card!.id && late === undefined) {
+        [late] = (await items.write([item('Late: card 4111.', [card!.id])])).map((one) => one.id);
+      }
+      return remove(entryId);
+    };
+
+    const report = await cascade.deleteEntries([card!.id], who);
+
+    expect(report.items.purged).toContain(late);
+    expect(await items.get(late!)).toBeNull();
+  });
+
   it('keeps a summary that covers none of what went', async () => {
     const [card, , porto] = entries;
     unwrap(
@@ -330,7 +412,9 @@ describe('MemoryCascade', () => {
     const history = await files.history({ scope }, PLAYBOOK_PATH);
     expect(history.filter((version) => version.content?.includes('card'))).toEqual([]);
     const observation = await files.read({ scope }, `${OBSERVATIONS_DIRECTORY}/ana.md`);
-    expect(observation?.content).toBe('[redacted]');
+    expect(observation).toBeUndefined();
+    const kept = await files.history({ scope }, `${OBSERVATIONS_DIRECTORY}/ana.md`);
+    expect(kept.filter((version) => version.content?.includes('4111'))).toEqual([]);
     const { MemoryObservations } = await import('../memory-observations');
     const observations = new MemoryObservations({ files, items, itemAdapter: memory });
     await items.write([
@@ -378,7 +462,7 @@ describe('MemoryCascade', () => {
       content: 'Ana prefers mail',
       category: 'preference',
       confidence: 1,
-      source: 'extracted',
+      source: 'inferred',
       metadata: { userId: 'ana' },
     });
 
@@ -390,7 +474,9 @@ describe('MemoryCascade', () => {
     expect(await items.query({ scope: { agentId: 'helper', userId: 'bob' } })).toHaveLength(1);
     expect(await items.query({ scope })).toEqual([]);
     expect(report.entities.length).toBeGreaterThanOrEqual(1);
-    expect((await files.read({ scope }, '/memories/notes.md'))?.content).toBe('[redacted]');
+    expect(await files.read({ scope }, '/memories/notes.md')).toBeUndefined();
+    const history = await files.history({ scope }, '/memories/notes.md');
+    expect(history.filter((version) => version.content?.includes('4111'))).toEqual([]);
     expect(facts.facts.size).toBe(0);
   });
 });

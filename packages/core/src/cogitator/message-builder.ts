@@ -22,6 +22,7 @@ import {
   withoutTurnContext,
   countMessageTokens,
   HISTORY_ENTRY_TYPES,
+  MEMORY_USERS_KEY,
 } from '@cogitator-ai/memory';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
@@ -175,7 +176,15 @@ export async function buildInitialMessages(
   }
   const timeZone = thread?.metadata.timeZone;
   if (thread) {
-    await noteMemoryAgent(memoryAdapter, thread.id, memoryAgentId(agent), options.onMemoryError);
+    await noteThreadRun(
+      memoryAdapter,
+      thread.id,
+      {
+        memoryId: memoryAgentId(agent),
+        ...(options.userId !== undefined && { userId: options.userId }),
+      },
+      options.onMemoryError
+    );
   }
 
   if (typeof branchFrom === 'string') {
@@ -331,26 +340,32 @@ function unwrap<T>(result: MemoryResult<T>, operation: string): T {
 export const MEMORY_AGENTS = 'memoryAgentIds';
 
 /**
- * Notes in the metadata of `threadId` that the agent whose memory id is `memoryId` ran in it, so
- * `Cogitator.forget` finds the items, files and facts kept under that id. The list is read again
- * just before the write, which narrows, but does not close, the window in which two runs of
- * different agents writing at once keep only one of them.
+ * Notes in the metadata of `threadId` that the agent whose memory id is `run.memoryId` ran in it
+ * (`memoryAgentIds`) and that `run.userId` wrote in it (`memoryUserIds`), so `Cogitator.forget`
+ * finds the items, files and facts kept under that id and the user's messages in threads of
+ * others. The lists are read again just before the write, which narrows, but does not close, the
+ * window in which two runs writing at once keep only one of their names.
  */
-export async function noteMemoryAgent(
+export async function noteThreadRun(
   memoryAdapter: MemoryAdapter,
   threadId: string,
-  memoryId: string,
+  run: { memoryId: string; userId?: string },
   onError?: (error: Error, operation: 'save' | 'load') => void
 ): Promise<void> {
   const thread = await memoryAdapter.getThread(threadId);
   if (!thread.success || !thread.data) return;
-  const known = thread.data.metadata[MEMORY_AGENTS];
-  const ids = Array.isArray(known)
-    ? known.filter((id): id is string => typeof id === 'string')
-    : [];
-  if (ids.includes(memoryId)) return;
+  const listed = (key: string) => {
+    const known = thread.data?.metadata[key];
+    return Array.isArray(known) ? known.filter((id): id is string => typeof id === 'string') : [];
+  };
+  const agents = listed(MEMORY_AGENTS);
+  const users = listed(MEMORY_USERS_KEY);
+  const newAgent = !agents.includes(run.memoryId);
+  const newUser = run.userId !== undefined && !users.includes(run.userId);
+  if (!newAgent && !newUser) return;
   const updated = await memoryAdapter.updateThread(threadId, {
-    [MEMORY_AGENTS]: [...ids, memoryId],
+    ...(newAgent && { [MEMORY_AGENTS]: [...agents, run.memoryId] }),
+    ...(newUser && run.userId !== undefined && { [MEMORY_USERS_KEY]: [...users, run.userId] }),
   });
   if (!updated.success) {
     reportMemoryError(new Error(`Memory updateThread failed: ${updated.error}`), 'save', onError);

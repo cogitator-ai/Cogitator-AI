@@ -19,6 +19,7 @@ import type {
   MemoryResult,
 } from '@cogitator-ai/types';
 import {
+  MemoryFileError,
   MemoryFiles,
   REDACTED_CONTENT,
   fileKeyOf,
@@ -26,6 +27,7 @@ import {
   type MemoryFileAccess,
 } from './memory-files';
 import { MemoryItems } from './memory-items';
+import { FORKS_KEY, MEMORY_USERS_KEY } from './adapters/base';
 import { OBSERVATIONS_DIRECTORY } from './memory-observations';
 import {
   PLAYBOOK_DRAFT_PATH,
@@ -40,6 +42,8 @@ export interface MemoryCascadeReport {
   entries: { deleted: string[]; redacted: string[] };
   /** Threads deleted */
   threads: string[];
+  /** Threads that lost or had redacted some of their entries */
+  threadsChanged: string[];
   /** Compaction entries deleted, their summaries standing on what went */
   summaries: string[];
   /**
@@ -90,6 +94,9 @@ export interface CascadeAgents {
 
 const CITED = /\[(?:item|lesson):([A-Za-z0-9_-]+)\]/g;
 
+/** Why a cascade redacts a file version, which also tells its paths to go */
+const FORGOTTEN = 'its source was forgotten';
+
 function unwrap<T>(result: MemoryResult<T>): T {
   if (!result.success) throw new Error(result.error);
   return result.data;
@@ -99,6 +106,7 @@ function emptyReport(): MemoryCascadeReport {
   return {
     entries: { deleted: [], redacted: [] },
     threads: [],
+    threadsChanged: [],
     summaries: [],
     items: { purged: [], trimmed: [], stale: [] },
     entities: [],
@@ -174,7 +182,7 @@ export class MemoryCascade {
     who: CascadeAgents
   ): Promise<MemoryCascadeReport> {
     const report = emptyReport();
-    const entries = await this.withReplies(await this.entriesOf(entryIds), who);
+    const entries = await this.expand(await this.entriesOf(entryIds), who);
     if (entries.length === 0) return report;
     const gone = new Set(entries.map((entry) => entry.id));
     await this.dropSummaries(entries, gone, report);
@@ -183,6 +191,8 @@ export class MemoryCascade {
       unwrap(await this.memory.deleteEntry(entry.id));
       report.entries.deleted.push(entry.id);
     }
+    noteThreads(report, entries);
+    await this.dropDerived(gone, who, report);
     return report;
   }
 
@@ -196,10 +206,11 @@ export class MemoryCascade {
     who: CascadeAgents
   ): Promise<MemoryCascadeReport> {
     const redact = this.memory.redactEntry?.bind(this.memory);
-    if (!redact)
+    if (!redact) {
       throw new Error(`The ${this.memory.provider} memory adapter cannot redact entries`);
+    }
     const report = emptyReport();
-    const entries = await this.withReplies(await this.entriesOf(entryIds), who);
+    const entries = await this.expand(await this.entriesOf(entryIds), who);
     if (entries.length === 0) return report;
     const gone = new Set(entries.map((entry) => entry.id));
     await this.dropSummaries(entries, gone, report);
@@ -213,18 +224,30 @@ export class MemoryCascade {
       unwrap(await redact(entry.id, redaction));
       report.entries.redacted.push(entry.id);
     }
+    noteThreads(report, entries);
+    await this.dropDerived(gone, who, report);
     return report;
   }
 
   /**
-   * Deletes the thread with everything that stands on its entries, and the items, entities and
-   * memory files kept for the thread alone
+   * Deletes the thread with everything that stands on its entries, the copies of them in threads
+   * forked from it, and the items, entities and memory files kept for the thread alone
    */
   async deleteThread(threadId: string, who: CascadeAgents): Promise<MemoryCascadeReport> {
     const report = emptyReport();
     const thread = unwrap(await this.memory.getThread(threadId));
     if (!thread) return report;
     const entries = unwrap(await this.memory.getEntries({ threadId, types: 'all' }));
+    const copies = (await this.withCopies(entries)).filter((entry) => entry.threadId !== threadId);
+    if (copies.length > 0) {
+      merge(
+        report,
+        await this.deleteEntries(
+          copies.map((entry) => entry.id),
+          who
+        )
+      );
+    }
     const gone = new Set(entries.map((entry) => entry.id));
     await this.dropDerived(gone, who, report);
     await this.dropScope(who, (scope) => scope.threadId === threadId, report);
@@ -235,25 +258,36 @@ export class MemoryCascade {
   }
 
   /**
-   * Deletes every thread of `userId` (by its `metadata.userId`) with what stands on them, and
-   * every item, entity, memory file, graph node and edge and fact kept for the user
+   * Deletes every thread of `userId` (by its `metadata.userId`) with what stands on them, the
+   * messages the user wrote in threads of others (those that list the user in
+   * `metadata.memoryUserIds`) with their replies, and every item, entity, memory file, graph node
+   * and edge and fact kept for the user. A thread of the user is deleted whole, the messages
+   * others wrote in it too.
    */
   async deleteUser(userId: string, who: CascadeAgents): Promise<MemoryCascadeReport> {
     const report = emptyReport();
-    const threads: string[] = [];
+    const own: string[] = [];
+    const visited: string[] = [];
     let cursor: string | undefined;
     do {
       const page = unwrap(
-        await this.memory.listThreads({
-          metadata: { userId },
-          limit: 500,
-          ...(cursor !== undefined && { cursor }),
-        })
+        await this.memory.listThreads({ limit: 500, ...(cursor !== undefined && { cursor }) })
       );
-      threads.push(...page.threads.map((thread) => thread.id));
+      for (const thread of page.threads) {
+        if (thread.metadata.userId === userId) own.push(thread.id);
+        else if (listed(thread.metadata[MEMORY_USERS_KEY]).includes(userId)) {
+          visited.push(thread.id);
+        }
+      }
       cursor = page.nextCursor;
     } while (cursor !== undefined);
-    for (const threadId of threads) merge(report, await this.deleteThread(threadId, who));
+    for (const threadId of visited) {
+      const written = unwrap(await this.memory.getEntries({ threadId }))
+        .filter((entry) => entry.message.role === 'user' && entry.metadata?.userId === userId)
+        .map((entry) => entry.id);
+      if (written.length > 0) merge(report, await this.deleteEntries(written, who));
+    }
+    for (const threadId of own) merge(report, await this.deleteThread(threadId, who));
     await this.dropScope(who, (scope) => scope.userId === userId, report);
     await this.dropOwned(who, userId, report);
     return report;
@@ -299,6 +333,42 @@ export class MemoryCascade {
     }
     unwrap(await rewind(threadId, toEntryId));
     return report;
+  }
+
+  /** `entries` with their replies and the copies of all of them in forks, and their replies */
+  private async expand(
+    entries: readonly MemoryEntry[],
+    who: CascadeAgents
+  ): Promise<MemoryEntry[]> {
+    return this.withReplies(await this.withCopies(await this.withReplies(entries, who)), who);
+  }
+
+  /**
+   * `entries` with their copies in the threads forked from theirs (`metadata.forks`), and the
+   * copies of those in their forks in turn
+   */
+  private async withCopies(entries: readonly MemoryEntry[]): Promise<MemoryEntry[]> {
+    const all = new Map(entries.map((entry) => [entry.id, entry]));
+    const queue = [...new Set(entries.map((entry) => entry.threadId))];
+    const seen = new Set(queue);
+    for (let threadId = queue.pop(); threadId !== undefined; threadId = queue.pop()) {
+      const thread = unwrap(await this.memory.getThread(threadId));
+      for (const forkId of listed(thread?.metadata[FORKS_KEY])) {
+        if (seen.has(forkId)) continue;
+        seen.add(forkId);
+        const fork = await this.memory.getEntries({ threadId: forkId, types: 'all' });
+        if (!fork.success) continue;
+        let found = false;
+        for (const entry of fork.data) {
+          const origin = entry.metadata?.forkOf;
+          if (typeof origin !== 'string' || !all.has(origin) || all.has(entry.id)) continue;
+          all.set(entry.id, entry);
+          found = true;
+        }
+        if (found) queue.push(forkId);
+      }
+    }
+    return [...all.values()];
   }
 
   /**
@@ -370,8 +440,10 @@ export class MemoryCascade {
           ? undefined
           : byId.get(entry.parentId);
       for (const entry of all) {
-        if (entry.type !== 'compaction' || gone.has(entry.id)) continue;
-        const event = entry.event as CompactionEvent | undefined;
+        const legacy = entry.metadata?.compactionSummary === true;
+        if ((entry.type !== 'compaction' && !legacy) || gone.has(entry.id)) continue;
+        const event = (legacy ? { levels: entry.metadata?.compactionLevels } : entry.event) as
+          CompactionEvent | undefined;
         const quoted = [
           ...(event?.levels?.saga ? [event.levels.saga] : []),
           ...(event?.levels?.arcs ?? []),
@@ -387,7 +459,7 @@ export class MemoryCascade {
         const kept = ancestors.findIndex((at) => at.id === event?.firstKeptEntryId);
         const last = ancestors.findIndex((at) => at.id === event?.lastCompactedEntryId);
         const from = kept !== -1 ? kept + 1 : last !== -1 ? last : 0;
-        const covers = ancestors.slice(from).some((at) => gone.has(at.id));
+        const covers = !legacy && ancestors.slice(from).some((at) => gone.has(at.id));
         if (!quoted && !covers) continue;
         if (this.embeddings) unwrap(await this.embeddings.deleteBySource(entry.id));
         unwrap(await this.memory.deleteEntry(entry.id));
@@ -406,16 +478,15 @@ export class MemoryCascade {
     if (this.embeddings) {
       for (const entryId of gone) unwrap(await this.embeddings.deleteBySource(entryId));
     }
-    const purged: string[] = [];
+    const doomed = new Map<string, MemoryItem[]>();
     if (this.itemAdapter && this.items) {
       for (const agentId of who.agentIds) {
         const found = unwrap(await this.itemAdapter.findItems({ agentId, includeExpired: true }));
-        const doomed = found.filter((item) => fateOf(item.evidence, gone) === 'gone');
+        doomed.set(
+          agentId,
+          found.filter((item) => fateOf(item.evidence, gone) === 'gone')
+        );
         const trimmed = found.filter((item) => fateOf(item.evidence, gone) === 'trimmed');
-        if (doomed.length > 0) {
-          await this.items.purge(doomed.map((item) => item.id));
-          purged.push(...doomed.map((item) => item.id));
-        }
         if (trimmed.length > 0) {
           report.items.trimmed.push(
             ...(await this.items.reviseEvidence(
@@ -426,12 +497,47 @@ export class MemoryCascade {
         }
       }
     }
-    report.items.purged.push(...purged);
+    const purged = [...doomed.values()].flat();
+    await this.dropFiles(who, gone, new Set(purged.map((item) => item.id)), report);
     for (const agentId of who.agentIds) {
       await this.dropFacts(agentId, gone, report);
       await this.dropGraph(agentId, gone, report);
     }
-    await this.dropFiles(who, gone, new Set(purged), report);
+    await this.purgeItems(purged, report);
+  }
+
+  /**
+   * Purges `items` (after what names them went, so a cascade made again still finds it), and
+   * deletes the entities no item is about any more
+   */
+  private async purgeItems(
+    items: readonly MemoryItem[],
+    report: MemoryCascadeReport
+  ): Promise<void> {
+    if (!this.items || !this.itemAdapter || items.length === 0) return;
+    await this.items.purge(items.map((item) => item.id));
+    report.items.purged.push(...items.map((item) => item.id));
+    const byAgent = new Map<string, Set<string>>();
+    for (const item of items) {
+      if (item.entityId === undefined) continue;
+      const entities = byAgent.get(item.scope.agentId) ?? new Set<string>();
+      entities.add(item.entityId);
+      byAgent.set(item.scope.agentId, entities);
+    }
+    for (const [agentId, entities] of byAgent) {
+      const left = unwrap(
+        await this.itemAdapter.findItems({
+          agentId,
+          entityIds: [...entities],
+          includeExpired: true,
+        })
+      );
+      const kept = new Set(left.flatMap((item) => (item.entityId ? [item.entityId] : [])));
+      const orphans = [...entities].filter((id) => !kept.has(id));
+      if (orphans.length === 0) continue;
+      unwrap(await this.itemAdapter.deleteEntities(orphans));
+      report.entities.push(...orphans);
+    }
   }
 
   private async dropFacts(
@@ -521,19 +627,50 @@ export class MemoryCascade {
             (version.place !== undefined && gone.has(version.place.entryId)) ||
             names(version))
       );
-      if (doomed.length === 0) continue;
-      unwrap(
-        await adapter.redactFileVersions(
-          doomed.map((version) => version.id),
-          {
-            content: REDACTED_CONTENT,
-            sha256: sha256Of(REDACTED_CONTENT),
-            at: this.now(),
-            reason: 'its source was forgotten',
-          }
-        )
-      );
-      report.fileVersions.push(...doomed.map((version) => version.id));
+      if (doomed.length > 0) {
+        unwrap(
+          await adapter.redactFileVersions(
+            doomed.map((version) => version.id),
+            {
+              content: REDACTED_CONTENT,
+              sha256: sha256Of(REDACTED_CONTENT),
+              at: this.now(),
+              reason: FORGOTTEN,
+            }
+          )
+        );
+        report.fileVersions.push(...doomed.map((version) => version.id));
+      }
+      await this.dropForgottenPaths(agentId);
+    }
+  }
+
+  /**
+   * Deletes the files of `agentId` whose version in front a cascade redacted, so their paths,
+   * which may name what was forgotten, leave the listing too
+   */
+  private async dropForgottenPaths(agentId: string): Promise<void> {
+    const adapter = this.fileAdapter;
+    const files = this.files;
+    if (!adapter || !files) return;
+    const fronts = new Map<string, MemoryFileVersion>();
+    for (const version of unwrap(await adapter.findFileVersions({ agentId }))) {
+      const key = fileKeyOf(version.scope, version.path);
+      const known = fronts.get(key);
+      if (!known || version.sequence > known.sequence) fronts.set(key, version);
+    }
+    for (const front of fronts.values()) {
+      if (front.content === null || front.redacted?.reason !== FORGOTTEN) continue;
+      const access: MemoryFileAccess = {
+        scope: front.scope,
+        visibleTo: front.scope,
+        author: 'system',
+      };
+      try {
+        await files.delete(access, front.path, front.sha256 ?? undefined);
+      } catch (error) {
+        if (!(error instanceof MemoryFileError)) throw error;
+      }
     }
   }
 
@@ -585,26 +722,28 @@ export class MemoryCascade {
     belongs: (scope: MemoryItem['scope']) => boolean,
     report: MemoryCascadeReport
   ): Promise<void> {
-    const purged = new Set<string>();
-    if (this.itemAdapter && this.items) {
+    const own: MemoryItem[] = [];
+    if (this.itemAdapter) {
       for (const agentId of who.agentIds) {
         const found = unwrap(await this.itemAdapter.findItems({ agentId, includeExpired: true }));
-        const own = found.filter((item) => belongs(item.scope)).map((item) => item.id);
-        if (own.length > 0) {
-          await this.items.purge(own);
-          for (const id of own) purged.add(id);
-          report.items.purged.push(...own);
-        }
+        own.push(...found.filter((item) => belongs(item.scope)));
+      }
+    }
+    await this.dropFiles(who, new Set(), new Set(own.map((item) => item.id)), report, (version) =>
+      belongs(version.scope)
+    );
+    await this.purgeItems(own, report);
+    if (this.itemAdapter) {
+      for (const agentId of who.agentIds) {
         const entities = unwrap(await this.itemAdapter.findEntities({ agentId }))
           .filter((entity) => belongs(entity.scope))
           .map((entity) => entity.id);
         if (entities.length > 0) {
           unwrap(await this.itemAdapter.deleteEntities(entities));
-          report.entities.push(...entities);
+          report.entities.push(...entities.filter((id) => !report.entities.includes(id)));
         }
       }
     }
-    await this.dropFiles(who, new Set(), purged, report, (version) => belongs(version.scope));
   }
 
   /** Deletes the facts, graph nodes and edges whose `metadata.userId` is `userId` */
@@ -624,7 +763,22 @@ export class MemoryCascade {
   }
 }
 
+/** The strings of a metadata list */
+function listed(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
+}
+
+/** Notes the threads of `entries` as changed */
+function noteThreads(report: MemoryCascadeReport, entries: readonly MemoryEntry[]): void {
+  for (const threadId of new Set(entries.map((entry) => entry.threadId))) {
+    if (!report.threadsChanged.includes(threadId)) report.threadsChanged.push(threadId);
+  }
+}
+
 function merge(into: MemoryCascadeReport, from: MemoryCascadeReport): void {
+  for (const threadId of from.threadsChanged) {
+    if (!into.threadsChanged.includes(threadId)) into.threadsChanged.push(threadId);
+  }
   into.entries.deleted.push(...from.entries.deleted);
   into.entries.redacted.push(...from.entries.redacted);
   into.threads.push(...from.threads);

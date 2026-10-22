@@ -201,6 +201,18 @@ function silenced(call: ToolCall): ToolCall {
   return { ...kept, arguments: {} };
 }
 
+/**
+ * The metadata key a thread lists the threads forked from it under, so what is forgotten in it
+ * is found in their copies too
+ */
+export const FORKS_KEY = 'forks';
+
+/**
+ * The metadata key a thread lists the users who wrote in it under, so forgetting a user finds
+ * their messages in threads of others too
+ */
+export const MEMORY_USERS_KEY = 'memoryUserIds';
+
 /** What a redacted entry says in place of what it said */
 export const REDACTED_TEXT = '[redacted]';
 
@@ -215,7 +227,12 @@ export function redactedEntry(
   redaction: EntryRedaction
 ): MemoryEntry | undefined {
   if (!CONVERSATION_ENTRY_TYPES.includes(entry.type ?? 'message')) return undefined;
-  const message = { ...entry.message, content: REDACTED_TEXT };
+  const { name: sender, ...said } = entry.message;
+  const message = {
+    ...said,
+    content: REDACTED_TEXT,
+    ...(sender !== undefined && entry.message.role !== 'user' && { name: sender }),
+  };
   if ('toolCalls' in message && Array.isArray(message.toolCalls)) {
     message.toolCalls = (message.toolCalls as ToolCall[]).map(silenced);
   }
@@ -370,12 +387,17 @@ export abstract class BranchingMemoryAdapter extends ChangeReportingMemoryAdapte
       includeToolCalls: true,
     });
     if (!path.success) return path;
+    const { pausedRun: _paused, [FORKS_KEY]: _forks, ...metadata } = source.data.metadata;
     const fork = await this.createThread(
       source.data.agentId,
-      { ...source.data.metadata, forkedFrom: { threadId, entryId: atEntryId } },
+      { ...metadata, forkedFrom: { threadId, entryId: atEntryId } },
       newThreadId
     );
     if (!fork.success) return fork;
+    const known = source.data.metadata[FORKS_KEY];
+    const forks = Array.isArray(known) ? known.filter((id) => typeof id === 'string') : [];
+    const noted = await this.updateThread(threadId, { [FORKS_KEY]: [...forks, fork.data.id] });
+    if (!noted.success) return noted;
     let parentId: string | null = null;
     const copies = new Map<string, string>();
     for (const entry of path.data) {

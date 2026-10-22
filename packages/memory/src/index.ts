@@ -9,6 +9,8 @@ export {
   ChangeReportingMemoryAdapter,
   BranchingMemoryAdapter,
   REDACTED_TEXT,
+  FORKS_KEY,
+  MEMORY_USERS_KEY,
   redactedEntry,
   InMemoryAdapter,
   createMemoryAdapter,

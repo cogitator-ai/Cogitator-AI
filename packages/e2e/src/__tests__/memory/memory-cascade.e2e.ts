@@ -209,7 +209,7 @@ for (const target of targets) {
         { scope: { agentId: agent.name, userId: 'zoe' } },
         '/memories/notes.md'
       );
-      expect(note?.content).toBe('[redacted]');
+      expect(note).toBeUndefined();
       const kept = await memory.getThread(`t4-${tag}`);
       expect(kept.success && kept.data?.id).toBe(`t4-${tag}`);
     });

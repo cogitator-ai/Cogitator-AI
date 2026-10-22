@@ -277,13 +277,16 @@ export async function runConsistencySuite(
           : 'the passport was not seen before, or the redacted turn lost its place'
       );
 
-      const other = await thread('kept', 'My bike is green.', 'The bike of the user is green.');
+      await thread('kept', 'My bike is green.', 'The bike of the user is green.');
       await cog.forget({ threadId: 'forget' }, { agents: [agent] });
       const afterThread = await ask('kept', 'What colour is my bike?');
+      const bike = await items.query({ scope: { agentId: agent.id }, text: 'bike' });
       check(
         'forget: forgetting one thread leaves the others whole',
-        afterThread.includes('green') && other.id.length > 0,
-        'a turn or item of another thread went with it'
+        afterThread.includes('green') && bike.length === 1,
+        afterThread.includes('green')
+          ? 'the item of another thread went with it'
+          : 'a turn of another thread went with it'
       );
       check('memory: no errors, no fallback', memoryErrors.length === 0, memoryErrors.join('; '));
     } catch (error) {

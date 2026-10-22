@@ -664,7 +664,24 @@ const SCENARIOS: Record<MemoryAdapterScenario, (adapter: MemoryAdapter) => Promi
     );
     if (adapter.getPath) {
       const path = ok(await adapter.getPath({ threadId: id }), 'getPath');
-      assert.equal(path.at(-1)?.id, last.id, 'the branch goes on past it');
+      assert.deepEqual(
+        path.map((entry) => entry.id),
+        [first.id, call.id, last.id],
+        'a redacted entry keeps its place on the branch'
+      );
+      assert.equal(readCall?.parentId, first.id, 'a redacted entry keeps its parent');
+      const summary = ok(
+        await adapter.addEntry({
+          threadId: id,
+          type: 'compaction',
+          message: { role: 'user', content: 'summary' },
+          tokenCount: 1,
+          event: { firstKeptEntryId: null, compacted: 3, summarized: true },
+        }),
+        'addEntry of a compaction'
+      );
+      refused(await adapter.redactEntry(summary.id, { at }), 'redactEntry of an event entry');
+      ok(await adapter.deleteEntry(summary.id), 'deleteEntry of the compaction');
       ok(await adapter.deleteEntry(first.id), 'deleteEntry of the redacted parent');
       const after = ok(await adapter.getPath({ threadId: id }), 'getPath');
       assert.deepEqual(

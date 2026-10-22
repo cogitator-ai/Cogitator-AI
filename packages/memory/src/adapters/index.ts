@@ -20,6 +20,8 @@ export {
   ChangeReportingMemoryAdapter,
   BranchingMemoryAdapter,
   REDACTED_TEXT,
+  FORKS_KEY,
+  MEMORY_USERS_KEY,
   redactedEntry,
 } from './base';
 export { InMemoryAdapter } from './memory';

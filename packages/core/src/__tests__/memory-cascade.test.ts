@@ -116,7 +116,8 @@ describe('forget, redactEntries and rewind', () => {
     const report = await cog.forget({ userId: 'ana' });
 
     expect(report.threads.sort()).toEqual(['a', 'b']);
-    expect((await store.getThread('c')).success).toBe(true);
+    const kept = await store.getThread('c');
+    expect(kept.success && kept.data?.id).toBe('c');
     expect(await items.query({ scope })).toEqual([]);
   });
 
@@ -274,6 +275,64 @@ describe('forget, redactEntries and rewind', () => {
     await cog.forget({ threadId: 'p' });
 
     expect(await checkpoints.load('p')).toBeNull();
+  });
+
+  it('writes no summary of turns forgotten while the model compacted them', async () => {
+    let cog: Cogitator | undefined;
+    let store: InMemoryAdapter | undefined;
+    let forgot = false;
+    const { llm } = backend(async (request) => {
+      if (!String(request.messages[0]?.content).startsWith('You compact')) return 'noted';
+      if (!forgot && store && cog) {
+        forgot = true;
+        const all = await store.getEntries({ threadId: 'k' });
+        const first = all.success ? all.data[0] : undefined;
+        if (first) await cog.forget({ entryIds: [first.id] }, { agents: [agent] });
+      }
+      return '[]';
+    });
+    const made = await runtime(llm, { compaction: { at: 0.001, keepRecentTokens: 1 } });
+    cog = made.cog;
+    store = made.store;
+    await store.createThread(agent.id, { memoryAgentIds: ['helper'] }, 'k');
+    await said(
+      store,
+      'k',
+      Array.from({ length: 8 }, (_, at) => `Turn ${at} with my code 8812.`)
+    );
+
+    await cog.run(agent, { input: 'one more', threadId: 'k' });
+
+    expect(forgot).toBe(true);
+    const all = await store.getEntries({ threadId: 'k', types: 'all' });
+    expect(all.success && all.data.some((entry) => entry.type === 'compaction')).toBe(false);
+  });
+
+  it('extracts and compacts every window while the branch stays, the control of the tests below', async () => {
+    let extractions = 0;
+    let chapters = 0;
+    const { llm } = backend(async (request) => {
+      const system = String(request.messages[0]?.content);
+      if (system.startsWith('You keep the long-term memory')) extractions++;
+      if (system.startsWith('You compact')) chapters++;
+      return '[]';
+    });
+    const made = await runtime(llm, {
+      extraction: { windowTokens: 30 },
+      compaction: { at: 0.001, keepRecentTokens: 1, chapterTokens: 20 },
+    });
+    await made.store.createThread(agent.id, { userId: 'ana' }, 't');
+    await said(
+      made.store,
+      't',
+      Array.from({ length: 12 }, (_, at) => `Turn ${at} with some words to fill the window up.`)
+    );
+    await made.store.updateThread('t', { memoryExtraction: { through: null } });
+
+    await made.cog.run(agent, { input: 'one more', threadId: 't', userId: 'ana' });
+
+    expect(extractions).toBeGreaterThan(1);
+    expect(chapters).toBeGreaterThan(1);
   });
 
   it('stops extracting a branch a rewind left, before its next model call', async () => {

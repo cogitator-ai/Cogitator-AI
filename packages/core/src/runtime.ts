@@ -132,7 +132,7 @@ async function playbookNote(
 }
 import { TruncateStrategy } from './context/strategies/index';
 import { sanitizeToolHistory } from './utils/tool-history';
-import { MEMORY_AGENTS, noteMemoryAgent } from './cogitator/message-builder';
+import { MEMORY_AGENTS, noteThreadRun } from './cogitator/message-builder';
 import { normalizeTurn } from './llm/turn';
 import { withPiiDecisions, withPiiMasking } from './security/pii';
 import { MiddlewarePipeline } from './middleware/pipeline';
@@ -1303,10 +1303,13 @@ export class Cogitator implements ToolInvoker {
         active = target;
         if (this.state.memoryAdapter && options.useMemory !== false) {
           memoryNotes.push(
-            noteMemoryAgent(
+            noteThreadRun(
               this.state.memoryAdapter,
               threadId,
-              memoryAgentId(target),
+              {
+                memoryId: memoryAgentId(target),
+                ...(options.userId !== undefined && { userId: options.userId }),
+              },
               options.onMemoryError
             ).catch((error: unknown) =>
               getLogger().warn('Could not note the agent a run handed over to', {
@@ -3049,14 +3052,14 @@ export class Cogitator implements ToolInvoker {
         });
       }
       const report = await cascade.deleteUser(target.userId, { agentIds: users });
-      await this.dropPausedRuns(report.threads);
+      await this.dropPausedRuns([...report.threads, ...report.threadsChanged]);
       return report;
     }
     if ('threadId' in target) {
       const report = await cascade.deleteThread(target.threadId, {
         agentIds: await this.withThreadAgents(agentIds, [target.threadId]),
       });
-      await this.dropPausedRuns([target.threadId]);
+      await this.dropPausedRuns([target.threadId, ...report.threadsChanged]);
       return report;
     }
     const threads = await this.threadsOf(target.entryIds);
@@ -3064,7 +3067,7 @@ export class Cogitator implements ToolInvoker {
       agentIds: await this.withThreadAgents(agentIds, threads),
       ...(options.keepReplies && { keepReplies: true }),
     });
-    await this.dropPausedRuns(threads);
+    await this.dropPausedRuns([...threads, ...report.threadsChanged]);
     return report;
   }
 
@@ -3098,7 +3101,7 @@ export class Cogitator implements ToolInvoker {
         ...(options.keepReplies && { keepReplies: true }),
       }
     );
-    await this.dropPausedRuns(threads);
+    await this.dropPausedRuns([...threads, ...report.threadsChanged]);
     return report;
   }
 
@@ -3169,7 +3172,7 @@ export class Cogitator implements ToolInvoker {
    */
   private async dropPausedRuns(threadIds: readonly string[]): Promise<void> {
     const store = this.runCheckpointStore();
-    for (const threadId of threadIds) {
+    for (const threadId of new Set(threadIds)) {
       if (await store.load(threadId)) await store.delete(threadId);
     }
   }
