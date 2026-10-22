@@ -16,6 +16,7 @@ export type ChannelType =
   | 'bluesky'
   | 'threads'
   | 'github'
+  | 'email'
   | (string & {});
 
 export type AttachmentType = 'image' | 'file' | 'audio' | 'video';
@@ -43,7 +44,8 @@ export interface ChannelMessage {
   /**
    * The topic or thread inside the chat the message was posted in: a Telegram forum topic or a
    * topic of a private chat, the `ts` of the Slack thread of a channel message, the first comment
-   * of a GitHub review thread. Replies go to the same topic.
+   * of a GitHub review thread, the first `Message-ID` of an email thread. Replies go to the same
+   * topic.
    */
   topicId?: string;
   /**

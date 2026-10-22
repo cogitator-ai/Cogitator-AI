@@ -55,6 +55,7 @@ import { webchatChannel } from './channels/webchat';
 import { blueskyChannel } from './channels/bluesky/channel';
 import { threadsChannel } from './channels/threads/channel';
 import { githubChannel } from './channels/github/channel';
+import { emailChannel, type EmailWebhookConfig } from './channels/email/channel';
 import { FileTokenStore } from './feeds/token-store';
 import type { GatewayApprovalsConfig } from './approvals';
 import { ownerCommands } from './middleware/owner-commands';
@@ -1043,7 +1044,117 @@ export class RuntimeBuilder {
       }
     }
 
+    const email = this.config.channels.email;
+    if (email) {
+      const built = this.buildEmailChannel(email);
+      if (built) channels.push(built);
+    }
+
     return channels;
+  }
+
+  /**
+   * The email channel of `cogitator.yml`, its secrets and, where the file leaves them out,
+   * hosts and ports from the env: `EMAIL_ADDRESS`, `EMAIL_IMAP_HOST`, `EMAIL_IMAP_PORT`,
+   * `EMAIL_IMAP_USER`, `EMAIL_IMAP_PASSWORD`, `EMAIL_SMTP_HOST`, `EMAIL_SMTP_PORT`,
+   * `EMAIL_SMTP_USER`, `EMAIL_SMTP_PASSWORD`, `EMAIL_MAILGUN_SIGNING_KEY`, `EMAIL_WEBHOOK_TOKEN`,
+   * `EMAIL_WEBHOOK_USER` and `EMAIL_WEBHOOK_PASSWORD`. Warns and builds nothing when something
+   * it needs is missing.
+   */
+  private buildEmailChannel(
+    email: NonNullable<AssistantConfig['channels']['email']>
+  ): Channel | undefined {
+    const env = (name: string) => this.env[name]?.trim() || undefined;
+    const port = (name: string) => {
+      const value = Number(env(name));
+      return Number.isInteger(value) && value > 0 ? value : undefined;
+    };
+    const missing = (what: string) => {
+      console.warn(`[RuntimeBuilder] Email configured but ${what} not found in env`);
+      return undefined;
+    };
+    const address = email.address ?? env('EMAIL_ADDRESS')?.toLowerCase();
+    if (!address) return missing('EMAIL_ADDRESS (or channels.email.address)');
+
+    const smtpHost = email.smtp?.host ?? env('EMAIL_SMTP_HOST');
+    const smtpPassword = env('EMAIL_SMTP_PASSWORD');
+    if (!smtpHost) return missing('EMAIL_SMTP_HOST (or channels.email.smtp.host)');
+    const smtpPort = email.smtp?.port ?? port('EMAIL_SMTP_PORT');
+
+    const imapWanted = email.imap !== undefined || !!env('EMAIL_IMAP_HOST');
+    const imapHost = email.imap?.host ?? env('EMAIL_IMAP_HOST');
+    const imapPassword = env('EMAIL_IMAP_PASSWORD');
+    if (imapWanted && !imapHost) return missing('EMAIL_IMAP_HOST (or channels.email.imap.host)');
+    if (imapWanted && !imapPassword) return missing('EMAIL_IMAP_PASSWORD');
+    const imapPort = email.imap?.port ?? port('EMAIL_IMAP_PORT');
+
+    let webhook: EmailWebhookConfig | undefined;
+    if (email.webhook) {
+      const server = {
+        port: email.webhook.port,
+        ...(email.webhook.path && { path: email.webhook.path }),
+      };
+      if (email.webhook.provider === 'mailgun') {
+        const signingKey = env('EMAIL_MAILGUN_SIGNING_KEY');
+        if (!signingKey) return missing('EMAIL_MAILGUN_SIGNING_KEY');
+        webhook = { provider: 'mailgun', signingKey, ...server };
+      } else {
+        const token = env('EMAIL_WEBHOOK_TOKEN');
+        const username = env('EMAIL_WEBHOOK_USER');
+        const password = env('EMAIL_WEBHOOK_PASSWORD');
+        if (!token && !(username && password)) {
+          return missing('EMAIL_WEBHOOK_TOKEN (or EMAIL_WEBHOOK_USER and EMAIL_WEBHOOK_PASSWORD)');
+        }
+        webhook = {
+          provider: email.webhook.provider,
+          ...(token && { token }),
+          ...(username && password && { basicAuth: { username, password } }),
+          ...server,
+        };
+      }
+    }
+    if (!imapWanted && !webhook) {
+      console.warn(
+        '[RuntimeBuilder] Email configured without imap or webhook: the channel only sends mail'
+      );
+    }
+
+    const allowFrom = [...(email.allowFrom ?? []), ...(email.ownerIds ?? [])];
+    return emailChannel({
+      address,
+      ...(email.name && { name: email.name }),
+      ...(email.aliases && { aliases: email.aliases }),
+      smtp: {
+        host: smtpHost,
+        ...(smtpPort !== undefined && { port: smtpPort }),
+        ...(email.smtp?.secure !== undefined && { secure: email.smtp.secure }),
+        ...(smtpPassword && {
+          auth: { user: env('EMAIL_SMTP_USER') ?? address, pass: smtpPassword },
+        }),
+      },
+      ...(imapWanted &&
+        imapHost &&
+        imapPassword && {
+          imap: {
+            host: imapHost,
+            ...(imapPort !== undefined && { port: imapPort }),
+            ...(email.imap?.secure !== undefined && { secure: email.imap.secure }),
+            auth: { user: env('EMAIL_IMAP_USER') ?? address, pass: imapPassword },
+            ...(email.imap?.mailbox && { mailbox: email.imap.mailbox }),
+            ...(email.imap?.pollInterval !== undefined && {
+              pollInterval: email.imap.pollInterval,
+            }),
+            ...(email.imap?.lookbackDays !== undefined && {
+              lookbackDays: email.imap.lookbackDays,
+            }),
+          },
+        }),
+      ...(webhook && { webhook }),
+      ...(allowFrom.length > 0 && { allowFrom: [...new Set(allowFrom)] }),
+      ...(email.senderAuth && { senderAuth: email.senderAuth }),
+      ...(email.trustedAuthservIds && { trustedAuthservIds: email.trustedAuthservIds }),
+      ...(email.subject && { subject: email.subject }),
+    });
   }
 
   private buildScheduler(

@@ -30,6 +30,7 @@ export const CHANNELS = [
   'bluesky',
   'threads',
   'github',
+  'email',
 ] as const;
 
 export type LLMProvider = (typeof PROVIDERS)[number];

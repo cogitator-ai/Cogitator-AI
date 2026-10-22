@@ -16,6 +16,7 @@ pnpm add @slack/bolt               # Slack
 pnpm add @whiskeysockets/baileys   # WhatsApp, 6.x or 7.x (+ qrcode-terminal to print the pairing QR)
 pnpm add ws                        # WebChat
 pnpm add @atproto/api              # Bluesky (Threads and GitHub need no SDK)
+pnpm add nodemailer imapflow postal-mime   # Email: SMTP, IMAP and MIME parsing (webhooks need only nodemailer)
 
 # RuntimeBuilder (`cogitator up`)
 pnpm add better-sqlite3            # SQLite memory, knowledge graph and core facts (always needed)
@@ -244,17 +245,41 @@ const github = githubChannel({
 
 The agent answers new issues and pull requests, comments on them, reviews with a body and comments on lines of a diff, from a repository or organization webhook. Each issue or pull request is a conversation, `channelId` `owner/repo#number`, and answers are comments on it. A comment on a line is answered in its review thread, which is the message's `topicId`, so each review thread is a conversation of its own. Deliveries are answered at once and handled after, each once by its `X-GitHub-Delivery` and the comment it carries (remembered in memory). It answers only the repository's owner, members and collaborators unless `associations` or `authors` say otherwise, since what people write steers an agent that holds the token, so give the bot an account and a token of its own scoped to its repositories. The bot skips its own comments and other bots (`allowBots` lets them in), and by default answers only mentions of `@login`, outside code and quotes, plus the next comment of someone it answered and comments in review threads it replied in. Answers go out finished (GitHub notifies people of a comment's first text, `stream: true` edits a comment as it grows, at most every 3 seconds), as several comments past 65536 characters. Reactions use GitHub's eight. GitHub has no upload API for comments, so `sendFile` links a file with a public `url` and refuses a buffer. A GitHub App installation token cannot read `GET /user`: set `login` to `<app-slug>[bot]`. Docs: [GitHub](https://cogitator.app/docs/channels/github).
 
+### Email
+
+```typescript
+import { emailChannel } from '@cogitator-ai/channels';
+
+const email = emailChannel({
+  address: 'assistant@example.com', // sends from it, never answers it
+  allowFrom: ['example.com', 'ann@partner.org'], // default: nobody, with a warning
+  imap: {
+    host: 'imap.gmail.com',
+    auth: { user: 'assistant@example.com', pass: process.env.EMAIL_IMAP_PASSWORD! },
+  },
+  smtp: {
+    host: 'smtp.gmail.com',
+    port: 587,
+    auth: { user: 'assistant@example.com', pass: process.env.EMAIL_SMTP_PASSWORD! },
+  }, // or { transport } for any nodemailer transport
+  // or instead of imap, a provider's inbound webhook:
+  // webhook: { provider: 'mailgun', signingKey: process.env.EMAIL_MAILGUN_SIGNING_KEY!, port: 8788 },
+});
+```
+
+The agent answers mail in its thread. Mail comes from a mailbox over IMAP (IDLE reports new mail at once, a poll every minute catches the rest, a message is marked read once it was handed over, so a restart reads only new mail, a dropped connection is opened again with a wait that doubles up to a minute) or from the inbound webhook of Mailgun (HMAC of timestamp and token, refused after 5 minutes and handled once), Postmark or SendGrid (neither signs, so the URL carries basic auth or a `token`). Answers go out over SMTP with `nodemailer`, as HTML rendered from the Markdown with a plain text alternative, a `Re:` subject and `In-Reply-To` and `References` set, so mail clients keep the thread. A sender is a conversation partner: `channelId` and `userId` are the address in lower case, and `topicId` is the thread's first `Message-ID`, so each email thread is a conversation of its own. The agent reads the plain text part (or the HTML as text) without the quoted history and the signature, with the subject on a thread's first mail, and attachments up to 10 MB. Mail from the bot itself, mail with the `X-Cogitator` header it puts on what it sends, auto-replies, bounces and bulk mail are skipped, and each `Message-ID` is handled once. Email is spoofable: the bot answers only `allowFrom`, and drops mail whose DKIM, SPF or DMARC results fail for the `From` domain (`senderAuth: 'required'` also drops mail without results). Answers cannot be edited. Docs: [Email](https://cogitator.app/docs/channels/email).
+
 ## Platform Comparison
 
-| Feature            | Telegram     | Discord | Slack     | WhatsApp | WebChat   | Bluesky            | Threads            | GitHub              |
-| ------------------ | ------------ | ------- | --------- | -------- | --------- | ------------------ | ------------------ | ------------------- |
-| Streaming (edit)   | ✅           | ✅      | ✅        | ✅       | ✅        | ❌ (sent finished) | ❌ (sent finished) | with `stream: true` |
-| Reactions          | ✅           | ✅      | ✅        | ❌       | ❌        | ❌                 | ❌                 | ✅ (8 kinds)        |
-| Typing indicator   | ✅           | ✅      | ❌        | ✅       | ✅        | ❌                 | ❌                 | ❌                  |
-| Photos → vision    | ✅           | ✅      | ✅        | ✅       | ❌        | ❌                 | ❌                 | ❌                  |
-| Voice → STT        | ✅           | ✅      | ✅        | ✅       | ❌        | ❌                 | ❌                 | ❌                  |
-| Max message length | 4096         | 2000    | 40000     | 65536    | unlimited | 300 per post       | 500 per post       | 65536 per comment   |
-| Public URL needed  | webhook only | no      | HTTP only | no       | no        | no                 | webhooks only      | yes (webhook)       |
+| Feature            | Telegram     | Discord | Slack     | WhatsApp | WebChat   | Bluesky            | Threads            | GitHub              | Email              |
+| ------------------ | ------------ | ------- | --------- | -------- | --------- | ------------------ | ------------------ | ------------------- | ------------------ |
+| Streaming (edit)   | ✅           | ✅      | ✅        | ✅       | ✅        | ❌ (sent finished) | ❌ (sent finished) | with `stream: true` | ❌ (sent finished) |
+| Reactions          | ✅           | ✅      | ✅        | ❌       | ❌        | ❌                 | ❌                 | ✅ (8 kinds)        | ❌                 |
+| Typing indicator   | ✅           | ✅      | ❌        | ✅       | ✅        | ❌                 | ❌                 | ❌                  | ❌                 |
+| Photos → vision    | ✅           | ✅      | ✅        | ✅       | ❌        | ❌                 | ❌                 | ❌                  | ✅ (attachments)   |
+| Voice → STT        | ✅           | ✅      | ✅        | ✅       | ❌        | ❌                 | ❌                 | ❌                  | ✅ (attachments)   |
+| Max message length | 4096         | 2000    | 40000     | 65536    | unlimited | 300 per post       | 500 per post       | 65536 per comment   | unlimited          |
+| Public URL needed  | webhook only | no      | HTTP only | no       | no        | no                 | webhooks only      | yes (webhook)       | webhooks only      |
 
 Outbound calls (`sendText`, `editText`, `sendFile`, `deleteMessage`) throw when the channel is not started, the target chat is unavailable or the platform rejects the request — wrap direct calls in `try/catch`. WebChat is the exception: only `sendText` throws for a disconnected client, the other calls are dropped. `sendText` returns the platform message id (for Discord, the id of the first chunk; continuation chunks are edited and deleted with it).
 
@@ -307,7 +332,7 @@ Docs: [Social Feeds](https://cogitator.app/docs/channels/feeds).
 
 Routes incoming messages to your agent. Handles:
 
-- Conversation threads: one per user per conversation (chat, forum topic, Slack thread, Bluesky or Threads post thread, GitHub issue, pull request or review thread), answered one message at a time
+- Conversation threads: one per user per conversation (chat, forum topic, Slack thread, Bluesky or Threads post thread, GitHub issue, pull request or review thread, email thread), answered one message at a time
 - Session management (per-user, per-channel) with an optional custom `sessionManager`
 - History compaction, hierarchical into a handoff of grounded atoms or with LLM-written summaries
 - Streaming with `StreamBuffer` when `stream` is set (message editing, splits at the platform limit without losing text); without `stream` the full answer is sent once the run finishes
@@ -362,10 +387,11 @@ A thread is the conversation memory and the queue of one user in one conversatio
 | Discord          | channel, a thread is a channel of its own                                   | `discord:98765:1234`                                             |
 | Bluesky, Threads | the post thread's root (`conversationId`), not the reply post               | `bluesky:thread:at://did:plc:a/app.bsky.feed.post/1:did:plc:b`   |
 | GitHub           | issue or pull request, plus the review thread (`topicId`)                   | `github:acme/app#12:583231`, `github:acme/app#12:1840022:583231` |
+| Email            | sender, plus the email thread (`topicId`, its first `Message-ID`)           | `email:ann@example.com:<a1@example.com>:ann@example.com`         |
 | WhatsApp         | chat, a chat addressed by LID by the phone-number jid                       | `whatsapp:15550001111@s.whatsapp.net:15550001111`                |
 | WebChat          | client                                                                      | `webchat:c7f2:c7f2`                                              |
 
-So a user keeps a separate thread in their private chat, in each group and in each topic, and every reply in a Bluesky or Threads post thread lands in the same one. In a Slack channel each top-level message is answered in a new Slack thread, a conversation of its own without the history of earlier ones, and its follow-ups in that thread continue it, while a DM is one conversation. On GitHub each issue or pull request is a conversation, and each review thread another one. A WhatsApp chat that reaches a person by LID gets their phone-number jid as its `conversationId` when WhatsApp shares it, so it stays one thread with the chat addressed by phone number.
+So a user keeps a separate thread in their private chat, in each group and in each topic, and every reply in a Bluesky or Threads post thread lands in the same one. In a Slack channel each top-level message is answered in a new Slack thread, a conversation of its own without the history of earlier ones, and its follow-ups in that thread continue it, while a DM is one conversation. On GitHub each issue or pull request is a conversation, and each review thread another one. By email each thread is a conversation, however its subject changes. A WhatsApp chat that reaches a person by LID gets their phone-number jid as its `conversationId` when WhatsApp shares it, so it stays one thread with the chat addressed by phone number.
 
 The gateway keeps the conversations of each user in their session's metadata (`conversations`, up to 50, most recent first), and `compactAll()` finds their threads there after a restart. A run gets the `topicId` and `conversationId` of its message, and its tools see them in their context, so `schedule_task` stores them with the task and `HeartbeatScheduler` fires it into the same topic and thread, even when the user has moved on to another one. A task without them is answered in the topic and thread of the user's most recent conversation in its chat. With a custom `threadKey` the gateway keeps no conversations and leaves stored sessions out of `compactAll()`, except with `legacyThreadKey`, whose thread of each stored session it still finds.
 
@@ -689,7 +715,7 @@ session:
 
 For a parsed YAML file, validate it first with `new RuntimeBuilder(AssistantConfigSchema.parse(yamlObject), process.env)` (the schema is exported, along with the `AssistantConfigInput` / `AssistantConfigOutput` types).
 
-- **Channels:** the terminal REPL plus `channels.telegram` (`TG_TOKEN` or `TELEGRAM_TOKEN`), `channels.discord` (`DISCORD_TOKEN`) and `channels.slack` (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, optional `SLACK_APP_TOKEN` / `SLACK_PORT`). A configured channel without its token is skipped with a warning. `channels.whatsapp` (`{ ownerIds?, sessionPath? }`, owner ids are phone numbers without `@s.whatsapp.net`, the session defaults to `~/.cogitator/whatsapp-session`) needs `@whiskeysockets/baileys`. `channels.webchat` (`{ port?, path? }`, default `8080` and `/ws`, no `ownerIds`) needs `ws` and starts only with `WEBCHAT_TOKEN` set, and clients connect with `?token=<WEBCHAT_TOKEN>`. `channels.bluesky` (`{ ownerIds?, posts?, directMessages?, pollInterval?, tokenPath? }`, owner ids are DIDs) needs `@atproto/api` and starts with `BLUESKY_HANDLE` and `BLUESKY_APP_PASSWORD`. `channels.threads` (`{ ownerIds?, webhook?: { port, path? }, pollInterval?, tokenPath? }`, owner ids are usernames) starts with `THREADS_ACCESS_TOKEN`, and with `THREADS_APP_SECRET` and `THREADS_VERIFY_TOKEN` for webhooks. Both keep their session or token in `tokenPath` (default `~/.cogitator/tokens.json`). `channels.github` (`{ ownerIds?, webhook?: { port?, path? }, trigger?, repositories?, associations?, authors?, login?, allowBots?, stream? }`, owner ids are numeric user ids, the webhook server defaults to port `8787` at `/github/webhook`) starts with `GITHUB_CHANNEL_TOKEN` (falling back to `GITHUB_TOKEN` with a warning) and `GITHUB_WEBHOOK_SECRET`, and calls `GITHUB_API_URL` when set (GitHub Enterprise Server).
+- **Channels:** the terminal REPL plus `channels.telegram` (`TG_TOKEN` or `TELEGRAM_TOKEN`), `channels.discord` (`DISCORD_TOKEN`) and `channels.slack` (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, optional `SLACK_APP_TOKEN` / `SLACK_PORT`). A configured channel without its token is skipped with a warning. `channels.whatsapp` (`{ ownerIds?, sessionPath? }`, owner ids are phone numbers without `@s.whatsapp.net`, the session defaults to `~/.cogitator/whatsapp-session`) needs `@whiskeysockets/baileys`. `channels.webchat` (`{ port?, path? }`, default `8080` and `/ws`, no `ownerIds`) needs `ws` and starts only with `WEBCHAT_TOKEN` set, and clients connect with `?token=<WEBCHAT_TOKEN>`. `channels.bluesky` (`{ ownerIds?, posts?, directMessages?, pollInterval?, tokenPath? }`, owner ids are DIDs) needs `@atproto/api` and starts with `BLUESKY_HANDLE` and `BLUESKY_APP_PASSWORD`. `channels.threads` (`{ ownerIds?, webhook?: { port, path? }, pollInterval?, tokenPath? }`, owner ids are usernames) starts with `THREADS_ACCESS_TOKEN`, and with `THREADS_APP_SECRET` and `THREADS_VERIFY_TOKEN` for webhooks. Both keep their session or token in `tokenPath` (default `~/.cogitator/tokens.json`). `channels.github` (`{ ownerIds?, webhook?: { port?, path? }, trigger?, repositories?, associations?, authors?, login?, allowBots?, stream? }`, owner ids are numeric user ids, the webhook server defaults to port `8787` at `/github/webhook`) starts with `GITHUB_CHANNEL_TOKEN` (falling back to `GITHUB_TOKEN` with a warning) and `GITHUB_WEBHOOK_SECRET`, and calls `GITHUB_API_URL` when set (GitHub Enterprise Server). `channels.email` (`{ ownerIds?, address?, name?, aliases?, allowFrom?, senderAuth?, trustedAuthservIds?, subject?, imap?: { host?, port?, secure?, mailbox?, pollInterval?, lookbackDays? }, smtp?: { host?, port?, secure? }, webhook?: { provider, port?, path? } }`, owner ids are addresses and are always answered, the webhook server defaults to port `8788` at `/email/webhook`) needs `nodemailer`, plus `imapflow` and `postal-mime` for IMAP. It takes the address, hosts and ports from the file or `EMAIL_ADDRESS`, `EMAIL_IMAP_HOST`, `EMAIL_IMAP_PORT`, `EMAIL_SMTP_HOST` and `EMAIL_SMTP_PORT`, the passwords from `EMAIL_IMAP_PASSWORD` and `EMAIL_SMTP_PASSWORD` (users `EMAIL_IMAP_USER` and `EMAIL_SMTP_USER`, default the address), and reads over IMAP when `imap` is set or `EMAIL_IMAP_HOST` is. A Mailgun webhook needs `EMAIL_MAILGUN_SIGNING_KEY`, Postmark and SendGrid `EMAIL_WEBHOOK_TOKEN` (`?token=` in the URL) or `EMAIL_WEBHOOK_USER` and `EMAIL_WEBHOOK_PASSWORD` (basic auth).
 
 - **Memory:** `memory.adapter: sqlite` (default, `memory.path`, default `~/.cogitator/memory.db`) or `postgres` (`memory.connectionString`, `DATABASE_URL` or `POSTGRES_URL`, requires `pg`). Core facts always live in the SQLite file, as memory items with their history. The knowledge graph (`memory.knowledgeGraph`) and auto-extraction (`memory.autoExtract`) are on by default, and the memory tools keep memory items in the memory store too: `remember` keeps a fact as the user's (an `active` item, a core fact) only when its `quote` is in one of the run user's own messages on the thread's active branch, else as a suggestion, `recall` searches the items of the user and the thread, and `forget` lets go only the run's own that hold the query as whole words (a run without a user keeps its facts in the thread's memory). The assistant's agent id is its `name`, the same across restarts. `memory.compaction.threshold` enables history compaction, hierarchical, keeping about 4000 tokens of the newest turns verbatim.
 - **Fresh context:** the gateway builds an agent per message: instructions (with known user facts) and the `/model` override are resolved each time. The current date and time go to each run as its `brief`, with the input, so they do not change the instructions and their prompt cache. `runtime.agent` is the base agent.
@@ -738,6 +764,21 @@ GITHUB_CHANNEL_TOKEN=github_pat_...  # a separate bot account's token, scoped to
 GITHUB_TOKEN=ghp_...             # capabilities.github, and the channel's fallback (with a warning)
 GITHUB_WEBHOOK_SECRET=...        # the secret set on the webhook
 GITHUB_API_URL=...               # GitHub Enterprise Server only, https://<host>/api/v3
+
+# Email (channels.email, hosts and ports may be in cogitator.yml instead)
+EMAIL_ADDRESS=assistant@example.com
+EMAIL_IMAP_HOST=imap.gmail.com   # reading over IMAP
+EMAIL_IMAP_PORT=993
+EMAIL_IMAP_USER=...              # default EMAIL_ADDRESS
+EMAIL_IMAP_PASSWORD=...          # an app password for Gmail and Outlook
+EMAIL_SMTP_HOST=smtp.gmail.com
+EMAIL_SMTP_PORT=587              # 465 for TLS from the start
+EMAIL_SMTP_USER=...              # default EMAIL_ADDRESS
+EMAIL_SMTP_PASSWORD=...
+EMAIL_MAILGUN_SIGNING_KEY=...    # webhook.provider: mailgun
+EMAIL_WEBHOOK_TOKEN=...          # webhook.provider: postmark or sendgrid, ?token= in the URL
+EMAIL_WEBHOOK_USER=...           # or basic auth in the URL, https://user:password@host/email/webhook
+EMAIL_WEBHOOK_PASSWORD=...
 
 # STT (optional, for voice messages — pick one)
 DEEPGRAM_API_KEY=...         # highest priority

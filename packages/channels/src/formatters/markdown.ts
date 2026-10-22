@@ -12,6 +12,7 @@ const PLATFORM_LIMITS: Record<string, number> = {
   bluesky: Infinity,
   threads: Infinity,
   github: 65536,
+  email: Infinity,
 };
 
 const DEFAULT_LIMIT = 4096;

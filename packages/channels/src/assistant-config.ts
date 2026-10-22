@@ -13,6 +13,12 @@ const McpServerSchema = z.object({
 
 const OwnerIdsSchema = z.array(z.string()).optional();
 
+const EmailAddressSchema = z
+  .string()
+  .trim()
+  .regex(/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/, 'Not an email address')
+  .transform((address) => address.toLowerCase());
+
 const AssistantChannelsSchema = z.object({
   telegram: z.object({ ownerIds: OwnerIdsSchema }).optional(),
   discord: z.object({ ownerIds: OwnerIdsSchema }).optional(),
@@ -101,6 +107,65 @@ const AssistantChannelsSchema = z.object({
       allowBots: z.boolean().optional(),
       /** Stream answers into a comment it edits, at most every 3 seconds (default false) */
       stream: z.boolean().optional(),
+    })
+    .optional(),
+  email: z
+    .object({
+      /** Owner addresses, also answered whatever `allowFrom` says */
+      ownerIds: z.array(EmailAddressSchema).optional(),
+      /** The bot's address (default `EMAIL_ADDRESS` from the env) */
+      address: EmailAddressSchema.optional(),
+      /** The display name of the mail it sends */
+      name: z.string().optional(),
+      /** Other addresses of the bot, never answered */
+      aliases: z.array(EmailAddressSchema).optional(),
+      /** Who it answers: addresses, domains, `*.domain` or `*` (default nobody but the owners) */
+      allowFrom: z
+        .array(
+          z
+            .string()
+            .regex(
+              /^(\*|(\*\.|@)?[^\s@*]+\.[^\s@*]+|[^\s@]+@[^\s@]+\.[^\s@]+)$/,
+              'An allowFrom entry is an address, a domain, *.domain or *'
+            )
+        )
+        .optional(),
+      /** `when-reported` (default), `required` or `off`: how DKIM, SPF and DMARC results are used */
+      senderAuth: z.enum(['required', 'when-reported', 'off']).optional(),
+      /** The authserv-ids whose Authentication-Results count (default the topmost header) */
+      trustedAuthservIds: z.array(z.string()).optional(),
+      /** The subject of mail that starts a conversation */
+      subject: z.string().optional(),
+      /** Read mail over IMAP, host, port, user and password may also come from EMAIL_IMAP_* */
+      imap: z
+        .object({
+          host: z.string().optional(),
+          port: z.number().int().positive().optional(),
+          secure: z.boolean().optional(),
+          mailbox: z.string().optional(),
+          pollInterval: z.number().int().positive().optional(),
+          lookbackDays: z.number().positive().optional(),
+        })
+        .optional(),
+      /** Send over SMTP, host, port, user and password may also come from EMAIL_SMTP_* */
+      smtp: z
+        .object({
+          host: z.string().optional(),
+          port: z.number().int().positive().optional(),
+          secure: z.boolean().optional(),
+        })
+        .optional(),
+      /** Take mail from a provider's inbound webhook, on its own server (default port 8788) */
+      webhook: z
+        .object({
+          provider: z.enum(['mailgun', 'postmark', 'sendgrid']),
+          port: z.number().int().positive().default(8788),
+          path: z
+            .string()
+            .regex(/^\//, 'The webhook path starts with /, such as /email/webhook')
+            .optional(),
+        })
+        .optional(),
     })
     .optional(),
 });

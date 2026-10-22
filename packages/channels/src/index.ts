@@ -94,6 +94,7 @@ export * from './feeds/index';
 export * from './channels/bluesky/index';
 export * from './channels/threads/index';
 export * from './channels/github/index';
+export * from './channels/email/index';
 
 export { SimpleTimerStore } from './simple-timer-store';
 export type { TimerStoreOptions } from './simple-timer-store';
@@ -125,6 +126,7 @@ export { chunkDiscordText } from './formatters/discord-chunker';
 export type { ChunkDiscordTextOpts } from './formatters/discord-chunker';
 export { markdownToWhatsApp } from './formatters/whatsapp-markdown';
 export { markdownToPlainText } from './formatters/plain-text';
+export { htmlToText, markdownToHtml } from './formatters/html';
 
 export type {
   Channel,

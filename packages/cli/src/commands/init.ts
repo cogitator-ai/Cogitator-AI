@@ -32,7 +32,7 @@ import {
 } from '../utils/provider-models.js';
 
 export type InitChannel =
-  'telegram' | 'discord' | 'slack' | 'webchat' | 'bluesky' | 'threads' | 'github';
+  'telegram' | 'discord' | 'slack' | 'webchat' | 'bluesky' | 'threads' | 'github' | 'email';
 
 const INIT_CHANNELS: readonly InitChannel[] = [
   'telegram',
@@ -42,6 +42,7 @@ const INIT_CHANNELS: readonly InitChannel[] = [
   'bluesky',
   'threads',
   'github',
+  'email',
 ];
 export type InitMemory = 'memory' | 'sqlite' | 'postgres';
 
@@ -62,9 +63,23 @@ export interface InitAnswers {
   threadsAccessToken?: string;
   githubToken?: string;
   githubWebhookSecret?: string;
+  email?: InitEmail;
   memory: InitMemory;
   databaseUrl?: string;
 }
+
+/** The mailbox of the email channel: read over IMAP, sent through SMTP. */
+export interface InitEmail {
+  address: string;
+  /** Who may write to the bot: addresses, domains, `*.domain` or `*`, comma-separated */
+  allowFrom: string;
+  imapHost: string;
+  imapPassword: string;
+  smtpHost: string;
+  smtpPassword: string;
+}
+
+const EMAIL_ADDRESS = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
 
 export const DEFAULT_POSTGRES_URL = 'postgresql://cogitator:cogitator@localhost:5432/cogitator';
 
@@ -109,6 +124,14 @@ export function initSecrets(answers: InitAnswers): Record<string, string> {
   if (answers.threadsAccessToken) secrets.THREADS_ACCESS_TOKEN = answers.threadsAccessToken;
   if (answers.githubToken) secrets.GITHUB_CHANNEL_TOKEN = answers.githubToken;
   if (answers.githubWebhookSecret) secrets.GITHUB_WEBHOOK_SECRET = answers.githubWebhookSecret;
+  if (answers.email) {
+    secrets.EMAIL_ADDRESS = answers.email.address;
+    secrets.EMAIL_ALLOW_FROM = answers.email.allowFrom;
+    secrets.EMAIL_IMAP_HOST = answers.email.imapHost;
+    secrets.EMAIL_IMAP_PASSWORD = answers.email.imapPassword;
+    secrets.EMAIL_SMTP_HOST = answers.email.smtpHost;
+    secrets.EMAIL_SMTP_PASSWORD = answers.email.smtpPassword;
+  }
   if (
     answers.memory === 'postgres' &&
     answers.databaseUrl &&
@@ -200,6 +223,7 @@ async function collectAnswers(nameArg?: string): Promise<InitAnswers> {
         { value: 'bluesky', label: 'Bluesky', hint: 'mentions, replies and DMs' },
         { value: 'threads', label: 'Threads', hint: 'replies and mentions' },
         { value: 'github', label: 'GitHub', hint: 'issues, pull requests and reviews' },
+        { value: 'email', label: 'Email', hint: 'a mailbox over IMAP and SMTP' },
       ],
       required: false,
     })
@@ -259,6 +283,8 @@ async function collectAnswers(nameArg?: string): Promise<InitAnswers> {
       )
     : undefined;
 
+  const email = channels.includes('email') ? await askEmail() : undefined;
+
   const memoryChoice = answer(
     await p.select({
       message: 'Memory adapter',
@@ -300,9 +326,54 @@ async function collectAnswers(nameArg?: string): Promise<InitAnswers> {
     threadsAccessToken,
     githubToken,
     githubWebhookSecret,
+    email,
     memory,
     databaseUrl,
   };
+}
+
+async function askText(message: string, placeholder: string, invalid: string): Promise<string> {
+  return answer(
+    await p.text({
+      message,
+      placeholder,
+      validate: (v) => (!v?.trim() ? invalid : undefined),
+    })
+  ).trim();
+}
+
+async function askEmail(): Promise<InitEmail> {
+  const address = answer(
+    await p.text({
+      message: 'Address of the bot mailbox:',
+      placeholder: 'assistant@example.com',
+      validate: (v) => (EMAIL_ADDRESS.test(v?.trim() ?? '') ? undefined : 'Not an email address'),
+    })
+  ).trim();
+  const allowFrom = await askText(
+    'Who may write to it: addresses or domains, comma-separated (* for anyone):',
+    'example.com, ann@example.org',
+    'Name at least one address or domain, mail can be sent by anyone'
+  );
+  const imapHost = await askText(
+    'IMAP server it reads mail from:',
+    'imap.gmail.com',
+    'IMAP server is required'
+  );
+  const imapPassword = await askSecret(
+    'IMAP password (an app password for Gmail and Outlook):',
+    'Password is required'
+  );
+  const smtpHost = await askText(
+    'SMTP server it sends mail through:',
+    'smtp.gmail.com',
+    'SMTP server is required'
+  );
+  const smtpPassword = await askSecret(
+    'SMTP password (often the same app password):',
+    'Password is required'
+  );
+  return { address, allowFrom, imapHost, imapPassword, smtpHost, smtpPassword };
 }
 
 function clackLogger(): ScaffoldLogger {
@@ -317,7 +388,7 @@ function clackLogger(): ScaffoldLogger {
 
 export const initCommand = new Command('init')
   .description(
-    'Create a messaging assistant project (Telegram, Discord, Slack, WebChat, Bluesky, Threads, GitHub)'
+    'Create a messaging assistant project (Telegram, Discord, Slack, WebChat, Bluesky, Threads, GitHub, Email)'
   )
   .argument('[name]', 'Project name')
   .option('--no-install', 'Skip dependency installation')

@@ -181,6 +181,40 @@ describe('AssistantConfigSchema', () => {
     expect(result.rateLimit?.maxPerMinute).toBe(30);
   });
 
+  it('checks the email channel: addresses, allow list entries and the webhook provider', () => {
+    const base = {
+      name: 'test',
+      personality: 'Bot',
+      llm: { provider: 'openai', model: 'openai/gpt-4o' },
+    };
+    const parsed = AssistantConfigSchema.parse({
+      ...base,
+      channels: {
+        email: {
+          address: ' Bot@Example.com ',
+          ownerIds: ['Me@Example.com'],
+          allowFrom: ['example.org', '*.example.net', 'ann@example.com', '*'],
+          webhook: { provider: 'postmark' },
+        },
+      },
+    });
+    expect(parsed.channels.email).toMatchObject({
+      address: 'bot@example.com',
+      ownerIds: ['me@example.com'],
+      webhook: { provider: 'postmark', port: 8788 },
+    });
+    const valid = (email: Record<string, unknown>) =>
+      AssistantConfigSchema.safeParse({ ...base, channels: { email } }).success;
+    expect(valid({ address: 'not-an-address' })).toBe(false);
+    expect(valid({ ownerIds: ['me'] })).toBe(false);
+    expect(valid({ allowFrom: ['localhost'] })).toBe(false);
+    expect(valid({ allowFrom: ['ann @example.com'] })).toBe(false);
+    expect(valid({ webhook: { provider: 'ses' } })).toBe(false);
+    expect(valid({ webhook: { provider: 'mailgun', path: 'email' } })).toBe(false);
+    expect(valid({ senderAuth: 'maybe' })).toBe(false);
+    expect(valid({ imap: {}, smtp: { port: 587 } })).toBe(true);
+  });
+
   it('checks the GitHub channel: repositories, webhook path and numeric owner ids', () => {
     const base = {
       name: 'test',

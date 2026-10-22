@@ -17,13 +17,13 @@ The wizard walks you through:
 
 1. **Names** - your name and the assistant's name (used in the default personality)
 2. **LLM provider and model** - Google, Anthropic, OpenAI, or Ollama (local, or a remote/cloud URL with an optional API key); models are fetched live
-3. **Channels** - Telegram, Discord, Slack, Bluesky, Threads, GitHub: the token and owner IDs (Slack also asks for the signing secret and an optional `xapp-` app token for Socket Mode, Bluesky for the handle and an app password, with owner DIDs, Threads takes a long-lived token and owner usernames, GitHub a token, the webhook secret and numeric owner user ids). The terminal channel is always on
+3. **Channels** - Telegram, Discord, Slack, Bluesky, Threads, GitHub, email: the token and owner IDs (Slack also asks for the signing secret and an optional `xapp-` app token for Socket Mode, Bluesky for the handle and an app password, with owner DIDs, Threads takes a long-lived token and owner usernames, GitHub a token, the webhook secret and numeric owner user ids, email the mailbox address, the IMAP and SMTP servers and passwords, owner addresses and who else may write to it). The terminal channel is always on
 4. **Capabilities** - web search, file system (allowed paths), GitHub (token), device tools, browser (visible window / stealth), scheduler, RAG (paths to index), self-config, self-tools
 5. **MCP servers** - any command line, quoted arguments supported
 6. **Memory** - SQLite database path
 7. **Personality** - the system prompt, pre-filled from the names above
 
-The wizard sets up Telegram, Discord, Slack, Bluesky, Threads and GitHub. Add [WhatsApp and WebChat](#whatsapp-and-webchat) to `cogitator.yml` by hand. `--edit` keeps those entries.
+The wizard sets up Telegram, Discord, Slack, Bluesky, Threads, GitHub and email (read over IMAP, a [webhook](/docs/channels/email#webhooks) is set in `cogitator.yml` by hand). Add [WhatsApp and WebChat](#whatsapp-and-webchat) to `cogitator.yml` by hand. `--edit` keeps those entries.
 
 Secrets are merged into `.env` (written with mode `0600`) without removing your other variables or comments. If `cogitator.yml` already exists, the wizard asks before overwriting it.
 

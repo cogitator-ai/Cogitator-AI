@@ -17,7 +17,7 @@ interface ChannelSetup {
   imports?: string[];
   expression: string;
   packages: Array<[string, string]>;
-  env: Array<{ name: string; description: string; required: boolean }>;
+  env: Array<{ name: string; description: string; required: boolean; secret?: boolean }>;
 }
 
 const CHANNEL_SETUP: Record<ChannelKind, ChannelSetup> = {
@@ -142,6 +142,86 @@ const CHANNEL_SETUP: Record<ChannelKind, ChannelSetup> = {
       },
     ],
   },
+  email: {
+    factory: 'emailChannel',
+    expression: code`
+      emailChannel({
+        address: env.EMAIL_ADDRESS,
+        allowFrom: env.EMAIL_ALLOW_FROM.split(',')
+          .map((entry) => entry.trim())
+          .filter(Boolean),
+        imap: {
+          host: env.EMAIL_IMAP_HOST,
+          auth: { user: env.EMAIL_IMAP_USER ?? env.EMAIL_ADDRESS, pass: env.EMAIL_IMAP_PASSWORD },
+        },
+        smtp: {
+          host: env.EMAIL_SMTP_HOST,
+          port: Number(env.EMAIL_SMTP_PORT ?? 587),
+          auth: { user: env.EMAIL_SMTP_USER ?? env.EMAIL_ADDRESS, pass: env.EMAIL_SMTP_PASSWORD },
+        },
+      })
+    `,
+    packages: [
+      ['imapflow', VERSIONS.imapflow],
+      ['postal-mime', VERSIONS.postalMime],
+      ['nodemailer', VERSIONS.nodemailer],
+    ],
+    env: [
+      {
+        name: 'EMAIL_ADDRESS',
+        description: 'Address of the bot mailbox, which it reads and sends from',
+        required: true,
+        secret: false,
+      },
+      {
+        name: 'EMAIL_ALLOW_FROM',
+        description:
+          'Who may write to the bot: addresses, domains, *.domain or *, comma-separated, since anyone can send mail',
+        required: true,
+        secret: false,
+      },
+      {
+        name: 'EMAIL_IMAP_HOST',
+        description: 'IMAP server of the mailbox, such as imap.gmail.com',
+        required: true,
+        secret: false,
+      },
+      {
+        name: 'EMAIL_IMAP_USER',
+        description: 'IMAP user, EMAIL_ADDRESS when not set',
+        required: false,
+        secret: false,
+      },
+      {
+        name: 'EMAIL_IMAP_PASSWORD',
+        description: 'IMAP password, an app password for Gmail and Outlook',
+        required: true,
+      },
+      {
+        name: 'EMAIL_SMTP_HOST',
+        description: 'SMTP server it sends through, such as smtp.gmail.com',
+        required: true,
+        secret: false,
+      },
+      {
+        name: 'EMAIL_SMTP_PORT',
+        description: 'SMTP port: 587 for STARTTLS (default) or 465 for TLS',
+        required: false,
+        secret: false,
+      },
+      {
+        name: 'EMAIL_SMTP_USER',
+        description: 'SMTP user, EMAIL_ADDRESS when not set',
+        required: false,
+        secret: false,
+      },
+      {
+        name: 'EMAIL_SMTP_PASSWORD',
+        description: 'SMTP password, often the same app password',
+        required: true,
+      },
+    ],
+  },
 };
 
 /**
@@ -173,7 +253,9 @@ export const appChannelsFeature: FeatureModule = {
     for (const channel of spec.channels) {
       const setup = CHANNEL_SETUP[channel];
       for (const [name, version] of setup.packages) project.dependency(name, version);
-      for (const variable of setup.env) project.envVar({ ...variable, secret: true });
+      for (const variable of setup.env) {
+        project.envVar({ ...variable, secret: variable.secret ?? true });
+      }
     }
     if (
       spec.channels.some((channel) => CHANNEL_SETUP[channel].imports?.includes('FileTokenStore'))
@@ -299,6 +381,12 @@ export const appChannelsFeature: FeatureModule = {
         \`src/gateway.ts\` builds a \`Gateway\` from \`@cogitator-ai/channels\` that answers on ${spec.channels.join(', ')} with \`agents.assistant\`, and \`src/index.ts\` starts it. Each chat is its own thread${memory ? ' in memory, compacted when it grows long' : ''}. Channel tokens come from \`.env\`. \`${runScript(pm, 'dev')}\` runs it with reload on change, \`cogitator assistant\` with a live dashboard, \`cogitator daemon start\` in the background.
       `
     );
+    if (spec.channels.includes('email')) {
+      project.readmeSection(
+        'Email',
+        'The bot reads unread mail of `EMAIL_ADDRESS` over IMAP and answers in the same thread over SMTP, marking what it read. Give it a mailbox of its own, since it reads every unread mail there. It answers only `EMAIL_ALLOW_FROM`, skips auto-replies, bounces and mailing lists, and drops mail whose DKIM, SPF or DMARC results fail for the sender domain, as reported in `Authentication-Results`. A `From` address is easy to forge, so keep the list short and give the agent no tools a stranger must not use.'
+      );
+    }
     if (github) {
       project.readmeSection(
         'GitHub',

@@ -34,7 +34,7 @@ export function compatibilityIssues(spec: ProjectSpec): CompatIssue[] {
   if (spec.app === 'channels' && spec.channels.length === 0) {
     issues.push({
       message: 'A messaging bot needs at least one channel',
-      fix: 'pass --channels webchat, telegram, discord, slack, bluesky, threads or github',
+      fix: 'pass --channels webchat, telegram, discord, slack, bluesky, threads, github or email',
     });
   }
   if (spec.app !== 'channels' && spec.channels.length > 0) {

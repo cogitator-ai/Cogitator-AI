@@ -1,0 +1,254 @@
+---
+title: Email
+description: Answer email with your agent, in the thread of each mail, from a mailbox over IMAP or a Mailgun, Postmark or SendGrid inbound webhook.
+---
+
+## Setup
+
+The channel sends with `nodemailer` and reads mail one of two ways:
+
+- **IMAP.** It reads unread mail of a mailbox with `imapflow` and parses it with `postal-mime`. Nothing needs a public URL, so this is the easy way to start. Any mailbox with IMAP works: Gmail and Outlook take an app password once 2-step verification is on.
+- **A provider's inbound webhook.** Mailgun, Postmark or SendGrid receive mail for a domain and post it to the channel, which needs a URL they can reach. Their webhooks report the sender's DKIM and SPF results, see [Security](#security).
+
+```bash
+pnpm add @cogitator-ai/channels nodemailer imapflow postal-mime
+```
+
+`imapflow` and `postal-mime` are only needed for IMAP (and for a webhook that posts raw MIME). All three are optional peer dependencies, loaded when they are first used.
+
+Give the bot a mailbox of its own, such as `assistant@example.com`: it reads every unread mail there and marks it read.
+
+## Usage
+
+```typescript
+import { Agent, Cogitator } from '@cogitator-ai/core';
+import { Gateway, emailChannel } from '@cogitator-ai/channels';
+
+const email = emailChannel({
+  address: 'assistant@example.com',
+  name: 'Acme Assistant',
+  allowFrom: ['example.com', 'ann@partner.org'],
+  imap: {
+    host: 'imap.gmail.com',
+    auth: { user: 'assistant@example.com', pass: process.env.EMAIL_IMAP_PASSWORD! },
+  },
+  smtp: {
+    host: 'smtp.gmail.com',
+    port: 587,
+    auth: { user: 'assistant@example.com', pass: process.env.EMAIL_SMTP_PASSWORD! },
+  },
+});
+
+const cogitator = new Cogitator({
+  llm: { providers: { google: { apiKey: process.env.GOOGLE_API_KEY! } } },
+  memory: { adapter: 'memory' },
+});
+const memory = await cogitator.getMemory();
+
+const gateway = new Gateway({
+  agent: new Agent({
+    name: 'email-assistant',
+    model: 'google/gemini-3.5-flash-lite',
+    instructions: 'You answer email for a small team. Be friendly and brief.',
+  }),
+  cogitator,
+  channels: [email],
+  ...(memory && { memory }),
+});
+
+await gateway.start();
+```
+
+`start()` connects to the IMAP server (and rejects when the first connection fails), opens the webhook server when `webhook.port` is set, and warns when `allowFrom` is empty, since the bot then answers nobody.
+
+## Messages and Threads
+
+| `ChannelMessage` | From the mail                                                                    |
+| ---------------- | -------------------------------------------------------------------------------- |
+| `id`             | `Message-ID`, with its angle brackets                                            |
+| `channelId`      | the sender's address, in lower case                                              |
+| `userId`         | the sender's address, in lower case                                              |
+| `userName`       | the sender's display name                                                        |
+| `replyTo`        | `In-Reply-To`                                                                    |
+| `topicId`        | the thread's root: the first id of `References`, else `In-Reply-To`, else `id`   |
+| `text`           | the plain text part, or the HTML as text, without quoted history and signature   |
+| `attachments`    | the attachments, up to `maxAttachmentBytes` (10 MB) each, inline images left out |
+
+The [Gateway](/docs/channels/gateway) keeps one conversation per sender and thread, `email:<address>:<root>:<address>`, so each email thread is a conversation of its own, whatever its subject turns into. The first mail of a thread starts with its subject (`Subject: ...`), which often holds the question, and `includeSubject: false` leaves it out.
+
+The text is cut where the quoted history starts: an `On ... wrote:` line and its translations (German, French, Spanish, Portuguese, Dutch, Italian, and the `<address>:` lines Gmail and Yandex write in Russian), an Outlook `From:` and `Sent:` block or `-----Original Message-----`, and a trailing block of `>` quotes. A signature after a `-- ` line and a `Sent from my ...` line go too. Quotes the writer answers between are kept, since they say what each answer is about. HTML mail becomes text with its paragraphs, lists, links as `text (url)` and quotes as `>` lines.
+
+## Answers
+
+`sendText(address, text, options)` sends a mail to the address. With the `replyTo` of a mail the channel saw it answers that mail: the subject gets `Re: `, `In-Reply-To` names the mail and `References` the thread (the first id and the latest 19), so mail clients keep it in the conversation. With only a `topicId`, as a [scheduled](/docs/channels/scheduler) reminder has, it answers the latest mail of that thread. Otherwise it starts a new thread, with the subject `subject` (default `Message from <name>`). It resolves with the new mail's `Message-ID`.
+
+The channel remembers the subject and references of the latest 1000 mails in memory. After a restart an answer to an older mail still sets `In-Reply-To` and `References` from the ids it has, with the default subject.
+
+- **Format.** The agent writes Markdown, sent as HTML (headings, lists, tables, code, links to `http`, `https` and `mailto` only, inline styles, raw HTML escaped) with a plain text alternative. `format: 'plain'` sends only text, `format: 'html'` sends HTML as given with its text.
+- **Editing.** Sent mail cannot be changed, so the channel says `editable: false` and the Gateway sends each answer once it is finished. `editText` rejects.
+- **Length.** No limit (`maxMessageChars` is `Infinity`): an answer is one mail.
+- **Files.** `sendFile` sends a mail with the file attached and its caption as the text, from a `buffer` or an `http(s)` `url` that nodemailer downloads.
+- **Typing and reactions.** Email has neither. `sendTyping` does nothing.
+- **Headers.** Every mail carries `X-Cogitator: email` and `Auto-Submitted: auto-replied` (`auto-generated` for a new thread), so other bots and auto-responders can tell it is automatic.
+
+### Transports
+
+`smtp` takes a server, sent through with nodemailer: `host`, `port` (default 587, or 465 when `secure`), `secure` (TLS from the start, default on port 465, STARTTLS otherwise), `auth` and further nodemailer `options`. Or it takes a `transport`, anything with `sendMail(mail)` such as a nodemailer transporter for Amazon SES or a test transport. Mailgun, Postmark and SendGrid all take SMTP, so their SMTP relays work as the server.
+
+```typescript
+import nodemailer from 'nodemailer';
+
+const email = emailChannel({
+  address: 'assistant@example.com',
+  smtp: { transport: nodemailer.createTransport({ host: 'smtp.mailgun.org', port: 587, auth }) },
+  webhook: { provider: 'mailgun', signingKey: process.env.EMAIL_MAILGUN_SIGNING_KEY!, port: 8788 },
+  allowFrom: ['example.com'],
+});
+```
+
+## IMAP
+
+The channel opens the mailbox (`mailbox`, default `INBOX`) and reads its unread mail of the last `lookbackDays` (default 7), so a first start does not answer a whole inbox. New mail is reported at once through IMAP IDLE, and a poll every `pollInterval` (default 60 s) catches what IDLE missed. Mail is fetched `batchSize` (20) at a time and parsed `concurrency` (4) at once, and reaches the agent in order.
+
+A mail is flagged `\Seen` only once it was handed to the Gateway, which queues it, so a restart reads only what was not handed over yet, and the UIDs handed over are remembered in case flagging failed. A mail that cannot be parsed is logged and marked read. When the connection drops, the channel connects again after 1 s, doubling the wait up to 60 s while it keeps failing. `poll()` looks for new mail at once.
+
+```typescript
+emailChannel({
+  address: 'assistant@example.com',
+  imap: {
+    host: 'imap.example.com',
+    port: 993, // default
+    secure: true, // default, false for STARTTLS
+    auth: { user: 'assistant@example.com', pass: process.env.EMAIL_IMAP_PASSWORD! }, // or accessToken for OAuth2
+    mailbox: 'Assistant',
+    pollInterval: 60_000,
+    lookbackDays: 7,
+    clientOptions: { tls: { rejectUnauthorized: true } }, // passed to ImapFlow
+  },
+  smtp: { host: 'smtp.example.com', auth: { user: 'assistant@example.com', pass: '...' } },
+  allowFrom: ['example.com'],
+});
+```
+
+## Webhooks
+
+With `webhook`, the channel takes mail a provider posts. It runs a server of its own on `port` (at `/email/webhook` unless `path` says otherwise, bodies up to `maxBody`, 10 MB, `413` beyond), or you mount `handleWebhook` or `webhookListener()` in your server with the raw body. A request is checked, answered `200` at once and its mail handed to the agent after. Once `stop()` was called, requests are answered `503`.
+
+```typescript
+import express from 'express';
+
+const app = express();
+app.post('/email/webhook', express.raw({ type: '*/*', limit: '10mb' }), async (req, res) => {
+  const response = await email.handleWebhook({
+    method: req.method,
+    query: req.query as Record<string, string>,
+    headers: req.headers,
+    rawBody: req.body,
+  });
+  res.status(response.status).send(response.body);
+});
+```
+
+| Provider | How it is checked                                                                                  | What it posts                                                                   | Set it up                                                                     |
+| -------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Mailgun  | HMAC SHA-256 of `timestamp` and `token` with the webhook signing key, at most `maxAge` (300 s) old | a form (parsed, or raw in `body-mime`) or JSON signed over the whole body       | a route with `forward("https://<host>/email/webhook")`                        |
+| Postmark | basic auth in the URL, or `?token=`                                                                | the inbound JSON (`FromFull`, `TextBody`, `HtmlBody`, `Headers`, `Attachments`) | the inbound webhook URL `https://user:password@<host>/email/webhook`          |
+| SendGrid | `?token=` in the URL, or basic auth                                                                | Inbound Parse multipart (`headers`, `text`, `html`, `attachment1`...), or raw   | Inbound Parse to `https://<host>/email/webhook?token=...`, raw MIME preferred |
+
+- **Mailgun.** The signing key is the HTTP webhook signing key of the account. A request without a valid signature, or older than `maxAge`, is refused with `401`, and a signature seen before is answered `200` and not handled again, so a replayed request does nothing.
+- **Postmark and SendGrid** do not sign inbound mail, so the URL carries a secret: `basicAuth` (`{ username, password }`, which Postmark sends from the `user:password@` of the URL) or a `token` in the query (`?token=`, or an `X-Webhook-Token` header). At least one is required, both are compared in constant time, and a request without them gets `401`.
+- **SendGrid** sends the parsed fields in their own character sets. Turn on "POST the raw, full MIME message" for mail in other encodings than UTF-8: the channel parses the raw message with `postal-mime`.
+- **Postmark** gives each mail an id of its own. The channel uses the `Message-ID` header when it is among the headers, and `<id@postmark.invalid>` otherwise.
+
+## What Reaches the Agent
+
+- **Its own mail.** Mail from `address` or one of `aliases`, and mail with the `X-Cogitator` header that every Cogitator email channel puts on what it sends, so two bots cannot answer each other forever.
+- **Automatic mail** is skipped: `Auto-Submitted` other than `no`, `Precedence: bulk`, `junk`, `list` or `auto_reply`, `X-Autoreply` and similar, delivery reports (`multipart/report`, `X-Failed-Recipients`, an empty `Return-Path`), and senders such as `mailer-daemon@`, `postmaster@` and `no-reply@`.
+- **Each mail once**, by its `Message-ID` (the latest 1000, in memory), whichever request or mailbox brings it.
+- **Mail with nothing in it** (no text, no subject, no attachment) is skipped.
+
+## Security
+
+Anyone can send mail, and the `From` address is easy to forge. Treat what arrives as untrusted input:
+
+- **Who may write.** `allowFrom` lists addresses (`ann@example.com`), domains (`example.com`, without subdomains), subdomain wildcards (`*.example.com`) or `*` for everyone. Without it the bot answers nobody. With `cogitator up`, the `ownerIds` are always answered too.
+- **Sender authentication.** The receiving side checks DKIM, SPF and DMARC, and the channel uses what it reports for the `From` domain. A DKIM signature, an SPF pass for the envelope sender or a DMARC pass passes only when its domain is the `From` domain or a subdomain of it, so a spoofer who signs with a domain of its own fails. `senderAuth: 'when-reported'` (default) drops mail whose results fail, `'required'` also drops mail without results, `'off'` does not look.
+  - **Mailgun** reports `X-Mailgun-Spf` (for the envelope sender, compared with the `From` domain) and `X-Mailgun-Dkim-Check-Result`, which does not say which signature it checked: a DKIM pass counts when the mail carries exactly one signature, for the `From` domain.
+  - **SendGrid** posts `dkim` (`{@example.com : pass}`, one entry per signature) and `SPF` for the envelope sender.
+  - **Postmark** adds SpamAssassin's `X-Spam-Tests`, where `DKIM_VALID_AU` is a valid signature of the author's domain.
+  - **IMAP** has the `Authentication-Results` and `Received-SPF` headers of the receiving server (Gmail, Outlook and most hosts add them). Only the topmost of each counts, since the receiving server puts its own on top and anything below may come from the sender. `trustedAuthservIds` (such as `['mx.google.com']`) makes the channel use only the results of those servers.
+- **Prefer verified webhooks.** A provider that receives the mail and reports DKIM and SPF, behind a signed (Mailgun) or secret (Postmark, SendGrid) webhook, is the strongest setup. With IMAP, use a mailbox whose server adds `Authentication-Results`.
+- **Prompt injection.** A mail can tell the agent to ignore its instructions, to forward a secret or to call a tool. Give the agent only the tools it needs, ask [approval](/docs/channels/gateway#approvals) for tools that write, send or delete, and keep secrets out of what it can read.
+- **Credentials.** Use an app password or a mailbox of the bot's own, never your personal password, and keep them in the environment.
+
+## Configuration
+
+```typescript
+interface EmailChannelConfig {
+  address: string;
+  name?: string;
+  aliases?: string[];
+  smtp:
+    | {
+        host: string;
+        port?: number;
+        secure?: boolean;
+        auth?: { user: string; pass: string };
+        options?: Record<string, unknown>;
+      }
+    | { transport: EmailTransport };
+  imap?: {
+    host: string;
+    port?: number; // default 993
+    secure?: boolean; // default true
+    auth: { user: string; pass?: string; accessToken?: string };
+    mailbox?: string; // default 'INBOX'
+    pollInterval?: number; // default 60 000 ms
+    lookbackDays?: number; // default 7
+    batchSize?: number; // default 20
+    concurrency?: number; // default 4
+    clientOptions?: Record<string, unknown>;
+  };
+  webhook?: (
+    | { provider: 'mailgun'; signingKey: string; maxAge?: number }
+    | {
+        provider: 'postmark' | 'sendgrid';
+        basicAuth?: { username: string; password: string };
+        token?: string;
+      }
+  ) & { port?: number; path?: string; host?: string; maxBody?: number };
+  allowFrom?: string[]; // default nobody
+  senderAuth?: 'required' | 'when-reported' | 'off'; // default 'when-reported'
+  trustedAuthservIds?: string[];
+  includeSubject?: boolean; // default true
+  subject?: string; // of mail that starts a thread
+  maxAttachmentBytes?: number; // default 10 MB
+}
+```
+
+In `cogitator.yml`, `channels.email` takes `ownerIds` (addresses, always answered), `address`, `name`, `aliases`, `allowFrom`, `senderAuth`, `trustedAuthservIds`, `subject`, `imap` (`host`, `port`, `secure`, `mailbox`, `pollInterval`, `lookbackDays`), `smtp` (`host`, `port`, `secure`) and `webhook` (`provider`, `port`, default `8788`, and `path`, starting with `/`). Hosts, ports and the address may come from the environment instead, and the secrets always do:
+
+| Variable                                       | For                                                      |
+| ---------------------------------------------- | -------------------------------------------------------- |
+| `EMAIL_ADDRESS`                                | the bot's address, when `address` is not set             |
+| `EMAIL_IMAP_HOST`, `EMAIL_IMAP_PORT`           | the IMAP server, `EMAIL_IMAP_HOST` alone turns IMAP on   |
+| `EMAIL_IMAP_USER`, `EMAIL_IMAP_PASSWORD`       | IMAP login, the user defaulting to the address           |
+| `EMAIL_SMTP_HOST`, `EMAIL_SMTP_PORT`           | the SMTP server                                          |
+| `EMAIL_SMTP_USER`, `EMAIL_SMTP_PASSWORD`       | SMTP login, the user defaulting to the address           |
+| `EMAIL_MAILGUN_SIGNING_KEY`                    | `webhook.provider: mailgun`                              |
+| `EMAIL_WEBHOOK_TOKEN`                          | `webhook.provider: postmark` or `sendgrid`, as `?token=` |
+| `EMAIL_WEBHOOK_USER`, `EMAIL_WEBHOOK_PASSWORD` | the same, as basic auth instead                          |
+
+```yaml title="cogitator.yml"
+channels:
+  email:
+    ownerIds: [me@example.com]
+    address: assistant@example.com
+    allowFrom: [example.com]
+    imap:
+      host: imap.gmail.com
+    smtp:
+      host: smtp.gmail.com
+```
+
+A channel without what it needs is skipped with a warning. The scaffolder makes a bot that reads a mailbox over IMAP with `npx create-cogitator-app my-bot --preset channels --channels email`, and `cogitator init` and `cogitator wizard` offer it too. See [`examples/channels/07-email-bot.ts`](https://github.com/cogitator-ai/Cogitator-AI/blob/main/examples/channels/07-email-bot.ts).

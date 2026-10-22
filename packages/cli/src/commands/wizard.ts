@@ -19,7 +19,7 @@ import {
 } from '../utils/provider-models.js';
 
 type AssistantConfig = AssistantConfigOutput;
-type ChannelName = 'telegram' | 'discord' | 'slack' | 'bluesky' | 'threads' | 'github';
+type ChannelName = 'telegram' | 'discord' | 'slack' | 'bluesky' | 'threads' | 'github' | 'email';
 type Capabilities = AssistantConfig['capabilities'];
 type McpServers = NonNullable<AssistantConfig['mcpServers']>;
 
@@ -30,6 +30,7 @@ export const CHANNEL_TOKEN_ENV: Record<ChannelName, string> = {
   bluesky: 'BLUESKY_APP_PASSWORD',
   threads: 'THREADS_ACCESS_TOKEN',
   github: 'GITHUB_CHANNEL_TOKEN',
+  email: 'EMAIL_IMAP_PASSWORD',
 };
 
 const CHANNEL_LABELS: Record<ChannelName, string> = {
@@ -39,6 +40,7 @@ const CHANNEL_LABELS: Record<ChannelName, string> = {
   bluesky: 'Bluesky',
   threads: 'Threads',
   github: 'GitHub',
+  email: 'Email',
 };
 
 const TOKEN_PROMPTS: Record<ChannelName, string> = {
@@ -49,6 +51,7 @@ const TOKEN_PROMPTS: Record<ChannelName, string> = {
   threads: 'Threads long-lived access token:',
   github:
     'GitHub token of a separate bot account, scoped to the repositories it answers in (issues and pull requests write):',
+  email: 'IMAP password of the bot mailbox (an app password for Gmail and Outlook):',
 };
 
 const OWNER_PROMPTS: Record<ChannelName, string> = {
@@ -59,6 +62,7 @@ const OWNER_PROMPTS: Record<ChannelName, string> = {
   threads: 'Threads owner username(s), comma-separated (for admin commands)',
   github:
     'GitHub owner user ID(s), comma-separated (numbers from api.github.com/users/<login>, for admin commands)',
+  email: 'Owner email address(es), comma-separated (always answered, for admin commands)',
 };
 
 const CHANNELS: readonly ChannelName[] = [
@@ -68,7 +72,10 @@ const CHANNELS: readonly ChannelName[] = [
   'bluesky',
   'threads',
   'github',
+  'email',
 ];
+
+const EMAIL_ADDRESS = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
 
 function isChannelName(value: unknown): value is ChannelName {
   return CHANNELS.some((channel) => channel === value);
@@ -389,6 +396,28 @@ export const wizardCommand = new Command('wizard')
         envUpdates.set('BLUESKY_HANDLE', handle);
       }
 
+      if (ch === 'email') {
+        const address = prompt(
+          await p.text({
+            message: 'Address of the bot mailbox',
+            placeholder: 'assistant@example.com',
+            ...(existingEnv.EMAIL_ADDRESS ? { initialValue: existingEnv.EMAIL_ADDRESS } : {}),
+            validate: (v) =>
+              EMAIL_ADDRESS.test(v?.trim() ?? '') ? undefined : 'Not an email address',
+          })
+        ).trim();
+        envUpdates.set('EMAIL_ADDRESS', address);
+        const imapHost = prompt(
+          await p.text({
+            message: 'IMAP server it reads mail from',
+            placeholder: 'imap.gmail.com',
+            ...(existingEnv.EMAIL_IMAP_HOST ? { initialValue: existingEnv.EMAIL_IMAP_HOST } : {}),
+            validate: (v) => (!v?.trim() ? 'IMAP server is required' : undefined),
+          })
+        ).trim();
+        envUpdates.set('EMAIL_IMAP_HOST', imapHost);
+      }
+
       const token = await askSecret({
         message: TOKEN_PROMPTS[ch],
         current: existingEnv[tokenEnv],
@@ -402,8 +431,14 @@ export const wizardCommand = new Command('wizard')
           message: OWNER_PROMPTS[ch],
           placeholder: 'your user ID',
           ...(existingOwners ? { initialValue: existingOwners } : {}),
-          validate: (v) =>
-            parsePathList(v ?? '').length === 0 ? 'Owner ID is required' : undefined,
+          validate: (v) => {
+            const owners = parsePathList(v ?? '');
+            if (owners.length === 0) return 'Owner ID is required';
+            if (ch === 'email' && owners.some((owner) => !EMAIL_ADDRESS.test(owner))) {
+              return 'Owners are email addresses';
+            }
+            return undefined;
+          },
         })
       );
 
@@ -434,6 +469,36 @@ export const wizardCommand = new Command('wizard')
         if (webhookSecret) envUpdates.set('GITHUB_WEBHOOK_SECRET', webhookSecret);
       }
 
+      let emailAllowFrom: string[] = [];
+      if (ch === 'email') {
+        const smtpHost = prompt(
+          await p.text({
+            message: 'SMTP server it sends mail through',
+            placeholder: 'smtp.gmail.com',
+            ...(existingEnv.EMAIL_SMTP_HOST ? { initialValue: existingEnv.EMAIL_SMTP_HOST } : {}),
+            validate: (v) => (!v?.trim() ? 'SMTP server is required' : undefined),
+          })
+        ).trim();
+        envUpdates.set('EMAIL_SMTP_HOST', smtpHost);
+        const smtpPassword = await askSecret({
+          message: 'SMTP password (often the same app password):',
+          current: existingEnv.EMAIL_SMTP_PASSWORD,
+          required: 'Required',
+        });
+        if (smtpPassword) envUpdates.set('EMAIL_SMTP_PASSWORD', smtpPassword);
+        const existingAllowFrom = existing.channels?.email?.allowFrom?.join(', ');
+        emailAllowFrom = parsePathList(
+          prompt(
+            await p.text({
+              message:
+                'Who else may write to it: addresses or domains, comma-separated (blank for the owners only)',
+              placeholder: 'example.com, ann@example.org',
+              ...(existingAllowFrom ? { initialValue: existingAllowFrom } : {}),
+            })
+          ) ?? ''
+        );
+      }
+
       const ownerIds = parsePathList(ownerIdsRaw);
       if (ch === 'bluesky') channelsConfig.bluesky = { ...existing.channels?.bluesky, ownerIds };
       else if (ch === 'threads')
@@ -443,6 +508,13 @@ export const wizardCommand = new Command('wizard')
           ...existing.channels?.github,
           webhook: existing.channels?.github?.webhook ?? { port: 8787 },
           ownerIds,
+        };
+      else if (ch === 'email')
+        channelsConfig.email = {
+          ...existing.channels?.email,
+          imap: existing.channels?.email?.imap ?? {},
+          ownerIds,
+          ...(emailAllowFrom.length > 0 ? { allowFrom: emailAllowFrom } : {}),
         };
       else channelsConfig[ch] = { ownerIds };
     }

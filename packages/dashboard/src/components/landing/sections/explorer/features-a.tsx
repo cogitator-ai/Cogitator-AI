@@ -197,7 +197,7 @@ export async function featuresA(): Promise<ExplorerFeature[]> {
       pkg: '@cogitator-ai/channels',
       title: 'Messaging channels',
       summary:
-        'One assistant on Telegram, Discord, Slack, WhatsApp, web chat, Bluesky, Threads and GitHub issues and pull requests, with sessions, streaming replies and tool approvals right in the chat, and posts published to social feeds.',
+        'One assistant on Telegram, Discord, Slack, WhatsApp, web chat, Bluesky, Threads, GitHub issues and pull requests and email, with sessions, streaming replies and tool approvals right in the chat, and posts published to social feeds.',
       href: '/docs/channels/gateway',
       code: channels,
     },

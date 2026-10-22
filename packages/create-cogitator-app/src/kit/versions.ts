@@ -82,6 +82,9 @@ export const VERSIONS = {
   slackBolt: '^5.1.0',
   ws: '^8.22.0',
   atprotoApi: '^0.24.0',
+  imapflow: '^2.7.0',
+  postalMime: '^4.1.2',
+  nodemailer: '^10.0.13',
   langfuse: '^3.39.2',
   modelContextProtocol: '^1.32.1',
 } as const;

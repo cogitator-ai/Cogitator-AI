@@ -119,6 +119,32 @@ describe('initSecrets', () => {
     });
   });
 
+  it('writes the mailbox, its servers and who may write to it', () => {
+    expect(
+      initSecrets(
+        answers({
+          channels: ['email'],
+          email: {
+            address: 'bot@example.com',
+            allowFrom: 'example.com',
+            imapHost: 'imap.example.com',
+            imapPassword: 'imap-pass',
+            smtpHost: 'smtp.example.com',
+            smtpPassword: 'smtp-pass',
+          },
+        })
+      )
+    ).toEqual({
+      OPENAI_API_KEY: 'sk-test',
+      EMAIL_ADDRESS: 'bot@example.com',
+      EMAIL_ALLOW_FROM: 'example.com',
+      EMAIL_IMAP_HOST: 'imap.example.com',
+      EMAIL_IMAP_PASSWORD: 'imap-pass',
+      EMAIL_SMTP_HOST: 'smtp.example.com',
+      EMAIL_SMTP_PASSWORD: 'smtp-pass',
+    });
+  });
+
   it('writes DATABASE_URL only when it differs from the compose default', () => {
     expect(initSecrets(answers({ memory: 'postgres', databaseUrl: DEFAULT_POSTGRES_URL }))).toEqual(
       {

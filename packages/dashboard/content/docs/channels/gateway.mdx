@@ -5,7 +5,7 @@ description: Route messages from messaging platforms to AI agents with sessions,
 
 ## Overview
 
-The `Gateway` is the central class of `@cogitator-ai/channels`. It connects messaging channels (Telegram, Discord, Slack, WhatsApp, WebChat, Bluesky, Threads, GitHub) to your AI agents, handling sessions, middleware, streaming, and message formatting.
+The `Gateway` is the central class of `@cogitator-ai/channels`. It connects messaging channels (Telegram, Discord, Slack, WhatsApp, WebChat, Bluesky, Threads, GitHub, email) to your AI agents, handling sessions, middleware, streaming, and message formatting.
 
 ```bash
 pnpm add @cogitator-ai/channels
@@ -140,10 +140,11 @@ A thread is the conversation memory and the queue of one user in one conversatio
 | Discord          | channel, a thread is a channel of its own                                   | `discord:98765:1234`                                             |
 | Bluesky, Threads | the post thread's root (`conversationId`), not the reply post               | `threads:thread:1790:reader`                                     |
 | GitHub           | issue or pull request, plus the review thread (`topicId`)                   | `github:acme/app#12:583231`, `github:acme/app#12:1840022:583231` |
+| Email            | sender, plus the email thread (`topicId`, its first `Message-ID`)           | `email:ann@example.com:<a1@example.com>:ann@example.com`         |
 | WhatsApp         | chat, a chat addressed by LID by the phone-number jid                       | `whatsapp:15550001111@s.whatsapp.net:15550001111`                |
 | WebChat          | client                                                                      | `webchat:c7f2:c7f2`                                              |
 
-A user keeps a separate thread in their private chat, in each group and in each topic, and every reply in a Bluesky or Threads post thread lands in the same one, while each answer still goes to the post it replies to. In a Slack channel each top-level message is answered in a new Slack thread, which is a conversation of its own without the history of earlier ones, and the follow-ups in it continue that conversation. A Slack DM is one conversation. On GitHub each issue or pull request is a conversation, and each review thread of a pull request another one. A WhatsApp chat that reaches a person by LID gets their phone-number jid as its `conversationId` when WhatsApp shares it, so it stays one thread with the chat addressed by phone number.
+A user keeps a separate thread in their private chat, in each group and in each topic, and every reply in a Bluesky or Threads post thread lands in the same one, while each answer still goes to the post it replies to. In a Slack channel each top-level message is answered in a new Slack thread, which is a conversation of its own without the history of earlier ones, and the follow-ups in it continue that conversation. A Slack DM is one conversation. On GitHub each issue or pull request is a conversation, and each review thread of a pull request another one. By email each thread is a conversation, however its subject changes. A WhatsApp chat that reaches a person by LID gets their phone-number jid as its `conversationId` when WhatsApp shares it, so it stays one thread with the chat addressed by phone number.
 
 The gateway keeps the conversations of each user in their session's metadata (`conversations`, up to 50, most recent first), and `compactAll()` finds their threads there after a restart. A run gets the `topicId` and `conversationId` of its message, and its tools see them in their context, so `schedule_task` stores them with the task and `HeartbeatScheduler` fires it into the same topic and thread, even when the user has moved on to another one. A task without them is answered in the topic and thread of the user's most recent conversation in its chat. With a custom `threadKey` the gateway keeps no conversations and leaves stored sessions out of `compactAll()`, except with `legacyThreadKey`, whose thread of each stored session it still finds.
 
@@ -287,16 +288,16 @@ const gateway = new Gateway({
 
 ## Platform Comparison
 
-| Feature            | Telegram     | Discord   | Slack          | WhatsApp | WebChat   | Bluesky                | Threads               | GitHub                   |
-| ------------------ | ------------ | --------- | -------------- | -------- | --------- | ---------------------- | --------------------- | ------------------------ |
-| Streaming (edit)   | ✅           | ✅        | ✅             | ✅       | ✅        | ❌ (sent finished)     | ❌ (sent finished)    | opt-in (`stream: true`)  |
-| Reactions          | ✅           | ✅        | ✅             | ❌       | ❌        | ❌                     | ❌                    | ✅ (GitHub's eight)      |
-| Typing indicator   | ✅           | ✅        | ❌             | ✅       | ✅        | ❌                     | ❌                    | ❌                       |
-| Media (vision)     | ✅           | ✅        | ✅             | ✅       | ❌        | ❌                     | ❌                    | ❌                       |
-| Voice (STT)        | ✅           | ✅        | ✅             | ✅       | ❌        | ❌                     | ❌                    | ❌                       |
-| Max message length | 4096         | 2000      | 40000          | 65536    | unlimited | 300 per post, threaded | 500 per post, chained | 65536                    |
-| Public URL needed  | webhook only | no        | HTTP mode only | no       | no        | no                     | webhooks only         | yes (webhook)            |
-| Auth model         | Bot token    | Bot token | 3 tokens       | QR code  | custom    | App password           | Long-lived token      | Token and webhook secret |
+| Feature            | Telegram     | Discord   | Slack          | WhatsApp | WebChat   | Bluesky                | Threads               | GitHub                   | Email                                    |
+| ------------------ | ------------ | --------- | -------------- | -------- | --------- | ---------------------- | --------------------- | ------------------------ | ---------------------------------------- |
+| Streaming (edit)   | ✅           | ✅        | ✅             | ✅       | ✅        | ❌ (sent finished)     | ❌ (sent finished)    | opt-in (`stream: true`)  | ❌ (sent finished)                       |
+| Reactions          | ✅           | ✅        | ✅             | ❌       | ❌        | ❌                     | ❌                    | ✅ (GitHub's eight)      | ❌                                       |
+| Typing indicator   | ✅           | ✅        | ❌             | ✅       | ✅        | ❌                     | ❌                    | ❌                       | ❌                                       |
+| Media (vision)     | ✅           | ✅        | ✅             | ✅       | ❌        | ❌                     | ❌                    | ❌                       | ✅ (attachments)                         |
+| Voice (STT)        | ✅           | ✅        | ✅             | ✅       | ❌        | ❌                     | ❌                    | ❌                       | ✅ (attachments)                         |
+| Max message length | 4096         | 2000      | 40000          | 65536    | unlimited | 300 per post, threaded | 500 per post, chained | 65536                    | unlimited                                |
+| Public URL needed  | webhook only | no        | HTTP mode only | no       | no        | no                     | webhooks only         | yes (webhook)            | webhooks only                            |
+| Auth model         | Bot token    | Bot token | 3 tokens       | QR code  | custom    | App password           | Long-lived token      | Token and webhook secret | IMAP and SMTP login, or a signed webhook |
 
 ## Approvals
 

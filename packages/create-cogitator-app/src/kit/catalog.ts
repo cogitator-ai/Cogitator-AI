@@ -22,7 +22,7 @@ export const APP_CHOICES: Choice<AppKind>[] = [
   {
     value: 'channels',
     label: 'Messaging bot',
-    hint: 'Telegram, Discord, Slack, WebChat, Bluesky, Threads or GitHub',
+    hint: 'Telegram, Discord, Slack, WebChat, Bluesky, Threads, GitHub or email',
   },
   { value: 'worker', label: 'Queue worker', hint: 'agents run as BullMQ jobs on Redis' },
 ];
@@ -90,6 +90,11 @@ export const CHANNEL_CHOICES: Choice<ChannelKind>[] = [
     value: 'github',
     label: 'GitHub',
     hint: 'issues, pull requests and reviews; needs a token and a webhook',
+  },
+  {
+    value: 'email',
+    label: 'Email',
+    hint: 'answers mail in its thread; needs a mailbox with IMAP and SMTP',
   },
 ];
 

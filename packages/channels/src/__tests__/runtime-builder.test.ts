@@ -26,6 +26,7 @@ const socialConfigs = vi.hoisted(() => ({
   bluesky: [] as Array<Record<string, unknown>>,
   threads: [] as Array<Record<string, unknown>>,
   github: [] as Array<Record<string, unknown>>,
+  email: [] as Array<Record<string, unknown>>,
 }));
 
 const stubChannel = (type: string) => ({
@@ -53,6 +54,13 @@ vi.mock('../channels/github/channel', () => ({
   githubChannel: (config: Record<string, unknown>) => {
     socialConfigs.github.push(config);
     return stubChannel('github');
+  },
+}));
+
+vi.mock('../channels/email/channel', () => ({
+  emailChannel: (config: Record<string, unknown>) => {
+    socialConfigs.email.push(config);
+    return stubChannel('email');
   },
 }));
 
@@ -489,6 +497,99 @@ describe('RuntimeBuilder', () => {
     );
     warn.mockRestore();
     await built.cleanup();
+  });
+
+  it('builds the email channel from cogitator.yml and the env, owners allowed too', async () => {
+    socialConfigs.email.length = 0;
+    const config: AssistantConfigInput = {
+      ...minimalConfig,
+      channels: {
+        email: {
+          ownerIds: ['Me@Example.com'],
+          name: 'Cogi',
+          allowFrom: ['example.org'],
+          senderAuth: 'required',
+          imap: { mailbox: 'Bot', lookbackDays: 2 },
+          webhook: { provider: 'mailgun' },
+        },
+      },
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const built = await new RuntimeBuilder(config, {
+      GOOGLE_API_KEY: 'test-key',
+      EMAIL_ADDRESS: 'Bot@Example.com',
+      EMAIL_IMAP_HOST: 'imap.example.com',
+      EMAIL_IMAP_PASSWORD: 'imap-pass',
+      EMAIL_SMTP_HOST: 'smtp.example.com',
+      EMAIL_SMTP_PORT: '465',
+      EMAIL_SMTP_USER: 'relay-user',
+      EMAIL_SMTP_PASSWORD: 'smtp-pass',
+      EMAIL_MAILGUN_SIGNING_KEY: 'mg-key',
+    }).build();
+    expect(socialConfigs.email).toEqual([
+      {
+        address: 'bot@example.com',
+        name: 'Cogi',
+        smtp: {
+          host: 'smtp.example.com',
+          port: 465,
+          auth: { user: 'relay-user', pass: 'smtp-pass' },
+        },
+        imap: {
+          host: 'imap.example.com',
+          auth: { user: 'bot@example.com', pass: 'imap-pass' },
+          mailbox: 'Bot',
+          lookbackDays: 2,
+        },
+        webhook: { provider: 'mailgun', signingKey: 'mg-key', port: 8788 },
+        allowFrom: ['example.org', 'me@example.com'],
+        senderAuth: 'required',
+      },
+    ]);
+    warn.mockRestore();
+    await built.cleanup();
+  });
+
+  it('warns instead of building email without what it needs', async () => {
+    socialConfigs.email.length = 0;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const build = async (email: Record<string, unknown>, env: Record<string, string>) => {
+      const built = await new RuntimeBuilder(
+        { ...minimalConfig, channels: { email } } as AssistantConfigInput,
+        { GOOGLE_API_KEY: 'test-key', ...env }
+      ).build();
+      await built.cleanup();
+    };
+    const base = { EMAIL_ADDRESS: 'bot@example.com', EMAIL_SMTP_HOST: 'smtp.example.com' };
+    await build({ imap: {} }, { EMAIL_SMTP_HOST: 'smtp.example.com' });
+    await build({ imap: { host: 'imap.example.com' } }, base);
+    await build({ webhook: { provider: 'postmark' } }, base);
+    await build({ webhook: { provider: 'mailgun' } }, base);
+    expect(socialConfigs.email).toEqual([]);
+    const warnings = warn.mock.calls.map((call) => String(call[0]));
+    for (const name of [
+      'EMAIL_ADDRESS',
+      'EMAIL_IMAP_PASSWORD',
+      'EMAIL_WEBHOOK_TOKEN',
+      'EMAIL_MAILGUN_SIGNING_KEY',
+    ]) {
+      expect(warnings.some((w) => w.includes(name))).toBe(true);
+    }
+    await build(
+      { webhook: { provider: 'sendgrid', path: '/hooks/mail' } },
+      { ...base, EMAIL_WEBHOOK_USER: 'sg', EMAIL_WEBHOOK_PASSWORD: 'pw' }
+    );
+    expect(socialConfigs.email).toEqual([
+      expect.objectContaining({
+        webhook: {
+          provider: 'sendgrid',
+          basicAuth: { username: 'sg', password: 'pw' },
+          port: 8788,
+          path: '/hooks/mail',
+        },
+      }),
+    ]);
+    warn.mockRestore();
   });
 
   it('warns instead of building GitHub without its webhook secret', async () => {

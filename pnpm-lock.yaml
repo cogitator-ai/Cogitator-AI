@@ -419,6 +419,9 @@ importers:
       '@types/node':
         specifier: ^22.20.4
         version: 22.20.4
+      '@types/nodemailer':
+        specifier: ^8.0.2
+        version: 8.0.2
       '@types/ws':
         specifier: ^8.18.2
         version: 8.18.2
@@ -428,6 +431,15 @@ importers:
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
+      imapflow:
+        specifier: ^2.7.0
+        version: 2.7.0
+      nodemailer:
+        specifier: ^10.0.13
+        version: 10.0.13
+      postal-mime:
+        specifier: ^4.1.2
+        version: 4.1.2
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -849,7 +861,7 @@ importers:
         version: 3.2.1
       mongodb:
         specifier: ^7.7.0
-        version: 7.7.0
+        version: 7.7.0(socks@2.8.10)
       zod:
         specifier: ^4.6.5
         version: 4.6.5
@@ -866,6 +878,9 @@ importers:
       '@types/node':
         specifier: ^22.20.4
         version: 22.20.4
+      '@types/nodemailer':
+        specifier: ^8.0.2
+        version: 8.0.2
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1
@@ -875,6 +890,9 @@ importers:
       ioredis:
         specifier: ^6.0.0
         version: 6.0.0(supports-color@10.2.2)
+      nodemailer:
+        specifier: ^10.0.13
+        version: 10.0.13
       openai:
         specifier: ^7.25.0
         version: 7.25.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@7.30.0)(ws@8.22.0)(zod@4.6.5)
@@ -884,6 +902,9 @@ importers:
       playwright:
         specifier: ^1.63.0
         version: 1.63.0
+      postal-mime:
+        specifier: ^4.1.2
+        version: 4.1.2
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -1165,7 +1186,7 @@ importers:
         version: 3.2.1
       mongodb:
         specifier: ^7.7.0
-        version: 7.7.0
+        version: 7.7.0(socks@2.8.10)
       openai:
         specifier: ^7.25.0
         version: 7.25.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@7.30.0)(ws@8.22.0)(zod@4.6.5)
@@ -1355,7 +1376,7 @@ importers:
         version: 6.0.0(supports-color@10.2.2)
       mongodb:
         specifier: ^7.7.0
-        version: 7.7.0
+        version: 7.7.0(socks@2.8.10)
       pg:
         specifier: ^8.23.1
         version: 8.23.1
@@ -4507,6 +4528,10 @@ packages:
   '@yuku-toolchain/types@0.10.2':
     resolution: {integrity: sha512-sSeo4SSSToiS+sSD+bwn/s94EEcaLJ7tG5LCp8gFYC1G5VzxzX7fqB6m9RU1yMD8KTpu6zdU/I1NlQf8hVBJ9Q==}
 
+  '@zone-eu/mailsplit@5.4.27':
+    resolution: {integrity: sha512-9008ddFqqKk7lMF2S1sLU7ExfJZP9zPw5tkZy24EVt45Ryme2x85f/5vJZZqQ+vCJkKcCY78dJ5yuEVG3ZrVZA==}
+    engines: {node: '>=20.0.0'}
+
   abort-controller@3.0.0:
     resolution: {integrity: sha512-h8lQ8tacZYnR3vNQTgibj+tODHI5/+l06Au2Pcriv/Gmet0eaj4TwWH41sO9wnHDiQsEj19q0drzdWdeAHtweg==}
     engines: {node: '>=6.5'}
@@ -5118,6 +5143,10 @@ packages:
   encodeurl@2.0.0:
     resolution: {integrity: sha512-Q0n9HRi4m6JuGIV1eFlmvJB7ZEVxu93IrMyiMsGC0lrMJMWzRgx6WGquyfQgZVb31vhGgXnfmPNNXmxnOkRBrg==}
     engines: {node: '>= 0.8'}
+
+  encoding-japanese@2.4.0:
+    resolution: {integrity: sha512-PE0KjlsDy9JSsoU4C2Q8NXb1kC4c+bZRac9ZvHXUE4q1Ht63gScKMdEy9jst9+Fi3M4eDkqzkEhBZvix4blP2A==}
+    engines: {node: '>=18.0.0'}
 
   encoding-sniffer@0.2.1:
     resolution: {integrity: sha512-5gvq20T6vfpekVtqrYQsSCFZ1wEg5+wW0/QaZMWkFr6BqD3NfKs0rLCx4rrVlSWJeZb5NBJgVLswK/w2MWU+Gw==}
@@ -5756,6 +5785,10 @@ packages:
     resolution: {integrity: sha512-im9DjEDQ55s9fL4EYzOAv0yMqmMBSZp6G0VvFyTMPKWxiSBHUj9NW/qqLmXUwXrrM7AvqSlTCfvqRb0cM8yYqw==}
     engines: {node: '>=0.10.0'}
 
+  iconv-lite@0.7.3:
+    resolution: {integrity: sha512-IKXpvIzjnC9XTAUbVBcMfGS0EPaIXtW6v+zr+RRp+hqULEpo0owZax6wyRwPOJbWbzjYspQwusTsfVr0ifh4uQ==}
+    engines: {node: '>=0.10.0'}
+
   ieee754@1.2.1:
     resolution: {integrity: sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==}
 
@@ -5766,6 +5799,10 @@ packages:
   ignore@7.0.5:
     resolution: {integrity: sha512-Hs59xBNfUIunMFgWAbGX5cq6893IbWg4KnrjbYwX3tx0ztorVgTDA6B2sxf8ejHJ4wz8BqGUMYlnzNBer5NvGg==}
     engines: {node: '>= 4'}
+
+  imapflow@2.7.0:
+    resolution: {integrity: sha512-fEMZi9lgRNCyyF4Qh9BQd7KjS0BS7kGP4acCfANkC/BECroSRObkNL+xFKHhJSQPtLo2Y+d+3QsZ9RWvx8h+3w==}
+    engines: {node: '>=20.0.0'}
 
   import-meta-resolve@4.2.0:
     resolution: {integrity: sha512-Iqv2fzaTQN28s/FwZAoFq0ZSs/7hMAHJVX+w8PZl3cY19Pxk6jFFalxQoIfW2826i/fDLXv8IiEZRIT0lDuWcg==}
@@ -5946,6 +5983,18 @@ packages:
   levn@0.4.1:
     resolution: {integrity: sha512-+bT2uH4E5LGE7h/n3evcS/sQlJXCpIp6ym8OWJ5eV6+67Dsql/LaaT7qJBAt2rzfoa/5QBGBhxDix1dMt2kQKQ==}
     engines: {node: '>= 0.8.0'}
+
+  libbase64@1.4.1:
+    resolution: {integrity: sha512-Nyh3H90B3gRtrcxIe56Ayy7635J0jmh6AbxbQgQae8wrSPQMH5wFqJChiMTB13yKG512L3YspbA5DzumhFTITA==}
+    engines: {node: '>=20.0.0'}
+
+  libmime@5.5.2:
+    resolution: {integrity: sha512-Byw3CchK4eSqbgzpttsUoC4hx2VPP+hnveAuYAYZNipEc+0WlDFjVb1ISNscjq/idvyDP/Xjg8mnBcdgbsgvzg==}
+    engines: {node: '>=20.0.0'}
+
+  libqp@3.0.1:
+    resolution: {integrity: sha512-7QZxpPX25pga1WiMueduWxmrHMVBFrZPH6ZUaozGYa/H98JH6NVBSET3qVw+4NxzoraIW7rJ81YxSU9IalvCpg==}
+    engines: {node: '>=20.0.0'}
 
   libsignal@6.0.0:
     resolution: {integrity: sha512-d/5V3YFtDljbFMufz4ncyUYGYhJl+vzAe+c2EFFBQ6bz1h8Q3IOMEGXYMzlibU60I+e8GagMMpji18iez3P1hA==}
@@ -6897,6 +6946,10 @@ packages:
     engines: {node: '>=20'}
     hasBin: true
 
+  postal-mime@4.1.2:
+    resolution: {integrity: sha512-t2e8Z9lkuYN4uq76Gf1g1mSTv3lR8pl4dy0KGQlR6bLPgbZ7mRTn+nTXRf6/FC+xEFG2HWVk2CQNWHKAds3BHg==}
+    engines: {node: '>=20'}
+
   postcss-load-config@6.0.1:
     resolution: {integrity: sha512-oPtTM4oerL+UXmx+93ytZVN82RrlY/wPUV8IeDxFrzIjXOLF1pN+EmKPLbubvKHT2HC20xXsCAH2Z+CKV6Oz/g==}
     engines: {node: '>= 18'}
@@ -7299,6 +7352,14 @@ packages:
   skin-tone@2.0.0:
     resolution: {integrity: sha512-kUMbT1oBJCpgrnKoSr0o6wPtvRWT9W9UKvGLwfJYO2WuahZRHOpEyL1ckyMGgMWh0UdpmaoFqKKD29WTomNEGA==}
     engines: {node: '>=8'}
+
+  smart-buffer@4.2.0:
+    resolution: {integrity: sha512-94hK0Hh8rPqQl2xXc3HsaBoOXKV20MToPkcXvwbISWLEs+64sBq5kFgn2kJDHb1Pry9yrP0dxrCI9RRci7RXKg==}
+    engines: {node: '>= 6.0.0', npm: '>= 3.0.0'}
+
+  socks@2.8.10:
+    resolution: {integrity: sha512-e0VyvkVTwVYViNovRkZ9aodhxVlyoMn7eJhVUPxZ+eK9P/7CBkxvvsBOHqFPEH416726W8tLXXXjKwqgTErrCQ==}
+    engines: {node: '>= 10.0.0', npm: '>= 3.0.0'}
 
   sonic-boom@4.2.1:
     resolution: {integrity: sha512-w6AxtubXa2wTXAUsZMMWERrsIRAdrK0Sc+FUytWvYAhBJLyuI4llrMIC1DtlNSdI99EI86KZum2MMq3EAZlF9Q==}
@@ -10526,6 +10587,12 @@ snapshots:
 
   '@yuku-toolchain/types@0.10.2': {}
 
+  '@zone-eu/mailsplit@5.4.27':
+    dependencies:
+      libbase64: 1.4.1
+      libmime: 5.5.2
+      libqp: 3.0.1
+
   abort-controller@3.0.0:
     dependencies:
       event-target-shim: 5.0.1
@@ -11171,6 +11238,8 @@ snapshots:
   emojilib@2.4.0: {}
 
   encodeurl@2.0.0: {}
+
+  encoding-japanese@2.4.0: {}
 
   encoding-sniffer@0.2.1:
     dependencies:
@@ -12031,11 +12100,26 @@ snapshots:
     dependencies:
       safer-buffer: 2.1.2
 
+  iconv-lite@0.7.3:
+    dependencies:
+      safer-buffer: 2.1.2
+
   ieee754@1.2.1: {}
 
   ignore@5.3.2: {}
 
   ignore@7.0.5: {}
+
+  imapflow@2.7.0:
+    dependencies:
+      '@zone-eu/mailsplit': 5.4.27
+      encoding-japanese: 2.4.0
+      iconv-lite: 0.7.3
+      libbase64: 1.4.1
+      libmime: 5.5.2
+      libqp: 3.0.1
+      pino: 10.3.1
+      socks: 2.8.10
 
   import-meta-resolve@4.2.0: {}
 
@@ -12221,6 +12305,17 @@ snapshots:
     dependencies:
       prelude-ls: 1.2.1
       type-check: 0.4.0
+
+  libbase64@1.4.1: {}
+
+  libmime@5.5.2:
+    dependencies:
+      encoding-japanese: 2.4.0
+      iconv-lite: 0.7.3
+      libbase64: 1.4.1
+      libqp: 3.0.1
+
+  libqp@3.0.1: {}
 
   libsignal@6.0.0:
     dependencies:
@@ -12943,11 +13038,13 @@ snapshots:
       '@types/whatwg-url': 13.0.0
       whatwg-url: 14.2.0
 
-  mongodb@7.7.0:
+  mongodb@7.7.0(socks@2.8.10):
     dependencies:
       '@mongodb-js/saslprep': 1.5.5
       bson: 7.3.3
       mongodb-connection-string-url: 7.0.2
+    optionalDependencies:
+      socks: 2.8.10
 
   motion-dom@13.5.0:
     dependencies:
@@ -13383,6 +13480,8 @@ snapshots:
   playwright@1.63.0:
     dependencies:
       playwright-core: 1.63.0
+
+  postal-mime@4.1.2: {}
 
   postcss-load-config@6.0.1(jiti@2.7.0)(postcss@8.5.28)(tsx@4.23.15)(yaml@2.9.1):
     dependencies:
@@ -13930,6 +14029,13 @@ snapshots:
   skin-tone@2.0.0:
     dependencies:
       unicode-emoji-modifier-base: 1.0.0
+
+  smart-buffer@4.2.0: {}
+
+  socks@2.8.10:
+    dependencies:
+      ip-address: 10.7.3
+      smart-buffer: 4.2.0
 
   sonic-boom@4.2.1:
     dependencies:

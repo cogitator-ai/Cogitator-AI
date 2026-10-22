@@ -15,8 +15,8 @@ import {
 } from '../../helpers/scaffold-harness';
 
 /**
- * A messaging bot on Bluesky, Threads, GitHub and WebChat (GitHub's webhook
- * served on the WebChat port), generated, installed from the workspace
+ * A messaging bot on Bluesky, Threads, GitHub, email and WebChat (GitHub's
+ * webhook served on the WebChat port), generated, installed from the workspace
  * tarballs the way npm would ship them, and checked: it typechecks, lints,
  * passes its own tests and builds.
  */
@@ -33,7 +33,7 @@ beforeAll(async () => {
       name: 'social-bot',
       preset: 'channels',
       app: 'channels',
-      channels: ['bluesky', 'threads', 'github', 'webchat'],
+      channels: ['bluesky', 'threads', 'github', 'email', 'webchat'],
       memory: 'sqlite',
       features: [],
       provider: 'ollama',
@@ -55,7 +55,7 @@ beforeAll(async () => {
 
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
-describe('a generated bot on Bluesky, Threads, GitHub and WebChat', () => {
+describe('a generated bot on Bluesky, Threads, GitHub, email and WebChat', () => {
   for (const script of ['typecheck', 'lint', 'test', 'build']) {
     it(`runs ${script}`, async (context) => {
       if (!available) return context.skip('pnpm is not installed');

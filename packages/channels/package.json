@@ -18,6 +18,7 @@
     "bluesky",
     "threads",
     "github",
+    "email",
     "social"
   ],
   "type": "module",
@@ -54,9 +55,13 @@
   "devDependencies": {
     "@atproto/api": "0.24.0",
     "@types/node": "^22.20.4",
+    "@types/nodemailer": "^8.0.2",
     "@types/ws": "^8.18.2",
     "@whiskeysockets/baileys": "7.0.0-rc14",
     "better-sqlite3": "^13.0.3",
+    "imapflow": "^2.7.0",
+    "nodemailer": "^10.0.13",
+    "postal-mime": "^4.1.2",
     "typescript": "^6.0.3",
     "vitest": "^5.0.3",
     "ws": "^8.22.0"
@@ -76,7 +81,10 @@
     "pg": ">=8.0.0",
     "qrcode-terminal": ">=0.12.0",
     "ws": ">=8.0.0",
-    "@atproto/api": ">=0.24.0"
+    "@atproto/api": ">=0.24.0",
+    "imapflow": ">=1.0.0",
+    "nodemailer": ">=6.0.0",
+    "postal-mime": ">=2.0.0"
   },
   "peerDependenciesMeta": {
     "grammy": {
@@ -122,6 +130,15 @@
       "optional": true
     },
     "@atproto/api": {
+      "optional": true
+    },
+    "imapflow": {
+      "optional": true
+    },
+    "nodemailer": {
+      "optional": true
+    },
+    "postal-mime": {
       "optional": true
     }
   },

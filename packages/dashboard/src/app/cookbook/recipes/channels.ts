@@ -5,7 +5,7 @@ export const channels: Section = {
   title: 'Messaging Channels',
   icon: '💬',
   description:
-    'Put an agent on Telegram, a WebChat socket or GitHub issues and reviews, or build a full personal assistant from a config object.',
+    'Put an agent on Telegram, a WebChat socket, GitHub issues and reviews or an email inbox, or build a full personal assistant from a config object.',
   recipes: [
     {
       id: 'telegram-bot',
@@ -385,6 +385,90 @@ console.log(\`@\${github.login} is listening on http://localhost:8787/github/web
         {
           href: '/docs/channels/github',
           label: 'GitHub',
+        },
+        {
+          href: '/docs/channels/gateway',
+          label: 'Gateway',
+        },
+      ],
+    },
+    {
+      id: 'email-bot',
+      title: 'Email Bot That Answers in the Thread',
+      difficulty: 'medium',
+      time: '15 min',
+      problem:
+        'You want an agent that answers mail sent to a mailbox, as a reply in the same thread, without answering spoofed senders or auto-replies.',
+      points: [
+        'Run a `Gateway` with `emailChannel()`: IMAP with IDLE reads new mail, SMTP sends the answers',
+        'Answers keep the thread: `Re:` subject, `In-Reply-To` and `References`, and every email thread is a conversation of its own',
+        'The agent reads the new text only, without quoted history and signatures, as HTML rendered from its Markdown goes out',
+        'Only `allowFrom` reaches the agent, and mail whose DKIM, SPF or DMARC results fail for the sender domain is dropped',
+        'Auto-replies, bounces, bulk mail and its own mail are skipped, so it never loops with another bot',
+      ],
+      file: 'email-bot.ts',
+      code: `import { Agent, Cogitator } from '@cogitator-ai/core';
+import { Gateway, emailChannel } from '@cogitator-ai/channels';
+
+const address = process.env.EMAIL_ADDRESS;
+const password = process.env.EMAIL_PASSWORD;
+const apiKey = process.env.GOOGLE_API_KEY;
+if (!address || !password || !apiKey) {
+  throw new Error('Set EMAIL_ADDRESS, EMAIL_PASSWORD and GOOGLE_API_KEY');
+}
+
+const email = emailChannel({
+  address,
+  name: 'Acme Assistant',
+  allowFrom: ['acme.com'],
+  imap: { host: 'imap.gmail.com', auth: { user: address, pass: password } },
+  smtp: { host: 'smtp.gmail.com', port: 587, auth: { user: address, pass: password } },
+});
+
+const agent = new Agent({
+  name: 'email-assistant',
+  model: 'google/gemini-3.5-flash-lite',
+  instructions: 'You answer email for the Acme team. Be friendly and brief.',
+});
+
+const cogitator = new Cogitator({
+  llm: { providers: { google: { apiKey } } },
+  memory: { adapter: 'memory' },
+});
+const memory = await cogitator.getMemory();
+
+const gateway = new Gateway({
+  agent,
+  cogitator,
+  channels: [email],
+  ...(memory && { memory }),
+});
+
+await gateway.start();
+console.log(\`\${address} answers mail from acme.com\`);`,
+      install: 'pnpm add @cogitator-ai/core @cogitator-ai/channels imapflow postal-mime nodemailer',
+      env: ['EMAIL_ADDRESS', 'EMAIL_PASSWORD', 'GOOGLE_API_KEY'],
+      run: 'npx tsx email-bot.ts',
+      repoRun: 'npx tsx examples/channels/07-email-bot.ts',
+      notes: [
+        {
+          type: 'tip',
+          text: 'Give the bot a mailbox of its own: it reads every unread mail there and marks it read. For Gmail turn on 2-step verification and use an app password.',
+        },
+        {
+          type: 'warning',
+          text: 'A `From` address is easy to forge. Keep `allowFrom` short, leave `senderAuth` on, and give the agent no tool a stranger must not reach.',
+        },
+        {
+          type: 'info',
+          text: "Mailgun, Postmark and SendGrid can post inbound mail instead: `webhook: { provider: 'mailgun', signingKey, port: 8788 }`. Their DKIM and SPF results are checked for the sender domain.",
+        },
+      ],
+      example: 'channels/07-email-bot.ts',
+      docs: [
+        {
+          href: '/docs/channels/email',
+          label: 'Email',
         },
         {
           href: '/docs/channels/gateway',
