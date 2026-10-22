@@ -221,23 +221,28 @@ class Cogitator {
     run?: { userId?: string; threadId?: string; since?: Date } // since: report.dedupe.through to go on
   ): Promise<MemoryConsolidationReport>;
   // Deletes entries (a user message with its replies, unless keepReplies), a thread, or every thread
-  // of a user and everything kept for the user, with all memory derived from them. Goes through the
-  // memory of the agents each thread names (metadata.memoryAgentIds) and its owner, agents adds
-  // others and is needed for a thread that names none or a user without threads
+  // of a user and everything kept for the user, with all memory derived from them and the paused
+  // runs of the threads it touches. Goes through the memory of the agents each thread names
+  // (metadata.memoryAgentIds), agents adds others and is needed for the agents that ran in a
+  // thread before threads named them and for a user without threads. The graph is reached only
+  // with graph. Throws CogitatorError (VALIDATION_ERROR) without memory or when the agents to go
+  // through are not known, a store's own error when it fails part of the way (call it again)
   forget(
     target: { entryIds: readonly string[] } | { threadId: string } | { userId: string },
     options?: MemoryCascadeCall // { agents?: (Agent | string)[]; graph?: GraphAdapter; keepReplies?: boolean }
   ): Promise<MemoryCascadeReport>;
-  // What the entries said becomes '[redacted]', their place stays, what was derived from them goes
+  // What the entries said becomes '[redacted]', their place stays, what was derived from them goes,
+  // an event entry among them or their replies is deleted. Also throws when the adapter cannot redact
   redactEntries(
     entryIds: readonly string[],
     options?: MemoryCascadeCall & { reason?: string }
   ): Promise<MemoryCascadeReport>;
-  // Rewinds the thread to an entry of its active branch, items standing only on the turns after it go stale
+  // Rewinds the thread to an entry of its active branch, items standing only on the turns after it
+  // go stale. Also throws when the adapter has no branches
   rewind(
     threadId: string,
     toEntryId: string,
-    options?: MemoryCascadeCall
+    options?: Pick<MemoryCascadeCall, 'agents'> // { agents? } only
   ): Promise<MemoryCascadeReport>;
 
   // Versioned instructions and A/B tests
@@ -1238,14 +1243,15 @@ const who = { agentIds: ['assistant'], keepReplies: false }; // whose items, fil
 
 await cascade.deleteEntries(entryIds, who); // a user message takes its replies unless keepReplies
 await cascade.redactEntries(entryIds, { at: new Date(), reason: 'erasure request' }, who); // needs redactEntry
-await cascade.deleteThread(threadId, who); // also purges the thread's own items and entities, redacts its files
-await cascade.deleteUser(userId, who); // every thread with metadata.userId, the user's scope, owned facts and graph
+await cascade.deleteThread(threadId, who); // also the thread's own items and entities and files, the copies in its forks
+await cascade.deleteUser(userId, who); // its threads whole, its messages in threads of others, its scope, owned facts and graph
 await cascade.rewind(threadId, toEntryId, who); // items standing only on the turns after it marked stale
 
 // MemoryCascadeReport
 interface MemoryCascadeReport {
   entries: { deleted: string[]; redacted: string[] };
-  threads: string[];
+  threads: string[]; // threads deleted
+  threadsChanged: string[]; // threads that lost or had redacted some of their entries
   summaries: string[]; // compaction entries deleted, the next compaction writes them again
   items: { purged: string[]; trimmed: string[]; stale: string[] };
   entities: string[];
@@ -1262,7 +1268,7 @@ await new MemoryItems({ adapter: memory }).reviseEvidence(
 );
 ```
 
-With deleted or redacted entries go the compaction summaries that cover or quote them, the memory items, facts and graph nodes and edges that stand only on them (the others lose those quotes), their vectors, the memory file versions written at them and every version of an observation or a playbook that names an item or a lesson that went. `redactedEntry(entry, redaction)` and `REDACTED_TEXT` build a redacted entry for an adapter of your own. See [Forgetting, Redacting and Rewinding](https://cogitator.app/docs/memory#forgetting-redacting-and-rewinding).
+With deleted or redacted entries go their replies and their copies in forks (`metadata.forks`, `FORKS_KEY`), the compaction summaries that cover or quote them, the memory items, facts and graph nodes and edges that stand only on them (the others lose those quotes, entities no item is about any more are deleted), their vectors, the memory file versions written at them and every version of an observation or a playbook that names an item or a lesson that went. A file whose version in front was redacted is then deleted. An event entry among the entries to redact or their replies is deleted, not redacted. `deleteUser` finds the user's messages in threads of others by `metadata.memoryUserIds` (`MEMORY_USERS_KEY`), listing every thread. Derived memory goes before the entries, so a cascade that fails part of the way can be made again. `MemoryCascade` reads no `metadata.memoryAgentIds` and drops no paused runs, a Cogitator does both. `redactedEntry(entry, redaction)` and `REDACTED_TEXT` build a redacted entry for an adapter of your own. See [Forgetting, Redacting and Rewinding](https://cogitator.app/docs/memory#forgetting-redacting-and-rewinding).
 
 ---
 
