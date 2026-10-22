@@ -509,8 +509,8 @@ export class Cogitator implements ToolInvoker {
    * runtime's sandbox and `tool.timeout` kept. A call that needs approval nobody gives does not
    * run: there is no run to pause, so it is refused with the request in `pendingApproval`. A call
    * whose `signal` aborts, even while its approval is being decided, does not run either. Pass
-   * `agent` for the gates a run of that agent applies: its model for the guardrails and its
-   * middleware around the call.
+   * `agent` for the gates a run of that agent applies: its model for the guardrails unless
+   * `guardrails.model` is set, and its middleware around the call.
    *
    * @example
    * ```ts

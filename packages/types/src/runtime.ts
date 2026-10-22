@@ -441,9 +441,9 @@ export interface ToolInvocationOptions {
   agentId?: string;
   /**
    * The agent the call is made for, so it gets the gates a run of that agent applies: the
-   * guardrails are built with its model when neither `guardrails.model` nor `llm.defaultModel`
-   * names one, its `middleware` wraps the call after the Cogitator's, and its id and name are the
-   * call's `agentId` and `agentName` unless `agentId` is set
+   * guardrails are built with its model unless `guardrails.model` is set (as for a run, the
+   * first call or run builds them), its `middleware` wraps the call after the Cogitator's, and
+   * its id and name are the call's `agentId` and `agentName` unless `agentId` is set
    */
   agent?: ToolInvocationAgent;
   /** Cancels the call */

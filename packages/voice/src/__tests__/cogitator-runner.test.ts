@@ -126,11 +126,27 @@ describe('createCogitatorRunner streaming and tools', () => {
       Symbol.asyncIterator
     ]();
     const pending = iterator.next();
+    await vi.waitFor(() => expect(run).toHaveBeenCalled());
 
     controller.abort(new Error('interrupted'));
 
     await expect(pending).rejects.toThrow('interrupted');
     expect(runSignal?.aborted).toBe(true);
+  });
+
+  it('does not start a run whose turn was interrupted before it started', async () => {
+    const run = vi.fn().mockResolvedValue({ output: 'late' });
+    const runner = createCogitatorRunner({ run }, agent);
+    const controller = new AbortController();
+    const iterator = runner.stream!('Hi', { sessionId: 'a', signal: controller.signal })[
+      Symbol.asyncIterator
+    ]();
+
+    const pending = iterator.next();
+    controller.abort(new Error('interrupted'));
+
+    await expect(pending).rejects.toThrow('interrupted');
+    expect(run).not.toHaveBeenCalled();
   });
 
   it('offers the agent tools through invokeTool with the session thread', async () => {

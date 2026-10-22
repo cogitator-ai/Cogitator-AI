@@ -146,13 +146,16 @@ export function maxSentenceLength(maxLength: number | undefined): number {
  * list items are spoken one by one. Markdown emphasis and code marks after the stop (`**Note.**`)
  * stay with it. A period does not end a sentence after an abbreviation (`Dr.`, `e.g.`, `U.S.`,
  * an initial such as `J.`), inside a number (`3.14`), after a list number at the start of a line
- * (`1.`), or before a lowercase word. A piece longer than `maxLength` (at least 20) is cut at the
+ * (`1.`) or after the next number of a list that goes on in the same line (`1. Open it. 2. Close
+ * it.`), or before a lowercase word. A piece longer than `maxLength` (at least 20) is cut at the
  * last whitespace before it, or at the limit when there is none.
  */
 export class SentenceSplitter {
   private buffer = '';
   /** Whether the buffer starts a line: at the start of the text or after a line break */
   private lineStart = true;
+  /** The number of the last list item taken (`2.` for "2. Close it."), to know the next one */
+  private listNumber: number | undefined;
   private readonly maxLength: number;
 
   constructor(options: SentenceSplitterOptions = {}) {
@@ -194,6 +197,8 @@ export class SentenceSplitter {
     const sentence = this.buffer.slice(0, at);
     this.buffer = this.buffer.slice(at);
     this.lineStart = /\n\s*$/.test(sentence);
+    const marker = /^\s*(\d+)\.\s/.exec(sentence);
+    if (marker) this.listNumber = Number(marker[1]);
     return sentence;
   }
 
@@ -213,6 +218,16 @@ export class SentenceSplitter {
       cut = next;
     }
     return cut;
+  }
+
+  /**
+   * Whether `word` starts the next sentence as the next item of a list whose items share a line
+   * ("1. Open it. 2. Close it.")
+   */
+  private continuesList(word: string, start: number): boolean {
+    if (this.listNumber === undefined) return false;
+    if (this.buffer.slice(0, start).trim().length > 0) return false;
+    return Number(word) === this.listNumber + 1;
   }
 
   /** Whether the text before `start` on its line is only whitespace */
@@ -272,7 +287,9 @@ export class SentenceSplitter {
     if (run === '.') {
       const { word, start } = wordBefore(text, at);
       if (isAbbreviation(word, previousWord(text, start))) return { kind: 'none' };
-      if (/^\d+$/.test(word) && this.opensLine(start)) return { kind: 'none' };
+      if (/^\d+$/.test(word) && (this.opensLine(start) || this.continuesList(word, start))) {
+        return { kind: 'none' };
+      }
     }
 
     if (next === text.length) return final ? { kind: 'cut', at: next } : { kind: 'wait' };

@@ -199,7 +199,8 @@ export interface RealtimeToolsOptions {
   agentId?: string;
   /**
    * The agent the tools belong to: each call gets the gates a run of it applies, its model for
-   * the guardrails and its middleware around the call (see `ToolInvocationOptions.agent`)
+   * the guardrails unless `guardrails.model` is set, and its middleware around the call (see
+   * `ToolInvocationOptions.agent`)
    */
   agent?: ToolInvocationAgent;
   /**

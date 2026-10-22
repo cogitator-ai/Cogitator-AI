@@ -330,7 +330,7 @@ Without a VAD, audio is buffered until `endAudio()`. `interrupt()` cancels the i
 
 ### Streaming replies
 
-When the runner has a `stream(input, context)` method, as `createCogitatorRunner()` does, a session speaks the answer while the model is still generating it. The text deltas are split into sentences and each sentence goes to `tts.streamSynthesize` in order, so the first audio leaves before the answer is complete. The splitter knows abbreviations (`Dr.`, `e.g.`), initials after a capitalized word (`J. R. R. Tolkien`, but not `vitamin C.`), decimals (`3.14`), list numbers at the start of a line (`1.`), ellipses, `?!`, markdown marks after a stop (`**Note.**`), CJK full stops and line breaks, flushes a tail without punctuation at the end, and cuts a piece longer than `maxSentenceLength` characters (default 250, at least 20) on whitespace.
+When the runner has a `stream(input, context)` method, as `createCogitatorRunner()` does, a session speaks the answer while the model is still generating it. The text deltas are split into sentences and each sentence goes to `tts.streamSynthesize` in order, so the first audio leaves before the answer is complete. The splitter knows abbreviations (`Dr.`, `e.g.`), initials after a capitalized word (`J. R. R. Tolkien`, but not `vitamin C.`), decimals (`3.14`), list numbers at the start of a line or of the next item of a list (`1. Open it. 2. Close it.`), ellipses, `?!`, markdown marks after a stop (`**Note.**`), CJK full stops and line breaks, flushes a tail without punctuation at the end, and cuts a piece longer than `maxSentenceLength` characters (default 250, at least 20) on whitespace.
 
 ```typescript
 const pipeline = new VoicePipeline({
@@ -367,7 +367,7 @@ With `createCogitatorRunner()` the thread then holds what the user heard:
 
 Text the model said alongside tool calls (for example "Let me check") stays as the run saved it, only the final answer is trimmed. A run that fails after it saved its answer has the answer replaced the same way, and its error is reported once the turn was spoken. The model reads an interrupted reply with `[interrupted by the user]` after it, so it does not take the spoken part for a finished answer.
 
-The thread is changed only while the turn's last entry is still its active leaf. When something else wrote to the thread after the turn (another run on the same `threadId`, a message added by your code), the thread is left as it is, with the whole answer, so a newer message is never hidden or moved. The runner settles the turns of one thread one after another. Keeping the thread needs a runtime with `getMemory()`, as a `Cogitator` with `memory` configured has.
+The thread is changed only while the turn's last entry is still its active leaf. When something else wrote to the thread after the turn (another run on the same `threadId`, a message added by your code), the thread is left as it is, with the whole answer, so a newer message is never hidden or moved. The runner fixes the thread as soon as the run saved its answer, without waiting for what the run does afterwards (`afterRun` hooks such as memory extraction), settles the turns of one thread one after another, and starts a run only after the previous run of its thread ended, so the runs of a thread never overlap. Keeping the thread needs a runtime with `getMemory()`, as a `Cogitator` with `memory` configured has.
 
 ### Barge-in
 
@@ -598,7 +598,7 @@ await voiceAgent.listen(8080);
 
 In realtime mode the agent's `instructions` are used as the session instructions unless `instructions` is set explicitly.
 
-Without `tools`, the model gets the agent's own tools from `agent.realtimeTools()`. This is on by default, so a realtime `VoiceAgent` built with `createCogitatorRunner()` exposes the agent's tools to the model: pass `agentTools: false` to keep the model without tools. A `createCogitatorRunner()` runner builds them with `createRealtimeTools(cogitator, agent.tools, { agent })`, so each call goes through `cogitator.invokeTool` with the agent, the gates a text run of it applies: schema validation, approvals, the guardrails built with the agent's model, the agent's `wrapToolCall` middleware after the Cogitator's, the sandbox and `tool.timeout`, with the agent's id and the session's thread id (`voice:<sessionId>`, or the runner's `threadId` resolver) in the tool context.
+Without `tools`, the model gets the agent's own tools from `agent.realtimeTools()`. This is on by default, so a realtime `VoiceAgent` built with `createCogitatorRunner()` exposes the agent's tools to the model: pass `agentTools: false` to keep the model without tools. A `createCogitatorRunner()` runner builds them with `createRealtimeTools(cogitator, agent.tools, { agent })`, so each call goes through `cogitator.invokeTool` with the agent, the gates a text run of it applies: schema validation, approvals, the guardrails (built with the agent's model unless `guardrails.model` is set, as for a text run), the agent's `wrapToolCall` middleware after the Cogitator's, the sandbox and `tool.timeout`, with the agent's id and the session's thread id (`voice:<sessionId>`, or the runner's `threadId` resolver) in the tool context.
 
 What is not the same as a text run:
 

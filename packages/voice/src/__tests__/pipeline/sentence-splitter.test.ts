@@ -138,6 +138,18 @@ describe('SentenceSplitter', () => {
     ]);
   });
 
+  it('keeps the numbers of a list in one line with their items', () => {
+    expect(trimmed(split('1. Open it. 2. Close it. 3. Done.'))).toEqual([
+      '1. Open it.',
+      '2. Close it.',
+      '3. Done.',
+    ]);
+    expect(trimmed(splitStreamed(['1. Open', ' it. 2', '. Close it.']))).toEqual([
+      '1. Open it.',
+      '2. Close it.',
+    ]);
+  });
+
   it('reads a single capital as an initial only after a capitalized word or at the start', () => {
     expect(trimmed(split('Take vitamin C. It helps. Plan B. Works too.'))).toEqual([
       'Take vitamin C.',

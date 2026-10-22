@@ -66,21 +66,64 @@ const INTERRUPTED = { interrupted: true } as const;
 const CHARS_PER_TOKEN = 4;
 const MESSAGE_OVERHEAD = 4;
 
-/** Runs the tasks given for a thread one after another */
-type ThreadQueue = (threadId: string, task: () => Promise<void>) => Promise<void>;
+/**
+ * Keeps the streamed turns of each thread in order: their settles run one after another, and a
+ * run starts once the runs and settles queued before it for its thread are done, so the runs of
+ * a thread never overlap, as when each turn waited for the whole run
+ */
+class ThreadLanes {
+  private readonly settles = new Map<string, Promise<void>>();
+  private readonly runs = new Map<string, Promise<void>>();
 
-function threadQueue(): ThreadQueue {
-  const tails = new Map<string, Promise<void>>();
-  return (threadId, task) => {
-    const previous = tails.get(threadId) ?? Promise.resolve();
-    const run = previous.then(task);
-    const tail = run.catch(() => undefined);
+  /** Queues `task` after the settles of `threadId` queued before it */
+  settle(threadId: string, task: () => Promise<void>): Promise<void> {
+    const done = (this.settles.get(threadId) ?? Promise.resolve()).then(task);
+    this.keep(
+      this.settles,
+      threadId,
+      done.catch(() => undefined)
+    );
+    return done;
+  }
+
+  /** Resolves once the runs and settles of `threadId` queued so far are done */
+  idle(threadId: string): Promise<void> {
+    return Promise.all([this.runs.get(threadId), this.settles.get(threadId)]).then(() => undefined);
+  }
+
+  /** Records a run of `threadId` that ends when `finished` settles (it never rejects) */
+  run(threadId: string, finished: Promise<void>): void {
+    this.keep(
+      this.runs,
+      threadId,
+      Promise.all([this.runs.get(threadId), finished]).then(() => undefined)
+    );
+  }
+
+  private keep(tails: Map<string, Promise<void>>, threadId: string, tail: Promise<void>): void {
     tails.set(threadId, tail);
     void tail.then(() => {
       if (tails.get(threadId) === tail) tails.delete(threadId);
     });
-    return run;
-  };
+  }
+}
+
+/** Resolves with `promise`, or rejects with the abort reason once `signal` aborts first */
+function unlessAborted(promise: Promise<void>, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(abortError(signal));
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => reject(abortError(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    void promise.then(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    });
+  });
+}
+
+function abortError(signal: AbortSignal): Error {
+  const reason: unknown = signal.reason;
+  return reason instanceof Error ? reason : new Error('The voice turn was aborted');
 }
 
 /** The agent as `invokeTool` takes it, when it names itself like a Cogitator `Agent` does */
@@ -107,7 +150,9 @@ function invocationAgent(agent: CogitatorRunnerAgent): ToolInvocationAgent | und
  * Text the model said alongside tool calls stays as the run saved it. A turn that completes and
  * is spoken in full leaves the thread as `run` does. The rewrite happens only while the run's
  * last entry is still the thread's active leaf: when something else wrote to the thread after
- * it, the thread is left as it is. Keeping the thread needs a runtime with `getMemory()`, as a
+ * it, the thread is left as it is. The thread is fixed as soon as the run saved its answer, and
+ * the runs of a thread never overlap: a streamed turn's run starts after the runs and settles
+ * before it for its thread are done. Keeping the thread needs a runtime with `getMemory()`, as a
  * `Cogitator` has.
  *
  * `realtimeTools` gives a realtime `VoiceAgent` the agent's tools, run through
@@ -129,7 +174,7 @@ export function createCogitatorRunner<TAgent extends CogitatorRunnerAgent>(
   options: CogitatorRunnerOptions = {}
 ): VoiceAgentRunner {
   const resolveThreadId = options.threadId ?? ((ctx: VoiceRunContext) => `voice:${ctx.sessionId}`);
-  const settles = threadQueue();
+  const lanes = new ThreadLanes();
   const runner: VoiceAgentRunner = {
     instructions: agent.instructions,
     async run(input, context) {
@@ -147,7 +192,7 @@ export function createCogitatorRunner<TAgent extends CogitatorRunnerAgent>(
         input,
         resolveThreadId(context),
         context,
-        settles
+        lanes
       );
     },
   };
@@ -187,6 +232,11 @@ class CogitatorVoiceTurn<TAgent> implements VoiceTurn {
   private failure: Error | undefined;
   private failureDelivered = false;
   private settled: Promise<void> | undefined;
+  private answerSaved!: () => void;
+  /** Resolves once the run saved its final answer: what `settle` needs, before the run's tail */
+  private readonly answered = new Promise<void>((resolve) => {
+    this.answerSaved = resolve;
+  });
 
   constructor(
     private readonly cogitator: CogitatorLike<TAgent>,
@@ -194,7 +244,7 @@ class CogitatorVoiceTurn<TAgent> implements VoiceTurn {
     private readonly input: string,
     private readonly threadId: string,
     private readonly context: VoiceRunContext,
-    private readonly settles: ThreadQueue
+    private readonly lanes: ThreadLanes
   ) {}
 
   [Symbol.asyncIterator](): AsyncIterator<string, string | undefined, undefined> {
@@ -207,12 +257,22 @@ class CogitatorVoiceTurn<TAgent> implements VoiceTurn {
     return this.settled;
   }
 
+  /**
+   * Fixes the thread as soon as the run saved its answer (or ended without one), not after what
+   * the run does afterwards (`afterRun` hooks, reflection), then waits for the run to end and
+   * reports a failure the stream did not deliver
+   */
   private async settleOnce(outcome: VoiceTurnOutcome): Promise<void> {
-    if (!this.finished) return;
-    await this.finished;
+    const finished = this.finished;
+    if (!finished) return;
     if (outcome.interrupted) {
-      await this.settles(this.threadId, () => this.keepSpoken(outcome.spoken));
+      const ready = Promise.race([this.answered, finished]);
+      await this.lanes.settle(this.threadId, async () => {
+        await ready;
+        await this.keepSpoken(outcome.spoken);
+      });
     }
+    await finished;
     if (this.failure && !this.failureDelivered && !this.controller.signal.aborted) {
       throw this.failure;
     }
@@ -225,27 +285,32 @@ class CogitatorVoiceTurn<TAgent> implements VoiceTurn {
     if (signal?.aborted) forwardAbort();
     else signal?.addEventListener('abort', forwardAbort, { once: true });
 
-    this.finished = this.cogitator
-      .run(this.agent, {
-        input: this.input,
-        threadId: this.threadId,
-        signal: this.controller.signal,
-        stream: true,
-        onToken: (token) => this.say(token),
-        onModelTurn: (turn) => {
-          if (turn.toolCalls.length > 0) {
-            if (this.streamed.length > 0 && !this.streamed.endsWith('\n')) this.say('\n');
-            this.answerStart = this.streamed.length;
-            return;
-          }
-          this.endAnswer(turn.content);
-        },
-        onMemoryEntry: (entry) => {
-          if (entry.threadId === this.threadId) this.entries.push(entry);
-        },
-      })
+    const turnsBefore = this.lanes.idle(this.threadId);
+    this.finished = unlessAborted(turnsBefore, this.controller.signal)
+      .then(() =>
+        this.cogitator.run(this.agent, {
+          input: this.input,
+          threadId: this.threadId,
+          signal: this.controller.signal,
+          stream: true,
+          onToken: (token) => this.say(token),
+          onModelTurn: (turn) => {
+            if (turn.toolCalls.length > 0) {
+              if (this.streamed.length > 0 && !this.streamed.endsWith('\n')) this.say('\n');
+              this.answerStart = this.streamed.length;
+              return;
+            }
+            this.endAnswer(turn.content);
+          },
+          onMemoryEntry: (entry) => {
+            if (entry.threadId !== this.threadId) return;
+            this.entries.push(entry);
+            if (isAnswer(entry)) this.answerSaved();
+          },
+        })
+      )
       .then(
-        (result) => this.endAnswer(result.output),
+        (result) => this.endRun(result.output),
         (error: unknown) => {
           this.failure = error instanceof Error ? error : new Error(String(error));
           if (this.tokens.ended) return;
@@ -254,6 +319,7 @@ class CogitatorVoiceTurn<TAgent> implements VoiceTurn {
         }
       )
       .finally(() => signal?.removeEventListener('abort', forwardAbort));
+    this.lanes.run(this.threadId, this.finished);
   }
 
   private say(text: string): void {
@@ -262,11 +328,22 @@ class CogitatorVoiceTurn<TAgent> implements VoiceTurn {
     this.tokens.push(text);
   }
 
-  /** Ends the stream with the answer, saying it at once when none of it was streamed */
+  /** The final model turn: ends the stream with its text, said at once when none of it streamed */
   private endAnswer(answer: string): void {
     if (this.tokens.ended) return;
     if (this.streamed.length === this.answerStart) this.say(answer);
     this.tokens.end(answer);
+  }
+
+  /**
+   * The run ended without a final model turn the stream saw (a paused run, an iteration limit,
+   * a runtime that does not stream): end the stream with its output, said only when nothing was
+   * streamed at all, since otherwise it was already said
+   */
+  private endRun(output: string): void {
+    if (this.tokens.ended) return;
+    if (this.streamed.length === 0) this.say(output);
+    this.tokens.end(output);
   }
 
   private async keepSpoken(spoken: string): Promise<void> {

@@ -348,6 +348,116 @@ describe('createCogitatorRunner streaming with a Cogitator', () => {
     ]);
   });
 
+  it('does not say the output again when a run pauses for an approval', async () => {
+    const book = tool({
+      name: 'book',
+      description: 'Book',
+      parameters: z.object({}),
+      requiresApproval: true,
+      execute: async () => 'ok',
+    });
+    const booking = new Agent({
+      name: 'booking',
+      model: 'mock/m',
+      instructions: 'x',
+      tools: [book],
+    });
+    const backend = new MockLLMBackend().setStreamChunks([
+      { content: 'Booking it now.' },
+      { toolCalls: [{ id: 'c1', name: 'book', arguments: {} }], finishReason: 'tool_calls' },
+    ]);
+    const cogitator = runtime(backend);
+    const runner = createCogitatorRunner(cogitator, booking);
+    const run = await cogitator.run(booking, {
+      input: 'Book',
+      threadId: 'plain',
+      stream: true,
+      onToken: () => undefined,
+    });
+
+    const { deltas, answer } = await allOf(
+      runner.stream!('Book', { sessionId: 's', signal: new AbortController().signal })
+    );
+
+    expect(run.status).toBe('paused');
+    expect(deltas).toEqual(['Booking it now.', '\n']);
+    expect(answer).toBe(run.output);
+  });
+
+  it('does not say the output again when a run stops at its iteration limit', async () => {
+    const limited = new Agent({
+      name: 'limited',
+      model: 'mock/m',
+      instructions: 'x',
+      tools: [weather],
+      maxIterations: 1,
+      onIterationLimit: 'stop',
+    });
+    const backend = new MockLLMBackend().setStreamChunks(toolTurn);
+    const cogitator = runtime(backend);
+    const runner = createCogitatorRunner(cogitator, limited);
+    const run = await cogitator.run(limited, {
+      input: 'Weather?',
+      threadId: 'plain',
+      stream: true,
+      onToken: () => undefined,
+    });
+
+    const { deltas, answer } = await allOf(
+      runner.stream!('Weather?', { sessionId: 's', signal: new AbortController().signal })
+    );
+
+    expect(run.iterationLimitReached).toBe(true);
+    expect(deltas).toEqual(['Let me check. ', '\n']);
+    expect(answer).toBe(run.output);
+  });
+
+  it('settles once the answer is saved and starts the next run after the slow tail', async () => {
+    let tailsDone = 0;
+    const slowTail: RunMiddleware = {
+      name: 'slow-tail',
+      afterRun: async () => {
+        await new Promise((r) => setTimeout(r, 300));
+        tailsDone++;
+      },
+    };
+    const backend = new MockLLMBackend().setMultipleStreamChunks([
+      chunks('One. ', 'Two.'),
+      chunks('Next.'),
+    ]);
+    const cogitator = runtime(backend);
+    const runner = createCogitatorRunner(cogitator, agentWith([slowTail]));
+    const signal = new AbortController().signal;
+
+    const first = runner.stream!('Hi', { sessionId: 's', signal });
+    await readAll(first);
+    const settled = first.settle!({ spoken: 'One. ', interrupted: true });
+    await vi.waitFor(async () =>
+      expect(said(await path(cogitator, 'voice:s')).at(-1)).toEqual([
+        'message',
+        'assistant',
+        'One.',
+      ])
+    );
+    expect(tailsDone).toBe(0);
+
+    const second = runner.stream!('Again', { sessionId: 's', signal });
+    const reading = readAll(second);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(backend.getCallCount()).toBe(1);
+    expect(await reading).toEqual(['Next.']);
+    expect(tailsDone).toBeGreaterThanOrEqual(1);
+    await settled;
+    await second.settle!({ spoken: 'Next.', interrupted: false });
+
+    expect(said(await path(cogitator, 'voice:s'))).toEqual([
+      ['message', 'user', 'Hi'],
+      ['message', 'assistant', 'One.'],
+      ['message', 'user', 'Again'],
+      ['message', 'assistant', 'Next.'],
+    ]);
+  });
+
   it('settles once however often settle is called', async () => {
     const backend = new MockLLMBackend().setStreamChunks(chunks('One. ', 'Two.'));
     const cogitator = runtime(backend);
