@@ -8,6 +8,7 @@ import type {
   AgentWireResponseFormat,
   AgentWireRunResult,
   AgentWireUsage,
+  CheckpointStore,
   RunCheckpoint,
   Tool,
   ToolApprovalDecision,
@@ -196,10 +197,26 @@ export interface AgentJobResult extends AgentWireRunResult {
   };
 }
 
+/**
+ * What a job used and cost, summed over its agent runs. `inputTokens` and `outputTokens` are
+ * absent where the runs reported only their totals.
+ */
+export interface JobUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens: number;
+  /** USD */
+  cost: number;
+  /** Agent runs counted */
+  runs: number;
+}
+
 export interface WorkflowJobResult {
   type: 'workflow';
   output: Record<string, unknown>;
   nodeResults: Record<string, unknown>;
+  /** What the agent nodes used and cost */
+  usage: JobUsage;
   duration: number;
 }
 
@@ -207,6 +224,8 @@ export interface SwarmJobResult {
   type: 'swarm';
   output: string;
   rounds: number;
+  /** What the swarm's agent runs used and cost, in all and by agent */
+  usage: JobUsage & { byAgent: Record<string, { tokens: number; cost: number; runs: number }> };
   agentOutputs: {
     agent: string;
     output: string;
@@ -266,6 +285,11 @@ export interface JobExecutionOptions {
    * `WorkerPool.cancelJob()` and a shutdown that runs out of time stop the work
    */
   signal?: AbortSignal;
+  /**
+   * Whether no attempt of the job comes after this one: a workflow job that fails on its last
+   * attempt lets its checkpoints go, one that fails earlier keeps them for the next attempt
+   */
+  isFinalAttempt?: boolean;
 }
 
 /**
@@ -279,6 +303,12 @@ export interface WorkerRuntime {
    * name; a job that needs a tool missing from this list fails.
    */
   tools?: Tool[];
+  /**
+   * Where workflow jobs keep their checkpoints, after every node, so a retried job goes on from
+   * the last one. `WorkerPool` keeps them in its Redis by default, a processor called on its own
+   * runs without them.
+   */
+  checkpoints?: CheckpointStore;
 }
 
 export interface WorkerConfig extends QueueConfig, WorkerRuntime {

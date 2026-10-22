@@ -259,7 +259,12 @@ describe('workflow jobs whose agent pauses', () => {
   it('fail without retries in the worker pool', async () => {
     const runtime = worker();
     const { WorkerPool } = await import('../worker');
-    const pool = new WorkerPool({ redis: { host: 'h', port: 1 }, ...runtime });
+    const { InMemoryCheckpointStore } = await import('@cogitator-ai/workflows');
+    const pool = new WorkerPool({
+      redis: { host: 'h', port: 1 },
+      ...runtime,
+      checkpoints: new InMemoryCheckpointStore(),
+    });
     await pool.start();
     const job = {
       id: 'job_1',

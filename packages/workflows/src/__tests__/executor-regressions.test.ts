@@ -761,3 +761,38 @@ describe('Executor resume and stream options', () => {
     expect(metricsCollector.getWorkflowMetrics('resumable')?.executionCount).toBe(1);
   });
 });
+
+describe('NodeContext.idempotencyKey', () => {
+  it('names each visit of a node, the same when it is retried or its run resumed', async () => {
+    const seen: string[] = [];
+    let failing = true;
+    const workflow = new WorkflowBuilder('pay')
+      .addNode('charge', async (ctx) => {
+        seen.push(ctx.idempotencyKey ?? 'none');
+        if (failing) throw new Error('gateway down');
+        return { output: 'charged' };
+      })
+      .build();
+    const checkpoints = new InMemoryCheckpointStore();
+    const executor = new WorkflowExecutor({} as Cogitator, checkpoints);
+
+    const first = await executor.execute(
+      workflow,
+      {},
+      {
+        workflowId: 'wf-1',
+        defaultRetry: { maxRetries: 1, backoff: 'constant', initialDelay: 1 },
+      }
+    );
+    expect(first.error?.message).toBe('gateway down');
+    failing = false;
+    const second = await executor.execute(workflow, {}, { workflowId: 'wf-1' });
+
+    expect(second.error).toBeUndefined();
+    expect(seen).toEqual([
+      'workflow:wf-1:node:charge:visit:1',
+      'workflow:wf-1:node:charge:visit:1',
+      'workflow:wf-1:node:charge:visit:1',
+    ]);
+  });
+});

@@ -7,6 +7,8 @@
 
 import { UnrecoverableError, Worker, type Job } from 'bullmq';
 import { Cogitator, findAgentRunPausedError } from '@cogitator-ai/core';
+import { RedisCheckpointStore } from '@cogitator-ai/workflows';
+import type { CheckpointStore } from '@cogitator-ai/types';
 import type { WorkerConfig, JobPayload, JobResult, QueueMetrics, WorkerRuntime } from './types';
 import { processAgentJob } from './processors/agent.js';
 import { processWorkflowJob } from './processors/workflow.js';
@@ -29,13 +31,22 @@ export interface WorkerPoolEvents {
   onWorkerError?: (error: Error) => void;
 }
 
+/** What a job result reports it used, in the shape the metrics count */
+function usageOf(
+  result: JobResult
+): { inputTokens?: number; outputTokens?: number; totalTokens: number; cost: number } | undefined {
+  if (!('usage' in result) || !result.usage) return undefined;
+  return result.usage;
+}
+
 export class WorkerPool {
   private workers: Worker<JobPayload, JobResult>[] = [];
   private connections: BullConnection[] = [];
   private readonly config: WorkerConfig;
   private readonly events: WorkerPoolEvents;
-  private readonly runtime: Required<WorkerRuntime>;
+  private readonly runtime: WorkerRuntime & Required<Pick<WorkerRuntime, 'cogitator' | 'tools'>>;
   private publisher?: RedisClient;
+  private checkpointStore?: CheckpointStore;
   private isRunning = false;
 
   /** Job duration and per-type counters, ready for Prometheus exposition */
@@ -78,6 +89,8 @@ export class WorkerPool {
         if (job.processedOn !== undefined && job.finishedOn !== undefined) {
           this.metrics.recordJob(job.data.type, job.finishedOn - job.processedOn);
         }
+        const usage = usageOf(result);
+        if (usage) this.metrics.recordUsage(job.data.type, usage);
         this.events.onJobCompleted?.(job.id ?? job.data.jobId, result);
       });
 
@@ -127,7 +140,11 @@ export class WorkerPool {
       case 'agent':
         return processAgentJob(job.data, this.runtime, execution);
       case 'workflow':
-        return processWorkflowJob(job.data, this.runtime, execution);
+        return processWorkflowJob(
+          job.data,
+          { ...this.runtime, checkpoints: this.workflowCheckpoints() },
+          { ...execution, isFinalAttempt: job.attemptsMade + 1 >= (job.opts.attempts ?? 1) }
+        );
       case 'swarm':
         return processSwarmJob(job.data, this.runtime, execution);
       case 'swarm-agent':
@@ -161,6 +178,27 @@ export class WorkerPool {
   private getPublisher(): RedisClient {
     this.publisher ??= createRedisClient(this.config.redis);
     return this.publisher;
+  }
+
+  /**
+   * Where workflow jobs keep their checkpoints: `checkpoints` of the config, else this pool's
+   * Redis, under the queue's prefix
+   */
+  private workflowCheckpoints(): CheckpointStore {
+    if (this.config.checkpoints) return this.config.checkpoints;
+    const redis = this.getPublisher();
+    this.checkpointStore ??= new RedisCheckpointStore({
+      client: {
+        get: (key) => redis.get(key),
+        set: (key, value) => redis.set(key, value),
+        del: (...keys) => redis.del(...keys),
+        zadd: (key, score, member) => redis.zadd(key, score, member),
+        zrange: (key, start, stop) => redis.zrange(key, String(start), String(stop)),
+        zrem: (key, ...members) => redis.zrem(key, ...members),
+      },
+      keyPrefix: `${queuePrefix(this.config.redis)}:workflow-checkpoints`,
+    });
+    return this.checkpointStore;
   }
 
   /**
@@ -239,6 +277,7 @@ export class WorkerPool {
   private async closePublisher(): Promise<void> {
     const publisher = this.publisher;
     this.publisher = undefined;
+    this.checkpointStore = undefined;
     if (publisher) {
       await publisher.quit();
     }

@@ -63,7 +63,7 @@ function isSwarmAgentJob(value: unknown): value is SwarmAgentJobPayload {
 export class DistributedSwarmWorker {
   private readonly config: DistributedSwarmWorkerConfig;
   private readonly events: DistributedSwarmWorkerEvents;
-  private readonly runtime: Required<WorkerRuntime>;
+  private readonly runtime: WorkerRuntime & Required<Pick<WorkerRuntime, 'cogitator' | 'tools'>>;
   private readonly queueKey: string;
   private consumer?: Redis;
   private publisher?: Redis;

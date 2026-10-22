@@ -430,6 +430,7 @@ export class WorkflowExecutor {
             signal: options?.signal,
             depth: options?.depth ?? 0,
             visit,
+            idempotencyKey,
             approvalStore: options?.approvalStore,
             approvalNotifier: options?.approvalNotifier,
             timerStore: options?.timerStore,

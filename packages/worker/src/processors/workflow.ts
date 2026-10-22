@@ -1,10 +1,6 @@
 /**
- * Workflow job processor
- *
- * Executes a serialized workflow graph as a DAG over a shared state object. Nodes run as
- * soon as all of their predecessors have settled; independent branches run concurrently.
- * Condition nodes activate their `'true'` or `'false'` outgoing edges; nodes reachable only
- * through inactive edges are skipped.
+ * Workflow job processor: a serialized workflow graph run on the workflow executor of
+ * `@cogitator-ai/workflows`, over a shared state object, checkpointed for retries
  */
 
 import { z } from 'zod';
@@ -14,9 +10,13 @@ import {
   isPausedRun,
   parseAgentWire,
 } from '@cogitator-ai/core';
+import { WorkflowExecutor } from '@cogitator-ai/workflows';
+import type { Edge, NodeContext, NodeResult, Workflow, WorkflowNode } from '@cogitator-ai/types';
 import type {
   ConditionNodeConfig,
+  JobUsage,
   SerializedWorkflow,
+  SerializedWorkflowEdge,
   SerializedWorkflowNode,
   TransformNodeConfig,
   WorkerRuntime,
@@ -46,9 +46,6 @@ const conditionNodeSchema = z.object({
   operator: z.enum(['equals', 'not-equals', 'contains', 'exists', 'gt', 'lt']),
   value: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
 });
-
-type NodeOutcome =
-  { status: 'completed'; output: unknown; branch?: 'true' | 'false' } | { status: 'skipped' };
 
 /**
  * Read a dot-separated path from the workflow state.
@@ -219,163 +216,188 @@ function applyTransform(
   }
 }
 
-class WorkflowRun {
-  private readonly nodes: Map<string, SerializedWorkflowNode>;
-  private readonly outcomes = new Map<string, NodeOutcome>();
-  private readonly outputKeys = new Map<string, string>();
-  private readonly state: WorkflowState;
-  private readonly controller = new AbortController();
+/** Prefix of the state keys a run keeps its own bookkeeping under, left out of the output */
+const RUN_KEY = '__cogitator:';
+const doneKey = (id: string) => `${RUN_KEY}done:${id}`;
+const branchKey = (id: string) => `${RUN_KEY}branch:${id}`;
+const usageKey = (id: string) => `${RUN_KEY}usage:${id}`;
+/** The node a graph with many roots starts from, never one of its own */
+const START = `${RUN_KEY}start`;
 
-  constructor(
-    private readonly workflow: SerializedWorkflow,
-    input: Record<string, unknown>,
-    private readonly runtime: ResolvedRuntime,
-    private readonly signal?: AbortSignal
-  ) {
-    this.nodes = new Map(workflow.nodes.map((n) => [n.id, n]));
-    this.state = { ...input };
+function outputKeyOf(node: SerializedWorkflowNode): string | undefined {
+  if (node.type === 'agent') return parseNodeConfig(node, agentNodeSchema).outputKey ?? node.id;
+  if (node.type === 'transform') {
+    return parseNodeConfig(node, transformNodeSchema).outputKey ?? node.id;
   }
+  return undefined;
+}
 
-  /**
-   * Run the graph. Cancelling the job (`signal`) or a failing node aborts the agent runs still
-   * in flight, and the run rejects once they have settled.
-   */
-  async execute(): Promise<{ state: WorkflowState; nodeResults: Record<string, unknown> }> {
-    const forwardAbort = () => this.controller.abort(this.signal?.reason);
-    if (this.signal?.aborted) forwardAbort();
-    this.signal?.addEventListener('abort', forwardAbort, { once: true });
-    try {
-      return await this.runGraph();
-    } finally {
-      this.signal?.removeEventListener('abort', forwardAbort);
-    }
-  }
-
-  private async runGraph(): Promise<{
-    state: WorkflowState;
-    nodeResults: Record<string, unknown>;
-  }> {
-    const pending = new Set(this.nodes.keys());
-    const running = new Map<string, Promise<void>>();
-
-    while (pending.size > 0 || running.size > 0) {
-      this.controller.signal.throwIfAborted();
-      for (const id of [...pending]) {
-        const incoming = this.workflow.edges.filter((e) => e.to === id);
-        if (!incoming.every((e) => this.outcomes.has(e.from))) continue;
-
-        pending.delete(id);
-        const active = incoming.length === 0 || incoming.some((e) => this.isEdgeActive(e));
-        if (!active) {
-          this.outcomes.set(id, { status: 'skipped' });
-          continue;
-        }
-
-        running.set(
-          id,
-          this.runNode(this.nodes.get(id)!, incoming).then((outcome) => {
-            this.outcomes.set(id, outcome);
-            running.delete(id);
-          })
-        );
-      }
-
-      if (running.size > 0) {
-        try {
-          await Promise.race(running.values());
-        } catch (error) {
-          this.controller.abort(error);
-          await Promise.allSettled(running.values());
-          throw error;
-        }
-      } else if (pending.size > 0 && ![...pending].some((id) => this.isReady(id))) {
-        throw new Error(`Workflow '${this.workflow.name}' cannot make progress`);
-      }
-    }
-
-    const nodeResults: Record<string, unknown> = {};
-    for (const [id, outcome] of this.outcomes) {
-      nodeResults[id] = outcome.status === 'completed' ? outcome.output : { skipped: true };
-    }
-    return { state: this.state, nodeResults };
-  }
-
-  private isReady(id: string): boolean {
-    return this.workflow.edges.filter((e) => e.to === id).every((e) => this.outcomes.has(e.from));
-  }
-
-  private isEdgeActive(edge: SerializedWorkflow['edges'][number]): boolean {
-    const outcome = this.outcomes.get(edge.from);
-    if (outcome?.status !== 'completed') return false;
-    return outcome.branch === undefined || outcome.branch === edge.condition;
-  }
-
-  private previousOutput(incoming: SerializedWorkflow['edges']): unknown {
-    for (const edge of incoming) {
-      if (!this.isEdgeActive(edge)) continue;
-      const key = this.outputKeys.get(edge.from);
-      if (key !== undefined) return this.state[key];
+/**
+ * The serialized graph as a workflow of `@cogitator-ai/workflows`. Each node keeps in the state
+ * that it ran (`__cogitator:done:<id>`), the branch a condition took (`__cogitator:branch:<id>`)
+ * and the usage of an agent run (`__cogitator:usage:<id>`), so a run resumed from a checkpoint
+ * knows them too. `abort` stops the agent runs still in flight once a node fails.
+ */
+function workflowOf(
+  serialized: SerializedWorkflow,
+  runtime: ResolvedRuntime,
+  abort: (reason: unknown) => void
+): Workflow<WorkflowState> {
+  const byId = new Map(serialized.nodes.map((node) => [node.id, node]));
+  const incomingOf = (id: string) => serialized.edges.filter((edge) => edge.to === id);
+  const active = (edge: SerializedWorkflowEdge, state: WorkflowState) =>
+    state[doneKey(edge.from)] === true &&
+    (byId.get(edge.from)?.type !== 'condition' || state[branchKey(edge.from)] === edge.condition);
+  const previousOutput = (id: string, state: WorkflowState): unknown => {
+    for (const edge of incomingOf(id)) {
+      if (!active(edge, state)) continue;
+      const from = byId.get(edge.from);
+      const key = from ? outputKeyOf(from) : undefined;
+      if (key !== undefined) return state[key];
     }
     return undefined;
-  }
+  };
 
-  private async runNode(
+  const run = async (
     node: SerializedWorkflowNode,
-    incoming: SerializedWorkflow['edges']
-  ): Promise<NodeOutcome> {
+    ctx: NodeContext<WorkflowState> & { signal?: AbortSignal }
+  ): Promise<NodeResult<WorkflowState>> => {
+    const state = ctx.state;
+    const done = { [doneKey(node.id)]: true };
     switch (node.type) {
       case 'agent': {
         const config = parseNodeConfig(node, agentNodeSchema);
-        const agent = createAgentFromConfig(config.agentConfig, this.runtime);
+        const agent = createAgentFromConfig(config.agentConfig, runtime);
         const prompt = config.prompt
-          ? renderTemplate(config.prompt, this.state)
-          : JSON.stringify(this.state);
-        const result = await this.runtime.cogitator.run(agent, {
+          ? renderTemplate(config.prompt, state)
+          : JSON.stringify(withoutRunKeys(state));
+        const result = await runtime.cogitator.run(agent, {
           input: prompt,
-          signal: this.controller.signal,
+          ...(ctx.signal && { signal: ctx.signal }),
         });
         if (isPausedRun(result)) {
           throw new AgentRunPausedError(
             result,
             agent.name,
-            `workflow "${this.workflow.name}", node "${node.id}"`
+            `workflow "${serialized.name}", node "${node.id}"`
           );
         }
         const answer =
           agent.config.responseFormat?.type === 'json_schema' && result.structured !== undefined
             ? result.structured
             : result.output;
-        return this.store(node.id, config.outputKey, answer);
+        const usage: JobUsage = {
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          totalTokens: result.usage.totalTokens,
+          cost: result.usage.cost,
+          runs: 1,
+        };
+        return {
+          state: { ...done, [config.outputKey ?? node.id]: answer, [usageKey(node.id)]: usage },
+          output: answer,
+        };
       }
-
       case 'transform': {
         const config: TransformNodeConfig = parseNodeConfig(node, transformNodeSchema);
         const input =
           config.inputKey !== undefined
-            ? readStatePath(this.state, config.inputKey)
-            : this.previousOutput(incoming);
-        return this.store(node.id, config.outputKey, applyTransform(config, input, this.state));
+            ? readStatePath(state, config.inputKey)
+            : previousOutput(node.id, state);
+        const value = applyTransform(config, input, state);
+        return { state: { ...done, [config.outputKey ?? node.id]: value }, output: value };
       }
-
       case 'condition': {
-        const config = parseNodeConfig(node, conditionNodeSchema);
-        const passed = evaluateCondition(config, this.state);
-        return { status: 'completed', output: passed, branch: passed ? 'true' : 'false' };
+        const passed = evaluateCondition(parseNodeConfig(node, conditionNodeSchema), state);
+        return {
+          state: { ...done, [branchKey(node.id)]: passed ? 'true' : 'false' },
+          output: passed,
+        };
       }
-
       case 'parallel':
-        return { status: 'completed', output: null };
+        return { state: done, output: null };
+    }
+  };
+
+  const nodes = new Map<string, WorkflowNode<WorkflowState>>();
+  for (const node of serialized.nodes) {
+    nodes.set(node.id, {
+      name: node.id,
+      fn: async (ctx) => {
+        try {
+          return await run(node, ctx as NodeContext<WorkflowState> & { signal?: AbortSignal });
+        } catch (error) {
+          abort(error);
+          throw error;
+        }
+      },
+    });
+  }
+
+  const edges: Edge[] = [];
+  for (const node of serialized.nodes) {
+    const out = serialized.edges.filter((edge) => edge.from === node.id);
+    if (out.length === 0) continue;
+    if (node.type === 'condition') {
+      edges.push({
+        type: 'conditional',
+        from: node.id,
+        targets: [...new Set(out.map((edge) => edge.to))],
+        condition: (state) =>
+          out
+            .filter((edge) => edge.condition === (state as WorkflowState)[branchKey(node.id)])
+            .map((edge) => edge.to),
+      });
+    } else if (out.length === 1) {
+      edges.push({ type: 'sequential', from: node.id, to: out[0]!.to });
+    } else {
+      edges.push({ type: 'parallel', from: node.id, to: out.map((edge) => edge.to) });
     }
   }
 
-  private store(nodeId: string, outputKey: string | undefined, value: unknown): NodeOutcome {
-    const key = outputKey ?? nodeId;
-    this.state[key] = value;
-    this.outputKeys.set(nodeId, key);
-    return { status: 'completed', output: value };
+  const roots = serialized.nodes.filter((node) => incomingOf(node.id).length === 0);
+  let entryPoint = roots[0]?.id ?? START;
+  if (roots.length !== 1) {
+    nodes.set(START, { name: START, fn: async () => ({ output: null }) });
+    if (roots.length > 0) edges.push({ type: 'parallel', from: START, to: roots.map((r) => r.id) });
+    entryPoint = START;
   }
+
+  return { name: serialized.name, initialState: {}, nodes, edges, entryPoint };
 }
 
+function withoutRunKeys(state: WorkflowState): WorkflowState {
+  return Object.fromEntries(Object.entries(state).filter(([key]) => !key.startsWith(RUN_KEY)));
+}
+
+/** The usage of the agent runs a finished state recorded */
+function usageOf(state: WorkflowState): JobUsage {
+  const usage: Required<JobUsage> = {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cost: 0,
+    runs: 0,
+  };
+  for (const [key, value] of Object.entries(state)) {
+    if (!key.startsWith(`${RUN_KEY}usage:`)) continue;
+    const one = value as JobUsage;
+    usage.inputTokens += one.inputTokens ?? 0;
+    usage.outputTokens += one.outputTokens ?? 0;
+    usage.totalTokens += one.totalTokens;
+    usage.cost += one.cost;
+    usage.runs += one.runs;
+  }
+  return usage;
+}
+
+/**
+ * Runs a workflow job on the workflow executor of `@cogitator-ai/workflows`: nodes run as soon
+ * as the nodes before them settled, independent branches at once, a condition taking its
+ * `'true'` or `'false'` edges. With `checkpoints` the run is checkpointed after every node under
+ * the job's `runId`, so a retried job (BullMQ attempts) goes on from the last checkpoint instead
+ * of running its agents again, and the checkpoints go once the run finished or failed for good.
+ */
 export async function processWorkflowJob(
   payload: WorkflowJobPayload,
   runtime: WorkerRuntime = {},
@@ -383,18 +405,55 @@ export async function processWorkflowJob(
 ): Promise<WorkflowJobResult> {
   const started = Date.now();
   validateWorkflow(payload.workflowConfig);
-
-  const { state, nodeResults } = await new WorkflowRun(
-    payload.workflowConfig,
-    payload.input,
-    resolveRuntime(runtime),
-    execution.signal
-  ).execute();
-
-  return {
-    type: 'workflow',
-    output: state,
-    nodeResults,
-    duration: Date.now() - started,
+  const resolved = resolveRuntime(runtime);
+  const controller = new AbortController();
+  const forward = () => controller.abort(execution.signal?.reason);
+  if (execution.signal?.aborted) forward();
+  execution.signal?.addEventListener('abort', forward, { once: true });
+  const workflow = workflowOf(payload.workflowConfig, resolved, (reason) => {
+    if (!controller.signal.aborted) controller.abort(reason);
+  });
+  const store = runtime.checkpoints;
+  const executor = new WorkflowExecutor(resolved.cogitator, store);
+  const options = {
+    workflowId: payload.runId,
+    signal: controller.signal,
+    ...(store && { checkpoint: true, checkpointStrategy: 'per-node' as const }),
   };
+  const ofRun = async () =>
+    store
+      ? (await store.list(workflow.name))
+          .filter((checkpoint) => checkpoint.workflowId === payload.runId)
+          .sort((a, b) => a.timestamp - b.timestamp)
+      : [];
+  const forget = async () => {
+    for (const checkpoint of await ofRun()) await store?.delete(checkpoint.id);
+  };
+
+  try {
+    const latest = (await ofRun()).at(-1);
+    const result = latest
+      ? await executor.resume(workflow, latest.id, options)
+      : await executor.execute(workflow, payload.input, options);
+    if (result.error) throw result.error;
+    controller.signal.throwIfAborted();
+    await forget();
+    const nodeResults: Record<string, unknown> = {};
+    for (const node of payload.workflowConfig.nodes) {
+      const ran = result.nodeResults.get(node.id);
+      nodeResults[node.id] = ran ? ran.output : { skipped: true };
+    }
+    return {
+      type: 'workflow',
+      output: withoutRunKeys(result.state),
+      nodeResults,
+      usage: usageOf(result.state),
+      duration: Date.now() - started,
+    };
+  } catch (error) {
+    if (execution.isFinalAttempt !== false) await forget().catch(() => undefined);
+    throw error;
+  } finally {
+    execution.signal?.removeEventListener('abort', forward);
+  }
 }

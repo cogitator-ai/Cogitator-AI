@@ -1849,6 +1849,9 @@ importers:
       '@cogitator-ai/types':
         specifier: workspace:*
         version: link:../types
+      '@cogitator-ai/workflows':
+        specifier: workspace:*
+        version: link:../workflows
       bullmq:
         specifier: ^6.3.11
         version: 6.3.11(ioredis@6.0.0(supports-color@10.2.2))(pg@8.23.1)

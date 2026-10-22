@@ -32,6 +32,11 @@ import {
   type BullConnection,
 } from './connection.js';
 
+/**
+ * A queue of agent, workflow and swarm jobs. Each `add*Job` takes a `jobId`: the job is added
+ * under it, and adding a job whose id the queue holds already gives the job it holds back instead
+ * of adding a second one, so producers can retry an add without running the work twice.
+ */
 export class JobQueue {
   private queue: Queue<JobPayload>;
   private connection: BullConnection;
@@ -65,9 +70,13 @@ export class JobQueue {
       priority?: number;
       delay?: number;
       metadata?: Record<string, unknown>;
+      /** Id of the job, see {@link JobQueue} for adding one twice */
+      jobId?: string;
     }
   ): Promise<Job<AgentJobPayload>> {
-    const jobId = nanoid();
+    const existing = await this.existing<AgentJobPayload>(options?.jobId);
+    if (existing) return existing;
+    const jobId = options?.jobId ?? nanoid();
     const threadId = options?.threadId ?? nanoid();
 
     const payload: AgentJobPayload = {
@@ -119,6 +128,8 @@ export class JobQueue {
       priority?: number;
       delay?: number;
       metadata?: Record<string, unknown>;
+      /** Id of the job, see {@link JobQueue} for adding one twice */
+      jobId?: string;
     }
   ): Promise<Job<AgentJobPayload>> {
     if (paused.status !== undefined && paused.status !== 'paused') {
@@ -128,7 +139,9 @@ export class JobQueue {
     if (!threadId) {
       throw new Error('Cannot resume an agent job without the checkpoint or thread of its run');
     }
-    const jobId = nanoid();
+    const existing = await this.existing<AgentJobPayload>(options?.jobId);
+    if (existing) return existing;
+    const jobId = options?.jobId ?? nanoid();
 
     const payload: AgentJobPayload = {
       type: 'agent',
@@ -163,9 +176,13 @@ export class JobQueue {
       priority?: number;
       delay?: number;
       metadata?: Record<string, unknown>;
+      /** Id of the job, see {@link JobQueue} for adding one twice */
+      jobId?: string;
     }
   ): Promise<Job<WorkflowJobPayload>> {
-    const jobId = nanoid();
+    const existing = await this.existing<WorkflowJobPayload>(options?.jobId);
+    if (existing) return existing;
+    const jobId = options?.jobId ?? nanoid();
     const runId = options?.runId ?? nanoid();
 
     const payload: WorkflowJobPayload = {
@@ -194,9 +211,13 @@ export class JobQueue {
       priority?: number;
       delay?: number;
       metadata?: Record<string, unknown>;
+      /** Id of the job, see {@link JobQueue} for adding one twice */
+      jobId?: string;
     }
   ): Promise<Job<SwarmJobPayload>> {
-    const jobId = nanoid();
+    const existing = await this.existing<SwarmJobPayload>(options?.jobId);
+    if (existing) return existing;
+    const jobId = options?.jobId ?? nanoid();
 
     const payload: SwarmJobPayload = {
       type: 'swarm',
@@ -234,9 +255,13 @@ export class JobQueue {
       delay?: number;
       /** Agent run timeout in ms (shorthand for `runOptions.timeout`) */
       timeout?: number;
+      /** Id of the job, see {@link JobQueue} for adding one twice */
+      jobId?: string;
     }
   ): Promise<Job<SwarmAgentJobPayload>> {
-    const jobId = nanoid();
+    const existing = await this.existing<SwarmAgentJobPayload>(options?.jobId);
+    if (existing) return existing;
+    const jobId = options?.jobId ?? nanoid();
     const keyPrefix = options?.keyPrefix ?? 'swarm';
 
     const payload: SwarmAgentJobPayload = {
@@ -263,6 +288,23 @@ export class JobQueue {
       priority: options?.priority,
       delay: options?.delay,
     }) as Promise<Job<SwarmAgentJobPayload>>;
+  }
+
+  /**
+   * The job the queue holds under `jobId`, when one was given and the queue has it: adding a job
+   * whose id the queue holds already gives that job back and adds nothing, so a producer that
+   * retries an add, such as after a timeout, does not run the work twice. A job the queue removed
+   * (after it completed or failed, past `removeOnComplete` or `removeOnFail`) is gone, and its id
+   * adds a new job.
+   */
+  private async existing<T extends JobPayload>(
+    jobId: string | undefined
+  ): Promise<Job<T> | undefined> {
+    if (jobId === undefined) return undefined;
+    if (jobId === '' || jobId.includes(':')) {
+      throw new Error(`A job id must be a non-empty string without ':', got '${jobId}'`);
+    }
+    return (await this.queue.getJob(jobId)) as Job<T> | undefined;
   }
 
   /**

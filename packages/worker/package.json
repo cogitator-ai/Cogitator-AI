@@ -40,6 +40,7 @@
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/swarms": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
+    "@cogitator-ai/workflows": "workspace:*",
     "bullmq": "^6.3.11",
     "nanoid": "^6.0.1",
     "zod": "^4.6.5"

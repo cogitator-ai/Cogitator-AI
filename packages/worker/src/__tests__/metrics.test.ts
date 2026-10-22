@@ -180,3 +180,39 @@ describe('Prometheus Metrics', () => {
     });
   });
 });
+
+describe('MetricsCollector usage', () => {
+  it('counts the tokens and cost of completed jobs by type', async () => {
+    const { MetricsCollector } = await import('../metrics');
+    const metrics = new MetricsCollector();
+    metrics.recordUsage('workflow', {
+      inputTokens: 6,
+      outputTokens: 4,
+      totalTokens: 10,
+      cost: 0.25,
+    });
+    metrics.recordUsage('workflow', {
+      inputTokens: 1,
+      outputTokens: 1,
+      totalTokens: 2,
+      cost: 0.05,
+    });
+    metrics.recordUsage('swarm', { totalTokens: 7, cost: 0.1 });
+
+    const output = metrics.format({
+      waiting: 0,
+      active: 0,
+      completed: 0,
+      failed: 0,
+      delayed: 0,
+      depth: 0,
+      workerCount: 0,
+    });
+
+    expect(output).toContain('cogitator_job_tokens_total{type="workflow"} 12');
+    expect(output).toContain('cogitator_job_tokens_total{type="swarm"} 7');
+    expect(output).toContain('cogitator_job_input_tokens_total{type="workflow"} 7');
+    expect(output).not.toContain('cogitator_job_input_tokens_total{type="swarm"}');
+    expect(output).toMatch(/cogitator_job_cost_usd_total\{type="workflow"\} 0\.3/);
+  });
+});

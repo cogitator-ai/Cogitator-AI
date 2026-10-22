@@ -157,6 +157,10 @@ export class MetricsCollector {
   readonly jobDuration: DurationHistogram;
   private jobsByType = new Map<string, number>();
   private failedJobsByType = new Map<string, number>();
+  private tokensByType = new Map<string, number>();
+  private inputTokensByType = new Map<string, number>();
+  private outputTokensByType = new Map<string, number>();
+  private costByType = new Map<string, number>();
 
   constructor() {
     this.jobDuration = new DurationHistogram(
@@ -171,6 +175,22 @@ export class MetricsCollector {
   recordJob(type: string, durationMs: number): void {
     this.jobDuration.observe(durationMs / 1000);
     this.jobsByType.set(type, (this.jobsByType.get(type) ?? 0) + 1);
+  }
+
+  /**
+   * Record what a completed job used and cost. Input and output tokens are counted where the job
+   * reported them apart.
+   */
+  recordUsage(
+    type: string,
+    usage: { inputTokens?: number; outputTokens?: number; totalTokens: number; cost: number }
+  ): void {
+    const add = (counts: Map<string, number>, value: number) =>
+      counts.set(type, (counts.get(type) ?? 0) + value);
+    add(this.tokensByType, usage.totalTokens);
+    add(this.costByType, usage.cost);
+    if (usage.inputTokens !== undefined) add(this.inputTokensByType, usage.inputTokens);
+    if (usage.outputTokens !== undefined) add(this.outputTokensByType, usage.outputTokens);
   }
 
   /**
@@ -197,6 +217,30 @@ export class MetricsCollector {
         'cogitator_jobs_failed_total',
         'Jobs that failed their last attempt, by type',
         this.failedJobsByType,
+        labels
+      ),
+      ...formatCounterByType(
+        'cogitator_job_tokens_total',
+        'Tokens the agent runs of completed jobs used, by type',
+        this.tokensByType,
+        labels
+      ),
+      ...formatCounterByType(
+        'cogitator_job_input_tokens_total',
+        'Input tokens the agent runs of completed jobs used, by type',
+        this.inputTokensByType,
+        labels
+      ),
+      ...formatCounterByType(
+        'cogitator_job_output_tokens_total',
+        'Output tokens the agent runs of completed jobs used, by type',
+        this.outputTokensByType,
+        labels
+      ),
+      ...formatCounterByType(
+        'cogitator_job_cost_usd_total',
+        'USD the agent runs of completed jobs cost, by type',
+        this.costByType,
         labels
       )
     );

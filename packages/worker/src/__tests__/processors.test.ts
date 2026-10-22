@@ -350,6 +350,139 @@ describe('processors/workflow', () => {
     expect(result.nodeResults.shout).toBe('SUMMARY OF WRITE ABOUT RUST');
   });
 
+  it('goes on from its checkpoint when a retried job runs again, and lets it go once done', async () => {
+    const { InMemoryCheckpointStore } = await import('@cogitator-ai/workflows');
+    const checkpoints = new InMemoryCheckpointStore();
+    let failing = true;
+    runMock.mockImplementation(async (agent: { name: string }, options: RunOptions) => {
+      if (agent.name === 'reviewer' && failing) throw new Error('provider down');
+      return runResult(`${agent.name} on ${options.input}`);
+    });
+    const { processWorkflowJob } = await import('../processors/workflow');
+    const job = {
+      type: 'workflow' as const,
+      jobId: 'j',
+      runId: 'run-1',
+      input: { topic: 'rust' },
+      workflowConfig: workflow({
+        nodes: [
+          {
+            id: 'write',
+            type: 'agent',
+            config: {
+              agentConfig: agentConfig(),
+              prompt: 'Write about {{topic}}',
+              outputKey: 'draft',
+            },
+          },
+          { id: 'check', type: 'condition', config: { key: 'draft', operator: 'exists' } },
+          {
+            id: 'review',
+            type: 'agent',
+            config: { agentConfig: agentConfig({ name: 'reviewer' }), prompt: 'Review {{draft}}' },
+          },
+          { id: 'skip', type: 'transform', config: { transform: 'template', template: 'none' } },
+        ],
+        edges: [
+          { from: 'write', to: 'check' },
+          { from: 'check', to: 'review', condition: 'true' },
+          { from: 'check', to: 'skip', condition: 'false' },
+        ],
+      }),
+    };
+
+    await expect(
+      processWorkflowJob(job, { checkpoints }, { isFinalAttempt: false })
+    ).rejects.toThrow('provider down');
+    expect(runMock).toHaveBeenCalledTimes(2);
+    expect((await checkpoints.list('test')).length).toBeGreaterThan(0);
+
+    failing = false;
+    const result = await processWorkflowJob(job, { checkpoints }, { isFinalAttempt: true });
+
+    expect(runMock.mock.calls.map(([agent]) => (agent as { name: string }).name)).toEqual([
+      'writer',
+      'reviewer',
+      'reviewer',
+    ]);
+    expect(result.output).toEqual({
+      topic: 'rust',
+      draft: 'writer on Write about rust',
+      review: 'reviewer on Review writer on Write about rust',
+    });
+    expect(result.nodeResults.skip).toEqual({ skipped: true });
+    expect(result.usage).toEqual({
+      inputTokens: 6,
+      outputTokens: 4,
+      totalTokens: 10,
+      cost: 0,
+      runs: 2,
+    });
+    expect(await checkpoints.list('test')).toEqual([]);
+  });
+
+  it('lets its checkpoints go when its last attempt fails', async () => {
+    const { InMemoryCheckpointStore } = await import('@cogitator-ai/workflows');
+    const checkpoints = new InMemoryCheckpointStore();
+    runMock.mockImplementation(async (agent: { name: string }) => {
+      if (agent.name === 'reviewer') throw new Error('provider down');
+      return runResult('ok');
+    });
+    const { processWorkflowJob } = await import('../processors/workflow');
+
+    await expect(
+      processWorkflowJob(
+        {
+          type: 'workflow',
+          jobId: 'j',
+          runId: 'run-2',
+          input: {},
+          workflowConfig: workflow({
+            nodes: [
+              { id: 'a', type: 'agent', config: { agentConfig: agentConfig() } },
+              {
+                id: 'b',
+                type: 'agent',
+                config: { agentConfig: agentConfig({ name: 'reviewer' }) },
+              },
+            ],
+            edges: [{ from: 'a', to: 'b' }],
+          }),
+        },
+        { checkpoints },
+        { isFinalAttempt: true }
+      )
+    ).rejects.toThrow('provider down');
+    expect(await checkpoints.list('test')).toEqual([]);
+  });
+
+  it('starts a graph of many roots at all of them', async () => {
+    const { processWorkflowJob } = await import('../processors/workflow');
+    const result = await processWorkflowJob({
+      type: 'workflow',
+      jobId: 'j',
+      runId: 'r',
+      input: { name: 'ada' },
+      workflowConfig: workflow({
+        nodes: [
+          { id: 'a', type: 'transform', config: { transform: 'template', template: 'A {{name}}' } },
+          { id: 'b', type: 'transform', config: { transform: 'template', template: 'B {{name}}' } },
+          {
+            id: 'join',
+            type: 'transform',
+            config: { transform: 'template', template: '{{a}}+{{b}}' },
+          },
+        ],
+        edges: [
+          { from: 'a', to: 'join' },
+          { from: 'b', to: 'join' },
+        ],
+      }),
+    });
+    expect(result.output.join).toBe('A ada+B ada');
+    expect(Object.keys(result.nodeResults).sort()).toEqual(['a', 'b', 'join']);
+  });
+
   it('follows only the matching branch of a condition node', async () => {
     const { processWorkflowJob } = await import('../processors/workflow');
 

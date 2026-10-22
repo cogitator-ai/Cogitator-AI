@@ -33,6 +33,13 @@ export interface NodeContext<S = WorkflowState> {
   nodeId: string;
   workflowId: string;
   step: number;
+  /**
+   * The key of this visit of the node, `workflow:<workflowId>:node:<name>:visit:<n>`: the same
+   * when the node is retried or its run resumed, a new one when the workflow comes back to the
+   * node. Pass it to an external API that takes an idempotency key, so a node that runs again
+   * does not charge a card or send a message twice.
+   */
+  idempotencyKey?: string;
   reportProgress?: (progress: number) => void;
 }
 

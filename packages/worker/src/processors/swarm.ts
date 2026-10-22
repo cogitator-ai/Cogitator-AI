@@ -192,6 +192,7 @@ export async function processSwarmJob(
       ...(execution.signal && { signal: execution.signal }),
     });
 
+    const spent = swarm.getResourceUsage();
     return {
       type: 'swarm',
       output: typeof result.output === 'string' ? result.output : JSON.stringify(result.output),
@@ -205,6 +206,17 @@ export async function processSwarmJob(
         agent: stageAgents.get(key) ?? key,
         output: runResult.output,
       })),
+      usage: {
+        totalTokens: spent.totalTokens,
+        cost: spent.totalCost,
+        runs: [...spent.agentUsage.values()].reduce((sum, one) => sum + one.runs, 0),
+        byAgent: Object.fromEntries(
+          [...spent.agentUsage].map(([agent, one]) => [
+            agent,
+            { tokens: one.tokens, cost: one.cost, runs: one.runs },
+          ])
+        ),
+      },
     };
   } finally {
     await swarm.close();
