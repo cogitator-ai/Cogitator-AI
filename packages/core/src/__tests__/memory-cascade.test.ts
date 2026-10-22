@@ -11,6 +11,7 @@ import type {
 import { InMemoryAdapter, MemoryItems } from '@cogitator-ai/memory';
 import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
+import { InMemoryRunCheckpointStore } from '../cogitator/run-checkpoints';
 
 const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
 
@@ -253,6 +254,26 @@ describe('forget, redactEntries and rewind', () => {
 
     const thread = await store.getThread('t');
     expect(thread.success && thread.data?.metadata.pausedRun).toBeNull();
+  });
+
+  it('drops the paused run of a forgotten thread from a checkpoint store of its own', async () => {
+    const { llm } = backend();
+    const checkpoints = new InMemoryRunCheckpointStore();
+    const cog = new Cogitator({
+      llm: { backends: { mock: llm } },
+      memory: { adapter: 'memory' },
+      runCheckpoints: checkpoints,
+    });
+    cogs.push(cog);
+    const store = (await cog.getMemory()) as InMemoryAdapter;
+    await store.createThread(agent.id, { userId: 'ana', memoryAgentIds: ['helper'] }, 'p');
+    await checkpoints.save({ version: 1, threadId: 'p' } as unknown as Parameters<
+      typeof checkpoints.save
+    >[0]);
+
+    await cog.forget({ threadId: 'p' });
+
+    expect(await checkpoints.load('p')).toBeNull();
   });
 
   it('stops extracting a branch a rewind left, before its next model call', async () => {

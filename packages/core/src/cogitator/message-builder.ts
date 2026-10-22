@@ -331,9 +331,10 @@ function unwrap<T>(result: MemoryResult<T>, operation: string): T {
 export const MEMORY_AGENTS = 'memoryAgentIds';
 
 /**
- * Notes in the metadata of `threadId` that the agent whose memory id is `memoryId` ran in it,
- * read again just before the write so agents of one thread add to the list instead of taking
- * turns at it, and `Cogitator.forget` finds the items, files and facts kept under that id
+ * Notes in the metadata of `threadId` that the agent whose memory id is `memoryId` ran in it, so
+ * `Cogitator.forget` finds the items, files and facts kept under that id. The list is read again
+ * just before the write, which narrows, but does not close, the window in which two runs of
+ * different agents writing at once keep only one of them.
  */
 export async function noteMemoryAgent(
   memoryAdapter: MemoryAdapter,

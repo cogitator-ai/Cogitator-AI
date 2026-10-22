@@ -16,7 +16,6 @@ import type {
 import { getLogger } from '../logger';
 import { onActivePath } from './memory-extraction';
 
-/** The run a compaction follows, which its calls are counted against and stop with */
 /** A compaction stopped before a model call, as the run's branch is no longer the active one */
 class LeftBranchError extends Error {
   constructor(threadId: string) {
@@ -24,6 +23,7 @@ class LeftBranchError extends Error {
   }
 }
 
+/** The run a compaction follows, which its calls are counted against and stop with */
 export interface CompactionRun {
   runId: string;
   agentId: string;

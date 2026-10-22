@@ -84,9 +84,12 @@ function memoryAgentsOf(metadata: Record<string, unknown>): string[] {
   return Array.isArray(named) ? named.filter((id): id is string => typeof id === 'string') : [];
 }
 
-/** Whose memory a cascade of {@link Cogitator.forget} goes through */
+/**
+ * Whose memory a cascade of {@link Cogitator.forget}, {@link Cogitator.redactEntries} or
+ * {@link Cogitator.rewind} goes through, besides the agents its threads name
+ */
 export interface MemoryCascadeCall {
-  /** Agents (or their memory ids) whose items, files and facts to go through */
+  /** Agents (or their memory ids) whose items, files, facts and graph to go through */
   agents?: readonly (Agent | string)[];
   /** A knowledge graph of your own to go through too */
   graph?: GraphAdapter;
@@ -3025,7 +3028,12 @@ export class Cogitator implements ToolInvoker {
    * adds others, and is needed for a thread written before threads named them and for a user
    * without threads. `graph` is a knowledge graph of your own to go through too.
    *
+   * Paused runs of the threads it touches are dropped, as their messages would bring back what
+   * was forgotten on resume.
+   *
    * @throws CogitatorError when no memory is configured, or the agents to go through are not known
+   * (a thread that names none, or a user without threads, and no `agents`). A store that fails
+   * part of the way throws its own error, and the call can be made again.
    */
   async forget(
     target: { entryIds: readonly string[] } | { threadId: string } | { userId: string },
@@ -3040,12 +3048,16 @@ export class Cogitator implements ToolInvoker {
           code: ErrorCode.VALIDATION_ERROR,
         });
       }
-      return cascade.deleteUser(target.userId, { agentIds: users });
+      const report = await cascade.deleteUser(target.userId, { agentIds: users });
+      await this.dropPausedRuns(report.threads);
+      return report;
     }
     if ('threadId' in target) {
-      return cascade.deleteThread(target.threadId, {
+      const report = await cascade.deleteThread(target.threadId, {
         agentIds: await this.withThreadAgents(agentIds, [target.threadId]),
       });
+      await this.dropPausedRuns([target.threadId]);
+      return report;
     }
     const threads = await this.threadsOf(target.entryIds);
     const report = await cascade.deleteEntries(target.entryIds, {
@@ -3061,7 +3073,9 @@ export class Cogitator implements ToolInvoker {
    * thread stays (`MemoryAdapter.redactEntry`), and all memory derived from what they said goes as
    * with {@link forget}. A compaction entry among them is deleted.
    *
-   * @throws CogitatorError when no memory is configured, or the adapter cannot redact
+   * @throws CogitatorError when no memory is configured, the adapter cannot redact, or a thread
+   * names no agents and `agents` is not passed. A store that fails part of the way throws its own
+   * error, and the call can be made again.
    */
   async redactEntries(
     entryIds: readonly string[],
@@ -3095,12 +3109,14 @@ export class Cogitator implements ToolInvoker {
    * take them for what holds. Summaries and memory files of the branch left behind are not seen
    * from the new one already.
    *
-   * @throws CogitatorError when no memory is configured, or the adapter has no branches
+   * @throws CogitatorError when no memory is configured, the adapter has no branches, or the thread
+   * names no agents and `agents` is not passed. A store that fails throws its own error, and the
+   * rewind can be made again.
    */
   async rewind(
     threadId: string,
     toEntryId: string,
-    options: MemoryCascadeCall = {}
+    options: Pick<MemoryCascadeCall, 'agents'> = {}
   ): Promise<MemoryCascadeReport> {
     const { cascade, agentIds } = await this.cascadeFor('rewind', options);
     const memory = this.state.memoryAdapter;

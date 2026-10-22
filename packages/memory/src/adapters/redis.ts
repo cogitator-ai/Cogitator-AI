@@ -291,15 +291,10 @@ return out
 `;
 
 /**
- * Deletes the entry `KEYS[1]` of the thread `ARGV[4]` (entries `KEYS[2]`, leaf `KEYS[3]`, chained
- * marker `KEYS[4]`) and splices it out of its branch: its children go after its parent, and the
- * active leaf moves to the parent when it was the entry. Replies 1, 0 without the entry, -1 when
- * the entry is not the thread's.
- */
-/**
  * Writes the redacted body of an entry (ARGV[2], without its `parentId`) over KEYS[1] when the
  * entry still reads ARGV[1], keeping the `parentId` it has last as the tree helpers expect. Returns
- * 0 when another write changed the entry first, so the caller reads it again.
+ * 1, 0 when another write changed the entry first, so the caller reads it again, -1 without
+ * the entry.
  */
 const REDACT_ENTRY = `
 local current = redis.call('GET', KEYS[1])
@@ -312,6 +307,12 @@ redis.call('SET', KEYS[1], body, 'XX', 'KEEPTTL')
 return 1
 `;
 
+/**
+ * Deletes the entry `KEYS[1]` of the thread `ARGV[4]` (entries `KEYS[2]`, leaf `KEYS[3]`, chained
+ * marker `KEYS[4]`) and splices it out of its branch: its children go after its parent, and the
+ * active leaf moves to the parent when it was the entry. Replies 1, 0 without the entry, -1 when
+ * the entry is not the thread's.
+ */
 const REMOVE_ENTRY = `${LIFETIME}${TREE}
 local json = redis.call('GET', KEYS[1])
 if not json then return 0 end
