@@ -239,7 +239,7 @@ const aiTools = convertToolsToAISDK([cogCalculator]);
 - `inputSchema` (read by ai@5 – ai@7) — the Cogitator tool's zod schema
 - `parameters` (read by ai@4) — an AI SDK `Schema` with draft-07 JSON Schema and synchronous validation; it is also a Standard JSON Schema
 
-`execute(input, options)` maps the AI SDK options to a Cogitator `ToolContext`: `toolCallId` becomes `toolCallId` (and `runId`, unless the tool context names one), `abortSignal` becomes `signal`, and string fields `agentId`, `runId`, `threadId`, `userId`, `channelType`, `channelId` of the tool context (`context` on ai@7, `experimental_context` on ai@5 / ai@6) are copied over.
+`execute(input, options)` maps the AI SDK options to a Cogitator `ToolContext`: `toolCallId` becomes `toolCallId` (and `runId`, unless the tool context names one), `abortSignal` becomes `signal`, and string fields `agentId`, `runId`, `threadId`, `userId`, `channelType`, `channelId`, `topicId`, `conversationId` of the tool context (`context` on ai@7, `experimental_context` on ai@5 / ai@6) are copied over.
 
 A tool result with media (`toolContent()` of `@cogitator-ai/core`, or an object with a base64 `image` such as a browser screenshot) reaches the model of `generateText` / `streamText` as an image through the tool's `toModelOutput` (`experimental_toToolResultContent` on ai@4). Files are described, other results go as text or JSON as usual. In the other direction, `fromAISDKTool()` gives the AI SDK tool the id of the call it runs for as `toolCallId`, and keeps the `$defs` of its JSON Schema.
 

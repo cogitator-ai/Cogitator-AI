@@ -231,7 +231,7 @@ The agent answers replies to the bot's posts and mentions of it, from Meta's web
 import { githubChannel } from '@cogitator-ai/channels';
 
 const github = githubChannel({
-  token: process.env.GITHUB_TOKEN!, // a bot account's fine-grained token, or () => an App installation token
+  token: process.env.GITHUB_CHANNEL_TOKEN!, // a bot account's fine-grained token, or () => an App installation token
   webhook: {
     secret: process.env.GITHUB_WEBHOOK_SECRET!, // checked against X-Hub-Signature-256
     port: 8787, // its own server at /github/webhook, or mount github.handleWebhook / webhookListener()
@@ -497,7 +497,7 @@ const gateway = new Gateway({
 - **interrupt** - abort the current run (its signal is passed to `cogitator.run`), start the new message
 - **collect** - buffer during processing, merge per chat and topic on idle
 
-With a queue, a channel's message handler returns once the message is queued, so a channel that reads its updates one by one (Telegram long polling, the Bluesky and Threads polls) goes on to other chats, button presses and stop buttons while a thread is busy. `injectMessage` still resolves once the message is answered, and `idle()` waits for every queued message. Since the channel has confirmed a queued message to its platform already, `stop()` drains the queues before it stops the channels: it waits up to `drainTimeout` (default 30000 ms) for the queued messages and the runs in progress, then aborts the runs still going and drops what still waits.
+With a queue, a channel's message handler returns once the message is queued, so a channel that reads its updates one by one (Telegram long polling, the Bluesky and Threads polls) goes on to other chats, button presses and stop buttons while a thread is busy. `injectMessage` still resolves once the message is answered, and `idle()` waits for every queued message. Since the channel has confirmed a queued message to its platform already, `stop()` drains the queues before it stops the channels: it waits up to `drainTimeout` (default 30000 ms) for the queued messages and the runs in progress, then aborts the runs still going and drops what still waits. Messages that come in while it stops are dropped and reported to `onError`, a second `stop()` returns the same promise, and `injectMessage` rejects when its message was not answered (failed run, aborted or dropped by `stop()`).
 
 ## Formatting Pipeline
 
@@ -639,7 +639,7 @@ const scheduler = new HeartbeatScheduler(store, {
 scheduler.start();
 ```
 
-Schedule types: `cron` (recurring, next fire computed with `cron-parser`, honors `timezone`), `recurring` (interval), `fixed` (one-shot). Consecutive failures are carried across reschedules; after `maxRetries` the job is skipped until `enableJob()`. A fired job reaches `onFire` as a message on the `channel` / `channelId` / `userId` stored in its `metadata`, and `staggerMs` adds a random delay before the first poll. Docs: [Scheduler](https://cogitator.app/docs/channels/scheduler).
+Schedule types: `cron` (recurring, next fire computed with `cron-parser`, honors `timezone`), `recurring` (interval), `fixed` (one-shot). Consecutive failures are carried across reschedules, and a one-shot job whose `onFire` throws stays pending to fire again (unless `bestEffort`). After `maxRetries` the job is skipped until `enableJob()`. A fired job reaches `onFire` as a message on the `channel` / `channelId` / `userId` / `topicId` / `conversationId` stored in its `metadata`, and `staggerMs` adds a random delay before the first poll. Docs: [Scheduler](https://cogitator.app/docs/channels/scheduler).
 
 With a store that claims timers (`claimTtl` / `renew` / `release`, e.g. the Redis/Postgres timer stores of `@cogitator-ai/workflows`), the claim is renewed right before a task fires and every `claimTtl / 3` while it runs; `onClaimLost(entry)` reports a claim that is gone (the task is skipped before firing, or another worker may fire it too). Claims are released for disabled tasks, tasks over `maxRetries` and overdue tasks not reached before `stop()`.
 

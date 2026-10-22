@@ -143,7 +143,7 @@ interface TimerEntry {
 }
 ```
 
-After `maxRetries` consecutive errors (default: 5), the job is automatically skipped with status `'skipped'`. The error count is carried over when cron/interval jobs are rescheduled (unless the task is `bestEffort`). Re-enable it with `scheduler.enableJob(id)` to reset the error count.
+A one-shot task whose `onFire` throws (`gateway.injectMessage` does when the run failed or `stop()` aborted it) is not marked fired: it fires again on a later poll or after a restart, unless it is `bestEffort`. After `maxRetries` consecutive errors (default: 5), the job is automatically skipped with status `'skipped'`. The error count is carried over when cron/interval jobs are rescheduled (unless the task is `bestEffort`). Re-enable it with `scheduler.enableJob(id)` to reset the error count.
 
 Rescheduled cron/interval jobs get a new id; use `listJobs()` to find the current one.
 

@@ -67,6 +67,34 @@ describe('fromAISDKTool', () => {
     );
   });
 
+  it('hands an AI SDK tool the topic and conversation of the Cogitator context', async () => {
+    const executeFn = vi.fn().mockResolvedValue('ok');
+    const converted = fromAISDKTool(
+      { description: 'Where', inputSchema: z.object({}), execute: executeFn },
+      'where'
+    );
+
+    await converted.execute(
+      {},
+      {
+        agentId: 'a',
+        runId: 'r',
+        signal: new AbortController().signal,
+        channelId: '-100',
+        topicId: '7',
+        conversationId: 'thread:root',
+      }
+    );
+
+    expect(executeFn.mock.calls[0][1].context).toEqual({
+      agentId: 'a',
+      runId: 'r',
+      channelId: '-100',
+      topicId: '7',
+      conversationId: 'thread:root',
+    });
+  });
+
   it('accepts ai@4 tools that define parameters', () => {
     const converted = fromAISDKTool({ parameters: z.object({ x: z.number() }) }, 'legacy');
     expect(converted.toJSON().parameters.properties).toEqual({ x: { type: 'number' } });
@@ -196,8 +224,28 @@ describe('toAISDKTool', () => {
         userId: 'u1',
         channelType: undefined,
         channelId: undefined,
+        topicId: undefined,
+        conversationId: undefined,
       }
     );
+  });
+
+  it('passes the channel, topic and conversation of the AI SDK context to the tool', async () => {
+    const executeFn = vi.fn().mockResolvedValue('ok');
+    const aiTool = toAISDKTool(makeCogitatorTool(executeFn));
+    const where = {
+      channelType: 'telegram',
+      channelId: '-100',
+      topicId: '7',
+      conversationId: 'thread:root',
+    };
+
+    await aiTool.execute(
+      { input: 'x', count: 1 },
+      { toolCallId: 'tc3', messages: [], context: where }
+    );
+
+    expect(executeFn.mock.calls[0][1]).toMatchObject(where);
   });
 
   it('reads experimental_context and creates a signal when none is provided', async () => {

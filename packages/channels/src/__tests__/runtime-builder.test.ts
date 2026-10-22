@@ -473,12 +473,13 @@ describe('RuntimeBuilder', () => {
     await built.cleanup();
   });
 
-  it('falls back to GITHUB_TOKEN for the GitHub channel, saying it should not', async () => {
+  it('falls back to GITHUB_TOKEN for the GitHub channel when GITHUB_CHANNEL_TOKEN is empty, saying it should not', async () => {
     socialConfigs.github.length = 0;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const config: AssistantConfigInput = { ...minimalConfig, channels: { github: {} } };
     const built = await new RuntimeBuilder(config, {
       GOOGLE_API_KEY: 'test-key',
+      GITHUB_CHANNEL_TOKEN: '',
       GITHUB_TOKEN: 'ghp_shared',
       GITHUB_WEBHOOK_SECRET: 'hook-secret',
     }).build();

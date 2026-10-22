@@ -207,6 +207,98 @@ describe('Gateway thread order', () => {
     expect(gateway.stats.activeSessions).toBe(0);
   });
 
+  it('refuses messages that come in while it stops, and returns the same stop twice', async () => {
+    const channel = createChannel();
+    const control = controlledRun();
+    const onError = vi.fn();
+    const gateway = await startGateway(channel, control, { onError });
+
+    await channel.trigger(message({ id: 'm1', text: 'first' }));
+    await vi.waitFor(() => expect(control.started).toEqual(['first']));
+    const stopped = gateway.stop();
+    expect(gateway.stop()).toBe(stopped);
+    await channel.trigger(message({ id: 'm2', text: 'late', userId: 'u2' }));
+    await expect(gateway.injectMessage(message({ id: 'm3', text: 'later' }))).rejects.toThrow(
+      'The gateway is stopping'
+    );
+    control.release('first');
+    await stopped;
+
+    expect(control.started).toEqual(['first']);
+    expect(onError).toHaveBeenCalledTimes(2);
+    expect(onError.mock.calls.map(([, msg]) => (msg as ChannelMessage).id)).toEqual(['m2', 'm3']);
+    expect(channel.sendText).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a debounced message that comes in while it stops, and answers nothing after', async () => {
+    vi.useFakeTimers();
+    try {
+      const channel = createChannel();
+      let release = () => {};
+      let markStarted = () => {};
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      const run = vi.fn(
+        () =>
+          new Promise<{ output: string }>((resolve) => {
+            release = () => resolve({ output: 'ok' });
+            markStarted();
+          })
+      );
+      const gateway = await startGateway(
+        channel,
+        { run },
+        {
+          debounce: { enabled: true, delayMs: 1000 },
+        }
+      );
+
+      await channel.trigger(message({ id: 'm1', text: 'first' }));
+      const stopped = gateway.stop();
+      await started;
+      await channel.trigger(message({ id: 'm2', text: 'late' }));
+      release();
+      await stopped;
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(gateway.stats.activeSessions).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects injectMessage when stop aborts its run, so the scheduler keeps the task', async () => {
+    const store = new SimpleTimerStore();
+    await store.schedule({
+      workflowId: 'heartbeat',
+      runId: 'scheduler',
+      nodeId: 'task',
+      firesAt: Date.now() - 1000,
+      type: 'fixed',
+      metadata: { description: 'Stretch', channel: 'test', channelId: 'chat', userId: 'u1' },
+    });
+    const channel = createChannel();
+    const control = controlledRun();
+    const gateway = await startGateway(channel, control, { drainTimeout: 20 });
+    const scheduler = new HeartbeatScheduler(store, {
+      onFire: (msg) => gateway.injectMessage(msg),
+      pollInterval: 10,
+    });
+
+    scheduler.start();
+    await vi.waitFor(() => expect(control.started).toHaveLength(1));
+    scheduler.stop();
+    await gateway.stop();
+    await vi.waitFor(async () => {
+      const [task] = await store.list();
+      expect(task?.lastRunStatus).toBe('error');
+    });
+
+    expect(await store.getOverdue()).toHaveLength(1);
+  });
+
   it('answers messages held by debounce before it stops', async () => {
     const channel = createChannel();
     const cogitator = { run: vi.fn().mockResolvedValue({ output: 'ok' }) };

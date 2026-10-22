@@ -460,6 +460,34 @@ describe('GitHubChannel events', () => {
     expect(String(logged.mock.calls.at(-1)?.[0])).toMatch(/delivery was dropped/);
   });
 
+  it('takes a delivery sent again by hand after its login could not be loaded', async () => {
+    let failures = 3;
+    const api = github([
+      (call) =>
+        call.path === '/user' && failures-- > 0
+          ? Response.json({ message: 'Server Error' }, { status: 502 })
+          : undefined,
+    ]);
+    const { channel, received } = created(api);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const delivery = signed('issue_comment', issueComment('@mybot hi', person, 31), 'by-hand');
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      expect((await channel.handleWebhook(delivery)).body).toBe('OK');
+      await vi.advanceTimersByTimeAsync(15_000);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(received).toEqual([]);
+    expect(await channel.handleWebhook(delivery)).toEqual({ status: 200, body: 'OK' });
+    await settle();
+    expect(received.map((m) => m.id)).toEqual(['comment:31']);
+    expect(await channel.handleWebhook(delivery)).toEqual({
+      status: 200,
+      body: 'Already received',
+    });
+  });
+
   it('answers a delivery whose login loads only on a later try', async () => {
     let failures = 1;
     const api = github([
@@ -534,6 +562,45 @@ describe('GitHubChannel events', () => {
     await channel.handleWebhook(signed('issue_comment', issueComment('Once', person, 77), 'b'));
     await settle();
     expect(received).toHaveLength(1);
+  });
+
+  it('keeps the follow-up for the person an answer is for when someone else asked meanwhile', async () => {
+    const { channel, received } = await started(github());
+    const q = { login: 'quinn', id: 77, type: 'User' };
+    await channel.handleWebhook(signed('issue_comment', issueComment('@mybot deploy?', person, 1)));
+    await channel.handleWebhook(signed('issue_comment', issueComment('@mybot and me?', q, 2)));
+    await settle();
+    await channel.sendText('acme/widgets#12', 'Approve the deploy? Reply yes or no.', {
+      replyTo: 'comment:1',
+    });
+    await channel.handleWebhook(signed('issue_comment', issueComment('yes', person, 3)));
+    await channel.handleWebhook(signed('issue_comment', issueComment('me too', q, 4)));
+    await settle();
+    await channel.sendText('acme/widgets#12', 'You too.', { replyTo: 'comment:2' });
+    await channel.handleWebhook(signed('issue_comment', issueComment('thanks', q, 5)));
+    await settle();
+    expect(received.map((m) => m.text)).toEqual(['deploy?', 'and me?', 'yes', 'thanks']);
+  });
+
+  it('keeps the follow-up when an empty review comes first', async () => {
+    const { channel, received } = await started(github());
+    await channel.handleWebhook(
+      signed('issue_comment', issueComment('@mybot check it', person, 1))
+    );
+    await settle();
+    await channel.sendText('acme/widgets#12', 'Looks fine. Merge?', { replyTo: 'comment:1' });
+    await channel.handleWebhook(
+      signed('pull_request_review', {
+        action: 'submitted',
+        review: { id: 80, body: '', state: 'approved', author_association: 'MEMBER' },
+        pull_request: { number: 12, title: 'Add caching' },
+        repository,
+        sender: person,
+      })
+    );
+    await channel.handleWebhook(signed('issue_comment', issueComment('yes, merge', person, 2)));
+    await settle();
+    expect(received.map((m) => m.text)).toEqual(['check it', 'yes, merge']);
   });
 
   it('takes follow-ups without a mention from the person it answered, and in its review threads', async () => {

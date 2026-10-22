@@ -107,7 +107,7 @@ export function initSecrets(answers: InitAnswers): Record<string, string> {
   if (answers.blueskyHandle) secrets.BLUESKY_HANDLE = answers.blueskyHandle;
   if (answers.blueskyAppPassword) secrets.BLUESKY_APP_PASSWORD = answers.blueskyAppPassword;
   if (answers.threadsAccessToken) secrets.THREADS_ACCESS_TOKEN = answers.threadsAccessToken;
-  if (answers.githubToken) secrets.GITHUB_TOKEN = answers.githubToken;
+  if (answers.githubToken) secrets.GITHUB_CHANNEL_TOKEN = answers.githubToken;
   if (answers.githubWebhookSecret) secrets.GITHUB_WEBHOOK_SECRET = answers.githubWebhookSecret;
   if (
     answers.memory === 'postgres' &&

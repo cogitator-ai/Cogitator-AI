@@ -282,7 +282,7 @@ Converted tools work with the `tools` option of every AI SDK major:
 
 - `inputSchema` (ai@5 – ai@7) is the Cogitator tool's zod schema.
 - `parameters` (ai@4) is an AI SDK `Schema` with draft-07 JSON Schema and validation.
-- `execute(input, options)` builds a Cogitator `ToolContext`: `toolCallId` becomes `toolCallId` (and `runId` when the context names none), `abortSignal` becomes `signal`, and the string fields `agentId`, `runId`, `threadId`, `userId`, `channelType` and `channelId` of the AI SDK tool context (`context` on ai@7, `experimental_context` on ai@5 / ai@6) are copied.
+- `execute(input, options)` builds a Cogitator `ToolContext`: `toolCallId` becomes `toolCallId` (and `runId` when the context names none), `abortSignal` becomes `signal`, and the string fields `agentId`, `runId`, `threadId`, `userId`, `channelType`, `channelId`, `topicId` and `conversationId` of the AI SDK tool context (`context` on ai@7, `experimental_context` on ai@5 / ai@6) are copied.
 - `toModelOutput` shows the model a [media result](/docs/core/tools#media-results-with-toolcontent) as an image instead of base64 JSON.
 - `needsApproval` mirrors the tool's `requiresApproval` (`true`, or a function of the input where a throw counts as yes), so ai@6 and ai@7 ask for approval before they run it.
 

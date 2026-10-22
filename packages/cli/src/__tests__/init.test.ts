@@ -114,7 +114,7 @@ describe('initSecrets', () => {
       )
     ).toEqual({
       OPENAI_API_KEY: 'sk-test',
-      GITHUB_TOKEN: 'ghp_token',
+      GITHUB_CHANNEL_TOKEN: 'ghp_token',
       GITHUB_WEBHOOK_SECRET: 'hook-secret',
     });
   });

@@ -50,8 +50,10 @@ export interface ChannelMessage {
    * The conversation the message belongs to, for channels whose `channelId` does not name it:
    * on Bluesky and Threads `channelId` is the post to reply to and the conversation is the
    * thread's root post. The gateway's default thread key uses it in place of `channelId` and
-   * `topicId`, so it shares their namespace: it must never equal a `channelId` or
-   * `channelId:topicId` of the same channel, which is why Bluesky and Threads write it as
+   * `topicId`, so it shares their namespace: it may equal the `channelId` (or
+   * `channelId:topicId`) of the same conversation, as a WhatsApp chat addressed by LID gives the
+   * phone-number jid that is the `channelId` of the chat addressed by phone number, but never
+   * that of another conversation of the channel. That is why Bluesky and Threads write it as
    * `thread:<root>` while their `channelId` is `post:<id>` or `dm:<id>`.
    */
   conversationId?: string;

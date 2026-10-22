@@ -194,6 +194,8 @@ function aiSDKContext(context: ToolContext): Record<string, string> {
     userId: context.userId,
     channelType: context.channelType,
     channelId: context.channelId,
+    topicId: context.topicId,
+    conversationId: context.conversationId,
   }).filter((entry): entry is [string, string] => typeof entry[1] === 'string');
   return Object.fromEntries(entries);
 }
@@ -381,6 +383,8 @@ function cogitatorContext(options: AISDKToolExecutionOptions): ToolContext {
     userId: pick('userId'),
     channelType: pick('channelType'),
     channelId: pick('channelId'),
+    topicId: pick('topicId'),
+    conversationId: pick('conversationId'),
   };
 }
 
@@ -439,7 +443,7 @@ function toToolResultContent(output: unknown) {
  *
  * The tool exposes the same schema as `inputSchema` (ai@5+) and `parameters` (ai@4). String
  * fields of the AI SDK tool context (`agentId`, `runId`, `threadId`, `userId`, `channelType`,
- * `channelId`) are forwarded to the Cogitator `ToolContext`. A tool with `requiresApproval` gets
+ * `channelId`, `topicId`, `conversationId`) are forwarded to the Cogitator `ToolContext`. A tool with `requiresApproval` gets
  * the same `needsApproval`, so ai@6 and ai@7 ask before they run it.
  *
  * Pass `options.invoker` (your `Cogitator`) to run the calls through `invokeTool`, with approval
@@ -519,6 +523,8 @@ async function invokeThrough<TParams, TResult>(
     ...(context.userId !== undefined && { userId: context.userId }),
     ...(context.channelType !== undefined && { channelType: context.channelType }),
     ...(context.channelId !== undefined && { channelId: context.channelId }),
+    ...(context.topicId !== undefined && { topicId: context.topicId }),
+    ...(context.conversationId !== undefined && { conversationId: context.conversationId }),
     ...(onApproval && { onApproval }),
   });
   if (result.error !== undefined) throw new Error(result.error);

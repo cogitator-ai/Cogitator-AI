@@ -119,7 +119,7 @@ const CHANNEL_SETUP: Record<ChannelKind, ChannelSetup> = {
     factory: 'githubChannel',
     expression: code`
       githubChannel({
-        token: env.GITHUB_TOKEN,
+        token: env.GITHUB_CHANNEL_TOKEN,
         webhook: {
           secret: env.GITHUB_WEBHOOK_SECRET,
           port: Number(env.GITHUB_WEBHOOK_PORT ?? ${GITHUB_WEBHOOK_PORT}),
@@ -129,9 +129,9 @@ const CHANNEL_SETUP: Record<ChannelKind, ChannelSetup> = {
     packages: [],
     env: [
       {
-        name: 'GITHUB_TOKEN',
+        name: 'GITHUB_CHANNEL_TOKEN',
         description:
-          'GitHub token of the bot account, with read and write access to issues and pull requests',
+          'Token of a separate GitHub bot account, scoped to the repositories it answers in, with read and write access to issues and pull requests',
         required: true,
       },
       {
@@ -150,7 +150,7 @@ const CHANNEL_SETUP: Record<ChannelKind, ChannelSetup> = {
  */
 const GITHUB_ON_WEBCHAT = code`
   githubChannel({
-    token: env.GITHUB_TOKEN,
+    token: env.GITHUB_CHANNEL_TOKEN,
     webhook: { secret: env.GITHUB_WEBHOOK_SECRET },
   })
 `;
@@ -299,5 +299,11 @@ export const appChannelsFeature: FeatureModule = {
         \`src/gateway.ts\` builds a \`Gateway\` from \`@cogitator-ai/channels\` that answers on ${spec.channels.join(', ')} with \`agents.assistant\`, and \`src/index.ts\` starts it. Each chat is its own thread${memory ? ' in memory, compacted when it grows long' : ''}. Channel tokens come from \`.env\`. \`${runScript(pm, 'dev')}\` runs it with reload on change, \`cogitator assistant\` with a live dashboard, \`cogitator daemon start\` in the background.
       `
     );
+    if (github) {
+      project.readmeSection(
+        'GitHub',
+        `On GitHub the bot answers mentions from the repository's owner, members and collaborators. Give it an account of its own and set \`GITHUB_CHANNEL_TOKEN\` to a fine-grained token of that account, scoped to the repositories it answers in (not your own token), and \`GITHUB_WEBHOOK_SECRET\` to the secret of a webhook that sends Issues, Issue comments, Pull requests, Pull request reviews and Pull request review comments to \`/github/webhook\` on port ${webchat ? `\`WEBCHAT_PORT\` (${WEBCHAT_PORT})` : `\`GITHUB_WEBHOOK_PORT\` (${GITHUB_WEBHOOK_PORT})`}.`
+      );
+    }
   },
 };

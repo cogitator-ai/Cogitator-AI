@@ -290,7 +290,16 @@ describe('toAISDKTool with an invoker', () => {
           toolCallId: 'tc1',
           messages: [],
           abortSignal: controller.signal,
-          context: { agentId: 'web', runId: 'run-9', threadId: 't-1', userId: 'u-1' },
+          context: {
+            agentId: 'web',
+            runId: 'run-9',
+            threadId: 't-1',
+            userId: 'u-1',
+            channelType: 'telegram',
+            channelId: '-100',
+            topicId: '7',
+            conversationId: 'thread:root',
+          },
         }
       )
     ).resolves.toBe('ok');
@@ -302,6 +311,10 @@ describe('toAISDKTool with an invoker', () => {
       signal: controller.signal,
       threadId: 't-1',
       userId: 'u-1',
+      channelType: 'telegram',
+      channelId: '-100',
+      topicId: '7',
+      conversationId: 'thread:root',
     });
   });
 

@@ -327,11 +327,11 @@ process.on('SIGINT', async () => {
       code: `import { Agent, Cogitator } from '@cogitator-ai/core';
 import { Gateway, githubChannel } from '@cogitator-ai/channels';
 
-const token = process.env.GITHUB_TOKEN;
+const token = process.env.GITHUB_CHANNEL_TOKEN;
 const secret = process.env.GITHUB_WEBHOOK_SECRET;
 const apiKey = process.env.GOOGLE_API_KEY;
 if (!token || !secret || !apiKey) {
-  throw new Error('Set GITHUB_TOKEN, GITHUB_WEBHOOK_SECRET and GOOGLE_API_KEY');
+  throw new Error('Set GITHUB_CHANNEL_TOKEN, GITHUB_WEBHOOK_SECRET and GOOGLE_API_KEY');
 }
 
 const github = githubChannel({
@@ -363,7 +363,7 @@ const gateway = new Gateway({
 await gateway.start();
 console.log(\`@\${github.login} is listening on http://localhost:8787/github/webhook\`);`,
       install: 'pnpm add @cogitator-ai/core @cogitator-ai/channels',
-      env: ['GITHUB_TOKEN', 'GITHUB_WEBHOOK_SECRET', 'GOOGLE_API_KEY'],
+      env: ['GITHUB_CHANNEL_TOKEN', 'GITHUB_WEBHOOK_SECRET', 'GOOGLE_API_KEY'],
       run: 'npx tsx github-bot.ts',
       repoRun: 'npx tsx examples/channels/06-github-bot.ts',
       notes: [

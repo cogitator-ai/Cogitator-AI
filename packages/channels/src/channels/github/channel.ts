@@ -334,7 +334,10 @@ export class GitHubChannel implements Channel {
   private readonly reactions = new Map<string, { id: number; content: string }>();
   private readonly reacting = new Map<string, Promise<void>>();
   private readonly edits = new Map<string, EditState>();
-  private readonly askers = new Map<string, string>();
+  /** People who wrote to the bot in a conversation and were not answered yet, by conversation. */
+  private readonly waiting = new Map<string, Set<string>>();
+  /** The conversation and author of each message handed to the agent, by `channelId|messageId`. */
+  private readonly askers = new Map<string, { conversation: string; userId: string }>();
   private readonly engaged = new Set<string>();
   private server?: Server;
   private identity?: Promise<string>;
@@ -431,9 +434,11 @@ export class GitHubChannel implements Channel {
       this.deliveries.add(delivery);
       forgetOldest(this.deliveries);
     }
-    void this.receive(event, payload).catch((error: unknown) =>
-      console.error('[github] Webhook delivery failed:', error)
-    );
+    void this.receive(event, payload)
+      .then((taken) => {
+        if (!taken && delivery !== undefined) this.deliveries.delete(delivery);
+      })
+      .catch((error: unknown) => console.error('[github] Webhook delivery failed:', error));
     return { status: 200, body: 'OK' };
   }
 
@@ -477,10 +482,7 @@ export class GitHubChannel implements Channel {
     if (parts.length === 0) throw new Error('[github] Nothing to send');
     const ids: string[] = [];
     for (const part of parts) ids.push(await this.comment(conversation, part, thread));
-    this.answered(
-      thread === undefined ? channelId : `${channelId}:${thread}`,
-      thread !== undefined
-    );
+    this.answered(channelId, thread, options?.replyTo);
     return ids[0] ?? '';
   }
 
@@ -629,13 +631,24 @@ export class GitHubChannel implements Channel {
   }
 
   /**
-   * Notes that the bot answered in a conversation: the person it answered
-   * there may write on without a mention, and in a review thread everyone may.
+   * Notes that the bot answered in a conversation. The person the answer is
+   * for (its `replyTo`, or everyone waiting there when it names no message
+   * the bot was asked in) may write on without a mention, and in a review
+   * thread everyone may.
    */
-  private answered(conversation: string, reviewThread: boolean): void {
-    if (reviewThread) this.remember(this.engaged, conversation);
-    const asker = this.askers.get(conversation);
-    if (asker !== undefined) this.remember(this.engaged, `${conversation}|${asker}`);
+  private answered(channelId: string, thread: number | undefined, replyTo?: string): void {
+    const conversation = thread === undefined ? channelId : `${channelId}:${thread}`;
+    if (thread !== undefined) this.remember(this.engaged, conversation);
+    const asker = replyTo === undefined ? undefined : this.askers.get(`${channelId}|${replyTo}`);
+    if (asker) {
+      this.remember(this.engaged, `${asker.conversation}|${asker.userId}`);
+      this.waiting.get(asker.conversation)?.delete(asker.userId);
+      return;
+    }
+    for (const userId of this.waiting.get(conversation) ?? []) {
+      this.remember(this.engaged, `${conversation}|${userId}`);
+    }
+    this.waiting.delete(conversation);
   }
 
   private remember(set: Set<string>, key: string): void {
@@ -650,29 +663,38 @@ export class GitHubChannel implements Channel {
     return this.engaged.delete(`${conversation}|${userId}`);
   }
 
-  private async receive(event: string, payload: unknown): Promise<void> {
+  /**
+   * Hands a delivery's event to the agent when it is one to answer. Resolves
+   * false when the event was dropped because the bot's login could not be
+   * loaded or the channel stopped, so the delivery may be sent again.
+   */
+  private async receive(event: string, payload: unknown): Promise<boolean> {
     const inbound = githubInboundOf(event, payload);
-    if (!inbound || !this.handler) return;
-    if (!this.allowsRepository(inbound.repository) || !this.trusts(inbound)) return;
-    if (!(await this.loginForDelivery()) || this.stopped) return;
-    if (this.isOwnOrBot(inbound.sender)) return;
+    if (!inbound || !this.handler) return true;
+    if (!this.allowsRepository(inbound.repository) || !this.trusts(inbound)) return true;
+    if (!(await this.loginForDelivery()) || this.stopped) return false;
+    if (this.isOwnOrBot(inbound.sender)) return true;
+    const text = this.stripMention(inbound.text);
+    if (!text) return true;
+    const key = `${inbound.repository.toLowerCase()}:${inbound.id}`;
+    if (this.handled.has(key)) return true;
     const channelId = `${inbound.repository}#${inbound.number}`;
     const conversation = inbound.topicId ? `${channelId}:${inbound.topicId}` : channelId;
     const userId = String(inbound.sender.id);
-    const mentioned = this.mentionsBot(inbound.text);
     if (
       this.config.trigger !== 'all' &&
-      !mentioned &&
+      !this.mentionsBot(inbound.text) &&
       !this.takesWithoutMention(conversation, userId)
     ) {
-      return;
+      return true;
     }
-    const text = this.stripMention(inbound.text);
-    if (!text) return;
-    const key = `${inbound.repository.toLowerCase()}:${inbound.id}`;
-    if (this.handled.has(key)) return;
     this.remember(this.handled, key);
-    this.askers.set(conversation, userId);
+    const waiting = this.waiting.get(conversation) ?? new Set<string>();
+    waiting.add(userId);
+    this.waiting.delete(conversation);
+    this.waiting.set(conversation, waiting);
+    forgetOldest(this.waiting);
+    this.askers.set(`${channelId}|${inbound.id}`, { conversation, userId });
     forgetOldest(this.askers);
     const message: ChannelMessage = {
       id: inbound.id,
@@ -691,6 +713,7 @@ export class GitHubChannel implements Channel {
     } catch (error) {
       console.error('[github] Message handler error:', error);
     }
+    return true;
   }
 
   /**

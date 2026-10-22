@@ -27,6 +27,7 @@ export type { HeartbeatConfig } from './heartbeat';
 export { StatusReactionTracker } from './status-reactions';
 export { InboundDebouncer } from './inbound-debounce';
 export { MessageQueue } from './message-queue';
+export type { MessageProcessor } from './message-queue';
 export {
   defaultThreadKey,
   legacyThreadKey,

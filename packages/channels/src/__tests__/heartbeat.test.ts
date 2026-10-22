@@ -377,6 +377,36 @@ describe('HeartbeatScheduler', () => {
     scheduler.stop();
   });
 
+  it('keeps a failed one-shot task pending to fire again, unless it is bestEffort', async () => {
+    onFire.mockRejectedValue(new Error('aborted'));
+    store.getOverdue
+      .mockResolvedValueOnce([
+        { id: 'once', firesAt: Date.now() - 100, type: 'fixed', metadata: { description: 'A' } },
+        {
+          id: 'effort',
+          firesAt: Date.now() - 100,
+          type: 'fixed',
+          metadata: { description: 'B', bestEffort: true },
+        },
+      ])
+      .mockResolvedValue([]);
+
+    const scheduler = new HeartbeatScheduler(store as unknown as TimerStore, {
+      onFire,
+      pollInterval: 50,
+    });
+    scheduler.start();
+    await vi.waitFor(() => expect(store.update).toHaveBeenCalledTimes(2), { timeout: 200 });
+    scheduler.stop();
+
+    expect(store.markFired.mock.calls.map(([id]) => id)).toEqual(['effort']);
+    expect(store.update).toHaveBeenCalledWith(
+      'once',
+      expect.objectContaining({ lastRunStatus: 'error', consecutiveErrors: 1 })
+    );
+    expect(store.schedule).not.toHaveBeenCalled();
+  });
+
   it('skips entries that exceeded maxRetries', async () => {
     store.getOverdue
       .mockResolvedValueOnce([

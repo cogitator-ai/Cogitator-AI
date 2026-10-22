@@ -143,7 +143,10 @@ export class HeartbeatScheduler {
    * task fires (a task whose claim ran out while it waited is left to the worker that took it) and
    * every `claimTtl / 3` while it runs. Disabled and exhausted tasks are released so another
    * worker's poll is not blocked by this one's lease. A task that throws keeps the claim until its
-   * lease runs out, which spaces out the retries. The task's message goes to the `channel`,
+   * lease runs out, which spaces out the retries. A one-shot task that fails (its `onFire`
+   * throws, as `Gateway.injectMessage` does for a run that failed or was aborted by `stop()`)
+   * stays pending and fires again on a later poll or after a restart, up to `maxRetries`, unless
+   * it is `bestEffort`. The task's message goes to the `channel`,
    * `channelId`, `topicId` and `conversationId` of its metadata, those it has.
    */
   private async processEntry(entry: TimerEntry): Promise<void> {
@@ -208,11 +211,12 @@ export class HeartbeatScheduler {
     }
 
     await this.store.update(entry.id, patch);
-    await this.store.markFired(entry.id);
+    const nextFiresAt = this.computeNextFire(entry);
+    const retry = status === 'error' && nextFiresAt === null && !meta.bestEffort;
+    if (!retry) await this.store.markFired(entry.id);
 
     this.config.onRunComplete?.(entry, status, errorMsg, durationMs);
 
-    const nextFiresAt = this.computeNextFire(entry);
     if (nextFiresAt !== null) {
       await this.store.schedule({
         workflowId: entry.workflowId ?? 'heartbeat',

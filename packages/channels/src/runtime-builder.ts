@@ -1009,8 +1009,8 @@ export class RuntimeBuilder {
 
     const github = this.config.channels.github;
     if (github) {
-      const channelToken = this.env.GITHUB_CHANNEL_TOKEN;
-      const token = channelToken ?? this.env.GITHUB_TOKEN;
+      const channelToken = this.env.GITHUB_CHANNEL_TOKEN?.trim() || undefined;
+      const token = channelToken ?? (this.env.GITHUB_TOKEN?.trim() || undefined);
       const secret = this.env.GITHUB_WEBHOOK_SECRET;
       if (token && secret) {
         if (!channelToken) {

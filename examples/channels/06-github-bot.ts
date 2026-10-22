@@ -13,11 +13,11 @@ import { createCogitator, DEFAULT_MODEL, requireEnv } from '../_shared/setup';
  * `ngrok` to port 8787 works for a try), content type `application/json`,
  * the secret from GITHUB_WEBHOOK_SECRET, and the events Issues, Issue
  * comments, Pull requests, Pull request reviews and Pull request review
- * comments. GITHUB_TOKEN is a token of the bot account that may write
- * issues and pull requests there.
+ * comments. GITHUB_CHANNEL_TOKEN is a token of a separate bot account that
+ * may write issues and pull requests there, scoped to those repositories.
  */
 requireEnv('GOOGLE_API_KEY');
-const token = requireEnv('GITHUB_TOKEN');
+const token = requireEnv('GITHUB_CHANNEL_TOKEN');
 const secret = requireEnv('GITHUB_WEBHOOK_SECRET');
 const port = Number(process.env.GITHUB_WEBHOOK_PORT ?? 8787);
 const repositories = process.env.GITHUB_REPOSITORIES?.split(',').map((name) => name.trim());

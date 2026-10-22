@@ -7,7 +7,7 @@ description: Answer issues, pull requests, comments and code reviews with your a
 
 GitHub needs no SDK: the channel calls the REST API with `fetch` and takes events from a webhook.
 
-1. **A token for the bot.** Give the bot an account of its own (or a GitHub App) and a token that reaches only the repositories it answers in: a fine-grained personal access token with read and write access to **Issues** and **Pull requests** of those repositories, or a GitHub App installation token. Avoid a classic token with `repo`, which reaches every private repository of the account, and avoid your own token: the bot would post as you and take your comments for its own. Save it as `GITHUB_TOKEN=...` (`GITHUB_CHANNEL_TOKEN` with `cogitator up`, see [below](#configuration))
+1. **A token for the bot.** Give the bot an account of its own (or a GitHub App) and a token that reaches only the repositories it answers in: a fine-grained personal access token with read and write access to **Issues** and **Pull requests** of those repositories, or a GitHub App installation token. Avoid a classic token with `repo`, which reaches every private repository of the account, and avoid your own token: the bot would post as you and take your comments for its own. Save it as `GITHUB_CHANNEL_TOKEN=...`, apart from any `GITHUB_TOKEN` of yours
 2. **A webhook.** In the repository (or organization) settings, add a webhook with the payload URL `https://<your host>/github/webhook`, content type `application/json` and a secret of your choice, saved as `GITHUB_WEBHOOK_SECRET=...`. Pick the events **Issues**, **Issue comments**, **Pull requests**, **Pull request reviews** and **Pull request review comments**.
 
 GitHub only pushes events, so the bot needs a URL GitHub can reach. To try it on your machine, a tunnel such as `cloudflared tunnel --url http://localhost:8787` or `ngrok http 8787` is enough.
@@ -19,7 +19,7 @@ import { Agent, Cogitator } from '@cogitator-ai/core';
 import { Gateway, githubChannel } from '@cogitator-ai/channels';
 
 const github = githubChannel({
-  token: process.env.GITHUB_TOKEN!,
+  token: process.env.GITHUB_CHANNEL_TOKEN!,
   webhook: {
     secret: process.env.GITHUB_WEBHOOK_SECRET!,
     port: 8787, // its own server, at /github/webhook unless `path` says otherwise
@@ -65,7 +65,7 @@ Other events and actions (edits, closes, labels) are answered `200` and left alo
 - **Conversations.** A message's `channelId` is `owner/repo#number`, the same for every comment of an issue or pull request, so the [Gateway](/docs/channels/gateway) keeps one conversation per issue or pull request and person. A review comment's `topicId` is the id of its review thread's first comment: each review thread is a conversation of its own, and its answer is a reply in it. `groupId` is the repository.
 - **Whose events.** Only those of the repository's owner, the organization's members and collaborators (`author_association` `OWNER`, `MEMBER`, `COLLABORATOR`), whatever the trigger. `associations` names others (`['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR']`), `'any'` answers everyone, and `authors` lists logins answered whatever their association. GitHub may show a member whose membership is private as `CONTRIBUTOR`: list them in `authors`, or make the membership public.
 - **Which events.** By default (`trigger: 'mention'`) those that mention `@<login>`, outside code (fenced, indented or inline) and quoted lines, which only repeat a mention. The mention at the start is taken out of the text. `trigger: 'all'` answers every event of the table. `repositories` limits the bot to `owner/repo` names or `owner/*`.
-- **Follow-ups.** Once the bot answered someone in a conversation, their next comment there reaches it without a mention, such as the `yes` that answers a [tool approval](/docs/channels/gateway#approvals) prompt, and every comment in a review thread the bot replied in does too. The channel remembers the latest 1000 of these in memory.
+- **Follow-ups.** Once the bot answered someone in a conversation, their next comment there reaches it without a mention, such as the `yes` that answers a [tool approval](/docs/channels/gateway#approvals) prompt, and every comment in a review thread the bot replied in does too. An answer is for the person whose comment it replies to (`replyTo`), so someone else asking meanwhile does not take their turn, and an answer that names no comment is for everyone who asked since the last one. Comments the bot does not take, such as an empty review, leave the turn as it was. The channel remembers the latest 1000 of these in memory.
 - **What it skips.** Its own comments (by login, with or without an app's `[bot]`), and other bots and apps (`sender.type` `Bot`), so two bots cannot answer each other forever. `allowBots: true` lets bots in.
 - **Users.** `userId` is the sender's numeric GitHub id, which stays the same when they rename, and `userName` their login.
 
@@ -73,7 +73,7 @@ Other events and actions (edits, closes, labels) are answered `200` and left alo
 
 Every delivery must carry an `X-Hub-Signature-256` that is the HMAC SHA-256 of the body with the webhook secret, compared in constant time. A delivery without it, or signed with another secret, is refused with `401`. A signed delivery is answered `200` at once and handled after, within GitHub's 10-second limit however long the agent takes. A delivery GitHub sends again is handled once: by its `X-GitHub-Delivery`, and by the issue, comment or review it carries, which the signature covers (the header is not). Both are remembered in memory for the latest 1000, so after a restart a redelivered event is answered again. Deliveries sent as `application/x-www-form-urlencoded` are read too.
 
-When the bot's login is not known yet and `GET /user` fails, the delivery is still answered `200`, since GitHub does not send it again by itself: the channel tries to load the login twice more, 2 and 10 seconds later, and drops the event with a logged error if it still cannot. Once `stop()` was called, deliveries are answered `503`.
+When the bot's login is not known yet and `GET /user` fails, the delivery is still answered `200`, since GitHub does not send it again by itself: the channel tries to load the login twice more, 2 and 10 seconds later, and drops the event with a logged error if it still cannot. A dropped event is forgotten, so **Redeliver** in the webhook settings sends it again. Once `stop()` was called, deliveries are answered `503`.
 
 Without `port`, mount `handleWebhook` in your own server. It needs the body exactly as received, which the signature covers, and works before `start()` too: the first delivery loads the bot's login. `webhookListener()` is the same as a Node request listener, which reads the body itself. A [WebChat](/docs/channels/webchat) server takes it as a route, so one port serves both: `webchatChannel({ port, routes: { '/github/webhook': github.webhookListener() } })`.
 

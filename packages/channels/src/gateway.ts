@@ -144,6 +144,9 @@ const TYPING_INTERVAL_MS = 4000;
 
 const DEFAULT_DRAIN_TIMEOUT_MS = 30_000;
 
+/** Why {@link Gateway.stop} aborts the runs still going past `drainTimeout` */
+const GATEWAY_STOPPED = new Error('The gateway stopped');
+
 /** Threads kept in the gateway's own bookkeeping (stats, sessions, envelope times) */
 export const MAX_TRACKED_THREADS = 10_000;
 
@@ -221,7 +224,9 @@ export class Gateway {
   private readonly threads = new Map<string, Omit<GatewaySessionInfo, 'threadId' | 'active'>>();
   private readonly inFlight = new Map<string, number>();
   /** Messages taken and not answered yet, for {@link idle} */
-  private readonly pending = new Set<Promise<void>>();
+  private readonly pending = new Set<Promise<boolean>>();
+  /** The stop in progress, which a second {@link stop} call returns */
+  private stopping: Promise<void> | null = null;
   /** The last pending write of each user's session, so writes to one session never interleave */
   private readonly sessionWrites = new Map<string, Promise<void>>();
   private running = false;
@@ -286,17 +291,30 @@ export class Gateway {
    * first lets them be answered: messages held by `debounce` are flushed, and it waits up to
    * `drainTimeout` for the queues and the runs in progress. Then it aborts the runs still going,
    * drops the messages still waiting, waits for the aborted runs to settle (up to `drainTimeout`
-   * again) and stops the channels.
+   * again) and stops the channels. Messages that come in meanwhile are refused (see
+   * {@link injectMessage}). A second call while it stops returns the same promise.
    */
-  async stop(): Promise<void> {
-    if (!this.running) return;
+  stop(): Promise<void> {
+    if (this.stopping) return this.stopping;
+    if (!this.running) return Promise.resolve();
     this.running = false;
+    const stopping = this.drainAndStop().finally(() => {
+      this.stopping = null;
+    });
+    this.stopping = stopping;
+    return stopping;
+  }
+
+  private async drainAndStop(): Promise<void> {
     const timeout = this.config.drainTimeout ?? DEFAULT_DRAIN_TIMEOUT_MS;
 
-    if (this.debouncer) await this.debouncer.flushAll();
+    if (this.debouncer) {
+      await this.debouncer.flushAll();
+      this.debouncer.dispose();
+    }
     if (!(await settlesWithin(this.idle(), timeout))) {
       this.messageQueue?.dispose();
-      for (const run of this.runs) run.abort(new Error('The gateway stopped'));
+      for (const run of this.runs) run.abort(GATEWAY_STOPPED);
       await settlesWithin(this.idle(), timeout);
     }
     this.messageQueue?.dispose();
@@ -325,7 +343,9 @@ export class Gateway {
   /**
    * Feeds a message to the gateway as if a channel had received it (the scheduler sends its
    * tasks this way). It resolves once the message is answered, or once it is buffered when
-   * `debounce` is on.
+   * `debounce` is on. It rejects when the message was not answered: its run failed (also
+   * reported to `onError`), it was aborted or dropped by {@link stop}, or it came in while the
+   * gateway was stopping.
    */
   async injectMessage(msg: ChannelMessage): Promise<void> {
     return this.handleIncoming(msg, true);
@@ -565,20 +585,28 @@ export class Gateway {
    * `untilAnswered` waits for the answer.
    */
   private async handleIncoming(msg: ChannelMessage, untilAnswered: boolean): Promise<void> {
+    if (this.stopping) {
+      const refused = new Error('The gateway is stopping: the message was dropped');
+      this.config.onError?.(refused, msg);
+      if (untilAnswered) throw refused;
+      return;
+    }
     if (this.debouncer) {
       this.debouncer.enqueue(msg);
       return;
     }
     const answered = this.dispatch(msg);
     if (untilAnswered || !this.messageQueue) {
-      await answered;
+      if (!(await answered) && untilAnswered) {
+        throw new Error('The message was not answered: its run failed or was aborted');
+      }
       return;
     }
     answered.catch(() => {});
   }
 
-  /** Puts a message through the queue of its thread, resolving once it is answered */
-  private dispatch(msg: ChannelMessage): Promise<void> {
+  /** Puts a message through the queue of its thread, resolving once it is done with */
+  private dispatch(msg: ChannelMessage): Promise<boolean> {
     const answered = this.route(msg);
     this.pending.add(answered);
     const forget = () => {
@@ -588,13 +616,11 @@ export class Gateway {
     return answered;
   }
 
-  private async route(incoming: ChannelMessage): Promise<void> {
+  /** Resolves `true` once the message is handled, `false` when it failed or was dropped */
+  private async route(incoming: ChannelMessage): Promise<boolean> {
     const msg = await this.locateScheduled(incoming);
-    if (this.messageQueue) {
-      await this.messageQueue.push(msg, this.getThreadId(msg));
-      return;
-    }
-    await this.processMessage(msg);
+    if (this.messageQueue) return this.messageQueue.push(msg, this.getThreadId(msg));
+    return this.processMessage(msg);
   }
 
   /**
@@ -654,9 +680,13 @@ export class Gateway {
     return reachedEnd;
   }
 
-  private async processMessage(msg: ChannelMessage, signal?: AbortSignal): Promise<void> {
+  /**
+   * Handles one message, `false` when its run failed or was aborted. A message for a channel
+   * the gateway does not run counts as handled: it never can be.
+   */
+  private async processMessage(msg: ChannelMessage, signal?: AbortSignal): Promise<boolean> {
     const channel = this.channels.find((ch) => ch.type === msg.channelType);
-    if (!channel) return;
+    if (!channel) return true;
 
     const threadId = this.getThreadId(msg);
     this.inFlight.set(threadId, (this.inFlight.get(threadId) ?? 0) + 1);
@@ -668,9 +698,10 @@ export class Gateway {
 
     try {
       await this.processWithChannel(msg, channel, threadId, runSignal);
+      return signal?.aborted !== true && stop.signal.reason !== GATEWAY_STOPPED;
     } catch (error) {
-      if (runSignal.aborted) return;
-      this.config.onError?.(toError(error), msg);
+      if (!runSignal.aborted) this.config.onError?.(toError(error), msg);
+      return false;
     } finally {
       this.runs.delete(stop);
       const remaining = (this.inFlight.get(threadId) ?? 1) - 1;

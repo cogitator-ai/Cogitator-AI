@@ -114,7 +114,7 @@ describe('WhatsAppChannel', () => {
       message: { conversation: 'no phone shared' },
     });
     upsert(0, {
-      key: { remoteJid: '79990001122@s.whatsapp.net', remoteJidAlt: '9001@lid', id: 'd3' },
+      key: { remoteJid: '79990001122@s.whatsapp.net', id: 'd3' },
       message: { conversation: 'by phone' },
     });
     await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(4));
