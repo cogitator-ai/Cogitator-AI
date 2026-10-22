@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { bindJudgeContext, judgeContextFor, relevance } from '../metrics/llm-judge';
 import { JudgeConfigSchema } from '../schema';
 import type { JudgeCache, JudgeCogitator } from '../schema';
@@ -24,6 +24,10 @@ function judgeRuntime(delay = 0) {
 }
 
 describe('judge cache and concurrency', () => {
+  beforeAll(async () => {
+    await import('@cogitator-ai/core');
+  }, 60_000);
+
   it('judges an answer once with cache on, later verdicts costing nothing', async () => {
     const judge = judgeRuntime();
     const config = JudgeConfigSchema.parse({ model: 'm', cache: true });
