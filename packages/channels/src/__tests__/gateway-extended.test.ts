@@ -99,6 +99,10 @@ describe('Gateway regressions', () => {
       }),
       updateThread: vi.fn().mockResolvedValue({ success: true }),
       getEntries: vi.fn().mockResolvedValue({ success: true, data: entries }),
+      getEntry: vi.fn(async (id: string) => ({
+        success: true,
+        data: entries.find((entry) => entry.id === id) ?? null,
+      })),
       addEntry: vi.fn(async (entry: { createdAt?: Date }) => ({
         success: true,
         data: { ...entry, id: 'summary', createdAt: entry.createdAt ?? new Date() },
@@ -215,6 +219,10 @@ describe('Gateway regressions', () => {
       }),
       updateThread: vi.fn().mockResolvedValue({ success: true }),
       getEntries: vi.fn().mockResolvedValue({ success: true, data: entries }),
+      getEntry: vi.fn(async (id: string) => ({
+        success: true,
+        data: entries.find((entry) => entry.id === id) ?? null,
+      })),
       addEntry: vi.fn(async (entry: { createdAt?: Date }) => ({
         success: true,
         data: { ...entry, id: 'summary', createdAt: entry.createdAt ?? new Date() },
@@ -264,6 +272,10 @@ describe('Gateway regressions', () => {
       }),
       updateThread: vi.fn().mockResolvedValue({ success: true }),
       getEntries: vi.fn().mockResolvedValue({ success: true, data: entries }),
+      getEntry: vi.fn(async (id: string) => ({
+        success: true,
+        data: entries.find((entry) => entry.id === id) ?? null,
+      })),
       addEntry: vi.fn(async (entry: { createdAt?: Date }) => ({
         success: true,
         data: { ...entry, id: 'summary', createdAt: entry.createdAt ?? new Date() },
