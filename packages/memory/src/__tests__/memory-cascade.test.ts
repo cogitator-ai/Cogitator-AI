@@ -275,6 +275,40 @@ describe('MemoryCascade', () => {
     expect(report.threadsChanged.sort()).toEqual(['f', 't']);
   });
 
+  it('fails before it changes anything when a fork cannot be read, and skips a fork deleted', async () => {
+    const [card] = entries;
+    unwrap(await memory.forkThread('t', entries[3]!.id, 'f'));
+    unwrap(await memory.forkThread('t', entries[3]!.id, 'gone'));
+    unwrap(await memory.deleteThread('gone'));
+    const read = memory.getEntries.bind(memory);
+    memory.getEntries = async (options) =>
+      options.threadId === 'f' ? { success: false, error: 'fork unreadable' } : read(options);
+
+    await expect(cascade.deleteEntries([card!.id], who)).rejects.toThrow('fork unreadable');
+    expect(unwrap(await memory.getEntry(card!.id))).not.toBeNull();
+
+    memory.getEntries = read;
+    await cascade.deleteEntries([card!.id], who);
+    expect(JSON.stringify(unwrap(await memory.getEntries({ threadId: 'f' })))).not.toContain(
+      '4111'
+    );
+  });
+
+  it('redacts the playbook of a user it forgets, the rules of no lesson too', async () => {
+    const [card] = entries;
+    const [lesson] = await items.write([item('Never ask for card numbers.', [card!.id], 'lesson')]);
+    await files.put(
+      { scope, author: 'system' },
+      PLAYBOOK_PATH,
+      playbookFile({ rules: [`Never ask for cards. [lesson:${lesson!.id}]`, 'Ana prefers mail.'] })
+    );
+
+    await cascade.deleteUser('ana', who);
+
+    const history = await files.history({ scope }, PLAYBOOK_PATH);
+    expect(history.filter((version) => version.content?.includes('Ana prefers mail'))).toEqual([]);
+  });
+
   it('forgets what a user wrote in a thread of someone else, leaving the rest', async () => {
     unwrap(
       await memory.createThread('helper', { userId: 'ana', memoryUserIds: ['ana', 'bob'] }, 'group')

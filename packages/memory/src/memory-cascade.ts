@@ -365,10 +365,10 @@ export class MemoryCascade {
       for (const forkId of listed(thread?.metadata[FORKS_KEY])) {
         if (seen.has(forkId)) continue;
         seen.add(forkId);
-        const fork = await this.memory.getEntries({ threadId: forkId, types: 'all' });
-        if (!fork.success) continue;
+        if (!unwrap(await this.memory.getThread(forkId))) continue;
+        const fork = unwrap(await this.memory.getEntries({ threadId: forkId, types: 'all' }));
         let found = false;
-        for (const entry of fork.data) {
+        for (const entry of fork) {
           const origin = entry.metadata?.forkOf;
           if (typeof origin !== 'string' || !all.has(origin) || all.has(entry.id)) continue;
           all.set(entry.id, entry);
@@ -626,7 +626,7 @@ export class MemoryCascade {
       const names = (version: MemoryFileVersion) =>
         derived(version) && [...citedIn(version.content)].some((id) => purged.has(id));
       if (purged.size > 0) {
-        report.playbookRules += await this.rewritePlaybooks(versions, purged);
+        report.playbookRules += await this.rewritePlaybooks(versions, purged, owned);
       }
       const doomed = versions.filter(
         (version) =>
@@ -688,12 +688,13 @@ export class MemoryCascade {
 
   /**
    * Writes again each playbook in front that names a lesson of `purged`, without the rules that
-   * stood on it, so redacting its older versions leaves the other rules in place. Returns the
-   * rules taken out.
+   * stood on it, so redacting its older versions leaves the other rules in place. A playbook of a
+   * scope that goes whole (`owned`) is left to be redacted with it. Returns the rules taken out.
    */
   private async rewritePlaybooks(
     versions: readonly MemoryFileVersion[],
-    purged: ReadonlySet<string>
+    purged: ReadonlySet<string>,
+    owned?: (version: MemoryFileVersion) => boolean
   ): Promise<number> {
     const files = this.files;
     if (!files) return 0;
@@ -706,7 +707,7 @@ export class MemoryCascade {
     }
     let removed = 0;
     for (const front of fronts.values()) {
-      if (front.content === null || front.author === 'model') continue;
+      if (front.content === null || front.author === 'model' || owned?.(front)) continue;
       const playbook = parsePlaybook(front.content);
       const rules = playbook.rules.filter((rule) =>
         [...citedIn(rule)].every((id) => !purged.has(id))
