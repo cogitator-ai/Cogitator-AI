@@ -207,7 +207,7 @@ export async function buildInitialMessages(
       threadId,
       agentId: agent.id,
       memoryAgentId: memoryAgentId(agent),
-      ...(options.branch && { leafId: options.branch.fromEntryId }),
+      ...(history ? { leafId: null } : options.branch && { leafId: options.branch.fromEntryId }),
       userId: options.userId,
       systemPrompt: agent.instructions,
       currentInput: options.input,
@@ -216,7 +216,6 @@ export async function buildInitialMessages(
       ...(typeof timeZone === 'string' && { timeZone }),
       ...(contextBudget !== undefined && { maxTokens: contextBudget, reserveTokens: 0 }),
     });
-    onContext?.(ctx);
     for (const warning of ctx.warnings ?? []) {
       getLogger().warn(warning, { agent: agent.name, threadId });
     }
@@ -233,7 +232,16 @@ export async function buildInitialMessages(
       role: 'user',
       content: withMemoryContext(userContent, ctx.memoryContext),
     };
-    if (history) return [{ role: 'system', content: agent.instructions }, ...history, turn];
+    if (history) {
+      const messages: Message[] = [
+        { role: 'system', content: agent.instructions },
+        ...history,
+        turn,
+      ];
+      onContext?.({ ...ctx, messages });
+      return messages;
+    }
+    onContext?.(ctx);
     const recalled = ctx.memoryContext ? ctx.messages.slice(0, -1) : ctx.messages;
     return [
       ...withInstructions(cacheEndOnLast(sanitizeToolHistory(recalled)), agent.instructions),

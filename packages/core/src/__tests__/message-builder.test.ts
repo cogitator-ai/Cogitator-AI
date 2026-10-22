@@ -267,7 +267,8 @@ describe('buildInitialMessages with a context builder', () => {
       onContext
     );
 
-    expect(onContext).toHaveBeenCalledTimes(1);
+    expect(build).toHaveBeenCalledWith(expect.objectContaining({ leafId: null }));
+    expect(onContext).toHaveBeenCalledWith(expect.objectContaining({ messages }));
     expect(messages).toEqual([
       { role: 'system', content: 'sys' },
       { role: 'user', content: 'hi' },

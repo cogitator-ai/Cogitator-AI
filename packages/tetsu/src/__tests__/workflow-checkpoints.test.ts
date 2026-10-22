@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
-import { createApp, httpError } from '@tetsujs/core';
+import { createApp, hook, HttpError, httpError } from '@tetsujs/core';
 import { serve } from '@tetsujs/core/testing';
 import { openapi } from '@tetsujs/openapi';
 import { assertDescribed } from '@tetsujs/openapi/testing';
@@ -211,6 +211,78 @@ describe('workflow checkpoints', () => {
       message: 'The order changed meanwhile',
       checkpointId: expect.any(String),
     });
+  });
+
+  test('wraps a plain-text HttpError of a node in the envelope, with the checkpoint', async () => {
+    const plain = new WorkflowBuilder<Steps>('plain')
+      .initialState({ steps: [] })
+      .addNode('a', async () => ({ state: { steps: ['a'] } }))
+      .addNode(
+        'b',
+        async () => {
+          throw new HttpError(409, 'The order changed meanwhile');
+        },
+        { after: ['a'] }
+      )
+      .build() as unknown as Workflow<WorkflowState>;
+    const res = await serve(
+      createApp({
+        routes: cogitatorController({
+          cogitator: fakeCogitator().cogitator,
+          workflows: { plain },
+          workflowCheckpoints: new InMemoryCheckpointStore(),
+        }),
+        reportError: () => undefined,
+      })
+    )('/workflows/plain/run', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ options: { checkpoint: true } }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      status: 409,
+      message: 'The order changed meanwhile',
+      checkpointId: expect.any(String),
+    });
+  });
+
+  test("hands the application's onError the error of a run that saved no checkpoint", async () => {
+    class Overbooked extends Error {}
+    const seen: unknown[] = [];
+    const overbooked = new WorkflowBuilder<Steps>('overbooked')
+      .initialState({ steps: [] })
+      .addNode('a', async () => {
+        throw new Overbooked('No seats left');
+      })
+      .build() as unknown as Workflow<WorkflowState>;
+    const res = await serve(
+      createApp({
+        routes: cogitatorController({
+          cogitator: fakeCogitator().cogitator,
+          workflows: { overbooked },
+        }),
+        hooks: {
+          onError: [
+            hook.onError((ctx) => {
+              seen.push(ctx.error);
+              return ctx.error instanceof Overbooked
+                ? Response.json({ error: 'OVERBOOKED' }, { status: 418 })
+                : undefined;
+            }),
+          ],
+        },
+        reportError: () => undefined,
+      })
+    )('/workflows/overbooked/run', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+
+    expect(res.status).toBe(418);
+    expect(seen[0]).toBeInstanceOf(Overbooked);
   });
 
   test('names no checkpoint for a failed run that saved none', async () => {

@@ -57,18 +57,26 @@ export function unwrapWorkflowFailure(error: unknown): unknown {
  * Answers a failed workflow run that saved a checkpoint like the error it failed with, plus the
  * `checkpointId` to resume it from: a `CogitatorError` with its status and code, an `HttpError` a
  * node threw with its own status and body. Any other error is reported to the application and
- * answered with Tetsu's own `500 INTERNAL_SERVER_ERROR`. A JSON route throws the error of a run
+ * answered with Tetsu's own `500 INTERNAL_SERVER_ERROR` and the `checkpointId`, before the
+ * application's own `onError` hooks, which then do not see it: throw an `HttpError` or a
+ * `CogitatorError` from a node to choose the answer. A JSON route throws the error of a run
  * without a checkpoint as it is (see {@link workflowRouteError}).
  */
 function workflowFailureResponse(ctx: BaseCtx, error: WorkflowRunFailedError): Response {
   const checkpoint = error.checkpointId === undefined ? {} : { checkpointId: error.checkpointId };
   if (error.failure instanceof HttpError) {
-    const body = error.failure.body ?? errorBody(error.failure.status);
+    const { status, body } = error.failure;
+    const envelope =
+      body === undefined
+        ? errorBody(status)
+        : typeof body === 'string'
+          ? errorBody(status, undefined, body)
+          : body;
     return Response.json(
-      typeof body === 'object' && body !== null && !Array.isArray(body)
-        ? { ...body, ...checkpoint }
-        : body,
-      { status: error.failure.status }
+      typeof envelope === 'object' && envelope !== null && !Array.isArray(envelope)
+        ? { ...envelope, ...checkpoint }
+        : envelope,
+      { status }
     );
   }
   const described = describeHttpError(error.failure);
