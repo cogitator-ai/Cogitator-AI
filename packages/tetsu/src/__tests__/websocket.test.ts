@@ -200,6 +200,41 @@ describe('websocket', () => {
     expect(await connection.until('pong')).toEqual([{ type: 'pong', id: 'still-there' }]);
   });
 
+  test('sends nothing more for a run after its cancelled, even when the run goes on', async () => {
+    const { cogitator } = fakeCogitator(
+      (_agent, options) =>
+        new Promise((resolve) => {
+          options.onToken?.('first');
+          options.signal?.addEventListener(
+            'abort',
+            () => {
+              options.onToken?.('late');
+              resolve(runResult({ output: 'finished anyway' }));
+            },
+            { once: true }
+          );
+        })
+    );
+    const request = serveSockets({ cogitator, agents: { chat: chatAgent() } });
+    const connection = await connect(request.url);
+
+    connection.send({
+      type: 'run',
+      id: 'r',
+      payload: { type: 'agent', name: 'chat', input: 'go' },
+    });
+    expect(await connection.next()).toMatchObject({ id: 'r', payload: { type: 'token' } });
+    connection.send({ type: 'stop', id: 'r' });
+    expect(await connection.next()).toEqual({
+      type: 'event',
+      id: 'r',
+      payload: { type: 'cancelled' },
+    });
+
+    connection.send({ type: 'ping', id: 'after' });
+    expect(await connection.next()).toEqual({ type: 'pong', id: 'after' });
+  });
+
   test('refuses a run whose id is already running, and one more run without an id', async () => {
     const { cogitator } = fakeCogitator(
       (_agent, options) =>

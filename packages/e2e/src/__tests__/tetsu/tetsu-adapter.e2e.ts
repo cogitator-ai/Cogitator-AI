@@ -265,8 +265,11 @@ describe.skipIf(!hasBun)('Tetsu adapter on Bun', () => {
         );
       run('kept', 'Reply with the word pong.');
       run('stopped', 'Write a long story about the sea, at least three hundred words.');
-      await done;
-      socket.close();
+      try {
+        await done;
+      } finally {
+        socket.close();
+      }
 
       expect(ends.get('kept')?.type).toBe('complete');
       expect(ends.get('kept')?.result?.output.toLowerCase()).toContain('pong');
