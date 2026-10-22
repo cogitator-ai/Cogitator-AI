@@ -153,6 +153,33 @@ describe('VoiceAgent control protocol and realtime wiring', () => {
     expect(agent.run).not.toHaveBeenCalled();
   });
 
+  it('closes without waiting forever for a turn that never settles', async () => {
+    const agent = {
+      run: vi.fn(),
+      stream: vi.fn(() => ({
+        async *[Symbol.asyncIterator]() {
+          yield 'Hello.';
+        },
+        settle: () => new Promise<void>(() => undefined),
+      })),
+    };
+    const { ws, received } = await start({
+      mode: 'pipeline',
+      agent,
+      stt: createSTT(),
+      tts: createTTS(),
+      settleTimeout: 30,
+    });
+
+    ws.send(JSON.stringify({ type: 'text', text: 'hi' }));
+    await vi.waitFor(() => expect(received.messages).toContainEqual({ type: 'turn_end' }));
+
+    const started = Date.now();
+    await voice!.close();
+    voice = undefined;
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
   it('commits buffered audio on { type: "end_of_speech" } without a VAD', async () => {
     const agent = { run: vi.fn().mockResolvedValue({ content: 'ok' }) };
     const { ws, received } = await start({

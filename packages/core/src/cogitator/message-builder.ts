@@ -24,7 +24,7 @@ import {
   HISTORY_ENTRY_TYPES,
   MEMORY_USERS_KEY,
 } from '@cogitator-ai/memory';
-import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
+import { CogitatorError, ErrorCode, historyMessage } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
 import { ensureThreadAccess, threadMetadata } from './threads';
 import { memoryAgentId, type Agent } from '../agent';
@@ -273,7 +273,7 @@ export async function buildInitialMessages(
     const messages: Message[] = [{ role: 'system', content: agent.instructions }];
     if (entries.success) {
       const history = memoryAdapter.getPath ? compactedHistory(entries.data) : entries.data;
-      messages.push(...sanitizeToolHistory(history.map((e) => e.message)));
+      messages.push(...sanitizeToolHistory(history.map(historyMessage)));
     } else {
       reportMemoryError(
         new Error(

@@ -1,5 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import type {
+  ToolApprovalRequest,
+  ToolInvocationAgent,
   ToolInvocationOptions,
   TranscribeResult,
   VoiceAudioFormat,
@@ -82,14 +84,18 @@ export interface VoiceTurnOutcome {
 }
 
 /**
- * A turn a streaming runner answers: the text of the answer as it is generated, and an optional
- * `settle` the session calls once the turn is over, with what was spoken.
+ * A turn a streaming runner answers: the text to speak as it is generated, and an optional
+ * `settle` the session calls once the turn is over, with what was spoken. The iterator may finish
+ * with the answer as its return value (what `run` would return, such as only the final model
+ * turn of a run that called tools): the session's `agent_response` carries it, and all the text
+ * when there is none. A line break in the text ends a sentence at once, so a runner can have
+ * text said before a tool call spoken while the tool runs.
  */
-export interface VoiceTurn extends AsyncIterable<string> {
+export interface VoiceTurn extends AsyncIterable<string, string | void, undefined> {
   /**
-   * Called once after the turn, whether it completed, was interrupted or failed, before the
-   * session starts the next streamed turn. A runner that keeps a conversation records there what
-   * the user actually heard.
+   * Called after the turn, whether it completed, was interrupted or failed, before the session
+   * starts the next streamed turn. A runner that keeps a conversation records there what the
+   * user actually heard. Calling it again returns the first call's promise.
    */
   settle?(outcome: VoiceTurnOutcome): Promise<void>;
 }
@@ -133,6 +139,12 @@ export interface VoicePipelineConfig {
    * sentence without a break before it is cut at the last whitespace.
    */
   maxSentenceLength?: number;
+  /**
+   * Longest a session waits for a streamed turn to settle (`VoiceTurn.settle`) before the next
+   * turn starts or `close()` returns, in ms (default 10 000). A settle that takes longer goes on
+   * in the background.
+   */
+  settleTimeout?: number;
   /** @deprecated Not used by the pipeline. Audio is processed at provider-native rates. */
   sampleRate?: number;
 }
@@ -168,22 +180,35 @@ export interface RealtimeTool {
   maxResultLength?: number;
 }
 
+/** Decides a realtime tool call that needs approval, with the call's session in `context` */
+export type RealtimeApprovalHandler = (
+  request: ToolApprovalRequest,
+  context: RealtimeToolContext
+) => ReturnType<NonNullable<ToolInvocationOptions['onApproval']>>;
+
 export interface RealtimeToolsOptions {
   /**
    * Decides a call that needs approval (`requiresApproval`, or the guardrails), as
-   * `RunOptions.onApproval` does in a run. Without it `guardrails.onToolApproval` decides, and a
-   * call nobody approves does not run: the model gets an error saying it needs approval
+   * `RunOptions.onApproval` does in a run. The request names the call's `agentId`, `threadId`
+   * and `userId`, and `context` its `sessionId` and `callId`. Without it
+   * `guardrails.onToolApproval` decides, and a call nobody approves does not run: the model gets
+   * an error saying it needs approval
    */
-  onApproval?: ToolInvocationOptions['onApproval'];
-  /** Agent id the tools see in their context (default `'voice'`) */
+  onApproval?: RealtimeApprovalHandler;
+  /** Agent id the tools see in their context (default `agent.id`, else `'voice'`) */
   agentId?: string;
+  /**
+   * The agent the tools belong to: each call gets the gates a run of it applies, its model for
+   * the guardrails and its middleware around the call (see `ToolInvocationOptions.agent`)
+   */
+  agent?: ToolInvocationAgent;
   /**
    * Thread id the tools see in their context. Defaults to `voice:<sessionId>`, the thread
    * `createCogitatorRunner` gives the session's agent runs
    */
   threadId?: (context: RealtimeToolContext) => string | undefined;
-  /** The user the calls act for */
-  userId?: string;
+  /** The user the calls act for, the same for every session or chosen per call */
+  userId?: string | ((context: RealtimeToolContext) => string | undefined);
 }
 
 export interface RealtimeSessionConfig {
@@ -229,6 +254,8 @@ export interface VoiceAgentConfig {
   bargeIn?: boolean;
   /** Pipeline mode: see `VoicePipelineConfig.maxSentenceLength`. */
   maxSentenceLength?: number;
+  /** Pipeline mode: see `VoicePipelineConfig.settleTimeout`. */
+  settleTimeout?: number;
   realtimeProvider?: 'openai' | 'gemini';
   realtimeApiKey?: string;
   realtimeModel?: string;
@@ -243,9 +270,14 @@ export interface VoiceAgentConfig {
   tools?: RealtimeTool[];
   /**
    * Realtime mode without `tools`: give the model the agent's own tools, from
-   * `agent.realtimeTools()` (a `createCogitatorRunner` runner builds them with
-   * `createRealtimeTools`, so calls go through approvals, guardrails and the sandbox). Default
-   * true. Pass options, such as `onApproval`, to configure them, or `false` to turn it off.
+   * `agent.realtimeTools()`. Default true. A `createCogitatorRunner` runner builds them with
+   * `createRealtimeTools`, so each call goes through `cogitator.invokeTool` with the agent:
+   * approvals, its guardrails and middleware, the sandbox and `tool.timeout`. A runtime without
+   * `invokeTool` (a custom `CogitatorLike`) gets no tools. A tool that needs approval is refused
+   * unless `onApproval` (here) or `guardrails.onToolApproval` approves the call, and the model
+   * reads that it needs approval. A realtime session sets no `maxIterations`: the model may call
+   * tools as often as it likes. Pass options, such as `onApproval`, to configure the tools, or
+   * `false` to give the model none.
    */
   agentTools?: boolean | RealtimeToolsOptions;
   /** Realtime mode: send the images tools return to the model (see `RealtimeSessionConfig.toolImages`). */

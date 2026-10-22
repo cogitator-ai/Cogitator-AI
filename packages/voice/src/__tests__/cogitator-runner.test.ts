@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
-import { tool } from '@cogitator-ai/core';
+import { Agent, tool } from '@cogitator-ai/core';
 import { createCogitatorRunner, type CogitatorRunnerRunOptions } from '../cogitator-runner';
 import { VERSION } from '../index';
 import packageJson from '../../package.json' with { type: 'json' };
@@ -166,6 +166,36 @@ describe('createCogitatorRunner streaming and tools', () => {
         userId: 'u1',
       }
     );
+  });
+
+  it('gives invokeTool the agent so its model and middleware apply', async () => {
+    const invokeTool = vi.fn().mockResolvedValue({ result: 'ok' });
+    const audit = { name: 'audit' };
+    const weather = tool({
+      name: 'weather',
+      description: 'Weather',
+      parameters: z.object({ city: z.string() }),
+      execute: async () => 'ok',
+    });
+    const agent = new Agent({
+      name: 'concierge',
+      model: 'mock/m',
+      instructions: 'x',
+      tools: [weather],
+      middleware: [audit],
+    });
+    const runner = createCogitatorRunner({ run: vi.fn(), invokeTool }, agent);
+
+    const [realtime] = runner.realtimeTools!();
+    await realtime!.execute(
+      { city: 'Paris' },
+      { callId: 'c', signal: new AbortController().signal }
+    );
+
+    expect(invokeTool.mock.calls[0]![2]).toMatchObject({
+      agentId: agent.id,
+      agent: { id: agent.id, name: 'concierge', model: 'mock/m', config: { middleware: [audit] } },
+    });
   });
 
   it('offers no realtime tools without invokeTool', () => {

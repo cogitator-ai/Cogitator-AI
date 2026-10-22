@@ -206,7 +206,7 @@ export async function featuresA(): Promise<ExplorerFeature[]> {
       pkg: '@cogitator-ai/voice',
       title: 'Voice agents',
       summary:
-        'Speech in, speech out: an STT, agent and TTS pipeline with voice activity detection, or native realtime speech with OpenAI and Gemini.',
+        'Speech in, speech out: an STT, agent and TTS pipeline that speaks the reply while the model still writes it, or native realtime speech with OpenAI and Gemini.',
       href: '/docs/voice',
       code: voice,
     },

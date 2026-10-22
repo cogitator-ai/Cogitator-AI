@@ -110,6 +110,7 @@ interface RunOptions<TDeps = unknown> {
   onRunError?: (error: Error, runId: string, usage?: RunUsage) => void;
   onSpan?: (span: Span) => void;
   onMemoryError?: (error: Error, operation: 'save' | 'load') => void;
+  onMemoryEntry?: (entry: MemoryEntry) => void | Promise<void>; // each saved entry, also of an aborted or failed run
   branch?: { fromEntryId: string | null; activate?: boolean }; // run on a branch of the thread, activate default: true
   brief?: string; // notes for this turn only, sent with the input and not saved
   parallelToolCalls?: boolean; // default: false
@@ -176,6 +177,9 @@ interface ToolApprovalRequest {
   arguments: Record<string, unknown>;
   description: string;
   sideEffects?: string[];
+  agentId?: string; // set for invokeTool() calls, as their options name them
+  threadId?: string;
+  userId?: string;
 }
 
 type ToolApprovalDecision = { approved: true } | { approved: false; reason?: string };

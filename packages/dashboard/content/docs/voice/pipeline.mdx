@@ -142,11 +142,13 @@ session.on('error', (error: Error) => {
 
 When the runner has `stream(input, context)`, as `createCogitatorRunner()` does, the session speaks the answer while the model is still generating it. The text deltas are split into sentences and each sentence goes to `tts.streamSynthesize` in order, so the first audio leaves before the answer is complete.
 
-The splitter keeps abbreviations (`Dr.`, `e.g.`, `U.S.`), decimals (`3.14`) and list numbers (`1.`) inside their sentence, splits after `?!`, an ellipsis before a new sentence, CJK full stops and line breaks, flushes a tail without punctuation at the end, and cuts a sentence without a break at `maxSentenceLength` characters (default 250) on whitespace. `SentenceSplitter` is exported for your own code.
+The splitter keeps abbreviations (`Dr.`, `e.g.`, `U.S.`), initials after a capitalized word (`J. R. R. Tolkien`, but not `vitamin C.`), decimals (`3.14`) and list numbers at the start of a line (`1.`) inside their sentence, keeps markdown marks after a stop (`**Note.**`) with it, splits after `?!`, an ellipsis before a new sentence, CJK full stops and line breaks, flushes a tail without punctuation at the end, and cuts a piece longer than `maxSentenceLength` characters (default 250, at least 20) on whitespace. `SentenceSplitter` is exported for your own code.
 
-`agent_response_delta` carries each piece of text and `agent_response` the whole answer once it is generated, which can be while its first sentences are still being spoken. A runner without `stream` works as before: `run()` answers, then the whole text is synthesized at once.
+`agent_response_delta` carries each piece of text that is spoken. `agent_response` carries the answer once the model has finished it, the same text `run()` returns (with tools, only the final model turn), which can be while its first sentences are still being spoken. Text the model says before a tool call is spoken on its own while the tool runs: `createCogitatorRunner` ends it with a line break. The stream ends with the final model turn, so the last sentence does not wait for what the run does after it. A middleware that rewrites a turn in `afterModel` without `holdsStream: true` is heard before its rewrite.
 
-A streaming runner returns a `VoiceTurn`, an `AsyncIterable<string>` of deltas that stops when `context.signal` aborts, with an optional `settle({ spoken, interrupted })`. The session calls `settle` once the turn is over, and starts the next streamed turn only after it resolved.
+A runner without `stream` works as before: `run()` answers, then the whole text is synthesized at once.
+
+A streaming runner returns a `VoiceTurn`, an `AsyncIterable<string>` of deltas that stops when `context.signal` aborts and may return the answer as its return value, with an optional `settle({ spoken, interrupted })`. The session calls `settle` once the turn is over (a second call returns the same promise), and starts the next streamed turn after it resolved, waiting at most `settleTimeout` ms (default 10 000). `close()` waits for it the same way.
 
 ### Interruption
 
@@ -160,14 +162,24 @@ After interruption, the session returns to idle and is ready for new audio input
 
 A streamed turn that stops early (an interruption, `sendText()` during a turn, a barge-in, closing, or a model or TTS error) is settled with `spoken`: the sentences whose audio was sent in full. The server cannot know how much of that audio the client played, so keep the client's playback buffer short.
 
-With `createCogitatorRunner()` the thread then holds what the user heard. A fully spoken answer leaves the thread as a plain run does. An answer interrupted while it was spoken is replaced by its spoken part, with `metadata.interrupted: true`. When the model was still generating, the spoken part is saved after the run's `interrupt` event, marked the same way. When nothing was spoken, there is no assistant message for the answer. Text said alongside tool calls stays as the run saved it.
+With `createCogitatorRunner()` the thread then holds what the user heard. A fully spoken answer leaves the thread as a plain run does. An answer interrupted while it was spoken is replaced by its spoken part, with `metadata.interrupted: true`. When the model was still generating, the spoken part is saved after the run's `interrupt` event, marked the same way. When nothing was spoken, there is no assistant message for the answer. Text said alongside tool calls stays as the run saved it. The model reads an interrupted reply with `[interrupted by the user]` after it.
+
+The thread is changed only while the turn's last entry is still its active leaf: when something else wrote to the thread after the turn, such as another run on the same `threadId`, it is left as it is, so a newer message is never hidden. The runner settles the turns of one thread one after another.
 
 ### Barge-in
 
-With `bargeIn: true` and a `vad`, speech heard while the agent is thinking or speaking stops the reply and starts listening right away, emitting `speech_start` (a client should drop the audio it still has queued). It is off by default, because without echo cancellation on the client the agent's own voice would interrupt it.
+With `bargeIn: true` and a `vad`, on a `VoicePipeline` or a pipeline-mode `VoiceAgent`, speech heard while the agent is thinking or speaking stops the reply and starts listening right away, emitting `speech_start` (a client should drop the audio it still has queued). It is off by default, because without echo cancellation on the client the agent's own voice would interrupt it.
 
 ```typescript
 const pipeline = new VoicePipeline({ stt, tts, vad: new EnergyVAD(), agent, bargeIn: true });
+const voiceAgent = new VoiceAgent({
+  mode: 'pipeline',
+  stt,
+  tts,
+  vad: new EnergyVAD(),
+  agent,
+  bargeIn: true,
+});
 ```
 
 ### Closing
@@ -240,6 +252,26 @@ await voiceAgent.close();
 
 Use `voiceAgent.attach(httpServer)` instead of `listen()` to share an existing HTTP server; upgrades for other paths are left to other handlers (with `listen()` they get 404). `voiceAgent.port` is the bound port. Errors are only emitted when an `error` listener is attached — a misbehaving client cannot crash the process.
 
+### VoiceAgentConfig
+
+| Field                                | Type                              | Required      | Description                                                                                                                           |
+| ------------------------------------ | --------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent`                              | `VoiceAgentRunner`                | Yes           | `createCogitatorRunner(...)` or any `{ run(input, ctx) }`                                                                             |
+| `mode`                               | `'pipeline' \| 'realtime'`        | Yes           | Processing mode                                                                                                                       |
+| `stt`, `tts`                         | providers                         | Pipeline only | Speech-to-text and text-to-speech                                                                                                     |
+| `vad`                                | `VADProvider`                     | No            | Voice activity detection                                                                                                              |
+| `ttsOptions`                         | `TTSOptions`                      | No            | Pipeline: options for every TTS call                                                                                                  |
+| `bargeIn`                            | `boolean`                         | No            | Pipeline: speech during a reply stops it (default false, needs a `vad`)                                                               |
+| `maxSentenceLength`                  | `number`                          | No            | Pipeline: longest streamed piece sent to TTS (default 250)                                                                            |
+| `settleTimeout`                      | `number`                          | No            | Pipeline: longest wait in ms for a streamed turn to settle (default 10 000)                                                           |
+| `realtimeProvider`, `realtimeApiKey` | `'openai' \| 'gemini'`, `string`  | Realtime only | Realtime provider and its key                                                                                                         |
+| `realtimeModel`, `voice`             | `string`                          | No            | Realtime model and voice                                                                                                              |
+| `instructions`                       | `string`                          | No            | Realtime instructions (default `agent.instructions`)                                                                                  |
+| `tools`                              | `RealtimeTool[]`                  | No            | Realtime tools, replace the agent's own (`[]` for none)                                                                               |
+| `agentTools`                         | `boolean \| RealtimeToolsOptions` | No            | Realtime: the agent's own tools when `tools` is not set (default true, see [Realtime](/docs/voice/realtime#realtime-with-voiceagent)) |
+| `toolImages`                         | `boolean`                         | No            | Realtime: send images tools return to the model                                                                                       |
+| `transport`                          | `WebSocketTransportConfig`        | No            | Transport options, see below                                                                                                          |
+
 ### Transport options
 
 | Option           | Default    | Description                                                                                                                                                                  |
@@ -266,7 +298,7 @@ Browsers cannot set headers on a WebSocket, so pass credentials in the query str
 | ---------------- | ------ | --------------------------------------------------------------------------------------------------------------------------- |
 | Client -> Server | Binary | PCM16 mono (16kHz pipeline / Gemini, 24kHz OpenAI realtime)                                                                 |
 | Client -> Server | JSON   | `{ type: 'interrupt' }`, `{ type: 'end_of_speech' }` (pipeline), `{ type: 'text', text }`                                   |
-| Server -> Client | Binary | Response audio (TTS output format in pipeline mode, MP3 by default; PCM16 24kHz in realtime mode)                           |
+| Server -> Client | Binary | Response audio (TTS output format in pipeline mode, MP3 by default, PCM16 24kHz in realtime mode)                           |
 | Server -> Client | JSON   | `{ type: 'transcript', text, isFinal }`, `agent_response`, `agent_response_delta`, `speech_start`, `speech_end`, `turn_end` |
 
 In realtime mode `transcript` carries `role` (`'user'` or `'assistant'`) instead of `isFinal`, and there is no `agent_response`, `agent_response_delta` or `speech_end`. Invalid JSON and unknown control types are reported through the `error` event and otherwise ignored.
@@ -282,4 +314,5 @@ In realtime mode `transcript` carries `role` (`'user'` or `'assistant'`) instead
 | `agent`             | `VoiceAgentRunner` | Yes      | `createCogitatorRunner(...)` or any `{ run(input, ctx) }`               |
 | `bargeIn`           | `boolean`          | No       | Speech heard during a reply stops it (default false, needs a `vad`)     |
 | `maxSentenceLength` | `number`           | No       | Longest streamed piece sent to TTS at once (default 250)                |
+| `settleTimeout`     | `number`           | No       | Longest wait in ms for a streamed turn to settle (default 10 000)       |
 | `sampleRate`        | `number`           | No       | Deprecated, unused (configure the STT/VAD providers instead)            |

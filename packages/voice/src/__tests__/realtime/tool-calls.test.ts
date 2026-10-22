@@ -379,7 +379,10 @@ describe('createRealtimeTools', () => {
         toolCallId: 'call_2',
         toolName: 'delete_file',
         arguments: { path: '/tmp/a' },
-      })
+        agentId: 'voice',
+        threadId: 'voice:client-1',
+      }),
+      expect.objectContaining({ callId: 'call_2', sessionId: 'client-1' })
     );
     expect(deleteFile).toHaveBeenCalledTimes(1);
     expect(functionOutputs()[0]).toEqual({ callId: 'call_2', output: 'deleted /tmp/a' });
@@ -452,17 +455,16 @@ describe('createRealtimeTools', () => {
       name: t.name,
       result: 'ok',
     }));
-    const onApproval = vi.fn();
+    const onApproval = vi.fn(async () => ({ approved: true as const }));
     const [realtimeTool] = createRealtimeTools({ invokeTool }, [deleteTool], {
       agentId: 'phone',
       userId: 'u1',
       onApproval,
     });
     const signal = new AbortController().signal;
+    const context = { callId: 'call_7', signal, sessionId: 's1' };
 
-    await expect(
-      realtimeTool!.execute({ path: '/x' }, { callId: 'call_7', signal, sessionId: 's1' })
-    ).resolves.toBe('ok');
+    await expect(realtimeTool!.execute({ path: '/x' }, context)).resolves.toBe('ok');
 
     const options = invokeTool.mock.calls[0]![2]!;
     expect(options).toEqual({
@@ -471,7 +473,40 @@ describe('createRealtimeTools', () => {
       signal,
       threadId: 'voice:s1',
       userId: 'u1',
-      onApproval,
+      onApproval: expect.any(Function),
+    });
+    const request = {
+      toolCallId: 'call_7',
+      toolName: 'delete_file',
+      arguments: { path: '/x' },
+      description: 'Delete a file',
+    };
+    await options.onApproval!(request);
+    expect(onApproval).toHaveBeenCalledWith(request, context);
+  });
+
+  it('chooses the user per call and passes the agent for its gates', async () => {
+    const invokeTool = vi.fn<ToolInvoker['invokeTool']>(async (t) => ({
+      callId: 'c',
+      name: t.name,
+      result: null,
+    }));
+    const agent = { id: 'a1', name: 'concierge', model: 'mock/m', config: {} };
+    const [realtimeTool] = createRealtimeTools({ invokeTool }, [deleteTool], {
+      agent,
+      userId: ({ sessionId }) => `user-of-${sessionId}`,
+    });
+    const signal = new AbortController().signal;
+
+    await realtimeTool!.execute({ path: '/x' }, { callId: 'c', signal, sessionId: 's9' });
+
+    expect(invokeTool.mock.calls[0]![2]).toEqual({
+      toolCallId: 'c',
+      agentId: 'a1',
+      agent,
+      signal,
+      threadId: 'voice:s9',
+      userId: 'user-of-s9',
     });
   });
 

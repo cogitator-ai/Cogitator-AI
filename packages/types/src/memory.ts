@@ -138,6 +138,28 @@ export interface MemoryEntry {
   formatVersion?: number;
 }
 
+/** The note a model reads after an assistant reply that was cut short, see {@link historyMessage} */
+export const INTERRUPTED_REPLY_NOTE = '[interrupted by the user]';
+
+/**
+ * The message a history entry gives a model. An assistant reply that was cut short
+ * (`metadata.interrupted: true`, as a voice turn the user talked over leaves it) ends with
+ * {@link INTERRUPTED_REPLY_NOTE}, so the model does not read the part that was said as a finished
+ * statement. Any other entry gives its message as it is.
+ */
+export function historyMessage(entry: MemoryEntry): Message {
+  const { message } = entry;
+  if (message.role !== 'assistant' || entry.metadata?.interrupted !== true) return message;
+  const content = message.content;
+  if (typeof content === 'string') {
+    return {
+      ...message,
+      content: content ? `${content} ${INTERRUPTED_REPLY_NOTE}` : INTERRUPTED_REPLY_NOTE,
+    };
+  }
+  return { ...message, content: [...content, { type: 'text', text: INTERRUPTED_REPLY_NOTE }] };
+}
+
 /**
  * An entry to add to a thread. `createdAt` places it at that time instead of now: compaction
  * uses it to put a summary before the entries it keeps without rewriting them.

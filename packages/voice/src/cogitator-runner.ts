@@ -5,7 +5,9 @@ import type {
   MemoryResult,
   Message,
   RunMemoryPlace,
+  RunMiddleware,
   Tool,
+  ToolInvocationAgent,
   ToolInvoker,
 } from '@cogitator-ai/types';
 import { AsyncQueue } from './async-queue.js';
@@ -44,7 +46,10 @@ export interface CogitatorLike<TAgent> {
 export interface CogitatorRunnerAgent {
   readonly instructions?: string;
   readonly id?: string;
+  readonly name?: string;
+  readonly model?: string;
   readonly tools?: readonly Tool[];
+  readonly config?: { readonly middleware?: readonly RunMiddleware[] };
 }
 
 export interface CogitatorRunnerOptions {
@@ -61,21 +66,53 @@ const INTERRUPTED = { interrupted: true } as const;
 const CHARS_PER_TOKEN = 4;
 const MESSAGE_OVERHEAD = 4;
 
+/** Runs the tasks given for a thread one after another */
+type ThreadQueue = (threadId: string, task: () => Promise<void>) => Promise<void>;
+
+function threadQueue(): ThreadQueue {
+  const tails = new Map<string, Promise<void>>();
+  return (threadId, task) => {
+    const previous = tails.get(threadId) ?? Promise.resolve();
+    const run = previous.then(task);
+    const tail = run.catch(() => undefined);
+    tails.set(threadId, tail);
+    void tail.then(() => {
+      if (tails.get(threadId) === tail) tails.delete(threadId);
+    });
+    return run;
+  };
+}
+
+/** The agent as `invokeTool` takes it, when it names itself like a Cogitator `Agent` does */
+function invocationAgent(agent: CogitatorRunnerAgent): ToolInvocationAgent | undefined {
+  if (agent.id === undefined || agent.name === undefined) return undefined;
+  return {
+    id: agent.id,
+    name: agent.name,
+    model: agent.model,
+    config: { ...(agent.config?.middleware && { middleware: agent.config.middleware }) },
+  };
+}
+
 /**
  * Adapt a Cogitator runtime + agent to the `VoiceAgentRunner` interface used by
  * `VoicePipeline` and `VoiceAgent`.
  *
  * `stream` runs the agent with `stream: true`, so a `PipelineSession` speaks the answer while it
- * is generated. When such a turn is interrupted, the thread keeps only what was spoken: the
- * answer's assistant message is replaced by its spoken part, marked `metadata.interrupted`, or
- * removed when none of it was spoken, and a run stopped mid-answer gets its spoken part saved
- * after it. Text the model said alongside tool calls stays as the run saved it. A turn that
- * completes and is spoken in full leaves the thread as `run` does. Keeping the thread needs a
- * runtime with `getMemory()`, as a `Cogitator` has.
+ * is generated. The stream ends with the final model turn, its value the answer `run` returns,
+ * and text the model says before a tool call ends with a line break so it is spoken on its own.
+ * When such a turn is interrupted, the thread keeps only what was spoken: the answer's assistant
+ * message is replaced by its spoken part, marked `metadata.interrupted`, or removed when none of
+ * it was spoken, and a run stopped before it saved an answer gets its spoken part saved after it.
+ * Text the model said alongside tool calls stays as the run saved it. A turn that completes and
+ * is spoken in full leaves the thread as `run` does. The rewrite happens only while the run's
+ * last entry is still the thread's active leaf: when something else wrote to the thread after
+ * it, the thread is left as it is. Keeping the thread needs a runtime with `getMemory()`, as a
+ * `Cogitator` has.
  *
  * `realtimeTools` gives a realtime `VoiceAgent` the agent's tools, run through
- * `cogitator.invokeTool` (approvals, guardrails, the sandbox), with the same thread id the runs
- * of the session use.
+ * `cogitator.invokeTool` with the agent (approvals, its guardrails and middleware, the sandbox),
+ * with the same thread id the runs of the session use. A runtime without `invokeTool` gets none.
  *
  * @example
  * ```ts
@@ -92,6 +129,7 @@ export function createCogitatorRunner<TAgent extends CogitatorRunnerAgent>(
   options: CogitatorRunnerOptions = {}
 ): VoiceAgentRunner {
   const resolveThreadId = options.threadId ?? ((ctx: VoiceRunContext) => `voice:${ctx.sessionId}`);
+  const settles = threadQueue();
   const runner: VoiceAgentRunner = {
     instructions: agent.instructions,
     async run(input, context) {
@@ -103,7 +141,14 @@ export function createCogitatorRunner<TAgent extends CogitatorRunnerAgent>(
       return { content: result.output };
     },
     stream(input, context) {
-      return new CogitatorVoiceTurn(cogitator, agent, input, resolveThreadId(context), context);
+      return new CogitatorVoiceTurn(
+        cogitator,
+        agent,
+        input,
+        resolveThreadId(context),
+        context,
+        settles
+      );
     },
   };
 
@@ -112,9 +157,11 @@ export function createCogitatorRunner<TAgent extends CogitatorRunnerAgent>(
     const invoker: ToolInvoker = {
       invokeTool: (tool, args, invocation) => invokeTool.call(cogitator, tool, args, invocation),
     };
+    const owner = invocationAgent(agent);
     runner.realtimeTools = (toolOptions = {}) =>
       createRealtimeTools(invoker, agent.tools ?? [], {
         ...(agent.id !== undefined && { agentId: agent.id }),
+        ...(owner && { agent: owner }),
         threadId: (ctx: RealtimeToolContext) =>
           ctx.sessionId === undefined ? undefined : resolveThreadId({ sessionId: ctx.sessionId }),
         ...toolOptions,
@@ -130,40 +177,45 @@ export function createCogitatorRunner<TAgent extends CogitatorRunnerAgent>(
  */
 class CogitatorVoiceTurn<TAgent> implements VoiceTurn {
   private readonly controller = new AbortController();
-  private readonly tokens = new AsyncQueue<string>(() =>
+  private readonly tokens = new AsyncQueue<string, string>(() =>
     this.controller.abort(new Error('The voice turn stopped reading the answer'))
   );
   private readonly entries: MemoryEntry[] = [];
   private streamed = '';
   private answerStart = 0;
-  private completed = false;
   private finished: Promise<void> | undefined;
+  private failure: Error | undefined;
+  private failureDelivered = false;
+  private settled: Promise<void> | undefined;
 
   constructor(
     private readonly cogitator: CogitatorLike<TAgent>,
     private readonly agent: TAgent,
     private readonly input: string,
     private readonly threadId: string,
-    private readonly context: VoiceRunContext
+    private readonly context: VoiceRunContext,
+    private readonly settles: ThreadQueue
   ) {}
 
-  [Symbol.asyncIterator](): AsyncIterator<string> {
+  [Symbol.asyncIterator](): AsyncIterator<string, string | undefined, undefined> {
     this.start();
     return this.tokens;
   }
 
-  async settle(outcome: VoiceTurnOutcome): Promise<void> {
+  settle(outcome: VoiceTurnOutcome): Promise<void> {
+    this.settled ??= this.settleOnce(outcome);
+    return this.settled;
+  }
+
+  private async settleOnce(outcome: VoiceTurnOutcome): Promise<void> {
     if (!this.finished) return;
     await this.finished;
-    if (!outcome.interrupted) return;
-
-    const spoken =
-      outcome.spoken.length > this.answerStart ? outcome.spoken.slice(this.answerStart).trim() : '';
-    const memory = await this.cogitator.getMemory?.();
-    if (!memory) return;
-
-    if (this.completed) await this.keepSpokenAnswer(memory, spoken);
-    else if (spoken.length > 0) await this.saveSpokenPart(memory, spoken);
+    if (outcome.interrupted) {
+      await this.settles(this.threadId, () => this.keepSpoken(outcome.spoken));
+    }
+    if (this.failure && !this.failureDelivered && !this.controller.signal.aborted) {
+      throw this.failure;
+    }
   }
 
   private start(): void {
@@ -179,83 +231,114 @@ class CogitatorVoiceTurn<TAgent> implements VoiceTurn {
         threadId: this.threadId,
         signal: this.controller.signal,
         stream: true,
-        onToken: (token) => {
-          if (token.length === 0) return;
-          this.streamed += token;
-          this.tokens.push(token);
-        },
+        onToken: (token) => this.say(token),
         onModelTurn: (turn) => {
-          if (turn.toolCalls.length > 0) this.answerStart = this.streamed.length;
+          if (turn.toolCalls.length > 0) {
+            if (this.streamed.length > 0 && !this.streamed.endsWith('\n')) this.say('\n');
+            this.answerStart = this.streamed.length;
+            return;
+          }
+          this.endAnswer(turn.content);
         },
         onMemoryEntry: (entry) => {
           if (entry.threadId === this.threadId) this.entries.push(entry);
         },
       })
       .then(
-        (result) => {
-          this.completed = true;
-          if (this.streamed.length === 0 && result.output.length > 0) {
-            this.streamed = result.output;
-            this.tokens.push(result.output);
-          }
-          this.tokens.end();
-        },
+        (result) => this.endAnswer(result.output),
         (error: unknown) => {
-          this.tokens.fail(error instanceof Error ? error : new Error(String(error)));
+          this.failure = error instanceof Error ? error : new Error(String(error));
+          if (this.tokens.ended) return;
+          this.failureDelivered = true;
+          this.tokens.fail(this.failure);
         }
       )
       .finally(() => signal?.removeEventListener('abort', forwardAbort));
   }
 
-  /** A completed run saved its whole answer: keep its spoken part in its place, or nothing */
-  private async keepSpokenAnswer(memory: MemoryAdapter, spoken: string): Promise<void> {
-    const answer = [...this.entries].reverse().find(isAnswer);
-    if (!answer) return;
-    if (spoken === textOf(answer.message).trim()) return;
+  private say(text: string): void {
+    if (text.length === 0 || this.tokens.ended) return;
+    this.streamed += text;
+    this.tokens.push(text);
+  }
 
-    if (spoken.length > 0) {
-      const active = await this.isActiveLeaf(memory, answer);
-      unwrap(
-        await memory.addEntry({
-          threadId: answer.threadId,
-          message: { role: 'assistant', content: spoken },
-          tokenCount: messageTokens(spoken),
-          metadata: { ...answer.metadata, ...INTERRUPTED },
-          parentId: answer.parentId ?? null,
-          activate: active,
-        }),
-        'save the spoken part of the answer'
-      );
+  /** Ends the stream with the answer, saying it at once when none of it was streamed */
+  private endAnswer(answer: string): void {
+    if (this.tokens.ended) return;
+    if (this.streamed.length === this.answerStart) this.say(answer);
+    this.tokens.end(answer);
+  }
+
+  private async keepSpoken(spoken: string): Promise<void> {
+    const said = spoken.length > this.answerStart ? spoken.slice(this.answerStart).trim() : '';
+    const memory = await this.cogitator.getMemory?.();
+    if (!memory) return;
+
+    const answer = [...this.entries].reverse().find(isAnswer);
+    if (answer) {
+      if (said !== textOf(answer.message).trim()) await this.replaceAnswer(memory, answer, said);
+      return;
+    }
+    const last = this.entries.at(-1);
+    if (last && said.length > 0) await this.appendSpoken(memory, last, said);
+  }
+
+  /**
+   * The run saved its whole answer: put its spoken part in its place, or remove it when none
+   * was spoken. The new entry is added after the answer, as the thread's next entry, then the
+   * answer is spliced out, so a write that came in between is never hidden
+   */
+  private async replaceAnswer(
+    memory: MemoryAdapter,
+    answer: MemoryEntry,
+    said: string
+  ): Promise<void> {
+    if (!(await isActiveLeaf(memory, answer))) return;
+    if (said.length > 0) {
+      const added = await addSpoken(memory, answer.threadId, said, answer.metadata);
+      if (added.parentId !== answer.id) {
+        unwrap(await memory.deleteEntry(added.id), 'undo the spoken part of the answer');
+        return;
+      }
     }
     unwrap(await memory.deleteEntry(answer.id), 'remove the unspoken answer');
   }
 
-  /** A run stopped mid-answer saved none of it: save the spoken part after the run's entries */
-  private async saveSpokenPart(memory: MemoryAdapter, spoken: string): Promise<void> {
-    const last = this.entries.at(-1);
-    if (!last) return;
-    const active = await this.isActiveLeaf(memory, last);
-    unwrap(
-      await memory.addEntry({
-        threadId: last.threadId,
-        message: { role: 'assistant', content: spoken },
-        tokenCount: messageTokens(spoken),
-        metadata: { ...INTERRUPTED },
-        parentId: last.id,
-        activate: active,
-      }),
-      'save the spoken part of the answer'
-    );
+  /** The run saved no answer: save its spoken part after the run's last entry */
+  private async appendSpoken(
+    memory: MemoryAdapter,
+    last: MemoryEntry,
+    said: string
+  ): Promise<void> {
+    if (!(await isActiveLeaf(memory, last))) return;
+    const added = await addSpoken(memory, last.threadId, said);
+    if (added.parentId !== last.id) {
+      unwrap(await memory.deleteEntry(added.id), 'undo the spoken part of the answer');
+    }
   }
+}
 
-  /**
-   * Whether the thread still goes on from `entry`: when something else was written after it,
-   * the spoken part goes on the run's branch without taking the thread's active leaf
-   */
-  private async isActiveLeaf(memory: MemoryAdapter, entry: MemoryEntry): Promise<boolean> {
-    const thread = unwrap(await memory.getThread(entry.threadId), 'read the thread');
-    return thread?.activeLeafId === entry.id;
-  }
+async function isActiveLeaf(memory: MemoryAdapter, entry: MemoryEntry): Promise<boolean> {
+  const thread = unwrap(await memory.getThread(entry.threadId), 'read the thread');
+  return thread?.activeLeafId === entry.id;
+}
+
+/** Adds the spoken part after the thread's active leaf, marked as interrupted */
+async function addSpoken(
+  memory: MemoryAdapter,
+  threadId: string,
+  said: string,
+  metadata?: Record<string, unknown>
+): Promise<MemoryEntry> {
+  return unwrap(
+    await memory.addEntry({
+      threadId,
+      message: { role: 'assistant', content: said },
+      tokenCount: messageTokens(said),
+      metadata: { ...metadata, ...INTERRUPTED },
+    }),
+    'save the spoken part of the answer'
+  );
 }
 
 function isAnswer(entry: MemoryEntry): boolean {

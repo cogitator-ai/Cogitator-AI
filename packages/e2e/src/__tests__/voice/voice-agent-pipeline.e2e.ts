@@ -100,9 +100,12 @@ function connectClient(port: number): Promise<{ ws: WebSocket; log: ClientLog }>
   });
 }
 
-async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<void> {
+async function waitUntil(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs: number
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (Date.now() > deadline) throw new Error('Timed out waiting for condition');
     await new Promise((r) => setTimeout(r, 25));
   }
@@ -466,16 +469,14 @@ for (const target of streamingTargets) {
           ws!.send(JSON.stringify({ type: 'interrupt' }));
 
           let thread: MemoryEntry[] = [];
-          await waitUntil(() => {
-            void threadOf(cogitator, sessionId()).then((entries) => {
-              thread = entries;
-            });
+          await waitUntil(async () => {
+            thread = await threadOf(cogitator, sessionId());
             return thread.some((e) => e.metadata?.interrupted === true);
           }, 30_000);
 
-          expect(thread.map((e) => [e.message.role, String(e.message.content)])).toEqual([
+          expect(thread.map((e) => [e.message.role, String(e.message.content).trim()])).toEqual([
             ['user', 'Describe the ocean.'],
-            ['assistant', holding.spoken[0]],
+            ['assistant', holding.spoken[0]!.trim()],
           ]);
           expect(thread[1]!.metadata).toEqual({ interrupted: true });
           expect(log.order).not.toContain('turn_end');

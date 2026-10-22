@@ -96,32 +96,72 @@ describe('SentenceSplitter', () => {
   });
 
   it('cuts a long sentence without a break at whitespace', () => {
-    const text = 'one two three four five six seven eight nine ten';
-    const sentences = split(text, { maxLength: 15 });
+    const text = 'one two three four five six seven eight nine ten eleven twelve';
+    const sentences = split(text, { maxLength: 20 });
     expect(sentences.join('')).toBe(text);
-    for (const sentence of sentences) expect(sentence.trim().length).toBeLessThanOrEqual(15);
+    for (const sentence of sentences) expect(sentence.trim().length).toBeLessThanOrEqual(20);
     expect(trimmed(sentences)).toEqual([
-      'one two three',
-      'four five six',
-      'seven eight',
-      'nine ten',
+      'one two three four',
+      'five six seven eight',
+      'nine ten eleven',
+      'twelve',
     ]);
   });
 
   it('cuts a long word at the limit without splitting a surrogate pair', () => {
-    expect(split('abcdefghij', { maxLength: 4 })).toEqual(['abcd', 'efgh', 'ij']);
-    const emoji = 'ab😀cd';
-    const sentences = split(emoji, { maxLength: 3 });
+    const word = 'a'.repeat(45);
+    expect(split(word, { maxLength: 20 })).toEqual(['a'.repeat(20), 'a'.repeat(20), 'a'.repeat(5)]);
+    const emoji = `${'a'.repeat(19)}😀${'b'.repeat(5)}`;
+    const sentences = split(emoji, { maxLength: 20 });
     expect(sentences.join('')).toBe(emoji);
-    expect(sentences[0]).toBe('ab');
+    expect(sentences[0]).toBe('a'.repeat(19));
+    expect(sentences[1]).toBe(`😀${'b'.repeat(5)}`);
+  });
+
+  it('cuts a sentence whose natural end is past the limit', () => {
+    const text = `${'A'.repeat(300)}. Next sentence.`;
+    const sentences = split(text);
+    expect(sentences.join('')).toBe(text);
+    for (const sentence of sentences) expect(sentence.trim().length).toBeLessThanOrEqual(250);
+    expect(sentences.at(-1)!.trim()).toBe('Next sentence.');
+  });
+
+  it('splits after a number that does not open a line', () => {
+    expect(trimmed(splitStreamed(['How many? ', '5. Then we go.']))).toEqual([
+      'How many?',
+      '5.',
+      'Then we go.',
+    ]);
+    expect(trimmed(splitStreamed(['Steps:\n', '5. Then we go.']))).toEqual([
+      'Steps:',
+      '5. Then we go.',
+    ]);
+  });
+
+  it('reads a single capital as an initial only after a capitalized word or at the start', () => {
+    expect(trimmed(split('Take vitamin C. It helps. Plan B. Works too.'))).toEqual([
+      'Take vitamin C.',
+      'It helps.',
+      'Plan B. Works too.',
+    ]);
+  });
+
+  it('keeps markdown marks after a stop with their sentence', () => {
+    expect(trimmed(split('**Note.** Next one. Use `x.` Then go.'))).toEqual([
+      '**Note.**',
+      'Next one.',
+      'Use `x.`',
+      'Then go.',
+    ]);
   });
 
   it('does not return whitespace-only sentences', () => {
     expect(split('\n\nHi.\n\n')).toEqual(['\n\nHi.\n\n']);
   });
 
-  it('rejects a maxLength that is not a positive integer', () => {
+  it('rejects a maxLength that is too short or not an integer', () => {
+    expect(() => new SentenceSplitter({ maxLength: 1 })).toThrow('at least 20');
     expect(() => new SentenceSplitter({ maxLength: 0 })).toThrow(RangeError);
-    expect(() => new SentenceSplitter({ maxLength: 2.5 })).toThrow(RangeError);
+    expect(() => new SentenceSplitter({ maxLength: 25.5 })).toThrow(RangeError);
   });
 });

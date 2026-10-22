@@ -346,6 +346,29 @@ describe('Cogitator.invokeTool', () => {
     }
   });
 
+  it('tells onApproval the agent, thread and user of the call', async () => {
+    refundImpl.mockClear();
+    const cog = newCogitator();
+    const onApproval = vi.fn(async () => ({ approved: true as const }));
+
+    await cog.invokeTool(
+      refund,
+      { order: 'A-1' },
+      { toolCallId: 'x2', agentId: 'voice', threadId: 'voice:s1', userId: 'u1', onApproval }
+    );
+
+    expect(onApproval).toHaveBeenCalledWith({
+      toolCallId: 'x2',
+      toolName: 'refund',
+      arguments: { order: 'A-1' },
+      description: 'Refund an order',
+      agentId: 'voice',
+      threadId: 'voice:s1',
+      userId: 'u1',
+    });
+    await cog.close();
+  });
+
   it('does not run a call whose signal aborted before it started', async () => {
     refundImpl.mockClear();
     const cog = newCogitator();

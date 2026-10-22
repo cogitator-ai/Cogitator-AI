@@ -32,7 +32,7 @@ function deferred<T = void>(): Deferred<T> {
 interface ScriptedTurn {
   input: string;
   signal: AbortSignal | undefined;
-  deltas: AsyncQueue<string>;
+  deltas: AsyncQueue<string, string>;
   outcomes: VoiceTurnOutcome[];
   returned: boolean;
 }
@@ -45,7 +45,7 @@ function streamingRunner(settle?: (outcome: VoiceTurnOutcome) => Promise<void>) 
       const turn: ScriptedTurn = {
         input,
         signal: context.signal,
-        deltas: new AsyncQueue<string>(() => {
+        deltas: new AsyncQueue<string, string>(() => {
           turn.returned = true;
         }),
         outcomes: [],
@@ -168,7 +168,7 @@ describe('PipelineSession with a streaming runner', () => {
   function start(
     runner: VoiceAgentRunner,
     tts: TTSProvider,
-    extra: { vad?: VADProvider; stt?: STTProvider; bargeIn?: boolean } = {}
+    extra: { vad?: VADProvider; stt?: STTProvider; bargeIn?: boolean; settleTimeout?: number } = {}
   ) {
     session = new PipelineSession({
       stt: extra.stt ?? createSTT(),
@@ -177,6 +177,7 @@ describe('PipelineSession with a streaming runner', () => {
       ttsOptions: { voice: 'nova' },
       ...(extra.vad && { vad: extra.vad }),
       ...(extra.bargeIn !== undefined && { bargeIn: extra.bargeIn }),
+      ...(extra.settleTimeout !== undefined && { settleTimeout: extra.settleTimeout }),
     });
     return { session, recorded: record(session) };
   }
@@ -384,7 +385,81 @@ describe('PipelineSession with a streaming runner', () => {
     expect(turns[0]!.outcomes).toEqual([{ spoken: '', interrupted: true }]);
   });
 
+  it('announces the answer the stream returns instead of all the text', async () => {
+    const { runner, turns } = streamingRunner();
+    const { session, recorded } = start(runner, chunkedTTS().tts);
+
+    const done = session.sendText('weather?');
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    turns[0]!.deltas.push('Let me check.\n');
+    turns[0]!.deltas.push('It is sunny.');
+    turns[0]!.deltas.end('It is sunny.');
+    await done;
+
+    expect(recorded.deltas).toEqual(['Let me check.\n', 'It is sunny.']);
+    expect(recorded.responses).toEqual(['It is sunny.']);
+    expect(recorded.audio.filter((a) => a.endsWith('|1'))).toEqual([
+      'Let me check.|1',
+      'It is sunny.|1',
+    ]);
+  });
+
+  it('does not wait forever for a stuck settle when closing or starting the next turn', async () => {
+    const { runner, turns } = streamingRunner(() => new Promise<void>(() => undefined));
+    const { session, recorded } = start(runner, chunkedTTS().tts, { settleTimeout: 30 });
+
+    void session.sendText('first');
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    turns[0]!.deltas.push('Partial. Answer');
+    await vi.waitFor(() => expect(recorded.audio).toHaveLength(2));
+
+    const second = session.sendText('second');
+    await vi.waitFor(() => expect(turns).toHaveLength(2));
+    turns[1]!.deltas.end();
+    await second;
+    expect(recorded.turnEnds).toBe(1);
+
+    const started = Date.now();
+    await session.close();
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it('rejects a negative settleTimeout', () => {
+    expect(
+      () =>
+        new PipelineSession({
+          stt: createSTT(),
+          tts: chunkedTTS().tts,
+          agent: streamingRunner().runner,
+          settleTimeout: -1,
+        })
+    ).toThrow(RangeError);
+  });
+
   describe('barge-in', () => {
+    it('interrupts a reply of a runner that does not stream', async () => {
+      let signal: AbortSignal | undefined;
+      const runner: VoiceAgentRunner = {
+        run: vi.fn(
+          (_input: string, context?: { signal?: AbortSignal }) =>
+            new Promise<{ content: string }>(() => {
+              signal = context?.signal;
+            })
+        ),
+      };
+      const vad = scriptedVAD();
+      const { session, recorded } = start(runner, chunkedTTS().tts, { vad, bargeIn: true });
+
+      void session.sendText('question');
+      await vi.waitFor(() => expect(signal).toBeDefined());
+      vad.next({ type: 'speech_start' });
+      session.pushAudio(Buffer.alloc(64));
+
+      await vi.waitFor(() => expect(session.currentState).toBe('listening'));
+      expect(signal!.aborted).toBe(true);
+      expect(recorded.speechStarts).toBe(1);
+    });
+
     async function speakingSession(bargeIn: boolean | undefined) {
       const { runner, turns } = streamingRunner();
       const control = chunkedTTS();

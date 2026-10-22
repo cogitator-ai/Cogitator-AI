@@ -508,7 +508,9 @@ export class Cogitator implements ToolInvoker {
    * else `guardrails.onToolApproval`), the guardrails applied, sandboxed tools run in this
    * runtime's sandbox and `tool.timeout` kept. A call that needs approval nobody gives does not
    * run: there is no run to pause, so it is refused with the request in `pendingApproval`. A call
-   * whose `signal` aborts, even while its approval is being decided, does not run either.
+   * whose `signal` aborts, even while its approval is being decided, does not run either. Pass
+   * `agent` for the gates a run of that agent applies: its model for the guardrails and its
+   * middleware around the call.
    *
    * @example
    * ```ts
@@ -528,9 +530,11 @@ export class Cogitator implements ToolInvoker {
       name: tool.name,
       arguments: isArgumentRecord(args) ? args : {},
     };
-    this.ensureGuardrails();
+    const agent = options.agent;
+    this.ensureGuardrails(agent ? agent.model || this.config.llm?.defaultModel : undefined);
     const constitutionalAI = this.state.constitutionalAI;
     if (!constitutionalAI) this.warnGuardrailsWithoutModel();
+    const agentId = options.agentId ?? agent?.id ?? 'tool-invoker';
     const signal = options.signal;
     const aborted = (): ToolInvocationResult => ({
       callId: toolCall.id,
@@ -551,6 +555,9 @@ export class Cogitator implements ToolInvoker {
         arguments: toolCall.arguments,
         description: tool.description,
         ...(tool.sideEffects && { sideEffects: [...tool.sideEffects] }),
+        ...((options.agentId !== undefined || agent) && { agentId }),
+        ...(options.threadId !== undefined && { threadId: options.threadId }),
+        ...(options.userId !== undefined && { userId: options.userId }),
       };
       const deciding = this.decideApproval(request, options.onApproval);
       let decision: Awaited<typeof deciding>;
@@ -584,7 +591,6 @@ export class Cogitator implements ToolInvoker {
     const registry = new ToolRegistry();
     registry.register(tool);
     const runId = options.runId ?? `run_${nanoid(12)}`;
-    const agentId = options.agentId ?? 'tool-invoker';
     return runToolCall({
       registry,
       toolCall,
@@ -605,12 +611,13 @@ export class Cogitator implements ToolInvoker {
       allowNativeFallback: this.config.sandbox?.allowNativeFallback !== false,
       middleware: new MiddlewarePipeline([
         ...(this.config.middleware ?? []),
+        ...(agent?.config.middleware ?? []),
         ...this.builtinMiddleware(),
       ]),
       context: {
         runId,
         agentId,
-        agentName: agentId,
+        agentName: agent?.name ?? agentId,
         iteration: 0,
         signal: signal ?? new AbortController().signal,
         state: new Map(),
@@ -2166,6 +2173,8 @@ export class Cogitator implements ToolInvoker {
           { type: 'interrupt', event: { reason } },
           `The run was interrupted: ${reason}`
         );
+      } else {
+        await runMemory.settled();
       }
       const endTime = Date.now();
 
@@ -2447,16 +2456,16 @@ export class Cogitator implements ToolInvoker {
   }
 
   /**
-   * Guardrails need a model, which a run takes from its agent. `invokeTool` has no agent, so
-   * without `guardrails.model` or `llm.defaultModel`, and before a run built them with its agent's
-   * model, its calls skip the guardrails: say so once.
+   * Guardrails need a model, which a run takes from its agent. `invokeTool` without `agent` has
+   * none, so without `guardrails.model` or `llm.defaultModel`, and before a run built them with its
+   * agent's model, its calls skip the guardrails: say so once.
    */
   private warnGuardrailsWithoutModel(): void {
     if (this.warnedGuardrailsWithoutModel) return;
     if (!this.config.guardrails || this.config.guardrails.enabled === false) return;
     this.warnedGuardrailsWithoutModel = true;
     getLogger().warn(
-      'Guardrails are enabled but tool calls made with invokeTool skip them: set guardrails.model or llm.defaultModel'
+      'Guardrails are enabled but tool calls made with invokeTool skip them: set guardrails.model or llm.defaultModel, or pass the agent'
     );
   }
 

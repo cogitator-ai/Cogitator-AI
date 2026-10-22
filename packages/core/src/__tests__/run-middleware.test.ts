@@ -682,6 +682,44 @@ describe('run middleware', () => {
     });
   });
 
+  describe('invokeTool() for an agent', () => {
+    it("wraps the call with the agent's middleware after the Cogitator's", async () => {
+      const order: string[] = [];
+      const wrapper = (name: string): RunMiddleware => ({
+        name,
+        wrapToolCall: (call, next, context) => {
+          order.push(`${name}:${context.agentName}`);
+          return next(call);
+        },
+      });
+      const { backend } = scripted(answer('unused'));
+      const cog = runtime(backend, { middleware: [wrapper('runtime')] });
+      const agent = agentWith([wrapper('agent')]);
+
+      const result = await cog.invokeTool(lookup, { order: '3' }, { agent });
+
+      expect(result.result).toEqual({ order: '3', limit: 5 });
+      expect(order).toEqual(['runtime:support', 'agent:support']);
+      await cog.close();
+    });
+
+    it("builds the guardrails with the agent's model when no model is configured", async () => {
+      const { backend } = scripted(answer('unused'));
+      const cog = runtime(backend, { guardrails: { filterToolCalls: true } });
+      const logger = (await import('../logger')).getLogger();
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      try {
+        await cog.invokeTool(lookup, { order: '3' }, { agent: agentWith() });
+        expect(warn.mock.calls.map((call) => String(call[0]))).not.toContainEqual(
+          expect.stringContaining('invokeTool skip them')
+        );
+      } finally {
+        warn.mockRestore();
+        await cog.close();
+      }
+    });
+  });
+
   describe('review fixes', () => {
     it('refuses arguments a middleware changes when the tool needs approval for them', async () => {
       const execute = vi.fn(async ({ amount }: { amount: number }) => `paid ${amount}`);

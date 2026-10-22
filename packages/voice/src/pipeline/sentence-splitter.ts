@@ -8,6 +8,9 @@ export interface SentenceSplitterOptions {
 
 export const DEFAULT_MAX_SENTENCE_LENGTH = 250;
 
+/** The shortest `maxLength`: a shorter piece would cut most words apart */
+export const MIN_SENTENCE_LENGTH = 20;
+
 const TERMINATORS = new Set(['.', '!', '?', '…']);
 const CJK_TERMINATORS = new Set(['。', '！', '？', '｡']);
 const CLOSERS = new Set([
@@ -25,8 +28,11 @@ const CLOSERS = new Set([
   '】',
   '〉',
   '》',
+  '*',
+  '_',
+  '`',
 ]);
-const OPENERS = /^["'([{«“‘「『（【〈《]+/;
+const OPENERS = /^["'([{«“‘「『（【〈《*_`]+/;
 
 const ABBREVIATIONS = new Set([
   'mr',
@@ -82,25 +88,50 @@ function skipWhitespace(text: string, from: number): number {
   return at;
 }
 
-/** The word a period ends: what stands between the whitespace before it and the period */
-function wordBefore(text: string, period: number): { word: string; start: number } {
-  let start = period;
+/** The word that ends at `end`: what stands between the whitespace before it and `end` */
+function wordBefore(text: string, end: number): { word: string; start: number } {
+  let start = end;
   while (start > 0 && !isWhitespace(text[start - 1])) start--;
-  return { word: text.slice(start, period).replace(OPENERS, ''), start };
+  return { word: text.slice(start, end).replace(OPENERS, ''), start };
 }
 
-function isAbbreviation(word: string): boolean {
+/** The word before the one that starts at `start`, on the same line, if any */
+function previousWord(text: string, start: number): string | undefined {
+  let end = start;
+  while (end > 0 && isWhitespace(text[end - 1])) {
+    if (text[end - 1] === '\n') return undefined;
+    end--;
+  }
+  if (end === 0) return undefined;
+  return wordBefore(text, end).word;
+}
+
+/**
+ * Whether the word before a period is abbreviated: a known abbreviation, dotted letters
+ * (`e.g`, `U.S`), or a capital letter read as an initial, at the start of a sentence or after a
+ * capitalized word (`J. R. R. Tolkien`, but not `vitamin C.`)
+ */
+function isAbbreviation(word: string, before: string | undefined): boolean {
   if (word.length === 0) return false;
   if (ABBREVIATIONS.has(word.toLowerCase())) return true;
-  if (/^\p{L}$/u.test(word)) return true;
-  return /^(\p{L}\.)+\p{L}$/u.test(word);
+  if (/^(\p{L}\.)+\p{L}$/u.test(word)) return true;
+  if (!/^\p{Lu}$/u.test(word)) return false;
+  return before === undefined || /^\p{Lu}/u.test(before);
+}
+
+/** The length of the code point at `at`: 2 for a surrogate pair, else 1 */
+function codePointLength(text: string, at: number): number {
+  const code = text.charCodeAt(at);
+  return code >= 0xd800 && code <= 0xdbff && at + 1 < text.length ? 2 : 1;
 }
 
 /** `maxLength` checked, or the default when it is not set */
 export function maxSentenceLength(maxLength: number | undefined): number {
   const length = maxLength ?? DEFAULT_MAX_SENTENCE_LENGTH;
-  if (!Number.isInteger(length) || length < 1) {
-    throw new RangeError(`maxSentenceLength must be a positive integer, got ${String(maxLength)}`);
+  if (!Number.isInteger(length) || length < MIN_SENTENCE_LENGTH) {
+    throw new RangeError(
+      `maxSentenceLength must be an integer of at least ${MIN_SENTENCE_LENGTH}, got ${String(maxLength)}`
+    );
   }
   return length;
 }
@@ -112,12 +143,16 @@ export function maxSentenceLength(maxLength: number | undefined): number {
  *
  * A sentence ends at `.`, `!`, `?`, `…` or a run of them (`?!`, `...`) followed by whitespace,
  * after any closing quotes or brackets, at a CJK full stop (`。！？`) and at a line break, so
- * list items are spoken one by one. A period does not end a sentence after an abbreviation
- * (`Dr.`, `e.g.`, `U.S.`, an initial), inside a number (`3.14`), after a list number at the start
- * of a line (`1.`), or before a lowercase word. Text without a break is cut at `maxLength`.
+ * list items are spoken one by one. Markdown emphasis and code marks after the stop (`**Note.**`)
+ * stay with it. A period does not end a sentence after an abbreviation (`Dr.`, `e.g.`, `U.S.`,
+ * an initial such as `J.`), inside a number (`3.14`), after a list number at the start of a line
+ * (`1.`), or before a lowercase word. A piece longer than `maxLength` (at least 20) is cut at the
+ * last whitespace before it, or at the limit when there is none.
  */
 export class SentenceSplitter {
   private buffer = '';
+  /** Whether the buffer starts a line: at the start of the text or after a line break */
+  private lineStart = true;
   private readonly maxLength: number;
 
   constructor(options: SentenceSplitterOptions = {}) {
@@ -143,7 +178,8 @@ export class SentenceSplitter {
     for (;;) {
       const boundary = this.findBoundary(final);
       if (boundary.kind === 'cut') {
-        sentences.push(this.take(boundary.at));
+        const fits = this.buffer.slice(0, boundary.at).trimEnd().length <= this.maxLength;
+        sentences.push(this.take(fits ? boundary.at : this.lengthCut()));
         continue;
       }
       if (this.buffer.length > this.maxLength) {
@@ -157,9 +193,11 @@ export class SentenceSplitter {
   private take(at: number): string {
     const sentence = this.buffer.slice(0, at);
     this.buffer = this.buffer.slice(at);
+    this.lineStart = /\n\s*$/.test(sentence);
     return sentence;
   }
 
+  /** Where a piece too long for `maxLength` is cut: always after at least one code point */
   private lengthCut(): number {
     const text = this.buffer;
     for (let at = this.maxLength; at > 0; at--) {
@@ -168,9 +206,21 @@ export class SentenceSplitter {
         break;
       }
     }
-    const code = text.charCodeAt(this.maxLength - 1);
-    const splitsPair = code >= 0xd800 && code <= 0xdbff;
-    return splitsPair ? this.maxLength - 1 : this.maxLength;
+    let cut = 0;
+    while (cut < text.length) {
+      const next = cut + codePointLength(text, cut);
+      if (next > this.maxLength && cut > 0) break;
+      cut = next;
+    }
+    return cut;
+  }
+
+  /** Whether the text before `start` on its line is only whitespace */
+  private opensLine(start: number): boolean {
+    const text = this.buffer;
+    const lineBegin = text.lastIndexOf('\n', start - 1) + 1;
+    if (lineBegin === 0 && !this.lineStart) return false;
+    return text.slice(lineBegin, start).trim().length === 0;
   }
 
   private findBoundary(final: boolean): Boundary {
@@ -221,9 +271,8 @@ export class SentenceSplitter {
 
     if (run === '.') {
       const { word, start } = wordBefore(text, at);
-      if (isAbbreviation(word)) return { kind: 'none' };
-      const opensLine = text.slice(0, start).trim().length === 0 || text[start - 1] === '\n';
-      if (/^\d+$/.test(word) && opensLine) return { kind: 'none' };
+      if (isAbbreviation(word, previousWord(text, start))) return { kind: 'none' };
+      if (/^\d+$/.test(word) && this.opensLine(start)) return { kind: 'none' };
     }
 
     if (next === text.length) return final ? { kind: 'cut', at: next } : { kind: 'wait' };

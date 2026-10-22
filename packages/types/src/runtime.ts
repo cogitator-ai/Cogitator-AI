@@ -321,9 +321,10 @@ export interface RunOptions<TDeps = unknown> {
    * Called with each entry the run saved to its thread, once the write succeeded: the input, each
    * model turn, tool results and session events such as an `interrupt`. An aborted or failed run
    * reports what it wrote too, before its promise rejects, so a caller knows the run's place in
-   * the thread without a `RunResult`.
+   * the thread without a `RunResult`. The run does not wait for it: an error it throws, or a
+   * promise it returns that rejects, is logged.
    */
-  onMemoryEntry?: (entry: MemoryEntry) => void;
+  onMemoryEntry?: (entry: MemoryEntry) => unknown;
   /**
    * Runs on a branch of the thread: history is read along the branch ending at `fromEntryId`
    * (null for none, a new root), and the run's entries go after it, one after another. With
@@ -413,9 +414,23 @@ export interface ToolApprovalRequest {
   description: string;
   /** What the tool touches, as it declares (`sideEffects`) */
   sideEffects?: string[];
+  /** The agent a call made with `invokeTool` is made for, as its options name it */
+  agentId?: string;
+  /** The thread a call made with `invokeTool` belongs to, as its options name it */
+  threadId?: string;
+  /** The user a call made with `invokeTool` acts for, as its options name it */
+  userId?: string;
 }
 
 export type ToolApprovalDecision = { approved: true } | { approved: false; reason?: string };
+
+/** The agent a tool call made outside a run belongs to, see `ToolInvocationOptions.agent`. */
+export interface ToolInvocationAgent {
+  readonly id: string;
+  readonly name: string;
+  readonly model: string | undefined;
+  readonly config: { readonly middleware?: readonly RunMiddleware[] };
+}
 
 /** Options of one tool call made outside an agent run, see `ToolInvoker`. */
 export interface ToolInvocationOptions {
@@ -424,6 +439,13 @@ export interface ToolInvocationOptions {
   /** Run and agent the call is made for, as the tool's context reports them */
   runId?: string;
   agentId?: string;
+  /**
+   * The agent the call is made for, so it gets the gates a run of that agent applies: the
+   * guardrails are built with its model when neither `guardrails.model` nor `llm.defaultModel`
+   * names one, its `middleware` wraps the call after the Cogitator's, and its id and name are the
+   * call's `agentId` and `agentName` unless `agentId` is set
+   */
+  agent?: ToolInvocationAgent;
   /** Cancels the call */
   signal?: AbortSignal;
   threadId?: string;

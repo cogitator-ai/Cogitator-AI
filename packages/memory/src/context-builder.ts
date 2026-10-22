@@ -28,6 +28,7 @@ import type {
   MemoryResult,
   TimePrecision,
 } from '@cogitator-ai/types';
+import { historyMessage } from '@cogitator-ai/types';
 import { isMemoryItemAdapter, onePerSlot, visibleIn, type MemoryItems } from './memory-items';
 import { inert } from './memory-files';
 import { namedIn, type MemoryObservation, type MemoryObservations } from './memory-observations';
@@ -767,7 +768,7 @@ export class ContextBuilder {
       lasting.length > 0 ? [{ role: 'system', content: lasting.join('\n\n') }] : [];
 
     const historyEntries = [...kept('summaries'), ...kept('recent')].map(entryOf);
-    const history = markTurnEnds(historyEntries.map((entry) => entry.message));
+    const history = markTurnEnds(historyEntries.map(historyMessage));
     messages.push(...history);
 
     const facts = kept('facts').flatMap((block) =>

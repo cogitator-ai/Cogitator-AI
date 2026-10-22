@@ -37,7 +37,7 @@ The monorepo has 35 packages: 32 published `@cogitator-ai/*` packages, the `crea
 |                    | `@cogitator-ai/neuro-symbolic` | Prolog-style logic, SAT/SMT                                                                         |
 |                    | `@cogitator-ai/rag`            | RAG pipeline (loaders, chunkers, retrieval, reranking)                                              |
 |                    | `@cogitator-ai/evals`          | Eval framework (metrics, A/B testing, assertions)                                                   |
-|                    | `@cogitator-ai/voice`          | Voice/Realtime agents (STT, TTS, VAD)                                                               |
+|                    | `@cogitator-ai/voice`          | Voice/Realtime agents (STT, TTS, VAD, replies spoken while generated, spoken-only memory)           |
 | **Infrastructure** | `@cogitator-ai/redis`          | Redis client (standalone + cluster)                                                                 |
 |                    | `@cogitator-ai/deploy`         | Docker & Fly.io deployment                                                                          |
 |                    | `@cogitator-ai/cli`            | The `cogitator` command (init, up, run, deploy, …)                                                  |

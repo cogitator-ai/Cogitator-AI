@@ -538,7 +538,9 @@ Nothing of the paused turn runs until every call in it is decided. Paused runs l
 
 A paused run's `output` is not the agent's answer. `isPausedRun(result)` tells the two apart, the run result wire format (`toAgentWireRunResult`) keeps `status`, `pendingApprovals` and `checkpoint` across processes, and `AgentRunPausedError` (code `RUN_PAUSED`) reports a pause where the caller cannot wait for a decision.
 
-To run a single tool call outside a run with the same checks (schema, approval, guardrails, sandbox, `tool.timeout`, the Cogitator's `wrapToolCall` middleware), use `cog.invokeTool(tool, args, { onApproval })`. A call nobody approves is refused with `pendingApproval` set, since there is no run to pause.
+To run a single tool call outside a run with the same checks (schema, approval, guardrails, sandbox, `tool.timeout`, the Cogitator's `wrapToolCall` middleware), use `cog.invokeTool(tool, args, { onApproval })`. A call nobody approves is refused with `pendingApproval` set, since there is no run to pause. Pass `{ agent }` for the gates a run of that agent applies: its model builds the guardrails when neither `guardrails.model` nor `llm.defaultModel` names one, and its own `wrapToolCall` middleware wraps the call after the Cogitator's.
+
+`onMemoryEntry(entry)` hears each entry a run saves to its thread (the input, each model turn, tool results, session events such as an `interrupt`), also for a run that is aborted or fails, before its promise rejects. An assistant entry with `metadata.interrupted: true`, as a voice turn the user talked over leaves it, reaches the model with `[interrupted by the user]` after its text (`historyMessage()` from `@cogitator-ai/types`), so the model does not take the part that was said as a finished reply.
 
 ### PII Masking
 
@@ -927,6 +929,7 @@ const result = await cog.run(agent, {
   onRunComplete: (result) => console.log('Completed'),
   onRunError: (error, runId, usage) => console.error('Error:', error, 'spent', usage?.cost),
   onMemoryError: (error, op) => console.warn(`Memory ${op} failed`),
+  onMemoryEntry: (entry) => console.log('Saved', entry.type, entry.id),
 });
 ```
 

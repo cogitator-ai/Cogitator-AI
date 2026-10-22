@@ -8,7 +8,7 @@ import type {
   MemoryAdapter,
   MemoryEntry,
 } from '@cogitator-ai/types';
-import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
+import { CogitatorError, ErrorCode, INTERRUPTED_REPLY_NOTE } from '@cogitator-ai/types';
 import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { tool } from '../tool';
@@ -562,6 +562,81 @@ describe('runs on branches of a thread', () => {
     expect(result.output).toBe('re: hello');
     const path = await (await memoryOf(cog)).getPath!({ threadId: 't' });
     expect(path.success && path.data).toHaveLength(2);
+  });
+
+  it('reports the entries of a failed run before it rejects', async () => {
+    const failing: LLMBackend = {
+      provider: 'openai',
+      chat: vi.fn(async () => {
+        throw new Error('model down');
+      }),
+      chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {
+        yield { id: 's', delta: {}, finishReason: 'stop' };
+      }),
+    };
+    const cog = runtime(failing);
+    const seen: MemoryEntry[] = [];
+
+    await expect(
+      cog.run(agent, { input: 'hi', threadId: 't', onMemoryEntry: (entry) => seen.push(entry) })
+    ).rejects.toThrow('model down');
+
+    expect(seen.map((e) => [e.message.role, String(e.message.content)])).toEqual([['user', 'hi']]);
+  });
+
+  it('does not leave a rejected onMemoryEntry unhandled', async () => {
+    const cog = runtime(echoingBackend());
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      const result = await cog.run(agent, {
+        input: 'hello',
+        threadId: 't',
+        onMemoryEntry: async () => {
+          throw new Error('observer broke');
+        },
+      });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(result.output).toBe('re: hello');
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+  });
+
+  it.each([
+    ['history from memory', { adapter: 'memory' as const }],
+    [
+      'the context builder',
+      {
+        adapter: 'memory' as const,
+        contextBuilder: { strategy: 'recent' as const, maxTokens: 4000 },
+      },
+    ],
+  ])('marks an interrupted reply when a model reads it (%s)', async (_name, memoryConfig) => {
+    const backend = echoingBackend();
+    const cog = new Cogitator({ llm: { backends: { mock: backend } }, memory: memoryConfig });
+    cogs.push(cog);
+    const memory = await memoryOf(cog);
+    await memory.createThread(agent.id, {}, 't');
+    await memory.addEntry({
+      threadId: 't',
+      message: { role: 'user', content: 'Tell me about Paris' },
+      tokenCount: 5,
+    });
+    await memory.addEntry({
+      threadId: 't',
+      message: { role: 'assistant', content: 'Paris is the capital.' },
+      tokenCount: 5,
+      metadata: { interrupted: true },
+    });
+
+    await cog.run(agent, { input: 'go on', threadId: 't' });
+
+    const sent = backend.requests.at(-1)!.messages;
+    expect(sent.find((m) => m.role === 'assistant')?.content).toBe(
+      `Paris is the capital. ${INTERRUPTED_REPLY_NOTE}`
+    );
   });
 
   it('replays forks of one run on branches that never see each other', async () => {

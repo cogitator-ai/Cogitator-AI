@@ -24,6 +24,18 @@ export interface PipelineSessionOptions {
 
 const ABORTED: unique symbol = Symbol('aborted');
 
+/** How long a session waits for a streamed turn to settle by default, in ms */
+export const DEFAULT_SETTLE_TIMEOUT = 10_000;
+
+/** Resolves once `promise` settles or `ms` pass, whichever comes first */
+function bounded(promise: Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 function toError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));
 }
@@ -77,6 +89,7 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
   private readonly ttsOptions: VoicePipelineConfig['ttsOptions'];
   private readonly bargeIn: boolean;
   private readonly maxSentenceLength: number;
+  private readonly settleTimeout: number;
   private state: SessionState = 'idle';
   private stream: STTStream | null = null;
   private turn = new AbortController();
@@ -95,6 +108,10 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
     this.ttsOptions = config.ttsOptions;
     this.bargeIn = config.bargeIn ?? false;
     this.maxSentenceLength = maxSentenceLength(config.maxSentenceLength);
+    this.settleTimeout = config.settleTimeout ?? DEFAULT_SETTLE_TIMEOUT;
+    if (!(this.settleTimeout >= 0)) {
+      throw new RangeError(`settleTimeout must be 0 or more, got ${String(config.settleTimeout)}`);
+    }
   }
 
   get currentState(): SessionState {
@@ -162,7 +179,7 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
     if (this.activeProcessing) {
       await this.activeProcessing.catch(() => {});
     }
-    await this.settling;
+    await bounded(this.settling, this.settleTimeout);
 
     this.removeAllListeners();
   }
@@ -330,18 +347,27 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
       release = resolve;
     });
     this.settling = Promise.all([previous, own]).then(() => undefined);
+    const turn: { settled?: Promise<void> } = {};
     try {
-      const waited = await abortable(previous, signal);
+      const waited = await abortable(bounded(previous, this.settleTimeout), signal);
       if (waited === ABORTED || !this.isCurrent(signal)) return;
-      await this.streamTurn(input, signal);
+      await this.streamTurn(input, signal, turn);
     } finally {
-      release();
+      void (turn.settled ?? Promise.resolve()).then(release);
     }
   }
 
-  private async streamTurn(input: string, signal: AbortSignal): Promise<void> {
+  /**
+   * Speaks a streamed turn, then settles it. The settle is waited for at most `settleTimeout`
+   * before the turn ends, and `held.settled` resolves once it is really done
+   */
+  private async streamTurn(
+    input: string,
+    signal: AbortSignal,
+    held: { settled?: Promise<void> }
+  ): Promise<void> {
     let turn: VoiceTurn;
-    let deltas: AsyncIterator<string>;
+    let deltas: AsyncIterator<string, string | void, undefined>;
     try {
       turn = this.agent.stream!(input, { sessionId: this.id, signal });
       deltas = turn[Symbol.asyncIterator]();
@@ -395,11 +421,11 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
     await generation;
     signal.removeEventListener('abort', stopOnAbort);
 
-    try {
-      await turn.settle?.({ spoken, interrupted: !(generated && spokeAll && !failure) });
-    } catch (err) {
-      this.emitError(err);
-    }
+    const outcome = { spoken, interrupted: !(generated && spokeAll && !failure) };
+    held.settled = Promise.resolve()
+      .then(() => turn.settle?.(outcome))
+      .catch((err: unknown) => this.emitError(err));
+    await bounded(held.settled, this.settleTimeout);
 
     if (!this.isCurrent(signal)) return;
     this.state = 'idle';
@@ -412,17 +438,21 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
 
   /** Reads the answer's deltas into sentences: true once it ended, false when `stop` aborted */
   private async generate(
-    deltas: AsyncIterator<string>,
+    deltas: AsyncIterator<string, string | void, undefined>,
     sentences: AsyncQueue<string>,
     signal: AbortSignal,
     stop: AbortSignal
   ): Promise<boolean> {
     const splitter = new SentenceSplitter({ maxLength: this.maxSentenceLength });
     let text = '';
+    let answer: string | undefined;
     for (;;) {
       const next = await abortable(deltas.next(), stop);
       if (next === ABORTED) return false;
-      if (next.done) break;
+      if (next.done) {
+        if (typeof next.value === 'string') answer = next.value;
+        break;
+      }
       const delta = next.value;
       if (delta.length === 0) continue;
       text += delta;
@@ -432,7 +462,7 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
     if (stop.aborted) return false;
     for (const sentence of splitter.flush()) sentences.push(sentence);
     sentences.end();
-    if (this.isCurrent(signal)) this.emit('agent_response', text);
+    if (this.isCurrent(signal)) this.emit('agent_response', answer ?? text);
     return true;
   }
 

@@ -165,11 +165,13 @@ export class RunMemory {
 /** Hands a saved entry to `onMemoryEntry`, whose failure does not fail the write or the run */
 function reportEntry(entry: MemoryEntry, onMemoryEntry: RunOptions['onMemoryEntry']): void {
   if (!onMemoryEntry) return;
-  try {
-    onMemoryEntry(entry);
-  } catch (error) {
+  const warn = (error: unknown) =>
     getLogger().warn('onMemoryEntry failed', {
       error: error instanceof Error ? error.message : String(error),
     });
+  try {
+    void Promise.resolve(onMemoryEntry(entry)).catch(warn);
+  } catch (error) {
+    warn(error);
   }
 }

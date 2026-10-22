@@ -330,7 +330,7 @@ Without a VAD, audio is buffered until `endAudio()`. `interrupt()` cancels the i
 
 ### Streaming replies
 
-When the runner has a `stream(input, context)` method, as `createCogitatorRunner()` does, a session speaks the answer while the model is still generating it. The text deltas are split into sentences and each sentence goes to `tts.streamSynthesize` in order, so the first audio leaves before the answer is complete. The splitter knows abbreviations (`Dr.`, `e.g.`), decimals (`3.14`), ellipses, `?!`, CJK full stops and list items on their own lines, flushes a tail without punctuation at the end, and cuts a sentence without a break at `maxSentenceLength` characters (default 250) on whitespace.
+When the runner has a `stream(input, context)` method, as `createCogitatorRunner()` does, a session speaks the answer while the model is still generating it. The text deltas are split into sentences and each sentence goes to `tts.streamSynthesize` in order, so the first audio leaves before the answer is complete. The splitter knows abbreviations (`Dr.`, `e.g.`), initials after a capitalized word (`J. R. R. Tolkien`, but not `vitamin C.`), decimals (`3.14`), list numbers at the start of a line (`1.`), ellipses, `?!`, markdown marks after a stop (`**Note.**`), CJK full stops and line breaks, flushes a tail without punctuation at the end, and cuts a piece longer than `maxSentenceLength` characters (default 250, at least 20) on whitespace.
 
 ```typescript
 const pipeline = new VoicePipeline({
@@ -346,9 +346,13 @@ session.on('agent_response_delta', (delta) => showCaption(delta));
 session.on('agent_response', (text) => console.log('Full answer:', text));
 ```
 
-`agent_response_delta` carries each piece of text as it arrives and `agent_response` still carries the whole answer once it is generated, so existing listeners keep working. A runner without `stream` is used exactly as before: `run()` answers, then the whole text is synthesized at once. `VoicePipeline.process()` returns one audio buffer, so it always uses `run()` and a single `synthesize()` call. `SentenceSplitter` is exported for your own streaming code.
+`agent_response_delta` carries each piece of text that is spoken as it arrives. `agent_response` carries the answer once the model has finished it, the same text `run()` returns: with tools, only the final model turn. It can arrive while the first sentences are still playing. Text the model says before a tool call ("Let me check.") is spoken on its own while the tool runs, and `createCogitatorRunner` ends it with a line break in the deltas for that. The stream ends with the final model turn, so the last sentence does not wait for what the run does after it (`afterRun` hooks, memory notes).
 
-A streaming runner returns a `VoiceTurn`: an `AsyncIterable<string>` of deltas that stops when `context.signal` aborts, with an optional `settle({ spoken, interrupted })` the session calls once the turn is over. The next streamed turn of the session starts only after the previous one settled.
+A middleware that rewrites a turn's text in `afterModel` without `holdsStream: true` is heard before the rewrite: the session speaks the text as it streams. Set `holdsStream: true` on such a middleware to speak only the final text.
+
+A runner without `stream` is used exactly as before: `run()` answers, then the whole text is synthesized at once. `VoicePipeline.process()` returns one audio buffer, so it always uses `run()` and a single `synthesize()` call. `SentenceSplitter` is exported for your own streaming code.
+
+A streaming runner returns a `VoiceTurn`: an `AsyncIterable<string>` of deltas that stops when `context.signal` aborts and may return the answer as its return value, with an optional `settle({ spoken, interrupted })` the session calls once the turn is over (calling it again returns the same promise). The next streamed turn of the session starts after the previous one settled, and `close()` waits for it, both at most `settleTimeout` ms (default 10 000): a settle that takes longer goes on in the background.
 
 ### Interruption and spoken-only memory
 
@@ -361,7 +365,9 @@ With `createCogitatorRunner()` the thread then holds what the user heard:
 - interrupted while the model was still generating: the spoken part is saved after the run's `interrupt` event, marked the same way, since the run itself saves no partial answer
 - nothing was spoken: no assistant message for the answer
 
-Text the model said alongside tool calls (for example "Let me check") stays as the run saved it, only the final answer is trimmed. When something else wrote to the thread after the turn, the spoken part goes on the turn's branch without moving the thread's active leaf. Keeping the thread needs a runtime with `getMemory()`, as a `Cogitator` with `memory` configured has.
+Text the model said alongside tool calls (for example "Let me check") stays as the run saved it, only the final answer is trimmed. A run that fails after it saved its answer has the answer replaced the same way, and its error is reported once the turn was spoken. The model reads an interrupted reply with `[interrupted by the user]` after it, so it does not take the spoken part for a finished answer.
+
+The thread is changed only while the turn's last entry is still its active leaf. When something else wrote to the thread after the turn (another run on the same `threadId`, a message added by your code), the thread is left as it is, with the whole answer, so a newer message is never hidden or moved. The runner settles the turns of one thread one after another. Keeping the thread needs a runtime with `getMemory()`, as a `Cogitator` with `memory` configured has.
 
 ### Barge-in
 
@@ -418,12 +424,13 @@ const session = new RealtimeSession({
 });
 ```
 
-| Option       | Description                                                                                 |
-| ------------ | ------------------------------------------------------------------------------------------- |
-| `onApproval` | Decides calls that need approval, as `RunOptions.onApproval` does in a run                  |
-| `agentId`    | Agent id the tools see in their context (default `'voice'`)                                 |
-| `threadId`   | Thread id for the tools, from the call context (default `voice:<sessionId>`, as the runner) |
-| `userId`     | The user the calls act for                                                                  |
+| Option       | Description                                                                                       |
+| ------------ | ------------------------------------------------------------------------------------------------- |
+| `onApproval` | `(request, context)`: decides calls that need approval, as `RunOptions.onApproval` does in a run  |
+| `agent`      | The agent the tools belong to: its model builds the guardrails and its middleware wraps the calls |
+| `agentId`    | Agent id the tools see in their context (default `agent.id`, else `'voice'`)                      |
+| `threadId`   | Thread id for the tools, from the call context (default `voice:<sessionId>`, as the runner)       |
+| `userId`     | The user the calls act for, a string or a function of the call's context                          |
 
 A result made of parts (`toolContent()` from `@cogitator-ai/core`, or an object with a base64 `image`) reaches the model as the text of its parts, with images and files described, instead of a JSON string full of base64. The text, and the message of a tool that throws, is cut to the tool's `maxResultLength` (default 100 000 characters, a positive integer, the session refuses anything else). With `toolImages: true` the session also sends the PNG, JPEG, GIF and WebP images to a model that takes them: OpenAI gets a user message with `input_image` parts after the tool outputs (`gpt-realtime`, `gpt-realtime-2`), Gemini gets `inlineData` parts in the function response (Gemini 3 models). Other results are sent as before, as JSON to OpenAI and as `{ result }` to Gemini, and one whose JSON is longer than `maxResultLength` is cut the same way.
 
@@ -579,7 +586,10 @@ const voiceAgent = new VoiceAgent({
   realtimeApiKey: process.env.GOOGLE_API_KEY!,
   voice: 'Puck',
   agentTools: {
-    onApproval: async (request) => ({ approved: await askOperator(request) }),
+    onApproval: async (request, { sessionId }) => ({
+      approved: await askOperator(sessionId, request),
+    }),
+    userId: ({ sessionId }) => userOfSession(sessionId),
   },
 });
 
@@ -588,7 +598,15 @@ await voiceAgent.listen(8080);
 
 In realtime mode the agent's `instructions` are used as the session instructions unless `instructions` is set explicitly.
 
-Without `tools`, the model gets the agent's own tools from `agent.realtimeTools()`. A `createCogitatorRunner()` runner builds them with `createRealtimeTools(cogitator, agent.tools)`, so each call goes through `cogitator.invokeTool`: schema validation, approvals, guardrails, the sandbox and `tool.timeout`, with the agent's id and the session's thread id (`voice:<sessionId>`, or the runner's `threadId` resolver) in the tool context. `agentTools` takes the options of `createRealtimeTools` (`onApproval`, `userId`, ...), and `agentTools: false` turns the bridge off. Explicit `tools` always win, and `tools: []` gives the model no tools.
+Without `tools`, the model gets the agent's own tools from `agent.realtimeTools()`. This is on by default, so a realtime `VoiceAgent` built with `createCogitatorRunner()` exposes the agent's tools to the model: pass `agentTools: false` to keep the model without tools. A `createCogitatorRunner()` runner builds them with `createRealtimeTools(cogitator, agent.tools, { agent })`, so each call goes through `cogitator.invokeTool` with the agent, the gates a text run of it applies: schema validation, approvals, the guardrails built with the agent's model, the agent's `wrapToolCall` middleware after the Cogitator's, the sandbox and `tool.timeout`, with the agent's id and the session's thread id (`voice:<sessionId>`, or the runner's `threadId` resolver) in the tool context.
+
+What is not the same as a text run:
+
+- a tool with `requiresApproval` runs only when `agentTools.onApproval` or `guardrails.onToolApproval` approves the call, otherwise it is refused and the model reads that it needs approval (there is no run to pause)
+- a realtime session sets no `maxIterations`: the model may call tools as often as it likes during the session
+- a runtime without `invokeTool` (a custom `CogitatorLike`) gets no tools from the bridge
+
+`agentTools` takes the options of `createRealtimeTools`: `onApproval(request, context)` gets the call's `agentId`, `threadId` and `userId` in the request and its `sessionId` and `callId` in the context, and `userId` is a string or a function of the call's context. Explicit `tools` always win, and `tools: []` gives the model no tools.
 
 ---
 
@@ -682,6 +700,7 @@ if (format) audioMimeType(format); // e.g. 'audio/wav'
 | `ttsOptions`        | `TTSOptions`                      | No            | Pipeline only: options passed to every TTS call                        |
 | `bargeIn`           | `boolean`                         | No            | Pipeline only: user speech stops the reply (default false)             |
 | `maxSentenceLength` | `number`                          | No            | Pipeline only: longest streamed piece sent to TTS (250)                |
+| `settleTimeout`     | `number`                          | No            | Pipeline only: longest wait in ms for a turn to settle (10 000)        |
 | `realtimeProvider`  | `'openai' \| 'gemini'`            | Realtime only | Realtime API provider                                                  |
 | `realtimeApiKey`    | `string`                          | Realtime only | API key for realtime provider                                          |
 | `realtimeModel`     | `string`                          | No            | Model override                                                         |

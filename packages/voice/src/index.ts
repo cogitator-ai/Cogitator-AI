@@ -62,7 +62,7 @@ export { OpenAIRealtimeAdapter } from './realtime/index.js';
 export { GeminiRealtimeAdapter } from './realtime/index.js';
 export { RealtimeSession } from './realtime/index.js';
 export { createRealtimeTools } from './realtime/index.js';
-export type { RealtimeToolsOptions } from './realtime/index.js';
+export type { RealtimeToolsOptions, RealtimeApprovalHandler } from './realtime/index.js';
 
 export {
   WebSocketTransport,

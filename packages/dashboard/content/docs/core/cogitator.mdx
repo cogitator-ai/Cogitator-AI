@@ -160,6 +160,7 @@ const result = await cog.run(agent, {
 | `onRunComplete`            | `(result: RunResult) => void`                             | Called with the result                                                                                                                                         |
 | `onRunError`               | `(error: Error, runId: string, usage?: RunUsage) => void` | Called when the run fails, with what its finished model calls used and cost (a run cut short by its timeout spent them too)                                    |
 | `onMemoryError`            | `(error: Error, operation: 'save' \| 'load') => void`     | Called when loading or saving history fails (the run goes on)                                                                                                  |
+| `onMemoryEntry`            | `(entry: MemoryEntry) => void \| Promise<void>`           | Each entry the run saved, also of a run that is aborted or fails, before it rejects (a failing callback is only logged)                                        |
 | `onSpan`                   | `(span: Span) => void`                                    | Observability callback for tracing                                                                                                                             |
 | `channelType`, `channelId` | `string`                                                  | Where the message came from, passed on to tools in their context                                                                                               |
 

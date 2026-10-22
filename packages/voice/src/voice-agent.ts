@@ -65,6 +65,7 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
         ttsOptions: config.ttsOptions,
         bargeIn: config.bargeIn,
         maxSentenceLength: config.maxSentenceLength,
+        settleTimeout: config.settleTimeout,
       });
     }
     this.realtimeTools = config.mode === 'realtime' ? resolveRealtimeTools(config) : undefined;
