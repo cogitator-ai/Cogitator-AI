@@ -230,6 +230,7 @@ export class SlackChannel implements Channel {
       ...(message.thread_ts && message.thread_ts !== message.ts
         ? { replyTo: message.thread_ts }
         : {}),
+      ...(isDirect ? {} : { topicId: message.thread_ts ?? message.ts }),
     };
 
     await this.handler(channelMessage);
@@ -258,7 +259,7 @@ export class SlackChannel implements Channel {
     const app = this.requireApp();
     const threadTs = options?.replyTo
       ? (this.threadRoots.get(options.replyTo) ?? options.replyTo)
-      : undefined;
+      : options?.topicId;
 
     const result = await app.client.chat.postMessage({
       channel: channelId,

@@ -243,6 +243,42 @@ describe('HeartbeatScheduler', () => {
     scheduler.stop();
   });
 
+  it('sends the task to the topic and conversation of its metadata', async () => {
+    store.getOverdue.mockResolvedValueOnce([
+      {
+        id: 't4',
+        firesAt: Date.now() - 500,
+        metadata: {
+          description: 'Topic task',
+          channel: 'telegram',
+          channelId: '-100',
+          topicId: '7',
+          conversationId: 'thread:root',
+          userId: 'u5',
+        },
+      },
+      {
+        id: 't5',
+        firesAt: Date.now() - 500,
+        metadata: { description: 'Plain task', channelId: '-100', topicId: '', userId: 'u5' },
+      },
+    ]);
+
+    const scheduler = new HeartbeatScheduler(store as unknown as TimerStore, {
+      onFire,
+      pollInterval: 50,
+    });
+    scheduler.start();
+
+    await vi.waitFor(() => expect(onFire).toHaveBeenCalledTimes(2), { timeout: 200 });
+    scheduler.stop();
+
+    const [withTopic, plain] = onFire.mock.calls.map(([msg]) => msg);
+    expect(withTopic).toMatchObject({ topicId: '7', conversationId: 'thread:root' });
+    expect(plain).not.toHaveProperty('topicId');
+    expect(plain).not.toHaveProperty('conversationId');
+  });
+
   it('reschedules interval tasks at now + interval', async () => {
     const now = Date.now();
     store.getOverdue

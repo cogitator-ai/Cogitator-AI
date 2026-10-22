@@ -22,8 +22,8 @@ describe('MessageQueue thread lifecycle', () => {
       const processor = vi.fn().mockResolvedValue(undefined);
       const queue = new MessageQueue(mode, processor);
 
-      queue.push(msg('a'), 't1');
-      queue.push(msg('b'), 't2');
+      void queue.push(msg('a'), 't1');
+      void queue.push(msg('b'), 't2');
       await vi.waitFor(() => expect(processor).toHaveBeenCalledTimes(2));
       await vi.waitFor(() => expect(threadCount(queue)).toBe(0));
     }
@@ -34,7 +34,7 @@ describe('MessageQueue thread lifecycle', () => {
     process.on('unhandledRejection', unhandled);
     try {
       const queue = new MessageQueue('parallel', vi.fn().mockRejectedValue(new Error('x')));
-      queue.push(msg('a'), 't');
+      void queue.push(msg('a'), 't');
       await new Promise((r) => setTimeout(r, 20));
       expect(unhandled).not.toHaveBeenCalled();
     } finally {

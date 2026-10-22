@@ -10,8 +10,9 @@ export function replyDestination(msg: ChannelMessage): string {
 
 /**
  * Messages of one user to one destination as one message: their texts joined by new lines and
- * all their attachments. It keeps the first message's id and the destination (`topicId`), and
- * `replyTo` of the first message that replies to one. A single message is returned as it is.
+ * all their attachments. It keeps the first message's id, the destination (`topicId`) and
+ * `conversationId`, and `replyTo` of the first message that replies to one. A single message is
+ * returned as it is.
  */
 export function mergeChannelMessages(messages: readonly ChannelMessage[]): ChannelMessage {
   const first = messages[0];
@@ -29,6 +30,7 @@ export function mergeChannelMessages(messages: readonly ChannelMessage[]): Chann
     text: messages.map((m) => m.text).join('\n'),
     raw: last.raw,
     ...(first.topicId !== undefined && { topicId: first.topicId }),
+    ...(first.conversationId !== undefined && { conversationId: first.conversationId }),
     ...(replyTo !== undefined && { replyTo }),
   };
 

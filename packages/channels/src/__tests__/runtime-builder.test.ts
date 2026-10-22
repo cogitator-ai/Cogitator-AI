@@ -25,6 +25,7 @@ vi.mock('../channels/slack', () => ({
 const socialConfigs = vi.hoisted(() => ({
   bluesky: [] as Array<Record<string, unknown>>,
   threads: [] as Array<Record<string, unknown>>,
+  github: [] as Array<Record<string, unknown>>,
 }));
 
 const stubChannel = (type: string) => ({
@@ -45,6 +46,13 @@ vi.mock('../channels/threads/channel', () => ({
   threadsChannel: (config: Record<string, unknown>) => {
     socialConfigs.threads.push(config);
     return stubChannel('threads');
+  },
+}));
+
+vi.mock('../channels/github/channel', () => ({
+  githubChannel: (config: Record<string, unknown>) => {
+    socialConfigs.github.push(config);
+    return stubChannel('github');
   },
 }));
 
@@ -423,6 +431,57 @@ describe('RuntimeBuilder', () => {
     await built.cleanup();
   });
 
+  it('builds the GitHub channel from the env with its webhook server and triggers', async () => {
+    socialConfigs.github.length = 0;
+    const config: AssistantConfigInput = {
+      ...minimalConfig,
+      channels: {
+        github: {
+          trigger: 'all',
+          repositories: ['acme/*'],
+          login: 'helper[bot]',
+          ownerIds: ['583231'],
+        },
+      },
+    };
+    const built = await new RuntimeBuilder(config, {
+      GOOGLE_API_KEY: 'test-key',
+      GITHUB_TOKEN: 'ghp_token',
+      GITHUB_WEBHOOK_SECRET: 'hook-secret',
+      GITHUB_API_URL: 'https://ghe.example.com/api/v3',
+    }).build();
+    expect(socialConfigs.github).toEqual([
+      {
+        token: 'ghp_token',
+        webhook: { secret: 'hook-secret', port: 8787 },
+        apiUrl: 'https://ghe.example.com/api/v3',
+        login: 'helper[bot]',
+        trigger: 'all',
+        repositories: ['acme/*'],
+      },
+    ]);
+    await built.cleanup();
+  });
+
+  it('warns instead of building GitHub without its webhook secret', async () => {
+    socialConfigs.github.length = 0;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const config: AssistantConfigInput = {
+      ...minimalConfig,
+      channels: { github: { webhook: { port: 3300, path: '/hooks/github' } } },
+    };
+    const built = await new RuntimeBuilder(config, {
+      GOOGLE_API_KEY: 'test-key',
+      GITHUB_TOKEN: 'ghp_token',
+    }).build();
+    expect(socialConfigs.github).toEqual([]);
+    expect(warn.mock.calls.some((call) => String(call[0]).includes('GITHUB_WEBHOOK_SECRET'))).toBe(
+      true
+    );
+    warn.mockRestore();
+    await built.cleanup();
+  });
+
   it('warns when Slack runs without an app token', async () => {
     slackConfigs.length = 0;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -794,6 +853,37 @@ describe('RuntimeBuilder', () => {
     await built.cleanup();
   });
 
+  it('keys threads and orders messages as the session block says', async () => {
+    const built = await new RuntimeBuilder(
+      {
+        ...minimalConfig,
+        channels: { whatsapp: {} },
+        session: { threadKey: 'legacy', queueMode: 'parallel' },
+      },
+      { GOOGLE_API_KEY: 'test-key' }
+    ).build();
+    const run = built.cogitator.run as unknown as ReturnType<typeof vi.fn>;
+    const releases: (() => void)[] = [];
+    run.mockImplementation(
+      () => new Promise((resolve) => releases.push(() => resolve({ output: 'ok' })))
+    );
+    const user = { channelType: 'whatsapp', channelId: '15550001111', userId: '15550001111' };
+
+    const answered = Promise.all([
+      built.gateway.injectMessage({ ...user, id: 'm1', text: 'one', raw: {} }),
+      built.gateway.injectMessage({ ...user, id: 'm2', text: 'two', raw: {} }),
+    ]);
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+    for (const release of releases) release();
+    await answered;
+
+    expect(run.mock.calls.map(([, options]) => options.threadId)).toEqual([
+      'whatsapp:15550001111',
+      'whatsapp:15550001111',
+    ]);
+    await built.cleanup();
+  });
+
   it('keeps same-named tools of several MCP servers apart and names them to the model', async () => {
     mcpServerTools.set('github-mcp', ['search', 'create_issue']);
     mcpServerTools.set('gitlab-mcp', ['search']);
@@ -900,7 +990,7 @@ describe('RuntimeBuilder', () => {
 
     compactThread.mockResolvedValue('Nothing to compact (3 messages)');
     await built.gateway.injectMessage({ ...owner, id: 'm2', text: '/compact' });
-    expect(compactThread).toHaveBeenCalledWith('whatsapp:15550001111');
+    expect(compactThread).toHaveBeenCalledWith('whatsapp:15550001111:15550001111');
     expect(compactAll).toHaveBeenCalledTimes(1);
     await built.cleanup();
   });

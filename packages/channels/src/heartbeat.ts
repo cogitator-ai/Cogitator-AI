@@ -143,7 +143,8 @@ export class HeartbeatScheduler {
    * task fires (a task whose claim ran out while it waited is left to the worker that took it) and
    * every `claimTtl / 3` while it runs. Disabled and exhausted tasks are released so another
    * worker's poll is not blocked by this one's lease. A task that throws keeps the claim until its
-   * lease runs out, which spaces out the retries.
+   * lease runs out, which spaces out the retries. The task's message goes to the `channel`,
+   * `channelId`, `topicId` and `conversationId` of its metadata, those it has.
    */
   private async processEntry(entry: TimerEntry): Promise<void> {
     if (entry.enabled === false) {
@@ -164,11 +165,15 @@ export class HeartbeatScheduler {
     const meta = entry.metadata ?? {};
     const description = readString(meta, 'description') ?? entry.name ?? '';
     const userId = readString(meta, 'userId');
+    const topicId = readString(meta, 'topicId');
+    const conversationId = readString(meta, 'conversationId');
     const msg: ChannelMessage = {
       id: `heartbeat_${entry.id}`,
       channelType: readString(meta, 'channel') ?? 'system',
       channelId: readString(meta, 'channelId') ?? userId ?? 'system',
       userId: userId ?? 'system',
+      ...(topicId && { topicId }),
+      ...(conversationId && { conversationId }),
       text: `[SCHEDULED TASK] Execute this task that was scheduled earlier: "${description}". If it's a reminder — deliver it in a friendly way. If it's an action (e.g. check something, fetch data, run a tool) — do it and report the result.`,
       raw: { scheduled: true, taskId: entry.id },
     };

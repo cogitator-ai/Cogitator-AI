@@ -201,6 +201,7 @@ describe('ThreadsChannel webhooks', () => {
       channelType: 'threads',
       channelId: 'post:r1',
       groupId: 'thread:root-post',
+      conversationId: 'thread:root-post',
       replyTo: 'root-post',
     });
   });

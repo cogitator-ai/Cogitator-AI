@@ -65,7 +65,7 @@ export const PRESETS: readonly Preset[] = [
   {
     id: 'channels',
     label: 'Messaging bot',
-    hint: 'one assistant on Telegram, Discord, Slack, WebChat, Bluesky or Threads',
+    hint: 'one assistant on Telegram, Discord, Slack, WebChat, Bluesky, Threads or GitHub',
     spec: { app: 'channels', channels: ['webchat'], memory: 'sqlite', features: [] },
   },
   {

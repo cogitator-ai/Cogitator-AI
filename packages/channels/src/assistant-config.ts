@@ -51,6 +51,28 @@ const AssistantChannelsSchema = z.object({
       tokenPath: z.string().optional(),
     })
     .optional(),
+  github: z
+    .object({
+      /** GitHub user ids (numbers, as `https://api.github.com/users/<login>` shows them) */
+      ownerIds: OwnerIdsSchema,
+      /** The server GitHub's webhook delivers to (default port 8787, path `/github/webhook`) */
+      webhook: z
+        .object({
+          port: z.number().int().positive().default(8787),
+          path: z.string().optional(),
+        })
+        .default({ port: 8787 }),
+      /** `mention` (default) answers only when `@login` is mentioned, `all` every new event */
+      trigger: z.enum(['mention', 'all']).optional(),
+      /** The repositories to answer in, `owner/repo` or `owner/*` (default every one) */
+      repositories: z.array(z.string()).optional(),
+      /** The bot's login, needed for a GitHub App installation token (`<app-slug>[bot]`) */
+      login: z.string().optional(),
+      allowBots: z.boolean().optional(),
+      /** Stream answers into a comment it edits (default false) */
+      stream: z.boolean().optional(),
+    })
+    .optional(),
 });
 
 const ApprovalsSchema = z
@@ -98,6 +120,17 @@ const AssistantMemorySchema = z.object({
   compaction: z.object({ threshold: z.number() }).optional(),
 });
 
+/** How the gateway names and orders conversation threads */
+const AssistantSessionSchema = z.object({
+  /** `sequential` (default) answers a thread's messages one at a time, `parallel` all at once */
+  queueMode: z.enum(['parallel', 'sequential', 'interrupt', 'collect']).optional(),
+  /**
+   * `conversation` (default): a thread per user per chat, topic or post thread. `legacy`: a thread
+   * per user per channel, as before, to keep the threads stored by earlier versions
+   */
+  threadKey: z.enum(['conversation', 'legacy']).optional(),
+});
+
 const CommandAccessSchema = z
   .object({
     authorized: z.array(z.string()).optional(),
@@ -133,6 +166,7 @@ export const AssistantConfigSchema = z.object({
   }),
   security: SecuritySchema,
   approvals: ApprovalsSchema,
+  session: AssistantSessionSchema.optional(),
   stream: z
     .object({
       flushInterval: z.number().default(600),

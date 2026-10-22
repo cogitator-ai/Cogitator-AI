@@ -121,7 +121,7 @@ describe('Channels E2E: Gateway Pipeline', () => {
     await gateway.stop();
   });
 
-  it('generates default thread IDs as channelType:userId', async () => {
+  it('generates default thread IDs as channelType:channelId:userId', async () => {
     const gateway = new Gateway({
       agent: { name: 'agent' } as never,
       channels: [channel],
@@ -136,7 +136,7 @@ describe('Channels E2E: Gateway Pipeline', () => {
     });
 
     const runCall = cogitator.run.mock.calls[0];
-    expect(runCall[1].threadId).toBe('test:alice');
+    expect(runCall[1].threadId).toBe('test:ch_1:alice');
 
     await gateway.stop();
   });

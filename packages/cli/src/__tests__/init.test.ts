@@ -103,6 +103,22 @@ describe('initSecrets', () => {
     });
   });
 
+  it('writes the GitHub token and webhook secret', () => {
+    expect(
+      initSecrets(
+        answers({
+          channels: ['github'],
+          githubToken: 'ghp_token',
+          githubWebhookSecret: 'hook-secret',
+        })
+      )
+    ).toEqual({
+      OPENAI_API_KEY: 'sk-test',
+      GITHUB_TOKEN: 'ghp_token',
+      GITHUB_WEBHOOK_SECRET: 'hook-secret',
+    });
+  });
+
   it('writes DATABASE_URL only when it differs from the compose default', () => {
     expect(initSecrets(answers({ memory: 'postgres', databaseUrl: DEFAULT_POSTGRES_URL }))).toEqual(
       {

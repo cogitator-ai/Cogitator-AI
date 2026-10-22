@@ -31,7 +31,8 @@ import {
   type SetupProvider,
 } from '../utils/provider-models.js';
 
-export type InitChannel = 'telegram' | 'discord' | 'slack' | 'webchat' | 'bluesky' | 'threads';
+export type InitChannel =
+  'telegram' | 'discord' | 'slack' | 'webchat' | 'bluesky' | 'threads' | 'github';
 
 const INIT_CHANNELS: readonly InitChannel[] = [
   'telegram',
@@ -40,6 +41,7 @@ const INIT_CHANNELS: readonly InitChannel[] = [
   'webchat',
   'bluesky',
   'threads',
+  'github',
 ];
 export type InitMemory = 'memory' | 'sqlite' | 'postgres';
 
@@ -58,6 +60,8 @@ export interface InitAnswers {
   blueskyHandle?: string;
   blueskyAppPassword?: string;
   threadsAccessToken?: string;
+  githubToken?: string;
+  githubWebhookSecret?: string;
   memory: InitMemory;
   databaseUrl?: string;
 }
@@ -103,6 +107,8 @@ export function initSecrets(answers: InitAnswers): Record<string, string> {
   if (answers.blueskyHandle) secrets.BLUESKY_HANDLE = answers.blueskyHandle;
   if (answers.blueskyAppPassword) secrets.BLUESKY_APP_PASSWORD = answers.blueskyAppPassword;
   if (answers.threadsAccessToken) secrets.THREADS_ACCESS_TOKEN = answers.threadsAccessToken;
+  if (answers.githubToken) secrets.GITHUB_TOKEN = answers.githubToken;
+  if (answers.githubWebhookSecret) secrets.GITHUB_WEBHOOK_SECRET = answers.githubWebhookSecret;
   if (
     answers.memory === 'postgres' &&
     answers.databaseUrl &&
@@ -193,6 +199,7 @@ async function collectAnswers(nameArg?: string): Promise<InitAnswers> {
         { value: 'webchat', label: 'WebChat (localhost)', hint: 'no setup needed' },
         { value: 'bluesky', label: 'Bluesky', hint: 'mentions, replies and DMs' },
         { value: 'threads', label: 'Threads', hint: 'replies and mentions' },
+        { value: 'github', label: 'GitHub', hint: 'issues, pull requests and reviews' },
       ],
       required: false,
     })
@@ -239,6 +246,18 @@ async function collectAnswers(nameArg?: string): Promise<InitAnswers> {
   const threadsAccessToken = channels.includes('threads')
     ? await askSecret('Threads long-lived access token:', 'Token is required')
     : undefined;
+  const githubToken = channels.includes('github')
+    ? await askSecret(
+        'GitHub token of the bot account (a personal access token with issues and pull requests write):',
+        'Token is required'
+      )
+    : undefined;
+  const githubWebhookSecret = channels.includes('github')
+    ? await askSecret(
+        'GitHub webhook secret (set the same one on the repository webhook):',
+        'Webhook secret is required'
+      )
+    : undefined;
 
   const memoryChoice = answer(
     await p.select({
@@ -279,6 +298,8 @@ async function collectAnswers(nameArg?: string): Promise<InitAnswers> {
     blueskyHandle,
     blueskyAppPassword,
     threadsAccessToken,
+    githubToken,
+    githubWebhookSecret,
     memory,
     databaseUrl,
   };
@@ -296,7 +317,7 @@ function clackLogger(): ScaffoldLogger {
 
 export const initCommand = new Command('init')
   .description(
-    'Create a messaging assistant project (Telegram, Discord, Slack, WebChat, Bluesky, Threads)'
+    'Create a messaging assistant project (Telegram, Discord, Slack, WebChat, Bluesky, Threads, GitHub)'
   )
   .argument('[name]', 'Project name')
   .option('--no-install', 'Skip dependency installation')

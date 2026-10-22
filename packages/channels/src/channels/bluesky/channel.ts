@@ -279,6 +279,7 @@ export class BlueskyChannel implements Channel {
       userId: notification.author.did,
       userName: notification.author.displayName || notification.author.handle,
       groupId: `thread:${root}`,
+      conversationId: `thread:${root}`,
       text: stripMention(text, this.account.identifier),
       ...(parent && { replyTo: parent }),
       raw: notification,

@@ -35,24 +35,24 @@ Requires Node.js 22.12+.
 
 ## Presets
 
-| Preset             | What you get                                                            |
-| ------------------ | ----------------------------------------------------------------------- |
-| `basic`            | One agent with real tools in your terminal, the best place to start     |
-| `assistant`        | Workspace files with approvals, long-term memory, a scheduler and evals |
-| `memory`           | Conversations that survive restarts, in SQLite                          |
-| `api-server`       | Express with Swagger UI, token auth and persistent threads              |
-| `hono`             | Agents behind a small, fast HTTP API                                    |
-| `tetsu`            | Bun-native controller with OpenAPI and WebSocket                        |
-| `nextjs`           | Streaming chat with tool calls, approvals and saved threads             |
-| `channels`         | One assistant on Telegram, Discord, Slack, WebChat, Bluesky or Threads  |
-| `rag`              | Answers grounded in the files of `docs/`                                |
-| `mcp`              | Tools from an MCP server, your agents served over MCP                   |
-| `swarm`            | A researcher and a writer under a reviewing supervisor                  |
-| `workflow`         | A multi-step pipeline of agents                                         |
-| `durable-workflow` | A saga with compensation, an approval step and crash recovery           |
-| `a2a`              | An agent other frameworks call over the Agent-to-Agent protocol         |
-| `voice-realtime`   | Speech in, speech out over WebSocket                                    |
-| `evals`            | Measure an agent on a dataset and gate CI on the score                  |
+| Preset             | What you get                                                                   |
+| ------------------ | ------------------------------------------------------------------------------ |
+| `basic`            | One agent with real tools in your terminal, the best place to start            |
+| `assistant`        | Workspace files with approvals, long-term memory, a scheduler and evals        |
+| `memory`           | Conversations that survive restarts, in SQLite                                 |
+| `api-server`       | Express with Swagger UI, token auth and persistent threads                     |
+| `hono`             | Agents behind a small, fast HTTP API                                           |
+| `tetsu`            | Bun-native controller with OpenAPI and WebSocket                               |
+| `nextjs`           | Streaming chat with tool calls, approvals and saved threads                    |
+| `channels`         | One assistant on Telegram, Discord, Slack, WebChat, Bluesky, Threads or GitHub |
+| `rag`              | Answers grounded in the files of `docs/`                                       |
+| `mcp`              | Tools from an MCP server, your agents served over MCP                          |
+| `swarm`            | A researcher and a writer under a reviewing supervisor                         |
+| `workflow`         | A multi-step pipeline of agents                                                |
+| `durable-workflow` | A saga with compensation, an approval step and crash recovery                  |
+| `a2a`              | An agent other frameworks call over the Agent-to-Agent protocol                |
+| `voice-realtime`   | Speech in, speech out over WebSocket                                           |
+| `evals`            | Measure an agent on a dataset and gate CI on the score                         |
 
 `--list-templates` prints them, `--template <name>` is an alias of `--preset`. A preset is only a starting point: every flag below changes it.
 

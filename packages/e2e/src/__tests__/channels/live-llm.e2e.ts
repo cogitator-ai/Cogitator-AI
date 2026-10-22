@@ -146,6 +146,7 @@ describeE2E('Channels E2E: Live LLM through Gateway', () => {
     await gateway.start();
 
     await channel.trigger(message('Name the capital of France in one short sentence.'));
+    await gateway.idle();
 
     expect(finished).toHaveBeenCalledTimes(1);
     const ids = (finished.mock.calls[0][0] as { messageIds: string[] }).messageIds;
@@ -178,11 +179,14 @@ describeE2E('Channels E2E: Live LLM through Gateway', () => {
     await gateway.start();
 
     await channel.trigger(message('My name is Alice and my favourite colour is green.'));
+    await gateway.idle();
     await channel.trigger(message('I live in Berlin and I work as a nurse.'));
+    await gateway.idle();
     await channel.trigger(message('What is my name?'));
+    await gateway.idle();
 
     expect(compacted).toHaveBeenCalled();
-    const entries = await memory.getEntries({ threadId: 'test:user_1', types: 'all' });
+    const entries = await memory.getEntries({ threadId: 'test:chat_1:user_1', types: 'all' });
     expect(entries.success).toBe(true);
     const summary = entries.success
       ? entries.data.find((e) => e.metadata?.compactionSummary === true)

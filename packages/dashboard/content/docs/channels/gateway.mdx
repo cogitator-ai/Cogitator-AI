@@ -51,7 +51,7 @@ interface GatewayConfig {
   runTimeout?: number; // ms, defaults to the agent's timeout
 
   session?: {
-    threadKey?: (msg: ChannelMessage) => string;
+    threadKey?: (msg: ChannelMessage) => string; // default: channelType:conversation:userId
     compaction?: CompactionConfig;
   };
 
@@ -59,7 +59,7 @@ interface GatewayConfig {
   reactions?: StatusReactionConfig;
   debounce?: DebounceConfig;
   envelope?: EnvelopeConfig;
-  queueMode?: 'parallel' | 'sequential' | 'interrupt' | 'collect';
+  queueMode?: 'parallel' | 'sequential' | 'interrupt' | 'collect'; // default: 'sequential'
   approvals?: {
     format?: (approvals: readonly ToolApprovalRequest[], words: ApprovalReplyWords) => string;
     approveWords?: readonly string[]; // default: approve, yes, да, одобряю
@@ -111,7 +111,7 @@ const gateway = new Gateway({
 User sends message
   → Channel converts to ChannelMessage
   → Debouncer (if enabled): buffer rapid messages, merge into one
-  → MessageQueue (if queueMode is not 'parallel'): sequential/interrupt/collect per thread
+  → MessageQueue (unless queueMode is 'parallel'): sequential (default)/interrupt/collect per thread
   → Middleware pipeline (dm-policy → owner-commands → rate-limit → ...)
   → message:received hook
   → Agent resolved (factory called per message), session lookup/create (emits session:created)
@@ -126,7 +126,42 @@ User sends message
   → Run paused for approval? Prompt listing the waiting tool calls
 ```
 
-Runs use `threadId` from `session.threadKey` (default `` `${channelType}:${userId}` ``), `threadAccess: 'shared'`, and pass `userId`, `channelType` and `channelId` to the run, so tools see them in their context. Scheduled messages (`raw.scheduled === true`, see [Scheduler](/docs/channels/scheduler)) are answered without quoting the trigger message.
+Runs use `threadId` from `session.threadKey` (default `` `${channelType}:${conversation}:${userId}` ``, see [Threads](#conversation-threads)), `threadAccess: 'shared'`, and pass `userId`, `channelType` and `channelId` to the run, so tools see them in their context. Scheduled messages (`raw.scheduled === true`, see [Scheduler](/docs/channels/scheduler)) are answered without quoting the trigger message.
+
+## Conversation Threads
+
+A thread is the conversation memory and the queue of one user in one conversation. The default key is `channelType:conversation:userId` (`defaultThreadKey`), where the conversation is the message's `conversationId` if it has one, else its `channelId` plus `:topicId` when it has a topic:
+
+| Channel           | Conversation                                                  | Example thread                     |
+| ----------------- | ------------------------------------------------------------- | ---------------------------------- |
+| Telegram          | chat, plus the forum topic                                    | `telegram:-100123:7:42`            |
+| Slack             | DM, or the Slack thread of a channel message (`topicId`)      | `slack:C123:1712.5:U1`             |
+| Discord           | channel, a thread is a channel of its own                     | `discord:98765:1234`               |
+| Bluesky, Threads  | the post thread's root (`conversationId`), not the reply post | `threads:thread:1790:reader`       |
+| WhatsApp, WebChat | chat                                                          | `whatsapp:15550001111:15550001111` |
+
+A user keeps a separate thread in their private chat, in each group and in each topic, and every reply in a Bluesky or Threads post thread lands in the same one, while each answer still goes to the post it replies to. In a Slack channel each top-level message opens a Slack thread (the answer goes there) and the follow-ups in it continue that conversation. A Slack DM is one conversation.
+
+The gateway keeps the conversations of each user in their session's metadata (`conversations`, up to 50, most recent first). `compactAll()` finds their threads there after a restart, and a scheduled task, which names only its chat, is answered in the topic and thread of the user's most recent conversation in that chat, unless the task's metadata names `topicId` or `conversationId` itself. With a custom `threadKey` none of this applies.
+
+Up to 0.15 the default key was `channelType:userId`, one thread per user per channel type, and threads stored under it are not found by the new key. To keep them, pass `legacyThreadKey`:
+
+```typescript
+import { legacyThreadKey } from '@cogitator-ai/channels';
+
+const gateway = new Gateway({
+  // ...
+  session: { threadKey: legacyThreadKey },
+});
+```
+
+With `RuntimeBuilder` (`cogitator up`), set it in `cogitator.yml`:
+
+```yaml
+session:
+  threadKey: legacy # or conversation (default)
+  queueMode: parallel # sequential (default), interrupt, collect
+```
 
 ## Status Reactions
 
@@ -198,23 +233,25 @@ The elapsed time shows how long since the last message in this thread. The LLM n
 
 ## Queue Modes
 
-Control how concurrent messages from the same user/thread are handled.
+Control how the messages of one thread wait for each other. Different threads always run side by side.
 
 ```typescript
 const gateway = new Gateway({
   // ...
-  queueMode: 'sequential',
+  queueMode: 'parallel', // the default is 'sequential'
 });
 ```
 
 | Mode         | Behavior                                                                                                                             |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `parallel`   | Default. All messages processed immediately.                                                                                         |
-| `sequential` | FIFO per thread. Next message waits for current to finish.                                                                           |
+| `sequential` | Default. FIFO per thread, the next message waits until the one before it is answered.                                                |
+| `parallel`   | All messages processed immediately, also in the same thread (the default up to 0.15).                                                |
 | `interrupt`  | Abort current processing (the run's `AbortSignal` fires), start new message immediately. Aborted runs are not reported to `onError`. |
 | `collect`    | Buffer messages during processing, merge them per chat and topic when idle.                                                          |
 
 For personal assistants, `sequential` or `collect` usually give the best UX. Queues are keyed by the same thread id as sessions.
+
+With a queue, a channel's message handler returns once the message is queued, so a channel that reads its updates one by one (Telegram long polling, the Bluesky and Threads polls) goes on to other chats, button presses and stop buttons while a thread is busy. `await gateway.injectMessage(msg)` still resolves once the message is answered, and `await gateway.idle()` waits until every queued message is answered, for example before `gateway.stop()`.
 
 ## Multi-channel Setup
 
@@ -384,7 +421,7 @@ const gateway = new Gateway({
   // ...
   memory,
   session: {
-    threadKey: (msg) => `${msg.channelType}:${msg.userId}`,
+    threadKey: (msg) => `${msg.channelType}:${msg.channelId}`, // one thread per chat
     compaction: {
       strategy: 'hierarchical',
       messageThreshold: 100, // messages in the thread before compaction runs (or `threshold` in tokens)
@@ -396,11 +433,11 @@ const gateway = new Gateway({
 });
 ```
 
-The `threadKey` function determines how sessions are grouped. By default, each user gets their own session per channel.
+The `threadKey` function determines how conversations are grouped into threads. By default, each user gets a thread per conversation (see [Threads](#conversation-threads)). Sessions stay one per user per channel.
 
 Compaction follows the same rules as `CompactionService`: `threshold` counts tokens and `messageThreshold` counts messages (with `hierarchical`, those written since the last summary), and the thread is compacted once either is reached. `hierarchical` keeps the newest `keepRecentTokens` tokens of whole turns verbatim and the rest as a handoff of grounded atoms (see [Hierarchical Compaction](/docs/memory#hierarchical-compaction)), `summary` summarizes everything but the newest `keepRecent` messages with one LLM call (`summaryPrompt` overrides the default prompt), `sliding-window` drops old messages and `hybrid` picks one of those two. The summary is added to the thread as a `compaction` entry, which later runs read in place of the summarized messages (nothing is deleted, see [Sessions and Compaction](/docs/memory#sessions-compaction-and-core-facts)). The gateway's summarizer asks the model and prompt each call names, as the hierarchical strategy does for its chapters, and falls back to `summaryModel` and `summaryPrompt`, then to the agent's model and a default prompt. A failed compaction is reported to `onError` and the message is still answered.
 
-Force a compaction with `await gateway.compactThread(threadId)`, whatever the thresholds. `await gateway.compactAll()` compacts every thread the gateway knows the same way: the threads it served since it started and, unless `threadKey` names threads its own way, the thread of every stored session. It goes one thread at a time, past those that fail, and answers with a report such as `Compacted 2 of 3 threads`, followed by `Failed (n):` and a line per failed thread.
+Force a compaction with `await gateway.compactThread(threadId)`, whatever the thresholds. `await gateway.compactAll()` compacts every thread the gateway knows the same way: the threads it served since it started and, unless `threadKey` names threads its own way (other than `legacyThreadKey`), the threads of every stored session. It goes one thread at a time, past those that fail, and answers with a report such as `Compacted 2 of 3 threads`, followed by `Failed (n):` and a line per failed thread.
 
 ## Stats
 

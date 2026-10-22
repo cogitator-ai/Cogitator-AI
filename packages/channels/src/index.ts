@@ -27,6 +27,14 @@ export type { HeartbeatConfig } from './heartbeat';
 export { StatusReactionTracker } from './status-reactions';
 export { InboundDebouncer } from './inbound-debounce';
 export { MessageQueue } from './message-queue';
+export {
+  defaultThreadKey,
+  legacyThreadKey,
+  conversationOf,
+  readConversations,
+  CONVERSATIONS_KEY,
+} from './thread-key';
+export type { ConversationRef, StoredConversation } from './thread-key';
 export { formatEnvelope, formatElapsed } from './envelope';
 export { getNextCronMs } from './cron';
 
@@ -84,6 +92,7 @@ export type { AssistantConfig, BuiltRuntime, RuntimeBuilderOpts } from './runtim
 export * from './feeds/index';
 export * from './channels/bluesky/index';
 export * from './channels/threads/index';
+export * from './channels/github/index';
 
 export { SimpleTimerStore } from './simple-timer-store';
 export type { TimerStoreOptions } from './simple-timer-store';

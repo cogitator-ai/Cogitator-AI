@@ -95,13 +95,14 @@ describe('Gateway', () => {
 
     await gateway.start();
     await channel.triggerMessage(createTestMessage());
+    await gateway.idle();
 
     expect(channel.sendTyping).toHaveBeenCalledWith('ch_1');
     expect(cogitator.run).toHaveBeenCalledWith(
       agent,
       expect.objectContaining({
         input: 'Hello',
-        threadId: 'test:user_1',
+        threadId: 'test:ch_1:user_1',
       })
     );
     expect(channel.sendText).toHaveBeenCalledWith(
@@ -129,6 +130,7 @@ describe('Gateway', () => {
 
     await gateway.start();
     await channel.triggerMessage(createTestMessage());
+    await gateway.idle();
 
     expect(cogitator.run).toHaveBeenCalledWith(
       agent,
@@ -155,6 +157,7 @@ describe('Gateway', () => {
 
     await gateway.start();
     await channel.triggerMessage(createTestMessage());
+    await gateway.idle();
 
     expect(cogitator.run).toHaveBeenCalledWith(
       expect.anything(),
@@ -172,7 +175,9 @@ describe('Gateway', () => {
 
     await gateway.start();
     await channel.triggerMessage(createTestMessage({ userId: 'user_1' }));
+    await gateway.idle();
     await channel.triggerMessage(createTestMessage({ id: 'msg_2', userId: 'user_2' }));
+    await gateway.idle();
 
     const calls = vi.mocked(cogitator.run).mock.calls.map(([, options]) => options);
     expect(calls).toEqual([
@@ -203,6 +208,7 @@ describe('Gateway', () => {
 
     await gateway.start();
     await channel.triggerMessage(createTestMessage());
+    await gateway.idle();
 
     expect(cogitator.run).not.toHaveBeenCalled();
   });
@@ -231,6 +237,7 @@ describe('Gateway', () => {
 
     await gateway.start();
     await channel.triggerMessage(createTestMessage());
+    await gateway.idle();
 
     expect(cogitator.run).toHaveBeenCalled();
   });
@@ -255,6 +262,7 @@ describe('Gateway', () => {
 
     await gateway.start();
     await channel.triggerMessage(createTestMessage());
+    await gateway.idle();
 
     expect(onError).toHaveBeenCalledWith(
       expect.any(Error),
@@ -283,6 +291,7 @@ describe('Gateway', () => {
     expect(gateway.stats.messagesToday).toBe(0);
 
     await channel.triggerMessage(createTestMessage());
+    await gateway.idle();
     expect(gateway.stats.messagesToday).toBe(1);
   });
 
@@ -304,6 +313,7 @@ describe('Gateway', () => {
 
     await gateway.start();
     await channel.triggerMessage(createTestMessage({ userName: 'Alice' }));
+    await gateway.idle();
 
     expect(agentFactory).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'user_1', name: 'Alice' })
@@ -338,6 +348,7 @@ describe('Gateway with a channel that cannot edit', () => {
     });
     await gateway.start();
     await channel.triggerMessage(createTestMessage());
+    await gateway.idle();
     expect(channel.sendText).toHaveBeenCalledTimes(1);
     expect(channel.sendText).toHaveBeenCalledWith('ch_1', 'The whole answer', expect.anything());
     expect(channel.editText).not.toHaveBeenCalled();

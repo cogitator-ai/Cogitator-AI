@@ -22,7 +22,7 @@ export const APP_CHOICES: Choice<AppKind>[] = [
   {
     value: 'channels',
     label: 'Messaging bot',
-    hint: 'Telegram, Discord, Slack, WebChat, Bluesky or Threads',
+    hint: 'Telegram, Discord, Slack, WebChat, Bluesky, Threads or GitHub',
   },
   { value: 'worker', label: 'Queue worker', hint: 'agents run as BullMQ jobs on Redis' },
 ];
@@ -86,6 +86,11 @@ export const CHANNEL_CHOICES: Choice<ChannelKind>[] = [
   { value: 'slack', label: 'Slack', hint: 'needs a bot token and signing secret' },
   { value: 'bluesky', label: 'Bluesky', hint: 'mentions, replies and DMs; needs an app password' },
   { value: 'threads', label: 'Threads', hint: 'replies and mentions; needs a long-lived token' },
+  {
+    value: 'github',
+    label: 'GitHub',
+    hint: 'issues, pull requests and reviews; needs a token and a webhook',
+  },
 ];
 
 export const CODING_AGENT_CHOICES: Choice<CodingAgent>[] = [

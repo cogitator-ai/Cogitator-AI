@@ -454,6 +454,35 @@ describe('deploy', () => {
   });
 });
 
+describe('a messaging bot on GitHub', () => {
+  const plan = planProject(specFor('channels', 'openai', { channels: ['github'] }));
+
+  it('answers on a webhook server of its own, with the token and secret from the env', () => {
+    const gateway = file(plan, 'src/gateway.ts');
+    expect(gateway).toContain("import { Gateway, githubChannel } from '@cogitator-ai/channels';");
+    expect(gateway).toContain('token: env.GITHUB_TOKEN');
+    expect(gateway).toContain('secret: env.GITHUB_WEBHOOK_SECRET');
+    expect(gateway).toContain('port: Number(env.GITHUB_WEBHOOK_PORT ?? 8787)');
+    expect(syntaxErrors('src/gateway.ts', gateway)).toEqual([]);
+    const index = file(plan, 'src/index.ts');
+    expect(index).toContain('/github/webhook');
+    expect(syntaxErrors('src/index.ts', index)).toEqual([]);
+  });
+
+  it('asks for the token and webhook secret and exposes the webhook port', () => {
+    const env = file(plan, '.env.example');
+    for (const name of ['GITHUB_TOKEN', 'GITHUB_WEBHOOK_SECRET']) expect(env).toContain(`${name}=`);
+    expect(env).toContain('GITHUB_WEBHOOK_PORT=8787');
+    expect(file(plan, 'cogitator.yml')).toContain('port: 8787');
+    expect(file(plan, '.gitignore')).not.toContain('tokens.json');
+  });
+
+  it('keeps the WebChat port for deploys when both run', () => {
+    const both = planProject(specFor('channels', 'openai', { channels: ['webchat', 'github'] }));
+    expect(file(both, 'cogitator.yml')).toContain('port: 18789');
+  });
+});
+
 describe('a messaging bot on Bluesky and Threads', () => {
   const plan = planProject(specFor('channels', 'openai', { channels: ['bluesky', 'threads'] }));
 

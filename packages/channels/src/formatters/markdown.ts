@@ -11,6 +11,7 @@ const PLATFORM_LIMITS: Record<string, number> = {
   webchat: Infinity,
   bluesky: Infinity,
   threads: Infinity,
+  github: 65536,
 };
 
 const DEFAULT_LIMIT = 4096;

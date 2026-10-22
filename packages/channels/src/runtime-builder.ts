@@ -42,6 +42,7 @@ import type { LLMBackendMinimal, PostgresGraphAdapterConfig } from '@cogitator-a
 import type { EmbeddingServiceConfig } from '@cogitator-ai/types';
 import { createSelfConfigTools } from './tools/self-config';
 import { Gateway } from './gateway';
+import { legacyThreadKey } from './thread-key';
 import { getNextCronMs } from './cron';
 import { HeartbeatScheduler } from './heartbeat';
 import { SimpleTimerStore } from './simple-timer-store';
@@ -53,6 +54,7 @@ import { whatsappChannel } from './channels/whatsapp';
 import { webchatChannel } from './channels/webchat';
 import { blueskyChannel } from './channels/bluesky/channel';
 import { threadsChannel } from './channels/threads/channel';
+import { githubChannel } from './channels/github/channel';
 import { FileTokenStore } from './feeds/token-store';
 import type { GatewayApprovalsConfig } from './approvals';
 import { ownerCommands } from './middleware/owner-commands';
@@ -457,16 +459,18 @@ export class RuntimeBuilder {
       ...(this.config.approvals || this.opts?.approvals
         ? { approvals: { ...this.config.approvals, ...this.opts?.approvals } }
         : {}),
-      session: this.config.memory.compaction
-        ? {
-            compaction: {
-              strategy: 'hierarchical',
-              messageThreshold: this.config.memory.compaction.threshold,
-              keepRecent: 10,
-              keepRecentTokens: CHANNEL_KEEP_RECENT_TOKENS,
-            },
-          }
-        : undefined,
+      ...(this.config.session?.queueMode && { queueMode: this.config.session.queueMode }),
+      session: {
+        ...(this.config.session?.threadKey === 'legacy' && { threadKey: legacyThreadKey }),
+        ...(this.config.memory.compaction && {
+          compaction: {
+            strategy: 'hierarchical',
+            messageThreshold: this.config.memory.compaction.threshold,
+            keepRecent: 10,
+            keepRecentTokens: CHANNEL_KEEP_RECENT_TOKENS,
+          },
+        }),
+      },
       onError: (err, msg) => {
         console.error(`[${this.config.name}] Error for ${msg.userId}:`, err.message);
       },
@@ -1003,6 +1007,34 @@ export class RuntimeBuilder {
       }
     }
 
+    const github = this.config.channels.github;
+    if (github) {
+      const token = this.env.GITHUB_TOKEN;
+      const secret = this.env.GITHUB_WEBHOOK_SECRET;
+      if (token && secret) {
+        channels.push(
+          githubChannel({
+            token,
+            webhook: {
+              secret,
+              port: github.webhook.port,
+              ...(github.webhook.path && { path: github.webhook.path }),
+            },
+            ...(this.env.GITHUB_API_URL && { apiUrl: this.env.GITHUB_API_URL }),
+            ...(github.login && { login: github.login }),
+            ...(github.trigger && { trigger: github.trigger }),
+            ...(github.repositories && { repositories: github.repositories }),
+            ...(github.allowBots !== undefined && { allowBots: github.allowBots }),
+            ...(github.stream !== undefined && { stream: github.stream }),
+          })
+        );
+      } else {
+        console.warn(
+          '[RuntimeBuilder] GitHub configured but GITHUB_TOKEN/GITHUB_WEBHOOK_SECRET not found in env'
+        );
+      }
+    }
+
     return channels;
   }
 
@@ -1099,7 +1131,7 @@ Required env vars per provider:
 - ollama (local): none
 - ollama (cloud): OLLAMA_URL=https://ollama.com, OLLAMA_API_KEY
 
-Other env vars: GITHUB_TOKEN (for GitHub capability), TG_TOKEN, DISCORD_TOKEN, SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET, SLACK_APP_TOKEN (Slack Socket Mode), WEBCHAT_TOKEN (WebChat).`;
+Other env vars: GITHUB_TOKEN (for the GitHub capability and channel), GITHUB_WEBHOOK_SECRET (GitHub channel), TG_TOKEN, DISCORD_TOKEN, SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET, SLACK_APP_TOKEN (Slack Socket Mode), WEBCHAT_TOKEN (WebChat).`;
     }
 
     if (this.config.capabilities.selfTools) {

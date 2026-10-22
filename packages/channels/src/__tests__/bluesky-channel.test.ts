@@ -234,6 +234,7 @@ describe('BlueskyChannel', () => {
       userId: 'did:plc:reader',
       userName: 'Reader',
       groupId: `thread:${root}`,
+      conversationId: `thread:${root}`,
       replyTo: root,
     });
     expect(state.seenAt).toEqual(['2026-10-09T10:02:00Z']);

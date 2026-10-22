@@ -16,6 +16,7 @@ import type {
   Message,
   RunOptions,
   RunResult,
+  Session,
   SessionManager as ISessionManager,
   ToolApprovalDecision,
   ToolApprovalRequest,
@@ -32,6 +33,14 @@ import { StatusReactionTracker } from './status-reactions';
 import { InboundDebouncer } from './inbound-debounce';
 import { formatEnvelope } from './envelope';
 import { MessageQueue } from './message-queue';
+import {
+  CONVERSATIONS_KEY,
+  defaultThreadKey,
+  findConversation,
+  legacyThreadKey,
+  readConversations,
+  rememberConversation,
+} from './thread-key';
 import {
   DEFAULT_APPROVE_WORDS,
   DEFAULT_DENY_WORDS,
@@ -134,11 +143,6 @@ function messageText(message: Message): string {
     .join(' ');
 }
 
-/** The thread of a user on a channel when `session.threadKey` does not name it */
-function defaultThreadId(channelType: string, userId: string): string {
-  return `${channelType}:${userId}`;
-}
-
 function isScheduled(msg: ChannelMessage): boolean {
   const raw = msg.raw;
   return typeof raw === 'object' && raw !== null && 'scheduled' in raw && raw.scheduled === true;
@@ -180,6 +184,10 @@ export class Gateway {
   private readonly lastMessageTime = new Map<string, number>();
   private readonly threads = new Map<string, Omit<GatewaySessionInfo, 'threadId' | 'active'>>();
   private readonly inFlight = new Map<string, number>();
+  /** Messages taken and not answered yet, for {@link idle} */
+  private readonly pending = new Set<Promise<void>>();
+  /** The last pending write of each user's session, so writes to one session never interleave */
+  private readonly sessionWrites = new Map<string, Promise<void>>();
   private running = false;
   private startedAt: number | null = null;
   private messageCount = 0;
@@ -199,17 +207,18 @@ export class Gateway {
     this.sessionManager =
       config.sessionManager ?? (config.memory ? new SessionManager(config.memory) : null);
 
+    const queueMode = config.queueMode ?? 'sequential';
     this.messageQueue =
-      config.queueMode && config.queueMode !== 'parallel'
-        ? new MessageQueue(config.queueMode, (msg, signal) => this.processMessage(msg, signal))
-        : null;
+      queueMode === 'parallel'
+        ? null
+        : new MessageQueue(queueMode, (msg, signal) => this.processMessage(msg, signal));
 
     this.debouncer = config.debounce?.enabled
       ? new InboundDebouncer(config.debounce, (merged) => this.dispatch(merged))
       : null;
 
     for (const channel of this.channels) {
-      channel.onMessage((msg) => this.handleIncoming(msg));
+      channel.onMessage((msg) => this.handleIncoming(msg, false));
       channel.onAction?.((action) => this.handleAction(channel, action));
       channel.onStop?.((stop) => {
         this.stoppableDrafts
@@ -262,8 +271,25 @@ export class Gateway {
       .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
   }
 
+  /**
+   * Feeds a message to the gateway as if a channel had received it (the scheduler sends its
+   * tasks this way). It resolves once the message is answered, or once it is buffered when
+   * `debounce` is on.
+   */
   async injectMessage(msg: ChannelMessage): Promise<void> {
-    return this.handleIncoming(msg);
+    return this.handleIncoming(msg, true);
+  }
+
+  /**
+   * Resolves once every message the gateway has taken is answered: those waiting in their
+   * thread's queue and the runs in progress, including messages that come in while it waits.
+   * Messages held by `debounce` count from the moment they are flushed. Await it before
+   * {@link stop} to let the threads finish what they were given.
+   */
+  async idle(): Promise<void> {
+    while (this.pending.size > 0) {
+      await Promise.allSettled(this.pending);
+    }
   }
 
   /**
@@ -317,16 +343,33 @@ export class Gateway {
 
   /**
    * The threads {@link compactAll} goes through: those served since the gateway started, and the
-   * default thread of each stored session when threads are not keyed by `session.threadKey`
+   * threads of each stored session when they are keyed by the default key (the conversations kept
+   * in the session's metadata, or the chat it was created in) or by `legacyThreadKey`
    */
   private async knownThreads(): Promise<{ threadIds: string[]; listError?: string }> {
     const threadIds = new Set(this.threads.keys());
-    if (!this.sessionManager || this.config.session?.threadKey) {
+    const threadKey = this.config.session?.threadKey;
+    if (!this.sessionManager || (threadKey && threadKey !== legacyThreadKey)) {
       return { threadIds: [...threadIds] };
     }
     try {
       for (const session of await this.sessionManager.list()) {
-        threadIds.add(defaultThreadId(session.channelType, session.userId));
+        if (threadKey) {
+          threadIds.add(legacyThreadKey(session));
+          continue;
+        }
+        const conversations = readConversations(session.metadata);
+        for (const conversation of conversations.length > 0
+          ? conversations
+          : [{ channelId: session.channelId }]) {
+          threadIds.add(
+            defaultThreadKey({
+              channelType: session.channelType,
+              userId: session.userId,
+              ...conversation,
+            })
+          );
+        }
       }
     } catch (error) {
       return { threadIds: [...threadIds], listError: toError(error).message };
@@ -432,7 +475,7 @@ export class Gateway {
 
     await answer();
     await this.closePrompts(prompt.threadId, approve);
-    await this.handleIncoming(msg);
+    await this.handleIncoming(msg, false);
   }
 
   /**
@@ -464,20 +507,78 @@ export class Gateway {
     }
   }
 
-  private async handleIncoming(msg: ChannelMessage): Promise<void> {
+  /**
+   * A message from a channel, a button or {@link injectMessage}. With a queue, a channel's message
+   * is only queued, so the channel goes on to its next update while the thread waits its turn.
+   * `untilAnswered` waits for the answer.
+   */
+  private async handleIncoming(msg: ChannelMessage, untilAnswered: boolean): Promise<void> {
     if (this.debouncer) {
       this.debouncer.enqueue(msg);
       return;
     }
-    await this.dispatch(msg);
+    const answered = this.dispatch(msg);
+    if (untilAnswered || !this.messageQueue) {
+      await answered;
+      return;
+    }
+    answered.catch(() => {});
   }
 
-  private async dispatch(msg: ChannelMessage): Promise<void> {
+  /** Puts a message through the queue of its thread, resolving once it is answered */
+  private dispatch(msg: ChannelMessage): Promise<void> {
+    const answered = this.route(msg);
+    this.pending.add(answered);
+    const forget = () => {
+      this.pending.delete(answered);
+    };
+    answered.then(forget, forget);
+    return answered;
+  }
+
+  private async route(incoming: ChannelMessage): Promise<void> {
+    const msg = await this.locateScheduled(incoming);
     if (this.messageQueue) {
-      this.messageQueue.push(msg, this.getThreadId(msg));
+      await this.messageQueue.push(msg, this.getThreadId(msg));
       return;
     }
     await this.processMessage(msg);
+  }
+
+  /**
+   * A scheduled message names only its chat, so with the default thread key it gets the topic or
+   * conversation of the user's most recent conversation in that chat, kept in their session: the
+   * task is then answered in the thread and topic it was set up in.
+   */
+  private async locateScheduled(msg: ChannelMessage): Promise<ChannelMessage> {
+    if (
+      !isScheduled(msg) ||
+      msg.topicId ||
+      msg.conversationId ||
+      !this.sessionManager ||
+      this.config.session?.threadKey
+    ) {
+      return msg;
+    }
+    try {
+      const [session] = await this.sessionManager.list({
+        userId: msg.userId,
+        channelType: msg.channelType,
+        limit: 1,
+      });
+      const conversation = session
+        ? findConversation(readConversations(session.metadata), msg.channelId)
+        : undefined;
+      if (!conversation) return msg;
+      return {
+        ...msg,
+        ...(conversation.topicId && { topicId: conversation.topicId }),
+        ...(conversation.conversationId && { conversationId: conversation.conversationId }),
+      };
+    } catch (error) {
+      this.config.onError?.(toError(error), msg);
+      return msg;
+    }
   }
 
   private rollMessageCounter(): void {
@@ -565,16 +666,22 @@ export class Gateway {
     const agent = await this.resolveAgent(user);
 
     if (this.sessionManager) {
-      const session = await this.sessionManager.getOrCreate({
-        userId: msg.userId,
-        channelType: msg.channelType,
-        channelId: msg.channelId,
-        agentId: agent.name,
+      const sessionManager = this.sessionManager;
+      await this.writeSession(`${msg.channelType}:${msg.userId}`, async () => {
+        const session = await sessionManager.getOrCreate({
+          userId: msg.userId,
+          channelType: msg.channelType,
+          channelId: msg.channelId,
+          agentId: agent.name,
+        });
+        if (session.messageCount === 0) {
+          await this.hooks?.emit('session:created', { session, threadId });
+        }
+        if (!this.config.session?.threadKey && !isScheduled(msg)) {
+          await this.rememberConversation(sessionManager, session, msg);
+        }
+        await sessionManager.incrementMessageCount?.(session.id);
       });
-      if (session.messageCount === 0) {
-        await this.hooks?.emit('session:created', { session, threadId });
-      }
-      await this.sessionManager.incrementMessageCount?.(session.id);
     }
 
     const decision = this.readApprovalReply(msg, threadId, known !== undefined);
@@ -1046,7 +1153,43 @@ export class Gateway {
     if (this.config.session?.threadKey) {
       return this.config.session.threadKey(msg);
     }
-    return defaultThreadId(msg.channelType, msg.userId);
+    return defaultThreadKey(msg);
+  }
+
+  /**
+   * Keeps the message's conversation in the user's session, so its thread is known after a
+   * restart. A failure is reported to `onError` and does not keep the message from its answer.
+   */
+  private async rememberConversation(
+    sessionManager: GatewaySessionManager,
+    session: Session,
+    msg: ChannelMessage
+  ): Promise<void> {
+    const conversations = rememberConversation(readConversations(session.metadata), msg);
+    if (!conversations) return;
+    try {
+      await sessionManager.update(session.id, {
+        metadata: { [CONVERSATIONS_KEY]: conversations },
+      });
+    } catch (error) {
+      this.config.onError?.(toError(error), msg);
+    }
+  }
+
+  /**
+   * Runs `write` after every earlier write to the same session has finished, so a read, change
+   * and write of its metadata never loses another one's change.
+   */
+  private async writeSession(key: string, write: () => Promise<void>): Promise<void> {
+    const previous = this.sessionWrites.get(key) ?? Promise.resolve();
+    const current = previous.then(write);
+    const settled = current.catch(() => {});
+    this.sessionWrites.set(key, settled);
+    try {
+      await current;
+    } finally {
+      if (this.sessionWrites.get(key) === settled) this.sessionWrites.delete(key);
+    }
   }
 
   private async resolveAgent(user: ChannelUser): Promise<Agent> {

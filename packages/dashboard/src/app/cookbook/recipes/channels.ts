@@ -5,7 +5,7 @@ export const channels: Section = {
   title: 'Messaging Channels',
   icon: '💬',
   description:
-    'Put an agent on Telegram or a WebChat socket, or build a full personal assistant from a config object.',
+    'Put an agent on Telegram, a WebChat socket or GitHub issues and reviews, or build a full personal assistant from a config object.',
   recipes: [
     {
       id: 'telegram-bot',
@@ -306,6 +306,84 @@ process.on('SIGINT', async () => {
         {
           href: '/docs/channels/threads',
           label: 'Threads',
+        },
+      ],
+    },
+    {
+      id: 'github-bot',
+      title: 'GitHub Issue and Review Bot',
+      difficulty: 'medium',
+      time: '15 min',
+      problem:
+        'You want an agent that answers when people mention it in issues, pull requests and code reviews, in the same place they asked.',
+      points: [
+        'Run a `Gateway` with `githubChannel()` on a webhook server of its own',
+        'Every issue and pull request is a conversation, and every review thread one of its own, answered with a reply in it',
+        'Deliveries are checked against the webhook secret and handled once, even when GitHub sends one again',
+        "The bot answers mentions of `@login` (or every event with `trigger: 'all'`), skips its own comments and other bots",
+      ],
+      file: 'github-bot.ts',
+      code: `import { Agent, Cogitator } from '@cogitator-ai/core';
+import { Gateway, githubChannel } from '@cogitator-ai/channels';
+
+const token = process.env.GITHUB_TOKEN;
+const secret = process.env.GITHUB_WEBHOOK_SECRET;
+const apiKey = process.env.GOOGLE_API_KEY;
+if (!token || !secret || !apiKey) {
+  throw new Error('Set GITHUB_TOKEN, GITHUB_WEBHOOK_SECRET and GOOGLE_API_KEY');
+}
+
+const github = githubChannel({
+  token,
+  webhook: { secret, port: 8787 },
+  repositories: ['acme/*'],
+});
+
+const agent = new Agent({
+  name: 'github-assistant',
+  model: 'google/gemini-3.5-flash-lite',
+  instructions: 'You help maintainers on GitHub. Be precise and brief, and use GitHub Markdown.',
+});
+
+const cogitator = new Cogitator({
+  llm: { providers: { google: { apiKey } } },
+  memory: { adapter: 'memory' },
+});
+const memory = await cogitator.getMemory();
+
+const gateway = new Gateway({
+  agent,
+  cogitator,
+  channels: [github],
+  ...(memory && { memory }),
+  reactions: { enabled: true },
+});
+
+await gateway.start();
+console.log(\`@\${github.login} is listening on http://localhost:8787/github/webhook\`);`,
+      install: 'pnpm add @cogitator-ai/core @cogitator-ai/channels',
+      env: ['GITHUB_TOKEN', 'GITHUB_WEBHOOK_SECRET', 'GOOGLE_API_KEY'],
+      run: 'npx tsx github-bot.ts',
+      repoRun: 'npx tsx examples/channels/06-github-bot.ts',
+      notes: [
+        {
+          type: 'tip',
+          text: 'Add the webhook in the repository settings with content type `application/json` and the events Issues, Issue comments, Pull requests, Pull request reviews and Pull request review comments. A tunnel to port 8787 is enough to try it.',
+        },
+        {
+          type: 'info',
+          text: 'A GitHub App installation token works too: pass a function that returns a fresh one as `token`, and set `login` to `<app-slug>[bot]`, since such a token cannot read its own user.',
+        },
+      ],
+      example: 'channels/06-github-bot.ts',
+      docs: [
+        {
+          href: '/docs/channels/github',
+          label: 'GitHub',
+        },
+        {
+          href: '/docs/channels/gateway',
+          label: 'Gateway',
         },
       ],
     },

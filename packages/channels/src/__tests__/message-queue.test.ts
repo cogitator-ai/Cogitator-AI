@@ -30,9 +30,9 @@ describe('MessageQueue', () => {
       const processor = vi.fn().mockResolvedValue(undefined);
       const queue = new MessageQueue('parallel', processor);
 
-      queue.push(makeMsg({ text: 'a' }), 'thread1');
-      queue.push(makeMsg({ text: 'b' }), 'thread1');
-      queue.push(makeMsg({ text: 'c' }), 'thread1');
+      void queue.push(makeMsg({ text: 'a' }), 'thread1');
+      void queue.push(makeMsg({ text: 'b' }), 'thread1');
+      void queue.push(makeMsg({ text: 'c' }), 'thread1');
 
       expect(processor).toHaveBeenCalledTimes(3);
       queue.dispose();
@@ -55,8 +55,8 @@ describe('MessageQueue', () => {
 
       const queue = new MessageQueue('sequential', processor);
 
-      queue.push(makeMsg({ text: 'first' }), 'thread1');
-      queue.push(makeMsg({ text: 'second' }), 'thread1');
+      void queue.push(makeMsg({ text: 'first' }), 'thread1');
+      void queue.push(makeMsg({ text: 'second' }), 'thread1');
 
       await new Promise((r) => setTimeout(r, 10));
       expect(order).toEqual(['start:first']);
@@ -87,8 +87,8 @@ describe('MessageQueue', () => {
 
       const queue = new MessageQueue('sequential', processor);
 
-      queue.push(makeMsg({ text: 'thread1-msg' }), 'thread1');
-      queue.push(makeMsg({ text: 'thread2-msg' }), 'thread2');
+      void queue.push(makeMsg({ text: 'thread1-msg' }), 'thread1');
+      void queue.push(makeMsg({ text: 'thread2-msg' }), 'thread2');
 
       await new Promise((r) => setTimeout(r, 10));
       expect(calls).toContain('thread1-msg');
@@ -112,12 +112,12 @@ describe('MessageQueue', () => {
 
       const queue = new MessageQueue('interrupt', processor);
 
-      queue.push(makeMsg({ text: 'old' }), 'thread1');
+      void queue.push(makeMsg({ text: 'old' }), 'thread1');
       await new Promise((r) => setTimeout(r, 10));
       expect(signals).toHaveLength(1);
       expect(signals[0].aborted).toBe(false);
 
-      queue.push(makeMsg({ text: 'new' }), 'thread1');
+      void queue.push(makeMsg({ text: 'new' }), 'thread1');
       expect(signals[0].aborted).toBe(true);
       expect(processor).toHaveBeenCalledTimes(2);
 
@@ -141,11 +141,11 @@ describe('MessageQueue', () => {
 
       const queue = new MessageQueue('collect', processor);
 
-      queue.push(makeMsg({ text: 'first' }), 'thread1');
+      void queue.push(makeMsg({ text: 'first' }), 'thread1');
       await new Promise((r) => setTimeout(r, 10));
 
-      queue.push(makeMsg({ text: 'buffered1' }), 'thread1');
-      queue.push(makeMsg({ text: 'buffered2' }), 'thread1');
+      void queue.push(makeMsg({ text: 'buffered1' }), 'thread1');
+      void queue.push(makeMsg({ text: 'buffered2' }), 'thread1');
 
       d1.resolve();
       await new Promise((r) => setTimeout(r, 10));
@@ -168,11 +168,11 @@ describe('MessageQueue', () => {
       });
       const queue = new MessageQueue('collect', processor);
 
-      queue.push(makeMsg({ text: 'first', topicId: '7' }), 'thread1');
+      void queue.push(makeMsg({ text: 'first', topicId: '7' }), 'thread1');
       await new Promise((r) => setTimeout(r, 10));
-      queue.push(makeMsg({ text: 'in 7', topicId: '7', replyTo: '41' }), 'thread1');
-      queue.push(makeMsg({ text: 'in 9', topicId: '9' }), 'thread1');
-      queue.push(makeMsg({ text: 'in 7 again', topicId: '7' }), 'thread1');
+      void queue.push(makeMsg({ text: 'in 7', topicId: '7', replyTo: '41' }), 'thread1');
+      void queue.push(makeMsg({ text: 'in 9', topicId: '9' }), 'thread1');
+      void queue.push(makeMsg({ text: 'in 7 again', topicId: '7' }), 'thread1');
       d1.resolve();
       await new Promise((r) => setTimeout(r, 10));
 
@@ -183,6 +183,82 @@ describe('MessageQueue', () => {
       ]);
 
       queue.dispose();
+    });
+  });
+
+  describe('the promise of push', () => {
+    it('settles in sequential mode once the message is processed, after those before it', async () => {
+      const d1 = defer();
+      const done: string[] = [];
+      const queue = new MessageQueue('sequential', async (msg) => {
+        if (msg.text === 'first') await d1.promise;
+        if (msg.text === 'second') throw new Error('failed');
+      });
+
+      const first = queue
+        .push(makeMsg({ text: 'first' }), 'thread1')
+        .then(() => done.push('first'));
+      const second = queue
+        .push(makeMsg({ text: 'second' }), 'thread1')
+        .then(() => done.push('second'));
+      await new Promise((r) => setTimeout(r, 5));
+      expect(done).toEqual([]);
+
+      d1.resolve();
+      await Promise.all([first, second]);
+      expect(done).toEqual(['first', 'second']);
+    });
+
+    it('settles every message of a collected batch once the batch is processed', async () => {
+      const d1 = defer();
+      const processed: string[] = [];
+      const queue = new MessageQueue('collect', async (msg) => {
+        processed.push(msg.text);
+        if (msg.text === 'first') await d1.promise;
+      });
+
+      const first = queue.push(makeMsg({ text: 'first' }), 'thread1');
+      const batch = [
+        queue.push(makeMsg({ text: 'a' }), 'thread1'),
+        queue.push(makeMsg({ text: 'b' }), 'thread1'),
+      ];
+      d1.resolve();
+      await Promise.all([first, ...batch]);
+
+      expect(processed).toEqual(['first', 'a\nb']);
+    });
+
+    it('settles the messages dispose drops without processing them', async () => {
+      const d1 = defer();
+      const processor = vi.fn(async () => d1.promise);
+      const queue = new MessageQueue('sequential', processor);
+
+      const first = queue.push(makeMsg({ text: 'first' }), 'thread1');
+      const dropped = queue.push(makeMsg({ text: 'dropped' }), 'thread1');
+      queue.dispose();
+      await dropped;
+      d1.resolve();
+      await first;
+
+      expect(processor).toHaveBeenCalledTimes(1);
+    });
+
+    it('settles an interrupted message when the newer one takes over', async () => {
+      const processor = vi.fn(
+        (_msg: ChannelMessage, signal?: AbortSignal) =>
+          new Promise<void>((resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(new Error('aborted')));
+            setTimeout(resolve, 20);
+          })
+      );
+      const queue = new MessageQueue('interrupt', processor);
+
+      const old = queue.push(makeMsg({ text: 'old' }), 'thread1');
+      const latest = queue.push(makeMsg({ text: 'new' }), 'thread1');
+      await old;
+      await latest;
+
+      expect(processor).toHaveBeenCalledTimes(2);
     });
   });
 });

@@ -145,8 +145,10 @@ describe('Gateway approvals', () => {
     cogitator = createMockCogitator();
   });
 
+  let gateway: Gateway;
+
   async function startGateway(overrides: Partial<GatewayFullConfig> = {}) {
-    const gateway = new Gateway({
+    gateway = new Gateway({
       agent,
       channels: [channel],
       cogitator: cogitator as never,
@@ -163,6 +165,7 @@ describe('Gateway approvals', () => {
     await startGateway({ hooks });
 
     await channel.trigger(message('Make me a weather tool'));
+    await gateway.idle();
 
     const texts = sentTexts(channel);
     expect(texts[0]).toBe('Let me build that tool.');
@@ -171,7 +174,11 @@ describe('Gateway approvals', () => {
     expect(texts[1]).toContain('Reply "approve"');
     expect(vi.mocked(channel.sendText).mock.calls[1][2]).not.toHaveProperty('replyTo');
     expect(requested).toHaveBeenCalledWith(
-      expect.objectContaining({ threadId: 'test:user_1', userId: 'user_1', approvals: [pending] })
+      expect.objectContaining({
+        threadId: 'test:ch_1:user_1',
+        userId: 'user_1',
+        approvals: [pending],
+      })
     );
   });
 
@@ -181,6 +188,7 @@ describe('Gateway approvals', () => {
 
     const msg = message('Make me a weather tool');
     await channel.trigger(msg);
+    await gateway.idle();
 
     expect(channel.sendText).toHaveBeenCalledTimes(1);
     expect(vi.mocked(channel.sendText).mock.calls[0][2]).toEqual(
@@ -195,12 +203,14 @@ describe('Gateway approvals', () => {
     await startGateway({ hooks });
 
     await channel.trigger(message('Make me a weather tool'));
+    await gateway.idle();
     await channel.trigger(message('approve'));
+    await gateway.idle();
 
     expect(cogitator.run).toHaveBeenCalledTimes(1);
     expect(cogitator.resume).toHaveBeenCalledWith(
       agent,
-      'test:user_1',
+      'test:ch_1:user_1',
       expect.objectContaining({ userId: 'user_1', defaultDecision: { approved: true } })
     );
     expect(sentTexts(channel).at(-1)).toBe('Tool created.');
@@ -217,11 +227,13 @@ describe('Gateway approvals', () => {
     await startGateway();
 
     await channel.trigger(message('Make me a weather tool'));
+    await gateway.idle();
     await channel.trigger(message('deny too risky'));
+    await gateway.idle();
 
     expect(cogitator.resume).toHaveBeenCalledWith(
       agent,
-      'test:user_1',
+      'test:ch_1:user_1',
       expect.objectContaining({ defaultDecision: { approved: false, reason: 'too risky' } })
     );
   });
@@ -231,19 +243,22 @@ describe('Gateway approvals', () => {
 
     cogitator.resume.mockResolvedValueOnce(pausedResult());
     await channel.trigger(message('Сделай инструмент погоды'));
+    await gateway.idle();
     await channel.trigger(message('Да'));
+    await gateway.idle();
     expect(cogitator.resume).toHaveBeenLastCalledWith(
       agent,
-      'test:user_1',
+      'test:ch_1:user_1',
       expect.objectContaining({ defaultDecision: { approved: true } })
     );
 
     await channel.trigger(message('нет, слишком рискованно'));
+    await gateway.idle();
     expect(cogitator.resume).toHaveBeenCalledTimes(2);
     expect(cogitator.run).toHaveBeenCalledTimes(1);
     expect(cogitator.resume).toHaveBeenLastCalledWith(
       agent,
-      'test:user_1',
+      'test:ch_1:user_1',
       expect.objectContaining({
         defaultDecision: { approved: false, reason: 'слишком рискованно' },
       })
@@ -255,8 +270,11 @@ describe('Gateway approvals', () => {
     await startGateway();
 
     await channel.trigger(message('Make me a weather tool'));
+    await gateway.idle();
     await channel.trigger(message('yes'));
+    await gateway.idle();
     await channel.trigger(message('yes'));
+    await gateway.idle();
 
     expect(cogitator.resume).toHaveBeenCalledTimes(2);
     expect(sentTexts(channel).filter((text) => text.includes('create_tool'))).toHaveLength(2);
@@ -269,16 +287,19 @@ describe('Gateway approvals', () => {
     await startGateway({ hooks });
 
     await channel.trigger(message('Make me a weather tool'));
+    await gateway.idle();
     cogitator.run.mockResolvedValue(completedResult('Sure, forget the tool.'));
     await channel.trigger(message('Actually, what time is it?'));
+    await gateway.idle();
 
     expect(cogitator.run).toHaveBeenLastCalledWith(
       agent,
-      expect.objectContaining({ input: 'Actually, what time is it?', threadId: 'test:user_1' })
+      expect.objectContaining({ input: 'Actually, what time is it?', threadId: 'test:ch_1:user_1' })
     );
     expect(resolved).toHaveBeenCalledWith(expect.objectContaining({ superseded: true }));
 
     await channel.trigger(message('yes'));
+    await gateway.idle();
     expect(cogitator.resume).not.toHaveBeenCalled();
     expect(cogitator.run).toHaveBeenLastCalledWith(
       agent,
@@ -298,6 +319,7 @@ describe('Gateway approvals', () => {
     await startGateway({ onError, hooks });
 
     await channel.trigger(message('yes'));
+    await gateway.idle();
 
     expect(cogitator.resume).toHaveBeenCalledTimes(1);
     expect(cogitator.run).toHaveBeenCalledWith(agent, expect.objectContaining({ input: 'yes' }));
@@ -310,6 +332,7 @@ describe('Gateway approvals', () => {
     await startGateway();
 
     await channel.trigger(message('approve'));
+    await gateway.idle();
 
     expect(cogitator.resume).toHaveBeenCalledTimes(1);
     expect(cogitator.run).not.toHaveBeenCalled();
@@ -321,10 +344,12 @@ describe('Gateway approvals', () => {
     await startGateway({ onError, session: { threadKey: (msg) => msg.channelId } });
 
     await channel.trigger(message('Make me a weather tool'));
+    await gateway.idle();
     cogitator.resume.mockRejectedValueOnce(
       new CogitatorError({ message: 'other user', code: ErrorCode.THREAD_ACCESS_DENIED })
     );
     await channel.trigger(message('approve', { userId: 'user_2' }));
+    await gateway.idle();
 
     expect(cogitator.resume).toHaveBeenCalledWith(
       agent,
@@ -338,6 +363,7 @@ describe('Gateway approvals', () => {
     expect(onError).not.toHaveBeenCalled();
 
     await channel.trigger(message('approve'));
+    await gateway.idle();
     expect(cogitator.resume).toHaveBeenLastCalledWith(
       agent,
       'ch_1',
@@ -354,6 +380,7 @@ describe('Gateway approvals', () => {
     });
 
     await channel.trigger(message('Сделай инструмент'));
+    await gateway.idle();
     expect(sentTexts(channel).at(-1)).toBe('Разрешить create_tool?');
     expect(format).toHaveBeenCalledWith([pending], {
       approveWords: ['ок'],
@@ -361,9 +388,10 @@ describe('Gateway approvals', () => {
     });
 
     await channel.trigger(message('стоп хватит'));
+    await gateway.idle();
     expect(cogitator.resume).toHaveBeenCalledWith(
       agent,
-      'test:user_1',
+      'test:ch_1:user_1',
       expect.objectContaining({ defaultDecision: { approved: false, reason: 'хватит' } })
     );
   });
@@ -379,12 +407,14 @@ describe('Gateway approvals', () => {
     await startGateway({ stream: { flushInterval: 10_000, minChunkSize: 1 } });
 
     await channel.trigger(message('Make me a weather tool'));
+    await gateway.idle();
     expect(sentTexts(channel).some((text) => text.includes('create_tool'))).toBe(true);
 
     await channel.trigger(message('approve'));
+    await gateway.idle();
     expect(cogitator.resume).toHaveBeenCalledWith(
       agent,
-      'test:user_1',
+      'test:ch_1:user_1',
       expect.objectContaining({ stream: true, defaultDecision: { approved: true } })
     );
     const delivered = [

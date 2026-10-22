@@ -10,6 +10,7 @@ import type {
 } from '@cogitator-ai/types';
 import { Gateway } from '../gateway';
 import { createHookRegistry } from '../hooks';
+import { legacyThreadKey } from '../thread-key';
 
 const summarizers = vi.hoisted(() => [] as SummarizeFn[]);
 
@@ -130,7 +131,7 @@ describe('Gateway summarizer', () => {
   it('asks with the prompt and model CompactionService passes', async () => {
     summarizers.length = 0;
     const memory = new InMemoryAdapter();
-    await seed(memory, 'test:u1', ['We picked Postgres.', 'noted', 'q', 'a']);
+    await seed(memory, 'test:c_u1:u1', ['We picked Postgres.', 'noted', 'q', 'a']);
     const { gateway, chat, getLLMBackend } = setup({
       memory,
       compaction: {
@@ -141,7 +142,7 @@ describe('Gateway summarizer', () => {
       },
     });
 
-    await gateway.compactThread('test:u1');
+    await gateway.compactThread('test:c_u1:u1');
     const summarize = summarizers.at(-1);
     if (!summarize) throw new Error('No summarizer was built');
     chat.mockClear();
@@ -173,13 +174,13 @@ describe('Gateway summarizer', () => {
   it('falls back to the default prompt when neither the call nor the config has one', async () => {
     summarizers.length = 0;
     const memory = new InMemoryAdapter();
-    await seed(memory, 'test:u1', ['We picked Postgres.', 'noted', 'q', 'a']);
+    await seed(memory, 'test:c_u1:u1', ['We picked Postgres.', 'noted', 'q', 'a']);
     const { gateway, chat } = setup({
       memory,
       compaction: { strategy: 'summary', threshold: 0, keepRecent: 2 },
     });
 
-    await gateway.compactThread('test:u1');
+    await gateway.compactThread('test:c_u1:u1');
 
     const [request] = chat.mock.calls[0] ?? [];
     expect(request?.messages[0]?.content).toContain('Summarize the following conversation');
@@ -189,7 +190,7 @@ describe('Gateway summarizer', () => {
 describe('Gateway hierarchical compaction', () => {
   it('compacts a thread past messageThreshold into chapters of atoms, asked with the chapter prompt', async () => {
     const memory = new InMemoryAdapter();
-    await seed(memory, 'test:u1', [
+    await seed(memory, 'test:c_u1:u1', [
       'We picked Postgres.',
       'noted',
       'TODO: write tests',
@@ -201,10 +202,11 @@ describe('Gateway hierarchical compaction', () => {
     await gateway.start();
 
     await channel.trigger(msg('u1'));
+    await gateway.idle();
 
     const [request] = chat.mock.calls[0] ?? [];
     expect(request?.messages[0]?.content).toContain('Answer with a JSON array only');
-    const history = await conversation(memory, 'test:u1');
+    const history = await conversation(memory, 'test:c_u1:u1');
     const summary = history[0];
     expect(summary?.type).toBe('compaction');
     expect((summary?.event as CompactionEvent | undefined)?.levels?.chapters).toHaveLength(1);
@@ -215,13 +217,13 @@ describe('Gateway hierarchical compaction', () => {
       'latest answer',
     ]);
     expect(compacted).toHaveBeenCalledWith(
-      expect.objectContaining({ threadId: 'test:u1', result: expect.anything() })
+      expect.objectContaining({ threadId: 'test:c_u1:u1', result: expect.anything() })
     );
   });
 
   it('adds the configured summaryPrompt to the chapter prompt', async () => {
     const memory = new InMemoryAdapter();
-    await seed(memory, 'test:u1', ['We picked Postgres.', 'noted', 'q', 'a']);
+    await seed(memory, 'test:c_u1:u1', ['We picked Postgres.', 'noted', 'q', 'a']);
     const { chat, gateway } = setup({
       memory,
       compaction: {
@@ -233,7 +235,7 @@ describe('Gateway hierarchical compaction', () => {
       },
     });
 
-    const report = await gateway.compactThread('test:u1');
+    const report = await gateway.compactThread('test:c_u1:u1');
 
     expect(report).toBe('Compacted 4 messages into 3');
     const system = chat.mock.calls[0]?.[0].messages[0]?.content ?? '';
@@ -256,12 +258,14 @@ describe('Gateway.compactAll', () => {
         keepRecentTokens: 25,
       },
     });
-    await seed(memory, 'test:u1', long);
-    await seed(memory, 'test:u2', ['short', 'thread']);
-    await seed(memory, 'test:u3', long);
+    await seed(memory, 'test:c_u1:u1', long);
+    await seed(memory, 'test:c_u2:u2', ['short', 'thread']);
+    await seed(memory, 'test:c_u3:u3', long);
     await gateway.start();
     await channel.trigger(msg('u1'));
+    await gateway.idle();
     await channel.trigger(msg('u2'));
+    await gateway.idle();
     await memory.createThread(
       'bot',
       {
@@ -279,18 +283,17 @@ describe('Gateway.compactAll', () => {
     const report = await gateway.compactAll();
 
     expect(report).toBe('Compacted 2 of 3 threads');
-    expect((await conversation(memory, 'test:u1'))[0]?.type).toBe('compaction');
-    expect((await conversation(memory, 'test:u3'))[0]?.type).toBe('compaction');
-    expect((await conversation(memory, 'test:u2')).map((entry) => entry.message.content)).toEqual([
-      'short',
-      'thread',
-    ]);
+    expect((await conversation(memory, 'test:c_u1:u1'))[0]?.type).toBe('compaction');
+    expect((await conversation(memory, 'test:c_u3:u3'))[0]?.type).toBe('compaction');
+    expect(
+      (await conversation(memory, 'test:c_u2:u2')).map((entry) => entry.message.content)
+    ).toEqual(['short', 'thread']);
   });
 
   it('goes on past a thread that fails and lists it', async () => {
     const memory = new InMemoryAdapter();
-    await seed(memory, 'test:good', long);
-    await seed(memory, 'test:bad', ['BROKEN', ...long.slice(1)]);
+    await seed(memory, 'test:c_good:good', long);
+    await seed(memory, 'test:c_bad:bad', ['BROKEN', ...long.slice(1)]);
     const { channel, gateway } = setup({
       memory,
       compaction: {
@@ -304,16 +307,68 @@ describe('Gateway.compactAll', () => {
     });
     await gateway.start();
     await channel.trigger(msg('bad'));
+    await gateway.idle();
     await channel.trigger(msg('good'));
+    await gateway.idle();
 
     const report = await gateway.compactAll();
 
     expect(report.split('\n')).toEqual([
       'Compacted 1 of 2 threads',
       'Failed (1):',
-      'test:bad: The summarizer did not answer with the atoms of a chapter after 3 tries',
+      'test:c_bad:bad: The summarizer did not answer with the atoms of a chapter after 3 tries',
     ]);
-    expect((await conversation(memory, 'test:good'))[0]?.type).toBe('compaction');
+    expect((await conversation(memory, 'test:c_good:good'))[0]?.type).toBe('compaction');
+  });
+
+  it('finds the thread of every topic a user wrote in after a restart', async () => {
+    const memory = new InMemoryAdapter();
+    const compaction: CompactionConfig = {
+      strategy: 'hierarchical',
+      messageThreshold: 100,
+      keepRecent: 2,
+      keepRecentTokens: 25,
+    };
+    await seed(memory, 'test:g:t1:u1', long);
+    await seed(memory, 'test:g:t2:u1', long);
+    await seed(memory, 'test:g:u1', long);
+    const before = setup({ memory, compaction });
+    await before.gateway.start();
+    await before.channel.trigger(msg('u1', { id: 'a', channelId: 'g', topicId: 't1' }));
+    await before.gateway.idle();
+    await before.channel.trigger(msg('u1', { id: 'b', channelId: 'g', topicId: 't2' }));
+    await before.gateway.idle();
+    await before.gateway.stop();
+
+    const { gateway } = setup({ memory, compaction });
+
+    expect(await gateway.compactAll()).toBe('Compacted 2 of 2 threads');
+    expect((await conversation(memory, 'test:g:t1:u1'))[0]?.type).toBe('compaction');
+    expect((await conversation(memory, 'test:g:t2:u1'))[0]?.type).toBe('compaction');
+    expect((await conversation(memory, 'test:g:u1'))[0]?.type).not.toBe('compaction');
+  });
+
+  it('names the threads of stored sessions with legacyThreadKey when it keys them', async () => {
+    const memory = new InMemoryAdapter();
+    await memory.createThread(
+      'bot',
+      { _session: true, userId: 'u7', channelType: 'test', channelId: 'c', status: 'active' },
+      'session_test_u7'
+    );
+    await seed(memory, 'test:u7', long);
+    const { gateway } = setup({
+      memory,
+      compaction: {
+        strategy: 'hierarchical',
+        messageThreshold: 100,
+        keepRecent: 2,
+        keepRecentTokens: 25,
+      },
+      threadKey: legacyThreadKey,
+    });
+
+    expect(await gateway.compactAll()).toBe('Compacted 1 of 1 threads');
+    expect((await conversation(memory, 'test:u7'))[0]?.type).toBe('compaction');
   });
 
   it('leaves stored sessions out when threads are keyed by threadKey', async () => {
@@ -323,14 +378,14 @@ describe('Gateway.compactAll', () => {
       { _session: true, userId: 'u9', channelType: 'test', channelId: 'c', status: 'active' },
       'session_test_u9'
     );
-    await seed(memory, 'test:u9', long);
+    await seed(memory, 'test:c_u9:u9', long);
     const { gateway } = setup({
       memory,
       threadKey: (m) => `custom:${m.userId}`,
     });
 
     expect(await gateway.compactAll()).toBe('No threads to compact');
-    expect((await conversation(memory, 'test:u9'))[0]?.type).not.toBe('compaction');
+    expect((await conversation(memory, 'test:c_u9:u9'))[0]?.type).not.toBe('compaction');
   });
 
   it('says so when compaction is not configured', async () => {

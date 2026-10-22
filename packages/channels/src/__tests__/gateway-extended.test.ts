@@ -70,7 +70,9 @@ describe('Gateway regressions', () => {
     });
     await gateway.start();
     await channel.trigger(msg());
+    await gateway.idle();
     await channel.trigger(msg({ id: 'm2' }));
+    await gateway.idle();
 
     expect(sessionManager.getOrCreate).toHaveBeenCalledTimes(2);
     expect(created).toHaveBeenCalledTimes(1);
@@ -80,7 +82,7 @@ describe('Gateway regressions', () => {
     const channel = createChannel();
     const entries = Array.from({ length: 6 }, (_, i) => ({
       id: `e${i}`,
-      threadId: 'test:u1',
+      threadId: 'test:c1:u1',
       message: { role: 'user', content: `message number ${i} `.repeat(20) },
       createdAt: new Date(2026, 0, 1, 0, i),
       tokenCount: 100,
@@ -128,13 +130,17 @@ describe('Gateway regressions', () => {
     });
     await gateway.start();
     await channel.trigger(msg());
+    await gateway.idle();
 
-    expect(memory.getEntries).toHaveBeenCalledWith({ threadId: 'test:u1', includeToolCalls: true });
+    expect(memory.getEntries).toHaveBeenCalledWith({
+      threadId: 'test:c1:u1',
+      includeToolCalls: true,
+    });
     expect(memory.getEntries).toHaveBeenCalledTimes(1);
     expect(chat).toHaveBeenCalledWith(expect.objectContaining({ model: 'test' }));
     expect(memory.addEntry).toHaveBeenCalledWith(
       expect.objectContaining({
-        threadId: 'test:u1',
+        threadId: 'test:c1:u1',
         message: expect.objectContaining({ content: expect.stringContaining('SUMMARY') }),
       })
     );
@@ -166,7 +172,7 @@ describe('Gateway regressions', () => {
         data: [
           {
             id: 'e',
-            threadId: 'test:u1',
+            threadId: 'test:c1:u1',
             message: { role: 'user', content: 'x'.repeat(5000) },
             createdAt: new Date(),
           },
@@ -190,6 +196,7 @@ describe('Gateway regressions', () => {
     });
     await gateway.start();
     await channel.trigger(msg());
+    await gateway.idle();
 
     expect(memory.getEntries).toHaveBeenCalledTimes(1);
     expect(getLLMBackend).not.toHaveBeenCalled();
@@ -200,7 +207,7 @@ describe('Gateway regressions', () => {
     const channel = createChannel();
     const entries = Array.from({ length: 12 }, (_, i) => ({
       id: `e${i}`,
-      threadId: 'test:u1',
+      threadId: 'test:c1:u1',
       message: { role: 'user', content: `short message number ${i}` },
       createdAt: new Date(2026, 0, 1, 0, i),
       tokenCount: 10,
@@ -244,6 +251,7 @@ describe('Gateway regressions', () => {
     });
     await gateway.start();
     await channel.trigger(msg());
+    await gateway.idle();
 
     expect(chat).toHaveBeenCalledTimes(1);
     expect(vi.mocked(memory.deleteEntry)).toHaveBeenCalledTimes(10);
@@ -253,7 +261,7 @@ describe('Gateway regressions', () => {
     const channel = createChannel();
     const entries = Array.from({ length: 6 }, (_, i) => ({
       id: `e${i}`,
-      threadId: 'test:u1',
+      threadId: 'test:c1:u1',
       message: { role: 'user', content: `m${i}` },
       createdAt: new Date(2026, 0, 1, 0, i),
       tokenCount: 1,
@@ -297,6 +305,7 @@ describe('Gateway regressions', () => {
     });
     await gateway.start();
     await channel.trigger(msg());
+    await gateway.idle();
 
     expect(chat).toHaveBeenCalledTimes(1);
   });
@@ -354,6 +363,7 @@ describe('Gateway regressions', () => {
     await channel.trigger(msg({ text: 'first' }));
     await new Promise((r) => setTimeout(r, 5));
     await channel.trigger(msg({ id: 'm2', text: 'second' }));
+    await gateway.idle();
 
     await vi.waitFor(() => expect(channel.sendText).toHaveBeenCalled());
     expect(signals[0].aborted).toBe(true);
@@ -379,6 +389,7 @@ describe('Gateway regressions', () => {
     });
     await gateway.start();
     await channel.trigger(msg());
+    await gateway.idle();
 
     expect(run.mock.calls[0][1]).toEqual(expect.objectContaining({ timeout: 5000 }));
     const emojis = channel.setReaction.mock.calls.map((c) => c[2]);
@@ -410,13 +421,16 @@ describe('Gateway regressions', () => {
     });
     await gateway.start();
     await channel.trigger(msg({ userName: 'Ann' }));
+    await gateway.idle();
     await channel.trigger(msg({ userId: 'u2' }));
+    await gateway.idle();
     await channel.trigger(msg());
+    await gateway.idle();
 
     expect(gateway.stats.totalSessions).toBe(2);
     expect(gateway.stats.activeSessions).toBe(0);
     const sessions = gateway.getSessions();
-    const ann = sessions.find((s) => s.threadId === 'test:u1');
+    const ann = sessions.find((s) => s.threadId === 'test:c1:u1');
     expect(ann).toEqual(
       expect.objectContaining({ userName: 'Ann', messageCount: 2, active: false })
     );
@@ -432,7 +446,9 @@ describe('Gateway regressions', () => {
     await gateway.start();
 
     await channel.trigger(msg({ raw: { scheduled: true } }));
+    await gateway.idle();
     await channel.trigger(msg());
+    await gateway.idle();
 
     expect(channel.sendText).toHaveBeenCalledTimes(1);
     expect(channel.sendText.mock.calls[0][2]).not.toHaveProperty('replyTo');
@@ -452,6 +468,7 @@ describe('Gateway regressions', () => {
     });
     await gateway.start();
     await channel.trigger(msg());
+    await gateway.idle();
 
     expect(channel.sendText).toHaveBeenCalledTimes(1);
     expect(channel.sendText.mock.calls[0][1]).toBe('Hello there');
@@ -473,6 +490,7 @@ describe('Gateway streaming formatting', () => {
     });
     await gateway.start();
     await channel.trigger(msg({ channelType: 'telegram' }));
+    await gateway.idle();
 
     expect(channel.sendText.mock.calls[0][1]).toBe('*Title*\n*bold*');
   });

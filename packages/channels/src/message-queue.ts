@@ -1,9 +1,14 @@
 import type { ChannelMessage, QueueMode } from '@cogitator-ai/types';
 import { mergeByDestination } from './merge-messages';
 
+interface QueuedMessage {
+  msg: ChannelMessage;
+  settle: () => void;
+}
+
 interface ThreadState {
   processing: boolean;
-  queue: ChannelMessage[];
+  queue: QueuedMessage[];
   abortController?: AbortController;
 }
 
@@ -15,27 +20,29 @@ export class MessageQueue {
     private readonly processor: (msg: ChannelMessage, signal?: AbortSignal) => Promise<void>
   ) {}
 
-  push(msg: ChannelMessage, threadId: string): void {
+  /**
+   * Queues a message of a thread. The returned promise settles once the message is done with:
+   * answered (alone or merged with others), interrupted by a newer one, or dropped by
+   * {@link dispose}. It never rejects.
+   */
+  push(msg: ChannelMessage, threadId: string): Promise<void> {
     switch (this.mode) {
       case 'parallel':
-        void this.processor(msg).catch(() => {});
-        break;
+        return this.processor(msg).catch(() => {});
       case 'sequential':
-        this.pushSequential(msg, threadId);
-        break;
+        return this.enqueue(msg, threadId, (state) => this.drainSequential(threadId, state));
       case 'interrupt':
-        this.pushInterrupt(msg, threadId);
-        break;
+        return this.pushInterrupt(msg, threadId);
       case 'collect':
-        this.pushCollect(msg, threadId);
-        break;
+        return this.enqueue(msg, threadId, (state) => this.drainCollect(threadId, state));
     }
   }
 
+  /** Aborts interruptible runs and drops every message still waiting, settling their promises */
   dispose(): void {
     for (const state of this.threads.values()) {
       state.abortController?.abort();
-      state.queue.length = 0;
+      for (const queued of state.queue.splice(0)) queued.settle();
     }
     this.threads.clear();
   }
@@ -49,12 +56,15 @@ export class MessageQueue {
     return state;
   }
 
-  private pushSequential(msg: ChannelMessage, threadId: string): void {
+  private enqueue(
+    msg: ChannelMessage,
+    threadId: string,
+    drain: (state: ThreadState) => Promise<void>
+  ): Promise<void> {
     const state = this.getThread(threadId);
-    state.queue.push(msg);
-    if (!state.processing) {
-      void this.drainSequential(threadId, state);
-    }
+    const done = new Promise<void>((settle) => state.queue.push({ msg, settle }));
+    if (!state.processing) void drain(state);
+    return done;
   }
 
   private release(threadId: string, state: ThreadState): void {
@@ -69,26 +79,29 @@ export class MessageQueue {
     let next = state.queue.shift();
     while (next) {
       try {
-        await this.processor(next);
-      } catch {}
+        await this.processor(next.msg);
+      } catch {
+      } finally {
+        next.settle();
+      }
       next = state.queue.shift();
     }
     this.release(threadId, state);
   }
 
-  private pushInterrupt(msg: ChannelMessage, threadId: string): void {
+  private pushInterrupt(msg: ChannelMessage, threadId: string): Promise<void> {
     const state = this.getThread(threadId);
 
     if (state.processing && state.abortController) {
       state.abortController.abort();
     }
 
-    state.queue.length = 0;
+    for (const queued of state.queue.splice(0)) queued.settle();
     const ac = new AbortController();
     state.abortController = ac;
     state.processing = true;
 
-    void this.processor(msg, ac.signal)
+    return this.processor(msg, ac.signal)
       .catch(() => {})
       .finally(() => {
         if (state.abortController === ac) {
@@ -98,24 +111,19 @@ export class MessageQueue {
       });
   }
 
-  private pushCollect(msg: ChannelMessage, threadId: string): void {
-    const state = this.getThread(threadId);
-    state.queue.push(msg);
-
-    if (!state.processing) {
-      void this.drainCollect(threadId, state);
-    }
-  }
-
   private async drainCollect(threadId: string, state: ThreadState): Promise<void> {
     state.processing = true;
 
     while (state.queue.length > 0) {
       const batch = state.queue.splice(0, state.queue.length);
-      for (const merged of mergeByDestination(batch)) {
-        try {
-          await this.processor(merged);
-        } catch {}
+      try {
+        for (const merged of mergeByDestination(batch.map((queued) => queued.msg))) {
+          try {
+            await this.processor(merged);
+          } catch {}
+        }
+      } finally {
+        for (const queued of batch) queued.settle();
       }
     }
 

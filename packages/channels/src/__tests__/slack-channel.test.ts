@@ -150,6 +150,42 @@ describe('SlackChannel', () => {
     );
   });
 
+  it('names the Slack thread of a channel message as its topic, and none in DMs', async () => {
+    const { handler, app } = await started();
+
+    await app.handler!({
+      message: { ts: '5.0', channel: 'C1', channel_type: 'channel', user: 'U1', text: 'start' },
+    });
+    await app.handler!({
+      message: { ts: '5.5', thread_ts: '5.0', channel: 'C1', user: 'U1', text: 'in thread' },
+    });
+    await app.handler!({
+      message: {
+        ts: '6.0',
+        thread_ts: '1.0',
+        channel: 'D1',
+        channel_type: 'im',
+        user: 'U1',
+        text: 'dm',
+      },
+    });
+
+    const [root, reply, dm] = handler.mock.calls.map((c) => c[0] as ChannelMessage);
+    expect(root.topicId).toBe('5.0');
+    expect(reply).toMatchObject({ topicId: '5.0', replyTo: '5.0' });
+    expect(dm.topicId).toBeUndefined();
+  });
+
+  it('posts into the thread its topic names when it replies to no message', async () => {
+    const { channel, app } = await started();
+
+    await channel.sendText('C1', 'reminder', { topicId: '5.0' });
+
+    expect(app.client.chat.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: 'C1', thread_ts: '5.0' })
+    );
+  });
+
   it('ignores bot messages and edits but accepts file shares', async () => {
     vi.stubGlobal(
       'fetch',

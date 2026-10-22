@@ -111,8 +111,10 @@ describe('Gateway buttons', () => {
     };
   });
 
+  let gateway: Gateway;
+
   async function startGateway(overrides: Partial<GatewayFullConfig> = {}) {
-    const gateway = new Gateway({
+    gateway = new Gateway({
       agent,
       channels: [channel],
       cogitator: cogitator as never,
@@ -125,6 +127,7 @@ describe('Gateway buttons', () => {
   it('puts Approve and Deny buttons under the approval prompt', async () => {
     await startGateway();
     await channel.trigger(message('Publish the noon edition'));
+    await gateway.idle();
 
     const prompt = vi.mocked(channel.sendText).mock.calls.at(-1)!;
     expect(prompt[1]).toContain('publish');
@@ -139,14 +142,17 @@ describe('Gateway buttons', () => {
   it('leaves the buttons out when they are turned off', async () => {
     await startGateway({ approvals: { buttons: false } });
     await channel.trigger(message('Publish the noon edition'));
+    await gateway.idle();
     expect(vi.mocked(channel.sendText).mock.calls.at(-1)![2]).not.toHaveProperty('buttons');
   });
 
   it('resumes the paused run when Approve is pressed, and shows the decision', async () => {
     await startGateway({ approvals: { buttonLabels: { approved: 'Going to press' } } });
     await channel.trigger(message('Publish the noon edition'));
+    await gateway.idle();
 
     await channel.press({ data: APPROVE_ACTION });
+    await gateway.idle();
 
     expect(channel.answerAction).toHaveBeenCalledWith('press_1', undefined);
     expect(channel.editButtons).toHaveBeenCalledWith('42', 'prompt_1', [
@@ -154,7 +160,7 @@ describe('Gateway buttons', () => {
     ]);
     expect(cogitator.resume).toHaveBeenCalledWith(
       agent,
-      'telegram:42',
+      'telegram:42:42',
       expect.objectContaining({ defaultDecision: { approved: true } })
     );
     expect(vi.mocked(channel.sendText).mock.calls.at(-1)![1]).toBe('Published.');
@@ -163,10 +169,12 @@ describe('Gateway buttons', () => {
   it('declines when Deny is pressed', async () => {
     await startGateway();
     await channel.trigger(message('Publish the noon edition'));
+    await gateway.idle();
     await channel.press({ data: DENY_ACTION });
+    await gateway.idle();
     expect(cogitator.resume).toHaveBeenCalledWith(
       agent,
-      'telegram:42',
+      'telegram:42:42',
       expect.objectContaining({ defaultDecision: { approved: false } })
     );
   });
@@ -174,8 +182,10 @@ describe('Gateway buttons', () => {
   it('refuses a press from someone else in a shared thread', async () => {
     await startGateway({ session: { threadKey: (msg) => msg.channelId } });
     await channel.trigger(message('Publish the noon edition'));
+    await gateway.idle();
 
     await channel.press({ data: APPROVE_ACTION, userId: '7' });
+    await gateway.idle();
 
     expect(channel.answerAction).toHaveBeenLastCalledWith('press_1', {
       text: 'Only the person who made this request can approve or deny it.',
@@ -188,8 +198,10 @@ describe('Gateway buttons', () => {
   it('refuses a stranger with a thread of their own, who never wrote to the bot', async () => {
     await startGateway();
     await channel.trigger(message('Publish the noon edition'));
+    await gateway.idle();
 
     await channel.press({ data: APPROVE_ACTION, userId: '7', channelId: '42' });
+    await gateway.idle();
 
     expect(channel.answerAction).toHaveBeenLastCalledWith(
       'press_1',
@@ -203,13 +215,16 @@ describe('Gateway buttons', () => {
   it('retires the buttons once the request is answered, and refuses later presses', async () => {
     await startGateway();
     await channel.trigger(message('Publish the noon edition'));
+    await gateway.idle();
 
     await channel.trigger(message('approve'));
+    await gateway.idle();
     expect(channel.editButtons).toHaveBeenCalledWith('42', 'prompt_1', [
       [{ text: 'Approved', disabled: true, style: 'success' }],
     ]);
 
     await channel.press({ data: DENY_ACTION, id: 'late' });
+    await gateway.idle();
     expect(channel.answerAction).toHaveBeenLastCalledWith('late', {
       text: 'This request is no longer waiting. Reply "approve" or "deny" if it is still paused.',
       alert: true,
@@ -220,8 +235,10 @@ describe('Gateway buttons', () => {
   it('takes the buttons away when the user moves on without answering', async () => {
     await startGateway();
     await channel.trigger(message('Publish the noon edition'));
+    await gateway.idle();
     cogitator.run.mockResolvedValueOnce(completed('Sure.'));
     await channel.trigger(message('Actually, tell me a joke'));
+    await gateway.idle();
     expect(channel.editButtons).toHaveBeenCalledWith('42', 'prompt_1', null);
   });
 
@@ -235,7 +252,9 @@ describe('Gateway buttons', () => {
     await startGateway({ hooks });
 
     await channel.press({ data: 'quiet', id: 'q' });
+    await gateway.idle();
     await channel.press({ data: 'loud', id: 'l' });
+    await gateway.idle();
 
     expect(seen).toEqual(['quiet', 'loud']);
     expect(vi.mocked(channel.answerAction!).mock.calls).toEqual([
@@ -268,6 +287,7 @@ describe('Gateway buttons', () => {
     await startGateway({ onError, hooks, stream: { flushInterval: 5, minChunkSize: 1 } });
 
     await channel.trigger(message('Write me an essay'));
+    await gateway.idle();
 
     expect(vi.mocked(channel.sendDraft!).mock.calls[0]?.[3]).toEqual(
       expect.objectContaining({ canStop: true, format: 'markdown' })
@@ -283,6 +303,7 @@ describe('Gateway buttons', () => {
     await startGateway();
 
     await channel.trigger(message('Format it', { topicId: '9' }));
+    await gateway.idle();
 
     expect(channel.sendTyping).toHaveBeenCalledWith('42', { topicId: '9' });
     expect(channel.sendText).toHaveBeenCalledWith('42', '## Heading\n\n**bold**', {
@@ -296,6 +317,7 @@ describe('Gateway buttons', () => {
     cogitator.run.mockResolvedValue(completed('## Heading'));
     await startGateway();
     await channel.trigger(message('Format it'));
+    await gateway.idle();
     expect(vi.mocked(channel.sendText).mock.calls.at(-1)![1]).toBe('*Heading*');
   });
 });

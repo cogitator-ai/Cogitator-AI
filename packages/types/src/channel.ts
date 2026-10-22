@@ -8,7 +8,15 @@ import type { MemoryAdapter } from './memory';
 import type { ToolApprovalDecision, ToolApprovalRequest } from './runtime';
 
 export type ChannelType =
-  'telegram' | 'discord' | 'slack' | 'whatsapp' | 'webchat' | 'bluesky' | 'threads' | (string & {});
+  | 'telegram'
+  | 'discord'
+  | 'slack'
+  | 'whatsapp'
+  | 'webchat'
+  | 'bluesky'
+  | 'threads'
+  | 'github'
+  | (string & {});
 
 export type AttachmentType = 'image' | 'file' | 'audio' | 'video';
 
@@ -37,6 +45,13 @@ export interface ChannelMessage {
    * topic or a topic of a private chat. Replies go to the same topic.
    */
   topicId?: string;
+  /**
+   * The conversation the message belongs to, for channels whose `channelId` does not name it:
+   * on Bluesky and Threads `channelId` is the post to reply to and the conversation is the
+   * thread's root post. The gateway's default thread key uses it in place of `channelId` and
+   * `topicId`.
+   */
+  conversationId?: string;
   raw: unknown;
 }
 
@@ -385,6 +400,11 @@ export interface GatewayConfig {
   owner?: OwnerConfig;
 
   session?: {
+    /**
+     * The conversation thread of a message. Defaults to one thread per user per conversation,
+     * `channelType:conversation:userId`, where the conversation is `conversationId`, or
+     * `channelId` plus `:topicId` when the message has a topic.
+     */
     threadKey?: (msg: ChannelMessage) => string;
     compaction?: CompactionConfig;
   };
@@ -394,6 +414,11 @@ export interface GatewayConfig {
   reactions?: StatusReactionConfig;
   debounce?: DebounceConfig;
   envelope?: EnvelopeConfig;
+  /**
+   * How messages of one thread wait for each other. Defaults to `'sequential'`: a thread answers
+   * its messages one at a time in the order they came, while different threads run side by side.
+   * `'parallel'` runs every message at once.
+   */
   queueMode?: QueueMode;
   hooks?: HookRegistry;
 

@@ -19,7 +19,7 @@ import {
 } from '../utils/provider-models.js';
 
 type AssistantConfig = AssistantConfigOutput;
-type ChannelName = 'telegram' | 'discord' | 'slack' | 'bluesky' | 'threads';
+type ChannelName = 'telegram' | 'discord' | 'slack' | 'bluesky' | 'threads' | 'github';
 type Capabilities = AssistantConfig['capabilities'];
 type McpServers = NonNullable<AssistantConfig['mcpServers']>;
 
@@ -29,6 +29,7 @@ export const CHANNEL_TOKEN_ENV: Record<ChannelName, string> = {
   slack: 'SLACK_BOT_TOKEN',
   bluesky: 'BLUESKY_APP_PASSWORD',
   threads: 'THREADS_ACCESS_TOKEN',
+  github: 'GITHUB_TOKEN',
 };
 
 const CHANNEL_LABELS: Record<ChannelName, string> = {
@@ -37,6 +38,7 @@ const CHANNEL_LABELS: Record<ChannelName, string> = {
   slack: 'Slack',
   bluesky: 'Bluesky',
   threads: 'Threads',
+  github: 'GitHub',
 };
 
 const TOKEN_PROMPTS: Record<ChannelName, string> = {
@@ -45,6 +47,8 @@ const TOKEN_PROMPTS: Record<ChannelName, string> = {
   slack: 'Slack bot token:',
   bluesky: 'Bluesky app password (create it with direct messages allowed):',
   threads: 'Threads long-lived access token:',
+  github:
+    'GitHub token of the bot account (a personal access token with issues and pull requests write):',
 };
 
 const OWNER_PROMPTS: Record<ChannelName, string> = {
@@ -53,9 +57,18 @@ const OWNER_PROMPTS: Record<ChannelName, string> = {
   slack: 'Slack owner user ID(s), comma-separated (for admin commands)',
   bluesky: 'Bluesky owner DID(s), comma-separated (did:plc:..., for admin commands)',
   threads: 'Threads owner username(s), comma-separated (for admin commands)',
+  github:
+    'GitHub owner user ID(s), comma-separated (numbers from api.github.com/users/<login>, for admin commands)',
 };
 
-const CHANNELS: readonly ChannelName[] = ['telegram', 'discord', 'slack', 'bluesky', 'threads'];
+const CHANNELS: readonly ChannelName[] = [
+  'telegram',
+  'discord',
+  'slack',
+  'bluesky',
+  'threads',
+  'github',
+];
 
 function isChannelName(value: unknown): value is ChannelName {
   return CHANNELS.some((channel) => channel === value);
@@ -412,10 +425,25 @@ export const wizardCommand = new Command('wizard')
         if (appToken) envUpdates.set('SLACK_APP_TOKEN', appToken);
       }
 
+      if (ch === 'github') {
+        const webhookSecret = await askSecret({
+          message: 'GitHub webhook secret (the same as on the repository webhook):',
+          current: existingEnv.GITHUB_WEBHOOK_SECRET,
+          required: 'Required',
+        });
+        if (webhookSecret) envUpdates.set('GITHUB_WEBHOOK_SECRET', webhookSecret);
+      }
+
       const ownerIds = parsePathList(ownerIdsRaw);
       if (ch === 'bluesky') channelsConfig.bluesky = { ...existing.channels?.bluesky, ownerIds };
       else if (ch === 'threads')
         channelsConfig.threads = { ...existing.channels?.threads, ownerIds };
+      else if (ch === 'github')
+        channelsConfig.github = {
+          ...existing.channels?.github,
+          webhook: existing.channels?.github?.webhook ?? { port: 8787 },
+          ownerIds,
+        };
       else channelsConfig[ch] = { ownerIds };
     }
 

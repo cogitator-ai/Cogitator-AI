@@ -372,6 +372,7 @@ export class ThreadsChannel implements Channel {
         userId: post.username ?? '',
         ...(post.username && { userName: post.username }),
         groupId: `thread:${root}`,
+        conversationId: `thread:${root}`,
         text: this.stripMention(post.text),
         ...(post.replied_to && { replyTo: post.replied_to.id }),
         raw: post,

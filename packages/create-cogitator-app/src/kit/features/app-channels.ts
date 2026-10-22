@@ -6,6 +6,7 @@ import { LIFECYCLE_TS, startupImports, startupStatements } from './shared.js';
 import type { FeatureModule } from './types.js';
 
 export const WEBCHAT_PORT = 18789;
+export const GITHUB_WEBHOOK_PORT = 8787;
 
 /** Where Bluesky sessions and Threads tokens are kept, out of git. */
 const TOKENS_PATH = '.cogitator/tokens.json';
@@ -114,6 +115,33 @@ const CHANNEL_SETUP: Record<ChannelKind, ChannelSetup> = {
       },
     ],
   },
+  github: {
+    factory: 'githubChannel',
+    expression: code`
+      githubChannel({
+        token: env.GITHUB_TOKEN,
+        webhook: {
+          secret: env.GITHUB_WEBHOOK_SECRET,
+          port: Number(env.GITHUB_WEBHOOK_PORT ?? ${GITHUB_WEBHOOK_PORT}),
+        },
+      })
+    `,
+    packages: [],
+    env: [
+      {
+        name: 'GITHUB_TOKEN',
+        description:
+          'GitHub token of the bot account, with read and write access to issues and pull requests',
+        required: true,
+      },
+      {
+        name: 'GITHUB_WEBHOOK_SECRET',
+        description:
+          'Secret of the webhook that sends issues, pull requests, comments and reviews to /github/webhook',
+        required: true,
+      },
+    ],
+  },
 };
 
 /** A messaging bot: one Gateway that answers on every chosen channel with the assistant. */
@@ -143,6 +171,16 @@ export const appChannelsFeature: FeatureModule = {
         secret: false,
       });
       project.deploy.port = WEBCHAT_PORT;
+    }
+    if (spec.channels.includes('github')) {
+      project.envVar({
+        name: 'GITHUB_WEBHOOK_PORT',
+        description: 'Port GitHub delivers webhook events to, at /github/webhook',
+        example: String(GITHUB_WEBHOOK_PORT),
+        required: false,
+        secret: false,
+      });
+      project.deploy.port ??= GITHUB_WEBHOOK_PORT;
     }
 
     project
@@ -203,17 +241,19 @@ export const appChannelsFeature: FeatureModule = {
     );
 
     const webchat = spec.channels.includes('webchat');
+    const github = spec.channels.includes('github');
     project.file(
       'src/index.ts',
       code`
         import { cogitator } from './cogitator.js';
-        ${webchat && "import { loadEnv } from './env.js';"}
+        ${(webchat || github) && "import { loadEnv } from './env.js';"}
         import { gateway } from './gateway.js';
         import { onShutdown } from './lifecycle.js';
 
         await gateway.start();
         console.log(\`The assistant is listening on \${gateway.stats.connectedChannels.join(', ')}\`);
         ${webchat && `console.log(\`WebChat: ws://localhost:\${loadEnv().WEBCHAT_PORT ?? ${WEBCHAT_PORT}}/ws\`);`}
+        ${github && `console.log(\`GitHub webhook: http://localhost:\${loadEnv().GITHUB_WEBHOOK_PORT ?? ${GITHUB_WEBHOOK_PORT}}/github/webhook\`);`}
 
         onShutdown(async () => {
           await gateway.stop();

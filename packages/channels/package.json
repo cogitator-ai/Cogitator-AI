@@ -17,6 +17,7 @@
     "streaming",
     "bluesky",
     "threads",
+    "github",
     "social"
   ],
   "type": "module",
