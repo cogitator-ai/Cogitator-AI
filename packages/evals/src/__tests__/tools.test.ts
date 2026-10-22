@@ -56,6 +56,11 @@ function mockSuiteResult(overrides?: Partial<EvalSuiteResult>): EvalSuiteResult 
     },
     report: vi.fn(),
     saveBaseline: vi.fn(),
+    runId: '20261022T101530123Z-1a2b3c4d',
+    startedAt: '2026-10-22T10:15:30.123Z',
+    finishedAt: '2026-10-22T10:15:30.623Z',
+    toRun: vi.fn(),
+    saveRun: vi.fn(),
     ...overrides,
   };
 }

@@ -6,8 +6,16 @@ import { csvReport } from './csv';
 import { ciReport } from './ci';
 import { junitReport } from './junit';
 import { githubReport } from './github';
+import { markdownReport } from './markdown';
+import { htmlReport } from './html';
 import type { EvalStats } from '../assertions';
-import type { EvalToolCall, EvalToolResult, EvalTurnResult, Passage } from '../metrics/types';
+import type {
+  EvalPrompt,
+  EvalToolCall,
+  EvalToolResult,
+  EvalTurnResult,
+  Passage,
+} from '../metrics/types';
 
 export interface AggregatedMetric {
   name: string;
@@ -54,36 +62,53 @@ export interface ReportedCase {
   retrieved?: readonly Passage[];
   /** Each turn of a multi-turn case */
   turns?: readonly EvalTurnResult[];
+  /** The trace of the agent run, the last turn's for a multi-turn case */
+  traceId?: string;
+  /** The versioned instructions the agent run used, the last turn's for a multi-turn case */
+  prompt?: EvalPrompt;
   scores: Array<{ name: string; score: number; details?: string; error?: string }>;
   /** Every run of the case when the suite ran several trials, the first being the case itself */
   trials?: readonly ReportedCase[];
 }
 
 export interface EvalSuiteResult {
+  /** The suite's `name`, the title of the markdown and html reports */
+  name?: string;
+  /** The id of the run */
+  runId?: string;
   results: ReportedCase[];
   aggregated: Record<string, AggregatedMetric>;
   assertions: AssertionResult[];
   stats: EvalStats;
 }
 
-export type ReporterType = 'console' | 'json' | 'csv' | 'ci' | 'junit' | 'github';
+export type ReporterType =
+  'console' | 'json' | 'csv' | 'ci' | 'junit' | 'github' | 'markdown' | 'html';
 export type ReporterOptions = {
   /**
-   * Base path of file reports. Each file reporter writes it with its own
-   * extension, so `./reports/eval` gives `eval.json`, `eval.csv` and `eval.xml`.
+   * Base path of file reports. Each file reporter writes it with its own extension, so
+   * `./reports/eval` gives `eval.json`, `eval.csv`, `eval.xml`, `eval.md` and `eval.html`.
    */
   path?: string;
 };
 
+/** The extension of a file report */
+export type ReportExtension = 'json' | 'csv' | 'xml' | 'md' | 'html';
+
 const DEFAULT_BASE = 'eval-report';
 
-/** The file a reporter writes: the base path with the reporter's extension. */
-export function reportPath(base: string | undefined, extension: 'json' | 'csv' | 'xml'): string {
-  const stem = (base ?? DEFAULT_BASE).replace(/\.(json|csv|xml)$/i, '');
+/** The file a reporter writes: the base path, without a report extension, with the reporter's */
+export function reportPath(
+  base: string | undefined,
+  extension: ReportExtension,
+  fallback: string = DEFAULT_BASE
+): string {
+  const stem = (base ?? fallback).replace(/\.(json|csv|xml|md|html)$/i, '');
   return `${stem}.${extension}`;
 }
 
-function prepare(path: string): string {
+/** Creates the directory of a report file, returning the path */
+export function prepare(path: string): string {
   mkdirSync(dirname(path), { recursive: true });
   return path;
 }
@@ -118,6 +143,12 @@ export function report(
       case 'github':
         githubReport(result);
         break;
+      case 'markdown':
+        markdownReport(result, { path: prepare(reportPath(options?.path, 'md')) });
+        break;
+      case 'html':
+        htmlReport(result, { path: prepare(reportPath(options?.path, 'html')) });
+        break;
       case 'ci':
         ciReport(result);
         break;
@@ -131,3 +162,5 @@ export { csvReport } from './csv';
 export { ciReport } from './ci';
 export { junitReport } from './junit';
 export { githubReport } from './github';
+export { markdownReport, markdownSummary } from './markdown';
+export { htmlReport, htmlPage } from './html';

@@ -1,6 +1,6 @@
 import { appendFileSync } from 'node:fs';
 import type { EvalSuiteResult } from './index';
-import { caseFlags, caseLabel, trialsPerCase } from './format';
+import { caseFlags, caseLabel, cell, num, trialsPerCase } from './format';
 
 /** Escapes the message of a workflow command */
 function escapeData(value: string): string {
@@ -37,23 +37,6 @@ export function githubAnnotations(result: EvalSuiteResult): string[] {
   }
 
   return lines;
-}
-
-/**
- * A table cell of the step summary: any line break (a lone `\r` too) becomes `<br>` so the row
- * holds, and `<` and `&` are escaped so no tag or comment in an answer hides the rest
- */
-function cell(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/\\/g, '\\\\')
-    .replace(/\|/g, '\\|')
-    .replace(/\r\n|\r|\n/g, '<br>');
-}
-
-function num(n: number): string {
-  return Number.isInteger(n) ? String(n) : n.toFixed(4);
 }
 
 /** The Markdown summary of the run for `$GITHUB_STEP_SUMMARY` */

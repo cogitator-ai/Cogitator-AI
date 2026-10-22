@@ -1,6 +1,6 @@
 ---
 title: Reporters
-description: Output evaluation results to the console, JSON, CSV or JUnit XML files, GitHub Actions annotations, or a CI verdict that sets the exit code, and run suites as Vitest tests.
+description: Output evaluation results to the console, JSON, CSV, JUnit XML, Markdown or HTML files, GitHub Actions annotations, or a CI verdict that sets the exit code, render comparisons, and run suites as Vitest tests.
 ---
 
 ## Overview
@@ -24,14 +24,16 @@ report(result, 'console');
 report(result, ['json', 'csv'], { path: './eval-report' });
 ```
 
-| Reporter  | Output                                                              |
-| --------- | ------------------------------------------------------------------- |
-| `console` | Colored table of metrics, assertions and a summary line             |
-| `json`    | Writes `<path>.json` with every case, score and aggregate           |
-| `csv`     | Writes `<path>.csv` with one row per case                           |
-| `junit`   | Writes `<path>.xml`, a JUnit report CI systems show as test results |
-| `github`  | Prints GitHub Actions annotations and writes the job summary        |
-| `ci`      | Prints a short verdict and sets `process.exitCode` to 1 on failure  |
+| Reporter   | Output                                                              |
+| ---------- | ------------------------------------------------------------------- |
+| `console`  | Colored table of metrics, assertions and a summary line             |
+| `json`     | Writes `<path>.json` with every case, score and aggregate           |
+| `csv`      | Writes `<path>.csv` with one row per case                           |
+| `junit`    | Writes `<path>.xml`, a JUnit report CI systems show as test results |
+| `github`   | Prints GitHub Actions annotations and writes the job summary        |
+| `ci`       | Prints a short verdict and sets `process.exitCode` to 1 on failure  |
+| `markdown` | Writes `<path>.md`, a compact summary for a pull request comment    |
+| `html`     | Writes `<path>.html`, a self-contained page for light and dark      |
 
 File reporters create missing directories. `result.report()` writes each case as `{ case: { input, expected }, output, duration, error?, truncated?, iterationLimitReached?, paused?, scores }`, and passing the suite result to the standalone `report()` writes the full case results (including `usage` and `context`).
 
@@ -64,7 +66,7 @@ Assertions show green check marks for passes and red crosses for failures.
 
 ## JSON Reporter
 
-Writes the full result data to a JSON file. Includes per-case results with scores and run flags, the agent's `toolCalls`, `toolResults`, `retrieved` passages and `turns`, every trial in `trials` when the suite ran several, aggregated metrics with their `count`, assertions, and stats. The console and GitHub reporters show the trials per case in their summary (`2 cases x 3 trials`).
+Writes the full result data to a JSON file. Includes per-case results with scores and run flags, the agent's `toolCalls`, `toolResults`, `retrieved` passages and `turns`, the `traceId` and versioned `prompt` of an agent run (see [Experiment Tracking](/docs/evals/experiments#traces-and-prompt-versions)), every trial in `trials` when the suite ran several, aggregated metrics with their `count`, assertions, and stats. The console and GitHub reporters show the trials per case in their summary (`2 cases x 3 trials`).
 
 ```typescript
 result.report('json', { path: './eval-report.json' });
@@ -120,6 +122,67 @@ Fields containing commas, quotes, or line breaks are quoted. When any case carri
 ```csv
 input,expected,output,duration,truncated,exactMatch
 Summarize the report,...,The report covers,2310,true,0
+```
+
+## Markdown Reporter
+
+Writes a compact summary of the run, made to be posted as a pull request comment.
+
+```typescript
+result.report('markdown', { path: './reports/eval' });
+```
+
+Default path: `eval-report.md`
+
+It holds a title with the suite's `name`, a line with the totals (cases, trials per case when there are several, errored cases, metric errors, duration, cost, assertions passed and failed), a table of each metric's mean and the cases it covers, the assertions with pass or fail, and the failed cases: each errored case with its error and each metric that failed on a case. At most 25 failures are listed, the rest counted.
+
+```markdown
+### Eval results: support-agent
+
+**50** cases | **1** errored | 32358 ms | 0.0412 USD | assertions: **1** passed, **1** failed
+
+| Metric     |   Mean | Cases |
+| ---------- | -----: | ----: |
+| exactMatch | 0.9200 |    49 |
+
+| Assertion             | Result   | Details                                         |
+| --------------------- | -------- | ----------------------------------------------- |
+| threshold(exactMatch) | pass     | exactMatch = 0.92 >= 0.9                        |
+| maxErrorRate(0)       | **fail** | 1 of 50 cases errored (2%), expected at most 0% |
+
+**Failed cases** (1)
+
+| Case                      | Problem                        |
+| ------------------------- | ------------------------------ |
+| [7] Capital of Australia? | error: Timed out after 30000ms |
+```
+
+Every value from the run is escaped (`<`, `&`, `|`, `\` and line breaks), so no answer can break a table or hide the rest of the comment.
+
+```bash
+gh pr comment "$PR" --body-file reports/eval.md
+```
+
+## HTML Reporter
+
+Writes the run as one self-contained page: inline CSS that follows the reader's light or dark color scheme, no scripts and no external assets, so it opens from a CI artifact or an email attachment as it is.
+
+```typescript
+result.report('html', { path: './reports/eval' });
+```
+
+Default path: `eval-report.html`
+
+The page shows the totals, the aggregated metrics (mean, p50, p95, min, max, cases), the assertions, and every case with its input, expected answer, output (long outputs and conversations folded), scores, status (answered or the error, run flags, trials answered) and, for agent targets, the trace id and prompt version. Every value is HTML-escaped.
+
+## Comparisons
+
+`reportComparison(comparison, type, options?)` renders a comparison, from [`compareRuns()`](/docs/evals/experiments#comparing-runs) or from [`EvalComparison`](/docs/evals/comparison), as `console`, `markdown` (`<path>.md`) or `html` (`<path>.html`), with the default path `eval-comparison`. See [Reporting a Comparison](/docs/evals/experiments#reporting-a-comparison).
+
+```typescript
+reportComparison(compareRuns(base, head), ['console', 'markdown'], {
+  path: './reports/comparison',
+});
 ```
 
 ## CI Reporter
@@ -232,7 +295,7 @@ Pass an array of reporter types to output in multiple formats at once:
 result.report(['console', 'json', 'csv'], { path: './reports/eval' });
 ```
 
-The `path` option is a base path shared across file-based reporters: a trailing `.json`, `.csv` or `.xml` is dropped and each reporter adds its own extension, so `./reports/eval` (or `./reports/eval.json`) gives `./reports/eval.json`, `./reports/eval.csv` and `./reports/eval.xml`. The other reporters run in the order given, and `ci` always runs last, so its verdict is the final line of the output.
+The `path` option is a base path shared across file-based reporters: a trailing `.json`, `.csv`, `.xml`, `.md` or `.html` is dropped and each reporter adds its own extension, so `./reports/eval` (or `./reports/eval.json`) gives `./reports/eval.json`, `./reports/eval.csv`, `./reports/eval.xml`, `./reports/eval.md` and `./reports/eval.html`. The other reporters run in the order given, and `ci` always runs last, so its verdict is the final line of the output.
 
 ## Vitest
 

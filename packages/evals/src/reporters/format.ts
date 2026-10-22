@@ -35,3 +35,21 @@ export function trialsPerCase(result: {
 }): number {
   return result.results.reduce((most, r) => Math.max(most, r.trials?.length ?? 1), 1);
 }
+
+/**
+ * A Markdown table cell: any line break (a lone `\r` too) becomes `<br>` so the row holds, and
+ * `<` and `&` are escaped so no tag or comment in an answer hides the rest
+ */
+export function cell(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/\\/g, '\\\\')
+    .replace(/\|/g, '\\|')
+    .replace(/\r\n|\r|\n/g, '<br>');
+}
+
+/** A figure in a report: an integer as it is, any other number to 4 decimals */
+export function num(n: number): string {
+  return Number.isInteger(n) ? String(n) : n.toFixed(4);
+}

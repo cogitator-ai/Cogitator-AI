@@ -1,6 +1,6 @@
 import { EvalSuite } from './eval-suite';
 import type { EvalTarget, EvalSuiteResult } from './eval-suite';
-import type { MetricFn, MetricScore, ScoredCaseResult, StatisticalMetricFn } from './metrics/types';
+import type { MetricFn, ScoredCaseResult, StatisticalMetricFn } from './metrics/types';
 import type { EvalComparisonConfig, JudgeCogitator, JudgeConfigInput } from './schema';
 import { EvalComparisonConfigSchema, JudgeConfigSchema } from './schema';
 import { Dataset } from './datasets';
@@ -9,14 +9,20 @@ import { judgeContextFor } from './metrics/llm-judge';
 import { judgePairwise } from './pairwise';
 import type { PairwiseOptions, PairwiseResult } from './pairwise';
 import { parseOptions } from './options';
-import { pairedTTest } from './stats/t-test';
-import { mcnemarExact, mcnemarsTest } from './stats/mcnemar';
-import { wilcoxonSignedRank } from './stats/wilcoxon';
-import { bootstrapCI } from './stats/bootstrap';
-import { cohensD } from './stats/effect-size';
-import { holm } from './stats/holm';
 import { mean } from './stats/percentiles';
-import { pairedDifference } from './stats/precision';
+import {
+  compareMetrics,
+  compareResource,
+  determineOverallWinner,
+  pairedScores,
+  scoredMetricNames,
+} from './comparison-stats';
+import type {
+  CasePair,
+  ComparisonWinner,
+  MetricComparison,
+  ResourceComparison,
+} from './comparison-stats';
 
 export interface EvalComparisonOptions {
   dataset: Dataset;
@@ -61,57 +67,12 @@ export interface EvalComparisonRunOptions {
   signal?: AbortSignal;
 }
 
-/**
- * The test a comparison ran: McNemar's (exact below 25 discordant pairs, chi-square with
- * continuity correction from 25), the paired t-test, Wilcoxon signed-rank, or none with fewer
- * than 2 cases
- */
-export type ComparisonTest = 'mcnemar' | 'mcnemar-exact' | 't' | 'wilcoxon' | 'none';
-
-export type ComparisonWinner = 'baseline' | 'challenger' | 'tie';
-
-export interface MetricComparison {
-  baseline: number;
-  challenger: number;
-  /** Cases compared: those at least one side scored, an errored side counting as a 0 */
-  n: number;
-  /** Mean of the paired differences, challenger minus baseline */
-  difference: number;
-  /** Percentile bootstrap confidence interval of `difference` at `1 - alpha` */
-  ci: { low: number; high: number };
-  /** Cohen's d of the paired differences (dz), NaN with fewer than 2 cases */
-  effectSize: number;
-  test: ComparisonTest;
-  /** The test's own p-value */
-  pValue: number;
-  /** `pValue` after Holm's correction across the compared metrics */
-  adjustedPValue: number;
-  /** `adjustedPValue` is below `alpha` */
-  significant: boolean;
-  /**
-   * The higher side when significant, by the test's direction: the sign of `difference`, except
-   * for Wilcoxon's test, where it is the side with the larger rank sum and may differ from it
-   */
-  winner: ComparisonWinner;
-}
-
-/**
- * Latency or cost of the two sides, paired over the cases both answered, where lower is better.
- * Not corrected for multiple comparisons and not part of the metrics' vote on the winner
- */
-export interface ResourceComparison {
-  /** Mean per case, NaN when no case pairs up */
-  baseline: number;
-  challenger: number;
-  n: number;
-  /** Challenger minus baseline: below 0 when the challenger is cheaper or faster */
-  difference: number;
-  test: ComparisonTest;
-  pValue: number;
-  significant: boolean;
-  /** The lower side when significant, by the test's direction as for `MetricComparison.winner` */
-  winner: ComparisonWinner;
-}
+export type {
+  ComparisonTest,
+  ComparisonWinner,
+  MetricComparison,
+  ResourceComparison,
+} from './comparison-stats';
 
 export interface ComparisonResult {
   summary: {
@@ -126,139 +87,6 @@ export interface ComparisonResult {
   challenger: EvalSuiteResult;
   /** The judge's pairwise verdicts, with the `pairwise` option */
   pairwise?: PairwiseResult;
-}
-
-function isBinary(scores: number[]): boolean {
-  return scores.every((s) => s === 0 || s === 1);
-}
-
-/** Below this many discordant pairs McNemar's test is exact */
-const EXACT_MCNEMAR_BELOW = 25;
-
-interface PairedTest {
-  test: ComparisonTest;
-  pValue: number;
-  /**
-   * Which side the test finds higher: 1 the challenger, -1 the baseline, 0 neither. The sign of
-   * the mean difference, except for Wilcoxon's test, where it is the side with the larger rank sum
-   */
-  direction: number;
-}
-
-function pairedTest(
-  baseline: number[],
-  challenger: number[],
-  continuous: 't' | 'wilcoxon',
-  binaryAllowed: boolean
-): PairedTest {
-  const direction = Math.sign(mean(differencesOf(baseline, challenger)));
-  if (baseline.length < 2) return { test: 'none', pValue: 1, direction };
-  if (binaryAllowed && isBinary(baseline) && isBinary(challenger)) {
-    let b = 0;
-    let c = 0;
-    for (let i = 0; i < baseline.length; i++) {
-      if (baseline[i] === 1 && challenger[i] === 0) b++;
-      if (baseline[i] === 0 && challenger[i] === 1) c++;
-    }
-    return b + c < EXACT_MCNEMAR_BELOW
-      ? { test: 'mcnemar-exact', pValue: mcnemarExact(b, c).pValue, direction }
-      : { test: 'mcnemar', pValue: mcnemarsTest(b, c).pValue, direction };
-  }
-  if (continuous === 'wilcoxon') {
-    const { statistic, n, pValue } = wilcoxonSignedRank(baseline, challenger);
-    return { test: 'wilcoxon', pValue, direction: Math.sign((n * (n + 1)) / 4 - statistic) };
-  }
-  return { test: 't', pValue: pairedTTest(baseline, challenger).pValue, direction };
-}
-
-/** Challenger minus baseline per case, without float noise */
-function differencesOf(baseline: number[], challenger: number[]): number[] {
-  return challenger.map((score, i) => pairedDifference(score, baseline[i]));
-}
-
-type ComparedMetric = Omit<MetricComparison, 'adjustedPValue' | 'significant' | 'winner'> & {
-  direction: number;
-};
-
-function meanOrNaN(values: number[]): number {
-  return values.length === 0 ? Number.NaN : mean(values);
-}
-
-function compareMetric(
-  name: string,
-  baselineScores: number[],
-  challengerScores: number[],
-  config: EvalComparisonConfig
-): ComparedMetric {
-  const differences = differencesOf(baselineScores, challengerScores);
-  const { low, high } = bootstrapCI(differences, {
-    confidence: 1 - config.alpha,
-    ...(config.seed !== undefined && { seed: `${String(config.seed)}:${name}` }),
-  });
-  return {
-    baseline: mean(baselineScores),
-    challenger: mean(challengerScores),
-    n: baselineScores.length,
-    difference: mean(differences),
-    ci: { low, high },
-    effectSize: cohensD(differences),
-    ...pairedTest(baselineScores, challengerScores, config.test, true),
-  };
-}
-
-/** Each metric's verdict once its p-value is adjusted with Holm's correction over all metrics */
-function decideMetrics(
-  compared: Record<string, ComparedMetric>,
-  alpha: number
-): Record<string, MetricComparison> {
-  const names = Object.keys(compared);
-  const adjusted = holm(names.map((name) => compared[name].pValue));
-  const decided: Record<string, MetricComparison> = {};
-  for (const [at, name] of names.entries()) {
-    const { direction, ...metric } = compared[name];
-    const significant = adjusted[at] < alpha && direction !== 0;
-    decided[name] = {
-      ...metric,
-      adjustedPValue: adjusted[at],
-      significant,
-      winner: !significant ? 'tie' : direction > 0 ? 'challenger' : 'baseline',
-    };
-  }
-  return decided;
-}
-
-function compareResource(
-  baseline: number[],
-  challenger: number[],
-  config: EvalComparisonConfig
-): ResourceComparison {
-  const difference = meanOrNaN(differencesOf(baseline, challenger));
-  const { test, pValue, direction } = pairedTest(baseline, challenger, config.test, false);
-  const significant = pValue < config.alpha && direction !== 0;
-  return {
-    baseline: meanOrNaN(baseline),
-    challenger: meanOrNaN(challenger),
-    n: baseline.length,
-    difference,
-    test,
-    pValue,
-    significant,
-    winner: !significant ? 'tie' : direction < 0 ? 'challenger' : 'baseline',
-  };
-}
-
-function determineOverallWinner(metrics: Record<string, MetricComparison>): ComparisonWinner {
-  let baselineWins = 0;
-  let challengerWins = 0;
-
-  for (const mc of Object.values(metrics)) {
-    if (mc.winner === 'baseline') baselineWins++;
-    if (mc.winner === 'challenger') challengerWins++;
-  }
-
-  if (challengerWins > baselineWins) return 'challenger';
-  if (baselineWins > challengerWins) return 'baseline';
-  return 'tie';
 }
 
 export class EvalComparison {
@@ -345,25 +173,15 @@ export class EvalComparison {
       challengerSuite.run({ signal: options.signal }),
     ]);
 
-    const metricNames = new Set<string>();
-    for (const result of [baselineResult, challengerResult]) {
-      for (const r of result.results) {
-        for (const trial of r.trials ?? [r]) {
-          for (const s of trial.scores) metricNames.add(s.name);
-        }
-      }
+    const pairs = casePairs(baselineResult, challengerResult);
+    const paired = new Map<string, [number[], number[]]>();
+    for (const name of scoredMetricNames([
+      ...baselineResult.results,
+      ...challengerResult.results,
+    ])) {
+      paired.set(name, pairedScores(pairs, name));
     }
-
-    const compared: Record<string, ComparedMetric> = {};
-    for (const name of metricNames) {
-      const [baselineScores, challengerScores] = pairedScores(
-        baselineResult,
-        challengerResult,
-        name
-      );
-      compared[name] = compareMetric(name, baselineScores, challengerScores, this.config);
-    }
-    const metricComparisons = decideMetrics(compared, this.config.alpha);
+    const metricComparisons = compareMetrics(paired, this.config);
 
     const latency = compareResource(
       ...pairedResource(baselineResult, challengerResult, caseLatency),
@@ -444,39 +262,7 @@ function pairedResource(
   return [baselineValues, challengerValues];
 }
 
-/** A case's score of a metric: the mean over its trials the metric scored, none when it scored none */
-function caseScore(result: ScoredCaseResult | undefined, metricName: string): number | undefined {
-  if (!result) return undefined;
-  const trials = result.trials ?? [result];
-  if (trials.every((trial) => trial.error !== undefined)) return undefined;
-  const scores = trials.flatMap((trial) =>
-    trial.error !== undefined
-      ? [0]
-      : trial.scores.filter((s: MetricScore) => s.name === metricName).map((s) => s.score)
-  );
-  return scores.length === 0 ? undefined : mean(scores);
-}
-
-/**
- * The scores of a metric for each case, side by side. A case one side errored on counts as a 0
- * for that side, since a target that fails loses the case, and a case both sides errored on is
- * left out, telling nothing about either
- */
-function pairedScores(
-  baseline: EvalSuiteResult,
-  challenger: EvalSuiteResult,
-  metricName: string
-): [number[], number[]] {
-  const scoreOf = (result: EvalSuiteResult, at: number) =>
-    caseScore(result.results[at], metricName);
-  const baselineScores: number[] = [];
-  const challengerScores: number[] = [];
-  for (let at = 0; at < baseline.results.length; at++) {
-    const b = scoreOf(baseline, at);
-    const c = scoreOf(challenger, at);
-    if (b === undefined && c === undefined) continue;
-    baselineScores.push(b ?? 0);
-    challengerScores.push(c ?? 0);
-  }
-  return [baselineScores, challengerScores];
+/** The cases of the two runs side by side, by position */
+function casePairs(baseline: EvalSuiteResult, challenger: EvalSuiteResult): CasePair[] {
+  return baseline.results.map((result, at) => [result, challenger.results[at]] as const);
 }

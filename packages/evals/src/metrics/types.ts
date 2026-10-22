@@ -45,11 +45,24 @@ export interface Passage {
   source?: string;
 }
 
+/** The versioned instructions an agent run used, as its `RunResult.prompt` reports them */
+export interface EvalPrompt {
+  /** The agent's `id` when it was set explicitly, else its `name` */
+  key: string;
+  versionId?: string;
+  version?: number;
+  abTest?: { id: string; variant: 'control' | 'treatment' };
+}
+
 /** One user turn of a multi-turn case and the answer to it */
 export interface EvalTurnResult {
   input: string;
   output: string;
   toolCalls?: readonly EvalToolCall[];
+  /** The trace of the agent run that answered the turn */
+  traceId?: string;
+  /** The versioned instructions the agent run of the turn used */
+  prompt?: EvalPrompt;
   /** Set on the turn that failed, the last one the case ran */
   error?: string;
 }
@@ -81,6 +94,16 @@ export interface EvalCaseResult {
   retrieved?: readonly Passage[];
   /** Each turn of a case with `turns`: `input` first, then the further turns */
   turns?: readonly EvalTurnResult[];
+  /**
+   * The trace of the agent run, from its `RunResult.trace.traceId`, to find the run in a trace
+   * viewer. With `turns`, the last turn's. A `fn` target has none
+   */
+  traceId?: string;
+  /**
+   * The versioned instructions the agent run used, from its `RunResult.prompt`. With `turns`, the
+   * last turn's. Set when the Cogitator versions instructions (`cogitator.prompts`)
+   */
+  prompt?: EvalPrompt;
   /**
    * Every run of the case when the suite runs several `trials`, each with its own scores. The
    * case result itself is the first of them

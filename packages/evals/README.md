@@ -13,7 +13,7 @@ pnpm add @cogitator-ai/core  # agent targets and LLM-as-judge metrics
 pnpm add -D vitest  # describeEval from @cogitator-ai/evals/vitest
 ```
 
-Website docs: [Evals](https://cogitator.app/docs/evals), [Datasets](https://cogitator.app/docs/evals/datasets), [Metrics](https://cogitator.app/docs/evals/metrics), [Assertions](https://cogitator.app/docs/evals/assertions), [Agents](https://cogitator.app/docs/evals/agents), [Comparison](https://cogitator.app/docs/evals/comparison), [Reporters](https://cogitator.app/docs/evals/reporters).
+Website docs: [Evals](https://cogitator.app/docs/evals), [Datasets](https://cogitator.app/docs/evals/datasets), [Metrics](https://cogitator.app/docs/evals/metrics), [Assertions](https://cogitator.app/docs/evals/assertions), [Agents](https://cogitator.app/docs/evals/agents), [Comparison](https://cogitator.app/docs/evals/comparison), [Experiments](https://cogitator.app/docs/evals/experiments), [Reporters](https://cogitator.app/docs/evals/reporters).
 
 ## Features
 
@@ -26,7 +26,8 @@ Website docs: [Evals](https://cogitator.app/docs/evals), [Datasets](https://cogi
 - **Trials and pass@k** - run each case several times and score how often it passes with `passAtK()`
 - **Assertions** — threshold, noRegression, custom assertion with auto-detection of lower-is-better metrics
 - **A/B Testing** - EvalComparison with McNemar's test (exact for few discordant pairs), the paired t-test or Wilcoxon signed-rank, Holm's correction across metrics, bootstrap confidence intervals, effect sizes, latency and cost comparisons and pairwise judging
-- **6 Reporters** - console (colored table), JSON, CSV, JUnit XML, GitHub Actions annotations and job summary, CI (exit code on failure)
+- **Experiment Tracking** - named runs with metadata saved as versioned run files, a `RunStore` directory of runs, `compareRuns()` with the A/B statistics, per-case regressions and improvements, and warnings when datasets, prompt versions, metrics or judges differ. Agent cases keep the `traceId` and versioned `prompt` of their runs
+- **8 Reporters** - console (colored table), JSON, CSV, JUnit XML, Markdown (pull request comments), self-contained HTML, GitHub Actions annotations and job summary, CI (exit code on failure), plus `reportComparison()` for comparisons
 - **Vitest** - `describeEval` from `@cogitator-ai/evals/vitest` runs a suite as a test file, one test per case plus one for the assertions, and `evalMatchers` from `@cogitator-ai/evals/matchers` (Vitest 5) adds `toHaveCalledTool`, `toFollowTrajectory`, `toHaveRetrieved` and `toScoreAtLeast`
 - **Builder API** — Fluent `EvalBuilder` for composable eval pipelines
 - **Baseline Workflow** — Save baselines, compare against them, catch regressions in CI
@@ -574,14 +575,16 @@ Access full suite results via `result.baseline` and `result.challenger`. `compar
 
 Call `result.report()` after a suite run to output results.
 
-| Reporter  | Output                                                               |
-| --------- | -------------------------------------------------------------------- |
-| `console` | Colored table with metrics, assertions, summary                      |
-| `json`    | Writes `eval-report.json` (configurable path)                        |
-| `csv`     | Writes `eval-report.csv` (configurable path)                         |
-| `junit`   | Writes `eval-report.xml`, a JUnit report (configurable path)         |
-| `github`  | GitHub Actions annotations, plus a job summary in Actions            |
-| `ci`      | Compact verdict, sets `process.exitCode = 1` when an assertion fails |
+| Reporter   | Output                                                                |
+| ---------- | --------------------------------------------------------------------- |
+| `console`  | Colored table with metrics, assertions, summary                       |
+| `json`     | Writes `eval-report.json` (configurable path)                         |
+| `csv`      | Writes `eval-report.csv` (configurable path)                          |
+| `junit`    | Writes `eval-report.xml`, a JUnit report (configurable path)          |
+| `github`   | GitHub Actions annotations, plus a job summary in Actions             |
+| `ci`       | Compact verdict, sets `process.exitCode = 1` when an assertion fails  |
+| `markdown` | Writes `eval-report.md`, a compact summary for a pull request comment |
+| `html`     | Writes `eval-report.html`, a self-contained page for light and dark   |
 
 ```typescript
 const result = await suite.run();
@@ -592,9 +595,11 @@ result.report(['console', 'json', 'csv', 'junit'], { path: './reports/eval' });
 result.report(['github', 'ci']);
 ```
 
-The `path` is a base path: each file reporter adds its own extension (`.json`, `.csv`, `.xml`). `ci` runs last and does not end the process, so output flushes and later hooks still run before Node exits with code 1.
+The `path` is a base path: each file reporter adds its own extension (`.json`, `.csv`, `.xml`, `.md`, `.html`). `ci` runs last and does not end the process, so output flushes and later hooks still run before Node exits with code 1.
 
 - **junit** writes one `<testsuite name="eval">` with a `<testcase>` per case (a `<failure>` when it errored, its scores in `<system-out>`) and a `<testcase>` per assertion (a `<failure>` when it did not pass). Everything is XML-escaped, and characters XML 1.0 does not allow are replaced.
+- **markdown** writes the totals (with the trials per case when there are several), each metric's mean and cases, the assertions with pass or fail, and the failed cases. Every value is escaped, so no answer breaks the tables.
+- **html** writes one page with inline CSS and no scripts or external assets: totals, metrics, assertions and every case with its scores, status, turns, trials, trace id and prompt version. Every value is HTML-escaped.
 - **github** prints `::error` for each failed assertion and errored case and `::warning` for each failed metric score. When `GITHUB_STEP_SUMMARY` is set it also appends a Markdown summary with the totals, the aggregated metrics (mean, p50, p95, cases scored) and the assertions.
 
 Agent run flags (`truncated`, `iterationLimitReached`, `paused`) show up per case in the json, csv and junit reports, and each aggregated metric's `count` (cases it was scored on) in the console, json and github output. The json report keeps each case's `toolCalls`, `toolResults`, `retrieved`, `turns` and `trials`, and the console and github reports show the trials per case.
@@ -633,6 +638,41 @@ it('books a table', async () => {
 `toHaveCalledTool(name, args?)` checks a case result's calls, `args` as a subset of a call's arguments. `toFollowTrajectory(names, { order? })` wants exactly those calls in that order by default, the calls in that order with others between them for `'in-order'`, and each of them in any order for `'any-order'`. `toHaveRetrieved(idOrText)` matches passages as the retrieval metrics do. `toScoreAtLeast(metric, min)` reads a case result's score or a suite result's aggregated mean, and throws when the metric is missing.
 
 `describeEval(name, { suite, run?, timeout? })` registers a `describe` block. The suite runs once in `beforeAll` (`timeout` defaults to 10 minutes, after which the run is cancelled), each case of `suite.cases(run?.maxCases)` gets a test that fails with the case error, and an `assertions` test lists every failed assertion. When the run itself fails, every test fails with that cause. `result()` returns the `EvalSuiteResult` once the run has finished.
+
+---
+
+## Experiment Tracking
+
+Give a suite a `name` and JSON `metadata`, save each run as a run file, and compare runs later, across commits or prompt versions.
+
+```typescript
+import { EvalSuite, RunStore, compareRuns, reportComparison } from '@cogitator-ai/evals';
+
+const suite = new EvalSuite({
+  dataset,
+  target: { agent, cogitator },
+  metrics: [exactMatch(), faithfulness()],
+  judge: { model: 'google/gemini-3.5-flash-lite', cogitator },
+  name: 'support-agent',
+  metadata: { branch: process.env.GITHUB_HEAD_REF, commit: process.env.GITHUB_SHA },
+});
+
+const result = await suite.run();
+const store = new RunStore('./eval-runs');
+const base = store.latest({ name: 'support-agent' });
+store.save(result); // ./eval-runs/<runId>.json, as result.saveRun('./eval-runs') writes it
+
+if (base) {
+  const comparison = compareRuns(base, result, { seed: 42 });
+  reportComparison(comparison, ['console', 'markdown'], { path: './reports/comparison' });
+}
+```
+
+- **Run files.** `result.saveRun(target)` writes JSON with `format: 'cogitator.eval-run'` and `version: 1`: `runId`, `startedAt` and `finishedAt`, `name`, `metadata`, the dataset fingerprint (SHA-256 of the canonical JSON of the cases run), the config (metric names, judge model, temperature and samples, trials, concurrency, target kind, agent name and model), the prompt versions used, every case result with its `caseKey`, the aggregates, assertions and stats. A directory target (or one ending in `/`) gets `<runId>.json`. Functions, Cogitator instances and keys are never written. `result.toRun()` returns the same object, and `loadRun(path)` reads one back, validated with Zod.
+- **Traces and prompts.** Agent cases keep the `traceId` of their run (`RunResult.trace.traceId`) and the versioned instructions in `prompt` (`{ key, versionId?, version?, abTest? }`, set when the Cogitator versions instructions with `cogitator.prompts`). Each turn of a multi-turn case keeps its own and the case keeps the last turn's, each trial its own.
+- **RunStore.** `new RunStore(dir)` keeps run files in a directory: `save(result | run)`, `list(filter?)` newest first with id, name, metadata, times and metric means, `load(id)`, and `latest(filter?)`, where a filter is `{ name }` or a predicate.
+- **compareRuns(base, head, { alpha?, test?, seed?, metrics? }).** Cases are matched by `caseKey` (SHA-256 of `{ input, turns, expected }`), the others listed in `added` and `removed`. Each metric both runs have gets the statistics of `EvalComparison`: means, `difference`, `ci`, `effectSize`, `pValue`, `adjustedPValue` (Holm across the compared metrics), `significant` and `winner` (`head`, `base` or `tie`), plus the `improved` and `regressed` cases. An errored side counts as 0, a case both runs errored on is dropped. `warnings` say when the datasets, the prompt versions, the metrics or the judge differ.
+- **reportComparison(comparison, 'markdown' | 'html' | 'console', { path? }).** Renders a `compareRuns()` or `EvalComparison` result: the winner, a metric table with difference, CI, p and adjusted p and significance, the regressions and improvements, and the warnings. The default path is `eval-comparison`.
 
 ---
 
@@ -720,6 +760,10 @@ result.report('ci');
 | `EvalComparison` | A/B testing runner with statistical significance                    |
 | `calibrateJudge` | Agreement of a judge metric with labelled examples                  |
 | `EvalBuilder`    | Fluent builder for EvalSuite                                        |
+| `compareRuns`    | Compares two saved runs or suite results case by case               |
+| `RunStore`       | Directory of run files: save, list, load, latest                    |
+| `loadRun`        | Reads and validates a run file                                      |
+| `caseKey`        | The key a case is matched by across runs                            |
 | `Dataset`        | Immutable dataset with from/fromJsonl/fromCsv/filter/sample/shuffle |
 | `loadJsonl`      | Low-level JSONL file loader                                         |
 | `loadCsv`        | Low-level CSV file loader                                           |
@@ -767,25 +811,30 @@ result.report('ci');
 
 ### Reporters
 
-| Export                             | Description                              |
-| ---------------------------------- | ---------------------------------------- |
-| `report`                           | Dispatch to one or more reporter types   |
-| `describeEval` (`/vitest` entry)   | Run a suite as a Vitest describe block   |
-| `evalMatchers` (`/matchers` entry) | Matchers for `expect.extend()`, Vitest 5 |
+| Export                                 | Description                                      |
+| -------------------------------------- | ------------------------------------------------ |
+| `report`                               | Dispatch to one or more reporter types           |
+| `reportComparison`                     | Render a comparison as console, Markdown or HTML |
+| `comparisonMarkdown`, `comparisonHtml` | The Markdown or HTML of a comparison as a string |
+| `describeEval` (`/vitest` entry)       | Run a suite as a Vitest describe block           |
+| `evalMatchers` (`/matchers` entry)     | Matchers for `expect.extend()`, Vitest 5         |
 
-`report` takes `console`, `json`, `csv`, `junit`, `github` and `ci`. `describeEval` takes `DescribeEvalOptions` and returns a `DescribeEvalHandle`.
+`report` takes `console`, `json`, `csv`, `junit`, `github`, `ci`, `markdown` and `html`. `describeEval` takes `DescribeEvalOptions` and returns a `DescribeEvalHandle`.
 
 ### Types
 
-| Export             | Description                                                              |
-| ------------------ | ------------------------------------------------------------------------ |
-| `JudgeConfigInput` | The `judge` option: model, settings, `cogitator`, `cache`, `concurrency` |
-| `JudgeCache`       | Where verdicts are kept across runs: `get(key)` and `set(key, verdict)`  |
-| `AggregatedMetric` | Aggregate of a metric, with `count` for the cases it covers              |
-| `MetricComparison` | A metric of a comparison, with `n` for the cases it was compared on      |
-| `ExpectedToolCall` | A tool call a case expects: `name` and optional `arguments`              |
-| `Passage`          | A retrieved passage: `id?`, `content`, `score?`, `source?`               |
-| `EvalTurnResult`   | A turn of a multi-turn case: `input`, `output`, `toolCalls?`, `error?`   |
+| Export             | Description                                                                                   |
+| ------------------ | --------------------------------------------------------------------------------------------- |
+| `JudgeConfigInput` | The `judge` option: model, settings, `cogitator`, `cache`, `concurrency`                      |
+| `JudgeCache`       | Where verdicts are kept across runs: `get(key)` and `set(key, verdict)`                       |
+| `AggregatedMetric` | Aggregate of a metric, with `count` for the cases it covers                                   |
+| `MetricComparison` | A metric of a comparison, with `n` for the cases it was compared on                           |
+| `ExpectedToolCall` | A tool call a case expects: `name` and optional `arguments`                                   |
+| `Passage`          | A retrieved passage: `id?`, `content`, `score?`, `source?`                                    |
+| `EvalTurnResult`   | A turn of a multi-turn case: `input`, `output`, `toolCalls?`, `traceId?`, `prompt?`, `error?` |
+| `EvalPrompt`       | Versioned instructions of an agent run: `key`, `versionId?`, `version?`, `abTest?`            |
+| `EvalRun`          | A saved run, as `loadRun()` returns it                                                        |
+| `RunComparison`    | What `compareRuns()` returns                                                                  |
 
 ### Statistics
 

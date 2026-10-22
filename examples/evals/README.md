@@ -10,7 +10,7 @@ Examples 02, 03 and 04 require an LLM provider API key:
 export GOOGLE_API_KEY=your-key-here
 ```
 
-Example 01 uses a mock function and needs no API keys.
+Examples 01 and 05 use mock functions and need no API keys.
 
 ## Examples
 
@@ -44,4 +44,12 @@ Evaluate what an agent does: expected tool calls scored by `toolCalls()` and `tr
 
 ```bash
 npx tsx examples/evals/04-agent-eval.ts
+```
+
+### 05 - Experiment Tracking
+
+Run two versions of a target as named experiments with metadata, save both runs to a `RunStore` in a temporary directory, list them, compare them with `compareRuns()` and render the comparison to the console and as Markdown for a pull request comment.
+
+```bash
+npx tsx examples/evals/05-experiments.ts
 ```

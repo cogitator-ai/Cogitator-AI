@@ -173,6 +173,19 @@ interface PairwiseResult {
 
 Pairwise judging needs `judge`, run by `judge.cogitator` or, when it is not set, the `cogitator` of an agent target. Each order is asked once, `judge.samples` applies to judge metrics only. It runs after both suites, at most `concurrency` cases at once, and is not part of the metrics' vote on the overall winner.
 
+## Reporting
+
+`reportComparison(result, 'console' | 'markdown' | 'html', { path? })` renders the comparison: the winner, a table of the metrics with means, difference, CI, p and adjusted p and significance, and the cases that regressed and improved from the baseline to the challenger. `markdown` writes `<path>.md` for a pull request comment, `html` a self-contained `<path>.html`, and the default path is `eval-comparison`.
+
+```typescript
+import { reportComparison } from '@cogitator-ai/evals';
+
+const result = await comparison.run();
+reportComparison(result, ['console', 'markdown'], { path: './reports/ab' });
+```
+
+To compare runs made at different times, such as the last run of the main branch and the run of a pull request, save each run and use [`compareRuns()`](/docs/evals/experiments#comparing-runs), which computes the same statistics on cases matched by their key and warns when the datasets, prompt versions, metrics or judges differ.
+
 ## Exported Tests
 
 The tests are exported for your own analyses:

@@ -1,0 +1,269 @@
+---
+title: Experiment Tracking
+description: Save named eval runs with metadata as versioned run files, keep them in a RunStore, and compare runs case by case with the A/B statistics, regressions, improvements and warnings.
+---
+
+## Overview
+
+An eval run tells you how a version of your agent did today. Experiment tracking tells you whether it got better: every run is saved as a run file, and two runs, from two commits, two prompt versions or two models, are compared case by case with the same statistics as [A/B comparison](/docs/evals/comparison).
+
+```typescript
+import { EvalSuite, RunStore, compareRuns, reportComparison } from '@cogitator-ai/evals';
+
+const suite = new EvalSuite({
+  dataset,
+  target: { agent, cogitator },
+  metrics: [exactMatch(), faithfulness()],
+  judge: { model: 'google/gemini-3.5-flash-lite', cogitator },
+  name: 'support-agent',
+  metadata: { branch: process.env.GITHUB_HEAD_REF, commit: process.env.GITHUB_SHA },
+});
+
+const result = await suite.run();
+
+const store = new RunStore('./eval-runs');
+const base = store.latest({ name: 'support-agent' });
+store.save(result);
+
+if (base) {
+  const comparison = compareRuns(base, result, { seed: 42 });
+  reportComparison(comparison, ['console', 'markdown'], { path: './reports/comparison' });
+}
+```
+
+## Naming an Experiment
+
+Two suite options describe the experiment a run belongs to:
+
+| Option     | Type                      | Description                                                                 |
+| ---------- | ------------------------- | --------------------------------------------------------------------------- |
+| `name`     | `string`                  | Names the experiment, such as `support-agent`. Shown in reports and stores  |
+| `metadata` | `Record<string, unknown>` | Anything that tells runs apart: branch, commit, model, the change you tried |
+
+`metadata` must be JSON-serializable. Keys holding `undefined` are dropped, as JSON drops them, so `process.env.GITHUB_SHA` outside CI is fine, while a function, a `Date`, a bigint or a number that is not finite throws when the suite is created.
+
+Each run also gets a unique `runId`, which sorts by start time (`20261022T101530123Z-1a2b3c4d`), and its `startedAt` and `finishedAt` as ISO 8601. The suite result carries `runId`, `name`, `metadata`, `startedAt` and `finishedAt`.
+
+## Traces and Prompt Versions
+
+Agent cases keep where their answer came from:
+
+- `traceId` is the trace of the agent run (`RunResult.trace.traceId`), to look the run up in your tracing backend.
+- `prompt` is the versioned instructions the run used (`RunResult.prompt`): `{ key, versionId?, version?, abTest? }`. It is there when the Cogitator versions instructions, through `cogitator.prompts.deploy()` or an A/B test.
+
+A multi-turn case keeps them per turn in `turns`, and the case itself keeps the last turn's. With several `trials`, each trial keeps its own. A `fn` target has neither. The JSON report and run files carry them, and the HTML report shows them per case.
+
+```typescript
+await cogitator.prompts.deploy(agent, 'Answer in one short sentence.');
+const result = await suite.run();
+
+console.log(result.results[0].traceId); // 4bf92f3577b34da6a3ce929d0e0e4736
+console.log(result.results[0].prompt); // { key: 'support', versionId: '...', version: 1 }
+```
+
+## Run Files
+
+`result.saveRun(target)` writes the run as one JSON file and returns its path. A target that is a directory, or ends with `/`, gets `<runId>.json`, any other target is the file itself. Missing directories are created. `result.toRun()` returns the same object without writing it.
+
+```typescript
+result.saveRun('./eval-runs'); // ./eval-runs/20261022T101530123Z-1a2b3c4d.json
+result.saveRun('./reports/latest-run.json');
+```
+
+The format is versioned and validated with Zod when a run is read back:
+
+```json
+{
+  "format": "cogitator.eval-run",
+  "version": 1,
+  "runId": "20261022T101530123Z-1a2b3c4d",
+  "startedAt": "2026-10-22T10:15:30.123Z",
+  "finishedAt": "2026-10-22T10:16:02.481Z",
+  "name": "support-agent",
+  "metadata": { "branch": "main", "commit": "a1b2c3d" },
+  "dataset": { "fingerprint": "9f86d0...", "cases": 50 },
+  "config": {
+    "metrics": ["exactMatch", "faithfulness"],
+    "statisticalMetrics": [],
+    "judge": { "model": "google/gemini-3.5-flash-lite", "temperature": 0 },
+    "trials": 1,
+    "concurrency": 5,
+    "target": { "kind": "agent", "name": "support", "model": "google/gemini-3.5-flash-lite" }
+  },
+  "prompts": [{ "key": "support", "versionId": "ver_2", "version": 2 }],
+  "results": [
+    { "caseKey": "3a7bd3...", "case": { "input": "..." }, "output": "...", "scores": [] }
+  ],
+  "aggregated": { "exactMatch": { "name": "exactMatch", "mean": 0.92, "count": 50 } },
+  "assertions": [],
+  "stats": { "total": 50, "errors": 0, "duration": 32358, "cost": 0.0412 }
+}
+```
+
+- `dataset.fingerprint` is the SHA-256 of the canonical JSON (keys sorted) of the cases run, so it changes when a case, its context or the order of the cases changes, and with `maxCases`.
+- `config` holds the names of the metrics, the judge's model, temperature and samples when there is a judge, the trials, the concurrency, the target kind and an agent's name and model. Functions, Cogitator instances, API keys and the agent's instructions are never written.
+- `prompts` lists the distinct prompt versions the agent runs used.
+- Each case result keeps everything a suite result has (output, scores, usage, tool calls, turns, trials, `traceId`, `prompt`), as JSON keeps it, with a `caseKey`: the SHA-256 of the canonical JSON of the case's `{ input, turns, expected }`. A bigint becomes its decimal string and a circular reference `[Circular]`.
+- A mean no case was scored on, when every case errored, is NaN in the run and `null` in the file, and reads back as NaN.
+
+`loadRun(path)` reads a run file back. It throws, naming the file, when the file is missing, is not JSON, is not a run file, is of another format version or has a field that does not fit the format.
+
+```typescript
+import { loadRun } from '@cogitator-ai/evals';
+
+const run = loadRun('./eval-runs/20261022T101530123Z-1a2b3c4d.json');
+```
+
+## RunStore
+
+`RunStore` keeps run files in a directory, one `<runId>.json` each:
+
+```typescript
+import { RunStore } from '@cogitator-ai/evals';
+
+const store = new RunStore('./eval-runs');
+
+store.save(result); // a suite result or a run, returns the path
+store.list(); // newest first
+store.list({ name: 'support-agent' });
+store.load('20261022T101530123Z-1a2b3c4d');
+store.latest({ name: 'support-agent' });
+store.latest((run) => run.metadata?.branch === 'main');
+```
+
+| Method            | Returns                | Description                                                            |
+| ----------------- | ---------------------- | ---------------------------------------------------------------------- |
+| `save(source)`    | `string`               | Writes the run file of a suite result or a run, creating the directory |
+| `list(filter?)`   | `RunSummary[]`         | The runs, newest first by `startedAt`                                  |
+| `load(id)`        | `EvalRun`              | The run with that id, throws when there is none                        |
+| `latest(filter?)` | `EvalRun \| undefined` | The newest run the filter picks                                        |
+
+A filter is `{ name }` or a predicate over the summaries. A summary holds `id`, `name`, `metadata`, `startedAt`, `finishedAt`, `cases`, `path` and `metrics`, the mean of each aggregated metric. Other JSON files in the directory, such as a baseline, are ignored, while a file that claims to be a run file and is not valid throws. A directory that does not exist yet lists no runs.
+
+## Comparing Runs
+
+`compareRuns(base, head, options?)` compares two runs, or suite results, case by case:
+
+```typescript
+import { compareRuns } from '@cogitator-ai/evals';
+
+const comparison = compareRuns(store.load(baseId), result, { seed: 42 });
+
+console.log(comparison.winner); // 'head' | 'base' | 'tie'
+for (const [name, m] of Object.entries(comparison.metrics)) {
+  console.log(
+    `${name}: ${m.base.toFixed(3)} -> ${m.head.toFixed(3)} ` +
+      `[${m.ci.low.toFixed(3)}, ${m.ci.high.toFixed(3)}] adjusted p=${m.adjustedPValue.toFixed(4)}`
+  );
+  for (const change of m.regressed) console.log(`  regressed: ${change.input} ${change.delta}`);
+}
+for (const warning of comparison.warnings) console.warn(warning);
+```
+
+Cases are matched by `caseKey`, so a reordered or extended dataset still pairs the cases both runs have. A case that repeats is paired occurrence by occurrence. Cases only the head run has are listed in `added`, those only the base run has in `removed`, and `matched` counts the pairs.
+
+Each metric both runs have is compared exactly as [`EvalComparison`](/docs/evals/comparison) compares its sides, with the base run in the baseline's place and the head run in the challenger's: McNemar's test for binary scores, the paired t-test or Wilcoxon's test for the others, Holm's correction across the compared metrics, a bootstrap interval of the difference and Cohen's d. A case one run errored on counts as 0 for that run, and a case both runs errored on is left out.
+
+```typescript
+interface RunComparison {
+  base: { runId: string; name?: string; startedAt: string };
+  head: { runId: string; name?: string; startedAt: string };
+  winner: 'base' | 'head' | 'tie'; // majority of the metrics' winners
+  metrics: Record<string, RunMetricComparison>;
+  matched: number;
+  added: { caseKey: string; input: string }[];
+  removed: { caseKey: string; input: string }[];
+  warnings: string[];
+}
+
+interface RunMetricComparison {
+  base: number; // mean score over the compared cases
+  head: number;
+  n: number; // cases compared
+  difference: number; // mean of head - base
+  ci: { low: number; high: number };
+  effectSize: number;
+  test: 'mcnemar' | 'mcnemar-exact' | 't' | 'wilcoxon' | 'none';
+  pValue: number;
+  adjustedPValue: number; // Holm across the compared metrics
+  significant: boolean;
+  winner: 'base' | 'head' | 'tie';
+  improved: RunCaseChange[]; // largest rise first
+  regressed: RunCaseChange[]; // largest fall first
+}
+
+interface RunCaseChange {
+  caseKey: string;
+  input: string; // shortened to one line
+  base: number;
+  head: number;
+  delta: number; // head - base
+}
+```
+
+A case is listed in `improved` or `regressed` when its score moved by more than `1e-9`, after the float noise of the subtraction is removed.
+
+### Options
+
+| Option    | Type                | Default | Description                                                                       |
+| --------- | ------------------- | ------- | --------------------------------------------------------------------------------- |
+| `alpha`   | `number`            | `0.05`  | Significance level for the Holm-adjusted p-values, and the `ci` level `1 - alpha` |
+| `test`    | `'t' \| 'wilcoxon'` | `'t'`   | Test of metrics that are not binary                                               |
+| `seed`    | `number \| string`  | -       | Seeds the bootstrap, so the intervals are the same on every call                  |
+| `metrics` | `string[]`          | -       | The metrics to compare. Default: every per-case metric both runs have             |
+
+A metric in `metrics` that one of the runs does not have throws, naming the metrics each run has.
+
+### Warnings
+
+`warnings` lists what makes the two runs harder to compare, without stopping the comparison:
+
+- the dataset fingerprints differ, with how many cases each run has that the other does not, or a note that every case matches while their order, context or metadata changed,
+- the prompt versions differ, naming each version: `Prompt 'support' differs: the base run used v1 (ver_1), the head run v2 (ver_2)`,
+- the metrics differ, naming those only one run has, such as a metric added in the head run, which is then not compared,
+- the judge differs in model, temperature or samples, or only one run has a judge.
+
+## Reporting a Comparison
+
+`reportComparison()` renders a `compareRuns()` result, or an `EvalComparison` result:
+
+```typescript
+import { reportComparison } from '@cogitator-ai/evals';
+
+reportComparison(comparison, 'console');
+reportComparison(comparison, ['markdown', 'html'], { path: './reports/comparison' });
+```
+
+| Type       | Output                                                                         |
+| ---------- | ------------------------------------------------------------------------------ |
+| `console`  | The winner, a colored metric table, the warnings, regressions and improvements |
+| `markdown` | Writes `<path>.md`, a compact summary for a pull request comment               |
+| `html`     | Writes `<path>.html`, a self-contained page with inline CSS for light and dark |
+
+Each shows the winner, a table of the metrics with both means, the difference, the CI, p and adjusted p, significance and the metric's winner, the cases that regressed and improved, and the warnings. For an `EvalComparison` result the per-case changes are computed from its baseline and challenger results. The default path is `eval-comparison`, and a trailing `.md` or `.html` is dropped from the path. Every value is escaped, so no case input can break the Markdown tables or inject HTML. The Markdown lists at most 10 changes per metric and direction and counts the rest. `comparisonMarkdown(comparison)` and `comparisonHtml(comparison)` return the text without writing a file.
+
+### Posting to a Pull Request
+
+```yaml
+# .github/workflows/eval.yml
+- name: Run evals
+  run: pnpm tsx eval/compare.ts
+- name: Comment
+  run: gh pr comment ${{ github.event.number }} --body-file reports/comparison.md
+  env:
+    GH_TOKEN: ${{ github.token }}
+```
+
+```typescript
+// eval/compare.ts
+const store = new RunStore('./eval-runs');
+const base = store.latest({ name: 'support-agent' });
+const result = await suite.run();
+store.save(result);
+if (base)
+  reportComparison(compareRuns(base, result, { seed: 1 }), 'markdown', {
+    path: './reports/comparison',
+  });
+```
+
+Keep the run directory as a CI artifact or in a cache, so the next job finds the last run of the main branch.

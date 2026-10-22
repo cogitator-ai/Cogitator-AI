@@ -113,6 +113,7 @@ export type {
   MetricUsage,
   MetricOptions,
   EvalCaseResult,
+  EvalPrompt,
   ScoredCaseResult,
   EvalToolCall,
   EvalToolResult,
@@ -131,6 +132,34 @@ export type { AssertionFn, AssertionResult, AggregatedMetric, EvalStats } from '
 
 export { report } from './reporters';
 export type { ReporterType, ReporterOptions, ReportedCase } from './reporters';
+export { reportComparison, comparisonMarkdown, comparisonHtml } from './reporters/comparison';
+export type { ReportableComparison, ComparisonReporterType } from './reporters/comparison';
+
+export {
+  loadRun,
+  caseKey,
+  RunStore,
+  compareRuns,
+  EvalRunSchema,
+  EVAL_RUN_FORMAT,
+  EVAL_RUN_VERSION,
+} from './runs';
+export type {
+  EvalRun,
+  EvalRunCase,
+  EvalRunConfig,
+  EvalRunSource,
+  JsonMetadata,
+  RunSummary,
+  RunFilter,
+  CompareRunsOptions,
+  RunComparison,
+  RunMetricComparison,
+  RunCaseChange,
+  RunCaseRef,
+  RunRef,
+  RunWinner,
+} from './runs';
 
 export { pairedTTest } from './stats/t-test';
 export type { TTestResult } from './stats/t-test';

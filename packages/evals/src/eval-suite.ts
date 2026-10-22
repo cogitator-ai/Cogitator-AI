@@ -8,6 +8,7 @@ import type {
   MetricFn,
   MetricScore,
   EvalCaseResult,
+  EvalPrompt,
   EvalToolCall,
   EvalToolResult,
   EvalTurnResult,
@@ -24,6 +25,10 @@ import type { AssertionFn, AssertionResult, AggregatedMetric, EvalStats } from '
 import { aggregate, mean } from './stats';
 import { report } from './reporters';
 import type { ReportedCase, ReporterType, ReporterOptions } from './reporters';
+import { parseOptions } from './options';
+import { ExperimentOptionsSchema, RunPromptSchema } from './runs/schema';
+import type { EvalRun, EvalRunConfig, JsonMetadata } from './runs/schema';
+import { buildRun, newRunId, writeRun } from './runs/run';
 
 /** A turn of a conversation: what the user said and what the target answered */
 export interface EvalTurn {
@@ -77,6 +82,13 @@ export interface EvalProgress {
 export interface EvalSuiteOptions {
   dataset: Dataset;
   target: EvalTarget;
+  /** Names the experiment the suite runs, such as `support-agent`, in reports and run files */
+  name?: string;
+  /**
+   * Describes the experiment in run files, such as `{ branch: 'main', commit: 'a1b2c3' }`. Must be
+   * JSON-serializable: keys holding `undefined` are dropped, other values JSON cannot hold throw
+   */
+  metadata?: Record<string, unknown>;
   metrics?: MetricFn[];
   statisticalMetrics?: StatisticalMetricFn[];
   judge?: JudgeConfigInput;
@@ -125,6 +137,28 @@ export interface EvalSuiteResult {
   report: (type: ReporterType | ReporterType[], options?: ReporterOptions) => void;
   /** Writes the mean of each metric as JSON; throws when a mean is not a finite number */
   saveBaseline: (path: string) => void;
+  /** Unique id of the run, which names its run file: `20261022T101530123Z-1a2b3c4d` */
+  runId: string;
+  /** The suite's `name` */
+  name?: string;
+  /** The suite's `metadata` */
+  metadata?: JsonMetadata;
+  /** When the run started, ISO 8601 */
+  startedAt: string;
+  /** When the run finished, ISO 8601 */
+  finishedAt: string;
+  /**
+   * The run as a run file holds it: id, times, name and metadata, the dataset fingerprint, the
+   * suite's configuration (never its functions, Cogitator or keys), the prompts used, every case
+   * result with its `caseKey`, the aggregates, assertions and stats
+   */
+  toRun: () => EvalRun;
+  /**
+   * Writes the run file and returns its path: `<target>/<runId>.json` when `target` is a
+   * directory or ends with a path separator, `target` itself otherwise. Read it back with
+   * `loadRun()`, keep runs with a `RunStore` and compare them with `compareRuns()`
+   */
+  saveRun: (target: string) => string;
 }
 
 type TargetUsage = NonNullable<EvalCaseResult['usage']>;
@@ -135,6 +169,8 @@ type AttemptOutcome =
 
 interface AgentRunResult {
   output?: unknown;
+  trace?: unknown;
+  prompt?: unknown;
   usage?: unknown;
   toolCalls?: unknown;
   truncated?: unknown;
@@ -278,6 +314,9 @@ export class EvalSuite {
   private readonly retries: number;
   private readonly trials: number;
   private readonly onProgress?: (progress: EvalProgress) => void;
+  private readonly name?: string;
+  private readonly metadata?: JsonMetadata;
+  private readonly runConfig: EvalRunConfig;
 
   constructor(opts: EvalSuiteOptions) {
     const config = EvalSuiteConfigSchema.parse({
@@ -296,6 +335,14 @@ export class EvalSuite {
     this.retries = config.retries;
     this.trials = config.trials;
     this.onProgress = opts.onProgress;
+
+    const experiment = parseOptions(
+      ExperimentOptionsSchema,
+      { name: opts.name, metadata: opts.metadata },
+      'EvalSuite'
+    );
+    this.name = experiment.name;
+    this.metadata = experiment.metadata;
 
     this.validateTarget();
 
@@ -322,6 +369,21 @@ export class EvalSuite {
     this.boundMetrics = rawMetrics.map((m) =>
       isLLMMetric(m) && judge ? bindJudgeContext(m, judge) : m
     );
+
+    this.runConfig = {
+      metrics: rawMetrics.map((m) => m.metricName),
+      statisticalMetrics: this.statisticalMetrics.map((m) => m.metricName),
+      ...(judgeConfig && {
+        judge: {
+          model: judgeConfig.model,
+          temperature: judgeConfig.temperature,
+          ...(judgeConfig.samples !== undefined && { samples: judgeConfig.samples }),
+        },
+      }),
+      trials: this.trials,
+      concurrency: this.concurrency,
+      target: targetDescription(this.target),
+    };
   }
 
   private validateTarget(): void {
@@ -397,7 +459,9 @@ export class EvalSuite {
     }
     signal?.throwIfAborted();
 
-    const suiteStart = Date.now();
+    const startedAt = new Date();
+    const runId = newRunId(startedAt);
+    const suiteStart = startedAt.getTime();
     const cases = this.cases(maxCases);
     const total = cases.length;
     const trials = this.trials;
@@ -458,15 +522,41 @@ export class EvalSuite {
     };
 
     const assertionResults = this.assertionFns.map((fn) => fn(aggregated, stats));
+    const finishedAt = new Date(suiteStart + stats.duration);
+
+    let run: EvalRun | undefined;
+    const toRun = () =>
+      (run ??= buildRun({
+        runId,
+        startedAt,
+        finishedAt,
+        ...(this.name !== undefined && { name: this.name }),
+        ...(this.metadata !== undefined && { metadata: this.metadata }),
+        cases,
+        config: this.runConfig,
+        results: orderedResults,
+        aggregated,
+        assertions: assertionResults,
+        stats,
+      }));
 
     const suiteResult: EvalSuiteResult = {
       results: orderedResults,
       aggregated,
       assertions: assertionResults,
       stats,
+      runId,
+      ...(this.name !== undefined && { name: this.name }),
+      ...(this.metadata !== undefined && { metadata: this.metadata }),
+      startedAt: startedAt.toISOString(),
+      finishedAt: finishedAt.toISOString(),
+      toRun,
+      saveRun: (target) => writeRun(toRun(), target),
       report: (type, options) => {
         report(
           {
+            ...(this.name !== undefined && { name: this.name }),
+            runId,
             results: orderedResults.map(reportedCase),
             aggregated,
             assertions: assertionResults,
@@ -649,6 +739,7 @@ export class EvalSuite {
     const retrieved: Passage[] = [];
     let reportsToolCalls = false;
     let usage: TargetUsage | undefined;
+    let lastRun: RunIdentity = {};
     const flags: Pick<EvalCaseResult, 'truncated' | 'iterationLimitReached' | 'paused'> = {};
 
     for (const input of inputs) {
@@ -689,10 +780,12 @@ export class EvalSuite {
       if (runResult.truncated === true) flags.truncated = true;
       if (runResult.iterationLimitReached === true) flags.iterationLimitReached = true;
       if (runResult.status === 'paused') flags.paused = true;
+      lastRun = runIdentityOf(runResult);
       turns.push({
         input,
         output,
         ...(turnCalls && turnCalls.length > 0 && { toolCalls: turnCalls }),
+        ...lastRun,
       });
     }
 
@@ -705,6 +798,7 @@ export class EvalSuite {
       ...(toolResults.length > 0 && { toolResults }),
       ...(retrieved.length > 0 && { retrieved }),
       ...(threadId !== undefined && { turns }),
+      ...lastRun,
       ...flags,
     };
   }
@@ -775,6 +869,39 @@ export class EvalSuite {
   }
 }
 
+/** The trace and versioned instructions of an agent run */
+interface RunIdentity {
+  traceId?: string;
+  prompt?: EvalPrompt;
+}
+
+function runIdentityOf(runResult: AgentRunResult): RunIdentity {
+  const trace = runResult.trace;
+  const traceId =
+    typeof trace === 'object' && trace !== null
+      ? (trace as { traceId?: unknown }).traceId
+      : undefined;
+  const prompt = RunPromptSchema.safeParse(runResult.prompt);
+  return {
+    ...(typeof traceId === 'string' && traceId !== '' && { traceId }),
+    ...(prompt.success && { prompt: prompt.data }),
+  };
+}
+
+/** What a run file records of the target: its kind, and an agent's name and model */
+function targetDescription(target: EvalTarget): EvalRunConfig['target'] {
+  if (target.fn !== undefined) return { kind: 'fn' };
+  const agent =
+    typeof target.agent === 'object' && target.agent !== null
+      ? (target.agent as { name?: unknown; model?: unknown })
+      : {};
+  return {
+    kind: 'agent',
+    ...(typeof agent.name === 'string' && { name: agent.name }),
+    ...(typeof agent.model === 'string' && { model: agent.model }),
+  };
+}
+
 function trialsOf(result: ScoredCaseResult): readonly ScoredCaseResult[] {
   return result.trials ?? [result];
 }
@@ -800,12 +927,12 @@ function failureDetails(settled: Settled): AttemptOutcome {
   return { ok: false, error: settled.error, turns, ...(usage && { usage }) };
 }
 
-/** A case result as the reporters get it, the agent's data and the trials kept */
 /** The trial a case is reported by: the first that answered, the first when every trial errored */
 function leadTrial(trials: ScoredCaseResult[]): ScoredCaseResult {
   return trials.find((trial) => trial.error === undefined) ?? trials[0];
 }
 
+/** A case result as the reporters get it, the agent's data and the trials kept */
 function reportedCase(r: ScoredCaseResult): ReportedCase {
   return {
     case: { input: r.case.input, expected: r.case.expected },
@@ -819,6 +946,8 @@ function reportedCase(r: ScoredCaseResult): ReportedCase {
     ...(r.toolResults && { toolResults: r.toolResults }),
     ...(r.retrieved && { retrieved: r.retrieved }),
     ...(r.turns && { turns: r.turns }),
+    ...(r.traceId !== undefined && { traceId: r.traceId }),
+    ...(r.prompt && { prompt: r.prompt }),
     scores: r.scores,
     ...(r.trials && { trials: r.trials.map(reportedCase) }),
   };

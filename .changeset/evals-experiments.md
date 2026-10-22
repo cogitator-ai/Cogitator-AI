@@ -1,0 +1,13 @@
+---
+'@cogitator-ai/evals': minor
+---
+
+Experiment tracking: named runs saved as versioned run files, a `RunStore`, `compareRuns()`, Markdown and HTML reports, and `reportComparison()`
+
+Agent case results now keep the `traceId` of their run (`RunResult.trace.traceId`) and the versioned instructions it used in `prompt` (`{ key, versionId?, version?, abTest? }`, from `RunResult.prompt`). Each turn of a multi-turn case keeps its own and the case keeps the last turn's, each trial its own. The JSON report carries them.
+
+`EvalSuite` takes `name` and JSON-serializable `metadata` describing the experiment, and its result has a unique `runId`, `startedAt` and `finishedAt`. `result.saveRun(target)` writes a run file (`format: 'cogitator.eval-run'`, `version: 1`, `<runId>.json` in a directory target) with the dataset fingerprint (SHA-256 of the canonical JSON of the cases run), the configuration (metric names, judge model, temperature and samples, trials, concurrency, target kind, agent name and model, never functions, Cogitator instances or keys), the prompt versions used, every case result with a stable `caseKey`, the aggregates, assertions and stats. `result.toRun()` returns it without writing, `loadRun(path)` reads it back validated with Zod, and `RunStore` keeps runs in a directory with `save()`, `list()` (newest first, with metric means), `load(id)` and `latest(filter?)`.
+
+`compareRuns(base, head, { alpha?, test?, seed?, metrics? })` matches cases by `caseKey`, lists the cases only one run has in `added` and `removed`, and compares each metric both runs have with the statistics of `EvalComparison` (means, difference, bootstrap CI, effect size, p-value, Holm-adjusted p-value, significance and winner), plus the `improved` and `regressed` cases. `warnings` say when the dataset fingerprints, the prompt versions, the metrics or the judge differ.
+
+`result.report()` takes two new types: `markdown`, a compact summary for pull request comments, and `html`, a self-contained page that reads well in light and dark color schemes. `reportComparison(comparison, 'markdown' | 'html' | 'console', { path? })` renders `compareRuns()` and `EvalComparison` results with the winner, a metric table, regressions, improvements and warnings, and `comparisonMarkdown()` and `comparisonHtml()` return the text. The statistics of `EvalComparison` moved into a module shared with `compareRuns()`, with no change to their results.
