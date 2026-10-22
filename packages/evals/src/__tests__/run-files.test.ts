@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -61,6 +61,10 @@ function fnSuite(options: { name?: string; metadata?: Record<string, unknown> } 
 }
 
 let dir: string;
+
+beforeAll(async () => {
+  await import('@cogitator-ai/core');
+}, 60_000);
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'cogitator-run-files-'));
@@ -356,6 +360,8 @@ describe('case keys and fingerprints', () => {
     expect(caseKey({ expected: 'a', input: 'q' })).toBe(key);
     expect(caseKey({ input: 'q', expected: 'b' })).not.toBe(key);
     expect(caseKey({ input: 'q', expected: 'a', turns: ['more'] })).not.toBe(key);
+    const withContext = { input: 'q', expected: 'a', context: { user: 'x' }, metadata: { v: 1 } };
+    expect(caseKey(withContext)).toBe(key);
     expect(key).toMatch(/^[0-9a-f]{64}$/);
   });
 
@@ -368,6 +374,19 @@ describe('case keys and fingerprints', () => {
       when: '1970-01-01T00:00:00.000Z',
       n: null,
     });
+  });
+
+  it('calls toJSON once, as JSON.stringify does, even when it returns the object itself', () => {
+    const selfish = {
+      a: 1,
+      toJSON() {
+        return this;
+      },
+    };
+    const wrapped = { toJSON: () => ({ inner: { toJSON: () => 'inner value' } }) };
+
+    expect(toJson({ selfish })).toEqual(JSON.parse(JSON.stringify({ selfish })));
+    expect(canonicalJson(wrapped)).toBe(JSON.stringify(wrapped));
   });
 
   it('fingerprints the cases run, so maxCases changes it', async () => {

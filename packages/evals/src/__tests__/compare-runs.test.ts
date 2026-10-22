@@ -127,6 +127,26 @@ describe('compareRuns', () => {
     expect(compareRuns(base, head).warnings[0]).toMatch(/every case matches by input/);
   });
 
+  it('matches every case when only the context or metadata changed, and says so', async () => {
+    const base = await runWith(right, { cases: CASES.slice(0, 3) });
+    const head = await runWith(right, {
+      cases: CASES.slice(0, 3).map((c) => ({
+        ...c,
+        context: { tone: 'formal' },
+        metadata: { v: 2 },
+      })),
+    });
+
+    const runs = compareRuns(base, head);
+
+    expect(runs.matched).toBe(3);
+    expect(runs.added).toEqual([]);
+    expect(runs.removed).toEqual([]);
+    expect(runs.warnings).toEqual([
+      'The datasets differ (fingerprints differ) while every case matches by input, turns and expected answer: their order, context or metadata changed',
+    ]);
+  });
+
   it('pairs repeated cases occurrence by occurrence', async () => {
     const base = await runWith(right, { cases: [CASES[0], CASES[0], CASES[1]] });
     const head = await runWith(right, { cases: [CASES[0], CASES[1]] });
@@ -244,6 +264,42 @@ describe('compareRuns', () => {
       'Metrics differ: only the head run has latency',
       'Judge differs: the base run used no judge, the head run judge/b at temperature 0, 3 samples',
     ]);
+  });
+
+  it('leaves out a metric no matched case was scored on, so Holm is unaffected', async () => {
+    const withoutSimilarity = (run: EvalRun): EvalRun => ({
+      ...run,
+      results: run.results.map((r) => ({
+        ...r,
+        scores: r.scores.filter((score) => score.name !== 'similarity'),
+      })),
+    });
+    const base = withoutSimilarity(await runWith(rightUpTo(3)));
+    const head = withoutSimilarity(await runWith(rightUpTo(10)));
+
+    const runs = compareRuns(base, head, { seed: 1 });
+    const alone = compareRuns(base, head, { seed: 1, metrics: ['exactMatch'] });
+
+    expect(Object.keys(runs.metrics)).toEqual(['exactMatch']);
+    expect(runs.metrics.exactMatch).toEqual(alone.metrics.exactMatch);
+    expect(runs.metrics.exactMatch.adjustedPValue).toBe(runs.metrics.exactMatch.pValue);
+    expect(runs.warnings).toEqual([
+      "Metric 'similarity' was scored on no case the runs share (every case errored or went unscored), so it is not compared",
+    ]);
+
+    const asked = compareRuns(base, head, { metrics: ['similarity'] }).metrics.similarity;
+    expect(asked).toMatchObject({ n: 0, test: 'none', pValue: 1, winner: 'tie' });
+    expect(asked.base).toBeNaN();
+    expect(asked.head).toBeNaN();
+    expect(asked.difference).toBeNaN();
+  });
+
+  it('leaves out every metric when every case errored on both runs', async () => {
+    const down: Answer = () => new Error('down');
+    const runs = compareRuns(await runWith(down), await runWith(down));
+
+    expect(runs.metrics).toEqual({});
+    expect(runs.warnings).toHaveLength(2);
   });
 
   it('compares nothing when the runs share no metric', async () => {

@@ -31,7 +31,11 @@ export interface CompareRunsOptions {
   test?: 't' | 'wilcoxon';
   /** Seeds the bootstrap of each metric's `ci`, so the intervals are the same on every call */
   seed?: number | string;
-  /** The metrics to compare. Default: every per-case metric both runs have */
+  /**
+   * The metrics to compare. Default: every per-case metric both runs have and scored on at least
+   * one matched case, the others named in `warnings`, so a metric without data neither shows two
+   * means of 0 nor weakens the Holm correction of the others
+   */
   metrics?: string[];
 }
 
@@ -49,7 +53,7 @@ export interface RunCaseChange {
 }
 
 export interface RunMetricComparison {
-  /** Mean score of the base run over the compared cases */
+  /** Mean score of the base run over the compared cases, NaN when `n` is 0 */
   base: number;
   head: number;
   /** Cases compared: matched cases at least one run scored, an errored side counting as a 0 */
@@ -98,7 +102,10 @@ export interface RunComparison {
   added: RunCaseRef[];
   /** Cases only the base run has */
   removed: RunCaseRef[];
-  /** What makes the runs harder to compare: other cases, other prompts, other metrics or judge */
+  /**
+   * What makes the runs harder to compare: other cases, other prompts, other metrics or judge,
+   * and metrics left out because no matched case was scored on them
+   */
   warnings: string[];
 }
 
@@ -272,10 +279,14 @@ export function compareRuns(
   const base = runOf(baseSource);
   const head = runOf(headSource);
   const { pairs, added, removed } = matchCases(base, head);
-  const names = metricsToCompare(base, head, config.metrics);
-
   const paired = new Map<string, [number[], number[]]>();
-  for (const name of names) paired.set(name, pairedScores(pairs, name));
+  const unscored: string[] = [];
+  for (const name of metricsToCompare(base, head, config.metrics)) {
+    const scores = pairedScores(pairs, name);
+    if (scores[0].length === 0 && config.metrics === undefined) unscored.push(name);
+    else paired.set(name, scores);
+  }
+  const names = [...paired.keys()];
   const compared = compareMetrics(paired, config);
 
   const metrics: Record<string, RunMetricComparison> = {};
@@ -304,6 +315,10 @@ export function compareRuns(
     ...(dataset ? [dataset] : []),
     ...promptWarnings(base, head),
     ...configWarnings(base, head),
+    ...unscored.map(
+      (name) =>
+        `Metric '${name}' was scored on no case the runs share (every case errored or went unscored), so it is not compared`
+    ),
   ];
 
   return {

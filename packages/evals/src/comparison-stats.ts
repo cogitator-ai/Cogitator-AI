@@ -19,11 +19,12 @@ export type ComparisonTest = 'mcnemar' | 'mcnemar-exact' | 't' | 'wilcoxon' | 'n
 export type ComparisonWinner = 'baseline' | 'challenger' | 'tie';
 
 export interface MetricComparison {
+  /** Mean score over the compared cases, NaN when `n` is 0 */
   baseline: number;
   challenger: number;
   /** Cases compared: those at least one side scored, an errored side counting as a 0 */
   n: number;
-  /** Mean of the paired differences, challenger minus baseline */
+  /** Mean of the paired differences, challenger minus baseline, NaN when `n` is 0 */
   difference: number;
   /** Percentile bootstrap confidence interval of `difference` at `1 - alpha` */
   ci: { low: number; high: number };
@@ -159,10 +160,10 @@ function compareMetric(
     ...(config.seed !== undefined && { seed: `${String(config.seed)}:${name}` }),
   });
   return {
-    baseline: mean(baselineScores),
-    challenger: mean(challengerScores),
+    baseline: meanOrNaN(baselineScores),
+    challenger: meanOrNaN(challengerScores),
     n: baselineScores.length,
-    difference: mean(differences),
+    difference: meanOrNaN(differences),
     ci: { low, high },
     effectSize: cohensD(differences),
     ...pairedTest(baselineScores, challengerScores, config.test, true),

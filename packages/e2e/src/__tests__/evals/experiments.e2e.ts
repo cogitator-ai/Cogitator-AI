@@ -29,9 +29,10 @@ const TRACE_ID = /^[0-9a-f]{32}$/;
 
 describeIf('Evals E2E: experiment tracking', () => {
   let cogitator: Cogitator;
-  const dir = mkdtempSync(join(tmpdir(), 'cogitator-experiments-'));
+  let dir: string;
 
   beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cogitator-experiments-'));
     cogitator = new Cogitator({
       llm: { defaultModel: MODEL, providers: { google: { apiKey: GOOGLE_API_KEY! } } },
     });

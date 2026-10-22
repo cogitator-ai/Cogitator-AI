@@ -1,7 +1,7 @@
 export { loadRun, caseKey } from './run';
 export type { EvalRunSource } from './run';
 export { RunStore } from './store';
-export type { RunSummary, RunFilter } from './store';
+export type { RunSummary, RunFilter, RunStoreOptions, SkippedRunFile } from './store';
 export { compareRuns } from './compare';
 export type {
   CompareRunsOptions,

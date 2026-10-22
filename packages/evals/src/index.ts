@@ -152,6 +152,8 @@ export type {
   JsonMetadata,
   RunSummary,
   RunFilter,
+  RunStoreOptions,
+  SkippedRunFile,
   CompareRunsOptions,
   RunComparison,
   RunMetricComparison,

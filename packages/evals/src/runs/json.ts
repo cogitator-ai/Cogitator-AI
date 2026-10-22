@@ -4,7 +4,13 @@ function hasToJson(value: object): value is { toJSON: (key: string) => unknown }
   return typeof (value as { toJSON?: unknown }).toJSON === 'function';
 }
 
-function convert(value: unknown, key: string, ancestors: object[], sortKeys: boolean): unknown {
+function convert(
+  value: unknown,
+  key: string,
+  ancestors: object[],
+  sortKeys: boolean,
+  calledToJson = false
+): unknown {
   if (value === null) return null;
   switch (typeof value) {
     case 'string':
@@ -20,7 +26,9 @@ function convert(value: unknown, key: string, ancestors: object[], sortKeys: boo
       return undefined;
   }
   const object = value as object;
-  if (hasToJson(object)) return convert(object.toJSON(key), key, ancestors, sortKeys);
+  if (!calledToJson && hasToJson(object)) {
+    return convert(object.toJSON(key), key, ancestors, sortKeys, true);
+  }
   if (ancestors.includes(object)) return '[Circular]';
   const nested = [...ancestors, object];
   if (Array.isArray(object)) {
@@ -37,7 +45,8 @@ function convert(value: unknown, key: string, ancestors: object[], sortKeys: boo
 }
 
 /**
- * A value as JSON keeps it, as `JSON.stringify` would write it, except that a bigint becomes its
+ * A value as JSON keeps it, as `JSON.stringify` would write it (`toJSON` called once per value),
+ * except that a bigint becomes its
  * decimal string and a circular reference the string `[Circular]` instead of throwing
  */
 export function toJson(value: unknown): unknown {

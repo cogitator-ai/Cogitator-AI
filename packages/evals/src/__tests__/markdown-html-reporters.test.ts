@@ -114,6 +114,28 @@ describe('markdown reporter', () => {
     expect(md).not.toContain('Failed cases');
   });
 
+  it('lists the failures of every trial', () => {
+    const first = { ...makeResult().results[0], scores: [{ name: 'exactMatch', score: 1 }] };
+    const second = {
+      ...first,
+      scores: [{ name: 'exactMatch', score: 0, error: 'judge gave no verdict' }],
+    };
+    const third = { ...first, output: '', error: 'Timed out', scores: [] };
+    const result = makeResult({ results: [{ ...first, trials: [first, second, third] }] });
+
+    const md = markdownSummary(result);
+    const html = htmlPage(result);
+
+    expect(md).toContain('**Failed cases** (2)');
+    expect(md).toContain(
+      '| [1] What is 2+2? | trial 2: metric exactMatch failed: judge gave no verdict |'
+    );
+    expect(md).toContain('| [1] What is 2+2? | trial 3: error: Timed out |');
+    expect(html).toContain('2 of 3 trials answered');
+    expect(html).toContain('trial 2: metric exactMatch failed: judge gave no verdict');
+    expect(html).toContain('trial 3: error: Timed out');
+  });
+
   it('counts the failures it does not list', () => {
     const errored = makeResult().results[2];
     const md = markdownSummary(
@@ -254,6 +276,23 @@ describe('reportComparison', () => {
     expect(md).toContain('**Regressions**');
     expect(md).toContain('| exactMatch | 2 \\| 2 | 1 | 0 | -1 |');
     expect(md).toContain('| exactMatch | Capital of &lt;France>? | 0 | 1 | +1 |');
+  });
+
+  it('lists at most 10 changes per metric in Markdown and counts the rest', () => {
+    const comparison = runComparison();
+    const change = comparison.metrics.exactMatch.regressed[0];
+    comparison.metrics.exactMatch.regressed = Array.from({ length: 12 }, (_, i) => ({
+      ...change,
+      input: `case ${i}`,
+    }));
+
+    const md = comparisonMarkdown(comparison);
+
+    expect(md.match(/\| exactMatch \| case \d+ \| 1 \| 0 \| -1 \|/g)).toHaveLength(10);
+    expect(md).toContain('| case 9 |');
+    expect(md).not.toContain('| case 10 |');
+    expect(md).toContain('| exactMatch | and 2 more | | | |');
+    expect(comparisonHtml(comparison).match(/case \d+/g)).toHaveLength(12);
   });
 
   it('renders a run comparison as an escaped HTML page', () => {

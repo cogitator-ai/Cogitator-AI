@@ -1,12 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { EvalSuite } from '../eval-suite';
 import { Dataset } from '../datasets';
 import { exactMatch } from '../metrics/deterministic';
 import { RunStore } from '../runs';
-import type { EvalRun } from '../runs';
+import type { EvalRun, SkippedRunFile } from '../runs';
 
 let dir: string;
 
@@ -83,26 +83,80 @@ describe('RunStore', () => {
     expect(store.latest({ name: 'missing' })).toBeUndefined();
   });
 
-  it('ignores other files and throws on a run file that is not valid', async () => {
-    const store = new RunStore(dir);
-    store.save(await suite('qa', 'yes').run());
+  it('passes over other JSON and reports the entries it cannot read, listing the rest', async () => {
+    const skipped: SkippedRunFile[] = [];
+    const store = new RunStore(dir, { onSkip: (entry) => skipped.push(entry) });
+    const run = (await suite('qa', 'yes').run()).toRun();
+    store.save(run);
     writeFileSync(join(dir, 'baseline.json'), '{"exactMatch": 1}');
     writeFileSync(join(dir, 'notes.txt'), 'hello');
     writeFileSync(join(dir, 'broken.json'), '{nope');
+    writeFileSync(join(dir, 'edited.json'), JSON.stringify({ ...run, runId: 'edited', stats: 1 }));
+    writeFileSync(
+      join(dir, 'future.json'),
+      JSON.stringify({ ...run, runId: 'future', version: 2 })
+    );
+    mkdirSync(join(dir, 'folder.json'));
 
-    expect(store.list()).toHaveLength(1);
-
-    writeFileSync(join(dir, 'bad.json'), '{"format": "cogitator.eval-run", "version": 1}');
-    expect(() => store.list()).toThrow(/bad\.json is not a valid eval run file/);
+    expect(store.list().map((r) => r.id)).toEqual([run.runId]);
+    expect(store.latest()?.runId).toBe(run.runId);
+    expect(skipped.map((s) => basename(s.path)).sort()).toEqual([
+      'broken.json',
+      'broken.json',
+      'edited.json',
+      'edited.json',
+      'folder.json',
+      'folder.json',
+      'future.json',
+      'future.json',
+    ]);
+    const reasons = Object.fromEntries(skipped.map((s) => [basename(s.path), s.reason]));
+    expect(reasons['broken.json']).toBe('not JSON');
+    expect(reasons['edited.json']).toMatch(/is not a valid eval run file: stats/);
+    expect(reasons['future.json']).toMatch(
+      /of version 2, this version of @cogitator-ai\/evals reads version 1/
+    );
+    expect(reasons['folder.json']).toBe('not a file');
   });
 
-  it('loads by id and refuses ids that are missing or not ids', () => {
-    const store = new RunStore(dir);
+  it('reports skipped entries as process warnings by default', () => {
+    const warn = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
+    try {
+      writeFileSync(join(dir, 'broken.json'), '{nope');
+
+      expect(new RunStore(dir).list()).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(`RunStore skipped ${join(dir, 'broken.json')}: not JSON`, {
+        code: 'COGITATOR_EVALS_RUN_SKIPPED',
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('loads by id strictly and refuses ids that are missing or not ids', async () => {
+    const store = new RunStore(dir, { onSkip: () => {} });
+    const run = (await suite('qa', 'yes').run()).toRun();
     writeFileSync(join(dir, 'other.json'), '{"exactMatch": 1}');
+    writeFileSync(join(dir, 'future.json'), JSON.stringify({ ...run, version: 2 }));
+    mkdirSync(join(dir, 'folder.json'));
 
     expect(() => store.load('nope')).toThrow(`No run 'nope' in ${dir}`);
-    expect(() => store.load('other')).toThrow(/No run 'other'/);
+    expect(() => store.load('other')).toThrow(/other\.json is not an eval run file/);
+    expect(() => store.load('future')).toThrow(/of version 2/);
+    expect(() => store.load('folder')).toThrow(/Cannot read the run file/);
     expect(() => store.load('../escape')).toThrow(/is not a run id/);
+  });
+
+  it('refuses to save a run whose id would lead outside the directory', async () => {
+    const store = new RunStore(join(dir, 'runs'));
+    const run = (await suite('qa', 'yes').run()).toRun();
+
+    expect(() => store.save({ ...run, runId: '../escaped' })).toThrow(
+      /Cannot write the run: runId/
+    );
+    expect(() => store.save({ ...run, runId: 'a/b' })).toThrow(/Cannot write the run: runId/);
+    expect(existsSync(join(dir, 'escaped.json'))).toBe(false);
+    expect(existsSync(join(dir, 'runs'))).toBe(false);
   });
 
   it('lists nothing for a directory that does not exist yet', () => {

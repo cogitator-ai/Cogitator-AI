@@ -1,8 +1,8 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { EVAL_RUN_FORMAT } from './schema';
 import type { EvalRun, JsonMetadata } from './schema';
-import { parseRun, runOf, writeRun } from './run';
+import { loadRun, parseRun, runOf, writeRun } from './run';
 import type { EvalRunSource } from './run';
 
 /** A run as `RunStore.list()` shows it */
@@ -46,12 +46,80 @@ function matches(summary: RunSummary, filter: RunFilter | undefined): boolean {
   return filter.name === undefined || summary.name === filter.name;
 }
 
+/** A file `list()` and `latest()` passed over: what it is and why it was not read */
+export interface SkippedRunFile {
+  path: string;
+  reason: string;
+}
+
+export interface RunStoreOptions {
+  /**
+   * Called for each `.json` entry `list()` and `latest()` skip: a directory, a file that cannot
+   * be read or is not JSON, or a run file that is not valid (of another format version, or edited
+   * by hand). Default: a process warning with the code `COGITATOR_EVALS_RUN_SKIPPED`
+   */
+  onSkip?: (skipped: SkippedRunFile) => void;
+}
+
+type FileRead = { kind: 'run'; run: EvalRun } | { kind: 'other' } | { kind: 'bad'; reason: string };
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function warnSkipped({ path, reason }: SkippedRunFile): void {
+  process.emitWarning(`RunStore skipped ${path}: ${reason}`, {
+    code: 'COGITATOR_EVALS_RUN_SKIPPED',
+  });
+}
+
+/** What a run file path holds: a valid run, JSON of another kind, or something unreadable */
+function readRunFile(path: string): FileRead {
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf-8');
+  } catch (error) {
+    return { kind: 'bad', reason: errorMessage(error) };
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return { kind: 'bad', reason: 'not JSON' };
+  }
+  const format =
+    typeof value === 'object' && value !== null ? (value as { format?: unknown }).format : null;
+  if (format !== EVAL_RUN_FORMAT) return { kind: 'other' };
+  try {
+    return { kind: 'run', run: parseRun(value, path) };
+  } catch (error) {
+    return { kind: 'bad', reason: errorMessage(error) };
+  }
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Saved suite runs in a directory, one `<runId>.json` run file each. Other JSON files in the
- * directory are ignored, while a file that claims to be a run file and is not valid throws
+ * Saved suite runs in a directory, one `<runId>.json` run file each. `list()` and `latest()` pass
+ * over JSON files that are not run files, such as a baseline, and report the `.json` entries they
+ * cannot read through `onSkip`, so one bad file never hides the other runs. `load(id)` is strict
+ * and throws for a run file it cannot read
  */
 export class RunStore {
-  constructor(readonly directory: string) {}
+  private readonly onSkip: (skipped: SkippedRunFile) => void;
+
+  constructor(
+    readonly directory: string,
+    options: RunStoreOptions = {}
+  ) {
+    this.onSkip = options.onSkip ?? warnSkipped;
+  }
 
   /** Writes the run file of a suite result or a run, returning its path */
   save(source: EvalRunSource): string {
@@ -65,13 +133,15 @@ export class RunStore {
       .filter((summary) => matches(summary, filter));
   }
 
-  /** The run with this id. Throws when the directory has none */
+  /**
+   * The run with this id. Throws when the directory has none, and when its file cannot be read
+   * or is not a valid run file
+   */
   load(id: string): EvalRun {
     if (!RUN_ID.test(id)) throw new Error(`'${id}' is not a run id`);
     const path = join(this.directory, `${id}.json`);
-    const run = this.read(path);
-    if (!run) throw new Error(`No run '${id}' in ${this.directory}`);
-    return run;
+    if (!existsSync(path)) throw new Error(`No run '${id}' in ${this.directory}`);
+    return loadRun(path);
   }
 
   /** The newest run, of those the filter picks, undefined when there is none */
@@ -91,36 +161,21 @@ export class RunStore {
       throw error;
     }
     const entries: Array<{ run: EvalRun; path: string }> = [];
-    for (const file of files) {
+    for (const file of files.sort()) {
       if (!file.endsWith('.json')) continue;
       const path = join(this.directory, file);
-      const run = this.read(path);
-      if (run) entries.push({ run, path });
+      if (!isFile(path)) {
+        this.onSkip({ path, reason: 'not a file' });
+        continue;
+      }
+      const read = readRunFile(path);
+      if (read.kind === 'run') entries.push({ run: read.run, path });
+      else if (read.kind === 'bad') this.onSkip({ path, reason: read.reason });
     }
     return entries.sort(
       (a, b) =>
         Date.parse(b.run.startedAt) - Date.parse(a.run.startedAt) ||
         b.run.runId.localeCompare(a.run.runId)
     );
-  }
-
-  /** The run in a file, undefined when the file is missing or holds other JSON */
-  private read(path: string): EvalRun | undefined {
-    let text: string;
-    try {
-      text = readFileSync(path, 'utf-8');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-      throw error;
-    }
-    let value: unknown;
-    try {
-      value = JSON.parse(text);
-    } catch {
-      return undefined;
-    }
-    const format =
-      typeof value === 'object' && value !== null ? (value as { format?: unknown }).format : null;
-    return format === EVAL_RUN_FORMAT ? parseRun(value, path) : undefined;
   }
 }

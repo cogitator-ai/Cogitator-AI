@@ -1,6 +1,6 @@
 import { writeFileSync } from 'node:fs';
 import type { EvalSuiteResult, ReportedCase } from './index';
-import { caseFlags, num, trialsPerCase } from './format';
+import { caseFlags, caseProblems, num, trialsPerCase } from './format';
 import { escapeHtml, foldable, htmlDocument, htmlTable, htmlTiles } from './html-format';
 
 function scoresCell(r: ReportedCase): string {
@@ -22,6 +22,9 @@ function statusCell(r: ReportedCase): string {
   if (r.trials && r.trials.length > 1) {
     const answered = r.trials.filter((t) => t.error === undefined).length;
     parts.push(`<span class="muted">${answered} of ${r.trials.length} trials answered</span>`);
+    for (const problem of caseProblems(r)) {
+      parts.push(`<span class="fail">${foldable(problem, 80)}</span>`);
+    }
   }
   return parts.join('<br>');
 }
@@ -49,8 +52,8 @@ function runCell(r: ReportedCase): string {
 
 /**
  * A self-contained HTML page of a suite run: the totals, the aggregated metrics, the assertions
- * and every case with its scores. Inline CSS for light and dark color schemes, no scripts, no
- * external assets, and every value from the run escaped
+ * and every case with its scores and the failures of each of its trials. Inline CSS for light and
+ * dark color schemes, no scripts, no external assets, and every value from the run escaped
  */
 export function htmlPage(result: EvalSuiteResult): string {
   const { stats } = result;

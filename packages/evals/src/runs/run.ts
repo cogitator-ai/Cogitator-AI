@@ -143,13 +143,18 @@ function isDirectory(path: string): boolean {
 }
 
 /**
- * Writes a run file and returns its path: `<target>/<runId>.json` when `target` is a directory
+ * Validates a run, so its id can never lead outside the directory, then writes its run file
+ * and returns its path: `<target>/<runId>.json` when `target` is a directory
  * or ends with a path separator, `target` itself otherwise. Missing directories are created
  */
 export function writeRun(run: EvalRun, target: string): string {
+  const checked = EvalRunSchema.safeParse(toJson(run));
+  if (!checked.success) {
+    throw new Error(`Cannot write the run: ${issuesOf(checked.error)}`);
+  }
   const intoDirectory = target.endsWith('/') || target.endsWith(sep) || isDirectory(target);
-  const path = intoDirectory ? join(target, `${run.runId}.json`) : target;
+  const path = intoDirectory ? join(target, `${checked.data.runId}.json`) : target;
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(run, null, 2)}\n`, 'utf-8');
+  writeFileSync(path, `${JSON.stringify(checked.data, null, 2)}\n`, 'utf-8');
   return path;
 }

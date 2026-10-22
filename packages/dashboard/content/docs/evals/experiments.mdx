@@ -63,7 +63,7 @@ console.log(result.results[0].prompt); // { key: 'support', versionId: '...', ve
 
 ## Run Files
 
-`result.saveRun(target)` writes the run as one JSON file and returns its path. A target that is a directory, or ends with `/`, gets `<runId>.json`, any other target is the file itself. Missing directories are created. `result.toRun()` returns the same object without writing it.
+`result.saveRun(target)` writes the run as one JSON file and returns its path. A target that is a directory, or ends with `/`, gets `<runId>.json`, any other target is the file itself. Missing directories are created. The run is validated before it is written, so a run built or edited by hand with a `runId` such as `../escaped` throws instead of writing outside the directory. `result.toRun()` returns the same object without writing it.
 
 ```typescript
 result.saveRun('./eval-runs'); // ./eval-runs/20261022T101530123Z-1a2b3c4d.json
@@ -121,7 +121,9 @@ const run = loadRun('./eval-runs/20261022T101530123Z-1a2b3c4d.json');
 ```typescript
 import { RunStore } from '@cogitator-ai/evals';
 
-const store = new RunStore('./eval-runs');
+const store = new RunStore('./eval-runs', {
+  onSkip: ({ path, reason }) => console.warn(`skipped ${path}: ${reason}`),
+});
 
 store.save(result); // a suite result or a run, returns the path
 store.list(); // newest first
@@ -135,10 +137,12 @@ store.latest((run) => run.metadata?.branch === 'main');
 | ----------------- | ---------------------- | ---------------------------------------------------------------------- |
 | `save(source)`    | `string`               | Writes the run file of a suite result or a run, creating the directory |
 | `list(filter?)`   | `RunSummary[]`         | The runs, newest first by `startedAt`                                  |
-| `load(id)`        | `EvalRun`              | The run with that id, throws when there is none                        |
+| `load(id)`        | `EvalRun`              | The run with that id, throws when there is none or it is not valid     |
 | `latest(filter?)` | `EvalRun \| undefined` | The newest run the filter picks                                        |
 
-A filter is `{ name }` or a predicate over the summaries. A summary holds `id`, `name`, `metadata`, `startedAt`, `finishedAt`, `cases`, `path` and `metrics`, the mean of each aggregated metric. Other JSON files in the directory, such as a baseline, are ignored, while a file that claims to be a run file and is not valid throws. A directory that does not exist yet lists no runs.
+A filter is `{ name }` or a predicate over the summaries. A summary holds `id`, `name`, `metadata`, `startedAt`, `finishedAt`, `cases`, `path` and `metrics`, the mean of each aggregated metric. A directory that does not exist yet lists no runs.
+
+`list()` and `latest()` never let one bad file hide the other runs. JSON files that are not run files, such as a baseline, are passed over silently. A `.json` entry they cannot use is skipped and reported to the `onSkip` option as `{ path, reason }`: a directory named `x.json`, a file that cannot be read or is not JSON, and a run file that is not valid, of another format version or edited by hand. Without `onSkip`, each skipped entry is a process warning with the code `COGITATOR_EVALS_RUN_SKIPPED`. `load(id)` stays strict and throws for any of them, naming the file.
 
 ## Comparing Runs
 
@@ -168,7 +172,7 @@ Each metric both runs have is compared exactly as [`EvalComparison`](/docs/evals
 interface RunComparison {
   base: { runId: string; name?: string; startedAt: string };
   head: { runId: string; name?: string; startedAt: string };
-  winner: 'base' | 'head' | 'tie'; // majority of the metrics' winners
+  winner: 'base' | 'head' | 'tie'; // the run more metrics name as their winner, a tie when as many name each
   metrics: Record<string, RunMetricComparison>;
   matched: number;
   added: { caseKey: string; input: string }[];
@@ -210,9 +214,9 @@ A case is listed in `improved` or `regressed` when its score moved by more than 
 | `alpha`   | `number`            | `0.05`  | Significance level for the Holm-adjusted p-values, and the `ci` level `1 - alpha` |
 | `test`    | `'t' \| 'wilcoxon'` | `'t'`   | Test of metrics that are not binary                                               |
 | `seed`    | `number \| string`  | -       | Seeds the bootstrap, so the intervals are the same on every call                  |
-| `metrics` | `string[]`          | -       | The metrics to compare. Default: every per-case metric both runs have             |
+| `metrics` | `string[]`          | -       | The metrics to compare. Default: every per-case metric both runs have and scored  |
 
-A metric in `metrics` that one of the runs does not have throws, naming the metrics each run has.
+A metric in `metrics` that one of the runs does not have throws, naming the metrics each run has. By default a metric that no matched case was scored on, such as when every case errored on both runs, is left out and named in `warnings`, so it neither shows two means of 0 nor weakens the Holm correction of the other metrics. Asked for in `metrics`, it is compared with `n` 0, NaN means and difference, and a p-value of 1.
 
 ### Warnings
 
@@ -221,7 +225,8 @@ A metric in `metrics` that one of the runs does not have throws, naming the metr
 - the dataset fingerprints differ, with how many cases each run has that the other does not, or a note that every case matches while their order, context or metadata changed,
 - the prompt versions differ, naming each version: `Prompt 'support' differs: the base run used v1 (ver_1), the head run v2 (ver_2)`,
 - the metrics differ, naming those only one run has, such as a metric added in the head run, which is then not compared,
-- the judge differs in model, temperature or samples, or only one run has a judge.
+- the judge differs in model, temperature or samples, or only one run has a judge,
+- a metric was left out because no matched case was scored on it.
 
 ## Reporting a Comparison
 

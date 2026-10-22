@@ -1,29 +1,23 @@
 import { writeFileSync } from 'node:fs';
 import type { EvalSuiteResult } from './index';
-import { caseLabel, cell, num, trialsPerCase } from './format';
+import { caseLabel, caseProblems, cell, num, trialsPerCase } from './format';
 
 /** Most failures the summary lists before it counts the rest */
 export const MARKDOWN_MAX_FAILURES = 25;
 
-/** The failures of the cases: errored cases, then metrics that failed on a case */
+/** The failures of the cases, of every trial: errored runs, then metrics that failed */
 function failures(result: EvalSuiteResult): Array<{ label: string; problem: string }> {
-  const list: Array<{ label: string; problem: string }> = [];
-  result.results.forEach((r, i) => {
+  return result.results.flatMap((r, i) => {
     const label = caseLabel(i, r.case.input);
-    if (r.error !== undefined) list.push({ label, problem: `error: ${r.error}` });
-    for (const score of r.scores) {
-      if (score.error !== undefined) {
-        list.push({ label, problem: `metric ${score.name} failed: ${score.error}` });
-      }
-    }
+    return caseProblems(r).map((problem) => ({ label, problem }));
   });
-  return list;
 }
 
 /**
  * A compact Markdown summary of a suite run for a pull request comment: the totals, the mean of
- * each metric with the cases it covers, the assertions and the failed cases. Every value from the
- * run is escaped, so no answer can break the tables or hide the rest of the comment
+ * each metric with the cases it covers, the assertions and the failures of every case and trial.
+ * Every value from the run is escaped, so no answer can break the tables or hide the rest of the
+ * comment
  */
 export function markdownSummary(result: EvalSuiteResult): string {
   const { stats } = result;

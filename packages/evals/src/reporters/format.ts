@@ -53,3 +53,28 @@ export function cell(value: string): string {
 export function num(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(4);
 }
+
+/** A case result as `caseProblems` reads it */
+export interface ProblemSource {
+  error?: string;
+  scores: ReadonlyArray<{ name: string; error?: string }>;
+  trials?: readonly ProblemSource[];
+}
+
+/**
+ * What went wrong on a case: its error and each metric that failed on it. With several trials,
+ * those of every trial, each prefixed with its trial number
+ */
+export function caseProblems(result: ProblemSource): string[] {
+  const several = result.trials !== undefined && result.trials.length > 1;
+  const runs = several ? result.trials! : [result];
+  return runs.flatMap((run, at) => {
+    const prefix = several ? `trial ${at + 1}: ` : '';
+    return [
+      ...(run.error !== undefined ? [`${prefix}error: ${run.error}`] : []),
+      ...run.scores.flatMap((score) =>
+        score.error !== undefined ? [`${prefix}metric ${score.name} failed: ${score.error}`] : []
+      ),
+    ];
+  });
+}

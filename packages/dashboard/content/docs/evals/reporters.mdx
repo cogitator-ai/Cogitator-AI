@@ -134,7 +134,7 @@ result.report('markdown', { path: './reports/eval' });
 
 Default path: `eval-report.md`
 
-It holds a title with the suite's `name`, a line with the totals (cases, trials per case when there are several, errored cases, metric errors, duration, cost, assertions passed and failed), a table of each metric's mean and the cases it covers, the assertions with pass or fail, and the failed cases: each errored case with its error and each metric that failed on a case. At most 25 failures are listed, the rest counted.
+It holds a title with the suite's `name`, a line with the totals (cases, trials per case when there are several, errored cases, metric errors, duration, cost, assertions passed and failed), a table of each metric's mean and the cases it covers, the assertions with pass or fail, and the failures: each errored case with its error and each metric that failed on a case, for every trial with its number (`trial 2: metric relevance failed: ...`) when the suite ran several. At most 25 failures are listed, the rest counted.
 
 ```markdown
 ### Eval results: support-agent
@@ -173,7 +173,7 @@ result.report('html', { path: './reports/eval' });
 
 Default path: `eval-report.html`
 
-The page shows the totals, the aggregated metrics (mean, p50, p95, min, max, cases), the assertions, and every case with its input, expected answer, output (long outputs and conversations folded), scores, status (answered or the error, run flags, trials answered) and, for agent targets, the trace id and prompt version. Every value is HTML-escaped.
+The page shows the totals, the aggregated metrics (mean, p50, p95, min, max, cases), the assertions, and every case with its input, expected answer, output (long outputs and conversations folded), scores, status (answered or the error, run flags, trials answered and the failures of each trial) and, for agent targets, the trace id and prompt version. Every value is HTML-escaped.
 
 ## Comparisons
 
