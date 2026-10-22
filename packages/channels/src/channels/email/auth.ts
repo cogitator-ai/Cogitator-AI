@@ -1,5 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { alignedDomains, domainOf, headersOf, type EmailHeaders } from './address';
+import { alignedDomains, headersOf, type EmailHeaders } from './address';
 
 /**
  * What the receiving side found about the sender: `pass` when DKIM, SPF or DMARC passed for a
@@ -23,12 +23,22 @@ export function combineAuthentication(
 /** Results that say something about the sender, unlike `none`, `neutral` or `temperror`. */
 const DEFINITE = new Set(['pass', 'fail', 'softfail', 'permerror', 'hardfail']);
 
+/**
+ * The text of a header without its comments, in one pass that knows quoted strings and `\`
+ * escapes: a `(` inside quotes is text, and an escaped quote does not end them.
+ */
 function withoutComments(text: string): string {
   let out = '';
   let depth = 0;
   let quoted = false;
-  for (const char of text) {
-    if (char === '"' && depth === 0) quoted = !quoted;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === '\\' && i + 1 < text.length) {
+      if (depth === 0) out += char + text[i + 1];
+      i++;
+      continue;
+    }
+    if (depth === 0 && char === '"') quoted = !quoted;
     if (!quoted && char === '(') depth++;
     else if (!quoted && char === ')' && depth > 0) depth--;
     else if (depth === 0) out += char;
@@ -36,47 +46,98 @@ function withoutComments(text: string): string {
   return out;
 }
 
-function propertyDomain(segment: string, ...names: string[]): string | undefined {
+/** `text` split at `separator` and at whitespace too when `alsoSpace`, never inside quotes. */
+function splitOutsideQuotes(text: string, separator: string, alsoSpace = false): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === '\\' && i + 1 < text.length) {
+      current += char + text[++i];
+      continue;
+    }
+    if (char === '"') quoted = !quoted;
+    if (!quoted && (char === separator || (alsoSpace && /\s/.test(char)))) {
+      if (current) parts.push(current);
+      current = '';
+    } else current += char;
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
+/** One result of an `Authentication-Results` header: `dkim=pass header.d=example.com`. */
+interface AuthResult {
+  method: string;
+  result: string;
+  properties: Map<string, string>;
+}
+
+/** The results of a header, its `;`-separated parts read outside quoted strings. */
+function authResultsOf(value: string): { authservId: string; results: AuthResult[] } {
+  const [id = '', ...segments] = splitOutsideQuotes(withoutComments(value), ';');
+  const results: AuthResult[] = [];
+  for (const segment of segments) {
+    const [first = '', ...rest] = splitOutsideQuotes(segment.trim(), ' ', true);
+    const method = /^(dkim|spf|dmarc)=([a-z]+)$/i.exec(first);
+    if (!method) continue;
+    const properties = new Map<string, string>();
+    for (const token of rest) {
+      const equals = token.indexOf('=');
+      if (equals <= 0) continue;
+      const name = token.slice(0, equals).toLowerCase();
+      if (!properties.has(name)) properties.set(name, token.slice(equals + 1));
+    }
+    results.push({ method: method[1].toLowerCase(), result: method[2].toLowerCase(), properties });
+  }
+  return { authservId: id.trim().split(/\s+/)[0]?.toLowerCase() ?? '', results };
+}
+
+/** The domain a property names: of an address (after its last `@`) or the value itself. */
+function propertyDomain(result: AuthResult, ...names: string[]): string | undefined {
   for (const name of names) {
-    const match = new RegExp(`(?:^|\\s)${name.replace('.', '\\.')}=("?)([^\\s";]+)\\1`, 'i').exec(
-      segment
-    );
-    if (match) return domainOf(match[2].includes('@') ? match[2] : `x@${match[2]}`);
+    const value = result.properties.get(name);
+    if (!value) continue;
+    const bare = value.replace(/^"|"$/g, '');
+    const at = bare.lastIndexOf('@');
+    const domain = (at === -1 ? bare : bare.slice(at + 1)).replace(/^"|"$/g, '').toLowerCase();
+    if (domain && !/[\s";]/.test(domain)) return domain;
   }
   return undefined;
 }
 
 /**
  * The verdict of one `Authentication-Results` header (RFC 8601) for the author domain
- * `fromDomain`, and its authserv-id. A DKIM, SPF or DMARC pass for an aligned domain passes.
- * Otherwise any definite result (a fail, or a pass for another domain, as a spoofer signing
- * with a domain of its own gets) fails, and results of `none` or `neutral` only say nothing.
+ * `fromDomain`, and its authserv-id. A DMARC result for the `From` domain decides when there is
+ * one: DMARC already weighs DKIM and SPF alignment. Otherwise a DKIM or SPF pass for an aligned
+ * domain passes, and any definite result (a fail, or a pass for another domain, as a spoofer
+ * signing with a domain of its own gets) fails, while `none` or `neutral` say nothing. Parts
+ * are split outside quoted strings, so an address like `"a;dkim=pass"@evil.example` stays one
+ * value.
  */
 export function parseAuthenticationResults(
   value: string,
   fromDomain: string
 ): { authservId: string; verdict: SenderAuthentication } {
-  const [id = '', ...segments] = withoutComments(value).split(';');
-  const authservId = id.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+  const { authservId, results } = authResultsOf(value);
+  const dmarc = results.find((result) => {
+    if (result.method !== 'dmarc') return false;
+    const from = propertyDomain(result, 'header.from');
+    return !from || alignedDomains(from, fromDomain);
+  });
+  if (dmarc?.result === 'pass') return { authservId, verdict: 'pass' };
+  if (dmarc && DEFINITE.has(dmarc.result)) return { authservId, verdict: 'fail' };
   let reported = false;
-  for (const raw of segments) {
-    const segment = raw.trim();
-    const method = /^(dkim|spf|dmarc)\s*=\s*([a-z]+)/i.exec(segment);
-    if (!method) continue;
-    const result = method[2].toLowerCase();
-    if (DEFINITE.has(result)) reported = true;
-    if (result !== 'pass') continue;
-    const kind = method[1].toLowerCase();
-    if (kind === 'dmarc') {
-      const from = propertyDomain(segment, 'header.from');
-      if (!from || alignedDomains(from, fromDomain)) return { authservId, verdict: 'pass' };
-    } else if (kind === 'dkim') {
-      const signer = propertyDomain(segment, 'header.d', 'header.i');
-      if (signer && alignedDomains(signer, fromDomain)) return { authservId, verdict: 'pass' };
-    } else {
-      const sender = propertyDomain(segment, 'smtp.mailfrom', 'smtp.helo');
-      if (sender && alignedDomains(sender, fromDomain)) return { authservId, verdict: 'pass' };
-    }
+  for (const result of results) {
+    if (result.method === 'dmarc') continue;
+    if (DEFINITE.has(result.result)) reported = true;
+    if (result.result !== 'pass') continue;
+    const domain =
+      result.method === 'dkim'
+        ? propertyDomain(result, 'header.d', 'header.i')
+        : propertyDomain(result, 'smtp.mailfrom', 'smtp.helo');
+    if (domain && alignedDomains(domain, fromDomain)) return { authservId, verdict: 'pass' };
   }
   return { authservId, verdict: reported ? 'fail' : 'none' };
 }

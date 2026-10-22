@@ -332,8 +332,14 @@ function safeUrl(url: string): string | undefined {
   return /^(https?:|mailto:)/i.test(decoded) ? escapeHtml(decoded) : undefined;
 }
 
+/** How deep quotes and lists nest before the rest is a paragraph of text. */
+const MAX_NESTING = 16;
+/** The longest text formatted inline: a longer paragraph is sent as escaped text. */
+const MAX_INLINE = 100_000;
+
 /** Inline Markdown (code spans, emphasis, links) as HTML, the text escaped. */
 function inlineHtml(input: string): string {
+  if (input.length > MAX_INLINE) return escapeHtml(input).replace(/\n/g, '<br>\n');
   const code: string[] = [];
   const keep = (html: string) => `\uE000${code.push(html) - 1}\uE000`;
   const text = input.replace(/\uE000/g, '\uFFFD');
@@ -400,7 +406,7 @@ function startsBlock(line: string, next: string | undefined): boolean {
   );
 }
 
-function renderList(lines: string[]): string {
+function renderList(lines: string[], depth: number): string {
   const first = LIST_ITEM.exec(lines[0]);
   const indent = first?.[1].length ?? 0;
   const ordered = /\d/.test(first?.[2] ?? '');
@@ -420,13 +426,16 @@ function renderList(lines: string[]): string {
       }
       const head = nested === -1 ? item : item.slice(0, nested);
       const rest = nested === -1 ? [] : item.slice(nested);
-      return `<li>${inlineHtml(head.join('\n').trim())}${rest.length ? renderBlocks(rest) : ''}</li>`;
+      return `<li>${inlineHtml(head.join('\n').trim())}${rest.length ? renderBlocks(rest, depth + 1) : ''}</li>`;
     })
     .join('');
   return `<${tag}${ordered && start !== 1 ? ` start="${start}"` : ''}>${body}</${tag}>`;
 }
 
-function renderBlocks(lines: string[]): string {
+function renderBlocks(lines: string[], depth = 0): string {
+  if (depth >= MAX_NESTING) {
+    return `<p>${inlineHtml(lines.join('\n').trim())}</p>`;
+  }
   const out: string[] = [];
   let i = 0;
   while (i < lines.length) {
@@ -472,7 +481,7 @@ function renderBlocks(lines: string[]): string {
         i++;
       }
       out.push(
-        `<blockquote style="margin: 0 0 0 8px; padding-left: 12px; border-left: 3px solid #d4d4d8; color: #52525b">${renderBlocks(quoted)}</blockquote>`
+        `<blockquote style="margin: 0 0 0 8px; padding-left: 12px; border-left: 3px solid #d4d4d8; color: #52525b">${renderBlocks(quoted, depth + 1)}</blockquote>`
       );
       continue;
     }
@@ -505,7 +514,7 @@ function renderBlocks(lines: string[]): string {
         items.push(current);
         i++;
       }
-      out.push(renderList(items));
+      out.push(renderList(items, depth));
       continue;
     }
     const next = lines[i + 1];

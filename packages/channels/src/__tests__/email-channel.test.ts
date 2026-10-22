@@ -1169,6 +1169,45 @@ describe('sender authentication', () => {
   });
 });
 
+describe('authentication results with quoted values', () => {
+  it('keeps a quoted address one value, and lets a DMARC result for the From domain decide', () => {
+    const verdict = (value: string) => parseAuthenticationResults(value, 'victim.com').verdict;
+    expect(
+      verdict(
+        'mx.google.com; spf=pass (google.com: domain of "a;dkim=pass header.d=victim.com"@evil.com) smtp.mailfrom="a;dkim=pass header.d=victim.com"@evil.com; dmarc=fail (p=REJECT) header.from=victim.com'
+      )
+    ).toBe('fail');
+    expect(
+      verdict('mx.google.com; spf=pass smtp.mailfrom="a; dkim=pass header.d=victim.com"@evil.com')
+    ).toBe('fail');
+    expect(
+      verdict('mx.google.com; dkim=pass header.d=victim.com; dmarc=fail header.from=victim.com')
+    ).toBe('fail');
+    expect(
+      verdict('mx.google.com; spf=pass (x \\) y) smtp.mailfrom=ann@victim.com; dmarc=none')
+    ).toBe('pass');
+    expect(verdict('mx.google.com; dmarc=pass header.from="victim.com"')).toBe('pass');
+  });
+
+  it('gives a mail with two From headers no sender', async () => {
+    imap.mailbox.push({
+      uid: 1,
+      source: Buffer.from(
+        'From: a@evil.com\r\nFrom: ceo@victim.com\r\nMessage-ID: <two@x>\r\nContent-Type: text/plain\r\n\r\nHi\r\n'
+      ),
+      seen: false,
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { channel, received } = created({
+      webhook: undefined,
+      imap: { host: 'imap.example.com', auth: { user: BOT, pass: 'x' } },
+    });
+    await channel.start();
+    await vi.waitFor(() => expect(imap.mailbox[0].seen).toBe(true));
+    expect(received).toEqual([]);
+  });
+});
+
 describe('forged senders', () => {
   it('takes the address outside quotes and comments, never one inside the display name', () => {
     expect(parseMailbox('"x <ceo@victim.com>" <attacker@evil.com>')).toEqual({
@@ -1350,6 +1389,29 @@ describe('a gateway that does not take the mail', () => {
   });
 });
 
+describe('a webhook answered before the gateway took its mail', () => {
+  it('logs the mail when the gateway hands it back after the request was answered', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { channel } = created();
+    let finish = () => {};
+    channel.onMessage(
+      (msg) =>
+        new Promise<void>((resolve) => {
+          finish = () => void channel.redeliver(msg).then(resolve);
+        })
+    );
+    const response = channel.handleWebhook(mailgunRequest(mailgunFields()));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect((await response).status).toBe(200);
+    finish();
+    vi.useRealTimers();
+    await vi.waitFor(() =>
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('dropped unanswered'))
+    );
+  });
+});
+
 describe('IMAP reading', () => {
   const imapConfig = { host: 'imap.example.com', auth: { user: BOT, pass: 'app-password' } };
   const mail = (id: string, body = 'Hello', extra: string[] = []) =>
@@ -1415,6 +1477,21 @@ describe('IMAP reading', () => {
     expect(imap.mailbox[0].seen).toBe(true);
     await gateway.stop();
     expect(imap.mailbox[0].seen).toBe(false);
+  });
+
+  it('marks mail unread once the connection is open again when it was closed', async () => {
+    imap.mailbox.push({ uid: 1, source: mail('<later@example.com>'), seen: false });
+    const { channel, received } = created({ webhook: undefined, imap: imapConfig });
+    await channel.start();
+    await vi.waitFor(() => expect(imap.mailbox[0].seen).toBe(true));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    (imap.clients[0] as EventEmitter).emit('close');
+    await channel.redeliver(received[0]);
+    expect(imap.mailbox[0].seen).toBe(true);
+    await vi.advanceTimersByTimeAsync(EMAIL_RECONNECT_MIN_DELAY);
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(received).toHaveLength(2));
+    expect(imap.events).toContain('unseen:1');
   });
 
   it('drops a forged sender with the results of the trusted server, ignoring injected ones', async () => {
@@ -1536,6 +1613,14 @@ describe('time it takes', () => {
     expect(
       quick(() => stripQuotedReply(`${Array(20_000).fill('ann@example.com:').join('\n')}\n> q`))
     ).toBeLessThan(1500);
+  });
+
+  it('renders deep nesting and huge paragraphs without overflowing or stalling', () => {
+    expect(() => markdownToHtml(`${'> '.repeat(30_000)}x`)).not.toThrow();
+    const nested = Array.from({ length: 2000 }, (_, k) => `${' '.repeat(k * 2)}- a`).join('\n');
+    expect(() => markdownToHtml(nested)).not.toThrow();
+    expect(quick(() => markdownToHtml('**a '.repeat(250_000)))).toBeLessThan(1500);
+    expect(quick(() => markdownToHtml('['.repeat(1_000_000)))).toBeLessThan(1500);
   });
 
   it('keeps model output from forging its own code placeholders', () => {

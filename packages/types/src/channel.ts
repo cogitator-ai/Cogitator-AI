@@ -166,7 +166,11 @@ export interface Channel {
    * that came in while it was stopping (called before the handler resolves), or one it had
    * queued or was running and dropped after `drainTimeout`. A channel that can deliver it again
    * later does: the email channel leaves the mail unread or marks it unread again, and answers
-   * a webhook `503` so the provider retries. The Gateway waits for it before it stops the channel.
+   * a webhook `503` so the provider retries. A run that ignores the abort is handed back once
+   * `stop()` gives up on it. A message whose answer started going out is never handed back, so
+   * delivery is at least once for unanswered messages only, and the tools of a run that was
+   * aborted may run again. The Gateway waits up to `drainTimeout` for each call before it stops
+   * the channel.
    */
   redeliver?(msg: ChannelMessage): Promise<void>;
 

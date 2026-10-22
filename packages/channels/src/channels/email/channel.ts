@@ -463,9 +463,24 @@ export class EmailChannel implements Channel {
       console.error('[email] Webhook mail failed:', error);
       return 'taken';
     });
-    if ((await within(accepted, HANDOVER_TIMEOUT, 'taken')) === 'refused') {
+    const pending = Symbol('pending');
+    const handedOver = await within<Acceptance | typeof pending>(
+      accepted,
+      HANDOVER_TIMEOUT,
+      pending
+    );
+    if (handedOver === 'refused') {
       if (replayKey !== undefined) this.signatures.delete(replayKey);
       return { status: 503, body: 'Not taken now, send it again later' };
+    }
+    if (handedOver === pending) {
+      void accepted.then((late) => {
+        if (late === 'refused') {
+          console.warn(
+            `[email] The mail ${email.messageId ?? ''} from ${email.from?.address ?? 'unknown'} was dropped unanswered after its webhook was answered, so the provider will not send it again`
+          );
+        }
+      });
     }
     return { status: 200, body: 'OK' };
   }

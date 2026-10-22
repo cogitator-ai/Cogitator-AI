@@ -267,6 +267,61 @@ describe('Gateway thread order', () => {
     );
   });
 
+  it('stops within its timeouts when a run ignores the abort, handing the message back', async () => {
+    const channel = { ...createChannel(), redeliver: vi.fn().mockResolvedValue(undefined) };
+    const run = vi.fn(() => new Promise(() => {}));
+    const gateway = await startGateway(channel, { run }, { drainTimeout: 30, onError: vi.fn() });
+
+    await channel.trigger(message({ id: 'm1', text: 'stuck' }));
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    const started = Date.now();
+    await gateway.stop();
+
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(channel.redeliver.mock.calls.map(([msg]) => (msg as ChannelMessage).id)).toEqual(['m1']);
+    expect(channel.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('never hands back a message whose answer went out before stop aborted its run', async () => {
+    const channel = { ...createChannel(), redeliver: vi.fn().mockResolvedValue(undefined) };
+    let sent = () => {};
+    channel.sendText.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          sent = () => resolve('sent');
+        })
+    );
+    const run = vi.fn().mockResolvedValue({ output: 'answer' });
+    const gateway = await startGateway(channel, { run }, { drainTimeout: 20, onError: vi.fn() });
+
+    await channel.trigger(message({ id: 'm1', text: 'slow smtp' }));
+    await vi.waitFor(() => expect(channel.sendText).toHaveBeenCalledTimes(1));
+    await gateway.stop();
+    sent();
+    await gateway.idle();
+
+    expect(channel.redeliver).not.toHaveBeenCalled();
+  });
+
+  it('hands back every message merged by debounce when stop drops them', async () => {
+    const channel = { ...createChannel(), redeliver: vi.fn().mockResolvedValue(undefined) };
+    const control = controlledRun();
+    const gateway = await startGateway(channel, control, {
+      drainTimeout: 20,
+      debounce: { enabled: true, delayMs: 10 },
+    });
+
+    await channel.trigger(message({ id: 'm1', text: 'one' }));
+    await channel.trigger(message({ id: 'm2', text: 'two' }));
+    await vi.waitFor(() => expect(control.started).toHaveLength(1));
+    await gateway.stop();
+
+    expect(channel.redeliver.mock.calls.map(([msg]) => (msg as ChannelMessage).id)).toEqual([
+      'm1',
+      'm2',
+    ]);
+  });
+
   it('does not hand back a message whose run failed while it was running', async () => {
     const channel = { ...createChannel(), redeliver: vi.fn().mockResolvedValue(undefined) };
     const run = vi.fn().mockRejectedValue(new Error('model down'));

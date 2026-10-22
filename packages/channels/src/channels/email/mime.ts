@@ -3,6 +3,7 @@ import {
   decodeMimeWords,
   domainOf,
   headerOf,
+  headersOf,
   messageIdOf,
   messageIdsOf,
   parseMailbox,
@@ -113,7 +114,10 @@ function bytesOf(content: ArrayBuffer | Uint8Array | string): Uint8Array {
   return content instanceof Uint8Array ? content : new Uint8Array(content);
 }
 
-/** The thread fields, sender and subject every inbound email reads from its headers. */
+/**
+ * The thread fields, sender and subject every inbound email reads from its headers. A mail with
+ * more than one `From` has no sender, since mail clients may show another one than is checked.
+ */
 export function envelopeOf(headers: EmailHeaders): {
   messageId?: string;
   inReplyTo?: string;
@@ -123,7 +127,8 @@ export function envelopeOf(headers: EmailHeaders): {
 } {
   const messageId = messageIdOf(headerOf(headers, 'message-id'));
   const inReplyTo = messageIdOf(headerOf(headers, 'in-reply-to'));
-  const from = parseMailbox(headerOf(headers, 'from'));
+  const fromHeaders = headersOf(headers, 'from');
+  const from = fromHeaders.length === 1 ? parseMailbox(fromHeaders[0]) : undefined;
   return {
     ...(messageId && { messageId }),
     ...(inReplyTo && { inReplyTo }),

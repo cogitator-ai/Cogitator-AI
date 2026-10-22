@@ -125,6 +125,8 @@ export class ImapInbox<T> {
   private attempts = 0;
   private uidValidity?: string;
   private readonly done = new Set<string>();
+  /** Messages to mark unread once the connection is open again, by `key` */
+  private readonly unseeLater = new Set<string>();
 
   constructor(
     private readonly config: EmailImapConfig,
@@ -147,6 +149,11 @@ export class ImapInbox<T> {
   /** Stops reading: waits up to 5 s for a read in progress, then closes the connection. */
   async stop(): Promise<void> {
     this.stopped = true;
+    if (this.unseeLater.size > 0) {
+      console.error(
+        `[email] ${this.unseeLater.size} mail could not be marked unread again before the stop, as the connection was closed: mark ${[...this.unseeLater].join(', ')} unread by hand`
+      );
+    }
     clearInterval(this.pollTimer);
     clearTimeout(this.reconnectTimer);
     this.pollTimer = undefined;
@@ -190,10 +197,36 @@ export class ImapInbox<T> {
     return run;
   }
 
-  /** Marks a message unread again and forgets it, so the next look reads it once more. */
+  /**
+   * Marks a message unread again and forgets it, so the next look reads it once more. While the
+   * connection is being opened again, the message is marked once it is open (in the same mailbox,
+   * when its UIDVALIDITY did not change).
+   */
   async unsee(uid: number): Promise<void> {
     this.done.delete(this.key(uid));
-    await this.client?.messageFlagsRemove([uid], ['\\Seen'], { uid: true });
+    const client = this.client;
+    if (!client) {
+      this.unseeLater.add(this.key(uid));
+      return;
+    }
+    await client.messageFlagsRemove([uid], ['\\Seen'], { uid: true });
+  }
+
+  /** Marks unread what `unsee` could not while the connection was closed. */
+  private async unseeQueued(client: ImapClient): Promise<void> {
+    const queued = [...this.unseeLater];
+    this.unseeLater.clear();
+    const prefix = `${this.uidValidity ?? ''}:`;
+    const uids = queued
+      .filter((key) => key.startsWith(prefix))
+      .map((key) => Number(key.slice(prefix.length)));
+    if (uids.length < queued.length) {
+      console.error(
+        '[email] The mailbox changed its UIDs, some mail could not be marked unread again'
+      );
+    }
+    if (uids.length === 0) return;
+    await client.messageFlagsRemove(uids, ['\\Seen'], { uid: true });
   }
 
   private async connect(): Promise<void> {
@@ -226,6 +259,11 @@ export class ImapInbox<T> {
     }
     this.client = client;
     this.attempts = 0;
+    if (this.unseeLater.size > 0) {
+      await this.unseeQueued(client).catch((error: unknown) =>
+        console.error('[email] Could not mark mail unread again:', error)
+      );
+    }
     clearInterval(this.pollTimer);
     this.pollTimer = setInterval(() => void this.sync(), this.config.pollInterval ?? 60_000);
     void this.sync();

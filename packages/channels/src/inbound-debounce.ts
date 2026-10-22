@@ -12,7 +12,8 @@ export class InboundDebouncer {
 
   constructor(
     private readonly config: DebounceConfig,
-    private readonly onFlush: (merged: ChannelMessage) => Promise<void>
+    /** Gets the merged message and the messages merged into it */
+    private readonly onFlush: (merged: ChannelMessage, originals: ChannelMessage[]) => Promise<void>
   ) {
     this.defaultDelay = config.delayMs ?? 1500;
   }
@@ -54,6 +55,6 @@ export class InboundDebouncer {
 
     const merged = mergeChannelMessages(messages);
 
-    await this.onFlush(merged);
+    await this.onFlush(merged, messages);
   }
 }
