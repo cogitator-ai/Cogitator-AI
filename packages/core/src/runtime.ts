@@ -26,6 +26,7 @@ import type {
   MemoryFilesConfig,
   MemoryFileAdapter,
   GraphAdapter,
+  Thread,
   MemoryItemScope,
   MemoryConsolidationReport,
   HandoffEvent,
@@ -70,6 +71,8 @@ import {
   type SummarizeFn,
   isMemoryFileAdapter,
   isMemoryItemAdapter,
+  FORKS_KEY,
+  MEMORY_USERS_KEY,
   MemoryCascade,
   type MemoryCascadeReport,
   MemoryFiles,
@@ -80,8 +83,12 @@ import {
 
 /** The memory ids a thread's metadata names, see `MEMORY_AGENTS` */
 function memoryAgentsOf(metadata: Record<string, unknown>): string[] {
-  const named = metadata[MEMORY_AGENTS];
-  return Array.isArray(named) ? named.filter((id): id is string => typeof id === 'string') : [];
+  return stringsOf(metadata[MEMORY_AGENTS]);
+}
+
+/** The strings of a metadata list */
+function stringsOf(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
 }
 
 /**
@@ -3190,9 +3197,9 @@ export class Cogitator implements ToolInvoker {
   }
 
   /**
-   * `agentIds` with the agents of `threadIds`: the thread's owner, and the memory ids of the
-   * agents that ran in it (`metadata.memoryAgentIds`). A thread that names none, written before
-   * threads named them, needs `agentIds` from the caller.
+   * `agentIds` with the agents of `threadIds` and of the threads forked from them (in turn): the
+   * memory ids the threads name (`metadata.memoryAgentIds`) and their owners. A thread that names
+   * none, written before threads named them, needs `agentIds` from the caller.
    */
   private async withThreadAgents(
     agentIds: readonly string[],
@@ -3200,48 +3207,61 @@ export class Cogitator implements ToolInvoker {
   ): Promise<string[]> {
     const memory = this.state.memoryAdapter;
     const all = new Set(agentIds);
-    for (const threadId of threadIds) {
+    const queue = [...threadIds];
+    const seen = new Set(queue);
+    for (let threadId = queue.pop(); threadId !== undefined; threadId = queue.pop()) {
       const thread = await memory?.getThread(threadId);
       if (!thread?.success || !thread.data) continue;
-      all.add(thread.data.agentId);
-      const named = memoryAgentsOf(thread.data.metadata);
-      if (named.length === 0 && agentIds.length === 0) {
-        throw new CogitatorError({
-          message: `Thread ${threadId} does not name the agents whose memory stands on it: pass agents`,
-          code: ErrorCode.VALIDATION_ERROR,
-        });
+      this.addThreadAgents(all, thread.data, agentIds.length === 0);
+      for (const fork of stringsOf(thread.data.metadata[FORKS_KEY])) {
+        if (seen.has(fork)) continue;
+        seen.add(fork);
+        queue.push(fork);
       }
-      for (const id of named) all.add(id);
     }
     return [...all];
   }
 
-  /** `agentIds` with the memory ids of the agents that ran in the threads of `userId` */
+  /**
+   * `agentIds` with the agents of every thread `userId` wrote in: the user's own threads, those
+   * that list the user in `metadata.memoryUserIds`, and the threads forked from them. Every
+   * thread is listed to find them.
+   */
   private async withUserAgents(agentIds: readonly string[], userId: string): Promise<string[]> {
     const memory = this.state.memoryAdapter;
-    const all = new Set(agentIds);
+    const touched: string[] = [];
     let cursor: string | undefined;
     do {
       const page = await memory?.listThreads({
-        metadata: { userId },
         limit: 500,
         ...(cursor !== undefined && { cursor }),
       });
       if (!page?.success) break;
       for (const thread of page.data.threads) {
-        all.add(thread.agentId);
-        const named = memoryAgentsOf(thread.metadata);
-        if (named.length === 0 && agentIds.length === 0) {
-          throw new CogitatorError({
-            message: `Thread ${thread.id} does not name the agents whose memory stands on it: pass agents`,
-            code: ErrorCode.VALIDATION_ERROR,
-          });
-        }
-        for (const id of named) all.add(id);
+        const wrote =
+          thread.metadata.userId === userId ||
+          stringsOf(thread.metadata[MEMORY_USERS_KEY]).includes(userId);
+        if (wrote) touched.push(thread.id);
       }
       cursor = page.data.nextCursor;
     } while (cursor !== undefined);
-    return [...all];
+    return this.withThreadAgents(agentIds, touched);
+  }
+
+  /**
+   * Adds to `all` the owner of `thread` and the memory ids it names, refusing a thread that names
+   * none when `required`
+   */
+  private addThreadAgents(all: Set<string>, thread: Thread, required: boolean): void {
+    all.add(thread.agentId);
+    const named = memoryAgentsOf(thread.metadata);
+    if (named.length === 0 && required) {
+      throw new CogitatorError({
+        message: `Thread ${thread.id} does not name the agents whose memory stands on it: pass agents`,
+        code: ErrorCode.VALIDATION_ERROR,
+      });
+    }
+    for (const id of named) all.add(id);
   }
 
   /**

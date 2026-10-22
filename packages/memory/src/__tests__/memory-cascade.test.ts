@@ -342,6 +342,41 @@ describe('MemoryCascade', () => {
     expect(await items.get(late!)).toBeNull();
   });
 
+  it('keeps the path of a file another branch still holds text of', async () => {
+    const [first, second, , last] = entries;
+    const branchA = {
+      threadId: 't',
+      pathIds: new Set([first!.id, second!.id]),
+      entryId: second!.id,
+    };
+    const branchB = {
+      threadId: 't',
+      pathIds: new Set(entries.map((entry) => entry.id)),
+      entryId: last!.id,
+    };
+    await files.create({ scope, place: branchA }, '/memories/plan.md', 'branch A plan');
+    const onA = await files.read({ scope, place: branchA }, '/memories/plan.md');
+    await files.put({ scope, place: branchB }, '/memories/plan.md', 'branch B plan', onA!.sha256);
+
+    await cascade.deleteEntries([last!.id], who);
+
+    expect((await files.read({ scope, place: branchA }, '/memories/plan.md'))?.content).toBe(
+      'branch A plan'
+    );
+  });
+
+  it('marks nothing stale when the store refuses the rewind', async () => {
+    const [, , porto, after] = entries;
+    const [cut] = await items.write([item('Ana said got it.', [after!.id])]);
+    const rewind = memory.rewind.bind(memory);
+    memory.rewind = async () => ({ success: false, error: 'not on the active branch' });
+
+    await expect(cascade.rewind('t', porto!.id, who)).rejects.toThrow('not on the active branch');
+
+    expect((await items.get(cut!.id))?.status).toBe('active');
+    memory.rewind = rewind;
+  });
+
   it('keeps a summary that covers none of what went', async () => {
     const [card, , porto] = entries;
     unwrap(

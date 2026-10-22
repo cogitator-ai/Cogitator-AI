@@ -296,8 +296,10 @@ export class MemoryCascade {
   /**
    * The rewind of `threadId` to `toEntryId` (`MemoryAdapter.rewind`): the entries after it on the
    * active branch stay, on a branch of their own, and the items that stood only on them become
-   * `stale` with `staleBecause: { reason: 'rewound' }`, marked before the rewind so a rewind that
-   * fails can be made again. A thread that stands at `toEntryId` already is left as it is.
+   * `stale` with `staleBecause: { reason: 'rewound' }`. They are marked before the thread moves,
+   * and as they were again when the store refuses the rewind, such as for an entry another
+   * checkout took off the active branch meanwhile. A thread that stands at `toEntryId` already is
+   * left as it is.
    */
   async rewind(
     threadId: string,
@@ -317,21 +319,28 @@ export class MemoryCascade {
       unwrap(await rewind(threadId, toEntryId));
       return report;
     }
+    const marked: MemoryItem[] = [];
     for (const agentId of who.agentIds) {
       const found = unwrap(
         await this.itemAdapter.findItems({ agentId, statuses: ['active', 'suggested'] })
       );
       const cutOff = found.filter((item) => fateOf(item.evidence, cut) === 'gone');
       if (cutOff.length === 0) continue;
-      report.items.stale.push(
-        ...(await this.items.markStale(
+      const stale = new Set(
+        await this.items.markStale(
           cutOff.map((item) => item.id),
           { reason: 'rewound', threadId, toEntryId, at: this.now().toISOString() },
           ['active', 'suggested']
-        ))
+        )
       );
+      marked.push(...cutOff.filter((item) => stale.has(item.id)));
     }
-    unwrap(await rewind(threadId, toEntryId));
+    const moved = await rewind(threadId, toEntryId);
+    if (!moved.success) {
+      for (const item of marked) unwrap(await this.itemAdapter.putItem(item));
+      throw new Error(moved.error);
+    }
+    report.items.stale.push(...marked.map((item) => item.id));
     return report;
   }
 
@@ -646,21 +655,24 @@ export class MemoryCascade {
   }
 
   /**
-   * Deletes the files of `agentId` whose version in front a cascade redacted, so their paths,
-   * which may name what was forgotten, leave the listing too
+   * Deletes the files of `agentId` whose version in front a cascade redacted and that keep no
+   * text in any version, on any branch, so their paths, which may name what was forgotten, leave
+   * the listing too. A file another branch still holds text of keeps its path.
    */
   private async dropForgottenPaths(agentId: string): Promise<void> {
     const adapter = this.fileAdapter;
     const files = this.files;
     if (!adapter || !files) return;
-    const fronts = new Map<string, MemoryFileVersion>();
+    const byKey = new Map<string, MemoryFileVersion[]>();
     for (const version of unwrap(await adapter.findFileVersions({ agentId }))) {
       const key = fileKeyOf(version.scope, version.path);
-      const known = fronts.get(key);
-      if (!known || version.sequence > known.sequence) fronts.set(key, version);
+      byKey.set(key, [...(byKey.get(key) ?? []), version]);
     }
-    for (const front of fronts.values()) {
-      if (front.content === null || front.redacted?.reason !== FORGOTTEN) continue;
+    for (const versions of byKey.values()) {
+      const held = versions.filter((version) => version.content !== null);
+      const front = [...versions].sort((a, b) => b.sequence - a.sequence)[0];
+      if (!front || front.content === null || front.redacted?.reason !== FORGOTTEN) continue;
+      if (!held.every((version) => version.redacted !== undefined)) continue;
       const access: MemoryFileAccess = {
         scope: front.scope,
         visibleTo: front.scope,

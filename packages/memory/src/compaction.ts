@@ -234,7 +234,8 @@ export class CompactionService {
     for (const entry of compacted) {
       const read = await this.adapter.getEntry(entry.id);
       if (!read.success) throw new Error(`Failed to read the thread: ${read.error}`);
-      if (read.data === null || read.data.metadata?.redacted) {
+      const redactedSince = !entry.metadata?.redacted && read.data?.metadata?.redacted;
+      if (read.data === null || redactedSince) {
         throw new Error(
           `Entries of ${sessionId} were deleted or redacted while it was compacted, compact it again`
         );

@@ -409,7 +409,7 @@ export interface MemoryAdapter {
   /**
    * A new thread holding copies of the branch up to `atEntryId`, each copy naming its original
    * in `metadata.forkOf`, the thread naming its origin in `metadata.forkedFrom` and the origin
-   * listing it in `metadata.forks`. A paused run of the origin is not copied.
+   * listing it in `metadata.memoryForks`. A paused run of the origin is not copied.
    */
   forkThread?(
     threadId: string,

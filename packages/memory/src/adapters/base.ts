@@ -203,9 +203,10 @@ function silenced(call: ToolCall): ToolCall {
 
 /**
  * The metadata key a thread lists the threads forked from it under, so what is forgotten in it
- * is found in their copies too
+ * is found in their copies too. Two forks made of one thread at the same moment may keep only one
+ * of them in the list.
  */
-export const FORKS_KEY = 'forks';
+export const FORKS_KEY = 'memoryForks';
 
 /**
  * The metadata key a thread lists the users who wrote in it under, so forgetting a user finds

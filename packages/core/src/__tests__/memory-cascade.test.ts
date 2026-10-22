@@ -121,6 +121,32 @@ describe('forget, redactEntries and rewind', () => {
     expect(await items.query({ scope })).toEqual([]);
   });
 
+  it('forgets a user through the agents of threads of others they wrote in', async () => {
+    const { llm } = backend();
+    const { cog, store, items } = await runtime(llm);
+    const host = new Agent({ name: 'host', model: 'mock/m', instructions: 'x' });
+    await cog.run(host, { input: 'Welcome.', threadId: 'room', userId: 'ana' });
+    await cog.run(host, {
+      input: 'Bob here, my phone is 555-0199.',
+      threadId: 'room',
+      userId: 'bob',
+      threadAccess: 'shared',
+    });
+    const room = await store.getEntries({ threadId: 'room' });
+    const said = room.success
+      ? room.data.find((entry) => String(entry.message.content).includes('555-0199'))
+      : undefined;
+    const [phone] = await items.write([
+      { ...item('Bob has phone 555-0199.', [said!.id]), scope: { agentId: 'host', userId: 'bob' } },
+    ]);
+
+    const report = await cog.forget({ userId: 'bob' });
+
+    expect(report.items.purged).toContain(phone!.id);
+    const left = await store.getEntries({ threadId: 'room' });
+    expect(JSON.stringify(left)).not.toContain('555-0199');
+  });
+
   it('redacts entries in place, keeping the thread whole', async () => {
     const { llm } = backend();
     const { cog, store, items } = await runtime(llm);

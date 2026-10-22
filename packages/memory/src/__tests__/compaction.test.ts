@@ -73,6 +73,29 @@ describe('CompactionService', () => {
       });
     });
 
+    it('compacts a thread that holds an entry redacted before, but not one redacted meanwhile', async () => {
+      await addMessages(10);
+      const all = await adapter.getEntries({ threadId });
+      const first = all.success ? all.data[0] : undefined;
+      await adapter.redactEntry(first!.id, { at: new Date() });
+
+      await service.compact(threadId, config);
+      expect((await conversation(adapter, threadId)).success).toBe(true);
+
+      await adapter.clearThread(threadId);
+      await addMessages(10);
+      const again = await adapter.getEntries({ threadId });
+      const second = again.success ? again.data[1] : undefined;
+      const racing = new CompactionService({
+        adapter,
+        summarize: async () => {
+          await adapter.redactEntry(second!.id, { at: new Date() });
+          return 'Summary';
+        },
+      });
+      await expect(racing.compact(threadId, config)).rejects.toThrow('compact it again');
+    });
+
     it('summarizes old messages and keeps recent ones', async () => {
       await addMessages(10);
 
