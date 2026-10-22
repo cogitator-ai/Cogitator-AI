@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { alignedDomains, headersOf, type EmailHeaders } from './address';
 
 /**
@@ -203,16 +203,15 @@ export function headerAuthentication(
   return combineSources(...verdicts);
 }
 
-/** Key of the double HMAC that `secretsEqual` compares through, new in every process */
-const COMPARISON_KEY = randomBytes(32);
-
 /**
- * Compares two secrets in constant time, whatever their lengths: both go through an HMAC with a
- * random key first, so the comparison sees equal lengths and learns nothing from timing.
+ * Compares two secrets in constant time for their contents: unequal lengths still run one full
+ * comparison (of the expected secret with itself), so only the length of the secret can show.
  */
 export function secretsEqual(given: string, expected: string): boolean {
-  const mac = (value: string) => createHmac('sha256', COMPARISON_KEY).update(value).digest();
-  return timingSafeEqual(mac(given), mac(expected));
+  const givenBytes = Buffer.from(given);
+  const expectedBytes = Buffer.from(expected);
+  const sameLength = givenBytes.length === expectedBytes.length;
+  return timingSafeEqual(sameLength ? givenBytes : expectedBytes, expectedBytes) && sameLength;
 }
 
 /**
