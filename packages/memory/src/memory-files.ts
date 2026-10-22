@@ -794,9 +794,9 @@ export class MemoryFiles {
           );
         }
         const sequences = this.nextSequences(snapshot, writes);
-        const conflict = await this.write(access, writes, current, sequences);
-        if (!conflict) {
-          await this.keepTree(access, writes, current);
+        const kept = await this.write(access, writes, current, sequences);
+        if (kept) {
+          await this.keepTree(access, kept);
           return;
         }
         if (attempt >= WRITE_ATTEMPTS) {
@@ -809,17 +809,19 @@ export class MemoryFiles {
   }
 
   /**
-   * Checks, once `writes` are kept, that no file the change wrote lies under another file or has
+   * Checks, once `kept` are kept, that no file the change wrote lies under another file or has
    * files under it, which another process writing at the same time could cause, as each change is
-   * planned on what stood before it. A change that broke the tree is undone (each path as it stood
-   * before) and refused, so the writer tries again on what stands now.
+   * planned on what stood before it. A change that broke the tree is taken back, its versions
+   * deleted from the store where no later version stands on them (one another writer added since
+   * is left as it is), and refused, so the writer tries again on what stands now.
    */
   private async keepTree(
     access: MemoryFileAccess,
-    writes: readonly (PlannedWrite & { scope: MemoryItemScope })[],
-    before: ReadonlyMap<string, MemoryFile>
+    kept: readonly MemoryFileVersion[]
   ): Promise<void> {
-    const written = writes.filter((write) => write.content !== null).map((write) => write.path);
+    const written = kept
+      .filter((version) => version.content !== null)
+      .map((version) => version.path);
     if (written.length === 0) return;
     const snapshot = unwrap(
       await this.adapter.findFileVersions({
@@ -832,32 +834,16 @@ export class MemoryFiles {
       paths.some((other) => other !== path && (under(other, path) || under(path, other)))
     );
     if (broken === undefined) return;
-    const undo = new Map<string, PlannedWrite & { scope: MemoryItemScope }>();
-    for (const write of writes) {
-      undo.set(write.path, {
-        path: write.path,
-        content: before.get(write.path)?.content ?? null,
-        scope: write.scope,
-      });
-      if (write.from !== undefined) {
-        undo.set(write.from, {
-          path: write.from,
-          content: before.get(write.from)?.content ?? null,
-          scope: write.scope,
-        });
-      }
-    }
-    const undone = [...undo.values()];
-    for (let attempt = 1, seen = snapshot; attempt <= WRITE_ATTEMPTS; attempt++) {
-      const latest = new Map(this.filesOf(access, seen).map((file) => [file.path, file]));
-      const taken = await this.write(access, undone, latest, this.nextSequences(seen, undone));
-      if (!taken) break;
-      seen = unwrap(
-        await this.adapter.findFileVersions({
-          agentId: access.scope.agentId,
-          visibleTo: access.visibleTo ?? access.scope,
-        })
+    const later = (version: MemoryFileVersion) =>
+      snapshot.some(
+        (other) =>
+          fileKeyOf(other.scope, other.path) === fileKeyOf(version.scope, version.path) &&
+          other.sequence > version.sequence
       );
+    const ours = kept.filter((version) => !later(version)).map((version) => version.id);
+    if (ours.length > 0) unwrap(await this.adapter.deleteFileVersions(ours));
+    for (const version of kept) {
+      if (!later(version)) access.observe?.(version.path, null);
     }
     throw new MemoryFileError(
       `Another writer changed the memory around ${broken} at the same time. View it again and try again.`
@@ -911,7 +897,7 @@ export class MemoryFiles {
     writes: readonly (PlannedWrite & { scope: MemoryItemScope })[],
     current: ReadonlyMap<string, MemoryFile>,
     sequences: Map<string, number>
-  ): Promise<boolean> {
+  ): Promise<MemoryFileVersion[] | undefined> {
     const at = this.now();
     const entryId = access.place?.entryId;
     const versions = writes.map((write): MemoryFileVersion => {
@@ -935,13 +921,13 @@ export class MemoryFiles {
     });
     const put = await this.adapter.putFileVersions(versions);
     if (!put.success) {
-      if (put.error === MEMORY_FILE_CONFLICT) return true;
+      if (put.error === MEMORY_FILE_CONFLICT) return undefined;
       throw new MemoryFileError('The memory store failed to keep the change. Try again later.', {
         cause: new Error(put.error),
       });
     }
     for (const version of versions) access.observe?.(version.path, version.sha256);
-    return false;
+    return versions;
   }
 
   private async exclusive<T>(agentId: string, work: () => Promise<T>): Promise<T> {
