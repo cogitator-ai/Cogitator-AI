@@ -147,3 +147,31 @@ export type {
   ReadinessTarget,
   ReadinessOptions,
 } from './readiness.js';
+
+export {
+  INTERNAL_ERROR,
+  UNAUTHORIZED,
+  admitCaller,
+  authorizeThreadAccess,
+  checkRunLimits,
+  cogitatorErrorStatus,
+  describeHttpError,
+  errorEnvelope,
+  errorHeaders,
+  retryAfterSeconds,
+  swarmTimeoutWithin,
+  threadForbidden,
+  workflowOptionsWithin,
+} from './contract.js';
+
+export type {
+  AnonymousPolicy,
+  AuthorizeThread,
+  ErrorEnvelope,
+  HttpErrorDescription,
+  RunLimits,
+} from './contract.js';
+
+export { MAX_THREAD_PAGE_LIMIT, parseThreadPageQuery, readThreadPage } from './thread-page.js';
+
+export type { ThreadPage, ThreadPageQuery } from './thread-page.js';

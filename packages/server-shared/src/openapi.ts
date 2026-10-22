@@ -1,5 +1,7 @@
 import type { OpenAPIContext, SwaggerConfig, OpenAPISpec } from './openapi-types.js';
 import { MAX_RUN_TIMEOUT_MS, NON_BLANK_PATTERN, RUN_INPUT_SCHEMA } from './validation.js';
+import type { RunLimits } from './contract.js';
+import { MAX_THREAD_PAGE_LIMIT } from './thread-page.js';
 
 const THREAD_ID_SCHEMA = { type: 'string', minLength: 1, pattern: NON_BLANK_PATTERN } as const;
 
@@ -30,7 +32,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
     ],
     paths: {},
     components: {
-      schemas: generateSchemas(),
+      schemas: generateSchemas(config.limits),
       ...(config.auth && {
         securitySchemes: {
           bearerAuth: {
@@ -94,17 +96,48 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
     },
   };
 
+  const errorContent = {
+    'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
+  };
+  const retryAfter = {
+    'Retry-After': {
+      description: 'Seconds to wait before trying again, when the provider said',
+      schema: { type: 'integer', minimum: 1 },
+    },
+  };
   const threadForbidden = {
-    description: 'The thread belongs to another user (THREAD_ACCESS_DENIED)',
+    description:
+      'The thread belongs to another user (THREAD_ACCESS_DENIED), or the server keeps the caller from it (THREAD_FORBIDDEN)',
+    content: errorContent,
   };
   const refusals = {
     400: {
       description: 'The body breaks the request schema (INVALID_INPUT)',
-      content: {
-        'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
-      },
+      content: errorContent,
     },
-    415: { description: 'The body is not JSON (UNSUPPORTED_MEDIA_TYPE)' },
+    ...(config.auth && {
+      401: {
+        description: 'The credentials were refused, or the caller has none (UNAUTHORIZED)',
+        content: errorContent,
+      },
+    }),
+    415: { description: 'The body is not JSON (UNSUPPORTED_MEDIA_TYPE)', content: errorContent },
+  };
+  const runFailures = {
+    429: {
+      description: 'The provider limited the rate or the budget ran out (LLM_RATE_LIMITED, BUDGET_EXCEEDED)',
+      headers: retryAfter,
+      content: errorContent,
+    },
+    503: {
+      description: 'The provider or a circuit breaker is unavailable (LLM_UNAVAILABLE, CIRCUIT_OPEN)',
+      headers: retryAfter,
+      content: errorContent,
+    },
+    504: {
+      description: 'The run ran out of time (RUN_TIMEOUT, LLM_TIMEOUT)',
+      content: errorContent,
+    },
   };
 
   for (const [name] of Object.entries(ctx.agents)) {
@@ -126,6 +159,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
             },
           },
           ...refusals,
+          ...runFailures,
           403: threadForbidden,
           404: { description: 'Agent not found' },
         },
@@ -150,6 +184,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
             },
           },
           ...refusals,
+          ...runFailures,
           403: threadForbidden,
           404: { description: 'Agent not found' },
           409: { description: 'The thread has no paused run (RUN_NOT_PAUSED)' },
@@ -182,8 +217,23 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
   spec.paths['/threads/{id}'] = {
     get: {
       tags: ['threads'],
-      summary: 'Get thread by ID',
-      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      summary: 'Get thread by ID, whole or a page at a time',
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        {
+          name: 'limit',
+          in: 'query',
+          description:
+            'Answer the newest `limit` messages of what is left and a `nextCursor`; without it the whole thread',
+          schema: { type: 'integer', minimum: 1, maximum: MAX_THREAD_PAGE_LIMIT },
+        },
+        {
+          name: 'cursor',
+          in: 'query',
+          description: 'The `nextCursor` of the page after the one to read',
+          schema: { type: 'string' },
+        },
+      ],
       responses: {
         200: {
           description: 'Thread data',
@@ -191,6 +241,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
             'application/json': { schema: { $ref: '#/components/schemas/ThreadResponse' } },
           },
         },
+        400: { description: 'limit or cursor is not valid (INVALID_INPUT)', content: errorContent },
         403: threadForbidden,
         503: { description: 'Memory not configured' },
       },
@@ -270,6 +321,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
             },
           },
           ...refusals,
+          ...runFailures,
         },
       },
     };
@@ -317,6 +369,8 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
             },
           },
           ...refusals,
+          ...runFailures,
+          403: threadForbidden,
         },
       },
     };
@@ -439,7 +493,7 @@ const RUN_OUTCOME_PROPERTIES = {
   },
 } as const;
 
-function generateSchemas(): Record<string, unknown> {
+function generateSchemas(limits: RunLimits | undefined): Record<string, unknown> {
   return {
     HealthResponse: {
       type: 'object',
@@ -591,9 +645,13 @@ function generateSchemas(): Record<string, unknown> {
       type: 'object',
       properties: {
         id: { type: 'string' },
-        messages: { type: 'array' },
+        messages: { type: 'array', description: 'The messages of the page, oldest first' },
         createdAt: { type: 'number' },
         updatedAt: { type: 'number' },
+        nextCursor: {
+          type: 'string',
+          description: 'Pass as `cursor` to read the page before this one; absent at the start',
+        },
       },
     },
     AddMessageRequest: {
@@ -649,8 +707,8 @@ function generateSchemas(): Record<string, unknown> {
         options: {
           type: 'object',
           properties: {
-            maxConcurrency: { type: 'integer', minimum: 1 },
-            maxIterations: { type: 'integer', minimum: 1 },
+            maxConcurrency: limitedInteger(limits?.workflowMaxConcurrency),
+            maxIterations: limitedInteger(limits?.workflowMaxIterations),
             checkpoint: {
               type: 'boolean',
               enum: [false],
@@ -693,7 +751,14 @@ function generateSchemas(): Record<string, unknown> {
         input: { ...RUN_INPUT_SCHEMA },
         context: CONTEXT_SCHEMA,
         threadId: THREAD_ID_SCHEMA,
-        timeout: { type: 'number', exclusiveMinimum: 0, maximum: MAX_RUN_TIMEOUT_MS },
+        timeout: {
+          type: 'number',
+          exclusiveMinimum: 0,
+          maximum: MAX_RUN_TIMEOUT_MS,
+          ...(limits?.swarmTimeout !== undefined && {
+            description: `Held to ${limits.swarmTimeout} ms, the server's limit, which is also the default`,
+          }),
+        },
       },
     },
     SwarmRunResponse: {
@@ -732,5 +797,20 @@ function generateSchemas(): Record<string, unknown> {
         },
       },
     },
+  };
+}
+
+/**
+ * An integer field the operator may cap: the cap is not a maximum the request is refused
+ * over, the server holds a larger value to it, so the spec says so and gives it as the default
+ */
+function limitedInteger(cap: number | undefined): Record<string, unknown> {
+  return {
+    type: 'integer',
+    minimum: 1,
+    ...(cap !== undefined && {
+      default: cap,
+      description: `Held to ${cap}, the server's limit, which is also the default`,
+    }),
   };
 }

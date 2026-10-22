@@ -1,3 +1,5 @@
+import type { RunLimits } from './contract.js';
+
 export interface OpenAPISpec {
   openapi: string;
   info: {
@@ -44,6 +46,8 @@ export interface SwaggerConfig {
    * declares an optional bearer token, so Swagger UI offers to send one.
    */
   auth?: boolean;
+  /** The operator's run limits: the spec shows them as the maximums of the request fields */
+  limits?: RunLimits;
 }
 
 export interface OpenAPIContext {

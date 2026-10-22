@@ -1,4 +1,6 @@
-import type { ResumeOptions, RunOptions, RunResult } from '@cogitator-ai/types';
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
+import type { MemoryQueryOptions, ResumeOptions, RunOptions, RunResult } from '@cogitator-ai/types';
+import type { AnonymousPolicy, RunLimits } from './contract.js';
 import type { StreamEvent } from './protocol.js';
 import { toAgentRunResponse } from './response.js';
 import type { ContextPolicy, ThreadMessageRole } from './validation.js';
@@ -40,6 +42,9 @@ export const CONFORMANCE_ROUTES = {
   swarmRun: `/swarms/${CONFORMANCE_NAMES.swarm}/run`,
   workflowRun: `/workflows/${CONFORMANCE_NAMES.workflow}/run`,
   threadMessages: `/threads/${CONFORMANCE_NAMES.thread}/messages`,
+  thread: `/threads/${CONFORMANCE_NAMES.thread}`,
+  threadPage: `/threads/${CONFORMANCE_NAMES.thread}?limit=2`,
+  threadBadPage: `/threads/${CONFORMANCE_NAMES.thread}?limit=0`,
 } as const;
 
 export type ConformanceRoute = keyof typeof CONFORMANCE_ROUTES;
@@ -48,6 +53,23 @@ export type ConformanceRoute = keyof typeof CONFORMANCE_ROUTES;
 export interface ConformanceServerOptions {
   acceptContext?: ContextPolicy;
   threadMessageRoles?: readonly ThreadMessageRole[];
+  limits?: RunLimits;
+  /** The adapter's anonymous policy. The cases send no credentials, so every caller is anonymous */
+  anonymous?: AnonymousPolicy;
+  /** Threads the adapter's `authorizeThread` turns every caller away from */
+  forbiddenThreads?: readonly string[];
+  /** What the adapter's `deps` hook returns for every request */
+  deps?: Readonly<Record<string, unknown>>;
+}
+
+/** How the conformance runtime behaves for a case */
+export interface ConformanceRuntimeOptions {
+  /** Runs and resumes fail with this Cogitator error */
+  fail?: { code: ErrorCode; message: string; retryAfter?: number };
+  /** Runs and resumes fail with a plain error carrying this message, which no client may see */
+  crash?: string;
+  /** Messages the conformance thread holds, one a millisecond */
+  threadEntries?: number;
 }
 
 export interface ConformanceCase {
@@ -56,6 +78,7 @@ export interface ConformanceCase {
   /** Default: `POST` */
   method?: 'GET' | 'POST';
   server?: ConformanceServerOptions;
+  runtime?: ConformanceRuntimeOptions;
   /** The raw request body; none for a `GET` */
   body?: string;
   /** Default: `application/json` */
@@ -76,6 +99,12 @@ export interface ConformanceCase {
     memoryWrites?: number;
     /** The exact JSON answer */
     json?: unknown;
+    /** Headers the answer must carry, names in lower case */
+    headers?: Readonly<Record<string, string>>;
+    /** Text the answer must not contain */
+    hides?: string;
+    /** The thread page the answer holds: how many messages, and whether a `nextCursor` */
+    page?: { messages: number; nextCursor: boolean };
   };
 }
 
@@ -234,6 +263,102 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
     body: run({ role: 'system', content: 'Answer in French' }),
     expect: { status: 201, runs: 0, memoryWrites: 1 },
   },
+  {
+    name: 'answers a rate limited run with its status, code and Retry-After',
+    route: 'agentRun',
+    runtime: {
+      fail: { code: ErrorCode.LLM_RATE_LIMITED, message: 'rate limited', retryAfter: 1500 },
+    },
+    body: run({ input: 'hi' }),
+    expect: { status: 429, code: 'LLM_RATE_LIMITED', runs: 1, headers: { 'retry-after': '2' } },
+  },
+  {
+    name: 'answers an unavailable provider with 503 and Retry-After',
+    route: 'agentRun',
+    runtime: {
+      fail: { code: ErrorCode.LLM_UNAVAILABLE, message: 'provider down', retryAfter: 30_000 },
+    },
+    body: run({ input: 'hi' }),
+    expect: { status: 503, code: 'LLM_UNAVAILABLE', runs: 1, headers: { 'retry-after': '30' } },
+  },
+  {
+    name: 'answers an unexpected error without telling what it was',
+    route: 'agentRun',
+    runtime: { crash: 'database password is hunter2' },
+    body: run({ input: 'hi' }),
+    expect: { status: 500, runs: 1, hides: 'hunter2' },
+  },
+  {
+    name: 'refuses a caller without identity where the server denies anonymous callers',
+    route: 'agentRun',
+    server: { anonymous: 'deny' },
+    body: run({ input: 'hi' }),
+    expect: { status: 401, code: 'UNAUTHORIZED' },
+  },
+  {
+    name: 'refuses a run on a thread the server keeps the caller from',
+    route: 'agentRun',
+    server: { forbiddenThreads: [CONFORMANCE_NAMES.thread] },
+    body: run({ input: 'hi', threadId: CONFORMANCE_NAMES.thread }),
+    expect: { status: 403, code: 'THREAD_FORBIDDEN' },
+  },
+  {
+    name: 'runs on a thread the server lets the caller use',
+    route: 'agentRun',
+    server: { forbiddenThreads: ['someone-elses'] },
+    body: run({ input: 'hi', threadId: CONFORMANCE_NAMES.thread }),
+    expect: { status: 200, runOptions: { threadId: CONFORMANCE_NAMES.thread } },
+  },
+  {
+    name: 'refuses a resume on a thread the server keeps the caller from',
+    route: 'agentResume',
+    server: { forbiddenThreads: [CONFORMANCE_NAMES.thread] },
+    body: run({ threadId: CONFORMANCE_NAMES.thread, decisions: {} }),
+    expect: { status: 403, code: 'THREAD_FORBIDDEN' },
+  },
+  {
+    name: 'refuses to add a message to a thread the server keeps the caller from',
+    route: 'threadMessages',
+    server: { forbiddenThreads: [CONFORMANCE_NAMES.thread] },
+    body: run({ role: 'user', content: 'hello' }),
+    expect: { status: 403, code: 'THREAD_FORBIDDEN', memoryWrites: 0 },
+  },
+  {
+    name: 'refuses to read a thread the server keeps the caller from',
+    route: 'thread',
+    method: 'GET',
+    server: { forbiddenThreads: [CONFORMANCE_NAMES.thread] },
+    runtime: { threadEntries: 3 },
+    expect: { status: 403, code: 'THREAD_FORBIDDEN' },
+  },
+  {
+    name: 'reads a whole thread',
+    route: 'thread',
+    method: 'GET',
+    runtime: { threadEntries: 3 },
+    expect: { status: 200, runs: 0, page: { messages: 3, nextCursor: false } },
+  },
+  {
+    name: 'reads the newest page of a thread with a cursor to the one before',
+    route: 'threadPage',
+    method: 'GET',
+    runtime: { threadEntries: 5 },
+    expect: { status: 200, runs: 0, page: { messages: 2, nextCursor: true } },
+  },
+  {
+    name: 'refuses a thread page of no messages',
+    route: 'threadBadPage',
+    method: 'GET',
+    runtime: { threadEntries: 5 },
+    expect: { status: 400, code: 'INVALID_INPUT' },
+  },
+  {
+    name: 'hands the run the dependencies the server builds for the request',
+    route: 'agentRun',
+    server: { deps: { tenant: 'acme' } },
+    body: run({ input: 'hi' }),
+    expect: { status: 200, runOptions: { deps: { tenant: 'acme' } } },
+  },
 ];
 
 /** The method a case sends */
@@ -355,8 +480,26 @@ export class ConformanceRuntime {
   readonly results: RunResult[] = [];
   readonly memoryWrites: unknown[] = [];
 
+  /** `testCase` sets how the runtime behaves for it (`runtime` of the case) */
+  constructor(private readonly testCase?: ConformanceCase) {}
+
+  /** The error a case makes every run and resume fail with */
+  private failure(): Error | undefined {
+    const options = this.testCase?.runtime;
+    if (options?.fail) {
+      return new CogitatorError({
+        code: options.fail.code,
+        message: options.fail.message,
+        ...(options.fail.retryAfter !== undefined && { retryAfter: options.fail.retryAfter }),
+      });
+    }
+    return options?.crash === undefined ? undefined : new Error(options.crash);
+  }
+
   run(_agent: unknown, options: RunOptions): Promise<RunResult> {
     this.runs.push(options);
+    const failure = this.failure();
+    if (failure) return Promise.reject(failure);
     if (options.stream) {
       options.onReasoning?.('thinking');
       options.onToken?.('Hel');
@@ -372,6 +515,8 @@ export class ConformanceRuntime {
 
   resume(_agent: unknown, threadId: string, options: ResumeOptions): Promise<RunResult> {
     this.runs.push(options);
+    const failure = this.failure();
+    if (failure) return Promise.reject(failure);
     return Promise.resolve(this.record(conformancePausedResult(threadId)));
   }
 
@@ -387,7 +532,22 @@ export class ConformanceRuntime {
       getThread: () => ok(null),
       createThread: (agentId: string, metadata: Record<string, unknown>, id: string) =>
         ok(thread(id, agentId, metadata)),
-      getEntries: () => ok([]),
+      getEntries: (query: MemoryQueryOptions) => {
+        const count =
+          query.threadId === CONFORMANCE_NAMES.thread
+            ? (this.testCase?.runtime?.threadEntries ?? 0)
+            : 0;
+        let entries = Array.from({ length: count }, (_, at) => ({
+          id: `entry_${at + 1}`,
+          threadId: query.threadId,
+          message: { role: at % 2 === 0 ? 'user' : 'assistant', content: `message ${at + 1}` },
+          tokenCount: 1,
+          createdAt: new Date(at + 1),
+        }));
+        if (query.before) entries = entries.filter((entry) => entry.createdAt < query.before!);
+        if (query.limit) entries = entries.slice(-query.limit);
+        return ok(entries);
+      },
       addEntry: (entry: unknown) => {
         this.memoryWrites.push(entry);
         return ok({ id: `entry_${this.memoryWrites.length}` });
@@ -409,6 +569,8 @@ export interface ConformanceResponse {
   code?: string;
   /** The answer's body as text */
   body: string;
+  /** The answer's headers, names in lower case, for the cases that check them */
+  headers?: Readonly<Record<string, string>>;
 }
 
 /** How {@link checkConformance} reads an adapter's answers */
@@ -520,6 +682,26 @@ export function checkConformance(
 
   if (expect.memoryWrites !== undefined && runtime.memoryWrites.length !== expect.memoryWrites) {
     fail(`wrote ${runtime.memoryWrites.length} messages, expected ${expect.memoryWrites}`);
+  }
+
+  for (const [name, value] of Object.entries(expect.headers ?? {})) {
+    const actual = response.headers?.[name];
+    if (actual !== value) fail(`header ${name} was ${String(actual)}, expected ${value}`);
+  }
+
+  if (expect.hides !== undefined && response.body.includes(expect.hides)) {
+    fail(`the answer tells the client ${expect.hides}`);
+  }
+
+  if (expect.page !== undefined) {
+    const answer = parseJson(response.body) as { messages?: unknown; nextCursor?: unknown };
+    const count = Array.isArray(answer?.messages) ? answer.messages.length : undefined;
+    if (count !== expect.page.messages) {
+      fail(`the page holds ${String(count)} messages, expected ${expect.page.messages}`);
+    }
+    if ((typeof answer?.nextCursor === 'string') !== expect.page.nextCursor) {
+      fail(`the page ${expect.page.nextCursor ? 'has no' : 'has a'} nextCursor`);
+    }
   }
 
   return problems;
