@@ -238,6 +238,11 @@ export class EvalSuite {
     }
   }
 
+  /** The cases a run with `maxCases` goes through, in order */
+  cases(maxCases?: number): readonly EvalCase[] {
+    return this.dataset.cases.slice(0, maxCases);
+  }
+
   async run(options: EvalRunOptions = {}): Promise<EvalSuiteResult> {
     const { maxCases, signal } = options;
     if (maxCases !== undefined && (!Number.isInteger(maxCases) || maxCases < 1)) {
@@ -246,7 +251,7 @@ export class EvalSuite {
     signal?.throwIfAborted();
 
     const suiteStart = Date.now();
-    const cases = this.dataset.cases.slice(0, maxCases);
+    const cases = this.cases(maxCases);
     const total = cases.length;
 
     type ScoredResult = EvalCaseResult & { scores: MetricScore[] };
