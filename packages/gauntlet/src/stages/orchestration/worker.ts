@@ -396,7 +396,10 @@ const workerSwarm: StageDefinition = {
 
     const inspector = new Redis({ ...redis, lazyConnect: true });
     ctx.onCleanup(() => inspector.quit().then(() => undefined));
-    const stateKeys = () => inspector.keys(`${keyPrefix}:*`);
+    const stateKeys = async () =>
+      (await inspector.keys(`${keyPrefix}:*`)).filter(
+        (key) => !key.startsWith(`${keyPrefix}:jobs:`)
+      );
 
     const events: SwarmEvent[] = [];
     const unsubscribe = swarm.on('*', (event) => {

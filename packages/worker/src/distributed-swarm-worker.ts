@@ -2,25 +2,32 @@
  * Worker node for distributed swarms.
  *
  * Consumes agent turns dispatched by `DistributedSwarmCoordinator` (from
- * `@cogitator-ai/swarms`), runs them with the worker's Cogitator and tools, and publishes
- * each result back to the coordinator's results channel.
+ * `@cogitator-ai/swarms`), runs them with the worker's Cogitator and tools, and hands each
+ * result back to the coordinator. A turn moves from the queue to this worker's own list while
+ * it runs, so a turn of a worker that died goes back to the queue for another one.
  */
 
-import { Redis } from 'ioredis';
-import { swarmJobQueueKey } from '@cogitator-ai/swarms';
+import { nanoid } from 'nanoid';
+import {
+  closeSwarmRedis,
+  createSwarmRedis,
+  deliverSwarmJobResult,
+  swarmQueueKeys,
+  type SwarmQueueKeys,
+  type SwarmRedis,
+} from '@cogitator-ai/swarms';
+import type { RedisConnectionConfig } from '@cogitator-ai/types';
 import type { SwarmAgentJobPayload, SwarmAgentJobResult, WorkerRuntime } from './types';
 import { executeSwarmAgentJob } from './processors/swarm-agent.js';
 import { toErrorMessage } from './processors/shared.js';
 import { Cogitator } from '@cogitator-ai/core';
 
 export interface DistributedSwarmWorkerConfig extends WorkerRuntime {
-  /** Redis holding the swarm job queue (must match the swarm's `distributed.redis`) */
-  redis?: {
-    host?: string;
-    port?: number;
-    password?: string;
-    db?: number;
-  };
+  /**
+   * Redis holding the swarm job queue (must match the swarm's `distributed.redis`): a url, host
+   * and port, TLS, or a cluster. Default: localhost:6379
+   */
+  redis?: RedisConnectionConfig;
   /** Swarm key prefix (must match `distributed.redis.keyPrefix`, default: 'swarm') */
   keyPrefix?: string;
   /** Job queue name (must match `distributed.queue`, default: 'swarm-agent-jobs') */
@@ -35,16 +42,37 @@ export interface DistributedSwarmWorkerConfig extends WorkerRuntime {
    * cancelled turn is aborted and its result is not published
    */
   cancelCheckInterval?: number;
+  /**
+   * How often, in ms, the worker tells the queue it is alive and returns the turns of workers
+   * that stopped doing so to the queue (default: 5000). A worker silent for three intervals
+   * counts as gone, so a turn that runs past that on a stalled worker can run twice
+   */
+  heartbeatInterval?: number;
 }
 
 export interface DistributedSwarmWorkerEvents {
   onJobStarted?: (job: SwarmAgentJobPayload) => void;
   onJobCompleted?: (job: SwarmAgentJobPayload, result: SwarmAgentJobResult) => void;
   onJobFailed?: (job: SwarmAgentJobPayload, error: Error) => void;
-  /** The coordinator gave up on the turn: it was skipped, or aborted while it ran */
+  /**
+   * The coordinator gave up on the turn or already has its result: it was skipped, or aborted
+   * while it ran
+   */
   onJobCancelled?: (job: SwarmAgentJobPayload) => void;
+  /**
+   * Turns went back to the queue: those of a worker that stopped beating, or ones on this
+   * worker's own list it never got (`workerId` is then its own)
+   */
+  onJobsRecovered?: (workerId: string, count: number) => void;
   onError?: (error: Error) => void;
 }
+
+/** Take one copy of a turn off a worker's list and put it at the head of the queue, at once */
+const HAND_BACK = `if redis.call('LREM', KEYS[1], 1, ARGV[1]) == 1 then
+  redis.call('LPUSH', KEYS[2], ARGV[1])
+  return 1
+end
+return 0`;
 
 function isSwarmAgentJob(value: unknown): value is SwarmAgentJobPayload {
   if (typeof value !== 'object' || value === null) return false;
@@ -64,12 +92,24 @@ export class DistributedSwarmWorker {
   private readonly config: DistributedSwarmWorkerConfig;
   private readonly events: DistributedSwarmWorkerEvents;
   private readonly runtime: WorkerRuntime & Required<Pick<WorkerRuntime, 'cogitator' | 'tools'>>;
-  private readonly queueKey: string;
-  private consumer?: Redis;
-  private publisher?: Redis;
+  private readonly keys: SwarmQueueKeys;
+  /** This worker's id in the queue's worker set, new for every start */
+  private workerId = '';
+  private consumer?: SwarmRedis;
+  private publisher?: SwarmRedis;
   private loop?: Promise<void>;
+  /** The next beat, scheduled once the one before it finished */
+  private beat?: ReturnType<typeof setTimeout>;
+  /** The beat running now, which `stop()` waits for */
+  private beating?: Promise<void>;
+  /** Whether the worker beats: from `start()` until `stop()` saw its last turn finish */
+  private alive = false;
   private running = false;
   private readonly active = new Set<Promise<void>>();
+  /** The turns this worker took and runs, as moved: one entry per copy */
+  private readonly holding: string[] = [];
+  /** Turns on this worker's list it did not run at the last beat, with how many copies */
+  private strays = new Map<string, number>();
 
   constructor(
     config: DistributedSwarmWorkerConfig = {},
@@ -81,41 +121,42 @@ export class DistributedSwarmWorker {
       cogitator: config.cogitator ?? new Cogitator(),
       tools: config.tools ?? [],
     };
-    this.queueKey = swarmJobQueueKey(config.keyPrefix, config.queue);
+    this.keys = swarmQueueKeys(config.keyPrefix, config.queue);
   }
 
   /**
-   * Start consuming jobs. Resolves once the worker is connected.
+   * Start consuming jobs. Resolves once the worker is connected, has joined the queue's workers
+   * and has returned the turns of workers that are gone to the queue.
    */
   async start(): Promise<void> {
     if (this.running) return;
 
-    const options = {
-      host: this.config.redis?.host ?? 'localhost',
-      port: this.config.redis?.port ?? 6379,
-      password: this.config.redis?.password,
-      db: this.config.redis?.db ?? 0,
-      lazyConnect: true,
-    };
-    const consumer = new Redis({ ...options, maxRetriesPerRequest: null });
-    const publisher = new Redis(options);
+    const consumer = createSwarmRedis(this.config.redis, { blocking: true });
+    const publisher = createSwarmRedis(this.config.redis);
 
     try {
       await Promise.all([consumer.connect(), publisher.connect()]);
+      this.workerId = `worker_${nanoid(12)}`;
+      this.publisher = publisher;
+      await this.heartbeat();
+      await this.recover();
     } catch (error) {
+      this.publisher = undefined;
       consumer.disconnect();
       publisher.disconnect();
       throw error;
     }
 
     this.consumer = consumer;
-    this.publisher = publisher;
     this.running = true;
+    this.alive = true;
+    this.scheduleBeat();
     this.loop = this.consume();
   }
 
   /**
-   * Stop taking new jobs, wait for in-flight jobs to finish and close connections.
+   * Stop taking new jobs, wait for in-flight jobs to finish, hand back to the queue whatever is
+   * still on this worker's list, leave the queue's workers and close connections.
    */
   async stop(): Promise<void> {
     if (!this.running) return;
@@ -124,11 +165,29 @@ export class DistributedSwarmWorker {
     this.consumer?.disconnect();
     await this.loop;
     await Promise.allSettled([...this.active]);
+    this.alive = false;
+    clearTimeout(this.beat);
+    await this.beating;
 
-    await this.publisher?.quit();
+    if (this.publisher) {
+      try {
+        await this.requeue(this.workerId);
+        await this.publisher.del(this.keys.heartbeat(this.workerId));
+        await this.publisher.srem(this.keys.workers, this.workerId);
+      } catch (error) {
+        this.reportError(error);
+      }
+      await closeSwarmRedis(this.publisher);
+    }
     this.consumer = undefined;
     this.publisher = undefined;
     this.loop = undefined;
+    this.beat = undefined;
+  }
+
+  /** This worker's id in the queue's worker set while it runs */
+  getWorkerId(): string {
+    return this.workerId;
   }
 
   isRunning(): boolean {
@@ -149,23 +208,139 @@ export class DistributedSwarmWorker {
         continue;
       }
 
-      let entry: [string, string] | null;
+      let raw: string | null;
       try {
-        entry = await this.consumer!.blpop(this.queueKey, pollTimeout);
+        raw = await this.consumer!.blmove(
+          this.keys.queue,
+          this.keys.processing(this.workerId),
+          'LEFT',
+          'RIGHT',
+          pollTimeout
+        );
       } catch (error) {
         if (!this.running) return;
-        this.events.onError?.(error instanceof Error ? error : new Error(toErrorMessage(error)));
+        this.reportError(error);
         await new Promise((resolve) => setTimeout(resolve, 1000));
         continue;
       }
 
-      if (!entry) continue;
+      if (raw === null) continue;
 
-      const task = this.handle(entry[1]).finally(() => {
-        this.active.delete(task);
-      });
+      const taken = raw;
+      this.holding.push(taken);
+      const task = this.handle(taken)
+        .catch((error: unknown) => this.reportError(error))
+        .finally(() => {
+          this.active.delete(task);
+          this.holding.splice(this.holding.indexOf(taken), 1);
+          void this.publisher
+            ?.lrem(this.keys.processing(this.workerId), 1, taken)
+            .catch((error: unknown) => this.reportError(error));
+        });
       this.active.add(task);
     }
+  }
+
+  /**
+   * Beat once `heartbeatInterval` ms from now, and again that long after it finished: one beat at
+   * a time, so a slow Redis never runs two `reclaim()` at once or shortens the grace between two
+   */
+  private scheduleBeat(): void {
+    this.beat = setTimeout(() => {
+      this.beating = this.heartbeat()
+        .then(() => this.reclaim())
+        .then(() => this.recover())
+        .catch((error: unknown) => this.reportError(error))
+        .finally(() => {
+          this.beating = undefined;
+          if (this.alive) this.scheduleBeat();
+        });
+    }, this.heartbeatInterval());
+  }
+
+  private heartbeatInterval(): number {
+    return Math.max(100, this.config.heartbeatInterval ?? 5000);
+  }
+
+  /** Tell the queue this worker is alive: its heartbeat first, so no one takes it for gone */
+  private async heartbeat(): Promise<void> {
+    const publisher = this.publisher!;
+    await publisher.set(
+      this.keys.heartbeat(this.workerId),
+      String(Date.now()),
+      'PX',
+      this.heartbeatInterval() * 3
+    );
+    await publisher.sadd(this.keys.workers, this.workerId);
+  }
+
+  /**
+   * Hand back to the queue the turns on this worker's own list it does not run, at the second
+   * beat in a row that finds them there: a BLMOVE whose reply a dropped connection lost (and
+   * ioredis sent again) moved a turn this worker never got. One beat of grace lets a reply that
+   * is still on its way arrive first
+   */
+  private async reclaim(): Promise<void> {
+    const publisher = this.publisher!;
+    const listed = await publisher.lrange(this.keys.processing(this.workerId), 0, -1);
+    const strays = new Map<string, number>();
+    for (const raw of listed) strays.set(raw, (strays.get(raw) ?? 0) + 1);
+    for (const raw of this.holding) {
+      const left = (strays.get(raw) ?? 0) - 1;
+      if (left > 0) strays.set(raw, left);
+      else strays.delete(raw);
+    }
+
+    let count = 0;
+    for (const [raw, copies] of strays) {
+      const confirmed = Math.min(copies, this.strays.get(raw) ?? 0);
+      for (let at = 0; at < confirmed; at++) {
+        const moved = await publisher.eval(
+          HAND_BACK,
+          2,
+          this.keys.processing(this.workerId),
+          this.keys.queue,
+          raw
+        );
+        if (moved === 1) count++;
+      }
+    }
+    this.strays = strays;
+    if (count > 0) this.events.onJobsRecovered?.(this.workerId, count);
+  }
+
+  /** Return the turns of every worker whose heartbeat is gone to the queue */
+  private async recover(): Promise<void> {
+    const publisher = this.publisher!;
+    for (const workerId of await publisher.smembers(this.keys.workers)) {
+      if (workerId === this.workerId) continue;
+      if ((await publisher.exists(this.keys.heartbeat(workerId))) === 1) continue;
+      const count = await this.requeue(workerId);
+      await publisher.srem(this.keys.workers, workerId);
+      if (count > 0) this.events.onJobsRecovered?.(workerId, count);
+    }
+  }
+
+  /**
+   * Move the turns on a worker's list back to the head of the queue, one at a time so two
+   * workers recovering it at once never move a turn twice
+   *
+   * @returns how many turns this call moved
+   */
+  private async requeue(workerId: string): Promise<number> {
+    const publisher = this.publisher!;
+    let count = 0;
+    while (
+      (await publisher.lmove(this.keys.processing(workerId), this.keys.queue, 'RIGHT', 'LEFT')) !==
+      null
+    ) {
+      count++;
+    }
+    return count;
+  }
+
+  private reportError(error: unknown): void {
+    this.events.onError?.(error instanceof Error ? error : new Error(toErrorMessage(error)));
   }
 
   private async handle(raw: string): Promise<void> {
@@ -204,9 +379,9 @@ export class DistributedSwarmWorker {
     }
 
     try {
-      await this.publisher!.publish(job.stateKeys.results, JSON.stringify(result));
+      await deliverSwarmJobResult(this.publisher!, job, result, (error) => this.reportError(error));
     } catch (error) {
-      this.events.onError?.(error instanceof Error ? error : new Error(toErrorMessage(error)));
+      this.reportError(error);
       return;
     }
 
@@ -217,14 +392,19 @@ export class DistributedSwarmWorker {
     }
   }
 
-  /** Whether the coordinator gave up on the job (only coordinators that name a cancel set). */
+  /**
+   * Whether the coordinator gave up on the job (only coordinators that name a cancel set), or a
+   * worker answered it already, such as one that died after answering and before taking the job
+   * off its list
+   */
   private async isCancelled(job: SwarmAgentJobPayload): Promise<boolean> {
-    const key = job.stateKeys.cancelled;
-    if (!key || !this.publisher) return false;
+    const { cancelled, result } = job.stateKeys;
+    if (!this.publisher) return false;
     try {
-      return (await this.publisher.sismember(key, job.jobId)) === 1;
+      if (cancelled && (await this.publisher.sismember(cancelled, job.jobId)) === 1) return true;
+      return result !== undefined && (await this.publisher.exists(result)) === 1;
     } catch (error) {
-      this.events.onError?.(error instanceof Error ? error : new Error(toErrorMessage(error)));
+      this.reportError(error);
       return false;
     }
   }

@@ -171,7 +171,7 @@ Swarms with `distributed.enabled` dispatch each agent turn to Redis. Run `Distri
 import { DistributedSwarmWorker } from '@cogitator-ai/worker';
 
 const worker = new DistributedSwarmWorker({
-  redis: { host: 'localhost', port: 6379 },
+  redis: { url: 'redis://localhost:6379' }, // the same Redis as the swarm's distributed.redis
   keyPrefix: 'swarm', // must match the swarm's distributed.redis.keyPrefix
   queue: 'swarm-agent-jobs', // must match distributed.queue
   concurrency: 4, // default 4
@@ -182,7 +182,11 @@ const worker = new DistributedSwarmWorker({
 await worker.start();
 ```
 
-`redis` also takes `password` and `db`; `pollTimeout` (seconds, default 1) controls how long a blocking poll waits before re-checking state. A second constructor argument takes `onJobStarted`, `onJobCompleted`, `onJobFailed` and `onError` callbacks.
+`redis` is the same `RedisConnectionConfig` as the swarm's `distributed.redis` and the queue's `redis`: a `url` (`rediss://` for TLS), `host`, `port`, `username`, `password`, `db`, `tls` or `cluster.nodes`, the url read first and the explicit fields winning over it. `pollTimeout` (seconds, default 1) controls how long a blocking poll waits before re-checking state. A second constructor argument takes `onJobStarted`, `onJobCompleted`, `onJobFailed`, `onJobCancelled`, `onJobsRecovered` and `onError` callbacks.
+
+The queue is reliable: a worker moves each turn with `BLMOVE` (Redis 6.2 or newer) from the list `<keyPrefix>:jobs:{<queue>}` to its own list `<keyPrefix>:jobs:{<queue>}:processing:<workerId>` and takes it off once the turn is done. It keeps a heartbeat key `<keyPrefix>:jobs:{<queue>}:heartbeat:<workerId>` alive every `heartbeatInterval` ms (default 5000, the key expires after three intervals) and is listed in the set `<keyPrefix>:jobs:{<queue>}:workers`. On `start()` and on every beat, a worker moves the turns of workers whose heartbeat is gone back to the head of the queue, drops those workers from the set and reports `onJobsRecovered(workerId, count)`. A worker also checks its own list on every beat: a turn on it that the worker does not run at two beats in a row, such as one a `BLMOVE` moved while a dropped connection lost its reply, goes back to the head of the queue and is reported with the worker's own id. A worker silent for three intervals counts as gone, so a turn on a stalled worker can run twice. The result is kept under the job's `stateKeys.result` for `resultTtl` ms before it is published, and a worker skips a job whose result is already there. `stop()` waits for in-flight turns, hands back what is left on its list, leaves the set and deletes its heartbeat. `getWorkerId()` gives the worker's id, new on every `start()`.
+
+The braces in `<keyPrefix>:jobs:{<queue>}` are a Redis Cluster hash tag, so the queue and its worker keys sit in one slot. Earlier versions used `<keyPrefix>:jobs:<queue>`, so upgrade the processes that run swarms and the workers together.
 
 See [Distributed Swarms](/docs/swarms/distributed) for the coordinator side.
 
@@ -204,6 +208,8 @@ const redisConfig = {
 const queue = new JobQueue({ redis: redisConfig });
 const pool = new WorkerPool({ redis: redisConfig, workerCount: 4, concurrency: 10 });
 ```
+
+`DistributedSwarmWorker` and the swarm's `distributed.redis` take the same config, their keys carry their own hash tags (the queue name and the swarm id).
 
 ## Prometheus Metrics
 

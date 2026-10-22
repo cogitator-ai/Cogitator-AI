@@ -452,7 +452,7 @@ Subscriptions survive the coordinator rebuild that happens after model assessmen
 
 ## Distributed Execution
 
-With `distributed.enabled`, the swarm keeps its message bus, blackboard and events in Redis and dispatches every agent turn as a job. Worker nodes from `@cogitator-ai/worker` execute the turns and publish results back.
+With `distributed.enabled`, the swarm keeps its message bus, blackboard and events in Redis and dispatches every agent turn as a job. Worker nodes from `@cogitator-ai/worker` execute the turns and hand the results back.
 
 ```typescript
 const swarm = new SwarmBuilder('distributed-team')
@@ -467,7 +467,7 @@ const swarm = new SwarmBuilder('distributed-team')
     enabled: true,
     queue: 'swarm-agent-jobs',
     timeout: 300_000,
-    redis: { host: 'localhost', port: 6379, keyPrefix: 'swarm' },
+    redis: { url: 'redis://localhost:6379', keyPrefix: 'swarm' },
     retry: { maxRetries: 2, backoff: 'exponential', initialDelay: 1000 },
     cleanupAfter: 3_600_000,
   })
@@ -484,7 +484,7 @@ import { Cogitator } from '@cogitator-ai/core';
 import { DistributedSwarmWorker } from '@cogitator-ai/worker';
 
 const worker = new DistributedSwarmWorker({
-  redis: { host: 'localhost', port: 6379 },
+  redis: { url: 'redis://localhost:6379' }, // the same Redis as distributed.redis
   keyPrefix: 'swarm', // must match distributed.redis.keyPrefix
   queue: 'swarm-agent-jobs', // must match distributed.queue
   concurrency: 4,
@@ -497,6 +497,16 @@ process.on('SIGTERM', () => void worker.stop());
 ```
 
 `retry` re-dispatches jobs that fail on a worker or time out (defaults: 3 retries, exponential backoff from 1000 ms up to 30000 ms, without it nothing is re-dispatched), a timed-out job may still be running, so its turn can run twice. `cleanupAfter` expires the swarm's Redis state after `close()` (default one hour, `0` deletes it at once). `workerConcurrency` is deprecated - set `concurrency` on the worker. The swarm's `errorHandling` (retry, failover), budgets and circuit breaking work the same as for local swarms: each turn carries the whole agent in the agent wire format of `@cogitator-ai/core` (response format, reasoning, stop sequences, timeout and the rest), and comes back with the cost, duration and flags (`truncated`, `blocked`) the worker measured. `RedisMessageBus`, `RedisBlackboard` and `RedisSwarmEventEmitter` are exported for direct use.
+
+`distributed.redis` is a `RedisConnectionConfig` (`url`, `host`, `port`, `username`, `password`, `db`, `tls`, `cluster.nodes`) plus `keyPrefix`, the same config the worker takes. The `url` is read first (`rediss://` turns on TLS) and the explicit fields win over it. With `cluster` the swarm and its workers connect to a Redis Cluster, and the url and fields give only the credentials and TLS.
+
+Keys carry Redis Cluster hash tags, with literal braces: the queue is `<keyPrefix>:jobs:{<queue>}` and the swarm's state keys are `<keyPrefix>:{<swarmId>}:...`, so in a cluster each group sits in one slot. Earlier versions used keys without the braces, so upgrade coordinators and workers together.
+
+The queue is reliable. A worker moves each turn with `BLMOVE` (Redis 6.2 or newer) from the queue to its own list `<queue key>:processing:<workerId>` and takes it off once the turn is done. It keeps a heartbeat key `<queue key>:heartbeat:<workerId>` (expiring after three `heartbeatInterval`s, 5000 ms by default) and is listed in the set `<queue key>:workers`. On start and on every beat, a worker moves the turns of workers whose heartbeat is gone back to the head of the queue, so a crashed worker loses no turns. A worker also checks its own list on every beat: a turn on it that the worker does not run at two beats in a row, such as one a `BLMOVE` moved while a dropped connection lost its reply, goes back to the head of the queue and is reported with the worker's own id. A worker silent for three intervals counts as gone, so a turn on a stalled worker can run twice.
+
+The worker keeps each result under the job's `stateKeys.result` (`<keyPrefix>:{<swarmId>}:result:<jobId>`) for `resultTtl` ms, which the coordinator sets to the larger of `timeout` and `cleanupAfter`, and then publishes it. The coordinator reads the stored result when a turn times out, when either of its connections reconnects and every few seconds, so a result published while it reconnected is not lost. A result the worker cannot keep under its key is still published. A worker skips a job whose result is already there, and the coordinator deletes the stored result before it re-dispatches a retry.
+
+The building blocks are exported too: `swarmJobQueueKey` and `swarmQueueKeys` give the queue keys, `deliverSwarmJobResult` (with `DEFAULT_SWARM_RESULT_TTL`) hands a result back the way workers do, and `resolveRedisOptions`, `clusterNodeOptions`, `createSwarmRedis`, `duplicateSwarmRedis`, `scanSwarmKeys` and `closeSwarmRedis` turn a `RedisConnectionConfig` into ioredis clients (`SwarmRedis`, a `Redis` or `Cluster`) and work with them on both.
 
 ---
 

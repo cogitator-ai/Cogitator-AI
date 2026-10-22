@@ -259,8 +259,9 @@ export class JobQueue {
   }
 
   /**
-   * Queue one agent turn of a swarm as a BullMQ job. A `WorkerPool` runs it and publishes the
-   * result to `stateKeys.results` (by default `${keyPrefix}:${swarmId}:results`). Swarms with
+   * Queue one agent turn of a swarm as a BullMQ job. A `WorkerPool` runs it, keeps the result
+   * under `stateKeys.result` and publishes it to `stateKeys.results` (by default
+   * `${keyPrefix}:{${swarmId}}:result:<jobId>` and `${keyPrefix}:{${swarmId}}:results`). Swarms with
    * `distributed.enabled` do not use this queue: `DistributedSwarmCoordinator` pushes its turns
    * to a Redis list that `DistributedSwarmWorker` consumes, so run that worker for them.
    */
@@ -279,12 +280,20 @@ export class JobQueue {
       delay?: number;
       /** Agent run timeout in ms (shorthand for `runOptions.timeout`) */
       timeout?: number;
+      /** How long the worker keeps the result under `stateKeys.result`, in ms (default: 1 hour) */
+      resultTtl?: number;
       /** Id of the job, see {@link JobQueue} for adding one twice */
       jobId?: string;
     }
   ): Promise<Job<SwarmAgentJobPayload>> {
     const jobId = options?.jobId === undefined ? nanoid() : checkJobId(options.jobId);
     const keyPrefix = options?.keyPrefix ?? 'swarm';
+    if (
+      options?.resultTtl !== undefined &&
+      !(Number.isFinite(options.resultTtl) && options.resultTtl > 0)
+    ) {
+      throw new Error(`resultTtl must be a positive number of ms, got ${options.resultTtl}`);
+    }
 
     const payload: SwarmAgentJobPayload = {
       type: 'swarm-agent',
@@ -299,10 +308,12 @@ export class JobQueue {
           ? { ...options.runOptions, timeout: options.timeout }
           : options?.runOptions,
       stateKeys: options?.stateKeys ?? {
-        blackboard: `${keyPrefix}:${swarmId}:blackboard`,
-        messages: `${keyPrefix}:${swarmId}:messages`,
-        results: `${keyPrefix}:${swarmId}:results`,
+        blackboard: `${keyPrefix}:{${swarmId}}:blackboard`,
+        messages: `${keyPrefix}:{${swarmId}}:messages`,
+        results: `${keyPrefix}:{${swarmId}}:results`,
+        result: `${keyPrefix}:{${swarmId}}:result:${jobId}`,
       },
+      ...(options?.resultTtl !== undefined && { resultTtl: Math.ceil(options.resultTtl) }),
     };
 
     return this.add(payload, options);

@@ -158,6 +158,39 @@ describe('processors/swarm-agent', () => {
     expect(options.userId).toBe('alice');
   });
 
+  it('keeps the result under the key the job names before it publishes it', async () => {
+    runMock.mockResolvedValue(runResult('done'));
+    const calls: string[] = [];
+    const publisher = {
+      set: vi.fn(async () => {
+        calls.push('set');
+        return 'OK';
+      }),
+      publish: vi.fn(async () => {
+        calls.push('publish');
+        return 1;
+      }),
+    };
+    const { processSwarmAgentJob } = await import('../processors/swarm-agent');
+
+    await processSwarmAgentJob(
+      {
+        ...payload,
+        stateKeys: { ...payload.stateKeys, result: 'swarm:{swarm_1}:result:job_1' },
+        resultTtl: 5_000,
+      },
+      { publisher }
+    );
+
+    expect(publisher.set).toHaveBeenCalledWith(
+      'swarm:{swarm_1}:result:job_1',
+      expect.stringContaining('job_1'),
+      'PX',
+      5_000
+    );
+    expect(calls).toEqual(['set', 'publish']);
+  });
+
   it("runs the agent in the swarm's trace", async () => {
     runMock.mockResolvedValue(runResult('done'));
     const { processSwarmAgentJob } = await import('../processors/swarm-agent');

@@ -20,6 +20,10 @@ const redisState = vi.hoisted(() => ({
   jobs: [] as unknown[],
   queue: [] as string[],
   sets: new Map<string, Set<string>>(),
+  strings: new Map<string, string>(),
+  deleted: [] as string[],
+  failDeletes: 0,
+  instances: [] as { emit(event: string): boolean; listenerCount(event: string): number }[],
   channels: new Map<string, Set<(channel: string, message: string) => void>>(),
   handler: undefined as ((job: unknown) => void) | undefined,
 }));
@@ -29,6 +33,11 @@ vi.mock('ioredis', async () => {
 
   class FakeRedis extends EventEmitter {
     status = 'wait';
+
+    constructor() {
+      super();
+      redisState.instances.push(this);
+    }
 
     private ready(): void {
       this.status = 'ready';
@@ -86,6 +95,19 @@ vi.mock('ioredis', async () => {
       return 1;
     }
 
+    async get(key: string): Promise<string | null> {
+      return redisState.strings.get(key) ?? null;
+    }
+
+    async del(key: string): Promise<number> {
+      if (redisState.failDeletes > 0) {
+        redisState.failDeletes--;
+        throw new Error('redis down');
+      }
+      redisState.deleted.push(key);
+      return redisState.strings.delete(key) ? 1 : 0;
+    }
+
     async lrem(_key: string, _count: number, value: string): Promise<number> {
       const before = redisState.queue.length;
       redisState.queue = redisState.queue.filter((item) => item !== value);
@@ -138,7 +160,9 @@ vi.mock('ioredis', async () => {
     }
   }
 
-  return { default: FakeRedis, Redis: FakeRedis };
+  class FakeCluster extends FakeRedis {}
+
+  return { default: FakeRedis, Redis: FakeRedis, Cluster: FakeCluster };
 });
 
 function onJobs(handler: JobHandler): void {
@@ -177,6 +201,7 @@ describe('DistributedSwarmCoordinator jobs', () => {
     redisState.jobs.length = 0;
     redisState.queue = [];
     redisState.sets.clear();
+    redisState.strings.clear();
     redisState.channels.clear();
     redisState.handler = undefined;
   });
@@ -218,7 +243,7 @@ describe('DistributedSwarmCoordinator jobs', () => {
     await coord.close();
 
     const swarmKeys = [...redisState.keys].filter((key) =>
-      key.startsWith(`swarm:${coord.getSwarmId()}:`)
+      key.startsWith(`swarm:{${coord.getSwarmId()}}:`)
     );
     expect(swarmKeys.length).toBeGreaterThan(0);
     for (const key of swarmKeys) {
@@ -272,7 +297,7 @@ describe('DistributedSwarmCoordinator jobs', () => {
     await coord.runAgent('worker', 'go');
     await coord.close();
 
-    const eventsKey = `swarm:${coord.getSwarmId()}:events`;
+    const eventsKey = `swarm:{${coord.getSwarmId()}}:events`;
     expect(redisState.expirations.get(eventsKey)).toBe(3600000);
   });
 });
@@ -407,7 +432,7 @@ describe('DistributedSwarmCoordinator abandoned turns', () => {
   });
 
   function cancelledIds(coord: DistributedSwarmCoordinator): string[] {
-    return [...(redisState.sets.get(`swarm:${coord.getSwarmId()}:cancelled`) ?? [])];
+    return [...(redisState.sets.get(`swarm:{${coord.getSwarmId()}}:cancelled`) ?? [])];
   }
 
   it('retries a turn under one job id and never queues it twice', async () => {
@@ -432,7 +457,7 @@ describe('DistributedSwarmCoordinator abandoned turns', () => {
     await expect(coord.runAgent('worker', 'go')).rejects.toThrow('Job timeout');
 
     const [job] = redisState.jobs as SwarmAgentJobPayload[];
-    expect(job.stateKeys.cancelled).toBe(`swarm:${coord.getSwarmId()}:cancelled`);
+    expect(job.stateKeys.cancelled).toBe(`swarm:{${coord.getSwarmId()}}:cancelled`);
     expect(cancelledIds(coord)).toEqual([job.jobId]);
     await coord.close();
   });
@@ -460,5 +485,158 @@ describe('DistributedSwarmCoordinator abandoned turns', () => {
     await expect(running).rejects.toThrow('closed');
     expect(redisState.queue).toHaveLength(0);
     expect(cancelledIds(coord)).toHaveLength(1);
+  });
+});
+
+describe('DistributedSwarmCoordinator results kept by workers', () => {
+  beforeEach(() => {
+    redisState.keys.clear();
+    redisState.expirations.clear();
+    redisState.jobs.length = 0;
+    redisState.queue = [];
+    redisState.sets.clear();
+    redisState.strings.clear();
+    redisState.deleted.length = 0;
+    redisState.failDeletes = 0;
+    redisState.instances.length = 0;
+    redisState.channels.clear();
+    redisState.handler = undefined;
+  });
+
+  const kept = (job: SwarmAgentJobPayload, error?: string) =>
+    JSON.stringify({
+      jobId: job.jobId,
+      swarmId: job.swarmId,
+      agentName: job.agentName,
+      output: error ? '' : `${job.agentName} kept`,
+      toolCalls: [],
+      tokenUsage: { prompt: 1, completion: 1, total: 2 },
+      ...(error !== undefined && { error }),
+    });
+
+  it('names a result key in the swarm and how long the worker keeps the result', async () => {
+    redisState.handler = (raw) => {
+      const job = raw as SwarmAgentJobPayload;
+      redisState.strings.set(job.stateKeys.result!, kept(job));
+    };
+    const coord = coordinator({ timeout: 30 });
+
+    await coord.runAgent('worker', 'go');
+
+    const [job] = redisState.jobs as SwarmAgentJobPayload[];
+    expect(job.stateKeys.result).toBe(`swarm:{${coord.getSwarmId()}}:result:${job.jobId}`);
+    expect(job.resultTtl).toBe(3_600_000);
+    await coord.close();
+  });
+
+  it('reads the result a worker kept when the published one never came', async () => {
+    redisState.handler = (raw) => {
+      const job = raw as SwarmAgentJobPayload;
+      redisState.strings.set(job.stateKeys.result!, kept(job));
+    };
+    const coord = coordinator({ timeout: 30 });
+
+    const result = await coord.runAgent('worker', 'go');
+
+    expect(result.output).toBe('worker kept');
+    await coord.close();
+  });
+
+  it('reads the kept results of waiting turns once its subscriber reconnects', async () => {
+    redisState.handler = (raw) => {
+      const job = raw as SwarmAgentJobPayload;
+      redisState.strings.set(job.stateKeys.result!, kept(job));
+    };
+    const coord = coordinator({ timeout: 60_000 });
+    const started = Date.now();
+
+    const running = coord.runAgent('worker', 'go');
+    await vi.waitFor(() => expect(redisState.strings.size).toBe(1));
+    for (const instance of redisState.instances) instance.emit('ready');
+
+    expect((await running).output).toBe('worker kept');
+    expect(Date.now() - started).toBeLessThan(5_000);
+    await coord.close();
+  });
+
+  it('drops the result an earlier attempt left before it dispatches the turn again', async () => {
+    const seenBefore: boolean[] = [];
+    redisState.handler = (raw) => {
+      const job = raw as SwarmAgentJobPayload;
+      const key = job.stateKeys.result!;
+      seenBefore.push(redisState.strings.has(key));
+      const value = kept(job, seenBefore.length === 1 ? 'worker crashed' : undefined);
+      redisState.strings.set(key, value);
+      for (const listener of redisState.channels.get(job.stateKeys.results) ?? []) {
+        listener(job.stateKeys.results, value);
+      }
+    };
+    const coord = coordinator({ retry: { maxRetries: 1, backoff: 'constant', initialDelay: 1 } });
+
+    const result = await coord.runAgent('worker', 'go');
+
+    expect(result.output).toBe('worker kept');
+    expect(seenBefore).toEqual([false, false]);
+    const [job] = redisState.jobs as SwarmAgentJobPayload[];
+    expect(redisState.deleted).toEqual([job.stateKeys.result]);
+    await coord.close();
+  });
+
+  it('fails an attempt that cannot drop the old result and tries the turn again', async () => {
+    let attempts = 0;
+    redisState.handler = (raw) => {
+      const job = raw as SwarmAgentJobPayload;
+      attempts++;
+      const value = kept(job, attempts === 1 ? 'worker crashed' : undefined);
+      redisState.strings.set(job.stateKeys.result!, value);
+      for (const listener of redisState.channels.get(job.stateKeys.results) ?? []) {
+        listener(job.stateKeys.results, value);
+      }
+    };
+    redisState.failDeletes = 1;
+    const coord = coordinator({ retry: { maxRetries: 2, backoff: 'constant', initialDelay: 1 } });
+
+    const result = await coord.runAgent('worker', 'go');
+
+    expect(result.output).toBe('worker kept');
+    expect(attempts).toBe(2);
+    expect(redisState.deleted).toHaveLength(1);
+    await coord.close();
+  });
+
+  it('reads kept results now and then even when no connection comes back', async () => {
+    redisState.handler = (raw) => {
+      const job = raw as SwarmAgentJobPayload;
+      redisState.strings.set(job.stateKeys.result!, kept(job));
+    };
+    const coord = coordinator({ timeout: 2_000 });
+    const started = Date.now();
+
+    expect((await coord.runAgent('worker', 'go')).output).toBe('worker kept');
+    expect(Date.now() - started).toBeLessThan(1_500);
+    await coord.close();
+  });
+
+  it('times a turn out when what is kept under its result key is not a result', async () => {
+    redisState.handler = (raw) => {
+      const job = raw as SwarmAgentJobPayload;
+      redisState.strings.set(job.stateKeys.result!, 'not json');
+    };
+    const coord = coordinator({ timeout: 30 });
+
+    await expect(coord.runAgent('worker', 'go')).rejects.toThrow('Job timeout');
+    await coord.close();
+  });
+
+  it('starts no recovery when it is closed while it connects', async () => {
+    const coord = coordinator({ timeout: 100 });
+
+    const connecting = coord.initialize().catch(() => undefined);
+    await coord.close();
+    await connecting;
+
+    expect(redisState.instances.every((instance) => instance.listenerCount('ready') === 0)).toBe(
+      true
+    );
   });
 });

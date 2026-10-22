@@ -60,6 +60,7 @@ describe('JobQueue', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAdd.mockReset();
     queue = new JobQueue({
       redis: { host: 'localhost', port: 6379 },
     });
@@ -279,6 +280,35 @@ describe('JobQueue', () => {
         }),
         expect.any(Object)
       );
+    });
+
+    it('names state keys of the swarm under its hash tag, with a result key for the job', async () => {
+      mockGetJob.mockResolvedValue(undefined);
+      await queue.addSwarmAgentJob('swarm_123', 'agent1', mockAgentConfig, 'Task', {
+        jobId: 'turn-1',
+        resultTtl: 9_000,
+      });
+
+      const payload = mockAdd.mock.calls[0][1] as {
+        stateKeys: Record<string, string>;
+        resultTtl?: number;
+      };
+      expect(payload.stateKeys).toEqual({
+        blackboard: 'swarm:{swarm_123}:blackboard',
+        messages: 'swarm:{swarm_123}:messages',
+        results: 'swarm:{swarm_123}:results',
+        result: 'swarm:{swarm_123}:result:turn-1',
+      });
+      expect(payload.resultTtl).toBe(9_000);
+    });
+
+    it('refuses a result ttl that is not a positive number of ms', async () => {
+      for (const resultTtl of [0, -5, Number.NaN]) {
+        await expect(
+          queue.addSwarmAgentJob('swarm_123', 'agent1', mockAgentConfig, 'Task', { resultTtl })
+        ).rejects.toThrow('resultTtl must be a positive');
+      }
+      expect(mockAdd).not.toHaveBeenCalled();
     });
 
     it('includes state keys', async () => {

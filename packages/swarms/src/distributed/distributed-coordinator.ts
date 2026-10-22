@@ -1,5 +1,4 @@
 import { nanoid } from 'nanoid';
-import Redis from 'ioredis';
 import type {
   Agent,
   AgentWireConfig,
@@ -16,6 +15,13 @@ import { currentTraceContext, fromAgentWireRunResult, toAgentWire } from '@cogit
 import { RedisMessageBus } from '../communication/redis-message-bus.js';
 import { RedisBlackboard } from '../communication/redis-blackboard.js';
 import { RedisSwarmEventEmitter } from '../communication/redis-event-emitter.js';
+import {
+  closeSwarmRedis,
+  createSwarmRedis,
+  scanSwarmKeys,
+  type SwarmRedis,
+} from './redis-connection.js';
+import { swarmJobQueueKey } from './queue-keys.js';
 import {
   BaseSwarmCoordinator,
   computeBackoffDelay,
@@ -64,7 +70,14 @@ export interface SwarmAgentJobPayload {
      * and aborts it when it shows up while the turn runs
      */
     cancelled?: string;
+    /**
+     * Key the worker keeps the result under before it publishes it, for the coordinator to read
+     * when the published message did not reach it. A worker skips a job whose result is there
+     */
+    result?: string;
   };
+  /** How long the worker keeps the result under `stateKeys.result`, in ms (default: 1 hour) */
+  resultTtl?: number;
 }
 
 /**
@@ -82,13 +95,6 @@ export interface SwarmAgentJobResult extends Omit<AgentWireRunResult, 'usage'> {
   error?: string;
 }
 
-/**
- * Redis list key that distributed swarm workers consume jobs from.
- */
-export function swarmJobQueueKey(keyPrefix = 'swarm', queue = 'swarm-agent-jobs'): string {
-  return `${keyPrefix}:jobs:${queue}`;
-}
-
 function isJobResult(value: unknown): value is SwarmAgentJobResult {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Partial<SwarmAgentJobResult>;
@@ -98,6 +104,8 @@ function isJobResult(value: unknown): value is SwarmAgentJobResult {
 interface PendingJob {
   /** The payload as queued: LREM needs the exact string */
   raw: string;
+  /** Where the worker keeps the result */
+  resultKey: string;
   resolve: (result: SwarmAgentJobResult) => void;
   reject: (error: Error) => void;
 }
@@ -122,25 +130,19 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
   RedisSwarmEventEmitter
 > {
   private readonly distributed: DistributedSwarmConfig;
-  private readonly redis: Redis;
-  private readonly subscriber: Redis;
+  private readonly redis: SwarmRedis;
+  private readonly subscriber: SwarmRedis;
   private readonly keyPrefix: string;
   private readonly pendingJobs = new Map<string, PendingJob>();
   private initialization?: Promise<void>;
+  private recovery?: ReturnType<typeof setInterval>;
   private closed = false;
   private readonly resolveAgentModel: (agent: Agent) => string;
 
   constructor(options: DistributedCoordinatorOptions) {
     const keyPrefix = options.distributed.redis?.keyPrefix ?? 'swarm';
     const swarmId = `swarm_${nanoid(12)}`;
-    const redisOptions = {
-      host: options.distributed.redis?.host ?? 'localhost',
-      port: options.distributed.redis?.port ?? 6379,
-      password: options.distributed.redis?.password,
-      db: options.distributed.redis?.db ?? 0,
-      lazyConnect: true,
-    };
-    const redis = new Redis(redisOptions);
+    const redis = createSwarmRedis(options.distributed.redis);
 
     super(options.config, swarmId, {
       messageBus: new RedisMessageBus(options.config.messaging ?? { enabled: true }, {
@@ -168,7 +170,7 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
       });
     this.keyPrefix = keyPrefix;
     this.redis = redis;
-    this.subscriber = new Redis(redisOptions);
+    this.subscriber = createSwarmRedis(options.distributed.redis);
   }
 
   /**
@@ -196,23 +198,78 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
 
     this.subscriber.on('message', this.handleResultMessage);
     await this.subscriber.subscribe(this.resultsChannel());
+    if (this.closed) return;
+    this.subscriber.on('ready', this.recoverResults);
+    this.redis.on('ready', this.recoverResults);
+    this.recovery = setInterval(this.recoverResults, this.recoveryInterval());
+    this.recovery.unref?.();
+  }
+
+  /**
+   * How often the stored results of waiting turns are read even without a reconnect, for a
+   * cluster subscriber that moves to another node without the client reconnecting
+   */
+  private recoveryInterval(): number {
+    return Math.max(100, Math.min(5000, Math.floor((this.distributed.timeout ?? 300000) / 4)));
+  }
+
+  /**
+   * Read the results of the pending jobs from their keys, whenever either connection is back: a
+   * result published while the subscriber reconnected never reached it, but the worker kept it
+   * there first
+   */
+  private readonly recoverResults = (): void => {
+    for (const [jobId, job] of this.pendingJobs) {
+      void this.storedResult(job.resultKey).then((raw) => {
+        if (raw !== null && this.pendingJobs.get(jobId) === job) this.settle(raw, true);
+      });
+    }
+  };
+
+  /**
+   * Drop the result an earlier attempt of a turn left, before the turn is dispatched again: a
+   * worker skips a job whose result is there, so an attempt that cannot drop it fails like one
+   * that cannot be queued
+   */
+  private async forgetResult(key: string): Promise<void> {
+    await this.redis.del(key);
+  }
+
+  /** The result a worker kept under `key`, `null` when there is none or Redis cannot say */
+  private async storedResult(key: string): Promise<string | null> {
+    if (this.redis.status !== 'ready') return null;
+    try {
+      return await this.redis.get(key);
+    } catch (error) {
+      console.warn('[DistributedSwarmCoordinator] Failed to read a stored result:', error);
+      return null;
+    }
   }
 
   private resultsChannel(): string {
-    return `${this.keyPrefix}:${this.swarmId}:results`;
+    return `${this.keyPrefix}:{${this.swarmId}}:results`;
   }
 
   private readonly handleResultMessage = (_channel: string, messageJson: string): void => {
+    this.settle(messageJson);
+  };
+
+  /**
+   * Settle the pending job a result belongs to, if it still waits. A `stored` result that cannot
+   * be read is not the worker's answer, the job goes on waiting for one
+   */
+  private settle(messageJson: string, stored = false): void {
     let parsed: unknown;
     try {
       parsed = JSON.parse(messageJson);
     } catch (error) {
-      console.warn('[DistributedSwarmCoordinator] Failed to parse result message:', error);
+      if (!stored)
+        console.warn('[DistributedSwarmCoordinator] Failed to parse result message:', error);
       return;
     }
 
     if (!isJobResult(parsed)) {
-      console.warn('[DistributedSwarmCoordinator] Ignoring malformed job result');
+      if (!stored) console.warn('[DistributedSwarmCoordinator] Ignoring malformed job result');
       return;
     }
 
@@ -225,7 +282,7 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
     } else {
       pending.resolve(parsed);
     }
-  };
+  }
 
   /**
    * Strategy tools are bound to this process (they call back into the coordinator and the
@@ -258,6 +315,7 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
     try {
       for (let attempt = 0; ; attempt++) {
         try {
+          if (attempt > 0) await this.forgetResult(payload.stateKeys.result!);
           return await this.dispatchJobAndWait(payload, raw, request);
         } catch (error) {
           if (error instanceof UnansweredJobError && !error.withdrawn) abandoned = true;
@@ -282,10 +340,11 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
   private createJobPayload(request: AgentRunRequest): SwarmAgentJobPayload {
     const { agent, input, context } = request;
     const trace = currentTraceContext();
+    const jobId = `job_${nanoid(12)}`;
 
     return {
       type: 'swarm-agent',
-      jobId: `job_${nanoid(12)}`,
+      jobId,
       swarmId: this.swarmId,
       agentName: request.swarmAgent.agent.name,
       agentConfig: toAgentWire(agent, { resolveModel: this.resolveAgentModel }),
@@ -299,12 +358,21 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
         ...(trace && { trace }),
       },
       stateKeys: {
-        blackboard: `${this.keyPrefix}:${this.swarmId}:blackboard`,
-        messages: `${this.keyPrefix}:${this.swarmId}:messages`,
+        blackboard: `${this.keyPrefix}:{${this.swarmId}}:blackboard`,
+        messages: `${this.keyPrefix}:{${this.swarmId}}:messages`,
         results: this.resultsChannel(),
         cancelled: this.cancelledKey(),
+        result: `${this.keyPrefix}:{${this.swarmId}}:result:${jobId}`,
       },
+      resultTtl: this.stateTtl(),
     };
+  }
+
+  /** How long state a job leaves behind (cancel marks, results) is kept, in ms */
+  private stateTtl(): number {
+    return Math.ceil(
+      Math.max(1, this.distributed.timeout ?? 300000, this.distributed.cleanupAfter ?? 3600000)
+    );
   }
 
   private queueKey(): string {
@@ -312,7 +380,7 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
   }
 
   private cancelledKey(): string {
-    return `${this.keyPrefix}:${this.swarmId}:cancelled`;
+    return `${this.keyPrefix}:{${this.swarmId}}:cancelled`;
   }
 
   /** Take a queued copy of the job off the queue; resolves to whether one was there. */
@@ -332,16 +400,12 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
    */
   private async cancelJob(jobId: string, raw: string): Promise<void> {
     if (this.redis.status !== 'ready') return;
-    const ttl = Math.max(
-      this.distributed.timeout ?? 300000,
-      this.distributed.cleanupAfter ?? 3600000
-    );
     try {
+      await this.redis.lrem(this.queueKey(), 0, raw);
       await this.redis
         .pipeline()
-        .lrem(this.queueKey(), 0, raw)
         .sadd(this.cancelledKey(), jobId)
-        .pexpire(this.cancelledKey(), ttl)
+        .pexpire(this.cancelledKey(), this.stateTtl())
         .exec();
     } catch (error) {
       console.warn('[DistributedSwarmCoordinator] Failed to cancel a job:', error);
@@ -356,10 +420,12 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
     const timeout = this.distributed.timeout ?? 300000;
 
     return new Promise<SwarmAgentJobResult>((resolve, reject) => {
+      let entry: PendingJob | undefined;
+      const waiting = () => entry !== undefined && this.pendingJobs.get(payload.jobId) === entry;
       const cleanup = () => {
         clearTimeout(timeoutId);
         request.signal.removeEventListener('abort', onAbort);
-        this.pendingJobs.delete(payload.jobId);
+        if (waiting()) this.pendingJobs.delete(payload.jobId);
       };
 
       const onAbort = () => {
@@ -368,15 +434,23 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
         reject(reason instanceof Error ? reason : new Error('Swarm execution aborted'));
       };
 
+      const resultKey = payload.stateKeys.result!;
       const timeoutId = setTimeout(() => {
-        cleanup();
-        void this.withdrawJob(raw).then((withdrawn) => {
-          reject(
-            new UnansweredJobError(
-              `Job timeout for agent '${payload.agentName}' after ${timeout}ms`,
-              withdrawn
-            )
-          );
+        void this.storedResult(resultKey).then((stored) => {
+          if (!waiting()) return;
+          if (stored !== null) {
+            this.settle(stored, true);
+            if (!waiting()) return;
+          }
+          cleanup();
+          void this.withdrawJob(raw).then((withdrawn) => {
+            reject(
+              new UnansweredJobError(
+                `Job timeout for agent '${payload.agentName}' after ${timeout}ms`,
+                withdrawn
+              )
+            );
+          });
         });
       }, timeout);
 
@@ -386,8 +460,9 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
       }
       request.signal.addEventListener('abort', onAbort, { once: true });
 
-      this.pendingJobs.set(payload.jobId, {
+      entry = {
         raw,
+        resultKey,
         resolve: (result) => {
           cleanup();
           resolve(result);
@@ -396,7 +471,8 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
           cleanup();
           reject(error);
         },
-      });
+      };
+      this.pendingJobs.set(payload.jobId, entry);
 
       this.redis.rpush(this.queueKey(), raw).catch((error: unknown) => {
         cleanup();
@@ -447,13 +523,16 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
 
     this.rejectPendingJobs(new Error('Distributed swarm coordinator closed'));
     this.subscriber.off('message', this.handleResultMessage);
+    this.subscriber.off('ready', this.recoverResults);
+    this.redis.off('ready', this.recoverResults);
+    clearInterval(this.recovery);
 
     await this.messageBus.close();
     await this.blackboard.close();
     await this.events.close();
     await this.scheduleStateCleanup();
-    await closeRedis(this.subscriber);
-    await closeRedis(this.redis);
+    await closeSwarmRedis(this.subscriber);
+    await closeSwarmRedis(this.redis);
   }
 
   /**
@@ -464,19 +543,15 @@ export class DistributedSwarmCoordinator extends BaseSwarmCoordinator<
     if (this.redis.status !== 'ready') return;
 
     const ttl = Math.max(0, this.distributed.cleanupAfter ?? 3600000);
-    const pattern = `${this.keyPrefix}:${this.swarmId}:*`;
-    let cursor = '0';
+    const pattern = `${this.keyPrefix}:{${this.swarmId}}:*`;
 
     try {
-      do {
-        const [next, keys] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
-        cursor = next;
-        if (keys.length === 0) continue;
-
+      const keys = await scanSwarmKeys(this.redis, pattern);
+      if (keys.length > 0) {
         const pipeline = this.redis.pipeline();
         for (const key of keys) pipeline.pexpire(key, ttl);
         await pipeline.exec();
-      } while (cursor !== '0');
+      }
     } catch (error) {
       console.warn('[DistributedSwarmCoordinator] Failed to schedule state cleanup:', error);
     }
@@ -507,13 +582,4 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
     }, ms);
     signal.addEventListener('abort', onAbort, { once: true });
   });
-}
-
-async function closeRedis(client: Redis): Promise<void> {
-  if (client.status === 'end') return;
-  if (client.status === 'wait') {
-    client.disconnect();
-    return;
-  }
-  await client.quit();
 }

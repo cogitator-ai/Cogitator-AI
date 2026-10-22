@@ -54,10 +54,23 @@ export {
 export {
   DistributedSwarmCoordinator,
   swarmJobQueueKey,
+  swarmQueueKeys,
+  deliverSwarmJobResult,
+  DEFAULT_SWARM_RESULT_TTL,
+  resolveRedisOptions,
+  clusterNodeOptions,
+  createSwarmRedis,
+  duplicateSwarmRedis,
+  scanSwarmKeys,
+  closeSwarmRedis,
   type DistributedCoordinatorOptions,
   type SerializedSwarmAgentConfig,
   type SwarmAgentJobPayload,
   type SwarmAgentJobResult,
+  type SwarmQueueKeys,
+  type SwarmResultClient,
+  type RedisConnectionOptions,
+  type SwarmRedis,
 } from './distributed/index';
 
 export { ResourceTracker } from './resources/tracker';

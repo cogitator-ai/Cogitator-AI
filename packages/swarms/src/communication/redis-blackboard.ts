@@ -4,7 +4,11 @@ import type {
   BlackboardSection,
   BlackboardHistoryEntry,
 } from '@cogitator-ai/types';
-import type { Redis } from 'ioredis';
+import {
+  duplicateSwarmRedis,
+  scanSwarmKeys,
+  type SwarmRedis,
+} from '../distributed/redis-connection.js';
 import {
   BlackboardListeners,
   type BlackboardSectionHandler,
@@ -13,7 +17,7 @@ import {
 } from './blackboard.js';
 
 export interface RedisBlackboardOptions {
-  redis: Redis;
+  redis: SwarmRedis;
   swarmId: string;
   keyPrefix?: string;
 }
@@ -84,8 +88,8 @@ function parseStoredSection(raw: string): StoredSection | null {
 }
 
 export class RedisBlackboard implements ObservableBlackboard {
-  private redis: Redis;
-  private subscriber: Redis;
+  private redis: SwarmRedis;
+  private subscriber: SwarmRedis;
   private swarmId: string;
   private keyPrefix: string;
   private config: BlackboardConfig;
@@ -98,21 +102,21 @@ export class RedisBlackboard implements ObservableBlackboard {
   constructor(config: BlackboardConfig, options: RedisBlackboardOptions) {
     this.config = config;
     this.redis = options.redis;
-    this.subscriber = options.redis.duplicate();
+    this.subscriber = duplicateSwarmRedis(options.redis);
     this.swarmId = options.swarmId;
     this.keyPrefix = options.keyPrefix ?? 'swarm';
   }
 
   private sectionKey(section: string): string {
-    return `${this.keyPrefix}:${this.swarmId}:blackboard:${section}`;
+    return `${this.keyPrefix}:{${this.swarmId}}:blackboard:${section}`;
   }
 
   private historyKey(section: string): string {
-    return `${this.keyPrefix}:${this.swarmId}:blackboard:${section}:history`;
+    return `${this.keyPrefix}:{${this.swarmId}}:blackboard:${section}:history`;
   }
 
   private channelKey(): string {
-    return `${this.keyPrefix}:${this.swarmId}:blackboard:changes`;
+    return `${this.keyPrefix}:{${this.swarmId}}:blackboard:changes`;
   }
 
   private readonly handleRemoteChange = (_channel: string, messageJson: string): void => {
@@ -355,23 +359,17 @@ export class RedisBlackboard implements ObservableBlackboard {
   }
 
   async syncFromRedis(): Promise<void> {
-    const pattern = `${this.keyPrefix}:${this.swarmId}:blackboard:*`;
-    let cursor = '0';
+    const pattern = `${this.keyPrefix}:{${this.swarmId}}:blackboard:*`;
 
-    do {
-      const [nextCursor, keys] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
-      cursor = nextCursor;
+    for (const key of await scanSwarmKeys(this.redis, pattern)) {
+      if (key.endsWith(':history')) continue;
 
-      for (const key of keys) {
-        if (key.endsWith(':history')) continue;
-
-        const raw = await this.redis.get(key);
-        const stored = raw ? parseStoredSection(raw) : null;
-        if (stored && key === this.sectionKey(stored.name)) {
-          this.localCache.set(stored.name, stored);
-        }
+      const raw = await this.redis.get(key);
+      const stored = raw ? parseStoredSection(raw) : null;
+      if (stored && key === this.sectionKey(stored.name)) {
+        this.localCache.set(stored.name, stored);
       }
-    } while (cursor !== '0');
+    }
   }
 
   private pushHistory(section: string, entry: BlackboardHistoryEntry): void {

@@ -359,6 +359,26 @@ export interface SwarmErrorConfig {
   partialResults?: boolean;
 }
 
+/**
+ * A Redis to connect to: `url` (`redis://user:password@host:port/db`, or `rediss://` for TLS) is
+ * read first, and the explicit fields override what it says. With `cluster` the client connects
+ * to the cluster through its nodes, and the url and fields give the credentials and TLS only
+ */
+export interface RedisConnectionConfig {
+  url?: string;
+  host?: string;
+  port?: number;
+  username?: string;
+  password?: string;
+  db?: number;
+  /** Connect over TLS, implied by a `rediss://` url */
+  tls?: boolean;
+  /** Connect to a Redis Cluster through these nodes */
+  cluster?: {
+    nodes: { host: string; port: number }[];
+  };
+}
+
 export interface DistributedSwarmConfig {
   enabled: boolean;
   /** Queue name for agent jobs (default: 'swarm-agent-jobs') */
@@ -371,13 +391,13 @@ export interface DistributedSwarmConfig {
   workerConcurrency?: number;
   /** Job timeout in ms (default: 300000) */
   timeout?: number;
-  /** Redis connection config */
-  redis?: {
-    host?: string;
-    port?: number;
-    password?: string;
+  /**
+   * Redis holding the job queue and the swarm's shared state, the same one the workers use.
+   * Default: localhost:6379
+   */
+  redis?: RedisConnectionConfig & {
+    /** Prefix of every key of the swarm and its queue (default: 'swarm') */
     keyPrefix?: string;
-    db?: number;
   };
   /**
    * Re-dispatch a job that failed on a worker or timed out, before the failure reaches the

@@ -51,10 +51,7 @@ const team = swarm('distributed-team')
   .distributed({
     enabled: true,
     redis: {
-      host: 'redis.example.com',
-      port: 6379,
-      password: process.env.REDIS_PASSWORD,
-      db: 0,
+      url: process.env.REDIS_URL, // redis://user:password@redis.example.com:6379/0, rediss:// for TLS
       keyPrefix: 'swarm',
     },
     queue: 'swarm-agent-jobs',
@@ -73,17 +70,21 @@ Always call `team.close()` when done: it closes the Redis connections and schedu
 | Option            | Default                  | Description                                                                                                                                                                           |
 | ----------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `enabled`         | `false`                  | Enable distributed mode                                                                                                                                                               |
+| `redis.url`       | `undefined`              | `redis://user:password@host:port/db`, or `rediss://` for TLS. Read first, the explicit fields below win over it                                                                       |
 | `redis.host`      | `'localhost'`            | Redis server hostname                                                                                                                                                                 |
 | `redis.port`      | `6379`                   | Redis server port                                                                                                                                                                     |
+| `redis.username`  | `undefined`              | Redis ACL user                                                                                                                                                                        |
 | `redis.password`  | `undefined`              | Redis authentication password                                                                                                                                                         |
 | `redis.db`        | `0`                      | Redis database number                                                                                                                                                                 |
+| `redis.tls`       | `false`                  | Connect over TLS, implied by a `rediss://` url                                                                                                                                        |
+| `redis.cluster`   | `undefined`              | `{ nodes: { host, port }[] }`: connect to a Redis Cluster through these nodes                                                                                                         |
 | `redis.keyPrefix` | `'swarm'`                | Key prefix for all Redis keys                                                                                                                                                         |
-| `queue`           | `'swarm-agent-jobs'`     | Job queue name (`{keyPrefix}:jobs:{queue}`)                                                                                                                                           |
+| `queue`           | `'swarm-agent-jobs'`     | Job queue name (the list `<keyPrefix>:jobs:{<queue>}`)                                                                                                                                |
 | `timeout`         | `300000`                 | Timeout in ms for waiting on agent job results                                                                                                                                        |
-| `retry`           | `undefined` (no retries) | Re-dispatch jobs that fail on a worker or time out: `maxRetries` (`3`), `backoff` (`'exponential'`; or `'constant'`, `'linear'`), `initialDelay` (`1000` ms), `maxDelay` (`30000` ms) |
-| `cleanupAfter`    | `3600000`                | How long the swarm's Redis state (blackboard, messages, events) is kept after `close()`, in ms; `0` deletes it at once                                                                |
+| `retry`           | `undefined` (no retries) | Re-dispatch jobs that fail on a worker or time out: `maxRetries` (`3`), `backoff` (`'exponential'`, or `'constant'`, `'linear'`), `initialDelay` (`1000` ms), `maxDelay` (`30000` ms) |
+| `cleanupAfter`    | `3600000`                | How long the swarm's Redis state (blackboard, messages, events, stored results) is kept after `close()`, in ms, `0` deletes it at once                                                |
 
-`retry` acts before the swarm's `errorHandling` sees the failure, and an aborted run is never retried. Every attempt of a turn carries the same job id, and a timed-out attempt still waiting in the queue is taken off it before the next one is pushed, so retries never pile up. A timed-out job a worker already took may still be running, so a retried turn can run twice, whichever answer arrives first is used. When a turn is given up (the run is aborted or times out, the swarm is closed or reset, or the turn timed out on a worker), its queued copy is removed and its job id goes into the `{prefix}:{swarmId}:cancelled` set: `DistributedSwarmWorker` skips such a job and aborts it within `cancelCheckInterval` (default 1000 ms) when it is cancelled while running, without publishing a result. `workerConcurrency` is deprecated and has no effect: set concurrency where the workers run, with `DistributedSwarmWorker`'s `concurrency` option.
+`retry` acts before the swarm's `errorHandling` sees the failure, and an aborted run is never retried. Every attempt of a turn carries the same job id, and a timed-out attempt still waiting in the queue is taken off it before the next one is pushed, so retries never pile up. The result an earlier attempt left is deleted before the turn is dispatched again. A timed-out job a worker already took may still be running, so a retried turn can run twice, whichever answer arrives first is used. When a turn is given up (the run is aborted or times out, the swarm is closed or reset, or the turn timed out on a worker), its queued copy is removed and its job id goes into the `<prefix>:{<swarmId>}:cancelled` set: `DistributedSwarmWorker` skips such a job and aborts it within `cancelCheckInterval` (default 1000 ms) when it is cancelled while running, without publishing a result. `workerConcurrency` is deprecated and has no effect: set concurrency where the workers run, with `DistributedSwarmWorker`'s `concurrency` option.
 
 ```typescript
 swarm('team')
@@ -97,13 +98,35 @@ swarm('team')
   });
 ```
 
+## Redis Connection
+
+`distributed.redis` is a `RedisConnectionConfig` from `@cogitator-ai/types` plus `keyPrefix`, and `DistributedSwarmWorker` and the worker's `JobQueue` take the same `RedisConnectionConfig`. The `url` is read first (`redis://` or `rediss://`, `user:password@`, a `/db` path), then the explicit fields apply and win over it. TLS is on with a `rediss://` url or `tls: true`. With `cluster` the swarm connects to a Redis Cluster through the listed nodes, and the url and fields give only the credentials and TLS (a cluster has no database):
+
+```typescript
+.distributed({
+  enabled: true,
+  redis: {
+    password: process.env.REDIS_PASSWORD, // used for every node
+    tls: true,
+    cluster: {
+      nodes: [
+        { host: 'redis-1.example.com', port: 6379 },
+        { host: 'redis-2.example.com', port: 6379 },
+      ],
+    },
+  },
+});
+```
+
+Workers take the same `redis` config. Redis 6.2 or newer is required, as workers move turns with `BLMOVE`.
+
 ## How It Works
 
 When distributed mode is enabled, the `Swarm` creates a `DistributedSwarmCoordinator` instead of the local `SwarmCoordinator`. The distributed coordinator:
 
 1. **Uses Redis-backed primitives** — `RedisMessageBus`, `RedisBlackboard`, and `RedisSwarmEventEmitter` replace their in-memory counterparts. They are available right after construction and connect lazily on the first run.
-2. **Dispatches jobs** — when a strategy runs an agent, the coordinator serializes the agent (model, instructions, limits and tool schemas), the full turn context and run options, and pushes a `SwarmAgentJobPayload` onto the Redis list `{keyPrefix}:jobs:{queue}` (see `swarmJobQueueKey()`).
-3. **Waits for results** — results arrive on the `{keyPrefix}:{swarmId}:results` pub/sub channel and are matched by job id. Turns time out after `timeout` ms and are cancelled when the swarm is aborted or the run times out.
+2. **Dispatches jobs** — when a strategy runs an agent, the coordinator serializes the agent (model, instructions, limits and tool schemas), the full turn context and run options, and pushes a `SwarmAgentJobPayload` onto the Redis list `<keyPrefix>:jobs:{<queue>}` (see `swarmJobQueueKey()`).
+3. **Waits for results** — the worker keeps each result under `stateKeys.result` (`<keyPrefix>:{<swarmId>}:result:<jobId>`) for the job's `resultTtl` (the larger of `timeout` and `cleanupAfter`), then publishes it on the `<keyPrefix>:{<swarmId>}:results` pub/sub channel, where it is matched by job id. The coordinator reads the stored result when a turn times out, whenever either of its connections reconnects and every few seconds (a quarter of `timeout`, at most 5 s), so a result published while it reconnected, or while a cluster moved its subscriber to another node, is not lost. A result the worker cannot keep under its key is still published. Turns time out after `timeout` ms and are cancelled when the swarm is aborted or the run times out.
 4. **Applies the same policies as local swarms** — retry, failover, skip, budgets, circuit breaking and events behave exactly like in-process execution.
 5. **Synchronizes state** — blackboard writes and messages are persisted in Redis, so all nodes see the same state.
 
@@ -113,19 +136,26 @@ Strategy tools that call back into the coordinator (hierarchical delegation, vot
 
 ## Redis Key Structure
 
-All keys are prefixed with `{keyPrefix}:{swarmId}`:
+The braces in the keys are literal: they are Redis Cluster hash tags. A swarm's state keys carry its id as the tag (`<keyPrefix>:{<swarmId>}:...`) and the queue keys carry the queue name (`<keyPrefix>:jobs:{<queue>}...`), so in a cluster each group sits in one slot. With the default `keyPrefix` and `queue`:
 
-| Key Pattern                               | Type          | Purpose                         |
-| ----------------------------------------- | ------------- | ------------------------------- |
-| `swarm:{id}:messages`                     | List          | Message bus message history     |
-| `swarm:{id}:channel:{target}`             | Pub/Sub       | Real-time message delivery      |
-| `swarm:{id}:blackboard:{section}`         | String (JSON) | Blackboard section data         |
-| `swarm:{id}:blackboard:{section}:history` | List          | Blackboard write history        |
-| `swarm:{id}:blackboard:changes`           | Pub/Sub       | Blackboard change notifications |
-| `swarm:{id}:events`                       | List          | Event history                   |
-| `swarm:{id}:events:live`                  | Pub/Sub       | Live event streaming            |
-| `swarm:{id}:results`                      | Pub/Sub       | Agent job results               |
-| `swarm:jobs:{queue}`                      | List          | Job queue for worker nodes      |
+| Key Pattern                                      | Type          | Purpose                                                     |
+| ------------------------------------------------ | ------------- | ----------------------------------------------------------- |
+| `swarm:{<id>}:messages`                          | List          | Message bus message history                                 |
+| `swarm:{<id>}:channel:<target>`                  | Pub/Sub       | Real-time message delivery                                  |
+| `swarm:{<id>}:blackboard:<section>`              | String (JSON) | Blackboard section data                                     |
+| `swarm:{<id>}:blackboard:<section>:history`      | List          | Blackboard write history                                    |
+| `swarm:{<id>}:blackboard:changes`                | Pub/Sub       | Blackboard change notifications                             |
+| `swarm:{<id>}:events`                            | List          | Event history                                               |
+| `swarm:{<id>}:events:live`                       | Pub/Sub       | Live event streaming                                        |
+| `swarm:{<id>}:results`                           | Pub/Sub       | Agent job results                                           |
+| `swarm:{<id>}:result:<jobId>`                    | String (JSON) | A job's result, kept for `resultTtl` ms                     |
+| `swarm:{<id>}:cancelled`                         | Set           | Ids of the jobs the coordinator gave up on                  |
+| `swarm:jobs:{swarm-agent-jobs}`                  | List          | Job queue for worker nodes                                  |
+| `swarm:jobs:{swarm-agent-jobs}:processing:<wid>` | List          | The turns a worker moved off the queue and runs             |
+| `swarm:jobs:{swarm-agent-jobs}:heartbeat:<wid>`  | String        | A worker's heartbeat, expires after 3 x `heartbeatInterval` |
+| `swarm:jobs:{swarm-agent-jobs}:workers`          | Set           | Ids of the workers that took turns from the queue           |
+
+`swarmQueueKeys(keyPrefix?, queue?)` gives the queue keys (`queue`, `workers`, `processing(workerId)`, `heartbeat(workerId)`). Earlier versions used `<keyPrefix>:jobs:<queue>` and `<keyPrefix>:<swarmId>:...` without the braces, so upgrade coordinators and workers together: a coordinator and a worker on different versions do not see the same queue.
 
 ## RedisMessageBus
 
@@ -155,7 +185,7 @@ await bus.syncFromRedis();
 await bus.close();
 ```
 
-The bus maintains a local cache for fast reads and subscribes to Redis pub/sub channels using pattern matching (`swarm:{id}:channel:*`) for real-time delivery.
+The bus maintains a local cache for fast reads and subscribes to Redis pub/sub channels using pattern matching (`swarm:{<id>}:channel:*`) for real-time delivery. Like `RedisBlackboard` and `RedisSwarmEventEmitter`, it takes an ioredis `Redis` or `Cluster` as `redis` (`SwarmRedis`) and subscribes on a duplicate of it.
 
 ## RedisBlackboard
 
@@ -218,7 +248,7 @@ The emitter auto-trims the event list in Redis to `maxEvents` entries to prevent
 
 ## Running Worker Nodes
 
-`DistributedSwarmWorker` from `@cogitator-ai/worker` consumes the job queue, runs each agent turn with its own `Cogitator` and tools, and publishes the result back to the coordinator:
+`DistributedSwarmWorker` from `@cogitator-ai/worker` consumes the job queue, runs each agent turn with its own `Cogitator` and tools, and hands the result back to the coordinator:
 
 ```typescript
 import { Cogitator } from '@cogitator-ai/core';
@@ -226,7 +256,7 @@ import { DistributedSwarmWorker } from '@cogitator-ai/worker';
 
 const worker = new DistributedSwarmWorker(
   {
-    redis: { host: 'redis.example.com', port: 6379, password: process.env.REDIS_PASSWORD },
+    redis: { url: process.env.REDIS_URL }, // the same Redis as distributed.redis
     keyPrefix: 'swarm', // must match distributed.redis.keyPrefix
     queue: 'swarm-agent-jobs', // must match distributed.queue
     concurrency: 4,
@@ -235,6 +265,7 @@ const worker = new DistributedSwarmWorker(
   },
   {
     onJobFailed: (job, error) => console.error(job.agentName, error.message),
+    onJobsRecovered: (workerId, count) => console.warn(`${count} turns of ${workerId} requeued`),
   }
 );
 
@@ -242,11 +273,19 @@ await worker.start();
 process.on('SIGTERM', () => void worker.stop());
 ```
 
-Agents reference tools by name; a turn that needs a tool missing from the worker's `tools` fails with a clear error instead of running with a fake implementation. `stop()` stops taking new jobs and waits for in-flight turns.
+Agents reference tools by name, and a turn that needs a tool missing from the worker's `tools` fails with a clear error instead of running with a fake implementation.
+
+### Worker Failures
+
+A worker takes a turn with `BLMOVE`, which moves it from the queue to the worker's own list `<keyPrefix>:jobs:{<queue>}:processing:<workerId>` in one step (Redis 6.2 or newer), so a turn is never only in the memory of a worker. The turn leaves that list once it is done. Every `heartbeatInterval` ms (default 5000) the worker sets its heartbeat key `<keyPrefix>:jobs:{<queue>}:heartbeat:<workerId>`, which expires after three intervals, and stays in the set `<keyPrefix>:jobs:{<queue>}:workers`. On `start()` and on every beat, a worker looks for workers in the set whose heartbeat is gone, moves their turns back to the head of the queue, drops them from the set and reports `onJobsRecovered(workerId, count)`. A worker that crashed or lost its connection therefore loses no turns, another one runs them. A worker also checks its own list on every beat: a turn on it that the worker does not run at two beats in a row, such as one a `BLMOVE` moved while a dropped connection lost its reply, goes back to the head of the queue and is reported with the worker's own id.
+
+A worker silent for three intervals counts as gone even when it is only stalled, so a turn that runs past that on a stalled worker can run twice. Before it runs a turn, a worker checks the job's stored result and skips a job that has one, for example a turn a dead worker answered before it took the turn off its list. Whichever answer reaches the coordinator first is used.
+
+`stop()` stops taking new jobs, waits for in-flight turns, hands whatever is still on its list back to the queue, leaves the set and deletes its heartbeat. `getWorkerId()` gives the worker's id in the set, new on every `start()`.
 
 ## Scaling Considerations
 
-**Horizontal scaling** — spin up multiple worker nodes consuming from the same job queue. Redis `BLPOP` ensures each job is processed by exactly one worker; `concurrency` controls parallel turns per node.
+**Horizontal scaling** — spin up multiple worker nodes consuming from the same job queue. Redis `BLMOVE` hands each job to one worker, and a turn of a worker that died goes back to the queue (see [Worker Failures](#worker-failures)). `concurrency` controls parallel turns per node.
 
 **State consistency** — the blackboard and message bus use Redis as the source of truth. Local caches provide fast reads; writes are immediately persisted and broadcast.
 
@@ -254,4 +293,4 @@ Agents reference tools by name; a turn that needs a tool missing from the worker
 
 **Timeouts** — configure the `timeout` option based on your expected agent execution time. Jobs that exceed the timeout will cause the coordinator to throw an error.
 
-**Key cleanup** — swarm keys persist in Redis after execution. For production use, set a TTL on keys or implement periodic cleanup based on the `swarmId`.
+**Key cleanup** — `close()` sets every key of the swarm to expire after `cleanupAfter` ms (default one hour), and a stored result expires after its `resultTtl` on its own. The queue keys belong to the queue and its workers, not to a swarm.

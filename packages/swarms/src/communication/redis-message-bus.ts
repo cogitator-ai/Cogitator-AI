@@ -1,6 +1,6 @@
 import { nanoid } from 'nanoid';
 import type { MessageBusConfig, SwarmMessage } from '@cogitator-ai/types';
-import type { Redis } from 'ioredis';
+import { duplicateSwarmRedis, type SwarmRedis } from '../distributed/redis-connection.js';
 import {
   MessageBusState,
   addSubscription,
@@ -11,7 +11,7 @@ import {
 } from './message-bus.js';
 
 export interface RedisMessageBusOptions {
-  redis: Redis;
+  redis: SwarmRedis;
   swarmId: string;
   keyPrefix?: string;
 }
@@ -32,8 +32,8 @@ function parseSwarmMessage(raw: string): SwarmMessage | null {
 }
 
 export class RedisMessageBus implements ReadTrackingMessageBus {
-  private redis: Redis;
-  private subscriber: Redis;
+  private redis: SwarmRedis;
+  private subscriber: SwarmRedis;
   private swarmId: string;
   private keyPrefix: string;
   private config: MessageBusConfig;
@@ -46,17 +46,17 @@ export class RedisMessageBus implements ReadTrackingMessageBus {
   constructor(config: MessageBusConfig, options: RedisMessageBusOptions) {
     this.config = config;
     this.redis = options.redis;
-    this.subscriber = options.redis.duplicate();
+    this.subscriber = duplicateSwarmRedis(options.redis);
     this.swarmId = options.swarmId;
     this.keyPrefix = options.keyPrefix ?? 'swarm';
   }
 
   private messagesKey(): string {
-    return `${this.keyPrefix}:${this.swarmId}:messages`;
+    return `${this.keyPrefix}:{${this.swarmId}}:messages`;
   }
 
   private channelKey(target: string): string {
-    return `${this.keyPrefix}:${this.swarmId}:channel:${target}`;
+    return `${this.keyPrefix}:{${this.swarmId}}:channel:${target}`;
   }
 
   private readonly handleRemoteMessage = (
@@ -82,7 +82,7 @@ export class RedisMessageBus implements ReadTrackingMessageBus {
 
     this.subscriber.on('pmessage', this.handleRemoteMessage);
     try {
-      await this.subscriber.psubscribe(`${this.keyPrefix}:${this.swarmId}:channel:*`);
+      await this.subscriber.psubscribe(`${this.keyPrefix}:{${this.swarmId}}:channel:*`);
     } catch (error) {
       this.subscriber.off('pmessage', this.handleRemoteMessage);
       this.initialized = false;

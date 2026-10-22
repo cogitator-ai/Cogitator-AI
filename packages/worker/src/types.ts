@@ -9,6 +9,7 @@ import type {
   AgentWireRunResult,
   AgentWireUsage,
   CheckpointStore,
+  RedisConnectionConfig,
   RunCheckpoint,
   Tool,
   ToolApprovalDecision,
@@ -245,20 +246,7 @@ export interface QueueConfig {
    * Redis connection config. `url` (`redis://user:password@host:port/db`, or `rediss://` for
    * TLS) is read first, and the explicit fields override what it says
    */
-  redis: {
-    url?: string;
-    host?: string;
-    port?: number;
-    username?: string;
-    password?: string;
-    db?: number;
-    /** Connect over TLS; implied by a `rediss://` url */
-    tls?: boolean;
-    /** For cluster mode */
-    cluster?: {
-      nodes: { host: string; port: number }[];
-    };
-  };
+  redis: RedisConnectionConfig;
   /** Default job options */
   defaultJobOptions?: {
     /** Max attempts before failing */

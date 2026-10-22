@@ -7,6 +7,7 @@
  */
 
 import { toAgentWireRunResult } from '@cogitator-ai/core';
+import { deliverSwarmJobResult, type SwarmResultClient } from '@cogitator-ai/swarms';
 import type {
   JobExecutionOptions,
   SwarmAgentJobPayload,
@@ -63,11 +64,10 @@ export async function executeSwarmAgentJob(
 }
 
 /**
- * Publishes a job result on the channel the swarm coordinator listens to.
+ * Hands a job result to the swarm coordinator: publishes it on the channel the coordinator
+ * listens to, and keeps it under the job's result key first when it can set keys.
  */
-export interface SwarmResultPublisher {
-  publish(channel: string, message: string): Promise<unknown>;
-}
+export type SwarmResultPublisher = SwarmResultClient;
 
 export interface SwarmAgentJobOptions extends WorkerRuntime, JobExecutionOptions {
   /** Connection used to publish the result back to the coordinator */
@@ -80,7 +80,8 @@ export interface SwarmAgentJobOptions extends WorkerRuntime, JobExecutionOptions
 }
 
 /**
- * Execute a swarm agent job and publish its result to `payload.stateKeys.results`.
+ * Execute a swarm agent job and hand its result to the coordinator: kept under
+ * `payload.stateKeys.result` when the job names one, and published to `payload.stateKeys.results`.
  * Throws after publishing when the agent failed, so queues mark the job as failed.
  */
 export async function processSwarmAgentJob(
@@ -91,7 +92,9 @@ export async function processSwarmAgentJob(
   const isFinal = options.isFinalAttempt ?? true;
 
   if (result.error === undefined || isFinal) {
-    await options.publisher.publish(payload.stateKeys.results, JSON.stringify(result));
+    await deliverSwarmJobResult(options.publisher, payload, result, (error) => {
+      console.warn('[processSwarmAgentJob] Could not keep the result under its key:', error);
+    });
   }
 
   if (result.error !== undefined) {

@@ -1,11 +1,11 @@
 import { nanoid } from 'nanoid';
 import type { SwarmEventType, SwarmEvent, SwarmEventHandler } from '@cogitator-ai/types';
-import type { Redis } from 'ioredis';
+import { duplicateSwarmRedis, type SwarmRedis } from '../distributed/redis-connection.js';
 import { invokeSafely } from '../utils/invoke.js';
 import type { QueryableSwarmEventEmitter } from './event-emitter.js';
 
 export interface RedisEventEmitterOptions {
-  redis: Redis;
+  redis: SwarmRedis;
   swarmId: string;
   keyPrefix?: string;
   maxEvents?: number;
@@ -35,8 +35,8 @@ function parseSwarmEvent(raw: string): SwarmEvent | null {
 }
 
 export class RedisSwarmEventEmitter implements QueryableSwarmEventEmitter {
-  private redis: Redis;
-  private subscriber: Redis;
+  private redis: SwarmRedis;
+  private subscriber: SwarmRedis;
   private swarmId: string;
   private keyPrefix: string;
   private maxEvents: number;
@@ -47,18 +47,18 @@ export class RedisSwarmEventEmitter implements QueryableSwarmEventEmitter {
 
   constructor(options: RedisEventEmitterOptions) {
     this.redis = options.redis;
-    this.subscriber = options.redis.duplicate();
+    this.subscriber = duplicateSwarmRedis(options.redis);
     this.swarmId = options.swarmId;
     this.keyPrefix = options.keyPrefix ?? 'swarm';
     this.maxEvents = options.maxEvents ?? 1000;
   }
 
   private eventsKey(): string {
-    return `${this.keyPrefix}:${this.swarmId}:events`;
+    return `${this.keyPrefix}:{${this.swarmId}}:events`;
   }
 
   private channelKey(): string {
-    return `${this.keyPrefix}:${this.swarmId}:events:live`;
+    return `${this.keyPrefix}:{${this.swarmId}}:events:live`;
   }
 
   private readonly handleRemoteEvent = (_channel: string, messageJson: string): void => {

@@ -131,6 +131,8 @@ interface QueueConfig {
 }
 ```
 
+`redis` is the `RedisConnectionConfig` of `@cogitator-ai/types`, the same config `DistributedSwarmWorker` and distributed swarms take. `resolveRedisOptions(redis)` gives the settings it resolves to for one server.
+
 ### Adding Jobs
 
 **Agent Jobs:**
@@ -434,7 +436,7 @@ const swarmResult = await processSwarmJob(
 
 `processWorkflowJob` called on its own runs without checkpoints unless the runtime has `checkpoints` (a `CheckpointStore`). With them, pass `{ willRetry }` as the third argument: a run whose failure another attempt follows (`willRetry(error)` returns `true`) keeps its checkpoint for it, any other failure deletes it.
 
-`processSwarmAgentJob(payload, { publisher, isFinalAttempt, ...runtime })` executes one distributed swarm turn and publishes the result (tagged with the job id) to `payload.stateKeys.results`; `executeSwarmAgentJob` returns the result without publishing.
+`processSwarmAgentJob(payload, { publisher, isFinalAttempt, ...runtime })` executes one distributed swarm turn and hands the result (tagged with the job id) to the coordinator with `deliverSwarmJobResult` of `@cogitator-ai/swarms`: when the job names `stateKeys.result` and the publisher has `set`, the result is kept there for `payload.resultTtl` ms (one hour by default), then it is published to `payload.stateKeys.results`. `publisher` is a `SwarmResultPublisher`, now an alias of `SwarmResultClient` (`publish`, optional `set`). `executeSwarmAgentJob` returns the result without publishing.
 
 ---
 
@@ -448,7 +450,7 @@ import { DistributedSwarmWorker } from '@cogitator-ai/worker';
 
 const worker = new DistributedSwarmWorker(
   {
-    redis: { host: 'localhost', port: 6379 },
+    redis: { url: 'redis://localhost:6379' }, // the same Redis as the swarm's distributed.redis
     keyPrefix: 'swarm', // must match the swarm's distributed.redis.keyPrefix
     queue: 'swarm-agent-jobs', // must match distributed.queue
     concurrency: 4,
@@ -459,6 +461,7 @@ const worker = new DistributedSwarmWorker(
     onJobCompleted: (job) => console.log('done', job.agentName),
     onJobFailed: (job, error) => console.error(job.agentName, error.message),
     onJobCancelled: (job) => console.log('the swarm gave up on', job.jobId),
+    onJobsRecovered: (workerId, count) => console.warn(`${count} turns of ${workerId} requeued`),
     onError: (error) => console.error(error),
   }
 );
@@ -468,6 +471,18 @@ process.on('SIGTERM', () => void worker.stop()); // waits for in-flight turns
 ```
 
 Failed turns are reported back to the swarm as errors, so the swarm's own `errorHandling` (retry, failover, skip) applies. A turn the swarm gave up on (its run aborted or timed out, the swarm closed, another attempt answered) is skipped, or aborted while it runs (checked every `cancelCheckInterval` ms, default 1000), and reported to `onJobCancelled` instead of being published. Each turn runs on the model its agent would use in-process, routed by the worker's `cogitator`, so give the worker the same `llm.backends`, plugins and provider keys as the process that runs the swarm.
+
+`redis` takes a `url` (`rediss://` for TLS), `host`, `port`, `username`, `password`, `db`, `tls` or `cluster.nodes`, like the queue. The turns sit in the list `<keyPrefix>:jobs:{<queue>}`, whose braces are a Redis Cluster hash tag that keeps the queue and its worker keys in one slot. Earlier versions used `<keyPrefix>:jobs:<queue>`, so upgrade the processes that run swarms and the workers together.
+
+The queue is reliable:
+
+- A worker moves each turn with `BLMOVE` (Redis 6.2 or newer) from the queue to its own list `<queue key>:processing:<workerId>`, and takes it off once the turn is done.
+- Every `heartbeatInterval` ms (default 5000) it sets its heartbeat key `<queue key>:heartbeat:<workerId>`, which expires after three intervals, and stays in the set `<queue key>:workers`.
+- On `start()` and on every beat, a worker moves the turns of workers whose heartbeat is gone back to the head of the queue, drops those workers from the set and reports `onJobsRecovered(workerId, count)`.
+- A worker also checks its own list on every beat: a turn on it that the worker does not run at two beats in a row, such as one a `BLMOVE` moved while a dropped connection lost its reply, goes back to the head of the queue and is reported with the worker's own id.
+- A worker silent for three intervals counts as gone, so a turn on a stalled worker can run twice.
+- The result is kept under the job's `stateKeys.result` for `resultTtl` ms before it is published, so the coordinator finds it after a missed message, and a worker skips a job whose result is there (such as one a dead worker answered before it took the turn off its list). A result the worker cannot keep under its key is still published.
+- `stop()` waits for in-flight turns, hands back what is left on its list, leaves the set and deletes its heartbeat. `getWorkerId()` gives the worker's id, new on every `start()`.
 
 ---
 
