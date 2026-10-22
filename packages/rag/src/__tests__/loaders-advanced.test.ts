@@ -360,3 +360,71 @@ describe('WebLoader', () => {
     expect(loader.supportedTypes).toEqual(['http', 'https']);
   });
 });
+
+describe('JSONLLoader', () => {
+  it('loads one document per line, skipping blank lines', async () => {
+    const { JSONLLoader } = await import('../loaders/jsonl-loader');
+    const file = join(TEST_DIR, 'chat.jsonl');
+    writeFileSync(
+      file,
+      [
+        JSON.stringify({ text: 'First message', author: 'Alice' }),
+        '',
+        JSON.stringify({ text: 'Second message', author: 'Bob' }),
+        '',
+        JSON.stringify({ text: 'Third message', author: 'Charlie' }),
+      ].join('\n')
+    );
+
+    const loader = new JSONLLoader({ contentField: 'text', metadataFields: ['author'] });
+    const docs = await loader.load(file);
+
+    expect(docs).toHaveLength(3);
+    expect(docs[0].content).toBe('First message');
+    expect(docs[0].metadata?.author).toBe('Alice');
+    expect(docs[1].content).toBe('Second message');
+    expect(docs[2].metadata?.author).toBe('Charlie');
+  });
+
+  it('keeps ids stable across loads, one per line', async () => {
+    const { JSONLLoader } = await import('../loaders/jsonl-loader');
+    const file = join(TEST_DIR, 'stable-ids.jsonl');
+    writeFileSync(
+      file,
+      [JSON.stringify({ content: 'a' }), JSON.stringify({ content: 'b' })].join('\r\n')
+    );
+
+    const loader = new JSONLLoader();
+    const first = await loader.load(file);
+    const second = await loader.load(file);
+
+    expect(first).toHaveLength(2);
+    expect(new Set(first.map((d) => d.id)).size).toBe(2);
+    expect(second.map((d) => d.id)).toEqual(first.map((d) => d.id));
+  });
+
+  it('a broken line fails the load naming the line number', async () => {
+    const { JSONLLoader } = await import('../loaders/jsonl-loader');
+    const file = join(TEST_DIR, 'broken.jsonl');
+    writeFileSync(
+      file,
+      [JSON.stringify({ content: 'fine' }), '{"content": "not json', JSON.stringify({ content: 'fine again' })].join('\n')
+    );
+
+    const loader = new JSONLLoader();
+    await expect(loader.load(file)).rejects.toThrow(/line 2/);
+    await expect(loader.load(file)).rejects.toThrow(/broken\.jsonl/);
+  });
+
+  it('supports jsonl and ndjson, and documents stay sourceType json', async () => {
+    const { JSONLLoader } = await import('../loaders/jsonl-loader');
+    const loader = new JSONLLoader();
+    expect(loader.supportedTypes).toEqual(['jsonl', 'ndjson']);
+
+    const file = join(TEST_DIR, 'plain.ndjson');
+    writeFileSync(file, JSON.stringify({ body: 'from ndjson' }));
+    const docs = await loader.load(file);
+    expect(docs[0].sourceType).toBe('json');
+    expect(docs[0].content).toBe('from ndjson');
+  });
+});

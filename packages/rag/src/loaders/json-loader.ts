@@ -12,8 +12,8 @@ export interface JSONLoaderOptions {
 
 export class JSONLoader implements DocumentLoader {
   readonly supportedTypes = ['json'];
-  private readonly contentField?: string;
-  private readonly metadataFields?: string[];
+  protected readonly contentField?: string;
+  protected readonly metadataFields?: string[];
 
   constructor(options?: JSONLoaderOptions) {
     this.contentField = options?.contentField;
@@ -36,7 +36,7 @@ export class JSONLoader implements DocumentLoader {
     return items.map((item, index) => this.itemToDocument(item, filePath, index));
   }
 
-  private itemToDocument(item: unknown, source: string, index: number): RAGDocument {
+  protected itemToDocument(item: unknown, source: string, index: number): RAGDocument {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) {
       return {
         id: documentId(source, `item-${index}`),
@@ -58,7 +58,7 @@ export class JSONLoader implements DocumentLoader {
     };
   }
 
-  private extractContent(obj: Record<string, unknown>): string {
+  protected extractContent(obj: Record<string, unknown>): string {
     if (this.contentField && this.contentField in obj) {
       return this.valueToString(obj[this.contentField]);
     }
@@ -72,12 +72,12 @@ export class JSONLoader implements DocumentLoader {
     return JSON.stringify(obj, null, 2);
   }
 
-  private valueToString(value: unknown): string {
+  protected valueToString(value: unknown): string {
     if (typeof value === 'string') return value;
     return JSON.stringify(value, null, 2);
   }
 
-  private extractMetadata(obj: Record<string, unknown>): Record<string, unknown> | undefined {
+  protected extractMetadata(obj: Record<string, unknown>): Record<string, unknown> | undefined {
     if (!this.metadataFields) return undefined;
 
     const metadata: Record<string, unknown> = {};
