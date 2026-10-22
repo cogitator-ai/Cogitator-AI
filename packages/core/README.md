@@ -910,6 +910,7 @@ const result = await cog.run(agent, {
   useMemory: true,
   loadHistory: true,
   saveHistory: true,
+  // history: earlierMessages, // the conversation you hold, read instead of the thread's memory
   branch: { fromEntryId: entryId, activate: false }, // run on a branch of the thread's memory
   brief: `Current date and time: ${new Date().toISOString()}`, // notes for this turn, sent with the input, not saved
   asOf: new Date('2026-03-09T18:00:00Z'), // the moment memory reads the turn at, now by default

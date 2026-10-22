@@ -91,7 +91,9 @@ With **ai@4** the same call returns a `LanguageModelV1`; `{ specificationVersion
   - With `v3` / `v4` models they are always reported.
   - With `v2` models they are reported only for tools you also pass in `tools` (ai@5 cannot handle provider-executed calls of undeclared tools).
   - Every model also lists them in `providerMetadata.cogitator.toolCalls`, together with `runId`, `threadId`, `agentId`, `model`, `cost` and `duration`.
-- User and assistant text of the prompt is forwarded as the agent input (multi-turn prompts become a `User:` / `Assistant:` / `Tool:` transcript). Tool calls and tool results of earlier turns are written into the transcript (`[called tool search with {...}]`, `[tool search returned: ...]`), so the agent knows what its tools found before. System messages, files and images are not forwarded (the agent's `instructions` are its system prompt) and the AI SDK reports a warning.
+- The trailing user messages of the prompt are the agent's input, and the turns before them reach the run as its history (`RunOptions.history`), as messages: user and assistant text, assistant tool calls and their results, so the model sees earlier turns the way it wrote them. System messages, files and images are not forwarded (the agent's `instructions` are its system prompt) and the AI SDK reports a warning. A prompt that does not end with a user message is refused, except one that answers tool approvals.
+- `providerOptions.cogitator` (`providerMetadata.cogitator` on ai@4) takes `threadId`, `userId` and `saveHistory`. With a `threadId` the run's history is that memory thread, so only the new turn of the prompt is used, and the turn is saved there (`saveHistory` defaults to `true`). Without one the prompt is the whole conversation and nothing is saved unless `saveHistory: true`. `userId` reaches memory, tools (`context.userId`) and resumes.
+- `v4` models report what happens inside the run as custom parts: `cogitator.handoff` when the agent hands the conversation to another (`from`, `to`, `reason`) and `cogitator.model-fallback` when a turn moves to a fallback model (`from`, `to`, `error`), with the details in `providerMetadata.cogitator`, in the answer's content and in the stream as they happen.
 - `temperature`, `topP`, `maxOutputTokens` (`maxTokens` on ai@4) and `stopSequences` override the agent settings for the call; `abortSignal` cancels the run, as does cancelling the stream.
 - The `reasoning` call option of `v4` models (ai@7) overrides the effort of the agent's `reasoning` for the call. An agent with `reasoning: { summary: true }` returns its summary as `reasoning` content (`reasoning-start` / `reasoning-delta` / `reasoning-end` stream parts, `reasoning` text on ai@4), and usage carries its reasoning and cached input tokens.
 - JSON response formats (`generateObject`, `Output.object`, ai@4 `object-json` / `object-tool` modes) switch the agent to JSON mode and append the schema to the input.
@@ -138,6 +140,28 @@ const provider = createCogitatorProvider(cog, {
 const model = provider('researcher', { temperature: 0.5 });
 const sameModel = provider.languageModel('researcher');
 ```
+
+The provider follows the specification of its models, so an AI SDK provider registry takes it. Agents are its language models, and its embedding and image models (and an unknown agent) throw `NoSuchModelError`:
+
+```typescript
+import { createProviderRegistry, generateText } from 'ai';
+
+const registry = createProviderRegistry({ cogitator: provider, openai });
+const { text } = await generateText({ model: registry.languageModel('cogitator:writer'), prompt });
+```
+
+### Cogitator Agent as AI SDK Agent
+
+`toAISDKAgent` (ai@7) turns a Cogitator agent into an AI SDK agent (`agent-v1`) for everything that takes one, such as `createAgentUIStreamResponse`. It is a `ToolLoopAgent` on `cogitatorModel()`: the Cogitator agent runs its own tools, memory and approvals in one model step.
+
+```typescript
+import { toAISDKAgent } from '@cogitator-ai/ai-sdk/agent';
+
+const support = toAISDKAgent(cog, supportAgent, { temperature: 0.2 });
+const { text } = await support.generate({ prompt: 'Where is order 42?' });
+```
+
+It takes the settings of `ToolLoopAgent` except `model`, `instructions` and the tool settings, which the Cogitator agent has itself, and is in its own entry point because older `ai` versions have no `Agent` type.
 
 ### AI SDK Models in Cogitator
 
@@ -284,6 +308,20 @@ interface CogitatorProviderConfig<V> {
   specificationVersion?: V;
 }
 ```
+
+The provider has the members of its specification (`CogitatorProviderMembers<V>`): `specificationVersion`, `embeddingModel` and `imageModel` for `v4` and `v3`, `textEmbeddingModel` and `imageModel` for `v2`, `textEmbeddingModel` for `v1`, all throwing `NoSuchModelError`.
+
+### `toAISDKAgent(cogitator, agent, settings?)` (`@cogitator-ai/ai-sdk/agent`)
+
+A `ToolLoopAgent` of ai@7 on `cogitatorModel(cogitator, agent, { specificationVersion: 'v4' })`, with the id of the agent's name. `settings` (`CogitatorAgentSettings`) are those of `ToolLoopAgent` without `model`, `instructions`, `tools`, `activeTools` and `toolChoice`.
+
+### `providerOptions.cogitator` (`CogitatorCallOptions`)
+
+| Field         | Type      | Description                                                                                 |
+| ------------- | --------- | ------------------------------------------------------------------------------------------- |
+| `threadId`    | `string`  | Memory thread of the run: its history comes from memory, the prompt gives only the new turn |
+| `userId`      | `string`  | The user the run belongs to                                                                 |
+| `saveHistory` | `boolean` | Save the turn to memory. Default: `true` with a `threadId`, `false` without                 |
 
 ### `fromAISDK(model)` / `new AISDKBackend(model)`
 

@@ -318,6 +318,7 @@ interface RunOptions<TDeps = unknown> {
   useMemory?: boolean; // default: true if an adapter is configured
   loadHistory?: boolean; // default: true
   saveHistory?: boolean; // default: true
+  history?: Message[]; // the conversation before input, read instead of the thread history, no system messages
 
   // Execute tool calls in parallel (default: false)
   parallelToolCalls?: boolean;
