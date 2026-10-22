@@ -3,6 +3,14 @@ import { EvalCaseSchema } from '../schema';
 import { describeIssues } from './issues';
 import type { EvalCase } from '../schema';
 
+/** Columns whose cells hold JSON, such as `["follow-up question"]` for `turns` */
+const JSON_FIELDS = ['turns', 'expectedToolCalls', 'expectedPassages'] as const;
+
+/**
+ * Cases from a CSV file with an `input` column, an optional `expected` one, `metadata.<key>` and
+ * `context.<key>` columns, and `turns`, `expectedToolCalls` and `expectedPassages` columns whose
+ * cells hold JSON arrays (an empty cell leaves the field out)
+ */
 export async function loadCsv(path: string): Promise<EvalCase[]> {
   let Papa: typeof import('papaparse');
   try {
@@ -57,6 +65,16 @@ export async function loadCsv(path: string): Promise<EvalCase[]> {
 
     if (row.expected !== undefined && row.expected !== '') {
       evalCase.expected = row.expected;
+    }
+
+    for (const field of JSON_FIELDS) {
+      const cell = row[field];
+      if (cell === undefined || cell.trim() === '') continue;
+      try {
+        evalCase[field] = JSON.parse(cell) as unknown;
+      } catch {
+        throw new Error(`Invalid case at line ${line}: ${field}: not valid JSON`);
+      }
     }
 
     const metadata: Record<string, unknown> = {};

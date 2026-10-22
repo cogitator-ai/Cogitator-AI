@@ -5,7 +5,7 @@ description: Score agent responses with deterministic checks, LLM-as-judge evalu
 
 ## Overview
 
-Metrics score individual eval case results. Each metric receives the case result — the case (`input`, `expected`, `context`, `metadata`), the `output`, `duration`, and for agent targets `usage` and `toolCalls` — and returns a score between 0 and 1. Scores are automatically aggregated across the dataset into mean, median, min, max, standard deviation and p50/p95/p99.
+Metrics score individual eval case results. Each metric receives the case result (the case with `input`, `expected`, `context`, `metadata` and the agent fields, the `output`, `duration`, and for agent targets `usage`, `toolCalls`, `toolResults`, `retrieved` and `turns`) and returns a score between 0 and 1. The metrics for tool calls, trajectories and retrieval are on [Agent Evaluation](/docs/evals/agents). Scores are automatically aggregated across the dataset into mean, median, min, max, standard deviation and p50/p95/p99.
 
 ```typescript
 interface MetricScore {
@@ -200,12 +200,15 @@ Each judge metric sends one prompt per case containing the rubric, the case `inp
 
 ### Built-in Judge Metrics
 
-| Metric           | Evaluates                                                                   |
-| ---------------- | --------------------------------------------------------------------------- |
-| `faithfulness()` | Whether the response is faithful to facts in the input and the case context |
-| `relevance()`    | Whether the response addresses the question asked                           |
-| `coherence()`    | Whether the response is logical and well-structured                         |
-| `helpfulness()`  | Whether the response would be useful to the user                            |
+| Metric               | Evaluates                                                                      |
+| -------------------- | ------------------------------------------------------------------------------ |
+| `faithfulness()`     | Whether the response is faithful to facts in the input and the case context    |
+| `relevance()`        | Whether the response addresses the question asked                              |
+| `coherence()`        | Whether the response is logical and well-structured                            |
+| `helpfulness()`      | Whether the response would be useful to the user                               |
+| `contextRelevance()` | Whether the retrieved passages (or the case context) are relevant to the input |
+
+When the run retrieved passages, `faithfulness()` reads them instead of the case `context`, and `contextRelevance()` judges the input against them alone, falling back to `context` and scoring 0 without a judge call when the case has neither. See [Retrieval](/docs/evals/agents#retrieval).
 
 ### Custom Judge Metrics
 
@@ -279,6 +282,20 @@ Reports cost distribution in USD. Only cases with `usage` count — that is, age
 ```typescript
 // result.aggregated.cost.metadata:
 // { total, mean, median, min, max, p95, p99 }
+```
+
+### passAtK
+
+`passAtK(metric, { k, threshold = 1 })` scores how often a case passes when the suite runs several `trials`: per case the unbiased estimate of the chance that one of `k` trials scores `threshold` or more, averaged over the cases. It is named `passAtK(<metric>,<k>)`. See [Trials and pass@k](/docs/evals/agents#trials-and-passk).
+
+```typescript
+const suite = new EvalSuite({
+  dataset,
+  target: { agent, cogitator },
+  metrics: [exactMatch()],
+  statisticalMetrics: [passAtK('exactMatch', { k: 3 })],
+  trials: 3,
+});
 ```
 
 ### tokenUsage

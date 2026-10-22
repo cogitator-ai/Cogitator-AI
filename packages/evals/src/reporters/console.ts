@@ -1,4 +1,5 @@
 import type { EvalSuiteResult } from './index';
+import { trialsPerCase } from './format';
 
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
@@ -18,7 +19,8 @@ export function consoleReport(result: EvalSuiteResult): void {
   const metrics = Object.values(result.aggregated);
 
   if (metrics.length > 0) {
-    const cols = { metric: 14, mean: 10, median: 10, p95: 10, min: 10, max: 10, cases: 8 };
+    const metricWidth = Math.max(14, ...metrics.map((m) => m.name.length + 2));
+    const cols = { metric: metricWidth, mean: 10, median: 10, p95: 10, min: 10, max: 10, cases: 8 };
     const showCount = metrics.some((m) => m.count !== undefined);
     const header =
       pad('Metric', cols.metric) +
@@ -59,8 +61,10 @@ export function consoleReport(result: EvalSuiteResult): void {
 
   const errors = result.stats.errors ?? 0;
   const errorPart = errors > 0 ? ` | ${RED}${errors} errored${RESET}` : '';
+  const trials = trialsPerCase(result);
+  const trialPart = trials > 1 ? ` x ${trials} trials` : '';
 
   console.log(
-    `\n${BOLD}Summary${RESET}: ${result.stats.total} cases${errorPart} | ${result.stats.duration}ms | $${result.stats.cost} | ${GREEN}${passed} passed${RESET} ${failed > 0 ? `${RED}${failed} failed${RESET}` : ''}`
+    `\n${BOLD}Summary${RESET}: ${result.stats.total} cases${trialPart}${errorPart} | ${result.stats.duration}ms | $${result.stats.cost} | ${GREEN}${passed} passed${RESET} ${failed > 0 ? `${RED}${failed} failed${RESET}` : ''}`
   );
 }

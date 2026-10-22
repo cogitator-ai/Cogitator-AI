@@ -1,16 +1,29 @@
 import { z } from 'zod';
 
+/** A tool call a case expects: the tool's name and, optionally, arguments to compare */
+export const ExpectedToolCallSchema = z.object({
+  name: z.string().min(1),
+  arguments: z.record(z.string(), z.unknown()).optional(),
+});
+
 export const EvalCaseSchema = z.object({
   input: z.string(),
   expected: z.string().optional(),
   context: z.record(z.string(), z.unknown()).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  /** Further user turns after `input`, run in order on the same conversation */
+  turns: z.array(z.string()).optional(),
+  /** The tool calls the agent should make over the whole conversation, in order */
+  expectedToolCalls: z.array(ExpectedToolCallSchema).optional(),
+  /** Ids or texts of the passages the retrieval should surface */
+  expectedPassages: z.array(z.string().min(1)).optional(),
 });
 
 export const EvalSuiteConfigSchema = z.object({
   concurrency: z.number().int().min(1).default(5),
   timeout: z.number().int().min(1000).default(30000),
   retries: z.number().int().min(0).max(10).default(0),
+  trials: z.number().int().min(1).default(1),
 });
 
 /**
@@ -75,6 +88,7 @@ export const EvalComparisonConfigSchema = z.object({
   retries: z.number().int().min(0).max(10).default(0),
 });
 
+export type ExpectedToolCall = z.output<typeof ExpectedToolCallSchema>;
 export type EvalCase = z.output<typeof EvalCaseSchema>;
 export type EvalCaseInput = z.input<typeof EvalCaseSchema>;
 export type EvalSuiteConfig = z.output<typeof EvalSuiteConfigSchema>;

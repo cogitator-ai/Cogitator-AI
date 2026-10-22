@@ -4,7 +4,7 @@ Evaluation framework examples using `@cogitator-ai/evals`.
 
 ## Prerequisites
 
-Examples 02 and 03 require an LLM provider API key:
+Examples 02, 03 and 04 require an LLM provider API key:
 
 ```bash
 export GOOGLE_API_KEY=your-key-here
@@ -36,4 +36,12 @@ Compare two agents with different configurations on the same dataset. Shows pair
 
 ```bash
 npx tsx examples/evals/03-ab-comparison.ts
+```
+
+### 04 - Agent Evaluation
+
+Evaluate what an agent does: expected tool calls scored by `toolCalls()` and `trajectory()`, expected passages by `retrievalRecall()`, a two-turn case on one conversation, and three trials of each case scored with `passAtK()`.
+
+```bash
+npx tsx examples/evals/04-agent-eval.ts
 ```

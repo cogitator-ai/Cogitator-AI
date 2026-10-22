@@ -26,6 +26,11 @@
       "types": "./dist/vitest.d.ts",
       "import": "./dist/vitest.js",
       "default": "./dist/vitest.js"
+    },
+    "./matchers": {
+      "types": "./dist/matchers.d.ts",
+      "import": "./dist/matchers.js",
+      "default": "./dist/matchers.js"
     }
   },
   "sideEffects": false,

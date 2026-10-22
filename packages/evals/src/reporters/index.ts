@@ -7,6 +7,7 @@ import { ciReport } from './ci';
 import { junitReport } from './junit';
 import { githubReport } from './github';
 import type { EvalStats } from '../assertions';
+import type { EvalToolCall, EvalToolResult, EvalTurnResult, Passage } from '../metrics/types';
 
 export interface AggregatedMetric {
   name: string;
@@ -32,21 +33,34 @@ export interface AssertionResult {
   expected?: number;
 }
 
+/** A case result as the reporters get it */
+export interface ReportedCase {
+  case: { input: string; expected?: string };
+  output: string;
+  duration: number;
+  /** Why the case has no output: every attempt failed or timed out */
+  error?: string;
+  /** The agent's answer stopped at its output token limit */
+  truncated?: boolean;
+  /** Tool calls used up the agent's `maxIterations` before it answered */
+  iterationLimitReached?: boolean;
+  /** The run paused for tool approvals, so `output` holds no answer */
+  paused?: boolean;
+  /** The tool calls of the run, over every turn */
+  toolCalls?: readonly EvalToolCall[];
+  /** What the tool calls returned, over every turn */
+  toolResults?: readonly EvalToolResult[];
+  /** The passages the run retrieved */
+  retrieved?: readonly Passage[];
+  /** Each turn of a multi-turn case */
+  turns?: readonly EvalTurnResult[];
+  scores: Array<{ name: string; score: number; details?: string; error?: string }>;
+  /** Every run of the case when the suite ran several trials, the first being the case itself */
+  trials?: readonly ReportedCase[];
+}
+
 export interface EvalSuiteResult {
-  results: Array<{
-    case: { input: string; expected?: string };
-    output: string;
-    duration: number;
-    /** Why the case has no output: every attempt failed or timed out */
-    error?: string;
-    /** The agent's answer stopped at its output token limit */
-    truncated?: boolean;
-    /** Tool calls used up the agent's `maxIterations` before it answered */
-    iterationLimitReached?: boolean;
-    /** The run paused for tool approvals, so `output` holds no answer */
-    paused?: boolean;
-    scores: Array<{ name: string; score: number; details?: string; error?: string }>;
-  }>;
+  results: ReportedCase[];
   aggregated: Record<string, AggregatedMetric>;
   assertions: AssertionResult[];
   stats: EvalStats;

@@ -28,6 +28,30 @@ describe('EvalCaseSchema', () => {
     expect(result.metadata).toEqual({ source: 'unit-test', version: 1 });
   });
 
+  it('validates the agent fields of a case', () => {
+    const result = EvalCaseSchema.parse({
+      input: 'hi',
+      turns: ['and then?'],
+      expectedToolCalls: [{ name: 'search', arguments: { q: 'x' } }, { name: 'answer' }],
+      expectedPassages: ['doc:0', 'some text'],
+    });
+    expect(result.turns).toEqual(['and then?']);
+    expect(result.expectedToolCalls).toEqual([
+      { name: 'search', arguments: { q: 'x' } },
+      { name: 'answer' },
+    ]);
+    expect(result.expectedPassages).toEqual(['doc:0', 'some text']);
+  });
+
+  it('rejects malformed agent fields', () => {
+    expect(() => EvalCaseSchema.parse({ input: 'x', turns: 'more' })).toThrow();
+    expect(() => EvalCaseSchema.parse({ input: 'x', expectedToolCalls: [{ name: '' }] })).toThrow();
+    expect(() =>
+      EvalCaseSchema.parse({ input: 'x', expectedToolCalls: [{ name: 'a', arguments: [] }] })
+    ).toThrow();
+    expect(() => EvalCaseSchema.parse({ input: 'x', expectedPassages: [''] })).toThrow();
+  });
+
   it('rejects missing input', () => {
     expect(() => EvalCaseSchema.parse({})).toThrow();
     expect(() => EvalCaseSchema.parse({ expected: '4' })).toThrow();

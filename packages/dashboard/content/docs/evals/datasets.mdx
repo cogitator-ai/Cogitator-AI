@@ -5,7 +5,7 @@ description: Load evaluation test cases from JSONL files, CSV files, or build th
 
 ## Overview
 
-A `Dataset` is an immutable collection of `EvalCase` objects. Each case has an `input` string and optional `expected`, `context`, and `metadata` fields. Datasets are validated with Zod on construction — invalid cases throw immediately.
+A `Dataset` is an immutable collection of `EvalCase` objects. Each case has an `input` string and optional `expected`, `context`, and `metadata` fields, plus the optional agent fields `turns`, `expectedToolCalls` and `expectedPassages`. Datasets are validated with Zod on construction, invalid cases throw immediately.
 
 ```typescript
 interface EvalCase {
@@ -13,8 +13,17 @@ interface EvalCase {
   expected?: string;
   context?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
+  turns?: string[];
+  expectedToolCalls?: { name: string; arguments?: Record<string, unknown> }[];
+  expectedPassages?: string[];
 }
 ```
+
+| Field               | Used by                                                                                                                     |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `turns`             | Further user turns after `input`, run on the same conversation, see [multi-turn cases](/docs/evals/agents#multi-turn-cases) |
+| `expectedToolCalls` | The calls the agent should make, for [`toolCalls()` and `trajectory()`](/docs/evals/agents#tool-calls)                      |
+| `expectedPassages`  | Ids or texts the retrieval should surface, for the [retrieval metrics](/docs/evals/agents#retrieval)                        |
 
 ## Programmatic Construction
 
@@ -52,6 +61,8 @@ Example JSONL file:
 {"input": "What is 2+2?", "expected": "4"}
 {"input": "Capital of France?", "expected": "Paris"}
 {"input": "Translate hello to Spanish", "expected": "hola"}
+{"input": "Weather in Paris?", "expectedToolCalls": [{"name": "get_weather", "arguments": {"city": "Paris"}}]}
+{"input": "My name is Ada.", "turns": ["What is my name?"], "expected": "Ada"}
 ```
 
 Each line is validated against the `EvalCase` schema. Invalid JSON or a case the schema refuses throws with the line number and the fields at fault, such as `Invalid case at line 3: input: Invalid input`. The CSV loader names the line of the row too, counting quoted fields that span several lines. It reads commas as the delimiter and throws on a malformed row, such as a quote that is never closed, naming its line.
@@ -86,6 +97,16 @@ Capital of France?,Paris,geography,europe
 ```
 
 The CSV must have an `input` column (otherwise loading throws). The `expected` column is optional; empty cells leave `expected` unset. Columns prefixed with `metadata.` are extracted into the metadata object, and columns prefixed with `context.` go into the context object — all values are strings. Other columns are ignored.
+
+The agent fields `turns`, `expectedToolCalls` and `expectedPassages` take a column each whose cells hold a JSON array, quoted the CSV way (inner quotes doubled). An empty cell leaves the field out, and a cell that is not valid JSON throws with its line, such as `Invalid case at line 2: turns: not valid JSON`:
+
+```csv
+input,turns,expectedToolCalls,expectedPassages
+Book a table,"[""For two, please""]","[{""name"":""book_table"",""arguments"":{""guests"":2}}]",
+How long do refunds take?,,"[{""name"":""rag_search""}]","[""refund is issued within 5 days""]"
+```
+
+Nested data is easier to write and read in JSONL, so prefer it for agent datasets.
 
 Standalone loader:
 

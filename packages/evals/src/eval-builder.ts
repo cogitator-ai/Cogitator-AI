@@ -15,6 +15,7 @@ export class EvalBuilder {
   private _concurrency?: number;
   private _timeout?: number;
   private _retries?: number;
+  private _trials?: number;
   private _onProgress?: EvalSuiteOptions['onProgress'];
 
   withDataset(dataset: Dataset): this {
@@ -62,6 +63,12 @@ export class EvalBuilder {
     return this;
   }
 
+  /** Runs each case `n` times, see `EvalSuiteOptions.trials` */
+  withTrials(n: number): this {
+    this._trials = n;
+    return this;
+  }
+
   onProgress(fn: EvalSuiteOptions['onProgress']): this {
     this._onProgress = fn;
     return this;
@@ -92,6 +99,7 @@ export class EvalBuilder {
       concurrency: this._concurrency,
       timeout: this._timeout,
       retries: this._retries,
+      trials: this._trials,
       onProgress: this._onProgress,
     };
 

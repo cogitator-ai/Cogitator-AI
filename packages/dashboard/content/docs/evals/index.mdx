@@ -93,12 +93,13 @@ const suite = new EvalSuite({
 | `dataset`            | —       | [`Dataset`](/docs/evals/datasets) of cases                                                                                       |
 | `target`             | —       | What to evaluate — see [Target](#target)                                                                                         |
 | `metrics`            | `[]`    | Per-case [metrics](/docs/evals/metrics)                                                                                          |
-| `statisticalMetrics` | `[]`    | Metrics over the whole run (`latency()`, `cost()`, `tokenUsage()`)                                                               |
+| `statisticalMetrics` | `[]`    | Metrics over the whole run (`latency()`, `cost()`, `tokenUsage()`, `passAtK()`)                                                  |
 | `judge`              | —       | `{ model, temperature?, maxTokens?, cogitator? }` (`JudgeConfigInput`; `temperature` defaults to `0`) — required for LLM metrics |
 | `assertions`         | `[]`    | [Pass/fail checks](/docs/evals/assertions)                                                                                       |
 | `concurrency`        | `5`     | Cases run in parallel                                                                                                            |
 | `timeout`            | `30000` | Per-attempt timeout in ms (minimum 1000)                                                                                         |
 | `retries`            | `0`     | Extra attempts for a failed or timed-out case (max 10)                                                                           |
+| `trials`             | `1`     | Runs of each case, each scored on its own, see [Trials and pass@k](/docs/evals/agents#trials-and-passk)                          |
 | `onProgress`         | —       | Called with `{ completed, total, currentCase }` after each case                                                                  |
 
 Errors and timeouts are retried up to `retries` times. If every attempt fails, the case result has an empty `output` and an `error` message (for example `Timed out after 30000ms`), so a failed run is never mistaken for an empty answer. No metric scores it, so it costs no judge calls and does not count as a 0: the aggregates cover the cases that answered (`count` says how many), and `stats.errors` or the [`maxErrorRate`](/docs/evals/assertions#maxerrorrate) assertion catch a run where many cases failed.
@@ -132,7 +133,9 @@ const agentTarget: EvalTarget = {
 };
 ```
 
-A target has either `fn` or both `agent` and `cogitator`, anything else throws when the suite is created. An agent target runs `cogitator.run(agent, { input, context, signal })` with the case's `context`, and records the run's `usage` (tokens, cost) and `toolCalls` on the case result, which is what the `cost()` and `tokenUsage()` metrics read. The usage is summed over every attempt that reported one, so an attempt that finished after it timed out still counts, and `attempts` says how many the case took. A `fn` target is called as `fn(input, { signal, case, attempt })` and only records the duration.
+A target has either `fn` or both `agent` and `cogitator`, anything else throws when the suite is created. An agent target runs `cogitator.run(agent, { input, context, signal, onToolResult })` with the case's `context`, and records the run's `usage` (tokens, cost), `toolCalls`, `toolResults` and the passages its tools `retrieved` on the case result. `cost()` and `tokenUsage()` read the usage, the [agent metrics](/docs/evals/agents) the rest, and an optional `retrieval` on the target reads passages out of your own tools' results. The usage is summed over every attempt that reported one, so an attempt that finished after it timed out still counts, and `attempts` says how many the case took. A `fn` target is called as `fn(input, { signal, case, attempt, turn, history })` and only records the duration.
+
+A case with `turns` is a conversation: an agent target runs every turn on one thread, so the Cogitator needs memory, and a `fn` target is called once per turn. See [Multi-turn Cases](/docs/evals/agents#multi-turn-cases).
 
 ### Results
 
@@ -141,7 +144,7 @@ A target has either `fn` or both `agent` and `cogitator`, anything else throws w
 ```typescript
 const result = await suite.run();
 
-result.results; // per-case { case, output, duration, error?, usage?, toolCalls?, scores }
+result.results; // per-case { case, output, duration, error?, usage?, toolCalls?, toolResults?, retrieved?, turns?, trials?, scores }
 result.aggregated; // { exactMatch: { mean, median, p95, ... }, ... }
 result.assertions; // [{ name, passed, message }, ...]
 result.stats; // { total, errors, metricErrors, duration (ms), cost, targetCost, judgeCost }
@@ -196,6 +199,7 @@ const suite = new EvalBuilder()
   .withConcurrency(10)
   .withTimeout(15000)
   .withRetries(1)
+  .withTrials(3)
   .onProgress(({ completed, total }) => console.log(`${completed}/${total}`))
   .build();
 
@@ -228,6 +232,7 @@ The tool takes an optional `maxCases` and returns `{ success, total, duration, c
 
 - [Datasets](/docs/evals/datasets) — load test cases from JSONL, CSV, or build programmatically
 - [Metrics](/docs/evals/metrics) — deterministic, LLM-as-judge, statistical, and custom metrics
+- [Agent Evaluation](/docs/evals/agents) - tool calls, trajectories, retrieval, multi-turn cases, trials and pass@k
 - [Assertions](/docs/evals/assertions) — threshold checks, regression detection, custom assertions
 - [A/B Comparison](/docs/evals/comparison) — compare two targets with statistical significance testing
 - [Reporters](/docs/evals/reporters) - console, JSON, CSV, JUnit, GitHub Actions and CI output, plus `describeEval` for Vitest

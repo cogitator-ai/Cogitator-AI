@@ -4,6 +4,7 @@ import {
   relevance,
   coherence,
   helpfulness,
+  contextRelevance,
   llmMetric,
   bindJudgeContext,
 } from '../metrics/llm-judge';
@@ -302,5 +303,87 @@ describe('LLM judge metrics', () => {
 
       expect(result.score).toBe(0);
     });
+  });
+});
+
+describe('retrieval-aware judge metrics', () => {
+  const passages = [
+    { id: 'c1', content: 'Paris is the capital of France.', source: 'facts.txt' },
+    { content: 'France is in Europe.' },
+  ];
+
+  function withRetrieval(context?: Record<string, unknown>): EvalCaseResult {
+    return {
+      case: { input: 'capital of France?', ...(context && { context }) },
+      output: 'Paris',
+      duration: 1,
+      retrieved: passages,
+    };
+  }
+
+  function promptOf(judge: JudgeContext): string {
+    return (judge.cogitator.run as ReturnType<typeof vi.fn>).mock.calls[0][0].input as string;
+  }
+
+  it('contextRelevance judges the input against the retrieved passages', async () => {
+    const judge = makeJudgeContext('{"score": 0.8, "reasoning": "on topic"}');
+    const bound = bindJudgeContext(contextRelevance(), judge);
+
+    const score = await bound(withRetrieval({ notes: 'ignored' }));
+
+    expect(score).toEqual({ name: 'contextRelevance', score: 0.8, details: 'on topic' });
+    const prompt = promptOf(judge);
+    expect(prompt).toContain(
+      'Input: capital of France?\nRetrieved passages:\n[1] (facts.txt) Paris is the capital of France.\n[2] France is in Europe.'
+    );
+    expect(prompt).not.toContain('ignored');
+    expect(prompt).not.toContain('Response:');
+  });
+
+  it('contextRelevance falls back to the case context, and skips a case with neither', async () => {
+    const judge = makeJudgeContext('{"score": 1, "reasoning": "ok"}');
+    const bound = bindJudgeContext(contextRelevance(), judge);
+
+    await bound({ case: { input: 'q', context: { doc: 'some text' } }, output: 'a', duration: 1 });
+    expect(promptOf(judge)).toContain('Context:\ndoc: some text');
+
+    const skipped = await bound({ case: { input: 'q' }, output: 'a', duration: 1 });
+    expect(skipped).toEqual({
+      name: 'contextRelevance',
+      score: 0,
+      details: 'no retrieved passages or context to judge',
+    });
+    expect(judge.cogitator.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('faithfulness reads the retrieved passages when there are some, the context otherwise', async () => {
+    const withPassages = makeJudgeContext('{"score": 1, "reasoning": "ok"}');
+    await bindJudgeContext(faithfulness(), withPassages)(withRetrieval({ notes: 'case context' }));
+    expect(promptOf(withPassages)).toContain('Retrieved passages:\n[1] (facts.txt) Paris');
+    expect(promptOf(withPassages)).not.toContain('case context');
+    expect(promptOf(withPassages)).toContain('Response: Paris');
+
+    const withContext = makeJudgeContext('{"score": 1, "reasoning": "ok"}');
+    await bindJudgeContext(
+      faithfulness(),
+      withContext
+    )({
+      case: { input: 'q', context: { notes: 'case context' } },
+      output: 'a',
+      duration: 1,
+    });
+    expect(promptOf(withContext)).toContain('Context:\nnotes: case context');
+  });
+
+  it('relevance keeps judging with the case context', async () => {
+    const judge = makeJudgeContext('{"score": 1, "reasoning": "ok"}');
+    await bindJudgeContext(relevance(), judge)(withRetrieval({ notes: 'case context' }));
+    expect(promptOf(judge)).toContain('Context:\nnotes: case context');
+    expect(promptOf(judge)).not.toContain('Retrieved passages');
+  });
+
+  it('contextRelevance is a judge metric with its own name', () => {
+    expect(contextRelevance().requiresJudge).toBe(true);
+    expect(contextRelevance({ name: 'ctx' }).metricName).toBe('ctx');
   });
 });

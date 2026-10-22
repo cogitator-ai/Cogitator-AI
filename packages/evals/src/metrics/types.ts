@@ -22,6 +22,38 @@ export interface MetricScore {
   usage?: MetricUsage;
 }
 
+/** A tool call the agent made */
+export interface EvalToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+/** What a tool call returned, as the run's `onToolResult` reported it */
+export interface EvalToolResult {
+  callId: string;
+  name: string;
+  result?: unknown;
+  error?: string;
+}
+
+/** A passage the agent's retrieval surfaced, such as one result of a `rag_search` call */
+export interface Passage {
+  id?: string;
+  content: string;
+  score?: number;
+  source?: string;
+}
+
+/** One user turn of a multi-turn case and the answer to it */
+export interface EvalTurnResult {
+  input: string;
+  output: string;
+  toolCalls?: readonly EvalToolCall[];
+  /** Set on the turn that failed, the last one the case ran */
+  error?: string;
+}
+
 export interface EvalCaseResult {
   case: EvalCase;
   output: string;
@@ -41,11 +73,19 @@ export interface EvalCaseResult {
     cost: number;
     duration: number;
   };
-  toolCalls?: readonly {
-    id: string;
-    name: string;
-    arguments: Record<string, unknown>;
-  }[];
+  /** The tool calls of the run, over every turn */
+  toolCalls?: readonly EvalToolCall[];
+  /** What the tool calls returned, over every turn, raw */
+  toolResults?: readonly EvalToolResult[];
+  /** The passages the tool results surfaced, over every turn, in the order they came */
+  retrieved?: readonly Passage[];
+  /** Each turn of a case with `turns`: `input` first, then the further turns */
+  turns?: readonly EvalTurnResult[];
+  /**
+   * Every run of the case when the suite runs several `trials`, each with its own scores. The
+   * case result itself is the first of them
+   */
+  trials?: ReadonlyArray<EvalCaseResult & { scores: MetricScore[] }>;
   /** The agent's answer stopped at its output token limit */
   truncated?: boolean;
   /** Tool calls used up the agent's `maxIterations` before it answered */
@@ -69,6 +109,9 @@ export interface StatisticalScore extends MetricScore {
 export type StatisticalMetricFn = ((results: EvalCaseResult[]) => StatisticalScore) & {
   metricName: string;
 };
+
+/** A case result with the scores of its metrics, as a suite run returns it */
+export type ScoredCaseResult = EvalCaseResult & { scores: MetricScore[] };
 
 /** Options every built-in per-case metric factory takes */
 export interface MetricOptions {

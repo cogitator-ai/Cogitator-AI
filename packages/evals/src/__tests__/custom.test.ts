@@ -124,6 +124,7 @@ describe('metric (custom)', () => {
       output: 'my output',
       expected: 'my expected',
       context: { key: 'value' },
+      result: makeResult('my input', 'my output', 'my expected', { key: 'value' }),
     });
   });
 
@@ -145,6 +146,7 @@ describe('metric (custom)', () => {
       output: 'output',
       expected: undefined,
       context: undefined,
+      result: makeResult('input', 'output'),
     });
   });
 });

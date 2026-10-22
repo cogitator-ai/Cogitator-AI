@@ -157,4 +157,33 @@ describe('loadCsv', () => {
     );
     await expect(loadCsv(file)).rejects.toThrow(/^Invalid CSV at line 3: /);
   });
+
+  it('parses the JSON cells of turns, expectedToolCalls and expectedPassages', async () => {
+    const content = [
+      'input,turns,expectedToolCalls,expectedPassages',
+      `hi,"[""and then?""]","[{""name"":""search"",""arguments"":{""q"":""x""}}]","[""doc:0""]"`,
+      'plain,,,',
+    ].join('\n');
+
+    const cases = await loadCsv(writeTmpFile('agent.csv', content));
+
+    expect(cases).toEqual([
+      {
+        input: 'hi',
+        turns: ['and then?'],
+        expectedToolCalls: [{ name: 'search', arguments: { q: 'x' } }],
+        expectedPassages: ['doc:0'],
+      },
+      { input: 'plain' },
+    ]);
+  });
+
+  it('reports a JSON cell that does not parse or fit the schema', async () => {
+    await expect(loadCsv(writeTmpFile('bad.csv', 'input,turns\nhi,[not json'))).rejects.toThrow(
+      'Invalid case at line 2: turns: not valid JSON'
+    );
+    await expect(
+      loadCsv(writeTmpFile('bad2.csv', 'input,expectedToolCalls\nhi,"[{""arguments"":{}}]"'))
+    ).rejects.toThrow('Invalid case at line 2: expectedToolCalls.0.name');
+  });
 });

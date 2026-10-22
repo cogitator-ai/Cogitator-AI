@@ -1,6 +1,6 @@
 import { appendFileSync } from 'node:fs';
 import type { EvalSuiteResult } from './index';
-import { caseFlags, caseLabel } from './format';
+import { caseFlags, caseLabel, trialsPerCase } from './format';
 
 /** Escapes the message of a workflow command */
 function escapeData(value: string): string {
@@ -63,8 +63,9 @@ export function githubSummary(result: EvalSuiteResult): string {
   const failed = result.assertions.length - passed;
   const flagged = result.results.filter((r) => caseFlags(r).length > 0).length;
 
+  const trials = trialsPerCase(result);
   const totals = [
-    `**${stats.total}** cases`,
+    `**${stats.total}** cases${trials > 1 ? ` x **${trials}** trials` : ''}`,
     `**${stats.errors ?? 0}** errored`,
     ...(stats.metricErrors ? [`**${stats.metricErrors}** metric errors`] : []),
     ...(flagged > 0 ? [`**${flagged}** truncated, paused or at the iteration limit`] : []),

@@ -1,6 +1,13 @@
 import { z } from 'zod';
 import type { JudgeCache, JudgeCogitator, JudgeConfig } from '../schema';
-import type { MetricFn, EvalCaseResult, MetricScore, MetricOptions, MetricUsage } from './types';
+import type {
+  MetricFn,
+  EvalCaseResult,
+  MetricScore,
+  MetricOptions,
+  MetricUsage,
+  Passage,
+} from './types';
 
 export interface JudgeContext {
   cogitator: {
@@ -9,10 +16,15 @@ export interface JudgeContext {
   judgeConfig: JudgeConfig;
 }
 
+/** What the judge is asked about a case, or why the case is not judged and scores 0 */
+export type JudgeMessage = { message: string } | { skip: string };
+
 export interface LLMMetricFn extends MetricFn {
   readonly requiresJudge: true;
   readonly __judgeSystemPrompt: string;
   readonly __judgeName: string;
+  /** Builds what the judge reads about a case. Default: input, context, expected and response */
+  readonly __judgeMessage?: (result: EvalCaseResult) => JudgeMessage;
 }
 
 const FENCED_BLOCK = /```[a-z]*\s*([\s\S]*?)```/gi;
@@ -232,7 +244,11 @@ function limiter(limit: number): <T>(task: () => Promise<T>) => Promise<T> {
   };
 }
 
-function createJudgeMetric(name: string, systemPrompt: string): LLMMetricFn {
+function createJudgeMetric(
+  name: string,
+  systemPrompt: string,
+  message?: (result: EvalCaseResult) => JudgeMessage
+): LLMMetricFn {
   const fn = (async (_result: EvalCaseResult): Promise<MetricScore> => {
     return { name, score: 0, details: 'unbound judge metric — call bindJudgeContext first' };
   }) as LLMMetricFn;
@@ -241,6 +257,7 @@ function createJudgeMetric(name: string, systemPrompt: string): LLMMetricFn {
   Object.defineProperty(fn, 'requiresJudge', { value: true, writable: false });
   Object.defineProperty(fn, '__judgeSystemPrompt', { value: systemPrompt, writable: false });
   Object.defineProperty(fn, '__judgeName', { value: name, writable: false });
+  if (message) Object.defineProperty(fn, '__judgeMessage', { value: message, writable: false });
 
   return fn;
 }
@@ -254,16 +271,35 @@ function contextText(context: Record<string, unknown>): string {
     .join('\n');
 }
 
+function passagesText(passages: readonly Passage[]): string {
+  return passages
+    .map((p, i) => `[${i + 1}]${p.source ? ` (${p.source})` : ''} ${p.content}`)
+    .join('\n');
+}
+
 /**
- * What the judge reads: the input, the case's context when it has one (source documents, a
- * dossier, retrieved passages), the expected answer and the response.
+ * The evidence of a case: its retrieved passages when it has any and `preferRetrieved` is set,
+ * else its context, else nothing
  */
-function buildUserMessage(result: EvalCaseResult): string {
-  const expected = result.case.expected || 'N/A';
+function evidenceBlock(result: EvalCaseResult, preferRetrieved: boolean): string | undefined {
+  if (preferRetrieved && result.retrieved && result.retrieved.length > 0) {
+    return `Retrieved passages:\n${passagesText(result.retrieved)}`;
+  }
   const context = result.case.context;
-  const contextBlock =
-    context && Object.keys(context).length > 0 ? `\nContext:\n${contextText(context)}` : '';
-  return `Input: ${result.case.input}${contextBlock}\nExpected: ${expected}\nResponse: ${result.output}`;
+  return context && Object.keys(context).length > 0
+    ? `Context:\n${contextText(context)}`
+    : undefined;
+}
+
+/**
+ * What the judge reads: the input, the case's evidence when it has some (its context, or the
+ * retrieved passages for metrics that prefer them), the expected answer and the response.
+ */
+function buildUserMessage(result: EvalCaseResult, preferRetrieved = false): string {
+  const expected = result.case.expected || 'N/A';
+  const evidence = evidenceBlock(result, preferRetrieved);
+  const evidenceText = evidence === undefined ? '' : `\n${evidence}`;
+  return `Input: ${result.case.input}${evidenceText}\nExpected: ${expected}\nResponse: ${result.output}`;
 }
 
 export function bindJudgeContext(metric: LLMMetricFn, context: JudgeContext): MetricFn {
@@ -272,8 +308,9 @@ export function bindJudgeContext(metric: LLMMetricFn, context: JudgeContext): Me
 
   const bound = (async (result: EvalCaseResult): Promise<MetricScore> => {
     try {
-      const userMessage = buildUserMessage(result);
-      const prompt = `${systemPrompt}\n\n${userMessage}`;
+      const message = metric.__judgeMessage?.(result) ?? { message: buildUserMessage(result) };
+      if ('skip' in message) return { name, score: 0, details: message.skip };
+      const prompt = `${systemPrompt}\n\n${message.message}`;
 
       const runResult = await context.cogitator.run({ input: prompt });
       const usage = usageOf(runResult.usage);
@@ -313,10 +350,32 @@ export function bindJudgeContext(metric: LLMMetricFn, context: JudgeContext): Me
   return bound;
 }
 
+/**
+ * How faithful the response is to the input and the evidence: the passages the run retrieved
+ * when the case has any, its `context` otherwise.
+ */
 export function faithfulness(opts?: MetricOptions): LLMMetricFn {
   return createJudgeMetric(
     opts?.name ?? 'faithfulness',
-    'You are evaluating the faithfulness of an AI assistant\'s response.\n\nGiven the input, the context when there is one, and the response, rate how faithful the response is to the facts and information in the input and the context. Claims that neither supports count against it.\n\nScore from 0.0 (completely unfaithful) to 1.0 (perfectly faithful).\n\nRespond with JSON: {"score": <number>, "reasoning": "<explanation>"}'
+    'You are evaluating the faithfulness of an AI assistant\'s response.\n\nGiven the input, the context or retrieved passages when there are some, and the response, rate how faithful the response is to the facts and information in the input and the context. Claims that neither supports count against it.\n\nScore from 0.0 (completely unfaithful) to 1.0 (perfectly faithful).\n\nRespond with JSON: {"score": <number>, "reasoning": "<explanation>"}',
+    (result) => ({ message: buildUserMessage(result, true) })
+  );
+}
+
+/**
+ * Whether the passages the run retrieved are relevant to the input, judged on the input and the
+ * passages alone (the case's `context` when nothing was retrieved). A case with neither scores 0
+ * without a judge call.
+ */
+export function contextRelevance(opts?: MetricOptions): LLMMetricFn {
+  return createJudgeMetric(
+    opts?.name ?? 'contextRelevance',
+    'You are evaluating the context an AI assistant retrieved to answer a request.\n\nGiven the input and the retrieved passages (or context), rate how relevant they are to the input: whether they hold the information needed to answer it, with little that is off topic.\n\nScore from 0.0 (completely irrelevant) to 1.0 (perfectly relevant).\n\nRespond with JSON: {"score": <number>, "reasoning": "<explanation>"}',
+    (result) => {
+      const evidence = evidenceBlock(result, true);
+      if (evidence === undefined) return { skip: 'no retrieved passages or context to judge' };
+      return { message: `Input: ${result.case.input}\n${evidence}` };
+    }
   );
 }
 

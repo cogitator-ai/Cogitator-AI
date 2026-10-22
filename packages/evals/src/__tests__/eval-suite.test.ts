@@ -163,6 +163,7 @@ describe('EvalSuite', () => {
         input: 'query',
         context: undefined,
         signal: expect.any(AbortSignal),
+        onToolResult: expect.any(Function),
       });
     });
 
@@ -198,7 +199,12 @@ describe('EvalSuite', () => {
 
       expect(mockCogitator.run).toHaveBeenCalledWith(
         {},
-        { input: 'test', context: { key: 'value' }, signal: expect.any(AbortSignal) }
+        {
+          input: 'test',
+          context: { key: 'value' },
+          signal: expect.any(AbortSignal),
+          onToolResult: expect.any(Function),
+        }
       );
     });
   });

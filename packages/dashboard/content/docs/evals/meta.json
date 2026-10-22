@@ -1,4 +1,4 @@
 {
   "title": "Evaluation Framework",
-  "pages": ["index", "datasets", "metrics", "assertions", "comparison", "reporters"]
+  "pages": ["index", "datasets", "metrics", "agents", "assertions", "comparison", "reporters"]
 }

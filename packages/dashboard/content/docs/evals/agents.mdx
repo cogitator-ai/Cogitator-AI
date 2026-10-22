@@ -1,0 +1,243 @@
+---
+title: Agent Evaluation
+description: Evaluate what an agent did, not only what it answered, with expected tool calls, trajectories, retrieval metrics, multi-turn conversations, trials and pass@k.
+---
+
+## Overview
+
+An agent's answer can be right for the wrong reasons, or wrong after a perfect search. Agent evaluation scores the run itself: which tools the agent called and with what arguments, which passages its retrieval surfaced, how it carried a conversation, and how often it gets a case right when you run it again.
+
+An agent target (`{ agent, cogitator }`) records on each case result:
+
+| Field         | What it holds                                                                                   |
+| ------------- | ----------------------------------------------------------------------------------------------- |
+| `toolCalls`   | Every tool call of the run, `{ id, name, arguments }`                                           |
+| `toolResults` | What the calls returned, `{ callId, name, result?, error? }`, raw from the run's `onToolResult` |
+| `retrieved`   | Passages the tool results surfaced, `{ id?, content, score?, source? }`                         |
+| `turns`       | Each turn of a [multi-turn case](#multi-turn-cases), `{ input, output, toolCalls?, error? }`    |
+| `trials`      | Every run of the case when the suite runs several [trials](#trials-and-passk)                   |
+
+A case states what it expects with three optional fields:
+
+```typescript
+import { Dataset } from '@cogitator-ai/evals';
+
+const dataset = Dataset.from([
+  {
+    input: 'What is the weather in Paris?',
+    expectedToolCalls: [{ name: 'get_weather', arguments: { city: 'Paris' } }],
+  },
+  {
+    input: 'How long do refunds take?',
+    expectedToolCalls: [{ name: 'rag_search' }],
+    expectedPassages: ['refund is issued within 5 days'],
+  },
+  {
+    input: 'My name is Ada.',
+    turns: ['What is my name?'],
+    expected: 'Ada',
+  },
+]);
+```
+
+## Tool Calls
+
+`toolCalls()` compares the calls of the run, over every turn, with `expectedToolCalls` as multisets: each expected call pairs with at most one actual call, and the pairing is the largest possible one.
+
+```typescript
+import { EvalSuite, toolCalls } from '@cogitator-ai/evals';
+
+const suite = new EvalSuite({
+  dataset,
+  target: { agent, cogitator },
+  metrics: [toolCalls(), toolCalls({ arguments: 'exact', score: 'recall', name: 'exactRecall' })],
+});
+```
+
+| Option      | Default       | Values                                                                                                                                   |
+| ----------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `arguments` | `'subset'`    | `'subset'`: the expected arguments are in the call with equal values, others allowed. `'exact'`: equal arguments. `'ignore'`: names only |
+| `score`     | `'f1'`        | `'f1'`, `'recall'` (expected calls made) or `'precision'` (calls that were expected)                                                     |
+| `name`      | `'toolCalls'` | The name the metric reports under                                                                                                        |
+
+An expected call without `arguments` matches on its name alone. Nested objects compare key by key, arrays item by item. The score's `details` lists what went wrong, such as `missing get_weather({"city":"Paris"}) | unexpected search({"q":"weather"})`, and its `metadata` holds `precision`, `recall`, `f1` and `matched`.
+
+## Trajectory
+
+`trajectory()` looks at the order of the tool names and ignores their arguments, pair it with `toolCalls()` for those.
+
+```typescript
+import { trajectory } from '@cogitator-ai/evals';
+
+metrics: [trajectory(), trajectory({ order: 'in-order', name: 'roughOrder' })];
+```
+
+| `order`       | Score                                                                      |
+| ------------- | -------------------------------------------------------------------------- |
+| `'exact'`     | 1 when the names are the expected ones in the same order, else 0 (default) |
+| `'in-order'`  | Longest common subsequence over the length of the longer sequence          |
+| `'any-order'` | Names both sequences share, as multisets, over the longer length           |
+
+Both metrics score 0 with `details: 'no expected tool calls provided'` on a case without `expectedToolCalls`, as `exactMatch()` does without `expected`, so give every case of a suite that uses them an expectation. A case expecting no calls (`expectedToolCalls: []`) scores 1 when the agent made none and 0 otherwise.
+
+## Retrieval
+
+The target's `retrieval` turns each successful tool result into passages. The default, `ragSearchPassages`, reads the `rag_search` tool of [`@cogitator-ai/rag`](/docs/rag): its `{ results: [{ content, chunkId, score, source, ... }] }`, the `id` of a result (or else its `chunkId`) becoming the passage id. Any other tool result with that shape is read too, and other results give nothing.
+
+```typescript
+import { Agent, tool } from '@cogitator-ai/core';
+import { createSearchTool } from '@cogitator-ai/rag';
+import {
+  EvalSuite,
+  retrievalRecall,
+  retrievalPrecision,
+  retrievalMRR,
+  contextRelevance,
+  faithfulness,
+} from '@cogitator-ai/evals';
+
+const agent = new Agent({
+  name: 'handbook',
+  model: 'google/gemini-3.5-flash-lite',
+  instructions: 'Call rag_search, then answer only from its results.',
+  tools: [tool(createSearchTool(pipeline))],
+});
+
+const suite = new EvalSuite({
+  dataset,
+  target: { agent, cogitator },
+  metrics: [
+    retrievalRecall(),
+    retrievalPrecision(),
+    retrievalMRR(),
+    contextRelevance(),
+    faithfulness(),
+  ],
+  judge: { model: 'google/gemini-3.5-flash-lite' },
+});
+```
+
+For a search tool of your own, pass a `retrieval` that maps its result, returning `undefined` for results it does not know:
+
+```typescript
+import { ragSearchPassages } from '@cogitator-ai/evals';
+
+const target = {
+  agent,
+  cogitator,
+  retrieval: ({ name, result }) =>
+    name === 'search_docs'
+      ? (result as Doc[]).map((doc) => ({ id: doc.slug, content: doc.body }))
+      : ragSearchPassages({ name, result }),
+};
+```
+
+An expected passage is an id or a text. A retrieved passage matches it by an equal `id`, or when one text contains the other once case and whitespace are normalized, so a sentence of a chunk finds the chunk.
+
+| Metric                 | Score                                                                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `retrievalRecall()`    | Share of the expected passages some retrieved passage matches                                                                               |
+| `retrievalPrecision()` | Share of the retrieved passages that match an expected one                                                                                  |
+| `retrievalMRR()`       | 1 / rank of the first retrieved passage that matches, 0 when none does. Passages rank in the order they came, tool result after tool result |
+| `contextRelevance()`   | LLM judge: are the retrieved passages relevant to the input                                                                                 |
+
+The three deterministic metrics score 0 with `details: 'no expected passages provided'` on a case without `expectedPassages`. A case expecting none (`expectedPassages: []`) scores 1 when nothing was retrieved.
+
+`contextRelevance()` shows the judge the input and the retrieved passages, or the case's `context` when nothing was retrieved, and scores 0 without a judge call when the case has neither. `faithfulness()` checks the response against the retrieved passages when the case has any and against `context` otherwise. See [LLM-as-Judge Metrics](/docs/evals/metrics#llm-as-judge-metrics).
+
+## Multi-turn Cases
+
+A case with `turns` is a conversation: the agent answers `input`, then each turn in order, all on one thread of the case's own (`threadId` `eval-<uuid>`, fresh for every attempt and trial, so a retry starts the conversation over). The Cogitator's memory carries the conversation from turn to turn, so give it a memory adapter:
+
+```typescript
+import { Cogitator } from '@cogitator-ai/core';
+
+const cogitator = new Cogitator({
+  llm: { providers: { google: { apiKey: process.env.GOOGLE_API_KEY } } },
+  memory: { adapter: 'memory' },
+});
+```
+
+The case result's `output` is the last answer, so `expected` and the output metrics score how the conversation ended. `toolCalls`, `toolResults`, `retrieved` and `usage` are summed over every turn, and `turns` lists each `{ input, output, toolCalls? }`. A turn that fails fails the case with that turn's error, the result keeping the turns run so far with the failed one last.
+
+A `fn` target is called once per turn, `context.turn` telling which (0 for `input`) and `context.history` holding the earlier `{ input, output }` turns:
+
+```typescript
+const target = {
+  fn: async (input, { history }) =>
+    chat([...history.flatMap((t) => [user(t.input), assistant(t.output)]), user(input)]),
+};
+```
+
+## Trials and pass@k
+
+Agents are not deterministic, and one run of a case says little about how often it succeeds. `trials` runs each case several times:
+
+```typescript
+import { EvalSuite, exactMatch, toolCalls, passAtK, threshold } from '@cogitator-ai/evals';
+
+const suite = new EvalSuite({
+  dataset,
+  target: { agent, cogitator },
+  metrics: [exactMatch(), toolCalls()],
+  statisticalMetrics: [passAtK('exactMatch', { k: 1 }), passAtK('exactMatch', { k: 5 })],
+  assertions: [threshold('passAtK(exactMatch,5)', 0.9)],
+  trials: 5,
+});
+
+const result = await suite.run();
+result.results[0].trials; // five runs, each with its own scores
+```
+
+- Trials share the suite's `concurrency`, `timeout`, `retries`, abort signal and `maxCases`, each being one more run in the queue.
+- Every trial is scored on its own. The case result is the first trial, with all of them in `trials`.
+- The aggregate of a metric takes, for each case, the mean of its scored trials, so `aggregated.exactMatch.mean` is the expected pass rate of a single run.
+- `stats.targetCost`, `judgeCost` and `metricErrors` cover every trial. `stats.errors` counts the cases whose first trial errored, the others show in `trials`.
+- `onProgress` fires once per case, after its last trial.
+
+`passAtK(metric, { k, threshold = 1 })` estimates, for each case, the chance that at least one of `k` trials scores `threshold` or more, with the unbiased estimator
+
+```
+pass@k = 1 - C(n - c, k) / C(n, k)
+```
+
+where `n` is the number of trials and `c` the trials that passed (1 when fewer than `k` failed). It averages that over the cases with at least one scored trial, an errored trial counting as a failure. The metric is named `passAtK(<metric>,<k>)`, ready for `threshold()` and baselines. `k` must be a positive integer up to `trials`, and the suite throws when it is created if `k` is larger or the metric is not among its `metrics`.
+
+## Custom Agent Metrics
+
+The `metric()` factory hands `evaluate` the run's data along with the input and output:
+
+```typescript
+import { metric } from '@cogitator-ai/evals';
+
+const noFailedTools = metric({
+  name: 'noFailedTools',
+  evaluate: ({ toolResults = [] }) => ({
+    score: toolResults.every((r) => r.error === undefined) ? 1 : 0,
+  }),
+});
+
+const answersEveryTurn = metric({
+  name: 'answersEveryTurn',
+  evaluate: ({ turns, output }) => ({
+    score: (turns ?? [{ output }]).every((t) => t.output.trim() !== '') ? 1 : 0,
+  }),
+});
+```
+
+`evaluate` also gets the whole case result as `result`.
+
+## Vitest Matchers
+
+`evalMatchers` from `@cogitator-ai/evals/matchers` (Vitest 5) adds assertions on results to `expect`, see [Vitest](/docs/evals/reporters#vitest-matchers):
+
+```typescript
+import { expect } from 'vitest';
+import { evalMatchers } from '@cogitator-ai/evals/matchers';
+
+expect.extend(evalMatchers);
+
+const [weather] = (await suite.run()).results;
+expect(weather).toHaveCalledTool('get_weather', { city: 'Paris' });
+expect(weather).toFollowTrajectory(['get_weather']);
+```

@@ -64,7 +64,7 @@ Assertions show green check marks for passes and red crosses for failures.
 
 ## JSON Reporter
 
-Writes the full result data to a JSON file. Includes per-case results with scores and run flags, aggregated metrics with their `count`, assertions, and stats.
+Writes the full result data to a JSON file. Includes per-case results with scores and run flags, the agent's `toolCalls`, `toolResults`, `retrieved` passages and `turns`, every trial in `trials` when the suite ran several, aggregated metrics with their `count`, assertions, and stats. The console and GitHub reporters show the trials per case in their summary (`2 cases x 3 trials`).
 
 ```typescript
 result.report('json', { path: './eval-report.json' });
@@ -268,6 +268,37 @@ afterAll(() => qa.result().report('junit', { path: './reports/qa' }));
 If the run itself fails (a cancelled signal, a timeout, an invalid `maxCases`), every test of the block fails with that cause instead of a confusing follow-up error.
 
 `describeEval` returns `{ result }`. `result()` gives the `EvalSuiteResult` once the run has finished, so call it in a later test or in `afterAll`, for example to write reports or save a baseline. It throws with the cause when the run failed, and before the run has finished.
+
+### Vitest Matchers
+
+`evalMatchers` adds matchers for eval results to `expect`. Register them once, in the test file or a setup file. They come from `@cogitator-ai/evals/matchers`, which augments Vitest's `Assertion` and `AsymmetricMatchersContaining` types, so the matchers are typed wherever it is imported. Those types changed in Vitest 5, so the entry needs Vitest 5, while `describeEval` works from Vitest 3.
+
+```typescript
+import { expect, it } from 'vitest';
+import { evalMatchers } from '@cogitator-ai/evals/matchers';
+
+expect.extend(evalMatchers);
+
+it('books a table', async () => {
+  const result = await suite.run();
+  const [booking] = result.results;
+
+  expect(booking).toHaveCalledTool('book_table', { guests: 2 });
+  expect(booking).toFollowTrajectory(['find_restaurant', 'book_table'], { order: 'in-order' });
+  expect(booking).toHaveRetrieved('doc:menu');
+  expect(booking).toScoreAtLeast('toolCalls', 1);
+  expect(result).toScoreAtLeast('trajectory', 0.8);
+});
+```
+
+| Matcher                                 | Passes when                                                                                                                                            |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `toHaveCalledTool(name, args?)`         | The case called `name`, over any turn, with arguments holding `args` (other arguments allowed)                                                         |
+| `toFollowTrajectory(names, { order? })` | `'exact'` (default): exactly those calls in that order. `'in-order'`: in that order, others between allowed. `'any-order'`: each of them, in any order |
+| `toHaveRetrieved(idOrText)`             | A retrieved passage has that id, or its text and `idOrText` contain one another                                                                        |
+| `toScoreAtLeast(metric, min)`           | A case result's score of the metric, or a suite result's aggregated mean, is at least `min`                                                            |
+
+A failure names what the case did instead, such as `expected the case to call cancel({"id":1}), it made search({"q":"paris"}), book({})`. `toScoreAtLeast` throws when the case or the suite has no such metric, listing the ones it has, so a typo never passes under `.not`.
 
 ## CI Integration Example
 

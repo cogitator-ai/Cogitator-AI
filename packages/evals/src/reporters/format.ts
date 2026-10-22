@@ -28,3 +28,10 @@ export function caseLabel(index: number, input: string): string {
   const text = truncateInput(input);
   return `[${index + 1}] ${text === '' ? '(empty input)' : text}`;
 }
+
+/** How many trials each case ran, 1 for a suite without several trials */
+export function trialsPerCase(result: {
+  results: ReadonlyArray<{ trials?: readonly unknown[] }>;
+}): number {
+  return result.results.reduce((most, r) => Math.max(most, r.trials?.length ?? 1), 1);
+}

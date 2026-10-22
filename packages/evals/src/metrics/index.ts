@@ -6,6 +6,11 @@ export type {
   MetricFn,
   StatisticalMetricFn,
   StatisticalScore,
+  ScoredCaseResult,
+  EvalToolCall,
+  EvalToolResult,
+  EvalTurnResult,
+  Passage,
 } from './types';
 export {
   exactMatch,
@@ -17,13 +22,31 @@ export {
   jsonSchema,
 } from './deterministic';
 export { metric } from './custom';
-export type { CustomMetricConfig } from './custom';
-export { latency, cost, tokenUsage } from './statistical';
+export type { CustomMetricConfig, CustomMetricData } from './custom';
+export {
+  latency,
+  cost,
+  tokenUsage,
+  passAtK,
+  passAtKEstimate,
+  isPassAtKMetric,
+} from './statistical';
+export type { PassAtKOptions, PassAtKMetricFn } from './statistical';
+export { toolCalls, trajectory, toolCallMatches, trajectoryScore } from './tool-calls';
+export type {
+  ToolCallsOptions,
+  TrajectoryOptions,
+  ToolArgumentsMatch,
+  ToolCallsScore,
+  TrajectoryOrder,
+} from './tool-calls';
+export { retrievalRecall, retrievalPrecision, retrievalMRR, ragSearchPassages } from './retrieval';
 export {
   faithfulness,
   relevance,
   coherence,
   helpfulness,
+  contextRelevance,
   llmMetric,
   bindJudgeContext,
 } from './llm-judge';

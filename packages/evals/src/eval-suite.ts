@@ -1,16 +1,35 @@
+import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { Dataset } from './datasets';
 import type { EvalCase } from './schema';
 import { EvalSuiteConfigSchema, JudgeConfigSchema } from './schema';
 import type { JudgeCogitator, JudgeConfigInput } from './schema';
-import type { MetricFn, MetricScore, EvalCaseResult, StatisticalMetricFn } from './metrics/types';
+import type {
+  MetricFn,
+  MetricScore,
+  EvalCaseResult,
+  EvalToolCall,
+  EvalToolResult,
+  EvalTurnResult,
+  Passage,
+  ScoredCaseResult,
+  StatisticalMetricFn,
+} from './metrics/types';
 import { nonFiniteScoreError } from './metrics/types';
+import { isPassAtKMetric } from './metrics/statistical';
+import { ragSearchPassages } from './metrics/retrieval';
 import type { LLMMetricFn } from './metrics/llm-judge';
 import { bindJudgeContext, judgeContextFor } from './metrics/llm-judge';
 import type { AssertionFn, AssertionResult, AggregatedMetric, EvalStats } from './assertions';
-import { aggregate } from './stats';
+import { aggregate, mean } from './stats';
 import { report } from './reporters';
-import type { ReporterType, ReporterOptions } from './reporters';
+import type { ReportedCase, ReporterType, ReporterOptions } from './reporters';
+
+/** A turn of a conversation: what the user said and what the target answered */
+export interface EvalTurn {
+  input: string;
+  output: string;
+}
 
 /** What a function target gets besides the input */
 export interface EvalTargetContext {
@@ -24,12 +43,29 @@ export interface EvalTargetContext {
   case: EvalCase;
   /** 0 for the first attempt, then 1, 2 and so on for retries */
   attempt: number;
+  /** 0 for the case's `input`, then 1, 2 and so on for each of its further `turns` */
+  turn: number;
+  /** The turns of the case before this one, with the answers the target gave */
+  history: readonly EvalTurn[];
+}
+
+/** A tool result as the `retrieval` of a target reads it */
+export interface RetrievalToolResult {
+  name: string;
+  result: unknown;
 }
 
 export interface EvalTarget {
   agent?: unknown;
   cogitator?: unknown;
+  /** Called once per turn of a case: with `input`, then with each of its further `turns` */
   fn?: (input: string, context: EvalTargetContext) => Promise<string>;
+  /**
+   * Reads the passages a tool result of an agent target surfaced, into the case's `retrieved`,
+   * undefined for a result that holds none. Default: `ragSearchPassages`, which reads the
+   * results of the `rag_search` tool of `@cogitator-ai/rag`
+   */
+  retrieval?: (toolResult: RetrievalToolResult) => Passage[] | undefined;
 }
 
 export interface EvalProgress {
@@ -48,7 +84,17 @@ export interface EvalSuiteOptions {
   concurrency?: number;
   timeout?: number;
   retries?: number;
-  /** Called after each case. A callback that throws is reported as a process warning */
+  /**
+   * Runs of each case, a positive integer, 1 by default. Each trial is scored on its own, the
+   * case result is the first trial with every trial in `trials`, and the aggregate of a metric
+   * takes the mean of a case's scored trials as the case's score. Use `passAtK()` to score how
+   * often a case passes
+   */
+  trials?: number;
+  /**
+   * Called after each case, once all its trials ran. A callback that throws is reported as a
+   * process warning
+   */
   onProgress?: (progress: EvalProgress) => void;
 }
 
@@ -66,7 +112,11 @@ export interface EvalRunOptions {
 export type EvalSuiteStats = Required<EvalStats>;
 
 export interface EvalSuiteResult {
-  results: Array<EvalCaseResult & { scores: MetricScore[] }>;
+  /**
+   * One result per case, in dataset order. With several trials it is the first trial, every
+   * trial in its `trials`
+   */
+  results: ScoredCaseResult[];
   aggregated: Record<string, AggregatedMetric>;
   assertions: AssertionResult[];
   stats: EvalSuiteStats;
@@ -78,7 +128,55 @@ export interface EvalSuiteResult {
 type TargetUsage = NonNullable<EvalCaseResult['usage']>;
 
 type AttemptOutcome =
-  { ok: true; result: EvalCaseResult } | { ok: false; error: unknown; usage?: TargetUsage };
+  | { ok: true; result: EvalCaseResult }
+  | { ok: false; error: unknown; usage?: TargetUsage; turns?: EvalTurnResult[] };
+
+interface AgentRunResult {
+  output?: unknown;
+  usage?: unknown;
+  toolCalls?: unknown;
+  truncated?: unknown;
+  iterationLimitReached?: unknown;
+  status?: unknown;
+}
+
+interface AgentRunner {
+  run: (
+    agent: unknown,
+    opts: {
+      input: string;
+      context?: Record<string, unknown>;
+      signal?: AbortSignal;
+      threadId?: string;
+      onToolResult?: (result: {
+        callId: string;
+        name: string;
+        result: unknown;
+        error?: string;
+      }) => void;
+    }
+  ) => Promise<AgentRunResult>;
+}
+
+/**
+ * A turn of a multi-turn case failed: the error of the turn, with the turns run so far (the
+ * failed one last) and what they spent
+ */
+class TurnFailure extends Error {
+  constructor(
+    cause: unknown,
+    readonly turns: EvalTurnResult[],
+    readonly usage: TargetUsage | undefined
+  ) {
+    super(errorMessage(cause), { cause });
+    this.name = 'TurnFailure';
+  }
+}
+
+/** What the user says to the target, turn by turn: the case's `input`, then its `turns` */
+function turnInputs(evalCase: EvalCase): string[] {
+  return [evalCase.input, ...(evalCase.turns ?? [])];
+}
 
 type Settled = { ok: true; result: EvalCaseResult } | { ok: false; error: unknown };
 
@@ -176,6 +274,7 @@ export class EvalSuite {
   private readonly concurrency: number;
   private readonly timeout: number;
   private readonly retries: number;
+  private readonly trials: number;
   private readonly onProgress?: (progress: EvalProgress) => void;
 
   constructor(opts: EvalSuiteOptions) {
@@ -183,6 +282,7 @@ export class EvalSuite {
       concurrency: opts.concurrency,
       timeout: opts.timeout,
       retries: opts.retries,
+      trials: opts.trials,
     });
 
     this.dataset = opts.dataset;
@@ -192,12 +292,14 @@ export class EvalSuite {
     this.concurrency = config.concurrency;
     this.timeout = config.timeout;
     this.retries = config.retries;
+    this.trials = config.trials;
     this.onProgress = opts.onProgress;
 
     this.validateTarget();
 
     const rawMetrics = opts.metrics ?? [];
     this.validateMetricNames(rawMetrics);
+    this.validatePassAtK(rawMetrics);
     const hasLLMMetrics = rawMetrics.some(isLLMMetric);
 
     if (hasLLMMetrics && !opts.judge) {
@@ -241,6 +343,29 @@ export class EvalSuite {
     if (hasCogitator && !hasAgent) {
       throw new Error('Cogitator target requires agent instance');
     }
+
+    if (hasFn && this.target.retrieval !== undefined) {
+      throw new Error('Target retrieval reads tool results, so it needs an agent target, not fn');
+    }
+  }
+
+  /** A `passAtK()` metric needs the metric it reads and at least `k` trials */
+  private validatePassAtK(metrics: MetricFn[]): void {
+    const names = new Set(metrics.map((m) => m.metricName));
+    for (const statMetric of this.statisticalMetrics) {
+      if (!isPassAtKMetric(statMetric)) continue;
+      const { metric, k } = statMetric.passAtK;
+      if (!names.has(metric)) {
+        throw new Error(
+          `${statMetric.metricName} reads the metric '${metric}', which the suite does not have: add it to metrics`
+        );
+      }
+      if (k > this.trials) {
+        throw new Error(
+          `${statMetric.metricName} needs at least ${k} trials per case, the suite runs ${this.trials}: set trials to ${k} or more`
+        );
+      }
+    }
   }
 
   /** Two metrics with one name would be aggregated, compared and reported as one */
@@ -273,24 +398,33 @@ export class EvalSuite {
     const suiteStart = Date.now();
     const cases = this.cases(maxCases);
     const total = cases.length;
+    const trials = this.trials;
 
-    type ScoredResult = EvalCaseResult & { scores: MetricScore[] };
-    const orderedResults = new Array<ScoredResult>(total);
-    let nextIdx = 0;
+    const trialResults = cases.map(() => new Array<ScoredCaseResult>(trials));
+    const trialsLeft = cases.map(() => trials);
+    const runs = total * trials;
+    let nextRun = 0;
     let completed = 0;
 
     const worker = async () => {
-      while (nextIdx < total && !signal?.aborted) {
-        const i = nextIdx++;
+      while (nextRun < runs && !signal?.aborted) {
+        const run = nextRun++;
+        const i = Math.floor(run / trials);
         const evalCase = cases[i];
-        orderedResults[i] = await this.runCase(evalCase, signal);
+        trialResults[i][run % trials] = await this.runCase(evalCase, signal);
+        if (--trialsLeft[i] > 0) continue;
         completed++;
         this.reportProgress({ completed, total, currentCase: evalCase });
       }
     };
 
-    await Promise.all(Array.from({ length: Math.min(this.concurrency, total) }, worker));
+    await Promise.all(Array.from({ length: Math.min(this.concurrency, runs) }, worker));
     signal?.throwIfAborted();
+
+    const orderedResults: ScoredCaseResult[] = trialResults.map((caseTrials) =>
+      trials === 1 ? caseTrials[0] : { ...caseTrials[0], trials: caseTrials }
+    );
+    const allTrials = orderedResults.flatMap(trialsOf);
 
     const aggregated = this.aggregateScores(orderedResults);
 
@@ -303,15 +437,15 @@ export class EvalSuite {
       };
     }
 
-    const targetCost = orderedResults.reduce((sum, r) => sum + (r.usage?.cost ?? 0), 0);
-    const judgeCost = orderedResults.reduce(
+    const targetCost = allTrials.reduce((sum, r) => sum + (r.usage?.cost ?? 0), 0);
+    const judgeCost = allTrials.reduce(
       (sum, r) => sum + r.scores.reduce((s, score) => s + (score.usage?.cost ?? 0), 0),
       0
     );
     const stats: EvalSuiteStats = {
       total,
       errors: orderedResults.filter((r) => r.error !== undefined).length,
-      metricErrors: orderedResults.reduce(
+      metricErrors: allTrials.reduce(
         (n, r) => n + r.scores.filter((s) => s.error !== undefined).length,
         0
       ),
@@ -331,16 +465,7 @@ export class EvalSuite {
       report: (type, options) => {
         report(
           {
-            results: orderedResults.map((r) => ({
-              case: { input: r.case.input, expected: r.case.expected },
-              output: r.output,
-              duration: r.duration,
-              ...(r.error !== undefined && { error: r.error }),
-              ...(r.truncated && { truncated: true }),
-              ...(r.iterationLimitReached && { iterationLimitReached: true }),
-              ...(r.paused && { paused: true }),
-              scores: r.scores,
-            })),
+            results: orderedResults.map(reportedCase),
             aggregated,
             assertions: assertionResults,
             stats,
@@ -385,7 +510,7 @@ export class EvalSuite {
   private async runCase(
     evalCase: EvalCase,
     signal: AbortSignal | undefined
-  ): Promise<EvalCaseResult & { scores: MetricScore[] }> {
+  ): Promise<ScoredCaseResult> {
     const caseResult = await this.executeCase(evalCase, signal);
     if (signal?.aborted || caseResult.error !== undefined) return { ...caseResult, scores: [] };
     return { ...caseResult, scores: await this.evaluateCaseMetrics(caseResult) };
@@ -397,6 +522,7 @@ export class EvalSuite {
   ): Promise<EvalCaseResult> {
     const start = Date.now();
     let lastError: unknown;
+    let lastTurns: EvalTurnResult[] | undefined;
     let usage: TargetUsage | undefined;
     let attempts = 0;
 
@@ -409,6 +535,7 @@ export class EvalSuite {
       }
       usage = addUsage(usage, outcome.usage);
       lastError = outcome.error;
+      lastTurns = outcome.turns;
     }
 
     return {
@@ -418,6 +545,7 @@ export class EvalSuite {
       error: errorMessage(signal?.aborted ? signal.reason : lastError),
       attempts,
       ...(usage && { usage }),
+      ...(lastTurns && { turns: lastTurns }),
     };
   }
 
@@ -451,11 +579,13 @@ export class EvalSuite {
 
     try {
       const first = await Promise.race([settled, abort.aborted]);
-      if (first !== 'aborted' && (first.ok || !signal.aborted)) return first;
+      if (first !== 'aborted' && (first.ok || !signal.aborted)) return failureDetails(first);
 
       const late = await waitAtMost(settled, this.timeout);
-      const usage = late?.ok ? late.result.usage : undefined;
-      return { ok: false, error: signal.reason, ...(usage && { usage }) };
+      const lateOutcome = late && failureDetails(late);
+      const usage = lateOutcome?.ok ? lateOutcome.result.usage : lateOutcome?.usage;
+      const turns = lateOutcome && !lateOutcome.ok ? lateOutcome.turns : undefined;
+      return { ok: false, error: signal.reason, ...(usage && { usage }), ...(turns && { turns }) };
     } finally {
       clearTimeout(timer);
       abort.cancel();
@@ -464,50 +594,111 @@ export class EvalSuite {
 
   private async executeFnTarget(
     evalCase: EvalCase,
-    context: EvalTargetContext
+    context: Omit<EvalTargetContext, 'turn' | 'history'>
   ): Promise<EvalCaseResult> {
     const start = Date.now();
-    const output = await this.target.fn!(evalCase.input, context);
-    return { case: evalCase, output, duration: Date.now() - start };
+    const inputs = turnInputs(evalCase);
+    const multiTurn = inputs.length > 1;
+    const turns: EvalTurnResult[] = [];
+
+    for (const [turn, input] of inputs.entries()) {
+      const history = turns.map(({ input, output }) => ({ input, output }));
+      try {
+        const output = await this.target.fn!(input, { ...context, turn, history });
+        turns.push({ input, output });
+      } catch (error) {
+        if (!multiTurn) throw error;
+        throw new TurnFailure(
+          error,
+          [...turns, { input, output: '', error: errorMessage(error) }],
+          undefined
+        );
+      }
+    }
+
+    return {
+      case: evalCase,
+      output: turns[turns.length - 1].output,
+      duration: Date.now() - start,
+      ...(multiTurn && { turns }),
+    };
   }
 
+  /**
+   * Runs the agent on each turn of the case. A case with further `turns` runs them all on one
+   * thread of its own, so the Cogitator's memory carries the conversation from turn to turn
+   */
   private async executeAgentTarget(
     evalCase: EvalCase,
     signal: AbortSignal
   ): Promise<EvalCaseResult> {
     const start = Date.now();
-    const cogitator = this.target.cogitator as {
-      run: (
-        agent: unknown,
-        opts: { input: string; context?: Record<string, unknown>; signal?: AbortSignal }
-      ) => Promise<Record<string, unknown>>;
-    };
-    const runResult = await cogitator.run(this.target.agent, {
-      input: evalCase.input,
-      context: evalCase.context,
-      signal,
-    });
-    const duration = Date.now() - start;
+    const cogitator = this.target.cogitator as AgentRunner;
+    const retrieval = this.target.retrieval ?? ragSearchPassages;
+    const inputs = turnInputs(evalCase);
+    const threadId = inputs.length > 1 ? `eval-${randomUUID()}` : undefined;
 
-    const result: EvalCaseResult = {
+    const turns: EvalTurnResult[] = [];
+    const toolCalls: EvalToolCall[] = [];
+    const toolResults: EvalToolResult[] = [];
+    const retrieved: Passage[] = [];
+    let reportsToolCalls = false;
+    let usage: TargetUsage | undefined;
+    const flags: Pick<EvalCaseResult, 'truncated' | 'iterationLimitReached' | 'paused'> = {};
+
+    for (const input of inputs) {
+      const turnResults: EvalToolResult[] = [];
+      let runResult: AgentRunResult;
+      try {
+        runResult = await cogitator.run(this.target.agent, {
+          input,
+          context: evalCase.context,
+          signal,
+          ...(threadId !== undefined && { threadId }),
+          onToolResult: (toolResult) => turnResults.push(toolResultOf(toolResult)),
+        });
+      } catch (error) {
+        if (threadId === undefined) throw error;
+        throw new TurnFailure(
+          error,
+          [...turns, { input, output: '', error: errorMessage(error) }],
+          usage
+        );
+      }
+
+      const output = typeof runResult.output === 'string' ? runResult.output : '';
+      const turnCalls = Array.isArray(runResult.toolCalls)
+        ? (runResult.toolCalls as EvalToolCall[])
+        : undefined;
+      if (turnCalls) reportsToolCalls = true;
+      toolCalls.push(...(turnCalls ?? []));
+      toolResults.push(...turnResults);
+      for (const toolResult of turnResults) {
+        if (toolResult.error !== undefined) continue;
+        retrieved.push(...(retrieval({ name: toolResult.name, result: toolResult.result }) ?? []));
+      }
+      usage = addUsage(usage, targetUsageOf(runResult.usage));
+      if (runResult.truncated === true) flags.truncated = true;
+      if (runResult.iterationLimitReached === true) flags.iterationLimitReached = true;
+      if (runResult.status === 'paused') flags.paused = true;
+      turns.push({
+        input,
+        output,
+        ...(turnCalls && turnCalls.length > 0 && { toolCalls: turnCalls }),
+      });
+    }
+
+    return {
       case: evalCase,
-      output: (runResult.output as string) ?? '',
-      duration,
+      output: turns[turns.length - 1].output,
+      duration: Date.now() - start,
+      ...(usage && { usage }),
+      ...(reportsToolCalls && { toolCalls }),
+      ...(toolResults.length > 0 && { toolResults }),
+      ...(retrieved.length > 0 && { retrieved }),
+      ...(threadId !== undefined && { turns }),
+      ...flags,
     };
-
-    const usage = targetUsageOf(runResult.usage);
-    if (usage) {
-      result.usage = usage;
-    }
-
-    if (runResult.toolCalls) {
-      result.toolCalls = runResult.toolCalls as EvalCaseResult['toolCalls'];
-    }
-    if (runResult.truncated === true) result.truncated = true;
-    if (runResult.iterationLimitReached === true) result.iterationLimitReached = true;
-    if (runResult.status === 'paused') result.paused = true;
-
-    return result;
   }
 
   private async evaluateCaseMetrics(result: EvalCaseResult): Promise<MetricScore[]> {
@@ -545,27 +736,28 @@ export class EvalSuite {
     }
   }
 
-  private aggregateScores(
-    results: Array<EvalCaseResult & { scores: MetricScore[] }>
-  ): Record<string, AggregatedMetric> {
+  /** One score per case and metric: the mean over the case's trials the metric scored */
+  private aggregateScores(results: ScoredCaseResult[]): Record<string, AggregatedMetric> {
     const scoresByMetric = new Map<string, number[]>();
+    const push = (map: Map<string, number[]>, name: string, value: number) => {
+      const values = map.get(name);
+      if (values) values.push(value);
+      else map.set(name, [value]);
+    };
 
     for (const r of results) {
-      for (const s of r.scores) {
-        let arr = scoresByMetric.get(s.name);
-        if (!arr) {
-          arr = [];
-          scoresByMetric.set(s.name, arr);
-        }
-        arr.push(s.score);
+      const caseScores = new Map<string, number[]>();
+      for (const trial of trialsOf(r)) {
+        for (const s of trial.scores) push(caseScores, s.name, s.score);
       }
+      for (const [name, values] of caseScores) push(scoresByMetric, name, mean(values));
     }
 
     const aggregated: Record<string, AggregatedMetric> = {};
     for (const [name, values] of scoresByMetric) {
       aggregated[name] = { name, ...aggregate(values), count: values.length };
     }
-    if (results.length > 0 && results.every((r) => r.error !== undefined)) {
+    if (results.length > 0 && results.flatMap(trialsOf).every((r) => r.error !== undefined)) {
       for (const metric of this.boundMetrics) {
         aggregated[metric.metricName] ??= unscored(metric.metricName);
       }
@@ -573,4 +765,48 @@ export class EvalSuite {
 
     return aggregated;
   }
+}
+
+function trialsOf(result: ScoredCaseResult): readonly ScoredCaseResult[] {
+  return result.trials ?? [result];
+}
+
+function toolResultOf(toolResult: {
+  callId: string;
+  name: string;
+  result: unknown;
+  error?: string;
+}): EvalToolResult {
+  return {
+    callId: toolResult.callId,
+    name: toolResult.name,
+    ...(toolResult.result !== undefined && { result: toolResult.result }),
+    ...(toolResult.error !== undefined && { error: toolResult.error }),
+  };
+}
+
+/** The turns and usage a failed attempt leaves, when a turn of a multi-turn case failed */
+function failureDetails(settled: Settled): AttemptOutcome {
+  if (settled.ok || !(settled.error instanceof TurnFailure)) return settled;
+  const { turns, usage } = settled.error;
+  return { ok: false, error: settled.error, turns, ...(usage && { usage }) };
+}
+
+/** A case result as the reporters get it, the agent's data and the trials kept */
+function reportedCase(r: ScoredCaseResult): ReportedCase {
+  return {
+    case: { input: r.case.input, expected: r.case.expected },
+    output: r.output,
+    duration: r.duration,
+    ...(r.error !== undefined && { error: r.error }),
+    ...(r.truncated && { truncated: true }),
+    ...(r.iterationLimitReached && { iterationLimitReached: true }),
+    ...(r.paused && { paused: true }),
+    ...(r.toolCalls && { toolCalls: r.toolCalls }),
+    ...(r.toolResults && { toolResults: r.toolResults }),
+    ...(r.retrieved && { retrieved: r.retrieved }),
+    ...(r.turns && { turns: r.turns }),
+    scores: r.scores,
+    ...(r.trials && { trials: r.trials.map(reportedCase) }),
+  };
 }
