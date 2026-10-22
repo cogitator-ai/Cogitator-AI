@@ -592,7 +592,7 @@ describe('websocket server contract', () => {
     expect(completed.get('s')).toMatchObject({ swarmName: 'team', output: 'swarm answer' });
   });
 
-  test('stops a workflow run by its id and leaves a swarm run going', async () => {
+  test('stops a workflow run by its id at once, freeing the id, and leaves a swarm run going', async () => {
     const nodeStarted = deferred<void>();
     const release = deferred<void>();
     const swarmStarted = deferred<void>();
@@ -611,6 +611,7 @@ describe('websocket server contract', () => {
     try {
       const request = serveSockets({
         cogitator: fakeCogitator().cogitator,
+        agents: { chat: chatAgent() },
         workflows: { held },
         swarms: { team },
       });
@@ -638,26 +639,66 @@ describe('websocket server contract', () => {
       }
       expect(Object.fromEntries(ends)).toEqual({ w: 'cancelled', s: 'complete' });
 
-      const again = {
+      connection.send({
+        type: 'run',
+        id: 'w',
+        payload: { type: 'agent', name: 'chat', input: 'right after the stop' },
+      });
+      expect((await connection.until('complete')).at(-1)).toMatchObject({
+        id: 'w',
+        payload: { type: 'complete' },
+      });
+    } finally {
+      release.resolve();
+      swarmRun.mockRestore();
+    }
+  });
+
+  test('counts a stopped run that still winds down toward maxRuns until it ends', async () => {
+    const nodeStarted = deferred<void>();
+    const release = deferred<void>();
+    const held = new WorkflowBuilder('held')
+      .addNode('wait', async () => {
+        nodeStarted.resolve();
+        await release.promise;
+        return { output: 'released' };
+      })
+      .build() as unknown as Workflow<WorkflowState>;
+    try {
+      const request = serveSockets(
+        {
+          cogitator: fakeCogitator().cogitator,
+          agents: { chat: chatAgent() },
+          workflows: { held },
+        },
+        [],
+        { maxRuns: 1 }
+      );
+      const connection = await connect(request.url);
+      const chat = { type: 'run', id: 'x', payload: { type: 'agent', name: 'chat', input: 'hi' } };
+
+      connection.send({
         type: 'run',
         id: 'w',
         payload: { type: 'workflow', name: 'held', input: 'x' },
-      };
-      connection.send(again);
-      expect(await connection.next()).toMatchObject({ id: 'w', code: 'RUN_IN_PROGRESS' });
+      });
+      await nodeStarted.promise;
+      connection.send({ type: 'stop', id: 'w' });
+      expect(await connection.next()).toMatchObject({ id: 'w', payload: { type: 'cancelled' } });
+      connection.send(chat);
+      expect(await connection.next()).toMatchObject({ id: 'x', code: 'TOO_MANY_RUNS' });
 
       release.resolve();
       let answer: WebSocketServerMessage | undefined;
       for (let attempt = 0; attempt < 50; attempt++) {
-        connection.send(again);
+        connection.send(chat);
         answer = await connection.next();
         if (answer.type !== 'error') break;
         await Bun.sleep(10);
       }
-      expect(answer).toMatchObject({ id: 'w', payload: { type: 'complete' } });
+      expect(answer).toMatchObject({ id: 'x', payload: { type: 'complete' } });
     } finally {
       release.resolve();
-      swarmRun.mockRestore();
     }
   });
 

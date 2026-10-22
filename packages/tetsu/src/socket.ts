@@ -37,10 +37,23 @@ export const DEFAULT_MAX_SOCKET_RUNS = 8;
 /** Default of `websocket.maxBufferedBytes`: what may wait for a client that reads slowly */
 export const DEFAULT_MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 
-/** The runs of one socket by the `id` of the frame that started them, and what it sends */
+/**
+ * The runs of one socket by the `id` of the frame that started them, the stopped ones still
+ * winding down, which count toward `maxRuns` but no longer hold their `id`, and what it sends
+ */
 interface SocketState {
   runs: Map<string | undefined, AbortController>;
+  stopping: Set<AbortController>;
   outbox: SocketOutbox;
+}
+
+/** Cancels a run: its `id` is free at once, and it counts as stopping until it ends */
+function stopRun(state: SocketState, id: string | undefined): void {
+  const run = state.runs.get(id);
+  if (!run) return;
+  state.runs.delete(id);
+  state.stopping.add(run);
+  run.abort();
 }
 
 /** What the handshake adds to a socket: the `deps` of every agent run on the connection */
@@ -69,7 +82,7 @@ function positiveInteger(name: string, value: number | undefined, fallback: numb
 
 function alreadyRunning(id: string | undefined): string {
   return id === undefined
-    ? 'A run without an id is already in progress: give each run its own id'
+    ? 'A run is already in progress: give each run its own id to run several at once'
     : `A run with id '${id}' is already in progress`;
 }
 
@@ -99,7 +112,11 @@ export function cogitatorSocket(
   const stateOf = (socket: OutboxSocket): SocketState => {
     let state = sockets.get(socket);
     if (!state) {
-      state = { runs: new Map(), outbox: new SocketOutbox(socket, maxBufferedBytes) };
+      state = {
+        runs: new Map(),
+        stopping: new Set(),
+        outbox: new SocketOutbox(socket, maxBufferedBytes),
+      };
       sockets.set(socket, state);
     }
     return state;
@@ -116,20 +133,21 @@ export function cogitatorSocket(
     },
     until: () => resolveSignal(deps.until),
     message: (socket, message) => {
-      const { runs, outbox } = stateOf(socket);
+      const state = stateOf(socket);
+      const { runs, stopping, outbox } = state;
       switch (message.type) {
         case 'ping':
           outbox.send({ type: 'pong', id: message.id });
           return;
         case 'stop':
-          if (message.id === undefined) for (const run of runs.values()) run.abort();
-          else runs.get(message.id)?.abort();
+          if (message.id === undefined) for (const id of [...runs.keys()]) stopRun(state, id);
+          else stopRun(state, message.id);
           return;
         case 'run':
         case 'resume': {
           const refusal = runs.has(message.id)
             ? { error: alreadyRunning(message.id), code: 'RUN_IN_PROGRESS' }
-            : runs.size >= maxRuns
+            : runs.size + stopping.size >= maxRuns
               ? {
                   error: `The socket already has ${maxRuns} runs going: stop one or wait for it to end`,
                   code: 'TOO_MANY_RUNS',
@@ -147,6 +165,7 @@ export function cogitatorSocket(
           };
           return handleRun(deps, outbox, message, connection, controller.signal).finally(() => {
             if (runs.get(message.id) === controller) runs.delete(message.id);
+            stopping.delete(controller);
           });
         }
       }
@@ -165,8 +184,7 @@ export function cogitatorSocket(
       const state = sockets.get(socket);
       if (!state) return;
       state.outbox.close();
-      for (const run of state.runs.values()) run.abort();
-      state.runs.clear();
+      for (const id of [...state.runs.keys()]) stopRun(state, id);
     },
   });
 }
@@ -180,7 +198,8 @@ interface Caller {
 /**
  * Runs one frame's run. A stop answers `cancelled` at once and silences the run from then on,
  * even when what runs notices the abort only later, such as a workflow node that is still
- * running: the run keeps its slot of `maxRuns` until it actually ends.
+ * running: its `id` is free for a new run at once, and it counts toward `maxRuns` until it
+ * actually ends.
  */
 async function handleRun(
   deps: CogitatorDeps,
