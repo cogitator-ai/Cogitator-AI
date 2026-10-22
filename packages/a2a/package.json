@@ -75,7 +75,7 @@
     "@types/node": "^22.20.4",
     "ajv": "^8.18.0",
     "typescript": "^6.0.3",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.5"
   },
   "peerDependencies": {
     "@cogitator-ai/core": "workspace:>=0.56.0",
