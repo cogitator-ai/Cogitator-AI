@@ -129,7 +129,7 @@ async function playbookNote(
 }
 import { TruncateStrategy } from './context/strategies/index';
 import { sanitizeToolHistory } from './utils/tool-history';
-import { MEMORY_AGENTS } from './cogitator/message-builder';
+import { MEMORY_AGENTS, noteMemoryAgent } from './cogitator/message-builder';
 import { normalizeTurn } from './llm/turn';
 import { withPiiDecisions, withPiiMasking } from './security/pii';
 import { MiddlewarePipeline } from './middleware/pipeline';
@@ -1266,6 +1266,7 @@ export class Cogitator implements ToolInvoker {
         await enrichMessagesWithInsights(messages, this.state.reflectionEngine, agentContext);
       }
 
+      const memoryNotes: Promise<void>[] = [];
       const switchTo = (target: Agent, reason: unknown) => {
         const event: HandoffEvent = {
           from: active.name,
@@ -1297,6 +1298,21 @@ export class Cogitator implements ToolInvoker {
           )
         );
         active = target;
+        if (this.state.memoryAdapter && options.useMemory !== false) {
+          memoryNotes.push(
+            noteMemoryAgent(
+              this.state.memoryAdapter,
+              threadId,
+              memoryAgentId(target),
+              options.onMemoryError
+            ).catch((error: unknown) =>
+              getLogger().warn('Could not note the agent a run handed over to', {
+                threadId,
+                error: error instanceof Error ? error.message : String(error),
+              })
+            )
+          );
+        }
         pipeline = pipelineFor(target);
         ({ registry, targets: handoffTargets } = buildRegistry(target));
         effectiveModel = this.resolveModel(target);
@@ -2100,6 +2116,7 @@ export class Cogitator implements ToolInvoker {
       if (prompt) await this.recordPrompt(prompt, result, Date.now() - startTime);
 
       await runMemory.settled();
+      await Promise.all(memoryNotes);
       if (sentItemIds.length > 0) this.noteRetrieved(sentItemIds, runId);
       await pipeline.afterRun(
         {
@@ -3030,10 +3047,13 @@ export class Cogitator implements ToolInvoker {
         agentIds: await this.withThreadAgents(agentIds, [target.threadId]),
       });
     }
-    return cascade.deleteEntries(target.entryIds, {
-      agentIds: await this.withThreadAgents(agentIds, await this.threadsOf(target.entryIds)),
+    const threads = await this.threadsOf(target.entryIds);
+    const report = await cascade.deleteEntries(target.entryIds, {
+      agentIds: await this.withThreadAgents(agentIds, threads),
       ...(options.keepReplies && { keepReplies: true }),
     });
+    await this.dropPausedRuns(threads);
+    return report;
   }
 
   /**
@@ -3055,14 +3075,17 @@ export class Cogitator implements ToolInvoker {
         code: ErrorCode.VALIDATION_ERROR,
       });
     }
-    return cascade.redactEntries(
+    const threads = await this.threadsOf(entryIds);
+    const report = await cascade.redactEntries(
       entryIds,
       { at: new Date(), ...(options.reason !== undefined && { reason: options.reason }) },
       {
-        agentIds: await this.withThreadAgents(agentIds, await this.threadsOf(entryIds)),
+        agentIds: await this.withThreadAgents(agentIds, threads),
         ...(options.keepReplies && { keepReplies: true }),
       }
     );
+    await this.dropPausedRuns(threads);
+    return report;
   }
 
   /**
@@ -3080,6 +3103,13 @@ export class Cogitator implements ToolInvoker {
     options: MemoryCascadeCall = {}
   ): Promise<MemoryCascadeReport> {
     const { cascade, agentIds } = await this.cascadeFor('rewind', options);
+    const memory = this.state.memoryAdapter;
+    if (!memory?.rewind || !memory.getPath) {
+      throw new CogitatorError({
+        message: `The ${memory?.provider ?? 'configured'} memory adapter has no branches to rewind`,
+        code: ErrorCode.VALIDATION_ERROR,
+      });
+    }
     return cascade.rewind(threadId, toEntryId, {
       agentIds: await this.withThreadAgents(agentIds, [threadId]),
     });
@@ -3115,6 +3145,17 @@ export class Cogitator implements ToolInvoker {
       ]),
     ];
     return { cascade, agentIds };
+  }
+
+  /**
+   * Drops the paused runs of `threadIds`: a checkpoint keeps the messages of the run, which would
+   * bring what was forgotten back on resume
+   */
+  private async dropPausedRuns(threadIds: readonly string[]): Promise<void> {
+    const store = this.runCheckpointStore();
+    for (const threadId of threadIds) {
+      if (await store.load(threadId)) await store.delete(threadId);
+    }
   }
 
   /** The threads `entryIds` are in */

@@ -228,14 +228,36 @@ describe('MemoryCascade', () => {
     expect(unwrap(await memory.getEntry(card!.id))).toBeNull();
   });
 
-  it('marks what stood after the target when run again on a thread that stands there', async () => {
+  it('leaves a thread that stands at the target as it is', async () => {
     const [, , porto, after] = entries;
-    const [cut] = await items.write([item('Ana said got it.', [after!.id])]);
+    const [other] = await items.write([item('Ana said got it.', [after!.id])]);
     unwrap(await memory.rewind('t', porto!.id));
 
     const report = await cascade.rewind('t', porto!.id, who);
 
-    expect(report.items.stale).toEqual([cut!.id]);
+    expect(report.items.stale).toEqual([]);
+    expect((await items.get(other!.id))?.status).toBe('active');
+  });
+
+  it('drops a summary whose first kept entry went before what it covers', async () => {
+    const [secret, , kept] = entries;
+    unwrap(
+      await memory.addEntry({
+        threadId: 't',
+        type: 'compaction',
+        message: { role: 'user', content: 'Summary: the card is 4111.' },
+        tokenCount: 4,
+        event: {
+          firstKeptEntryId: kept!.id,
+          lastCompactedEntryId: entries[1]!.id,
+          compacted: 2,
+          summarized: true,
+        },
+      })
+    );
+    await cascade.deleteEntries([kept!.id], { ...who, keepReplies: true });
+    const report = await cascade.deleteEntries([secret!.id], { ...who, keepReplies: true });
+    expect(report.summaries).toHaveLength(1);
   });
 
   it('keeps a summary that covers none of what went', async () => {

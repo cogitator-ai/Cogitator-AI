@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type {
   MemoryAdapter,
   MemoryChange,
+  ToolCall,
   MemoryEntry,
   MemoryResult,
   Thread,
@@ -599,7 +600,15 @@ const SCENARIOS: Record<MemoryAdapterScenario, (adapter: MemoryAdapter) => Promi
       await adapter.addEntry({
         threadId: id,
         message: { role: 'assistant', content: 'checking the card 4111' },
-        toolCalls: [{ id: 'c1', name: 'lookup', arguments: { card: '4111' } }],
+        toolCalls: [
+          {
+            id: 'c1',
+            name: 'lookup',
+            arguments: { card: '4111' },
+            argumentsError: 'bad card 4111',
+            replay: { precedingItems: [{ type: 'message', text: 'looking up 4111' }] },
+          } as ToolCall,
+        ],
         toolResults: [{ callId: 'c1', name: 'lookup', result: { owner: 'Ana 4111' } }],
         tokenCount: 6,
       }),
@@ -656,6 +665,13 @@ const SCENARIOS: Record<MemoryAdapterScenario, (adapter: MemoryAdapter) => Promi
     if (adapter.getPath) {
       const path = ok(await adapter.getPath({ threadId: id }), 'getPath');
       assert.equal(path.at(-1)?.id, last.id, 'the branch goes on past it');
+      ok(await adapter.deleteEntry(first.id), 'deleteEntry of the redacted parent');
+      const after = ok(await adapter.getPath({ threadId: id }), 'getPath');
+      assert.deepEqual(
+        after.map((entry) => entry.id),
+        [call.id, last.id],
+        'a redacted entry still follows its parent when the parent goes'
+      );
     }
   },
 

@@ -192,6 +192,15 @@ export function entryTypeWanted(
   return (types ?? CONVERSATION_ENTRY_TYPES).includes(type ?? 'message');
 }
 
+/**
+ * A tool call with nothing left of what it said: no arguments, and none of the replay state or
+ * argument error a provider may keep the model's own words in
+ */
+function silenced(call: ToolCall): ToolCall {
+  const { replay: _replay, argumentsError: _error, ...kept } = call;
+  return { ...kept, arguments: {} };
+}
+
 /** What a redacted entry says in place of what it said */
 export const REDACTED_TEXT = '[redacted]';
 
@@ -208,16 +217,13 @@ export function redactedEntry(
   if (!CONVERSATION_ENTRY_TYPES.includes(entry.type ?? 'message')) return undefined;
   const message = { ...entry.message, content: REDACTED_TEXT };
   if ('toolCalls' in message && Array.isArray(message.toolCalls)) {
-    message.toolCalls = (message.toolCalls as ToolCall[]).map((call) => ({
-      ...call,
-      arguments: {},
-    }));
+    message.toolCalls = (message.toolCalls as ToolCall[]).map(silenced);
   }
   return {
     ...entry,
     message,
     ...(entry.toolCalls && {
-      toolCalls: entry.toolCalls.map((call) => ({ ...call, arguments: {} })),
+      toolCalls: entry.toolCalls.map(silenced),
     }),
     ...(entry.toolResults && {
       toolResults: entry.toolResults.map((result) => ({

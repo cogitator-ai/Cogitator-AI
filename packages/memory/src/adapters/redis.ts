@@ -296,6 +296,22 @@ return out
  * active leaf moves to the parent when it was the entry. Replies 1, 0 without the entry, -1 when
  * the entry is not the thread's.
  */
+/**
+ * Writes the redacted body of an entry (ARGV[2], without its `parentId`) over KEYS[1] when the
+ * entry still reads ARGV[1], keeping the `parentId` it has last as the tree helpers expect. Returns
+ * 0 when another write changed the entry first, so the caller reads it again.
+ */
+const REDACT_ENTRY = `
+local current = redis.call('GET', KEYS[1])
+if not current then return -1 end
+if current ~= ARGV[1] then return 0 end
+local parent = string.match(current, ',"parentId":([^,]*)}$')
+local body = ARGV[2]
+if parent then body = string.sub(body, 1, -2) .. ',"parentId":' .. parent .. '}' end
+redis.call('SET', KEYS[1], body, 'XX', 'KEEPTTL')
+return 1
+`;
+
 const REMOVE_ENTRY = `${LIFETIME}${TREE}
 local json = redis.call('GET', KEYS[1])
 if not json then return 0 end
@@ -1336,23 +1352,27 @@ export class RedisAdapter
     return this.redactThrough(entryId, redaction, (entry) =>
       this.run(async (client) => {
         const key = this.key('entry', entry.id);
-        const data = await client.get(key);
-        if (data === null) return this.failure(`Entry not found: ${entry.id}`);
-        const stored = {
-          ...parseEntry(data),
-          message: entry.message,
-          toolCalls: entry.toolCalls,
-          toolResults: entry.toolResults,
-          tokenCount: entry.tokenCount,
-          metadata: entry.metadata,
-        };
-        await client.eval(
-          "return redis.call('SET', KEYS[1], ARGV[1], 'XX', 'KEEPTTL')",
-          1,
-          key,
-          JSON.stringify(stored)
-        );
-        return this.success(undefined);
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const data = await client.get(key);
+          if (data === null) return this.failure(`Entry not found: ${entry.id}`);
+          const { parentId: _parent, ...kept } = parseEntry(data) as ReturnType<
+            typeof parseEntry
+          > & {
+            parentId?: unknown;
+          };
+          const body = {
+            ...kept,
+            message: entry.message,
+            toolCalls: entry.toolCalls,
+            toolResults: entry.toolResults,
+            tokenCount: entry.tokenCount,
+            metadata: entry.metadata,
+          };
+          const reply = Number(await client.eval(REDACT_ENTRY, 1, key, data, JSON.stringify(body)));
+          if (reply === -1) return this.failure(`Entry not found: ${entry.id}`);
+          if (reply === 1) return this.success(undefined);
+        }
+        return this.failure(`Entry ${entry.id} kept changing while it was redacted`);
       })
     );
   }

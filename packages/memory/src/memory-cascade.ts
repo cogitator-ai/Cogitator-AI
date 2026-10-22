@@ -262,8 +262,8 @@ export class MemoryCascade {
   /**
    * The rewind of `threadId` to `toEntryId` (`MemoryAdapter.rewind`): the entries after it on the
    * active branch stay, on a branch of their own, and the items that stood only on them become
-   * `stale` with `staleBecause: { reason: 'rewound' }`. Called again once the thread stands at
-   * `toEntryId`, such as after a failure, it marks what stood only on the entries after it.
+   * `stale` with `staleBecause: { reason: 'rewound' }`, marked before the rewind so a rewind that
+   * fails can be made again. A thread that stands at `toEntryId` already is left as it is.
    */
   async rewind(
     threadId: string,
@@ -276,18 +276,13 @@ export class MemoryCascade {
       throw new Error(`The ${this.memory.provider} memory adapter has no branches to rewind`);
     }
     const report = emptyReport();
-    const thread = unwrap(await this.memory.getThread(threadId));
-    let cut: Set<string>;
-    if (thread?.activeLeafId === toEntryId) {
-      cut = await this.descendantsOf(threadId, toEntryId);
-    } else {
-      const before = unwrap(await getPath({ threadId, types: 'all' }));
-      const at = before.findIndex((entry) => entry.id === toEntryId);
+    const before = unwrap(await getPath({ threadId, types: 'all' }));
+    const at = before.findIndex((entry) => entry.id === toEntryId);
+    const cut = new Set(at === -1 ? [] : before.slice(at + 1).map((entry) => entry.id));
+    if (cut.size === 0 || !this.itemAdapter || !this.items) {
       unwrap(await rewind(threadId, toEntryId));
-      if (at === -1) return report;
-      cut = new Set(before.slice(at + 1).map((entry) => entry.id));
+      return report;
     }
-    if (cut.size === 0 || !this.itemAdapter || !this.items) return report;
     for (const agentId of who.agentIds) {
       const found = unwrap(
         await this.itemAdapter.findItems({ agentId, statuses: ['active', 'suggested'] })
@@ -302,6 +297,7 @@ export class MemoryCascade {
         ))
       );
     }
+    unwrap(await rewind(threadId, toEntryId));
     return report;
   }
 
@@ -336,21 +332,6 @@ export class MemoryCascade {
     return [...all.values()];
   }
 
-  /** The ids of the entries after `entryId` on every branch of `threadId` */
-  private async descendantsOf(threadId: string, entryId: string): Promise<Set<string>> {
-    const children = await this.childrenOf(threadId);
-    const found = new Set<string>();
-    const queue = [entryId];
-    for (let id = queue.pop(); id !== undefined; id = queue.pop()) {
-      for (const child of children.get(id) ?? []) {
-        if (found.has(child.id)) continue;
-        found.add(child.id);
-        queue.push(child.id);
-      }
-    }
-    return found;
-  }
-
   /** The entries of `threadId` by the entry they follow */
   private async childrenOf(threadId: string): Promise<Map<string, MemoryEntry[]>> {
     const children = new Map<string, MemoryEntry[]>();
@@ -372,7 +353,9 @@ export class MemoryCascade {
 
   /**
    * Deletes the compaction entries of the threads of `entries` whose summary stands on one of
-   * `gone`: covering it on their branch, or quoting it in an atom
+   * `gone`: covering it on their branch (the entries before its first kept one, else from its
+   * last left out one back, else, when neither is found, every entry before it), or quoting it in
+   * an atom
    */
   private async dropSummaries(
     entries: readonly MemoryEntry[],
@@ -399,12 +382,12 @@ export class MemoryCascade {
             gone.has(node.to) ||
             node.atoms.some((atom) => fateOf(atom.evidence, gone) !== 'untouched')
         );
-        let covers = false;
-        let past = event?.firstKeptEntryId === null;
-        for (let at = parentOf(entry); at && !covers; at = parentOf(at)) {
-          if (past && gone.has(at.id)) covers = true;
-          if (at.id === event?.firstKeptEntryId) past = true;
-        }
+        const ancestors: MemoryEntry[] = [];
+        for (let at = parentOf(entry); at; at = parentOf(at)) ancestors.push(at);
+        const kept = ancestors.findIndex((at) => at.id === event?.firstKeptEntryId);
+        const last = ancestors.findIndex((at) => at.id === event?.lastCompactedEntryId);
+        const from = kept !== -1 ? kept + 1 : last !== -1 ? last : 0;
+        const covers = ancestors.slice(from).some((at) => gone.has(at.id));
         if (!quoted && !covers) continue;
         if (this.embeddings) unwrap(await this.embeddings.deleteBySource(entry.id));
         unwrap(await this.memory.deleteEntry(entry.id));

@@ -203,6 +203,58 @@ describe('forget, redactEntries and rewind', () => {
     expect(await made.items.query({ scope })).toEqual([]);
   });
 
+  it('names every agent a run handed over to on the thread', async () => {
+    const billing = new Agent({ name: 'billing', model: 'mock/m', instructions: 'billing' });
+    const triage = new Agent({
+      name: 'triage',
+      model: 'mock/m',
+      instructions: 'triage',
+      handoffs: [billing],
+    });
+    const llm: LLMBackend = {
+      provider: 'openai',
+      chat: vi.fn(async (request: ChatRequest): Promise<ChatResponse> =>
+        String(request.messages[0]?.content) === 'triage'
+          ? {
+              id: 't',
+              content: '',
+              toolCalls: [{ id: 'h', name: 'transfer_to_billing', arguments: { reason: 'money' } }],
+              finishReason: 'tool_calls',
+              usage,
+            }
+          : { id: 'b', content: 'billing here', finishReason: 'stop', usage }
+      ),
+      chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {
+        yield { id: 's', delta: {}, finishReason: 'stop' };
+      }),
+    };
+    const { cog, store } = await runtime(llm);
+
+    await cog.run(triage, { input: 'refund please', threadId: 'h', userId: 'ana' });
+
+    const thread = await store.getThread('h');
+    expect(thread.success && thread.data?.metadata.memoryAgentIds).toEqual(['triage', 'billing']);
+  });
+
+  it('drops the paused run of a thread whose entries it forgets', async () => {
+    const { llm } = backend();
+    const { cog, store } = await runtime(llm);
+    await store.createThread(agent.id, { userId: 'ana', memoryAgentIds: ['helper'] }, 't');
+    const [card] = await said(store, 't', ['My card is 4111.', 'Noted.']);
+    await store.updateThread('t', {
+      pausedRun: {
+        version: 1,
+        threadId: 't',
+        messages: [{ role: 'user', content: 'My card is 4111.' }],
+      },
+    });
+
+    await cog.forget({ entryIds: [card!] });
+
+    const thread = await store.getThread('t');
+    expect(thread.success && thread.data?.metadata.pausedRun).toBeNull();
+  });
+
   it('stops extracting a branch a rewind left, before its next model call', async () => {
     let store: InMemoryAdapter | undefined;
     let first: string | undefined;

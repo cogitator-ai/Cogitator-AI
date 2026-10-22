@@ -174,7 +174,9 @@ export async function buildInitialMessages(
     }
   }
   const timeZone = thread?.metadata.timeZone;
-  if (thread) await noteMemoryAgent(memoryAdapter, thread, memoryAgentId(agent), options);
+  if (thread) {
+    await noteMemoryAgent(memoryAdapter, thread.id, memoryAgentId(agent), options.onMemoryError);
+  }
 
   if (typeof branchFrom === 'string') {
     const from = unwrap(await memoryAdapter.getEntry(branchFrom), 'getEntry');
@@ -329,29 +331,28 @@ function unwrap<T>(result: MemoryResult<T>, operation: string): T {
 export const MEMORY_AGENTS = 'memoryAgentIds';
 
 /**
- * Notes in the thread's metadata that the agent whose memory id is `memoryId` ran in it, so
- * `Cogitator.forget` finds the items, files and facts kept under that id
+ * Notes in the metadata of `threadId` that the agent whose memory id is `memoryId` ran in it,
+ * read again just before the write so agents of one thread add to the list instead of taking
+ * turns at it, and `Cogitator.forget` finds the items, files and facts kept under that id
  */
-async function noteMemoryAgent(
+export async function noteMemoryAgent(
   memoryAdapter: MemoryAdapter,
-  thread: Thread,
+  threadId: string,
   memoryId: string,
-  options: RunOptions
+  onError?: (error: Error, operation: 'save' | 'load') => void
 ): Promise<void> {
-  const known = thread.metadata[MEMORY_AGENTS];
+  const thread = await memoryAdapter.getThread(threadId);
+  if (!thread.success || !thread.data) return;
+  const known = thread.data.metadata[MEMORY_AGENTS];
   const ids = Array.isArray(known)
     ? known.filter((id): id is string => typeof id === 'string')
     : [];
   if (ids.includes(memoryId)) return;
-  const updated = await memoryAdapter.updateThread(thread.id, {
+  const updated = await memoryAdapter.updateThread(threadId, {
     [MEMORY_AGENTS]: [...ids, memoryId],
   });
   if (!updated.success) {
-    reportMemoryError(
-      new Error(`Memory updateThread failed: ${updated.error}`),
-      'save',
-      options.onMemoryError
-    );
+    reportMemoryError(new Error(`Memory updateThread failed: ${updated.error}`), 'save', onError);
   }
 }
 
