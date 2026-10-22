@@ -93,6 +93,19 @@ export interface CogitatorToolApprovalRequestContent {
 /** Content of the v3 and v4 models, which can ask for tool approvals. */
 export type CogitatorContentV3 = CogitatorContent | CogitatorToolApprovalRequestContent;
 
+/**
+ * An event of the agent's run as a custom part (v4 only): a handoff to another agent
+ * (`cogitator.handoff`) or a turn moved to a fallback model (`cogitator.model-fallback`), with
+ * what happened in `providerMetadata.cogitator`
+ */
+export interface CogitatorCustomContent {
+  type: 'custom';
+  kind: 'cogitator.handoff' | 'cogitator.model-fallback';
+  providerMetadata: { cogitator: JSONObject };
+}
+
+export type CogitatorContentV4 = CogitatorContentV3 | CogitatorCustomContent;
+
 export type CogitatorStreamPart<TWarning, TUsage, TFinishReason, TExtra = never> =
   | { type: 'stream-start'; warnings: TWarning[] }
   | { type: 'response-metadata'; id?: string; timestamp?: Date; modelId?: string }
@@ -237,7 +250,7 @@ export interface CogitatorLanguageModelV4 extends CogitatorModernLanguageModel<
   CogitatorWarningV3,
   CogitatorUsageV3,
   CogitatorFinishReasonV3,
-  CogitatorContentV3
+  CogitatorContentV4
 > {
   readonly specificationVersion: 'v4';
 }

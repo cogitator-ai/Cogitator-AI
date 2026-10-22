@@ -14,6 +14,10 @@ export type {
   CogitatorLanguageModelV2,
   CogitatorLanguageModelV3,
   CogitatorLanguageModelV4,
+  CogitatorContentV4,
+  CogitatorCustomContent,
+  CogitatorProviderMembers,
+  CogitatorUnservedModel,
   CogitatorModelOptions,
   CogitatorProvider,
   CogitatorProviderConfig,
@@ -23,3 +27,4 @@ export type {
   DefaultSpecificationVersion,
 } from './types.js';
 export type { LanguageModelV1 } from './v1-types.js';
+export type { CogitatorCallOptions } from './agent-runner.js';

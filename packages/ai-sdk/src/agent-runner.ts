@@ -1,6 +1,8 @@
 import type { Agent, Cogitator } from '@cogitator-ai/core';
 import type {
   AgentConfig,
+  HandoffEvent,
+  ModelFallbackEvent,
   Message,
   ReasoningEffort,
   RunResult,
@@ -186,8 +188,14 @@ function findResume(prompt: ReadonlyArray<PromptMessageLike>): AgentCallResume |
   return { threadId: [...threads][0], decisions, priorToolCalls };
 }
 
+/** An event of the agent's run besides its text and tool calls */
+export type AgentRunEvent =
+  | { type: 'handoff'; handoff: HandoffEvent }
+  | { type: 'model-fallback'; fallback: ModelFallbackEvent };
+
 export interface AgentRunListener {
   onRunStart?(runId: string): void;
+  onAgentEvent?(event: AgentRunEvent): void;
   onTextDelta?(delta: string): void;
   onReasoningDelta?(delta: string): void;
   onToolCall?(call: ToolCall): void;
@@ -322,6 +330,13 @@ export class AgentRunner {
       onReasoning: options.stream ? listener.onReasoningDelta : undefined,
       onToolCall: listener.onToolCall,
       onToolResult: listener.onToolResult,
+      onHandoff:
+        listener.onAgentEvent &&
+        ((handoff: HandoffEvent) => listener.onAgentEvent?.({ type: 'handoff', handoff })),
+      onModelFallback:
+        listener.onAgentEvent &&
+        ((fallback: ModelFallbackEvent) =>
+          listener.onAgentEvent?.({ type: 'model-fallback', fallback })),
     };
     const resume = prepared.resume;
     const { threadId, userId, saveHistory } = prepared.options;

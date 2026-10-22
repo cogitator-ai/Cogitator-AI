@@ -566,7 +566,7 @@ export interface RunCheckpointStore {
 /** Options for `cogitator.resume()`: run options, minus what the checkpoint fixes. */
 export interface ResumeOptions<TDeps = unknown> extends Omit<
   RunOptions<TDeps>,
-  'input' | 'images' | 'audio' | 'context' | 'threadId' | 'threadAccess'
+  'input' | 'images' | 'audio' | 'context' | 'threadId' | 'threadAccess' | 'history'
 > {
   /**
    * Who resumes the run. When set, or when resuming by thread id, it must be
