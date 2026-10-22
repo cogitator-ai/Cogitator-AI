@@ -3,6 +3,7 @@ import { nanoid } from 'nanoid';
 import type { STTStream, VADEvent, VoicePipelineConfig, VoiceTurn } from '../types.js';
 import { pcm16ToFloat32 } from '../audio.js';
 import { AsyncQueue } from '../async-queue.js';
+import { DEFAULT_SETTLE_TIMEOUT, bounded } from '../timing.js';
 import { SentenceSplitter, maxSentenceLength } from './sentence-splitter.js';
 
 type SessionState = 'idle' | 'listening' | 'processing' | 'speaking';
@@ -24,17 +25,7 @@ export interface PipelineSessionOptions {
 
 const ABORTED: unique symbol = Symbol('aborted');
 
-/** How long a session waits for a streamed turn to settle by default, in ms */
-export const DEFAULT_SETTLE_TIMEOUT = 10_000;
-
-/** Resolves once `promise` settles or `ms` pass, whichever comes first */
-function bounded(promise: Promise<void>, ms: number): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<void>((resolve) => {
-    timer = setTimeout(resolve, ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
+export { DEFAULT_SETTLE_TIMEOUT };
 
 function toError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));

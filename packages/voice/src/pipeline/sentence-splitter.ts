@@ -221,13 +221,13 @@ export class SentenceSplitter {
   }
 
   /**
-   * Whether `word` starts the next sentence as the next item of a list whose items share a line
-   * ("1. Open it. 2. Close it.")
+   * Whether `word` opens a sentence as an item of a list whose items share a line: `1.`, or the
+   * number after the last item taken ("Here are the steps. 1. Open it. 2. Close it.")
    */
   private continuesList(word: string, start: number): boolean {
-    if (this.listNumber === undefined) return false;
     if (this.buffer.slice(0, start).trim().length > 0) return false;
-    return Number(word) === this.listNumber + 1;
+    const number = Number(word);
+    return number === 1 || (this.listNumber !== undefined && number === this.listNumber + 1);
   }
 
   /** Whether the text before `start` on its line is only whitespace */

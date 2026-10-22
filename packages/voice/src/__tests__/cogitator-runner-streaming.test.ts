@@ -458,6 +458,43 @@ describe('createCogitatorRunner streaming with a Cogitator', () => {
     ]);
   });
 
+  it('answers the next turn when the run before it never finishes its tail', async () => {
+    let calls = 0;
+    const stuck: RunMiddleware = {
+      name: 'stuck-tail',
+      afterRun: () => (++calls === 1 ? new Promise<void>(() => undefined) : undefined),
+    };
+    const backend = new MockLLMBackend().setMultipleStreamChunks([
+      chunks('Hello there.'),
+      chunks('Again here.'),
+    ]);
+    const cogitator = runtime(backend);
+    const runner = createCogitatorRunner(cogitator, agentWith([stuck]), { tailTimeout: 50 });
+    const signal = new AbortController().signal;
+
+    const first = runner.stream!('Hi', { sessionId: 's', signal });
+    await readAll(first);
+    void first.settle!({ spoken: 'Hello there.', interrupted: false });
+    const started = Date.now();
+    const second = runner.stream!('Again', { sessionId: 's', signal });
+
+    expect(await readAll(second)).toEqual(['Again here.']);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    await second.settle!({ spoken: 'Again here.', interrupted: false });
+    expect(said(await path(cogitator, 'voice:s'))).toEqual([
+      ['message', 'user', 'Hi'],
+      ['message', 'assistant', 'Hello there.'],
+      ['message', 'user', 'Again'],
+      ['message', 'assistant', 'Again here.'],
+    ]);
+  });
+
+  it('rejects a negative tailTimeout', () => {
+    expect(() =>
+      createCogitatorRunner(runtime(new MockLLMBackend()), agent, { tailTimeout: -1 })
+    ).toThrow(RangeError);
+  });
+
   it('settles once however often settle is called', async () => {
     const backend = new MockLLMBackend().setStreamChunks(chunks('One. ', 'Two.'));
     const cogitator = runtime(backend);

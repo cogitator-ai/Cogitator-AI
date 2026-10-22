@@ -138,6 +138,16 @@ describe('SentenceSplitter', () => {
     ]);
   });
 
+  it('keeps a list that starts after a sentence with its items', () => {
+    const text = 'Here are the steps. 1. Open it. 2. Close it.';
+    const expected = ['Here are the steps.', '1. Open it.', '2. Close it.'];
+    expect(trimmed(split(text))).toEqual(expected);
+    expect(trimmed(splitStreamed([...text]))).toEqual(expected);
+    expect(
+      trimmed(splitStreamed(['Here are the steps. 1', '. Open it. 2', '. Close it.']))
+    ).toEqual(expected);
+  });
+
   it('keeps the numbers of a list in one line with their items', () => {
     expect(trimmed(split('1. Open it. 2. Close it. 3. Done.'))).toEqual([
       '1. Open it.',

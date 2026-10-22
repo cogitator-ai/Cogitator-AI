@@ -164,7 +164,7 @@ A streamed turn that stops early (an interruption, `sendText()` during a turn, a
 
 With `createCogitatorRunner()` the thread then holds what the user heard. A fully spoken answer leaves the thread as a plain run does. An answer interrupted while it was spoken is replaced by its spoken part, with `metadata.interrupted: true`. When the model was still generating, the spoken part is saved after the run's `interrupt` event, marked the same way. When nothing was spoken, there is no assistant message for the answer. Text said alongside tool calls stays as the run saved it. The model reads an interrupted reply with `[interrupted by the user]` after it.
 
-The thread is changed only while the turn's last entry is still its active leaf: when something else wrote to the thread after the turn, such as another run on the same `threadId`, it is left as it is, so a newer message is never hidden. The runner fixes the thread as soon as the run saved its answer, without waiting for the run's `afterRun` hooks, settles the turns of one thread one after another, and starts a run only after the previous run of its thread ended.
+The thread is changed only while the turn's last entry is still its active leaf: when something else wrote to the thread after the turn, such as another run on the same `threadId`, it is left as it is, so a newer message is never hidden. The runner fixes the thread as soon as the run saved its answer, without waiting for the run's `afterRun` hooks, settles the turns of one thread one after another, and starts a run once the previous run of its thread saved its answer, waiting for the rest of that run at most `tailTimeout` ms (a `createCogitatorRunner` option, default 10 000).
 
 ### Barge-in
 

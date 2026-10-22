@@ -11,6 +11,7 @@ import type {
   ToolInvoker,
 } from '@cogitator-ai/types';
 import { AsyncQueue } from './async-queue.js';
+import { DEFAULT_SETTLE_TIMEOUT, bounded } from './timing.js';
 import { createRealtimeTools } from './realtime/cogitator-tools.js';
 import type {
   RealtimeToolContext,
@@ -58,6 +59,12 @@ export interface CogitatorRunnerOptions {
    * session keeps its own conversation history.
    */
   threadId?: (context: VoiceRunContext) => string;
+  /**
+   * Longest a streamed turn's run waits for what the run before it in its thread does after it
+   * saved its answer (`afterRun` hooks, reflection), in ms (default 10 000, as
+   * `VoicePipelineConfig.settleTimeout`). It always waits for that answer to be saved first.
+   */
+  tailTimeout?: number;
 }
 
 /** Metadata of the assistant message that keeps the spoken part of an interrupted answer */
@@ -68,12 +75,17 @@ const MESSAGE_OVERHEAD = 4;
 
 /**
  * Keeps the streamed turns of each thread in order: their settles run one after another, and a
- * run starts once the runs and settles queued before it for its thread are done, so the runs of
- * a thread never overlap, as when each turn waited for the whole run
+ * run starts once the runs before it for its thread saved their answers (or ended) and the
+ * settles queued for the thread are done. It also waits for the rest of those runs (`afterRun`
+ * hooks, reflection), at most `tailTimeout` ms, so the runs of a thread overlap only when such a
+ * tail takes longer than that
  */
 class ThreadLanes {
   private readonly settles = new Map<string, Promise<void>>();
+  private readonly answers = new Map<string, Promise<void>>();
   private readonly runs = new Map<string, Promise<void>>();
+
+  constructor(private readonly tailTimeout: number) {}
 
   /** Queues `task` after the settles of `threadId` queued before it */
   settle(threadId: string, task: () => Promise<void>): Promise<void> {
@@ -86,13 +98,24 @@ class ThreadLanes {
     return done;
   }
 
-  /** Resolves once the runs and settles of `threadId` queued so far are done */
+  /** Resolves once the thread may take its next run, see the class */
   idle(threadId: string): Promise<void> {
-    return Promise.all([this.runs.get(threadId), this.settles.get(threadId)]).then(() => undefined);
+    const runs = this.runs.get(threadId);
+    return Promise.all([this.answers.get(threadId), this.settles.get(threadId)]).then(() =>
+      runs ? bounded(runs, this.tailTimeout) : undefined
+    );
   }
 
-  /** Records a run of `threadId` that ends when `finished` settles (it never rejects) */
-  run(threadId: string, finished: Promise<void>): void {
+  /**
+   * Records a run of `threadId` that saved its answer (or ended) when `answered` resolves and
+   * ended when `finished` resolves. Neither rejects
+   */
+  run(threadId: string, answered: Promise<void>, finished: Promise<void>): void {
+    this.keep(
+      this.answers,
+      threadId,
+      Promise.all([this.answers.get(threadId), answered]).then(() => undefined)
+    );
     this.keep(
       this.runs,
       threadId,
@@ -151,8 +174,8 @@ function invocationAgent(agent: CogitatorRunnerAgent): ToolInvocationAgent | und
  * is spoken in full leaves the thread as `run` does. The rewrite happens only while the run's
  * last entry is still the thread's active leaf: when something else wrote to the thread after
  * it, the thread is left as it is. The thread is fixed as soon as the run saved its answer, and
- * the runs of a thread never overlap: a streamed turn's run starts after the runs and settles
- * before it for its thread are done. Keeping the thread needs a runtime with `getMemory()`, as a
+ * a streamed turn's run starts after the runs before it for its thread saved their answers and
+ * their settles are done, and after the rest of those runs, waited for at most `tailTimeout`. Keeping the thread needs a runtime with `getMemory()`, as a
  * `Cogitator` has.
  *
  * `realtimeTools` gives a realtime `VoiceAgent` the agent's tools, run through
@@ -174,7 +197,11 @@ export function createCogitatorRunner<TAgent extends CogitatorRunnerAgent>(
   options: CogitatorRunnerOptions = {}
 ): VoiceAgentRunner {
   const resolveThreadId = options.threadId ?? ((ctx: VoiceRunContext) => `voice:${ctx.sessionId}`);
-  const lanes = new ThreadLanes();
+  const tailTimeout = options.tailTimeout ?? DEFAULT_SETTLE_TIMEOUT;
+  if (!(tailTimeout >= 0)) {
+    throw new RangeError(`tailTimeout must be 0 or more, got ${String(options.tailTimeout)}`);
+  }
+  const lanes = new ThreadLanes(tailTimeout);
   const runner: VoiceAgentRunner = {
     instructions: agent.instructions,
     async run(input, context) {
@@ -319,7 +346,7 @@ class CogitatorVoiceTurn<TAgent> implements VoiceTurn {
         }
       )
       .finally(() => signal?.removeEventListener('abort', forwardAbort));
-    this.lanes.run(this.threadId, this.finished);
+    this.lanes.run(this.threadId, Promise.race([this.answered, this.finished]), this.finished);
   }
 
   private say(text: string): void {
