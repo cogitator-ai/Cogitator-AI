@@ -529,12 +529,12 @@ export class SQLiteAdapter
       params.push(...typeParams);
 
       let sql = `SELECT * FROM entries WHERE ${conditions.join(' AND ')}
-                 ORDER BY created_at ASC, seq ASC, id ASC`;
+                 ORDER BY created_at ASC, seq ASC`;
       if (options.limit) {
         sql = `SELECT * FROM (
           SELECT * FROM entries WHERE ${conditions.join(' AND ')}
-          ORDER BY created_at DESC, seq DESC, id DESC LIMIT ?
-        ) ORDER BY created_at ASC, seq ASC, id ASC`;
+          ORDER BY created_at DESC, seq DESC LIMIT ?
+        ) ORDER BY created_at ASC, seq ASC`;
         params.push(options.limit);
       }
 
