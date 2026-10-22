@@ -239,7 +239,11 @@ function escapeRegExp(text: string): string {
  * and quoted lines, which only repeat a mention.
  */
 function mentionableText(text: string): string {
-  const lines: string[] = [];
+  const paragraphs: string[][] = [[]];
+  const keep = (line: string) => paragraphs[paragraphs.length - 1].push(line);
+  const breakParagraph = () => {
+    if (paragraphs[paragraphs.length - 1].length > 0) paragraphs.push([]);
+  };
   let fence: string | undefined;
   let blank = true;
   let indentedCode = false;
@@ -252,21 +256,66 @@ function mentionableText(text: string): string {
     }
     if (!line.trim()) {
       blank = true;
+      breakParagraph();
       continue;
     }
     if (/^( {4}|\t)/.test(line)) {
       indentedCode = indentedCode || (blank && !inList);
       blank = false;
-      if (!indentedCode) lines.push(line.replace(/`[^`]*`/g, ''));
+      if (indentedCode) breakParagraph();
+      else keep(line);
       continue;
     }
     blank = false;
     indentedCode = false;
     inList = /^ {0,3}([-*+]|\d+[.)])\s/.test(line);
-    if (marker) fence = marker;
-    else if (!/^ {0,3}>/.test(line)) lines.push(line.replace(/`[^`]*`/g, ''));
+    if (marker) {
+      fence = marker;
+      breakParagraph();
+    } else if (/^ {0,3}>/.test(line)) breakParagraph();
+    else keep(line);
   }
-  return lines.join('\n');
+  return paragraphs.map((lines) => withoutCodeSpans(lines.join('\n'))).join('\n');
+}
+
+/**
+ * `text` without its Markdown code spans: a run of backticks opens one that the next run of the
+ * same length closes, and a run nothing closes is plain text. Linear in the length of `text`.
+ */
+function withoutCodeSpans(text: string): string {
+  const runs: { start: number; length: number }[] = [];
+  for (let i = 0; i < text.length;) {
+    if (text[i] !== '`') {
+      i++;
+      continue;
+    }
+    const start = i;
+    while (i < text.length && text[i] === '`') i++;
+    runs.push({ start, length: i - start });
+  }
+  const nextOfLength = new Map<number, number[]>();
+  runs.forEach((run, index) => {
+    const indexes = nextOfLength.get(run.length) ?? [];
+    indexes.push(index);
+    nextOfLength.set(run.length, indexes);
+  });
+  const cursor = new Map<number, number>();
+  let out = '';
+  let from = 0;
+  for (let index = 0; index < runs.length; index++) {
+    const run = runs[index];
+    if (run.start < from) continue;
+    const sameLength = nextOfLength.get(run.length) ?? [];
+    let position = cursor.get(run.length) ?? 0;
+    while (position < sameLength.length && sameLength[position] <= index) position++;
+    cursor.set(run.length, position);
+    const closing = sameLength[position];
+    if (closing === undefined) continue;
+    out += text.slice(from, run.start);
+    from = runs[closing].start + run.length;
+    index = closing;
+  }
+  return out + text.slice(from);
 }
 
 /** A login without the `[bot]` an app's login ends with, in lower case. */

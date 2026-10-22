@@ -408,6 +408,26 @@ describe('GitHubChannel events', () => {
     expect(received.map((m) => m.text)).toEqual(['can you review this?', 'cc @MyBot, thoughts?']);
   });
 
+  it('skips code spans of any backtick length, also across lines, but not unclosed backticks', async () => {
+    const { channel, received } = await started(github());
+    const texts = [
+      'Documentation example: ``@mybot``',
+      'Use ```@mybot``` inline',
+      'a span over ``two\n@mybot lines``',
+      'one `` ` `` then `@mybot`',
+      'unclosed `` @mybot please',
+      'a stray ` before @mybot here',
+    ];
+    for (const [index, text] of texts.entries()) {
+      await channel.handleWebhook(signed('issue_comment', issueComment(text, person, 700 + index)));
+    }
+    await settle();
+    expect(received.map((m) => m.text)).toEqual([
+      'unclosed `` @mybot please',
+      'a stray ` before @mybot here',
+    ]);
+  });
+
   it('finds mentions of an app by its slug and skips the app comments by its login', async () => {
     const api = github();
     const { channel, received } = await started(api, { login: 'helper-app[bot]' });
