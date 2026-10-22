@@ -220,6 +220,11 @@ interface MemoryAdapter {
   getEntry(entryId: string): Promise<MemoryResult<MemoryEntry | null>>;
   deleteEntry(entryId: string): Promise<MemoryResult<void>>;
   clearThread(threadId: string): Promise<MemoryResult<void>>;
+  // Optional, in every built-in adapter: what the entry said becomes '[redacted]', its place stays
+  redactEntry?(
+    entryId: string,
+    redaction: EntryRedaction
+  ): Promise<MemoryResult<MemoryEntry | null>>;
 
   connect(): Promise<MemoryResult<void>>;
   disconnect(): Promise<MemoryResult<void>>;
@@ -227,6 +232,8 @@ interface MemoryAdapter {
 ```
 
 Calling `createThread` with an existing `threadId` is an upsert in every adapter: stored entries and `createdAt` are kept, only the metadata is updated.
+
+`redactEntry(entryId, { at, reason? })` replaces the text of a `message` or `tool_result` entry, the arguments of its tool calls and the results of its tools with `[redacted]` (`REDACTED_TEXT`), keeps its place in the thread, its role and the ids that tie tool calls to their results, and records `metadata.redacted` (`{ at, reason? }`). It gives `null` for a missing entry and refuses an event entry, such as a compaction, which is deleted instead. Change listeners hear `{ type: 'entry-redacted', entryId, threadId }`, and the message index drops the entry's vectors. An adapter of your own builds the redacted entry with `redactedEntry(entry, redaction)` from `@cogitator-ai/memory`.
 
 ### Key Types
 
@@ -599,6 +606,55 @@ Every built-in conversation adapter implements `MemoryItemAdapter` (`putItem`, `
 - `query({ scope, kinds?, statuses?, slots?, entityIds?, asOf?, knownAt?, includeClosed?, text?, limit? })` (statuses `active` and `superseded` by default, the state that holds read from `validFrom`/`validTo`, `asOf` defaulting to `knownAt` and `knownAt` to now, recording time filtered only by an explicit `knownAt`), `history(scope, slot)`, `markStale`, `expire` (kept, found only by an earlier `knownAt`, an item whose `expiredAt` is still ahead found until then, a state let go keeping its place in the timeline), `purge` (deleted for good).
 
 `resolveTime(expression, sessionAt, timeZone?)` turns time words a model marked up (`date`, `relative`, `weekday`) into an interval in a time zone, `end` exclusive, with its precision (`approximate` when nothing can be placed). `MemoryExtractor` reads entries in windows (`windowTokens`, default 4000), one model call each with `EXTRACTION_PROMPT`, the session date (`sessionLine`) and each message's date in the transcript, asked again up to three tries in all only when the answer holds no JSON array (a `null` or blank field is read as absent, an item that does not fit is dropped), checks every quote against its entry, gives each item the trust of the least trusted entry a holding quote is in (`parseExtraction`, `trustOfEntry(entry, userId)`, another user's message counting as `model`) and resolves its dates from the first message it quotes (its `saidAt` and `sessionAt`), and writes the items through `MemoryItems`. With `memory.extraction` a Cogitator runs it after every run (the built-in middleware `cogitator:memory-extraction`, items under the agent's configured id, else its name (`memoryAgentId`), for the run's own user, cursor in thread `metadata.memoryExtraction` kept after every window, runs of one thread one after another, a window left out only after the model could not answer it three extractions in a row, a cursor on an abandoned branch replaced by the run's branch point, a failed first extraction storing where it started so the next one takes those entries, a run without a user keeping its items in the thread's scope, a thread `metadata.timeZone` that is not an IANA zone falling back to the configured one), and with `contextBuilder.includeFacts` the context's facts are the items the run sees that hold now, one state per slot (the one that started last, the narrowest scope on a tie), instructions and preferences first, newest first, a replaced value as `(previously: X)` only when the run sees it and memory did not let it go.
+
+## Forgetting, Redacting and Rewinding
+
+Everything memory derives from a conversation keeps the entries it stands on (`evidence`, a compaction's `firstKeptEntryId` and atoms, a memory file version's `place`). Deleting, redacting or rewinding entries follows that lineage into every store, so nothing a user asked to be forgotten stays behind in a fact, a summary or a playbook rule:
+
+```typescript
+await cog.forget({ entryIds: [entry.id] }, { agents: [assistant] }); // the entry and what stands on it
+await cog.forget({ threadId: 'chat' }, { agents: [assistant] }); // the thread
+await cog.forget({ userId: 'ana' }, { agents: [assistant] }); // every thread and everything kept for the user
+await cog.redactEntries([entry.id], { agents: [assistant], reason: 'the user asked' }); // its place stays
+await cog.rewind('chat', earlier.id, { agents: [assistant] }); // items of the turns after it go stale
+```
+
+| What stands on the entries                 | Deleted or redacted entries                                                                                                                                                                   | Rewind                                                           |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Replies to a user message                  | Go with it (its descendants on every branch up to the next user message, events among them), unless `keepReplies`                                                                             | Stay, on the branch left                                         |
+| Compaction summaries                       | Deleted when they cover one (before `firstKeptEntryId` on their branch) or quote one in an atom, the next compaction writes them again                                                        | Stay, seen on their own branch                                   |
+| Memory items, facts, graph nodes and edges | Purged when they stand only on them, the others lose the quotes of them                                                                                                                       | Items standing only on the turns after the target become `stale` |
+| Vectors                                    | Deleted with the entries, summaries and facts that go                                                                                                                                         | Stay                                                             |
+| Memory file versions                       | Redacted when written at one of them                                                                                                                                                          | Stay, seen on their own branch                                   |
+| Observations and the playbook              | Every version naming a purged item or lesson redacted, the playbook in front first written again without those rules, an observation written again over its redacted file by the next refresh | Stay                                                             |
+
+`forget({ threadId })` also purges the items and entities and redacts the memory file versions kept for that thread alone. `forget({ userId })` deletes every thread whose `metadata.userId` is the user (a run with a `userId` sets it), purges every item and entity and redacts every memory file version of the user's scope, deletes the facts and graph nodes and edges whose `metadata.userId` is the user, and the embeddings with that metadata, through `deleteByFilter` where the store has it. `redactEntries` deletes a compaction entry among the ids, as it cannot be redacted, and throws `VALIDATION_ERROR` when the adapter has no `redactEntry`. A rewind deletes nothing: the turns after `toEntryId` stay on a branch of their own, and the items that stood only on them are marked `stale` with `staleBecause: { reason: 'rewound', threadId, toEntryId, at }`, so later runs no longer take them for what holds. A rewind called again once the thread stands at `toEntryId`, such as after a failure, marks what stood only on the entries after it.
+
+Items, files, facts and the graph are kept by the memory id of an agent. Every run names its agent in the thread's `metadata.memoryAgentIds`, and a cascade goes through the memory of the agents a thread names and of the thread's owner (for `forget({ userId })`, of every thread of the user). `agents` (agents or their memory ids) adds others, and is needed for a thread written before threads named their agents and for a user without threads: without it such a call throws `VALIDATION_ERROR`. `graph` is a knowledge graph of your own to go through too, and `keepReplies: true` leaves the replies to a user message alone. Each call returns a `MemoryCascadeReport`: `entries` (`deleted`, `redacted`), `threads`, `summaries`, `items` (`purged`, `trimmed`, `stale`), `entities`, `facts` (`deleted`, `trimmed`), `graph` (`nodes`, `edges`, `trimmed`), `fileVersions` and `playbookRules`. Memory extraction and compaction after a run stop before their next model call once the run's branch is no longer the active one, such as after a rewind while they work, so nothing is learned or summarized from a branch the conversation left, and extraction drops the items whose entries were forgotten or redacted while the model answered.
+
+`MemoryCascade` from `@cogitator-ai/memory` does the same over stores of your own:
+
+```typescript
+import { MemoryCascade } from '@cogitator-ai/memory';
+
+const cascade = new MemoryCascade({
+  memory,
+  items: memory,
+  files: memory,
+  graph,
+  facts,
+  embeddings,
+});
+const who = { agentIds: ['assistant'] };
+
+await cascade.deleteEntries([entry.id], who);
+await cascade.redactEntries([entry.id], { at: new Date(), reason: 'erasure request' }, who);
+await cascade.deleteThread('chat', who);
+await cascade.deleteUser('ana', who);
+await cascade.rewind('chat', earlier.id, who);
+```
+
+`MemoryItems.reviseEvidence(itemIds, keep)` keeps of each item's evidence the pieces `keep` takes and returns the ids of the items it changed, which is how an item that stands on more than what went loses only those quotes.
 
 ---
 

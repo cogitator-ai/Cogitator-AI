@@ -836,9 +836,21 @@ interface Evidence {
 }
 
 type EvidenceStatus = 'verified' | 'suggested';
+
+interface EntryRedaction {
+  at: Date;
+  reason?: string; // why, such as a user's request
+}
+
+type MemoryChange =
+  | { type: 'entry-added'; entry: MemoryEntry }
+  | { type: 'entry-deleted'; entryId: string; threadId?: string }
+  | { type: 'entry-redacted'; entryId: string; threadId: string }
+  | { type: 'thread-cleared'; threadId: string }
+  | { type: 'thread-deleted'; threadId: string };
 ```
 
-`MemoryQueryOptions` takes `types` as well, `Thread` has `activeLeafId`, `MemoryEntry` has `type`, `parentId`, `seq`, `event` and `formatVersion`, and `Fact`, `GraphNode`, `GraphEdge` and `Insight` take an optional `evidence: Evidence[]`. `ExecutionCheckpoint` keeps the run's `memory: RunMemoryPlace`, see [Time Travel](/docs/advanced/time-travel#replays-on-branches).
+`MemoryAdapter.redactEntry?(entryId, redaction: EntryRedaction)` replaces what a `message` or `tool_result` entry said with `[redacted]` in place and records the redaction in `metadata.redacted` (`{ at, reason? }`, `at` as an ISO string), see [Forgetting, Redacting and Rewinding](/docs/memory#forgetting-redacting-and-rewinding). `MemoryQueryOptions` takes `types` as well, `Thread` has `activeLeafId`, `MemoryEntry` has `type`, `parentId`, `seq`, `event` and `formatVersion`, and `Fact`, `GraphNode`, `GraphEdge` and `Insight` take an optional `evidence: Evidence[]`. `ExecutionCheckpoint` keeps the run's `memory: RunMemoryPlace`, see [Time Travel](/docs/advanced/time-travel#replays-on-branches).
 
 The [context builder](/docs/memory#context-building) shares its budget among partitions and reports what it left out with these types:
 

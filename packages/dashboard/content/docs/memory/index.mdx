@@ -203,7 +203,7 @@ const copy = unwrap(await memory.forkThread(thread.id, retry.id, 'rome-vatican')
 
 `deleteEntry` splices an entry out of its branch: its children go after its parent, and when it was the active leaf, its parent becomes the leaf. `clearThread` removes every entry and the leaf with them.
 
-These methods are optional on the `MemoryAdapter` interface, so an adapter of your own may leave them out. Every built-in adapter has them, and a run on a branch needs `getPath`.
+These methods are optional on the `MemoryAdapter` interface, so an adapter of your own may leave them out. Every built-in adapter has them, and a run on a branch needs `getPath`. `cog.rewind(threadId, toEntryId)` rewinds a thread and marks as `stale` the memory items that stood only on the turns it left, see [Forgetting, Redacting and Rewinding](#forgetting-redacting-and-rewinding).
 
 #### Entries Written Before Trees
 
@@ -291,7 +291,7 @@ evidenceOnPath(evidence, new Set(branch.map((entry) => entry.id))); // true
 - `verifyEvidenceInMemory(memory, evidence)` loads each entry with `getEntry` and checks it. Evidence of an entry that is gone, or with no `entryId` (a file is not memory's to check), is `'suggested'`. The whole is `'verified'` only when every piece is.
 - `evidenceOnPath(evidence, pathIds)` is `true` when every piece that names an entry names one of `pathIds`. Use it with the ids of a branch from `getPath` to keep only the derived items that stand on that branch, so a fact learned on an abandoned branch does not leak into another.
 
-Every built-in fact and graph adapter stores `evidence` and reads it back (a JSON column in Postgres and SQLite, a JSON property in Neo4j), `updateFact`, `updateNode` and `updateEdge` take it, and `mergeNodes` keeps the evidence of every merged node.
+Every built-in fact and graph adapter stores `evidence` and reads it back (a JSON column in Postgres and SQLite, a JSON property in Neo4j), `updateFact`, `updateNode` and `updateEdge` take it, and `mergeNodes` keeps the evidence of every merged node. Deleting or redacting entries follows this lineage, see [Forgetting, Redacting and Rewinding](#forgetting-redacting-and-rewinding).
 
 ## Context Building
 
@@ -950,7 +950,7 @@ const written = await extractor.extract(entries, { scope, timeZone: 'Europe/Lisb
 - `extract(entries, context)` leaves out system and `compaction` entries and reads the rest in windows of about `windowTokens` tokens, cut as compaction chapters are, one model call each. The model gets the window as a numbered transcript, each message with the date it was written, and `EXTRACTION_PROMPT` as its instructions, with the date of the session (`sessionLine`, such as `The session took place on Wednesday, 2026-10-21 (Europe/Lisbon).`) and `prompt` after it. Your `summarize` must send the prompt it is given as its instructions, as for compaction.
 - The answer is a JSON array of items, each with its `kind`, `content`, `subject`, `attribute`, `value`, `confidence`, the time words marked up as a `TimeExpression` and its `evidence` as message numbers and quotes. A field that is `null`, blank or does not fit is read as absent, and an item that does not fit is left out. Only an answer that holds no JSON array is asked for again, up to three tries in all, and then `read` throws an `ExtractionAnswerError`, and `extract` a `WindowError` with the entries that window was the first to read (`own`).
 - `parseExtraction(answer, window, context)` checks every item: each quote is tied to the entry its number names and checked against it ([lineage](#lineage)), and an item is `verified` only when it has quotes and all of them hold. Its trust is that of the least trusted entry one of its holding quotes is in (`trustOfEntry`: a user message is `user`, or `model` when another user wrote it (its `metadata.userId`, which a run with a user saves on its user messages, is not the user of `context.scope`), a tool result `tool`, or `web` for a tool whose name says it fetches pages, such as `web_search` or `fetch_url`, and an assistant message `model`), and `model` when no quote holds, so a statement a page or the assistant made is never the user's, whatever else is quoted with it. Its time words are resolved in `context.timeZone` from the date of the first entry it quotes, the message that said them, else from the session date (`context.sessionAt`, the time of the window's last entry by default), and that date is its `saidAt` and `sessionAt`.
-- The items are written in order through `MemoryItems`, so an item said again merges and a newer state closes the one it follows. Nothing is updated or deleted on the model's word. `extract` returns the items as written, and `read(window, context)` the checked items of one window, unwritten. `extract(entries, context, { onWindow, skip })` lets a caller keep its place: `onWindow(own, items)` is awaited once a window's items are written, and `skip(error, own, index)` may return `true` to go on without a window that failed.
+- The items are written in order through `MemoryItems`, so an item said again merges and a newer state closes the one it follows. Nothing is updated or deleted on the model's word. `extract` returns the items as written, and `read(window, context)` the checked items of one window, unwritten. `extract(entries, context, { onWindow, skip })` lets a caller keep its place: `onWindow(own, items)` is awaited once a window's items are written, and `skip(error, own, index)` may return `true` to go on without a window that failed. `beforeWindow(own)` returning `false` stops the extraction before a window's model call, with what it wrote so far, and `beforeWrite(items)` returns the items of a window to write, such as without those whose entries were forgotten while the model answered.
 
 ### Extraction After a Run
 
@@ -1154,15 +1154,15 @@ if (memory && isMemoryFileAdapter(memory)) {
 }
 ```
 
-| Method                                                       | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `run(access, command)`                                       | Runs a command of the memory tool (`MemoryFileCommand`) and returns the answer the model reads                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `view`, `create`, `strReplace`, `insert`, `delete`, `rename` | The commands one by one. `strReplace`, `insert`, `delete` and `rename` take the `sha256` the caller last read, to fail when another writer changed the file since                                                                                                                                                                                                                                                                                                                                                                            |
-| `list(access, directory?)`                                   | The files the access sees, by path                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `read(access, path)`                                         | One file, or `undefined`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `history(access, path)`                                      | Every version of the file the access sees, oldest first                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `redact(access, paths, reason?, { everyScope? })`            | Replaces the content of every version of the files (and of the files under them, following each file's own history back through the paths it had and on to the ones it got, never into another file that took one of those paths later) with `[redacted]`, kept as redacted with the reason, and returns how many it redacted. `everyScope` redacts the versions of every user, project and thread of the agent, not only those the access sees. The conversation keeps the tool calls that wrote the text, which a redaction does not touch |
-| `index(access, maxChars?)`                                   | The list of files a run's context gets, `undefined` when there are none                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Method                                                       | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run(access, command)`                                       | Runs a command of the memory tool (`MemoryFileCommand`) and returns the answer the model reads                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `view`, `create`, `strReplace`, `insert`, `delete`, `rename` | The commands one by one. `strReplace`, `insert`, `delete` and `rename` take the `sha256` the caller last read, to fail when another writer changed the file since                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `list(access, directory?)`                                   | The files the access sees, by path                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `read(access, path)`                                         | One file, or `undefined`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `history(access, path)`                                      | Every version of the file the access sees, oldest first                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `redact(access, paths, reason?, { everyScope? })`            | Replaces the content of every version of the files (and of the files under them, following each file's own history back through the paths it had and on to the ones it got, never into another file that took one of those paths later) with `[redacted]`, kept as redacted with the reason, and returns how many it redacted. `everyScope` redacts the versions of every user, project and thread of the agent, not only those the access sees. The conversation keeps the tool calls that wrote the text, which a redaction does not touch, `cog.redactEntries` redacts those (see [Forgetting, Redacting and Rewinding](#forgetting-redacting-and-rewinding)) |
+| `index(access, maxChars?)`                                   | The list of files a run's context gets, `undefined` when there are none                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 `MemoryFileAccess` is `{ scope, visibleTo?, place?, readOnly?, reserved?, author?, observe? }`: where new versions go, what the access sees (`scope` by default), the branch it stands on, paths no change may touch (`reserved`), who writes, and a function that hears of the version of each file a command showed or wrote (its path and `sha256`, `null` once deleted). A refused command throws a `MemoryFileError` with the message the model reads, and `memoryPath(path)` normalizes a path or throws one. `memoryFileTool({ memory, agentId, scope?, readOnly?, placeOf?, files? })` from `@cogitator-ai/core` builds the tool over a store of your own, for an agent run outside a Cogitator configured with `memory.files`. A store of your own keeps files by implementing `MemoryFileAdapter`, see [Memory Files](/docs/memory/adapters#memory-files) on the adapters page.
 
@@ -1309,6 +1309,90 @@ await consolidator.promotePlaybook(scope);
 
 await new MemoryObservations({ files, items, itemAdapter: memory }).refresh(scope, { summarize });
 ```
+
+## Forgetting, Redacting and Rewinding
+
+Memory derives a lot from a conversation: summaries, memory items, facts, graph nodes and edges, vectors, notes and a playbook. Each keeps the entries it stands on ([lineage](#lineage), a compaction's `firstKeptEntryId` and atoms, a memory file version's `place`). So deleting a turn alone is not forgetting it: a fact written from it would still reach the next run. `cog.forget`, `cog.redactEntries` and `cog.rewind` follow the lineage into every store:
+
+```typescript
+import { Agent, Cogitator } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  memory: {
+    adapter: 'postgres',
+    postgres: { connectionString: process.env.DATABASE_URL! },
+    extraction: {},
+  },
+});
+const assistant = new Agent({ name: 'assistant', instructions: 'You are a helpful assistant.' });
+
+await cog.forget({ entryIds: [locker.id] }); // the turn, its replies and what stands on them
+await cog.redactEntries([passport.id], { reason: 'the user asked' }); // its place stays, '[redacted]' in it
+await cog.rewind('chat', earlier.id); // the turns after it stay on their branch, their items go stale
+await cog.forget({ threadId: 'chat' }); // the thread
+const report = await cog.forget({ userId: 'ana' }, { agents: [assistant] }); // everything kept for the user
+```
+
+What goes with the entries:
+
+| What stands on the entries                 | Forget or redact                                                                                                                                                                                                                         | Rewind                                                             |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Replies to a user message                  | Go with it: the entries after it on every branch up to the next user message, events such as a model change among them, unless `keepReplies: true`                                                                                       | Stay, on a branch of their own                                     |
+| Compaction summaries                       | Deleted when they cover an entry (it lies before `firstKeptEntryId` on their branch) or quote one in an atom, and the next compaction writes them again                                                                                  | Stay, seen only on their branch                                    |
+| Memory items, facts, graph nodes and edges | Purged when they stand only on what went, those that stand on more lose the quotes of it (`items.trimmed`, `facts.trimmed`, `graph.trimmed`)                                                                                             | Items that stood only on the turns after the target become `stale` |
+| Vectors                                    | Deleted with the entries, summaries and facts that go                                                                                                                                                                                    | Stay                                                               |
+| Memory file versions                       | Redacted when written at one of the entries                                                                                                                                                                                              | Stay, seen only on their branch                                    |
+| Observations and the playbook              | Every version that names a purged item or lesson is redacted. The playbook in front is first written again without the rules that stood on such a lesson, and an observation is written again over its redacted file by the next refresh | Stay                                                               |
+
+- **Redacting** keeps the turn in its place: its text, the arguments of its tool calls and the results of its tools become `[redacted]`, its role and the ids that tie tool calls to results stay, so the conversation still reads as a whole, and `metadata.redacted` records when and why. A compaction entry among the ids is deleted, as it cannot be redacted. It needs an adapter with `redactEntry` (every built-in one) and throws `VALIDATION_ERROR` otherwise.
+- **A rewind** deletes nothing. The turns after `toEntryId` stay on a branch of their own, as with `memory.rewind`, and the memory items that stood only on them are marked `stale` with `staleBecause: { reason: 'rewound', threadId, toEntryId, at }`, so later runs no longer take them for what holds. Called again once the thread stands at `toEntryId`, such as after a failure, it marks what stood only on the entries after it.
+- **`forget({ threadId })`** also purges the items and entities and redacts the memory file versions kept for that thread alone.
+- **`forget({ userId })`** deletes every thread whose `metadata.userId` is the user (a run with a `userId` sets it) with what stands on them, purges every item and entity and redacts every memory file version of the user's scope, deletes the facts and graph nodes and edges whose `metadata.userId` is the user, and the embeddings with that metadata, through `deleteByFilter` where the store has it.
+
+Items, files, facts and the graph are kept by the memory id of an agent. Every run names its agent in the thread's `metadata.memoryAgentIds`, and a call goes through the memory of the agents a thread names and of the thread's owner, for `forget({ userId })` those of every thread of the user. `agents` (agents or their memory ids) adds others, and is needed for a thread written before threads named their agents and for a user without threads: without it such a call throws `VALIDATION_ERROR`. `graph` is a knowledge graph of your own to go through too.
+
+Memory extraction and compaction after a run stop before their next model call once the run's branch is no longer the thread's active one, such as after a rewind or a checkout while they work, so nothing is learned or summarized from a branch the conversation left. Extraction also drops the items whose entries were forgotten or redacted while the model answered.
+
+Each call returns what it changed, store by store:
+
+```typescript
+// report
+// {
+//   entries: { deleted: ['ent_4', 'ent_5'], redacted: [] },
+//   threads: [],
+//   summaries: ['ent_9'], // compaction entries deleted, written again by the next compaction
+//   items: { purged: ['mem_a1'], trimmed: ['mem_b2'], stale: [] },
+//   entities: [],
+//   facts: { deleted: [], trimmed: [] },
+//   graph: { nodes: [], edges: [], trimmed: [] },
+//   fileVersions: ['ver_3'], // memory file versions redacted
+//   playbookRules: 1, // rules taken out of a playbook in front
+// }
+```
+
+`MemoryCascade` from `@cogitator-ai/memory` runs the same cascades over stores of your own, for the agents in `who`:
+
+```typescript
+import { MemoryCascade } from '@cogitator-ai/memory';
+
+const cascade = new MemoryCascade({
+  memory, // the conversation store
+  items: memory, // a MemoryItemAdapter
+  files: memory, // a MemoryFileAdapter
+  graph, // a GraphAdapter
+  facts, // a FactAdapter
+  embeddings, // an EmbeddingAdapter
+});
+const who = { agentIds: ['assistant'], keepReplies: false };
+
+await cascade.deleteEntries([locker.id], who);
+await cascade.redactEntries([passport.id], { at: new Date(), reason: 'erasure request' }, who);
+await cascade.deleteThread('chat', who);
+await cascade.deleteUser('ana', who);
+await cascade.rewind('chat', earlier.id, who);
+```
+
+Every store but `memory` is optional, and what is not given is left alone. An adapter that cannot redact or has no branches makes `redactEntries` or `rewind` throw. `MemoryItems.reviseEvidence(itemIds, keep)` keeps of each item's evidence the pieces `keep` takes and returns the ids of the items it changed.
 
 ## Installation
 

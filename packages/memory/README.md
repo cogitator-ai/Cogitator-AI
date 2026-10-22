@@ -37,6 +37,7 @@ With `@cogitator-ai/core` you usually configure memory on the runtime (`new Cogi
 - **Memory Retriever** - The multi-channel search of `hybrid` recall as its own class (`MemoryRetriever`, `analyzeQuery`), for tools that search memory the same way
 - **Memory Files** - Notes an agent keeps under `/memories` with the commands of Anthropic's memory tool, every change a version, seen per branch, with optimistic locking, read-only access and redaction, on every built-in adapter
 - **Memory Upkeep** - A pre-turn brief of cards that quote their sources (`MemoryBriefer`), observations of entities kept as memory files (`MemoryObservations`), and consolidation that marks repeats stale and folds lessons into a playbook a few edits at a time (`MemoryConsolidator`)
+- **Lineage Cascades** - Deleting, redacting or rewinding entries takes what stands on them out of every store: summaries, memory items, facts, graph nodes and edges, vectors, memory file versions, observations and playbook rules (`MemoryCascade`, `redactEntry` on every built-in adapter)
 - **Facts Storage** - Store and retrieve agent knowledge (`FactAdapter` on PostgreSQL, `CoreFactsStore` on SQLite, both kept as memory items)
 - **Knowledge Graph** - Entity-relationship memory with multi-hop traversal
 - **Zod Schemas** - Type-safe configuration validation
@@ -269,10 +270,15 @@ interface MemoryAdapter {
     atEntryId: string,
     newThreadId?: string
   ): Promise<MemoryResult<Thread>>;
+
+  redactEntry?(
+    entryId: string,
+    redaction: EntryRedaction
+  ): Promise<MemoryResult<MemoryEntry | null>>;
 }
 ```
 
-The branch methods and `healthCheck()` are optional on the interface, and every built-in adapter implements them. Custom adapters can implement `healthCheck(): Promise<MemoryResult<void>>` to participate in server readiness checks (`GET /ready`). An adapter without `healthCheck()` reports `unchecked` and does not fail readiness. Built-in adapters deduplicate concurrent health checks so at most one check is in flight per adapter.
+The branch methods, `redactEntry()` and `healthCheck()` are optional on the interface, and every built-in adapter implements them. Custom adapters can implement `healthCheck(): Promise<MemoryResult<void>>` to participate in server readiness checks (`GET /ready`). An adapter without `healthCheck()` reports `unchecked` and does not fail readiness. Built-in adapters deduplicate concurrent health checks so at most one check is in flight per adapter.
 
 ### Thread Operations
 
@@ -441,7 +447,7 @@ const builder = new ContextBuilder(
 );
 ```
 
-Every built-in adapter reports its changes through `onChange(listener)` (`entry-added`, `entry-deleted`, `thread-cleared`, `thread-deleted`), which is what `attach` listens to, and every built-in embedding store reads vectors by source with `getBySources(ids)`. An adapter of your own reports its changes by extending `ChangeReportingMemoryAdapter` and passing each write's result through `reported()`. Vectors carry `metadata.index: 'messages'` and the thread's `agentId` and `userId`.
+Every built-in adapter reports its changes through `onChange(listener)` (`entry-added`, `entry-deleted`, `entry-redacted`, `thread-cleared`, `thread-deleted`), which is what `attach` listens to (a deleted or redacted entry loses its vectors), and every built-in embedding store reads vectors by source with `getBySources(ids)`. An adapter of your own reports its changes by extending `ChangeReportingMemoryAdapter` and passing each write's result through `reported()`. Vectors carry `metadata.index: 'messages'` and the thread's `agentId` and `userId`.
 
 ### Recall
 
@@ -850,6 +856,42 @@ await consolidator.readPlaybook(scope); // the file at /memories/playbook.md
 
 ---
 
+## Forgetting, Redacting and Rewinding
+
+What memory derives from a conversation keeps the entries it stands on: the evidence of items, facts and graph nodes and edges, a compaction's `firstKeptEntryId` and atoms, a memory file version's `place`, the items an observation or a playbook rule names. `MemoryCascade` follows that lineage when entries go, so a fact written from a turn does not outlive the turn:
+
+```typescript
+import { MemoryCascade } from '@cogitator-ai/memory';
+
+const cascade = new MemoryCascade({
+  memory,
+  items: memory,
+  files: memory,
+  graph,
+  facts,
+  embeddings,
+});
+const who = { agentIds: ['assistant'] }; // whose items, files, facts and graph to go through
+
+await cascade.deleteEntries([locker.id], who);
+await cascade.redactEntries([passport.id], { at: new Date(), reason: 'the user asked' }, who);
+await cascade.deleteThread('chat', who);
+await cascade.deleteUser('ana', who);
+await cascade.rewind('chat', earlier.id, who);
+// { entries: { deleted, redacted }, threads, summaries, items: { purged, trimmed, stale },
+//   entities, facts: { deleted, trimmed }, graph: { nodes, edges, trimmed }, fileVersions, playbookRules }
+```
+
+- With deleted or redacted entries go the compaction summaries that cover them (the entries before `firstKeptEntryId` on their branch) or quote them in an atom, and the next compaction writes them again. The memory items, facts and graph nodes and edges that stand only on them are purged, those that stand on more lose the quotes of them (`MemoryItems.reviseEvidence(itemIds, keep)`, which returns the ids it changed). The vectors of the entries, summaries and facts that go are deleted from `embeddings`, and the memory file versions written at the entries are redacted.
+- Every version of an observation or a playbook that names an item or a lesson that went is redacted. A playbook in front is first written again without the rules that stood on such a lesson, so the other rules stay, and an observation is written again over its redacted file by the next refresh.
+- A user message takes its replies, the entries after it on every branch up to the next user message, events such as a model change among them, as an answer may say again what it said. `keepReplies: true` leaves them.
+- `redactEntries` needs `redactEntry` on the adapter and deletes an event entry among the ids, as it cannot be redacted. `deleteThread` also purges the items and entities and redacts the memory file versions kept for the thread alone. `deleteUser` deletes every thread whose `metadata.userId` is the user, does the same for the user's scope, and deletes the facts and graph nodes and edges whose `metadata.userId` is the user and the embeddings with that metadata (`deleteByFilter`, where the store has it).
+- `rewind` deletes nothing: the entries after `toEntryId` stay on a branch of their own, and the items that stood only on them become `stale` with `staleBecause: { reason: 'rewound', threadId, toEntryId, at }`. Called again once the thread stands at `toEntryId`, such as after a failure, it marks what stood only on the entries after it.
+
+`redactEntry(entryId, { at, reason? })` on every built-in adapter replaces the text of a `message` or `tool_result` entry, the arguments of its tool calls and the results of its tools with `[redacted]`, keeps its place, its role and its call ids, records `metadata.redacted`, gives `null` for a missing entry and refuses an event entry. Listeners hear `entry-redacted`. An adapter of your own builds the entry with `redactedEntry(entry, redaction)` and `REDACTED_TEXT`. A Cogitator runs the cascades as `cog.forget`, `cog.redactEntries` and `cog.rewind`, see [Forgetting, Redacting and Rewinding](https://cogitator.app/docs/memory#forgetting-redacting-and-rewinding).
+
+---
+
 ## Core Facts
 
 `CoreFactsStore` keeps a small set of key/value facts about the user in SQLite (with history), formatted for a system prompt. Each key is the slot `core:<key>` of `system` memory items in its `scope` (`{ agentId: 'core' }` by default):
@@ -1145,6 +1187,9 @@ import type {
   Playbook,
   PlaybookChange,
   PlaybookEdit,
+  CascadeAgents,
+  MemoryCascadeOptions,
+  MemoryCascadeReport,
   Retrieval,
   RetrievalRequest,
   QueryAnalysis,
@@ -1169,6 +1214,8 @@ import type {
   MemoryConsolidationConfig,
   MemoryConsolidationReport,
   StaleMark,
+  EntryRedaction,
+  MemoryChange,
 } from '@cogitator-ai/types';
 ```
 

@@ -152,6 +152,8 @@ const result = await cog.run(agent, { input: 'Email the invoice to ann@example.c
 - **Audit** — `onDetect` receives counts per kind (`{ email: 1 }`), never the values.
 - **Storage** — memory keeps the real values; masking happens only on the way to the provider.
 
+Since memory keeps the real values, a request to be forgotten is answered in memory. `cog.redactEntries(entryIds)` replaces what turns said with `[redacted]` while they keep their place, `cog.forget({ entryIds })`, `cog.forget({ threadId })` and `cog.forget({ userId }, { agents })` delete them, and each takes with it what memory derived from them: compaction summaries, memory items, facts, graph nodes and edges, vectors, memory file versions, observations and playbook rules. See [Forgetting, Redacting and Rewinding](/docs/memory#forgetting-redacting-and-rewinding).
+
 In YAML config, custom patterns are strings:
 
 ```yaml
