@@ -1,5 +1,12 @@
 # @cogitator-ai/mcp
 
+## 19.5.19
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @cogitator-ai/core@0.56.4
+
 ## 19.5.18
 
 ### Patch Changes

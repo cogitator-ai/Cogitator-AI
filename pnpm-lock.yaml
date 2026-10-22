@@ -362,13 +362,13 @@ importers:
   packages/channels:
     dependencies:
       '@cogitator-ai/browser':
-        specifier: workspace:>=0.4.36
+        specifier: workspace:>=0.4.37
         version: link:../browser
       '@cogitator-ai/core':
         specifier: workspace:*
         version: link:../core
       '@cogitator-ai/mcp':
-        specifier: workspace:^19.5.18
+        specifier: workspace:^19.5.19
         version: link:../mcp
       '@cogitator-ai/memory':
         specifier: workspace:*

@@ -1,5 +1,14 @@
 # @cogitator-ai/studio
 
+## 0.3.11
+
+### Patch Changes
+
+- Updated dependencies [[`afb3815`](https://github.com/cogitator-ai/Cogitator-AI/commit/afb3815d149086f411063b6a0cf2beaa299adcdc)]:
+  - @cogitator-ai/memory@0.24.3
+  - @cogitator-ai/core@0.56.4
+  - @cogitator-ai/workflows@0.14.2
+
 ## 0.3.10
 
 ### Patch Changes

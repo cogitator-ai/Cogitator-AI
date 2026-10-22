@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/studio",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "description": "Cogitator Studio: a local debugger for agent projects with chat, traces, costs, approvals, workflow runs and time-travel forks",
   "keywords": [
     "cogitator",
@@ -45,7 +45,7 @@
     "@cogitator-ai/types": "workspace:*"
   },
   "peerDependencies": {
-    "@cogitator-ai/workflows": "workspace:>=0.14.1",
+    "@cogitator-ai/workflows": "workspace:>=0.14.2",
     "tsx": ">=4.0.0"
   },
   "peerDependenciesMeta": {

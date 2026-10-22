@@ -1,5 +1,12 @@
 # @cogitator-ai/workflows
 
+## 0.14.2
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @cogitator-ai/core@0.56.4
+
 ## 0.14.1
 
 ### Patch Changes

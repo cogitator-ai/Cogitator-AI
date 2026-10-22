@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/mcp",
-  "version": "19.5.18",
+  "version": "19.5.19",
   "description": "MCP (Model Context Protocol) integration for Cogitator",
   "keywords": [
     "cogitator",
