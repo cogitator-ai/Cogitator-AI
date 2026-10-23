@@ -186,6 +186,36 @@ describe('memory wiring', () => {
       await reader.close();
     });
 
+    it('defaults to the hybrid strategy with memory.embedding, indexing the thread', async () => {
+      const cog = new Cogitator({
+        llm: { backends: { mock: backend } },
+        memory: {
+          adapter: 'memory',
+          contextBuilder: { maxTokens: 4000 },
+          embedding: fakeEmbedding(),
+        },
+      });
+
+      await cog.run(agent, { input: 'hi' });
+
+      expect(configs.at(-1)?.strategy).toBe('hybrid');
+      expect(captured.at(-1)?.messageIndex).toBeDefined();
+      await cog.close();
+    });
+
+    it('defaults to the recent strategy without memory.embedding', async () => {
+      const cog = new Cogitator({
+        llm: { backends: { mock: backend } },
+        memory: { adapter: 'memory', contextBuilder: { maxTokens: 4000 } },
+      });
+
+      await cog.run(agent, { input: 'hi' });
+
+      expect(configs.at(-1)?.strategy).toBe('recent');
+      expect(captured.at(-1)?.messageIndex).toBeUndefined();
+      await cog.close();
+    });
+
     it('keeps no index for the recent strategy', async () => {
       const cog = new Cogitator({
         llm: { backends: { mock: backend } },
@@ -198,6 +228,7 @@ describe('memory wiring', () => {
 
       await cog.run(agent, { input: 'hi' });
 
+      expect(configs.at(-1)?.strategy).toBe('recent');
       expect(captured.at(-1)?.messageIndex).toBeUndefined();
       await cog.close();
     });

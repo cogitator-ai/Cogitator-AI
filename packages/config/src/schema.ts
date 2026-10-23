@@ -295,6 +295,7 @@ export const MemoryExtractionConfigSchema = z.object({
   prompt: z.string().optional(),
   windowTokens: z.number().int().positive().optional(),
   activationConfidence: z.number().min(0).max(1).optional(),
+  mode: z.enum(['apply', 'shadow']).optional(),
   scope: z.enum(['user', 'agent', 'thread']).optional(),
   timeZone: TimeZoneSchema.optional(),
 });

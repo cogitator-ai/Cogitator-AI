@@ -3,7 +3,13 @@ import type { MemoryEntry, Message } from '@cogitator-ai/types';
 import { InMemoryAdapter } from '../adapters/memory';
 import { MemoryItems } from '../memory-items';
 import type { SummarizeOptions } from '../compaction';
-import { MemoryExtractor, parseExtraction, sessionLine, trustOfEntry } from '../memory-extraction';
+import {
+  EXTRACTION_CONTINUATIONS,
+  MemoryExtractor,
+  parseExtraction,
+  sessionLine,
+  trustOfEntry,
+} from '../memory-extraction';
 
 const session = new Date('2026-01-07T12:00:00Z');
 const scope = { agentId: 'a', userId: 'u1' };
@@ -126,6 +132,26 @@ describe('parseExtraction', () => {
     expect(items[1]).toMatchObject({ value: '7', verified: false, evidence: [] });
   });
 
+  it('passes over brackets in the text around the array', () => {
+    const answer =
+      'Message [0] says where Ana lives:\n```json\n' +
+      '[{"kind":"fact","content":"Ana lives in Lisbon [since 2025]","evidence":[{"message":0,"quote":"I moved to Lisbon"}]}]' +
+      '\n```\nSee [1] for the rest.';
+    expect(parseExtraction(answer, window, { scope })?.map((item) => item.content)).toEqual([
+      'Ana lives in Lisbon [since 2025]',
+    ]);
+    expect(parseExtraction('Only small talk in [0] and [1]: []', window, { scope })).toEqual([]);
+    expect(parseExtraction('Messages [0] and [1] hold nothing', window, { scope })).toBeUndefined();
+  });
+
+  it('keeps the finished items of an answer cut inside the array', () => {
+    const answer =
+      '[{"kind":"fact","content":"Ana lives in Lisbon"},\n{"kind":"preference","content":"Ana likes ja';
+    expect(parseExtraction(answer, window, { scope })?.map((item) => item.content)).toEqual([
+      'Ana lives in Lisbon',
+    ]);
+  });
+
   it('keeps an attribute only with its subject', () => {
     const [item] =
       parseExtraction('[{"kind":"fact","content":"x","attribute":"city","value":"Rome"}]', window, {
@@ -205,6 +231,112 @@ describe('MemoryExtractor', () => {
       'Porto',
       'Lisbon',
     ]);
+  });
+
+  it('goes on after an answer its length limit cut, until the array closes', async () => {
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    const fact = (city: string) =>
+      JSON.stringify({
+        kind: 'fact',
+        content: `Ana visited ${city}`,
+        evidence: [{ message: 0, quote: 'Lisbon' }],
+      });
+    const answers = [
+      `[${fact('Porto')},\n${fact('Braga')},\n{"kind":"fact","content":"Ana vis`,
+      `[${fact('Braga')},\n${fact('Faro')}]`,
+    ];
+    const summarize = vi.fn(async (_messages: Message[], _options?: SummarizeOptions) =>
+      String(answers.shift())
+    );
+    const extractor = new MemoryExtractor({ items: new MemoryItems({ adapter }), summarize });
+
+    const written = await extractor.extract(window, { scope });
+
+    expect(written.map((item) => item.content)).toEqual([
+      'Ana visited Porto',
+      'Ana visited Braga',
+      'Ana visited Faro',
+    ]);
+    expect(summarize).toHaveBeenCalledTimes(2);
+    const followUp = summarize.mock.calls[1]?.[0] ?? [];
+    expect(followUp.map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
+    expect(followUp[0]?.content).toBe(summarize.mock.calls[0]?.[0][0]?.content);
+    expect(String(followUp[1]?.content)).toContain('Ana vis');
+    expect(String(followUp[2]?.content)).toContain(
+      'after 2 items, the last one: "Ana visited Braga"'
+    );
+    expect(summarize.mock.calls[1]?.[1]?.prompt).toBe(summarize.mock.calls[0]?.[1]?.prompt);
+  });
+
+  it('reads every fact of a window holding more items than one answer has room for', async () => {
+    const facts = Array.from(
+      { length: 300 },
+      (_, at) => `${at}. Person ${at} was born in City ${at}.`
+    );
+    const dense = [
+      entry('e0', { role: 'user', content: `Memorize these facts:\n${facts.join('\n')}` }),
+    ];
+    const listing = (from: number) =>
+      `[\n${facts
+        .slice(from)
+        .map((line) => {
+          const fact = line.replace(/^\d+\. /, '');
+          return JSON.stringify({
+            kind: 'fact',
+            content: fact,
+            subject: fact.split(' was')[0],
+            attribute: 'birthplace',
+            value: fact.split(' in ')[1],
+            confidence: 1,
+            evidence: [{ message: 0, quote: fact }],
+          });
+        })
+        .join(',\n')}\n]`;
+    const summarize = vi.fn(async (messages: Message[], options?: SummarizeOptions) => {
+      const after = /the last one: "Person (\d+) /.exec(String(messages.at(-1)?.content));
+      const answer = listing(after ? Number(after[1]) + 1 : 0);
+      return answer.slice(0, (options?.maxTokens ?? 8000) * 4);
+    });
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    const extractor = new MemoryExtractor({ items: new MemoryItems({ adapter }), summarize });
+
+    const written = await extractor.extract(dense, { scope });
+
+    expect(written).toHaveLength(300);
+    expect(written.every((item) => item.verified)).toBe(true);
+    expect(summarize.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('stops going on when the answers bring nothing new, and at the continuation limit', async () => {
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    const cut = (city: string) => `[{"kind":"fact","content":"Ana visited ${city}"},{"kind":`;
+    const repeating = vi.fn(async () => cut('Porto'));
+    await new MemoryExtractor({ items: new MemoryItems({ adapter }), summarize: repeating }).read(
+      window,
+      { scope }
+    );
+    expect(repeating).toHaveBeenCalledTimes(2);
+
+    let call = 0;
+    const endless = vi.fn(async () => cut(`city ${call++}`));
+    const read = await new MemoryExtractor({
+      items: new MemoryItems({ adapter }),
+      summarize: endless,
+    }).read(window, { scope });
+    expect(endless).toHaveBeenCalledTimes(EXTRACTION_CONTINUATIONS + 1);
+    expect(read).toHaveLength(EXTRACTION_CONTINUATIONS + 1);
+  });
+
+  it('keeps what a cut answer gave when its continuation brings no array', async () => {
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    const answers = ['[{"kind":"fact","content":"Ana visited Porto"},{"kind":', 'sorry'];
+    const summarize = vi.fn(async () => answers.shift() ?? 'sorry');
+    const read = await new MemoryExtractor({ items: new MemoryItems({ adapter }), summarize }).read(
+      window,
+      { scope }
+    );
+    expect(read.map((item) => item.content)).toEqual(['Ana visited Porto']);
+    expect(summarize).toHaveBeenCalledTimes(4);
   });
 
   it('asks again for an answer that is not items, and fails after three', async () => {

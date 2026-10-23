@@ -5,6 +5,7 @@
 
 import { z } from 'zod';
 import type { BriefCard, BriefCardKind } from '@cogitator-ai/types';
+import { findAnswerArray } from './answer-array';
 import type { SummarizeFn } from './compaction';
 import { inert } from './memory-files';
 
@@ -62,24 +63,18 @@ function flat(text: string): string {
 /**
  * The cards of a model's `answer` that stand: of a kind a card may be, naming one of `sources`,
  * whose text holds the quote of at least three words word for word (spacing and case aside), one
- * card per quote, at most
- * `maxCards`. An answer that holds no JSON array gives no cards.
+ * card per quote, at most `maxCards`. The array is found past text and brackets around it, and
+ * of an answer cut at its length limit the cards it finished are kept. The model is not asked to
+ * go on: the brief holds a few cards and runs before the turn's first model call, within its
+ * time limit, so a second call would cost the turn more than the cards it could add. An answer
+ * that holds no JSON array gives no cards.
  */
 export function parseBrief(
   answer: string,
   sources: readonly BriefSource[],
   maxCards = MAX_BRIEF_CARDS
 ): BriefCard[] {
-  const start = answer.indexOf('[');
-  const end = answer.lastIndexOf(']');
-  if (start === -1 || end <= start) return [];
-  let raw: unknown;
-  try {
-    raw = JSON.parse(answer.slice(start, end + 1));
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(raw)) return [];
+  const raw = findAnswerArray(answer)?.values ?? [];
   const bySource = new Map(sources.map((source) => [source.ref, flat(source.text)]));
   const quoted = new Set<string>();
   const cards: BriefCard[] = [];

@@ -10,10 +10,12 @@ import type {
   MemoryItem,
   MemoryItemScope,
   MemoryItemTrust,
+  Message,
   NewMemoryItem,
 } from '@cogitator-ai/types';
 import type { SummarizeFn } from './compaction';
 import { chapterTranscript, chapterWindows } from './compaction-hierarchy';
+import { findAnswerArray, type AnswerArray } from './answer-array';
 import { verifyEvidence } from './lineage';
 import type { MemoryItems } from './memory-items';
 import { calendarDate, resolveTime } from './time-resolution';
@@ -155,24 +157,26 @@ export function sessionLine(sessionAt: Date, timeZone = 'UTC'): string {
  * in (a statement a page made is not the user's, whatever else is quoted with it), and the time
  * words resolved from the date of the first entry quoted, the message that said them, else from
  * the session date. A field that is `null` or that does not fit is read as absent, an item that
- * does not fit is left out, and only an answer that holds no JSON array is undefined.
+ * does not fit is left out, and only an answer that holds no JSON array of items is undefined.
+ * Text around the array is passed over, brackets in it too, and of an answer cut at its length
+ * limit inside the array the items it finished are kept.
  */
 export function parseExtraction(
   answer: string,
   window: readonly MemoryEntry[],
   context: MemoryExtractionContext
 ): NewMemoryItem[] | undefined {
-  const start = answer.indexOf('[');
-  const end = answer.lastIndexOf(']');
-  if (start === -1 || end <= start) return undefined;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(answer.slice(start, end + 1));
-  } catch {
-    return undefined;
-  }
-  if (!Array.isArray(raw)) return undefined;
-  const items = raw.flatMap((value) => {
+  const found = findAnswerArray(answer);
+  return found && itemsOf(found.values, window, context);
+}
+
+/** The items of the JSON `values` of an answer about `window`, see {@link parseExtraction} */
+function itemsOf(
+  values: readonly unknown[],
+  window: readonly MemoryEntry[],
+  context: MemoryExtractionContext
+): NewMemoryItem[] {
+  const items = values.flatMap((value) => {
     const parsed = itemSchema.safeParse(value);
     return parsed.success ? [parsed.data] : [];
   });
@@ -251,6 +255,19 @@ export class ExtractionAnswerError extends Error {
 const DEFAULT_WINDOW_TOKENS = 4000;
 /** Tokens an extraction answer may take: a dense window's items with their quotes */
 const EXTRACTION_MAX_TOKENS = 8000;
+/**
+ * Times the model is asked to go on with a window whose answer its length limit cut, so a window
+ * gets five answers of {@link EXTRACTION_MAX_TOKENS} at most
+ */
+export const EXTRACTION_CONTINUATIONS = 4;
+
+/** An item by its kind and words, so a continuation that says an item again adds nothing */
+const itemKey = (item: NewMemoryItem): string => `${item.kind}\u0000${item.content.toLowerCase()}`;
+
+/** What the model is asked after an answer that was cut, `count` items in, the last `last` */
+export function extractionContinuationPrompt(count: number, last: string): string {
+  return `Your answer was cut off at its length limit after ${count} items, the last one: ${JSON.stringify(last)}. Go on with the items of the transcript that come after it, in the same form. Answer with a JSON array of those items only, no other text, and close the array.`;
+}
 
 /** An {@link ExtractionAnswerError} of a window, with the entries that window was the first to read */
 export class WindowError extends ExtractionAnswerError {
@@ -319,7 +336,13 @@ export class MemoryExtractor {
     return written;
   }
 
-  /** The checked items of one window, unwritten */
+  /**
+   * The checked items of one window, unwritten. An answer that holds no JSON array of items is
+   * asked for again, three tries in all. An answer cut at its length limit inside the array
+   * keeps the items it finished, and the model is asked to go on after the last one, up to
+   * {@link EXTRACTION_CONTINUATIONS} times: a window dense with facts can hold more items than one
+   * answer has room for. A continuation that brings no array ends the window with what was read.
+   */
   async read(
     window: readonly MemoryEntry[],
     context: MemoryExtractionContext,
@@ -332,15 +355,44 @@ export class MemoryExtractor {
     const transcript = chapterTranscript(window, windowTokens, (entry) =>
       dayOf(entry.createdAt, context.timeZone ?? 'UTC')
     );
+    const read: NewMemoryItem[] = [];
+    const seen = new Set<string>();
+    let messages: Message[] = [{ role: 'user', content: transcript }];
+    for (let continuation = 0; continuation <= EXTRACTION_CONTINUATIONS; continuation++) {
+      const answer = await this.answer(messages, prompt);
+      if (!answer) {
+        if (continuation === 0) throw new ExtractionAnswerError(window);
+        break;
+      }
+      const items = itemsOf(answer.found.values, window, { ...context, sessionAt });
+      const fresh = items.filter((item) => !seen.has(itemKey(item)));
+      for (const item of fresh) seen.add(itemKey(item));
+      read.push(...fresh);
+      const last = items.at(-1);
+      if (!answer.found.cut || !last || fresh.length === 0) break;
+      messages = [
+        { role: 'user', content: transcript },
+        { role: 'assistant', content: answer.text },
+        { role: 'user', content: extractionContinuationPrompt(read.length, last.content) },
+      ];
+    }
+    return read;
+  }
+
+  /** The model's answer to `messages` that holds a JSON array of items, of three tries at most */
+  private async answer(
+    messages: Message[],
+    prompt: string
+  ): Promise<{ text: string; found: AnswerArray } | undefined> {
     for (let attempt = 0; attempt < 3; attempt++) {
-      const answer = await this.config.summarize([{ role: 'user', content: transcript }], {
+      const text = await this.config.summarize(messages, {
         model: this.config.model,
         prompt,
         maxTokens: EXTRACTION_MAX_TOKENS,
       });
-      const items = parseExtraction(answer, window, { ...context, sessionAt });
-      if (items) return items;
+      const found = findAnswerArray(text);
+      if (found) return { text, found };
     }
-    throw new ExtractionAnswerError(window);
+    return undefined;
   }
 }

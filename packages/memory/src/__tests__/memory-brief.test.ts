@@ -71,6 +71,19 @@ describe('parseBrief', () => {
     ).toEqual([]);
     expect(parseBrief('[not json', sources)).toEqual([]);
   });
+
+  it('passes over brackets around the array and keeps the cards of a cut answer', () => {
+    const card = JSON.stringify({
+      kind: 'knowledge',
+      text: 'Ana cannot eat peanuts.',
+      quote: 'allergic to peanuts',
+      source: 'item:mem_2',
+    });
+    expect(parseBrief(`From [item:mem_2]:\n[${card}]\nsee [1]`, sources)).toHaveLength(1);
+    expect(
+      parseBrief(`[${card}, {"kind": "constraint", "text": "Answer in Portu`, sources)
+    ).toEqual([expect.objectContaining({ text: 'Ana cannot eat peanuts.' })]);
+  });
 });
 
 describe('briefBlock', () => {

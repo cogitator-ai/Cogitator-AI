@@ -157,6 +157,12 @@ export function memoryExtractionMiddleware(
       `memory.extraction.activationConfidence must be from 0 to 1, got ${activation}`
     );
   }
+  if (config.mode !== undefined && config.mode !== 'apply' && config.mode !== 'shadow') {
+    throw new Error(
+      `memory.extraction.mode must be 'apply' or 'shadow', got ${String(config.mode)}`
+    );
+  }
+  const shadow = config.mode === 'shadow';
   const failures = new Map<string, { until: number; wait: number }>();
   const extracting = new Map<string, Promise<void>>();
   return {
@@ -232,7 +238,9 @@ export function memoryExtractionMiddleware(
       const extractor = new MemoryExtractor({
         items: new MemoryItems({
           adapter: memory,
-          ...(activation !== undefined && { activationConfidence: activation }),
+          ...(shadow
+            ? { activationConfidence: Number.POSITIVE_INFINITY }
+            : activation !== undefined && { activationConfidence: activation }),
         }),
         summarize: deps.summarizer(config.model ?? model, {
           runId: result.runId,

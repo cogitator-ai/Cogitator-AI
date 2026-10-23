@@ -1,38 +1,228 @@
 ---
 title: Memory Overview
-description: Understand how Cogitator agents persist context across conversations using pluggable memory adapters, embeddings, and knowledge graphs.
+description: The layers of Cogitator memory, from thread entries and retrieval to memory items, memory files and the stages between runs, what is on by default and why.
 ---
 
 ## Why Memory Matters
 
-LLMs are stateless. Every request starts from scratch unless you explicitly pass conversation history. As conversations grow, they exceed context window limits. Memory solves this by persisting, indexing, and intelligently retrieving past interactions.
-
-Cogitator's memory system gives agents:
-
-- **Conversation persistence** across sessions via threads and entries
-- **Semantic search** over stored documents and messages using vector embeddings
-- **Fact storage** for long-term knowledge (user preferences, learned info)
-- **Memory items** extracted from conversations after each run, grounded in quotes, trusted by who said them, and kept with when they held
-- **Knowledge graphs** for structured entity and relationship tracking
-- **Token-aware context building** that fits the most relevant history into the model's context window
+LLMs are stateless. Every request starts from scratch unless you pass the conversation again, and a long conversation outgrows the context window. Memory keeps what was said, finds the part a turn needs, and keeps what a conversation established past the conversation itself.
 
 ## Architecture
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│                         ContextBuilder                          │
-│   Assembles messages, facts, semantic and graph context         │
-│   within a token budget                                         │
-├───────────────┬──────────────┬──────────────────┬──────────────┤
-│ MemoryAdapter │ FactAdapter  │ EmbeddingAdapter │ GraphAdapter │
-│ (threads +    │ (long-term   │ (vector search)  │ (entities +  │
-│  entries)     │  facts)      │                  │  relations)  │
-├───────────────┴──────────────┴──────────────────┴──────────────┤
-│  InMemory │ Redis │ Postgres │ SQLite │ MongoDB │ Qdrant        │
-└────────────────────────────────────────────────────────────────┘
-```
+Memory is a stack of layers over one store. Each layer reads the ones below it, and only the bottom ones are needed for a conversation to go on across runs:
 
-Every conversation adapter implements the same `MemoryAdapter` interface, so you can swap backends without changing application code. Every built-in conversation adapter also stores [memory items](#memory-items) (`MemoryItemAdapter`). Facts, embeddings and graphs are separate interfaces that only some backends implement, see [Choosing an Adapter](#choosing-an-adapter).
+<svg
+  viewBox="0 0 960 660"
+  width="100%"
+  role="img"
+  aria-label="The layers of Cogitator memory, from the store up to the context of a turn, and the stages before a turn and after a run"
+>
+  <title>Layers of Cogitator memory</title>
+  <rect x="10" y="10" width="940" height="60" rx="8" fill="currentColor" opacity="0.05" />
+  <rect
+    x="10"
+    y="10"
+    width="940"
+    height="60"
+    rx="8"
+    fill="none"
+    stroke="currentColor"
+    opacity="0.35"
+  />
+  <text x="28" y="36" fill="currentColor">
+    Before a turn
+  </text>
+  <text x="28" y="57" fill="currentColor" opacity="0.6">
+    opt-in
+  </text>
+  <text x="260" y="47" fill="currentColor" opacity="0.85">
+    a brief of cards that quote their sources
+  </text>
+  <rect x="10" y="80" width="940" height="60" rx="8" fill="currentColor" opacity="0.16" />
+  <rect
+    x="10"
+    y="80"
+    width="940"
+    height="60"
+    rx="8"
+    fill="none"
+    stroke="currentColor"
+    opacity="0.35"
+  />
+  <text x="28" y="106" fill="currentColor">
+    Context of a turn
+  </text>
+  <text x="28" y="127" fill="currentColor" opacity="0.6">
+    with contextBuilder
+  </text>
+  <text x="260" y="117" fill="currentColor" opacity="0.85">
+    system, pinned, index, summaries, facts, recall, brief, newest turns
+  </text>
+  <rect x="10" y="150" width="940" height="60" rx="8" fill="currentColor" opacity="0.16" />
+  <rect
+    x="10"
+    y="150"
+    width="940"
+    height="60"
+    rx="8"
+    fill="none"
+    stroke="currentColor"
+    opacity="0.35"
+  />
+  <text x="28" y="176" fill="currentColor">
+    Retrieval
+  </text>
+  <text x="28" y="197" fill="currentColor" opacity="0.6">
+    hybrid with embeddings
+  </text>
+  <text x="260" y="187" fill="currentColor" opacity="0.85">
+    recent, relevant or hybrid: the newest turns plus what matches the turn
+  </text>
+  <rect x="10" y="220" width="940" height="60" rx="8" fill="currentColor" opacity="0.16" />
+  <rect
+    x="10"
+    y="220"
+    width="940"
+    height="60"
+    rx="8"
+    fill="none"
+    stroke="currentColor"
+    opacity="0.35"
+  />
+  <text x="28" y="246" fill="currentColor">
+    Message index
+  </text>
+  <text x="28" y="267" fill="currentColor" opacity="0.6">
+    with embeddings
+  </text>
+  <text x="260" y="257" fill="currentColor" opacity="0.85">
+    every message embedded once, in the background, the whole thread searched
+  </text>
+  <rect x="10" y="290" width="940" height="60" rx="8" fill="currentColor" opacity="0.05" />
+  <rect
+    x="10"
+    y="290"
+    width="940"
+    height="60"
+    rx="8"
+    fill="none"
+    stroke="currentColor"
+    opacity="0.35"
+  />
+  <text x="28" y="316" fill="currentColor">
+    Memory items
+  </text>
+  <text x="28" y="337" fill="currentColor" opacity="0.6">
+    written by extraction
+  </text>
+  <text x="260" y="327" fill="currentColor" opacity="0.85">
+    facts, events, preferences, lessons: quoted, trusted by source, in time
+  </text>
+  <rect x="10" y="360" width="940" height="60" rx="8" fill="currentColor" opacity="0.05" />
+  <rect
+    x="10"
+    y="360"
+    width="940"
+    height="60"
+    rx="8"
+    fill="none"
+    stroke="currentColor"
+    opacity="0.35"
+  />
+  <text x="28" y="386" fill="currentColor">
+    Memory files
+  </text>
+  <text x="28" y="407" fill="currentColor" opacity="0.6">
+    opt-in
+  </text>
+  <text x="260" y="397" fill="currentColor" opacity="0.85">
+    notes under /memories through the memory tool, observations, the playbook
+  </text>
+  <rect x="10" y="430" width="940" height="60" rx="8" fill="currentColor" opacity="0.16" />
+  <rect
+    x="10"
+    y="430"
+    width="940"
+    height="60"
+    rx="8"
+    fill="none"
+    stroke="currentColor"
+    opacity="0.35"
+  />
+  <text x="28" y="456" fill="currentColor">
+    Thread entries
+  </text>
+  <text x="28" y="477" fill="currentColor" opacity="0.6">
+    always
+  </text>
+  <text x="260" y="467" fill="currentColor" opacity="0.85">
+    a tree of entries: branches, rewind, fork, forget and redact
+  </text>
+  <rect x="10" y="500" width="940" height="60" rx="8" fill="currentColor" opacity="0.16" />
+  <rect
+    x="10"
+    y="500"
+    width="940"
+    height="60"
+    rx="8"
+    fill="none"
+    stroke="currentColor"
+    opacity="0.35"
+  />
+  <text x="28" y="526" fill="currentColor">
+    Store
+  </text>
+  <text x="28" y="547" fill="currentColor" opacity="0.6">
+    always
+  </text>
+  <text x="260" y="537" fill="currentColor" opacity="0.85">
+    SQLite, Postgres, Redis, MongoDB or in process, and a vector store
+  </text>
+  <rect x="10" y="580" width="940" height="60" rx="8" fill="currentColor" opacity="0.05" />
+  <rect
+    x="10"
+    y="580"
+    width="940"
+    height="60"
+    rx="8"
+    fill="none"
+    stroke="currentColor"
+    opacity="0.35"
+  />
+  <text x="28" y="606" fill="currentColor">
+    After a run
+  </text>
+  <text x="28" y="627" fill="currentColor" opacity="0.6">
+    opt-in
+  </text>
+  <text x="260" y="617" fill="currentColor" opacity="0.85">
+    compaction, extraction, observations and consolidation
+  </text>
+</svg>
+
+Darker layers are on once memory is configured, the context and retrieval with `memory.contextBuilder` and the message index with `memory.embedding`. Lighter ones are opt-in.
+
+- **Store.** One thread store (`memory.adapter`) keeps the entries, memory items and memory file versions, and a vector store keeps the embeddings: pgvector on Postgres, `memory.qdrant`, or vectors in process. See [Choosing an Adapter](#choosing-an-adapter).
+- **Thread entries.** A thread is a tree of entries: a run appends to the active branch, and a replay or a fork writes a branch of its own that never shows up in the conversation it split from. Rewinding, forgetting and redacting take what stands on an entry out of every layer above it. See [Threads as Trees](#threads-as-trees) and [Forgetting, Redacting and Rewinding](#forgetting-redacting-and-rewinding).
+- **Message index.** With `memory.embedding`, every message is embedded once, in the background, so a search reaches the whole thread instead of its newest turns. See [History Strategies](#history-strategies).
+- **Retrieval.** The context builder fills a token budget by partitions and picks the history by a strategy: `recent` the newest turns that fit, `relevant` the turns closest to the input, `hybrid` the newest turns plus a recall of earlier turns and memory items that match the turn. See [Context Building](#context-building) and [Recall](#recall).
+- **Memory items.** What conversations established, as facts, events, preferences, instructions, opinions and lessons, each grounded in quotes, trusted by who said it and kept with when it held, so a newer state closes the old one. [Extraction](#extraction-after-a-run) writes them, the facts partition and recall read them. See [Memory Items](#memory-items).
+- **Memory files.** Notes an agent keeps under `/memories` with the `memory` tool, every change a version. Observations of the entities memory knows about and the playbook of lessons are memory files too. See [Memory Files](#memory-files) and [Between Runs](#between-runs).
+- **Between runs.** Compaction folds a long thread into a hierarchical summary, extraction writes memory items, observations and consolidation keep the files in shape, and the brief prepares cards for the next turn. See [Sessions, Compaction and Core Facts](#sessions-compaction-and-core-facts).
+
+### What Is On by Default
+
+The defaults follow the [memory benchmarks](/docs/memory/benchmarks): a stage is on only where it won without a cost worth noticing.
+
+| Layer                                            | Default                                         | Measured reason                                                                                                                                                                       |
+| ------------------------------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| History strategy (`contextBuilder.strategy`)     | `hybrid` with `memory.embedding`, else `recent` | `hybrid` gained 7 to 60 points over `recent` on all seven datasets (44.9% against 18.0% on average), as much as `relevant` at three quarters of its cost and with a lower p95 latency |
+| `relevant`                                       | opt-in                                          | An equal choice for question answering over long histories, without the prompt cache `hybrid` keeps                                                                                   |
+| Compaction (`memory.compaction`)                 | off                                             | Saves 55% of the input tokens and helps sessions up to about 100K tokens, lost to `recent` past that. Use it to save tokens, not as memory                                            |
+| Extraction (`memory.extraction`)                 | off, start with `mode: 'shadow'`                | Gained 5 to 16 points over `recent` (most on preferences), below `hybrid` everywhere, and its calls cost three times the answers                                                      |
+| Memory files, brief, observations, consolidation | off                                             | Not measured by the benchmarks                                                                                                                                                        |
+
+Without `contextBuilder`, a run loads the last 20 entries of the thread's active branch. A `strategy` you set is always kept, so set `strategy: 'recent'` to keep the newest turns only with embeddings configured. The memory stages (compaction chapters, extraction) were measured with `claude-haiku-5-5` only.
 
 ## Results and `unwrap()`
 
@@ -550,7 +740,7 @@ await cog.run(agent, { input: 'What is my name?', threadId: 'thread-alice' });
 ```
 
 - `memory.adapter` names the thread store and takes its settings from the key of the same name: `'memory'` (`inMemory`), `'redis'` (`redis.url`, `redis.host` + `redis.port`, or `redis.cluster`), `'postgres'` (`postgres.connectionString`), `'sqlite'` (`sqlite.path`) or `'mongodb'` (`mongodb.uri`). When the required setting is missing or the connection fails, the run goes on without memory and logs a warning, and the failed adapter is disconnected so nothing keeps reconnecting in the background. An adapter you connect yourself can be assigned with `cog.memory = adapter`, such runs load the last 20 entries of the active branch, since the context builder is only created from the `memory` config.
-- With `contextBuilder` set, each run builds its context as described above. Without `maxTokens` the budget is the context window of the model the run starts on (from the model registry, else the model family, else 8192 tokens, and at most 4096 on Ollama, which serves no more by default, except Ollama Cloud), minus room for the answer (the agent's `maxTokens`, else 15% of the window, at most half of it) and the tool schemas, and below the point where `context` compression would start when it is on, and `strategy` defaults to `'recent'`. The runtime passes that budget once, with `reserveTokens: 0`, and the builder counts the input in it (the `final` partition), so nothing is reserved twice. With `maxTokens` set, the builder's `reserveTokens` applies as usual. Set `maxTokens` to cap the history, and the cost of every turn, on long threads, or to use a larger context your Ollama server runs with (`OLLAMA_CONTEXT_LENGTH`). The agent's instructions are always sent and counted in the budget (`includeSystemPrompt: false` is ignored with a warning), and a run with instructions larger than the budget logs a warning. What memory recalls for the turn (`memoryContext`, with the run's `brief`), the run's `context` and the insights of reflection go into the final user message in front of the input, inside one `<memory_context>` block, so the system prompt and the history stay the same from turn to turn and are read from the prompt cache, and only the input is saved to the thread. Parts that fail to load are passed to `onMemoryError` with the `'load'` operation, and the run goes on without them. Options the runtime cannot serve log a warning at connect: `includeFacts` needs a store that keeps memory items or facts (every built-in thread store keeps items), `includeSemanticContext` needs `memory.embedding` and an embedding store, and `includeGraphContext` has no effect, since the runtime builds no knowledge graph. A Postgres store is also the fact adapter, and the embedding adapter unless `memory.qdrant` is set. The runtime creates the Postgres `embeddings` table with the vector size of `memory.embedding` (768 without one, or the size of an existing table). A Postgres store without pgvector still keeps threads and facts, but is not used for semantic context, and a warning names the reason. With `relevant` or `hybrid` and `memory.embedding`, the runtime keeps a message index on every memory, so every message is embedded once, in the background, and `close()` waits for that work: in the embedding store (the Postgres store or `memory.qdrant`), else in process. The in-process `memory` adapter is always indexed in process, and a lasting store without an embedding store keeps up to 50,000 vectors, of the threads used lately, indexing a thread again when a run uses it after it was dropped. An adapter that reports no changes logs a warning, since the vectors of its deleted entries would stay. Indexing failures are logged with the `index` operation. Without `contextBuilder`, a run loads the last 20 entries of the thread's active branch.
+- With `contextBuilder` set, each run builds its context as described above. Without `maxTokens` the budget is the context window of the model the run starts on (from the model registry, else the model family, else 8192 tokens, and at most 4096 on Ollama, which serves no more by default, except Ollama Cloud), minus room for the answer (the agent's `maxTokens`, else 15% of the window, at most half of it) and the tool schemas, and below the point where `context` compression would start when it is on, and `strategy` defaults to `'hybrid'` when `memory.embedding` is set, else to `'recent'` (a `strategy` you set is kept, see [What Is On by Default](#what-is-on-by-default)). The runtime passes that budget once, with `reserveTokens: 0`, and the builder counts the input in it (the `final` partition), so nothing is reserved twice. With `maxTokens` set, the builder's `reserveTokens` applies as usual. Set `maxTokens` to cap the history, and the cost of every turn, on long threads, or to use a larger context your Ollama server runs with (`OLLAMA_CONTEXT_LENGTH`). The agent's instructions are always sent and counted in the budget (`includeSystemPrompt: false` is ignored with a warning), and a run with instructions larger than the budget logs a warning. What memory recalls for the turn (`memoryContext`, with the run's `brief`), the run's `context` and the insights of reflection go into the final user message in front of the input, inside one `<memory_context>` block, so the system prompt and the history stay the same from turn to turn and are read from the prompt cache, and only the input is saved to the thread. Parts that fail to load are passed to `onMemoryError` with the `'load'` operation, and the run goes on without them. Options the runtime cannot serve log a warning at connect: `includeFacts` needs a store that keeps memory items or facts (every built-in thread store keeps items), `includeSemanticContext` needs `memory.embedding` and an embedding store, and `includeGraphContext` has no effect, since the runtime builds no knowledge graph. A Postgres store is also the fact adapter, and the embedding adapter unless `memory.qdrant` is set. The runtime creates the Postgres `embeddings` table with the vector size of `memory.embedding` (768 without one, or the size of an existing table). A Postgres store without pgvector still keeps threads and facts, but is not used for semantic context, and a warning names the reason. With `relevant` or `hybrid` and `memory.embedding`, the runtime keeps a message index on every memory, so every message is embedded once, in the background, and `close()` waits for that work: in the embedding store (the Postgres store or `memory.qdrant`), else in process. The in-process `memory` adapter is always indexed in process, and a lasting store without an embedding store keeps up to 50,000 vectors, of the threads used lately, indexing a thread again when a run uses it after it was dropped. An adapter that reports no changes logs a warning, since the vectors of its deleted entries would stay. Indexing failures are logged with the `index` operation. Without `contextBuilder`, a run loads the last 20 entries of the thread's active branch.
 - With `strategy: 'hybrid'` each run [recalls](#recall) older turns and memory items into the turn's memory context. `memory.reranker` (a `Reranker`, set in code) reorders the best hits. `contextBuilder.timeZone` (an IANA zone, `memory.extraction.timeZone` by default, else UTC) is the calendar of recalled dates and of the time a turn names, and a run on a thread whose `metadata.timeZone` is a valid zone uses that one. `RunOptions.asOf` sets the moment the turn is read at, now by default, to replay or evaluate a conversation recorded at another time: "yesterday" is resolved from it, and the facts and recalled items are those that held then.
 - Embedding cost: `relevant` and `hybrid` embed every entry of a thread once, in the background, which is one embedding per message, plus one embedding of the input per turn. After importing a conversation, `await cog.indexMemory(threadId)` embeds every entry of the thread the index has not reached yet, a page of 500 at a time, and returns once the vectors are stored, so the first search already sees the whole thread. It does nothing without an index (the `recent` strategy or no `memory.embedding`). It fails when the embedding store refuses a vector.
 - A run counts the memory items it sent to the model, the facts and the recalled items, once it finishes or pauses for approval: each item's `timesRetrieved` goes up and `lastRetrievedAt` is set. The counts are written in the background, one after another, so the run does not wait on them, a failure is logged, and `close()` waits for them.
@@ -703,7 +893,7 @@ A part to compact under a tenth of the kept tail is left for later (`compact()` 
 
 **Atoms.** A `CompactionAtom` is one thing the conversation established: its `kind` (`fact`, `task`, `decision`, `constraint`, `error`, `file`, or `thread` for a question left open), its `status` (`open` or `closed`), a short `text` and its `evidence`, quotes of the entries it stands on. Every kind but `fact` and `file` is a control atom, something a reader must not lose while it is open.
 
-**Grounding.** Each quote is checked against the entry it names, as [lineage](#lineage) checks facts. An atom whose quotes all hold is `verified`, any other is a suggestion. A `constraint` or a `decision` that only tool outputs show is not verified either, so text a tool fetched does not become a rule. An answer that is not a valid array is asked for again, up to three tries in all, and then the compaction fails. Some atoms need no model: the files tool calls worked on (arguments such as `path`, `file`, `file_path` or `filename`), tool calls that failed (`bash {"command":"npm test"} failed: exit 1`, known by the tool and its files, or its arguments when it names no files) and task lines (`TODO:`, `- [ ]`) are taken from the entries themselves, so no answer can lose them. A failed call is closed by a later call of the same tool that succeeds on the same files, or with the same arguments when it names no files, and `- [ ] item` by `- [x] item`.
+**Grounding.** Each quote is checked against the entry it names, as [lineage](#lineage) checks facts. An atom whose quotes all hold is `verified`, any other is a suggestion. A `constraint` or a `decision` that only tool outputs show is not verified either, so text a tool fetched does not become a rule. The array of atoms is found past any text and brackets around it, and an element that is not an atom (such as one of another kind) is left out instead of the whole answer. An answer cut at its length limit inside the array keeps the atoms it finished, and the summarizer is asked to go on after the last one, up to four times, so a dense chapter is summarized whole. An answer that holds no array is asked for again, up to three tries in all, and then the compaction fails. Some atoms need no model: the files tool calls worked on (arguments such as `path`, `file`, `file_path` or `filename`), tool calls that failed (`bash {"command":"npm test"} failed: exit 1`, known by the tool and its files, or its arguments when it names no files) and task lines (`TODO:`, `- [ ]`) are taken from the entries themselves, so no answer can lose them. A failed call is closed by a later call of the same tool that succeeds on the same files, or with the same arguments when it names no files, and `- [ ] item` by `- [x] item`.
 
 **Levels.** Chapters beyond `chaptersPerArc` fold into arcs, oldest first, and arcs beyond `arcsPerSaga` fold into the saga. Folding merges atoms by kind and text with no model, so no open item in the middle of a long thread is lost. The saga keeps every open control atom and the newest 200 facts and files (`SAGA_ATOMS`), leaving out items done long ago, so the handoff stops growing. A later status wins, except that a control atom is closed or opened again only by an atom whose evidence holds: a claim of done the conversation does not show leaves it open, and a repeat that does not hold does not bring back an item that was done. An open item that a window shows only in the overlap it opens with belongs to the window before and is left out.
 
@@ -738,7 +928,7 @@ const anthropicCompaction = new CompactionService({
 
 ### Compaction After a Run
 
-`memory.compaction` (`MemoryCompactionConfig`) has a Cogitator compact a run's thread once the run is done, so the next run starts from the handoff and the newest turns instead of a conversation that no longer fits:
+`memory.compaction` (`MemoryCompactionConfig`) has a Cogitator compact a run's thread once the run is done, so the next run starts from the handoff and the newest turns instead of a conversation that no longer fits. It is off by default: on the [memory benchmarks](/docs/memory/benchmarks) it sent 55% fewer input tokens and helped threads up to about 100K tokens, and lost to `recent` on longer ones, so use it to save tokens rather than as memory:
 
 ```typescript
 const cog = new Cogitator({
@@ -948,7 +1138,7 @@ const written = await extractor.extract(entries, { scope, timeZone: 'Europe/Lisb
 ```
 
 - `extract(entries, context)` leaves out system and `compaction` entries and reads the rest in windows of about `windowTokens` tokens, cut as compaction chapters are, one model call each. The model gets the window as a numbered transcript, each message with the date it was written, and `EXTRACTION_PROMPT` as its instructions, with the date of the session (`sessionLine`, such as `The session took place on Wednesday, 2026-10-21 (Europe/Lisbon).`) and `prompt` after it. Your `summarize` must send the prompt it is given as its instructions, as for compaction.
-- The answer is a JSON array of items, each with its `kind`, `content`, `subject`, `attribute`, `value`, `confidence`, the time words marked up as a `TimeExpression` and its `evidence` as message numbers and quotes. A field that is `null`, blank or does not fit is read as absent, and an item that does not fit is left out. Only an answer that holds no JSON array is asked for again, up to three tries in all, and then `read` throws an `ExtractionAnswerError`, and `extract` a `WindowError` with the entries that window was the first to read (`own`).
+- The answer is a JSON array of items, each with its `kind`, `content`, `subject`, `attribute`, `value`, `confidence`, the time words marked up as a `TimeExpression` and its `evidence` as message numbers and quotes. The array is found past any text and brackets around it, such as a message number (`[3]`) the model mentions. A field that is `null`, blank or does not fit is read as absent, and an item, or an element that is not JSON, is left out. An answer cut at its length limit inside the array keeps the items it finished, and the model is asked to go on after the last one (`extractionContinuationPrompt`), up to `EXTRACTION_CONTINUATIONS` (4) times, so a window dense with facts is read whole. A continuation that brings no array ends the window with what was read. Only an answer that holds no JSON array is asked for again, up to three tries in all, and then `read` throws an `ExtractionAnswerError`, and `extract` a `WindowError` with the entries that window was the first to read (`own`).
 - `parseExtraction(answer, window, context)` checks every item: each quote is tied to the entry its number names and checked against it ([lineage](#lineage)), and an item is `verified` only when it has quotes and all of them hold. Its trust is that of the least trusted entry one of its holding quotes is in (`trustOfEntry`: a user message is `user`, or `model` when another user wrote it (its `metadata.userId`, which a run with a user saves on its user messages, is not the user of `context.scope`), a tool result `tool`, or `web` for a tool whose name says it fetches pages, such as `web_search` or `fetch_url`, and an assistant message `model`), and `model` when no quote holds, so a statement a page or the assistant made is never the user's, whatever else is quoted with it. Its time words are resolved in `context.timeZone` from the date of the first entry it quotes, the message that said them, else from the session date (`context.sessionAt`, the time of the window's last entry by default), and that date is its `saidAt` and `sessionAt`.
 - The items are written in order through `MemoryItems`, so an item said again merges and a newer state closes the one it follows. Nothing is updated or deleted on the model's word. `extract` returns the items as written, and `read(window, context)` the checked items of one window, unwritten. `extract(entries, context, { onWindow, skip })` lets a caller keep its place: `onWindow(own, items)` is awaited once a window's items are written, and `skip(error, own, index)` may return `true` to go on without a window that failed. `beforeWindow(own)` returning `false` stops the extraction before a window's model call, with what it wrote so far, and `beforeWrite(items)` returns the items of a window to write, such as without those whose entries were forgotten while the model answered.
 
@@ -968,6 +1158,7 @@ const cog = new Cogitator({
       timeZone: 'Europe/Lisbon', // default: UTC
       windowTokens: 4000, // default
       activationConfidence: 0.7, // default
+      mode: 'apply', // default, 'shadow' keeps every new item suggested for review
       prompt: 'Mind diets and allergies.',
       afterExtract: (kept) => console.log(kept.map((item) => item.content)),
     },
@@ -986,6 +1177,7 @@ await cog.run(agent, {
 - A window the model could not answer (no JSON array after three tries, `ExtractionAnswerError`) fails the extraction, and the cursor counts it (`failures`, `failedThrough`). Only when the same window failed three extractions in a row does the next one leave it out, with a warning, so one window cannot hold the thread back. A provider, storage or abort failure never leaves a window out.
 - Runs of one thread extract one after another. A run whose leaf other runs of the thread appended after is still extracted.
 - The items are kept under the agent's memory id, its configured `id`, else its `name` (`memoryAgentId(agent)`, the `memoryAgentId` of the `afterRun` event), so a new instance of the agent finds them. `scope` decides who they belong to: `user` (default) the run's own user, never the thread's owner, `agent` everyone the agent talks to, and `thread` the thread alone. With `user` a run without a user keeps its items in the thread's scope, so visitors never share them. User messages a run with a user saves carry `metadata.userId`, so another user's words in a shared thread count as a claim (`model`), not as the user's.
+- Extraction is off by default. Turn it on with `mode: 'shadow'` first: every new item is written as `suggested`, so it reaches no context, no recall and no fact, and an item said again merges into the one kept as before. Review what it wrote with `MemoryItems.query({ scope, statuses: ['suggested'] })` (`afterExtract` hears every item too), activate the items you trust with `MemoryItems.activate(id)`, and switch to `apply` once the items are worth it. A `mode` that is neither `apply` nor `shadow` throws when the middleware is built.
 - Relative dates are resolved in the thread's `metadata.timeZone` when it is a valid IANA zone (`isTimeZone`), else in `timeZone`, else in UTC.
 - `windowTokens` must be a whole number above 0 and `activationConfidence` from 0 to 1, else building the middleware throws. `afterExtract(items)` gets the items an extraction wrote, and an error it throws is logged.
 - Each call asks for an answer of up to 8000 tokens (`SummarizeOptions.maxTokens`). The extraction calls are counted in the run's costs (`getCostSummary()`) and in the `usage` it returns, and they stop with the run's `signal`: an aborted run is not extracted.

@@ -420,6 +420,7 @@ describe('CogitatorConfigSchema', () => {
       prompt: 'Mind the allergies.',
       windowTokens: 3000,
       activationConfidence: 0.8,
+      mode: 'shadow' as const,
       scope: 'thread' as const,
       timeZone: 'Europe/Lisbon',
     };
@@ -430,6 +431,7 @@ describe('CogitatorConfigSchema', () => {
     for (const invalid of [
       { windowTokens: 0 },
       { activationConfidence: 1.5 },
+      { mode: 'dry-run' },
       { scope: 'world' },
       { timeZone: 'Mars/Olympus' },
       { model: '' },

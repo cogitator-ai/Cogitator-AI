@@ -1,6 +1,7 @@
 import type { ModelPricing } from '@cogitator-ai/models';
 import type {
   CogitatorConfig,
+  ContextStrategy,
   Constitution,
   EmbeddingAdapter,
   EmbeddingService,
@@ -97,6 +98,15 @@ export interface InitializerState {
   contextManagerInitialized: boolean;
 }
 
+/**
+ * The history strategy of a `memory.contextBuilder` that names none: `hybrid` with
+ * `memory.embedding`, which finds the earlier turns and memory items a question needs on a long
+ * thread, else `recent`, the newest turns that fit
+ */
+export function defaultContextStrategy(embedding: EmbeddingService | undefined): ContextStrategy {
+  return embedding ? 'hybrid' : 'recent';
+}
+
 export async function initializeMemory(
   config: CogitatorConfig,
   state: InitializerState
@@ -128,7 +138,7 @@ export async function initializeMemory(
       (await connectEmbeddingStore(memory, embeddingService, state)) ?? embeddingStoreOf(adapter);
     const contextConfig = {
       ...memory.contextBuilder,
-      strategy: memory.contextBuilder.strategy ?? 'recent',
+      strategy: memory.contextBuilder.strategy ?? defaultContextStrategy(embeddingService),
       includeSystemPrompt: true,
       ...(memory.contextBuilder.timeZone === undefined &&
         memory.extraction?.timeZone !== undefined && { timeZone: memory.extraction.timeZone }),

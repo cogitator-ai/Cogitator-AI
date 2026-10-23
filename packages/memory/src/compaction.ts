@@ -24,8 +24,10 @@ import {
   lostControls,
   mergeAtoms,
   nodesOf,
+  CHAPTER_CONTINUATIONS,
+  chapterContinuationPrompt,
   openItemsPrompt,
-  parseChapter,
+  readChapter,
   renderHandoff,
   structuralAtoms,
 } from './compaction-hierarchy';
@@ -396,7 +398,9 @@ export class CompactionService {
   /**
    * The atoms of a chapter: what the summarizer finds in `window` (asked with
    * {@link CHAPTER_PROMPT} and the `open` control atoms of earlier chapters, which it may close,
-   * asked again up to twice for an answer that is not a valid array), with the control atoms the
+   * asked again up to twice for an answer that holds no array of atoms, and asked to go on after
+   * the last atom, up to {@link CHAPTER_CONTINUATIONS} times, when its length limit cut the
+   * answer inside the array), with the control atoms the
    * entries of `own` (the window less the overlap it opens with) hold in their structure, which
    * no answer can lose. Those come first, so an item the summarizer closes with evidence that
    * holds stays closed. An open item only the overlap shows belongs to the chapter before and is
@@ -412,16 +416,29 @@ export class CompactionService {
       .filter(Boolean)
       .join('\n\n');
     const transcript = chapterTranscript(window, config.chapterTokens ?? DEFAULT_CHAPTER_TOKENS);
-    let atoms: CompactionAtom[] | undefined;
-    for (let attempt = 0; attempt < 3 && atoms === undefined; attempt++) {
-      const answer = await this.summarize([{ role: 'user', content: transcript }], {
-        model: config.summaryModel,
-        prompt,
-      });
-      atoms = parseChapter(answer, window);
-    }
-    if (atoms === undefined) {
-      throw new Error('The summarizer did not answer with the atoms of a chapter after 3 tries');
+    const atoms: CompactionAtom[] = [];
+    const seen = new Set<string>();
+    let messages: Message[] = [{ role: 'user', content: transcript }];
+    for (let continuation = 0; continuation <= CHAPTER_CONTINUATIONS; continuation++) {
+      const answer = await this.chapterAnswer(messages, config, prompt, window);
+      if (!answer) {
+        if (continuation === 0) {
+          throw new Error(
+            'The summarizer did not answer with the atoms of a chapter after 3 tries'
+          );
+        }
+        break;
+      }
+      const fresh = answer.read.atoms.filter((atom) => !seen.has(listedKey(atom)));
+      for (const atom of fresh) seen.add(listedKey(atom));
+      atoms.push(...fresh);
+      const last = answer.read.atoms.at(-1);
+      if (!answer.read.cut || !last || fresh.length === 0) break;
+      messages = [
+        { role: 'user', content: transcript },
+        { role: 'assistant', content: answer.text },
+        { role: 'user', content: chapterContinuationPrompt(atoms.length, last.text) },
+      ];
     }
     const own = new Set((options.own ?? window).map((entry) => entry.id));
     const restated = ({ status, evidence = [] }: CompactionAtom) =>
@@ -438,6 +455,21 @@ export class CompactionService {
     ]);
   }
 
+  /** The summarizer's answer to `messages` that holds an array of atoms, of three tries at most */
+  private async chapterAnswer(
+    messages: Message[],
+    config: CompactionConfig,
+    prompt: string,
+    window: readonly MemoryEntry[]
+  ): Promise<{ text: string; read: { atoms: CompactionAtom[]; cut: boolean } } | undefined> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const text = await this.summarize(messages, { model: config.summaryModel, prompt });
+      const read = readChapter(text, window);
+      if (read) return { text, read };
+    }
+    return undefined;
+  }
+
   getSummarizeFn(): SummarizeFn {
     return this.summarize;
   }
@@ -445,6 +477,11 @@ export class CompactionService {
   getAdapter(): MemoryAdapter {
     return this.adapter;
   }
+}
+
+/** An atom by its kind, words and status, so a continuation that says one again adds nothing */
+function listedKey(atom: CompactionAtom): string {
+  return `${atomKey(atom)}\u0000${atom.status}`;
 }
 
 function lastOf(entries: readonly MemoryEntry[]): { lastCompactedEntryId?: string } {

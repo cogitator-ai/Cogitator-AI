@@ -1,0 +1,195 @@
+---
+title: Memory Benchmarks
+description: How the memory strategies of the runtime were measured on seven long-memory datasets, the results with their confidence intervals, and the defaults they decided.
+---
+
+The memory of a Cogitator run can be built five ways, from keeping only the newest turns to compacting the thread or extracting memory items from it. This page is the measurement behind the [defaults](/docs/memory#what-is-on-by-default): every strategy answered the same 2,222 questions of seven long-memory datasets on the same model and context budget, and its answers were scored the way each dataset scores them.
+
+Read the numbers as a comparison of the strategies of this runtime, not as leaderboard figures. One model answered, ran the memory stages and judged, the context was held at 8192 tokens on purpose so memory has to choose, and the datasets were adapted to the runtime as described under [Methodology](#methodology).
+
+## Results
+
+Averaged over the seven datasets, each dataset counting once:
+
+| Strategy    | Accuracy, mean of datasets | Answer cost per 1000 questions | Input tokens per question | Cache hit | Latency p50 / p95 | Context build p50 / p95 |
+| ----------- | -------------------------- | ------------------------------ | ------------------------- | --------- | ----------------- | ----------------------- |
+| `recent`    | 18.0%                      | $0.53                          | 10,549                    | 81.6%     | 2.0 / 8.0 s       | 4 / 32 ms               |
+| `relevant`  | 44.6%                      | $1.53                          | 10,721                    | 12.1%     | 2.8 / 12.6 s      | 11 / 72 ms              |
+| `hybrid`    | 44.9%                      | $1.14                          | 10,332                    | 26.6%     | 2.7 / 9.5 s       | 59 / 261 ms             |
+| `compacted` | 21.0%                      | $0.34                          | 4,729                     | 82.5%     | 2.2 / 7.2 s       | 3 / 8 ms                |
+| `extracted` | 23.1%                      | $0.66                          | 10,731                    | 57.9%     | 2.6 / 11.1 s      | 19 / 85 ms              |
+
+The answer cost counts the questions only. Compaction and extraction also pay once per conversation for their own model calls: $36.42 for compacting every conversation of the run and $31.60 for extracting from them, against $9.78 for all answers of all five strategies.
+
+- `relevant` and `hybrid` beat `recent` on every dataset, by 7 to 67 points, and their intervals overlap on every dataset. `hybrid` costs a quarter less, keeps more of the prompt cache and has the lower tail latency, for about 50 ms more context build at the median.
+- `compacted` wins up to about 100K tokens (BEAM 100K +19.1, LongMemEval-S +11.0) and loses to `recent` on BEAM 500K and 1M and on MemoryAgentBench. It sends 55% fewer input tokens per question.
+- `extracted` gains 5 to 16 points over `recent` on BEAM and LongMemEval-S, most on preferences (BEAM 500K preference following 87.5% against 69.0%), and stays below `relevant` and `hybrid` on every dataset.
+
+### By dataset
+
+Accuracy is the mean score of the questions, a failed answer counted as zero. "vs `recent`" is the difference in points on the same questions. Both intervals are 95% cluster bootstrap intervals, see [Scoring](#scoring).
+
+#### LongMemEval-S
+
+| Strategy    | Questions | Accuracy (95% CI)      | vs `recent`, points (95% CI) | Input tokens per question | Cache hit | Latency p50 / p95 | Answer cost |
+| ----------- | --------- | ---------------------- | ---------------------------- | ------------------------- | --------- | ----------------- | ----------- |
+| `recent`    | 100       | 14.0% (8.0% to 21.0%)  | -                            | 9,734                     | 0.0%      | 2.3 / 5.4 s       | $0.14       |
+| `relevant`  | 100       | 81.0% (72.0% to 88.0%) | +67.0 (+57.0 to +76.0)       | 10,055                    | 0.0%      | 3.2 / 6.6 s       | $0.15       |
+| `hybrid`    | 100       | 74.0% (65.0% to 82.0%) | +60.0 (+49.0 to +70.0)       | 9,970                     | 0.0%      | 2.5 / 5.6 s       | $0.14       |
+| `compacted` | 100       | 25.0% (17.0% to 34.0%) | +11.0 (+2.0 to +20.0)        | 5,573                     | 0.0%      | 2.0 / 3.8 s       | $0.08       |
+| `extracted` | 100       | 25.0% (17.0% to 33.0%) | +11.0 (+2.0 to +20.0)        | 9,889                     | 0.0%      | 2.3 / 4.5 s       | $0.14       |
+
+#### BEAM 100K
+
+| Strategy    | Questions | Accuracy (95% CI)      | vs `recent`, points (95% CI) | Input tokens per question | Cache hit | Latency p50 / p95 | Answer cost |
+| ----------- | --------- | ---------------------- | ---------------------------- | ------------------------- | --------- | ----------------- | ----------- |
+| `recent`    | 400       | 24.3% (21.7% to 27.0%) | -                            | 10,125                    | 84.0%     | 3.7 / 10.4 s      | $0.41       |
+| `relevant`  | 400       | 50.4% (47.9% to 53.0%) | +26.1 (+22.3 to +29.9)       | 10,365                    | 0.0%      | 6.6 / 15.4 s      | $0.95       |
+| `hybrid`    | 400       | 49.3% (46.0% to 53.3%) | +25.0 (+21.1 to +29.4)       | 10,042                    | 21.8%     | 4.8 / 12.2 s      | $0.74       |
+| `compacted` | 400       | 43.4% (40.2% to 46.6%) | +19.1 (+15.6 to +22.8)       | 6,792                     | 84.8%     | 3.4 / 11.7 s      | $0.38       |
+| `extracted` | 400       | 40.4% (37.0% to 43.5%) | +16.1 (+11.8 to +20.1)       | 10,255                    | 62.3%     | 4.2 / 12.4 s      | $0.56       |
+
+#### BEAM 500K
+
+| Strategy    | Questions      | Accuracy (95% CI)      | vs `recent`, points (95% CI) | Input tokens per question | Cache hit | Latency p50 / p95 | Answer cost |
+| ----------- | -------------- | ---------------------- | ---------------------------- | ------------------------- | --------- | ----------------- | ----------- |
+| `recent`    | 200            | 25.2% (20.5% to 30.0%) | -                            | 10,111                    | 47.2%     | 3.8 / 11.8 s      | $0.30       |
+| `relevant`  | 200            | 53.3% (47.8% to 58.6%) | +28.0 (+21.2 to +34.3)       | 10,631                    | 0.0%      | 6.9 / 15.0 s      | $0.50       |
+| `hybrid`    | 200            | 48.7% (43.2% to 54.1%) | +23.4 (+17.5 to +29.7)       | 10,334                    | 11.2%     | 4.2 / 12.6 s      | $0.41       |
+| `compacted` | 200 (6 failed) | 22.7% (17.9% to 27.7%) | -2.5 (-6.9 to +1.2)          | 3,636                     | 49.6%     | 2.9 / 8.1 s       | $0.17       |
+| `extracted` | 200            | 32.6% (28.0% to 37.4%) | +7.4 (+3.9 to +11.2)         | 10,206                    | 37.2%     | 3.3 / 15.7 s      | $0.34       |
+
+#### BEAM 1M
+
+| Strategy    | Questions       | Accuracy (95% CI)      | vs `recent`, points (95% CI) | Input tokens per question | Cache hit | Latency p50 / p95 | Answer cost |
+| ----------- | --------------- | ---------------------- | ---------------------------- | ------------------------- | --------- | ----------------- | ----------- |
+| `recent`    | 200             | 24.9% (20.9% to 29.6%) | -                            | 10,253                    | 49.1%     | 3.9 / 11.4 s      | $0.31       |
+| `relevant`  | 200             | 43.5% (38.6% to 48.6%) | +18.6 (+13.0 to +24.2)       | 10,764                    | 0.0%      | 7.9 / 17.7 s      | $0.54       |
+| `hybrid`    | 200             | 48.3% (43.5% to 53.0%) | +23.4 (+18.1 to +28.8)       | 10,508                    | 11.8%     | 5.4 / 13.6 s      | $0.45       |
+| `compacted` | 200 (12 failed) | 22.2% (17.7% to 26.1%) | -2.6 (-5.3 to -0.2)          | 2,151                     | 49.1%     | 3.0 / 8.9 s       | $0.16       |
+| `extracted` | 200             | 30.0% (24.4% to 35.1%) | +5.1 (+1.5 to +9.3)          | 10,317                    | 36.6%     | 4.4 / 15.5 s      | $0.38       |
+
+#### MemoryAgentBench conflicts
+
+| Strategy    | Questions        | Accuracy (95% CI)      | vs `recent`, points (95% CI) | Input tokens per question | Cache hit | Latency p50 / p95 | Answer cost |
+| ----------- | ---------------- | ---------------------- | ---------------------------- | ------------------------- | --------- | ----------------- | ----------- |
+| `recent`    | 800              | 29.5% (7.4% to 58.5%)  | -                            | 10,441                    | 98.3%     | 1.4 / 2.5 s       | $0.14       |
+| `relevant`  | 800              | 38.0% (15.9% to 63.8%) | +8.5 (+1.1 to +16.2)         | 10,378                    | 33.0%     | 1.5 / 2.7 s       | $0.76       |
+| `hybrid`    | 800              | 51.9% (26.2% to 77.5%) | +22.4 (+2.4 to +41.9)        | 9,809                     | 41.0%     | 1.8 / 3.2 s       | $0.55       |
+| `compacted` | 800              | 21.9% (0.2% to 50.8%)  | -7.6 (-13.2 to -3.2)         | 5,527                     | 97.9%     | 1.9 / 3.1 s       | $0.14       |
+| `extracted` | 800 (600 failed) | 22.1% (0.0% to 54.0%)  | -7.4 (-13.4 to -2.2)         | 10,764                    | 92.6%     | 1.5 / 3.0 s       | $0.05       |
+
+#### LongMemEval-V2 small
+
+| Strategy    | Questions | Accuracy (95% CI)      | vs `recent`, points (95% CI) | Input tokens per question | Cache hit | Latency p50 / p95 | Answer cost |
+| ----------- | --------- | ---------------------- | ---------------------------- | ------------------------- | --------- | ----------------- | ----------- |
+| `recent`    | 422       | 0.9% (0.5% to 1.3%)    | -                            | 11,702                    | 97.4%     | 1.9 / 4.0 s       | $0.12       |
+| `relevant`  | 422       | 30.6% (17.3% to 42.2%) | +29.6 (+16.8 to +40.9)       | 11,939                    | 2.8%      | 3.0 / 5.9 s       | $0.70       |
+| `hybrid`    | 422       | 27.7% (18.3% to 36.0%) | +26.8 (+17.8 to +34.7)       | 11,356                    | 27.4%     | 3.0 / 5.5 s       | $0.45       |
+| `compacted` | 422       | 2.8% (1.0% to 4.4%)    | +1.9 (+0.5 to +3.1)          | 2,785                     | 94.3%     | 1.8 / 3.8 s       | $0.08       |
+| `extracted` | 422       | 2.8% (1.5% to 4.0%)    | +1.9 (+1.0 to +2.7)          | 11,876                    | 67.9%     | 2.1 / 4.5 s       | $0.26       |
+
+#### LoCoMo (smoke)
+
+| Strategy    | Questions | Accuracy (95% CI)      | vs `recent`, points (95% CI) | Input tokens per question | Cache hit | Latency p50 / p95 | Answer cost |
+| ----------- | --------- | ---------------------- | ---------------------------- | ------------------------- | --------- | ----------------- | ----------- |
+| `recent`    | 100       | 7.2% (5.4% to 9.1%)    | -                            | 10,543                    | 71.8%     | 2.2 / 4.4 s       | $0.06       |
+| `relevant`  | 100       | 15.2% (12.8% to 17.4%) | +8.0 (+6.1 to +9.5)          | 10,509                    | 0.0%      | 2.3 / 4.8 s       | $0.14       |
+| `hybrid`    | 100       | 14.2% (12.1% to 16.7%) | +7.0 (+5.2 to +8.7)          | 11,378                    | 18.4%     | 2.4 / 4.4 s       | $0.13       |
+| `compacted` | 100       | 8.7% (6.3% to 11.4%)   | +1.5 (-1.9 to +4.8)          | 4,425                     | 70.8%     | 1.4 / 3.1 s       | $0.03       |
+| `extracted` | 100       | 8.8% (7.3% to 10.2%)   | +1.6 (+0.2 to +2.8)          | 10,461                    | 58.8%     | 2.2 / 4.1 s       | $0.07       |
+
+## What the numbers decided
+
+A memory stage is on by default only where it won without a cost worth noticing. Everything else is an option, with the advice below.
+
+| Layer                                            | Default                                               | Why                                                                                                                                                                                                              |
+| ------------------------------------------------ | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| History strategy                                 | `hybrid` with `memory.embedding`, `recent` without it | `hybrid` gained 7 to 60 points over `recent` on every dataset, as much as `relevant` at three quarters of its cost and a lower p95 latency                                                                       |
+| `relevant`                                       | opt-in                                                | An equal choice for question answering over long histories (the best on LongMemEval-S, 81.0%, and BEAM 500K, 53.3%), with no prompt cache to speak of                                                            |
+| Compaction                                       | off                                                   | Saves input tokens and helps sessions up to about 100K tokens, lost to `recent` past that and failed to finish on three of the longest conversations. Use it to save tokens, not as memory                       |
+| Extraction                                       | off, start with `mode: 'shadow'`                      | Below `hybrid` and `relevant` everywhere, and its calls cost $31.60, three times all the answers of the run. In shadow mode the items are written as `suggested` for review and reach no context until activated |
+| Memory files, brief, observations, consolidation | off                                                   | Not measured by these benchmarks                                                                                                                                                                                 |
+
+The memory stages ran on `claude-haiku-5-5`, a cheap model, and it is the only one measured, so nothing here says how another model would do in them.
+
+## Failures
+
+Failures are counted as zero in every accuracy and interval above. Answers that failed and passed when the run was resumed are not counted.
+
+| Dataset and strategy          | Questions failed | Conversations                                                          | Cause                                                                                                      |
+| ----------------------------- | ---------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| BEAM 500K, `compacted`        | 6 of 200         | `500K:7`                                                               | The runtime started compacting the thread and did not finish within the run's time limit                   |
+| BEAM 1M, `compacted`          | 12 of 200        | `1M:6`, `1M:10`                                                        | The same                                                                                                   |
+| MemoryAgentBench, `extracted` | 600 of 800       | every conversation of 32K, 64K and 262K tokens (`factconsolidation_*`) | The extraction of one window failed, `The extraction model did not answer with memory items after 3 tries` |
+
+The extraction failures were a fault of the extractor, not of the model. A window of these conversations holds 130 to 270 numbered facts, and a model that lists them all writes 10K to 22K tokens against the 8000 an extraction call may write, so its answer was cut inside the JSON array. The extractor then read no item from it and asked again the same way, three times. The extractor now keeps the items a cut answer finished and asks the model to go on after the last one, and it reads the array past brackets in the text around it. The numbers on this page were measured before that fix, so `extracted` on MemoryAgentBench measures the failure, not extraction, and the two smaller conversations it answered (6K tokens each) are its only data there.
+
+## Caveats
+
+- **LoCoMo** is a smoke test: 100 sampled questions of 10 dialogues, scored by token F1 against short reference answers, which a full sentence scores low. Its absolute numbers mean little, and its ordering of the strategies broadly agrees with the other datasets.
+- **LongMemEval-V2 small** has two haystacks (`web-1`, `enterprise-0`) and **MemoryAgentBench** eight conversations, so their intervals, which resample conversations, are wide.
+- One model answered, ran the stages and judged, and the judge graded the answers of the same model. The judges follow each benchmark's own prompts, not the model each benchmark's paper used.
+- `compacted` and `extracted` answer on `recent` over what the stage left (the summary and the kept tail, or the memory items as facts), so they measure the stage alone, not the stage combined with retrieval.
+
+## Methodology
+
+### Setup
+
+| Setting         | Value                                                                                                                                                            |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Model           | `claude-haiku-5-5` for the answers, compaction chapters, extraction and the judge (thinking off for the judge)                                                   |
+| Context budget  | 8192 tokens (`contextBuilder.maxTokens`), answers of up to 4096 tokens                                                                                           |
+| Embeddings      | `gemini-embedding-001`, for the message index of `relevant` and `hybrid` and for recall of memory items                                                          |
+| Answering       | Every question is a real `cog.run` on the conversation's thread, not saved, one turn, with fixed instructions to answer from the history or say it does not know |
+| Samples         | Stratified by category, seed 42: LongMemEval-S 100 of 500 questions, BEAM 500K and 1M 200 of 700 each, LoCoMo 100, the other datasets whole                      |
+| Compaction      | `memory.compaction`, hierarchical, at 8192 tokens, keeping the newest 2048 tokens verbatim, chapters of 4000 tokens, after a closing turn                        |
+| Extraction      | `MemoryExtractor`, windows of 4000 tokens, items scoped to the conversation's thread, dates resolved from each window's own date                                 |
+| Cost of the run | $83.10: answers $9.78, compaction $36.42, extraction $31.60, judge $1.64, embeddings $3.66                                                                       |
+
+### Datasets
+
+Every dataset is downloaded at a pinned revision and never committed.
+
+| Dataset                    | Source, revision, license                                                  | Conversations | Questions     | Scored by                                                  |
+| -------------------------- | -------------------------------------------------------------------------- | ------------- | ------------- | ---------------------------------------------------------- |
+| LongMemEval-S              | `xiaowu0162/longmemeval-cleaned` at `98d7416c`, MIT                        | 100           | 100           | The LongMemEval yes or no judge prompts                    |
+| BEAM 100K, 500K, 1M        | `Mohammadta/BEAM` at `3205395e`, CC BY-SA 4.0                              | 20, 35, 35    | 400, 200, 200 | The BEAM rubric judge, one call per rubric item            |
+| MemoryAgentBench conflicts | `ai-hyz/MemoryAgentBench` Conflict_Resolution at `7ea06698`, MIT           | 8             | 800           | Normalized substring match                                 |
+| LongMemEval-V2 small       | `xiaowu0162/longmemeval-v2` at `f152293e`, Apache-2.0, text questions only | 2             | 422           | The LongMemEval-V2 evaluators, their LLM checkers included |
+| LoCoMo                     | `snap-research/locomo` at `3eb6f2c5`, CC BY-NC 4.0                         | 10            | 100           | Token F1                                                   |
+
+The adaptations to the runtime are part of the method: every turn carries the date of its session, the dataset's answering rules and its "today" go to the agent's instructions so retrieval searches the question alone, MemoryAgentBench facts go in as messages of about 2048 tokens (the input limit of the embedding model), LongMemEval-V2 trajectories go in as notes of earlier sessions with accessibility trees cut to 4000 characters and its questions with screenshots left out, and BEAM event ordering is scored by its rubric judge without the Kendall tau alignment.
+
+### Strategies
+
+| Strategy    | What the model sees                                                                                                                                                          |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `recent`    | The newest turns of the thread that fit the budget                                                                                                                           |
+| `relevant`  | The turns closest to the question by embedding, found through the message index                                                                                              |
+| `hybrid`    | The newest turns as history, and the earlier turns and memory items a search of memory finds for the question, in up to 60% of the budget, see [Recall](/docs/memory#recall) |
+| `compacted` | `recent` over the thread the runtime compacted: the hierarchical summary and the newest 2048 tokens verbatim                                                                 |
+| `extracted` | `recent` with the memory items extracted from the conversation as the facts of the context (`includeFacts`)                                                                  |
+
+### Scoring
+
+Scores run from 0 to 1 per question (a BEAM rubric gives half points), and a question whose answer failed, or whose retrieval fell back to the newest turns, scores 0. The questions of one conversation share its history, so they are not independent: the 95% intervals are cluster bootstrap intervals, 1000 resamples of whole conversations, and the difference to `recent` is resampled the same way over the paired questions.
+
+### Offline suites
+
+Two suites run on every benchmark run with an in-process model and cost nothing, and both passed in full:
+
+- **Consistency** (36 checks, 12 per retrieval strategy): a history larger than the budget, forks and their branches, rewinds, forgetting and redacting turns and the memory items from them, and runs without errors or fallbacks.
+- **Compaction loss** (16 checks): three rounds of compaction folded into arcs and a saga, every planted open item kept in the handoff and the levels, an item closed with evidence shown as done and one closed without it kept open, unverified quotes marked, the kept tail verbatim, junk answers asked again and never published.
+
+### Running it
+
+The benchmark lives in [`packages/gauntlet/src/memory-bench`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/packages/gauntlet/src/memory-bench), with the prompts and evaluators it takes from the benchmarks and their licenses. A run resumes from its results, so nothing paid for is asked again:
+
+```bash
+pnpm memory-bench --estimate
+pnpm memory-bench --datasets longmemeval-s,beam-100k,beam-500k,beam-1m,mab-conflict,lme-v2-small,locomo \
+  --strategies recent,relevant,hybrid,compacted,extracted \
+  --sample longmemeval-s=100,beam-500k=200,beam-1m=200,locomo=100 --run my-run
+pnpm memory-bench --consistency-only
+```

@@ -2,6 +2,7 @@ import { code } from '../code.js';
 import { providerInfo } from '../providers.js';
 import { bareModel, hasFeature } from '../spec.js';
 import { IMAGES } from '../versions.js';
+import { memoryEmbeds } from './memory.js';
 import type { FeatureModule } from './types.js';
 
 /** `value` as one word of a POSIX shell command, quoted unless it is a plain model name. */
@@ -23,7 +24,9 @@ export const providerFeature: FeatureModule = {
 
     if (spec.provider === 'ollama') {
       const models = [bareModel(spec)];
-      if (hasFeature(spec, 'rag') && info.embeddingModel) models.push(info.embeddingModel);
+      if ((hasFeature(spec, 'rag') || memoryEmbeds(spec)) && info.embeddingModel) {
+        models.push(info.embeddingModel);
+      }
 
       project.service(
         {

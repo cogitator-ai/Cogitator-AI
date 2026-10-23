@@ -14,6 +14,7 @@ import type {
   MemoryEntry,
   ToolCall,
 } from '@cogitator-ai/types';
+import { findAnswerArray } from './answer-array';
 import { verifyEvidence } from './lineage';
 import { countEntryTokens } from './token-counter';
 
@@ -105,42 +106,67 @@ const SPOKEN_KINDS: ReadonlySet<CompactionAtomKind> = new Set(['constraint', 'de
 /**
  * The atoms of a chapter model's `answer` about `window`: its JSON array, each quote tied to the
  * entry it names and checked against it. A constraint or a decision that only a tool output
- * shows is not verified, so text a tool fetched does not become a rule. Undefined when the
- * answer holds no valid array.
+ * shows is not verified, so text a tool fetched does not become a rule. The array is found past
+ * text and brackets around it, an element that is not an atom is left out instead of the whole
+ * answer, and of an answer cut at its length limit inside the array the atoms it finished are
+ * kept. Undefined when the answer holds no array of atoms.
  */
 export function parseChapter(
   answer: string,
   window: readonly MemoryEntry[]
 ): CompactionAtom[] | undefined {
-  const start = answer.indexOf('[');
-  const end = answer.lastIndexOf(']');
-  if (start === -1 || end <= start) return undefined;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(answer.slice(start, end + 1));
-  } catch {
-    return undefined;
-  }
-  const parsed = z.array(atomSchema).safeParse(raw);
-  if (!parsed.success) return undefined;
-  return parsed.data.map((item) => {
-    const evidence: Evidence[] = [];
-    let verified = item.evidence.length > 0;
-    let spoken = false;
-    for (const quote of item.evidence) {
-      const entry = window[quote.message];
-      if (!entry) {
-        verified = false;
-        continue;
-      }
-      const piece: Evidence = { entryId: entry.id, quote: quote.quote };
-      evidence.push(piece);
-      if (verifyEvidence(piece, entry) !== 'verified') verified = false;
-      if (entry.message.role !== 'tool') spoken = true;
-    }
-    if (SPOKEN_KINDS.has(item.kind) && !spoken) verified = false;
-    return { kind: item.kind, status: item.status, text: item.text, evidence, verified };
+  return readChapter(answer, window)?.atoms;
+}
+
+/**
+ * {@link parseChapter} with whether the answer was cut inside its array, so the chapter model can
+ * be asked to go on after the last atom
+ */
+export function readChapter(
+  answer: string,
+  window: readonly MemoryEntry[]
+): { atoms: CompactionAtom[]; cut: boolean } | undefined {
+  const found = findAnswerArray(answer);
+  if (!found) return undefined;
+  const atoms = found.values.flatMap((value) => {
+    const parsed = atomSchema.safeParse(value);
+    return parsed.success ? [checkedAtom(parsed.data, window)] : [];
   });
+  return { atoms, cut: found.cut };
+}
+
+/** An atom as the model wrote it, its quotes tied to the entries of `window` and checked */
+function checkedAtom(
+  item: z.infer<typeof atomSchema>,
+  window: readonly MemoryEntry[]
+): CompactionAtom {
+  const evidence: Evidence[] = [];
+  let verified = item.evidence.length > 0;
+  let spoken = false;
+  for (const quote of item.evidence) {
+    const entry = window[quote.message];
+    if (!entry) {
+      verified = false;
+      continue;
+    }
+    const piece: Evidence = { entryId: entry.id, quote: quote.quote };
+    evidence.push(piece);
+    if (verifyEvidence(piece, entry) !== 'verified') verified = false;
+    if (entry.message.role !== 'tool') spoken = true;
+  }
+  if (SPOKEN_KINDS.has(item.kind) && !spoken) verified = false;
+  return { kind: item.kind, status: item.status, text: item.text, evidence, verified };
+}
+
+/**
+ * Times the chapter model is asked to go on with a window whose answer its length limit cut, so
+ * a dense window is summarized whole
+ */
+export const CHAPTER_CONTINUATIONS = 4;
+
+/** What the chapter model is asked after an answer that was cut, `count` atoms in, the last `last` */
+export function chapterContinuationPrompt(count: number, last: string): string {
+  return `Your answer was cut off at its length limit after ${count} items, the last one: ${JSON.stringify(last)}. Go on with the items of the transcript that come after it, in the same form. Answer with a JSON array of those items only, no other text, and close the array.`;
 }
 
 const FILE_ARGUMENT = /^(path|file|filepath|file_path|filename|dir|directory)$/i;

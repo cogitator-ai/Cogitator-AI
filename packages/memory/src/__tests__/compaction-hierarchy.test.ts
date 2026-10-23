@@ -72,9 +72,31 @@ describe('parseChapter', () => {
     ]);
   });
 
-  it('gives nothing for an answer that holds no valid array', () => {
+  it('gives nothing for an answer that holds no array, and leaves out what is not an atom', () => {
     expect(parseChapter('I could not do it', window)).toBeUndefined();
-    expect(parseChapter('[{"kind": "mood", "text": "x"}]', window)).toBeUndefined();
+    expect(parseChapter('[{"kind": "mood", "text": "x"}]', window)).toEqual([]);
+    expect(
+      parseChapter(
+        '[{"kind": "preference", "text": "x"}, {"kind": "fact", "text": "Report due Friday"}]',
+        window
+      )?.map((atom) => atom.text)
+    ).toEqual(['Report due Friday']);
+  });
+
+  it('passes over brackets in the text around the array', () => {
+    const atoms = parseChapter(
+      'Messages [0] and [1] give:\n```json\n[{"kind": "fact", "text": "Report [draft] due Friday"}]\n```\nSee [2].',
+      window
+    );
+    expect(atoms?.map((atom) => atom.text)).toEqual(['Report [draft] due Friday']);
+  });
+
+  it('keeps the finished atoms of an answer cut inside the array', () => {
+    const atoms = parseChapter(
+      '[{"kind": "task", "text": "Ship the report"}, {"kind": "decision", "text": "Use the new tem',
+      window
+    );
+    expect(atoms?.map((atom) => atom.text)).toEqual(['Ship the report']);
   });
 
   it('does not verify a rule that only a tool output shows', () => {
@@ -466,6 +488,66 @@ describe('hierarchical compaction', () => {
     expect(event.levels?.chapters).toHaveLength(1);
     expect(String(summary?.message.content)).toContain('- TODO: one');
     expect(String(summary?.message.content)).toContain('- TODO: two');
+  });
+
+  it('asks the summarizer to go on after an answer its length limit cut', async () => {
+    const window = [
+      entry('e0', { role: 'user', content: 'We picked Postgres, Redis and Kafka.' }),
+      entry('e1', { role: 'assistant', content: 'Noted.' }),
+    ];
+    const decision = (name: string) =>
+      JSON.stringify({
+        kind: 'decision',
+        text: `Use ${name}`,
+        evidence: [{ message: 0, quote: name }],
+      });
+    const answers = [
+      `[${decision('Postgres')}, ${decision('Redis')}, {"kind": "decision", "text": "Use Ka`,
+      `[${decision('Redis')}, ${decision('Kafka')}]`,
+    ];
+    const summarize = vi.fn(async (_messages: Message[]) => answers.shift() ?? 'sorry');
+    const service = new CompactionService({
+      adapter: new InMemoryAdapter({ provider: 'memory' }),
+      summarize,
+    });
+
+    const atoms = await service.chapterAtoms(window, {
+      strategy: 'hierarchical',
+      threshold: 0,
+      keepRecent: 0,
+    });
+
+    expect(atoms.map((atom) => atom.text)).toEqual(['Use Postgres', 'Use Redis', 'Use Kafka']);
+    expect(summarize).toHaveBeenCalledTimes(2);
+    const followUp = summarize.mock.calls[1]?.[0] ?? [];
+    expect(followUp.map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
+    expect(String(followUp[2]?.content)).toContain('after 2 items, the last one: "Use Redis"');
+  });
+
+  it('stops going on when a continuation brings nothing new or no array', async () => {
+    const window = [entry('e0', { role: 'user', content: 'We picked Postgres.' })];
+    const cut = '[{"kind": "fact", "text": "Postgres was picked"}, {"kind": "fa';
+    const config = { strategy: 'hierarchical' as const, threshold: 0, keepRecent: 0 };
+    const repeating = vi.fn(async () => cut);
+    const first = new CompactionService({
+      adapter: new InMemoryAdapter({ provider: 'memory' }),
+      summarize: repeating,
+    });
+    expect((await first.chapterAtoms(window, config)).map((atom) => atom.text)).toEqual([
+      'Postgres was picked',
+    ]);
+    expect(repeating).toHaveBeenCalledTimes(2);
+
+    const answers = [cut];
+    const failing = vi.fn(async () => answers.shift() ?? 'sorry');
+    const second = new CompactionService({
+      adapter: new InMemoryAdapter({ provider: 'memory' }),
+      summarize: failing,
+    });
+    expect((await second.chapterAtoms(window, config)).map((atom) => atom.text)).toEqual([
+      'Postgres was picked',
+    ]);
+    expect(failing).toHaveBeenCalledTimes(4);
   });
 
   it('asks again for an answer that is not atoms, and fails after three', async () => {

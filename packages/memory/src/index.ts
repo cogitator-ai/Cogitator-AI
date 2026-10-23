@@ -355,10 +355,12 @@ export {
   type Weekday,
 } from './time-resolution';
 export {
+  EXTRACTION_CONTINUATIONS,
   EXTRACTION_PROMPT,
   ExtractionAnswerError,
   MemoryExtractor,
   WindowError,
+  extractionContinuationPrompt,
   parseExtraction,
   sessionLine,
   trustOfEntry,

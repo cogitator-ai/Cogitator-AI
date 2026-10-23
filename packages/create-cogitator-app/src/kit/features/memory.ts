@@ -1,5 +1,7 @@
 import { code } from '../code.js';
 import type { ProjectBuilder } from '../project.js';
+import { DEFAULT_OLLAMA_URL, providerInfo } from '../providers.js';
+import type { ProjectSpec } from '../spec.js';
 import { cogitatorVersion, IMAGES, VERSIONS } from '../versions.js';
 import type { FeatureModule } from './types.js';
 
@@ -65,6 +67,44 @@ export function addPostgresService(project: ProjectBuilder): void {
     secret: true,
     deploy: true,
   });
+}
+
+/** Whether the project keeps memory across restarts, which long-term memory builds on. */
+export function lastingMemory(spec: Pick<ProjectSpec, 'memory'>): boolean {
+  return spec.memory !== 'none' && spec.memory !== 'memory';
+}
+
+/** Whether the project's memory embeds its messages: lasting memory with a provider that embeds. */
+export function memoryEmbeds(spec: Pick<ProjectSpec, 'memory' | 'provider'>): boolean {
+  return lastingMemory(spec) && providerInfo(spec.provider).embeddingModel !== undefined;
+}
+
+/** The `memory.embedding` lines of cogitator.yml, with the provider's embedding model. */
+function embeddingYml(spec: ProjectSpec): string[] {
+  const info = providerInfo(spec.provider);
+  if (!info.embeddingModel) return [];
+  const lines = ['embedding:', `  provider: ${spec.provider}`, `  model: ${info.embeddingModel}`];
+  if (spec.provider === 'ollama')
+    lines.push(`  baseUrl: \${OLLAMA_BASE_URL:-${DEFAULT_OLLAMA_URL}}`);
+  if (info.envKey) lines.push(`  apiKey: \${${info.envKey}}`);
+  if (spec.provider === 'google') lines.push(`  dimensions: ${info.embeddingDimensions}`);
+  return lines;
+}
+
+/**
+ * Long-term memory over a lasting store, as the memory benchmarks recommend: the `hybrid`
+ * history strategy with the provider's embedding model (the newest turns, plus the earlier turns
+ * and memory items a question needs), else `recent`, and memory files the agent keeps notes in.
+ * Compaction and extraction stay off, AGENTS.md says when to turn them on.
+ */
+function longTermMemoryYml(spec: ProjectSpec): string[] {
+  return [
+    ...embeddingYml(spec),
+    'contextBuilder:',
+    `  strategy: ${memoryEmbeds(spec) ? 'hybrid' : 'recent'}`,
+    'files:',
+    '  scope: user',
+  ];
 }
 
 export const memoryFeature: FeatureModule = {
@@ -137,6 +177,14 @@ export const memoryFeature: FeatureModule = {
       case 'none':
         break;
     }
+    if (lastingMemory(spec)) project.memoryYml.push(...longTermMemoryYml(spec));
+    const embeddingModel = providerInfo(spec.provider).embeddingModel;
+    if (spec.provider === 'ollama' && !spec.compose && memoryEmbeds(spec) && embeddingModel) {
+      project.step({
+        command: `ollama pull ${embeddingModel}`,
+        note: 'the embedding model memory finds earlier messages with',
+      });
+    }
 
     const where: Record<typeof spec.memory, string> = {
       none: '',
@@ -146,10 +194,16 @@ export const memoryFeature: FeatureModule = {
       redis: 'in Redis (`REDIS_URL`, started by `docker compose up -d`)',
       mongodb: 'in MongoDB (`MONGODB_URI`, started by `docker compose up -d`)',
     };
+    const recall = memoryEmbeds(spec)
+      ? `Each turn gets the newest messages of the thread and, with the \`hybrid\` strategy, the earlier messages and memory items that match the question, found with \`${providerInfo(spec.provider).embeddingModel}\` embeddings.`
+      : `Each turn gets the newest messages of the thread that fit (the \`recent\` strategy): ${providerInfo(spec.provider).label} has no embedding model, and \`hybrid\`, which also finds earlier messages that match the question, needs one in \`memory.embedding\`.`;
+    const longTerm = lastingMemory(spec)
+      ? `\n\n${recall} With \`memory.files\` every agent gets the \`memory\` tool and keeps notes about the user in \`/memories\` across conversations. Compaction (\`memory.compaction\`) and extraction of memory items (\`memory.extraction\`, start with \`mode: shadow\` and review what it writes) are off, see https://cogitator.app/docs/memory.`
+      : '';
     project.section(
       'Memory',
       code`
-        Conversations are stored ${where[spec.memory]}. The \`memory\` section of \`cogitator.yml\` configures it, and runs with the same \`threadId\` continue the same conversation. Tests replace it with in-process memory.
+        Conversations are stored ${where[spec.memory]}. The \`memory\` section of \`cogitator.yml\` configures it, and runs with the same \`threadId\` continue the same conversation. Tests replace it with in-process memory.${longTerm}
       `
     );
   },

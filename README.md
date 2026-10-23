@@ -103,7 +103,7 @@ npx tsx examples/core/01-basic-agent.ts
 - **Workflows that outlive the process.** Checkpoints, approvals and timers live in Redis or Postgres, so a workflow resumes from its last checkpoint after a restart or on another machine.
 - **Untrusted code, contained.** Docker and WASM sandboxes with resource limits, and 18 pre-built WASM tools for hashing, parsing, conversions and more.
 - **A debugger, not just logs.** Cogitator Studio shows the trace and cost of every run, lets you approve tool calls, rerun a workflow from a node and fork a run from any step. Traces also export to OpenTelemetry and Langfuse.
-- **Memory that keeps its sources.** Six storage backends, BM25 plus vector hybrid search, knowledge graphs, and facts extracted from conversations, each tied to the quote it came from. Forget or redact a turn and what memory made of it goes too.
+- **Memory that keeps its sources.** Six storage backends, BM25 plus vector hybrid search, knowledge graphs, and facts extracted from conversations, each tied to the quote it came from. Forget or redact a turn and what memory made of it goes too. With embeddings, every turn recalls the earlier turns and memory items it needs by default, chosen on [seven long-memory benchmarks](https://cogitator.app/docs/memory/benchmarks).
 - **Speaks the protocols.** MCP as client and server, Google's A2A in both directions, an OpenAI-compatible API, and adapters for Express, Fastify, Hono, Koa, Next.js and Tetsu.
 - **More than prompting.** Prolog-style logic and Z3/SAT solving for verifiable plans, tree-of-thought and causal reasoning.
 
