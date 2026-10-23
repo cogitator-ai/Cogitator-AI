@@ -34,7 +34,12 @@ describe('cogitator.yml of an init project', () => {
     expect(detectConfigKind(doc)).toBe('runtime');
     expect(doc).toEqual({
       llm: { defaultProvider: 'anthropic', defaultModel: 'anthropic/claude-sonnet-5-5' },
-      memory: { adapter: 'sqlite', sqlite: { path: './data/memory.db' } },
+      memory: {
+        adapter: 'sqlite',
+        sqlite: { path: './data/memory.db' },
+        contextBuilder: { strategy: 'recent' },
+        files: { scope: 'user' },
+      },
       deploy: { kind: 'worker', secrets: ['ANTHROPIC_API_KEY', 'TELEGRAM_BOT_TOKEN'] },
     });
   });
