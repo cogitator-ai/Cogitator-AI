@@ -408,11 +408,16 @@ describe('JSONLLoader', () => {
     const file = join(TEST_DIR, 'broken.jsonl');
     writeFileSync(
       file,
-      [JSON.stringify({ content: 'fine' }), '{"content": "not json', JSON.stringify({ content: 'fine again' })].join('\n')
+      [
+        JSON.stringify({ content: 'fine' }),
+        '',
+        '{"content": "not json',
+        JSON.stringify({ content: 'fine again' }),
+      ].join('\n')
     );
 
     const loader = new JSONLLoader();
-    await expect(loader.load(file)).rejects.toThrow(/line 2/);
+    await expect(loader.load(file)).rejects.toThrow(/line 3/);
     await expect(loader.load(file)).rejects.toThrow(/broken\.jsonl/);
   });
 

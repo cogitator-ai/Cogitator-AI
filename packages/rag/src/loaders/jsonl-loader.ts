@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import type { DocumentLoader, RAGDocument } from '@cogitator-ai/types';
 import { JSONLoader, type JSONLoaderOptions } from './json-loader.js';
 
-export interface JSONLLoaderOptions extends JSONLoaderOptions {}
+export type JSONLLoaderOptions = JSONLoaderOptions;
 
 /**
  * Loads JSON Lines files (`.jsonl`, `.ndjson`): one JSON document per line.
@@ -13,12 +13,8 @@ export interface JSONLLoaderOptions extends JSONLoaderOptions {}
  * Documents keep `sourceType: 'json'` and ids that are stable across
  * loads of the same file, one per line.
  */
-export class JSONLLoader extends JSONLoader implements DocumentLoader {
+export class JSONLLoader extends JSONLoader {
   override readonly supportedTypes = ['jsonl', 'ndjson'];
-
-  constructor(options?: JSONLLoaderOptions) {
-    super(options);
-  }
 
   async load(source: string): Promise<RAGDocument[]> {
     const filePath = resolve(source);
@@ -35,10 +31,9 @@ export class JSONLLoader extends JSONLoader implements DocumentLoader {
         item = JSON.parse(line);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        throw new Error(
-          `JSONLLoader: failed to parse "${filePath}" line ${i + 1}: ${message}`,
-          { cause: err }
-        );
+        throw new Error(`JSONLLoader: failed to parse "${filePath}" line ${i + 1}: ${message}`, {
+          cause: err,
+        });
       }
       documents.push(this.itemToDocument(item, filePath, i + 1));
     }
