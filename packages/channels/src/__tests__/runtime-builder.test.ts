@@ -27,6 +27,7 @@ const socialConfigs = vi.hoisted(() => ({
   threads: [] as Array<Record<string, unknown>>,
   github: [] as Array<Record<string, unknown>>,
   email: [] as Array<Record<string, unknown>>,
+  teams: [] as Array<Record<string, unknown>>,
 }));
 
 const stubChannel = (type: string) => ({
@@ -54,6 +55,13 @@ vi.mock('../channels/github/channel', () => ({
   githubChannel: (config: Record<string, unknown>) => {
     socialConfigs.github.push(config);
     return stubChannel('github');
+  },
+}));
+
+vi.mock('../channels/teams/channel', () => ({
+  teamsChannel: (config: Record<string, unknown>) => {
+    socialConfigs.teams.push(config);
+    return stubChannel('teams');
   },
 }));
 
@@ -595,6 +603,62 @@ describe('RuntimeBuilder', () => {
       }),
     ]);
     warn.mockRestore();
+  });
+
+  it('builds the Teams channel from the env with its tenant, webhook and allow-lists', async () => {
+    socialConfigs.teams.length = 0;
+    const config: AssistantConfigInput = {
+      ...minimalConfig,
+      channels: {
+        teams: {
+          ownerIds: ['aad-owner'],
+          tenants: ['contoso', 'fabrikam'],
+          users: ['aad-owner'],
+          trigger: 'all',
+          serviceUrlHosts: ['smba.trafficmanager.net'],
+          webhook: { port: 3979, path: '/teams/messages' },
+        },
+      },
+    };
+    const built = await new RuntimeBuilder(config, {
+      GOOGLE_API_KEY: 'test-key',
+      TEAMS_APP_ID: 'app-id',
+      TEAMS_APP_PASSWORD: 'client-secret',
+      TEAMS_TENANT_ID: 'contoso',
+    }).build();
+    expect(socialConfigs.teams).toEqual([
+      {
+        appId: 'app-id',
+        appPassword: 'client-secret',
+        appType: 'SingleTenant',
+        tenantId: 'contoso',
+        webhook: { port: 3979, path: '/teams/messages' },
+        tenants: ['contoso', 'fabrikam'],
+        users: ['aad-owner'],
+        trigger: 'all',
+        serviceUrlHosts: ['smba.trafficmanager.net'],
+      },
+    ]);
+    await built.cleanup();
+  });
+
+  it('warns instead of building Teams without its credentials or the tenant of a single-tenant bot', async () => {
+    socialConfigs.teams.length = 0;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const config: AssistantConfigInput = { ...minimalConfig, channels: { teams: {} } };
+    const first = await new RuntimeBuilder(config, { GOOGLE_API_KEY: 'test-key' }).build();
+    const second = await new RuntimeBuilder(config, {
+      GOOGLE_API_KEY: 'test-key',
+      TEAMS_APP_ID: 'app-id',
+      TEAMS_APP_PASSWORD: 'client-secret',
+    }).build();
+    expect(socialConfigs.teams).toEqual([]);
+    const warnings = warn.mock.calls.map((call) => String(call[0]));
+    expect(warnings.some((text) => text.includes('TEAMS_APP_PASSWORD'))).toBe(true);
+    expect(warnings.some((text) => text.includes('TEAMS_TENANT_ID'))).toBe(true);
+    warn.mockRestore();
+    await first.cleanup();
+    await second.cleanup();
   });
 
   it('warns instead of building GitHub without its webhook secret', async () => {

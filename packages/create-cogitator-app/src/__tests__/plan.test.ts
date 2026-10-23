@@ -575,6 +575,67 @@ describe('a messaging bot on GitHub', () => {
   });
 });
 
+describe('a messaging bot on Microsoft Teams', () => {
+  const plan = planProject(specFor('channels', 'openai', { channels: ['teams'] }));
+
+  it('serves the messaging endpoint on its own port, with the app registration from the env', () => {
+    const gateway = file(plan, 'src/gateway.ts');
+    expect(gateway).toContain("import { Gateway, teamsChannel } from '@cogitator-ai/channels';");
+    expect(gateway).toContain('appId: env.TEAMS_APP_ID');
+    expect(gateway).toContain('appPassword: env.TEAMS_APP_PASSWORD');
+    expect(gateway).toContain('tenantId: env.TEAMS_TENANT_ID');
+    expect(gateway).toContain('port: Number(env.TEAMS_PORT ?? 3978)');
+    expect(syntaxErrors('src/gateway.ts', gateway)).toEqual([]);
+    const index = file(plan, 'src/index.ts');
+    expect(index).toContain('TEAMS_PORT ?? 3978}/api/messages');
+    expect(syntaxErrors('src/index.ts', index)).toEqual([]);
+    const env = file(plan, '.env.example');
+    for (const name of ['TEAMS_APP_ID', 'TEAMS_APP_PASSWORD', 'TEAMS_TENANT_ID']) {
+      expect(env).toMatch(new RegExp(`^${name}=`, 'm'));
+    }
+    expect(env).toContain('TEAMS_PORT=3978');
+    expect(file(plan, 'README.md')).toContain('single-tenant Azure Bot');
+  });
+
+  it('hands the app registration to a deployment and exposes the Teams port', () => {
+    const deployed = planProject(
+      specFor('channels', 'openai', { channels: ['teams'], deploy: 'fly' })
+    );
+    const yml = file(deployed, 'cogitator.yml');
+    for (const name of ['TEAMS_APP_ID', 'TEAMS_APP_PASSWORD', 'TEAMS_TENANT_ID']) {
+      expect(yml).toContain(`    - ${name}`);
+    }
+    expect(file(deployed, 'fly.toml')).toContain('internal_port = 3978');
+  });
+
+  it('serves the GitHub webhook on the Teams port, and both on the WebChat port when it runs', () => {
+    const withGithub = planProject(
+      specFor('channels', 'openai', { channels: ['github', 'teams'] })
+    );
+    const gateway = file(withGithub, 'src/gateway.ts');
+    expect(gateway).toContain("routes: { '/github/webhook': github.webhookListener() }");
+    expect(gateway).not.toContain('GITHUB_WEBHOOK_PORT');
+    expect(gateway.indexOf('const github = githubChannel(')).toBeLessThan(
+      gateway.indexOf('teamsChannel(')
+    );
+    expect(syntaxErrors('src/gateway.ts', gateway)).toEqual([]);
+    expect(file(withGithub, 'src/index.ts')).toContain('TEAMS_PORT ?? 3978}/github/webhook');
+    expect(file(withGithub, '.env.example')).not.toContain('GITHUB_WEBHOOK_PORT');
+
+    const all = planProject(
+      specFor('channels', 'openai', { channels: ['webchat', 'github', 'teams'], deploy: 'docker' })
+    );
+    const shared = file(all, 'src/gateway.ts');
+    expect(shared).toContain(
+      "routes: { '/github/webhook': github.webhookListener(), '/api/messages': teams.webhookListener() }"
+    );
+    expect(shared).not.toContain('TEAMS_PORT');
+    expect(syntaxErrors('src/gateway.ts', shared)).toEqual([]);
+    expect(file(all, 'src/index.ts')).toContain('WEBCHAT_PORT ?? 18789}/api/messages');
+    expect(file(all, '.env.example')).not.toContain('TEAMS_PORT');
+  });
+});
+
 describe('a messaging bot on Bluesky and Threads', () => {
   const plan = planProject(specFor('channels', 'openai', { channels: ['bluesky', 'threads'] }));
 

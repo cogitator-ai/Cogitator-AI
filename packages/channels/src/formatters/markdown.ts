@@ -13,6 +13,7 @@ const PLATFORM_LIMITS: Record<string, number> = {
   threads: Infinity,
   github: 65536,
   email: Infinity,
+  teams: 13653,
 };
 
 const DEFAULT_LIMIT = 4096;

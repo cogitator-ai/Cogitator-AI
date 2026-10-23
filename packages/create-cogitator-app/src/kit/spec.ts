@@ -31,6 +31,7 @@ export const CHANNELS = [
   'threads',
   'github',
   'email',
+  'teams',
 ] as const;
 
 export type LLMProvider = (typeof PROVIDERS)[number];

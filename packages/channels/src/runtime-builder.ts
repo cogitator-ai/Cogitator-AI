@@ -56,6 +56,7 @@ import { blueskyChannel } from './channels/bluesky/channel';
 import { threadsChannel } from './channels/threads/channel';
 import { githubChannel } from './channels/github/channel';
 import { emailChannel, type EmailWebhookConfig } from './channels/email/channel';
+import { teamsChannel } from './channels/teams/channel';
 import { isAddress } from './channels/email/address';
 import { FileTokenStore } from './feeds/token-store';
 import type { GatewayApprovalsConfig } from './approvals';
@@ -1051,6 +1052,45 @@ export class RuntimeBuilder {
       if (built) channels.push(built);
     }
 
+    const teams = this.config.channels.teams;
+    if (teams) {
+      const env = (name: string) => this.env[name]?.trim() || undefined;
+      const appId = env('TEAMS_APP_ID');
+      const appPassword = env('TEAMS_APP_PASSWORD');
+      const tenantId = teams.tenantId ?? env('TEAMS_TENANT_ID');
+      const appType = teams.appType ?? 'SingleTenant';
+      if (appType === 'UserAssignedMSI') {
+        console.warn(
+          '[RuntimeBuilder] Teams with a UserAssignedMSI app needs a tokenProvider: create teamsChannel() in code'
+        );
+      } else if (!appId || !appPassword) {
+        console.warn(
+          '[RuntimeBuilder] Teams configured but TEAMS_APP_ID and TEAMS_APP_PASSWORD not found in env'
+        );
+      } else if (appType === 'SingleTenant' && !tenantId) {
+        console.warn(
+          '[RuntimeBuilder] Teams configured but TEAMS_TENANT_ID (or channels.teams.tenantId) not found: a single-tenant bot gets its token from its own tenant'
+        );
+      } else {
+        channels.push(
+          teamsChannel({
+            appId,
+            appPassword,
+            appType,
+            ...(tenantId && { tenantId }),
+            webhook: {
+              port: teams.webhook.port,
+              ...(teams.webhook.path && { path: teams.webhook.path }),
+            },
+            ...(teams.tenants && { tenants: teams.tenants }),
+            ...(teams.users && { users: teams.users }),
+            ...(teams.trigger && { trigger: teams.trigger }),
+            ...(teams.serviceUrlHosts && { serviceUrlHosts: teams.serviceUrlHosts }),
+          })
+        );
+      }
+    }
+
     return channels;
   }
 
@@ -1251,7 +1291,7 @@ Required env vars per provider:
 - ollama (local): none
 - ollama (cloud): OLLAMA_URL=https://ollama.com, OLLAMA_API_KEY
 
-Other env vars: GITHUB_TOKEN (for the GitHub capability), GITHUB_CHANNEL_TOKEN and GITHUB_WEBHOOK_SECRET (GitHub channel), TG_TOKEN, DISCORD_TOKEN, SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET, SLACK_APP_TOKEN (Slack Socket Mode), WEBCHAT_TOKEN (WebChat).`;
+Other env vars: GITHUB_TOKEN (for the GitHub capability), GITHUB_CHANNEL_TOKEN and GITHUB_WEBHOOK_SECRET (GitHub channel), TEAMS_APP_ID, TEAMS_APP_PASSWORD and TEAMS_TENANT_ID (Microsoft Teams), TG_TOKEN, DISCORD_TOKEN, SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET, SLACK_APP_TOKEN (Slack Socket Mode), WEBCHAT_TOKEN (WebChat).`;
     }
 
     if (this.config.capabilities.selfTools) {

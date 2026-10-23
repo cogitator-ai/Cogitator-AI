@@ -32,7 +32,15 @@ import {
 } from '../utils/provider-models.js';
 
 export type InitChannel =
-  'telegram' | 'discord' | 'slack' | 'webchat' | 'bluesky' | 'threads' | 'github' | 'email';
+  | 'telegram'
+  | 'discord'
+  | 'slack'
+  | 'webchat'
+  | 'bluesky'
+  | 'threads'
+  | 'github'
+  | 'email'
+  | 'teams';
 
 const INIT_CHANNELS: readonly InitChannel[] = [
   'telegram',
@@ -43,6 +51,7 @@ const INIT_CHANNELS: readonly InitChannel[] = [
   'threads',
   'github',
   'email',
+  'teams',
 ];
 export type InitMemory = 'memory' | 'sqlite' | 'postgres';
 
@@ -64,6 +73,7 @@ export interface InitAnswers {
   githubToken?: string;
   githubWebhookSecret?: string;
   email?: InitEmail;
+  teams?: InitTeams;
   memory: InitMemory;
   databaseUrl?: string;
 }
@@ -77,6 +87,16 @@ export interface InitEmail {
   imapPassword: string;
   smtpHost: string;
   smtpPassword: string;
+}
+
+/** The app registration of the Teams channel, from Azure Bot Service. */
+export interface InitTeams {
+  /** The Microsoft App ID */
+  appId: string;
+  /** A client secret of the app registration */
+  appPassword: string;
+  /** The tenant of the app registration, a single-tenant bot */
+  tenantId: string;
 }
 
 const EMAIL_ADDRESS = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
@@ -131,6 +151,11 @@ export function initSecrets(answers: InitAnswers): Record<string, string> {
     secrets.EMAIL_IMAP_PASSWORD = answers.email.imapPassword;
     secrets.EMAIL_SMTP_HOST = answers.email.smtpHost;
     secrets.EMAIL_SMTP_PASSWORD = answers.email.smtpPassword;
+  }
+  if (answers.teams) {
+    secrets.TEAMS_APP_ID = answers.teams.appId;
+    secrets.TEAMS_APP_PASSWORD = answers.teams.appPassword;
+    secrets.TEAMS_TENANT_ID = answers.teams.tenantId;
   }
   if (
     answers.memory === 'postgres' &&
@@ -224,6 +249,7 @@ async function collectAnswers(nameArg?: string): Promise<InitAnswers> {
         { value: 'threads', label: 'Threads', hint: 'replies and mentions' },
         { value: 'github', label: 'GitHub', hint: 'issues, pull requests and reviews' },
         { value: 'email', label: 'Email', hint: 'a mailbox over IMAP and SMTP' },
+        { value: 'teams', label: 'Microsoft Teams', hint: 'an Azure Bot, single-tenant' },
       ],
       required: false,
     })
@@ -284,6 +310,7 @@ async function collectAnswers(nameArg?: string): Promise<InitAnswers> {
     : undefined;
 
   const email = channels.includes('email') ? await askEmail() : undefined;
+  const teams = channels.includes('teams') ? await askTeams() : undefined;
 
   const memoryChoice = answer(
     await p.select({
@@ -327,6 +354,7 @@ async function collectAnswers(nameArg?: string): Promise<InitAnswers> {
     githubToken,
     githubWebhookSecret,
     email,
+    teams,
     memory,
     databaseUrl,
   };
@@ -376,6 +404,24 @@ async function askEmail(): Promise<InitEmail> {
   return { address, allowFrom, imapHost, imapPassword, smtpHost, smtpPassword };
 }
 
+async function askTeams(): Promise<InitTeams> {
+  const appId = await askText(
+    'Microsoft App ID of the Azure Bot (Configuration in the Azure portal):',
+    '00000000-0000-0000-0000-000000000000',
+    'App ID is required'
+  );
+  const appPassword = await askSecret(
+    'Client secret of its app registration (Certificates & secrets):',
+    'Client secret is required'
+  );
+  const tenantId = await askText(
+    'Tenant ID of the app registration (the bot answers this tenant):',
+    '00000000-0000-0000-0000-000000000000',
+    'Tenant ID is required'
+  );
+  return { appId, appPassword, tenantId };
+}
+
 function clackLogger(): ScaffoldLogger {
   const spinner = p.spinner();
   return {
@@ -388,7 +434,7 @@ function clackLogger(): ScaffoldLogger {
 
 export const initCommand = new Command('init')
   .description(
-    'Create a messaging assistant project (Telegram, Discord, Slack, WebChat, Bluesky, Threads, GitHub, Email)'
+    'Create a messaging assistant project (Telegram, Discord, Slack, WebChat, Bluesky, Threads, GitHub, Email, Teams)'
   )
   .argument('[name]', 'Project name')
   .option('--no-install', 'Skip dependency installation')

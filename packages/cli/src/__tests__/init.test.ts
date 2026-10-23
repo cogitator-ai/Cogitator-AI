@@ -145,6 +145,22 @@ describe('initSecrets', () => {
     });
   });
 
+  it('writes the app id, client secret and tenant of the Teams bot', () => {
+    expect(
+      initSecrets(
+        answers({
+          channels: ['teams'],
+          teams: { appId: 'app-id', appPassword: 'client-secret', tenantId: 'tenant-id' },
+        })
+      )
+    ).toEqual({
+      OPENAI_API_KEY: 'sk-test',
+      TEAMS_APP_ID: 'app-id',
+      TEAMS_APP_PASSWORD: 'client-secret',
+      TEAMS_TENANT_ID: 'tenant-id',
+    });
+  });
+
   it('writes DATABASE_URL only when it differs from the compose default', () => {
     expect(initSecrets(answers({ memory: 'postgres', databaseUrl: DEFAULT_POSTGRES_URL }))).toEqual(
       {

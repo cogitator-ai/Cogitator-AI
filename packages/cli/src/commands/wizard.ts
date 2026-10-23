@@ -24,7 +24,8 @@ import {
 } from '../utils/provider-models.js';
 
 type AssistantConfig = AssistantConfigOutput;
-type ChannelName = 'telegram' | 'discord' | 'slack' | 'bluesky' | 'threads' | 'github' | 'email';
+type ChannelName =
+  'telegram' | 'discord' | 'slack' | 'bluesky' | 'threads' | 'github' | 'email' | 'teams';
 type Capabilities = AssistantConfig['capabilities'];
 type McpServers = NonNullable<AssistantConfig['mcpServers']>;
 
@@ -36,6 +37,7 @@ export const CHANNEL_TOKEN_ENV: Record<ChannelName, string> = {
   threads: 'THREADS_ACCESS_TOKEN',
   github: 'GITHUB_CHANNEL_TOKEN',
   email: 'EMAIL_IMAP_PASSWORD',
+  teams: 'TEAMS_APP_PASSWORD',
 };
 
 const CHANNEL_LABELS: Record<ChannelName, string> = {
@@ -46,6 +48,7 @@ const CHANNEL_LABELS: Record<ChannelName, string> = {
   threads: 'Threads',
   github: 'GitHub',
   email: 'Email',
+  teams: 'Microsoft Teams',
 };
 
 const TOKEN_PROMPTS: Record<ChannelName, string> = {
@@ -57,6 +60,7 @@ const TOKEN_PROMPTS: Record<ChannelName, string> = {
   github:
     'GitHub token of a separate bot account, scoped to the repositories it answers in (issues and pull requests write):',
   email: 'IMAP password of the bot mailbox (an app password for Gmail and Outlook):',
+  teams: 'Client secret of the Azure Bot app registration (Certificates & secrets):',
 };
 
 const OWNER_PROMPTS: Record<ChannelName, string> = {
@@ -68,6 +72,8 @@ const OWNER_PROMPTS: Record<ChannelName, string> = {
   github:
     'GitHub owner user ID(s), comma-separated (numbers from api.github.com/users/<login>, for admin commands)',
   email: 'Owner email address(es), comma-separated (always answered, for admin commands)',
+  teams:
+    'Teams owner Entra object ID(s), comma-separated (Microsoft Entra ID, Users, Object ID, for admin commands)',
 };
 
 const CHANNELS: readonly ChannelName[] = [
@@ -78,6 +84,7 @@ const CHANNELS: readonly ChannelName[] = [
   'threads',
   'github',
   'email',
+  'teams',
 ];
 
 function isChannelName(value: unknown): value is ChannelName {
@@ -463,6 +470,23 @@ export const wizardCommand = new Command('wizard')
         emailServer = { address, imapHost };
       }
 
+      if (ch === 'teams') {
+        for (const [name, message] of [
+          ['TEAMS_APP_ID', 'Microsoft App ID of the Azure Bot'],
+          ['TEAMS_TENANT_ID', 'Tenant ID of its app registration (the tenant it answers)'],
+        ] as const) {
+          const value = prompt(
+            await p.text({
+              message,
+              placeholder: '00000000-0000-0000-0000-000000000000',
+              ...(existingEnv[name] ? { initialValue: existingEnv[name] } : {}),
+              validate: (v) => (!v?.trim() ? 'Required' : undefined),
+            })
+          ).trim();
+          envUpdates.set(name, value);
+        }
+      }
+
       const token = await askSecret({
         message: TOKEN_PROMPTS[ch],
         current: existingEnv[tokenEnv],
@@ -571,6 +595,12 @@ export const wizardCommand = new Command('wizard')
         channelsConfig.github = {
           ...existing.channels?.github,
           webhook: existing.channels?.github?.webhook ?? { port: 8787 },
+          ownerIds,
+        };
+      else if (ch === 'teams')
+        channelsConfig.teams = {
+          ...existing.channels?.teams,
+          webhook: existing.channels?.teams?.webhook ?? { port: 3978 },
           ownerIds,
         };
       else if (ch === 'email' && emailAnswers)

@@ -5,7 +5,7 @@ export const channels: Section = {
   title: 'Messaging Channels',
   icon: '💬',
   description:
-    'Put an agent on Telegram, a WebChat socket, GitHub issues and reviews or an email inbox, or build a full personal assistant from a config object.',
+    'Put an agent on Telegram, a WebChat socket, GitHub issues and reviews, an email inbox or Microsoft Teams, or build a full personal assistant from a config object.',
   recipes: [
     {
       id: 'telegram-bot',
@@ -469,6 +469,86 @@ console.log(\`\${address} answers mail from acme.com\`);`,
         {
           href: '/docs/channels/email',
           label: 'Email',
+        },
+        {
+          href: '/docs/channels/gateway',
+          label: 'Gateway',
+        },
+      ],
+    },
+    {
+      id: 'teams-bot',
+      title: 'Microsoft Teams Bot Without an SDK',
+      difficulty: 'medium',
+      time: '20 min',
+      problem:
+        'You want an agent in Microsoft Teams that answers personal chats and @mentions in channels, asks before risky tools run, and does not pull in botbuilder.',
+      points: [
+        'Run a `Gateway` with `teamsChannel()`: Bot Framework posts activities to `/api/messages`, answers go to the Bot Connector',
+        'Every request is checked against its signed JWT: RS256, issuer, App ID audience, expiry, service URL and the `msteams` endorsement',
+        'Each personal chat, group chat and channel thread is a conversation of its own, and the mention of the bot is stripped',
+        'Answers stream into a message it edits, spaced under the 7 messages a second Teams allows per chat',
+        'Approval prompts get Approve and Deny buttons as an Adaptive Card with `Action.Execute`',
+      ],
+      file: 'teams-bot.ts',
+      code: `import { Agent, Cogitator } from '@cogitator-ai/core';
+import { Gateway, teamsChannel } from '@cogitator-ai/channels';
+
+const appId = process.env.TEAMS_APP_ID;
+const appPassword = process.env.TEAMS_APP_PASSWORD;
+const tenantId = process.env.TEAMS_TENANT_ID;
+const apiKey = process.env.GOOGLE_API_KEY;
+if (!appId || !appPassword || !tenantId || !apiKey) {
+  throw new Error('Set TEAMS_APP_ID, TEAMS_APP_PASSWORD, TEAMS_TENANT_ID and GOOGLE_API_KEY');
+}
+
+const teams = teamsChannel({ appId, appPassword, tenantId, webhook: { port: 3978 } });
+
+const agent = new Agent({
+  name: 'teams-assistant',
+  model: 'google/gemini-3.5-flash-lite',
+  instructions: 'You help a team in Microsoft Teams. Be brief and use Markdown.',
+});
+
+const cogitator = new Cogitator({
+  llm: { providers: { google: { apiKey } } },
+  memory: { adapter: 'memory' },
+});
+const memory = await cogitator.getMemory();
+
+const gateway = new Gateway({
+  agent,
+  cogitator,
+  channels: [teams],
+  ...(memory && { memory }),
+  stream: { flushInterval: 600, minChunkSize: 40 },
+});
+
+await gateway.start();
+console.log('Teams messaging endpoint at http://localhost:3978/api/messages');`,
+      install: 'pnpm add @cogitator-ai/core @cogitator-ai/channels',
+      env: ['TEAMS_APP_ID', 'TEAMS_APP_PASSWORD', 'TEAMS_TENANT_ID', 'GOOGLE_API_KEY'],
+      run: 'npx tsx teams-bot.ts',
+      repoRun: 'npx tsx examples/channels/08-teams-bot.ts',
+      notes: [
+        {
+          type: 'tip',
+          text: 'Create the Azure Bot as Single Tenant: new multi-tenant bots cannot be created since July 2025. Point its messaging endpoint at `https://<your host>/api/messages`, through a tunnel while you try it.',
+        },
+        {
+          type: 'warning',
+          text: 'The bot answers users of its own tenant only. Widen it with `tenants` with care, and give the agent no tool a colleague must not use.',
+        },
+        {
+          type: 'info',
+          text: 'Bots can upload files in personal chats only, through a file consent card. Elsewhere `sendFile` sends a public URL, and the manifest needs `supportsFiles` for uploads.',
+        },
+      ],
+      example: 'channels/08-teams-bot.ts',
+      docs: [
+        {
+          href: '/docs/channels/teams',
+          label: 'Microsoft Teams',
         },
         {
           href: '/docs/channels/gateway',

@@ -7,6 +7,7 @@ import type { FeatureModule } from './types.js';
 
 export const WEBCHAT_PORT = 18789;
 export const GITHUB_WEBHOOK_PORT = 8787;
+export const TEAMS_PORT = 3978;
 
 /** Where Bluesky sessions and Threads tokens are kept, out of git. */
 const TOKENS_PATH = '.cogitator/tokens.json';
@@ -246,25 +247,83 @@ const CHANNEL_SETUP: Record<ChannelKind, ChannelSetup> = {
       },
     ],
   },
+  teams: {
+    factory: 'teamsChannel',
+    expression: code`
+      teamsChannel({
+        appId: env.TEAMS_APP_ID,
+        appPassword: env.TEAMS_APP_PASSWORD,
+        tenantId: env.TEAMS_TENANT_ID,
+        webhook: { port: Number(env.TEAMS_PORT ?? ${TEAMS_PORT}) },
+      })
+    `,
+    packages: [],
+    env: [
+      {
+        name: 'TEAMS_APP_ID',
+        description: 'Microsoft App ID of the Azure Bot (single-tenant)',
+        required: true,
+        secret: false,
+      },
+      {
+        name: 'TEAMS_APP_PASSWORD',
+        description: 'Client secret of the app registration of the Azure Bot',
+        required: true,
+      },
+      {
+        name: 'TEAMS_TENANT_ID',
+        description: 'Tenant ID of the app registration, the tenant whose users the bot answers',
+        required: true,
+        secret: false,
+      },
+    ],
+  },
 };
 
-/**
- * GitHub's webhook when WebChat runs too: served as a route of the WebChat
- * server, so one port takes both and a deploy that exposes one port reaches both.
- */
-const GITHUB_ON_WEBCHAT = code`
-  githubChannel({
-    token: env.GITHUB_CHANNEL_TOKEN,
-    webhook: { secret: env.GITHUB_WEBHOOK_SECRET },
-  })
-`;
+/** The webhook path of each channel that takes webhooks, as a route of another server. */
+const WEBHOOK_ROUTES = { github: '/github/webhook', teams: '/api/messages' } as const;
 
-const WEBCHAT_WITH_GITHUB = code`
-  webchatChannel({
-    port: Number(env.WEBCHAT_PORT ?? ${WEBCHAT_PORT}),
-    routes: { '/github/webhook': github.webhookListener() },
-  })
-`;
+type WebhookChannel = keyof typeof WEBHOOK_ROUTES;
+
+/**
+ * The webhook channels as routes of another server: GitHub's and Teams' on the WebChat
+ * server when WebChat runs, GitHub's on the Teams server when Teams runs without WebChat. One
+ * port then takes every webhook, and a deploy that exposes one port reaches them all.
+ */
+const HOSTED: Record<WebhookChannel, string> = {
+  github: code`
+    githubChannel({
+      token: env.GITHUB_CHANNEL_TOKEN,
+      webhook: { secret: env.GITHUB_WEBHOOK_SECRET },
+    })
+  `,
+  teams: code`
+    teamsChannel({
+      appId: env.TEAMS_APP_ID,
+      appPassword: env.TEAMS_APP_PASSWORD,
+      tenantId: env.TEAMS_TENANT_ID,
+    })
+  `,
+};
+
+/** The server every webhook is served on: WebChat's, else Teams' own. */
+function webhookHost(channels: readonly ChannelKind[]): 'webchat' | 'teams' | undefined {
+  if (channels.includes('webchat')) return 'webchat';
+  return channels.includes('teams') ? 'teams' : undefined;
+}
+
+/** The webhook channels served as routes of the host's server. */
+function hostedChannels(channels: readonly ChannelKind[]): WebhookChannel[] {
+  const host = webhookHost(channels);
+  if (!host) return [];
+  return (['github', 'teams'] as const).filter(
+    (channel) => channel !== host && channels.includes(channel)
+  );
+}
+
+function routesOf(hosted: readonly WebhookChannel[]): string {
+  return `{ ${hosted.map((channel) => `'${WEBHOOK_ROUTES[channel]}': ${channel}.webhookListener()`).join(', ')} }`;
+}
 
 /** A messaging bot: one Gateway that answers on every chosen channel with the assistant. */
 export const appChannelsFeature: FeatureModule = {
@@ -300,7 +359,18 @@ export const appChannelsFeature: FeatureModule = {
       });
       project.deploy.port = WEBCHAT_PORT;
     }
-    if (spec.channels.includes('github') && !spec.channels.includes('webchat')) {
+    const host = webhookHost(spec.channels);
+    if (spec.channels.includes('teams') && host === 'teams') {
+      project.envVar({
+        name: 'TEAMS_PORT',
+        description: `Port of the Teams messaging endpoint, at /api/messages${spec.channels.includes('github') ? ', which takes the GitHub webhook at /github/webhook too' : ''}`,
+        example: String(TEAMS_PORT),
+        required: false,
+        secret: false,
+      });
+      project.deploy.port = TEAMS_PORT;
+    }
+    if (spec.channels.includes('github') && !host) {
       project.envVar({
         name: 'GITHUB_WEBHOOK_PORT',
         description: 'Port GitHub delivers webhook events to, at /github/webhook',
@@ -329,16 +399,46 @@ export const appChannelsFeature: FeatureModule = {
     const memory = spec.memory !== 'none';
     const webchat = spec.channels.includes('webchat');
     const github = spec.channels.includes('github');
-    const declarations: string[] = [];
+    const teams = spec.channels.includes('teams');
+    const host = webhookHost(spec.channels);
+    const hosted = hostedChannels(spec.channels);
+    const declarations = hosted.map((channel) => `const ${channel} = ${HOSTED[channel].trim()};`);
     const entries = spec.channels.map((channel) => {
-      if (channel === 'github') {
-        const expression = webchat ? GITHUB_ON_WEBCHAT : CHANNEL_SETUP.github.expression;
-        declarations.push(`const github = ${expression.trim()};`);
-        return 'github';
+      if (hosted.some((name) => name === channel)) return channel;
+      if (channel === 'webchat' && hosted.length > 0) {
+        return code`
+          webchatChannel({
+            port: Number(env.WEBCHAT_PORT ?? ${WEBCHAT_PORT}),
+            routes: ${routesOf(hosted)},
+          })
+        `.trim();
       }
-      if (channel === 'webchat' && github) return WEBCHAT_WITH_GITHUB.trim();
+      if (channel === 'teams' && hosted.length > 0) {
+        return code`
+          teamsChannel({
+            appId: env.TEAMS_APP_ID,
+            appPassword: env.TEAMS_APP_PASSWORD,
+            tenantId: env.TEAMS_TENANT_ID,
+            webhook: {
+              port: Number(env.TEAMS_PORT ?? ${TEAMS_PORT}),
+              routes: ${routesOf(hosted)},
+            },
+          })
+        `.trim();
+      }
       return CHANNEL_SETUP[channel].expression.trim();
     });
+    const hostPort =
+      host === 'webchat'
+        ? `\${loadEnv().WEBCHAT_PORT ?? ${WEBCHAT_PORT}}`
+        : host === 'teams'
+          ? `\${loadEnv().TEAMS_PORT ?? ${TEAMS_PORT}}`
+          : `\${loadEnv().GITHUB_WEBHOOK_PORT ?? ${GITHUB_WEBHOOK_PORT}}`;
+    const webhookLogs = [
+      github && `console.log(\`GitHub webhook: http://localhost:${hostPort}/github/webhook\`);`,
+      teams &&
+        `console.log(\`Teams messaging endpoint: http://localhost:${hostPort}/api/messages\`);`,
+    ].filter((line): line is string => typeof line === 'string');
 
     project.file(
       'src/gateway.ts',
@@ -385,15 +485,14 @@ export const appChannelsFeature: FeatureModule = {
       'src/index.ts',
       code`
         import { cogitator } from './cogitator.js';
-        ${(webchat || github) && "import { loadEnv } from './env.js';"}
+        ${(webchat || github || teams) && "import { loadEnv } from './env.js';"}
         import { gateway } from './gateway.js';
         import { onShutdown } from './lifecycle.js';
 
         await gateway.start();
         console.log(\`The assistant is listening on \${gateway.stats.connectedChannels.join(', ')}\`);
         ${webchat && `console.log(\`WebChat: ws://localhost:\${loadEnv().WEBCHAT_PORT ?? ${WEBCHAT_PORT}}/ws\`);`}
-        ${github && !webchat && `console.log(\`GitHub webhook: http://localhost:\${loadEnv().GITHUB_WEBHOOK_PORT ?? ${GITHUB_WEBHOOK_PORT}}/github/webhook\`);`}
-        ${github && webchat && `console.log(\`GitHub webhook: http://localhost:\${loadEnv().WEBCHAT_PORT ?? ${WEBCHAT_PORT}}/github/webhook\`);`}
+        ${webhookLogs.join('\n')}
 
         onShutdown(async () => {
           await gateway.stop();
@@ -415,10 +514,16 @@ export const appChannelsFeature: FeatureModule = {
         'The bot reads unread mail of `EMAIL_ADDRESS` over IMAP and answers in the same thread over SMTP, marking what it read. Give it a mailbox of its own, since it reads every unread mail there. It answers only `EMAIL_ALLOW_FROM` and skips auto-replies, bounces and mailing lists. A `From` address is easy to forge: set `EMAIL_TRUSTED_AUTHSERV_IDS` to the id your mailbox host writes in `Authentication-Results` (`mx.google.com` for Gmail), so mail whose DKIM, SPF or DMARC results fail for the sender domain is dropped, keep the list short and give the agent no tools a stranger must not use.'
       );
     }
+    if (teams) {
+      project.readmeSection(
+        'Microsoft Teams',
+        `Create a single-tenant Azure Bot in the Azure portal, add a client secret to its app registration and set \`TEAMS_APP_ID\`, \`TEAMS_APP_PASSWORD\` and \`TEAMS_TENANT_ID\`. Set its messaging endpoint to \`https://<your host>/api/messages\` (port ${host === 'webchat' ? `\`WEBCHAT_PORT\`, ${WEBCHAT_PORT}` : `\`TEAMS_PORT\`, ${TEAMS_PORT}`}, behind HTTPS), turn on the Microsoft Teams channel and install a Teams app whose manifest names the bot by its App ID. Every request is checked against the token Bot Framework signs it with. The bot answers users of its own tenant only, in personal chats and when @mentioned in group chats and channels, so give the agent no tools a colleague must not use.`
+      );
+    }
     if (github) {
       project.readmeSection(
         'GitHub',
-        `On GitHub the bot answers mentions from the repository's owner, members and collaborators. Give it an account of its own and set \`GITHUB_CHANNEL_TOKEN\` to a fine-grained token of that account, scoped to the repositories it answers in (not your own token), and \`GITHUB_WEBHOOK_SECRET\` to the secret of a webhook that sends Issues, Issue comments, Pull requests, Pull request reviews and Pull request review comments to \`/github/webhook\` on port ${webchat ? `\`WEBCHAT_PORT\` (${WEBCHAT_PORT})` : `\`GITHUB_WEBHOOK_PORT\` (${GITHUB_WEBHOOK_PORT})`}.`
+        `On GitHub the bot answers mentions from the repository's owner, members and collaborators. Give it an account of its own and set \`GITHUB_CHANNEL_TOKEN\` to a fine-grained token of that account, scoped to the repositories it answers in (not your own token), and \`GITHUB_WEBHOOK_SECRET\` to the secret of a webhook that sends Issues, Issue comments, Pull requests, Pull request reviews and Pull request review comments to \`/github/webhook\` on port ${host === 'webchat' ? `\`WEBCHAT_PORT\` (${WEBCHAT_PORT})` : host === 'teams' ? `\`TEAMS_PORT\` (${TEAMS_PORT})` : `\`GITHUB_WEBHOOK_PORT\` (${GITHUB_WEBHOOK_PORT})`}.`
       );
     }
   },

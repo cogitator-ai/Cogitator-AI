@@ -22,7 +22,7 @@ export const APP_CHOICES: Choice<AppKind>[] = [
   {
     value: 'channels',
     label: 'Messaging bot',
-    hint: 'Telegram, Discord, Slack, WebChat, Bluesky, Threads, GitHub or email',
+    hint: 'Telegram, Discord, Slack, WebChat, Bluesky, Threads, GitHub, email or Microsoft Teams',
   },
   { value: 'worker', label: 'Queue worker', hint: 'agents run as BullMQ jobs on Redis' },
 ];
@@ -95,6 +95,11 @@ export const CHANNEL_CHOICES: Choice<ChannelKind>[] = [
     value: 'email',
     label: 'Email',
     hint: 'answers mail in its thread, needs a mailbox with IMAP and SMTP',
+  },
+  {
+    value: 'teams',
+    label: 'Microsoft Teams',
+    hint: 'personal chats and @mentions, needs a single-tenant Azure Bot',
   },
 ];
 

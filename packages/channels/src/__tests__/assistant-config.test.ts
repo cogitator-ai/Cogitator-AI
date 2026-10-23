@@ -245,4 +245,31 @@ describe('AssistantConfigSchema', () => {
     expect(valid({ associations: ['FRIEND'] })).toBe(false);
     expect(valid({ associations: 'any' })).toBe(true);
   });
+
+  it('checks the Teams channel: tenants, the webhook and a multi-tenant bot without tenants', () => {
+    const base = {
+      name: 'test',
+      personality: 'Bot',
+      llm: { provider: 'openai', model: 'openai/gpt-4o' },
+    };
+    const parsed = AssistantConfigSchema.parse({
+      ...base,
+      channels: { teams: { ownerIds: ['aad-owner'], tenants: ['contoso'] } },
+    });
+    expect(parsed.channels.teams).toMatchObject({
+      ownerIds: ['aad-owner'],
+      tenants: ['contoso'],
+      webhook: { port: 3978 },
+    });
+    const valid = (teams: Record<string, unknown>) =>
+      AssistantConfigSchema.safeParse({ ...base, channels: { teams } }).success;
+    expect(valid({})).toBe(true);
+    expect(valid({ tenants: '*' })).toBe(true);
+    expect(valid({ tenants: [] })).toBe(false);
+    expect(valid({ tenants: [''] })).toBe(false);
+    expect(valid({ webhook: { path: 'api/messages' } })).toBe(false);
+    expect(valid({ appType: 'MultiTenant' })).toBe(false);
+    expect(valid({ appType: 'MultiTenant', tenants: '*' })).toBe(true);
+    expect(valid({ trigger: 'everything' })).toBe(false);
+  });
 });

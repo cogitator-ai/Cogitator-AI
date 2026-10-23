@@ -51,6 +51,7 @@ export const CHANNELS = [
   'Threads',
   'GitHub',
   'Email',
+  'Teams',
 ] as const;
 
 /** Length of `builtinTools` in `packages/core/src/tools/index.ts`. */
@@ -60,4 +61,4 @@ export const BUILTIN_TOOL_COUNT = 26;
 export const NPM_PACKAGE_COUNT = 33;
 
 /** Runnable examples under `examples/`, counted per category like the root README. */
-export const EXAMPLE_COUNT = 91;
+export const EXAMPLE_COUNT = 92;

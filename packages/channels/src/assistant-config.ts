@@ -178,6 +178,38 @@ const AssistantChannelsSchema = z.object({
         .optional(),
     })
     .optional(),
+  teams: z
+    .object({
+      /** Owner ids: Entra object ids (`aadObjectId`) of the users given owner rights */
+      ownerIds: OwnerIdsSchema,
+      /** `SingleTenant` (default), `MultiTenant` (legacy bots) or `UserAssignedMSI` */
+      appType: z.enum(['SingleTenant', 'MultiTenant', 'UserAssignedMSI']).optional(),
+      /** The tenant of the app registration (default `TEAMS_TENANT_ID` from the env) */
+      tenantId: z.string().trim().min(1).optional(),
+      /** The tenants whose users it answers, or `*` (default the bot's own tenant) */
+      tenants: z.union([z.array(z.string().trim().min(1)).min(1), z.literal('*')]).optional(),
+      /** Answer only these users, by Entra object id or Teams user id */
+      users: z.array(z.string().trim().min(1)).optional(),
+      /** `mention` (default) answers @mentions in group chats and channels, `all` every message */
+      trigger: z.enum(['mention', 'all']).optional(),
+      /** The hosts a service URL may have, such as smba.trafficmanager.net */
+      serviceUrlHosts: z.array(z.string().trim().min(1)).optional(),
+      /** The messaging endpoint the bot serves (default port 3978, path `/api/messages`) */
+      webhook: z
+        .object({
+          port: z.number().int().positive().default(3978),
+          path: z
+            .string()
+            .regex(/^\//, 'The webhook path starts with /, such as /api/messages')
+            .optional(),
+        })
+        .default({ port: 3978 }),
+    })
+    .refine((teams) => teams.appType !== 'MultiTenant' || teams.tenants !== undefined, {
+      message: 'A MultiTenant bot needs tenants: the tenants it answers, or *',
+      path: ['tenants'],
+    })
+    .optional(),
 });
 
 const ApprovalsSchema = z

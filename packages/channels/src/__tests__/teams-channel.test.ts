@@ -1,0 +1,1138 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { connect, createServer } from 'node:net';
+import type { ChannelAction, ChannelMessage } from '@cogitator-ai/types';
+import { FeedError } from '../feeds/errors';
+import {
+  TEAMS_CONVERSATION_INTERVAL,
+  TEAMS_MESSAGE_CHARS,
+  TeamsChannel,
+  splitTeamsText,
+  type TeamsChannelConfig,
+  type TeamsWebhookRequest,
+} from '../channels/teams/channel';
+import { TeamsTokenVerifier } from '../channels/teams/auth';
+import { TeamsApiError } from '../channels/teams/client';
+import { TeamsCredentials } from '../channels/teams/token';
+import { textWithoutMention, parseActivity } from '../channels/teams/activity';
+import { buttonsCard } from '../channels/teams/cards';
+import { defaultThreadKey } from '../thread-key';
+
+const APP_ID = '00000000-1111-2222-3333-444444444444';
+const TENANT = 'tenant-contoso';
+const BOT = `28:${APP_ID}`;
+const SERVICE = 'https://smba.test/emea/';
+const METADATA = 'https://login.test/v1/.well-known/openidconfiguration';
+const JWKS = 'https://login.test/v1/.well-known/keys';
+const LOGIN = 'https://entra.test';
+
+interface SigningPair {
+  kid: string;
+  privateKey: KeyObject;
+  jwk: Record<string, unknown>;
+}
+
+function keyPair(kid: string, endorsements: string[] = ['msteams']): SigningPair {
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  return {
+    kid,
+    privateKey,
+    jwk: { ...publicKey.export({ format: 'jwk' }), kid, use: 'sig', endorsements },
+  };
+}
+
+const primary = keyPair('key-1');
+const unendorsed = keyPair('key-2', ['webchat']);
+const rotated = keyPair('key-3');
+const stranger = keyPair('key-1');
+
+const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+
+const signed = token;
+
+function token(
+  claims: Record<string, unknown> = {},
+  options: { pair?: SigningPair; alg?: string; kid?: string; signer?: KeyObject } = {}
+): string {
+  const pair = options.pair ?? primary;
+  const now = Math.floor(Date.now() / 1000);
+  const header = encode({ alg: options.alg ?? 'RS256', kid: options.kid ?? pair.kid, typ: 'JWT' });
+  const payload = encode({
+    iss: 'https://api.botframework.com',
+    aud: APP_ID,
+    nbf: now - 10,
+    exp: now + 3600,
+    serviceurl: SERVICE,
+    ...claims,
+  });
+  const signature = sign(
+    'RSA-SHA256',
+    Buffer.from(`${header}.${payload}`),
+    options.signer ?? pair.privateKey
+  ).toString('base64url');
+  return `${header}.${payload}.${signature}`;
+}
+
+interface Call {
+  method: string;
+  url: string;
+  path: string;
+  body?: Record<string, unknown>;
+  authorization?: string;
+  form?: URLSearchParams;
+}
+
+type Route = (call: Call) => Response | undefined;
+
+function microsoft(routes: Route[] = []) {
+  const calls: Call[] = [];
+  const keys = [primary.jwk, unendorsed.jwk];
+  let next = 0;
+  let tokens = 0;
+  const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const headers = new Headers(init?.headers);
+    const raw = typeof init?.body === 'string' ? init.body : undefined;
+    const call: Call = {
+      method: init?.method ?? 'GET',
+      url: url.href,
+      path: decodeURIComponent(url.pathname),
+      ...(raw &&
+        (headers.get('content-type')?.includes('json')
+          ? { body: JSON.parse(raw) as Record<string, unknown> }
+          : { form: new URLSearchParams(raw) })),
+      ...(headers.get('authorization') && { authorization: headers.get('authorization') ?? '' }),
+    };
+    calls.push(call);
+    for (const route of routes) {
+      const response = route(call);
+      if (response) return response;
+    }
+    if (url.href === METADATA) return Response.json({ jwks_uri: JWKS });
+    if (url.href === JWKS) return Response.json({ keys });
+    if (url.origin === LOGIN) {
+      return Response.json({ access_token: `bot-token-${++tokens}`, expires_in: 3600 });
+    }
+    if (call.method === 'POST') return Response.json({ id: `m${++next}` }, { status: 201 });
+    return Response.json({});
+  });
+  return {
+    calls,
+    keys,
+    fetch: fetchImpl as unknown as typeof fetch,
+    connector: () => calls.filter((call) => call.url.startsWith(SERVICE)),
+    keyLoads: () => calls.filter((call) => call.url === JWKS).length,
+  };
+}
+
+const channels: TeamsChannel[] = [];
+
+afterEach(async () => {
+  for (const channel of channels.splice(0)) await channel.stop();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
+function created(api: ReturnType<typeof microsoft>, config: Partial<TeamsChannelConfig> = {}) {
+  const channel = new TeamsChannel({
+    appId: APP_ID,
+    appPassword: 'client-secret',
+    tenantId: TENANT,
+    openIdMetadataUrl: METADATA,
+    loginUrl: LOGIN,
+    retry: { baseDelay: 1, maxDelay: 5 },
+    serviceUrl: SERVICE,
+    fetch: api.fetch,
+    ...config,
+  });
+  channels.push(channel);
+  const received: ChannelMessage[] = [];
+  const actions: ChannelAction[] = [];
+  channel.onMessage(async (msg) => void received.push(msg));
+  channel.onAction(async (action) => void actions.push(action));
+  return { channel, received, actions };
+}
+
+let activities = 0;
+
+const alice = { id: '29:alice', name: 'Alice Doe', aadObjectId: 'aad-alice' };
+
+function activity(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    type: 'message',
+    id: `act-${++activities}`,
+    channelId: 'msteams',
+    serviceUrl: SERVICE,
+    from: alice,
+    recipient: { id: BOT, name: 'Cogi' },
+    conversation: { id: 'a:personal-alice', conversationType: 'personal', tenantId: TENANT },
+    channelData: { tenant: { id: TENANT } },
+    text: 'hello there',
+    ...overrides,
+  };
+}
+
+const groupChat = { id: '19:group@thread.v2', conversationType: 'groupChat', tenantId: TENANT };
+const channelThread = (root: string) => ({
+  id: `19:general@thread.tacv2;messageid=${root}`,
+  conversationType: 'channel',
+  tenantId: TENANT,
+});
+const mention = (text = '<at>Cogi</at>', id = BOT) => ({
+  type: 'mention',
+  text,
+  mentioned: { id, name: 'Cogi' },
+});
+
+function request(body: unknown, auth = token()): TeamsWebhookRequest {
+  return {
+    method: 'POST',
+    headers: { authorization: `Bearer ${auth}`, 'content-type': 'application/json' },
+    rawBody: typeof body === 'string' ? body : JSON.stringify(body),
+  };
+}
+
+async function settle(ms = 20) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function freePort(): Promise<number> {
+  return new Promise((resolve) => {
+    const probe = createServer();
+    probe.listen(0, () => {
+      const address = probe.address();
+      probe.close(() => resolve(typeof address === 'object' && address ? address.port : 0));
+    });
+  });
+}
+
+describe('TeamsTokenVerifier', () => {
+  const verifier = (api: ReturnType<typeof microsoft>, now?: () => number) =>
+    new TeamsTokenVerifier({
+      appId: APP_ID,
+      metadataUrl: METADATA,
+      fetch: api.fetch,
+      ...(now && { now }),
+    });
+
+  it('takes a token Bot Framework signed for the app, with its service URL and endorsements', async () => {
+    const verified = await verifier(microsoft()).verify(token());
+    expect(verified).toEqual({ serviceUrl: SERVICE, endorsements: ['msteams'] });
+  });
+
+  it('refuses another issuer, another audience and a bad signature', async () => {
+    const check = verifier(microsoft());
+    await expect(check.verify(token({ iss: 'https://evil.test' }))).rejects.toThrow(
+      /not issued by Bot Framework/
+    );
+    await expect(check.verify(token({ aud: 'another-app' }))).rejects.toThrow(/another app/);
+    await expect(check.verify(token({}, { signer: stranger.privateKey }))).rejects.toThrow(
+      /signature is invalid/
+    );
+    const [header, , signature] = token().split('.');
+    const forged = `${header}.${encode({ iss: 'https://api.botframework.com', aud: APP_ID, exp: 9e9 })}.${signature}`;
+    await expect(check.verify(forged)).rejects.toThrow(/signature is invalid/);
+  });
+
+  it('refuses expired tokens and tokens not valid yet, allowing five minutes of skew', async () => {
+    const check = verifier(microsoft());
+    const now = Math.floor(Date.now() / 1000);
+    await expect(check.verify(token({ exp: now - 301 }))).rejects.toThrow(/expired/);
+    await expect(check.verify(token({ exp: now - 200 }))).resolves.toBeDefined();
+    await expect(check.verify(token({ nbf: now + 301 }))).rejects.toThrow(/not valid yet/);
+    await expect(check.verify(token({ nbf: now + 200 }))).resolves.toBeDefined();
+    await expect(check.verify(token({ exp: undefined }))).rejects.toThrow(/cannot be read/);
+  });
+
+  it('refuses alg none, HS256 and anything but a signed JWT', async () => {
+    const check = verifier(microsoft());
+    const payload = encode({ iss: 'https://api.botframework.com', aud: APP_ID, exp: 9e9 });
+    await expect(
+      check.verify(`${encode({ alg: 'none', kid: 'key-1' })}.${payload}.`)
+    ).rejects.toThrow(/not a signed JWT/);
+    await expect(
+      check.verify(`${encode({ alg: 'none', kid: 'key-1' })}.${payload}.c2ln`)
+    ).rejects.toThrow(/none, not RS256/);
+    await expect(check.verify(token({}, { alg: 'HS256' }))).rejects.toThrow(/HS256, not RS256/);
+    await expect(check.verify('a.b')).rejects.toThrow(/not a signed JWT/);
+    await expect(check.verify('x'.repeat(20_000))).rejects.toThrow(/too long/);
+  });
+
+  it('caches the keys, loads them again after a day, and once for an unknown key at most every five minutes', async () => {
+    const api = microsoft();
+    let now = Date.now();
+    const check = verifier(api, () => now);
+    const lasting = { exp: Math.floor(now / 1000) + 3 * 86_400 };
+    const token = (
+      claims: Record<string, unknown> = {},
+      options: Parameters<typeof signed>[1] = {}
+    ) => signed({ ...lasting, ...claims }, options);
+    await check.verify(token());
+    await check.verify(token());
+    expect(api.keyLoads()).toBe(1);
+    await expect(check.verify(token({}, { pair: rotated }))).rejects.toThrow(/unknown key/);
+    expect(api.keyLoads()).toBe(2);
+    await expect(check.verify(token({}, { pair: rotated }))).rejects.toThrow(/unknown key/);
+    expect(api.keyLoads()).toBe(2);
+    api.keys.push(rotated.jwk);
+    now += 5 * 60 * 1000 + 1;
+    await expect(check.verify(token({}, { pair: rotated }))).resolves.toBeDefined();
+    expect(api.keyLoads()).toBe(3);
+    now += 24 * 60 * 60 * 1000 + 1;
+    await check.verify(token());
+    expect(api.keyLoads()).toBe(4);
+  });
+
+  it('loads the keys once for requests that come together, and keeps old keys when a reload fails', async () => {
+    let failing = false;
+    const api = microsoft([
+      (call) => (failing && call.url === JWKS ? new Response('down', { status: 500 }) : undefined),
+    ]);
+    let now = Date.now();
+    const check = verifier(api, () => now);
+    const token = () => signed({ exp: Math.floor(now / 1000) + 3 * 86_400 });
+    await Promise.all([check.verify(token()), check.verify(token()), check.verify(token())]);
+    expect(api.keyLoads()).toBe(1);
+    failing = true;
+    now += 24 * 60 * 60 * 1000 + 1;
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(check.verify(token())).resolves.toBeDefined();
+  });
+
+  it('answers 503 without hammering the metadata when the keys cannot be loaded', async () => {
+    const api = microsoft([
+      (call) => (call.url === METADATA ? new Response('down', { status: 500 }) : undefined),
+    ]);
+    const check = verifier(api);
+    await expect(check.verify(token())).rejects.toMatchObject({ status: 503 });
+    await expect(check.verify(token())).rejects.toMatchObject({ status: 503 });
+    expect(api.calls.filter((call) => call.url === METADATA)).toHaveLength(1);
+  });
+});
+
+describe('TeamsChannel webhook', () => {
+  it('answers a valid activity at once and hands the message over', async () => {
+    const { channel, received } = created(microsoft());
+    const response = await channel.handleWebhook(request(activity()));
+    expect(response.status).toBe(202);
+    await settle();
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({
+      channelType: 'teams',
+      channelId: 'a:personal-alice',
+      userId: 'aad-alice',
+      userName: 'Alice Doe',
+      text: 'hello there',
+    });
+    expect(received[0].groupId).toBeUndefined();
+  });
+
+  it('refuses requests without a valid token, and others of the wrong kind', async () => {
+    const { channel, received } = created(microsoft());
+    const body = activity();
+    expect((await channel.handleWebhook({ ...request(body), headers: {} })).status).toBe(401);
+    expect((await channel.handleWebhook(request(body, token({ aud: 'x' })))).status).toBe(401);
+    expect((await channel.handleWebhook(request(body, 'not.a.token'))).status).toBe(401);
+    expect((await channel.handleWebhook({ ...request(body), method: 'GET' })).status).toBe(405);
+    expect((await channel.handleWebhook(request('{not json'))).status).toBe(400);
+    expect((await channel.handleWebhook(request({ type: 'message' }))).status).toBe(400);
+    await settle();
+    expect(received).toEqual([]);
+  });
+
+  it('refuses a token issued for another service URL', async () => {
+    const { channel, received } = created(microsoft());
+    const response = await channel.handleWebhook(
+      request(activity({ serviceUrl: 'https://evil.test/' }))
+    );
+    expect(response.status).toBe(401);
+    const claimless = await channel.handleWebhook(
+      request(activity(), token({ serviceurl: undefined }))
+    );
+    expect(claimless.status).toBe(401);
+    await settle();
+    expect(received).toEqual([]);
+  });
+
+  it('answers 403 when the signing key is not endorsed for the channel of the activity', async () => {
+    const { channel, received } = created(microsoft());
+    const response = await channel.handleWebhook(
+      request(activity(), token({}, { pair: unendorsed }))
+    );
+    expect(response.status).toBe(403);
+    await settle();
+    expect(received).toEqual([]);
+  });
+
+  it('refuses service URLs outside the allowed hosts', async () => {
+    const { channel, received } = created(microsoft(), {
+      serviceUrlHosts: ['smba.trafficmanager.net'],
+    });
+    expect((await channel.handleWebhook(request(activity()))).status).toBe(403);
+    await settle();
+    expect(received).toEqual([]);
+  });
+
+  it('handles an activity Bot Framework sends again once', async () => {
+    const { channel, received } = created(microsoft());
+    const body = activity();
+    await channel.handleWebhook(request(body));
+    const again = await channel.handleWebhook(request(body));
+    expect(again.body).toBe('Already received');
+    await settle();
+    expect(received).toHaveLength(1);
+  });
+
+  it('skips its own activities and activities that are not messages', async () => {
+    const { channel, received } = created(microsoft());
+    await channel.handleWebhook(request(activity({ from: { id: BOT, name: 'Cogi' } })));
+    const update = await channel.handleWebhook(
+      request(activity({ type: 'conversationUpdate', text: undefined }))
+    );
+    expect(update.status).toBe(202);
+    await settle();
+    expect(received).toEqual([]);
+  });
+
+  it("answers only the bot's own tenant by default, and the listed tenants and users", async () => {
+    const api = microsoft();
+    const own = created(api);
+    const elsewhere = activity({
+      channelData: { tenant: { id: 'tenant-other' } },
+      conversation: { id: 'a:other', conversationType: 'personal', tenantId: 'tenant-other' },
+    });
+    await own.channel.handleWebhook(request(elsewhere));
+    await own.channel.handleWebhook(request(activity()));
+    const listed = created(api, { tenants: ['TENANT-OTHER'], users: ['aad-bob'] });
+    await listed.channel.handleWebhook(request(elsewhere));
+    await listed.channel.handleWebhook(
+      request({ ...elsewhere, id: 'from-bob', from: { id: '29:bob', aadObjectId: 'aad-bob' } })
+    );
+    await settle();
+    expect(own.received.map((m) => m.channelId)).toEqual(['a:personal-alice']);
+    expect(listed.received.map((m) => m.userId)).toEqual(['aad-bob']);
+  });
+
+  it('warns at start when it answers every tenant or nobody', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await created(microsoft(), { tenants: '*' }).channel.start();
+    await created(microsoft(), { appType: 'MultiTenant', tenantId: undefined }).channel.start();
+    expect(warn.mock.calls.map(([text]) => String(text))).toEqual([
+      expect.stringContaining('every tenant'),
+      expect.stringContaining('answers nobody'),
+    ]);
+  });
+
+  it('refuses requests once stopped', async () => {
+    const { channel } = created(microsoft());
+    await channel.stop();
+    expect((await channel.handleWebhook(request(activity()))).status).toBe(503);
+  });
+
+  it('cannot be created without what it needs to authenticate', () => {
+    const api = microsoft();
+    expect(() => new TeamsChannel({ appId: '', appPassword: 'x', tenantId: 't' })).toThrow(
+      /appId is required/
+    );
+    expect(() => new TeamsChannel({ appId: APP_ID, appPassword: 'x', fetch: api.fetch })).toThrow(
+      /tenantId is required for a SingleTenant bot/
+    );
+    expect(() => new TeamsChannel({ appId: APP_ID, tenantId: TENANT })).toThrow(
+      /appPassword .* or tokenProvider is required/
+    );
+    expect(
+      () => new TeamsChannel({ appId: APP_ID, tenantId: TENANT, appType: 'UserAssignedMSI' })
+    ).toThrow(/tokenProvider is required/);
+  });
+
+  it('runs its own server when given a port, with a body cap and a safe request line', async () => {
+    const port = await freePort();
+    const github = vi.fn((_req: unknown, res: { writeHead(s: number): { end(): void } }) =>
+      res.writeHead(204).end()
+    );
+    const { channel, received } = created(microsoft(), {
+      webhook: { port, maxBody: 64 * 1024, routes: { '/github/webhook': github } },
+    });
+    await channel.start();
+    const base = `http://127.0.0.1:${port}/api/messages`;
+    const posted = await fetch(base, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token()}`, 'content-type': 'application/json' },
+      body: JSON.stringify(activity()),
+    });
+    expect(posted.status).toBe(202);
+    await settle();
+    expect(received).toHaveLength(1);
+    expect((await fetch(`http://127.0.0.1:${port}/elsewhere`)).status).toBe(404);
+    expect(
+      (await fetch(`http://127.0.0.1:${port}/github/webhook`, { method: 'POST' })).status
+    ).toBe(204);
+    const raw = await new Promise<string>((resolve, reject) => {
+      const socket = connect(port, '127.0.0.1', () => {
+        socket.end('POST //% HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n');
+      });
+      let answer = '';
+      socket.on('data', (chunk) => (answer += String(chunk)));
+      socket.on('end', () => resolve(answer));
+      socket.on('error', reject);
+    });
+    expect(raw).toMatch(/^HTTP\/1\.1 400/);
+    const huge = await fetch(base, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token()}` },
+      body: 'x'.repeat(64 * 1024 + 10),
+    });
+    expect(huge.status).toBe(413);
+  });
+});
+
+describe('TeamsChannel conversations', () => {
+  it('maps personal chats, group chats and channel threads, one thread key each', async () => {
+    const { channel, received } = created(microsoft());
+    await channel.handleWebhook(request(activity()));
+    await channel.handleWebhook(
+      request(
+        activity({ conversation: groupChat, text: '<at>Cogi</at> hi', entities: [mention()] })
+      )
+    );
+    await channel.handleWebhook(
+      request(
+        activity({
+          conversation: channelThread('1700000000001'),
+          channelData: { tenant: { id: TENANT }, team: { id: '19:team@thread.tacv2' } },
+          text: '<at>Cogi</at> in a thread',
+          entities: [mention()],
+        })
+      )
+    );
+    await channel.handleWebhook(
+      request(
+        activity({
+          conversation: channelThread('1700000000002'),
+          text: '<at>Cogi</at> another thread',
+          entities: [mention()],
+        })
+      )
+    );
+    await settle();
+    expect(
+      received.map(({ channelId, topicId, groupId }) => ({ channelId, topicId, groupId }))
+    ).toEqual([
+      { channelId: 'a:personal-alice', topicId: undefined, groupId: undefined },
+      { channelId: '19:group@thread.v2', topicId: undefined, groupId: '19:group@thread.v2' },
+      {
+        channelId: '19:general@thread.tacv2',
+        topicId: '1700000000001',
+        groupId: '19:team@thread.tacv2',
+      },
+      {
+        channelId: '19:general@thread.tacv2',
+        topicId: '1700000000002',
+        groupId: '19:general@thread.tacv2',
+      },
+    ]);
+    expect(new Set(received.map(defaultThreadKey)).size).toBe(4);
+    expect(defaultThreadKey(received[2])).toBe(
+      'teams:19:general@thread.tacv2:1700000000001:aad-alice'
+    );
+  });
+
+  it('answers in groups and channels only when mentioned, without the mention', async () => {
+    const { channel, received } = created(microsoft());
+    await channel.handleWebhook(
+      request(activity({ conversation: groupChat, text: 'just chatting' }))
+    );
+    await channel.handleWebhook(
+      request(
+        activity({
+          conversation: groupChat,
+          text: '<at>Bob</at> and <at>Cogi</at>, what is up?',
+          entities: [mention('<at>Bob</at>', '29:bob'), mention()],
+        })
+      )
+    );
+    await settle();
+    expect(received.map((m) => m.text)).toEqual(['<at>Bob</at> and , what is up?']);
+    const all = created(microsoft(), { trigger: 'all' });
+    await all.channel.handleWebhook(
+      request(activity({ conversation: groupChat, text: 'no mention' }))
+    );
+    await settle();
+    expect(all.received.map((m) => m.text)).toEqual(['no mention']);
+  });
+
+  it('strips the mention in linear time', () => {
+    const fastest = (work: () => unknown) => {
+      let best = Infinity;
+      for (let run = 0; run < 3; run++) {
+        const started = performance.now();
+        work();
+        best = Math.min(best, performance.now() - started);
+      }
+      return best;
+    };
+    const strip = (size: number) => () =>
+      textWithoutMention(
+        parseActivity(activity({ text: '<at>Cogi'.repeat(size), entities: [mention()] }))
+      );
+    strip(10_000)();
+    const ratio = fastest(strip(200_000)) / Math.max(fastest(strip(50_000)), 1);
+    expect(ratio).toBeLessThan(9);
+  });
+
+  it('hands over files sent in a personal chat and inline images from its own Bot Connector only', async () => {
+    const api = microsoft([
+      (call) =>
+        call.url === `${SERVICE}v3/attachments/img/views/original`
+          ? new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'image/png' } })
+          : undefined,
+    ]);
+    const { channel, received } = created(api);
+    await channel.handleWebhook(
+      request(
+        activity({
+          text: '',
+          attachments: [
+            {
+              contentType: 'application/vnd.microsoft.teams.file.download.info',
+              name: 'report.pdf',
+              content: { downloadUrl: 'https://files.test/report.pdf', fileType: 'pdf' },
+            },
+            {
+              contentType: 'image/png',
+              contentUrl: `${SERVICE}v3/attachments/img/views/original`,
+              name: 'shot.png',
+            },
+            { contentType: 'image/png', contentUrl: 'https://evil.test/steal', name: 'x.png' },
+            { contentType: 'text/html', content: '<p>hi</p>' },
+          ],
+        })
+      )
+    );
+    await settle();
+    expect(received[0].attachments).toEqual([
+      {
+        type: 'file',
+        url: 'https://files.test/report.pdf',
+        mimeType: 'application/pdf',
+        filename: 'report.pdf',
+      },
+      {
+        type: 'image',
+        buffer: Buffer.from([1, 2, 3]),
+        mimeType: 'image/png',
+        filename: 'shot.png',
+      },
+    ]);
+    const image = api.calls.find((call) => call.url.includes('/attachments/img/'));
+    expect(image?.authorization).toBe('Bearer bot-token-1');
+    expect(api.calls.some((call) => call.url.startsWith('https://evil.test'))).toBe(false);
+  });
+
+  it('answers 503 for a message the gateway refuses while stopping, and takes it when sent again', async () => {
+    const { channel } = created(microsoft());
+    let refuse = true;
+    const taken: string[] = [];
+    channel.onMessage(async (msg) => {
+      if (refuse) await channel.redeliver(msg);
+      else taken.push(msg.text);
+    });
+    const body = activity();
+    expect((await channel.handleWebhook(request(body))).status).toBe(503);
+    refuse = false;
+    expect((await channel.handleWebhook(request(body))).status).toBe(202);
+    expect(taken).toEqual(['hello there']);
+  });
+
+  it('logs a message dropped after its request was answered', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { channel, received } = created(microsoft());
+    await channel.handleWebhook(request(activity()));
+    await settle();
+    await channel.redeliver(received[0]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('dropped unanswered'));
+  });
+});
+
+describe('TeamsChannel sending', () => {
+  it('posts replies with a client credentials token of the bot tenant, cached between requests', async () => {
+    const api = microsoft();
+    const { channel } = created(api);
+    await channel.handleWebhook(request(activity({ id: 'question' })));
+    const id = await channel.sendText('a:personal-alice', '**Sure**', { replyTo: 'question' });
+    await channel.sendText('a:personal-alice', 'and more');
+    expect(id).toBe('m1');
+    const login = api.calls.filter((call) => call.url.startsWith(LOGIN));
+    expect(login).toHaveLength(1);
+    expect(login[0].path).toBe(`/${TENANT}/oauth2/v2.0/token`);
+    expect(Object.fromEntries(login[0].form ?? [])).toEqual({
+      grant_type: 'client_credentials',
+      client_id: APP_ID,
+      client_secret: 'client-secret',
+      scope: 'https://api.botframework.com/.default',
+    });
+    const [reply, next] = api.connector();
+    expect(reply.path).toBe('/emea/v3/conversations/a:personal-alice/activities/question');
+    expect(reply.url).toContain('a%3Apersonal-alice');
+    expect(reply.authorization).toBe('Bearer bot-token-1');
+    expect(reply.body).toEqual({
+      type: 'message',
+      text: '**Sure**',
+      textFormat: 'extendedmarkdown',
+      replyToId: 'question',
+    });
+    expect(next.path).toBe('/emea/v3/conversations/a:personal-alice/activities');
+  });
+
+  it('uses the botframework.com tenant for a multi-tenant bot and a provider for a managed identity', async () => {
+    const api = microsoft();
+    const multi = created(api, { appType: 'MultiTenant', tenantId: undefined, tenants: [TENANT] });
+    await multi.channel.sendText('a:x', 'hi');
+    expect(api.calls.find((call) => call.url.startsWith(LOGIN))?.path).toBe(
+      '/botframework.com/oauth2/v2.0/token'
+    );
+    const provider = vi.fn(async () => ({ token: 'msi-token', expiresAt: Date.now() + 3_600_000 }));
+    const msi = created(api, {
+      appType: 'UserAssignedMSI',
+      appPassword: undefined,
+      tokenProvider: provider,
+    });
+    await msi.channel.sendText('a:y', 'one');
+    await msi.channel.sendText('a:y', 'two');
+    expect(provider).toHaveBeenCalledTimes(1);
+    expect(api.connector().at(-1)?.authorization).toBe('Bearer msi-token');
+  });
+
+  it('posts to the thread of a channel and to the service URL of the conversation', async () => {
+    const api = microsoft();
+    const { channel } = created(api, { serviceUrl: 'https://smba.test/fallback/' });
+    await channel.handleWebhook(
+      request(
+        activity({
+          conversation: channelThread('1700000000001'),
+          text: '<at>Cogi</at> hi',
+          entities: [mention()],
+        })
+      )
+    );
+    await channel.sendText('19:general@thread.tacv2', 'in the thread', {
+      topicId: '1700000000001',
+    });
+    await channel.sendText('19:unknown@thread.v2', 'proactive');
+    const calls = api.calls.filter((call) => call.method === 'POST' && call.body);
+    expect(calls.map((call) => call.path)).toEqual([
+      '/emea/v3/conversations/19:general@thread.tacv2;messageid=1700000000001/activities',
+      '/fallback/v3/conversations/19:unknown@thread.v2/activities',
+    ]);
+  });
+
+  it('splits text longer than a message holds, each part under 80 KB of JSON', async () => {
+    const text = `${'\u0001'.repeat(TEAMS_MESSAGE_CHARS)}${'b'.repeat(500)}`;
+    const parts = splitTeamsText(text);
+    expect(parts).toHaveLength(2);
+    for (const part of parts) {
+      expect(Buffer.byteLength(JSON.stringify(part))).toBeLessThanOrEqual(80 * 1024);
+    }
+    const api = microsoft();
+    const { channel } = created(api);
+    const long = Array.from({ length: 3000 }, (_, i) => `line ${i} of a long answer`).join('\n');
+    const id = await channel.sendText('a:personal-alice', long, {
+      buttons: [[{ text: 'Ok', data: 'ok' }]],
+    });
+    const posted = api.connector();
+    expect(posted.length).toBeGreaterThan(1);
+    expect(id).toBe('m1');
+    expect(posted.slice(0, -1).every((call) => !call.body?.attachments)).toBe(true);
+    expect(posted.at(-1)?.body?.attachments).toBeDefined();
+    expect(posted.map((call) => String(call.body?.text)).join('\n')).toBe(long);
+  });
+
+  it('retries throttled and failing requests with a backoff, honoring Retry-After', async () => {
+    let failures = [429, 412, 502, 504];
+    const api = microsoft([
+      (call) => {
+        if (!call.url.startsWith(SERVICE) || failures.length === 0) return undefined;
+        const status = failures.shift() ?? 500;
+        return Response.json(
+          { error: { code: 'Throttled', message: 'slow down' } },
+          { status, headers: status === 429 ? { 'retry-after': '0' } : {} }
+        );
+      },
+    ]);
+    const { channel } = created(api, { retry: { retries: 4, baseDelay: 1, maxDelay: 5 } });
+    await expect(channel.sendText('a:x', 'eventually')).resolves.toBe('m1');
+    expect(api.connector()).toHaveLength(5);
+    failures = [429, 429, 429, 429];
+    const tired = created(api, { retry: { retries: 2, baseDelay: 1, maxDelay: 5 } });
+    await expect(tired.channel.sendText('a:x', 'no luck')).rejects.toMatchObject({
+      code: 'rate_limited',
+      status: 429,
+    });
+  });
+
+  it('renews the token once when the Bot Connector refuses it', async () => {
+    let refused = false;
+    const api = microsoft([
+      (call) => {
+        if (!call.url.startsWith(SERVICE) || refused) return undefined;
+        refused = true;
+        return Response.json({ message: 'Authorization has been denied' }, { status: 401 });
+      },
+    ]);
+    const { channel } = created(api);
+    await channel.sendText('a:x', 'hi');
+    expect(api.connector().map((call) => call.authorization)).toEqual([
+      'Bearer bot-token-1',
+      'Bearer bot-token-2',
+    ]);
+  });
+
+  it('says clearly when the user blocked the bot, and maps other errors', async () => {
+    const api = microsoft([
+      (call) =>
+        call.url.includes('blocked')
+          ? Response.json(
+              { error: { code: 'MessageWritesBlocked', message: 'Thread is blocked' } },
+              { status: 403 }
+            )
+          : call.url.includes('missing')
+            ? Response.json({ error: { code: 'ConversationNotFound' } }, { status: 404 })
+            : undefined,
+    ]);
+    const { channel } = created(api);
+    const blocked = await channel.sendText('a:blocked', 'hi').catch((error: unknown) => error);
+    expect(blocked).toBeInstanceOf(TeamsApiError);
+    expect(blocked).toBeInstanceOf(FeedError);
+    expect(blocked).toMatchObject({ code: 'auth', status: 403, errorCode: 'MessageWritesBlocked' });
+    expect(String(blocked)).toMatch(/user blocked the bot or removed the app/);
+    await expect(channel.sendText('a:missing', 'hi')).rejects.toMatchObject({
+      code: 'not_found',
+      errorCode: 'ConversationNotFound',
+    });
+  });
+
+  it('reports a token the tenant refuses', async () => {
+    const api = microsoft([
+      (call) =>
+        call.url.startsWith(LOGIN)
+          ? Response.json(
+              { error: 'unauthorized_client', error_description: 'AADSTS700016: app not found' },
+              { status: 400 }
+            )
+          : undefined,
+    ]);
+    const { channel } = created(api);
+    await expect(channel.sendText('a:x', 'hi')).rejects.toThrow(/AADSTS700016/);
+  });
+
+  it('edits, deletes and shows typing, one request at a time per conversation', async () => {
+    const api = microsoft();
+    const { channel } = created(api);
+    const id = await channel.sendText('a:x', 'draft');
+    const started = Date.now();
+    await Promise.all([
+      channel.editText('a:x', id, 'draft, longer'),
+      channel.editText('a:x', id, 'draft, longer still'),
+      channel.editText('a:x', id, 'final'),
+    ]);
+    await channel.sendTyping('a:x');
+    await channel.deleteMessage('a:x', id);
+    const editing = channel.editText('a:x', 'm9', 'one');
+    await new Promise((resolve) => setTimeout(resolve, TEAMS_CONVERSATION_INTERVAL + 20));
+    const later = [channel.editText('a:x', 'm9', 'two'), channel.editText('a:x', 'm9', 'three')];
+    await Promise.all([editing, ...later]);
+    expect(
+      api
+        .connector()
+        .filter((call) => call.path.endsWith('/m9'))
+        .map((call) => call.body?.text)
+    ).toEqual(['one', 'three']);
+    const calls = api.connector().slice(0, 4);
+    expect(calls.map((call) => call.method)).toEqual(['POST', 'PUT', 'POST', 'DELETE']);
+    expect(calls[1].path).toBe('/emea/v3/conversations/a:x/activities/m1');
+    expect(calls[1].body).toEqual({
+      type: 'message',
+      id,
+      text: 'final',
+      textFormat: 'extendedmarkdown',
+    });
+    expect(calls[2].body).toEqual({ type: 'typing' });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(TEAMS_CONVERSATION_INTERVAL * 3);
+    await expect(channel.editText('a:x', id, 'x'.repeat(TEAMS_MESSAGE_CHARS + 1))).rejects.toThrow(
+      /at most/
+    );
+  });
+});
+
+describe('TeamsChannel buttons', () => {
+  const approve = [
+    [
+      { text: 'Approve', data: 'cogitator:approve', style: 'success' as const },
+      { text: 'Deny', data: 'cogitator:deny', style: 'danger' as const },
+    ],
+  ];
+
+  it('sends buttons as an Adaptive Card of Action.Execute falling back to Action.Submit', () => {
+    const card = buttonsCard([
+      ...approve,
+      [
+        { text: 'Docs', url: 'https://docs.test' },
+        { text: 'Copy', copyText: 'npm i' },
+        { text: 'Approved', disabled: true, style: 'success' },
+      ],
+    ]);
+    expect(card).toMatchObject({ type: 'AdaptiveCard', version: '1.4' });
+    const body = card.body as Record<string, unknown>[];
+    expect(body[0]).toEqual({
+      type: 'ActionSet',
+      actions: [
+        {
+          type: 'Action.Execute',
+          title: 'Approve',
+          verb: 'cogitator',
+          data: { cogitator: 'cogitator:approve' },
+          style: 'positive',
+          fallback: {
+            type: 'Action.Submit',
+            title: 'Approve',
+            data: { cogitator: 'cogitator:approve' },
+            style: 'positive',
+          },
+        },
+        expect.objectContaining({ title: 'Deny', style: 'destructive' }),
+      ],
+    });
+    expect(body[1]).toEqual({
+      type: 'TextBlock',
+      text: 'Approved',
+      weight: 'Bolder',
+      wrap: true,
+      color: 'good',
+    });
+    expect(body[2]).toMatchObject({
+      actions: [
+        { type: 'Action.OpenUrl', url: 'https://docs.test' },
+        { type: 'Action.ShowCard', title: 'Copy' },
+      ],
+    });
+  });
+
+  it('answers an Action.Execute press in its response with the press answer or the current card', async () => {
+    const api = microsoft();
+    const { channel, actions } = created(api);
+    const cardId = await channel.sendText('a:personal-alice', 'Run the tool?', {
+      buttons: approve,
+    });
+    const press = (data: string, extra: Record<string, unknown> = {}) =>
+      activity({
+        type: 'invoke',
+        name: 'adaptiveCard/action',
+        text: undefined,
+        replyToId: cardId,
+        value: { action: { type: 'Action.Execute', verb: 'cogitator', data: { cogitator: data } } },
+        ...extra,
+      });
+    const quiet = await channel.handleWebhook(request(press('cogitator:approve')));
+    expect(quiet.status).toBe(200);
+    expect(quiet.contentType).toBe('application/json');
+    expect(JSON.parse(quiet.body)).toEqual({
+      statusCode: 200,
+      type: 'application/vnd.microsoft.card.adaptive',
+      value: buttonsCard(approve),
+    });
+    expect(actions[0]).toMatchObject({
+      channelType: 'teams',
+      channelId: 'a:personal-alice',
+      userId: 'aad-alice',
+      messageId: cardId,
+      data: 'cogitator:approve',
+    });
+    channel.onAction(async (action) => {
+      await channel.answerAction(action.id, { text: 'This prompt has expired', alert: true });
+    });
+    const noticed = await channel.handleWebhook(request(press('cogitator:deny')));
+    expect(JSON.parse(noticed.body)).toEqual({
+      statusCode: 200,
+      type: 'application/vnd.microsoft.activity.message',
+      value: 'This prompt has expired',
+    });
+    const unknown = await channel.handleWebhook(
+      request(press('x', { value: { action: { verb: 'other', data: {} } } }))
+    );
+    expect(JSON.parse(unknown.body)).toMatchObject({ statusCode: 400 });
+    const other = await channel.handleWebhook(request(press('x', { name: 'task/fetch' })));
+    expect(other.status).toBe(501);
+  });
+
+  it('takes an Action.Submit press as a button press, answering it with a message', async () => {
+    const api = microsoft();
+    const { channel, received, actions } = created(api);
+    await channel.handleWebhook(
+      request(
+        activity({
+          conversation: channelThread('1700000000005'),
+          text: undefined,
+          replyToId: 'card-1',
+          value: { cogitator: 'cogitator:deny' },
+        })
+      )
+    );
+    await settle();
+    expect(received).toEqual([]);
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      channelId: '19:general@thread.tacv2',
+      topicId: '1700000000005',
+      messageId: 'card-1',
+      data: 'cogitator:deny',
+    });
+    await channel.answerAction(actions[0].id, { text: 'Only the person asked can answer' });
+    expect(api.connector().at(-1)?.path).toBe(
+      '/emea/v3/conversations/19:general@thread.tacv2;messageid=1700000000005/activities'
+    );
+    expect(api.connector().at(-1)?.body?.text).toBe('Only the person asked can answer');
+  });
+
+  it('replaces and removes the buttons of a message, keeping its text', async () => {
+    const api = microsoft();
+    const { channel } = created(api);
+    const id = await channel.sendText('a:x', 'Run it?', { buttons: approve });
+    await channel.editButtons('a:x', id, [[{ text: 'Approved', disabled: true }]]);
+    await channel.editButtons('a:x', id, null);
+    const puts = api.connector().filter((call) => call.method === 'PUT');
+    expect(puts[0].body).toMatchObject({ text: 'Run it?', attachments: [expect.any(Object)] });
+    expect(puts[1].body).toEqual({
+      type: 'message',
+      id,
+      text: 'Run it?',
+      textFormat: 'extendedmarkdown',
+    });
+    await expect(channel.editButtons('a:x', 'unknown', null)).rejects.toThrow(/not known/);
+  });
+});
+
+describe('TeamsChannel files', () => {
+  it('asks for consent in a personal chat and uploads the file once accepted', async () => {
+    const api = microsoft([
+      (call) =>
+        call.url.startsWith('https://onedrive.test/')
+          ? new Response(null, { status: 201 })
+          : undefined,
+    ]);
+    const { channel } = created(api);
+    await channel.handleWebhook(request(activity()));
+    await settle();
+    const consentId = await channel.sendFile('a:personal-alice', {
+      type: 'file',
+      buffer: Buffer.from('a,b\n1,2'),
+      mimeType: 'text/csv',
+      filename: 'report.csv',
+      caption: 'The report',
+    });
+    const consent = api.connector().at(-1);
+    expect(consentId).toBeTruthy();
+    const attachment = (consent?.body?.attachments as Record<string, unknown>[])[0];
+    expect(attachment).toMatchObject({
+      contentType: 'application/vnd.microsoft.teams.card.file.consent',
+      name: 'report.csv',
+      content: { description: 'The report', sizeInBytes: 7 },
+    });
+    const uploadId = (attachment.content as { acceptContext: { uploadId: string } }).acceptContext
+      .uploadId;
+    const accepted = await channel.handleWebhook(
+      request(
+        activity({
+          type: 'invoke',
+          name: 'fileConsent/invoke',
+          text: undefined,
+          value: {
+            type: 'fileUpload',
+            action: 'accept',
+            context: { uploadId },
+            uploadInfo: {
+              name: 'report.csv',
+              uploadUrl: 'https://onedrive.test/upload/1',
+              contentUrl: 'https://onedrive.test/files/report.csv',
+              uniqueId: 'unique-1',
+              fileType: 'csv',
+            },
+          },
+        })
+      )
+    );
+    expect(accepted.status).toBe(200);
+    await settle(300);
+    const upload = api.calls.find((call) => call.url === 'https://onedrive.test/upload/1');
+    expect(upload?.method).toBe('PUT');
+    expect(upload?.authorization).toBeUndefined();
+    expect(api.connector().at(-1)?.body).toMatchObject({
+      text: 'The report',
+      attachments: [
+        {
+          contentType: 'application/vnd.microsoft.teams.card.file.info',
+          contentUrl: 'https://onedrive.test/files/report.csv',
+          name: 'report.csv',
+          content: { uniqueId: 'unique-1', fileType: 'csv' },
+        },
+      ],
+    });
+  });
+
+  it('refuses uploads outside personal chats and links files with a public url', async () => {
+    const api = microsoft();
+    const { channel } = created(api);
+    await expect(
+      channel.sendFile('19:group@thread.v2', {
+        type: 'file',
+        buffer: new Uint8Array([1]),
+        mimeType: 'text/plain',
+      })
+    ).rejects.toThrow(/personal chats only/);
+    await channel.sendFile('19:group@thread.v2', {
+      type: 'file',
+      url: 'https://files.test/a.pdf',
+      mimeType: 'application/pdf',
+      filename: 'a.pdf',
+    });
+    await channel.sendFile('19:group@thread.v2', {
+      type: 'image',
+      url: 'https://files.test/a.png',
+      mimeType: 'image/png',
+      caption: 'Look',
+    });
+    const [link, image] = api.connector();
+    expect(link.body?.text).toBe('[a.pdf](<https://files.test/a.pdf>)');
+    expect(image.body).toMatchObject({
+      text: 'Look',
+      attachments: [{ contentType: 'image/png', contentUrl: 'https://files.test/a.png' }],
+    });
+    await expect(
+      channel.sendFile('a:x', { type: 'file', url: 'file:///etc/passwd', mimeType: 'text/plain' })
+    ).rejects.toThrow(/buffer .* or a public http/);
+  });
+});
+
+describe('TeamsCredentials', () => {
+  it('renews the token shortly before it expires, once for requests that come together', async () => {
+    const api = microsoft();
+    let now = Date.now();
+    const credentials = new TeamsCredentials({
+      appId: APP_ID,
+      appPassword: 'secret',
+      tenant: TENANT,
+      loginUrl: LOGIN,
+      fetch: api.fetch,
+      now: () => now,
+    });
+    const tokens = await Promise.all([
+      credentials.token(),
+      credentials.token(),
+      credentials.token(),
+    ]);
+    expect(new Set(tokens)).toEqual(new Set(['bot-token-1']));
+    now += 54 * 60 * 1000;
+    expect(await credentials.token()).toBe('bot-token-1');
+    now += 2 * 60 * 1000;
+    expect(await credentials.token()).toBe('bot-token-2');
+  });
+});

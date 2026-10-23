@@ -121,6 +121,10 @@ const KNOWN_ENV: Record<string, { description: string; example?: string }> = {
   },
   GITHUB_WEBHOOK_SECRET: { description: 'Secret of the GitHub webhook that sends the events' },
   GITHUB_WEBHOOK_PORT: { description: 'Port the GitHub webhook delivers to', example: '8787' },
+  TEAMS_APP_ID: { description: 'Microsoft App ID of the Azure Bot' },
+  TEAMS_APP_PASSWORD: { description: 'Client secret of the app registration of the Azure Bot' },
+  TEAMS_TENANT_ID: { description: 'Tenant ID of the app registration of the Azure Bot' },
+  TEAMS_PORT: { description: 'Port of the Teams messaging endpoint', example: '3978' },
   EMAIL_ADDRESS: { description: 'Address of the bot mailbox', example: 'assistant@example.com' },
   EMAIL_ALLOW_FROM: {
     description: 'Who may write to the bot: addresses or domains, comma-separated',

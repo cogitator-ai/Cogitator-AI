@@ -57,6 +57,7 @@ const gateway = new Gateway({
 | Threads  | No (sent finished)                           | -                              | 500 per post       |
 | GitHub   | Sent finished, or edited with `stream: true` | one edit per comment every 3 s | 65,536 per comment |
 | Email    | No (sent finished)                           | -                              | No limit           |
+| Teams    | Yes (`PUT` activity)                         | 7 requests/sec per chat        | 13,653 chars       |
 
 A channel that cannot edit what it sent says so with `editable: false`, as Bluesky, Threads and email do: the Gateway then sends its answers finished, as with streaming off, and the channel splits a long one into a thread of posts. GitHub could edit, but notifies people of a comment's first text, so it says `editable: false` unless `githubChannel({ stream: true })`, and then spaces the edits of a comment at least 3 seconds apart, whatever `flushInterval` is.
 
