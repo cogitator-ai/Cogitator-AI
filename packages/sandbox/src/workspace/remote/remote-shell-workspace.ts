@@ -52,8 +52,6 @@ const SETSID_NOTE = /^setsid: child \d+ did not exit normally[^\n]*\n?/gm;
 const PROVIDER_TIMEOUT_MARGIN = 10_000;
 const SERVICE_DIR = '.cogitator';
 const TRASH_DIR = `${SERVICE_DIR}/trash`;
-const PENDING_DIR = `${SERVICE_DIR}/pending`;
-const SNAPSHOT_DIR = `${SERVICE_DIR}/snapshots`;
 const SNAPSHOT_ID = /^snap_[a-z0-9]+_[a-f0-9]+$/;
 
 /** Options every remote workspace takes, whatever the provider. */
@@ -105,7 +103,8 @@ interface RemoteState {
   connection?: RemoteShellConnection;
   starting?: Promise<RemoteShellConnection>;
   realRoot?: string;
-  serviceReady?: Promise<void>;
+  /** The sandbox's temporary directory, where uploads and read copies go */
+  temp?: string;
   disposed: boolean;
   /** Commands running right now */
   running: number;
@@ -313,7 +312,7 @@ export class RemoteShellWorkspace implements Workspace {
     if (target === this.root) {
       throw new WorkspaceError('NOT_A_FILE', 'The root is not a file', { path });
     }
-    const upload = await this.upload(bytes, path);
+    const upload = await this.upload('upload', bytes, path);
     const { code } = await this.script(
       scripts.COMMIT_WRITE,
       [
@@ -322,6 +321,7 @@ export class RemoteShellWorkspace implements Workspace {
         options.createParents === false ? '0' : '1',
         options.force ? '1' : '0',
         String(bytes.byteLength),
+        token(),
       ],
       path
     ).catch(async (error: unknown) => {
@@ -529,6 +529,7 @@ export class RemoteShellWorkspace implements Workspace {
     const cwd = await this.lexical(cwdPath);
     const connection = await this.ready();
     this.state.running++;
+    void connection.keepAlive?.().catch(() => undefined);
     const keepAlive = setInterval(
       () => void connection.keepAlive?.().catch(() => undefined),
       KEEP_ALIVE_INTERVAL
@@ -569,7 +570,6 @@ export class RemoteShellWorkspace implements Workspace {
       ...(options.metadata !== undefined && { metadata: options.metadata }),
       exclude,
     };
-    await this.ensureService();
     const excluded = excludedBy(exclude);
     const kept = (await this.tree(exclude)).filter((entry) => !excluded(entry.name));
     const bytes = kept.reduce(
@@ -582,24 +582,24 @@ export class RemoteShellWorkspace implements Workspace {
         `A snapshot would hold ${bytes} bytes, over the limit of ${this.maxSnapshotBytes} bytes: exclude what can be rebuilt (node_modules/**, build output) or raise maxSnapshotBytes`
       );
     }
+    const lists: string[] = [];
     try {
-      await this.writeRaw(
-        this.servicePath(SNAPSHOT_DIR, `${record.id}.dirs`),
-        nulList(kept.filter((entry) => entry.type === 'directory').map((entry) => entry.key)),
-        'snapshot'
-      );
-      await this.writeRaw(
-        this.servicePath(SNAPSHOT_DIR, `${record.id}.list`),
-        nulList(kept.map((entry) => entry.key)),
-        'snapshot'
+      lists.push(await this.upload('list', nulList(kept.map((entry) => entry.key)), 'snapshot'));
+      lists.push(
+        await this.upload(
+          'list',
+          nulList(kept.filter((entry) => entry.type === 'directory').map((entry) => entry.key)),
+          'snapshot'
+        )
       );
       const { code } = await this.script(
         scripts.SNAPSHOT_CREATE,
-        [record.id, JSON.stringify(record)],
+        [record.id, JSON.stringify(record), ...lists],
         'snapshot'
       );
       this.check(code, 'snapshot');
     } catch (error) {
+      await this.discard(lists, 'snapshot');
       await this.script(scripts.SNAPSHOT_DISCARD, [record.id], 'snapshot').catch(() => undefined);
       throw error;
     }
@@ -626,21 +626,14 @@ export class RemoteShellWorkspace implements Workspace {
       }
     }
     dirs.sort((a, b) => depth(b) - depth(a));
-    const tag = randomUUID().replace(/-/g, '');
-    const filesList = this.servicePath(PENDING_DIR, `restore-${tag}.files`);
-    const dirsList = this.servicePath(PENDING_DIR, `restore-${tag}.dirs`);
-    await this.ensureService();
+    const lists: string[] = [];
     let code: number;
     try {
-      await this.writeRaw(filesList, nulList(files), 'restore');
-      await this.writeRaw(dirsList, nulList(dirs), 'restore');
-      ({ code } = await this.script(
-        scripts.SNAPSHOT_RESTORE,
-        [record.id, filesList, dirsList],
-        'restore'
-      ));
+      lists.push(await this.upload('list', nulList(files), 'restore'));
+      lists.push(await this.upload('list', nulList(dirs), 'restore'));
+      ({ code } = await this.script(scripts.SNAPSHOT_RESTORE, [record.id, ...lists], 'restore'));
     } finally {
-      await this.discard([filesList, dirsList], 'restore');
+      await this.discard(lists, 'restore');
     }
     if (code === SCRIPT_EXIT.notFound) throw snapshotMissing(snapshotId);
     this.check(code, 'restore');
@@ -687,16 +680,29 @@ export class RemoteShellWorkspace implements Workspace {
    * `latin1` string, so names that are not UTF-8 compare as they are.
    */
   private async savedPaths(id: string, kind: 'list' | 'dirs'): Promise<Set<string>> {
-    const bytes = await this.readRaw(this.servicePath(SNAPSHOT_DIR, `${id}.${kind}`));
+    const { code, stdout } = await this.script(
+      scripts.SNAPSHOT_SAVED,
+      [id, kind, integer(LISTING_CAP)],
+      'restore'
+    );
+    if (code === SCRIPT_EXIT.notFound) throw snapshotMissing(id);
+    this.check(code, 'restore');
+    const hex = stdout.trim();
+    if (hex.length / 2 > LISTING_CAP) {
+      throw new WorkspaceError(
+        'TOO_LARGE',
+        `The paths of snapshot ${id} are over ${LISTING_CAP} bytes`
+      );
+    }
     const paths = new Set<string>();
-    for (const name of Buffer.from(bytes).toString('latin1').split('\0')) {
+    for (const name of Buffer.from(hex, 'hex').toString('latin1').split('\0')) {
       if (name.startsWith('./')) paths.add(name.slice(2));
     }
     return paths;
   }
 
   /**
-   * Everything under the root, but the workspace's pending files and snapshots, parents first:
+   * Everything under the root but `.cogitator` and the plainly excluded directories, parents first:
    * `key` is the path's bytes as a `latin1` string, `name` the path read as UTF-8 (for globs).
    */
   private async tree(exclude: readonly string[]): Promise<TreeEntry[]> {
@@ -947,14 +953,15 @@ export class RemoteShellWorkspace implements Workspace {
           { path: root }
         );
       }
-      if (!result.stdout.startsWith('/')) {
+      const [realRoot = '', temp = ''] = result.stdout.split('\0');
+      if (!realRoot.startsWith('/') || !temp.startsWith('/')) {
         throw new WorkspaceError(
           'IO',
           `Could not resolve the root ${root}: got ${JSON.stringify(result.stdout)}`,
           { path: root }
         );
       }
-      if (result.stdout === '/') {
+      if (realRoot === '/') {
         throw new WorkspaceError('INVALID_PATH', 'The root of a workspace cannot be /', {
           path: root,
         });
@@ -962,7 +969,8 @@ export class RemoteShellWorkspace implements Workspace {
       if (this.state.disposed) {
         throw new WorkspaceError('DISPOSED', `Workspace ${this.id} was disposed while starting`);
       }
-      this.state.realRoot = result.stdout;
+      this.state.realRoot = realRoot;
+      this.state.temp = trimTrailingSlashes(temp) || '/';
       this.state.connection = connection;
       return connection;
     } catch (error) {
@@ -1040,53 +1048,26 @@ export class RemoteShellWorkspace implements Workspace {
     for (const group of groups) this.state.groups.delete(group);
   }
 
-  /** Removes files an operation made in `.cogitator/pending` or read copies, best effort. */
-  private async discard(files: string[], path: string): Promise<void> {
-    await this.script(scripts.DISCARD, files, path).catch(() => undefined);
+  /** Removes files of the temporary directory an operation named, best effort. */
+  private async discard(names: string[], path: string): Promise<void> {
+    if (names.length === 0) return;
+    await this.script(scripts.DISCARD, names, path).catch(() => undefined);
   }
 
-  /** Uploads bytes to a fresh file of `.cogitator/pending`, the workspace's own directory. */
-  private async upload(bytes: Uint8Array, path: string): Promise<string> {
-    await this.ensureService();
-    const upload = this.servicePath(PENDING_DIR, `upload-${randomUUID().replace(/-/g, '')}`);
-    await this.writeRaw(upload, bytes, path);
-    return upload;
-  }
-
-  private async writeRaw(target: string, bytes: Uint8Array, path: string): Promise<void> {
+  /**
+   * Uploads bytes to a fresh file of the sandbox's temporary directory, never through the
+   * workspace's own directories, which a command can swap for a symlink: the scripts that use
+   * the file check those directories as they go. Answers the file's name.
+   */
+  private async upload(kind: 'upload' | 'list', bytes: Uint8Array, path: string): Promise<string> {
     const connection = await this.ready();
-    try {
-      await connection.writeFile(target, bytes);
-    } catch {
-      this.state.serviceReady = undefined;
-      await this.ensureService();
-      await connection.writeFile(target, bytes).catch((error: unknown) => {
+    const name = `cogitator-${kind}-${token()}`;
+    await connection
+      .writeFile(`${this.state.temp ?? '/tmp'}/${name}`, bytes)
+      .catch((error: unknown) => {
         throw ioError(path, error);
       });
-    }
-  }
-
-  private async readRaw(target: string): Promise<Uint8Array> {
-    const connection = await this.ready();
-    return connection.readFile(target).catch((error: unknown) => {
-      throw ioError(target, error);
-    });
-  }
-
-  private servicePath(dir: string, name: string): string {
-    return `${this.root}/${dir}/${name}`;
-  }
-
-  /** Creates the workspace's own directories once, again after a command removed them. */
-  private ensureService(): Promise<void> {
-    this.state.serviceReady ??= this.script(scripts.ENSURE_SERVICE, [], SERVICE_DIR).then(
-      ({ code }) => this.check(code, SERVICE_DIR)
-    );
-    const ready = this.state.serviceReady;
-    return ready.catch((error: unknown) => {
-      if (this.state.serviceReady === ready) this.state.serviceReady = undefined;
-      throw error;
-    });
+    return name;
   }
 }
 
@@ -1269,6 +1250,11 @@ function excludedBy(exclude: readonly string[]): (path: string) => boolean {
       prefix = prefix.slice(0, slash);
     }
   };
+}
+
+/** A fresh random token for a file name nobody can guess. */
+function token(): string {
+  return randomUUID().replace(/-/g, '');
 }
 
 function depth(path: string): number {

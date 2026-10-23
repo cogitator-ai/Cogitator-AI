@@ -58,7 +58,10 @@ const GROUPS = `leaders() {
  * symlinks resolved (all of them, or all but the last component) and `rel` to it relative to the
  * root, and fails when it lands outside. A trailing `x` keeps newlines at the end of names that
  * command substitution would strip. `mkdirs` checks the nearest existing ancestor is inside the
- * root before it creates anything, so nothing is made outside through a symlink.
+ * root before it creates anything, so nothing is made outside through a symlink. `servicedir
+ * <name> <create>` checks `.cogitator/<name>` is a real directory of the root (neither it nor
+ * `.cogitator` a symlink), every time a script goes through it, and `temp <name>` sets `f` to a
+ * file of the sandbox's temporary directory the workspace named, refusing any other name.
  */
 const PRELUDE = `root=$1; shift
 canon() {
@@ -107,6 +110,26 @@ mkdirs() {
 gitignore() {
   [ -e "$root/.cogitator/.gitignore" ] || printf '*\\n' > "$root/.cogitator/.gitignore"
 }
+servicedir() {
+  sd="$root/.cogitator/$1"
+  [ ! -L "$root/.cogitator" ] || exit ${E.outside}
+  if ! present "$sd"; then
+    [ "$2" = 1 ] || return 2
+    mkdirs "$sd"
+  fi
+  { [ ! -L "$root/.cogitator" ] && [ ! -L "$sd" ] && [ -d "$sd" ]; } || exit ${E.outside}
+  n=$(realpath -e -- "$sd" && printf x) || exit 1
+  [ "\${n%?x}" = "$sd" ] || exit ${E.outside}
+  gitignore
+}
+T=\${TMPDIR:-/tmp}
+temp() {
+  case $1 in
+    */*|'') exit 1 ;;
+    cogitator-read-*|cogitator-upload-*|cogitator-list-*) f="$T/$1" ;;
+    *) exit 1 ;;
+  esac
+}
 ${GROUPS}busy() {
   leaders "$@"
   for g in "$@"; do
@@ -121,8 +144,9 @@ function script(body: string): string {
 }
 
 /**
- * Checks the tools, creates the root when asked (`$2` = 1) and prints the root with its
- * symlinks resolved. Missing tools are named on stderr.
+ * Checks the tools, creates the root when asked (`$2` = 1), removes what interrupted operations
+ * left in the temporary directory over an hour ago, and prints the root with its symlinks
+ * resolved and the temporary directory, NUL-separated. Missing tools are named on stderr.
  */
 export const START = `root=$1
 missing=
@@ -145,18 +169,9 @@ if [ "$2" = 1 ]; then mkdir -p -- "$root" || exit 1; fi
 [ -e "$root" ] || exit ${E.notFound}
 [ -d "$root" ] || exit ${E.notADirectory}
 r=$(realpath -e -- "$root" && printf x) || exit 1
-find "\${TMPDIR:-/tmp}" -mindepth 1 -maxdepth 1 \\( -name 'cogitator-read-*' -o -name 'cogitator-env.*' \\) -mmin +60 -exec rm -rf -- {} + 2>/dev/null
-printf '%s' "\${r%?x}"`;
-
-/**
- * Creates `.cogitator/pending` and `.cogitator/snapshots`, refusing them when they lead out of the
- * root, and removes what interrupted operations left in `pending` over an hour ago.
- */
-export const ENSURE_SERVICE =
-  script(`for d in "$root/.cogitator/pending" "$root/.cogitator/snapshots"; do mkdirs "$d"; done
-gitignore
-find "$root/.cogitator/pending" -mindepth 1 -maxdepth 1 -mmin +60 -exec rm -rf -- {} + 2>/dev/null
-exit 0`);
+t=\${TMPDIR:-/tmp}
+find "$t" -mindepth 1 -maxdepth 1 \\( -name 'cogitator-read-*' -o -name 'cogitator-upload-*' -o -name 'cogitator-list-*' -o -name 'cogitator-env.*' \\) -mmin +60 -exec rm -rf -- {} + 2>/dev/null
+printf '%s\\0%s' "\${r%?x}" "$t"`;
 
 /** `$1` path: exits 0 when it resolves inside the root. */
 export const CONTAINS = script(`resolve "$1" 1 || exit $?`);
@@ -192,26 +207,26 @@ s=$(stat -c %s -- "$t") || exit 1
 ok=1
 printf '%s' "$t"`);
 
-/**
- * Removes files the workspace made for one operation, nothing else: its own files of
- * `.cogitator/pending` by path, and its read copies in the temporary directory by name.
- */
-export const DISCARD = script(`for f in "$@"; do
-  case $f in
-    "$root"/.cogitator/pending/*) rm -f -- "$f" ;;
-    */*) ;;
-    cogitator-read-*) rm -f -- "\${TMPDIR:-/tmp}/$f" ;;
+/** Removes files of the temporary directory the workspace named for one operation, nothing else. */
+export const DISCARD = script(`for name in "$@"; do
+  case $name in
+    */*|'') ;;
+    cogitator-read-*|cogitator-upload-*|cogitator-list-*) rm -f -- "$T/$name" ;;
   esac
 done
 exit 0`);
 
 /**
- * `$1` path, `$2` the uploaded temporary file, `$3` create parents (1/0), `$4` force (1/0), `$5`
- * the size uploaded: moves the upload over the file, keeping the mode of the file it replaces.
- * The upload is removed whatever happens.
+ * `$1` path, `$2` the name of the upload in the temporary directory, `$3` create parents (1/0),
+ * `$4` force (1/0), `$5` the size uploaded, `$6` a fresh token: copies the upload to a new file
+ * next to the target and moves that over it, keeping the mode of the file it replaces. Nothing
+ * is written through the workspace's own directories, and the upload and the copy are removed
+ * whatever happens.
  */
-export const COMMIT_WRITE = script(`t=$2
-trap 'rm -f -- "$t"' EXIT
+export const COMMIT_WRITE = script(`temp "$2"; t=$f
+w=
+trap 'rm -f -- "$t"; [ -z "$w" ] || rm -f -- "$w"' EXIT
+{ [ -f "$t" ] && [ ! -L "$t" ]; } || exit ${E.uploadChanged}
 [ "$(stat -c %s -- "$t" 2>/dev/null)" = "$5" ] || exit ${E.uploadChanged}
 resolve "$1" 1 || exit $?
 [ "$rel" = . ] && exit ${E.isDirectory}
@@ -227,10 +242,14 @@ if present "$p"; then
   [ -d "$p" ] && exit ${E.isDirectory}
   [ -f "$p" ] || exit ${E.notRegular}
   [ "$4" = 1 ] || [ -w "$p" ] || exit ${E.readOnly}
-  chmod --reference="$p" -- "$t" 2>/dev/null
 fi
+w="$d/.cogitator-tmp-$6"
+(set -C; cat -- "$t" > "$w") || exit 1
+[ "$(stat -c %s -- "$w")" = "$5" ] || exit ${E.uploadChanged}
+present "$p" && chmod --reference="$p" -- "$w" 2>/dev/null
 case $rel in .cogitator/*) gitignore ;; esac
-mv -f -T -- "$t" "$p" || exit 1`);
+mv -f -T -- "$w" "$p" || exit 1
+w=`);
 
 /**
  * `$1` directory, `$2` how many entries at most (empty for all), `$3` the most bytes to print,
@@ -362,13 +381,19 @@ find . -mindepth 1 \\( -path ./.cogitator "$@" \\) -prune -o -printf '%y\\0%s\\0
 exit 0`);
 
 /**
- * `$1` snapshot id, `$2` its record (JSON): archives the paths listed in `<id>.list`, then
- * writes the record, which marks the snapshot complete. Files that vanish meanwhile are skipped,
- * and a snapshot that fails leaves nothing behind.
+ * `$1` snapshot id, `$2` its record (JSON), `$3` and `$4` the names of the uploaded lists of
+ * paths and of directories: keeps the lists, archives the paths listed, then writes the record,
+ * which marks the snapshot complete. Files that vanish meanwhile are skipped, and a snapshot that
+ * fails leaves nothing behind.
  */
-export const SNAPSHOT_CREATE = script(`cd -- "$root/.cogitator/snapshots" || exit 1
-id=$1
-trap 'rm -f -- "$id.tar.part" "$id.json.part"; [ -f "$id.json" ] || rm -f -- "$id.list" "$id.dirs" "$id.tar"' EXIT
+export const SNAPSHOT_CREATE = script(`id=$1
+temp "$3"; l=$f
+temp "$4"; dl=$f
+trap 'rm -f -- "$l" "$dl"' EXIT
+servicedir snapshots 1
+cd -- "$root/.cogitator/snapshots" || exit 1
+trap 'rm -f -- "$l" "$dl" "$id.tar.part" "$id.json.part"; [ -f "$id.json" ] || rm -f -- "$id.list" "$id.dirs" "$id.tar"' EXIT
+cat -- "$l" > "$id.list" && cat -- "$dl" > "$id.dirs" || exit 1
 tar -C "$root" --null --no-recursion --ignore-failed-read -T "$id.list" -cf "$id.tar.part" 2>/dev/null
 c=$?
 { [ "$c" -le 1 ] && [ -s "$id.tar.part" ]; } || exit 1
@@ -376,12 +401,23 @@ mv -f -- "$id.tar.part" "$id.tar" || exit 1
 printf '%s' "$2" > "$id.json.part" && mv -f -- "$id.json.part" "$id.json" || exit 1`);
 
 /** `$1` snapshot id: removes what an unfinished snapshot left. */
-export const SNAPSHOT_DISCARD = script(`cd -- "$root/.cogitator/snapshots" 2>/dev/null || exit 0
+export const SNAPSHOT_DISCARD = script(`servicedir snapshots 0 || exit 0
+cd -- "$root/.cogitator/snapshots" || exit 0
 [ -f "$1.json" ] || rm -f -- "$1.list" "$1.dirs" "$1.tar" "$1.tar.part"
 exit 0`);
 
+/**
+ * `$1` snapshot id, `$2` `list` or `dirs`, `$3` the most bytes to print: prints that list of
+ * the snapshot hex-encoded.
+ */
+export const SNAPSHOT_SAVED = script(`servicedir snapshots 0 || exit ${E.notFound}
+f="$root/.cogitator/snapshots/$1.$2"
+[ -f "$f" ] || exit ${E.notFound}
+head -c "$(($3 + 1))" -- "$f" | od -An -v -tx1 | tr -d ' \\n'`);
+
 /** `$1` the most bytes to print: prints the records of the snapshots, each followed by a NUL. */
-export const SNAPSHOT_RECORDS = script(`cap=$(($1 + 1))
+export const SNAPSHOT_RECORDS = script(`servicedir snapshots 0 || exit 0
+cap=$(($1 + 1))
 for f in "$root"/.cogitator/snapshots/*.json; do
   [ -f "$f" ] || continue
   cat -- "$f" && printf '\\0'
@@ -389,11 +425,13 @@ done | head -c "$cap"
 exit 0`);
 
 /**
- * `$1` snapshot id, `$2` and `$3` the uploaded lists of files and of directories (deepest first)
- * to remove first: removes them, then extracts the snapshot over the root.
+ * `$1` snapshot id, `$2` and `$3` the names of the uploaded lists of files and of directories
+ * (deepest first) to remove first: removes them, then extracts the snapshot over the root.
  */
-export const SNAPSHOT_RESTORE = script(`a=$2; b=$3
+export const SNAPSHOT_RESTORE = script(`temp "$2"; a=$f
+temp "$3"; b=$f
 trap 'rm -f -- "$a" "$b"' EXIT
+servicedir snapshots 0 || exit ${E.notFound}
 cd -- "$root" || exit 1
 [ -f ".cogitator/snapshots/$1.tar" ] || exit ${E.notFound}
 xargs -0 -r rm -f -- < "$a" || exit 1
@@ -401,7 +439,7 @@ xargs -0 -r rmdir --ignore-fail-on-non-empty -- < "$b" 2>/dev/null
 tar -xpf ".cogitator/snapshots/$1.tar" || exit 1`);
 
 /** `$1` snapshot id: forgets the snapshot. */
-export const SNAPSHOT_DELETE =
-  script(`cd -- "$root/.cogitator/snapshots" 2>/dev/null || exit ${E.notFound}
+export const SNAPSHOT_DELETE = script(`servicedir snapshots 0 || exit ${E.notFound}
+cd -- "$root/.cogitator/snapshots" || exit ${E.notFound}
 [ -f "$1.json" ] || exit ${E.notFound}
 rm -f -- "$1.json" "$1.tar" "$1.list" "$1.dirs"`);

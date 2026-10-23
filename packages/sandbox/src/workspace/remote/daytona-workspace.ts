@@ -194,7 +194,9 @@ class DaytonaDriver implements RemoteShellDriver {
 /**
  * A Daytona sandbox. Commands run in sessions: a session per started command (deleted when it
  * ends, unless it keeps background processes), and a small pool of sessions reused for the
- * workspace's own short scripts, which run synchronously.
+ * workspace's own short scripts, which run synchronously. A session takes a single command line,
+ * so the argv is joined with `shellCommand` and the directory and environment are quoted with
+ * `shellQuote`: every word single-quoted, which leaves nothing for the shell to expand or split.
  */
 class DaytonaConnection implements RemoteShellConnection {
   readonly sandboxId: string;

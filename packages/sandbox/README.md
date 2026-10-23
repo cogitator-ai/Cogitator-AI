@@ -302,7 +302,7 @@ try {
 All three are `RemoteShellWorkspace` over a small driver (create or connect, read and write bytes, run a program, release), and everything else runs as shell scripts in the sandbox, so they behave the same:
 
 - Paths are normalized against the root and resolved in the sandbox with `realpath -m`, a symlink out of the root is refused with `OUTSIDE_ROOT`
-- Writes upload to `.cogitator/pending` and move over the file in one step, keeping its mode, reads go through a private copy in the sandbox's temporary directory and never write the root, `maxFileBytes` caps both
+- Writes upload to a fresh file of the sandbox's temporary directory and move over the file in one step, keeping its mode, reads go through a private copy in the sandbox's temporary directory and never write the root, `maxFileBytes` caps both
 - `list`, `remove` (with the trash in `.cogitator/trash`) and `rename` follow the `LocalWorkspace` rules, and refuse with `BUSY` while a command runs or kept background processes
 - Commands run under `setsid` in their own process group, with unforgeable marker lines (the token comes on stdin): a timeout returns 124 and kills the group, `background: 'keep'` leaves background processes until `dispose()`
 - `snapshot()`, `restore()`, `listSnapshots()` and `deleteSnapshot()` keep tar archives in `.cogitator/snapshots` inside the sandbox, `.cogitator/**` always excluded, names that are not UTF-8 kept as they are, and `maxSnapshotBytes` (1 GiB) refusing a bigger one with `TOO_LARGE`

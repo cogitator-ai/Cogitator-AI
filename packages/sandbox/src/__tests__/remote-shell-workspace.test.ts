@@ -128,7 +128,7 @@ describe('RemoteShellWorkspace without a shell', () => {
     const ok = new RemoteShellWorkspace({
       root: 'project/',
       driver: scriptedDriver(
-        () => ({ exitCode: 0, stdout: '/home/user/project', stderr: '' }),
+        () => ({ exitCode: 0, stdout: '/home/user/project\0/tmp', stderr: '' }),
         calls
       ),
     });
@@ -136,7 +136,7 @@ describe('RemoteShellWorkspace without a shell', () => {
     await ok.start();
     expect(calls[0]).toContain('/home/user/project');
     const slash = new RemoteShellWorkspace({
-      driver: scriptedDriver(() => ({ exitCode: 0, stdout: '/', stderr: '' })),
+      driver: scriptedDriver(() => ({ exitCode: 0, stdout: '/\0/tmp', stderr: '' })),
     });
     await expect(slash.start()).rejects.toMatchObject({ code: 'INVALID_PATH' });
   });
@@ -144,7 +144,10 @@ describe('RemoteShellWorkspace without a shell', () => {
   it('refuses paths that climb out before reaching the sandbox', async () => {
     const calls: string[][] = [];
     const workspace = new RemoteShellWorkspace({
-      driver: scriptedDriver(() => ({ exitCode: 0, stdout: '/home/user', stderr: '' }), calls),
+      driver: scriptedDriver(
+        () => ({ exitCode: 0, stdout: '/home/user\0/tmp', stderr: '' }),
+        calls
+      ),
     });
     await workspace.start();
     const before = calls.length;
@@ -160,7 +163,7 @@ describe('RemoteShellWorkspace without a shell', () => {
 
   it('does not connect when disposed before use, and is unusable afterwards', async () => {
     let connects = 0;
-    const driver = scriptedDriver(() => ({ exitCode: 0, stdout: '/home/user', stderr: '' }));
+    const driver = scriptedDriver(() => ({ exitCode: 0, stdout: '/home/user\0/tmp', stderr: '' }));
     const counting: RemoteShellDriver = {
       ...driver,
       connect: () => {
@@ -177,14 +180,13 @@ describe('RemoteShellWorkspace without a shell', () => {
 
   it('can start again after a failed connect', async () => {
     let attempts = 0;
-    const driver = scriptedDriver(() => ({ exitCode: 0, stdout: '/home/user', stderr: '' }));
+    const driver = scriptedDriver(() => ({ exitCode: 0, stdout: '/home/user\0/tmp', stderr: '' }));
     const flaky: RemoteShellDriver = {
       ...driver,
       connect: () => {
         attempts++;
-        return attempts === 1
-          ? Promise.reject(new WorkspaceError('UNAVAILABLE', 'no sandbox'))
-          : driver.connect();
+        const failure: Error = new WorkspaceError('UNAVAILABLE', 'no sandbox');
+        return attempts === 1 ? Promise.reject(failure) : driver.connect();
       },
     };
     const workspace = new RemoteShellWorkspace({ driver: flaky });
@@ -194,7 +196,7 @@ describe('RemoteShellWorkspace without a shell', () => {
   });
 
   it('returns on a timeout or an abort while the provider never starts the command', async () => {
-    const driver = scriptedDriver(() => ({ exitCode: 0, stdout: '/home/user', stderr: '' }));
+    const driver = scriptedDriver(() => ({ exitCode: 0, stdout: '/home/user\0/tmp', stderr: '' }));
     let release: (process: RemoteProcess) => void = () => undefined;
     const late = new Promise<RemoteProcess>((resolve) => {
       release = resolve;
@@ -232,7 +234,7 @@ afterAll(() => {
   rmSync(base, { recursive: true, force: true });
 });
 
-describe.skipIf(!host)('RemoteShellWorkspace on a real shell', () => {
+describe.skipIf(!host)('RemoteShellWorkspace on a real shell', { timeout: 60_000 }, () => {
   const open: RemoteShellWorkspace[] = [];
   let count = 0;
 
@@ -252,6 +254,13 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', () => {
   afterEach(async () => {
     await Promise.all(open.splice(0).map((workspace) => workspace.dispose()));
   }, 60_000);
+
+  const uploadsLeft = async (workspace: RemoteShellWorkspace) =>
+    (
+      await workspace.exec(
+        'ls -A "${TMPDIR:-/tmp}" | grep -c -e "^cogitator-upload-" -e "^cogitator-list-" || true'
+      )
+    ).stdout.trim();
 
   const alive = async (workspace: RemoteShellWorkspace, pidFile: string) =>
     (
@@ -362,8 +371,8 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', () => {
     await expect(workspace.read('bin')).rejects.toMatchObject({ code: 'NOT_A_FILE' });
     await expect(workspace.read('nothing')).rejects.toMatchObject({ code: 'NOT_FOUND' });
 
-    const pending = (await workspace.list('.cogitator/pending', { includeHidden: true })).length;
-    expect(pending).toBe(0);
+    expect(await uploadsLeft(workspace)).toBe('0');
+    expect(await workspace.exists('.cogitator')).toBe(false);
   });
 
   it.skipIf(process.getuid?.() === 0)(
@@ -813,14 +822,21 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', () => {
     expect(left.stdout.trim()).toBe('0');
   });
 
-  it('removes what interrupted operations left in .cogitator/pending an hour ago', async () => {
+  it('removes what interrupted operations left in the temporary directory an hour ago', async () => {
     const { workspace } = fresh();
+    const stale = `cogitator-upload-stale${count}`;
+    const recent = `cogitator-upload-fresh${count}`;
     await workspace.exec(
-      'mkdir -p .cogitator/pending && touch .cogitator/pending/fresh && touch -d "2 hours ago" .cogitator/pending/stale'
+      `cd "\${TMPDIR:-/tmp}" && touch ${recent} && touch -d "2 hours ago" ${stale}`
     );
-    await workspace.write('a.txt', 'x');
-    const left = await workspace.list('.cogitator/pending', { includeHidden: true });
-    expect(left.map((entry) => entry.name)).toEqual(['fresh']);
+    const next = fresh().workspace;
+    await next.start();
+    const left = await next.exec(
+      `cd "\${TMPDIR:-/tmp}" && ls -A | grep "^cogitator-upload-" || true`
+    );
+    expect(left.stdout).toContain(recent);
+    expect(left.stdout).not.toContain(stale);
+    await next.exec(`rm -f "\${TMPDIR:-/tmp}/${recent}"`);
   });
 
   it('does not run a command the provider started after the deadline, even unkilled', async () => {
@@ -876,7 +892,7 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', () => {
     expect(await workspace.read('a.txt', { maxBytes: 1e21 })).toBe('content');
     expect(read).toHaveLength(1);
     expect(read[0]).toMatch(/\/cogitator-read-[a-f0-9]{32}$/);
-    expect(await workspace.exists('.cogitator')).toBe(true);
+    expect(await workspace.exists('.cogitator')).toBe(false);
     await expect(workspace.read('a.txt', { maxBytes: 3 })).rejects.toMatchObject({
       code: 'TOO_LARGE',
     });
@@ -890,7 +906,7 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', () => {
     }));
     await expect(workspace.write('a.txt', 'content')).rejects.toMatchObject({ code: 'IO' });
     expect(await workspace.exists('a.txt')).toBe(false);
-    expect(await workspace.list('.cogitator/pending', { includeHidden: true })).toEqual([]);
+    expect(await uploadsLeft(workspace)).toBe('0');
   });
 
   it('stops a command whose output passes maxStreamBytes', async () => {
@@ -933,7 +949,9 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', () => {
     const outside = join(base, `service-${count}`);
     mkdirSync(outside);
     await workspace.exec(`ln -s ${shellQuote(outside)} .cogitator && touch f.txt`);
-    await expect(workspace.write('a.txt', 'x')).rejects.toMatchObject({ code: 'OUTSIDE_ROOT' });
+    await workspace.write('a.txt', 'x');
+    await expect(workspace.snapshot()).rejects.toMatchObject({ code: 'OUTSIDE_ROOT' });
+    await expect(workspace.listSnapshots()).rejects.toMatchObject({ code: 'OUTSIDE_ROOT' });
     await expect(workspace.remove('f.txt', { trash: true })).rejects.toMatchObject({
       code: 'OUTSIDE_ROOT',
     });
@@ -945,6 +963,26 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', () => {
     });
     expect(readdirSync(outside)).toEqual([]);
     expect(existsSync(join(root, 'f.txt'))).toBe(true);
+  });
+
+  it('checks .cogitator/snapshots every time, also after it was swapped for a symlink', async () => {
+    const { workspace, root } = fresh();
+    const outside = join(base, `swapped-${count}`);
+    mkdirSync(outside);
+    await workspace.write('a.txt', 'one');
+    const first = await workspace.snapshot();
+    await workspace.exec(
+      `mv .cogitator/snapshots .cogitator/kept && ln -s ${shellQuote(outside)} .cogitator/snapshots && mkdir -p .cogitator/pending && rm -rf .cogitator/pending && ln -s ${shellQuote(outside)} .cogitator/pending`
+    );
+    await expect(workspace.snapshot()).rejects.toMatchObject({ code: 'OUTSIDE_ROOT' });
+    await expect(workspace.listSnapshots()).rejects.toMatchObject({ code: 'OUTSIDE_ROOT' });
+    await expect(workspace.restore(first.id)).rejects.toMatchObject({ code: 'OUTSIDE_ROOT' });
+    await expect(workspace.deleteSnapshot(first.id)).rejects.toMatchObject({
+      code: 'OUTSIDE_ROOT',
+    });
+    await workspace.write('b.txt', 'two');
+    expect(readFileSync(join(root, 'b.txt'), 'utf8')).toBe('two');
+    expect(readdirSync(outside)).toEqual([]);
   });
 
   it('snapshots names that are not UTF-8 as they are', async () => {

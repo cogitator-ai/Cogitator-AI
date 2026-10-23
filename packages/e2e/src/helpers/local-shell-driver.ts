@@ -1,4 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { readFile, writeFile } from 'node:fs/promises';
 import type {
   RemoteProcess,
@@ -30,15 +33,33 @@ export class LocalShellDriver implements RemoteShellDriver {
   constructor(readonly defaultRoot: string) {}
 
   connect(): Promise<RemoteShellConnection> {
+    const scripts = join(dirname(this.defaultRoot), '.scripts');
     return Promise.resolve({
       sandboxId: 'local',
       readFile: (path: string) => readFile(path),
       writeFile: (path: string, content: Uint8Array) => writeFile(path, content),
-      run: run,
-      spawn: start,
+      run: (argv, options) => run(fromFile(argv, scripts), options),
+      spawn: (argv, options) => start(fromFile(argv, scripts), options),
       close: () => Promise.resolve(),
     });
   }
+}
+
+/**
+ * `argv` with its `sh -c <script> <name> <args...>` turned into `sh <file> <args...>`, the script
+ * kept in a file of `dir`: the arguments stay positional parameters, and this machine never runs
+ * a command line built from them.
+ */
+function fromFile(argv: readonly string[], dir: string): string[] {
+  const at = argv.findIndex((word, i) => word === 'sh' && argv[i + 1] === '-c');
+  if (at === -1) return [...argv];
+  const script = argv[at + 2] ?? '';
+  const file = join(dir, `${createHash('sha256').update(script).digest('hex')}.sh`);
+  if (!existsSync(file)) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, script);
+  }
+  return [...argv.slice(0, at), 'sh', file, ...argv.slice(at + 4)];
 }
 
 function launch(argv: readonly string[], cwd: string, env: Record<string, string>, stdin: boolean) {

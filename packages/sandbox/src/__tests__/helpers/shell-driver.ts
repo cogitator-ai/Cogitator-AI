@@ -1,7 +1,8 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type {
   RemoteProcess,
   RemoteRunOptions,
@@ -88,7 +89,10 @@ export class LocalShellDriver implements RemoteShellDriver {
   ) {}
 
   connect(): Promise<RemoteShellConnection> {
-    const connection = new LocalShellConnection(this.host);
+    const connection = new LocalShellConnection(
+      this.host,
+      join(dirname(this.defaultRoot), '.scripts')
+    );
     this.connections.push(connection);
     return Promise.resolve(connection);
   }
@@ -99,7 +103,10 @@ export class LocalShellConnection implements RemoteShellConnection {
   closed = false;
   runs = 0;
 
-  constructor(private readonly host: ShellHost) {}
+  constructor(
+    private readonly host: ShellHost,
+    private readonly scripts: string
+  ) {}
 
   readFile(path: string): Promise<Uint8Array> {
     return readFile(path);
@@ -164,8 +171,9 @@ export class LocalShellConnection implements RemoteShellConnection {
     stdin: boolean
   ): ReturnType<typeof spawn> {
     const stdio: ['pipe' | 'ignore', 'pipe', 'pipe'] = [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'];
+    const words = fromFile(argv, this.scripts);
     if (this.host.kind === 'native') {
-      return spawn(argv[0], argv.slice(1), {
+      return spawn(words[0], words.slice(1), {
         cwd,
         env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', ...env },
         stdio,
@@ -174,8 +182,25 @@ export class LocalShellConnection implements RemoteShellConnection {
     const flags = Object.entries(env).flatMap(([name, value]) => ['-e', `${name}=${value}`]);
     return spawn(
       'docker',
-      ['exec', ...(stdin ? ['-i'] : []), '-w', cwd, ...flags, this.host.container, ...argv],
+      ['exec', ...(stdin ? ['-i'] : []), '-w', cwd, ...flags, this.host.container, ...words],
       { stdio }
     );
   }
+}
+
+/**
+ * `argv` with its `sh -c <script> <name> <args...>` turned into `sh <file> <args...>`, the script
+ * kept in a file of `dir`: the arguments stay positional parameters, and this machine never
+ * runs a command line built from them.
+ */
+export function fromFile(argv: readonly string[], dir: string): string[] {
+  const at = argv.findIndex((word, i) => word === 'sh' && argv[i + 1] === '-c');
+  if (at === -1) return [...argv];
+  const script = argv[at + 2] ?? '';
+  const file = join(dir, `${createHash('sha256').update(script).digest('hex')}.sh`);
+  if (!existsSync(file)) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, script);
+  }
+  return [...argv.slice(0, at), 'sh', file, ...argv.slice(at + 4)];
 }

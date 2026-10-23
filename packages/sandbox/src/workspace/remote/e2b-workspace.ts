@@ -186,6 +186,12 @@ class E2BDriver implements RemoteShellDriver {
   }
 }
 
+/**
+ * An E2B sandbox. E2B runs a command from a single command line (with `bash -l -c`), so the
+ * argv the workspace gives is joined with `shellCommand`: every word single-quoted, which leaves
+ * nothing for the shell to expand or split, and paths and values reach the program as the
+ * positional parameters of a constant script, never as script text.
+ */
 class E2BConnection implements RemoteShellConnection {
   readonly sandboxId: string;
   readonly keepAlive: () => Promise<void>;

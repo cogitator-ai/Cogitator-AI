@@ -10,6 +10,7 @@ const fake = vi.hoisted(() => {
     files: new Map<string, Uint8Array>(),
     exitCode: 0,
     lateOutput: undefined as (() => void) | undefined,
+    hold: undefined as Promise<void> | undefined,
   };
   return {
     state,
@@ -19,6 +20,7 @@ const fake = vi.hoisted(() => {
       state.files = new Map();
       state.exitCode = 0;
       state.lateOutput = undefined;
+      state.hold = undefined;
     },
     record(kind: string, ...args: unknown[]) {
       state.calls.push({ kind, args });
@@ -47,7 +49,7 @@ function scriptOf(command: string): keyof typeof scripts | undefined {
 }
 
 function answer(script: keyof typeof scripts | undefined, words: string[]): string {
-  if (script === 'START') return fake.state.root;
+  if (script === 'START') return `${fake.state.root}\0/tmp`;
   if (script === 'READ') {
     const [target, , name] = words.slice(-3);
     const bytes = fake.state.files.get(target);
@@ -123,12 +125,13 @@ vi.mock('e2b', () => {
             fake.record('closeStdin');
             return Promise.resolve();
           },
-          wait: () => {
+          wait: async () => {
+            await fake.state.hold;
             const out = fake.marked(token, 'hi\n', fake.state.exitCode);
             opts.onStdout?.(out.stdout);
             opts.onStderr?.(out.stderr);
             return fake.state.exitCode === 0
-              ? Promise.resolve({ exitCode: 0, ...out })
+              ? { exitCode: 0, ...out }
               : Promise.reject(new CommandExitError({ exitCode: fake.state.exitCode, ...out }));
           },
           kill: () => Promise.resolve(true),
@@ -391,7 +394,7 @@ describe('E2BWorkspace', () => {
     expect(read.args[1]).toEqual({ format: 'bytes' });
     await expect(workspace.write('b.txt', 'x')).rejects.toMatchObject({ code: 'DENIED' });
     const upload = fake.callsOf('files.write')[0];
-    expect(upload.args[0]).toMatch(/^\/home\/user\/\.cogitator\/pending\/upload-/);
+    expect(upload.args[0]).toMatch(/^\/tmp\/cogitator-upload-[a-f0-9]{32}$/);
     expect(upload.args[1]).toBeInstanceOf(ArrayBuffer);
     await workspace.dispose();
   });
@@ -407,6 +410,32 @@ describe('E2BWorkspace', () => {
     expect(workspace.root).toBe('/home/user/repo');
     await workspace.dispose();
     expect(fake.callsOf('sandbox.kill')).toHaveLength(0);
+  });
+
+  it('keeps a sandbox used only through commands alive, before and while they run', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    try {
+      const workspace = new E2BWorkspace({ apiKey: 'k', lifetime: 60_000 });
+      await workspace.start();
+      vi.setSystemTime(Date.now() + 31_000);
+      await workspace.exec('true');
+      expect(fake.callsOf('sandbox.setTimeout')).toHaveLength(1);
+      let release: () => void = () => undefined;
+      fake.state.hold = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const running = workspace.exec('sleep 600', { timeout: 600_000 });
+      await vi.waitFor(() => expect(fake.callsOf('sendStdin').length).toBe(2));
+      expect(fake.callsOf('sandbox.setTimeout')).toHaveLength(1);
+      vi.setSystemTime(Date.now() + 31_000);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(fake.callsOf('sandbox.setTimeout')).toHaveLength(2);
+      release();
+      await running;
+      await workspace.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps the sandbox alive once half its lifetime has passed since the last extension', async () => {
