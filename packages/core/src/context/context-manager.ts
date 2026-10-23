@@ -99,7 +99,16 @@ export class ContextManager {
     return state.needsCompression;
   }
 
-  async compress(messages: Message[], modelString: string): Promise<CompressionResult> {
+  /**
+   * `messages` compressed to fit the model's window, when they pass its threshold.
+   * `reserveTokens` keeps that much of the window free for messages the caller adds after the
+   * compression, such as the skill instructions and the todo list a run puts back
+   */
+  async compress(
+    messages: Message[],
+    modelString: string,
+    reserveTokens = 0
+  ): Promise<CompressionResult> {
     const state = this.checkState(messages, modelString);
 
     if (!this.config.enabled || !state.needsCompression) {
@@ -117,7 +126,7 @@ export class ContextManager {
 
     const ctx: CompressionContext = {
       messages,
-      targetTokens: state.maxTokens,
+      targetTokens: Math.max(1, state.maxTokens - Math.max(0, reserveTokens)),
       currentTokens: state.currentTokens,
       windowSize: this.config.windowSize,
       backend: summary?.backend,

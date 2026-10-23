@@ -1,11 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MockLLMBackend } from '@cogitator-ai/test-utils';
 import type { Message, RunObserver, TodoItem, ToolCall } from '@cogitator-ai/types';
 import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { keepThroughCompaction } from '../cogitator/harness';
 import { renderTodos, todoListSchema, todosIn } from '../tools/write-todos';
-import { clearToolOutputsMiddleware } from '../middleware/clear-tool-outputs';
+import { clearToolOutputsMiddleware, PINNED_TOOL_OUTPUTS } from '../middleware/clear-tool-outputs';
+import { getLogger } from '../logger';
 
 function call(id: string, name: string, args: Record<string, unknown>): ToolCall {
   return { id, name, arguments: args };
@@ -129,7 +130,10 @@ describe('write_todos in a run', () => {
 
     const memory = (await cog.getMemory())!;
     const thread = await memory.getThread('thread_todos');
-    expect(thread.success && thread.data?.metadata.todos).toEqual(progressed);
+    expect(thread.success && thread.data?.metadata.todos).toEqual({
+      items: progressed,
+      entryId: expect.any(String),
+    });
 
     const later = await cog.run(planner(), {
       input: 'Go on',
@@ -143,6 +147,124 @@ describe('write_todos in a run', () => {
       content: `Your todo list from earlier in this conversation (update it with write_todos):\n${renderTodos(progressed)}`,
     });
     expect(sent.at(-1)).toMatchObject({ role: 'user', content: 'Go on' });
+    await cog.close();
+  });
+
+  it('does not bring the list of another branch into a run', async () => {
+    const backend = new MockLLMBackend().setResponses([
+      { toolCalls: [call('t1', 'write_todos', { todos: progressed })] },
+      { content: 'Planned.' },
+      { content: 'From the root.' },
+      { content: 'Regenerated.' },
+      { content: 'On the branch.' },
+    ]);
+    const cog = new Cogitator({
+      llm: { backends: { mock: backend }, retry: false },
+      memory: { adapter: 'memory' },
+    });
+    const first = await cog.run(planner(), { input: 'Plan it', threadId: 'thread_branches' });
+    expect(first.todos).toEqual(progressed);
+    const memory = (await cog.getMemory())!;
+    const entries = await memory.getEntries({ threadId: 'thread_branches' });
+    const planInput = entries.success
+      ? entries.data.find((entry) => entry.message.content === 'Plan it')
+      : undefined;
+    expect(planInput).toBeDefined();
+
+    const fromRoot = await cog.run(planner(), {
+      input: 'Start over',
+      threadId: 'thread_branches',
+      branch: { fromEntryId: null },
+    });
+    expect(fromRoot.todos).toBeUndefined();
+
+    const regenerated = await cog.run(planner(), {
+      input: 'Plan it again',
+      threadId: 'thread_branches',
+      branch: { fromEntryId: planInput!.id, activate: false },
+      loadHistory: false,
+    });
+    expect(regenerated.todos).toBeUndefined();
+    await cog.close();
+  });
+
+  it('leaves the thread metadata alone in a run aside from the active branch', async () => {
+    const backend = new MockLLMBackend().setResponses([
+      { toolCalls: [call('t1', 'write_todos', { todos: plan })] },
+      { content: 'Planned.' },
+    ]);
+    const cog = new Cogitator({
+      llm: { backends: { mock: backend }, retry: false },
+      memory: { adapter: 'memory' },
+    });
+    const memory = (await cog.getMemory())!;
+    await memory.createThread('planner', {}, 'thread_aside');
+    const result = await cog.run(planner(), {
+      input: 'Plan aside',
+      threadId: 'thread_aside',
+      threadAccess: 'shared',
+      branch: { fromEntryId: null, activate: false },
+    });
+    expect(result.todos).toEqual(plan);
+    const thread = await memory.getThread('thread_aside');
+    expect(thread.success && thread.data?.metadata.todos).toBeUndefined();
+    await cog.close();
+  });
+
+  it('keeps an applied list when onTodos or the metadata write fails', async () => {
+    const backend = new MockLLMBackend().setResponses([
+      { toolCalls: [call('t1', 'write_todos', { todos: plan })] },
+      { content: 'Planned.' },
+    ]);
+    const cog = new Cogitator({
+      llm: { backends: { mock: backend }, retry: false },
+      memory: { adapter: 'memory' },
+    });
+    const memory = (await cog.getMemory())!;
+    const update = memory.updateThread.bind(memory);
+    vi.spyOn(memory, 'updateThread').mockImplementation((threadId, metadata) =>
+      'todos' in metadata ? Promise.reject(new Error('disk full')) : update(threadId, metadata)
+    );
+    const warn = vi.spyOn(getLogger(), 'warn');
+    const errors: (string | undefined)[] = [];
+    const result = await cog.run(planner(), {
+      input: 'Plan',
+      threadId: 'thread_failing',
+      onTodos: () => {
+        throw new Error('listener broke');
+      },
+      onToolResult: (r) => errors.push(r.error),
+    });
+    expect(errors).toEqual([undefined]);
+    expect(result.todos).toEqual(plan);
+    expect(warn).toHaveBeenCalledWith('Run onTodos failed', { error: 'listener broke' });
+    expect(warn).toHaveBeenCalledWith('Could not keep the todo list in the thread metadata', {
+      threadId: 'thread_failing',
+      error: 'disk full',
+    });
+    vi.restoreAllMocks();
+    await cog.close();
+  });
+
+  it('reports a list the run restored', async () => {
+    const backend = new MockLLMBackend().setResponses([
+      { toolCalls: [call('t1', 'write_todos', { todos: plan })] },
+      { content: 'Planned.' },
+      { content: 'Later.' },
+    ]);
+    const cog = new Cogitator({
+      llm: { backends: { mock: backend }, retry: false },
+      memory: { adapter: 'memory' },
+    });
+    await cog.run(planner(), { input: 'Plan', threadId: 'thread_restore' });
+    const reported: (readonly TodoItem[])[] = [];
+    await cog.run(planner(), {
+      input: 'Later',
+      threadId: 'thread_restore',
+      loadHistory: false,
+      onTodos: (todos) => reported.push(todos),
+    });
+    expect(reported).toEqual([plan]);
     await cog.close();
   });
 
@@ -186,10 +308,36 @@ describe('the todo list through clearing and compaction', () => {
         agentName: 'a',
         iteration: 1,
         signal: new AbortController().signal,
-        state: new Map(),
+        state: new Map([[PINNED_TOOL_OUTPUTS, new Map([['write_todos', Infinity]])]]),
       }
     );
     expect(update).toBeUndefined();
+  });
+
+  it('keeps one note of the list through compaction after compaction', () => {
+    let messages: Message[] = [
+      { role: 'system', content: 'Plan.' },
+      { role: 'user', content: 'go' },
+    ];
+    for (let step = 1; step <= 3; step++) {
+      const todos: TodoItem[] = [
+        { id: `s${step}`, content: `Step ${step}`, status: 'in_progress' },
+      ];
+      messages.push(
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [call(`t${step}`, 'write_todos', { todos })],
+        } as Message,
+        { role: 'tool', content: renderTodos(todos), toolCallId: `t${step}`, name: 'write_todos' },
+        { role: 'user', content: `more ${step}` }
+      );
+      const compacted = messages.filter((m) => m.role === 'system' || m.content === `more ${step}`);
+      messages = keepThroughCompaction(messages, compacted);
+      const notes = messages.filter((m) => String(m.content).startsWith('Your todo list'));
+      expect(notes).toHaveLength(1);
+      expect(String(notes[0]?.content)).toContain(`s${step}: Step ${step}`);
+    }
   });
 
   it('shows the newest list again when a compaction dropped it', () => {

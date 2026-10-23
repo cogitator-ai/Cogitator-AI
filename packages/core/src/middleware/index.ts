@@ -12,5 +12,6 @@ export {
   restoreClearedOutputs,
   clearedOutputNote,
   isClearedArguments,
+  PINNED_TOOL_OUTPUTS,
 } from './clear-tool-outputs';
 export { memoryCitations, type MemoryCitationsOptions } from './memory-citations';

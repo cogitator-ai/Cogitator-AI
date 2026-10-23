@@ -172,6 +172,24 @@ describe('parseSkillFile', () => {
     expect(parsed.diagnostics.map((d) => d.level)).toEqual(['warning', 'warning']);
   });
 
+  it('reports unknown YAML tags as diagnostics, not process warnings', async () => {
+    const emitted: unknown[] = [];
+    const listener = (warning: unknown) => emitted.push(warning);
+    process.on('warning', listener);
+    const parsed = parseSkillFile(
+      skill('name: pdf-processing\ndescription: !foo PDFs.\nmetadata:\n  x: !!js/function "f"'),
+      origin
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    process.off('warning', listener);
+    expect(parsed.manifest?.description).toBe('PDFs.');
+    expect(parsed.diagnostics.map((d) => d.message)).toEqual([
+      'The frontmatter YAML: Unresolved tag: !foo',
+      'The frontmatter YAML: Unresolved tag: tag:yaml.org,2002:js/function',
+    ]);
+    expect(emitted).toEqual([]);
+  });
+
   it('ignores a license of the wrong type and fields the format does not define', () => {
     const parsed = parseSkillFile(
       skill('name: pdf-processing\ndescription: PDFs.\nlicense: 2\nmodel: some-model'),

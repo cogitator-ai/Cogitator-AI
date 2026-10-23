@@ -236,4 +236,26 @@ describe('Agent + Skills integration', () => {
     expect(cloned.tools).toHaveLength(1);
     expect(cloned.tools[0].name).toBe('web_search');
   });
+
+  it('clone merges the skill instructions once, clone after clone', () => {
+    const skill = defineSkill({
+      name: 'search',
+      version: '1.0.0',
+      description: 'Search',
+      tools: [searchTool],
+      instructions: 'Search stuff.',
+    });
+    const agent = new Agent({
+      name: 'original',
+      model: 'test/model',
+      instructions: 'Base.',
+      tools: [calcTool],
+      skills: [skill],
+    });
+
+    const twice = agent.clone({ temperature: 0.5 }).clone({ maxTokens: 100 });
+    expect(twice.instructions).toBe('Base.\n\nSearch stuff.');
+    expect(twice.tools.map((t) => t.name)).toEqual(['calculator', 'web_search']);
+    expect(agent.clone({ instructions: 'Other.' }).instructions).toBe('Other.\n\nSearch stuff.');
+  });
 });

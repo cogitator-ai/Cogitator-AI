@@ -52,6 +52,31 @@ export function parseTodos(value: unknown): TodoItem[] | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
+/**
+ * The todo list as a thread's metadata keeps it (`todos`): the items, and the entry of the thread
+ * the list was written at, so a run on another branch does not take it
+ */
+export interface KeptTodos {
+  items: TodoItem[];
+  /** The newest entry of the run's branch when the list was written */
+  entryId?: string;
+}
+
+const keptTodosSchema = z.object({
+  items: todoListSchema,
+  entryId: z.string().optional(),
+});
+
+/** `value` as a todo list kept in thread metadata, when it is one. */
+export function parseKeptTodos(value: unknown): KeptTodos | undefined {
+  const parsed = keptTodosSchema.safeParse(value);
+  if (!parsed.success) return undefined;
+  return {
+    items: parsed.data.items,
+    ...(parsed.data.entryId !== undefined && { entryId: parsed.data.entryId }),
+  };
+}
+
 /** The todo list as the model reads it: a line per item with its status mark and id. */
 export function renderTodos(todos: readonly TodoItem[]): string {
   if (todos.length === 0) return 'Todo list: empty.';

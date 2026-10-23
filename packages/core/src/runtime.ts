@@ -156,6 +156,7 @@ import {
 import {
   clearedToolOutputsAttributes,
   clearToolOutputsMiddleware,
+  PINNED_TOOL_OUTPUTS,
   restoreClearedOutputs,
 } from './middleware/clear-tool-outputs';
 import { recallToolOutputTool } from './tools/recall-tool-output';
@@ -194,7 +195,7 @@ import {
 } from './cogitator/message-builder';
 import { RunMemory } from './cogitator/run-memory';
 import { RunHarness, todoNote } from './cogitator/harness';
-import { parseTodos, TODOS_METADATA_KEY } from './tools/write-todos';
+import { parseKeptTodos, TODOS_METADATA_KEY, type KeptTodos } from './tools/write-todos';
 import { createSpan, getTextContent } from './cogitator/span-factory';
 import {
   runToolCall,
@@ -1007,7 +1008,13 @@ export class Cogitator implements ToolInvoker {
         notify('onRunComplete', (observer) => observer.onRunComplete?.(result));
       },
       onTodos: (todos) => {
-        options.onTodos?.(todos);
+        try {
+          options.onTodos?.(todos);
+        } catch (error) {
+          getLogger().warn('Run onTodos failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
         notify('onTodos', (observer) => observer.onTodos?.(todos, { runId: runId() }));
       },
       onRunError: (error, id, usage) => {
@@ -1176,15 +1183,26 @@ export class Cogitator implements ToolInvoker {
         ...(workspaceOf(active) && { workspace: workspaceOf(active) }),
       });
 
+      const reportTodos = (todos: readonly TodoItem[]) => {
+        try {
+          options.onTodos?.(todos);
+        } catch (error) {
+          getLogger().warn('Run onTodos failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      };
       const harness = new RunHarness({
         conversation: () => messages,
         registry: () => registry,
         workspaceOf,
+        signal: abortController.signal,
         onTodos: async (todos) => {
-          options.onTodos?.(todos);
+          reportTodos(todos);
           await this.keepTodos(threadId, todos, runMemory);
         },
       });
+      middlewareState.set(PINNED_TOOL_OUTPUTS, harness.pinnedOutputs);
       await harness.prepare(active);
       const buildRegistry = (owner: Agent) => {
         const ownerRegistry = new ToolRegistry();
@@ -1262,18 +1280,14 @@ export class Cogitator implements ToolInvoker {
         }
 
         if (!runMemory.aside) await this.abandonPausedRun(agent, runOptions, threadId);
+        const budgetTools = harness.schemas(registry, options.history ?? [], forcedTool);
         messages = await this.prepareMessages(
           agent,
           harness.systemPrompt(agent),
           runOptions,
           threadId,
           runMemory,
-          this.historyBudget(
-            agent,
-            effectiveModel,
-            routeProvider,
-            harness.schemas(registry, [], forcedTool)
-          ),
+          this.historyBudget(agent, effectiveModel, routeProvider, budgetTools),
           (initial) =>
             waitForAbortable(
               pipeline.beforeRun({ input, messages: initial }, middlewareContext()),
@@ -1287,14 +1301,24 @@ export class Cogitator implements ToolInvoker {
             ];
           }
         );
+        const historyTools = harness.schemas(registry, messages, forcedTool);
+        if (
+          historyTools.length > budgetTools.length &&
+          this.state.contextBuilder &&
+          this.config.memory?.contextBuilder?.maxTokens === undefined
+        ) {
+          messages = await this.fitToModel(messages, effectiveModel, agent, historyTools);
+        }
       }
 
       if (active.config.todos) {
-        const kept = await harness.restoreTodos(messages, () =>
+        const restored = await harness.restoreTodos(messages, () =>
           this.keptTodos(threadId, options, runMemory)
         );
-        if (kept && !checkpoint)
-          messages.splice(Math.max(messages.length - 1, 0), 0, todoNote(kept));
+        if (restored?.from === 'kept' && !checkpoint) {
+          messages.splice(Math.max(messages.length - 1, 0), 0, todoNote(restored.todos));
+        }
+        if (restored) reportTodos(restored.todos);
       }
 
       let candidates = this.modelCandidates(active, effectiveModel, routeProvider, {
@@ -1350,6 +1374,11 @@ export class Cogitator implements ToolInvoker {
       const memoryNotes: Promise<void>[] = [];
       const switchTo = async (target: Agent, reason: unknown) => {
         await harness.prepare(target);
+        const kept = harness.forHandoff(target, messages);
+        if (kept.length !== messages.length) {
+          messages.length = 0;
+          messages.push(...kept);
+        }
         const event: HandoffEvent = {
           from: active.name,
           to: target.name,
@@ -2356,9 +2385,10 @@ export class Cogitator implements ToolInvoker {
   }
 
   /**
-   * Keeps `todos` in the metadata of thread `threadId` (`todos`), so a later run of the thread
-   * finds the list after its `write_todos` calls left the history. Only for a run that saves to
-   * memory on the thread's active branch. A failed write is logged, the run goes on.
+   * Keeps `todos` in the metadata of thread `threadId` (`todos`), with the entry of the run's
+   * branch they were written at, so a later run on that branch finds the list after its
+   * `write_todos` calls left the history. Only for a run that saves to memory on the thread's
+   * active branch. A failed write is logged, the run goes on.
    */
   private async keepTodos(
     threadId: string,
@@ -2367,16 +2397,25 @@ export class Cogitator implements ToolInvoker {
   ): Promise<void> {
     const memory = this.state.memoryAdapter;
     if (!memory || !runMemory.enabled || !runMemory.isOpen || runMemory.aside) return;
-    const updated = await memory.updateThread(threadId, { [TODOS_METADATA_KEY]: todos });
-    if (!updated.success) {
+    try {
+      await runMemory.settled();
+      const entryId = runMemory.conversation?.leafId ?? undefined;
+      const kept: KeptTodos = { items: [...todos], ...(entryId && { entryId }) };
+      const updated = await memory.updateThread(threadId, { [TODOS_METADATA_KEY]: kept });
+      if (!updated.success) throw new Error(updated.error);
+    } catch (error) {
       getLogger().warn('Could not keep the todo list in the thread metadata', {
         threadId,
-        error: updated.error,
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   }
 
-  /** The todo list kept in the metadata of thread `threadId`, for a run that reads memory. */
+  /**
+   * The todo list kept in the metadata of thread `threadId`, for a run that reads memory: only
+   * when the entry it was written at is on the run's branch (a memory without branches has one).
+   * A failed read is logged and gives none.
+   */
   private async keptTodos(
     threadId: string,
     options: RunOptions,
@@ -2384,9 +2423,30 @@ export class Cogitator implements ToolInvoker {
   ): Promise<TodoItem[] | undefined> {
     const memory = this.state.memoryAdapter;
     if (!memory || options.useMemory === false || !runMemory.isOpen) return undefined;
-    const thread = await memory.getThread(threadId);
-    if (!thread.success || !thread.data) return undefined;
-    return parseTodos(thread.data.metadata[TODOS_METADATA_KEY]);
+    try {
+      const thread = await memory.getThread(threadId);
+      if (!thread.success || !thread.data) return undefined;
+      const kept = parseKeptTodos(thread.data.metadata[TODOS_METADATA_KEY]);
+      if (!kept) return undefined;
+      if (kept.entryId === undefined || !memory.getPath) return kept.items;
+      await runMemory.settled();
+      const leafId = runMemory.conversation?.leafId;
+      if (leafId === null) return undefined;
+      const path = await memory.getPath({
+        threadId,
+        ...(leafId !== undefined && { leafId }),
+        types: 'all',
+      });
+      return path.success && path.data.some((entry) => entry.id === kept.entryId)
+        ? kept.items
+        : undefined;
+    } catch (error) {
+      getLogger().warn('Could not read the todo list kept in the thread metadata', {
+        threadId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
   }
 
   /**

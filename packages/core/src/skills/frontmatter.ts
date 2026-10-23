@@ -1,4 +1,4 @@
-import { parse as parseYaml } from 'yaml';
+import { parseDocument } from 'yaml';
 import { z } from 'zod';
 import type { SkillDiagnostic, SkillManifest } from '@cogitator-ai/types';
 
@@ -104,7 +104,16 @@ export function parseSkillFile(text: string, origin: SkillFileOrigin): ParsedSki
 
   let parsed: unknown;
   try {
-    parsed = parseYaml(parts.frontmatter);
+    const document = parseDocument(parts.frontmatter, { prettyErrors: false });
+    const [problem] = document.errors;
+    if (problem) {
+      report('error', `The frontmatter is not valid YAML: ${problem.message}`);
+      return { diagnostics };
+    }
+    for (const warning of document.warnings) {
+      report('warning', `The frontmatter YAML: ${warning.message}`);
+    }
+    parsed = document.toJS({ maxAliasCount: 100 });
   } catch (error) {
     report(
       'error',

@@ -358,7 +358,7 @@ See [Agents](https://cogitator.app/docs/core/agents).
 
 ### Agent Skills from SKILL.md
 
-Skills in the [Agent Skills](https://agentskills.io/specification) format are folders with a `SKILL.md` (YAML frontmatter with `name` and `description`, then instructions) and the files they need. A `SkillRegistry` finds them in `dirs`, in the run's workspace (`.agents/skills`, `.cogitator/skills`, `.claude/skills`), in a `project` folder and, with `user`, in the home folder, the first of a name winning. The model sees each skill's name and description in an `<available_skills>` section of the system prompt and activates one with the built-in `use_skill({ skill })`, which returns the body, the skill folder and its files. Host skills' files are read with `read_skill_file({ skill, path })`, confined to the skill folder, workspace skills' with `read_file`:
+Skills in the [Agent Skills](https://agentskills.io/specification) format are folders with a `SKILL.md` (YAML frontmatter with `name` and `description`, then instructions) and the files they need. A `SkillRegistry` finds them in `dirs`, in a `project` folder, with `user` in the home folder, and in the run's workspace (`.agents/skills`, `.cogitator/skills`, `.claude/skills`), the first of a name winning (`precedence: 'workspace'` puts the workspace before the host folders). Skills are trusted content: their instructions reach the model as they are, so load them only from places you trust. The model sees each skill's name and description in an `<available_skills>` section of the system prompt and activates one with the built-in `use_skill({ skill })`, which returns the body, the skill folder and its files. Host skills' files are read with `read_skill_file({ skill, path })`, confined to the skill folder, workspace skills' with `read_file`:
 
 ```typescript
 import { Agent, SkillRegistry } from '@cogitator-ai/core';
@@ -371,11 +371,11 @@ const agent = new Agent({
 });
 ```
 
-Frontmatter is read leniently: a skill without a description is skipped, other problems (a name that breaks the rules or differs from its folder, wrong types) load with a warning in the catalog's `diagnostics`. `allowed-tools` is kept on the skill as `allowedTools`, not enforced. A repeated `use_skill` returns a short note, and `use_skill` results survive tool output clearing and compaction. See [Skills](https://cogitator.app/docs/core/skills).
+Frontmatter is read leniently: a skill without a description is skipped, other problems (a name that breaks the rules or differs from its folder, wrong types) load with a warning in the catalog's `diagnostics`. `allowed-tools` is kept on the skill as `allowedTools`, not enforced. Instructions past `maxInstructionChars` (20 000) are cut with a note, a workspace skill never follows a symbolic link, a repeated `use_skill` returns a short note, and the newest `use_skill` results (up to 40 000 characters) survive tool output clearing and compaction. See [Skills](https://cogitator.app/docs/core/skills).
 
 ### Todo Lists and Tool Search
 
-`todos: true` gives the agent `write_todos({ todos: [{ id, content, status }] })`: each call replaces the list, at most one item is `in_progress`. The list is read back from the conversation, copied to the thread's metadata (`todos`) for later runs, reported with `onTodos` and returned as `result.todos`.
+`todos: true` gives the agent `write_todos({ todos: [{ id, content, status }] })`: each call replaces the list, at most one item is `in_progress`. The list is read back from the conversation, copied to the thread's metadata (`todos`, with the entry it was written at, so other branches do not take it) for later runs, reported with `onTodos` and returned as `result.todos`.
 
 A tool marked `deferred: true` keeps its schema out of the requests. The run offers `tool_search({ query, limit })` instead, which ranks the deferred tools with BM25 over names, descriptions and parameters and loads the best ones from the next turn on. The loaded set is read from the `tool_search` results in the history, so resumed and forked runs keep it. A call to a deferred tool that was never loaded still runs. Loading a tool changes the tool list and so the prompt cache prefix.
 

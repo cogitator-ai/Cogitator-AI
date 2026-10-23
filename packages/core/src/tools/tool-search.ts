@@ -136,15 +136,36 @@ export function toolSearchTool(options: ToolSearchOptions): Tool {
   });
 }
 
+/** How the note that keeps loaded tools through a compaction starts. */
+const LOADED_TOOLS_HEADER = 'Tools tool_search loaded earlier in this conversation, callable now:';
+
+/** A system message that keeps `names` loaded after a compaction dropped the searches that found them. */
+export function loadedToolsNote(names: Iterable<string>): Message {
+  return { role: 'system', content: `${LOADED_TOOLS_HEADER}\n${[...names].join(', ')}` };
+}
+
+/** Whether `message` is a note {@link loadedToolsNote} made. */
+export function isLoadedToolsNote(message: Message): boolean {
+  return (
+    message.role === 'system' &&
+    getTextContent(message.content).startsWith(`${LOADED_TOOLS_HEADER}\n`)
+  );
+}
+
 /**
- * Names of the tools the `tool_search` calls of `messages` loaded, read from their results, so a
- * run that goes on from these messages (resumed, forked, handed over or a later run of the
- * thread) keeps them loaded.
+ * Names of the tools the `tool_search` calls of `messages` loaded, read from their results (and
+ * from the notes that kept them through a compaction), so a run that goes on from these messages
+ * (resumed, forked, handed over or a later run of the thread) keeps them loaded.
  */
 export function toolsFoundIn(messages: readonly Message[]): Set<string> {
   const searches = new Set<string>();
   const found = new Set<string>();
   for (const message of messages) {
+    if (isLoadedToolsNote(message)) {
+      const names = getTextContent(message.content).slice(LOADED_TOOLS_HEADER.length + 1);
+      for (const name of names.split(',')) if (name.trim()) found.add(name.trim());
+      continue;
+    }
     if (message.role === 'assistant' && 'toolCalls' in message) {
       const calls: unknown = message.toolCalls;
       if (Array.isArray(calls)) {

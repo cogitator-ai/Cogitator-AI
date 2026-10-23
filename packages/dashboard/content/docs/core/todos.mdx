@@ -55,13 +55,13 @@ Todo list (1 of 3 completed):
 
 The list is read from the conversation itself: the newest successful `write_todos` call in the messages a run goes on from. So a resumed run, a fork and an agent the run hands over to all see it. On top of that:
 
-- **Thread metadata**: each change is copied to the metadata of the run's thread, under `todos`, for a run that saves to memory (on a branch run with `activate: false` it is not). A later run of the thread whose history no longer holds the `write_todos` calls (memory compacted them, or the history limit cut them) gets the list from there, as a system message just before the new input.
-- **Compaction**: clearing tool outputs never clears a `write_todos` result, and when compaction of the conversation drops the newest one, the list comes back as a system message.
+- **Thread metadata**: each change is copied to the metadata of the run's thread, under `todos`, as `{ items, entryId }`: the list and the newest entry of the run's branch when it was written. Only a run that saves to memory on the active branch writes it (a run with `saveHistory: false` or `branch.activate: false` does not). A later run of the thread whose history no longer holds the `write_todos` calls (memory compacted them, or the history limit cut them) gets the list from there, as a system message just before the new input, but only when that entry is on its branch: a run that goes on from an earlier entry (`branch.fromEntryId`, to regenerate or edit a message) does not take the list a later turn of another branch wrote.
+- **Compaction**: clearing tool outputs never clears the run's `write_todos` results, and when compaction of the conversation drops the newest one, the list comes back as a system message, one note however many compactions there are. On Anthropic and Google system messages join the system prompt, so the note changes it after a compaction, which already started the prompt cache over.
 - **`RunResult.todos`**: the list as the run left it, when the agent keeps one and it was written in this run or an earlier run of the thread.
-- **`onTodos`**: `RunOptions.onTodos` and `RunObserver.onTodos` get the whole list each time it changes.
+- **`onTodos`**: `RunOptions.onTodos` and `RunObserver.onTodos` get the whole list each time it changes, and once when a run starts from a list it found in the conversation or the thread metadata. A listener that throws is logged, as is a failed metadata write: the list the model wrote stays applied.
 
 [Cogitator Studio](/docs/getting-started/studio) shows the list of a run in a Todos panel, live while the run works.
 
 ## Reading lists yourself
 
-`todosIn(messages)` returns the list a conversation last wrote, `parseTodos(value)` checks a list you read from thread metadata (`TODOS_METADATA_KEY`), and `renderTodos(todos)` formats one as the model reads it.
+`todosIn(messages)` returns the list a conversation last wrote, `parseKeptTodos(value)` reads what the thread metadata keeps (`TODOS_METADATA_KEY`), `parseTodos(value)` checks a list, and `renderTodos(todos)` formats one as the model reads it.

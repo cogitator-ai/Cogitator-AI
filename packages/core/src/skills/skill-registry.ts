@@ -29,6 +29,12 @@ export const MAX_SKILL_RESOURCE_BYTES = 1024 * 1024;
 /** Most files `files` lists for a skill */
 export const MAX_LISTED_SKILL_FILES = 100;
 
+/**
+ * Most characters of a skill's instructions `body()` returns unless `maxInstructionChars` says
+ * otherwise: about 5 000 tokens, the most the Agent Skills format recommends
+ */
+export const DEFAULT_MAX_INSTRUCTION_CHARS = 20_000;
+
 const SKIPPED_DIRS = new Set(['.git', 'node_modules']);
 
 const configSchema = z.strictObject({
@@ -36,6 +42,8 @@ const configSchema = z.strictObject({
   workspace: z.boolean().optional(),
   project: z.string().min(1).optional(),
   user: z.union([z.boolean(), z.string().min(1)]).optional(),
+  precedence: z.enum(['host', 'workspace']).optional(),
+  maxInstructionChars: z.number().int().positive().optional(),
 });
 
 /** A skill folder a registry found, and how to read its files. */
@@ -55,12 +63,17 @@ interface ScanResult {
  * assets the skill needs. Only the metadata is kept, the body and the other files are read when
  * the agent activates the skill.
  *
- * It searches, in this order, the first skill of a name winning: the folders of `dirs`, the
- * run's workspace (`.agents/skills`, `.cogitator/skills` and `.claude/skills` under its root,
- * unless `workspace: false`), the same folders in `project` on the host and, with `user`, in the
- * home folder. A `SKILL.md` is read leniently: one without frontmatter or `description` is
- * skipped, other departures from the format are loaded with a warning. Everything found wrong is
- * in the catalog's `diagnostics` and logged once.
+ * It searches, in this order, the first skill of a name winning: the folders of `dirs`,
+ * `.agents/skills`, `.cogitator/skills` and `.claude/skills` in `project` on the host and, with
+ * `user`, in the home folder, then the same folders under the root of the run's workspace (unless
+ * `workspace: false`). `precedence: 'workspace'` puts the workspace before `project` and `user`.
+ * A `SKILL.md` is read leniently: one without frontmatter or `description` is skipped, other
+ * departures from the format are loaded with a warning. Everything found wrong is in the
+ * catalog's `diagnostics` and logged once.
+ *
+ * Skills are trusted content: the model gets their instructions as they are and is told to
+ * follow them. In the workspace only real folders and files count, a symbolic link is never
+ * followed, so a skill cannot reach files outside its folder.
  *
  * Folders on the host are scanned once and kept: call `reload()` to pick up changes. The
  * workspace is scanned on every run, since the agent may change it.
@@ -96,11 +109,22 @@ export class SkillRegistry implements SkillLoader {
   async discover(context: SkillDiscoveryContext = {}): Promise<SkillCatalog> {
     this.hostScan ??= this.scanHost();
     const host = await this.hostScan;
+    context.signal?.throwIfAborted();
     const workspace = this.config.workspace !== false ? context.workspace : undefined;
     const inWorkspace = workspace
-      ? await scanRoots(SKILL_DIRS.map((dir) => ({ kind: 'workspace' as const, dir, workspace })))
+      ? await scanRoots(
+          SKILL_DIRS.map((dir) => ({ kind: 'workspace' as const, dir, workspace })),
+          context.signal
+        )
       : { skills: [], diagnostics: [] };
-    const catalog = new FolderSkillCatalog([host.before, inWorkspace, host.after]);
+    const scans =
+      this.config.precedence === 'workspace'
+        ? [host.before, inWorkspace, host.after]
+        : [host.before, host.after, inWorkspace];
+    const catalog = new FolderSkillCatalog(
+      scans,
+      this.config.maxInstructionChars ?? DEFAULT_MAX_INSTRUCTION_CHARS
+    );
     for (const diagnostic of catalog.diagnostics) this.log(diagnostic);
     return catalog;
   }
@@ -136,9 +160,10 @@ export class SkillRegistry implements SkillLoader {
 type SkillRoot =
   { kind: 'host'; dir: string } | { kind: 'workspace'; dir: string; workspace: Workspace };
 
-async function scanRoots(roots: readonly SkillRoot[]): Promise<ScanResult> {
+async function scanRoots(roots: readonly SkillRoot[], signal?: AbortSignal): Promise<ScanResult> {
   const result: ScanResult = { skills: [], diagnostics: [] };
   for (const root of roots) {
+    signal?.throwIfAborted();
     const scanned =
       root.kind === 'host' ? await scanHostRoot(root.dir) : await scanWorkspaceRoot(root);
     result.skills.push(...scanned.skills);
@@ -223,7 +248,7 @@ async function scanWorkspaceRoot(root: { dir: string; workspace: Workspace }): P
   try {
     const entries = await workspace.list(dir, { includeHidden: true });
     folders = entries
-      .filter((entry) => entry.type === 'directory' || entry.type === 'symlink')
+      .filter((entry) => entry.type === 'directory')
       .map((entry) => entry.name)
       .filter((name) => !name.startsWith('.'))
       .sort();
@@ -242,7 +267,7 @@ async function scanWorkspaceRoot(root: { dir: string; workspace: Workspace }): P
     const file = posix.join(folder, SKILL_FILE);
     let text: string;
     try {
-      text = await workspace.read(file, { maxBytes: MAX_SKILL_FILE_BYTES });
+      text = await readWorkspaceFile(workspace, folder, SKILL_FILE, MAX_SKILL_FILE_BYTES);
     } catch (error) {
       if (!isWorkspaceMissing(error)) {
         result.diagnostics.push({
@@ -265,13 +290,64 @@ async function scanWorkspaceRoot(root: { dir: string; workspace: Workspace }): P
   return result;
 }
 
+/**
+ * The text of `path` inside the workspace folder `folder`, reached through real folders only:
+ * every step of the path must be a folder and the last one a file, never a symbolic link, so the
+ * read cannot leave `folder`. Throws `NOT_FOUND` for a step that is missing, `DENIED` for a link
+ * and an error for a path that leaves the folder.
+ */
+async function readWorkspaceFile(
+  workspace: Workspace,
+  folder: string,
+  path: string,
+  maxBytes: number
+): Promise<string> {
+  const target = posix.normalize(posix.join(folder, path.replaceAll('\\', '/')));
+  if (posix.isAbsolute(path) || !target.startsWith(`${folder}/`)) {
+    throw new Error(`${path} is outside the folder of the skill (${folder})`);
+  }
+  const steps = target.slice(folder.length + 1).split('/');
+  let dir = folder;
+  for (const [index, step] of steps.entries()) {
+    const entry = (await workspace.list(dir, { includeHidden: true })).find(
+      (candidate) => candidate.name === step
+    );
+    const last = index === steps.length - 1;
+    if (!entry) throw new WorkspaceError('NOT_FOUND', `${path} does not exist`, { path });
+    if (entry.type === 'symlink') {
+      throw new WorkspaceError(
+        'DENIED',
+        `${path} is a symbolic link or passes one, skills only read their own files`,
+        { path }
+      );
+    }
+    if (last ? entry.type !== 'file' : entry.type !== 'directory') {
+      throw new WorkspaceError('NOT_A_FILE', `${path} is not a file`, { path });
+    }
+    dir = posix.join(dir, step);
+  }
+  return workspace.read(target, { maxBytes });
+}
+
+/** `body` cut to `max` characters at a line end, with a note saying where the rest is. */
+function cutInstructions(body: string, max: number): string {
+  if (body.length <= max) return body;
+  const lineEnd = body.lastIndexOf('\n', max);
+  const cut = lineEnd > max * 0.8 ? lineEnd : max;
+  const line = body.slice(0, cut).split('\n').length + 1;
+  return `${body.slice(0, cut)}\n\n[The instructions are cut here, ${body.length - cut} of ${body.length} characters are left out. Read the rest of SKILL.md in the skill folder, from about line ${line} of its body on.]`;
+}
+
 /** The skills of several scans, the first skill of a name winning. */
 class FolderSkillCatalog implements SkillCatalog {
   readonly skills: readonly SkillManifest[];
   readonly diagnostics: readonly SkillDiagnostic[];
   private readonly found = new Map<string, FoundSkill>();
 
-  constructor(scans: readonly ScanResult[]) {
+  constructor(
+    scans: readonly ScanResult[],
+    private readonly maxInstructionChars: number
+  ) {
     const diagnostics: SkillDiagnostic[] = [];
     for (const scan of scans) {
       diagnostics.push(...scan.diagnostics);
@@ -290,11 +366,14 @@ class FolderSkillCatalog implements SkillCatalog {
   async body(name: string): Promise<string> {
     const skill = this.require(name);
     const text = skill.workspace
-      ? await skill.workspace.read(posix.join(skill.manifest.location, SKILL_FILE), {
-          maxBytes: MAX_SKILL_FILE_BYTES,
-        })
-      : await readFile(join(skill.manifest.location, SKILL_FILE), 'utf8');
-    return (splitSkillFile(text)?.body ?? text).trim();
+      ? await readWorkspaceFile(
+          skill.workspace,
+          skill.manifest.location,
+          SKILL_FILE,
+          MAX_SKILL_FILE_BYTES
+        )
+      : await readHostFile(join(skill.manifest.location, SKILL_FILE), MAX_SKILL_FILE_BYTES);
+    return cutInstructions((splitSkillFile(text)?.body ?? text).trim(), this.maxInstructionChars);
   }
 
   async files(name: string): Promise<string[]> {
@@ -308,7 +387,7 @@ class FolderSkillCatalog implements SkillCatalog {
         limit: MAX_LISTED_SKILL_FILES * 4,
       });
       return entries
-        .filter((entry) => entry.type === 'file' || entry.type === 'symlink')
+        .filter((entry) => entry.type === 'file')
         .map((entry) => posix.relative(location, entry.path))
         .filter((path) => path !== SKILL_FILE && !path.startsWith('..'))
         .sort()
@@ -323,11 +402,7 @@ class FolderSkillCatalog implements SkillCatalog {
     const skill = this.require(name);
     const location = skill.manifest.location;
     if (skill.workspace) {
-      const target = posix.normalize(posix.join(location, path.replaceAll('\\', '/')));
-      if (posix.isAbsolute(path) || !target.startsWith(`${location}/`)) {
-        throw new Error(`${path} is outside the folder of skill "${name}"`);
-      }
-      return skill.workspace.read(target, { maxBytes: MAX_SKILL_RESOURCE_BYTES });
+      return readWorkspaceFile(skill.workspace, location, path, MAX_SKILL_RESOURCE_BYTES);
     }
     const target = resolve(location, path);
     if (target === location || !(await isPathAllowed(target, [location]))) {
@@ -335,10 +410,7 @@ class FolderSkillCatalog implements SkillCatalog {
     }
     const info = await stat(target);
     if (!info.isFile()) throw new Error(`${path} is not a file of skill "${name}"`);
-    if (info.size > MAX_SKILL_RESOURCE_BYTES) {
-      throw new Error(`${path} is larger than ${MAX_SKILL_RESOURCE_BYTES} bytes`);
-    }
-    return readFile(target, 'utf8');
+    return readHostFile(target, MAX_SKILL_RESOURCE_BYTES);
   }
 
   private require(name: string): FoundSkill {
@@ -360,11 +432,27 @@ async function walkHost(root: string, dir: string, files: string[]): Promise<voi
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (!SKIPPED_DIRS.has(entry.name)) await walkHost(root, full, files);
-    } else if (entry.isFile() || entry.isSymbolicLink()) {
+    } else if (entry.isFile() || (entry.isSymbolicLink() && (await isReadableLink(root, full)))) {
       const path = relative(root, full).split(sep).join('/');
       if (path !== SKILL_FILE) files.push(path);
     }
   }
+}
+
+/** Whether the symbolic link `path` leads to a file inside `root`, which `readFile` reads. */
+async function isReadableLink(root: string, path: string): Promise<boolean> {
+  try {
+    return (await isPathAllowed(path, [root])) && (await stat(path)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** The text of the host file `path`, refused past `maxBytes`. */
+async function readHostFile(path: string, maxBytes: number): Promise<string> {
+  const info = await stat(path);
+  if (info.size > maxBytes) throw new Error(`${path} is larger than ${maxBytes} bytes`);
+  return readFile(path, 'utf8');
 }
 
 /**

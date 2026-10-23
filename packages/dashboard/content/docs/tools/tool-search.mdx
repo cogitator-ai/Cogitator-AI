@@ -45,9 +45,11 @@ const agent = new Agent({
 }
 ```
 
-The loaded tools are read back from the `tool_search` results in the conversation on every turn, not kept on the side. So they stay loaded in a run resumed after an approval, in a fork, after a handoff (when the other agent has them) and in a later run of the thread, as long as the search is in its history. Clearing tool outputs never clears a `tool_search` result.
+The loaded tools are read back from the `tool_search` results in the conversation on every turn, not kept on the side. So they stay loaded in a run resumed after an approval, in a fork, after a handoff (when the other agent has them) and in a later run of the thread, as long as the search is in its history. Clearing tool outputs never clears the run's `tool_search` results, and when compaction of the conversation drops one, a short system message keeps the tools it loaded, so checkpoints and forks taken after a compaction keep them too. A tool a run forces with `toolChoice` stays loaded for the rest of the run.
 
 A call to a deferred tool that no search loaded still runs: its arguments are checked against its schema as for any call. A model that knows the tool from an earlier conversation does not have to search for it again. A run that forces a deferred tool with `toolChoice` sends its schema from the first turn.
+
+The history budget of `memory.contextBuilder` counts the schemas of tools loaded in `history` you pass to the run. Tools a search loaded in the thread's history are only known once the history is read: when they push the turn past the window, the oldest history is cut to fit.
 
 ## Prompt caching
 

@@ -6,6 +6,7 @@ import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { tool } from '../tool';
 import { rankTools, toolsFoundIn, withIdentifierWords } from '../tools/tool-search';
+import { keepThroughCompaction } from '../cogitator/harness';
 
 function call(id: string, name: string, args: Record<string, unknown>): ToolCall {
   return { id, name, arguments: args };
@@ -228,6 +229,63 @@ describe('deferred tools in a run', () => {
       { input: 'weather', toolChoice: { type: 'function', function: { name: 'lookup_weather' } } }
     );
     expect(toolNames(backend.getCalls()[0])).toEqual(['lookup_weather', 'tool_search']);
+    expect(toolNames(backend.getCalls()[1])).toEqual(['lookup_weather', 'tool_search']);
+    await cog.close();
+  });
+
+  it('keeps the loaded tools through a compaction that drops the search', () => {
+    const search: Message[] = [
+      { role: 'system', content: 'Help.' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [call('t1', 'tool_search', { query: 'invoice' })],
+      } as Message,
+      {
+        role: 'tool',
+        toolCallId: 't1',
+        name: 'tool_search',
+        content: JSON.stringify({
+          tools: [{ name: 'create_invoice', description: 'Bill a customer' }],
+          note: 'loaded',
+        }),
+      },
+      { role: 'user', content: 'next' },
+    ];
+    const compacted = keepThroughCompaction(search, [search[0]!, search[3]!]);
+    expect([...toolsFoundIn(compacted)]).toEqual(['create_invoice']);
+    const again = keepThroughCompaction(compacted, [compacted[0]!, compacted.at(-1)!]);
+    expect(
+      again.filter((m) => String(m.content).startsWith('Tools tool_search loaded'))
+    ).toHaveLength(1);
+    expect([...toolsFoundIn(again)]).toEqual(['create_invoice']);
+  });
+
+  it('keeps loaded tools after a handoff to an agent that has them', async () => {
+    const billing = new Agent({
+      name: 'billing',
+      model: 'mock/m',
+      instructions: 'Billing.',
+      tools: [createInvoice, lookupWeather],
+    });
+    const triage = new Agent({
+      name: 'triage',
+      model: 'mock/m',
+      instructions: 'Triage.',
+      tools: [createInvoice, sendEmail],
+      handoffs: [billing],
+    });
+    const backend = new MockLLMBackend().setResponses([
+      { toolCalls: [call('t1', 'tool_search', { query: 'invoice' })] },
+      { toolCalls: [call('h1', 'transfer_to_billing', {})] },
+      { content: 'Billing here.' },
+    ]);
+    const cog = new Cogitator({ llm: { backends: { mock: backend }, retry: false } });
+    await cog.run(triage, { input: 'bill me' });
+    const last = toolNames(backend.getLastCall());
+    expect(last).toContain('create_invoice');
+    expect(last).not.toContain('lookup_weather');
+    expect(last).not.toContain('sendEmail');
     await cog.close();
   });
 });

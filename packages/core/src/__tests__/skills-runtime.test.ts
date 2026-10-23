@@ -11,7 +11,13 @@ import { tool } from '../tool';
 import { defineSkill } from '../skill';
 import { SkillRegistry } from '../skills/skill-registry';
 import { availableSkillsSection, MAX_SKILL_CATALOG_CHARS } from '../skills/skill-tools';
-import { keepThroughCompaction } from '../cogitator/harness';
+import { keepThroughCompaction, RunHarness } from '../cogitator/harness';
+import { ContextManager } from '../context/index';
+import { compactionMiddleware } from '../middleware/builtins';
+import { countMessagesTokens } from '../context/strategies/token-utils';
+import { PINNED_TOOL_OUTPUTS } from '../middleware/clear-tool-outputs';
+import { ToolRegistry } from '../registry';
+import { CogitatorError, type RunMiddlewareContext, type SkillLoader } from '@cogitator-ai/types';
 import { LocalWorkspace } from '../workspace/local-workspace';
 import { workspaceTools } from '../tools/workspace-tools';
 import { clearToolOutputsMiddleware } from '../middleware/clear-tool-outputs';
@@ -125,7 +131,7 @@ describe('SKILL.md skills in a run', () => {
 
     const [activated, script, repeat, escape] = toolTexts(result.messages);
     expect(activated).toContain(
-      '<skill_content name="pdf">\nRun scripts/extract.py on the file.\n</skill_content>'
+      `<skill_content name="pdf" source="host" location="${folder}">\nRun scripts/extract.py on the file.\n</skill_content>`
     );
     expect(activated).not.toContain('description: PDFs.');
     expect(activated).toContain(`Skill folder: ${folder}`);
@@ -256,48 +262,73 @@ describe('availableSkillsSection', () => {
   });
 });
 
+function skillText(name: string, body: string, location = `/skills/${name}`): string {
+  return `<skill_content name="${name}" source="host" location="${location}">\n${body}\n</skill_content>`;
+}
+
+function contextWith(state: Map<string, unknown>): RunMiddlewareContext {
+  return {
+    runId: 'r',
+    agentId: 'a',
+    agentName: 'a',
+    iteration: 1,
+    signal: new AbortController().signal,
+    state,
+  };
+}
+
+function useSkillTurn(id: string, text: string, name = 'use_skill'): Message[] {
+  return [
+    { role: 'assistant', content: '', toolCalls: [call(id, name, { skill: 'x' })] } as Message,
+    { role: 'tool', content: text, toolCallId: id, name },
+  ];
+}
+
 describe('use_skill results through clearing and compaction', () => {
-  it('never clears a use_skill result', async () => {
+  it('leaves the use_skill results of the run alone, the newest within the budget', async () => {
     const middleware = clearToolOutputsMiddleware({ trigger: 0, keep: 0 });
-    const skillText = `<skill_content name="pdf">\n${'x'.repeat(2000)}\n</skill_content>`;
+    const old = skillText('old', 'o'.repeat(30_000));
+    const recent = skillText('recent', 'r'.repeat(30_000));
+    const small = skillText('small', 's'.repeat(2_000));
     const messages: Message[] = [
       { role: 'system', content: 'Help.' },
       { role: 'user', content: 'go' },
-      {
-        role: 'assistant',
-        content: '',
-        toolCalls: [call('s1', 'use_skill', { skill: 'pdf' })],
-      } as Message,
-      { role: 'tool', content: skillText, toolCallId: 's1', name: 'use_skill' },
-      { role: 'assistant', content: '', toolCalls: [call('f1', 'fetch', {})] } as Message,
-      { role: 'tool', content: 'y'.repeat(2000), toolCallId: 'f1', name: 'fetch' },
+      ...useSkillTurn('s1', old),
+      ...useSkillTurn('s2', small),
+      ...useSkillTurn('s3', recent),
+      ...useSkillTurn('f1', 'y'.repeat(2000), 'fetch'),
+    ];
+    const state = new Map<string, unknown>([
+      [PINNED_TOOL_OUTPUTS, new Map([['use_skill', 40_000]])],
+    ]);
+    const update = await middleware.beforeModel!({ messages, model: 'mock/m' }, contextWith(state));
+    const after = update && 'messages' in update ? update.messages! : messages;
+    expect(after[3]?.content).not.toBe(old);
+    expect(after[5]?.content).toBe(small);
+    expect(after[7]?.content).toBe(recent);
+    expect(after[9]?.content).not.toBe('y'.repeat(2000));
+  });
+
+  it('clears a tool of your own named use_skill, which the run did not pin', async () => {
+    const middleware = clearToolOutputsMiddleware({ trigger: 0, keep: 0 });
+    const messages: Message[] = [
+      { role: 'system', content: 'Help.' },
+      ...useSkillTurn('s1', 'z'.repeat(3000)),
     ];
     const update = await middleware.beforeModel!(
       { messages, model: 'mock/m' },
-      {
-        runId: 'r',
-        agentId: 'a',
-        agentName: 'a',
-        iteration: 1,
-        signal: new AbortController().signal,
-        state: new Map(),
-      }
+      contextWith(new Map())
     );
-    const after = update && 'messages' in update ? update.messages! : messages;
-    expect(after[3]?.content).toBe(skillText);
-    expect(after[5]?.content).not.toBe('y'.repeat(2000));
+    expect(update && 'messages' in update ? update.messages![2]?.content : undefined).not.toBe(
+      'z'.repeat(3000)
+    );
   });
 
   it('puts an active skill back after a compaction dropped it, once', () => {
-    const skillText = '<skill_content name="pdf">\nSteps.\n</skill_content>';
+    const text = skillText('pdf', 'Steps.');
     const before: Message[] = [
       { role: 'system', content: 'Help.' },
-      {
-        role: 'assistant',
-        content: '',
-        toolCalls: [call('s1', 'use_skill', { skill: 'pdf' })],
-      } as Message,
-      { role: 'tool', content: skillText, toolCallId: 's1', name: 'use_skill' },
+      ...useSkillTurn('s1', text),
       { role: 'user', content: 'next' },
     ];
     const compacted: Message[] = [
@@ -310,10 +341,162 @@ describe('use_skill results through clearing and compaction', () => {
     expect(kept).toEqual([
       { role: 'system', content: 'Help.' },
       { role: 'system', content: 'Summary of earlier turns.' },
-      { role: 'system', content: skillText },
+      { role: 'system', content: text },
       { role: 'user', content: 'next' },
     ]);
     expect(keepThroughCompaction(kept, kept)).toEqual(kept);
+    expect(keepThroughCompaction(kept, [kept[0]!, kept[3]!])).toEqual([kept[0], kept[2], kept[3]]);
     expect(keepThroughCompaction(before, before)).toEqual(before);
+  });
+
+  it('puts back at most the pinned budget of instructions, the newest, and names the rest', () => {
+    const old = skillText('old', 'o'.repeat(30_000));
+    const recent = skillText('recent', 'r'.repeat(30_000));
+    const before: Message[] = [
+      { role: 'system', content: 'Help.' },
+      ...useSkillTurn('s1', old),
+      ...useSkillTurn('s2', recent),
+      { role: 'user', content: 'next' },
+    ];
+    const kept = keepThroughCompaction(before, [before[0]!, before[5]!]);
+    expect(kept.map((m) => String(m.content).slice(0, 60))).toEqual([
+      'Help.',
+      recent.slice(0, 60),
+      expect.stringContaining('Skills activated earlier whose instructions were left out'),
+      'next',
+    ]);
+    expect(String(kept[2]?.content)).toContain('old');
+  });
+
+  it('keeps the compacted conversation and what it puts back within the window', async () => {
+    class SmallWindow extends ContextManager {
+      override getModelContextLimit(): number {
+        return 1_000;
+      }
+    }
+    const manager = new SmallWindow({ strategy: 'truncate', outputReserve: 0 });
+    const conversation: Message[] = [
+      { role: 'system', content: 'Help.' },
+      ...useSkillTurn('s1', skillText('pdf', 'p'.repeat(1_000))),
+    ];
+    for (let i = 0; i < 12; i++) {
+      conversation.push({ role: 'user', content: `question ${i} ${'q'.repeat(200)}` });
+      conversation.push({ role: 'assistant', content: `answer ${i} ${'a'.repeat(200)}` });
+    }
+    const update = await compactionMiddleware(manager).beforeModel!(
+      { messages: conversation, model: 'mock/m' },
+      contextWith(new Map())
+    );
+    const compacted = update && 'messages' in update ? update.messages! : conversation;
+    expect(compacted.some((m) => String(m.content).startsWith('<skill_content name="pdf"'))).toBe(
+      true
+    );
+    expect(countMessagesTokens(compacted)).toBeLessThanOrEqual(1_000);
+  });
+});
+
+describe('skills across a run', () => {
+  it('loads the body of a skill of the same name the agent a handoff reaches has', async () => {
+    const triageSkills = join(base, 'triage-skills');
+    const billingSkills = join(base, 'billing-skills');
+    addSkill(triageSkills, 'notes', 'Triage notes.', 'Triage body.');
+    const billingFolder = addSkill(billingSkills, 'notes', 'Billing notes.', 'Billing body.');
+    const billing = new Agent({
+      name: 'billing',
+      model: 'mock/m',
+      instructions: 'Billing.',
+      skills: [new SkillRegistry({ dirs: [billingSkills] })],
+    });
+    const triage = new Agent({
+      name: 'triage',
+      model: 'mock/m',
+      instructions: 'Triage.',
+      skills: [new SkillRegistry({ dirs: [triageSkills] })],
+      handoffs: [billing],
+    });
+    const backend = new MockLLMBackend().setResponses([
+      { toolCalls: [call('u1', 'use_skill', { skill: 'notes' })] },
+      { toolCalls: [call('h1', 'transfer_to_billing', {})] },
+      { toolCalls: [call('u2', 'use_skill', { skill: 'notes' })] },
+      { content: 'Done.' },
+    ]);
+    const cog = cogitatorWith(backend);
+    const result = await cog.run(triage, { input: 'refund' });
+
+    const [first, , second] = toolTexts(result.messages);
+    expect(first).toContain('Triage body.');
+    expect(second).toContain('Billing body.');
+    expect(second).toContain(`location="${billingFolder}"`);
+    await cog.close();
+  });
+
+  it('drops kept instructions of skills the agent handed over to does not have', async () => {
+    const triageSkills = join(base, 'triage-skills');
+    const billingSkills = join(base, 'billing-skills');
+    const triageFolder = addSkill(triageSkills, 'notes', 'Triage notes.', 'Triage body.');
+    const billingFolder = addSkill(billingSkills, 'ledger', 'Ledger.', 'Ledger body.');
+    const billing = new Agent({
+      name: 'billing',
+      model: 'mock/m',
+      instructions: 'Billing.',
+      skills: [new SkillRegistry({ dirs: [billingSkills] })],
+    });
+    const harness = new RunHarness({
+      conversation: () => [],
+      registry: () => new ToolRegistry(),
+      workspaceOf: () => undefined,
+      onTodos: async () => undefined,
+      signal: new AbortController().signal,
+    });
+    await harness.prepare(billing);
+    const messages: Message[] = [
+      { role: 'system', content: 'Triage.' },
+      { role: 'system', content: skillText('notes', 'Triage body.', triageFolder) },
+      { role: 'system', content: skillText('ledger', 'Ledger body.', billingFolder) },
+      { role: 'user', content: 'hi' },
+    ];
+    expect(harness.forHandoff(billing, messages)).toEqual([messages[0], messages[2], messages[3]]);
+  });
+
+  it('ends the run at its timeout while a skill loader is still searching', async () => {
+    const hanging: SkillLoader = { discover: () => new Promise(() => undefined) };
+    const backend = new MockLLMBackend().setResponse({ content: 'Hi.' });
+    const cog = cogitatorWith(backend);
+    const agent = new Agent({
+      name: 'slow',
+      model: 'mock/m',
+      instructions: 'x',
+      skills: [hanging],
+      timeout: 50,
+    });
+    await expect(cog.run(agent, { input: 'hi' })).rejects.toThrow('timed out');
+    expect(backend.getCallCount()).toBe(0);
+    await cog.close();
+  });
+
+  it('fails a run whose skills configuration is invalid with a clear error', async () => {
+    const backend = new MockLLMBackend().setResponse({ content: 'Hi.' });
+    const cog = cogitatorWith(backend);
+    const agent = new Agent({
+      name: 'broken',
+      model: 'mock/m',
+      instructions: 'x',
+      skills: [{ dirs: [''] }],
+    });
+    const error = await cog.run(agent, { input: 'hi' }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CogitatorError);
+    expect((error as CogitatorError).message).toContain('The skills of agent "broken" are invalid');
+    await cog.close();
+  });
+
+  it('refuses an object that looks like a code skill but is not one', () => {
+    expect(
+      () =>
+        new Agent({
+          name: 'a',
+          instructions: 'x',
+          skills: [{ name: 'half', description: 'No version', tools: [] } as never],
+        })
+    ).toThrow('neither a skill made with defineSkill()');
   });
 });

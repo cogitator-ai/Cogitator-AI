@@ -22,9 +22,6 @@ import {
   recalledCallId,
   RECALL_TOOL_OUTPUT,
 } from '../tools/recall-tool-output';
-import { USE_SKILL } from '../skills/skill-tools';
-import { TOOL_SEARCH } from '../tools/tool-search';
-import { WRITE_TODOS } from '../tools/write-todos';
 
 const optionsSchema = z.object({
   trigger: z.number().int().nonnegative().default(100_000),
@@ -37,11 +34,46 @@ const optionsSchema = z.object({
 const STATE_KEY = 'cogitator:clear-tool-outputs';
 
 /**
- * Tools whose outputs are never cleared, whatever `exclude` says: the instructions of an active
- * skill, the tools a search loaded and the todo list, which the model needs as long as the run
- * goes on
+ * The key of the run's middleware state that names the tool outputs clearing leaves alone, as a
+ * map of tool name to the most characters of its newest outputs kept. A run puts its own
+ * `use_skill`, `tool_search` and `write_todos` there, so a tool of yours with one of these names
+ * is cleared like any other.
  */
-const NEVER_CLEARED: readonly string[] = [USE_SKILL, TOOL_SEARCH, WRITE_TODOS];
+export const PINNED_TOOL_OUTPUTS = 'cogitator:pinned-tool-outputs';
+
+/** Indexes of the results of `results` the run's pinned tools keep, newest first within each budget. */
+function pinnedIndexes(
+  messages: readonly Message[],
+  results: readonly number[],
+  nameOf: (message: Message) => string,
+  pinned: ReadonlyMap<string, number> | undefined
+): Set<number> {
+  const kept = new Set<number>();
+  if (!pinned || pinned.size === 0) return kept;
+  const left = new Map(pinned);
+  for (const index of [...results].reverse()) {
+    const message = messages[index];
+    if (!message) continue;
+    const name = nameOf(message);
+    const budget = left.get(name);
+    if (budget === undefined) continue;
+    const size = getTextLength(message.content);
+    if (size > budget) continue;
+    left.set(name, budget - size);
+    kept.add(index);
+  }
+  return kept;
+}
+
+function pinnedOf(context: RunMiddlewareContext): ReadonlyMap<string, number> | undefined {
+  const pinned = context.state.get(PINNED_TOOL_OUTPUTS);
+  return pinned instanceof Map ? (pinned as ReadonlyMap<string, number>) : undefined;
+}
+
+function getTextLength(content: MessageContent): number {
+  if (typeof content === 'string') return content.length;
+  return content.reduce((sum, part) => sum + (part.type === 'text' ? part.text.length : 0), 0);
+}
 const CLEARED_ARGUMENTS_TEXT = 'Arguments cleared to save context';
 
 /** What the clearing of a run did so far, kept in the run's middleware state. */
@@ -143,8 +175,9 @@ interface Candidate {
 /**
  * Clears the outputs of old tool calls from a run's conversation, see `ClearToolOutputsConfig`.
  * Before a turn whose conversation has `trigger` tokens or more, every tool result but the
- * `keep` most recent ones and those of `exclude`d tools (and of `use_skill`, `tool_search` and
- * `write_todos`, always) gets a note in place of its output, once
+ * `keep` most recent ones, those of `exclude`d tools and those the run pins (its `use_skill`,
+ * `tool_search` and `write_todos`, see {@link PINNED_TOOL_OUTPUTS}) gets a note in place of its
+ * output, once
  * that frees `clearAtLeast` tokens. Each result keeps its message, so every provider still gets
  * a result for each tool call. The run goes on with the cleared conversation, so a cleared
  * output is not counted again, and `restoreClearedOutputs` gives the outputs back in what outlives
@@ -165,26 +198,34 @@ export function clearToolOutputsMiddleware(config: ClearToolOutputsConfig = {}):
     });
   }
   const { trigger, keep, clearInputs, clearAtLeast } = parsed.data;
-  const exclude = new Set([...NEVER_CLEARED, ...parsed.data.exclude]);
+  const exclude = new Set(parsed.data.exclude);
   const onBeforeClear = config.onBeforeClear;
 
-  const candidatesIn = (messages: readonly Message[]): Candidate[] => {
+  const candidatesIn = (
+    messages: readonly Message[],
+    pinned: ReadonlyMap<string, number> | undefined
+  ): Candidate[] => {
     const calls = new Map<string, ToolCall>();
     const results: number[] = [];
     messages.forEach((message, index) => {
       for (const call of toolCallsOf(message) ?? []) calls.set(call.id, call);
       if (message.role === 'tool' && message.toolCallId !== undefined) results.push(index);
     });
+    const nameOf = (message: Message) =>
+      message.name ??
+      (message.toolCallId === undefined ? undefined : calls.get(message.toolCallId)?.name) ??
+      '';
+    const kept = pinnedIndexes(messages, results, nameOf, pinned);
     const older = keep === 0 ? results : results.slice(0, -keep);
     const candidates: Candidate[] = [];
     for (const index of older) {
       const message = messages[index];
       const toolCallId = message?.toolCallId;
-      if (!message || toolCallId === undefined) continue;
+      if (!message || toolCallId === undefined || kept.has(index)) continue;
       const note = clearedOutputNote(toolCallId);
       if (message.content === note) continue;
       const call = calls.get(toolCallId);
-      const toolName = message.name ?? call?.name ?? '';
+      const toolName = nameOf(message);
       if (exclude.has(toolName)) continue;
       const outputTokens =
         countMessageTokens(message) - countMessageTokens({ ...message, content: note });
@@ -214,7 +255,7 @@ export function clearToolOutputsMiddleware(config: ClearToolOutputsConfig = {}):
     async beforeModel({ messages, model }, context) {
       const tokens = countMessagesTokens([...messages]);
       if (tokens < trigger) return;
-      const candidates = candidatesIn(messages);
+      const candidates = candidatesIn(messages, pinnedOf(context));
       const tokensFreed = candidates.reduce((sum, candidate) => sum + candidate.call.tokens, 0);
       if (candidates.length === 0 || tokensFreed < clearAtLeast) return;
 

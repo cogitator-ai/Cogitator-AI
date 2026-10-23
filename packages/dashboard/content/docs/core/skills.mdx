@@ -65,22 +65,32 @@ const agent = new Agent({
 await new Cogitator().run(agent, { input: 'Ship version 2.1.0' });
 ```
 
-`skills: [{ user: true }]` does the same with a registry made for you. The search happens when a run starts, and an agent whose search finds nothing runs without any skill tool or prompt section.
+`skills: [{ user: true }]` does the same with a registry made for you. The search happens when a run starts and counts toward its `timeout`: a run aborted or timed out while a loader still searches ends at once. An agent whose search finds nothing runs without any skill tool or prompt section, and an invalid source (a `SkillRegistry` configuration with an unknown option, an object that looks like a `defineSkill` skill but is not one) fails with a `CONFIGURATION_ERROR` naming the agent.
 
 ## Where skills are found
 
 A `SkillRegistry` searches, in this order:
 
-| Option      | Where                                                                                            | Default |
-| ----------- | ------------------------------------------------------------------------------------------------ | ------- |
-| `dirs`      | Each folder given: a folder of skill folders, or a skill folder itself                           | none    |
-| `workspace` | `.agents/skills`, `.cogitator/skills` and `.claude/skills` under the root of the run's workspace | `true`  |
-| `project`   | The same three folders under a project folder on the host                                        | none    |
-| `user`      | The same three folders in the home folder (`true`) or in the folder named                        | `false` |
+| Option      | Where                                                                                         | Default |
+| ----------- | --------------------------------------------------------------------------------------------- | ------- |
+| `dirs`      | Each folder given: a folder of skill folders, or a skill folder itself                        | none    |
+| `project`   | `.agents/skills`, `.cogitator/skills` and `.claude/skills` under a project folder on the host | none    |
+| `user`      | The same three folders in the home folder (`true`) or in the folder named                     | `false` |
+| `workspace` | The same three folders under the root of the run's workspace                                  | `true`  |
 
-When two skills share a name, the first one found wins: `dirs` before the workspace, the workspace before the project, the project before the user, and `.agents/skills` before `.cogitator/skills` before `.claude/skills`. So a project overrides a skill of the same name in your home folder.
+When two skills share a name, the first one found wins: `dirs` before the project, the project before the user, the user before the workspace, and `.agents/skills` before `.cogitator/skills` before `.claude/skills`. So a project overrides a skill of the same name in your home folder, and the skills you chose on the host win over the ones a repository or the agent put into the workspace.
+
+`precedence: 'workspace'` puts the workspace right after `dirs`, before the project and the user: for an agent that works on repositories you trust, whose own skills should override yours.
 
 Folders on the host are scanned once per registry, call `registry.reload()` after you change them. The workspace is scanned on every run, since the agent may add a skill there itself.
+
+## Skills are trusted content
+
+The instructions of a skill reach the model as they are, and the model is told to follow them. A skill can tell the agent to run commands, send data somewhere or ignore other instructions, so load skills only from places whose authors you trust:
+
+- Host folders (`dirs`, `project`, `user`) are yours, and win a shared name by default.
+- The workspace may hold skills a cloned repository brought along or the agent wrote itself. Turn it off with `workspace: false` for a workspace you do not trust, or keep the default `precedence: 'host'` so it cannot replace a skill you chose.
+- In the workspace, only real folders and files count: a skill folder, a `SKILL.md` or a file that is a symbolic link (or sits behind one) is never read, so a skill cannot reach `.env` or anything else outside its folder.
 
 ## The SKILL.md format
 
@@ -95,7 +105,7 @@ The frontmatter is YAML. The registry reads it leniently, the way the format rec
 | `metadata`      | A map of strings                                                      | A number or boolean is read as a string, anything else is left out, with a warning |
 | `allowed-tools` | Space separated tool names (a YAML list works too)                    | Ignored, with a warning                                                            |
 
-A file without frontmatter, with YAML that does not parse or with frontmatter that is not a mapping is skipped. Fields the format does not define are ignored. Every problem lands in the catalog's `diagnostics` and is logged once:
+A file without frontmatter, with YAML that does not parse or with frontmatter that is not a mapping is skipped. Fields the format does not define are ignored, and a YAML tag the parser does not know (`!foo`, `!!js/function`) is read as a plain value, with a warning. Every problem lands in the catalog's `diagnostics` and is logged once:
 
 ```typescript
 const catalog = await new SkillRegistry({ project: '.' }).discover();
@@ -119,7 +129,7 @@ Skills hold instructions and files for particular tasks. When a task matches a s
 Descriptions fill at most 12 000 characters, the skills past them are listed by name only. `use_skill({ skill })` takes any of the names and returns:
 
 ```
-<skill_content name="release">
+<skill_content name="release" source="workspace" location=".agents/skills/release">
 1. Read checklist.md.
 ...
 </skill_content>
@@ -134,7 +144,9 @@ Files of the skill, read them with read_file, by these paths:
 The files are read with the tool that reaches them:
 
 - A skill in the run's workspace, when the agent has the `read_file` of `workspaceTools()`: with `read_file`, by their workspace paths. Its scripts run with `run_command` like any other file of the workspace.
-- A skill on the host (or in a workspace the agent has no `read_file` for): with the built-in `read_skill_file({ skill, path })`, which reads only inside the skill folder. A path with `..`, an absolute path elsewhere and a symlink that points out of the folder are refused.
+- A skill on the host (or in a workspace the agent has no `read_file` for): with the built-in `read_skill_file({ skill, path })`, which reads only inside the skill folder. A path with `..`, an absolute path elsewhere and a symlink that points out of the folder are refused, and the file list names only the files it can read.
+
+Instructions longer than `maxInstructionChars` (20 000 characters by default, about the 5 000 tokens the format recommends at most) are cut at a line end, with a note that tells the model to read the rest of `SKILL.md` as a file of the skill.
 
 The registry never runs a script. Running one is up to the tools you give the agent, inside the boundaries of its workspace.
 
@@ -142,12 +154,15 @@ The registry never runs a script. Running one is up to the tools you give the ag
 
 A skill activated once stays active for the run and the thread:
 
-- Calling `use_skill` again for a skill whose instructions are still in the conversation returns a short note instead of the whole body again.
-- Clearing tool outputs (`context.clearToolOutputs`) never clears a `use_skill` result.
-- When compaction of the conversation (`context`) drops a `use_skill` result, the instructions come back as a system message right after the system prompt.
+- Calling `use_skill` again for a skill whose instructions are still in the conversation returns a short note instead of the whole body again. A skill is told apart by its folder, so another agent's skill of the same name loads its own instructions.
+- Clearing tool outputs (`context.clearToolOutputs`) leaves the newest `use_skill` results of the run alone, up to 40 000 characters of instructions in all. Older ones past that are cleared like any tool output.
+- When compaction of the conversation (`context`) drops a `use_skill` result, the instructions come back as a system message right after the system prompt, the newest first within the same 40 000 characters, and a short note names the skills left out. Compaction keeps room for them, so the conversation and what comes back fit the window together.
+- A handoff takes along the instructions kept this way only for the skills the agent it hands over to has.
 
-Once the instructions are gone from the history (a later run after the thread was compacted in memory, say), `use_skill` returns the whole body again.
+On Anthropic and Google, every system message joins the system prompt, so instructions put back after a compaction change it. Compaction already changed the conversation, so the prompt cache starts over either way.
+
+Once the instructions are gone from the history (a later run after the thread was compacted in memory, or the oldest ones past the budget), `use_skill` returns the whole body again.
 
 ## Writing your own loader
 
-`skills` takes anything with `discover(context)` that returns a `SkillCatalog`: the skill manifests (`name`, `description`, `license`, `compatibility`, `metadata`, `allowedTools`, `location`, `source`), the diagnostics, and `body(name)`, `files(name)` and `readFile(name, path)`. Use it to serve skills from a database or a package. `parseSkillFile(text, origin)` and `splitSkillFile(text)` parse a `SKILL.md` the way the registry does.
+`skills` takes anything with `discover(context)` that returns a `SkillCatalog`. `context` holds the run's `workspace` and a `signal` that aborts with the run. The catalog has the skill manifests (`name`, `description`, `license`, `compatibility`, `metadata`, `allowedTools`, `location`, `source`), the diagnostics, and `body(name)`, `files(name)` and `readFile(name, path)`. Use it to serve skills from a database or a package. `parseSkillFile(text, origin)` and `splitSkillFile(text)` parse a `SKILL.md` the way the registry does.

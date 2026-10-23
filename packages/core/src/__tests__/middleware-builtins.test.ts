@@ -121,7 +121,7 @@ describe('compactionMiddleware', () => {
     expect(update).toEqual({ messages: compressed });
     expect(messages).toEqual(original);
     expect(manager.shouldCompress).toHaveBeenCalledExactlyOnceWith(original, model);
-    expect(manager.compress).toHaveBeenCalledExactlyOnceWith(original, model);
+    expect(manager.compress).toHaveBeenCalledExactlyOnceWith(original, model, 0);
   });
 
   it('skips compression and leaves the conversation unchanged when it is not needed', async () => {

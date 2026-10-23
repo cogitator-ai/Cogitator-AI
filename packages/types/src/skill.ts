@@ -92,6 +92,8 @@ export interface SkillCatalog {
 export interface SkillDiscoveryContext {
   /** The run's workspace (`RunOptions.workspace`, else the agent's) */
   readonly workspace?: Workspace;
+  /** Aborts when the run is cancelled or times out: a loader should stop then */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -104,8 +106,12 @@ export interface SkillLoader {
 
 /**
  * Where a `SkillRegistry` looks for skill folders (folders with a `SKILL.md`). When two skills
- * share a name, the first place in this order wins: `dirs` in the order given, the workspace, the
- * project, the user.
+ * share a name, the first place in this order wins: `dirs` in the order given, the project, the
+ * user, the workspace (with `precedence: 'workspace'`: `dirs`, the workspace, the project, the
+ * user).
+ *
+ * Skills are trusted content: their instructions reach the model as they are, and the model is
+ * told to follow them. Load them only from places whose authors you trust.
  */
 export interface SkillRegistryConfig {
   /** Folders that hold skill folders (or are one: a folder with a `SKILL.md`), searched first */
@@ -122,6 +128,19 @@ export interface SkillRegistryConfig {
    * the home folder, a string names another folder to search them in (default false)
    */
   user?: boolean | string;
+  /**
+   * Which skills win a name the host folders and the workspace share. `host` (default): the
+   * skills of `dirs`, `project` and `user`, which you chose, so a skill the agent or a repository
+   * put into the workspace cannot replace them. `workspace`: the workspace's, so a project you
+   * work on overrides your own skills of the same name
+   */
+  precedence?: 'host' | 'workspace';
+  /**
+   * Most characters of a skill's instructions (the body of its `SKILL.md`) `use_skill` returns
+   * (default 20 000, about 5 000 tokens, which the format recommends at most). Longer instructions
+   * are cut, with a note that tells the model to read the rest of `SKILL.md` as a file
+   */
+  maxInstructionChars?: number;
 }
 
 /**

@@ -19,6 +19,14 @@ const MAX_SKILL_NAME_LIST_CHARS = 4_000;
 const MAX_LISTED_DESCRIPTION = 1024;
 
 /**
+ * Most characters of skill instructions a run keeps in the conversation for good: clearing tool
+ * outputs leaves the newest `use_skill` results up to this many alone, and compaction puts back at
+ * most this many. Older instructions past it are cleared or dropped, and `use_skill` returns them
+ * again when the model asks
+ */
+export const MAX_PINNED_SKILL_CHARS = 40_000;
+
+/**
  * The section of the system prompt that lists `skills` for the model, name and description each:
  * an `<available_skills>` block with how to activate one. Descriptions fill at most
  * {@link MAX_SKILL_CATALOG_CHARS} characters, the skills past them are listed by name, and past
@@ -56,21 +64,29 @@ export function availableSkillsSection(skills: readonly SkillManifest[]): string
   ].join('\n');
 }
 
-/** The opening tag `use_skill` starts the instructions of skill `name` with. */
-function skillContentTag(name: string): string {
-  return `<skill_content name="${escapeXml(name)}">`;
+/**
+ * What tells a skill from another of the same name (of another agent, or found elsewhere): where
+ * its folder is
+ */
+export function skillKey(skill: Pick<SkillManifest, 'source' | 'location'>): string {
+  return `${skill.source}:${skill.location}`;
+}
+
+/** The opening tag `use_skill` starts the instructions of `skill` with. */
+function skillContentTag(skill: SkillManifest): string {
+  return `<skill_content name="${escapeXml(skill.name)}" source="${skill.source}" location="${escapeXml(skill.location)}">`;
 }
 
 /**
- * Names of the skills whose instructions `messages` hold: results of `use_skill` that returned
- * them, and notes that carried them through compaction.
+ * Keys ({@link skillKey}) of the skills whose instructions `messages` hold: results of
+ * `use_skill` that returned them, and system messages that carried them through compaction.
  */
 export function activeSkillsIn(messages: readonly Message[]): Set<string> {
   const active = new Set<string>();
   for (const message of messages) {
     if (!mayHoldSkill(message)) continue;
-    const name = skillContentName(getTextContent(message.content));
-    if (name !== undefined) active.add(name);
+    const content = skillContentOf(getTextContent(message.content));
+    if (content) active.add(content.key);
   }
   return active;
 }
@@ -86,12 +102,24 @@ export function mayHoldSkill(message: Message): boolean {
   );
 }
 
-/** The skill whose instructions `text` holds, when it starts with them. */
-export function skillContentName(text: string): string | undefined {
+/** The skill whose instructions `text` holds, when it starts with them: its name and key. */
+export function skillContentOf(text: string): { name: string; key: string } | undefined {
   const prefix = '<skill_content name="';
   if (!text.startsWith(prefix)) return undefined;
-  const end = text.indexOf('">', prefix.length);
-  return end === -1 ? undefined : unescapeXml(text.slice(prefix.length, end));
+  const nameEnd = text.indexOf('" source="', prefix.length);
+  if (nameEnd === -1) return undefined;
+  const sourceStart = nameEnd + '" source="'.length;
+  const sourceEnd = text.indexOf('" location="', sourceStart);
+  if (sourceEnd === -1) return undefined;
+  const locationStart = sourceEnd + '" location="'.length;
+  const locationEnd = text.indexOf('">', locationStart);
+  if (locationEnd === -1) return undefined;
+  const source = text.slice(sourceStart, sourceEnd);
+  if (source !== 'host' && source !== 'workspace') return undefined;
+  return {
+    name: unescapeXml(text.slice(prefix.length, nameEnd)),
+    key: skillKey({ source, location: unescapeXml(text.slice(locationStart, locationEnd)) }),
+  };
 }
 
 export interface SkillToolsOptions {
@@ -129,7 +157,7 @@ export function skillTools(options: SkillToolsOptions): Tool[] {
     execute: async ({ skill: name }) => {
       const skill = catalog.get(name);
       if (!skill) throw new Error(`There is no skill "${name}"`);
-      if (activeSkillsIn(conversation()).has(name)) {
+      if (activeSkillsIn(conversation()).has(skillKey(skill))) {
         return toolContent({
           type: 'text',
           text: `The skill "${name}" is already active: its instructions are earlier in this conversation. Follow them.`,
@@ -164,7 +192,7 @@ function skillContent(
   files: readonly string[],
   viaReadFile: boolean
 ): string {
-  const parts = [`${skillContentTag(skill.name)}\n${body}\n</skill_content>`];
+  const parts = [`${skillContentTag(skill)}\n${body}\n</skill_content>`];
   const folder =
     skill.source === 'workspace'
       ? `${skill.location} (in the workspace, relative to its root)`

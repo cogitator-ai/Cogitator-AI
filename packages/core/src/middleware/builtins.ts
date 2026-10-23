@@ -18,7 +18,8 @@ import {
   type PiiVault,
 } from '../security/pii';
 import { toolPartsToText, toolResultParts } from '../tool-content';
-import { keepThroughCompaction } from '../cogitator/harness';
+import { keepThroughCompaction, pinnedNotes } from '../cogitator/harness';
+import { countMessagesTokens } from '../context/strategies/token-utils';
 
 /**
  * Keeps personal data from the model per `security.pii`: in `mask` and `redact` mode every model
@@ -187,7 +188,8 @@ export function compactionMiddleware(manager: ContextManager): RunMiddleware {
     async beforeModel({ messages, model }) {
       const conversation = [...messages];
       if (!manager.shouldCompress(conversation, model)) return;
-      const compressed = await manager.compress(conversation, model);
+      const reserve = countMessagesTokens(pinnedNotes(conversation));
+      const compressed = await manager.compress(conversation, model, reserve);
       return { messages: keepThroughCompaction(conversation, compressed.messages) };
     },
   };
