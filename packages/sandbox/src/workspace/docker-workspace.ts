@@ -1,4 +1,6 @@
-import { hostname } from 'node:os';
+import { randomUUID } from 'node:crypto';
+import { readFile, readlink } from 'node:fs/promises';
+import { hostname, uptime } from 'node:os';
 import { posix } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import {
@@ -37,7 +39,24 @@ const DEFAULT_RESOURCES: Required<Pick<SandboxResourceLimits, 'memory' | 'cpus' 
   cpus: 2,
   pidsLimit: 512,
 };
-const EXEC_WRAPPER = 'printf "%s\\n" "$$" >&2; exec sh -c "$1"';
+const STDIO_GRACE = 200;
+const EXEC_WRAPPER =
+  'printf "__cogitator_%s_pgid:%s\\n" "$2" "$$" >&2; sh -c "$1"; c=$?; printf "__cogitator_%s_exit:%s\\n" "$2" "$c" >&2; exit $c';
+const REMOVE_SCRIPT = [
+  '[ -e "$1" ] || [ -L "$1" ] || exit 44',
+  'case "$2" in',
+  '  trash) mkdir -p -- "$(dirname -- "$3")" && mv -T -- "$1" "$3" ;;',
+  '  recursive) rm -rf -- "$1" ;;',
+  '  *) if [ -d "$1" ] && [ ! -L "$1" ]; then rmdir -- "$1" 2>/dev/null || exit 45; else rm -f -- "$1"; fi ;;',
+  'esac',
+].join('\n');
+const RENAME_SCRIPT = [
+  '[ -e "$1" ] || [ -L "$1" ] || exit 44',
+  'if [ -e "$2" ] || [ -L "$2" ]; then [ "$3" = 1 ] || exit 46; fi',
+  'mkdir -p -- "$(dirname -- "$2")" || exit 1',
+  'if [ "$3" = 1 ]; then mv -f -T -- "$1" "$2"; else mv -n -T -- "$1" "$2" && [ ! -e "$1" ] && [ ! -L "$1" ] || exit 46; fi',
+].join('\n');
+const INTERNAL_DIRS = ['.cogitator', '.cogitator/pending'];
 
 /** The label every workspace container carries, with the workspace id as its value. */
 export const WORKSPACE_CONTAINER_LABEL = 'ai.cogitator.workspace';
@@ -216,12 +235,132 @@ export class DockerWorkspace implements Workspace {
     return this.host.mkdir(this.toHost(path));
   }
 
-  remove(path: string, options?: WorkspaceRemoveOptions): Promise<WorkspaceRemoveResult> {
-    return this.host.remove(this.toHost(path), options);
+  /**
+   * Removes in the container, where a symlink cannot reach outside the mounted root, so a
+   * command that swaps directories while the removal runs cannot make it delete host files.
+   */
+  async remove(path: string, options: WorkspaceRemoveOptions = {}): Promise<WorkspaceRemoveResult> {
+    const rel = this.inside(path);
+    if (rel === '.')
+      throw new WorkspaceError('INVALID_PATH', 'The root cannot be removed', { path });
+    let trashedTo: string | undefined;
+    if (options.trash) {
+      trashedTo = `.cogitator/trash/${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 6)}/${rel}`;
+      if (!(await this.host.exists('.cogitator/.gitignore'))) {
+        await this.host.write('.cogitator/.gitignore', '*\n');
+      }
+    }
+    const mode = options.trash ? 'trash' : options.recursive ? 'recursive' : 'single';
+    const code = await this.internal(
+      [REMOVE_SCRIPT, this.inContainer(rel), mode, trashedTo ? this.inContainer(trashedTo) : ''],
+      path
+    );
+    if (code === 44) throw new WorkspaceError('NOT_FOUND', `${path} does not exist`, { path });
+    if (code === 45) {
+      throw new WorkspaceError(
+        'NOT_EMPTY',
+        `${path} is a directory with entries, pass recursive to remove it`,
+        { path }
+      );
+    }
+    return { path: rel, ...(trashedTo && { trashedTo }) };
   }
 
-  rename(from: string, to: string, options?: WorkspaceRenameOptions): Promise<void> {
-    return this.host.rename(this.toHost(from), this.toHost(to), options);
+  /** Moves in the container, for the same reason as `remove`. */
+  async rename(from: string, to: string, options: WorkspaceRenameOptions = {}): Promise<void> {
+    const source = this.inside(from);
+    const target = this.inside(to);
+    if (source === '.' || target === '.') {
+      throw new WorkspaceError('INVALID_PATH', 'The root cannot be moved', { path: from });
+    }
+    if (source === target) return;
+    if (target.startsWith(`${source}/`)) {
+      throw new WorkspaceError('INVALID_PATH', `${to} is inside ${from}`, { path: to });
+    }
+    const code = await this.internal(
+      [
+        RENAME_SCRIPT,
+        this.inContainer(source),
+        this.inContainer(target),
+        options.overwrite ? '1' : '0',
+      ],
+      from
+    );
+    if (code === 44)
+      throw new WorkspaceError('NOT_FOUND', `${from} does not exist`, { path: from });
+    if (code === 46) throw new WorkspaceError('EXISTS', `${to} already exists`, { path: to });
+  }
+
+  /**
+   * `path` relative to the root, normalized without touching the file system: refused when it
+   * climbs out or names the workspace's own bookkeeping.
+   */
+  private inside(path: string): string {
+    const mapped = this.toHost(path);
+    if (typeof mapped !== 'string' || mapped.length === 0 || mapped.includes('\0')) {
+      throw new WorkspaceError('INVALID_PATH', `Invalid path: ${JSON.stringify(path)}`, { path });
+    }
+    let rel: string;
+    if (mapped.startsWith('/')) {
+      const root = this.host.root;
+      const normalized = posix.resolve(mapped);
+      if (normalized !== root && !normalized.startsWith(`${root}/`)) {
+        throw new WorkspaceError('OUTSIDE_ROOT', `${path} is outside the workspace`, { path });
+      }
+      rel = normalized === root ? '.' : normalized.slice(root.length + 1);
+    } else {
+      rel = posix.normalize(mapped).replace(/\/+$/, '') || '.';
+    }
+    if (rel === '..' || rel.startsWith('../')) {
+      throw new WorkspaceError('OUTSIDE_ROOT', `${path} is outside the workspace`, { path });
+    }
+    if (INTERNAL_DIRS.includes(rel) || rel.startsWith('.cogitator/pending/')) {
+      throw new WorkspaceError('INVALID_PATH', `${path} is the workspace's own directory`, {
+        path,
+      });
+    }
+    return rel;
+  }
+
+  private inContainer(rel: string): string {
+    return rel === '.' ? this.workdir : posix.join(this.workdir, rel);
+  }
+
+  /** Runs one of the workspace's own scripts in the container, its exit code the answer. */
+  private async internal(args: string[], path: string): Promise<number> {
+    const container = await this.ready();
+    const [script, ...rest] = args;
+    try {
+      const exec = await container.exec({
+        Cmd: ['sh', '-c', script, 'cogitator', ...rest],
+        AttachStdout: true,
+        AttachStderr: true,
+      });
+      const stream = await exec.start({ hijack: true, stdin: false });
+      const errors: Buffer[] = [];
+      const demuxer = new DockerStreamDemuxer(
+        () => undefined,
+        (data) => errors.push(data)
+      );
+      await new Promise<void>((resolve, reject) => {
+        stream.on('data', (chunk: Buffer) => demuxer.push(chunk));
+        stream.on('end', () => resolve());
+        stream.on('close', () => resolve());
+        stream.on('error', (error: unknown) =>
+          reject(error instanceof Error ? error : new Error(String(error)))
+        );
+      });
+      const code = (await exec.inspect()).ExitCode ?? 1;
+      if (code !== 0 && code !== 44 && code !== 45 && code !== 46) {
+        const detail = Buffer.concat(errors).toString('utf8').trim().split('\n').pop() ?? '';
+        throw new WorkspaceError('IO', `${path}: ${detail || `failed with exit code ${code}`}`, {
+          path,
+        });
+      }
+      return code;
+    } catch (error) {
+      throw ioError(`${path}`, error);
+    }
   }
 
   async exec(command: string, options: WorkspaceExecOptions = {}): Promise<WorkspaceExecResult> {
@@ -240,6 +379,7 @@ export class DockerWorkspace implements Workspace {
       timeout: options.timeout ?? this.options.timeout ?? DEFAULT_EXEC_TIMEOUT,
       maxOutput: options.maxOutputBytes ?? this.options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
       killGrace: this.options.killGrace ?? DEFAULT_KILL_GRACE,
+      background: options.background ?? 'kill',
       signal: options.signal,
       onStdout: options.onStdout,
       onStderr: options.onStderr,
@@ -288,7 +428,7 @@ export class DockerWorkspace implements Workspace {
         labels: {
           [WORKSPACE_CONTAINER_LABEL]: this.id,
           [WORKSPACE_ROOT_LABEL]: this.host.root,
-          [WORKSPACE_OWNER_LABEL]: `${hostname()}:${process.pid}`,
+          [WORKSPACE_OWNER_LABEL]: await ownerLabel(),
         },
         workingDir: this.workdir,
         init: true,
@@ -327,58 +467,59 @@ export class DockerWorkspace implements Workspace {
       timeout: number;
       maxOutput: number;
       killGrace: number;
+      background: 'kill' | 'keep';
       signal?: AbortSignal;
       onStdout?: (chunk: string) => void;
       onStderr?: (chunk: string) => void;
     }
   ): Promise<WorkspaceExecResult> {
     const started = Date.now();
+    const token = randomUUID().replace(/-/g, '');
     const stdout = new StreamText(options.maxOutput, options.onStdout);
     const stderr = new StreamText(options.maxOutput, options.onStderr);
     let group: number | undefined;
-    let header = Buffer.alloc(0);
-    const demuxer = new DockerStreamDemuxer(
-      (data) => stdout.push(data),
-      (data) => {
-        if (group !== undefined) {
-          stderr.push(data);
-          return;
-        }
-        header = Buffer.concat([header, data]);
-        const end = header.indexOf(0x0a);
-        if (end === -1) return;
-        group = Number(header.subarray(0, end).toString('utf8').trim());
-        const rest = header.subarray(end + 1);
-        if (rest.length > 0) stderr.push(rest);
-        if (stopReason) void stopGroup();
-      }
-    );
-
+    let exitCode: number | undefined;
     let stopReason: 'timeout' | 'abort' | undefined;
     let stream: DockerStream | undefined;
     let releaseRead: () => void = () => undefined;
     const readReleased = new Promise<void>((resolve) => {
       releaseRead = resolve;
     });
-    const stopGroup = async () => {
-      if (group !== undefined && Number.isInteger(group) && group > 1) {
-        await signalGroup(container, group, 'TERM');
-        const kill = setTimeout(
-          () => void signalGroup(container, group!, 'KILL'),
-          options.killGrace
-        );
-        kill.unref();
+
+    const stopGroup = (signals: 'TERM' | 'KILL') => {
+      if (group === undefined) return;
+      const target = group;
+      if (signals === 'KILL') {
+        void signalGroup(container, target, 'KILL');
+        return;
       }
-      const bound = setTimeout(() => {
-        stream?.end();
-        releaseRead();
-      }, options.killGrace + 1_000);
-      bound.unref();
+      void signalGroup(container, target, 'TERM').then(() => {
+        setTimeout(() => void signalGroup(container, target, 'KILL'), options.killGrace).unref();
+      });
     };
+    const markers = new MarkerScanner(
+      token,
+      (text) => stderr.pushText(text),
+      (kind, value) => {
+        if (kind === 'pgid') {
+          group = value > 1 ? value : undefined;
+          if (stopReason) stopGroup('TERM');
+          return;
+        }
+        exitCode = value;
+        if (options.background === 'kill') stopGroup('TERM');
+        setTimeout(releaseRead, STDIO_GRACE).unref();
+      }
+    );
+    const demuxer = new DockerStreamDemuxer(
+      (data) => stdout.push(data),
+      (data) => markers.push(data)
+    );
     const stop = (reason: 'timeout' | 'abort') => {
       if (stopReason) return;
       stopReason = reason;
-      void stopGroup();
+      stopGroup('TERM');
+      setTimeout(releaseRead, options.killGrace + 1_000).unref();
     };
     const onAbort = () => stop('abort');
     options.signal?.addEventListener('abort', onAbort, { once: true });
@@ -388,7 +529,7 @@ export class DockerWorkspace implements Workspace {
       if (options.signal?.aborted) throw aborted(options.signal);
       const exec: DockerExec = await container
         .exec({
-          Cmd: ['sh', '-c', EXEC_WRAPPER, 'cogitator-exec', command],
+          Cmd: ['sh', '-c', EXEC_WRAPPER, 'cogitator-exec', command, token],
           Env: Object.entries(options.env).map(([key, value]) => `${key}=${value}`),
           WorkingDir: options.workingDir,
           AttachStdout: true,
@@ -412,21 +553,25 @@ export class DockerWorkspace implements Workspace {
       if (options.signal?.aborted) stop('abort');
 
       await Promise.race([finished, readReleased]);
+      markers.end();
+      active.end();
+      active.destroy?.();
       if (stopReason === 'abort' && options.signal) throw aborted(options.signal);
       const timedOut = stopReason === 'timeout';
-      const exitCode = timedOut
+      const code = timedOut
         ? 124
-        : await exec.inspect().then(
+        : (exitCode ??
+          (await exec.inspect().then(
             (inspection) => inspection.ExitCode ?? 1,
             (error: unknown) => {
               throw ioError('Could not read the exit code of the command', error);
             }
-          );
+          )));
       const err = stderr.text();
       return {
         stdout: stdout.text(),
         stderr: timedOut ? err || `Command timed out after ${options.timeout}ms` : err,
-        exitCode,
+        exitCode: code,
         timedOut,
         truncated: stdout.truncated || stderr.truncated,
         durationMs: Date.now() - started,
@@ -435,6 +580,60 @@ export class DockerWorkspace implements Workspace {
       clearTimeout(timer);
       options.signal?.removeEventListener('abort', onAbort);
     }
+  }
+}
+
+/**
+ * Takes the wrapper's markers (`__cogitator_<token>_pgid:<n>` and `..._exit:<n>`, each on a line
+ * of its own) out of a command's stderr wherever they appear, so a shell warning printed before
+ * them changes nothing, and hands the rest on. Text that may be the start of a marker is held
+ * until it is known.
+ */
+export class MarkerScanner {
+  private readonly decoder = new StringDecoder('utf8');
+  private held = '';
+  private readonly start: string;
+  private readonly pattern: RegExp;
+
+  constructor(
+    token: string,
+    private readonly emit: (text: string) => void,
+    private readonly onMarker: (kind: 'pgid' | 'exit', value: number) => void
+  ) {
+    this.start = `__cogitator_${token}_`;
+    this.pattern = new RegExp(`__cogitator_${token}_(pgid|exit):(\\d+)\\n`);
+  }
+
+  push(chunk: Buffer): void {
+    this.held += this.decoder.write(chunk);
+    for (;;) {
+      const match = this.pattern.exec(this.held);
+      if (!match) break;
+      if (match.index > 0) this.emit(this.held.slice(0, match.index));
+      this.held = this.held.slice(match.index + match[0].length);
+      this.onMarker(match[1] as 'pgid' | 'exit', Number(match[2]));
+    }
+    const keep = this.heldFrom();
+    if (keep > 0) {
+      this.emit(this.held.slice(0, keep));
+      this.held = this.held.slice(keep);
+    }
+  }
+
+  end(): void {
+    this.held += this.decoder.end();
+    if (this.held) this.emit(this.held);
+    this.held = '';
+  }
+
+  /** Where the text that may still become a marker begins. */
+  private heldFrom(): number {
+    const full = this.held.indexOf(this.start);
+    if (full !== -1) return full;
+    for (let length = Math.min(this.start.length - 1, this.held.length); length > 0; length--) {
+      if (this.start.startsWith(this.held.slice(-length))) return this.held.length - length;
+    }
+    return this.held.length;
   }
 }
 
@@ -463,18 +662,35 @@ async function signalGroup(
 }
 
 /**
- * Removes workspace containers of `root` that a process of this machine created and that
- * outlived it (a crash, a kill), so they do not keep the root mounted.
+ * Who created a container: host name, boot, PID namespace and process id. Two processes are
+ * only compared by pid when the rest matches, so containers sharing a host name, a Docker socket
+ * and a root (each in its own PID namespace) never remove each other's containers.
+ */
+export async function ownerLabel(pid = process.pid): Promise<string> {
+  const boot = await readFile('/proc/sys/kernel/random/boot_id', 'utf8').then(
+    (id) => id.trim(),
+    () => `boot-${Math.round((Date.now() - uptime() * 1000) / 60_000)}`
+  );
+  const namespace = await readlink('/proc/self/ns/pid').catch(() => 'host');
+  return [hostname(), boot, namespace, String(pid)].join('|');
+}
+
+/**
+ * Removes workspace containers of `root` that a process of this machine (same host name, boot
+ * and PID namespace) created and that outlived it (a crash, a kill), so they do not keep the root
+ * mounted.
  */
 async function removeOrphans(docker: Docker, root: string): Promise<void> {
   if (!docker.listContainers || !docker.getContainer) return;
   const containers = await docker
     .listContainers({ all: true, filters: { label: [`${WORKSPACE_ROOT_LABEL}=${root}`] } })
     .catch(() => []);
-  const here = hostname();
+  const ours = (await ownerLabel(0)).split('|').slice(0, 3).join('|');
   for (const summary of containers) {
-    const [owner, pid] = (summary.Labels?.[WORKSPACE_OWNER_LABEL] ?? '').split(/:(?=\d+$)/);
-    if (owner !== here || !pid || processAlive(Number(pid))) continue;
+    const owner = summary.Labels?.[WORKSPACE_OWNER_LABEL] ?? '';
+    const parts = owner.split('|');
+    if (parts.length !== 4 || parts.slice(0, 3).join('|') !== ours) continue;
+    if (processAlive(Number(parts[3]))) continue;
     await docker
       .getContainer(summary.Id)
       .remove({ force: true })
@@ -567,11 +783,21 @@ class StreamText {
     private readonly listener?: (chunk: string) => void
   ) {}
 
+  /** Text already decoded, such as stderr with the wrapper's markers taken out. */
+  pushText(text: string): void {
+    this.listener?.(text);
+    this.keep(Buffer.from(text, 'utf8'));
+  }
+
   push(chunk: Buffer): void {
     if (this.listener) {
       const text = this.decoder.write(chunk);
       if (text) this.listener(text);
     }
+    this.keep(chunk);
+  }
+
+  private keep(chunk: Buffer): void {
     const room = this.limit - this.size;
     if (chunk.length > room) this.truncated = true;
     if (room <= 0) return;

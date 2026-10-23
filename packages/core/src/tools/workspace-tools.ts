@@ -434,11 +434,17 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
         .max(600_000)
         .optional()
         .describe('Milliseconds before the command is killed'),
+      background: z
+        .boolean()
+        .optional()
+        .describe(
+          'Keep processes the command starts in the background (with &) running after it returns, e.g. a dev server. Redirect their output to a file, it is not captured (default: false, they are stopped)'
+        ),
     }),
     category: 'system',
     sideEffects: ['process', 'filesystem', 'network'],
     ...approval('run_command'),
-    execute: async ({ command, cwd, timeout }, context) => {
+    execute: async ({ command, cwd, timeout, background }, context) => {
       const ws = resolveWorkspace(context);
       const result = await call(() =>
         ws.exec(command, {
@@ -447,6 +453,7 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
             timeout: timeout ?? options.execTimeout,
           }),
           signal: context.signal,
+          background: background ? 'keep' : 'kill',
         })
       );
       return { command, ...result };

@@ -241,7 +241,7 @@ Pass the same options as `pool` to `SandboxManager`, `DockerSandboxExecutor` or 
 
 ## Docker Workspace
 
-`DockerWorkspace` is a [workspace](https://cogitator.app/docs/tools/workspace) whose commands run in one long-lived container: created on first use (or in `start()`), kept between commands, removed in `dispose()`. The root of a host workspace (a `LocalWorkspace` from `@cogitator-ai/core`) is bind-mounted at `/workspace`, files are read and written through the host workspace and its path guard (a path under `/workspace` is mapped to the root), and commands run with `docker exec` in the matching directory.
+`DockerWorkspace` is a [workspace](https://cogitator.app/docs/tools/workspace) whose commands run in one long-lived container: created on first use (or in `start()`), kept between commands, removed in `dispose()`. The root of a host workspace (a `LocalWorkspace` from `@cogitator-ai/core`) is bind-mounted at `/workspace`, files are read and written through the host workspace and its path guard (a path under `/workspace` is mapped to the root), `remove` and `rename` run in the container where no symlink reaches the host, and commands run with `docker exec` in the matching directory.
 
 ```typescript
 import { Agent, LocalWorkspace, workspaceTools } from '@cogitator-ai/core';
@@ -266,8 +266,6 @@ try {
 ```
 
 The container has the security defaults of the Docker executor, an init process, limits of 2 GB, 2 CPUs and 512 processes unless `resources` sets others, no network unless `network.mode` allows it, and on Linux runs commands as your uid and gid. Each command leads its own process group: a timeout or an abort signals the group (SIGTERM, then SIGKILL after `killGrace`), background and `env -i` processes included, and the container keeps running. A process that calls `setsid` escapes the group until `dispose()`. The image needs `sh`. Starting removes containers of the same root left by a process of this machine that is gone. Without Docker the first command fails with a `WorkspaceError` of code `UNAVAILABLE`, Docker API failures come as code `IO`. `dispose()` also disposes the host workspace.
-
-Containers made by `createSandboxContainer` (the pool and `DockerWorkspace`) get 1 GiB of memory and 1 CPU when no limits are set.
 
 ## WASM Executor
 

@@ -9,6 +9,8 @@ export interface DockerStream {
   on(event: string, listener: (...args: unknown[]) => void): this;
   write(data: string | Buffer): boolean;
   end(): void;
+  /** Closes the connection, also while the other side still sends (a hijacked socket has it) */
+  destroy?(): void;
 }
 
 export interface DockerExec {

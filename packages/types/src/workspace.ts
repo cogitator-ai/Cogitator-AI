@@ -94,6 +94,8 @@ export interface WorkspaceWriteOptions {
   createParents?: boolean;
   /** Refuse content larger than this many bytes (code `TOO_LARGE`). Default: the workspace's limit */
   maxBytes?: number;
+  /** Replace the file even when it is read-only, which is refused with code `DENIED` otherwise */
+  force?: boolean;
 }
 
 export interface WorkspaceListOptions {
@@ -150,6 +152,13 @@ export interface WorkspaceExecOptions {
   onStderr?: (chunk: string) => void;
   /** Bytes of each stream kept in the result (default: the workspace's limit) */
   maxOutputBytes?: number;
+  /**
+   * What happens to processes the command started in the background (`&`) when it exits:
+   * `kill` (default) ends its whole process group, `keep` leaves them running until `dispose()`.
+   * Either way the call returns when the command itself exits, and a kept process's output is
+   * no longer read, so redirect it (`server > server.log 2>&1 &`)
+   */
+  background?: 'kill' | 'keep';
 }
 
 export interface WorkspaceExecResult {

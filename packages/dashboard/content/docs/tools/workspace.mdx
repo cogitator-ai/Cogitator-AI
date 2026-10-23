@@ -62,7 +62,7 @@ After a handoff, the agent the run went on as brings its own workspace, unless t
 | `exec(command, options)`                                 | A shell command in `cwd` or `options.cwd`, streaming `onStdout`/`onStderr`, `timeout`, `signal` |
 | `snapshot`, `restore`, `listSnapshots`, `deleteSnapshot` | Optional: record the files and go back to them                                                  |
 
-`exec` resolves with `{ stdout, stderr, exitCode, timedOut, truncated, durationMs }`, also for a non-zero exit or a timeout (exit code 124), and rejects with code `ABORTED` when its signal aborts. A timeout or an abort sends SIGTERM to the command's process group, then SIGKILL.
+`exec` resolves with `{ stdout, stderr, exitCode, timedOut, truncated, durationMs }`, also for a non-zero exit or a timeout (exit code 124), and rejects with code `ABORTED` when its signal aborts. A timeout or an abort sends SIGTERM to the command's process group, then SIGKILL. The call returns when the command itself exits, even when a process it started in the background (`server &`) still holds its output open: with `background: 'kill'` (the default) the rest of the group is stopped then, with `background: 'keep'` it runs on until `dispose()`, its output no longer read, so redirect it (`server > server.log 2>&1 &`).
 
 Every failure is a `WorkspaceError` with a `code`: `OUTSIDE_ROOT`, `NOT_FOUND`, `NOT_A_FILE`, `NOT_A_DIRECTORY`, `EXISTS`, `NOT_EMPTY`, `TOO_LARGE`, `INVALID_PATH`, `NOT_STARTED`, `DISPOSED`, `UNAVAILABLE`, `ABORTED`, `DENIED` (the system or a policy refused it, such as missing permissions), `UNSUPPORTED` or `IO`.
 
@@ -76,7 +76,7 @@ try {
 }
 ```
 
-The workspace keeps its own files in `.cogitator/` inside the root (trash, saved tool results, temporary files), with a `.gitignore` that keeps all of it out of git.
+The workspace keeps its own files in `.cogitator/` inside the root (trash, saved tool results, entries being moved), with a `.gitignore` that keeps all of it out of git. `.cogitator` itself and `.cogitator/pending` cannot be written, moved or removed through the workspace.
 
 ## LocalWorkspace
 
@@ -111,7 +111,7 @@ const workspace = new LocalWorkspace({
 
 By default a command inherits only what a shell needs (`PATH`, `HOME`, the locale and a few more, see `WORKSPACE_INHERITED_ENV`), so the API keys in your environment do not reach commands the model writes. `HOME` is passed, so a command can still read what your home directory holds, such as `~/.ssh` and `~/.aws`: run untrusted commands in a `DockerWorkspace`.
 
-Each command runs in a process group of its own. A timeout or an abort stops the whole group, also background processes the shell already left behind, and `dispose()` kills every group the workspace started. A process that starts a new session (`setsid`) leaves the group. On Windows there are no process groups: only the command itself is killed.
+Each command runs in a process group of its own. A timeout or an abort stops the whole group, also background processes the shell already left behind, and `dispose()` kills every group the workspace started that still has processes. A process that starts a new session (`setsid`) leaves the group. On Windows there are no process groups: only the command itself is killed.
 
 ### How paths are guarded
 
@@ -119,13 +119,16 @@ A path is resolved with every symlink followed, a dangling one too (writing thro
 
 - Only regular files are read or written: a FIFO, a socket or a device is refused before it is opened, and files are opened with `O_NONBLOCK`, so nothing can hang a read.
 - Files are opened with `O_NOFOLLOW` and checked again once open: the path must still resolve inside the root, to the very file that was opened. A symlink swapped in between the check and the open is caught, for the file and for a parent directory.
-- Writes go to a temporary file in the same directory, which is then renamed over the target, keeping its mode. A crash never leaves half a file, and a hard link to a file outside the root is replaced instead of written through (the other links keep the old content, and the owner of the new file is your process).
-- `remove` and `rename` first move the entry into `.cogitator/pending/` and check it is the entry they resolved. When a parent directory was swapped for a symlink in between, what they moved goes back where it came from and the call fails, so nothing outside the root is deleted, pulled in or pushed out.
+- Writes go to a temporary file in the same directory, flushed to disk, which is then renamed over the target, keeping its mode. A crash never leaves half a file (leftover temporary files older than an hour are removed when a workspace starts), and a hard link to a file outside the root is replaced instead of written through (the other links keep the old content, and the owner of the new file is your process). A read-only file is refused with code `DENIED` unless the write passes `force`.
+- `remove` and `rename` first move the entry into `.cogitator/pending/` and check it is the entry they resolved. When a parent directory was swapped for a symlink in between, the entry that was moved instead goes back, without replacing anything, to the directory outside the root it came from, and the call fails. When even that directory cannot be told (the symlink was swapped back too), the entry stays in `.cogitator/pending/` and a warning is logged: nothing is deleted.
+- An entry never lands on top of another one: it goes to a fresh random name in the verified target directory, the directory is checked again, and it takes its final name with a hard link (or a new symlink, or a rename only onto nothing for a directory), so a target directory swapped for a symlink never gets an outside file replaced. `rename` with `overwrite` first moves the old target aside the same way and deletes it only once the move succeeded.
+- An entry on another device than the root (a mount inside it) cannot be moved aside: `remove` then checks the parent and the entry again right before deleting it, a narrower guarantee, and `rename` refuses with code `UNSUPPORTED`.
 
 What the guard does not stop:
 
 - Reading a hard link to a file outside the root: it is that file, hard links cannot be told from the original. `refuseHardLinks: true` refuses every file with more than one link, which also makes pnpm's `node_modules` (hard-linked to its store) unreadable.
 - A race that swaps a parent directory for a symlink right before `mkdir` can leave an empty directory outside the root, never content.
+- A recursive `remove` deletes the moved-aside directory with Node's `rm`, which a process changing that very tree at the same moment could still redirect. `DockerWorkspace` removes inside the container, where no symlink reaches the host.
 - `exec` runs as your process, only its directory is confined: `cat /etc/passwd` works. Use `DockerWorkspace` for commands you do not trust.
 
 ### Snapshots
@@ -153,9 +156,9 @@ try {
 }
 ```
 
-One container serves the whole workspace: created on first use (or in `start()`), kept between commands (installed packages and build output stay), and removed in `dispose()`, which also disposes the host workspace it owns. It has the [sandbox defaults](/docs/deployment/sandbox#security-defaults) (no capabilities, no new privileges, no network unless `network` allows it), an init process that reaps killed commands, and limits of 2 GB, 2 CPUs and 512 processes unless `resources` says otherwise. On Linux commands run as your uid and gid, so the files they write stay yours. When it starts, it removes containers of the same root that a process of this machine left behind and that is gone (a crash, a kill). Without Docker, the first command (or `start()`) fails with code `UNAVAILABLE`, and errors of the Docker API come as code `IO`.
+One container serves the whole workspace: created on first use (or in `start()`), kept between commands (installed packages and build output stay), and removed in `dispose()`, which also disposes the host workspace it owns. It has the [sandbox defaults](/docs/deployment/sandbox#security-defaults) (no capabilities, no new privileges, no network unless `network` allows it), an init process that reaps killed commands, and limits of 2 GB, 2 CPUs and 512 processes unless `resources` says otherwise. On Linux commands run as your uid and gid, so the files they write stay yours. When it starts, it removes containers of the same root that a process of this machine (same host name, boot and PID namespace) left behind and that is gone (a crash, a kill). Without Docker, the first command (or `start()`) fails with code `UNAVAILABLE`, and errors of the Docker API come as code `IO`.
 
-Each command runs as the leader of its own process group in the container. A timeout or an abort signals that group with the container's own `kill` (SIGTERM, then SIGKILL after `killGrace`), so background processes and processes with a cleared environment (`env -i`) go too, and the call returns at most `killGrace` plus a second later. A process that starts a new session (`setsid`) escapes and lives on until `dispose()`. The image needs `sh`: distroless images without a shell cannot run commands.
+`remove` and `rename` run in the container (`rm`, `rmdir`, `mv -T`), where a symlink a command plants cannot reach the host, while reads and writes go through the host workspace and its guard. Each command runs as the leader of its own process group in the container, which a small `sh` wrapper reports with a marker line on stderr, taken out again wherever it appears. A timeout or an abort signals that group with the container's own `kill` (SIGTERM, then SIGKILL after `killGrace`), so background processes and processes with a cleared environment (`env -i`) go too, and the call returns at most `killGrace` plus a second later. `background` works as for `LocalWorkspace`. A process that starts a new session (`setsid`) escapes and lives on until `dispose()`. The image needs `sh`: distroless images without a shell cannot run commands.
 
 | Option           | Default                     | What it does                                 |
 | ---------------- | --------------------------- | -------------------------------------------- |
@@ -183,7 +186,7 @@ Each command runs as the leader of its own process group in the container. A tim
 | `list_files`  | A directory's entries, optionally recursive, at most 1000                                                                                                                                                                                                                                                             |
 | `glob`        | Files matching a pattern such as `**/*.ts`, at most 1000                                                                                                                                                                                                                                                              |
 | `grep`        | Lines matching a regular expression, at most `maxMatches`. Binary files, files over 1 MiB and hidden files (unless `includeHidden`) are skipped. Matching runs in a worker thread with `grepTimeout` per file, so a pattern that backtracks catastrophically, such as `(a+)+$`, fails instead of blocking the process |
-| `run_command` | A shell command through `workspace.exec`, stopped when the run is cancelled                                                                                                                                                                                                                                           |
+| `run_command` | A shell command through `workspace.exec`, stopped when the run is cancelled. `background: true` keeps what it starts with `&` running                                                                                                                                                                                 |
 
 | Option            | Default                | What it does                                              |
 | ----------------- | ---------------------- | --------------------------------------------------------- |

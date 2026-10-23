@@ -14,7 +14,14 @@ export interface WorkspaceLaunch {
   env: Record<string, string>;
 }
 
-/** The process groups a workspace started, kept until they are gone, so `dispose()` can end them. */
+/** Milliseconds after a command exits that its output pipes may still deliver what it wrote. */
+const STDIO_GRACE = 200;
+
+/**
+ * The process groups a workspace started and that may still have processes: a group is
+ * forgotten as soon as it is found empty (when its command finishes, and before every new
+ * command), so `dispose()` never signals a group id the system gave to someone else since.
+ */
 export class ProcessGroups {
   private readonly groups = new Set<number>();
   private readonly children = new Set<ChildProcess>();
@@ -24,8 +31,10 @@ export class ProcessGroups {
     if (child.pid !== undefined && process.platform !== 'win32') this.groups.add(child.pid);
   }
 
+  /** The command finished: its group is kept only while processes are left in it. */
   settled(child: ChildProcess): void {
     this.children.delete(child);
+    if (child.pid !== undefined && !groupAlive(child.pid)) this.groups.delete(child.pid);
   }
 
   /** Forgets groups that have no process left. */
@@ -35,6 +44,7 @@ export class ProcessGroups {
 
   /** Kills every group still alive, background processes the commands left behind included. */
   killAll(): void {
+    this.prune();
     for (const group of this.groups) signalGroup(group, 'SIGKILL');
     for (const child of this.children) if (process.platform === 'win32') child.kill('SIGKILL');
     this.groups.clear();
@@ -48,6 +58,8 @@ export interface RunProcessOptions {
   maxOutput: number;
   /** Milliseconds between SIGTERM and SIGKILL when a command is stopped */
   killGrace: number;
+  /** What happens to background processes when the command exits */
+  background: 'kill' | 'keep';
   groups: ProcessGroups;
   signal?: AbortSignal;
   onStdout?: (chunk: string) => void;
@@ -56,8 +68,11 @@ export interface RunProcessOptions {
 
 /**
  * Runs `launch` in a process group of its own (outside Windows), its output streamed and capped.
- * A timeout or an abort sends SIGTERM to the whole group, SIGKILL after `killGrace`, also when
- * the shell already exited and only processes it started in the background are left.
+ * The call returns when the command exits (its output read for a moment more), not when every
+ * process it started closed its output: with `background: 'kill'` the rest of the group is then
+ * stopped, with `keep` it runs on. A timeout or an abort sends SIGTERM to the whole group,
+ * SIGKILL after `killGrace`, also when the shell already exited and only processes it started
+ * in the background are left.
  */
 export function runProcess(options: RunProcessOptions): Promise<WorkspaceExecResult> {
   const started = Date.now();
@@ -79,17 +94,22 @@ export function runProcess(options: RunProcessOptions): Promise<WorkspaceExecRes
     let timedOut = false;
     let abortedBy: AbortSignal | undefined;
     let settled = false;
-    let escalation: ReturnType<typeof setTimeout> | undefined;
+    let exitCode: number | undefined;
+    let drain: ReturnType<typeof setTimeout> | undefined;
 
-    const stop = () => {
+    const stopGroup = () => {
       if (windows || child.pid === undefined) {
         child.kill('SIGKILL');
-      } else {
-        const group = child.pid;
-        signalGroup(group, 'SIGTERM');
-        escalation = setTimeout(() => signalGroup(group, 'SIGKILL'), options.killGrace);
-        escalation.unref();
+        return;
       }
+      const group = child.pid;
+      signalGroup(group, 'SIGTERM');
+      setTimeout(() => {
+        if (groupAlive(group)) signalGroup(group, 'SIGKILL');
+      }, options.killGrace).unref();
+    };
+    const stop = () => {
+      stopGroup();
       child.stdout?.destroy();
       child.stderr?.destroy();
     };
@@ -104,11 +124,15 @@ export function runProcess(options: RunProcessOptions): Promise<WorkspaceExecRes
     options.signal?.addEventListener('abort', onAbort, { once: true });
     if (options.signal?.aborted) onAbort();
 
-    const finish = (exitCode: number, extraStderr?: string) => {
+    const finish = (code: number, extraStderr?: string) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (drain) clearTimeout(drain);
       options.signal?.removeEventListener('abort', onAbort);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      if (!timedOut && !abortedBy && options.background === 'kill') stopGroup();
       options.groups.settled(child);
       if (abortedBy) {
         reject(abortError(abortedBy));
@@ -120,7 +144,7 @@ export function runProcess(options: RunProcessOptions): Promise<WorkspaceExecRes
         stderr: timedOut
           ? stderr.text() || `Command timed out after ${options.timeout}ms`
           : stderr.text(),
-        exitCode: timedOut ? 124 : exitCode,
+        exitCode: timedOut ? 124 : code,
         timedOut,
         truncated: stdout.truncated || stderr.truncated,
         durationMs: Date.now() - started,
@@ -133,9 +157,12 @@ export function runProcess(options: RunProcessOptions): Promise<WorkspaceExecRes
       const code = error.code === 'ENOENT' ? 127 : error.code === 'EACCES' ? 126 : 1;
       finish(code, error.message);
     });
+    child.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
+      exitCode = code ?? (signal ? 128 + signalNumber(signal) : 1);
+      drain = setTimeout(() => finish(exitCode!), STDIO_GRACE);
+    });
     child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
-      if (escalation && !groupAlive(child.pid)) clearTimeout(escalation);
-      finish(code ?? (signal ? 128 + signalNumber(signal) : 1));
+      finish(exitCode ?? code ?? (signal ? 128 + signalNumber(signal) : 1));
     });
   });
 }

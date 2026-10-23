@@ -10,7 +10,7 @@ import {
   existsSync,
 } from 'node:fs';
 import { execSync } from 'node:child_process';
-import { chmodSync, readdirSync, statSync } from 'node:fs';
+import { chmodSync, readdirSync, statSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -283,6 +283,63 @@ describe('LocalWorkspace files', () => {
   });
 });
 
+describe('LocalWorkspace housekeeping', () => {
+  it('protects its own directory and answers without host paths', async () => {
+    await workspace.remove(await workspace.write('x.txt', 'x').then(() => 'x.txt'), {
+      trash: true,
+    });
+    for (const attempt of [
+      () => workspace.remove('.cogitator', { recursive: true }),
+      () => workspace.remove('.cogitator/pending', { recursive: true }),
+      () => workspace.rename('.cogitator', 'elsewhere'),
+      () => workspace.write('.cogitator/pending/x', 'x'),
+    ]) {
+      const error = await attempt().then(
+        () => undefined,
+        (reason: unknown) => reason
+      );
+      expect(WorkspaceError.is(error, 'INVALID_PATH')).toBe(true);
+      expect((error as Error).message).not.toContain(base);
+    }
+  });
+
+  it('refuses to replace a read-only file unless forced', async () => {
+    await workspace.write('locked.txt', 'v1');
+    chmodSync(join(root, 'locked.txt'), 0o444);
+    if (process.getuid?.() !== 0) await expectCode(workspace.write('locked.txt', 'v2'), 'DENIED');
+    await workspace.write('locked.txt', 'v3', { force: true });
+    expect(await workspace.read('locked.txt')).toBe('v3');
+    expect(statSync(join(root, 'locked.txt')).mode & 0o777).toBe(0o444);
+  });
+
+  it('overwrites a file on rename only when asked, and refuses a non-empty directory target', async () => {
+    await workspace.write('a.txt', 'A');
+    await workspace.write('b.txt', 'B');
+    await workspace.rename('a.txt', 'b.txt', { overwrite: true });
+    expect(await workspace.read('b.txt')).toBe('A');
+    expect(await workspace.exists('a.txt')).toBe(false);
+    await workspace.write('dir/inner.txt', 'x');
+    await workspace.mkdir('src');
+    await expectCode(workspace.rename('src', 'dir', { overwrite: true }), 'NOT_EMPTY');
+    await expectCode(workspace.rename('b.txt', 'dir', { overwrite: true }), 'NOT_A_FILE');
+    expect(readdirSync(join(root, '.cogitator', 'pending'))).toEqual([]);
+  });
+
+  it('sweeps temporary files an interrupted write left behind', async () => {
+    const leftover = join(root, '.cogitator-tmp-leftover');
+    const fresh = join(root, '.cogitator-tmp-fresh');
+    writeFileSync(leftover, 'half');
+    writeFileSync(fresh, 'in progress');
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    utimesSync(leftover, old, old);
+    const again = new LocalWorkspace({ root });
+    await again.start();
+    await vi.waitFor(() => expect(existsSync(leftover)).toBe(false));
+    expect(existsSync(fresh)).toBe(true);
+    await again.dispose();
+  });
+});
+
 describe('LocalWorkspace exec', () => {
   it('runs in the current directory or the given one, inside the root', async () => {
     await workspace.mkdir('pkg');
@@ -329,18 +386,31 @@ describe('LocalWorkspace exec', () => {
     expect(result.truncated).toBe(true);
   });
 
-  it('kills what a finished command left running in the background, on a timeout and on dispose', async () => {
-    const timedOut = await workspace.exec('sleep 66 & echo $! > bg.pid', { timeout: 2000 });
-    expect(timedOut.timedOut).toBe(true);
-    const first = Number((await workspace.read('bg.pid')).trim());
-    await vi.waitFor(() => expect(isAlive(first)).toBe(false), { timeout: 10_000 });
+  it('returns when the command exits and stops what it left in the background', async () => {
+    const result = await workspace.exec('sleep 66 & echo $! > bg.pid; echo started', {
+      timeout: 60_000,
+    });
+    expect(result).toMatchObject({ stdout: 'started\n', exitCode: 0, timedOut: false });
+    const pid = Number((await workspace.read('bg.pid')).trim());
+    await vi.waitFor(() => expect(isAlive(pid)).toBe(false), { timeout: 10_000 });
+  });
 
-    const done = await workspace.exec('nohup sleep 67 > /dev/null 2>&1 & echo $! > bg.pid');
-    expect(done.exitCode).toBe(0);
-    const second = Number((await workspace.read('bg.pid')).trim());
-    expect(isAlive(second)).toBe(true);
+  it('keeps background processes when asked, until dispose', async () => {
+    const result = await workspace.exec('sleep 67 > /dev/null 2>&1 & echo $! > bg.pid', {
+      background: 'keep',
+    });
+    expect(result.exitCode).toBe(0);
+    const pid = Number((await workspace.read('bg.pid')).trim());
+    expect(isAlive(pid)).toBe(true);
     await workspace.dispose();
-    await vi.waitFor(() => expect(isAlive(second)).toBe(false), { timeout: 10_000 });
+    await vi.waitFor(() => expect(isAlive(pid)).toBe(false), { timeout: 10_000 });
+  });
+
+  it('stops a command that holds its output open on a timeout, background included', async () => {
+    const result = await workspace.exec('sleep 69 & echo $! > bg.pid; sleep 70', { timeout: 1000 });
+    expect(result.timedOut).toBe(true);
+    const pid = Number((await workspace.read('bg.pid')).trim());
+    await vi.waitFor(() => expect(isAlive(pid)).toBe(false), { timeout: 10_000 });
   });
 
   it('runs commands through a launch wrapper, keeping the group kill', async () => {

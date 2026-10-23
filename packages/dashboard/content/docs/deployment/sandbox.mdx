@@ -124,8 +124,6 @@ await executor.disconnect();
 | `SecurityOpt` | `no-new-privileges` | Prevent privilege escalation |
 | `NetworkMode` | `none`              | No network access            |
 | `PidsLimit`   | `100`               | Prevent fork bombs           |
-| `Memory`      | 1 GiB unless set    | Bound memory use             |
-| `NanoCpus`    | 1 CPU unless set    | Bound CPU use                |
 
 `resources.memory` accepts strings like `'256MB'` or `'1GB'` (`parseMemory()`), `cpus` is converted to Docker NanoCPUs (`cpusToNanoCpus()`), and `cpuShares`, `mounts` (`{ source, target, readOnly }`), `user` and `env` are passed through. The default timeout is 30 seconds.
 
@@ -218,7 +216,7 @@ try {
 }
 ```
 
-The host workspace's root is bind-mounted at `/workspace`. Files are read and written on the host through the host workspace and its path guard, so a symlink a command creates to a path outside the root is refused when read, and a path under `/workspace` is taken as the same path under the root. The container has the security defaults above, an init process, limits of 2 GB, 2 CPUs and 512 processes unless `resources` sets others, and no network unless `network.mode` allows it (`allowedHosts` is refused, as for the Docker executor). Each command leads a process group of its own, and a timeout or an abort signals that group (SIGTERM, then SIGKILL), so background processes go too, while the container keeps running. The image needs `sh`. Starting removes containers of the same root left behind by a process of this machine that is gone. Without Docker the first command fails with a `WorkspaceError` of code `UNAVAILABLE`.
+The host workspace's root is bind-mounted at `/workspace`. Files are read and written on the host through the host workspace and its path guard, so a symlink a command creates to a path outside the root is refused when read, `remove` and `rename` run in the container, where no symlink reaches the host, and a path under `/workspace` is taken as the same path under the root. The container has the security defaults above, an init process, limits of 2 GB, 2 CPUs and 512 processes unless `resources` sets others, and no network unless `network.mode` allows it (`allowedHosts` is refused, as for the Docker executor). Each command leads a process group of its own, and a timeout or an abort signals that group (SIGTERM, then SIGKILL), so background processes go too, while the container keeps running. The image needs `sh`. Starting removes containers of the same root left behind by a process of this machine that is gone. Without Docker the first command fails with a `WorkspaceError` of code `UNAVAILABLE`.
 
 ## Fallback
 

@@ -1,11 +1,21 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { hostname, tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { WorkspaceError, type Workspace, type WorkspaceStat } from '@cogitator-ai/types';
 import {
   DockerWorkspace,
+  MarkerScanner,
+  ownerLabel,
   WORKSPACE_CONTAINER_LABEL,
   WORKSPACE_OWNER_LABEL,
   WORKSPACE_ROOT_LABEL,
@@ -64,9 +74,12 @@ function directoryHost(root: string): Workspace & { disposed: boolean } {
     },
     read: (path) => Promise.resolve(readFileSync(join(root, path), 'utf8')),
     readBytes: unsupported,
-    write: unsupported,
+    async write(path, content) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), content);
+    },
     list: unsupported,
-    exists: unsupported,
+    exists: (path) => Promise.resolve(existsSync(join(root, path))),
     mkdir: unsupported,
     remove: unsupported,
     rename: unsupported,
@@ -238,31 +251,112 @@ describe.skipIf(!docker)('DockerWorkspace with Docker', () => {
     await expect(other.exec('true')).rejects.toMatchObject({ code: 'DISPOSED' });
   }, 120_000);
 
-  it('removes a container of the same root that a process now gone left behind', async () => {
+  it("removes a container of the same root a gone process of this machine left, not a neighbor's", async () => {
     const orphanRoot = realpathSync(mkdtempSync(join(tmpdir(), 'docker-orphan-')));
-    const orphan = await createSandboxContainer(
-      docker as unknown as Docker,
-      'alpine:3.19',
-      {},
-      {
-        labels: {
-          [WORKSPACE_CONTAINER_LABEL]: 'orphan',
-          [WORKSPACE_ROOT_LABEL]: orphanRoot,
-          [WORKSPACE_OWNER_LABEL]: `${hostname()}:999999`,
-        },
-      }
-    );
+    const dead = await ownerLabel(999_999);
+    const neighbor = dead
+      .split('|')
+      .map((part, i) => (i === 2 ? 'pid:[1]' : part))
+      .join('|');
+    const make = (owner: string) =>
+      createSandboxContainer(
+        docker as unknown as Docker,
+        'alpine:3.19',
+        {},
+        {
+          labels: {
+            [WORKSPACE_CONTAINER_LABEL]: 'orphan',
+            [WORKSPACE_ROOT_LABEL]: orphanRoot,
+            [WORKSPACE_OWNER_LABEL]: owner,
+          },
+        }
+      );
+    const orphan = await make(dead);
+    const other = await make(neighbor);
     const fresh = new DockerWorkspace({ host: directoryHost(orphanRoot) });
     try {
       await fresh.start();
       await expect(docker!.getContainer(orphan.id).inspect()).rejects.toThrow();
+      await expect(docker!.getContainer(other.id).inspect()).resolves.toBeDefined();
     } finally {
       await fresh.dispose();
-      await docker!
-        .getContainer(orphan.id)
-        .remove({ force: true })
-        .catch(() => undefined);
+      for (const container of [orphan, other]) {
+        await docker!
+          .getContainer(container.id)
+          .remove({ force: true })
+          .catch(() => undefined);
+      }
       rmSync(orphanRoot, { recursive: true, force: true });
     }
   }, 120_000);
+
+  it('returns when the command exits, stopping or keeping its background processes', async () => {
+    const quick = await workspace.exec('sleep 71 & echo started', { timeout: 60_000 });
+    expect(quick).toMatchObject({ stdout: 'started\n', exitCode: 0, timedOut: false });
+    await vi.waitFor(
+      async () => {
+        const left = await workspace.exec('ps -o args | grep -c "^sleep 71" || true');
+        expect(left.stdout.trim()).toBe('0');
+      },
+      { timeout: 15_000, interval: 200 }
+    );
+    const kept = await workspace.exec('sleep 72 > /dev/null 2>&1 & echo started', {
+      background: 'keep',
+    });
+    expect(kept.exitCode).toBe(0);
+    const alive = await workspace.exec('ps -o args | grep -c "^sleep 72" || true');
+    expect(alive.stdout.trim()).toBe('1');
+    await workspace.exec('pkill -f "sleep 72" || true');
+  }, 60_000);
+
+  it('removes and moves inside the container', async () => {
+    mkdirSync(join(base, 'tree', 'sub'), { recursive: true });
+    await workspace.exec('echo a > tree/sub/a.txt && echo b > b.txt');
+    await expect(workspace.remove('tree')).rejects.toMatchObject({ code: 'NOT_EMPTY' });
+    await expect(workspace.rename('b.txt', 'tree')).rejects.toMatchObject({ code: 'EXISTS' });
+    await workspace.rename('b.txt', '/workspace/tree/sub/b.txt');
+    expect(readFileSync(join(base, 'tree', 'sub', 'b.txt'), 'utf8')).toBe('b\n');
+    const trashed = await workspace.remove('tree', { trash: true });
+    expect(trashed.trashedTo).toMatch(/^\.cogitator\/trash\/.+\/tree$/);
+    expect(readFileSync(join(base, trashed.trashedTo!, 'sub', 'a.txt'), 'utf8')).toBe('a\n');
+    await workspace.remove(trashed.trashedTo!, { recursive: true });
+    await expect(workspace.remove('missing')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(workspace.remove('.cogitator/pending', { recursive: true })).rejects.toMatchObject(
+      { code: 'INVALID_PATH' }
+    );
+    await expect(workspace.remove('../up')).rejects.toMatchObject({ code: 'OUTSIDE_ROOT' });
+  }, 60_000);
+});
+
+describe('MarkerScanner', () => {
+  it('finds the markers anywhere in stderr, split across chunks, and strips only them', () => {
+    const text: string[] = [];
+    const markers: [string, number][] = [];
+    const scanner = new MarkerScanner(
+      'tok',
+      (chunk) => text.push(chunk),
+      (kind, value) => markers.push([kind, value])
+    );
+    const stream =
+      'bash: warning: setlocale: LC_ALL\n__cogitator_tok_pgid:42\nreal error__cogitator_tok_exit:3\n';
+    for (let i = 0; i < stream.length; i += 5) scanner.push(Buffer.from(stream.slice(i, i + 5)));
+    scanner.end();
+    expect(markers).toEqual([
+      ['pgid', 42],
+      ['exit', 3],
+    ]);
+    expect(text.join('')).toBe('bash: warning: setlocale: LC_ALL\nreal error');
+  });
+
+  it('passes on text that only looks like the start of a marker', () => {
+    const text: string[] = [];
+    const scanner = new MarkerScanner(
+      'tok',
+      (chunk) => text.push(chunk),
+      () => undefined
+    );
+    scanner.push(Buffer.from('__cogitator_other_pgid:1\n__cog'));
+    scanner.end();
+    expect(text.join('')).toBe('__cogitator_other_pgid:1\n__cog');
+  });
 });

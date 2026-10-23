@@ -1,5 +1,6 @@
 import { constants, type Stats } from 'node:fs';
 import {
+  access,
   lstat,
   mkdir,
   open,
@@ -8,6 +9,7 @@ import {
   realpath,
   rename,
   rm,
+  rmdir,
   stat,
   unlink,
   type FileHandle,
@@ -30,6 +32,14 @@ import {
   type WorkspaceWriteOptions,
 } from '@cogitator-ai/types';
 import { globMatcher } from './glob';
+import {
+  deletePinned,
+  pinEntry,
+  STAGING_PREFIX,
+  stageInto,
+  unpinEntry,
+  type PinnedEntry,
+} from './placement';
 import { abortError, ProcessGroups, runProcess, type WorkspaceLaunch } from './process';
 
 const DEFAULT_MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -45,6 +55,9 @@ export const WORKSPACE_SERVICE_DIR = '.cogitator';
 /** Where `remove({ trash: true })` moves entries, relative to the root. */
 export const WORKSPACE_TRASH_DIR = `${WORKSPACE_SERVICE_DIR}/trash`;
 const PENDING_DIR = `${WORKSPACE_SERVICE_DIR}/pending`;
+const TEMP_PREFIX = '.cogitator-tmp-';
+const LEFTOVER_AGE = 60 * 60 * 1000;
+const SWEEP_MAX_DIRS = 5_000;
 
 /**
  * Environment variables a command inherits from the process by default: what a shell needs to
@@ -112,6 +125,12 @@ export interface LocalWorkspaceExecConfig {
   maxOutputBytes?: number;
   /** Milliseconds between SIGTERM and SIGKILL when a command is stopped (default: 2000) */
   killGrace?: number;
+  /**
+   * What happens to processes a command started in the background (`&`) once it exits, when the
+   * call does not say (`WorkspaceExecOptions.background`): `kill` (default) or `keep` until
+   * `dispose()`
+   */
+  background?: 'kill' | 'keep';
   /**
    * Changes what is spawned for a command, e.g. to run it under an OS sandbox (`sandbox-exec`,
    * `bwrap`): it gets the program, arguments, directory and environment the workspace would use
@@ -261,6 +280,7 @@ export class LocalWorkspace implements Workspace {
     if (bytes.byteLength > limit) throw tooLarge(path, bytes.byteLength, limit);
     const { absolute, relative: rel } = await this.locate(path, true);
     if (rel === '.') throw new WorkspaceError('NOT_A_FILE', 'The root is not a file', { path });
+    this.refuseInternal(rel, path);
     if (options.createParents ?? true) await this.mkdirAt(dirname(absolute), path);
     if (rel === WORKSPACE_SERVICE_DIR || rel.startsWith(`${WORKSPACE_SERVICE_DIR}/`)) {
       await this.ensureServiceDir();
@@ -271,8 +291,16 @@ export class LocalWorkspace implements Workspace {
       throw ioError(error, path);
     });
     if (existing && !existing.isFile()) throw notAFile(path, existing);
+    if (existing && !options.force) {
+      await access(absolute, constants.W_OK).catch((error: unknown) => {
+        throw new WorkspaceError('DENIED', `${path} is read-only, pass force to replace it`, {
+          path,
+          cause: error,
+        });
+      });
+    }
 
-    const temp = join(dirname(absolute), `.cogitator-tmp-${nanoid(12)}`);
+    const temp = join(dirname(absolute), `${TEMP_PREFIX}${nanoid(12)}`);
     const handle = await this.openVerified(
       temp,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
@@ -291,12 +319,14 @@ export class LocalWorkspace implements Workspace {
         written += bytesWritten;
       }
       if (existing) await handle.chmod(existing.mode & 0o7777);
+      await handle.sync();
       await handle.close();
       await this.verifyParent(absolute, path);
       await rename(temp, absolute).catch((error: unknown) => {
         throw ioError(error, path);
       });
       renamed = true;
+      await syncDirectory(dirname(absolute));
     } finally {
       if (!renamed) {
         await handle.close().catch(() => undefined);
@@ -378,6 +408,7 @@ export class LocalWorkspace implements Workspace {
     if (rel === '.') {
       throw new WorkspaceError('INVALID_PATH', 'The root cannot be removed', { path });
     }
+    this.refuseInternal(rel, path);
     const info = await this.lstatOf(absolute, path);
     if (info.isDirectory() && !options.recursive && (await readdir(absolute)).length > 0) {
       throw new WorkspaceError(
@@ -386,40 +417,42 @@ export class LocalWorkspace implements Workspace {
         { path }
       );
     }
+    const recursive = options.recursive ?? false;
 
-    if (rel === WORKSPACE_SERVICE_DIR) {
-      if (options.trash) {
-        throw new WorkspaceError('INVALID_PATH', 'The trash cannot be moved to the trash', {
-          path,
-        });
-      }
-      await this.verifyParent(absolute, path);
-      await rm(absolute, { recursive: true, force: false }).catch((error: unknown) => {
-        throw ioError(error, path);
-      });
-      return { path: rel };
-    }
-
-    const pinned = await this.pin(absolute, info, path);
     if (options.trash) {
       const stamp = `${new Date().toISOString().replace(/[:.]/g, '-')}-${nanoid(6)}`;
       const trashedTo = `${WORKSPACE_TRASH_DIR}/${stamp}/${rel}`;
       const target = join(this.root, ...trashedTo.split('/'));
+      await this.ensureServiceDir();
       await this.mkdirAt(dirname(target), path);
-      await this.verifyParent(target, path);
-      await rename(pinned.at, target).catch(async (error: unknown) => {
-        await pinned.undo();
+      const targetParent = await this.lstatOf(dirname(target), path);
+      const pinned = await this.pinOrNull(absolute, info, path);
+      if (!pinned) {
+        throw new WorkspaceError('UNSUPPORTED', `${path} is on another device than the trash`, {
+          path,
+        });
+      }
+      try {
+        await stageInto(pinned.at, pinned.kind, target, targetParent, path);
+      } catch (error) {
+        await unpinEntry(pinned, path);
         throw ioError(error, path);
-      });
-      await pinned.release();
+      }
+      await rmdir(pinned.holder).catch(() => undefined);
       return { path: rel, trashedTo };
     }
 
-    await this.verifyParent(pinned.at, path);
-    await rm(pinned.at, { recursive: true, force: false }).catch((error: unknown) => {
+    const pinned = await this.pinOrNull(absolute, info, path);
+    if (!pinned) {
+      await this.removeInPlace(absolute, info, recursive, path);
+      return { path: rel };
+    }
+    try {
+      await deletePinned(pinned, recursive);
+    } catch (error) {
+      await unpinEntry(pinned, path);
       throw ioError(error, path);
-    });
-    await pinned.release();
+    }
     return { path: rel };
   }
 
@@ -429,38 +462,58 @@ export class LocalWorkspace implements Workspace {
     if (source.relative === '.' || target.relative === '.') {
       throw new WorkspaceError('INVALID_PATH', 'The root cannot be moved', { path: from });
     }
+    this.refuseInternal(source.relative, from);
+    this.refuseInternal(target.relative, to);
     if (target.relative === source.relative) return;
     if (target.relative.startsWith(`${source.relative}/`)) {
       throw new WorkspaceError('INVALID_PATH', `${to} is inside ${from}`, { path: to });
     }
     const info = await this.lstatOf(source.absolute, from);
-    const taken = await lstat(target.absolute).then(
-      () => true,
-      () => false
-    );
-    if (taken && !options.overwrite) {
-      throw new WorkspaceError('EXISTS', `${to} already exists`, { path: to });
+    const existing = await lstat(target.absolute).catch(() => undefined);
+    if (existing) {
+      if (!options.overwrite) {
+        throw new WorkspaceError('EXISTS', `${to} already exists`, { path: to });
+      }
+      if (existing.isDirectory() && !info.isDirectory()) {
+        throw new WorkspaceError('NOT_A_FILE', `${to} is a directory`, { path: to });
+      }
+      if (!existing.isDirectory() && info.isDirectory()) {
+        throw new WorkspaceError('NOT_A_DIRECTORY', `${to} is not a directory`, { path: to });
+      }
+      if (existing.isDirectory() && (await readdir(target.absolute)).length > 0) {
+        throw new WorkspaceError('NOT_EMPTY', `${to} is a directory with entries`, { path: to });
+      }
     }
     await this.mkdirAt(dirname(target.absolute), to);
+    const targetParent = await this.lstatOf(dirname(target.absolute), to);
 
-    const pinned = await this.pin(source.absolute, info, from);
-    await this.verifyParent(target.absolute, to).catch(async (error: unknown) => {
-      await pinned.undo();
-      throw error;
-    });
-    await rename(pinned.at, target.absolute).catch(async (error: unknown) => {
-      await pinned.undo();
-      throw ioError(error, from);
-    });
-    const landed = await realpath(dirname(target.absolute)).catch(() => undefined);
-    if (landed !== dirname(target.absolute)) {
-      await rename(target.absolute, pinned.at).catch(() => undefined);
-      await pinned.undo();
-      throw new WorkspaceError('OUTSIDE_ROOT', `${to} changed while it was being moved`, {
-        path: to,
-      });
+    const replaced = existing ? await this.pinOrNull(target.absolute, existing, to) : undefined;
+    if (existing && !replaced) {
+      throw new WorkspaceError('UNSUPPORTED', `${to} is on another device`, { path: to });
     }
-    await pinned.release();
+    const pinned = await this.pinOrNull(source.absolute, info, from).catch(
+      async (error: unknown) => {
+        if (replaced) await unpinEntry(replaced, to);
+        throw error;
+      }
+    );
+    if (!pinned) {
+      if (replaced) await unpinEntry(replaced, to);
+      throw new WorkspaceError(
+        'UNSUPPORTED',
+        `${from} is on another device than the workspace's own directory, move it with a command`,
+        { path: from }
+      );
+    }
+    try {
+      await stageInto(pinned.at, pinned.kind, target.absolute, targetParent, to);
+    } catch (error) {
+      await unpinEntry(pinned, from);
+      if (replaced) await unpinEntry(replaced, to);
+      throw ioError(error, to);
+    }
+    if (replaced) await deletePinned(replaced, false).catch(() => undefined);
+    await rmdir(pinned.holder).catch(() => undefined);
   }
 
   async exec(command: string, options: WorkspaceExecOptions = {}): Promise<WorkspaceExecResult> {
@@ -495,6 +548,7 @@ export class LocalWorkspace implements Workspace {
       timeout,
       maxOutput,
       killGrace: this.execConfig.killGrace ?? DEFAULT_KILL_GRACE,
+      background: options.background ?? this.execConfig.background ?? 'kill',
       groups: this.state.groups,
       signal: options.signal,
       onStdout: options.onStdout,
@@ -543,6 +597,7 @@ export class LocalWorkspace implements Workspace {
         );
       }
       this.state.realRoot = real;
+      void sweepLeftovers(real).catch(() => undefined);
       return real;
     } catch (error) {
       if (error instanceof WorkspaceError) throw error;
@@ -620,43 +675,68 @@ export class LocalWorkspace implements Workspace {
     }
   }
 
+  /** Refuses paths of the workspace's own bookkeeping: `.cogitator` itself and its pending moves. */
+  private refuseInternal(rel: string, path: string): void {
+    if (rel === WORKSPACE_SERVICE_DIR || rel === PENDING_DIR || rel.startsWith(`${PENDING_DIR}/`)) {
+      throw new WorkspaceError('INVALID_PATH', `${path} is the workspace's own directory`, {
+        path,
+      });
+    }
+  }
+
   /**
-   * Moves the entry at `absolute` into `.cogitator/pending/` and checks it is the one `before`
-   * describes. When a parent directory was swapped for a symlink in between, the entry moved is
-   * another one: it goes back where it came from and the operation is refused.
+   * Moves the entry at `absolute` into a fresh holder of `.cogitator/pending/` and checks it is
+   * the one `before` describes (see `pinEntry`). `undefined` when it is on another device.
    */
-  private async pin(
+  private async pinOrNull(
     absolute: string,
-    before: FileIdentity,
+    before: Stats,
     path: string
-  ): Promise<{ at: string; undo: () => Promise<void>; release: () => Promise<void> }> {
+  ): Promise<PinnedEntry | undefined> {
     await this.ensureServiceDir();
-    const holder = join(this.root, ...PENDING_DIR.split('/'), nanoid(12));
-    await this.mkdirAt(holder, path);
-    const at = join(holder, 'entry');
-    const release = () => rm(holder, { recursive: true, force: true }).catch(() => undefined);
-    const undo = async () => {
-      await rename(at, absolute).catch(() => undefined);
-      await release();
-    };
-    await this.verifyParent(absolute, path).catch(async (error: unknown) => {
-      await release();
-      throw error;
+    const pending = join(this.root, ...PENDING_DIR.split('/'));
+    await this.mkdirAt(pending, path);
+    const holder = join(pending, nanoid(12));
+    await mkdir(holder).catch((error: unknown) => {
+      throw ioError(error, path);
     });
+    await this.verifyParent(holder, path);
     try {
-      await rename(absolute, at);
+      await this.verifyParent(absolute, path);
+      const pinned = await pinEntry(absolute, before, holder, this.root, path);
+      if (!pinned) await rmdir(holder).catch(() => undefined);
+      return pinned;
     } catch (error) {
-      await release();
+      await rmdir(holder).catch(() => undefined);
       throw ioError(error, path);
     }
-    const moved = await lstat(at).catch(() => undefined);
-    if (!moved || !sameFile(moved, before)) {
-      await undo();
+  }
+
+  /**
+   * Removes an entry that cannot be moved aside (it is on another device, such as a mount inside
+   * the root): the parent and the entry are checked again right before, a narrower guarantee
+   * than the moved-aside removal.
+   */
+  private async removeInPlace(
+    absolute: string,
+    before: Stats,
+    recursive: boolean,
+    path: string
+  ): Promise<void> {
+    await this.verifyParent(absolute, path);
+    const now = await this.lstatOf(absolute, path);
+    if (!sameFile(now, before)) {
       throw new WorkspaceError('OUTSIDE_ROOT', `${path} changed while it was being resolved`, {
         path,
       });
     }
-    return { at, undo, release };
+    try {
+      if (!now.isDirectory()) await unlink(absolute);
+      else if (recursive) await rm(absolute, { recursive: true, force: false });
+      else await rmdir(absolute);
+    } catch (error) {
+      throw ioError(error, path);
+    }
   }
 
   /** Throws when the parent directory of `absolute` no longer resolves to itself inside the root. */
@@ -761,6 +841,53 @@ async function canonical(
   if (!followFinal || !info.isSymbolicLink()) return here;
   const target = await readlink(here);
   return canonical(resolve(realParent, target), true, hops + 1, given);
+}
+
+/** Flushes a directory's entries to disk, where the platform allows it. */
+async function syncDirectory(dir: string): Promise<void> {
+  try {
+    const handle = await open(dir, constants.O_RDONLY);
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return;
+  }
+}
+
+/**
+ * Removes what an interrupted write or move left behind (`.cogitator-tmp-*`, `.cogitator-place-*`)
+ * when it is older than an hour, and empty holders of `.cogitator/pending/`, walking at most
+ * a few thousand directories and skipping `.git` and `node_modules`.
+ */
+async function sweepLeftovers(root: string): Promise<void> {
+  const cutoff = Date.now() - LEFTOVER_AGE;
+  const queue = [root];
+  let visited = 0;
+  while (queue.length > 0 && visited < SWEEP_MAX_DIRS) {
+    const dir = queue.shift()!;
+    visited++;
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === '.git' || entry.name === 'node_modules') continue;
+        if (dir === join(root, ...PENDING_DIR.split('/'))) {
+          await rmdir(full).catch(() => undefined);
+          continue;
+        }
+        if (!entry.name.startsWith(STAGING_PREFIX)) queue.push(full);
+        continue;
+      }
+      if (!entry.name.startsWith(TEMP_PREFIX) && !entry.name.startsWith(STAGING_PREFIX)) continue;
+      const info = await lstat(full).catch(() => undefined);
+      if (info && !info.isDirectory() && info.mtimeMs < cutoff) {
+        await unlink(full).catch(() => undefined);
+      }
+    }
+  }
 }
 
 async function readAtMost(handle: FileHandle, limit: number, path: string): Promise<Uint8Array> {
@@ -869,8 +996,16 @@ function ioError(error: unknown, path: string): WorkspaceError {
     case 'EPERM':
       return new WorkspaceError('DENIED', `${path}: permission denied`, { path, cause: error });
     case 'EINVAL':
-      return new WorkspaceError('INVALID_PATH', `${path}: ${message}`, { path, cause: error });
+      return new WorkspaceError('INVALID_PATH', `${path}: invalid operation`, {
+        path,
+        cause: error,
+      });
+    case 'EXDEV':
+      return new WorkspaceError('UNSUPPORTED', `${path}: crosses a device boundary`, {
+        path,
+        cause: error,
+      });
     default:
-      return new WorkspaceError('IO', `${path}: ${message}`, { path, cause: error });
+      return new WorkspaceError('IO', `${path}: ${code ?? message}`, { path, cause: error });
   }
 }
