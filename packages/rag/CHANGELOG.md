@@ -1,5 +1,11 @@
 # @cogitator-ai/rag
 
+## 0.9.0
+
+### Minor Changes
+
+- [#274](https://github.com/cogitator-ai/Cogitator-AI/pull/274) [`ecf5b2e`](https://github.com/cogitator-ai/Cogitator-AI/commit/ecf5b2e43e2412156dc606b9994ca0d8126fe492) Thanks [@rahul05ranjan](https://github.com/rahul05ranjan)! - Add a `JSONLLoader` for `.jsonl` / `.ndjson` files: one document per line, blank lines skipped, a parse error naming the file and the 1-based line number, and the same `contentField` / `metadataFields` options as `JSONLoader`.
+
 ## 0.8.18
 
 ### Patch Changes

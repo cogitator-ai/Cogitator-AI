@@ -75,6 +75,28 @@ If no content field is found, the entire object is serialized as the document co
 
 Auto-detected content fields (in order): `content`, `text`, `body`.
 
+## JSONLLoader
+
+Loads JSON Lines files (`.jsonl`, `.ndjson`): one document per line. Blank lines are skipped, and a line that does not parse fails the load naming the file and its 1-based line number. `contentField` and `metadataFields` work exactly as in `JSONLoader`.
+
+```typescript
+import { JSONLLoader } from '@cogitator-ai/rag';
+
+const loader = new JSONLLoader({
+  contentField: 'description',
+  metadataFields: ['category', 'author'],
+});
+
+const docs = await loader.load('./data/chat-log.jsonl');
+```
+
+Documents keep `sourceType: 'json'` and their ids are stable across loads of the same file, one per line.
+
+| Option           | Type     | Default | Description                            |
+| ---------------- | -------- | ------- | -------------------------------------- |
+| `contentField`   | string   | auto    | Field name to use as document content  |
+| `metadataFields` | string[] | —       | Fields to extract as document metadata |
+
 ## CSVLoader
 
 Loads CSV files. Each row becomes a separate document. Requires `papaparse` as a peer dependency.

@@ -69,6 +69,7 @@ Every stored chunk carries the document's loader metadata (e.g. Markdown frontma
 | `TextLoader`     | `.txt`                | —            | Files and directories                                  |
 | `MarkdownLoader` | `.md`, `.mdx`         | —            | Optional frontmatter -> metadata                       |
 | `JSONLoader`     | `.json`               | —            | Configurable content field                             |
+| `JSONLLoader`    | `.jsonl`, `.ndjson`   | —            | One document per line, blank lines skipped             |
 | `CSVLoader`      | `.csv`                | `papaparse`  | Column selection, `row` number in metadata             |
 | `HTMLLoader`     | `.html`, `.htm`       | `cheerio`    | CSS selector, scripts/styles removed, block-aware text |
 | `PDFLoader`      | `.pdf`                | `pdf-parse`  | Whole document or one document per page                |
@@ -107,13 +108,21 @@ const loader = new WebLoader({
 Responses are decompressed (gzip, deflate, br), decoded using the declared charset, and limited to `maxResponseBytes` (50MB by default). A page over the limit fails the load, or with `onTooLarge: 'truncate'` loads its first `maxResponseBytes` and is marked `truncated: true` in its metadata. That keeps a page over the limit from failing, but its first part holds the text only when the page puts it there, and many news pages put megabytes of scripts before their article, so keep the limit above the pages you load. Non-text content types are rejected.
 
 ```typescript
-import { MarkdownLoader, WebLoader, CSVLoader, PDFLoader, JSONLoader } from '@cogitator-ai/rag';
+import {
+  MarkdownLoader,
+  WebLoader,
+  CSVLoader,
+  PDFLoader,
+  JSONLoader,
+  JSONLLoader,
+} from '@cogitator-ai/rag';
 
 const md = new MarkdownLoader({ stripFrontmatter: true });
 const web = new WebLoader({ selector: 'article' });
 const csv = new CSVLoader({ contentColumn: 'body', metadataColumns: ['title'] });
 const pdf = new PDFLoader({ splitPages: true }); // one document per page
 const json = new JSONLoader({ contentField: 'text' });
+const jsonl = new JSONLLoader({ contentField: 'text' });
 ```
 
 A pipeline has one loader; use `withChunker()` / `withRetriever()` on the builder to replace the chunker or retriever the config would create.

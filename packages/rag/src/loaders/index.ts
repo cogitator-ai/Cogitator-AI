@@ -3,6 +3,8 @@ export { MarkdownLoader } from './markdown-loader.js';
 export type { MarkdownLoaderOptions } from './markdown-loader.js';
 export { JSONLoader } from './json-loader.js';
 export type { JSONLoaderOptions } from './json-loader.js';
+export { JSONLLoader } from './jsonl-loader.js';
+export type { JSONLLoaderOptions } from './jsonl-loader.js';
 export { CSVLoader } from './csv-loader.js';
 export type { CSVLoaderOptions } from './csv-loader.js';
 export { HTMLLoader } from './html-loader.js';
