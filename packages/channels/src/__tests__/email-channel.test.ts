@@ -1591,60 +1591,43 @@ describe('IMAP reading', () => {
 });
 
 describe('time it takes', () => {
-  const fastest = (work: () => unknown) => {
-    let best = Infinity;
-    for (let run = 0; run < 3; run++) {
-      const started = performance.now();
-      work();
-      best = Math.min(best, performance.now() - started);
+  /** Bytes of hostile input: a linear pass takes milliseconds, a quadratic one minutes */
+  const MEGABYTE = 1_000_000;
+  const BOUND_MS = 3000;
+
+  const repeated = (unit: string) => unit.repeat(Math.floor(MEGABYTE / unit.length));
+  const lines = (line: string) =>
+    Array.from({ length: Math.floor(MEGABYTE / (line.length + 1)) }, () => line).join('\n');
+  const elapsed = (work: () => unknown) => {
+    const started = performance.now();
+    work();
+    return performance.now() - started;
+  };
+
+  it('reads a megabyte of hostile HTML in linear time', { timeout: 60_000 }, () => {
+    for (const unit of ['<a', '<!--', '<a href="', '\n> ']) {
+      expect(elapsed(() => htmlToText(`${repeated(unit)}x`))).toBeLessThan(BOUND_MS);
     }
-    return best;
-  };
-
-  /**
-   * Whether `work` on four times the input takes about four times as long, not sixteen: the
-   * ratio holds on a loaded machine, where a fixed number of milliseconds does not
-   */
-  const linear = (
-    input: (size: number) => string,
-    work: (text: string) => unknown,
-    size: number
-  ) => {
-    const small = input(size);
-    const large = input(size * 4);
-    work(small);
-    const ratio =
-      fastest(() => work(large)) /
-      Math.max(
-        fastest(() => work(small)),
-        1
-      );
-    expect(ratio).toBeLessThan(9);
-  };
-
-  it('reads hostile HTML in linear time', { timeout: 60_000 }, () => {
-    linear((n) => '<a'.repeat(n), htmlToText, 50_000);
-    linear((n) => '<!--'.repeat(n), htmlToText, 25_000);
-    linear((n) => '<a href="'.repeat(n), htmlToText, 10_000);
-    linear((n) => `${'\n> '.repeat(n)}x`, htmlToText, 30_000);
-    linear((n) => '[a]('.repeat(n), markdownToHtml, 5_000);
+    expect(elapsed(() => markdownToHtml(repeated('[a](')))).toBeLessThan(BOUND_MS);
   });
 
-  it('strips quotes of hostile text in linear time', { timeout: 60_000 }, () => {
-    linear((n) => `${'a@'.repeat(n)}.`, stripQuotedReply, 2_000);
-    linear((n) => `${Array(n).fill('> a@b.co:').join('\n')}\nx`, stripQuotedReply, 5_000);
-    linear((n) => `${Array(n).fill('ann@example.com:').join('\n')}\n> q`, stripQuotedReply, 5_000);
+  it('strips quotes of a megabyte of hostile text in linear time', { timeout: 60_000 }, () => {
+    expect(elapsed(() => stripQuotedReply(`${repeated('a@')}.`))).toBeLessThan(BOUND_MS);
+    expect(elapsed(() => stripQuotedReply(`${lines('> a@b.co:')}\nx`))).toBeLessThan(BOUND_MS);
+    expect(elapsed(() => stripQuotedReply(`${lines('ann@example.com:')}\n> q`))).toBeLessThan(
+      BOUND_MS
+    );
   });
 
   it(
-    'renders deep nesting and huge paragraphs without overflowing or stalling',
+    'renders deep nesting and a megabyte of open emphasis without overflowing or stalling',
     { timeout: 60_000 },
     () => {
       expect(() => markdownToHtml(`${'> '.repeat(30_000)}x`)).not.toThrow();
       const nested = Array.from({ length: 2000 }, (_, k) => `${' '.repeat(k * 2)}- a`).join('\n');
       expect(() => markdownToHtml(nested)).not.toThrow();
-      linear((n) => '**a '.repeat(n), markdownToHtml, 25_000);
-      linear((n) => '['.repeat(n), markdownToHtml, 100_000);
+      expect(elapsed(() => markdownToHtml(repeated('**a ')))).toBeLessThan(BOUND_MS);
+      expect(elapsed(() => markdownToHtml(repeated('[')))).toBeLessThan(BOUND_MS);
     }
   );
 
