@@ -1,0 +1,16 @@
+---
+'@cogitator-ai/types': minor
+'@cogitator-ai/core': minor
+'@cogitator-ai/sandbox': minor
+'create-cogitator-app': minor
+---
+
+Workspaces: one directory an agent works in, with file access and commands that cannot leave it, locally or in a Docker container, and long tool results saved there instead of lost.
+
+- `Workspace` (types) is the interface: `id`, `root` and `cwd`, `read`, `readBytes` and `write` with size limits, `list({ recursive, glob })`, `stat`, `exists`, `mkdir`, `rename`, `remove({ recursive, trash })`, `exec(command, { cwd, env, timeout, signal, onStdout, onStderr })`, `contains`, `start` and `dispose`, and optional `snapshot` and `restore`. Paths are relative to the root, and a path that resolves outside it (`..`, an absolute path elsewhere, a symlink out, also a dangling one or one a command created) fails with a `WorkspaceError` of code `OUTSIDE_ROOT`. Every failure is a `WorkspaceError` with a typed `code`.
+- `LocalWorkspace` (core) works in a directory of this machine. Files are opened with `O_NOFOLLOW` and checked again once open, so a symlink swapped in between the check and the open is refused. Commands run with `spawn` in the root or `cwd`, inherit only the environment a shell needs (no API keys), stream their output, keep at most 1 MiB of each stream, and are killed with their whole process group on a timeout or an abort. `remove(path, { trash: true })` moves entries to `.cogitator/trash/<time>/`. Hard links to files outside the root, and commands themselves, are not confined: the docs say what the guard covers.
+- `DockerWorkspace` (sandbox) runs the commands of a host workspace in one long-lived container, created in `start()` and removed in `dispose()`, with the host root bind-mounted at `/workspace`, files read and written through the host workspace and its guard, the sandbox's security defaults, no network unless `network.mode` allows it, and the command's process tree killed on a timeout or an abort. Without Docker, `start()` fails with code `UNAVAILABLE`. `createSandboxContainer` is the container setup it shares with the pool.
+- `AgentConfig.workspace` and `RunOptions.workspace` (the run's wins) reach tools as `context.workspace`, `invokeTool` takes `workspace` too. The runtime only uses a workspace, whoever created it starts and disposes it.
+- `workspaceTools(workspace?, options?)` (core) gives an agent `read_file` with line ranges, `write_file`, `edit_file` (exact replacement of a unique string, or `replaceAll`), `list_files`, `glob`, `grep` (binary and large files skipped, capped matches) and `exec`, each using the given workspace or the run's. `exec` asks for approval by default. The global file tools, `exec` and `restrictFileTools` are unchanged.
+- A tool result longer than the model may read is saved in full to `.cogitator/tool-results/<runId>/<toolCallId>.txt` when the run has a workspace, and the model gets the cut preview with the path and how to page through it with `read_file`. Without a workspace, or when saving fails (logged), the result is only cut, as before. `toolResultPath()` gives the path.
+- The assistant preset of `create-cogitator-app` now builds its workspace tools on `LocalWorkspace` and `workspaceTools`: `read_file`, `list_files`, `glob` and `grep` freely, `write_file` and `edit_file` after approval.

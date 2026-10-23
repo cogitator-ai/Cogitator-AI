@@ -106,6 +106,8 @@ export {
   createSchedulerTools,
   restrictFileTools,
   isPathAllowed,
+  workspaceTools,
+  WORKSPACE_TOOL_NAMES,
   createCapabilitiesTool,
   recallToolOutputTool,
   isRecallToolOutput,
@@ -123,6 +125,8 @@ export type {
   CoreFactsLike,
   SchedulerToolsConfig,
   RestrictFileToolsOptions,
+  WorkspaceToolName,
+  WorkspaceToolsOptions,
   WebScrapeOptions,
   HttpRequestToolOptions,
   WebSearchOptions,
@@ -133,6 +137,25 @@ export type {
   SearchResult,
   SearchResponse,
 } from './tools/index';
+export {
+  LocalWorkspace,
+  WORKSPACE_TRASH_DIR,
+  WORKSPACE_INHERITED_ENV,
+  globMatcher,
+  type LocalWorkspaceOptions,
+  type LocalWorkspaceExecConfig,
+} from './workspace/index';
+export { WorkspaceError } from '@cogitator-ai/types';
+export { toolResultPath, TOOL_RESULTS_DIR } from './cogitator/tool-executor';
+export type {
+  Workspace,
+  WorkspaceErrorCode,
+  WorkspaceEntry,
+  WorkspaceStat,
+  WorkspaceExecOptions,
+  WorkspaceExecResult,
+  WorkspaceSnapshot,
+} from '@cogitator-ai/types';
 export {
   RobotsPolicy,
   robotsRulesFor,

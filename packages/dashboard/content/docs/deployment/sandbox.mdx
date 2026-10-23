@@ -195,6 +195,30 @@ await pool.release(container, { corrupted: true });
 
 `reuseContainers: true` (`pool.reuseContainers` on the manager or executor) returns a released container to the pool as it is, the older behaviour: faster, but whatever one execution leaves in the container is visible to the next, including other runs and users. Releasing with `corrupted: true` always destroys the container.
 
+## DockerWorkspace
+
+The executors above start a fresh container for every execution. An agent that works on a project needs one container that keeps its state between commands (installed packages, build output), with the project's files mounted. `DockerWorkspace` is that: a [workspace](/docs/tools/workspace) whose commands run with `docker exec` in one long-lived container, created in `start()` and removed in `dispose()`.
+
+```typescript
+import { LocalWorkspace, workspaceTools } from '@cogitator-ai/core';
+import { DockerWorkspace } from '@cogitator-ai/sandbox';
+
+const workspace = new DockerWorkspace({
+  host: new LocalWorkspace({ root: './project' }),
+  image: 'node:24-alpine',
+  resources: { memory: '1GB', cpus: 2 },
+  network: { mode: 'none' },
+});
+await workspace.start();
+try {
+  await cog.run(agent, { input: 'Run the tests and fix what fails', workspace });
+} finally {
+  await workspace.dispose();
+}
+```
+
+The host workspace's root is bind-mounted at `/workspace`. Files are read and written on the host through the host workspace and its path guard, so a symlink a command creates to a path outside the root is refused when read. The container has the security defaults above and no network unless `network.mode` allows it (`allowedHosts` is refused, as for the Docker executor). A timeout or an abort kills the command and every process it started, found by a marker in their environment, and the container keeps running. Without Docker `start()` fails with a `WorkspaceError` of code `UNAVAILABLE`.
+
 ## Fallback
 
 `SandboxManager` falls back in one case only:

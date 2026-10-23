@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import type {
@@ -14,6 +16,7 @@ import { Cogitator } from '../cogitator';
 import { tool } from '../tool';
 import { defineSkill } from '../skill';
 import { getLogger } from '../logger';
+import { LocalWorkspace } from '../workspace/local-workspace';
 import {
   AGENT_CONFIG_WIRE_FIELDS,
   AgentWireError,
@@ -93,6 +96,8 @@ function project(key: keyof AgentConfig, config: AgentConfig): unknown {
       return AGENT_CONFIG_WIRE_FIELDS.skills;
     case 'middleware':
       return AGENT_CONFIG_WIRE_FIELDS.middleware;
+    case 'workspace':
+      return AGENT_CONFIG_WIRE_FIELDS.workspace;
     case 'responseFormat': {
       const format = config.responseFormat;
       return format?.type === 'json_schema'
@@ -165,6 +170,7 @@ describe('agent wire format', () => {
       onIterationLimit: 'stop',
       timeout: 600000,
       middleware: [{ name: 'audit', afterModel: () => undefined }],
+      workspace: new LocalWorkspace({ root: join(tmpdir(), 'wire-workspace'), create: false }),
     };
     const original = new Agent(full);
 

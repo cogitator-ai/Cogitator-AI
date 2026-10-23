@@ -160,41 +160,7 @@ export class ContainerPool {
     image: string,
     options: ContainerCreateOptions
   ): Promise<DockerContainer> {
-    try {
-      await this.docker.getImage(image).inspect();
-    } catch {
-      await new Promise<void>((resolve, reject) => {
-        this.docker.pull(image, (err: Error | null, stream: NodeJS.ReadableStream) => {
-          if (err) return reject(err);
-          this.docker.modem.followProgress(stream, (progressErr) => {
-            if (progressErr) reject(progressErr);
-            else resolve();
-          });
-        });
-      });
-    }
-
-    const binds = options.mounts?.map((m) => `${m.source}:${m.target}${m.readOnly ? ':ro' : ''}`);
-
-    const container = await this.docker.createContainer({
-      Image: image,
-      Cmd: ['sleep', 'infinity'],
-      User: options.user,
-      Labels: { [SANDBOX_CONTAINER_LABEL]: 'true' },
-      HostConfig: {
-        Memory: options.memory,
-        NanoCpus: options.cpus ? cpusToNanoCpus(options.cpus) : undefined,
-        CpuShares: options.cpuShares,
-        PidsLimit: options.pidsLimit ?? 100,
-        NetworkMode: options.networkMode ?? 'none',
-        Dns: options.dns?.length ? options.dns : undefined,
-        Binds: binds,
-        SecurityOpt: ['no-new-privileges'],
-        CapDrop: ['ALL'],
-        ReadonlyRootfs: false,
-      },
-      WorkingDir: '/workspace',
-    });
+    const container = await createSandboxContainer(this.docker, image, options);
 
     try {
       await container.start();
@@ -259,4 +225,52 @@ export class ContainerPool {
     await Promise.all(containers.map((container) => this.destroyContainer(container)));
     await Promise.all([...this.pendingDestroys]);
   }
+}
+
+/**
+ * A hardened container for sandboxed executions, created (not started) from `image`, which is
+ * pulled first when missing: no capabilities, no new privileges, a PID limit, no network unless
+ * asked for, idling on `sleep infinity` for `docker exec` to run commands in it.
+ */
+export async function createSandboxContainer(
+  docker: Docker,
+  image: string,
+  options: ContainerCreateOptions,
+  extra: { labels?: Record<string, string>; workingDir?: string } = {}
+): Promise<DockerContainer> {
+  try {
+    await docker.getImage(image).inspect();
+  } catch {
+    await new Promise<void>((resolve, reject) => {
+      docker.pull(image, (err: Error | null, stream: NodeJS.ReadableStream) => {
+        if (err) return reject(err);
+        docker.modem.followProgress(stream, (progressErr) => {
+          if (progressErr) reject(progressErr);
+          else resolve();
+        });
+      });
+    });
+  }
+
+  const binds = options.mounts?.map((m) => `${m.source}:${m.target}${m.readOnly ? ':ro' : ''}`);
+
+  return docker.createContainer({
+    Image: image,
+    Cmd: ['sleep', 'infinity'],
+    User: options.user,
+    Labels: { [SANDBOX_CONTAINER_LABEL]: 'true', ...extra.labels },
+    HostConfig: {
+      Memory: options.memory,
+      NanoCpus: options.cpus ? cpusToNanoCpus(options.cpus) : undefined,
+      CpuShares: options.cpuShares,
+      PidsLimit: options.pidsLimit ?? 100,
+      NetworkMode: options.networkMode ?? 'none',
+      Dns: options.dns?.length ? options.dns : undefined,
+      Binds: binds,
+      SecurityOpt: ['no-new-privileges'],
+      CapDrop: ['ALL'],
+      ReadonlyRootfs: false,
+    },
+    WorkingDir: extra.workingDir ?? '/workspace',
+  });
 }

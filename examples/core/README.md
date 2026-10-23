@@ -9,7 +9,7 @@ pnpm install && pnpm build
 cp .env.example .env  # add GOOGLE_API_KEY at minimum
 ```
 
-`17-provider-surface.ts` to `21-run-middleware.ts` need no API key: they run on a local Ollama (`OLLAMA_URL`, model `OLLAMA_MODEL`, default `qwen2.5:0.5b`). `18-tool-contract.ts` runs its sandboxed command in Docker when Docker is up, on the host otherwise.
+`17-provider-surface.ts` to `22-workspace.ts` need no API key: they run on a local Ollama (`OLLAMA_URL`, model `OLLAMA_MODEL`, default `qwen2.5:0.5b`). `18-tool-contract.ts` runs its sandboxed command in Docker when Docker is up, on the host otherwise.
 
 ## Examples
 
@@ -36,6 +36,7 @@ cp .env.example .env  # add GOOGLE_API_KEY at minimum
 | 19  | `19-model-fallback.ts`    | `fallbackModels`, circuit breakers, every failed attempt reported  |
 | 20  | `20-tool-deps.ts`         | Typed per-request `deps` for tools, kept out of the prompt         |
 | 21  | `21-run-middleware.ts`    | Middleware around model and tool calls, tripwire guards            |
+| 22  | `22-workspace.ts`         | A workspace for files and commands, long tool results saved there  |
 
 ## Running
 

@@ -1,4 +1,12 @@
 {
   "title": "Tools",
-  "pages": ["built-in", "wasm-tools", "custom-tools", "approvals", "agent-as-tool", "tool-caching"]
+  "pages": [
+    "built-in",
+    "workspace",
+    "wasm-tools",
+    "custom-tools",
+    "approvals",
+    "agent-as-tool",
+    "tool-caching"
+  ]
 }

@@ -7,6 +7,7 @@ import type { Skill } from './skill';
 import type { ZodType } from 'zod';
 import type { ReasoningConfig } from './llm';
 import type { RunMiddleware } from './middleware';
+import type { Workspace } from './workspace';
 
 /**
  * An agent's configuration. `TDeps` is the type of the `deps` its runs pass (`RunOptions.deps`):
@@ -63,6 +64,12 @@ export interface AgentConfig<TDeps = unknown> {
    * brings its own.
    */
   middleware?: RunMiddleware<TDeps>[];
+  /**
+   * The directory this agent's tools work in: they get it as `context.workspace`, and a tool
+   * result too long for the model is saved there in full. `RunOptions.workspace` wins over it.
+   * The agent only uses it: whoever created the workspace starts and disposes it
+   */
+  workspace?: Workspace;
 }
 
 /** A model to fall back to: `provider/model`, or a model name with the provider to run it on. */

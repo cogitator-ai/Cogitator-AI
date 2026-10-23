@@ -49,3 +49,4 @@ export * from './feed';
 export * from './decision';
 export * from './skill';
 export * from './web';
+export * from './workspace';

@@ -47,6 +47,13 @@ export { createSchedulerTools, type SchedulerToolsConfig } from './scheduler-too
 
 export { restrictFileTools, isPathAllowed, type RestrictFileToolsOptions } from './path-guard';
 
+export {
+  workspaceTools,
+  WORKSPACE_TOOL_NAMES,
+  type WorkspaceToolName,
+  type WorkspaceToolsOptions,
+} from './workspace-tools';
+
 export { createCapabilitiesTool } from './capabilities-tool';
 
 export {

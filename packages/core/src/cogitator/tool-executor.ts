@@ -7,6 +7,7 @@ import type {
   ToolCallRequest,
   ToolContext,
   ToolResult,
+  Workspace,
 } from '@cogitator-ai/types';
 import { ToolRegistry } from '../registry';
 import { getLogger } from '../logger';
@@ -21,6 +22,7 @@ import { isTripwire } from '../middleware/tripwire';
 import {
   DEFAULT_TOOL_RESULT_MAX_LENGTH,
   toolPartsToMessageContent,
+  toolPartsToText,
   toolResultParts,
   truncateToolResultText,
 } from '../tool-content';
@@ -32,6 +34,7 @@ type ExtraToolContext = Record<string, unknown> & {
   channelId?: string;
   topicId?: string;
   conversationId?: string;
+  workspace?: Workspace;
 };
 
 /** One tool call of a run, or of `invokeTool()`, and what it runs with. */
@@ -443,4 +446,66 @@ export function createToolMessage(
     toolCallId: toolCall.id,
     name: toolCall.name,
   };
+}
+
+/** Where a run's tool results too long for the model are saved in full, relative to the workspace root. */
+export const TOOL_RESULTS_DIR = '.cogitator/tool-results';
+
+/** Where the run's workspace keeps one tool result: `.cogitator/tool-results/<runId>/<toolCallId>.txt`. */
+export function toolResultPath(runId: string, toolCallId: string): string {
+  return `${TOOL_RESULTS_DIR}/${pathSegment(runId)}/${pathSegment(toolCallId)}.txt`;
+}
+
+/**
+ * The message that answers a tool call, as {@link createToolMessage} makes it, except that a
+ * result longer than `maxLength` is saved in full to `offload.workspace` first (see
+ * {@link toolResultPath}): the model gets the cut preview and a note with the path and how to
+ * page through it with `read_file`. Without a workspace, for an error, and when saving fails
+ * (logged), the result is only cut.
+ */
+export async function createToolMessageWithOffload(
+  toolCall: ToolCall,
+  result: ToolResult,
+  maxLength = DEFAULT_TOOL_RESULT_MAX_LENGTH,
+  offload?: { workspace: Workspace; runId: string }
+): Promise<Message> {
+  if (!offload || result.error || !Number.isFinite(maxLength)) {
+    return createToolMessage(toolCall, result, maxLength);
+  }
+  const parts = toolResultParts(result.result);
+  const modelText = parts
+    ? toolPartsToText(parts.filter((part) => part.type !== 'image'))
+    : JSON.stringify(result.result ?? null);
+  if (modelText.length <= maxLength) return createToolMessage(toolCall, result, maxLength);
+
+  const full = parts
+    ? toolPartsToText(parts)
+    : typeof result.result === 'string'
+      ? result.result
+      : JSON.stringify(result.result ?? null, null, 2);
+  const path = toolResultPath(offload.runId, toolCall.id);
+  try {
+    await offload.workspace.write(path, full);
+  } catch (error) {
+    getLogger().warn('Could not save a long tool result to the workspace, it is only cut', {
+      tool: toolCall.name,
+      path,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return createToolMessage(toolCall, result, maxLength);
+  }
+
+  const lines = full.length === 0 ? 0 : full.split('\n').length;
+  const note = `[The full result (${full.length} characters, ${lines} lines) is saved in the workspace at ${path}. Read it with read_file, using offset and limit to page through the lines.]`;
+  const message = createToolMessage(toolCall, result, Math.max(1, maxLength - note.length - 2));
+  const content: MessageContent =
+    typeof message.content === 'string'
+      ? `${message.content}\n\n${note}`
+      : [...message.content, { type: 'text', text: note }];
+  return { ...message, content };
+}
+
+function pathSegment(value: string): string {
+  const safe = value.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '_');
+  return safe.length > 0 ? safe.slice(0, 128) : '_';
 }

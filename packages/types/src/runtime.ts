@@ -24,6 +24,7 @@ import type { DeployConfig } from './deploy';
 import type { DecisionBackend } from './decision';
 import type { ContextManagerConfig } from './context';
 import type { RunMiddleware } from './middleware';
+import type { Workspace } from './workspace';
 import type { LoggingConfig } from './logging';
 import type { ABTestStore, ABTestVariant, InstructionVersionStore } from './prompt-optimization';
 
@@ -237,6 +238,14 @@ export interface RunOptions<TDeps = unknown> {
    * the agent declares its deps type (`new Agent<Deps>(...)`)
    */
   deps?: TDeps;
+  /**
+   * The workspace for this run, instead of the agent's `workspace`: tools get it as
+   * `context.workspace`, and a tool result too long for the model is saved there in full, the
+   * model gets a preview and the path to read the rest from. Like `deps` it is not kept in a
+   * paused run's checkpoint, so pass it again to `resume()`. The run only uses it, whoever
+   * created it starts and disposes it
+   */
+  workspace?: Workspace;
   threadId?: string;
   timeout?: number;
   /** Abort signal for cancelling the run. */
@@ -433,7 +442,10 @@ export interface ToolInvocationAgent {
   readonly id: string;
   readonly name: string;
   readonly model: string | undefined;
-  readonly config: { readonly middleware?: readonly RunMiddleware[] };
+  readonly config: {
+    readonly middleware?: readonly RunMiddleware[];
+    readonly workspace?: Workspace;
+  };
 }
 
 /** Options of one tool call made outside an agent run, see `ToolInvoker`. */
@@ -468,6 +480,8 @@ export interface ToolInvocationOptions {
    * `deps` for the tool, as a run passes them (`RunOptions.deps`)
    */
   deps?: unknown;
+  /** The workspace the tool gets as `context.workspace` (default: the `agent`'s workspace) */
+  workspace?: Workspace;
   /**
    * Decides a call that needs approval (`requiresApproval`, or the guardrails), as
    * `RunOptions.onApproval` does in a run. Without it `guardrails.onToolApproval` decides. A call

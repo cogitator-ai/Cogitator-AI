@@ -4,6 +4,7 @@
 
 import type { ZodType } from 'zod';
 import type { SandboxConfig } from './sandbox';
+import type { Workspace } from './workspace';
 
 export type ToolCategory =
   | 'math'
@@ -142,6 +143,11 @@ export interface BaseToolContext<TDeps = unknown> {
    * memory, so a resumed run passes them again
    */
   deps?: TDeps;
+  /**
+   * The workspace of the run (`RunOptions.workspace`, else the agent's `workspace`), for tools
+   * that read, write or run commands in it, see `workspaceTools()`
+   */
+  workspace?: Workspace;
 }
 
 /**

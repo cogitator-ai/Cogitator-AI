@@ -5,20 +5,17 @@ import { cogitatorVersion, VERSIONS } from '../versions.js';
 import type { FeatureModule } from './types.js';
 
 const WORKSPACE_TS = code`
-  import { mkdirSync } from 'node:fs';
-  import { resolve } from 'node:path';
-  import { fileDelete, fileExists, fileList, fileRead, fileWrite, restrictFileTools } from '@cogitator-ai/core';
+  import { LocalWorkspace, workspaceTools as workspaceToolSet } from '@cogitator-ai/core';
 
   /**
    * File tools confined to \`root\`: paths are relative to it, nothing outside it
-   * is reachable (symlinks included), and writing or deleting waits for approval.
+   * is reachable (symlinks included), and writing or editing waits for approval.
    */
   export function createWorkspaceTools(root: string) {
-    const workspace = resolve(root);
-    mkdirSync(workspace, { recursive: true });
-    return restrictFileTools([fileRead, fileList, fileExists, fileWrite, fileDelete], [workspace], {
-      base: workspace,
-      requireApproval: (tool) => tool.sideEffects?.includes('filesystem') ?? false,
+    const workspace = new LocalWorkspace({ root });
+    return workspaceToolSet(workspace, {
+      tools: ['read_file', 'list_files', 'glob', 'grep', 'write_file', 'edit_file'],
+      requireApproval: (name) => name === 'write_file' || name === 'edit_file',
     });
   }
 
@@ -111,7 +108,7 @@ const SCHEDULER_TS = code`
 `;
 
 const HARNESS_TEST_TS = code`
-  import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+  import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
   import { tmpdir } from 'node:os';
   import { join } from 'node:path';
   import { Agent } from '@cogitator-ai/core';
@@ -134,7 +131,7 @@ const HARNESS_TEST_TS = code`
 
   function writeCall(path: string) {
     return {
-      toolCalls: [{ id: 'call-1', name: 'file_write', arguments: { path, content: 'hello' } }],
+      toolCalls: [{ id: 'call-1', name: 'write_file', arguments: { path, content: 'hello' } }],
       finishReason: 'tool_calls' as const,
     };
   }
@@ -167,19 +164,19 @@ const HARNESS_TEST_TS = code`
 
     it('cannot reach outside the workspace, also through a symlink', async () => {
       const workspace = join(dir, 'workspace');
-      const [fileRead] = createWorkspaceTools(workspace);
+      const [readFile] = createWorkspaceTools(workspace);
+      mkdirSync(workspace, { recursive: true });
       symlinkSync(dir, join(workspace, 'escape'));
 
       for (const path of ['../secret.txt', '/etc/passwd', 'escape/secret.txt']) {
-        const result = (await fileRead.execute({ path }, context)) as { error?: string };
-        expect(result.error, path).toContain('Access denied');
+        await expect(readFile.execute({ path }, context), path).rejects.toThrow('outside the workspace');
       }
     });
 
-    it('asks before writing and deleting, never before reading', () => {
+    it('asks before writing and editing, never before reading', () => {
       const tools = createWorkspaceTools(join(dir, 'workspace'));
       const needApproval = tools.filter((tool) => tool.requiresApproval).map((tool) => tool.name);
-      expect(needApproval.sort()).toEqual(['file_delete', 'file_write']);
+      expect(needApproval.sort()).toEqual(['edit_file', 'write_file']);
     });
   });
 
@@ -228,7 +225,7 @@ export const harnessFeature: FeatureModule = {
         secret: false,
       })
       .instruct(
-        'You have a workspace for files: read them freely, and know that writing or deleting needs the user to approve it.'
+        'You have a workspace for files: read and search them freely (read_file, list_files, glob, grep), and know that writing or editing them needs the user to approve it.'
       )
       .instruct(
         'Remember lasting facts about the user with remember_fact, and schedule reminders and recurring work with schedule_task.'
@@ -239,7 +236,7 @@ export const harnessFeature: FeatureModule = {
     project.section(
       'Assistant harness',
       code`
-        - \`src/harness/workspace.ts\`: file tools confined to \`workspace/\` (\`WORKSPACE_DIR\`) with \`restrictFileTools\` from core. Paths are relative to it, symlinks out of it are refused, and \`file_write\` and \`file_delete\` need approval: the terminal chat asks before they run.
+        - \`src/harness/workspace.ts\`: file tools confined to \`workspace/\` (\`WORKSPACE_DIR\`), a \`LocalWorkspace\` with \`workspaceTools\` from core. Paths are relative to it, symlinks out of it are refused, and \`write_file\` and \`edit_file\` need approval: the terminal chat asks before they run.
         - \`src/harness/facts.ts\`: \`remember_fact\` and \`forget_fact\` keep lasting facts in \`data/facts.db\` (\`CoreFactsStore\`), and every run gets them as context.
         - \`src/harness/scheduler.ts\`: \`schedule_task\`, \`list_tasks\` and \`cancel_task\`. Tasks are kept in \`data/timers.json\`, and while \`${runScript(pm, 'dev')}\` runs, a due task is handed to the assistant like a message.
       `

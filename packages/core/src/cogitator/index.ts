@@ -17,5 +17,12 @@ export {
   enrichMessagesWithInsights,
   addContextToMessages,
 } from './message-builder';
-export { executeTool, runToolCall, createToolMessage } from './tool-executor';
+export {
+  executeTool,
+  runToolCall,
+  createToolMessage,
+  createToolMessageWithOffload,
+  toolResultPath,
+  TOOL_RESULTS_DIR,
+} from './tool-executor';
 export { streamChat, streamChatRequest, type StreamChatResult } from './streaming';

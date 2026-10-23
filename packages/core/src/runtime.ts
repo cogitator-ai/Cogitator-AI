@@ -11,6 +11,7 @@ import type {
   ToolCall,
   ToolChoice,
   ToolResult,
+  Workspace,
   LLMBackend,
   ChatResponse,
   ModelRoute,
@@ -190,7 +191,12 @@ import {
 } from './cogitator/message-builder';
 import { RunMemory } from './cogitator/run-memory';
 import { createSpan, getTextContent } from './cogitator/span-factory';
-import { runToolCall, createToolMessage, needsApproval } from './cogitator/tool-executor';
+import {
+  runToolCall,
+  createToolMessage,
+  createToolMessageWithOffload,
+  needsApproval,
+} from './cogitator/tool-executor';
 import { DEFAULT_TOOL_RESULT_MAX_LENGTH, toolResultLengthError } from './tool-content';
 import { streamChatRequest, type StreamTiming } from './cogitator/streaming';
 import {
@@ -608,6 +614,9 @@ export class Cogitator implements ToolInvoker {
         ...(options.topicId !== undefined && { topicId: options.topicId }),
         ...(options.conversationId !== undefined && { conversationId: options.conversationId }),
         ...(options.deps !== undefined && { deps: options.deps }),
+        ...((options.workspace ?? agent?.config.workspace) && {
+          workspace: options.workspace ?? agent?.config.workspace,
+        }),
       },
       approved: approvedByUser,
       allowNativeFallback: this.config.sandbox?.allowNativeFallback !== false,
@@ -1145,6 +1154,9 @@ export class Cogitator implements ToolInvoker {
         ...(options.deps !== undefined && { deps: options.deps }),
       });
 
+      const workspaceOf = (owner: Agent): Workspace | undefined =>
+        options.workspace ?? owner.config.workspace;
+
       const buildRegistry = (owner: Agent) => {
         const ownerRegistry = new ToolRegistry();
         const handoff = handoffTools(owner);
@@ -1461,6 +1473,7 @@ export class Cogitator implements ToolInvoker {
                   topicId: options.topicId,
                   conversationId: options.conversationId,
                   ...(options.deps !== undefined && { deps: options.deps }),
+                  ...(workspaceOf(active) && { workspace: workspaceOf(active) }),
                 },
                 approved: decision?.approved === true,
                 allowNativeFallback: this.config.sandbox?.allowNativeFallback !== false,
@@ -1527,12 +1540,14 @@ export class Cogitator implements ToolInvoker {
 
           options.onToolResult?.(result);
 
-          const toolMessage = createToolMessage(
+          const runWorkspace = workspaceOf(active);
+          const toolMessage = await createToolMessageWithOffload(
             toolCall,
             result,
             registry.get(toolCall.name)?.maxResultLength ??
               this.config.limits?.maxToolResultLength ??
-              DEFAULT_TOOL_RESULT_MAX_LENGTH
+              DEFAULT_TOOL_RESULT_MAX_LENGTH,
+            runWorkspace ? { workspace: runWorkspace, runId } : undefined
           );
           messages.push(toolMessage);
 

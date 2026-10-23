@@ -80,6 +80,28 @@ Each clearing changes the prompt from the first output it clears on, so the prov
 
 The run's `agent.run` span reports what clearing did: `context.cleared_tool_outputs` (outputs cleared), `context.cleared_tool_output_tokens` (tokens freed) and `context.clearings` (how many times it cleared). The clearing is the built-in [run middleware](/docs/core/middleware) `cogitator:clear-tool-outputs`. To give it to one agent only, add `clearToolOutputsMiddleware(options)` to the agent's `middleware` and `recallToolOutputTool()` to its tools: the middleware answers the tool with the outputs it cleared. To read outputs of earlier runs from memory too, the tool needs to know where each run writes, `recallToolOutputTool(() => memory, (runId) => ({ threadId, leafId }))`, which the Cogitator does for the tool it adds.
 
+## Long Tool Results
+
+A tool result longer than the tool's `maxResultLength`, or `limits.maxToolResultLength` (100,000 characters by default), reaches the model cut: its start and end, with a note on how much was left out. When the run has a [workspace](/docs/tools/workspace), nothing is lost: the full text is saved to `.cogitator/tool-results/<runId>/<toolCallId>.txt` in the workspace, and the model gets the cut preview plus a note with that path, so it can page through the rest with `read_file` and its `offset` and `limit`.
+
+```typescript
+import { Agent, LocalWorkspace, toolResultPath, workspaceTools } from '@cogitator-ai/core';
+
+const workspace = new LocalWorkspace({ root: './project' });
+const agent = new Agent({
+  name: 'investigator',
+  model: 'openai/gpt-6.1-sol',
+  instructions: 'Find the failing step in the build log.',
+  tools: [buildLog, ...workspaceTools()], // buildLog: your tool that returns a long log
+  workspace,
+});
+
+const result = await cog.run(agent, { input: 'Why did the build fail?' });
+const saved = toolResultPath(result.runId, result.toolCalls[0].id);
+```
+
+The application still gets the whole result in `onToolResult` and `RunResult.toolCalls`. Without a workspace the result is only cut, as before, and when saving fails (the disk is full, the file is over the workspace's size limit) the result is only cut and the failure is logged as a warning. Errors are never saved, they are short.
+
 ## Context Budget with Memory
 
 With `memory.contextBuilder` and no `maxTokens` of its own, a run builds its context for the model it runs on: the model's context window minus room for the answer and the tool schemas, and below `compressionThreshold` when compression is on. The runtime passes that budget to the builder once, with `reserveTokens: 0`, and the builder counts the input in it (the `final` partition), so the window is not cut by a second reserve. The builder shares the budget among its [partitions](/docs/memory#partitions) and lists what did not fit in `dropped`.
