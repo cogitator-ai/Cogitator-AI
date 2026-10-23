@@ -121,6 +121,66 @@ describe('generated configuration', () => {
     expect(postgres).toContain('healthcheck:');
   });
 
+  it('gives lasting memory the hybrid strategy with the embedding model of the provider, and files', () => {
+    const memoryOf = (preset: string, provider: LLMProvider, overrides = {}) =>
+      (
+        parse(file(planProject(specFor(preset, provider, overrides)), 'cogitator.yml')) as {
+          memory?: Record<string, unknown>;
+        }
+      ).memory;
+
+    expect(memoryOf('assistant', 'openai')).toEqual({
+      adapter: 'sqlite',
+      sqlite: { path: './data/memory.db' },
+      embedding: {
+        provider: 'openai',
+        model: 'text-embedding-3-small',
+        apiKey: '${OPENAI_API_KEY}',
+      },
+      contextBuilder: { strategy: 'hybrid' },
+      files: { scope: 'user' },
+    });
+    expect(memoryOf('assistant', 'google')?.embedding).toEqual({
+      provider: 'google',
+      model: 'gemini-embedding-001',
+      apiKey: '${GOOGLE_API_KEY}',
+      dimensions: 768,
+    });
+    expect(memoryOf('nextjs', 'ollama', { memory: 'postgres' })?.embedding).toEqual({
+      provider: 'ollama',
+      model: 'nomic-embed-text',
+      baseUrl: '${OLLAMA_BASE_URL:-http://localhost:11434}',
+    });
+    const anthropic = memoryOf('assistant', 'anthropic');
+    expect(anthropic?.embedding).toBeUndefined();
+    expect(anthropic?.contextBuilder).toEqual({ strategy: 'recent' });
+    expect(anthropic?.files).toEqual({ scope: 'user' });
+    expect(memoryOf('tetsu', 'openai')).toEqual({ adapter: 'memory' });
+    expect(memoryOf('basic', 'openai')).toBeUndefined();
+
+    const guide = file(planProject(specFor('assistant', 'anthropic')), 'AGENTS.md');
+    expect(guide).toContain('Anthropic has no embedding model');
+    expect(guide).toContain('`mode: shadow`');
+    expect(file(planProject(specFor('assistant', 'openai')), 'AGENTS.md')).toContain(
+      'SQLite keeps no vectors, so the index lives in the process'
+    );
+    expect(
+      file(planProject(specFor('assistant', 'openai', { memory: 'postgres' })), 'AGENTS.md')
+    ).not.toContain('keeps no vectors');
+  });
+
+  it('pulls the embedding model of lasting memory on Ollama, in compose or by hand', () => {
+    const compose = file(planProject(specFor('assistant', 'ollama')), 'docker-compose.yml');
+    expect(compose).toContain('ollama pull qwen3.5:9b && ollama pull nomic-embed-text');
+    const native = planProject(specFor('assistant', 'ollama', { compose: false }))
+      .nextSteps({ installed: true, keyWritten: true, modelReady: true })
+      .map((step) => step.command);
+    expect(native).toContain('ollama pull nomic-embed-text');
+    expect(file(planProject(specFor('tetsu', 'ollama')), 'docker-compose.yml')).not.toContain(
+      'nomic-embed-text'
+    );
+  });
+
   it('pulls a model with an unusual name as one shell word, never as a command', () => {
     const model = "x; echo $HOME injected #'";
     const compose = parse(

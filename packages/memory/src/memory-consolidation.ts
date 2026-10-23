@@ -101,7 +101,13 @@ const HEADER =
 const LESSON_MARK = /\[lesson:[A-Za-z0-9_-]+\]/g;
 const MARKED = /\[lesson:([A-Za-z0-9_-]+)\]/g;
 
-/** Whether `answer` holds a JSON array, such as one cut short by the token limit does not */
+/**
+ * Whether `answer` holds a JSON array, such as one cut short by the token limit does not. Unlike
+ * extraction and compaction, which keep what a cut answer finished, consolidation takes only a
+ * whole answer on purpose: its decisions (which items repeat each other, which edits a playbook
+ * gets) are made as a set, and half a set would mark stale or rewrite on part of the model's
+ * reasoning, so a cut answer changes nothing and its lessons wait for the next fold.
+ */
 function holdsJsonArray(answer: string): boolean {
   const start = answer.indexOf('[');
   const end = answer.lastIndexOf(']');

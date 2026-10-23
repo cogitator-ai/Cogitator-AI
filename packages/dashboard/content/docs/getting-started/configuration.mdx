@@ -144,11 +144,12 @@ memory:
     timeZone: Europe/Lisbon # relative dates, when the thread names no metadata.timeZone (default UTC)
     windowTokens: 4000
     activationConfidence: 0.7
+    mode: shadow # every new item stays suggested until activated, apply by default
   compaction:
     at: 0.8
 ```
 
-Their hooks (`afterExtract`, `beforeCompact`, `afterCompact`) are functions, so they are set in code.
+Their hooks (`afterExtract`, `beforeCompact`, `afterCompact`) are functions, so they are set in code. `contextBuilder` without a `strategy` uses `hybrid` when `memory.embedding` is set and `recent` otherwise, see [What Is On by Default](/docs/memory#what-is-on-by-default).
 
 `memory.files` gives every agent the `memory` tool, notes under `/memories` it keeps across conversations, and lists them in each run's context, see [Memory Files](/docs/memory#memory-files). It is off unless set, and `files: {}` turns it on with the defaults:
 

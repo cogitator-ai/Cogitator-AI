@@ -127,6 +127,39 @@ describe('memory.extraction', () => {
     expect(JSON.stringify(answer?.messages)).toContain('The user lives in Porto');
   });
 
+  it('in shadow mode keeps every item suggested, out of the next run, until it is activated', async () => {
+    const llm = backend();
+    const afterExtract = vi.fn();
+    const cog = new Cogitator({
+      llm: { backends: { mock: llm } },
+      memory: {
+        adapter: 'memory',
+        extraction: { mode: 'shadow', afterExtract },
+        contextBuilder: { includeFacts: true, maxTokens: 4000 },
+      },
+    });
+    cogs.push(cog);
+
+    await cog.run(agent, { input: 'I live in Porto', threadId: 't', userId: 'u1' });
+    await cog.run(agent, { input: 'I live in Porto, as I said', threadId: 'other', userId: 'u1' });
+
+    const scope = { agentId: agent.name, userId: 'u1' };
+    const items = await itemsOf(cog);
+    expect(await items.query({ scope })).toEqual([]);
+    const suggested = await items.query({ scope, statuses: ['suggested'] });
+    expect(suggested.map((item) => [item.value, item.trust, item.verified])).toEqual([
+      ['Porto', 'user', true],
+    ]);
+    expect(afterExtract).toHaveBeenCalledTimes(2);
+    const answer = llm.requests.filter((request) => !isExtraction(request)).at(-1);
+    expect(JSON.stringify(answer?.messages)).not.toContain('The user lives in Porto');
+
+    await items.activate(suggested[0]!.id);
+    await cog.run(agent, { input: 'What do you know?', threadId: 'third', userId: 'u1' });
+    const next = llm.requests.filter((request) => !isExtraction(request)).at(-1);
+    expect(JSON.stringify(next?.messages)).toContain('The user lives in Porto');
+  });
+
   it('keeps the run when the extraction fails and waits before trying again', async () => {
     const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
     const llm = backend();
@@ -398,5 +431,8 @@ describe('memory.extraction', () => {
     await expect(
       runtime(backend(), { windowTokens: 0 }).run(agent, { input: 'x' })
     ).rejects.toThrow(/windowTokens/);
+    await expect(
+      runtime(backend(), { mode: 'dry-run' }).run(agent, { input: 'x' })
+    ).rejects.toThrow(/mode must be 'apply' or 'shadow'/);
   });
 });

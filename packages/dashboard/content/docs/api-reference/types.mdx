@@ -1061,6 +1061,7 @@ interface MemoryExtractionConfig {
   prompt?: string; // added to the extraction prompt
   windowTokens?: number; // conversation one call reads (default 4000)
   activationConfidence?: number; // default 0.7
+  mode?: 'apply' | 'shadow'; // default 'apply', 'shadow' keeps every new item suggested
   scope?: 'user' | 'agent' | 'thread'; // default 'user'
   timeZone?: string; // IANA, when the thread names none in metadata.timeZone (default UTC)
   afterExtract?: (items: MemoryItem[]) => void | Promise<void>;

@@ -215,6 +215,13 @@ export interface MemoryExtractionConfig {
   /** Confidence a `user` item with quotes that hold needs to become `active` (default 0.7) */
   activationConfidence?: number;
   /**
+   * `apply` (default) writes the items with the status their source and confidence earn them,
+   * `shadow` writes every new item as `suggested`, so it stays out of the context and of recall
+   * until it is reviewed (`MemoryItems.query` with `statuses: ['suggested']`) and activated
+   * (`MemoryItems.activate`). An item said again merges into the one kept as before.
+   */
+  mode?: 'apply' | 'shadow';
+  /**
    * Who the items belong to: `user` (default) the run's user, the thread for a run without one,
    * `agent` everyone the agent talks to, `thread` the thread alone
    */
