@@ -238,9 +238,8 @@ export function memoryExtractionMiddleware(
       const extractor = new MemoryExtractor({
         items: new MemoryItems({
           adapter: memory,
-          ...(shadow
-            ? { activationConfidence: Number.POSITIVE_INFINITY }
-            : activation !== undefined && { activationConfidence: activation }),
+          shadow,
+          ...(activation !== undefined && { activationConfidence: activation }),
         }),
         summarize: deps.summarizer(config.model ?? model, {
           runId: result.runId,

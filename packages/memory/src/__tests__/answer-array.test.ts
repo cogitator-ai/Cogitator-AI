@@ -41,4 +41,20 @@ describe('findAnswerArray', () => {
   it('skips a bracket whose pair does not match', () => {
     expect(findAnswerArray('[oops} then [{"a":1}]')).toEqual({ values: [{ a: 1 }], cut: false });
   });
+
+  it('takes an empty array only when no array of objects follows it', () => {
+    expect(findAnswerArray('No items in [] for that, the real ones: [{"a":1}]')).toEqual({
+      values: [{ a: 1 }],
+      cut: false,
+    });
+    expect(findAnswerArray('Nothing here: [] and [1, 2]')).toEqual({ values: [], cut: false });
+  });
+
+  it('stays linear on an answer full of brackets that never close', () => {
+    const hostile = ['[x '.repeat(40_000), '[{"a":"'.repeat(8_000), '['.repeat(40_000)];
+    const started = performance.now();
+    for (const answer of hostile) expect(findAnswerArray(answer)).toBeUndefined();
+    expect(findAnswerArray(`${'[x '.repeat(10_000)}\n[{"a":1}]`)?.values).toEqual([{ a: 1 }]);
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
 });

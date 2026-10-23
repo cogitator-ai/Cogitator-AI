@@ -11,18 +11,18 @@ Read the numbers as a comparison of the strategies of this runtime, not as leade
 
 Averaged over the seven datasets, each dataset counting once:
 
-| Strategy    | Accuracy, mean of datasets | Answer cost per 1000 questions | Input tokens per question | Cache hit | Latency p50 / p95 | Context build p50 / p95 |
-| ----------- | -------------------------- | ------------------------------ | ------------------------- | --------- | ----------------- | ----------------------- |
-| `recent`    | 18.0%                      | $0.53                          | 10,549                    | 81.6%     | 2.0 / 8.0 s       | 4 / 32 ms               |
-| `relevant`  | 44.6%                      | $1.53                          | 10,721                    | 12.1%     | 2.8 / 12.6 s      | 11 / 72 ms              |
-| `hybrid`    | 44.9%                      | $1.14                          | 10,332                    | 26.6%     | 2.7 / 9.5 s       | 59 / 261 ms             |
-| `compacted` | 21.0%                      | $0.34                          | 4,729                     | 82.5%     | 2.2 / 7.2 s       | 3 / 8 ms                |
-| `extracted` | 23.1%                      | $0.66                          | 10,731                    | 57.9%     | 2.6 / 11.1 s      | 19 / 85 ms              |
+| Strategy    | Accuracy, mean of datasets | Answer cost per 1000 answered questions | Input tokens per question | Cache hit | Latency p50 / p95 | Context build p50 / p95 |
+| ----------- | -------------------------- | --------------------------------------- | ------------------------- | --------- | ----------------- | ----------------------- |
+| `recent`    | 18.0%                      | $0.53                                   | 10,549                    | 81.6%     | 2.0 / 8.0 s       | 4 / 32 ms               |
+| `relevant`  | 44.6%                      | $1.53                                   | 10,721                    | 12.1%     | 2.8 / 12.6 s      | 11 / 72 ms              |
+| `hybrid`    | 44.9%                      | $1.14                                   | 10,332                    | 26.6%     | 2.7 / 9.5 s       | 59 / 261 ms             |
+| `compacted` | 21.0%                      | $0.34                                   | 4,729                     | 82.5%     | 2.2 / 7.2 s       | 3 / 8 ms                |
+| `extracted` | 23.1%                      | $0.90                                   | 10,731                    | 57.9%     | 2.6 / 11.1 s      | 19 / 85 ms              |
 
-The answer cost counts the questions only. Compaction and extraction also pay once per conversation for their own model calls: $36.42 for compacting every conversation of the run and $31.60 for extracting from them, against $9.78 for all answers of all five strategies.
+The answer cost counts the questions only, per question answered: the 600 failed MemoryAgentBench questions of `extracted` made no answer call. Compaction and extraction also pay once per conversation for their own model calls: $36.42 for compacting every conversation of the run and $31.60 for extracting from them, against $9.78 for all answers of all five strategies.
 
 - `relevant` and `hybrid` beat `recent` on every dataset, by 7 to 67 points, and their intervals overlap on every dataset. `hybrid` costs a quarter less, keeps more of the prompt cache and has the lower tail latency, for about 50 ms more context build at the median.
-- `compacted` wins up to about 100K tokens (BEAM 100K +19.1, LongMemEval-S +11.0) and loses to `recent` on BEAM 500K and 1M and on MemoryAgentBench. It sends 55% fewer input tokens per question.
+- `compacted` wins up to about 100K tokens (BEAM 100K +19.1, LongMemEval-S +11.0) and is no better than `recent` past that: -2.5 points on BEAM 500K (interval -6.9 to +1.2), -2.6 on BEAM 1M and -7.6 on MemoryAgentBench. It sends 55% fewer input tokens per question.
 - `extracted` gains 5 to 16 points over `recent` on BEAM and LongMemEval-S, most on preferences (BEAM 500K preference following 87.5% against 69.0%), and stays below `relevant` and `hybrid` on every dataset.
 
 ### By dataset
@@ -33,71 +33,71 @@ Accuracy is the mean score of the questions, a failed answer counted as zero. "v
 
 | Strategy    | Questions | Accuracy (95% CI)      | vs `recent`, points (95% CI) | Input tokens per question | Cache hit | Latency p50 / p95 | Answer cost |
 | ----------- | --------- | ---------------------- | ---------------------------- | ------------------------- | --------- | ----------------- | ----------- |
-| `recent`    | 100       | 14.0% (8.0% to 21.0%)  | -                            | 9,734                     | 0.0%      | 2.3 / 5.4 s       | $0.14       |
-| `relevant`  | 100       | 81.0% (72.0% to 88.0%) | +67.0 (+57.0 to +76.0)       | 10,055                    | 0.0%      | 3.2 / 6.6 s       | $0.15       |
-| `hybrid`    | 100       | 74.0% (65.0% to 82.0%) | +60.0 (+49.0 to +70.0)       | 9,970                     | 0.0%      | 2.5 / 5.6 s       | $0.14       |
-| `compacted` | 100       | 25.0% (17.0% to 34.0%) | +11.0 (+2.0 to +20.0)        | 5,573                     | 0.0%      | 2.0 / 3.8 s       | $0.08       |
-| `extracted` | 100       | 25.0% (17.0% to 33.0%) | +11.0 (+2.0 to +20.0)        | 9,889                     | 0.0%      | 2.3 / 4.5 s       | $0.14       |
+| `recent`    | 100       | 14.0% (8.0% to 21.0%)  | -                            | 9,734                     | 0.0%      | 2.3 / 5.4 s       | $0.140      |
+| `relevant`  | 100       | 81.0% (72.0% to 88.0%) | +67.0 (+57.0 to +76.0)       | 10,055                    | 0.0%      | 3.2 / 6.6 s       | $0.153      |
+| `hybrid`    | 100       | 74.0% (65.0% to 82.0%) | +60.0 (+49.0 to +70.0)       | 9,970                     | 0.0%      | 2.5 / 5.6 s       | $0.143      |
+| `compacted` | 100       | 25.0% (17.0% to 34.0%) | +11.0 (+2.0 to +20.0)        | 5,573                     | 0.0%      | 2.0 / 3.8 s       | $0.083      |
+| `extracted` | 100       | 25.0% (17.0% to 33.0%) | +11.0 (+2.0 to +20.0)        | 9,889                     | 0.0%      | 2.3 / 4.5 s       | $0.140      |
 
 #### BEAM 100K
 
 | Strategy    | Questions | Accuracy (95% CI)      | vs `recent`, points (95% CI) | Input tokens per question | Cache hit | Latency p50 / p95 | Answer cost |
 | ----------- | --------- | ---------------------- | ---------------------------- | ------------------------- | --------- | ----------------- | ----------- |
-| `recent`    | 400       | 24.3% (21.7% to 27.0%) | -                            | 10,125                    | 84.0%     | 3.7 / 10.4 s      | $0.41       |
-| `relevant`  | 400       | 50.4% (47.9% to 53.0%) | +26.1 (+22.3 to +29.9)       | 10,365                    | 0.0%      | 6.6 / 15.4 s      | $0.95       |
-| `hybrid`    | 400       | 49.3% (46.0% to 53.3%) | +25.0 (+21.1 to +29.4)       | 10,042                    | 21.8%     | 4.8 / 12.2 s      | $0.74       |
-| `compacted` | 400       | 43.4% (40.2% to 46.6%) | +19.1 (+15.6 to +22.8)       | 6,792                     | 84.8%     | 3.4 / 11.7 s      | $0.38       |
-| `extracted` | 400       | 40.4% (37.0% to 43.5%) | +16.1 (+11.8 to +20.1)       | 10,255                    | 62.3%     | 4.2 / 12.4 s      | $0.56       |
+| `recent`    | 400       | 24.3% (21.7% to 27.0%) | -                            | 10,125                    | 84.0%     | 3.7 / 10.4 s      | $0.410      |
+| `relevant`  | 400       | 50.4% (47.9% to 53.0%) | +26.1 (+22.3 to +29.9)       | 10,365                    | 0.0%      | 6.6 / 15.4 s      | $0.947      |
+| `hybrid`    | 400       | 49.3% (46.0% to 53.3%) | +25.0 (+21.1 to +29.4)       | 10,042                    | 21.8%     | 4.8 / 12.2 s      | $0.739      |
+| `compacted` | 400       | 43.4% (40.2% to 46.6%) | +19.1 (+15.6 to +22.8)       | 6,792                     | 84.8%     | 3.4 / 11.7 s      | $0.383      |
+| `extracted` | 400       | 40.4% (37.0% to 43.5%) | +16.1 (+11.8 to +20.1)       | 10,255                    | 62.3%     | 4.2 / 12.4 s      | $0.559      |
 
 #### BEAM 500K
 
 | Strategy    | Questions      | Accuracy (95% CI)      | vs `recent`, points (95% CI) | Input tokens per question | Cache hit | Latency p50 / p95 | Answer cost |
 | ----------- | -------------- | ---------------------- | ---------------------------- | ------------------------- | --------- | ----------------- | ----------- |
-| `recent`    | 200            | 25.2% (20.5% to 30.0%) | -                            | 10,111                    | 47.2%     | 3.8 / 11.8 s      | $0.30       |
-| `relevant`  | 200            | 53.3% (47.8% to 58.6%) | +28.0 (+21.2 to +34.3)       | 10,631                    | 0.0%      | 6.9 / 15.0 s      | $0.50       |
-| `hybrid`    | 200            | 48.7% (43.2% to 54.1%) | +23.4 (+17.5 to +29.7)       | 10,334                    | 11.2%     | 4.2 / 12.6 s      | $0.41       |
-| `compacted` | 200 (6 failed) | 22.7% (17.9% to 27.7%) | -2.5 (-6.9 to +1.2)          | 3,636                     | 49.6%     | 2.9 / 8.1 s       | $0.17       |
-| `extracted` | 200            | 32.6% (28.0% to 37.4%) | +7.4 (+3.9 to +11.2)         | 10,206                    | 37.2%     | 3.3 / 15.7 s      | $0.34       |
+| `recent`    | 200            | 25.2% (20.5% to 30.0%) | -                            | 10,111                    | 47.2%     | 3.8 / 11.8 s      | $0.297      |
+| `relevant`  | 200            | 53.3% (47.8% to 58.6%) | +28.0 (+21.2 to +34.3)       | 10,631                    | 0.0%      | 6.9 / 15.0 s      | $0.496      |
+| `hybrid`    | 200            | 48.7% (43.2% to 54.1%) | +23.4 (+17.5 to +29.7)       | 10,334                    | 11.2%     | 4.2 / 12.6 s      | $0.408      |
+| `compacted` | 200 (6 failed) | 22.7% (17.9% to 27.7%) | -2.5 (-6.9 to +1.2)          | 3,636                     | 49.6%     | 2.9 / 8.1 s       | $0.174      |
+| `extracted` | 200            | 32.6% (28.0% to 37.4%) | +7.4 (+3.9 to +11.2)         | 10,206                    | 37.2%     | 3.3 / 15.7 s      | $0.339      |
 
 #### BEAM 1M
 
 | Strategy    | Questions       | Accuracy (95% CI)      | vs `recent`, points (95% CI) | Input tokens per question | Cache hit | Latency p50 / p95 | Answer cost |
 | ----------- | --------------- | ---------------------- | ---------------------------- | ------------------------- | --------- | ----------------- | ----------- |
-| `recent`    | 200             | 24.9% (20.9% to 29.6%) | -                            | 10,253                    | 49.1%     | 3.9 / 11.4 s      | $0.31       |
-| `relevant`  | 200             | 43.5% (38.6% to 48.6%) | +18.6 (+13.0 to +24.2)       | 10,764                    | 0.0%      | 7.9 / 17.7 s      | $0.54       |
-| `hybrid`    | 200             | 48.3% (43.5% to 53.0%) | +23.4 (+18.1 to +28.8)       | 10,508                    | 11.8%     | 5.4 / 13.6 s      | $0.45       |
-| `compacted` | 200 (12 failed) | 22.2% (17.7% to 26.1%) | -2.6 (-5.3 to -0.2)          | 2,151                     | 49.1%     | 3.0 / 8.9 s       | $0.16       |
-| `extracted` | 200             | 30.0% (24.4% to 35.1%) | +5.1 (+1.5 to +9.3)          | 10,317                    | 36.6%     | 4.4 / 15.5 s      | $0.38       |
+| `recent`    | 200             | 24.9% (20.9% to 29.6%) | -                            | 10,253                    | 49.1%     | 3.9 / 11.4 s      | $0.314      |
+| `relevant`  | 200             | 43.5% (38.6% to 48.6%) | +18.6 (+13.0 to +24.2)       | 10,764                    | 0.0%      | 7.9 / 17.7 s      | $0.543      |
+| `hybrid`    | 200             | 48.3% (43.5% to 53.0%) | +23.4 (+18.1 to +28.8)       | 10,508                    | 11.8%     | 5.4 / 13.6 s      | $0.446      |
+| `compacted` | 200 (12 failed) | 22.2% (17.7% to 26.1%) | -2.6 (-5.3 to -0.2)          | 2,151                     | 49.1%     | 3.0 / 8.9 s       | $0.165      |
+| `extracted` | 200             | 30.0% (24.4% to 35.1%) | +5.1 (+1.5 to +9.3)          | 10,317                    | 36.6%     | 4.4 / 15.5 s      | $0.376      |
 
 #### MemoryAgentBench conflicts
 
 | Strategy    | Questions        | Accuracy (95% CI)      | vs `recent`, points (95% CI) | Input tokens per question | Cache hit | Latency p50 / p95 | Answer cost |
 | ----------- | ---------------- | ---------------------- | ---------------------------- | ------------------------- | --------- | ----------------- | ----------- |
-| `recent`    | 800              | 29.5% (7.4% to 58.5%)  | -                            | 10,441                    | 98.3%     | 1.4 / 2.5 s       | $0.14       |
-| `relevant`  | 800              | 38.0% (15.9% to 63.8%) | +8.5 (+1.1 to +16.2)         | 10,378                    | 33.0%     | 1.5 / 2.7 s       | $0.76       |
-| `hybrid`    | 800              | 51.9% (26.2% to 77.5%) | +22.4 (+2.4 to +41.9)        | 9,809                     | 41.0%     | 1.8 / 3.2 s       | $0.55       |
-| `compacted` | 800              | 21.9% (0.2% to 50.8%)  | -7.6 (-13.2 to -3.2)         | 5,527                     | 97.9%     | 1.9 / 3.1 s       | $0.14       |
-| `extracted` | 800 (600 failed) | 22.1% (0.0% to 54.0%)  | -7.4 (-13.4 to -2.2)         | 10,764                    | 92.6%     | 1.5 / 3.0 s       | $0.05       |
+| `recent`    | 800              | 29.5% (7.4% to 58.5%)  | -                            | 10,441                    | 98.3%     | 1.4 / 2.5 s       | $0.145      |
+| `relevant`  | 800              | 38.0% (15.9% to 63.8%) | +8.5 (+1.1 to +16.3)         | 10,378                    | 33.0%     | 1.5 / 2.7 s       | $0.765      |
+| `hybrid`    | 800              | 51.9% (26.3% to 77.5%) | +22.4 (+2.4 to +41.9)        | 9,809                     | 41.0%     | 1.8 / 3.2 s       | $0.552      |
+| `compacted` | 800              | 21.9% (0.3% to 50.8%)  | -7.6 (-13.3 to -3.2)         | 5,527                     | 97.9%     | 1.9 / 3.1 s       | $0.137      |
+| `extracted` | 800 (600 failed) | 22.1% (0.0% to 54.0%)  | -7.4 (-13.4 to -2.3)         | 10,764                    | 92.6%     | 1.5 / 3.0 s       | $0.051      |
 
 #### LongMemEval-V2 small
 
 | Strategy    | Questions | Accuracy (95% CI)      | vs `recent`, points (95% CI) | Input tokens per question | Cache hit | Latency p50 / p95 | Answer cost |
 | ----------- | --------- | ---------------------- | ---------------------------- | ------------------------- | --------- | ----------------- | ----------- |
-| `recent`    | 422       | 0.9% (0.5% to 1.3%)    | -                            | 11,702                    | 97.4%     | 1.9 / 4.0 s       | $0.12       |
-| `relevant`  | 422       | 30.6% (17.3% to 42.2%) | +29.6 (+16.8 to +40.9)       | 11,939                    | 2.8%      | 3.0 / 5.9 s       | $0.70       |
-| `hybrid`    | 422       | 27.7% (18.3% to 36.0%) | +26.8 (+17.8 to +34.7)       | 11,356                    | 27.4%     | 3.0 / 5.5 s       | $0.45       |
-| `compacted` | 422       | 2.8% (1.0% to 4.4%)    | +1.9 (+0.5 to +3.1)          | 2,785                     | 94.3%     | 1.8 / 3.8 s       | $0.08       |
-| `extracted` | 422       | 2.8% (1.5% to 4.0%)    | +1.9 (+1.0 to +2.7)          | 11,876                    | 67.9%     | 2.1 / 4.5 s       | $0.26       |
+| `recent`    | 422       | 0.9% (0.5% to 1.3%)    | -                            | 11,702                    | 97.4%     | 1.9 / 4.0 s       | $0.118      |
+| `relevant`  | 422       | 30.6% (17.3% to 42.2%) | +29.6 (+16.8 to +40.9)       | 11,939                    | 2.8%      | 3.0 / 5.9 s       | $0.703      |
+| `hybrid`    | 422       | 27.7% (18.3% to 36.0%) | +26.8 (+17.8 to +34.7)       | 11,356                    | 27.4%     | 3.0 / 5.5 s       | $0.448      |
+| `compacted` | 422       | 2.8% (1.0% to 4.4%)    | +1.9 (+0.5 to +3.1)          | 2,785                     | 94.3%     | 1.8 / 3.8 s       | $0.084      |
+| `extracted` | 422       | 2.8% (1.5% to 4.0%)    | +1.9 (+1.0 to +2.7)          | 11,876                    | 67.9%     | 2.1 / 4.5 s       | $0.260      |
 
 #### LoCoMo (smoke)
 
 | Strategy    | Questions | Accuracy (95% CI)      | vs `recent`, points (95% CI) | Input tokens per question | Cache hit | Latency p50 / p95 | Answer cost |
 | ----------- | --------- | ---------------------- | ---------------------------- | ------------------------- | --------- | ----------------- | ----------- |
-| `recent`    | 100       | 7.2% (5.4% to 9.1%)    | -                            | 10,543                    | 71.8%     | 2.2 / 4.4 s       | $0.06       |
-| `relevant`  | 100       | 15.2% (12.8% to 17.4%) | +8.0 (+6.1 to +9.5)          | 10,509                    | 0.0%      | 2.3 / 4.8 s       | $0.14       |
-| `hybrid`    | 100       | 14.2% (12.1% to 16.7%) | +7.0 (+5.2 to +8.7)          | 11,378                    | 18.4%     | 2.4 / 4.4 s       | $0.13       |
-| `compacted` | 100       | 8.7% (6.3% to 11.4%)   | +1.5 (-1.9 to +4.8)          | 4,425                     | 70.8%     | 1.4 / 3.1 s       | $0.03       |
-| `extracted` | 100       | 8.8% (7.3% to 10.2%)   | +1.6 (+0.2 to +2.8)          | 10,461                    | 58.8%     | 2.2 / 4.1 s       | $0.07       |
+| `recent`    | 100       | 7.2% (5.4% to 9.1%)    | -                            | 10,543                    | 71.8%     | 2.2 / 4.4 s       | $0.057      |
+| `relevant`  | 100       | 15.2% (12.8% to 17.4%) | +8.0 (+6.1 to +9.5)          | 10,509                    | 0.0%      | 2.3 / 4.8 s       | $0.145      |
+| `hybrid`    | 100       | 14.2% (12.1% to 16.7%) | +7.0 (+5.2 to +8.7)          | 11,378                    | 18.4%     | 2.4 / 4.4 s       | $0.134      |
+| `compacted` | 100       | 8.7% (6.3% to 11.4%)   | +1.5 (-1.9 to +4.8)          | 4,425                     | 70.8%     | 1.4 / 3.1 s       | $0.026      |
+| `extracted` | 100       | 8.8% (7.3% to 10.2%)   | +1.6 (+0.2 to +2.8)          | 10,461                    | 58.8%     | 2.2 / 4.1 s       | $0.073      |
 
 ## What the numbers decided
 
@@ -107,7 +107,7 @@ A memory stage is on by default only where it won without a cost worth noticing.
 | ------------------------------------------------ | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | History strategy                                 | `hybrid` with `memory.embedding`, `recent` without it | `hybrid` gained 7 to 60 points over `recent` on every dataset, as much as `relevant` at three quarters of its cost and a lower p95 latency                                                                       |
 | `relevant`                                       | opt-in                                                | An equal choice for question answering over long histories (the best on LongMemEval-S, 81.0%, and BEAM 500K, 53.3%), with no prompt cache to speak of                                                            |
-| Compaction                                       | off                                                   | Saves input tokens and helps sessions up to about 100K tokens, lost to `recent` past that and failed to finish on three of the longest conversations. Use it to save tokens, not as memory                       |
+| Compaction                                       | off                                                   | Saves input tokens and helps sessions up to about 100K tokens, no better than `recent` past that and failed to finish on three of the longest conversations. Use it to save tokens, not as memory                |
 | Extraction                                       | off, start with `mode: 'shadow'`                      | Below `hybrid` and `relevant` everywhere, and its calls cost $31.60, three times all the answers of the run. In shadow mode the items are written as `suggested` for review and reach no context until activated |
 | Memory files, brief, observations, consolidation | off                                                   | Not measured by these benchmarks                                                                                                                                                                                 |
 

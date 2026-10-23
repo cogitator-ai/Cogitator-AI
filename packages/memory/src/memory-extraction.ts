@@ -261,8 +261,22 @@ const EXTRACTION_MAX_TOKENS = 8000;
  */
 export const EXTRACTION_CONTINUATIONS = 4;
 
-/** An item by its kind and words, so a continuation that says an item again adds nothing */
-const itemKey = (item: NewMemoryItem): string => `${item.kind}\u0000${item.content.toLowerCase()}`;
+/**
+ * An item as the model wrote it, its words, slot, value, time and quotes, so a continuation that
+ * repeats an item exactly adds nothing, while one that says a value again from a later message
+ * is kept as the later state it is
+ */
+function itemKey(item: NewMemoryItem): string {
+  return JSON.stringify([
+    item.kind,
+    item.content.toLowerCase(),
+    item.subject,
+    item.attribute,
+    item.value,
+    item.about?.start,
+    item.evidence.map((piece) => [piece.entryId, piece.quote]),
+  ]);
+}
 
 /** What the model is asked after an answer that was cut, `count` items in, the last `last` */
 export function extractionContinuationPrompt(count: number, last: string): string {

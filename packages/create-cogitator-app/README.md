@@ -83,7 +83,7 @@ Requires Node.js 22.12+.
 | `--json`                              | Machine-readable output, implies `--yes`                                                                                   |
 | `--list-templates`, `--list-examples` | List the presets or the examples                                                                                           |
 
-A store that lasts (`sqlite`, `postgres`, `redis`, `mongodb`) comes with long-term memory in `cogitator.yml`, as the [memory benchmarks](https://cogitator.app/docs/memory/benchmarks) recommend: the `hybrid` history strategy with the provider's embedding model (`recent` with Anthropic, which has none), and memory files the agents keep notes in. Compaction and extraction stay off.
+A store that lasts (`sqlite`, `postgres`, `redis`, `mongodb`) comes with long-term memory in `cogitator.yml`, as the [memory benchmarks](https://cogitator.app/docs/memory/benchmarks) recommend: the `hybrid` history strategy with the provider's embedding model (`recent` with Anthropic, which has none), and memory files the agents keep notes in. Only Postgres keeps the vectors: on SQLite, Redis and MongoDB the index lives in the process, so a thread's messages are embedded again the first time it is used after a restart, which costs cents beside what `hybrid` gains. Compaction and extraction stay off.
 
 Combinations that cannot work are refused before anything is written, with how to fix them: a Tetsu server needs Bun, voice needs a provider with realtime speech, A2A needs a server or Next.js, and so on.
 

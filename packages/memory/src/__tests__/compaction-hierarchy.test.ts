@@ -524,6 +524,39 @@ describe('hierarchical compaction', () => {
     expect(String(followUp[2]?.content)).toContain('after 2 items, the last one: "Use Redis"');
   });
 
+  it('keeps a task a continuation reopens with a later quote, open', async () => {
+    const window = [
+      entry('e0', { role: 'user', content: 'Please ship the report.' }),
+      entry('e1', { role: 'assistant', content: 'The report is shipped.' }),
+      entry('e2', { role: 'user', content: 'It bounced, ship the report again.' }),
+    ];
+    const task = (status: string, message: number, quote: string) =>
+      JSON.stringify({
+        kind: 'task',
+        status,
+        text: 'Ship the report',
+        evidence: [{ message, quote }],
+      });
+    const answers = [
+      `[${task('open', 0, 'ship the report')}, ${task('closed', 1, 'report is shipped')}, {"kind": "ta`,
+      `[${task('closed', 1, 'report is shipped')}, ${task('open', 2, 'ship the report again')}]`,
+    ];
+    const service = new CompactionService({
+      adapter: new InMemoryAdapter({ provider: 'memory' }),
+      summarize: async () => answers.shift() ?? 'sorry',
+    });
+
+    const atoms = await service.chapterAtoms(window, {
+      strategy: 'hierarchical',
+      threshold: 0,
+      keepRecent: 0,
+    });
+
+    expect(atoms.filter((atom) => atom.kind === 'task')).toEqual([
+      expect.objectContaining({ text: 'Ship the report', status: 'open', verified: true }),
+    ]);
+  });
+
   it('stops going on when a continuation brings nothing new or no array', async () => {
     const window = [entry('e0', { role: 'user', content: 'We picked Postgres.' })];
     const cut = '[{"kind": "fact", "text": "Postgres was picked"}, {"kind": "fa';

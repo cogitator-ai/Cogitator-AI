@@ -307,6 +307,36 @@ describe('MemoryExtractor', () => {
     expect(summarize.mock.calls.length).toBeGreaterThan(1);
   });
 
+  it('keeps a later state a continuation says again, so the latest value holds', async () => {
+    const moves = [
+      entry('m0', { role: 'user', content: 'I live in Rome.' }, new Date('2026-01-01')),
+      entry('m1', { role: 'user', content: 'I moved to Berlin.' }, new Date('2026-02-01')),
+      entry('m2', { role: 'user', content: 'I am back in Rome.' }, new Date('2026-03-01')),
+    ];
+    const city = (value: string, message: number, quote: string) =>
+      JSON.stringify({
+        kind: 'fact',
+        content: `Ana lives in ${value}`,
+        subject: 'Ana',
+        attribute: 'home city',
+        value,
+        confidence: 0.9,
+        evidence: [{ message, quote }],
+      });
+    const answers = [
+      `[${city('Rome', 0, 'I live in Rome')}, ${city('Berlin', 1, 'moved to Berlin')}, {"kind": "fa`,
+      `[${city('Berlin', 1, 'moved to Berlin')}, ${city('Rome', 2, 'back in Rome')}]`,
+    ];
+    const summarize = vi.fn(async () => answers.shift() ?? 'sorry');
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    const items = new MemoryItems({ adapter });
+
+    await new MemoryExtractor({ items, summarize, windowTokens: 4000 }).extract(moves, { scope });
+
+    expect((await items.query({ scope })).map((item) => item.value)).toEqual(['Rome']);
+    expect(summarize).toHaveBeenCalledTimes(2);
+  });
+
   it('stops going on when the answers bring nothing new, and at the continuation limit', async () => {
     const adapter = new InMemoryAdapter({ provider: 'memory' });
     const cut = (city: string) => `[{"kind":"fact","content":"Ana visited ${city}"},{"kind":`;

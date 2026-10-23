@@ -9,200 +9,13 @@ LLMs are stateless. Every request starts from scratch unless you pass the conver
 
 ## Architecture
 
-Memory is a stack of layers over one store. Each layer reads the ones below it, and only the bottom ones are needed for a conversation to go on across runs:
+Memory is a stack of layers over one store. Read it from the bottom: the store keeps everything, the thread holds the conversation, the message index, memory items and memory files are built from the conversation or beside it, retrieval picks from them, and the context is what the model sees. The stages run around the stack, the brief before a turn and the rest after a run:
 
-<svg
-  viewBox="0 0 960 660"
-  width="100%"
-  role="img"
-  aria-label="The layers of Cogitator memory, from the store up to the context of a turn, and the stages before a turn and after a run"
->
-  <title>Layers of Cogitator memory</title>
-  <rect x="10" y="10" width="940" height="60" rx="8" fill="currentColor" opacity="0.05" />
-  <rect
-    x="10"
-    y="10"
-    width="940"
-    height="60"
-    rx="8"
-    fill="none"
-    stroke="currentColor"
-    opacity="0.35"
-  />
-  <text x="28" y="36" fill="currentColor">
-    Before a turn
-  </text>
-  <text x="28" y="57" fill="currentColor" opacity="0.6">
-    opt-in
-  </text>
-  <text x="260" y="47" fill="currentColor" opacity="0.85">
-    a brief of cards that quote their sources
-  </text>
-  <rect x="10" y="80" width="940" height="60" rx="8" fill="currentColor" opacity="0.16" />
-  <rect
-    x="10"
-    y="80"
-    width="940"
-    height="60"
-    rx="8"
-    fill="none"
-    stroke="currentColor"
-    opacity="0.35"
-  />
-  <text x="28" y="106" fill="currentColor">
-    Context of a turn
-  </text>
-  <text x="28" y="127" fill="currentColor" opacity="0.6">
-    with contextBuilder
-  </text>
-  <text x="260" y="117" fill="currentColor" opacity="0.85">
-    system, pinned, index, summaries, facts, recall, brief, newest turns
-  </text>
-  <rect x="10" y="150" width="940" height="60" rx="8" fill="currentColor" opacity="0.16" />
-  <rect
-    x="10"
-    y="150"
-    width="940"
-    height="60"
-    rx="8"
-    fill="none"
-    stroke="currentColor"
-    opacity="0.35"
-  />
-  <text x="28" y="176" fill="currentColor">
-    Retrieval
-  </text>
-  <text x="28" y="197" fill="currentColor" opacity="0.6">
-    hybrid with embeddings
-  </text>
-  <text x="260" y="187" fill="currentColor" opacity="0.85">
-    recent, relevant or hybrid: the newest turns plus what matches the turn
-  </text>
-  <rect x="10" y="220" width="940" height="60" rx="8" fill="currentColor" opacity="0.16" />
-  <rect
-    x="10"
-    y="220"
-    width="940"
-    height="60"
-    rx="8"
-    fill="none"
-    stroke="currentColor"
-    opacity="0.35"
-  />
-  <text x="28" y="246" fill="currentColor">
-    Message index
-  </text>
-  <text x="28" y="267" fill="currentColor" opacity="0.6">
-    with embeddings
-  </text>
-  <text x="260" y="257" fill="currentColor" opacity="0.85">
-    every message embedded once, in the background, the whole thread searched
-  </text>
-  <rect x="10" y="290" width="940" height="60" rx="8" fill="currentColor" opacity="0.05" />
-  <rect
-    x="10"
-    y="290"
-    width="940"
-    height="60"
-    rx="8"
-    fill="none"
-    stroke="currentColor"
-    opacity="0.35"
-  />
-  <text x="28" y="316" fill="currentColor">
-    Memory items
-  </text>
-  <text x="28" y="337" fill="currentColor" opacity="0.6">
-    written by extraction
-  </text>
-  <text x="260" y="327" fill="currentColor" opacity="0.85">
-    facts, events, preferences, lessons: quoted, trusted by source, in time
-  </text>
-  <rect x="10" y="360" width="940" height="60" rx="8" fill="currentColor" opacity="0.05" />
-  <rect
-    x="10"
-    y="360"
-    width="940"
-    height="60"
-    rx="8"
-    fill="none"
-    stroke="currentColor"
-    opacity="0.35"
-  />
-  <text x="28" y="386" fill="currentColor">
-    Memory files
-  </text>
-  <text x="28" y="407" fill="currentColor" opacity="0.6">
-    opt-in
-  </text>
-  <text x="260" y="397" fill="currentColor" opacity="0.85">
-    notes under /memories through the memory tool, observations, the playbook
-  </text>
-  <rect x="10" y="430" width="940" height="60" rx="8" fill="currentColor" opacity="0.16" />
-  <rect
-    x="10"
-    y="430"
-    width="940"
-    height="60"
-    rx="8"
-    fill="none"
-    stroke="currentColor"
-    opacity="0.35"
-  />
-  <text x="28" y="456" fill="currentColor">
-    Thread entries
-  </text>
-  <text x="28" y="477" fill="currentColor" opacity="0.6">
-    always
-  </text>
-  <text x="260" y="467" fill="currentColor" opacity="0.85">
-    a tree of entries: branches, rewind, fork, forget and redact
-  </text>
-  <rect x="10" y="500" width="940" height="60" rx="8" fill="currentColor" opacity="0.16" />
-  <rect
-    x="10"
-    y="500"
-    width="940"
-    height="60"
-    rx="8"
-    fill="none"
-    stroke="currentColor"
-    opacity="0.35"
-  />
-  <text x="28" y="526" fill="currentColor">
-    Store
-  </text>
-  <text x="28" y="547" fill="currentColor" opacity="0.6">
-    always
-  </text>
-  <text x="260" y="537" fill="currentColor" opacity="0.85">
-    SQLite, Postgres, Redis, MongoDB or in process, and a vector store
-  </text>
-  <rect x="10" y="580" width="940" height="60" rx="8" fill="currentColor" opacity="0.05" />
-  <rect
-    x="10"
-    y="580"
-    width="940"
-    height="60"
-    rx="8"
-    fill="none"
-    stroke="currentColor"
-    opacity="0.35"
-  />
-  <text x="28" y="606" fill="currentColor">
-    After a run
-  </text>
-  <text x="28" y="627" fill="currentColor" opacity="0.6">
-    opt-in
-  </text>
-  <text x="260" y="617" fill="currentColor" opacity="0.85">
-    compaction, extraction, observations and consolidation
-  </text>
-</svg>
+<MemoryLayers />
 
-Darker layers are on once memory is configured, the context and retrieval with `memory.contextBuilder` and the message index with `memory.embedding`. Lighter ones are opt-in.
+Filled bands are on once memory is configured, the context and retrieval with `memory.contextBuilder` and the message index with `memory.embedding`. Plain ones are opt-in.
 
-- **Store.** One thread store (`memory.adapter`) keeps the entries, memory items and memory file versions, and a vector store keeps the embeddings: pgvector on Postgres, `memory.qdrant`, or vectors in process. See [Choosing an Adapter](#choosing-an-adapter).
+- **Store.** One thread store (`memory.adapter`) keeps the entries, memory items and memory file versions, and a vector store keeps the embeddings: pgvector on Postgres, `memory.qdrant`, or vectors in process, which the message index embeds again after a restart, the first time each thread is used. See [Choosing an Adapter](#choosing-an-adapter).
 - **Thread entries.** A thread is a tree of entries: a run appends to the active branch, and a replay or a fork writes a branch of its own that never shows up in the conversation it split from. Rewinding, forgetting and redacting take what stands on an entry out of every layer above it. See [Threads as Trees](#threads-as-trees) and [Forgetting, Redacting and Rewinding](#forgetting-redacting-and-rewinding).
 - **Message index.** With `memory.embedding`, every message is embedded once, in the background, so a search reaches the whole thread instead of its newest turns. See [History Strategies](#history-strategies).
 - **Retrieval.** The context builder fills a token budget by partitions and picks the history by a strategy: `recent` the newest turns that fit, `relevant` the turns closest to the input, `hybrid` the newest turns plus a recall of earlier turns and memory items that match the turn. See [Context Building](#context-building) and [Recall](#recall).
@@ -214,13 +27,13 @@ Darker layers are on once memory is configured, the context and retrieval with `
 
 The defaults follow the [memory benchmarks](/docs/memory/benchmarks): a stage is on only where it won without a cost worth noticing.
 
-| Layer                                            | Default                                         | Measured reason                                                                                                                                                                       |
-| ------------------------------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| History strategy (`contextBuilder.strategy`)     | `hybrid` with `memory.embedding`, else `recent` | `hybrid` gained 7 to 60 points over `recent` on all seven datasets (44.9% against 18.0% on average), as much as `relevant` at three quarters of its cost and with a lower p95 latency |
-| `relevant`                                       | opt-in                                          | An equal choice for question answering over long histories, without the prompt cache `hybrid` keeps                                                                                   |
-| Compaction (`memory.compaction`)                 | off                                             | Saves 55% of the input tokens and helps sessions up to about 100K tokens, lost to `recent` past that. Use it to save tokens, not as memory                                            |
-| Extraction (`memory.extraction`)                 | off, start with `mode: 'shadow'`                | Gained 5 to 16 points over `recent` (most on preferences), below `hybrid` everywhere, and its calls cost three times the answers                                                      |
-| Memory files, brief, observations, consolidation | off                                             | Not measured by the benchmarks                                                                                                                                                        |
+| Layer                                            | Default                                         | Measured reason                                                                                                                                                                                             |
+| ------------------------------------------------ | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| History strategy (`contextBuilder.strategy`)     | `hybrid` with `memory.embedding`, else `recent` | `hybrid` gained 7 to 60 points over `recent` on all seven datasets (averaged 44.9% against 18.0% over the seven datasets), as much as `relevant` at three quarters of its cost and with a lower p95 latency |
+| `relevant`                                       | opt-in                                          | An equal choice for question answering over long histories, without the prompt cache `hybrid` keeps                                                                                                         |
+| Compaction (`memory.compaction`)                 | off                                             | Saves 55% of the input tokens and helps sessions up to about 100K tokens, no better than `recent` past that. Use it to save tokens, not as memory                                                           |
+| Extraction (`memory.extraction`)                 | off, start with `mode: 'shadow'`                | Gained 5 to 16 points over `recent` (most on preferences), below `hybrid` everywhere, and its calls cost three times the answers                                                                            |
+| Memory files, brief, observations, consolidation | off                                             | Not measured by the benchmarks                                                                                                                                                                              |
 
 Without `contextBuilder`, a run loads the last 20 entries of the thread's active branch. A `strategy` you set is always kept, so set `strategy: 'recent'` to keep the newest turns only with embeddings configured. The memory stages (compaction chapters, extraction) were measured with `claude-haiku-5-5` only.
 
@@ -893,7 +706,7 @@ A part to compact under a tenth of the kept tail is left for later (`compact()` 
 
 **Atoms.** A `CompactionAtom` is one thing the conversation established: its `kind` (`fact`, `task`, `decision`, `constraint`, `error`, `file`, or `thread` for a question left open), its `status` (`open` or `closed`), a short `text` and its `evidence`, quotes of the entries it stands on. Every kind but `fact` and `file` is a control atom, something a reader must not lose while it is open.
 
-**Grounding.** Each quote is checked against the entry it names, as [lineage](#lineage) checks facts. An atom whose quotes all hold is `verified`, any other is a suggestion. A `constraint` or a `decision` that only tool outputs show is not verified either, so text a tool fetched does not become a rule. The array of atoms is found past any text and brackets around it, and an element that is not an atom (such as one of another kind) is left out instead of the whole answer. An answer cut at its length limit inside the array keeps the atoms it finished, and the summarizer is asked to go on after the last one, up to four times, so a dense chapter is summarized whole. An answer that holds no array is asked for again, up to three tries in all, and then the compaction fails. Some atoms need no model: the files tool calls worked on (arguments such as `path`, `file`, `file_path` or `filename`), tool calls that failed (`bash {"command":"npm test"} failed: exit 1`, known by the tool and its files, or its arguments when it names no files) and task lines (`TODO:`, `- [ ]`) are taken from the entries themselves, so no answer can lose them. A failed call is closed by a later call of the same tool that succeeds on the same files, or with the same arguments when it names no files, and `- [ ] item` by `- [x] item`.
+**Grounding.** Each quote is checked against the entry it names, as [lineage](#lineage) checks facts. An atom whose quotes all hold is `verified`, any other is a suggestion. A `constraint` or a `decision` that only tool outputs show is not verified either, so text a tool fetched does not become a rule. The array of atoms is found past any text and brackets around it, and an element that is not an atom (such as one of another kind) is left out instead of the whole answer. A chapter call asks for an answer of up to 8000 tokens (`SummarizeOptions.maxTokens`), and an answer cut at that limit inside the array keeps the atoms it finished, and the summarizer is asked to go on after the last one, up to four times, so a dense chapter is summarized whole. An answer that holds no array is asked for again, up to three tries in all, and then the compaction fails. Some atoms need no model: the files tool calls worked on (arguments such as `path`, `file`, `file_path` or `filename`), tool calls that failed (`bash {"command":"npm test"} failed: exit 1`, known by the tool and its files, or its arguments when it names no files) and task lines (`TODO:`, `- [ ]`) are taken from the entries themselves, so no answer can lose them. A failed call is closed by a later call of the same tool that succeeds on the same files, or with the same arguments when it names no files, and `- [ ] item` by `- [x] item`.
 
 **Levels.** Chapters beyond `chaptersPerArc` fold into arcs, oldest first, and arcs beyond `arcsPerSaga` fold into the saga. Folding merges atoms by kind and text with no model, so no open item in the middle of a long thread is lost. The saga keeps every open control atom and the newest 200 facts and files (`SAGA_ATOMS`), leaving out items done long ago, so the handoff stops growing. A later status wins, except that a control atom is closed or opened again only by an atom whose evidence holds: a claim of done the conversation does not show leaves it open, and a repeat that does not hold does not bring back an item that was done. An open item that a window shows only in the overlap it opens with belongs to the window before and is left out.
 
@@ -928,7 +741,7 @@ const anthropicCompaction = new CompactionService({
 
 ### Compaction After a Run
 
-`memory.compaction` (`MemoryCompactionConfig`) has a Cogitator compact a run's thread once the run is done, so the next run starts from the handoff and the newest turns instead of a conversation that no longer fits. It is off by default: on the [memory benchmarks](/docs/memory/benchmarks) it sent 55% fewer input tokens and helped threads up to about 100K tokens, and lost to `recent` on longer ones, so use it to save tokens rather than as memory:
+`memory.compaction` (`MemoryCompactionConfig`) has a Cogitator compact a run's thread once the run is done, so the next run starts from the handoff and the newest turns instead of a conversation that no longer fits. It is off by default: on the [memory benchmarks](/docs/memory/benchmarks) it sent 55% fewer input tokens and helped threads up to about 100K tokens, and was no better than `recent` on longer ones, so use it to save tokens rather than as memory:
 
 ```typescript
 const cog = new Cogitator({
@@ -1183,6 +996,23 @@ await cog.run(agent, {
 - Each call asks for an answer of up to 8000 tokens (`SummarizeOptions.maxTokens`). The extraction calls are counted in the run's costs (`getCostSummary()`) and in the `usage` it returns, and they stop with the run's `signal`: an aborted run is not extracted.
 - A run on another branch than the thread's active one (a fork, a replay), and a store without memory items or branches, are left alone.
 - An extraction that fails is logged as a warning, and the run keeps its result. The thread is then left alone for a minute, twice as long after each failure in a row up to an hour.
+
+Reviewing what shadow mode wrote and activating what holds:
+
+```typescript
+import { memoryAgentId } from '@cogitator-ai/core';
+import { MemoryItems, isMemoryItemAdapter } from '@cogitator-ai/memory';
+
+const memory = await cog.getMemory();
+if (!memory || !isMemoryItemAdapter(memory)) throw new Error('this store keeps no memory items');
+const items = new MemoryItems({ adapter: memory });
+
+const scope = { agentId: memoryAgentId(agent), userId: 'ana' };
+const suggested = await items.query({ scope, statuses: ['suggested'] });
+for (const item of suggested) {
+  if (item.verified && item.trust === 'user') await items.activate(item.id);
+}
+```
 
 It is the built-in run middleware `cogitator:memory-extraction` (`memoryExtractionMiddleware`), an [`afterRun`](/docs/core/middleware#afterrun) hook that runs before `cogitator:memory-compaction`, so a thread compacted after a run has its items taken first. `run()` returns once it is done. `MemoryExtractionConfigSchema` in `@cogitator-ai/config` validates the settings YAML can hold, `afterExtract` is set in code.
 

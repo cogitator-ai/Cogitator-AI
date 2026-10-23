@@ -235,6 +235,12 @@ export interface MemoryItemsConfig {
   adapter: MemoryItemAdapter;
   /** Confidence a `user` or `system` item needs to become `active` (default 0.7) */
   activationConfidence?: number;
+  /**
+   * Writes every item as `suggested`, for review, and lets it change nothing memory already
+   * keeps: no item becomes `active` on its own and no opinion takes confidence from another
+   * (extraction's `shadow` mode). An item said again still merges into the one kept.
+   */
+  shadow?: boolean;
   /** The clock, for tests */
   now?: () => Date;
 }
@@ -258,11 +264,13 @@ export interface MemoryItemsConfig {
 export class MemoryItems {
   private readonly adapter: MemoryItemAdapter;
   private readonly threshold: number;
+  private readonly shadow: boolean;
   private readonly now: () => Date;
 
   constructor(config: MemoryItemsConfig) {
     this.adapter = config.adapter;
     this.threshold = config.activationConfidence ?? DEFAULT_ACTIVATION_CONFIDENCE;
+    this.shadow = config.shadow ?? false;
     this.now = config.now ?? (() => new Date());
   }
 
@@ -271,7 +279,7 @@ export class MemoryItems {
     item: Pick<NewMemoryItem, 'trust' | 'verified' | 'confidence'>
   ): 'active' | 'suggested' {
     const trusted = item.trust === 'system' || (item.trust === 'user' && item.verified === true);
-    return trusted && item.confidence >= this.threshold ? 'active' : 'suggested';
+    return !this.shadow && trusted && item.confidence >= this.threshold ? 'active' : 'suggested';
   }
 
   /**
@@ -352,7 +360,7 @@ export class MemoryItems {
     const written = unwrap(await this.adapter.putItem(item));
     if (written.slot === undefined) return written;
     if (written.status === 'active') return this.settled(written);
-    if (written.kind === 'opinion') await this.weaken(written);
+    if (written.kind === 'opinion' && !this.shadow) await this.weaken(written);
     return written;
   }
 

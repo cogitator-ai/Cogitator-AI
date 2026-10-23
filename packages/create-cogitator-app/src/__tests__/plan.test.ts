@@ -161,6 +161,12 @@ describe('generated configuration', () => {
     const guide = file(planProject(specFor('assistant', 'anthropic')), 'AGENTS.md');
     expect(guide).toContain('Anthropic has no embedding model');
     expect(guide).toContain('`mode: shadow`');
+    expect(file(planProject(specFor('assistant', 'openai')), 'AGENTS.md')).toContain(
+      'SQLite keeps no vectors, so the index lives in the process'
+    );
+    expect(
+      file(planProject(specFor('assistant', 'openai', { memory: 'postgres' })), 'AGENTS.md')
+    ).not.toContain('keeps no vectors');
   });
 
   it('pulls the embedding model of lasting memory on Ollama, in compose or by hand', () => {

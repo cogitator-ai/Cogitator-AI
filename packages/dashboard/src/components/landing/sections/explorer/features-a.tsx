@@ -161,7 +161,7 @@ export async function featuresA(): Promise<ExplorerFeature[]> {
       pkg: '@cogitator-ai/memory',
       title: 'Memory & context',
       summary:
-        "Every run gets a context built to its model's window or your budget: the newest turns and, with embeddings, a hybrid recall of earlier turns and memory items that answered 44.9% of seven long-memory benchmarks against 18.0% for recent history alone, plus notes the agent keeps under /memories with the memory tool, a brief of quoted cards before each turn and a playbook of lessons memory folds in between runs, on Postgres, Redis, SQLite, MongoDB or Qdrant.",
+        "Every run gets a context built to its model's window or your budget: the newest turns and, with embeddings, a hybrid recall of earlier turns and memory items that averaged 44.9% over seven long-memory benchmarks against 18.0% for recent history alone, plus notes the agent keeps under /memories with the memory tool, a brief of quoted cards before each turn and a playbook of lessons memory folds in between runs, on Postgres, Redis, SQLite, MongoDB or Qdrant.",
       href: '/docs/memory',
       code: memory,
     },

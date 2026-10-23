@@ -95,7 +95,9 @@ function embeddingYml(spec: ProjectSpec): string[] {
  * Long-term memory over a lasting store, as the memory benchmarks recommend: the `hybrid`
  * history strategy with the provider's embedding model (the newest turns, plus the earlier turns
  * and memory items a question needs), else `recent`, and memory files the agent keeps notes in.
- * Compaction and extraction stay off, AGENTS.md says when to turn them on.
+ * On a store without vectors (all but Postgres) the index lives in the process and threads are
+ * embedded again after a restart, a cost of cents beside the gain the benchmarks measured, so
+ * `hybrid` stays. Compaction and extraction stay off, AGENTS.md says when to turn them on.
  */
 function longTermMemoryYml(spec: ProjectSpec): string[] {
   return [
@@ -106,6 +108,16 @@ function longTermMemoryYml(spec: ProjectSpec): string[] {
     '  scope: user',
   ];
 }
+
+/** How the docs a project gets name each store */
+const STORE_NAMES: Record<ProjectSpec['memory'], string> = {
+  none: 'No store',
+  memory: 'In-process memory',
+  sqlite: 'SQLite',
+  postgres: 'Postgres',
+  redis: 'Redis',
+  mongodb: 'MongoDB',
+};
 
 export const memoryFeature: FeatureModule = {
   id: 'memory',
@@ -197,8 +209,12 @@ export const memoryFeature: FeatureModule = {
     const recall = memoryEmbeds(spec)
       ? `Each turn gets the newest messages of the thread and, with the \`hybrid\` strategy, the earlier messages and memory items that match the question, found with \`${providerInfo(spec.provider).embeddingModel}\` embeddings.`
       : `Each turn gets the newest messages of the thread that fit (the \`recent\` strategy): ${providerInfo(spec.provider).label} has no embedding model, and \`hybrid\`, which also finds earlier messages that match the question, needs one in \`memory.embedding\`.`;
+    const vectors =
+      memoryEmbeds(spec) && spec.memory !== 'postgres'
+        ? ` ${STORE_NAMES[spec.memory]} keeps no vectors, so the index lives in the process: after a restart (\`cogitator dev\` restarts on every change) a thread's messages are embedded again the first time it is used, one embedding per message. Postgres keeps them in pgvector.`
+        : '';
     const longTerm = lastingMemory(spec)
-      ? `\n\n${recall} With \`memory.files\` every agent gets the \`memory\` tool and keeps notes about the user in \`/memories\` across conversations. Compaction (\`memory.compaction\`) and extraction of memory items (\`memory.extraction\`, start with \`mode: shadow\` and review what it writes) are off, see https://cogitator.app/docs/memory.`
+      ? `\n\n${recall}${vectors} With \`memory.files\` every agent gets the \`memory\` tool and keeps notes about the user in \`/memories\` across conversations. Compaction (\`memory.compaction\`) and extraction of memory items (\`memory.extraction\`, start with \`mode: shadow\` and review what it writes) are off, see https://cogitator.app/docs/memory.`
       : '';
     project.section(
       'Memory',

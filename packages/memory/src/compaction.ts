@@ -463,7 +463,11 @@ export class CompactionService {
     window: readonly MemoryEntry[]
   ): Promise<{ text: string; read: { atoms: CompactionAtom[]; cut: boolean } } | undefined> {
     for (let attempt = 0; attempt < 3; attempt++) {
-      const text = await this.summarize(messages, { model: config.summaryModel, prompt });
+      const text = await this.summarize(messages, {
+        model: config.summaryModel,
+        prompt,
+        maxTokens: CHAPTER_MAX_TOKENS,
+      });
       const read = readChapter(text, window);
       if (read) return { text, read };
     }
@@ -479,9 +483,17 @@ export class CompactionService {
   }
 }
 
-/** An atom by its kind, words and status, so a continuation that says one again adds nothing */
+/**
+ * An atom as the summarizer wrote it, its kind, words, status and quotes, so a continuation that
+ * repeats an atom exactly adds nothing, while one that reopens or closes it from a later message
+ * is kept after it, where the later status wins
+ */
 function listedKey(atom: CompactionAtom): string {
-  return `${atomKey(atom)}\u0000${atom.status}`;
+  return JSON.stringify([
+    atomKey(atom),
+    atom.status,
+    (atom.evidence ?? []).map((piece) => [piece.entryId, piece.quote]),
+  ]);
 }
 
 function lastOf(entries: readonly MemoryEntry[]): { lastCompactedEntryId?: string } {
@@ -645,6 +657,11 @@ function tailStart(conversation: readonly MemoryEntry[], config: CompactionConfi
 }
 
 const DEFAULT_CHAPTER_TOKENS = 4000;
+/**
+ * Tokens a chapter answer may take, asked for explicitly so a dense chapter fits whatever the
+ * backend's default is, and continuing a cut answer stays the exception
+ */
+const CHAPTER_MAX_TOKENS = 8000;
 const DEFAULT_CHAPTERS_PER_ARC = 4;
 const DEFAULT_ARCS_PER_SAGA = 4;
 /** Open items of earlier chapters a chapter prompt lists, the newest */

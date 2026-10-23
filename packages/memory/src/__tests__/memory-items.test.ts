@@ -196,6 +196,32 @@ describe('MemoryItems', () => {
     expect((await items.query({ scope })).map((item) => item.value)).toEqual(['great']);
   });
 
+  it('in shadow keeps every item suggested and takes confidence from no other opinion', async () => {
+    const adapter = new InMemoryAdapter({ provider: 'memory' });
+    const items = new MemoryItems({ adapter, now: () => day(30) });
+    const shadow = new MemoryItems({ adapter, shadow: true, now: () => day(30) });
+    const opinion = (value: string, fields: Partial<NewMemoryItem> = {}) =>
+      said({
+        kind: 'opinion',
+        content: `The film is ${value}`,
+        subject: 'film',
+        attribute: 'rating',
+        value,
+        confidence: 0.9,
+        ...fields,
+      });
+    const [system] = await items.write([opinion('great', { trust: 'system', verified: false })]);
+
+    const [user, fact] = await shadow.write([
+      opinion('dull'),
+      said({ content: 'Ana lives in Porto' }),
+    ]);
+
+    expect([user?.status, fact?.status]).toEqual(['suggested', 'suggested']);
+    expect((await items.get(system!.id))?.confidence).toBeCloseTo(0.9);
+    expect(shadow.statusFor({ trust: 'system', verified: true, confidence: 1 })).toBe('suggested');
+  });
+
   it('shows an item only to its user, project and thread', async () => {
     const { items } = memory();
     await items.write([
