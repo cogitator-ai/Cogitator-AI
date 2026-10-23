@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { FeedError, type FeedErrorCode, feedErrorCode, retryAfterOf } from '../../feeds/errors';
-import type { ConversationPacer, Priority } from './pacer';
+import { pause, type ConversationPacer, type Priority } from './pacer';
 import type { TeamsCredentials } from './token';
 
 /** The statuses Microsoft asks bots to retry with a backoff. */
@@ -63,10 +63,6 @@ export function trimTrailingSlashes(value: string): string {
   return value.slice(0, end);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export interface TeamsClientOptions {
   credentials: TeamsCredentials;
   retry?: TeamsRetryOptions;
@@ -82,6 +78,14 @@ export interface TeamsPacing {
   priority?: Priority;
   /** The slot of the first try is taken already, with `tryAcquire` */
   reserved?: boolean;
+}
+
+/** How one request runs: what stops it, and whether it is tried again. */
+export interface TeamsRequestControl {
+  /** Aborts the request and every wait of it, such as when the channel stops */
+  signal?: AbortSignal;
+  /** Tries after the first one, overriding `retry.retries`, `0` for requests better dropped than late */
+  retries?: number;
 }
 
 /** How long a Bot Connector request may take by default, in ms. */
@@ -106,19 +110,23 @@ export class TeamsClient {
     serviceUrl: string,
     path: string,
     body?: unknown,
-    pacing?: TeamsPacing
+    pacing?: TeamsPacing,
+    control: TeamsRequestControl = {}
   ): Promise<unknown> {
-    const retries = this.options.retry?.retries ?? 3;
+    const retries = control.retries ?? this.options.retry?.retries ?? 3;
+    const signal = control.signal;
     const pacer = pacing ? this.options.pacer : undefined;
     let refreshed = false;
     let slotTaken = pacing?.reserved === true;
     for (let attempt = 0; ; attempt++) {
-      if (pacer && pacing && !slotTaken) await pacer.acquire(pacing.key, pacing.priority);
+      if (pacer && pacing && !slotTaken) {
+        await pacer.acquire(pacing.key, pacing.priority, signal);
+      }
       slotTaken = false;
       try {
-        return await this.once(method, serviceUrl, path, body);
+        return await this.once(method, serviceUrl, path, body, signal);
       } catch (error) {
-        if (!(error instanceof FeedError)) throw error;
+        if (!(error instanceof FeedError) || signal?.aborted) throw error;
         if (error instanceof TeamsApiError && error.status === 401 && !refreshed) {
           refreshed = true;
           this.options.credentials.invalidate();
@@ -133,7 +141,7 @@ export class TeamsClient {
         if (!retried || attempt >= retries) throw error;
         const wait = this.delay(attempt, error.retryAfter);
         if (pacer && pacing) pacer.block(pacing.key, wait);
-        else await sleep(wait);
+        else await pause(wait, signal);
       }
     }
   }
@@ -151,7 +159,8 @@ export class TeamsClient {
     method: TeamsMethod | 'GET',
     serviceUrl: string,
     path: string,
-    body: unknown
+    body: unknown,
+    halt: AbortSignal | undefined
   ): Promise<unknown> {
     const token = await this.options.credentials.token();
     const url = `${trimTrailingSlashes(serviceUrl)}${path}`;
@@ -167,10 +176,21 @@ export class TeamsClient {
           ...(body !== undefined && { 'content-type': 'application/json; charset=utf-8' }),
         },
         ...(body !== undefined && { body: JSON.stringify(body) }),
-        signal: AbortSignal.timeout(timeout),
+        signal: halt
+          ? AbortSignal.any([AbortSignal.timeout(timeout), halt])
+          : AbortSignal.timeout(timeout),
       });
       text = await response.text();
     } catch (error) {
+      if (halt?.aborted) {
+        throw new TeamsApiError(
+          'unavailable',
+          `${method} ${path} was aborted: the channel stopped`,
+          {
+            cause: error,
+          }
+        );
+      }
       const timedOut = isTimeout(error);
       throw new TeamsApiError(
         'unavailable',

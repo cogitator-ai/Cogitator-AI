@@ -20,24 +20,57 @@ const BACKGROUND_SHARE = 0.75;
 
 export type Priority = 'send' | 'background';
 
+interface Waiter {
+  priority: Priority;
+  resolve: () => void;
+  reject: (reason: Error) => void;
+}
+
 interface Lane {
-  /** The times requests were or will be sent, in ms, oldest first */
+  /** The times requests went out, in ms, oldest first */
   stamps: number[];
   /** No request before this time, set after Teams throttled one */
   blockedUntil: number;
+  /** Requests waiting for a slot, in the order they asked */
+  queue: Waiter[];
+  timer?: ReturnType<typeof setTimeout>;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/** The reason a wait ends with when its signal aborts. */
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error('The wait was aborted');
 }
 
 /**
- * Spaces the requests of each conversation so none of its windows takes more than its limit:
- * a request takes the earliest time every window has room, and waits until then. A throttled
- * request blocks its conversation for everyone until Teams says it may go on.
+ * Waits `ms`, or rejects when `signal` aborts. The timer does not keep the process alive.
+ */
+export function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortReason(signal));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', aborted);
+      resolve();
+    }, ms);
+    timer.unref?.();
+    const aborted = () => {
+      clearTimeout(timer);
+      reject(signal ? abortReason(signal) : new Error('The wait was aborted'));
+    };
+    signal?.addEventListener('abort', aborted, { once: true });
+  });
+}
+
+/**
+ * Spaces the requests of each conversation so none of its windows takes more than its limit.
+ * Requests wait in a queue and a slot is only taken when a request goes, never booked ahead:
+ * whenever the windows have room, the first waiting request whose limit has room goes. Those of
+ * one priority go in the order they asked, and a new message goes ahead of edits and typing
+ * that wait for their smaller share. A throttled request blocks its conversation for everyone
+ * until Teams says it may go on, and the queue keeps its order through the block.
  */
 export class ConversationPacer {
   private readonly lanes = new Map<string, Lane>();
+  private readonly longest: number;
 
   constructor(
     private readonly limits: readonly RateWindow[] = TEAMS_RATE_LIMITS,
@@ -47,30 +80,39 @@ export class ConversationPacer {
     this.longest = Math.max(...limits.map((rate) => rate.window));
   }
 
-  private readonly longest: number;
-
-  /**
-   * Waits for the next free slot of `key` and takes it. Slots are taken in order, so a request
-   * never goes before one that asked earlier, and one whose conversation got blocked while it
-   * waited takes a new slot after the block.
-   */
-  async acquire(key: string, priority: Priority = 'send'): Promise<void> {
-    for (;;) {
-      const at = this.reserve(key, priority);
-      const wait = at - this.now();
-      if (wait > 0) await sleep(wait);
-      const lane = this.lane(key);
-      if (this.now() >= lane.blockedUntil) return;
-      const index = lane.stamps.indexOf(at);
-      if (index >= 0) lane.stamps.splice(index, 1);
-    }
+  /** Waits for a slot of `key` and takes it, or rejects when `signal` aborts. */
+  acquire(key: string, priority: Priority = 'send', signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(abortReason(signal));
+    const lane = this.lane(key);
+    return new Promise<void>((resolve, reject) => {
+      const waiter: Waiter = {
+        priority,
+        resolve: () => {
+          signal?.removeEventListener('abort', aborted);
+          resolve();
+        },
+        reject,
+      };
+      const aborted = () => {
+        const index = lane.queue.indexOf(waiter);
+        if (index >= 0) lane.queue.splice(index, 1);
+        if (signal) reject(abortReason(signal));
+        this.pump(lane);
+      };
+      signal?.addEventListener('abort', aborted, { once: true });
+      lane.queue.push(waiter);
+      this.pump(lane);
+    });
   }
 
-  /** Takes a slot of `key` only when one is free now, for requests better dropped than late. */
+  /**
+   * Takes a slot of `key` only when one is free now and nobody waits for one, for requests
+   * better dropped than late.
+   */
   tryAcquire(key: string, priority: Priority = 'background'): boolean {
     const lane = this.lane(key);
     const now = this.now();
-    if (this.earliest(lane, now, priority) > now) return false;
+    if (lane.queue.length > 0 || this.earliest(lane, now, priority) > now) return false;
     lane.stamps.push(now);
     return true;
   }
@@ -79,23 +121,39 @@ export class ConversationPacer {
   block(key: string, ms: number): void {
     const lane = this.lane(key);
     lane.blockedUntil = Math.max(lane.blockedUntil, this.now() + ms);
+    this.pump(lane);
   }
 
-  private reserve(key: string, priority: Priority): number {
-    const lane = this.lane(key);
-    const at = this.earliest(lane, this.now(), priority);
-    lane.stamps.push(at);
-    return at;
+  /** Lets go every waiting request whose limit has room now, and wakes up when the next will. */
+  private pump(lane: Lane): void {
+    if (lane.timer) clearTimeout(lane.timer);
+    lane.timer = undefined;
+    const now = this.now();
+    for (let granted = true; granted;) {
+      granted = false;
+      for (const [index, waiter] of lane.queue.entries()) {
+        if (this.earliest(lane, now, waiter.priority) > now) continue;
+        lane.queue.splice(index, 1);
+        lane.stamps.push(now);
+        waiter.resolve();
+        granted = true;
+        break;
+      }
+    }
+    if (lane.queue.length === 0) return;
+    const next = Math.min(...lane.queue.map((waiter) => this.earliest(lane, now, waiter.priority)));
+    lane.timer = setTimeout(() => this.pump(lane), Math.max(1, next - now));
+    lane.timer.unref?.();
   }
 
   /**
-   * The earliest time from `from`, and not before a slot already taken, at which every window
-   * of the lane has room: when a window ending then holds its limit, the time moves past the
-   * oldest request in it.
+   * The earliest time from `from` at which every window of the lane has room for a request of
+   * `priority`: when a window ending then holds its limit, the time moves past the oldest
+   * request in it.
    */
   private earliest(lane: Lane, from: number, priority: Priority): number {
     while (lane.stamps.length > 0 && lane.stamps[0] <= from - this.longest) lane.stamps.shift();
-    let at = Math.max(from, lane.blockedUntil, lane.stamps.at(-1) ?? from);
+    let at = Math.max(from, lane.blockedUntil);
     for (let moved = true; moved;) {
       moved = false;
       for (const rate of this.limits) {
@@ -107,8 +165,11 @@ export class ConversationPacer {
           inWindow++;
         }
         if (inWindow >= limit) {
-          at = lane.stamps[lane.stamps.length - limit] + rate.window;
-          moved = true;
+          const next = lane.stamps[lane.stamps.length - limit] + rate.window;
+          if (next > at) {
+            at = next;
+            moved = true;
+          }
         }
       }
     }
@@ -120,13 +181,13 @@ export class ConversationPacer {
     if (lane) {
       this.lanes.delete(key);
     } else {
-      lane = { stamps: [], blockedUntil: 0 };
+      lane = { stamps: [], blockedUntil: 0, queue: [] };
     }
     this.lanes.set(key, lane);
-    while (this.lanes.size > this.maxLanes) {
-      const oldest = this.lanes.keys().next().value;
-      if (oldest === undefined) break;
-      this.lanes.delete(oldest);
+    for (const [oldKey, oldLane] of this.lanes) {
+      if (this.lanes.size <= this.maxLanes) break;
+      if (oldLane.queue.length > 0) continue;
+      this.lanes.delete(oldKey);
     }
     return lane;
   }

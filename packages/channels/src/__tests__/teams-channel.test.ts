@@ -16,6 +16,7 @@ import { TeamsApiError, TeamsClient } from '../channels/teams/client';
 import { ConversationPacer, TEAMS_RATE_LIMITS } from '../channels/teams/pacer';
 import { TeamsCredentials } from '../channels/teams/token';
 import { buttonsCard } from '../channels/teams/cards';
+import { imagesAsLinks } from '../formatters/markdown-images';
 import { defaultThreadKey } from '../thread-key';
 
 const APP_ID = '00000000-1111-2222-3333-444444444444';
@@ -1280,6 +1281,29 @@ describe('TeamsChannel limits and failures', () => {
     );
   });
 
+  it('reads code spans and fences as CommonMark does, so no image hides behind fake code', () => {
+    const cases: Array<[string, string]> = [
+      ['\\`![a](http://e/?q=s)`', '\\`[a](http://e/?q=s)`'],
+      ['``![a](http://e/?q=s)`', '``[a](http://e/?q=s)`'],
+      ['`![a](x)` and ``![b](y)``', '`![a](x)` and ``![b](y)``'],
+      ['`a\\`![c](http://e/)`', '`a\\`[c](http://e/)`'],
+      [
+        '```js\n![d](http://e/)\n```\n![e](http://e/)',
+        '```js\n![d](http://e/)\n```\n[e](http://e/)',
+      ],
+      ['``` x ` y\n![f](http://e/)', '``` x ` y\n[f](http://e/)'],
+      ['~~~\n![g](u)\n````\n~~~\n![h](u)', '~~~\n![g](u)\n````\n~~~\n[h](u)'],
+      ['<img src="http://e/?q=s"> <IMG SRC=x>', '&lt;img src="http://e/?q=s"> &lt;IMG SRC=x>'],
+      ['\\![not an image](u)', '\\![not an image](u)'],
+      ['`span\n![i](u)` over two lines', '`span\n![i](u)` over two lines'],
+      ['`open\n\n![j](u)` in the next paragraph', '`open\n\n[j](u)` in the next paragraph'],
+    ];
+    for (const [input, expected] of cases) expect(imagesAsLinks(input)).toBe(expected);
+    const hostile = `x${'`'.repeat(100_000)}![k](u)${'`` '.repeat(50_000)}`;
+    expect(imagesAsLinks(hostile)).toContain('[k](u)');
+    expect(imagesAsLinks(hostile)).not.toContain('![k]');
+  });
+
   it('never cuts an emoji in two when it splits a long text', () => {
     const halves = (part: string) => /[\uD800-\uDBFF]$/.test(part) || /^[\uDC00-\uDFFF]/.test(part);
     for (const text of ['😀'.repeat(TEAMS_MESSAGE_CHARS), `x${'😀'.repeat(TEAMS_MESSAGE_CHARS)}`]) {
@@ -1535,5 +1559,136 @@ describe('TeamsChannel file consent', () => {
         mimeType: 'text/plain',
       })
     ).rejects.toThrow(/empty/);
+  });
+});
+
+describe('ConversationPacer order', () => {
+  it('lets a new message go at once while edits wait for their share', async () => {
+    vi.useFakeTimers();
+    const pacer = new ConversationPacer([{ limit: 4, window: 2000 }], () => Date.now());
+    for (let i = 0; i < 3; i++) await pacer.acquire('c', 'background');
+    let edited = false;
+    const edit = pacer.acquire('c', 'background').then(() => (edited = true));
+    let sent = false;
+    const send = pacer.acquire('c', 'send').then(() => (sent = true));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sent).toBe(true);
+    expect(edited).toBe(false);
+    await vi.advanceTimersByTimeAsync(2000);
+    await Promise.all([edit, send]);
+    expect(edited).toBe(true);
+  });
+
+  it('keeps the order of waiting requests through a block', async () => {
+    vi.useFakeTimers();
+    const pacer = new ConversationPacer([{ limit: 1, window: 100 }], () => Date.now());
+    const order: string[] = [];
+    await pacer.acquire('k');
+    const a = pacer.acquire('k').then(() => order.push('A'));
+    const b = pacer.acquire('k').then(() => order.push('B'));
+    pacer.block('k', 150);
+    await vi.advanceTimersByTimeAsync(1000);
+    await Promise.all([a, b]);
+    expect(order).toEqual(['A', 'B']);
+  });
+
+  it('ends a wait when its signal aborts', async () => {
+    vi.useFakeTimers();
+    const pacer = new ConversationPacer([{ limit: 1, window: 60_000 }], () => Date.now());
+    await pacer.acquire('k');
+    const halt = new AbortController();
+    const waiting = pacer.acquire('k', 'send', halt.signal);
+    halt.abort(new Error('stopped'));
+    await expect(waiting).rejects.toThrow('stopped');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('TeamsChannel stopping and stale state', () => {
+  it('aborts waiting requests and refuses new ones once stopped', async () => {
+    const api = microsoft([
+      (call) =>
+        call.url.startsWith(SERVICE)
+          ? Response.json({}, { status: 429, headers: { 'retry-after': '60' } })
+          : undefined,
+    ]);
+    const { channel } = created(api, { retry: { retries: 3, baseDelay: 1, maxDelay: 60_000 } });
+    const sending = channel.sendText('a:x', 'hi').catch((error: unknown) => error);
+    await waitFor(() => api.connector().length === 1);
+    await channel.stop();
+    expect(await sending).toBeInstanceOf(Error);
+    await expect(channel.sendText('a:x', 'after')).rejects.toThrow(/stopped/);
+    await channel.sendTyping('a:x');
+    expect(api.connector()).toHaveLength(1);
+  });
+
+  it('does not try a typing indicator again', async () => {
+    const api = microsoft([
+      (call) => (call.url.startsWith(SERVICE) ? new Response('', { status: 502 }) : undefined),
+    ]);
+    const { channel } = created(api);
+    await expect(channel.sendTyping('a:x')).rejects.toMatchObject({ status: 502 });
+    expect(api.connector()).toHaveLength(1);
+  });
+
+  it('answers a press with no card when a pending change removes the buttons', async () => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const api = microsoft([
+      (call) => (call.method === 'PUT' ? gate.then(() => Response.json({})) : undefined),
+    ]);
+    const { channel } = created(api);
+    const cardId = await channel.sendText('a:personal-alice', 'Run it?', {
+      buttons: [[{ text: 'Approve', data: 'cogitator:approve' }]],
+    });
+    channel.onAction(async (action) => {
+      await channel.answerAction(action.id);
+      void channel.editButtons('a:personal-alice', cardId, null);
+    });
+    const response = await channel.handleWebhook(
+      request(
+        activity({
+          type: 'invoke',
+          name: 'adaptiveCard/action',
+          text: undefined,
+          replyToId: cardId,
+          value: { action: { verb: 'cogitator', data: { cogitator: 'cogitator:approve' } } },
+        })
+      )
+    );
+    release();
+    const body = JSON.parse(response.body) as { type: string; value: unknown };
+    expect(body.type).toBe('application/vnd.microsoft.activity.message');
+    expect(JSON.stringify(body.value)).not.toContain('Approve');
+  });
+
+  it('loads the keys for a new signing key once a failed load stops backing off', async () => {
+    let failing = false;
+    const api = microsoft([
+      (call) => (failing && call.url === JWKS ? new Response('down', { status: 500 }) : undefined),
+    ]);
+    let now = Date.now();
+    const check = new TeamsTokenVerifier({
+      appId: APP_ID,
+      metadataUrl: METADATA,
+      fetch: api.fetch,
+      now: () => now,
+    });
+    const lasting = { exp: Math.floor(now / 1000) + 3 * 86_400 };
+    await check.verify(token(lasting));
+    failing = true;
+    now += 24 * 60 * 60 * 1000 + 1;
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await check.verify(token(lasting));
+    await waitFor(() => api.keyLoads() === 2);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    failing = false;
+    api.keys.push(rotated.jwk);
+    now += 5000;
+    await expect(check.verify(token(lasting, { pair: rotated }))).rejects.toThrow(/unknown key/);
+    now += 6000;
+    await expect(check.verify(token(lasting, { pair: rotated }))).resolves.toBeDefined();
   });
 });

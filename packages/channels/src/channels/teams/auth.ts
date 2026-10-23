@@ -174,6 +174,7 @@ export class TeamsTokenVerifier {
     const known = this.keys.get(kid);
     if (known) return known;
     if (this.now() - this.lastUnknownRefresh < UNKNOWN_KEY_REFRESH) return undefined;
+    if (!this.loading && this.now() - this.lastFailure < FAILED_LOAD_BACKOFF) return undefined;
     this.lastUnknownRefresh = this.now();
     await this.refresh().catch(() => undefined);
     return this.keys.get(kid);

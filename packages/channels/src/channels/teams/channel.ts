@@ -9,8 +9,8 @@ import type {
   ChannelMessage,
   SendOptions,
 } from '@cogitator-ai/types';
-import { protectCode } from '../../formatters/code-protect';
 import { chunkMessage } from '../../formatters/markdown';
+import { imagesAsLinks } from '../../formatters/markdown-images';
 import {
   attachmentTypeOf,
   attachmentsOf,
@@ -46,7 +46,7 @@ import {
   TeamsClient,
   type TeamsRetryOptions,
 } from './client';
-import { ConversationPacer, type Priority } from './pacer';
+import { ConversationPacer, pause, type Priority } from './pacer';
 import { BOT_FRAMEWORK_TENANT, TeamsCredentials, type TeamsTokenProvider } from './token';
 
 /** The largest message Teams is advised to take, in bytes of the activity JSON. */
@@ -252,20 +252,16 @@ function textFormatOf(format: SendOptions['format']): string {
 }
 
 /**
- * Markdown with its images turned into links (`![alt](url)` becomes `[alt](url)`), outside code:
- * Teams loads an image as soon as it shows the message, so an answer steered by injected text
- * could send what it read to any address in the query of an image URL.
+ * Markdown with its images turned into links (`![alt](url)` becomes `[alt](url)`) and raw
+ * `<img>` tags into text, outside code: Teams loads an image as soon as it shows the message,
+ * so an answer steered by injected text could send what it read to any address in an image URL.
  */
 export function withoutImages(text: string): string {
-  return protectCode(text, (prose) => prose.split('![').join('['));
+  return imagesAsLinks(text);
 }
 
 function bodyFor(text: string, textFormat: string): string {
   return textFormat === 'extendedmarkdown' ? withoutImages(text) : text;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Resolves with `fallback` when `promise` takes longer than `ms`. */
@@ -369,6 +365,8 @@ export class TeamsChannel implements Channel {
   private readonly activeRequests = new Set<Promise<void>>();
   /** Waits that end at once when the channel stops */
   private readonly onHalt = new Set<() => void>();
+  /** Aborts every request and wait under way when the channel stops */
+  private halt = new AbortController();
   private readonly answers = new Map<string, PendingAnswer>();
   /** The conversation of each button press, to answer it with a message once its request is over */
   private readonly actionConversations = new Map<string, string>();
@@ -438,6 +436,7 @@ export class TeamsChannel implements Channel {
     }
     this.running = true;
     this.stopped = false;
+    if (this.halt.signal.aborted) this.halt = new AbortController();
     const webhook = this.config.webhook;
     if (webhook?.port !== undefined) {
       try {
@@ -456,6 +455,7 @@ export class TeamsChannel implements Channel {
     this.answers.clear();
     for (const halt of this.onHalt) halt();
     this.onHalt.clear();
+    this.halt.abort(new Error('[teams] The channel stopped'));
     const server = this.server;
     this.server = undefined;
     if (!server) return;
@@ -676,16 +676,13 @@ export class TeamsChannel implements Channel {
   async sendTyping(channelId: string, options?: Pick<SendOptions, 'topicId'>): Promise<void> {
     const conversationId = joinConversation(channelId, options?.topicId);
     const key = paceKeyOf(conversationId);
-    if (this.blocked.has(key) || !this.pacer.tryAcquire(key)) return;
+    if (this.stopped || this.blocked.has(key) || !this.pacer.tryAcquire(key)) return;
     await this.call(
       'POST',
       conversationId,
       activitiesPath(conversationId),
       { type: 'typing' },
-      {
-        priority: 'background',
-        reserved: true,
-      }
+      { priority: 'background', reserved: true, retries: 0 }
     );
   }
 
@@ -845,16 +842,18 @@ export class TeamsChannel implements Channel {
 
   /**
    * Calls the Bot Connector for a conversation, paced by its limits. A conversation where Teams
-   * blocks the bot's messages is not called again until an activity comes from it.
+   * blocks the bot's messages is not called again until an activity comes from it, and nothing
+   * is called once the channel stopped: its waits and requests under way are aborted.
    */
   private async call(
     method: 'POST' | 'PUT' | 'DELETE',
     conversationId: string,
     path: string,
     body?: unknown,
-    options: { priority?: Priority; reserved?: boolean } = {}
+    options: { priority?: Priority; reserved?: boolean; retries?: number } = {}
   ): Promise<unknown> {
     const key = paceKeyOf(conversationId);
+    if (this.stopped) throw new Error(`[teams] ${method} ${path} refused: the channel is stopped`);
     if (this.blocked.has(key)) {
       throw new TeamsApiError(
         'auth',
@@ -863,11 +862,21 @@ export class TeamsChannel implements Channel {
       );
     }
     try {
-      return await this.client.request(method, this.serviceUrlOf(conversationId), path, body, {
-        key,
-        ...(options.priority && { priority: options.priority }),
-        ...(options.reserved && { reserved: true }),
-      });
+      return await this.client.request(
+        method,
+        this.serviceUrlOf(conversationId),
+        path,
+        body,
+        {
+          key,
+          ...(options.priority && { priority: options.priority }),
+          ...(options.reserved && { reserved: true }),
+        },
+        {
+          signal: this.halt.signal,
+          ...(options.retries !== undefined && { retries: options.retries }),
+        }
+      );
     } catch (error) {
       if (error instanceof TeamsApiError && error.errorCode === 'MessageWritesBlocked') {
         this.blocked.add(key);
@@ -1108,9 +1117,12 @@ export class TeamsChannel implements Channel {
       return jsonResponse(200, { statusCode: 200, type: ACTIVITY_MESSAGE, value: answered.text });
     }
     const messageId = activity.replyToId;
-    const card = messageId
-      ? (this.updates.get(messageId)?.next.card ?? this.sent.get(messageId)?.card)
-      : undefined;
+    const pending = messageId ? this.updates.get(messageId) : undefined;
+    const card = pending
+      ? pending.next.card
+      : messageId
+        ? this.sent.get(messageId)?.card
+        : undefined;
     if (card) return jsonResponse(200, { statusCode: 200, type: ADAPTIVE_CARD, value: card });
     return jsonResponse(200, { statusCode: 200, type: ACTIVITY_MESSAGE, value: ACTION_RECEIVED });
   }
@@ -1261,7 +1273,7 @@ export class TeamsChannel implements Channel {
     try {
       while (state.dirty) {
         const wait = state.lastAt + TEAMS_MIN_EDIT_INTERVAL - Date.now();
-        if (wait > 0) await sleep(wait);
+        if (wait > 0) await pause(wait, this.halt.signal);
         state.dirty = false;
         const entry = state.next;
         state.lastAt = Date.now();

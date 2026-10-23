@@ -41,7 +41,7 @@ export const DEFAULT_EXPIRED_MESSAGE =
   'This request is no longer waiting. Reply "approve" or "deny" if it is still paused.';
 
 export const DEFAULT_STOPPING_MESSAGE =
-  'The assistant is restarting. Press again in a moment, the request is still waiting.';
+  'The assistant is restarting. Once it is back, reply "approve" or "deny": the request is still waiting.';
 
 /** The `data` of the approval buttons the gateway puts under its prompt. */
 export const APPROVE_ACTION = 'cogitator:approve';
