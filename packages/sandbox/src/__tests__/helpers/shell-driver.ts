@@ -18,9 +18,14 @@ const IMAGE = 'debian:stable-slim';
  */
 export type ShellHost = { kind: 'native' } | { kind: 'docker'; container: string };
 
-function works(file: string, args: string[]): boolean {
-  const result = spawnSync(file, args, { stdio: 'ignore', timeout: 30_000 });
+function works(file: string, args: string[], timeout = 30_000): boolean {
+  const result = spawnSync(file, args, { stdio: 'ignore', timeout });
   return result.status === 0;
+}
+
+function skipped(reason: string): undefined {
+  console.warn(`\n  The remote workspace shell tests are skipped: ${reason}\n`);
+  return undefined;
 }
 
 /** The shell host for `base`, starting a container when this machine lacks the tools. */
@@ -30,9 +35,11 @@ export function shellHost(base: string): ShellHost | undefined {
     works('realpath', ['-m', '/']) &&
     works('find', ['/', '-maxdepth', '0', '-printf', '']);
   if (gnu) return { kind: 'native' };
-  if (!works('docker', ['info'])) return undefined;
-  if (!works('docker', ['image', 'inspect', IMAGE]) && !works('docker', ['pull', IMAGE])) {
-    return undefined;
+  if (!works('docker', ['info'])) {
+    return skipped('this machine lacks GNU find, realpath and setsid, and Docker is not running');
+  }
+  if (!works('docker', ['image', 'inspect', IMAGE]) && !works('docker', ['pull', IMAGE], 300_000)) {
+    return skipped(`could not pull ${IMAGE}, run: docker pull ${IMAGE}`);
   }
   const user = `${process.getuid?.() ?? 0}:${process.getgid?.() ?? 0}`;
   const started = spawnSync(
@@ -52,7 +59,7 @@ export function shellHost(base: string): ShellHost | undefined {
     ],
     { encoding: 'utf8', timeout: 60_000 }
   );
-  if (started.status !== 0) return undefined;
+  if (started.status !== 0) return skipped(`could not start ${IMAGE}: ${started.stderr.trim()}`);
   return { kind: 'docker', container: started.stdout.trim() };
 }
 

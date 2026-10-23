@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -190,6 +191,37 @@ describe('RemoteShellWorkspace without a shell', () => {
     await expect(workspace.start()).rejects.toMatchObject({ code: 'UNAVAILABLE' });
     await workspace.start();
     expect(workspace.sandboxId).toBe('scripted');
+  });
+
+  it('returns on a timeout or an abort while the provider never starts the command', async () => {
+    const driver = scriptedDriver(() => ({ exitCode: 0, stdout: '/home/user', stderr: '' }));
+    let release: (process: RemoteProcess) => void = () => undefined;
+    const late = new Promise<RemoteProcess>((resolve) => {
+      release = resolve;
+    });
+    let killed = 0;
+    const hanging: RemoteShellDriver = {
+      ...driver,
+      async connect() {
+        const connection = await driver.connect();
+        return { ...connection, spawn: () => late };
+      },
+    };
+    const workspace = new RemoteShellWorkspace({ driver: hanging, killGrace: 50 });
+    const result = await workspace.exec('true', { timeout: 100 });
+    expect(result).toMatchObject({ timedOut: true, exitCode: 124 });
+    const controller = new AbortController();
+    const aborted = workspace.exec('true', { signal: controller.signal });
+    controller.abort();
+    await expect(aborted).rejects.toMatchObject({ code: 'ABORTED' });
+    release({
+      wait: () => new Promise<number>(() => undefined),
+      kill: () => {
+        killed++;
+        return Promise.resolve();
+      },
+    });
+    await vi.waitFor(() => expect(killed).toBe(2));
   });
 });
 
@@ -595,6 +627,7 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', () => {
     );
     expect(result).toMatchObject({ timedOut: true, exitCode: 124 });
     expect(result.stdout).not.toContain('never');
+    expect(result.stderr).toBe('Command timed out after 1500ms');
     await vi.waitFor(
       async () => {
         expect(await alive(workspace, 'bg.pid')).toBe('dead');
@@ -693,9 +726,16 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', () => {
       'mkdir -p src/old build empty && echo v1 > src/a.txt && echo keep > src/old/k.txt && echo b1 > build/out.txt && ln -s src/a.txt alink'
     );
     await workspace.write('.cogitator/tool-results/r/1.txt', 'result');
-    const exclude = ['build/**', '.cogitator/**'];
-    const first = await workspace.snapshot({ label: 'before', exclude, metadata: { turn: 1 } });
-    expect(first).toMatchObject({ label: 'before', exclude, workspaceId: workspace.id });
+    const first = await workspace.snapshot({
+      label: 'before',
+      exclude: ['build/**'],
+      metadata: { turn: 1 },
+    });
+    expect(first).toMatchObject({
+      label: 'before',
+      exclude: ['.cogitator/**', 'build/**'],
+      workspaceId: workspace.id,
+    });
 
     const outside = join(base, `victim-${count}`);
     writeFileSync(outside, 'untouched');
@@ -724,4 +764,137 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', () => {
     await expect(workspace.restore('../../etc')).rejects.toMatchObject({ code: 'NOT_FOUND' });
     await expect(workspace.deleteSnapshot(first.id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
   }, 60_000);
+
+  /** A workspace on the shell whose connection has some methods replaced. */
+  function overridden(
+    change: (connection: RemoteShellConnection) => Partial<RemoteShellConnection>
+  ): RemoteShellWorkspace {
+    if (!host) throw new Error('no shell host');
+    const driver = new LocalShellDriver(join(base, `ws-${++count}`), host);
+    const workspace = new RemoteShellWorkspace({
+      killGrace: 500,
+      driver: {
+        provider: driver.provider,
+        defaultRoot: driver.defaultRoot,
+        async connect() {
+          const connection = await driver.connect();
+          return {
+            sandboxId: connection.sandboxId,
+            readFile: (path) => connection.readFile(path),
+            writeFile: (path, content) => connection.writeFile(path, content),
+            run: (argv, options) => connection.run(argv, options),
+            spawn: (argv, options) => connection.spawn(argv, options),
+            close: () => connection.close(),
+            ...change(connection),
+          };
+        },
+      },
+    });
+    open.push(workspace);
+    return workspace;
+  }
+
+  it('reads through a copy of at most the limit and one byte, removed afterwards', async () => {
+    const read: string[] = [];
+    const workspace = overridden((connection) => ({
+      readFile: (path) => {
+        read.push(path);
+        return connection.readFile(path);
+      },
+    }));
+    await workspace.write('a.txt', 'content');
+    expect(await workspace.read('a.txt', { maxBytes: 1e21 })).toBe('content');
+    expect(read).toHaveLength(1);
+    expect(read[0]).toMatch(/\/\.cogitator\/pending\/read-[a-f0-9]{32}$/);
+    expect(await workspace.list('.cogitator/pending', { includeHidden: true })).toEqual([]);
+    await expect(workspace.read('a.txt', { maxBytes: 3 })).rejects.toMatchObject({
+      code: 'TOO_LARGE',
+    });
+    expect(read).toHaveLength(1);
+  });
+
+  it('refuses a write whose upload changed before it was moved into place', async () => {
+    const workspace = overridden((connection) => ({
+      writeFile: (path, content) =>
+        connection.writeFile(path, Buffer.concat([Buffer.from(content), Buffer.from('more')])),
+    }));
+    await expect(workspace.write('a.txt', 'content')).rejects.toMatchObject({ code: 'IO' });
+    expect(await workspace.exists('a.txt')).toBe(false);
+    expect(await workspace.list('.cogitator/pending', { includeHidden: true })).toEqual([]);
+  });
+
+  it('stops a command whose output passes maxStreamBytes', async () => {
+    const { workspace } = fresh({ maxStreamBytes: 100_000 });
+    let streamed = 0;
+    const result = await workspace.exec('echo $$ > yes.pid; exec yes', {
+      onStdout: (chunk) => {
+        streamed += chunk.length;
+      },
+    });
+    expect(result).toMatchObject({ truncated: true, timedOut: false, exitCode: 143 });
+    expect(result.stderr).toBe('Command stopped: its output passed 100000 bytes');
+    expect(streamed).toBeLessThan(10_000_000);
+    await vi.waitFor(async () => expect(await alive(workspace, 'yes.pid')).toBe('dead'), {
+      timeout: 20_000,
+      interval: 250,
+    });
+  }, 60_000);
+
+  it('cuts a listing at the limit in the sandbox, in tree order', async () => {
+    const { workspace } = fresh();
+    await workspace.exec('mkdir -p a/b a-c && touch a/b/x a/y a-c/z top');
+    const all = await workspace.list('.', { recursive: true });
+    expect(all.map((entry) => entry.path)).toEqual([
+      'a',
+      'a/b',
+      'a/b/x',
+      'a/y',
+      'a-c',
+      'a-c/z',
+      'top',
+    ]);
+    for (const limit of [0, 1, 3, 5, 100]) {
+      expect(await workspace.list('.', { recursive: true, limit })).toEqual(all.slice(0, limit));
+    }
+  });
+
+  it('creates nothing outside the root through a service directory that is a symlink', async () => {
+    const { workspace, root } = fresh();
+    const outside = join(base, `service-${count}`);
+    mkdirSync(outside);
+    await workspace.exec(`ln -s ${shellQuote(outside)} .cogitator && touch f.txt`);
+    await expect(workspace.write('a.txt', 'x')).rejects.toMatchObject({ code: 'OUTSIDE_ROOT' });
+    await expect(workspace.remove('f.txt', { trash: true })).rejects.toMatchObject({
+      code: 'OUTSIDE_ROOT',
+    });
+    expect(readdirSync(outside)).toEqual([]);
+    rmSync(join(root, '.cogitator'));
+    await workspace.exec(`mkdir .cogitator && ln -s ${shellQuote(outside)} .cogitator/trash`);
+    await expect(workspace.remove('f.txt', { trash: true })).rejects.toMatchObject({
+      code: 'OUTSIDE_ROOT',
+    });
+    expect(readdirSync(outside)).toEqual([]);
+    expect(existsSync(join(root, 'f.txt'))).toBe(true);
+  });
+
+  it('snapshots names that are not UTF-8 as they are', async () => {
+    const { workspace } = fresh();
+    const name = '"$(printf \'bad\\377name\')"';
+    await workspace.exec(`printf data > ${name} && mkdir -p ${name}.d && printf in > ${name}.d/f`);
+    const snapshot = await workspace.snapshot();
+    await workspace.exec(`rm -r ${name} ${name}.d`);
+    await workspace.restore(snapshot.id);
+    const check = await workspace.exec(`cat ${name}; cat ${name}.d/f`);
+    expect(check).toMatchObject({ stdout: 'datain', exitCode: 0 });
+  });
+
+  it('refuses a snapshot over maxSnapshotBytes and leaves nothing behind', async () => {
+    const { workspace } = fresh({ maxSnapshotBytes: 100 });
+    await workspace.write('big.txt', 'x'.repeat(200));
+    await expect(workspace.snapshot()).rejects.toMatchObject({ code: 'TOO_LARGE' });
+    await expect(workspace.snapshot({ exclude: ['big.txt'] })).resolves.toMatchObject({
+      exclude: ['.cogitator/**', 'big.txt'],
+    });
+    expect(await workspace.listSnapshots()).toHaveLength(1);
+  });
 });

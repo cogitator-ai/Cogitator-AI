@@ -32,7 +32,11 @@ function createWorkspace(provider: Provider): RemoteShellWorkspace {
     case 'daytona':
       return new DaytonaWorkspace({ ...common, autoStopInterval: 15 });
     case 'vercel':
-      return new VercelSandboxWorkspace({ ...common, runtime: 'node24', lifetime: 10 * 60_000 });
+      return new VercelSandboxWorkspace({
+        ...common,
+        image: 'vercel/sandbox/node:24',
+        lifetime: 10 * 60_000,
+      });
   }
 }
 

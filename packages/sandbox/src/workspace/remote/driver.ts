@@ -30,6 +30,12 @@ export interface RemoteShellConnection {
   run(argv: readonly string[], options: RemoteRunOptions): Promise<RemoteRunResult>;
   /** Starts a program, its output streamed as it arrives */
   spawn(argv: readonly string[], options: RemoteSpawnOptions): Promise<RemoteProcess>;
+  /**
+   * Pushes back the end of the sandbox's lifetime, for providers that end a sandbox after a set
+   * time. Called before every operation and every minute while a command runs, so it should
+   * reach the provider only when the lifetime is half spent
+   */
+  keepAlive?(): Promise<void>;
   /** Releases the sandbox: removes, stops or keeps it, as the workspace was configured */
   close(): Promise<void>;
 }

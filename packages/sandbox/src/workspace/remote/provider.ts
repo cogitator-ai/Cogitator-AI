@@ -14,11 +14,21 @@ export function setting(explicit: string | undefined, name: string): string | un
   return value === undefined || value === '' ? undefined : value;
 }
 
-/** The error a workspace fails with when the provider's SDK is not installed. */
-export function missingSdk(workspace: string, pkg: string, error: unknown): WorkspaceError {
+/**
+ * The error a workspace fails with when the provider's SDK cannot be loaded: "install it" when
+ * the package itself is missing, the real cause otherwise (a broken install, a Node.js version the
+ * SDK does not support).
+ */
+export function sdkError(workspace: string, pkg: string, error: unknown): WorkspaceError {
+  const code = error instanceof Error && 'code' in error ? error.code : undefined;
+  const missing =
+    (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') &&
+    message(error).includes(`'${pkg}'`);
   return new WorkspaceError(
     'UNAVAILABLE',
-    `${workspace} needs the ${pkg} package: install it next to @cogitator-ai/sandbox`,
+    missing
+      ? `${workspace} needs the ${pkg} package: install it next to @cogitator-ai/sandbox`
+      : `${workspace} could not load the ${pkg} package: ${message(error)}`,
     { cause: error }
   );
 }
@@ -34,10 +44,13 @@ export function unreachable(provider: string, error: unknown): WorkspaceError {
 }
 
 /** A file operation's failure: `NOT_FOUND` when the provider says the file is missing, `IO` otherwise. */
-export function fileError(provider: string, path: string, error: unknown): WorkspaceError {
+export function fileError(
+  provider: string,
+  path: string,
+  error: unknown,
+  notFound: boolean
+): WorkspaceError {
   if (error instanceof WorkspaceError) return error;
-  const notFound =
-    (error instanceof Error && /not ?found/i.test(error.name)) || statusOf(error) === 404;
   return new WorkspaceError(
     notFound ? 'NOT_FOUND' : 'IO',
     notFound ? `${path} does not exist` : `${provider}: ${path}: ${message(error)}`,
@@ -53,20 +66,6 @@ export function commandError(provider: string, error: unknown): WorkspaceError {
   });
 }
 
-function statusOf(error: unknown): number | undefined {
-  if (typeof error !== 'object' || error === null) return undefined;
-  for (const key of ['statusCode', 'status']) {
-    const value: unknown = (error as Record<string, unknown>)[key];
-    if (typeof value === 'number') return value;
-  }
-  const response: unknown = (error as Record<string, unknown>).response;
-  if (typeof response === 'object' && response !== null) {
-    const status: unknown = (response as Record<string, unknown>).status;
-    if (typeof status === 'number') return status;
-  }
-  return undefined;
-}
-
 /** A copy of `bytes` as an `ArrayBuffer` of its own. */
 export function arrayBufferOf(bytes: Uint8Array): ArrayBuffer {
   const copy = new Uint8Array(bytes.byteLength);
@@ -76,4 +75,28 @@ export function arrayBufferOf(bytes: Uint8Array): ArrayBuffer {
 
 export function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Calls `extend` at most once at a time and only when half of `lifetime` has passed since the
+ * last call, so a keepalive asked for before every operation reaches the provider rarely.
+ */
+export function throttledKeepAlive(
+  lifetime: number,
+  extend: () => Promise<void>
+): () => Promise<void> {
+  let last = Date.now();
+  let pending: Promise<void> | undefined;
+  return () => {
+    if (pending) return pending;
+    if (Date.now() - last < lifetime / 2) return Promise.resolve();
+    pending = extend()
+      .then(() => {
+        last = Date.now();
+      })
+      .finally(() => {
+        pending = undefined;
+      });
+    return pending;
+  };
 }

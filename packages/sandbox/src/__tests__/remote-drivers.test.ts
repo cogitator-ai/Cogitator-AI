@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { sdkError } from '../workspace/remote/provider';
 import * as scripts from '../workspace/remote/scripts';
 
 /** How a fake sandbox answers the workspace: its scripts by name, its commands by marker lines. */
@@ -8,6 +9,7 @@ const fake = vi.hoisted(() => {
     calls: [] as { kind: string; args: unknown[] }[],
     files: new Map<string, Uint8Array>(),
     exitCode: 0,
+    lateOutput: undefined as (() => void) | undefined,
   };
   return {
     state,
@@ -16,6 +18,7 @@ const fake = vi.hoisted(() => {
       state.calls = [];
       state.files = new Map();
       state.exitCode = 0;
+      state.lateOutput = undefined;
     },
     record(kind: string, ...args: unknown[]) {
       state.calls.push({ kind, args });
@@ -45,7 +48,12 @@ function scriptOf(command: string): keyof typeof scripts | undefined {
 
 function answer(script: keyof typeof scripts | undefined, words: string[]): string {
   if (script === 'START') return fake.state.root;
-  if (script === 'READ') return words[words.length - 2];
+  if (script === 'READ') {
+    const [target, , copy] = words.slice(-3);
+    const bytes = fake.state.files.get(target);
+    if (bytes) fake.state.files.set(copy, bytes);
+    return '';
+  }
   if (script === 'EXISTS') return '1';
   return '';
 }
@@ -57,6 +65,7 @@ function words(command: string): string[] {
 }
 
 vi.mock('e2b', () => {
+  class FileNotFoundError extends Error {}
   class CommandExitError extends Error {
     constructor(readonly result: { exitCode: number; stdout: string; stderr: string }) {
       super('exit');
@@ -77,11 +86,7 @@ vi.mock('e2b', () => {
       read: (path: string, opts: unknown) => {
         fake.record('files.read', path, opts);
         const bytes = fake.state.files.get(path);
-        if (!bytes) {
-          const error = new Error(`file ${path} not found`);
-          error.name = 'FileNotFoundError';
-          return Promise.reject(error);
-        }
+        if (!bytes) return Promise.reject(new FileNotFoundError(`file ${path} not found`));
         return Promise.resolve(bytes);
       },
       write: (path: string, data: ArrayBuffer) => {
@@ -135,9 +140,14 @@ vi.mock('e2b', () => {
       fake.record('sandbox.kill', sandboxId);
       return Promise.resolve(true);
     },
+    setTimeout: (ms: number) => {
+      fake.record('sandbox.setTimeout', ms);
+      return Promise.resolve();
+    },
   });
   return {
     CommandExitError,
+    FileNotFoundError,
     Sandbox: {
       create: (template: string, opts: unknown) => {
         fake.record('Sandbox.create', template, opts);
@@ -152,6 +162,7 @@ vi.mock('e2b', () => {
 });
 
 vi.mock('@daytona/sdk', () => {
+  class DaytonaNotFoundError extends Error {}
   const sessions = new Map<string, { token: string }>();
   const sandbox = (id: string, state: string) => ({
     id,
@@ -165,7 +176,9 @@ vi.mock('@daytona/sdk', () => {
       downloadFile: (path: string) => {
         fake.record('fs.downloadFile', path);
         const bytes = fake.state.files.get(path);
-        return bytes ? Promise.resolve(Buffer.from(bytes)) : Promise.reject(new Error('missing'));
+        return bytes
+          ? Promise.resolve(Buffer.from(bytes))
+          : Promise.reject(new DaytonaNotFoundError('missing'));
       },
     },
     process: {
@@ -202,6 +215,7 @@ vi.mock('@daytona/sdk', () => {
         const out = fake.marked(sessions.get(session)!.token, 'hi\n', 3);
         onStdout(out.stdout);
         onStderr(out.stderr);
+        fake.state.lateOutput = () => onStdout('late output\n');
         return Promise.resolve();
       },
       getSessionCommand: () => Promise.resolve({ exitCode: 3 }),
@@ -237,12 +251,16 @@ vi.mock('@daytona/sdk', () => {
       return Promise.resolve(sandbox(idOrName, 'stopped'));
     }
   }
-  return { Daytona };
+  return { Daytona, DaytonaNotFoundError };
 });
 
 vi.mock('@vercel/sandbox', () => {
   const sandbox = (name: string) => ({
     name,
+    extendTimeout: (duration: number) => {
+      fake.record('extendTimeout', duration);
+      return Promise.resolve();
+    },
     readFileToBuffer: ({ path }: { path: string }) => {
       fake.record('readFileToBuffer', path);
       const bytes = fake.state.files.get(path);
@@ -257,9 +275,10 @@ vi.mock('@vercel/sandbox', () => {
       fake.record('runCommand', params);
       if (!params.detached) {
         const script = scriptOf(params.args[1] ?? '');
+        const missing = script === 'READ' && !fake.state.files.has(params.args.at(-3) ?? '');
         const stdout = answer(script, params.args);
         return Promise.resolve({
-          exitCode: 0,
+          exitCode: missing ? scripts.SCRIPT_EXIT.notFound : 0,
           stdout: () => Promise.resolve(stdout),
           stderr: () => Promise.resolve(''),
         });
@@ -289,8 +308,8 @@ vi.mock('@vercel/sandbox', () => {
       fake.record('sandbox.stop', name);
       return Promise.resolve({});
     },
-    delete: () => {
-      fake.record('sandbox.delete', name);
+    delete: (opts: unknown) => {
+      fake.record('sandbox.delete', name, opts);
       return Promise.resolve();
     },
   });
@@ -360,7 +379,9 @@ describe('E2BWorkspace', () => {
     const workspace = new E2BWorkspace({ apiKey: 'explicit' });
     fake.state.files.set('/home/user/a.txt', new TextEncoder().encode('content'));
     expect(await workspace.read('a.txt')).toBe('content');
-    expect(fake.callsOf('files.read')[0].args).toEqual(['/home/user/a.txt', { format: 'bytes' }]);
+    const [read] = fake.callsOf('files.read');
+    expect(read.args[0]).toMatch(/^\/home\/user\/\.cogitator\/pending\/read-[a-f0-9]{32}$/);
+    expect(read.args[1]).toEqual({ format: 'bytes' });
     await expect(workspace.write('b.txt', 'x')).rejects.toMatchObject({ code: 'DENIED' });
     const upload = fake.callsOf('files.write')[0];
     expect(upload.args[0]).toMatch(/^\/home\/user\/\.cogitator\/pending\/upload-/);
@@ -372,10 +393,30 @@ describe('E2BWorkspace', () => {
     const workspace = new E2BWorkspace({ apiKey: 'k', sandboxId: 'sbx-old', root: 'repo' });
     fake.state.root = '/home/user/repo';
     await workspace.start();
-    expect(fake.callsOf('Sandbox.connect')[0].args[0]).toBe('sbx-old');
+    expect(fake.callsOf('Sandbox.connect')[0].args).toEqual([
+      'sbx-old',
+      { apiKey: 'k', timeoutMs: 30 * 60_000 },
+    ]);
     expect(workspace.root).toBe('/home/user/repo');
     await workspace.dispose();
     expect(fake.callsOf('sandbox.kill')).toHaveLength(0);
+  });
+
+  it('keeps the sandbox alive once half its lifetime has passed since the last extension', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const workspace = new E2BWorkspace({ apiKey: 'k', lifetime: 60_000 });
+      await workspace.start();
+      await workspace.exists('a');
+      expect(fake.callsOf('sandbox.setTimeout')).toHaveLength(0);
+      vi.setSystemTime(Date.now() + 31_000);
+      await workspace.exists('a');
+      await workspace.exists('a');
+      expect(fake.callsOf('sandbox.setTimeout').map((call) => call.args[0])).toEqual([60_000]);
+      await workspace.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -413,7 +454,16 @@ describe('DaytonaWorkspace', () => {
       );
     const started = commands.find((command) => command.runAsync);
     expect(started).toMatchObject({ suppressInputEcho: true });
-    expect(started?.command).toMatch(/^cd '\/home\/daytona' && env 'A=it'\\''s' 'setsid' '-w'/);
+    expect(started?.command).toMatch(
+      /^cd '\/home\/daytona' && \( \. '\/tmp\/cogitator-env-[^']+' && exec 'setsid' '-w'/
+    );
+    expect(started?.command).not.toContain("it'\\''s");
+    const envFile = fake
+      .callsOf('fs.uploadFile')
+      .find((call) => String(call.args[1]).startsWith('/tmp/cogitator-env-'));
+    expect(String(envFile?.args[0])).toBe(
+      `export A='it'\\''s'\nrm -f -- '${String(envFile?.args[1])}'\n`
+    );
     const script = commands.find((command) => !command.runAsync);
     expect(script?.command).toMatch(/<\/dev\/null$/);
     expect(fake.callsOf('sendSessionCommandInput')[0].args[1]).toMatch(/^[a-f0-9]{32}\n$/);
@@ -424,6 +474,21 @@ describe('DaytonaWorkspace', () => {
     });
     await workspace.dispose();
     expect(fake.callsOf('sandbox.delete')).toHaveLength(1);
+  });
+
+  it('refuses an image together with a snapshot', () => {
+    expect(() => new DaytonaWorkspace({ image: 'node:24', snapshot: 'snap' })).toThrow(
+      /an image or a snapshot/
+    );
+  });
+
+  it('ignores the output of a kept command once it returned', async () => {
+    const workspace = new DaytonaWorkspace({ apiKey: 'k' });
+    const seen: string[] = [];
+    await workspace.exec('server &', { background: 'keep', onStdout: (chunk) => seen.push(chunk) });
+    fake.state.lateOutput?.();
+    expect(seen.join('')).toBe('hi\n');
+    await workspace.dispose();
   });
 
   it('uploads a Buffer, never a string a local path would be read from', async () => {
@@ -462,11 +527,12 @@ describe('VercelSandboxWorkspace', () => {
     }
   });
 
-  it('needs OIDC or a complete token triple', async () => {
-    await expect(new VercelSandboxWorkspace().start()).rejects.toMatchObject({
-      code: 'UNAVAILABLE',
-      message: expect.stringContaining('VERCEL_OIDC_TOKEN'),
-    });
+  it('refuses a partial token triple and leaves OIDC to the SDK', async () => {
+    const oidc = new VercelSandboxWorkspace();
+    await oidc.start();
+    expect(fake.callsOf('Sandbox.create')[0].args[0]).not.toHaveProperty('token');
+    await oidc.dispose();
+    fake.reset('/vercel/sandbox');
     await expect(new VercelSandboxWorkspace({ token: 't' }).start()).rejects.toMatchObject({
       code: 'UNAVAILABLE',
       message: expect.stringContaining('teamId (VERCEL_TEAM_ID), projectId (VERCEL_PROJECT_ID)'),
@@ -476,12 +542,13 @@ describe('VercelSandboxWorkspace', () => {
 
   it('creates a sandbox with OIDC, runs argv without a shell line and deletes it', async () => {
     vi.stubEnv('VERCEL_OIDC_TOKEN', 'oidc');
-    const workspace = new VercelSandboxWorkspace({ runtime: 'node24', lifetime: 600_000 });
+    const workspace = new VercelSandboxWorkspace({ image: 'vercel/sandbox/node:24' });
     const result = await workspace.exec('echo hi');
     expect(result).toMatchObject({ stdout: 'hi\n', exitCode: 0 });
     expect(fake.callsOf('Sandbox.create')[0].args[0]).toEqual({
-      runtime: 'node24',
-      timeout: 600_000,
+      image: 'vercel/sandbox/node:24',
+      timeout: 30 * 60_000,
+      persistent: false,
     });
     const detached = fake
       .callsOf('runCommand')
@@ -491,7 +558,10 @@ describe('VercelSandboxWorkspace', () => {
     expect(detached?.args.at(-1)).toBe('echo hi');
     await expect(workspace.read('missing.txt')).rejects.toMatchObject({ code: 'NOT_FOUND' });
     await workspace.dispose();
-    expect(fake.callsOf('sandbox.delete')).toHaveLength(1);
+    expect(fake.callsOf('sandbox.delete')[0].args[1]).toEqual({ deleteOrphanSnapshots: true });
+    expect(() => new VercelSandboxWorkspace({ image: 'a', runtime: 'node24' })).toThrow(
+      /an image or a runtime/
+    );
   });
 
   it('reuses a sandbox by name with the token triple and stops it on dispose', async () => {
@@ -506,6 +576,7 @@ describe('VercelSandboxWorkspace', () => {
       teamId: 'team',
       projectId: 'proj',
       name: 'agent-box',
+      timeout: 30 * 60_000,
       resume: true,
     });
     await workspace.dispose();
@@ -522,7 +593,9 @@ describe('remote workspaces without their SDK', () => {
   ])('says %s is missing', async (pkg, path, name) => {
     vi.resetModules();
     vi.doMock(pkg, () => {
-      throw new Error(`Cannot find package '${pkg}'`);
+      throw Object.assign(new Error(`Cannot find package '${pkg}' imported from here`), {
+        code: 'ERR_MODULE_NOT_FOUND',
+      });
     });
     try {
       const module = (await import(path)) as Record<
@@ -532,10 +605,28 @@ describe('remote workspaces without their SDK', () => {
       const workspace = new module[name]({ apiKey: 'k' });
       await expect(workspace.start()).rejects.toMatchObject({
         code: 'UNAVAILABLE',
-        message: expect.stringContaining(`needs the ${pkg} package`),
+        message: expect.stringContaining(`the ${pkg} package`),
       });
     } finally {
       vi.doUnmock(pkg);
     }
+  });
+
+  it('says "install it" only when the package itself is missing', () => {
+    const missing = Object.assign(new Error("Cannot find package 'e2b' imported from x.js"), {
+      code: 'ERR_MODULE_NOT_FOUND',
+    });
+    expect(sdkError('E2BWorkspace', 'e2b', missing).message).toBe(
+      'E2BWorkspace needs the e2b package: install it next to @cogitator-ai/sandbox'
+    );
+    const dependency = Object.assign(new Error("Cannot find package 'undici' imported from e2b"), {
+      code: 'ERR_MODULE_NOT_FOUND',
+    });
+    expect(sdkError('E2BWorkspace', 'e2b', dependency).message).toContain(
+      'could not load the e2b package'
+    );
+    expect(sdkError('E2BWorkspace', 'e2b', new SyntaxError('Unexpected token')).message).toBe(
+      'E2BWorkspace could not load the e2b package: Unexpected token'
+    );
   });
 });

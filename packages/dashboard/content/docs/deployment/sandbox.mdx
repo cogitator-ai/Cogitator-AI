@@ -225,7 +225,7 @@ When the agent's commands should not run on your machine at all, `E2BWorkspace`,
 ```typescript
 import { VercelSandboxWorkspace } from '@cogitator-ai/sandbox';
 
-const workspace = new VercelSandboxWorkspace({ runtime: 'node24' });
+const workspace = new VercelSandboxWorkspace({ image: 'vercel/sandbox/node:24' });
 try {
   await cog.run(agent, { input: 'Run the tests and fix what fails', workspace });
 } finally {

@@ -10,7 +10,7 @@ pnpm add @cogitator-ai/sandbox
 # Optional peer dependencies
 pnpm add dockerode       # For Docker sandbox
 pnpm add @extism/extism  # For WASM sandbox
-pnpm add e2b             # For E2BWorkspace
+pnpm add e2b             # For E2BWorkspace (2.28.1 or later)
 pnpm add @daytona/sdk    # For DaytonaWorkspace
 pnpm add @vercel/sandbox # For VercelSandboxWorkspace
 ```
@@ -279,7 +279,7 @@ The container has the security defaults of the Docker executor, an init process,
 | ------------------------ | ----------------- | ----------------------------------------------------------------------------- | ----------------- |
 | `E2BWorkspace`           | `e2b`             | `E2B_API_KEY`                                                                 | `/home/user`      |
 | `DaytonaWorkspace`       | `@daytona/sdk`    | `DAYTONA_API_KEY` (`DAYTONA_API_URL`, `DAYTONA_TARGET`)                       | `/home/daytona`   |
-| `VercelSandboxWorkspace` | `@vercel/sandbox` | `VERCEL_OIDC_TOKEN`, or `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | `/vercel/sandbox` |
+| `VercelSandboxWorkspace` | `@vercel/sandbox` | Vercel's OIDC token, or `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | `/vercel/sandbox` |
 
 ```typescript
 import { Agent, workspaceTools } from '@cogitator-ai/core';
@@ -305,9 +305,11 @@ All three are `RemoteShellWorkspace` over a small driver (create or connect, rea
 - Writes upload to `.cogitator/pending` and move over the file in one step, keeping its mode, `maxFileBytes` caps reads and writes
 - `list`, `remove` (with the trash in `.cogitator/trash`) and `rename` follow the `LocalWorkspace` rules, and refuse with `BUSY` while a command runs or kept background processes
 - Commands run under `setsid` in their own process group, with unforgeable marker lines (the token comes on stdin): a timeout returns 124 and kills the group, `background: 'keep'` leaves background processes until `dispose()`
-- `snapshot()`, `restore()`, `listSnapshots()` and `deleteSnapshot()` keep tar archives in `.cogitator/snapshots` inside the sandbox, `.cogitator/**` excluded by default
+- `snapshot()`, `restore()`, `listSnapshots()` and `deleteSnapshot()` keep tar archives in `.cogitator/snapshots` inside the sandbox, `.cogitator/**` always excluded, names that are not UTF-8 kept as they are, and `maxSnapshotBytes` (1 GiB) refusing a bigger one with `TOO_LARGE`
+- Reads copy at most one byte over `maxFileBytes` before they download, and a command that prints more than `maxStreamBytes` (64 MiB) is stopped, because the SDKs keep whole outputs in memory
+- E2B and Vercel sandboxes get a `lifetime` (30 minutes) that the workspace pushes back while it is used
 
-`onDispose` picks what `dispose()` does with the sandbox: `destroy` (default for a created one), `stop` (Daytona and Vercel, the files survive) or `keep` (default for one given by id or name, `stop` for a named Vercel sandbox). The image needs `sh`, GNU coreutils, findutils and tar, and util-linux `setsid`, as the providers' default images have, and `start()` names what is missing. Without the SDK or the credentials the first operation fails with a `WorkspaceError` of code `UNAVAILABLE`.
+`onDispose` picks what `dispose()` does with the sandbox: `destroy` (default for a created one), `stop` (Daytona and Vercel, the files survive) or `keep` (default for one given by id or name, `stop` for a named Vercel sandbox). The image needs `sh`, GNU coreutils, findutils and tar, and util-linux `setsid`, as the providers' default images have, and `start()` names what is missing. Without the SDK or the credentials the first operation fails with a `WorkspaceError` of code `UNAVAILABLE`. `e2b` needs 2.28.1 or later, and from 2.59 it needs Node.js 22.19 or later. A process that starts a session of its own (`setsid`) escapes the group kill and lives until the sandbox goes. `DaytonaWorkspace` passes `env` in a short-lived file, so Daytona's record of the command line never holds the values.
 
 Bring another provider by implementing `RemoteShellDriver` and passing it to `new RemoteShellWorkspace({ driver })`. `shellQuote` and `shellCommand` build a safe shell line from an argv.
 

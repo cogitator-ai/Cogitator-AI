@@ -12,7 +12,7 @@ import {
   commandError,
   delay,
   fileError,
-  missingSdk,
+  sdkError,
   setting,
   unreachable,
   type RemoteSandboxDisposal,
@@ -104,6 +104,7 @@ export interface DaytonaModule {
     create(params?: DaytonaCreateParams, options?: { timeout?: number }): Promise<DaytonaSandbox>;
     get(sandboxIdOrName: string): Promise<DaytonaSandbox>;
   };
+  DaytonaNotFoundError: abstract new (...args: never[]) => Error;
 }
 
 async function loadDaytona(): Promise<DaytonaModule> {
@@ -111,7 +112,7 @@ async function loadDaytona(): Promise<DaytonaModule> {
     const sdk: DaytonaModule = await import('@daytona/sdk');
     return sdk;
   } catch (error) {
-    throw missingSdk('DaytonaWorkspace', '@daytona/sdk', error);
+    throw sdkError('DaytonaWorkspace', '@daytona/sdk', error);
   }
 }
 
@@ -120,11 +121,18 @@ async function loadDaytona(): Promise<DaytonaModule> {
  * id or name with `sandbox`) and deleted by `dispose()`. The root defaults to the sandbox's
  * working directory (`/home/daytona`). Needs the `@daytona/sdk` package and an API key
  * (`DAYTONA_API_KEY`, with `DAYTONA_API_URL` and `DAYTONA_TARGET` when not on the default cloud).
- * Commands run in Daytona sessions. See {@link RemoteShellWorkspace} for how files and commands
- * behave.
+ * Commands run in Daytona sessions, their environment passed in a file that the command removes
+ * as it starts, so the values never show in the command line Daytona records. See
+ * {@link RemoteShellWorkspace} for how files and commands behave.
  */
 export class DaytonaWorkspace extends RemoteShellWorkspace {
   constructor(options: DaytonaWorkspaceOptions = {}) {
+    if (options.image !== undefined && options.snapshot !== undefined) {
+      throw new WorkspaceError(
+        'UNSUPPORTED',
+        'DaytonaWorkspace takes an image or a snapshot to create the sandbox from, not both'
+      );
+    }
     super({ ...options, driver: new DaytonaDriver(options) });
   }
 }
@@ -163,7 +171,7 @@ class DaytonaDriver implements RemoteShellDriver {
       }
       const home = await sandbox.getWorkDir().catch(() => undefined);
       const disposal = this.options.onDispose ?? (existing ? 'keep' : 'destroy');
-      return new DaytonaConnection(sandbox, disposal, home);
+      return new DaytonaConnection(sdk, sandbox, disposal, home);
     } catch (error) {
       throw unreachable(PROVIDER, error);
     }
@@ -175,7 +183,7 @@ class DaytonaDriver implements RemoteShellDriver {
       ...(o.name !== undefined && { name: o.name }),
       ...(o.image !== undefined && { image: o.image }),
       ...(o.image !== undefined && o.resources && { resources: o.resources }),
-      ...(o.image === undefined && o.snapshot !== undefined && { snapshot: o.snapshot }),
+      ...(o.snapshot !== undefined && { snapshot: o.snapshot }),
       ...(o.sandboxEnv && { envVars: o.sandboxEnv }),
       ...(o.labels && { labels: o.labels }),
       ...(o.autoStopInterval !== undefined && { autoStopInterval: o.autoStopInterval }),
@@ -194,6 +202,7 @@ class DaytonaConnection implements RemoteShellConnection {
   private readonly sessions = new Set<string>();
 
   constructor(
+    private readonly sdk: DaytonaModule,
     private readonly sandbox: DaytonaSandbox,
     private readonly disposal: RemoteSandboxDisposal,
     readonly home: string | undefined
@@ -205,7 +214,7 @@ class DaytonaConnection implements RemoteShellConnection {
     try {
       return await this.sandbox.fs.downloadFile(path);
     } catch (error) {
-      throw fileError(PROVIDER, path, error);
+      throw fileError(PROVIDER, path, error, error instanceof this.sdk.DaytonaNotFoundError);
     }
   }
 
@@ -213,7 +222,7 @@ class DaytonaConnection implements RemoteShellConnection {
     try {
       await this.sandbox.fs.uploadFile(Buffer.from(content), path);
     } catch (error) {
-      throw fileError(PROVIDER, path, error);
+      throw fileError(PROVIDER, path, error, false);
     }
   }
 
@@ -228,7 +237,7 @@ class DaytonaConnection implements RemoteShellConnection {
     try {
       const response = await shell.executeSessionCommand(
         session,
-        { command: `${commandLine(argv, options.cwd, {})} </dev/null` },
+        { command: `cd ${shellQuote(options.cwd)} && ${shellCommand(argv)} </dev/null` },
         Math.ceil(options.timeout / 1000)
       );
       this.idle.push(session);
@@ -253,8 +262,9 @@ class DaytonaConnection implements RemoteShellConnection {
       throw commandError(PROVIDER, error);
     }
     try {
+      const command = await this.commandWithEnv(argv, options.cwd, options.env);
       const started = await shell.executeSessionCommand(session, {
-        command: commandLine(argv, options.cwd, options.env),
+        command,
         runAsync: true,
         suppressInputEcho: true,
       });
@@ -264,11 +274,16 @@ class DaytonaConnection implements RemoteShellConnection {
       await this.closeSession(session);
       throw commandError(PROVIDER, error);
     }
+    let detached = false;
     const logs = shell.getSessionCommandLogs(
       session,
       commandId,
-      (chunk) => options.onStdout(chunk),
-      (chunk) => options.onStderr(chunk)
+      (chunk) => {
+        if (!detached) options.onStdout(chunk);
+      },
+      (chunk) => {
+        if (!detached) options.onStderr(chunk);
+      }
     );
     const wait = async (): Promise<number> => {
       try {
@@ -290,7 +305,37 @@ class DaytonaConnection implements RemoteShellConnection {
     return {
       wait: () => waiting,
       kill: () => this.closeSession(session),
+      detach: () => {
+        detached = true;
+      },
     };
+  }
+
+  /**
+   * The line that runs `argv` in `cwd` with `env`: the variables go into a file of `/tmp` that a
+   * subshell sources and removes before it runs the program, so Daytona never records their
+   * values with the command.
+   */
+  private async commandWithEnv(
+    argv: readonly string[],
+    cwd: string,
+    env: Record<string, string>
+  ): Promise<string> {
+    const entries = Object.entries(env);
+    if (entries.length === 0) return `cd ${shellQuote(cwd)} && ${shellCommand(argv)}`;
+    const file = `/tmp/cogitator-env-${randomUUID()}`;
+    const lines = entries.map(([name, value]) => {
+      if (!isEnvName(name)) {
+        throw new WorkspaceError(
+          'UNSUPPORTED',
+          `${JSON.stringify(name)} is not a valid environment variable name`
+        );
+      }
+      return `export ${name}=${shellQuote(value)}\n`;
+    });
+    lines.push(`rm -f -- ${shellQuote(file)}\n`);
+    await this.writeFile(file, Buffer.from(lines.join(''), 'utf8'));
+    return `cd ${shellQuote(cwd)} && ( . ${shellQuote(file)} && exec ${shellCommand(argv)} )`;
   }
 
   async close(): Promise<void> {
@@ -315,25 +360,4 @@ class DaytonaConnection implements RemoteShellConnection {
     if (index !== -1) this.idle.splice(index, 1);
     await this.sandbox.process.deleteSession(session).catch(() => undefined);
   }
-}
-
-/**
- * The line a session runs: into `cwd`, then the program with `env`. A session keeps its directory
- * between commands, so each one sets it.
- */
-function commandLine(argv: readonly string[], cwd: string, env: Record<string, string>): string {
-  const assignments = Object.entries(env).map(([name, value]) => {
-    if (!isEnvName(name)) {
-      throw new WorkspaceError(
-        'UNSUPPORTED',
-        `${JSON.stringify(name)} is not a valid environment variable name`
-      );
-    }
-    return shellQuote(`${name}=${value}`);
-  });
-  const program =
-    assignments.length > 0
-      ? `env ${assignments.join(' ')} ${shellCommand(argv)}`
-      : shellCommand(argv);
-  return `cd ${shellQuote(cwd)} && ${program}`;
 }

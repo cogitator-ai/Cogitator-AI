@@ -10,20 +10,22 @@ import type {
 import {
   commandError,
   fileError,
-  missingSdk,
+  sdkError,
   setting,
+  throttledKeepAlive,
   unreachable,
   type RemoteSandboxDisposal,
 } from './provider';
 import { RemoteShellWorkspace, type RemoteWorkspaceOptions } from './remote-shell-workspace';
 
 const PROVIDER = 'Vercel Sandbox';
+const DEFAULT_LIFETIME = 30 * 60_000;
 
 export interface VercelSandboxWorkspaceOptions extends RemoteWorkspaceOptions {
   /**
    * Access token, with `teamId` and `projectId` (default: `VERCEL_TOKEN`, `VERCEL_TEAM_ID` and
-   * `VERCEL_PROJECT_ID`). Without them the SDK uses the OIDC token (`VERCEL_OIDC_TOKEN`), as it
-   * has on Vercel and after `vercel env pull`
+   * `VERCEL_PROJECT_ID`). Without them the SDK finds the OIDC token itself: the request's
+   * `x-vercel-oidc-token` header in a Vercel Function, `VERCEL_OIDC_TOKEN` after `vercel env pull`
    */
   token?: string;
   teamId?: string;
@@ -33,18 +35,31 @@ export interface VercelSandboxWorkspaceOptions extends RemoteWorkspaceOptions {
    * one is created with it. Without a name a fresh sandbox is created
    */
   name?: string;
-  /** Runtime image of a created sandbox, e.g. `node24` or `python3.13` (default: Vercel's) */
+  /**
+   * Image a created sandbox starts from, e.g. `vercel/sandbox/node:24` or an image of your
+   * project's registry (default: Vercel's `vercel/sandbox/universal`)
+   */
+  image?: string;
+  /**
+   * Legacy runtime of a created sandbox, e.g. `node24`
+   *
+   * @deprecated Use `image`, as `@vercel/sandbox` does
+   */
   runtime?: string;
-  /** Milliseconds the sandbox runs before Vercel stops it (default: Vercel's 5 minutes) */
+  /**
+   * Milliseconds the sandbox runs before Vercel stops it (default: 30 minutes). The workspace
+   * extends it while it is used, within what your plan allows
+   */
   lifetime?: number;
   /** Virtual CPUs of a created sandbox */
   vcpus?: number;
   /** Ports a created sandbox exposes */
   ports?: number[];
   /**
-   * What `dispose()` does with the sandbox: `destroy` deletes it, `stop` stops it (a named,
-   * persistent sandbox keeps its files for the next run), `keep` leaves it running (default:
-   * `stop` for a named sandbox, `destroy` otherwise)
+   * What `dispose()` does with the sandbox: `destroy` deletes it with the snapshots only it
+   * used, `stop` stops it (a named, persistent sandbox keeps its files for the next run), `keep`
+   * leaves it running (default: `stop` for a named sandbox, `destroy` otherwise). A sandbox
+   * created without a name is not persistent, so it leaves no snapshot behind
    */
   onDispose?: RemoteSandboxDisposal;
 }
@@ -57,7 +72,9 @@ interface VercelCredentials {
 
 interface VercelCreateParams extends Partial<VercelCredentials> {
   name?: string;
+  image?: string;
   runtime?: string;
+  persistent?: boolean;
   timeout?: number;
   ports?: number[];
   resources?: { vcpus: number };
@@ -86,6 +103,7 @@ interface VercelCommand {
 
 interface VercelSandbox {
   readonly name: string;
+  extendTimeout(duration: number): Promise<void>;
   readFileToBuffer(file: { path: string }): Promise<Buffer | null>;
   writeFiles(files: { path: string; content: Uint8Array }[]): Promise<void>;
   runCommand(params: VercelRunParams & { detached: true; stdin: true }): Promise<VercelCommand>;
@@ -95,7 +113,7 @@ interface VercelSandbox {
     stderr(): Promise<string>;
   }>;
   stop(): Promise<unknown>;
-  delete(): Promise<void>;
+  delete(opts?: { deleteOrphanSnapshots?: boolean }): Promise<void>;
 }
 
 /** The part of the `@vercel/sandbox` package the workspace uses. */
@@ -111,19 +129,25 @@ async function loadVercel(): Promise<VercelSandboxModule> {
     const sdk: VercelSandboxModule = await import('@vercel/sandbox');
     return sdk;
   } catch (error) {
-    throw missingSdk('VercelSandboxWorkspace', '@vercel/sandbox', error);
+    throw sdkError('VercelSandboxWorkspace', '@vercel/sandbox', error);
   }
 }
 
 /**
  * A workspace in a [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox): created on first
  * use, or reused by `name`, and deleted (or, when named, stopped) by `dispose()`. The root
- * defaults to `/vercel/sandbox`. Needs the `@vercel/sandbox` package and either an OIDC token
- * (`VERCEL_OIDC_TOKEN`) or an access token with its team and project. See
+ * defaults to `/vercel/sandbox`. Needs the `@vercel/sandbox` package and either Vercel's OIDC
+ * token (found by the SDK) or an access token with its team and project. See
  * {@link RemoteShellWorkspace} for how files and commands behave.
  */
 export class VercelSandboxWorkspace extends RemoteShellWorkspace {
   constructor(options: VercelSandboxWorkspaceOptions = {}) {
+    if (options.image !== undefined && options.runtime !== undefined) {
+      throw new WorkspaceError(
+        'UNSUPPORTED',
+        'VercelSandboxWorkspace takes an image or a runtime, not both'
+      );
+    }
     super({ ...options, driver: new VercelDriver(options) });
   }
 }
@@ -138,11 +162,13 @@ class VercelDriver implements RemoteShellDriver {
     const sdk = await loadVercel();
     const credentials = this.credentials();
     const o = this.options;
+    const lifetime = o.lifetime ?? DEFAULT_LIFETIME;
     const params: VercelCreateParams = {
       ...credentials,
       ...(o.name !== undefined && { name: o.name }),
+      ...(o.image !== undefined && { image: o.image }),
       ...(o.runtime !== undefined && { runtime: o.runtime }),
-      ...(o.lifetime !== undefined && { timeout: o.lifetime }),
+      timeout: lifetime,
       ...(o.ports && { ports: o.ports }),
       ...(o.vcpus !== undefined && { resources: { vcpus: o.vcpus } }),
     };
@@ -150,17 +176,18 @@ class VercelDriver implements RemoteShellDriver {
       const sandbox =
         o.name !== undefined
           ? await sdk.Sandbox.getOrCreate({ ...params, resume: true })
-          : await sdk.Sandbox.create(params);
+          : await sdk.Sandbox.create({ ...params, persistent: false });
       return new VercelConnection(
         sandbox,
-        o.onDispose ?? (o.name !== undefined ? 'stop' : 'destroy')
+        o.onDispose ?? (o.name !== undefined ? 'stop' : 'destroy'),
+        lifetime
       );
     } catch (error) {
       throw unreachable(PROVIDER, error);
     }
   }
 
-  /** The access token triple when one is configured, `{}` to let the SDK use OIDC. */
+  /** The access token triple when one is configured, `{}` to let the SDK find the OIDC token. */
   private credentials(): Partial<VercelCredentials> {
     const token = setting(this.options.token, 'VERCEL_TOKEN');
     const teamId = setting(this.options.teamId, 'VERCEL_TEAM_ID');
@@ -177,24 +204,21 @@ class VercelDriver implements RemoteShellDriver {
         `VercelSandboxWorkspace needs a token, a team and a project together, missing: ${missing.join(', ')}`
       );
     }
-    if (!setting(undefined, 'VERCEL_OIDC_TOKEN')) {
-      throw new WorkspaceError(
-        'UNAVAILABLE',
-        'VercelSandboxWorkspace needs credentials: set VERCEL_OIDC_TOKEN (vercel env pull), or VERCEL_TOKEN, VERCEL_TEAM_ID and VERCEL_PROJECT_ID'
-      );
-    }
     return {};
   }
 }
 
 class VercelConnection implements RemoteShellConnection {
   readonly sandboxId: string;
+  readonly keepAlive: () => Promise<void>;
 
   constructor(
     private readonly sandbox: VercelSandbox,
-    private readonly disposal: RemoteSandboxDisposal
+    private readonly disposal: RemoteSandboxDisposal,
+    lifetime: number
   ) {
     this.sandboxId = sandbox.name;
+    this.keepAlive = throttledKeepAlive(lifetime, () => sandbox.extendTimeout(lifetime / 2));
   }
 
   async readFile(path: string): Promise<Uint8Array> {
@@ -202,7 +226,7 @@ class VercelConnection implements RemoteShellConnection {
     try {
       content = await this.sandbox.readFileToBuffer({ path });
     } catch (error) {
-      throw fileError(PROVIDER, path, error);
+      throw fileError(PROVIDER, path, error, false);
     }
     if (content === null) throw new WorkspaceError('NOT_FOUND', `${path} does not exist`, { path });
     return content;
@@ -212,7 +236,7 @@ class VercelConnection implements RemoteShellConnection {
     try {
       await this.sandbox.writeFiles([{ path, content }]);
     } catch (error) {
-      throw fileError(PROVIDER, path, error);
+      throw fileError(PROVIDER, path, error, false);
     }
   }
 
@@ -277,7 +301,8 @@ class VercelConnection implements RemoteShellConnection {
   }
 
   async close(): Promise<void> {
-    if (this.disposal === 'destroy') await this.sandbox.delete().catch(() => undefined);
-    else if (this.disposal === 'stop') await this.sandbox.stop().catch(() => undefined);
+    if (this.disposal === 'destroy') {
+      await this.sandbox.delete({ deleteOrphanSnapshots: true }).catch(() => undefined);
+    } else if (this.disposal === 'stop') await this.sandbox.stop().catch(() => undefined);
   }
 }

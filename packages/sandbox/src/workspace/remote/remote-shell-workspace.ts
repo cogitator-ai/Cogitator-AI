@@ -38,8 +38,15 @@ const DEFAULT_MAX_FILE_BYTES = 10 * 1024 * 1024;
 const DEFAULT_EXEC_TIMEOUT = 120_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
 const DEFAULT_KILL_GRACE = 2_000;
+const DEFAULT_MAX_STREAM_BYTES = 64 * 1024 * 1024;
+const DEFAULT_MAX_SNAPSHOT_BYTES = 1024 * 1024 * 1024;
 const INTERNAL_TIMEOUT = 10 * 60_000;
+const KEEP_ALIVE_INTERVAL = 60_000;
 const STDIO_GRACE = 200;
+/** Exit code of a command stopped with SIGTERM (128 + 15), what a command stopped for its output reports. */
+const STOPPED_EXIT_CODE = 143;
+/** What `setsid -w` prints when the command it waits for was killed by a signal. */
+const SETSID_NOTE = /^setsid: child \d+ did not exit normally[^\n]*\n?/gm;
 const PROVIDER_TIMEOUT_MARGIN = 10_000;
 const SERVICE_DIR = '.cogitator';
 const TRASH_DIR = `${SERVICE_DIR}/trash`;
@@ -72,6 +79,18 @@ export interface RemoteWorkspaceOptions {
   killGrace?: number;
   /** What happens to processes a command leaves in the background, when the call does not say (default: `kill`) */
   background?: 'kill' | 'keep';
+  /**
+   * Bytes a command may print (stdout and stderr together) before it is stopped like on a
+   * timeout, with `truncated` set and exit code 143 (default: 64 MiB). The providers' SDKs keep
+   * a command's whole output in memory, E2B's even when it is streamed, so endless output
+   * (`yes`, a log tail) would otherwise grow without bound
+   */
+  maxStreamBytes?: number;
+  /**
+   * Bytes of files a snapshot may hold, refused with `TOO_LARGE` beyond (default: 1 GiB).
+   * Exclude what can be rebuilt (`node_modules/**`, build output) to stay under it
+   */
+  maxSnapshotBytes?: number;
 }
 
 export interface RemoteShellWorkspaceOptions extends RemoteWorkspaceOptions {
@@ -90,6 +109,13 @@ interface RemoteState {
   running: number;
   /** Process groups of commands that may still have processes */
   groups: Set<number>;
+}
+
+interface TreeEntry {
+  type: WorkspaceEntryType;
+  size: number;
+  key: string;
+  name: string;
 }
 
 interface ScriptResult {
@@ -118,14 +144,17 @@ const snapshotRecordSchema = z.object({
  * they land outside. The sandbox is the security boundary: a command can reach any file of the
  * sandbox anyway, so the check keeps the file tools in the root rather than guarding the machine.
  *
- * Each command runs in a session and process group of its own (`setsid`), and a timeout or an
- * abort sends SIGTERM to the group, SIGKILL after `killGrace`. Like `LocalWorkspace`, `remove`
- * and `rename` are refused with `BUSY` while a command of the workspace still runs or left
- * processes in the background.
+ * Each command runs in a session and process group of its own (`setsid`), and a timeout, an abort
+ * or output past `maxStreamBytes` sends SIGTERM to the group, SIGKILL after `killGrace`. A process
+ * that starts a session of its own (`setsid`) leaves the group and lives on until the sandbox
+ * goes. Like `LocalWorkspace`, `remove` and `rename` are refused with `BUSY` while a command of
+ * the workspace still runs or left processes in the background.
  *
  * Snapshots are tar archives in `.cogitator/snapshots` inside the sandbox: they live and die with
- * it. The workspace starts itself on first use, `dispose()` kills the processes its commands left
- * running and releases the sandbox as the provider's options say.
+ * it, and always leave `.cogitator/**` out, whatever `exclude` adds. The workspace starts itself
+ * on first use, keeps the sandbox alive while it is used (where the provider has a lifetime),
+ * and `dispose()` kills the processes its commands left running and releases the sandbox as the
+ * provider's options say.
  */
 export class RemoteShellWorkspace implements Workspace {
   readonly id: string;
@@ -139,6 +168,8 @@ export class RemoteShellWorkspace implements Workspace {
   private readonly maxOutputBytes: number;
   private readonly killGrace: number;
   private readonly background: 'kill' | 'keep';
+  private readonly maxStreamBytes: number;
+  private readonly maxSnapshotBytes: number;
   private readonly state: RemoteState;
 
   constructor(options: RemoteShellWorkspaceOptions) {
@@ -160,6 +191,16 @@ export class RemoteShellWorkspace implements Workspace {
     );
     this.killGrace = positive(options.killGrace, DEFAULT_KILL_GRACE, 'killGrace');
     this.background = options.background ?? 'kill';
+    this.maxStreamBytes = positive(
+      options.maxStreamBytes,
+      DEFAULT_MAX_STREAM_BYTES,
+      'maxStreamBytes'
+    );
+    this.maxSnapshotBytes = positive(
+      options.maxSnapshotBytes,
+      DEFAULT_MAX_SNAPSHOT_BYTES,
+      'maxSnapshotBytes'
+    );
     this.state = { disposed: false, running: 0, groups: new Set() };
   }
 
@@ -218,19 +259,28 @@ export class RemoteShellWorkspace implements Workspace {
   async readBytes(path: string, options: WorkspaceReadOptions = {}): Promise<Uint8Array> {
     const limit = positive(options.maxBytes, this.maxFileBytes, 'maxBytes');
     const target = await this.lexical(path);
-    const { code, stdout } = await this.script(
-      scripts.READ,
-      [target, String(Math.floor(limit))],
-      path
-    );
+    await this.ensureService();
+    const copy = this.servicePath(PENDING_DIR, `read-${randomUUID().replace(/-/g, '')}`);
+    const { code, stdout } = await this.script(scripts.READ, [target, integer(limit), copy], path);
     if (code === SCRIPT_EXIT.tooLarge) throw tooLarge(path, Number(stdout), limit);
     this.check(code, path);
-    const connection = await this.ready();
-    const bytes = await connection.readFile(stdout).catch((error: unknown) => {
-      throw ioError(path, error);
-    });
-    if (bytes.byteLength > limit) throw tooLarge(path, bytes.byteLength, limit);
-    return bytes;
+    try {
+      const connection = await this.ready();
+      const bytes = await connection.readFile(copy).catch((error: unknown) => {
+        throw new WorkspaceError(
+          'IO',
+          `Could not read ${path} from the sandbox: ${message(error)}`,
+          {
+            path,
+            cause: error,
+          }
+        );
+      });
+      if (bytes.byteLength > limit) throw tooLarge(path, bytes.byteLength, limit);
+      return bytes;
+    } finally {
+      await this.script(scripts.DISCARD, [copy], path).catch(() => undefined);
+    }
   }
 
   async write(
@@ -248,26 +298,44 @@ export class RemoteShellWorkspace implements Workspace {
     const upload = await this.upload(bytes, path);
     const { code } = await this.script(
       scripts.COMMIT_WRITE,
-      [target, upload, options.createParents === false ? '0' : '1', options.force ? '1' : '0'],
+      [
+        target,
+        upload,
+        options.createParents === false ? '0' : '1',
+        options.force ? '1' : '0',
+        String(bytes.byteLength),
+      ],
       path
     );
+    if (code === SCRIPT_EXIT.uploadChanged) {
+      throw new WorkspaceError('IO', `${path}: the upload changed before it was moved into place`, {
+        path,
+      });
+    }
     this.check(code, path);
   }
 
   async list(path = '.', options: WorkspaceListOptions = {}): Promise<WorkspaceEntry[]> {
     const target = await this.lexical(path);
+    const remoteLimit =
+      options.limit === undefined || options.glob ? '' : integer(Math.max(0, options.limit));
     const { code, stdout } = await this.script(
       scripts.LIST,
-      [target, ...findExpression(options)],
+      [target, remoteLimit, ...findExpression(options)],
       path
     );
     this.check(code, path);
-    const fields = stdout.split('\0');
-    const base = fields[0] ?? '.';
+    const records = stdout.split('\0');
+    const base = records[0] ?? '.';
     const matches = options.glob ? workspaceGlobMatcher(options.glob) : undefined;
     const entries: { segments: string[]; entry: WorkspaceEntry }[] = [];
-    for (let i = 1; i + 3 < fields.length; i += 4) {
-      const relToList = fields[i + 3];
+    for (const record of records.slice(1)) {
+      const fields = record.split('\u0001');
+      if (fields.length < 4) continue;
+      const modified = fields.pop();
+      const size = fields.pop();
+      const type = fields.pop();
+      const relToList = fields.join('\u0001').replaceAll('\u0002', '/');
       if (matches && !matches(relToList)) continue;
       const segments = relToList.split('/');
       entries.push({
@@ -275,9 +343,9 @@ export class RemoteShellWorkspace implements Workspace {
         entry: {
           name: segments[segments.length - 1],
           path: base === '.' ? relToList : `${base}/${relToList}`,
-          type: entryType(fields[i]),
-          size: Number(fields[i + 1]),
-          modifiedAt: Number(fields[i + 2]) * 1000,
+          type: entryType(type),
+          size: Number(size),
+          modifiedAt: Number(modified) * 1000,
         },
       });
     }
@@ -384,6 +452,11 @@ export class RemoteShellWorkspace implements Workspace {
     const cwd = await this.lexical(cwdPath);
     const connection = await this.ready();
     this.state.running++;
+    const keepAlive = setInterval(
+      () => void connection.keepAlive?.().catch(() => undefined),
+      KEEP_ALIVE_INTERVAL
+    );
+    keepAlive.unref();
     try {
       return await this.run(connection, command, {
         cwd,
@@ -397,16 +470,20 @@ export class RemoteShellWorkspace implements Workspace {
         onStderr: options.onStderr,
       });
     } finally {
+      clearInterval(keepAlive);
       this.state.running--;
     }
   }
 
   /**
-   * Records the files of the root, but for what `exclude` (default: `.cogitator/**`) leaves out,
-   * as a tar archive in `.cogitator/snapshots` inside the sandbox.
+   * Records the files of the root as a tar archive in `.cogitator/snapshots` inside the sandbox,
+   * but for what `exclude` leaves out, and always `.cogitator/**`. Refused with `TOO_LARGE` when
+   * the files are over `maxSnapshotBytes`.
    */
   async snapshot(options: WorkspaceSnapshotOptions = {}): Promise<WorkspaceSnapshot> {
-    const exclude = [...(options.exclude ?? WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE)];
+    const exclude = [
+      ...new Set([...WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE, ...(options.exclude ?? [])]),
+    ];
     const record: WorkspaceSnapshot = {
       id: `snap_${Date.now().toString(36)}_${randomUUID().replace(/-/g, '').slice(0, 8)}`,
       workspaceId: this.id,
@@ -417,24 +494,38 @@ export class RemoteShellWorkspace implements Workspace {
     };
     await this.ensureService();
     const excluded = excludedBy(exclude);
-    const kept = (await this.tree()).filter((entry) => !excluded(entry.path));
-    const directories = kept.filter((entry) => entry.type === 'directory');
-    await this.writeRaw(
-      this.servicePath(SNAPSHOT_DIR, `${record.id}.dirs`),
-      nulList(directories.map((entry) => entry.path)),
-      'snapshot'
+    const kept = (await this.tree()).filter((entry) => !excluded(entry.name));
+    const bytes = kept.reduce(
+      (sum, entry) => sum + (entry.type === 'directory' ? 0 : entry.size),
+      0
     );
-    await this.writeRaw(
-      this.servicePath(SNAPSHOT_DIR, `${record.id}.list`),
-      nulList(kept.map((entry) => entry.path)),
-      'snapshot'
-    );
-    const { code } = await this.script(
-      scripts.SNAPSHOT_CREATE,
-      [record.id, JSON.stringify(record)],
-      'snapshot'
-    );
-    this.check(code, 'snapshot');
+    if (bytes > this.maxSnapshotBytes) {
+      throw new WorkspaceError(
+        'TOO_LARGE',
+        `A snapshot would hold ${bytes} bytes, over the limit of ${this.maxSnapshotBytes} bytes: exclude what can be rebuilt (node_modules/**, build output) or raise maxSnapshotBytes`
+      );
+    }
+    try {
+      await this.writeRaw(
+        this.servicePath(SNAPSHOT_DIR, `${record.id}.dirs`),
+        nulList(kept.filter((entry) => entry.type === 'directory').map((entry) => entry.key)),
+        'snapshot'
+      );
+      await this.writeRaw(
+        this.servicePath(SNAPSHOT_DIR, `${record.id}.list`),
+        nulList(kept.map((entry) => entry.key)),
+        'snapshot'
+      );
+      const { code } = await this.script(
+        scripts.SNAPSHOT_CREATE,
+        [record.id, JSON.stringify(record)],
+        'snapshot'
+      );
+      this.check(code, 'snapshot');
+    } catch (error) {
+      await this.script(scripts.SNAPSHOT_DISCARD, [record.id], 'snapshot').catch(() => undefined);
+      throw error;
+    }
     return record;
   }
 
@@ -450,11 +541,11 @@ export class RemoteShellWorkspace implements Workspace {
     const files: string[] = [];
     const dirs: string[] = [];
     for (const entry of await this.tree()) {
-      if (excluded(entry.path)) continue;
+      if (excluded(entry.name)) continue;
       if (entry.type === 'directory') {
-        if (!savedDirectories.has(entry.path)) dirs.push(entry.path);
-      } else if (!saved.has(entry.path) || savedDirectories.has(entry.path)) {
-        files.push(entry.path);
+        if (!savedDirectories.has(entry.key)) dirs.push(entry.key);
+      } else if (!saved.has(entry.key) || savedDirectories.has(entry.key)) {
+        files.push(entry.key);
       }
     }
     dirs.sort((a, b) => depth(b) - depth(a));
@@ -502,24 +593,36 @@ export class RemoteShellWorkspace implements Workspace {
     return record;
   }
 
-  /** The paths (`list`) or the directories (`dirs`) a snapshot holds. */
+  /**
+   * The paths (`list`) or the directories (`dirs`) a snapshot holds, each as its bytes in a
+   * `latin1` string, so names that are not UTF-8 compare as they are.
+   */
   private async savedPaths(id: string, kind: 'list' | 'dirs'): Promise<Set<string>> {
     const bytes = await this.readRaw(this.servicePath(SNAPSHOT_DIR, `${id}.${kind}`));
     const paths = new Set<string>();
-    for (const name of Buffer.from(bytes).toString('utf8').split('\0')) {
+    for (const name of Buffer.from(bytes).toString('latin1').split('\0')) {
       if (name.startsWith('./')) paths.add(name.slice(2));
     }
     return paths;
   }
 
-  /** Everything under the root, but the workspace's pending files and snapshots, parents first. */
-  private async tree(): Promise<{ type: WorkspaceEntryType; path: string }[]> {
+  /**
+   * Everything under the root, but the workspace's pending files and snapshots, parents first:
+   * `key` is the path's bytes as a `latin1` string, `name` the path read as UTF-8 (for globs).
+   */
+  private async tree(): Promise<TreeEntry[]> {
     const { code, stdout } = await this.script(scripts.SNAPSHOT_TREE, [], 'snapshot');
     this.check(code, 'snapshot');
-    const fields = stdout.split('\0');
-    const entries: { type: WorkspaceEntryType; path: string }[] = [];
-    for (let i = 0; i + 1 < fields.length; i += 2) {
-      entries.push({ type: entryType(fields[i]), path: fields[i + 1] });
+    const fields = Buffer.from(stdout.trim(), 'hex').toString('latin1').split('\0');
+    const entries: TreeEntry[] = [];
+    for (let i = 0; i + 2 < fields.length; i += 3) {
+      const key = fields[i + 2];
+      entries.push({
+        type: entryType(fields[i]),
+        size: Number(fields[i + 1]),
+        key,
+        name: Buffer.from(key, 'latin1').toString('utf8'),
+      });
     }
     return entries;
   }
@@ -546,8 +649,9 @@ export class RemoteShellWorkspace implements Workspace {
     let group: number | undefined;
     let exitCode: number | undefined;
     let cwdCode: number | undefined;
-    let stopReason: 'timeout' | 'abort' | undefined;
+    let stopReason: 'timeout' | 'abort' | 'overflow' | undefined;
     let child: RemoteProcess | undefined;
+    let streamed = 0;
     let releaseRead: () => void = () => undefined;
     const readReleased = new Promise<void>((resolve) => {
       releaseRead = resolve;
@@ -591,20 +695,28 @@ export class RemoteShellWorkspace implements Workspace {
         setTimeout(releaseRead, STDIO_GRACE).unref();
       }
     );
-    const stop = (reason: 'timeout' | 'abort') => {
+    const stop = (reason: 'timeout' | 'abort' | 'overflow') => {
       if (stopReason) return;
       stopReason = reason;
+      if (reason === 'overflow') child?.detach?.();
       if (group === undefined) void child?.kill().catch(() => undefined);
       stopGroup();
       setTimeout(() => void child?.kill().catch(() => undefined), this.killGrace).unref();
       setTimeout(releaseRead, this.killGrace + 1_000).unref();
+    };
+    const take = (chunk: string | Uint8Array, into: (data: Buffer) => void) => {
+      if (stopReason === 'overflow') return;
+      const data = toBuffer(chunk);
+      streamed += data.length;
+      into(data);
+      if (streamed > this.maxStreamBytes) stop('overflow');
     };
     const onAbort = () => stop('abort');
     options.signal?.addEventListener('abort', onAbort, { once: true });
     const timer = setTimeout(() => stop('timeout'), options.timeout);
 
     try {
-      child = await connection
+      const spawning = connection
         .spawn(
           [
             'setsid',
@@ -623,42 +735,60 @@ export class RemoteShellWorkspace implements Workspace {
             stdin: `${token}\n`,
             timeout: options.timeout + this.killGrace + PROVIDER_TIMEOUT_MARGIN,
             background: options.background,
-            onStdout: (chunk) => stdout.push(toBuffer(chunk)),
-            onStderr: (chunk) => markers.push(toBuffer(chunk)),
+            onStdout: (chunk) => take(chunk, (data) => stdout.push(data)),
+            onStderr: (chunk) => take(chunk, (data) => markers.push(data)),
           }
         )
         .catch((error: unknown) => {
           throw ioError('Could not start the command in the sandbox', error);
         });
-      if (stopReason) void child.kill().catch(() => undefined);
       if (options.signal?.aborted) stop('abort');
-      const active = child;
-      let waitError: unknown;
+      child = await Promise.race([spawning, readReleased.then(() => undefined)]);
       let waited: number | undefined;
-      const finished = active.wait().then(
-        (code) => {
-          waited = code;
-        },
-        (error: unknown) => {
-          waitError = error;
-        }
-      );
-      await Promise.race([finished, readReleased]);
-      if (waited === undefined && waitError === undefined) active.detach?.();
+      let waitError: unknown;
+      if (!child) {
+        void spawning.then(
+          (late) => late.kill().catch(() => undefined),
+          () => undefined
+        );
+      } else {
+        if (stopReason === 'overflow') child.detach?.();
+        if (stopReason && group === undefined) void child.kill().catch(() => undefined);
+        const active = child;
+        const finished = active.wait().then(
+          (code) => {
+            waited = code;
+          },
+          (error: unknown) => {
+            waitError = error;
+          }
+        );
+        await Promise.race([finished, readReleased]);
+        active.detach?.();
+      }
       markers.end();
       if (stopReason === 'abort' && options.signal) throw aborted(options.signal);
       if (cwdCode !== undefined) throw cwdError(cwdCode, options.cwdPath);
       const timedOut = stopReason === 'timeout';
-      if (!timedOut && exitCode === undefined && waited === undefined) {
+      if (!stopReason && exitCode === undefined && waited === undefined) {
         throw ioError('The command output stream failed', waitError);
       }
-      const err = stderr.text();
+      let err = stderr.text();
+      if (stopReason) err = err.replace(SETSID_NOTE, '');
+      if (timedOut && !err) err = `Command timed out after ${options.timeout}ms`;
+      if (stopReason === 'overflow') {
+        err += `${err && !err.endsWith('\n') ? '\n' : ''}Command stopped: its output passed ${this.maxStreamBytes} bytes`;
+      }
       return {
         stdout: stdout.text(),
-        stderr: timedOut ? err || `Command timed out after ${options.timeout}ms` : err,
-        exitCode: timedOut ? 124 : (exitCode ?? waited ?? 1),
+        stderr: err,
+        exitCode: timedOut
+          ? 124
+          : stopReason === 'overflow'
+            ? (exitCode ?? STOPPED_EXIT_CODE)
+            : (exitCode ?? waited ?? 1),
         timedOut,
-        truncated: stdout.truncated || stderr.truncated,
+        truncated: stdout.truncated || stderr.truncated || stopReason === 'overflow',
         durationMs: Date.now() - started,
       };
     } finally {
@@ -777,6 +907,7 @@ export class RemoteShellWorkspace implements Workspace {
   /** Runs one of the workspace's scripts, its exit code and stdout the answer. */
   private async script(body: string, args: string[], path: string): Promise<ScriptResult> {
     const connection = await this.ready();
+    void connection.keepAlive?.().catch(() => undefined);
     const result = await connection
       .run(['sh', '-c', body, 'cogitator', this.root, ...args], {
         cwd: this.root,
@@ -916,12 +1047,12 @@ function snapshotMissing(snapshotId: string): WorkspaceError {
 }
 
 /**
- * The `find` expression that prints a listing's entries (type, size, modification time, path
- * relative to the listed directory, NUL-separated): hidden entries left out unless asked, and
- * `skipDirs` listed but not entered.
+ * The `find` expression that prints a listing's entries (path relative to the listed directory,
+ * type, size and modification time, SOH-separated, each entry ended by a NUL): hidden entries
+ * left out unless asked, and `skipDirs` listed but not entered.
  */
 function findExpression(options: WorkspaceListOptions): string[] {
-  const format = '%y\\0%s\\0%T@\\0%P\\0';
+  const format = '%P\\001%y\\001%s\\001%T@\\0';
   const expression: string[] = options.recursive ? [] : ['-maxdepth', '1'];
   if (!options.includeHidden) expression.push('(', '-name', '.*', '-prune', ')', '-o');
   const skip = options.skipDirs ?? [];
@@ -962,8 +1093,14 @@ function depth(path: string): number {
   return count;
 }
 
-function nulList(paths: readonly string[]): Buffer {
-  return Buffer.from(paths.map((path) => `./${path}\0`).join(''), 'utf8');
+/** Paths given as `latin1` strings of their bytes, as a NUL-separated list of `./path`. */
+function nulList(keys: readonly string[]): Buffer {
+  return Buffer.from(keys.map((key) => `./${key}\0`).join(''), 'latin1');
+}
+
+/** A byte limit as the integer a shell compares, never in exponent notation. */
+function integer(value: number): string {
+  return String(Math.min(Math.floor(value), Number.MAX_SAFE_INTEGER));
 }
 
 function compareSegments(a: readonly string[], b: readonly string[]): number {

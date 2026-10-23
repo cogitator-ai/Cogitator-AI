@@ -11,8 +11,9 @@ import {
   arrayBufferOf,
   commandError,
   fileError,
-  missingSdk,
+  sdkError,
   setting,
+  throttledKeepAlive,
   unreachable,
   type RemoteSandboxDisposal,
 } from './provider';
@@ -30,8 +31,9 @@ export interface E2BWorkspaceOptions extends RemoteWorkspaceOptions {
   /** Connect to this running (or paused) sandbox instead of creating one */
   sandboxId?: string;
   /**
-   * Milliseconds the sandbox lives before E2B kills it, counted from its creation (default:
-   * 30 minutes). Your E2B plan caps it
+   * Milliseconds the sandbox lives without being used before E2B kills it (default: 30
+   * minutes). The workspace pushes the end back while it is used, also for a sandbox it connects
+   * to. Your E2B plan caps it
    */
   lifetime?: number;
   /** Metadata attached to a created sandbox */
@@ -57,6 +59,10 @@ interface E2BConnectionOptions {
 interface E2BCreateOptions extends E2BConnectionOptions {
   timeoutMs?: number;
   metadata?: Record<string, string>;
+}
+
+interface E2BConnectOptions extends E2BConnectionOptions {
+  timeoutMs?: number;
 }
 
 interface E2BCommandResult {
@@ -94,16 +100,18 @@ interface E2BSandbox {
     ): Promise<E2BCommandHandle>;
     run(cmd: string, opts: E2BRunOptions & { background?: false }): Promise<E2BCommandResult>;
   };
-  kill(): Promise<boolean>;
+  kill(): Promise<unknown>;
+  setTimeout(timeoutMs: number): Promise<void>;
 }
 
 /** The part of the `e2b` package the workspace uses. */
 export interface E2BModule {
   Sandbox: {
     create(template: string, opts?: E2BCreateOptions): Promise<E2BSandbox>;
-    connect(sandboxId: string, opts?: E2BConnectionOptions): Promise<E2BSandbox>;
+    connect(sandboxId: string, opts?: E2BConnectOptions): Promise<E2BSandbox>;
   };
   CommandExitError: abstract new (...args: never[]) => E2BCommandResult;
+  FileNotFoundError: abstract new (...args: never[]) => Error;
 }
 
 async function loadE2B(): Promise<E2BModule> {
@@ -111,15 +119,16 @@ async function loadE2B(): Promise<E2BModule> {
     const sdk: E2BModule = await import('e2b');
     return sdk;
   } catch (error) {
-    throw missingSdk('E2BWorkspace', 'e2b', error);
+    throw sdkError('E2BWorkspace', 'e2b', error);
   }
 }
 
 /**
  * A workspace in an [E2B](https://e2b.dev) sandbox: created from `template` on first use (or
  * connected to by `sandboxId`) and killed by `dispose()`. The root defaults to `/home/user`.
- * Needs the `e2b` package and an API key (`E2B_API_KEY`). See {@link RemoteShellWorkspace} for
- * how files and commands behave.
+ * Needs the `e2b` package (2.28.1 or later, which itself needs Node.js 22.19 or later from 2.59)
+ * and an API key (`E2B_API_KEY`). See {@link RemoteShellWorkspace} for how files and commands
+ * behave.
  *
  * @example
  * ```ts
@@ -160,16 +169,17 @@ class E2BDriver implements RemoteShellDriver {
       }),
     };
     const existing = this.options.sandboxId;
+    const lifetime = this.options.lifetime ?? DEFAULT_LIFETIME;
     try {
       const sandbox = existing
-        ? await sdk.Sandbox.connect(existing, connection)
+        ? await sdk.Sandbox.connect(existing, { ...connection, timeoutMs: lifetime })
         : await sdk.Sandbox.create(this.options.template ?? 'base', {
             ...connection,
-            timeoutMs: this.options.lifetime ?? DEFAULT_LIFETIME,
+            timeoutMs: lifetime,
             ...(this.options.metadata && { metadata: this.options.metadata }),
           });
       const disposal = this.options.onDispose ?? (existing ? 'keep' : 'destroy');
-      return new E2BConnection(sdk, sandbox, disposal);
+      return new E2BConnection(sdk, sandbox, disposal, lifetime);
     } catch (error) {
       throw unreachable(PROVIDER, error);
     }
@@ -178,20 +188,23 @@ class E2BDriver implements RemoteShellDriver {
 
 class E2BConnection implements RemoteShellConnection {
   readonly sandboxId: string;
+  readonly keepAlive: () => Promise<void>;
 
   constructor(
     private readonly sdk: E2BModule,
     private readonly sandbox: E2BSandbox,
-    private readonly disposal: 'destroy' | 'keep'
+    private readonly disposal: 'destroy' | 'keep',
+    lifetime: number
   ) {
     this.sandboxId = sandbox.sandboxId;
+    this.keepAlive = throttledKeepAlive(lifetime, () => sandbox.setTimeout(lifetime));
   }
 
   async readFile(path: string): Promise<Uint8Array> {
     try {
       return await this.sandbox.files.read(path, { format: 'bytes' });
     } catch (error) {
-      throw fileError(PROVIDER, path, error);
+      throw fileError(PROVIDER, path, error, error instanceof this.sdk.FileNotFoundError);
     }
   }
 
@@ -199,7 +212,7 @@ class E2BConnection implements RemoteShellConnection {
     try {
       await this.sandbox.files.write(path, arrayBufferOf(content));
     } catch (error) {
-      throw fileError(PROVIDER, path, error);
+      throw fileError(PROVIDER, path, error, false);
     }
   }
 
@@ -260,6 +273,6 @@ class E2BConnection implements RemoteShellConnection {
   }
 
   async close(): Promise<void> {
-    if (this.disposal === 'destroy') await this.sandbox.kill().catch(() => false);
+    if (this.disposal === 'destroy') await this.sandbox.kill().catch(() => undefined);
   }
 }

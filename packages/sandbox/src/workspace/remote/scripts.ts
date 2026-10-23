@@ -2,8 +2,9 @@
  * The shell scripts a `RemoteShellWorkspace` runs in its sandbox. Each one runs as
  * `sh -c <script> cogitator <root> <args...>` with every argument a separate word, so no path
  * is ever parsed by the shell, and reports what went wrong with an exit code of
- * {@link SCRIPT_EXIT}. They need GNU coreutils (`realpath -m`, `stat -c`, `mv -T`), GNU
- * findutils (`find -printf`), GNU tar and util-linux `setsid`, which `START` checks.
+ * {@link SCRIPT_EXIT}. They need GNU coreutils (`realpath -m`, `stat -c`, `mv -T`, `head -z`,
+ * `sort -z`), GNU findutils (`find -printf`), GNU tar and util-linux `setsid`, which `START`
+ * checks.
  */
 
 /** Exit codes of the scripts, each one a `WorkspaceError` code for the path it is about. */
@@ -24,16 +25,40 @@ export const SCRIPT_EXIT = {
   rootPath: 55,
   internalTarget: 56,
   notRegular: 57,
+  uploadChanged: 58,
   missingTools: 60,
 } as const;
 
 const E = SCRIPT_EXIT;
 
 /**
+ * `leaders` sets `L` to the process groups that still lead their own session (` 12 34 `): a
+ * group a command's `setsid` wrapper made keeps its id as its session id, so an id the system
+ * gave to an unrelated process since is not taken for it. Without `/proc` every group given is
+ * taken as alive.
+ */
+const GROUPS = `leaders() {
+  L=' '
+  if ! [ -r /proc/self/stat ]; then
+    for g in "$@"; do L="$L$g "; done
+    return 0
+  fi
+  for f in /proc/[0-9]*/stat; do
+    { IFS= read -r l < "$f"; } 2>/dev/null || continue
+    l=\${l##*\\) }
+    set -- $l
+    [ "$3" = "$4" ] && L="$L$3 "
+  done
+  return 0
+}
+`;
+
+/**
  * Helpers every script starts with. `resolve <abs> <follow>` sets `p` to the path with its
  * symlinks resolved (all of them, or all but the last component) and `rel` to it relative to the
  * root, and fails when it lands outside. A trailing `x` keeps newlines at the end of names that
- * command substitution would strip.
+ * command substitution would strip. `mkdirs` checks the nearest existing ancestor is inside the
+ * root before it creates anything, so nothing is made outside through a symlink.
  */
 const PRELUDE = `root=$1; shift
 canon() {
@@ -65,22 +90,28 @@ internal() {
 present() { [ -e "$1" ] || [ -L "$1" ]; }
 isdir() { [ -d "$1" ] && [ ! -L "$1" ]; }
 hasentries() { [ -n "$(find "$1" -mindepth 1 -maxdepth 1 -print -quit)" ]; }
+inroot() {
+  n=$(realpath -e -- "$1" && printf x) || return 1
+  n=\${n%?x}
+  case $n in "$root"|"$root"/*) return 0 ;; esac
+  return 1
+}
 mkdirs() {
-  mkdir -p -- "$1" 2>/dev/null || {
-    m=$1
-    while ! present "$m"; do m=\${m%/*}; [ -n "$m" ] || m=/; done
-    [ -d "$m" ] || exit ${E.notADirectory}
-    mkdir -p -- "$1" || exit 1
-  }
-  m=$(realpath -e -- "$1" && printf x) || exit 1
-  m=\${m%?x}
-  case $m in "$root"|"$root"/*) ;; *) exit ${E.outside} ;; esac
+  m=$1
+  while ! present "$m"; do m=\${m%/*}; [ -n "$m" ] || m=/; done
+  inroot "$m" || exit ${E.outside}
+  [ -d "$m" ] || exit ${E.notADirectory}
+  mkdir -p -- "$1" || exit 1
+  inroot "$1" || exit ${E.outside}
 }
 gitignore() {
   [ -e "$root/.cogitator/.gitignore" ] || printf '*\\n' > "$root/.cogitator/.gitignore"
 }
-busy() {
-  for g in "$@"; do kill -s 0 -- "-$g" 2>/dev/null && return 0; done
+${GROUPS}busy() {
+  leaders "$@"
+  for g in "$@"; do
+    case $L in *" $g "*) return 0 ;; esac
+  done
   return 1
 }
 `;
@@ -90,17 +121,21 @@ function script(body: string): string {
 }
 
 /**
- * Checks the tools, creates the root when asked (`$1` = 1) and prints the root with its
+ * Checks the tools, creates the root when asked (`$2` = 1) and prints the root with its
  * symlinks resolved. Missing tools are named on stderr.
  */
 export const START = `root=$1
 missing=
-for tool in setsid realpath find stat mv tar xargs mkdir rmdir; do
+for tool in setsid realpath find stat mv tar xargs mkdir rmdir head sort tr od; do
   command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
 if [ -z "$missing" ]; then
   realpath -m / >/dev/null 2>&1 || missing="$missing realpath-m(GNU-coreutils)"
+  stat -c %s / >/dev/null 2>&1 || missing="$missing stat-c(GNU-coreutils)"
+  head -z -n 1 </dev/null >/dev/null 2>&1 || missing="$missing head-z(GNU-coreutils)"
+  sort -z </dev/null >/dev/null 2>&1 || missing="$missing sort-z(GNU-coreutils)"
   find / -maxdepth 0 -printf '' >/dev/null 2>&1 || missing="$missing find-printf(GNU-findutils)"
+  tar --null --no-recursion -cf /dev/null -T /dev/null >/dev/null 2>&1 || missing="$missing GNU-tar"
   setsid -w true >/dev/null 2>&1 || missing="$missing setsid-w(util-linux)"
 fi
 [ -z "$missing" ] || { printf '%s' "$missing" >&2; exit ${E.missingTools}; }
@@ -130,8 +165,9 @@ find "$p" -maxdepth 0 -printf '%y\\0%s\\0%T@\\0' || exit 1
 printf '%s\\0' "$rel"`);
 
 /**
- * `$1` path, `$2` byte limit: prints the resolved path of a regular file within the limit, or
- * its size when it is over.
+ * `$1` path, `$2` byte limit, `$3` a fresh file of `.cogitator/pending`: copies at most one byte
+ * over the limit of the regular file there, so a file that grows meanwhile is caught without
+ * moving more than that. Prints the size when it is over the limit.
  */
 export const READ = script(`resolve "$1" 1 || exit $?
 present "$p" || exit ${E.notFound}
@@ -139,15 +175,24 @@ present "$p" || exit ${E.notFound}
 [ -f "$p" ] || exit ${E.notRegular}
 s=$(stat -c %s -- "$p") || exit 1
 [ "$s" -le "$2" ] || { printf '%s' "$s"; exit ${E.tooLarge}; }
-printf '%s' "$p"`);
+t=$3
+head -c "$(($2 + 1))" -- "$p" > "$t" || { rm -f -- "$t"; exit 1; }
+s=$(stat -c %s -- "$t") || { rm -f -- "$t"; exit 1; }
+[ "$s" -le "$2" ] || { rm -f -- "$t"; printf '%s' "$s"; exit ${E.tooLarge}; }
+exit 0`);
+
+/** `$1` a file of `.cogitator/pending`: removes it. */
+export const DISCARD = script(`case $1 in "$root"/.cogitator/pending/*) rm -f -- "$1" ;; esac
+exit 0`);
 
 /**
- * `$1` path, `$2` the uploaded temporary file, `$3` create parents (1/0), `$4` force (1/0):
- * moves the upload over the file, keeping the mode of the file it replaces. The upload is
- * removed whatever happens.
+ * `$1` path, `$2` the uploaded temporary file, `$3` create parents (1/0), `$4` force (1/0), `$5`
+ * the size uploaded: moves the upload over the file, keeping the mode of the file it replaces.
+ * The upload is removed whatever happens.
  */
 export const COMMIT_WRITE = script(`t=$2
 trap 'rm -f -- "$t"' EXIT
+[ "$(stat -c %s -- "$t" 2>/dev/null)" = "$5" ] || exit ${E.uploadChanged}
 resolve "$1" 1 || exit $?
 [ "$rel" = . ] && exit ${E.isDirectory}
 internal "$rel" && exit ${E.internal}
@@ -168,16 +213,22 @@ case $rel in .cogitator/*) gitignore ;; esac
 mv -f -T -- "$t" "$p" || exit 1`);
 
 /**
- * `$1` directory, then the \`find\` expression that prints its entries: prints the directory
- * relative to the root, then type, size, modification time and path of every entry, NUL-separated.
- * Entries \`find\` cannot read are left out.
+ * `$1` directory, `$2` how many entries at most (empty for all), then the \`find\` expression
+ * that prints its entries as `path SOH type SOH size SOH mtime NUL`: prints the directory relative
+ * to the root and a NUL, then the entries sorted in tree order (each directory's entries right
+ * after it, as \`/\` turned into STX sorts before every other byte), cut at the limit, so a big
+ * tree is never shipped whole. Entries \`find\` cannot read are left out.
  */
 export const LIST = script(`resolve "$1" 1 || exit $?
 present "$p" || exit ${E.notFound}
 [ -d "$p" ] || exit ${E.notADirectory}
-shift
+n=$2; shift 2
 printf '%s\\0' "$rel"
-find "$p" -mindepth 1 "$@" 2>/dev/null
+if [ -n "$n" ]; then
+  find "$p" -mindepth 1 "$@" 2>/dev/null | tr '/' '\\002' | LC_ALL=C sort -z | head -z -n "$n"
+else
+  find "$p" -mindepth 1 "$@" 2>/dev/null | tr '/' '\\002' | LC_ALL=C sort -z
+fi
 exit 0`);
 
 /** `$1` path: creates the directory and its missing parents. */
@@ -259,31 +310,44 @@ sh -c "$2" </dev/null; c=$?
 printf '__cogitator_%s_exit:%s\\n' "$t" "$c" >&2
 exit $c`;
 
-/** `$1` signal name, then process group ids: signals every group, ignoring the gone ones. */
-export const SIGNAL_GROUPS = `s=$1; shift
-for g in "$@"; do kill -s "$s" -- "-$g" 2>/dev/null; done
+/**
+ * `$1` signal name, then process group ids: signals every group that still leads its session,
+ * skipping the gone ones and ids the system gave to another process since.
+ */
+export const SIGNAL_GROUPS = `${GROUPS}s=$1; shift
+leaders "$@"
+for g in "$@"; do
+  case $L in *" $g "*) kill -s "$s" -- "-$g" 2>/dev/null ;; esac
+done
 exit 0`;
 
 /**
- * Prints type and path (relative to the root) of everything in the root, NUL-separated, but for
- * the workspace's own pending files and snapshots.
+ * Prints type, size and path (relative to the root) of everything in the root, NUL-separated and
+ * hex-encoded, so names that are not UTF-8 arrive as they are, but for the workspace's own
+ * pending files and snapshots.
  */
 export const SNAPSHOT_TREE = script(`cd -- "$root" || exit 1
-find . -mindepth 1 \\( -path ./.cogitator/snapshots -o -path ./.cogitator/pending \\) -prune -o -printf '%y\\0%P\\0' 2>/dev/null
+find . -mindepth 1 \\( -path ./.cogitator/snapshots -o -path ./.cogitator/pending \\) -prune -o -printf '%y\\0%s\\0%P\\0' 2>/dev/null | od -An -v -tx1 | tr -d ' \\n'
 exit 0`);
 
 /**
  * `$1` snapshot id, `$2` its record (JSON): archives the paths listed in `<id>.list`, then
- * writes the record, which marks the snapshot complete. Files that vanish meanwhile are skipped.
+ * writes the record, which marks the snapshot complete. Files that vanish meanwhile are skipped,
+ * and a snapshot that fails leaves nothing behind.
  */
 export const SNAPSHOT_CREATE = script(`cd -- "$root/.cogitator/snapshots" || exit 1
 id=$1
-trap 'rm -f -- "$id.tar.part"' EXIT
+trap 'rm -f -- "$id.tar.part" "$id.json.part"; [ -f "$id.json" ] || rm -f -- "$id.list" "$id.dirs" "$id.tar"' EXIT
 tar -C "$root" --null --no-recursion --ignore-failed-read -T "$id.list" -cf "$id.tar.part" 2>/dev/null
 c=$?
-[ "$c" -le 1 ] || { rm -f -- "$id.list" "$id.dirs"; exit 1; }
+{ [ "$c" -le 1 ] && [ -s "$id.tar.part" ]; } || exit 1
 mv -f -- "$id.tar.part" "$id.tar" || exit 1
 printf '%s' "$2" > "$id.json.part" && mv -f -- "$id.json.part" "$id.json" || exit 1`);
+
+/** `$1` snapshot id: removes what an unfinished snapshot left. */
+export const SNAPSHOT_DISCARD = script(`cd -- "$root/.cogitator/snapshots" 2>/dev/null || exit 0
+[ -f "$1.json" ] || rm -f -- "$1.list" "$1.dirs" "$1.tar" "$1.tar.part"
+exit 0`);
 
 /** Prints the records of the snapshots, each followed by a NUL. */
 export const SNAPSHOT_RECORDS = script(`for f in "$root"/.cogitator/snapshots/*.json; do
