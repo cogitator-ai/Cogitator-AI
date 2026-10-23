@@ -218,6 +218,21 @@ try {
 
 The host workspace's root is bind-mounted at `/workspace`. Files are read and written on the host through the host workspace and its path guard, so a symlink a command creates to a path outside the root is refused when read, `remove` and `rename` run in the container, where no symlink reaches the host, and a path under `/workspace` is taken as the same path under the root. The container has the security defaults above, an init process, limits of 2 GB, 2 CPUs and 512 processes unless `resources` sets others, and no network unless `network.mode` allows it (`allowedHosts` is refused, as for the Docker executor). Each command leads a process group of its own, and a timeout or an abort signals that group (SIGTERM, then SIGKILL), so background processes go too, while the container keeps running. The image needs `sh`. Starting removes containers of the same root left behind by a process of this machine that is gone. Without Docker the first command fails with a `WorkspaceError` of code `UNAVAILABLE`.
 
+## Remote workspaces
+
+When the agent's commands should not run on your machine at all, `E2BWorkspace`, `DaytonaWorkspace` and `VercelSandboxWorkspace` put the whole workspace (files and commands) in a cloud sandbox of that provider, created on first use and released in `dispose()`. They need the provider's SDK (`e2b`, `@daytona/sdk`, `@vercel/sandbox`) and its credentials, and behave the same on every provider: path checks, trash, process groups killed on a timeout, and tar snapshots inside the sandbox. See [Remote Workspaces](/docs/tools/remote-workspaces).
+
+```typescript
+import { VercelSandboxWorkspace } from '@cogitator-ai/sandbox';
+
+const workspace = new VercelSandboxWorkspace({ runtime: 'node24' });
+try {
+  await cog.run(agent, { input: 'Run the tests and fix what fails', workspace });
+} finally {
+  await workspace.dispose();
+}
+```
+
 ## Fallback
 
 `SandboxManager` falls back in one case only:

@@ -2,10 +2,9 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { Tool, Workspace } from '@cogitator-ai/types';
+import { workspaceGlobMatcher, type Tool, type Workspace } from '@cogitator-ai/types';
 import { LocalWorkspace } from '../workspace/local-workspace';
 import { workspaceTools, WORKSPACE_TOOL_NAMES } from '../tools/workspace-tools';
-import { globMatcher } from '../workspace/glob';
 import { builtinTools } from '../tools/index';
 import { createToolContext } from './helpers/tool-context';
 
@@ -289,7 +288,7 @@ describe('workspaceTools on hard inputs', () => {
   });
 });
 
-describe('globMatcher', () => {
+describe('workspaceGlobMatcher', () => {
   it.each([
     ['*.ts', 'a.ts', true],
     ['*.ts', 'src/a.ts', false],
@@ -305,6 +304,6 @@ describe('globMatcher', () => {
     ['?.md', 'ab.md', false],
     ['a+b(c).txt', 'a+b(c).txt', true],
   ])('%s matches %s: %s', (glob, path, expected) => {
-    expect(globMatcher(glob)(path)).toBe(expected);
+    expect(workspaceGlobMatcher(glob)(path)).toBe(expected);
   });
 });

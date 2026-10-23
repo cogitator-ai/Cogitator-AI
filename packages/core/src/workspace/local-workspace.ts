@@ -18,6 +18,7 @@ import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } fr
 import { nanoid } from 'nanoid';
 import {
   WorkspaceError,
+  workspaceGlobMatcher,
   type Workspace,
   type WorkspaceEntry,
   type WorkspaceEntryType,
@@ -33,7 +34,6 @@ import {
 } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
 import { trimTrailingSlashes } from '../utils/url';
-import { globMatcher } from './glob';
 import {
   deletePinned,
   pinEntry,
@@ -358,7 +358,7 @@ export class LocalWorkspace implements Workspace {
     if (!info.isDirectory()) {
       throw new WorkspaceError('NOT_A_DIRECTORY', `${path} is not a directory`, { path });
     }
-    const matches = options.glob ? globMatcher(options.glob) : undefined;
+    const matches = options.glob ? workspaceGlobMatcher(options.glob) : undefined;
     const skip = new Set(options.skipDirs ?? []);
     const limit = options.limit ?? Infinity;
     const entries: WorkspaceEntry[] = [];

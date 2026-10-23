@@ -3,6 +3,7 @@
   "pages": [
     "built-in",
     "workspace",
+    "remote-workspaces",
     "wasm-tools",
     "custom-tools",
     "approvals",

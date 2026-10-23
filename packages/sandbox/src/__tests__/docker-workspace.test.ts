@@ -14,12 +14,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { WorkspaceError, type Workspace, type WorkspaceStat } from '@cogitator-ai/types';
 import {
   DockerWorkspace,
-  MarkerScanner,
   ownerLabel,
   WORKSPACE_CONTAINER_LABEL,
   WORKSPACE_OWNER_LABEL,
   WORKSPACE_ROOT_LABEL,
 } from '../workspace/docker-workspace';
+import { MarkerScanner } from '../workspace/exec-stream';
 import { createSandboxContainer } from '../pool/container-pool';
 import { dockerConnectionCandidates } from '../utils/docker-connection';
 import type { Docker } from '../docker-types';

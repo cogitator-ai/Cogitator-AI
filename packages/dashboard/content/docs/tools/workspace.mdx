@@ -1,16 +1,17 @@
 ---
 title: Workspace
-description: Give an agent one directory to work in, with file tools and commands that cannot leave it, locally or in a Docker container, and long tool results saved there instead of lost.
+description: Give an agent one directory to work in, with file tools and commands that cannot leave it, locally, in a Docker container or in a cloud sandbox, and long tool results saved there instead of lost.
 ---
 
 ## Overview
 
 A `Workspace` is the directory an agent works in. It reads, writes, lists and runs commands, and every path it takes is relative to its root: `..`, an absolute path elsewhere and a symlink that points out are refused with a `WorkspaceError` of code `OUTSIDE_ROOT`.
 
-Two implementations ship:
+These implementations ship:
 
 - `LocalWorkspace` from `@cogitator-ai/core`: a directory of this machine, commands run as your process.
 - `DockerWorkspace` from `@cogitator-ai/sandbox`: the same files, commands run in one long-lived container.
+- `E2BWorkspace`, `DaytonaWorkspace` and `VercelSandboxWorkspace` from `@cogitator-ai/sandbox`: files and commands in a cloud sandbox, see [Remote Workspaces](/docs/tools/remote-workspaces).
 
 Hand a workspace to an agent (or to one run) and the tools get it as `context.workspace`. `workspaceTools()` gives the agent `read_file`, `write_file`, `edit_file`, `list_files`, `glob`, `grep` and `run_command` on top of it.
 
@@ -35,7 +36,7 @@ await workspace.dispose();
 
 ## Lifecycle
 
-Whoever creates a workspace owns it and calls `dispose()` when done: it kills what commands left running and, for `DockerWorkspace`, removes the container. Both workspaces start themselves on first use. Call `start()` ahead of time to surface errors early (a missing root, no Docker) or to keep the image pull out of the first command. The runtime only uses the workspace it is given, it never starts or disposes one.
+Whoever creates a workspace owns it and calls `dispose()` when done: it kills what commands left running and, for `DockerWorkspace`, removes the container (a remote workspace releases its sandbox). Every workspace starts itself on first use. Call `start()` ahead of time to surface errors early (a missing root, no Docker) or to keep the image pull out of the first command. The runtime only uses the workspace it is given, it never starts or disposes one.
 
 ## Agent or run
 
@@ -136,7 +137,7 @@ What the guard does not stop:
 
 ### Snapshots
 
-`LocalWorkspace` does not implement snapshots. Copying the tree for every checkpoint is too slow for real projects, so they wait for a content-addressed store that keeps each version of a file once. The interface is ready for a checkpoint per user message: `snapshot({ label, metadata, exclude })` returns an `id`, the `workspaceId`, `createdAt` and the globs it left out (`.cogitator/**` by default, so restoring never wipes the trash or saved results), and `listSnapshots()` and `deleteSnapshot(id)` manage what is kept.
+`LocalWorkspace` does not implement snapshots. Copying the tree for every checkpoint is too slow for real projects, so they wait for a content-addressed store that keeps each version of a file once. Remote workspaces implement them as tar archives inside their sandbox, see [Remote Workspaces](/docs/tools/remote-workspaces#same-behavior-on-every-provider). The interface is ready for a checkpoint per user message: `snapshot({ label, metadata, exclude })` returns an `id`, the `workspaceId`, `createdAt` and the globs it left out (`.cogitator/**` by default, so restoring never wipes the trash or saved results), and `listSnapshots()` and `deleteSnapshot(id)` manage what is kept.
 
 ## DockerWorkspace
 

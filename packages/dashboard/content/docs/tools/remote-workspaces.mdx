@@ -1,0 +1,136 @@
+---
+title: Remote Workspaces
+description: Run an agent's workspace in a cloud sandbox on E2B, Daytona or Vercel Sandbox, with the same file tools, commands, trash and snapshots as a local workspace.
+---
+
+## Overview
+
+A remote workspace is a [workspace](/docs/tools/workspace) whose files and commands live in a sandbox of a cloud provider instead of on your machine. The agent's tools work the same, the commands it writes run in a machine you can throw away, and nothing it does reaches your files, your network or your keys.
+
+Three ship in `@cogitator-ai/sandbox`, each on its provider's SDK, an optional peer dependency you install next to it:
+
+| Workspace                | Install           | Credentials                                                                   | Default root      |
+| ------------------------ | ----------------- | ----------------------------------------------------------------------------- | ----------------- |
+| `E2BWorkspace`           | `e2b`             | `E2B_API_KEY`                                                                 | `/home/user`      |
+| `DaytonaWorkspace`       | `@daytona/sdk`    | `DAYTONA_API_KEY` (`DAYTONA_API_URL`, `DAYTONA_TARGET`)                       | `/home/daytona`   |
+| `VercelSandboxWorkspace` | `@vercel/sandbox` | `VERCEL_OIDC_TOKEN`, or `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | `/vercel/sandbox` |
+
+```typescript
+import { Agent, Cogitator, workspaceTools } from '@cogitator-ai/core';
+import { E2BWorkspace } from '@cogitator-ai/sandbox';
+
+const workspace = new E2BWorkspace({ root: 'project', template: 'base' });
+
+const coder = new Agent({
+  name: 'coder',
+  model: 'anthropic/claude-sonnet-5-5',
+  instructions: 'You work on the project in your workspace. Run the tests before you finish.',
+  tools: workspaceTools(),
+  workspace,
+});
+
+const cog = new Cogitator();
+try {
+  await cog.run(coder, { input: 'Clone github.com/acme/parser and make its tests pass' });
+} finally {
+  await workspace.dispose();
+}
+```
+
+## Lifecycle
+
+The sandbox is created on first use, or in `start()`, which also checks the sandbox has the tools the workspace needs. `dispose()` kills what commands left running and then releases the sandbox as `onDispose` says: `destroy` deletes it, `stop` stops it so its files survive (Daytona, Vercel), `keep` leaves it running. A sandbox the workspace created is destroyed by default, one it was pointed at (`sandboxId`, `sandbox`, `name`) is kept, or stopped for a named Vercel sandbox.
+
+```typescript
+const workspace = new DaytonaWorkspace({ sandbox: 'agent-box', onDispose: 'stop' });
+```
+
+Without the SDK, without credentials, or when the provider cannot create the sandbox, `start()` (or the first operation) fails with a `WorkspaceError` of code `UNAVAILABLE` that says which.
+
+## Same behavior on every provider
+
+The drivers do only what the providers do best: create or connect to a sandbox, move bytes in and out, and run a program. Everything else runs as small shell scripts inside the sandbox through `RemoteShellWorkspace`, so the three behave the same:
+
+- **Paths** are normalized against the root, then resolved in the sandbox with every symlink followed (`realpath -m`), and refused with `OUTSIDE_ROOT` when they land outside. A symlink a command made that points out of the root is refused like any other path.
+- **Writes** upload to `.cogitator/pending` and move over the file in one step, keeping its mode. `maxFileBytes` (10 MiB by default) caps reads and writes with code `TOO_LARGE`.
+- **Listing** follows the local rules: entries sorted by name with each directory's contents right after it, hidden entries left out unless `includeHidden`, `skipDirs` listed but not entered, `glob` and `limit` applied after sorting.
+- **`remove` and `rename`** have the local rules for `recursive`, `trash` (into `.cogitator/trash`), `overwrite`, `EXISTS`, `NOT_EMPTY` and nesting. Like `LocalWorkspace` they are refused with `BUSY` while a command of the workspace runs or left processes in the background.
+- **Commands** run under `setsid` as the leader of their own process group, reported with marker lines whose token arrives on stdin, so a command cannot forge them. A timeout returns exit code 124 and kills the group (SIGTERM, then SIGKILL after `killGrace`), an abort rejects with `ABORTED`. `background: 'kill'` (default) ends what a command left running when it exits, `keep` leaves it until `dispose()`. Output is streamed through `onStdout` and `onStderr` and capped at `maxOutputBytes` with `truncated` set.
+- **Snapshots** are tar archives in `.cogitator/snapshots` inside the sandbox. `snapshot({ label, metadata, exclude })` leaves out `.cogitator/**` unless `exclude` says otherwise, `restore(id)` removes what was made since, brings back what changed and leaves the excluded paths alone. They live and die with the sandbox.
+
+The sandbox is the security boundary. A command can read every file of its sandbox anyway, so the path checks keep the agent's file tools in the root rather than guard the machine. The image needs `sh`, GNU coreutils, findutils and tar, and util-linux `setsid`, which the default images of all three providers have. `start()` names whatever is missing.
+
+## Options
+
+Every remote workspace takes these:
+
+| Option           | Default                  | What it does                                              |
+| ---------------- | ------------------------ | --------------------------------------------------------- |
+| `root`           | the provider's directory | Absolute, or relative to the provider's working directory |
+| `createRoot`     | `true`                   | Create the root when it is missing                        |
+| `cwd`            | `.`                      | Where commands run, relative to the root                  |
+| `env`            | none                     | Environment variables every command gets                  |
+| `timeout`        | 120000                   | Milliseconds before a command is stopped                  |
+| `killGrace`      | 2000                     | Milliseconds between SIGTERM and SIGKILL                  |
+| `maxOutputBytes` | 1 MiB                    | Bytes of stdout and of stderr a result keeps              |
+| `maxFileBytes`   | 10 MiB                   | Largest file `read` and `write` accept                    |
+| `background`     | `kill`                   | What happens to background processes by default           |
+
+### E2BWorkspace
+
+| Option           | Default                            | What it does                                   |
+| ---------------- | ---------------------------------- | ---------------------------------------------- |
+| `apiKey`         | `E2B_API_KEY`                      | API key                                        |
+| `template`       | `base`                             | Template the sandbox is created from           |
+| `sandboxId`      | none                               | Connect to a running or paused sandbox instead |
+| `lifetime`       | 30 minutes                         | Milliseconds before E2B kills the sandbox      |
+| `metadata`       | none                               | Metadata of a created sandbox                  |
+| `onDispose`      | `destroy`, `keep` with `sandboxId` | `destroy` or `keep`                            |
+| `domain`         | E2B's cloud                        | Domain of a self-hosted deployment             |
+| `requestTimeout` | the SDK's                          | Milliseconds each request may take             |
+
+### DaytonaWorkspace
+
+| Option                         | Default                                                | What it does                                        |
+| ------------------------------ | ------------------------------------------------------ | --------------------------------------------------- |
+| `apiKey`, `apiUrl`, `target`   | `DAYTONA_API_KEY`, `DAYTONA_API_URL`, `DAYTONA_TARGET` | Credentials and region                              |
+| `sandbox`                      | none                                                   | Reuse a sandbox by id or name, started when stopped |
+| `image` or `snapshot`          | Daytona's default                                      | What a created sandbox runs                         |
+| `resources`                    | Daytona's                                              | `cpu`, `memory` and `disk` of an image sandbox      |
+| `name`, `labels`, `sandboxEnv` | none                                                   | Name, labels and environment of a created sandbox   |
+| `autoStopInterval`             | 15                                                     | Idle minutes before Daytona stops the sandbox       |
+| `startTimeout`                 | 60                                                     | Seconds to wait for the sandbox to start            |
+| `onDispose`                    | `destroy`, `keep` with `sandbox`                       | `destroy`, `stop` or `keep`                         |
+
+Commands run in Daytona sessions, one per command (removed when it ends, kept while it has background processes to keep), and files go through the file API as bytes.
+
+### VercelSandboxWorkspace
+
+| Option                         | Default                                               | What it does                                           |
+| ------------------------------ | ----------------------------------------------------- | ------------------------------------------------------ |
+| `token`, `teamId`, `projectId` | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Access token triple, else the OIDC token               |
+| `name`                         | none                                                  | Reuse the sandbox of that name (resumed), or create it |
+| `runtime`                      | Vercel's                                              | Runtime image, e.g. `node24` or `python3.13`           |
+| `lifetime`                     | Vercel's 5 minutes                                    | Milliseconds the sandbox runs                          |
+| `vcpus`, `ports`               | Vercel's                                              | Size and exposed ports of a created sandbox            |
+| `onDispose`                    | `destroy`, `stop` with `name`                         | `destroy`, `stop` or `keep`                            |
+
+On Vercel `vercel env pull` writes `VERCEL_OIDC_TOKEN` to `.env.local`, and on Vercel itself the token is there already.
+
+## Your own provider
+
+`RemoteShellWorkspace` takes any `RemoteShellDriver`: connect to a sandbox, read and write a file by absolute path, run a program to its end, start one with streamed output and stdin, and release the sandbox. Implement those five on SSH, Modal or your own runner and the workspace brings the rest.
+
+```typescript
+import { RemoteShellWorkspace, type RemoteShellDriver } from '@cogitator-ai/sandbox';
+
+const driver: RemoteShellDriver = {
+  provider: 'my-runner',
+  defaultRoot: '/srv/work',
+  connect: async () => connectToMyRunner(),
+};
+
+const workspace = new RemoteShellWorkspace({ driver, root: 'project' });
+```
+
+`shellQuote` and `shellCommand` turn an argv into a shell line for providers that only take one.

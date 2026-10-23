@@ -1,7 +1,12 @@
-import { WorkspaceError, type Tool, type ToolContext, type Workspace } from '@cogitator-ai/types';
+import {
+  WorkspaceError,
+  workspaceGlobMatcher,
+  type Tool,
+  type ToolContext,
+  type Workspace,
+} from '@cogitator-ai/types';
 import { z } from 'zod';
 import { tool } from '../tool';
-import { globMatcher } from '../workspace/glob';
 import { RegexWorker } from './regex-worker';
 
 const DEFAULT_READ_LINES = 2000;
@@ -354,7 +359,7 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
         );
       }
       const target = await call(() => ws.stat(path));
-      const matchesGlob = fileGlob ? globMatcher(fileGlob) : undefined;
+      const matchesGlob = fileGlob ? workspaceGlobMatcher(fileGlob) : undefined;
       const listLimit = MAX_GREP_FILES * 4;
       const listed =
         target.type === 'file'

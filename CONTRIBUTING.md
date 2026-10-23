@@ -209,14 +209,15 @@ pnpm lint         # lint package sources
 - **Unit tests** live next to the code: `packages/<package>/src/__tests__/*.test.ts` (Vitest; `tetsu` uses `bun test`).
 - **End-to-end tests** live in `packages/e2e/src/__tests__/<package>/*.e2e.ts` and run against real providers and services. Each suite is enabled by environment variables and skipped otherwise:
 
-  | Variable                                 | Enables                                   |
-  | ---------------------------------------- | ----------------------------------------- |
-  | `TEST_OLLAMA=true`, `TEST_MODEL`         | Local Ollama runs (default `gpt-oss:20b`) |
-  | `GOOGLE_API_KEY`, `OPENAI_API_KEY`       | Hosted provider runs                      |
-  | `TEST_REDIS=true`, `TEST_POSTGRES_URL`   | Redis and Postgres adapters               |
-  | `TEST_DOCKER=true`                       | Docker sandbox and deployment             |
-  | `TEST_BROWSER=true`                      | Browser automation (Playwright)           |
-  | `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY` | Voice providers                           |
+  | Variable                                              | Enables                                   |
+  | ----------------------------------------------------- | ----------------------------------------- |
+  | `TEST_OLLAMA=true`, `TEST_MODEL`                      | Local Ollama runs (default `gpt-oss:20b`) |
+  | `GOOGLE_API_KEY`, `OPENAI_API_KEY`                    | Hosted provider runs                      |
+  | `TEST_REDIS=true`, `TEST_POSTGRES_URL`                | Redis and Postgres adapters               |
+  | `TEST_DOCKER=true`                                    | Docker sandbox and deployment             |
+  | `TEST_BROWSER=true`                                   | Browser automation (Playwright)           |
+  | `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`              | Voice providers                           |
+  | `E2B_API_KEY`, `DAYTONA_API_KEY`, `VERCEL_OIDC_TOKEN` | Remote workspaces (paid sandboxes)        |
 
   The Ollama suites run only when Ollama answers at `OLLAMA_URL` (default `http://localhost:11434`) and `TEST_MODEL` is pulled. Otherwise they are skipped and the reason is printed, for example `model qwen2.5:0.5b is not pulled, run: ollama pull qwen2.5:0.5b`. In CI (`CI=true`) that run fails instead, so a job that sets up Ollama cannot pass with those suites skipped.
 
