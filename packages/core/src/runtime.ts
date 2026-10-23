@@ -414,6 +414,13 @@ export class Cogitator implements ToolInvoker {
     if (lengthError) {
       throw new CogitatorError({ message: lengthError, code: ErrorCode.CONFIGURATION_ERROR });
     }
+    const retention = config.limits?.toolResultRetention;
+    if (retention !== undefined && !(retention >= 0)) {
+      throw new CogitatorError({
+        message: `limits.toolResultRetention must be 0 or more milliseconds, got ${String(retention)}`,
+        code: ErrorCode.CONFIGURATION_ERROR,
+      });
+    }
     this.config = config;
     this.pricer = new CallPricer(config.llm?.pricing, (name) =>
       Object.hasOwn(config.llm?.backends ?? {}, name)
@@ -639,6 +646,9 @@ export class Cogitator implements ToolInvoker {
         ...(options.topicId !== undefined && { topicId: options.topicId }),
         ...(options.conversationId !== undefined && { conversationId: options.conversationId }),
         ...(options.deps !== undefined && { deps: options.deps }),
+        ...((options.workspace ?? agent?.config.workspace) && {
+          workspace: options.workspace ?? agent?.config.workspace,
+        }),
       },
     });
   }
@@ -1137,6 +1147,8 @@ export class Cogitator implements ToolInvoker {
         ]);
       let pipeline = pipelineFor(active);
       const middlewareState = new Map<string, unknown>();
+      const workspaceOf = (owner: Agent): Workspace | undefined =>
+        options.workspace ?? owner.config.workspace;
       const middlewareContext = (): RunMiddlewareContext => ({
         runId,
         threadId,
@@ -1152,10 +1164,8 @@ export class Cogitator implements ToolInvoker {
         ...(options.topicId !== undefined && { topicId: options.topicId }),
         ...(options.conversationId !== undefined && { conversationId: options.conversationId }),
         ...(options.deps !== undefined && { deps: options.deps }),
+        ...(workspaceOf(active) && { workspace: workspaceOf(active) }),
       });
-
-      const workspaceOf = (owner: Agent): Workspace | undefined =>
-        options.workspace ?? owner.config.workspace;
 
       const buildRegistry = (owner: Agent) => {
         const ownerRegistry = new ToolRegistry();
@@ -1547,7 +1557,13 @@ export class Cogitator implements ToolInvoker {
             registry.get(toolCall.name)?.maxResultLength ??
               this.config.limits?.maxToolResultLength ??
               DEFAULT_TOOL_RESULT_MAX_LENGTH,
-            runWorkspace ? { workspace: runWorkspace, runId } : undefined
+            runWorkspace && registry.get('read_file')
+              ? {
+                  workspace: runWorkspace,
+                  runId,
+                  retention: this.config.limits?.toolResultRetention,
+                }
+              : undefined
           );
           messages.push(toolMessage);
 

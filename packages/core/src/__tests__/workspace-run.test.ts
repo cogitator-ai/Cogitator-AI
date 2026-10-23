@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
+  RunMiddleware,
   ChatRequest,
   ChatResponse,
   ChatStreamChunk,
@@ -18,6 +19,7 @@ import { getLogger } from '../logger';
 import { LocalWorkspace } from '../workspace/local-workspace';
 import { workspaceTools } from '../tools/workspace-tools';
 import { toolResultPath } from '../cogitator/tool-executor';
+import { agentAsTool } from '../agent-tool';
 import { truncateToolResultText } from '../tool-content';
 
 let base: string;
@@ -207,7 +209,12 @@ describe('offload of long tool results', () => {
     });
     const warn = vi.spyOn(getLogger(), 'warn');
     const { backend, requests } = scriptedBackend([{ id: 'call_1', name: 'dump', arguments: {} }]);
-    const agent = new Agent({ name: 'a', model: 'mock/m', instructions: 'x', tools: [dump] });
+    const agent = new Agent({
+      name: 'a',
+      model: 'mock/m',
+      instructions: 'x',
+      tools: [dump, ...workspaceTools(undefined, { tools: ['read_file'] })],
+    });
     await new Cogitator({ llm: { backends: { mock: backend } } }).run(agent, {
       input: 'dump',
       workspace: broken,
@@ -220,5 +227,202 @@ describe('offload of long tool results', () => {
       expect.stringContaining('Could not save a long tool result'),
       expect.objectContaining({ tool: 'dump', error: 'disk full' })
     );
+  });
+});
+
+describe('offload housekeeping', () => {
+  const reader = () => workspaceTools(undefined, { tools: ['read_file'] });
+
+  async function dumpOnce(options: { retention?: number; tools?: ReturnType<typeof reader> } = {}) {
+    const { backend, requests } = scriptedBackend([
+      { id: 'call/1:x', name: 'dump', arguments: {} },
+    ]);
+    const agent = new Agent({
+      name: 'a',
+      model: 'mock/m',
+      instructions: 'x',
+      tools: [dump, ...(options.tools ?? reader())],
+      workspace: runWorkspace,
+    });
+    const cog = new Cogitator({
+      llm: { backends: { mock: backend } },
+      ...(options.retention !== undefined && {
+        limits: { toolResultRetention: options.retention },
+      }),
+    });
+    const result = await cog.run(agent, { input: 'dump' });
+    return { result, message: toolMessages(requests)[0] };
+  }
+
+  it('keeps saved results out of git and names ids safely, with a hash when they change', async () => {
+    const { result, message } = await dumpOnce();
+    expect(await runWorkspace.read('.cogitator/.gitignore')).toBe('*\n');
+    const path = toolResultPath(result.runId, 'call/1:x');
+    expect(path).toMatch(/\/call_1_x-[0-9a-f]{8}\.txt$/);
+    expect(toolResultPath(result.runId, 'call_1_x')).not.toBe(path);
+    expect(message).toContain(path);
+    expect(message).toContain('nextColumn');
+    expect(await runWorkspace.read(path)).toBe(LONG);
+  });
+
+  it('removes the results of runs older than the retention', async () => {
+    const first = await dumpOnce();
+    const second = await dumpOnce({ retention: 0 });
+    const runs = await runWorkspace.list('.cogitator/tool-results');
+    expect(runs.map((r) => r.name)).toEqual([second.result.runId]);
+    expect(first.result.runId).not.toBe(second.result.runId);
+  });
+
+  it('does not offload when the agent cannot read the saved file', async () => {
+    const { message } = await dumpOnce({ tools: [] });
+    expect(message).toContain('characters of this tool result were left out');
+    expect(message).not.toContain('.cogitator/tool-results');
+    expect(existsSync(join(runWorkspace.root, '.cogitator'))).toBe(false);
+  });
+
+  it('refuses a negative retention', () => {
+    expect(() => new Cogitator({ limits: { toolResultRetention: -1 } })).toThrow(
+      /toolResultRetention/
+    );
+  });
+});
+
+describe('workspace across agents and hooks', () => {
+  it('follows the handoff target, unless the run set one', async () => {
+    seen.length = 0;
+    const billing = new Agent({
+      name: 'billing',
+      model: 'mock/m',
+      instructions: 'You are billing.',
+      tools: [whichWorkspace],
+      workspace: runWorkspace,
+    });
+    const triage = new Agent({
+      name: 'triage',
+      model: 'mock/m',
+      instructions: 'You are triage.',
+      handoffs: [billing],
+      workspace: agentWorkspace,
+    });
+    const script = () => {
+      const backend: LLMBackend = {
+        provider: 'openai',
+        chat: vi.fn(async (request: ChatRequest): Promise<ChatResponse> => {
+          const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+          const system = String(request.messages[0].content);
+          const asked = request.messages.some(
+            (m) => m.role === 'tool' && m.name === 'which_workspace'
+          );
+          if (system.startsWith('You are triage.')) {
+            return {
+              id: 't',
+              content: '',
+              toolCalls: [{ id: 'h', name: 'transfer_to_billing', arguments: {} }],
+              finishReason: 'tool_calls',
+              usage,
+            };
+          }
+          return asked
+            ? { id: 'd', content: 'done', finishReason: 'stop', usage }
+            : {
+                id: 'b',
+                content: '',
+                toolCalls: [{ id: 'w', name: 'which_workspace', arguments: {} }],
+                finishReason: 'tool_calls',
+                usage,
+              };
+        }),
+        chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {
+          yield { id: 's', delta: {}, finishReason: 'stop' };
+        }),
+      };
+      return new Cogitator({ llm: { backends: { mock: backend } } });
+    };
+
+    await script().run(triage, { input: 'refund' });
+    const own = new LocalWorkspace({ root: join(base, 'own'), id: 'own-ws' });
+    await script().run(triage, { input: 'refund', workspace: own });
+    await own.dispose();
+
+    expect(seen).toEqual(['run-ws', 'own-ws']);
+  });
+
+  it('is passed again to resume(), like deps', async () => {
+    seen.length = 0;
+    const careful = tool({
+      name: 'careful',
+      description: 'Needs approval',
+      parameters: z.object({}),
+      requiresApproval: true,
+      execute: async (_args, context) => {
+        seen.push(context.workspace?.id);
+        return 'ok';
+      },
+    });
+    const { backend } = scriptedBackend([{ id: 'c1', name: 'careful', arguments: {} }]);
+    const cog = new Cogitator({ llm: { backends: { mock: backend } } });
+    const agent = new Agent({ name: 'a', model: 'mock/m', instructions: 'x', tools: [careful] });
+
+    const paused = await cog.run(agent, { input: 'go', workspace: runWorkspace });
+    expect(paused.status).toBe('paused');
+    await cog.resume(agent, paused.checkpoint!, {
+      decisions: { c1: { approved: true } },
+      workspace: runWorkspace,
+    });
+    expect(seen).toEqual(['run-ws']);
+  });
+
+  it('reaches an agent called as a tool, unless it has its own', async () => {
+    seen.length = 0;
+    const call: ToolCall = { id: 'c1', name: 'which_workspace', arguments: {} };
+    const innerBackend = scriptedBackend([call]);
+    const cog = new Cogitator({ llm: { backends: { mock: innerBackend.backend } } });
+    const bare = new Agent({
+      name: 'bare',
+      model: 'mock/m',
+      instructions: 'x',
+      tools: [whichWorkspace],
+    });
+    const owning = bare.clone({ name: 'owning', workspace: agentWorkspace });
+
+    for (const inner of [bare, owning]) {
+      const asTool = agentAsTool(cog, inner, { name: `ask_${inner.name}`, description: 'ask' });
+      await asTool.execute(
+        { task: 'which workspace?' },
+        {
+          agentId: 'outer',
+          runId: 'r',
+          signal: new AbortController().signal,
+          workspace: runWorkspace,
+        }
+      );
+      innerBackend.backend.chat = scriptedBackend([call]).backend.chat;
+    }
+    expect(seen).toEqual(['run-ws', 'agent-ws']);
+  });
+
+  it('is in the middleware context of tool calls and of the run', async () => {
+    const ids: (string | undefined)[] = [];
+    const watcher: RunMiddleware = {
+      name: 'watcher',
+      beforeRun: (_event, context) => {
+        ids.push(context.workspace?.id);
+      },
+      wrapToolCall: async (call, next, context) => {
+        ids.push(context.workspace?.id);
+        return next(call);
+      },
+    };
+    const { backend } = scriptedBackend([{ id: 'c1', name: 'which_workspace', arguments: {} }]);
+    const cog = new Cogitator({ llm: { backends: { mock: backend } }, middleware: [watcher] });
+    const agent = new Agent({
+      name: 'a',
+      model: 'mock/m',
+      instructions: 'x',
+      tools: [whichWorkspace],
+    });
+    await cog.run(agent, { input: 'go', workspace: runWorkspace });
+    await cog.invokeTool(whichWorkspace, {}, { workspace: agentWorkspace });
+    expect(ids).toEqual(['run-ws', 'run-ws', 'agent-ws']);
   });
 });

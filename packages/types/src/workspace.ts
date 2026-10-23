@@ -7,9 +7,10 @@
  * through `..`, an absolute path elsewhere or a symlink that points out, is refused with a
  * {@link WorkspaceError} of code `OUTSIDE_ROOT`.
  *
- * Lifecycle: whoever creates a workspace owns it, calls `start()` before handing it to agents and
- * `dispose()` when done. The runtime only uses the workspace it is given (`AgentConfig.workspace`,
- * `RunOptions.workspace`), it never starts or disposes one.
+ * Lifecycle: whoever creates a workspace owns it and calls `dispose()` when done. A workspace
+ * starts itself on first use, `start()` only does it ahead of time, to surface errors (a missing
+ * root, no Docker) early or to keep the first command fast. The runtime only uses the workspace it
+ * is given (`AgentConfig.workspace`, `RunOptions.workspace`), it never starts or disposes one.
  */
 export interface Workspace {
   /** Stable id of the workspace, used in logs and snapshot records */
@@ -22,10 +23,19 @@ export interface Workspace {
    */
   readonly cwd: string;
 
-  /** Prepares the workspace (creates the root, starts a container). Idempotent */
+  /** Prepares the workspace (creates the root, starts a container). Idempotent, optional: the first operation does it */
   start(): Promise<void>;
-  /** Releases what the workspace holds (a container, a process). Idempotent, the workspace is unusable afterwards */
+  /**
+   * Releases what the workspace holds (a container, the processes its commands left running).
+   * Idempotent, the workspace and its `withCwd()` views are unusable afterwards
+   */
   dispose(): Promise<void>;
+
+  /**
+   * The same workspace (same id, files, container and lifecycle) with another current directory,
+   * relative to the root. Disposing the view disposes the workspace
+   */
+  withCwd(cwd: string): Workspace;
 
   /** Whether `path` lies inside the root once symlinks are followed. Never throws */
   contains(path: string): Promise<boolean>;
@@ -51,20 +61,27 @@ export interface Workspace {
   rename(from: string, to: string, options?: WorkspaceRenameOptions): Promise<void>;
 
   /**
-   * Runs a shell command (`sh -c`) in the workspace, in `cwd` by default. Resolves with the
-   * outcome, also for a non-zero exit or a timeout, and rejects with a `WorkspaceError` of code
-   * `ABORTED` when `signal` aborts it. The command's whole process tree is killed on a timeout
-   * or an abort
+   * Runs a shell command in the workspace (`sh -c`, `cmd.exe /d /s /c` for a local workspace on
+   * Windows), in `cwd` by default. Resolves with the outcome, also for a non-zero exit or a
+   * timeout, and rejects with a `WorkspaceError` of code `ABORTED` when `signal` aborts it. The
+   * command's process group is killed on a timeout or an abort
    */
   exec(command: string, options?: WorkspaceExecOptions): Promise<WorkspaceExecResult>;
 
   /**
    * Records the state of the files, to go back to it with `restore()`, for example one snapshot
-   * per user message. Optional: a workspace that cannot snapshot leaves both methods out
+   * per user message. Optional: a workspace that cannot snapshot leaves these methods out
    */
   snapshot?(options?: WorkspaceSnapshotOptions): Promise<WorkspaceSnapshot>;
-  /** Brings the files back to a snapshot: changed files rewritten, new ones removed */
+  /**
+   * Brings the files back to a snapshot: changed files rewritten, new ones removed, the paths the
+   * snapshot excluded left alone
+   */
   restore?(snapshotId: string): Promise<void>;
+  /** The snapshots kept, oldest first */
+  listSnapshots?(): Promise<WorkspaceSnapshot[]>;
+  /** Forgets a snapshot and frees what only it kept */
+  deleteSnapshot?(snapshotId: string): Promise<void>;
 }
 
 export interface WorkspaceReadOptions {
@@ -163,9 +180,17 @@ export interface WorkspaceEntry extends WorkspaceStat {
   name: string;
 }
 
+/** Paths a snapshot leaves out unless told otherwise: the workspace's own trash, tool results and temporary files. */
+export const WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE: readonly string[] = ['.cogitator/**'];
+
 export interface WorkspaceSnapshotOptions {
   /** What the snapshot marks, e.g. the id of the user message it was taken before */
   label?: string;
+  /**
+   * Globs (relative to the root) the snapshot leaves out, and `restore()` leaves alone
+   * (default: {@link WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE})
+   */
+  exclude?: readonly string[];
   /** Your own data to keep with the snapshot */
   metadata?: Record<string, unknown>;
 }
@@ -178,6 +203,8 @@ export interface WorkspaceSnapshot {
   createdAt: string;
   label?: string;
   metadata?: Record<string, unknown>;
+  /** The globs the snapshot left out */
+  exclude: readonly string[];
 }
 
 /**
@@ -193,6 +220,7 @@ export interface WorkspaceSnapshot {
  * - `NOT_STARTED`, `DISPOSED`: the workspace is not started yet or disposed already
  * - `UNAVAILABLE`: what the workspace needs is missing, e.g. Docker
  * - `ABORTED`: the operation's signal aborted it
+ * - `DENIED`: the operating system or a policy refused it (permissions, a sandbox rule)
  * - `UNSUPPORTED`: the workspace cannot do this
  * - `IO`: the file system or the container failed otherwise
  */
@@ -209,6 +237,7 @@ export type WorkspaceErrorCode =
   | 'DISPOSED'
   | 'UNAVAILABLE'
   | 'ABORTED'
+  | 'DENIED'
   | 'UNSUPPORTED'
   | 'IO';
 

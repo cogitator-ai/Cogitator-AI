@@ -201,6 +201,7 @@ function toolContextOf(context: RunMiddlewareContext): ToolContext {
     ...(context.topicId !== undefined && { topicId: context.topicId }),
     ...(context.conversationId !== undefined && { conversationId: context.conversationId }),
     ...(context.deps !== undefined && { deps: context.deps }),
+    ...(context.workspace !== undefined && { workspace: context.workspace }),
   };
 }
 

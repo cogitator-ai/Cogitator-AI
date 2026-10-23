@@ -2,10 +2,11 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { Tool } from '@cogitator-ai/types';
+import type { Tool, Workspace } from '@cogitator-ai/types';
 import { LocalWorkspace } from '../workspace/local-workspace';
 import { workspaceTools, WORKSPACE_TOOL_NAMES } from '../tools/workspace-tools';
 import { globMatcher } from '../workspace/glob';
+import { builtinTools } from '../tools/index';
 import { createToolContext } from './helpers/tool-context';
 
 let base: string;
@@ -40,10 +41,10 @@ async function failure(promise: Promise<unknown>): Promise<string> {
 }
 
 describe('workspaceTools', () => {
-  it('has the documented tools, exec the only one asking for approval by default', () => {
+  it('has the documented tools, run_command the only one asking for approval by default', () => {
     expect([...tools.keys()]).toEqual([...WORKSPACE_TOOL_NAMES]);
     expect([...tools.values()].filter((t) => t.requiresApproval).map((t) => t.name)).toEqual([
-      'exec',
+      'run_command',
     ]);
     const strict = workspaceTools(workspace, { requireApproval: (name) => name !== 'read_file' });
     expect(strict.filter((t) => !t.requiresApproval).map((t) => t.name)).toEqual(['read_file']);
@@ -171,9 +172,112 @@ describe('workspaceTools', () => {
   });
 
   it('runs commands through the workspace', async () => {
-    const result = await run('exec', { command: 'echo hi > out.txt && cat out.txt' });
+    const result = await run('run_command', { command: 'echo hi > out.txt && cat out.txt' });
     expect(result).toMatchObject({ stdout: 'hi\n', exitCode: 0, timedOut: false });
     expect(await workspace.read('out.txt')).toBe('hi\n');
+  });
+});
+
+describe('workspaceTools on hard inputs', () => {
+  it('does not collide with the global built-in tools', () => {
+    const names = new Set(builtinTools.map((t) => t.name));
+    expect(WORKSPACE_TOOL_NAMES.filter((name) => names.has(name))).toEqual([]);
+  });
+
+  it('pages through a one-line file longer than a page with nextColumn', async () => {
+    const line = 'x'.repeat(200_000);
+    await workspace.write('one-line.json', line);
+    const pages: string[] = [];
+    let args: Record<string, unknown> = { path: 'one-line.json', limit: 1 };
+    for (;;) {
+      const page = (await run('read_file', args)) as {
+        content: string;
+        nextOffset?: number;
+        nextColumn?: number;
+      };
+      expect(page.content.length).toBeLessThanOrEqual(80_000);
+      pages.push(page.content);
+      if (page.nextOffset === undefined) break;
+      args = { path: 'one-line.json', offset: page.nextOffset, column: page.nextColumn, limit: 1 };
+    }
+    expect(pages.join('')).toBe(line);
+    expect(pages.length).toBe(3);
+  });
+
+  it('stops before a long line that does not fit after others, and reports CRLF endings', async () => {
+    await workspace.write('mixed.txt', `short\r\n${'y'.repeat(90_000)}\r\nend\r\n`);
+    expect(await run('read_file', { path: 'mixed.txt' })).toMatchObject({
+      content: 'short',
+      endLine: 1,
+      nextOffset: 2,
+      lineEndings: 'crlf',
+    });
+    expect(await failure(run('read_file', { path: 'mixed.txt', offset: 3, column: 9 }))).toContain(
+      'past its end'
+    );
+  });
+
+  it('edits CRLF files with plain newlines and keeps their endings', async () => {
+    await workspace.write('win.txt', 'one\r\ntwo\r\nthree\r\n');
+    await run('edit_file', { path: 'win.txt', oldString: 'one\ntwo', newString: 'uno\ndos' });
+    expect(await workspace.read('win.txt')).toBe('uno\r\ndos\r\nthree\r\n');
+  });
+
+  it('refuses to edit binary files and files that are not UTF-8', async () => {
+    await workspace.write('bin.dat', new Uint8Array([65, 0, 66]));
+    expect(
+      await failure(run('edit_file', { path: 'bin.dat', oldString: 'A', newString: 'B' }))
+    ).toContain('binary');
+    const latin1 = new Uint8Array([99, 97, 102, 0xe9, 10]);
+    await workspace.write('latin1.txt', latin1);
+    expect(
+      await failure(run('edit_file', { path: 'latin1.txt', oldString: 'caf', newString: 'tea' }))
+    ).toContain('not valid UTF-8');
+    expect([...(await workspace.readBytes('latin1.txt'))]).toEqual([...latin1]);
+  });
+
+  it('stops a pattern that backtracks catastrophically instead of blocking the process', async () => {
+    await workspace.write('evil.txt', `${'a'.repeat(40)}!\n`);
+    const slow = new Map(workspaceTools(workspace, { grepTimeout: 300 }).map((t) => [t.name, t]));
+    const grep = slow.get('grep')!;
+    let ticks = 0;
+    const ticker = setInterval(() => ticks++, 10);
+    const message = await failure(
+      grep.execute(grep.parameters.parse({ pattern: '(a+)+$' }), createToolContext())
+    );
+    clearInterval(ticker);
+    expect(message).toContain('backtrack catastrophically');
+    expect(ticks).toBeGreaterThan(0);
+  });
+
+  it('searches hidden files when asked', async () => {
+    await workspace.write('.eslintrc', 'TODO hidden');
+    expect(await run('grep', { pattern: 'TODO' })).toMatchObject({ matches: [] });
+    expect(await run('grep', { pattern: 'TODO', includeHidden: true })).toMatchObject({
+      matches: [{ path: '.eslintrc', line: 1 }],
+    });
+  });
+
+  it('still searches what it listed when the listing hits its limit', async () => {
+    const files = Array.from({ length: 20_000 }, (_, i) => ({
+      name: `f${i}.txt`,
+      path: `f${i}.txt`,
+      type: 'file' as const,
+      size: 4,
+      modifiedAt: 0,
+    }));
+    const huge: Workspace = Object.assign(Object.create(workspace) as LocalWorkspace, {
+      stat: async () => ({ path: '.', type: 'directory' as const, size: 0, modifiedAt: 0 }),
+      list: async () => files,
+      readBytes: async () => new TextEncoder().encode('TODO'),
+    });
+    const [grep] = workspaceTools(huge, { tools: ['grep'] });
+    const result = await grep.execute(
+      grep.parameters.parse({ pattern: 'TODO', maxMatches: 3 }),
+      createToolContext()
+    );
+    expect(result).toMatchObject({ truncated: true, incomplete: true });
+    expect((result as { matches: unknown[] }).matches).toHaveLength(3);
   });
 });
 

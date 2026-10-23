@@ -139,22 +139,35 @@ export type {
 } from './tools/index';
 export {
   LocalWorkspace,
+  WORKSPACE_SERVICE_DIR,
   WORKSPACE_TRASH_DIR,
   WORKSPACE_INHERITED_ENV,
-  globMatcher,
   type LocalWorkspaceOptions,
   type LocalWorkspaceExecConfig,
+  type WorkspaceLaunch,
 } from './workspace/index';
-export { WorkspaceError } from '@cogitator-ai/types';
-export { toolResultPath, TOOL_RESULTS_DIR } from './cogitator/tool-executor';
+export { WorkspaceError, WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE } from '@cogitator-ai/types';
+export {
+  toolResultPath,
+  TOOL_RESULTS_DIR,
+  DEFAULT_TOOL_RESULT_RETENTION,
+} from './cogitator/tool-executor';
 export type {
   Workspace,
   WorkspaceErrorCode,
   WorkspaceEntry,
+  WorkspaceEntryType,
   WorkspaceStat,
+  WorkspaceReadOptions,
+  WorkspaceWriteOptions,
+  WorkspaceListOptions,
+  WorkspaceRemoveOptions,
+  WorkspaceRemoveResult,
+  WorkspaceRenameOptions,
   WorkspaceExecOptions,
   WorkspaceExecResult,
   WorkspaceSnapshot,
+  WorkspaceSnapshotOptions,
 } from '@cogitator-ai/types';
 export {
   RobotsPolicy,

@@ -639,7 +639,7 @@ When Docker is unavailable (or `@cogitator-ai/sandbox` is missing), a Docker-san
 
 ### Workspace
 
-A `Workspace` is the directory an agent works in: file access and commands that cannot leave its root (`..`, absolute paths elsewhere and symlinks out are refused with a `WorkspaceError` of code `OUTSIDE_ROOT`). `LocalWorkspace` is a directory of this machine, `DockerWorkspace` from `@cogitator-ai/sandbox` runs the commands in a container. `workspaceTools()` gives the agent `read_file` (by line range), `write_file`, `edit_file` (exact, unique replacement), `list_files`, `glob`, `grep` and `exec`.
+A `Workspace` is the directory an agent works in: file access and commands that cannot leave its root (`..`, absolute paths elsewhere and symlinks out are refused with a `WorkspaceError` of code `OUTSIDE_ROOT`). `LocalWorkspace` is a directory of this machine, `DockerWorkspace` from `@cogitator-ai/sandbox` runs the commands in a container. `workspaceTools()` gives the agent `read_file` (by line range), `write_file`, `edit_file` (exact, unique replacement), `list_files`, `glob`, `grep` (in a worker thread, so a runaway pattern cannot block the process) and `run_command`, named apart from the global `file_*` and `exec` built-in tools.
 
 ```typescript
 import { Agent, LocalWorkspace, workspaceTools } from '@cogitator-ai/core';
@@ -658,7 +658,7 @@ await cog.run(coder, { input: 'Same for this project', workspace: otherWorkspace
 await workspace.dispose();
 ```
 
-Tools get the run's workspace as `context.workspace` (`RunOptions.workspace`, else the agent's). The runtime only uses a workspace, whoever creates it starts and disposes it. When a tool result is longer than the model may read and the run has a workspace, the full text is saved to `.cogitator/tool-results/<runId>/<toolCallId>.txt` and the model gets a preview with the path, to page through with `read_file`. `remove(path, { trash: true })` moves entries to `.cogitator/trash/`. See [Workspace](https://cogitator.app/docs/tools/workspace).
+Tools and middleware get the run's workspace as `context.workspace` (`RunOptions.workspace`, else the agent's). A workspace starts itself on first use, the runtime only uses it, and whoever creates it disposes it. Only regular files are read and written, writes are atomic (a temporary file renamed over the target), and `remove` and `rename` check what they move, so a symlink swapped in at the wrong moment cannot reach outside the root. Commands run in their own process group with a trimmed environment, and a timeout, an abort or `dispose()` kills the group. When a tool result is longer than the model may read and the run has a workspace and `read_file`, the full text is saved to `.cogitator/tool-results/<runId>/<toolCallId>.txt` (ignored by git, removed after `limits.toolResultRetention`, 7 days by default) and the model gets a preview with the path, to page through with `read_file`. `remove(path, { trash: true })` moves entries to `.cogitator/trash/`. See [Workspace](https://cogitator.app/docs/tools/workspace).
 
 ### Tool Registry
 

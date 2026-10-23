@@ -1,4 +1,3 @@
-import { spawn, type ChildProcess } from 'node:child_process';
 import { constants, type Stats } from 'node:fs';
 import {
   lstat,
@@ -10,10 +9,10 @@ import {
   rename,
   rm,
   stat,
+  unlink,
   type FileHandle,
 } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { StringDecoder } from 'node:string_decoder';
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { nanoid } from 'nanoid';
 import {
   WorkspaceError,
@@ -31,19 +30,26 @@ import {
   type WorkspaceWriteOptions,
 } from '@cogitator-ai/types';
 import { globMatcher } from './glob';
+import { abortError, ProcessGroups, runProcess, type WorkspaceLaunch } from './process';
 
 const DEFAULT_MAX_FILE_BYTES = 10 * 1024 * 1024;
 const DEFAULT_EXEC_TIMEOUT = 120_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
+const DEFAULT_KILL_GRACE = 2_000;
 const MAX_SYMLINK_HOPS = 40;
 const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
+const O_NONBLOCK = constants.O_NONBLOCK ?? 0;
 
+/** The directory inside the root a workspace keeps its own files in, ignored by git. */
+export const WORKSPACE_SERVICE_DIR = '.cogitator';
 /** Where `remove({ trash: true })` moves entries, relative to the root. */
-export const WORKSPACE_TRASH_DIR = '.cogitator/trash';
+export const WORKSPACE_TRASH_DIR = `${WORKSPACE_SERVICE_DIR}/trash`;
+const PENDING_DIR = `${WORKSPACE_SERVICE_DIR}/pending`;
 
 /**
  * Environment variables a command inherits from the process by default: what a shell needs to
- * find programs and format text, and nothing that may hold a secret.
+ * find programs and format text, and nothing that may hold a secret. `HOME` is among them, so
+ * a command can still read what your home directory holds (`~/.ssh`, `~/.aws`).
  */
 export const WORKSPACE_INHERITED_ENV = [
   'PATH',
@@ -77,11 +83,21 @@ export interface LocalWorkspaceOptions {
   create?: boolean;
   /** Largest file `read` and `write` accept, in bytes (default: 10 MiB) */
   maxFileBytes?: number;
+  /**
+   * Refuse to read a file with more than one hard link (code `DENIED`), since a hard link in the
+   * root may be a file outside it. Off by default: package managers (pnpm) hard-link
+   * `node_modules` files to their store, which this would make unreadable. Writes replace the
+   * file, so they never reach the other links either way
+   */
+  refuseHardLinks?: boolean;
   exec?: LocalWorkspaceExecConfig;
 }
 
 export interface LocalWorkspaceExecConfig {
-  /** The POSIX shell commands run with, as `<shell> -c <command>` (default: `/bin/sh`, `cmd.exe` on Windows) */
+  /**
+   * The POSIX shell commands run with, as `<shell> -c <command>` (default: `/bin/sh`). On Windows
+   * commands run with `cmd.exe /d /s /c` unless a shell is given
+   */
   shell?: string;
   /** Environment variables every command gets */
   env?: Record<string, string>;
@@ -94,6 +110,15 @@ export interface LocalWorkspaceExecConfig {
   timeout?: number;
   /** Bytes of stdout and of stderr a result keeps (default: 1 MiB each) */
   maxOutputBytes?: number;
+  /** Milliseconds between SIGTERM and SIGKILL when a command is stopped (default: 2000) */
+  killGrace?: number;
+  /**
+   * Changes what is spawned for a command, e.g. to run it under an OS sandbox (`sandbox-exec`,
+   * `bwrap`): it gets the program, arguments, directory and environment the workspace would use
+   * and returns the program and arguments to spawn instead. The process group, its kill on a
+   * timeout or an abort, the trimmed environment and the output caps stay
+   */
+  launch?: (launch: WorkspaceLaunch) => Pick<WorkspaceLaunch, 'file' | 'args'>;
 }
 
 interface FileIdentity {
@@ -101,25 +126,39 @@ interface FileIdentity {
   ino: number;
 }
 
+/** What a workspace and its `withCwd()` views share. */
+interface LocalWorkspaceState {
+  realRoot?: string;
+  starting?: Promise<string>;
+  disposed: boolean;
+  groups: ProcessGroups;
+}
+
 /**
  * A workspace in a directory of this machine.
  *
  * File operations never leave the root: a path is resolved with every symlink followed (a
- * dangling one too) and refused when it lands outside. Files are opened with `O_NOFOLLOW` and
- * checked again once open: the path must still resolve inside the root, to the very file that
- * was opened, so a symlink swapped in between the check and the open is caught.
+ * dangling one too) and refused when it lands outside. Only regular files are read or written
+ * (a FIFO or a device is refused before it is opened), files are opened with `O_NOFOLLOW` and
+ * checked again once open, so a symlink swapped in between the check and the open is caught.
+ * Writes go to a temporary file in the same directory, renamed over the target: a crash never
+ * leaves half a file, and a hard link to a file outside the root is replaced, not written
+ * through. `remove` and `rename` first move the entry into the workspace's own directory and
+ * check it is the entry they resolved, so a parent directory swapped for a symlink in between
+ * cannot make them delete or move what lies outside the root.
  *
- * What it does not stop: a hard link inside the root to a file outside it is that file (it is
- * the same inode, hard links cannot be told from the original), a race that swaps a parent
- * directory for a symlink can leave an empty new file or directory outside the root (never
- * content), and `exec` runs commands as this process with only their directory confined. Use
- * `DockerWorkspace` from `@cogitator-ai/sandbox` for commands you do not trust.
+ * What it does not stop: reading a hard link to a file outside the root (see
+ * `refuseHardLinks`), a race that swaps a parent directory for a symlink right before `mkdir`
+ * creating an empty directory outside the root, and `exec`, which runs as this process with only
+ * its directory confined. Use `DockerWorkspace` from `@cogitator-ai/sandbox` for commands you do
+ * not trust.
  *
  * Snapshots are not implemented: copying the tree for every checkpoint is too slow for real
  * projects, so `snapshot` and `restore` are left out until a content-addressed store backs them.
  *
  * The workspace starts itself on first use, `start()` only makes errors (a missing root with
- * `create: false`) surface early. `dispose()` kills the commands still running.
+ * `create: false`) surface early. `dispose()` kills the commands still running and what they
+ * left running in the background.
  *
  * @example
  * ```ts
@@ -135,11 +174,9 @@ export class LocalWorkspace implements Workspace {
   private readonly givenRoot: string;
   private readonly create: boolean;
   private readonly maxFileBytes: number;
+  private readonly refuseHardLinks: boolean;
   private readonly execConfig: LocalWorkspaceExecConfig;
-  private realRoot?: string;
-  private starting?: Promise<string>;
-  private disposed = false;
-  private readonly running = new Set<ChildProcess>();
+  private readonly state: LocalWorkspaceState;
 
   constructor(options: LocalWorkspaceOptions) {
     if (!options.root) throw new WorkspaceError('INVALID_PATH', 'A workspace needs a root');
@@ -148,14 +185,17 @@ export class LocalWorkspace implements Workspace {
     this.cwd = normalizeCwd(options.cwd);
     this.create = options.create ?? true;
     this.maxFileBytes = positive(options.maxFileBytes, DEFAULT_MAX_FILE_BYTES, 'maxFileBytes');
+    this.refuseHardLinks = options.refuseHardLinks ?? false;
     this.execConfig = options.exec ?? {};
     positive(this.execConfig.timeout, DEFAULT_EXEC_TIMEOUT, 'exec.timeout');
     positive(this.execConfig.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES, 'exec.maxOutputBytes');
+    positive(this.execConfig.killGrace, DEFAULT_KILL_GRACE, 'exec.killGrace');
+    this.state = { disposed: false, groups: new ProcessGroups() };
   }
 
   /** The root with symlinks resolved once started, the given root before */
   get root(): string {
-    return this.realRoot ?? this.givenRoot;
+    return this.state.realRoot ?? this.givenRoot;
   }
 
   async start(): Promise<void> {
@@ -163,9 +203,13 @@ export class LocalWorkspace implements Workspace {
   }
 
   async dispose(): Promise<void> {
-    this.disposed = true;
-    for (const child of this.running) killTree(child);
-    this.running.clear();
+    this.state.disposed = true;
+    this.state.groups.killAll();
+  }
+
+  withCwd(cwd: string): LocalWorkspace {
+    const view: LocalWorkspace = Object.create(LocalWorkspace.prototype);
+    return Object.assign(view, this, { cwd: normalizeCwd(cwd) });
   }
 
   async contains(path: string): Promise<boolean> {
@@ -185,11 +229,22 @@ export class LocalWorkspace implements Workspace {
   async readBytes(path: string, options: WorkspaceReadOptions = {}): Promise<Uint8Array> {
     const limit = positive(options.maxBytes, this.maxFileBytes, 'maxBytes');
     const { absolute } = await this.locate(path, true);
+    const before = await this.lstatOf(absolute, path);
+    if (!before.isFile()) throw notAFile(path, before);
+    if (before.size > limit) throw tooLarge(path, before.size, limit);
     const handle = await this.openVerified(absolute, constants.O_RDONLY, path);
     try {
       const info = await handle.stat();
-      if (!info.isFile()) throw new WorkspaceError('NOT_A_FILE', `${path} is not a file`, { path });
-      if (info.size > limit) throw tooLarge(path, info.size, limit);
+      if (!info.isFile() || !sameFile(info, before)) {
+        throw new WorkspaceError('OUTSIDE_ROOT', `${path} changed while it was opened`, { path });
+      }
+      if (this.refuseHardLinks && info.nlink > 1) {
+        throw new WorkspaceError(
+          'DENIED',
+          `${path} has ${info.nlink} hard links, and hard-linked files are refused`,
+          { path }
+        );
+      }
       return await readAtMost(handle, limit, path);
     } finally {
       await handle.close();
@@ -207,12 +262,24 @@ export class LocalWorkspace implements Workspace {
     const { absolute, relative: rel } = await this.locate(path, true);
     if (rel === '.') throw new WorkspaceError('NOT_A_FILE', 'The root is not a file', { path });
     if (options.createParents ?? true) await this.mkdirAt(dirname(absolute), path);
+    if (rel === WORKSPACE_SERVICE_DIR || rel.startsWith(`${WORKSPACE_SERVICE_DIR}/`)) {
+      await this.ensureServiceDir();
+    }
 
-    const handle = await this.openForWrite(absolute, path);
+    const existing = await lstat(absolute).catch((error: unknown) => {
+      if (errnoOf(error) === 'ENOENT') return undefined;
+      throw ioError(error, path);
+    });
+    if (existing && !existing.isFile()) throw notAFile(path, existing);
+
+    const temp = join(dirname(absolute), `.cogitator-tmp-${nanoid(12)}`);
+    const handle = await this.openVerified(
+      temp,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+      path
+    );
+    let renamed = false;
     try {
-      const info = await handle.stat();
-      if (!info.isFile()) throw new WorkspaceError('NOT_A_FILE', `${path} is not a file`, { path });
-      await handle.truncate(0);
       let written = 0;
       while (written < bytes.byteLength) {
         const { bytesWritten } = await handle.write(
@@ -223,8 +290,18 @@ export class LocalWorkspace implements Workspace {
         );
         written += bytesWritten;
       }
-    } finally {
+      if (existing) await handle.chmod(existing.mode & 0o7777);
       await handle.close();
+      await this.verifyParent(absolute, path);
+      await rename(temp, absolute).catch((error: unknown) => {
+        throw ioError(error, path);
+      });
+      renamed = true;
+    } finally {
+      if (!renamed) {
+        await handle.close().catch(() => undefined);
+        await unlink(temp).catch(() => undefined);
+      }
     }
   }
 
@@ -298,8 +375,9 @@ export class LocalWorkspace implements Workspace {
 
   async remove(path: string, options: WorkspaceRemoveOptions = {}): Promise<WorkspaceRemoveResult> {
     const { absolute, relative: rel } = await this.locate(path, false);
-    if (rel === '.')
+    if (rel === '.') {
       throw new WorkspaceError('INVALID_PATH', 'The root cannot be removed', { path });
+    }
     const info = await this.lstatOf(absolute, path);
     if (info.isDirectory() && !options.recursive && (await readdir(absolute)).length > 0) {
       throw new WorkspaceError(
@@ -308,26 +386,40 @@ export class LocalWorkspace implements Workspace {
         { path }
       );
     }
-    await this.verifyParent(absolute, path);
 
+    if (rel === WORKSPACE_SERVICE_DIR) {
+      if (options.trash) {
+        throw new WorkspaceError('INVALID_PATH', 'The trash cannot be moved to the trash', {
+          path,
+        });
+      }
+      await this.verifyParent(absolute, path);
+      await rm(absolute, { recursive: true, force: false }).catch((error: unknown) => {
+        throw ioError(error, path);
+      });
+      return { path: rel };
+    }
+
+    const pinned = await this.pin(absolute, info, path);
     if (options.trash) {
       const stamp = `${new Date().toISOString().replace(/[:.]/g, '-')}-${nanoid(6)}`;
       const trashedTo = `${WORKSPACE_TRASH_DIR}/${stamp}/${rel}`;
       const target = join(this.root, ...trashedTo.split('/'));
       await this.mkdirAt(dirname(target), path);
-      try {
-        await rename(absolute, target);
-      } catch (error) {
+      await this.verifyParent(target, path);
+      await rename(pinned.at, target).catch(async (error: unknown) => {
+        await pinned.undo();
         throw ioError(error, path);
-      }
+      });
+      await pinned.release();
       return { path: rel, trashedTo };
     }
 
-    try {
-      await rm(absolute, { recursive: info.isDirectory(), force: false });
-    } catch (error) {
+    await this.verifyParent(pinned.at, path);
+    await rm(pinned.at, { recursive: true, force: false }).catch((error: unknown) => {
       throw ioError(error, path);
-    }
+    });
+    await pinned.release();
     return { path: rel };
   }
 
@@ -337,22 +429,38 @@ export class LocalWorkspace implements Workspace {
     if (source.relative === '.' || target.relative === '.') {
       throw new WorkspaceError('INVALID_PATH', 'The root cannot be moved', { path: from });
     }
-    await this.lstatOf(source.absolute, from);
-    if (!options.overwrite) {
-      const taken = await lstat(target.absolute).then(
-        () => true,
-        () => false
-      );
-      if (taken) throw new WorkspaceError('EXISTS', `${to} already exists`, { path: to });
+    if (target.relative === source.relative) return;
+    if (target.relative.startsWith(`${source.relative}/`)) {
+      throw new WorkspaceError('INVALID_PATH', `${to} is inside ${from}`, { path: to });
+    }
+    const info = await this.lstatOf(source.absolute, from);
+    const taken = await lstat(target.absolute).then(
+      () => true,
+      () => false
+    );
+    if (taken && !options.overwrite) {
+      throw new WorkspaceError('EXISTS', `${to} already exists`, { path: to });
     }
     await this.mkdirAt(dirname(target.absolute), to);
-    await this.verifyParent(source.absolute, from);
-    await this.verifyParent(target.absolute, to);
-    try {
-      await rename(source.absolute, target.absolute);
-    } catch (error) {
+
+    const pinned = await this.pin(source.absolute, info, from);
+    await this.verifyParent(target.absolute, to).catch(async (error: unknown) => {
+      await pinned.undo();
+      throw error;
+    });
+    await rename(pinned.at, target.absolute).catch(async (error: unknown) => {
+      await pinned.undo();
       throw ioError(error, from);
+    });
+    const landed = await realpath(dirname(target.absolute)).catch(() => undefined);
+    if (landed !== dirname(target.absolute)) {
+      await rename(target.absolute, pinned.at).catch(() => undefined);
+      await pinned.undo();
+      throw new WorkspaceError('OUTSIDE_ROOT', `${to} changed while it was being moved`, {
+        path: to,
+      });
     }
+    await pinned.release();
   }
 
   async exec(command: string, options: WorkspaceExecOptions = {}): Promise<WorkspaceExecResult> {
@@ -374,23 +482,32 @@ export class LocalWorkspace implements Workspace {
         path: cwdPath,
       });
     }
-    if (options.signal?.aborted) throw aborted(options.signal);
+    if (options.signal?.aborted) throw abortError(options.signal);
 
     const env = { ...this.inheritedEnv(), ...this.execConfig.env, ...options.env };
-    return runProcess(command, {
-      cwd,
-      env,
+    const planned = this.shellLaunch(command, cwd, env);
+    const launch = this.execConfig.launch
+      ? { ...planned, ...this.execConfig.launch(planned) }
+      : planned;
+    this.state.groups.prune();
+    return runProcess({
+      launch,
       timeout,
       maxOutput,
-      shell: this.execConfig.shell,
+      killGrace: this.execConfig.killGrace ?? DEFAULT_KILL_GRACE,
+      groups: this.state.groups,
       signal: options.signal,
       onStdout: options.onStdout,
       onStderr: options.onStderr,
-      track: (child) => {
-        this.running.add(child);
-        return () => this.running.delete(child);
-      },
     });
+  }
+
+  private shellLaunch(command: string, cwd: string, env: Record<string, string>): WorkspaceLaunch {
+    const shell = this.execConfig.shell;
+    if (process.platform === 'win32' && !shell) {
+      return { file: env.ComSpec ?? 'cmd.exe', args: ['/d', '/s', '/c', `"${command}"`], cwd, env };
+    }
+    return { file: shell ?? '/bin/sh', args: ['-c', command], cwd, env };
   }
 
   private inheritedEnv(): Record<string, string> {
@@ -405,14 +522,14 @@ export class LocalWorkspace implements Workspace {
   }
 
   private ready(): Promise<string> {
-    if (this.disposed) {
+    if (this.state.disposed) {
       return Promise.reject(new WorkspaceError('DISPOSED', `Workspace ${this.id} is disposed`));
     }
-    this.starting ??= this.open().catch((error: unknown) => {
-      this.starting = undefined;
+    this.state.starting ??= this.open().catch((error: unknown) => {
+      this.state.starting = undefined;
       throw error;
     });
-    return this.starting;
+    return this.state.starting;
   }
 
   private async open(): Promise<string> {
@@ -425,7 +542,7 @@ export class LocalWorkspace implements Workspace {
           `The root ${this.givenRoot} is not a directory`
         );
       }
-      this.realRoot = real;
+      this.state.realRoot = real;
       return real;
     } catch (error) {
       if (error instanceof WorkspaceError) throw error;
@@ -482,6 +599,66 @@ export class LocalWorkspace implements Workspace {
     }
   }
 
+  /** Creates `.cogitator/` with a `.gitignore` that keeps everything in it out of git. */
+  private async ensureServiceDir(): Promise<void> {
+    const dir = join(this.root, WORKSPACE_SERVICE_DIR);
+    await this.mkdirAt(dir, WORKSPACE_SERVICE_DIR);
+    const ignore = join(dir, '.gitignore');
+    try {
+      const handle = await open(
+        ignore,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | O_NOFOLLOW | O_NONBLOCK,
+        0o644
+      );
+      try {
+        await handle.write('*\n');
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      if (errnoOf(error) !== 'EEXIST') throw ioError(error, `${WORKSPACE_SERVICE_DIR}/.gitignore`);
+    }
+  }
+
+  /**
+   * Moves the entry at `absolute` into `.cogitator/pending/` and checks it is the one `before`
+   * describes. When a parent directory was swapped for a symlink in between, the entry moved is
+   * another one: it goes back where it came from and the operation is refused.
+   */
+  private async pin(
+    absolute: string,
+    before: FileIdentity,
+    path: string
+  ): Promise<{ at: string; undo: () => Promise<void>; release: () => Promise<void> }> {
+    await this.ensureServiceDir();
+    const holder = join(this.root, ...PENDING_DIR.split('/'), nanoid(12));
+    await this.mkdirAt(holder, path);
+    const at = join(holder, 'entry');
+    const release = () => rm(holder, { recursive: true, force: true }).catch(() => undefined);
+    const undo = async () => {
+      await rename(at, absolute).catch(() => undefined);
+      await release();
+    };
+    await this.verifyParent(absolute, path).catch(async (error: unknown) => {
+      await release();
+      throw error;
+    });
+    try {
+      await rename(absolute, at);
+    } catch (error) {
+      await release();
+      throw ioError(error, path);
+    }
+    const moved = await lstat(at).catch(() => undefined);
+    if (!moved || !sameFile(moved, before)) {
+      await undo();
+      throw new WorkspaceError('OUTSIDE_ROOT', `${path} changed while it was being resolved`, {
+        path,
+      });
+    }
+    return { at, undo, release };
+  }
+
   /** Throws when the parent directory of `absolute` no longer resolves to itself inside the root. */
   private async verifyParent(absolute: string, path: string): Promise<void> {
     const parent = dirname(absolute);
@@ -514,28 +691,17 @@ export class LocalWorkspace implements Workspace {
     if (!isWithin(this.root, real)) throw outside(path, this.givenRoot);
   }
 
-  private async openForWrite(absolute: string, path: string): Promise<FileHandle> {
-    try {
-      return await this.openVerified(
-        absolute,
-        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
-        path
-      );
-    } catch (error) {
-      if (!WorkspaceError.is(error, 'EXISTS')) throw error;
-      return this.openVerified(absolute, constants.O_WRONLY, path);
-    }
-  }
-
   /**
    * Opens `absolute` (already resolved inside the root) without following a symlink in its
-   * last component, then checks that the path still resolves inside the root to the file that
-   * was opened, so nothing swapped in between the check and the open slips through.
+   * last component and without blocking on a FIFO, then checks that the path still resolves
+   * inside the root to the regular file that was opened, so nothing swapped in between the check
+   * and the open slips through. A file this call created and that turns out to be outside the
+   * root is removed again.
    */
   private async openVerified(absolute: string, flags: number, path: string): Promise<FileHandle> {
     let handle: FileHandle;
     try {
-      handle = await open(absolute, flags | O_NOFOLLOW, 0o666);
+      handle = await open(absolute, flags | O_NOFOLLOW | O_NONBLOCK, 0o666);
     } catch (error) {
       const code = errnoOf(error);
       if (code === 'EEXIST') throw new WorkspaceError('EXISTS', `${path} exists`, { path });
@@ -546,11 +712,16 @@ export class LocalWorkspace implements Workspace {
       }
       throw ioError(error, path);
     }
+    const created = (flags & constants.O_CREAT) !== 0;
     try {
       const opened = await handle.stat();
+      if (!opened.isFile()) throw notAFile(path, opened);
       const again = await realpath(absolute).catch(() => undefined);
       const current = again ? await stat(again).catch(() => undefined) : undefined;
       if (!again || !isWithin(this.root, again) || !current || !sameFile(opened, current)) {
+        if (created && again && current && sameFile(opened, current)) {
+          await unlink(again).catch(() => undefined);
+        }
         throw new WorkspaceError('OUTSIDE_ROOT', `${path} changed while it was opened`, { path });
       }
       return handle;
@@ -558,142 +729,6 @@ export class LocalWorkspace implements Workspace {
       await handle.close();
       throw error;
     }
-  }
-}
-
-interface RunProcessOptions {
-  cwd: string;
-  env: Record<string, string>;
-  timeout: number;
-  maxOutput: number;
-  shell?: string;
-  signal?: AbortSignal;
-  onStdout?: (chunk: string) => void;
-  onStderr?: (chunk: string) => void;
-  /** Registers the child, returns how to unregister it */
-  track: (child: ChildProcess) => () => void;
-}
-
-function runProcess(command: string, options: RunProcessOptions): Promise<WorkspaceExecResult> {
-  const started = Date.now();
-  const windows = process.platform === 'win32';
-  const stdout = new CappedText(options.maxOutput, options.onStdout);
-  const stderr = new CappedText(options.maxOutput, options.onStderr);
-
-  return new Promise<WorkspaceExecResult>((resolvePromise, reject) => {
-    const child = windows
-      ? spawn(command, {
-          cwd: options.cwd,
-          env: options.env,
-          shell: options.shell ?? true,
-          windowsHide: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        })
-      : spawn(options.shell ?? '/bin/sh', ['-c', command], {
-          cwd: options.cwd,
-          env: options.env,
-          detached: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-    const untrack = options.track(child);
-    let timedOut = false;
-    let abortedBy: AbortSignal | undefined;
-    let settled = false;
-
-    const stop = () => {
-      killTree(child);
-      child.stdout?.destroy();
-      child.stderr?.destroy();
-    };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      stop();
-    }, options.timeout);
-    const onAbort = () => {
-      abortedBy = options.signal;
-      stop();
-    };
-    options.signal?.addEventListener('abort', onAbort, { once: true });
-
-    const finish = (exitCode: number, extraStderr?: string) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      options.signal?.removeEventListener('abort', onAbort);
-      untrack();
-      if (abortedBy) {
-        reject(aborted(abortedBy));
-        return;
-      }
-      if (extraStderr) stderr.push(extraStderr);
-      resolvePromise({
-        stdout: stdout.text(),
-        stderr: timedOut
-          ? stderr.text() || `Command timed out after ${options.timeout}ms`
-          : stderr.text(),
-        exitCode: timedOut ? 124 : exitCode,
-        timedOut,
-        truncated: stdout.truncated || stderr.truncated,
-        durationMs: Date.now() - started,
-      });
-    };
-
-    child.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk));
-    child.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk));
-    child.on('error', (error: NodeJS.ErrnoException) => {
-      const code = error.code === 'ENOENT' ? 127 : error.code === 'EACCES' ? 126 : 1;
-      finish(code, error.message);
-    });
-    child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
-      finish(code ?? (signal ? 128 + signalNumber(signal) : 1));
-    });
-  });
-}
-
-/** Kills a command and every process it started (its process group, outside Windows). */
-function killTree(child: ChildProcess): void {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  try {
-    if (process.platform !== 'win32' && child.pid !== undefined)
-      process.kill(-child.pid, 'SIGKILL');
-    else child.kill('SIGKILL');
-  } catch {
-    child.kill('SIGKILL');
-  }
-}
-
-/** Text of a stream up to a byte limit, decoded without splitting a character, every piece reported. */
-class CappedText {
-  private readonly decoder = new StringDecoder('utf8');
-  private readonly chunks: Buffer[] = [];
-  private size = 0;
-  truncated = false;
-
-  constructor(
-    private readonly limit: number,
-    private readonly listener?: (chunk: string) => void
-  ) {}
-
-  push(chunk: Buffer | string): void {
-    const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
-    if (this.listener) {
-      const text = this.decoder.write(buffer);
-      if (text) this.listener(text);
-    }
-    const room = this.limit - this.size;
-    if (buffer.length > room) this.truncated = true;
-    if (room <= 0) return;
-    const kept = buffer.length > room ? buffer.subarray(0, room) : buffer;
-    this.chunks.push(kept);
-    this.size += kept.length;
-  }
-
-  text(): string {
-    if (this.listener) {
-      const rest = this.decoder.end();
-      if (rest) this.listener(rest);
-    }
-    return new StringDecoder('utf8').end(Buffer.concat(this.chunks));
   }
 }
 
@@ -756,14 +791,15 @@ function toPosix(path: string): string {
   return sep === '/' ? path : path.split(sep).join('/');
 }
 
-function normalizeCwd(cwd: string | undefined): string {
+/** `cwd` as a path relative to the root with `/` separators, `.` for the root. */
+export function normalizeCwd(cwd: string | undefined): string {
   if (cwd === undefined || cwd === '' || cwd === '.') return '.';
   if (isAbsolute(cwd)) {
     throw new WorkspaceError('INVALID_PATH', 'cwd must be relative to the root', { path: cwd });
   }
-  const normalized = toPosix(relative('/', resolve('/', cwd)));
-  if (normalized.startsWith('..')) throw outside(cwd, 'the root');
-  return normalized || '.';
+  const normalized = posix.normalize(toPosix(cwd)).replace(/\/+$/, '');
+  if (normalized === '..' || normalized.startsWith('../')) throw outside(cwd, 'the root');
+  return normalized === '' || normalized === '.' ? '.' : normalized;
 }
 
 function entryType(info: {
@@ -775,6 +811,14 @@ function entryType(info: {
   if (info.isDirectory()) return 'directory';
   if (info.isFile()) return 'file';
   return 'other';
+}
+
+function notAFile(path: string, info: { isDirectory(): boolean }): WorkspaceError {
+  return new WorkspaceError(
+    'NOT_A_FILE',
+    info.isDirectory() ? `${path} is a directory` : `${path} is not a regular file`,
+    { path }
+  );
 }
 
 function positive(value: number | undefined, fallback: number, field: string): number {
@@ -803,15 +847,6 @@ function tooLarge(path: string, size: number, limit: number): WorkspaceError {
   );
 }
 
-function aborted(signal: AbortSignal): WorkspaceError {
-  const reason: unknown = signal.reason;
-  const detail =
-    reason instanceof Error ? reason.message : reason === undefined ? '' : String(reason);
-  return new WorkspaceError('ABORTED', detail ? `Command aborted: ${detail}` : 'Command aborted', {
-    cause: reason,
-  });
-}
-
 function ioError(error: unknown, path: string): WorkspaceError {
   if (error instanceof WorkspaceError) return error;
   const code = errnoOf(error);
@@ -830,23 +865,12 @@ function ioError(error: unknown, path: string): WorkspaceError {
       return new WorkspaceError('EXISTS', `${path} already exists`, { path, cause: error });
     case 'ENOTEMPTY':
       return new WorkspaceError('NOT_EMPTY', `${path} is not empty`, { path, cause: error });
+    case 'EACCES':
+    case 'EPERM':
+      return new WorkspaceError('DENIED', `${path}: permission denied`, { path, cause: error });
     case 'EINVAL':
       return new WorkspaceError('INVALID_PATH', `${path}: ${message}`, { path, cause: error });
     default:
       return new WorkspaceError('IO', `${path}: ${message}`, { path, cause: error });
   }
-}
-
-function signalNumber(signal: NodeJS.Signals): number {
-  const numbers: Partial<Record<NodeJS.Signals, number>> = {
-    SIGHUP: 1,
-    SIGINT: 2,
-    SIGQUIT: 3,
-    SIGABRT: 6,
-    SIGKILL: 9,
-    SIGSEGV: 11,
-    SIGPIPE: 13,
-    SIGTERM: 15,
-  };
-  return numbers[signal] ?? 0;
 }

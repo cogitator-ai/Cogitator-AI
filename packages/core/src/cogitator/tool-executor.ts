@@ -203,6 +203,7 @@ export async function executeTool(
         conversationId: extraContext.conversationId,
       }),
       ...(extraContext?.deps !== undefined && { deps: extraContext.deps }),
+      ...(extraContext?.workspace !== undefined && { workspace: extraContext.workspace }),
     },
   });
 }
@@ -451,23 +452,40 @@ export function createToolMessage(
 /** Where a run's tool results too long for the model are saved in full, relative to the workspace root. */
 export const TOOL_RESULTS_DIR = '.cogitator/tool-results';
 
-/** Where the run's workspace keeps one tool result: `.cogitator/tool-results/<runId>/<toolCallId>.txt`. */
+/** How long the saved results of a run are kept by default: 7 days. */
+export const DEFAULT_TOOL_RESULT_RETENTION = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Where the run's workspace keeps one tool result: `.cogitator/tool-results/<runId>/<toolCallId>.txt`,
+ * each id made safe for a file name (characters other than letters, digits, `.`, `_` and `-`
+ * replaced, with a short hash of the id when it had to change, so two ids never share a file).
+ */
 export function toolResultPath(runId: string, toolCallId: string): string {
   return `${TOOL_RESULTS_DIR}/${pathSegment(runId)}/${pathSegment(toolCallId)}.txt`;
+}
+
+export interface ToolResultOffload {
+  workspace: Workspace;
+  runId: string;
+  /** Milliseconds older runs' results are kept, see `limits.toolResultRetention` */
+  retention?: number;
 }
 
 /**
  * The message that answers a tool call, as {@link createToolMessage} makes it, except that a
  * result longer than `maxLength` is saved in full to `offload.workspace` first (see
  * {@link toolResultPath}): the model gets the cut preview and a note with the path and how to
- * page through it with `read_file`. Without a workspace, for an error, and when saving fails
- * (logged), the result is only cut.
+ * page through it with `read_file`. The workspace's `.cogitator/` gets a `.gitignore` so the
+ * results stay out of git, and results of runs older than `offload.retention` are removed.
+ * Without a workspace, for an error, and when saving fails (logged), the result is only cut.
+ * Offer the offload only to a run that has `read_file`, or the note points to a tool the model
+ * cannot call.
  */
 export async function createToolMessageWithOffload(
   toolCall: ToolCall,
   result: ToolResult,
   maxLength = DEFAULT_TOOL_RESULT_MAX_LENGTH,
-  offload?: { workspace: Workspace; runId: string }
+  offload?: ToolResultOffload
 ): Promise<Message> {
   if (!offload || result.error || !Number.isFinite(maxLength)) {
     return createToolMessage(toolCall, result, maxLength);
@@ -484,8 +502,11 @@ export async function createToolMessageWithOffload(
       ? result.result
       : JSON.stringify(result.result ?? null, null, 2);
   const path = toolResultPath(offload.runId, toolCall.id);
+  const { workspace } = offload;
   try {
-    await offload.workspace.write(path, full);
+    if (!(await workspace.exists(SERVICE_GITIGNORE)))
+      await workspace.write(SERVICE_GITIGNORE, '*\n');
+    await workspace.write(path, full);
   } catch (error) {
     getLogger().warn('Could not save a long tool result to the workspace, it is only cut', {
       tool: toolCall.name,
@@ -494,9 +515,14 @@ export async function createToolMessageWithOffload(
     });
     return createToolMessage(toolCall, result, maxLength);
   }
+  await pruneToolResults(
+    workspace,
+    pathSegment(offload.runId),
+    offload.retention ?? DEFAULT_TOOL_RESULT_RETENTION
+  );
 
   const lines = full.length === 0 ? 0 : full.split('\n').length;
-  const note = `[The full result (${full.length} characters, ${lines} lines) is saved in the workspace at ${path}. Read it with read_file, using offset and limit to page through the lines.]`;
+  const note = `[The full result (${full.length} characters, ${lines} lines) is saved in the workspace at ${path}. Read it with read_file: offset and limit page through the lines, and for a line too long to show at once read_file returns nextColumn to continue it with column.]`;
   const message = createToolMessage(toolCall, result, Math.max(1, maxLength - note.length - 2));
   const content: MessageContent =
     typeof message.content === 'string'
@@ -505,7 +531,41 @@ export async function createToolMessageWithOffload(
   return { ...message, content };
 }
 
+const SERVICE_GITIGNORE = '.cogitator/.gitignore';
+
+/** Removes the saved results of runs other than `current` last changed more than `retention` ago. */
+async function pruneToolResults(
+  workspace: Workspace,
+  current: string,
+  retention: number
+): Promise<void> {
+  if (!Number.isFinite(retention)) return;
+  try {
+    const cutoff = Date.now() - retention;
+    const runs = await workspace.list(TOOL_RESULTS_DIR, { includeHidden: true });
+    for (const run of runs) {
+      if (run.name === current || run.modifiedAt >= cutoff) continue;
+      await workspace.remove(run.path, { recursive: true });
+    }
+  } catch (error) {
+    getLogger().warn('Could not remove old tool results from the workspace', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 function pathSegment(value: string): string {
   const safe = value.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '_');
-  return safe.length > 0 ? safe.slice(0, 128) : '_';
+  if (safe === value && safe.length > 0 && safe.length <= 100) return safe;
+  return `${safe.slice(0, 100) || '_'}-${fnv1a(value)}`;
+}
+
+/** A short, stable hash of `text` (FNV-1a, 32 bits, hex). */
+function fnv1a(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
 }

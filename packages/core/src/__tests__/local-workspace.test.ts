@@ -9,6 +9,8 @@ import {
   writeFileSync,
   existsSync,
 } from 'node:fs';
+import { execSync } from 'node:child_process';
+import { chmodSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -116,13 +118,32 @@ describe('LocalWorkspace paths', () => {
     await expectCode(workspace.read('a\0b'), 'INVALID_PATH');
   });
 
-  it('reads a hard link to an outside file, a documented limit: it is the same file', async () => {
+  it('reads a hard link to an outside file unless told to refuse, and never writes through it', async () => {
     try {
       linkSync(join(outside, 'secret.txt'), join(root, 'hard.txt'));
     } catch {
       return;
     }
     expect(await workspace.read('hard.txt')).toBe('top secret');
+    const strict = new LocalWorkspace({ root, refuseHardLinks: true });
+    await expectCode(strict.read('hard.txt'), 'DENIED');
+
+    await workspace.write('hard.txt', 'replaced');
+    expect(await workspace.read('hard.txt')).toBe('replaced');
+    expect(readFileSync(join(outside, 'secret.txt'), 'utf8')).toBe('top secret');
+  });
+
+  it('refuses FIFOs and other non-regular files without blocking on them', async () => {
+    execSync(`mkfifo "${join(root, 'pipe')}"`);
+    await expectCode(workspace.read('pipe'), 'NOT_A_FILE');
+    await expectCode(workspace.write('pipe', 'x'), 'NOT_A_FILE');
+    expect((await workspace.stat('pipe')).type).toBe('other');
+  });
+
+  it('refuses a cwd that climbs out of the root', () => {
+    expect(() => new LocalWorkspace({ root, cwd: '../up' })).toThrow(/outside/);
+    expect(() => new LocalWorkspace({ root, cwd: 'a/../../up' })).toThrow(/outside/);
+    expect(new LocalWorkspace({ root, cwd: 'a/./b/' }).cwd).toBe('a/b');
   });
 
   it('refuses to start a missing root when told not to create it', async () => {
@@ -151,10 +172,34 @@ describe('LocalWorkspace files', () => {
     expect([...(await workspace.readBytes('blob.bin'))]).toEqual([0, 1, 2, 255]);
   });
 
-  it('replaces the whole content on write', async () => {
-    await workspace.write('a.txt', 'a long first version');
-    await workspace.write('a.txt', 'short');
-    expect(await workspace.read('a.txt')).toBe('short');
+  it('replaces the whole content on write, keeping the mode and leaving no temporary file', async () => {
+    await workspace.write('run.sh', 'a long first version');
+    chmodSync(join(root, 'run.sh'), 0o750);
+    await workspace.write('run.sh', 'short');
+    expect(await workspace.read('run.sh')).toBe('short');
+    expect(statSync(join(root, 'run.sh')).mode & 0o777).toBe(0o750);
+    expect(readdirSync(root)).toEqual(['run.sh']);
+  });
+
+  it('answers DENIED when the system refuses access', async () => {
+    if (process.getuid?.() === 0) return;
+    await workspace.write('locked.txt', 'x');
+    chmodSync(join(root, 'locked.txt'), 0);
+    try {
+      await expectCode(workspace.read('locked.txt'), 'DENIED');
+    } finally {
+      chmodSync(join(root, 'locked.txt'), 0o644);
+    }
+  });
+
+  it('gives a view with another cwd that shares the workspace', async () => {
+    await workspace.mkdir('pkg');
+    const view = workspace.withCwd('pkg');
+    expect(view.id).toBe(workspace.id);
+    expect(view.cwd).toBe('pkg');
+    expect((await view.exec('pwd')).stdout.trim()).toBe(join(workspace.root, 'pkg'));
+    await view.dispose();
+    await expectCode(workspace.read('x'), 'DISPOSED');
   });
 
   it('tells files and directories apart', async () => {
@@ -208,6 +253,7 @@ describe('LocalWorkspace files', () => {
     expect(trashed.trashedTo?.startsWith(`${WORKSPACE_TRASH_DIR}/`)).toBe(true);
     expect(await workspace.exists('old')).toBe(false);
     expect(await workspace.read(`${trashed.trashedTo}/notes.md`)).toBe('keep me');
+    expect(await workspace.read('.cogitator/.gitignore')).toBe('*\n');
 
     await workspace.write('gone.txt', 'bye');
     expect(await workspace.remove('gone.txt')).toEqual({ path: 'gone.txt' });
@@ -281,6 +327,36 @@ describe('LocalWorkspace exec', () => {
     });
     expect(result.stdout).toBe('x'.repeat(100));
     expect(result.truncated).toBe(true);
+  });
+
+  it('kills what a finished command left running in the background, on a timeout and on dispose', async () => {
+    const timedOut = await workspace.exec('sleep 66 & echo $! > bg.pid', { timeout: 2000 });
+    expect(timedOut.timedOut).toBe(true);
+    const first = Number((await workspace.read('bg.pid')).trim());
+    await vi.waitFor(() => expect(isAlive(first)).toBe(false), { timeout: 10_000 });
+
+    const done = await workspace.exec('nohup sleep 67 > /dev/null 2>&1 & echo $! > bg.pid');
+    expect(done.exitCode).toBe(0);
+    const second = Number((await workspace.read('bg.pid')).trim());
+    expect(isAlive(second)).toBe(true);
+    await workspace.dispose();
+    await vi.waitFor(() => expect(isAlive(second)).toBe(false), { timeout: 10_000 });
+  });
+
+  it('runs commands through a launch wrapper, keeping the group kill', async () => {
+    const wrapped = new LocalWorkspace({
+      root,
+      exec: {
+        launch: ({ file, args }) => ({
+          file: '/usr/bin/env',
+          args: ['WRAPPED=yes', file, ...args],
+        }),
+      },
+    });
+    expect((await wrapped.exec('echo $WRAPPED')).stdout.trim()).toBe('yes');
+    const result = await wrapped.exec('sleep 68', { timeout: 300 });
+    expect(result.timedOut).toBe(true);
+    await wrapped.dispose();
   });
 
   it('kills the whole process group on a timeout', async () => {

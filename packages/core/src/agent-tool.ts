@@ -43,6 +43,10 @@ const DEFAULT_SCHEMA = z.object({
   task: z.string().describe('The task to delegate to the agent'),
 });
 
+/**
+ * The agent as a tool another agent calls with a task. The inner run gets the caller's signal,
+ * user, deps and, unless the inner agent has a workspace of its own, the caller's workspace.
+ */
 export function agentAsTool<TDeps = unknown>(
   cogitator: Cogitator,
   agent: Agent<TDeps>,
@@ -78,6 +82,7 @@ export function agentAsTool<TDeps = unknown>(
           signal: context.signal,
           ...(context.userId !== undefined && { userId: context.userId }),
           ...(context.deps !== undefined && { deps: context.deps }),
+          ...(!delegate.config.workspace && context.workspace && { workspace: context.workspace }),
           onApproval: async (request) => {
             const decision = onApproval ? await onApproval(request) : 'pause';
             return decision === 'pause' ? DELEGATED_DECLINE : decision;

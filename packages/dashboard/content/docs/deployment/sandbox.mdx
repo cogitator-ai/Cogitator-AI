@@ -124,6 +124,8 @@ await executor.disconnect();
 | `SecurityOpt` | `no-new-privileges` | Prevent privilege escalation |
 | `NetworkMode` | `none`              | No network access            |
 | `PidsLimit`   | `100`               | Prevent fork bombs           |
+| `Memory`      | 1 GiB unless set    | Bound memory use             |
+| `NanoCpus`    | 1 CPU unless set    | Bound CPU use                |
 
 `resources.memory` accepts strings like `'256MB'` or `'1GB'` (`parseMemory()`), `cpus` is converted to Docker NanoCPUs (`cpusToNanoCpus()`), and `cpuShares`, `mounts` (`{ source, target, readOnly }`), `user` and `env` are passed through. The default timeout is 30 seconds.
 
@@ -197,7 +199,7 @@ await pool.release(container, { corrupted: true });
 
 ## DockerWorkspace
 
-The executors above start a fresh container for every execution. An agent that works on a project needs one container that keeps its state between commands (installed packages, build output), with the project's files mounted. `DockerWorkspace` is that: a [workspace](/docs/tools/workspace) whose commands run with `docker exec` in one long-lived container, created in `start()` and removed in `dispose()`.
+The executors above start a fresh container for every execution. An agent that works on a project needs one container that keeps its state between commands (installed packages, build output), with the project's files mounted. `DockerWorkspace` is that: a [workspace](/docs/tools/workspace) whose commands run with `docker exec` in one long-lived container, created on first use (or in `start()`) and removed in `dispose()`.
 
 ```typescript
 import { LocalWorkspace, workspaceTools } from '@cogitator-ai/core';
@@ -206,10 +208,9 @@ import { DockerWorkspace } from '@cogitator-ai/sandbox';
 const workspace = new DockerWorkspace({
   host: new LocalWorkspace({ root: './project' }),
   image: 'node:24-alpine',
-  resources: { memory: '1GB', cpus: 2 },
+  resources: { memory: '4GB', cpus: 4 },
   network: { mode: 'none' },
 });
-await workspace.start();
 try {
   await cog.run(agent, { input: 'Run the tests and fix what fails', workspace });
 } finally {
@@ -217,7 +218,7 @@ try {
 }
 ```
 
-The host workspace's root is bind-mounted at `/workspace`. Files are read and written on the host through the host workspace and its path guard, so a symlink a command creates to a path outside the root is refused when read. The container has the security defaults above and no network unless `network.mode` allows it (`allowedHosts` is refused, as for the Docker executor). A timeout or an abort kills the command and every process it started, found by a marker in their environment, and the container keeps running. Without Docker `start()` fails with a `WorkspaceError` of code `UNAVAILABLE`.
+The host workspace's root is bind-mounted at `/workspace`. Files are read and written on the host through the host workspace and its path guard, so a symlink a command creates to a path outside the root is refused when read, and a path under `/workspace` is taken as the same path under the root. The container has the security defaults above, an init process, limits of 2 GB, 2 CPUs and 512 processes unless `resources` sets others, and no network unless `network.mode` allows it (`allowedHosts` is refused, as for the Docker executor). Each command leads a process group of its own, and a timeout or an abort signals that group (SIGTERM, then SIGKILL), so background processes go too, while the container keeps running. The image needs `sh`. Starting removes containers of the same root left behind by a process of this machine that is gone. Without Docker the first command fails with a `WorkspaceError` of code `UNAVAILABLE`.
 
 ## Fallback
 

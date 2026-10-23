@@ -163,6 +163,12 @@ export interface CogitatorConfig {
      * application still gets the whole result, in `onToolResult`.
      */
     maxToolResultLength?: number;
+    /**
+     * Milliseconds the full text of long tool results stays in a run's workspace
+     * (`.cogitator/tool-results/<runId>/`, see `RunOptions.workspace`): saving a result removes
+     * the folders of runs older than this. Default: 7 days, `Infinity` keeps them all
+     */
+    toolResultRetention?: number;
   };
   memory?: MemoryConfig;
   /** Sandbox configuration for isolated tool execution */

@@ -34,6 +34,11 @@ export interface ContainerPoolOptions {
 
 export const SANDBOX_CONTAINER_LABEL = 'ai.cogitator.sandbox';
 
+/** Memory a sandbox container gets when none is set: 1 GiB. */
+export const DEFAULT_CONTAINER_MEMORY = 1024 * 1024 * 1024;
+/** CPUs a sandbox container gets when none are set. */
+export const DEFAULT_CONTAINER_CPUS = 1;
+
 function poolKey(image: string, options: ContainerCreateOptions): string {
   return JSON.stringify([
     image,
@@ -229,14 +234,16 @@ export class ContainerPool {
 
 /**
  * A hardened container for sandboxed executions, created (not started) from `image`, which is
- * pulled first when missing: no capabilities, no new privileges, a PID limit, no network unless
- * asked for, idling on `sleep infinity` for `docker exec` to run commands in it.
+ * pulled first when missing: no capabilities, no new privileges, a PID limit (100), memory and
+ * CPU limits (1 GiB and 1 CPU unless set), no network unless asked for, idling on
+ * `sleep infinity` for `docker exec` to run commands in it. `init` runs an init process as PID 1
+ * that reaps the zombies of killed commands.
  */
 export async function createSandboxContainer(
   docker: Docker,
   image: string,
   options: ContainerCreateOptions,
-  extra: { labels?: Record<string, string>; workingDir?: string } = {}
+  extra: { labels?: Record<string, string>; workingDir?: string; init?: boolean } = {}
 ): Promise<DockerContainer> {
   try {
     await docker.getImage(image).inspect();
@@ -260,8 +267,8 @@ export async function createSandboxContainer(
     User: options.user,
     Labels: { [SANDBOX_CONTAINER_LABEL]: 'true', ...extra.labels },
     HostConfig: {
-      Memory: options.memory,
-      NanoCpus: options.cpus ? cpusToNanoCpus(options.cpus) : undefined,
+      Memory: options.memory ?? DEFAULT_CONTAINER_MEMORY,
+      NanoCpus: cpusToNanoCpus(options.cpus ?? DEFAULT_CONTAINER_CPUS),
       CpuShares: options.cpuShares,
       PidsLimit: options.pidsLimit ?? 100,
       NetworkMode: options.networkMode ?? 'none',
@@ -270,6 +277,7 @@ export async function createSandboxContainer(
       SecurityOpt: ['no-new-privileges'],
       CapDrop: ['ALL'],
       ReadonlyRootfs: false,
+      ...(extra.init && { Init: true }),
     },
     WorkingDir: extra.workingDir ?? '/workspace',
   });

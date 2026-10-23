@@ -1,31 +1,39 @@
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { WorkspaceError, type Workspace, type WorkspaceStat } from '@cogitator-ai/types';
-import { DockerWorkspace, WORKSPACE_CONTAINER_LABEL } from '../workspace/docker-workspace';
+import {
+  DockerWorkspace,
+  WORKSPACE_CONTAINER_LABEL,
+  WORKSPACE_OWNER_LABEL,
+  WORKSPACE_ROOT_LABEL,
+} from '../workspace/docker-workspace';
+import { createSandboxContainer } from '../pool/container-pool';
 import { dockerConnectionCandidates } from '../utils/docker-connection';
 import type { Docker } from '../docker-types';
+import type Dockerode from 'dockerode';
 
-async function dockerAvailable(): Promise<boolean> {
+async function connectDocker(): Promise<Dockerode | null> {
   try {
-    const Dockerode = (await import('dockerode')).default;
+    const Client = (await import('dockerode')).default;
     for (const options of dockerConnectionCandidates()) {
+      const client = new Client(options);
       try {
-        await (new Dockerode(options) as unknown as Docker).ping();
-        return true;
+        await client.ping();
+        return client;
       } catch {
         continue;
       }
     }
   } catch {
-    return false;
+    return null;
   }
-  return false;
+  return null;
 }
 
-const hasDocker = await dockerAvailable();
+const docker = await connectDocker();
 
 /**
  * A host workspace for these tests: a plain directory, only what DockerWorkspace asks of it.
@@ -33,15 +41,16 @@ const hasDocker = await dockerAvailable();
  */
 function directoryHost(root: string): Workspace & { disposed: boolean } {
   const unsupported = () => Promise.reject(new WorkspaceError('UNSUPPORTED', 'not in this test'));
-  return {
+  const host: Workspace & { disposed: boolean } = {
     id: 'host',
     root,
     cwd: '.',
     disposed: false,
     start: async () => undefined,
     async dispose() {
-      this.disposed = true;
+      host.disposed = true;
     },
+    withCwd: () => host,
     contains: async () => true,
     async stat(path): Promise<WorkspaceStat> {
       const full = join(root, path);
@@ -63,6 +72,7 @@ function directoryHost(root: string): Workspace & { disposed: boolean } {
     rename: unsupported,
     exec: unsupported,
   };
+  return host;
 }
 
 describe('DockerWorkspace without Docker', () => {
@@ -71,7 +81,7 @@ describe('DockerWorkspace without Docker', () => {
       host: directoryHost(tmpdir()),
       docker: { socketPath: join(tmpdir(), 'no-such-docker.sock') },
     });
-    const error = await workspace.start().then(
+    const error = await workspace.exec('true').then(
       () => undefined,
       (reason: unknown) => reason
     );
@@ -79,20 +89,31 @@ describe('DockerWorkspace without Docker', () => {
     expect((error as Error).message).toContain('Docker is not reachable');
   });
 
-  it('refuses to run before start and refuses network allow-lists', async () => {
-    const workspace = new DockerWorkspace({ host: directoryHost(tmpdir()) });
-    await expect(workspace.exec('true')).rejects.toMatchObject({ code: 'NOT_STARTED' });
+  it('refuses network allow-lists, an absolute cwd and one outside the root', () => {
+    const host = directoryHost(tmpdir());
     expect(
       () =>
-        new DockerWorkspace({
-          host: directoryHost(tmpdir()),
-          network: { mode: 'bridge', allowedHosts: ['example.com'] },
-        })
+        new DockerWorkspace({ host, network: { mode: 'bridge', allowedHosts: ['example.com'] } })
     ).toThrow(/allowedHosts/);
+    expect(() => new DockerWorkspace({ host, cwd: '/etc' })).toThrow(/relative/);
+    expect(() => new DockerWorkspace({ host, cwd: '../up' })).toThrow(/outside/);
+    expect(new DockerWorkspace({ host, cwd: 'a/./b/' }).cwd).toBe('a/b');
+  });
+
+  it('refuses commands whose signal already aborted, without touching Docker', async () => {
+    const workspace = new DockerWorkspace({
+      host: directoryHost(tmpdir()),
+      docker: { socketPath: join(tmpdir(), 'no-such-docker.sock') },
+    });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(workspace.exec('true', { signal: controller.signal })).rejects.toMatchObject({
+      code: 'ABORTED',
+    });
   });
 });
 
-describe.skipIf(!hasDocker)('DockerWorkspace with Docker', () => {
+describe.skipIf(!docker)('DockerWorkspace with Docker', () => {
   let base: string;
   let host: ReturnType<typeof directoryHost>;
   let workspace: DockerWorkspace;
@@ -101,88 +122,147 @@ describe.skipIf(!hasDocker)('DockerWorkspace with Docker', () => {
     base = realpathSync(mkdtempSync(join(tmpdir(), 'docker-workspace-')));
     mkdirSync(join(base, 'pkg'));
     host = directoryHost(base);
-    workspace = new DockerWorkspace({ host, image: 'alpine:3.19', id: 'test-ws' });
-    await workspace.start();
+    workspace = new DockerWorkspace({ host, image: 'alpine:3.19', id: 'test-ws', killGrace: 500 });
   }, 120_000);
 
   afterAll(async () => {
     await workspace?.dispose();
     rmSync(base, { recursive: true, force: true });
-  });
+  }, 60_000);
 
-  it('runs commands in one long-lived container on the mounted root', async () => {
+  it('starts on first use and runs commands in one long-lived container', async () => {
+    expect(workspace.containerId).toBeUndefined();
     const first = await workspace.exec('echo hello > from-container.txt && hostname');
     const second = await workspace.exec('hostname');
+    expect(workspace.containerId).toBeDefined();
     expect(first.exitCode).toBe(0);
     expect(second.stdout).toBe(first.stdout);
     expect(readFileSync(join(base, 'from-container.txt'), 'utf8')).toBe('hello\n');
     expect(await workspace.read('from-container.txt')).toBe('hello\n');
-  });
+    expect(await workspace.read('/workspace/from-container.txt')).toBe('hello\n');
+  }, 120_000);
 
-  it('maps the working directory into the container', async () => {
+  it('maps the working directory into the container, also for a withCwd view', async () => {
     expect((await workspace.exec('pwd')).stdout.trim()).toBe('/workspace');
     expect((await workspace.exec('pwd', { cwd: 'pkg' })).stdout.trim()).toBe('/workspace/pkg');
-  });
+    expect((await workspace.exec('pwd', { cwd: '/workspace/pkg' })).stdout.trim()).toBe(
+      '/workspace/pkg'
+    );
+    const view = workspace.withCwd('pkg');
+    expect(view.id).toBe(workspace.id);
+    expect((await view.exec('pwd')).stdout.trim()).toBe('/workspace/pkg');
+    expect(view.containerId).toBe(workspace.containerId);
+  }, 60_000);
 
-  it('streams output and reports the exit code', async () => {
+  it('streams output and reports the exit code, stderr without the wrapper header', async () => {
     const out: string[] = [];
+    const err: string[] = [];
     const result = await workspace.exec("printf 'a'; printf 'b' >&2; exit 7", {
       onStdout: (chunk) => out.push(chunk),
+      onStderr: (chunk) => err.push(chunk),
     });
     expect(result).toMatchObject({ stdout: 'a', stderr: 'b', exitCode: 7, timedOut: false });
     expect(out.join('')).toBe('a');
-  });
+    expect(err.join('')).toBe('b');
+  }, 60_000);
 
   it('has no network by default', async () => {
     const result = await workspace.exec('wget -q -T 2 -O- http://1.1.1.1 || echo offline');
     expect(result.stdout).toContain('offline');
-  });
+  }, 60_000);
 
-  it('kills the command and what it started on a timeout, and keeps the container', async () => {
-    const result = await workspace.exec('sleep 60 & sleep 60; echo never', { timeout: 1500 });
+  it('kills the command group on a timeout, background and env -i processes too', async () => {
+    const result = await workspace.exec(
+      'sleep 61 & env -i sh -c "exec sleep 62" & sleep 63; echo never',
+      { timeout: 1000 }
+    );
     expect(result.timedOut).toBe(true);
     expect(result.exitCode).toBe(124);
+    expect(result.stdout).not.toContain('never');
     await vi.waitFor(
       async () => {
-        const left = await workspace.exec('ps -o args | grep -c "^sleep 60" || true');
+        const left = await workspace.exec('ps -o args | grep -c "^sleep 6[123]" || true');
         expect(left.stdout.trim()).toBe('0');
       },
-      { timeout: 10_000 }
+      { timeout: 15_000, interval: 200 }
     );
     expect((await workspace.exec('echo alive')).stdout).toBe('alive\n');
-  });
+  }, 60_000);
 
-  it('rejects with ABORTED when the signal aborts', async () => {
+  it('rejects with ABORTED when the signal aborts, and kills the command', async () => {
     const controller = new AbortController();
-    const running = workspace.exec('echo ready; sleep 60', {
+    const running = workspace.exec('echo ready; sleep 64', {
       signal: controller.signal,
       onStdout: (chunk) => {
         if (chunk.includes('ready')) controller.abort();
       },
     });
     await expect(running).rejects.toMatchObject({ code: 'ABORTED' });
-  });
+    await vi.waitFor(
+      async () => {
+        const left = await workspace.exec('ps -o args | grep -c "^sleep 64" || true');
+        expect(left.stdout.trim()).toBe('0');
+      },
+      { timeout: 15_000, interval: 200 }
+    );
+  }, 60_000);
+
+  it('rejects with ABORTED when the signal aborts while the command is being started', async () => {
+    const controller = new AbortController();
+    const running = workspace.exec('sleep 65', { signal: controller.signal });
+    controller.abort();
+    await expect(running).rejects.toMatchObject({ code: 'ABORTED' });
+    await vi.waitFor(
+      async () => {
+        const left = await workspace.exec('ps -o args | grep -c "^sleep 65" || true');
+        expect(left.stdout.trim()).toBe('0');
+      },
+      { timeout: 15_000, interval: 200 }
+    );
+  }, 60_000);
 
   it('labels its container and removes it with the host on dispose', async () => {
-    const other = new DockerWorkspace({ host: directoryHost(base), id: 'disposable' });
+    const ownedHost = directoryHost(base);
+    const other = new DockerWorkspace({ host: ownedHost, id: 'disposable' });
     await other.start();
-    const id = other.containerId;
-    expect(id).toBeDefined();
-    const Dockerode = (await import('dockerode')).default;
-    const docker = new Dockerode(dockerConnectionCandidates()[0]);
-    const info = await docker.getContainer(id!).inspect();
+    const id = other.containerId!;
+    const info = await docker!.getContainer(id).inspect();
     expect(info.Config.Labels[WORKSPACE_CONTAINER_LABEL]).toBe('disposable');
+    expect(info.Config.Labels[WORKSPACE_ROOT_LABEL]).toBe(base);
+    expect(info.HostConfig.Init).toBe(true);
+    expect(info.HostConfig.Memory).toBeGreaterThan(0);
 
     await other.dispose();
-    await expect(docker.getContainer(id!).inspect()).rejects.toThrow();
-    await expect(other.exec('true')).rejects.toMatchObject({ code: 'DISPOSED' });
-  });
-
-  it('disposes the host it owns', async () => {
-    const ownedHost = directoryHost(base);
-    const owned = new DockerWorkspace({ host: ownedHost });
-    await owned.start();
-    await owned.dispose();
     expect(ownedHost.disposed).toBe(true);
-  });
+    await expect(docker!.getContainer(id).inspect()).rejects.toThrow();
+    await expect(other.exec('true')).rejects.toMatchObject({ code: 'DISPOSED' });
+  }, 120_000);
+
+  it('removes a container of the same root that a process now gone left behind', async () => {
+    const orphanRoot = realpathSync(mkdtempSync(join(tmpdir(), 'docker-orphan-')));
+    const orphan = await createSandboxContainer(
+      docker as unknown as Docker,
+      'alpine:3.19',
+      {},
+      {
+        labels: {
+          [WORKSPACE_CONTAINER_LABEL]: 'orphan',
+          [WORKSPACE_ROOT_LABEL]: orphanRoot,
+          [WORKSPACE_OWNER_LABEL]: `${hostname()}:999999`,
+        },
+      }
+    );
+    const fresh = new DockerWorkspace({ host: directoryHost(orphanRoot) });
+    try {
+      await fresh.start();
+      await expect(docker!.getContainer(orphan.id).inspect()).rejects.toThrow();
+    } finally {
+      await fresh.dispose();
+      await docker!
+        .getContainer(orphan.id)
+        .remove({ force: true })
+        .catch(() => undefined);
+      rmSync(orphanRoot, { recursive: true, force: true });
+    }
+  }, 120_000);
 });

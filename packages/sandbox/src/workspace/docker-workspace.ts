@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import { posix } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import {
@@ -31,28 +31,38 @@ const DEFAULT_IMAGE = 'alpine:3.19';
 const DEFAULT_WORKDIR = '/workspace';
 const DEFAULT_EXEC_TIMEOUT = 120_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
-const EXEC_MARKER = 'COGITATOR_WORKSPACE_EXEC';
+const DEFAULT_KILL_GRACE = 2_000;
+const DEFAULT_RESOURCES: Required<Pick<SandboxResourceLimits, 'memory' | 'cpus' | 'pidsLimit'>> = {
+  memory: '2GB',
+  cpus: 2,
+  pidsLimit: 512,
+};
+const EXEC_WRAPPER = 'printf "%s\\n" "$$" >&2; exec sh -c "$1"';
 
 /** The label every workspace container carries, with the workspace id as its value. */
 export const WORKSPACE_CONTAINER_LABEL = 'ai.cogitator.workspace';
+/** The label naming the host root a workspace container mounts. */
+export const WORKSPACE_ROOT_LABEL = 'ai.cogitator.workspace.root';
+/** The label naming the process that created a workspace container, as `<hostname>:<pid>`. */
+export const WORKSPACE_OWNER_LABEL = 'ai.cogitator.workspace.owner';
 
 export interface DockerWorkspaceOptions {
   /**
    * The workspace on this machine whose root is mounted into the container: files are read and
    * written through it, with its path guard, and commands run in the container on the same
    * files. Usually a `LocalWorkspace` from `@cogitator-ai/core`. The Docker workspace owns it:
-   * `start()` starts it and `dispose()` disposes it
+   * `dispose()` disposes it
    */
   host: Workspace;
   /** Id of the workspace (default: the host's) */
   id?: string;
   /** The current directory, relative to the root (default: the host's) */
   cwd?: string;
-  /** Image of the container (default: `alpine:3.19`), pulled when missing */
+  /** Image of the container (default: `alpine:3.19`), pulled when missing. It needs `sh` */
   image?: string;
   /** Where the root is mounted in the container (default: `/workspace`) */
   workdir?: string;
-  /** Memory, CPU and process limits of the container */
+  /** Memory, CPU and process limits of the container (default: 2 GB, 2 CPUs, 512 processes) */
   resources?: SandboxResourceLimits;
   /** Network of the container (default: `{ mode: 'none' }`, no network). `allowedHosts` is not supported */
   network?: SandboxNetworkConfig;
@@ -71,25 +81,40 @@ export interface DockerWorkspaceOptions {
   timeout?: number;
   /** Bytes of stdout and of stderr a result keeps (default: 1 MiB each) */
   maxOutputBytes?: number;
+  /** Milliseconds between SIGTERM and SIGKILL when a command is stopped (default: 2000) */
+  killGrace?: number;
+}
+
+/** What a workspace and its `withCwd()` views share. */
+interface DockerWorkspaceState {
+  container?: DockerContainer;
+  starting?: Promise<DockerContainer>;
+  disposed: boolean;
 }
 
 /**
  * A workspace whose commands run in a Docker container: one long-lived container per workspace,
- * created in `start()` and removed in `dispose()`, with the host workspace's root mounted at
- * `workdir`. Files are read and written on the host through the host workspace (so its path
- * guard applies, and a symlink a command creates to a path outside the root is refused like any
- * other), commands run with `docker exec` in the matching directory of the container, without
- * network unless `network` allows it and with no capabilities. A timeout or an abort kills the
- * command and every process it started, the container keeps running.
+ * created on first use (or in `start()`) and removed in `dispose()`, with the host workspace's
+ * root mounted at `workdir`. Files are read and written on the host through the host workspace
+ * (so its path guard applies, and a symlink a command creates to a path outside the root is
+ * refused like any other), and a path under `workdir`, as commands print them, is taken as the
+ * same path under the root. Commands run with `docker exec` in the matching directory, without
+ * network unless `network` allows it, with no capabilities, an init process and default limits.
+ *
+ * Each command runs in a process group of its own, and a timeout or an abort sends SIGTERM to
+ * that group, SIGKILL after `killGrace`: background processes and processes with a cleared
+ * environment go too. A process that deliberately starts a new session (`setsid`) escapes the
+ * group and lives on until `dispose()` removes the container. The image needs `sh` (distroless
+ * images without a shell cannot run commands). When the container starts, containers of the same
+ * root left behind by a process of this machine that is gone are removed.
  *
  * @example
  * ```ts
  * const workspace = new DockerWorkspace({
  *   host: new LocalWorkspace({ root: './project' }),
  *   image: 'node:24-alpine',
- *   resources: { memory: '1GB', cpus: 2 },
+ *   resources: { memory: '4GB', cpus: 2 },
  * });
- * await workspace.start();
  * try {
  *   await cog.run(agent, { input: 'Run the tests and fix what fails', workspace });
  * } finally {
@@ -106,9 +131,7 @@ export class DockerWorkspace implements Workspace {
   readonly restore?: (snapshotId: string) => Promise<void>;
   private readonly options: DockerWorkspaceOptions;
   private readonly host: Workspace;
-  private container?: DockerContainer;
-  private starting?: Promise<void>;
-  private disposed = false;
+  private readonly state: DockerWorkspaceState;
 
   constructor(options: DockerWorkspaceOptions) {
     if (options.network?.allowedHosts?.length) {
@@ -120,8 +143,9 @@ export class DockerWorkspace implements Workspace {
     this.options = options;
     this.host = options.host;
     this.id = options.id ?? options.host.id;
-    this.cwd = options.cwd ?? options.host.cwd;
-    this.workdir = options.workdir ?? DEFAULT_WORKDIR;
+    this.workdir = posix.resolve('/', options.workdir ?? DEFAULT_WORKDIR);
+    this.cwd = normalizeCwd(options.cwd ?? options.host.cwd);
+    this.state = { disposed: false };
     const host = options.host;
     if (host.snapshot && host.restore) {
       this.snapshot = (snapshotOptions) => host.snapshot!(snapshotOptions);
@@ -135,40 +159,37 @@ export class DockerWorkspace implements Workspace {
 
   /** Id of the container, once started */
   get containerId(): string | undefined {
-    return this.container?.id;
+    return this.state.container?.id;
   }
 
-  start(): Promise<void> {
-    if (this.disposed) {
-      return Promise.reject(new WorkspaceError('DISPOSED', `Workspace ${this.id} is disposed`));
-    }
-    this.starting ??= this.launch().catch((error: unknown) => {
-      this.starting = undefined;
-      throw error;
-    });
-    return this.starting;
+  async start(): Promise<void> {
+    await this.ready();
   }
 
   async dispose(): Promise<void> {
-    if (this.disposed) return;
-    this.disposed = true;
-    await this.starting?.catch(() => undefined);
-    const container = this.container;
-    this.container = undefined;
+    if (this.state.disposed) return;
+    this.state.disposed = true;
+    const container = await this.state.starting?.catch(() => undefined);
+    this.state.container = undefined;
     if (container) await container.remove({ force: true }).catch(() => undefined);
     await this.host.dispose();
   }
 
+  withCwd(cwd: string): DockerWorkspace {
+    const view: DockerWorkspace = Object.create(DockerWorkspace.prototype);
+    return Object.assign(view, this, { cwd: normalizeCwd(cwd) });
+  }
+
   contains(path: string): Promise<boolean> {
-    return this.host.contains(path);
+    return this.host.contains(this.toHost(path));
   }
 
   read(path: string, options?: WorkspaceReadOptions): Promise<string> {
-    return this.host.read(path, options);
+    return this.host.read(this.toHost(path), options);
   }
 
   readBytes(path: string, options?: WorkspaceReadOptions): Promise<Uint8Array> {
-    return this.host.readBytes(path, options);
+    return this.host.readBytes(this.toHost(path), options);
   }
 
   write(
@@ -176,99 +197,107 @@ export class DockerWorkspace implements Workspace {
     content: string | Uint8Array,
     options?: WorkspaceWriteOptions
   ): Promise<void> {
-    return this.host.write(path, content, options);
+    return this.host.write(this.toHost(path), content, options);
   }
 
   list(path?: string, options?: WorkspaceListOptions): Promise<WorkspaceEntry[]> {
-    return this.host.list(path, options);
+    return this.host.list(path === undefined ? undefined : this.toHost(path), options);
   }
 
   stat(path: string): Promise<WorkspaceStat> {
-    return this.host.stat(path);
+    return this.host.stat(this.toHost(path));
   }
 
   exists(path: string): Promise<boolean> {
-    return this.host.exists(path);
+    return this.host.exists(this.toHost(path));
   }
 
   mkdir(path: string): Promise<void> {
-    return this.host.mkdir(path);
+    return this.host.mkdir(this.toHost(path));
   }
 
   remove(path: string, options?: WorkspaceRemoveOptions): Promise<WorkspaceRemoveResult> {
-    return this.host.remove(path, options);
+    return this.host.remove(this.toHost(path), options);
   }
 
   rename(from: string, to: string, options?: WorkspaceRenameOptions): Promise<void> {
-    return this.host.rename(from, to, options);
+    return this.host.rename(this.toHost(from), this.toHost(to), options);
   }
 
   async exec(command: string, options: WorkspaceExecOptions = {}): Promise<WorkspaceExecResult> {
-    if (this.disposed) throw new WorkspaceError('DISPOSED', `Workspace ${this.id} is disposed`);
-    const container = this.container;
-    if (!container) {
-      throw new WorkspaceError(
-        'NOT_STARTED',
-        `Workspace ${this.id} is not started, call start() first`
-      );
-    }
-    const cwdPath = options.cwd ?? this.cwd;
+    if (options.signal?.aborted) throw aborted(options.signal);
+    const container = await this.ready();
+    const cwdPath = this.toHost(options.cwd ?? this.cwd);
     const cwd = await this.host.stat(cwdPath);
     if (cwd.type !== 'directory') {
       throw new WorkspaceError('NOT_A_DIRECTORY', `${cwdPath} is not a directory`, {
         path: cwdPath,
       });
     }
-    if (options.signal?.aborted) throw aborted(options.signal);
-
-    const timeout = options.timeout ?? this.options.timeout ?? DEFAULT_EXEC_TIMEOUT;
-    const maxOutput =
-      options.maxOutputBytes ?? this.options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-    const marker = randomUUID();
-    const env = { ...this.options.env, ...options.env, [EXEC_MARKER]: marker };
-    const exec = await container.exec({
-      Cmd: ['sh', '-c', command],
-      Env: Object.entries(env).map(([key, value]) => `${key}=${value}`),
-      WorkingDir: cwd.path === '.' ? this.workdir : posix.join(this.workdir, cwd.path),
-      AttachStdout: true,
-      AttachStderr: true,
-    });
-    return this.run(container, exec, marker, {
-      timeout,
-      maxOutput,
+    return this.run(container, command, {
+      workingDir: cwd.path === '.' ? this.workdir : posix.join(this.workdir, cwd.path),
+      env: { ...this.options.env, ...options.env },
+      timeout: options.timeout ?? this.options.timeout ?? DEFAULT_EXEC_TIMEOUT,
+      maxOutput: options.maxOutputBytes ?? this.options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
+      killGrace: this.options.killGrace ?? DEFAULT_KILL_GRACE,
       signal: options.signal,
       onStdout: options.onStdout,
       onStderr: options.onStderr,
     });
   }
 
-  private async launch(): Promise<void> {
+  /** A path as the host workspace takes it: one under `workdir` (a container path) is mapped to the root. */
+  private toHost(path: string): string {
+    if (typeof path !== 'string' || !path.startsWith('/')) return path;
+    const normalized = posix.resolve(path);
+    if (normalized === this.workdir) return '.';
+    if (normalized.startsWith(`${this.workdir}/`)) return normalized.slice(this.workdir.length + 1);
+    return path;
+  }
+
+  private ready(): Promise<DockerContainer> {
+    if (this.state.disposed) {
+      return Promise.reject(new WorkspaceError('DISPOSED', `Workspace ${this.id} is disposed`));
+    }
+    this.state.starting ??= this.launch().catch((error: unknown) => {
+      this.state.starting = undefined;
+      throw error;
+    });
+    return this.state.starting;
+  }
+
+  private async launch(): Promise<DockerContainer> {
     await this.host.start();
     const docker = await connect(this.options.docker);
-    const memory = this.options.resources?.memory
-      ? parseMemory(this.options.resources.memory)
-      : undefined;
+    await removeOrphans(docker, this.host.root);
+    const resources = { ...DEFAULT_RESOURCES, ...this.options.resources };
     const container = await createSandboxContainer(
       docker,
       this.options.image ?? DEFAULT_IMAGE,
       {
-        memory,
-        cpus: this.options.resources?.cpus,
-        cpuShares: this.options.resources?.cpuShares,
-        pidsLimit: this.options.resources?.pidsLimit,
+        memory: parseMemory(resources.memory),
+        cpus: resources.cpus,
+        cpuShares: resources.cpuShares,
+        pidsLimit: resources.pidsLimit,
         networkMode: this.options.network?.mode ?? 'none',
         dns: this.options.network?.dns,
         mounts: [{ source: this.host.root, target: this.workdir }, ...(this.options.mounts ?? [])],
         user: this.options.user ?? defaultUser(),
       },
-      { labels: { [WORKSPACE_CONTAINER_LABEL]: this.id }, workingDir: this.workdir }
+      {
+        labels: {
+          [WORKSPACE_CONTAINER_LABEL]: this.id,
+          [WORKSPACE_ROOT_LABEL]: this.host.root,
+          [WORKSPACE_OWNER_LABEL]: `${hostname()}:${process.pid}`,
+        },
+        workingDir: this.workdir,
+        init: true,
+      }
     ).catch((error: unknown) => {
       throw new WorkspaceError(
         'UNAVAILABLE',
         `Could not create the workspace container: ${message(error)}`,
-        {
-          cause: error,
-        }
+        { cause: error }
       );
     });
     try {
@@ -278,25 +307,26 @@ export class DockerWorkspace implements Workspace {
       throw new WorkspaceError(
         'UNAVAILABLE',
         `Could not start the workspace container: ${message(error)}`,
-        {
-          cause: error,
-        }
+        { cause: error }
       );
     }
-    if (this.disposed) {
+    if (this.state.disposed) {
       await container.remove({ force: true }).catch(() => undefined);
       throw new WorkspaceError('DISPOSED', `Workspace ${this.id} was disposed while starting`);
     }
-    this.container = container;
+    this.state.container = container;
+    return container;
   }
 
   private async run(
     container: DockerContainer,
-    exec: DockerExec,
-    marker: string,
+    command: string,
     options: {
+      workingDir: string;
+      env: Record<string, string>;
       timeout: number;
       maxOutput: number;
+      killGrace: number;
       signal?: AbortSignal;
       onStdout?: (chunk: string) => void;
       onStderr?: (chunk: string) => void;
@@ -305,60 +335,118 @@ export class DockerWorkspace implements Workspace {
     const started = Date.now();
     const stdout = new StreamText(options.maxOutput, options.onStdout);
     const stderr = new StreamText(options.maxOutput, options.onStderr);
+    let group: number | undefined;
+    let header = Buffer.alloc(0);
     const demuxer = new DockerStreamDemuxer(
       (data) => stdout.push(data),
-      (data) => stderr.push(data)
+      (data) => {
+        if (group !== undefined) {
+          stderr.push(data);
+          return;
+        }
+        header = Buffer.concat([header, data]);
+        const end = header.indexOf(0x0a);
+        if (end === -1) return;
+        group = Number(header.subarray(0, end).toString('utf8').trim());
+        const rest = header.subarray(end + 1);
+        if (rest.length > 0) stderr.push(rest);
+        if (stopReason) void stopGroup();
+      }
     );
-    const stream: DockerStream = await exec.start({ hijack: true, stdin: false });
-    const finished = new Promise<void>((resolve, reject) => {
-      stream.on('end', () => resolve());
-      stream.on('close', () => resolve());
-      stream.on('error', (error: unknown) =>
-        reject(error instanceof Error ? error : new Error(String(error)))
-      );
-    });
-    stream.on('data', (chunk: Buffer) => demuxer.push(chunk));
 
     let stopReason: 'timeout' | 'abort' | undefined;
+    let stream: DockerStream | undefined;
+    let releaseRead: () => void = () => undefined;
+    const readReleased = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const stopGroup = async () => {
+      if (group !== undefined && Number.isInteger(group) && group > 1) {
+        await signalGroup(container, group, 'TERM');
+        const kill = setTimeout(
+          () => void signalGroup(container, group!, 'KILL'),
+          options.killGrace
+        );
+        kill.unref();
+      }
+      const bound = setTimeout(() => {
+        stream?.end();
+        releaseRead();
+      }, options.killGrace + 1_000);
+      bound.unref();
+    };
     const stop = (reason: 'timeout' | 'abort') => {
       if (stopReason) return;
       stopReason = reason;
-      void killMarked(container, marker).finally(() => stream.end());
+      void stopGroup();
     };
-    const timer = setTimeout(() => stop('timeout'), options.timeout);
     const onAbort = () => stop('abort');
     options.signal?.addEventListener('abort', onAbort, { once: true });
+    const timer = setTimeout(() => stop('timeout'), options.timeout);
 
     try {
-      await finished;
+      if (options.signal?.aborted) throw aborted(options.signal);
+      const exec: DockerExec = await container
+        .exec({
+          Cmd: ['sh', '-c', EXEC_WRAPPER, 'cogitator-exec', command],
+          Env: Object.entries(options.env).map(([key, value]) => `${key}=${value}`),
+          WorkingDir: options.workingDir,
+          AttachStdout: true,
+          AttachStderr: true,
+        })
+        .catch((error: unknown) => {
+          throw ioError('Could not run the command in the container', error);
+        });
+      stream = await exec.start({ hijack: true, stdin: false }).catch((error: unknown) => {
+        throw ioError('Could not start the command in the container', error);
+      });
+      const active = stream;
+      const finished = new Promise<void>((resolve, reject) => {
+        active.on('end', () => resolve());
+        active.on('close', () => resolve());
+        active.on('error', (error: unknown) =>
+          reject(ioError('The command output stream failed', error))
+        );
+      });
+      active.on('data', (chunk: Buffer) => demuxer.push(chunk));
+      if (options.signal?.aborted) stop('abort');
+
+      await Promise.race([finished, readReleased]);
+      if (stopReason === 'abort' && options.signal) throw aborted(options.signal);
+      const timedOut = stopReason === 'timeout';
+      const exitCode = timedOut
+        ? 124
+        : await exec.inspect().then(
+            (inspection) => inspection.ExitCode ?? 1,
+            (error: unknown) => {
+              throw ioError('Could not read the exit code of the command', error);
+            }
+          );
+      const err = stderr.text();
+      return {
+        stdout: stdout.text(),
+        stderr: timedOut ? err || `Command timed out after ${options.timeout}ms` : err,
+        exitCode,
+        timedOut,
+        truncated: stdout.truncated || stderr.truncated,
+        durationMs: Date.now() - started,
+      };
     } finally {
       clearTimeout(timer);
       options.signal?.removeEventListener('abort', onAbort);
     }
-    if (stopReason === 'abort' && options.signal) throw aborted(options.signal);
-    const timedOut = stopReason === 'timeout';
-    const exitCode = timedOut ? 124 : ((await exec.inspect()).ExitCode ?? 1);
-    const err = stderr.text();
-    return {
-      stdout: stdout.text(),
-      stderr: timedOut ? err || `Command timed out after ${options.timeout}ms` : err,
-      exitCode,
-      timedOut,
-      truncated: stdout.truncated || stderr.truncated,
-      durationMs: Date.now() - started,
-    };
   }
 }
 
-/**
- * Kills, in the container, every process whose environment carries the marker of one command:
- * the command and whatever it started, even in the background, and nothing else.
- */
-async function killMarked(container: DockerContainer, marker: string): Promise<void> {
-  const script = `for p in /proc/[0-9]*; do if tr '\\0' '\\n' < "$p/environ" 2>/dev/null | grep -qx "${EXEC_MARKER}=${marker}"; then kill -9 "\${p#/proc/}" 2>/dev/null; fi; done`;
+/** Sends a signal to the process group of one command, with the container's own `kill`. */
+async function signalGroup(
+  container: DockerContainer,
+  group: number,
+  signal: 'TERM' | 'KILL'
+): Promise<void> {
   try {
     const exec = await container.exec({
-      Cmd: ['sh', '-c', script],
+      Cmd: ['sh', '-c', `kill -${signal} -${group} 2>/dev/null; true`],
       AttachStdout: true,
       AttachStderr: true,
     });
@@ -371,6 +459,36 @@ async function killMarked(container: DockerContainer, marker: string): Promise<v
     });
   } catch {
     return;
+  }
+}
+
+/**
+ * Removes workspace containers of `root` that a process of this machine created and that
+ * outlived it (a crash, a kill), so they do not keep the root mounted.
+ */
+async function removeOrphans(docker: Docker, root: string): Promise<void> {
+  if (!docker.listContainers || !docker.getContainer) return;
+  const containers = await docker
+    .listContainers({ all: true, filters: { label: [`${WORKSPACE_ROOT_LABEL}=${root}`] } })
+    .catch(() => []);
+  const here = hostname();
+  for (const summary of containers) {
+    const [owner, pid] = (summary.Labels?.[WORKSPACE_OWNER_LABEL] ?? '').split(/:(?=\d+$)/);
+    if (owner !== here || !pid || processAlive(Number(pid))) continue;
+    await docker
+      .getContainer(summary.Id)
+      .remove({ force: true })
+      .catch(() => undefined);
+  }
+}
+
+function processAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error instanceof Error && 'code' in error && error.code === 'EPERM';
   }
 }
 
@@ -402,6 +520,18 @@ async function connect(config: SandboxDockerConfig | undefined): Promise<Docker>
   );
 }
 
+function normalizeCwd(cwd: string): string {
+  if (cwd === '' || cwd === '.') return '.';
+  if (cwd.startsWith('/')) {
+    throw new WorkspaceError('INVALID_PATH', 'cwd must be relative to the root', { path: cwd });
+  }
+  const normalized = posix.normalize(cwd).replace(/\/+$/, '');
+  if (normalized === '..' || normalized.startsWith('../')) {
+    throw new WorkspaceError('OUTSIDE_ROOT', `${cwd} is outside the workspace`, { path: cwd });
+  }
+  return normalized === '' || normalized === '.' ? '.' : normalized;
+}
+
 function defaultUser(): string | undefined {
   if (process.platform !== 'linux' || !process.getuid || !process.getgid) return undefined;
   return `${process.getuid()}:${process.getgid()}`;
@@ -414,6 +544,11 @@ function aborted(signal: AbortSignal): WorkspaceError {
   return new WorkspaceError('ABORTED', detail ? `Command aborted: ${detail}` : 'Command aborted', {
     cause: reason,
   });
+}
+
+function ioError(what: string, error: unknown): WorkspaceError {
+  if (error instanceof WorkspaceError) return error;
+  return new WorkspaceError('IO', `${what}: ${message(error)}`, { cause: error });
 }
 
 function message(error: unknown): string {

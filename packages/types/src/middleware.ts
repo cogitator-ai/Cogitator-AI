@@ -6,6 +6,7 @@ import type { ChatRequest, ChatResponse } from './llm';
 import type { Message, ToolCall, ToolResult } from './message';
 import type { Tool } from './tool';
 import type { RunResult } from './runtime';
+import type { Workspace } from './workspace';
 
 /**
  * What a middleware hook knows about the run it works in. `iteration` and the agent are those of
@@ -34,6 +35,11 @@ export interface RunMiddlewareContext<TDeps = unknown> {
   readonly signal: AbortSignal;
   /** The run's `deps`, as its tools get them */
   readonly deps?: TDeps;
+  /**
+   * The run's workspace (`RunOptions.workspace`, else the agent's), as its tools get it: for hooks
+   * that checkpoint files or check whether a path is inside it (`contains`)
+   */
+  readonly workspace?: Workspace;
   /**
    * Values the run's middleware share, alive for the run (or the `invokeTool()` call). Not kept
    * in a paused run's checkpoint: a resumed run starts with an empty one.

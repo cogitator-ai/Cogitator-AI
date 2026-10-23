@@ -192,7 +192,7 @@ Both regex tools reject texts over 1,000,000 characters and stop matching after 
 
 `file_write` and `file_delete` declare `sideEffects: ['filesystem']`. On their own the file tools act with the permissions of your process. Confine them to directories with `restrictFileTools` (below), and put writes behind [approvals](/docs/tools/approvals).
 
-For an agent that works on a project, prefer a [workspace](/docs/tools/workspace): `workspaceTools()` gives it `read_file` with line ranges, `write_file`, `edit_file`, `list_files`, `glob`, `grep` and `exec`, all confined to one directory, locally or in a Docker container.
+For an agent that works on a project, prefer a [workspace](/docs/tools/workspace): `workspaceTools()` gives it `read_file` with line ranges, `write_file`, `edit_file`, `list_files`, `glob`, `grep` and `run_command`, all confined to one directory, locally or in a Docker container. Their names differ from the tools on this page, so both can be registered side by side.
 
 ### `file_read`
 

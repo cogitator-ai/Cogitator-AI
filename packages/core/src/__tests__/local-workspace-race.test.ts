@@ -1,4 +1,6 @@
 import {
+  existsSync,
+  readdirSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -13,7 +15,11 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WorkspaceError } from '@cogitator-ai/types';
 
-const hooks = vi.hoisted(() => ({ beforeOpen: undefined as undefined | ((path: string) => void) }));
+const hooks = vi.hoisted(() => ({
+  beforeOpen: undefined as undefined | ((path: string) => void),
+  beforeRename: undefined as undefined | ((from: string, to: string, call: number) => boolean),
+  renames: 0,
+}));
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
@@ -24,6 +30,11 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       hooks.beforeOpen = undefined;
       hook?.(String(args[0]));
       return actual.open(...args);
+    },
+    rename: (from: string, to: string) => {
+      hooks.renames++;
+      if (hooks.beforeRename?.(from, to, hooks.renames)) hooks.beforeRename = undefined;
+      return actual.rename(from, to);
     },
   };
 });
@@ -46,6 +57,8 @@ beforeEach(() => {
 
 afterEach(() => {
   hooks.beforeOpen = undefined;
+  hooks.beforeRename = undefined;
+  hooks.renames = 0;
   rmSync(base, { recursive: true, force: true });
 });
 
@@ -91,5 +104,49 @@ describe('LocalWorkspace races between the check and the open', () => {
     const error = await refusal(workspace.write('docs/notes.md', 'overwritten'));
     expect(error.code).toBe('OUTSIDE_ROOT');
     expect(readFileSync(join(outside, 'notes.md'), 'utf8')).toBe('outside secret');
+    expect(readdirSync(outside)).toEqual(['notes.md']);
+  });
+
+  const swapDocs = () => {
+    renameSync(join(root, 'docs'), join(root, 'docs-moved'));
+    symlinkSync(outside, join(root, 'docs'));
+    return true;
+  };
+
+  it('deletes nothing outside when a parent is swapped right before a remove', async () => {
+    const workspace = new LocalWorkspace({ root });
+    await workspace.start();
+    hooks.beforeRename = swapDocs;
+    const error = await refusal(workspace.remove('docs/notes.md'));
+    expect(error.code).toBe('OUTSIDE_ROOT');
+    expect(readFileSync(join(outside, 'notes.md'), 'utf8')).toBe('outside secret');
+    expect(readFileSync(join(root, 'docs-moved', 'notes.md'), 'utf8')).toBe('inside');
+  });
+
+  it('pulls nothing in when a parent is swapped right before a rename', async () => {
+    const workspace = new LocalWorkspace({ root });
+    await workspace.start();
+    hooks.beforeRename = swapDocs;
+    const error = await refusal(workspace.rename('docs/notes.md', 'stolen.md'));
+    expect(error.code).toBe('OUTSIDE_ROOT');
+    expect(readFileSync(join(outside, 'notes.md'), 'utf8')).toBe('outside secret');
+    expect(existsSync(join(root, 'stolen.md'))).toBe(false);
+  });
+
+  it('pushes nothing out when the target directory is swapped right before a rename lands', async () => {
+    const workspace = new LocalWorkspace({ root });
+    await workspace.start();
+    await workspace.write('secret-inside.md', 'keep me in');
+    mkdirSync(join(root, 'dest'));
+    hooks.beforeRename = (_from, to) => {
+      if (!to.endsWith(join('dest', 'secret-inside.md'))) return false;
+      renameSync(join(root, 'dest'), join(root, 'dest-moved'));
+      symlinkSync(outside, join(root, 'dest'));
+      return true;
+    };
+    const error = await refusal(workspace.rename('secret-inside.md', 'dest/secret-inside.md'));
+    expect(error.code).toBe('OUTSIDE_ROOT');
+    expect(existsSync(join(outside, 'secret-inside.md'))).toBe(false);
+    expect(readFileSync(join(root, 'secret-inside.md'), 'utf8')).toBe('keep me in');
   });
 });
