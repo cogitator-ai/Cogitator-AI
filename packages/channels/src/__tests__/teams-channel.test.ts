@@ -27,6 +27,9 @@ const METADATA = 'https://login.test/v1/.well-known/openidconfiguration';
 const JWKS = 'https://login.test/v1/.well-known/keys';
 const LOGIN = 'https://entra.test';
 
+/** Whether `url` goes to the origin of `base`, compared as parsed URLs rather than by prefix */
+const sameOrigin = (url: string, base: string) => new URL(url).origin === new URL(base).origin;
+
 interface SigningPair {
   kid: string;
   privateKey: KeyObject;
@@ -123,7 +126,7 @@ function microsoft(routes: Route[] = []) {
     calls,
     keys,
     fetch: fetchImpl as unknown as typeof fetch,
-    connector: () => calls.filter((call) => call.url.startsWith(SERVICE)),
+    connector: () => calls.filter((call) => sameOrigin(call.url, SERVICE)),
     keyLoads: () => calls.filter((call) => call.url === JWKS).length,
   };
 }
@@ -601,7 +604,7 @@ describe('TeamsChannel conversations', () => {
     ]);
     const image = api.calls.find((call) => call.url.includes('/attachments/img/'));
     expect(image?.authorization).toBe('Bearer bot-token-1');
-    expect(api.calls.some((call) => call.url.startsWith('https://evil.test'))).toBe(false);
+    expect(api.calls.some((call) => sameOrigin(call.url, 'https://evil.test'))).toBe(false);
   });
 
   it('answers 503 for a message the gateway refuses while stopping, and takes it when sent again', async () => {
@@ -636,7 +639,7 @@ describe('TeamsChannel sending', () => {
     const id = await channel.sendText('a:personal-alice', '**Sure**', { replyTo: 'question' });
     await channel.sendText('a:personal-alice', 'and more');
     expect(id).toBe('m1');
-    const login = api.calls.filter((call) => call.url.startsWith(LOGIN));
+    const login = api.calls.filter((call) => sameOrigin(call.url, LOGIN));
     expect(login).toHaveLength(1);
     expect(login[0].path).toBe(`/${TENANT}/oauth2/v2.0/token`);
     expect(Object.fromEntries(login[0].form ?? [])).toEqual({
@@ -662,7 +665,7 @@ describe('TeamsChannel sending', () => {
     const api = microsoft();
     const multi = created(api, { appType: 'MultiTenant', tenantId: undefined, tenants: [TENANT] });
     await multi.channel.sendText('a:x', 'hi');
-    expect(api.calls.find((call) => call.url.startsWith(LOGIN))?.path).toBe(
+    expect(api.calls.find((call) => sameOrigin(call.url, LOGIN))?.path).toBe(
       '/botframework.com/oauth2/v2.0/token'
     );
     const provider = vi.fn(async () => ({ token: 'msi-token', expiresAt: Date.now() + 3_600_000 }));
@@ -725,7 +728,7 @@ describe('TeamsChannel sending', () => {
     let failures = [429, 412, 502, 504];
     const api = microsoft([
       (call) => {
-        if (!call.url.startsWith(SERVICE) || failures.length === 0) return undefined;
+        if (!sameOrigin(call.url, SERVICE) || failures.length === 0) return undefined;
         const status = failures.shift() ?? 500;
         return Response.json(
           { error: { code: 'Throttled', message: 'slow down' } },
@@ -748,7 +751,7 @@ describe('TeamsChannel sending', () => {
     let refused = false;
     const api = microsoft([
       (call) => {
-        if (!call.url.startsWith(SERVICE) || refused) return undefined;
+        if (!sameOrigin(call.url, SERVICE) || refused) return undefined;
         refused = true;
         return Response.json({ message: 'Authorization has been denied' }, { status: 401 });
       },
@@ -788,7 +791,7 @@ describe('TeamsChannel sending', () => {
   it('reports a token the tenant refuses', async () => {
     const api = microsoft([
       (call) =>
-        call.url.startsWith(LOGIN)
+        sameOrigin(call.url, LOGIN)
           ? Response.json(
               { error: 'unauthorized_client', error_description: 'AADSTS700016: app not found' },
               { status: 400 }
@@ -986,7 +989,7 @@ describe('TeamsChannel files', () => {
   it('asks for consent in a personal chat and uploads the file once accepted', async () => {
     const api = microsoft([
       (call) =>
-        call.url.startsWith('https://onedrive.test/')
+        sameOrigin(call.url, 'https://onedrive.test/')
           ? new Response(null, { status: 201 })
           : undefined,
     ]);
@@ -1151,7 +1154,7 @@ describe('ConversationPacer', () => {
     let throttled = false;
     const api = microsoft([
       (call) => {
-        if (!call.url.startsWith(SERVICE) || throttled) return undefined;
+        if (!sameOrigin(call.url, SERVICE) || throttled) return undefined;
         throttled = true;
         return Response.json({}, { status: 429, headers: { 'retry-after': '0.05' } });
       },
@@ -1179,7 +1182,7 @@ describe('TeamsChannel limits and failures', () => {
   it('gives up on a request that gets no answer in time, and does not post twice', async () => {
     const api = microsoft([
       (call) =>
-        call.url.startsWith(SERVICE)
+        sameOrigin(call.url, SERVICE)
           ? new Promise<Response>(() => {
               return;
             })
@@ -1209,7 +1212,7 @@ describe('TeamsChannel limits and failures', () => {
     let blocked = true;
     const api = microsoft([
       (call) =>
-        blocked && call.url.startsWith(SERVICE)
+        blocked && sameOrigin(call.url, SERVICE)
           ? Response.json({ error: { code: 'MessageWritesBlocked' } }, { status: 403 })
           : undefined,
     ]);
@@ -1608,7 +1611,7 @@ describe('TeamsChannel stopping and stale state', () => {
   it('aborts waiting requests and refuses new ones once stopped', async () => {
     const api = microsoft([
       (call) =>
-        call.url.startsWith(SERVICE)
+        sameOrigin(call.url, SERVICE)
           ? Response.json({}, { status: 429, headers: { 'retry-after': '60' } })
           : undefined,
     ]);
@@ -1624,7 +1627,7 @@ describe('TeamsChannel stopping and stale state', () => {
 
   it('does not try a typing indicator again', async () => {
     const api = microsoft([
-      (call) => (call.url.startsWith(SERVICE) ? new Response('', { status: 502 }) : undefined),
+      (call) => (sameOrigin(call.url, SERVICE) ? new Response('', { status: 502 }) : undefined),
     ]);
     const { channel } = created(api);
     await expect(channel.sendTyping('a:x')).rejects.toMatchObject({ status: 502 });
