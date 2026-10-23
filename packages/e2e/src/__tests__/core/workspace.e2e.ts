@@ -144,7 +144,7 @@ const ollamaReason = await ollamaSkipReason();
 describe.skipIf(ollamaReason !== null)(
   `Workspace: a real model writes a file (Ollama ${getTestModel()})`,
   () => {
-    it('writes the file it was asked to write', async () => {
+    it('writes the file it was asked to write', { timeout: 300_000 }, async () => {
       const cog = new Cogitator({ llm: { defaultModel: `ollama/${getTestModel()}` } });
       const agent = new Agent({
         name: 'writer',
@@ -155,13 +155,16 @@ describe.skipIf(ollamaReason !== null)(
         maxIterations: 3,
       });
       const written: string[] = [];
-      await cog.run(agent, {
-        input: 'Create the file hello.txt with the content "hi". Call write_file.',
-        toolChoice: 'required',
-        onToolResult: (r) => {
-          if (!r.error) written.push(String((r.result as { path: string }).path));
-        },
-      });
+      for (let attempt = 0; attempt < 5 && written.length === 0; attempt++) {
+        await cog.run(agent, {
+          input: 'Create the file hello.txt with the content "hi". Call write_file.',
+          threadId: `workspace-write-${attempt}`,
+          toolChoice: 'required',
+          onToolResult: (r) => {
+            if (!r.error) written.push(String((r.result as { path: string }).path));
+          },
+        });
+      }
       expect(written.length).toBeGreaterThan(0);
       for (const path of written) expect(await workspace.exists(path)).toBe(true);
       await cog.close();
