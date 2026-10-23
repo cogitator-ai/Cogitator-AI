@@ -10,13 +10,13 @@ export interface LineMatch {
 const WORKER_SOURCE = `
 const { parentPort, workerData } = require('node:worker_threads');
 const regex = new RegExp(workerData.pattern, workerData.flags);
-parentPort.on('message', ({ id, text, remaining, maxTested, maxShown }) => {
+parentPort.on('message', ({ id, text, remaining, maxShown }) => {
   const lines = text.split(/\\r?\\n/);
   if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
   const hits = [];
   for (let i = 0; i < lines.length && hits.length <= remaining; i++) {
     const line = lines[i];
-    if (!regex.test(line.length > maxTested ? line.slice(0, maxTested) : line)) continue;
+    if (!regex.test(line)) continue;
     hits.push({ line: i + 1, text: line.length > maxShown ? line.slice(0, maxShown) + '...' : line });
   }
   parentPort.postMessage({ id, hits });
@@ -28,8 +28,6 @@ export interface RegexWorkerOptions {
   flags: string;
   /** Milliseconds one file may take before the worker is stopped */
   timeout: number;
-  /** Characters of a line that are tested */
-  maxTested: number;
   /** Characters of a matching line that are reported */
   maxShown: number;
 }
@@ -92,7 +90,6 @@ export class RegexWorker {
         id,
         text,
         remaining,
-        maxTested: this.options.maxTested,
         maxShown: this.options.maxShown,
       });
     });

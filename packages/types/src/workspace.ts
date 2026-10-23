@@ -230,6 +230,8 @@ export interface WorkspaceSnapshot {
  * - `UNAVAILABLE`: what the workspace needs is missing, e.g. Docker
  * - `ABORTED`: the operation's signal aborted it
  * - `DENIED`: the operating system or a policy refused it (permissions, a sandbox rule)
+ * - `BUSY`: a process the workspace started is still running, and the operation would race it
+ *   (`remove` and `rename` of a `LocalWorkspace`)
  * - `UNSUPPORTED`: the workspace cannot do this
  * - `IO`: the file system or the container failed otherwise
  */
@@ -247,6 +249,7 @@ export type WorkspaceErrorCode =
   | 'UNAVAILABLE'
   | 'ABORTED'
   | 'DENIED'
+  | 'BUSY'
   | 'UNSUPPORTED'
   | 'IO';
 

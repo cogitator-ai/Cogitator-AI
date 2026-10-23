@@ -117,26 +117,6 @@ describe('LocalWorkspace races between the check and the open', () => {
     return true;
   };
 
-  it('deletes nothing outside when a parent is swapped right before a remove', async () => {
-    const workspace = new LocalWorkspace({ root });
-    await workspace.start();
-    hooks.beforeRename = swapDocs;
-    const error = await refusal(workspace.remove('docs/notes.md'));
-    expect(error.code).toBe('OUTSIDE_ROOT');
-    expect(readFileSync(join(outside, 'notes.md'), 'utf8')).toBe('outside secret');
-    expect(readFileSync(join(root, 'docs-moved', 'notes.md'), 'utf8')).toBe('inside');
-  });
-
-  it('pulls nothing in when a parent is swapped right before a rename', async () => {
-    const workspace = new LocalWorkspace({ root });
-    await workspace.start();
-    hooks.beforeRename = swapDocs;
-    const error = await refusal(workspace.rename('docs/notes.md', 'stolen.md'));
-    expect(error.code).toBe('OUTSIDE_ROOT');
-    expect(readFileSync(join(outside, 'notes.md'), 'utf8')).toBe('outside secret');
-    expect(existsSync(join(root, 'stolen.md'))).toBe(false);
-  });
-
   it('pushes nothing out when the target directory is swapped right before a rename lands', async () => {
     const workspace = new LocalWorkspace({ root });
     await workspace.start();
@@ -154,16 +134,84 @@ describe('LocalWorkspace races between the check and the open', () => {
     expect(readFileSync(join(root, 'secret-inside.md'), 'utf8')).toBe('keep me in');
   });
 
-  it('puts an outside entry pulled in by a swap back where it was, never over anything', async () => {
+  const quarantined = (): string[] => {
+    const pending = join(root, '.cogitator', 'pending');
+    return readdirSync(pending).flatMap((holder) =>
+      readdirSync(join(pending, holder)).map((name) =>
+        readFileSync(join(pending, holder, name), 'utf8')
+      )
+    );
+  };
+
+  it('deletes nothing when a parent is swapped right before a remove: the entry is quarantined', async () => {
+    const workspace = new LocalWorkspace({ root });
+    await workspace.start();
+    hooks.beforeRename = swapDocs;
+    const error = await refusal(workspace.remove('docs/notes.md'));
+    expect(error.code).toBe('OUTSIDE_ROOT');
+    expect(error.message).toContain('.cogitator/pending/');
+    expect(quarantined()).toEqual(['outside secret']);
+    expect(readFileSync(join(root, 'docs-moved', 'notes.md'), 'utf8')).toBe('inside');
+  });
+
+  it('moves nothing to a target when a parent is swapped right before a rename', async () => {
+    const workspace = new LocalWorkspace({ root });
+    await workspace.start();
+    hooks.beforeRename = swapDocs;
+    const error = await refusal(workspace.rename('docs/notes.md', 'stolen.md'));
+    expect(error.code).toBe('OUTSIDE_ROOT');
+    expect(existsSync(join(root, 'stolen.md'))).toBe(false);
+    expect(quarantined()).toEqual(['outside secret']);
+  });
+
+  it('never steers a pulled-in entry back to a path resolved again', async () => {
+    const elsewhere = join(base, 'elsewhere');
+    mkdirSync(elsewhere);
     const workspace = new LocalWorkspace({ root });
     await workspace.start();
     hooks.beforeRename = (from, to) =>
       from === join(root, 'docs', 'notes.md') && to.includes('pending') && swapDocs();
-    const error = await refusal(workspace.remove('docs/notes.md', { recursive: true }));
+    hooks.afterRename = (_from, to) => {
+      if (!to.includes('pending')) return false;
+      rmSync(join(root, 'docs'));
+      symlinkSync(elsewhere, join(root, 'docs'));
+      return true;
+    };
+    const error = await refusal(workspace.remove('docs/notes.md'));
     expect(error.code).toBe('OUTSIDE_ROOT');
-    expect(readFileSync(join(outside, 'notes.md'), 'utf8')).toBe('outside secret');
-    expect(readFileSync(join(root, 'docs-moved', 'notes.md'), 'utf8')).toBe('inside');
-    expect(readdirSync(join(root, '.cogitator', 'pending'))).toEqual([]);
+    expect(readdirSync(elsewhere)).toEqual([]);
+    expect(quarantined()).toEqual(['outside secret']);
+  });
+
+  it('refuses moves while a command it started is still running', async () => {
+    const workspace = new LocalWorkspace({ root });
+    await workspace.exec('sleep 73 > /dev/null 2>&1 &', { background: 'keep' });
+    await expect(workspace.remove('docs/notes.md')).rejects.toMatchObject({ code: 'BUSY' });
+    await expect(workspace.rename('docs/notes.md', 'x.md')).rejects.toMatchObject({ code: 'BUSY' });
+    await workspace.dispose();
+  });
+
+  it('reports honestly when a double swap carried the staged entry away', async () => {
+    const workspace = new LocalWorkspace({ root });
+    await workspace.start();
+    await workspace.write('a.txt', 'payload');
+    mkdirSync(join(root, 'sub'));
+    hooks.beforeRename = (_from, to) => {
+      if (!to.startsWith(join(root, 'sub', '.cogitator-place-'))) return false;
+      renameSync(join(root, 'sub'), join(root, 'sub-real'));
+      symlinkSync(outside, join(root, 'sub'));
+      return true;
+    };
+    hooks.afterRename = (_from, to) => {
+      if (!to.startsWith(join(root, 'sub', '.cogitator-place-'))) return false;
+      rmSync(join(root, 'sub'));
+      renameSync(join(root, 'sub-real'), join(root, 'sub'));
+      return true;
+    };
+    const error = await refusal(workspace.rename('a.txt', 'sub/b.txt'));
+    expect(error.code).toBe('OUTSIDE_ROOT');
+    expect(error.message).toContain('could not be found again');
+    expect(readdirSync(outside).some((name) => name.startsWith('.cogitator-place-'))).toBe(true);
   });
 
   it('keeps an entry in quarantine when the swap is undone before it can go back', async () => {

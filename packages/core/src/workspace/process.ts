@@ -37,6 +37,12 @@ export class ProcessGroups {
     if (child.pid !== undefined && !groupAlive(child.pid)) this.groups.delete(child.pid);
   }
 
+  /** Whether a command is running or a group the workspace started still has processes. */
+  busy(): boolean {
+    this.prune();
+    return this.children.size > 0 || this.groups.size > 0;
+  }
+
   /** Forgets groups that have no process left. */
   prune(): void {
     for (const group of this.groups) if (!groupAlive(group)) this.groups.delete(group);
@@ -135,7 +141,8 @@ export function runProcess(options: RunProcessOptions): Promise<WorkspaceExecRes
       if (!timedOut && !abortedBy && options.background === 'kill') stopGroup();
       options.groups.settled(child);
       if (abortedBy) {
-        reject(abortError(abortedBy));
+        const error: Error = abortError(abortedBy);
+        reject(error);
         return;
       }
       if (extraStderr) stderr.push(extraStderr);

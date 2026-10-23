@@ -9,6 +9,7 @@ import type {
   ToolResult,
   Workspace,
 } from '@cogitator-ai/types';
+import { WorkspaceError } from '@cogitator-ai/types';
 import { ToolRegistry } from '../registry';
 import { getLogger } from '../logger';
 import type { SandboxManager } from './initializers';
@@ -548,6 +549,7 @@ async function pruneToolResults(
       await workspace.remove(run.path, { recursive: true });
     }
   } catch (error) {
+    if (error instanceof WorkspaceError && error.code === 'BUSY') return;
     getLogger().warn('Could not remove old tool results from the workspace', {
       error: error instanceof Error ? error.message : String(error),
     });

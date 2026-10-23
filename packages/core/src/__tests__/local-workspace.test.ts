@@ -10,7 +10,7 @@ import {
   existsSync,
 } from 'node:fs';
 import { execSync } from 'node:child_process';
-import { chmodSync, readdirSync, statSync, utimesSync } from 'node:fs';
+import { chmodSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -325,17 +325,33 @@ describe('LocalWorkspace housekeeping', () => {
     expect(readdirSync(join(root, '.cogitator', 'pending'))).toEqual([]);
   });
 
-  it('sweeps temporary files an interrupted write left behind', async () => {
-    const leftover = join(root, '.cogitator-tmp-leftover');
-    const fresh = join(root, '.cogitator-tmp-fresh');
-    writeFileSync(leftover, 'half');
-    writeFileSync(fresh, 'in progress');
-    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
-    utimesSync(leftover, old, old);
-    const again = new LocalWorkspace({ root });
+  it('sweeps temporary write files, recovers staged entries and never deletes them', async () => {
+    const temp = join(root, 'src', '.cogitator-tmp-leftover');
+    const linked = join(root, 'src', '.cogitator-tmp-linked');
+    const staged = join(root, 'src', '.cogitator-place-AbCdEfGhIjKl');
+    mkdirSync(join(root, 'src'));
+    writeFileSync(temp, 'half');
+    writeFileSync(join(root, 'src', 'kept.txt'), 'kept');
+    linkSync(join(root, 'src', 'kept.txt'), linked);
+    writeFileSync(staged, 'only copy of src/report.md');
+
+    const young = new LocalWorkspace({ root, leftoverAge: 60 * 60 * 1000 });
+    await young.start();
+    await young.list('.');
+    expect(existsSync(staged)).toBe(true);
+    expect(existsSync(temp)).toBe(true);
+    await young.dispose();
+
+    const again = new LocalWorkspace({ root, leftoverAge: 0 });
     await again.start();
-    await vi.waitFor(() => expect(existsSync(leftover)).toBe(false));
-    expect(existsSync(fresh)).toBe(true);
+    expect(existsSync(staged)).toBe(false);
+    expect(existsSync(temp)).toBe(false);
+    expect(existsSync(linked)).toBe(true);
+    const pending = join(root, '.cogitator', 'pending');
+    const [holder] = readdirSync(pending).filter((name) => name.startsWith('recovered-'));
+    expect(readFileSync(join(pending, holder, '.cogitator-place-AbCdEfGhIjKl'), 'utf8')).toBe(
+      'only copy of src/report.md'
+    );
     await again.dispose();
   });
 });

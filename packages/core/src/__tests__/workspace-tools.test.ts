@@ -250,6 +250,14 @@ describe('workspaceTools on hard inputs', () => {
     expect(ticks).toBeGreaterThan(0);
   });
 
+  it('matches the whole of a very long line, end anchors included', async () => {
+    await workspace.write('long.txt', `${'x'.repeat(10_001)}needle\n`);
+    expect(await run('grep', { pattern: 'needle$' })).toMatchObject({
+      matches: [{ path: 'long.txt', line: 1 }],
+    });
+    expect(await run('grep', { pattern: '^x+$' })).toMatchObject({ matches: [] });
+  });
+
   it('searches hidden files when asked', async () => {
     await workspace.write('.eslintrc', 'TODO hidden');
     expect(await run('grep', { pattern: 'TODO' })).toMatchObject({ matches: [] });

@@ -40,8 +40,13 @@ const DEFAULT_RESOURCES: Required<Pick<SandboxResourceLimits, 'memory' | 'cpus' 
   pidsLimit: 512,
 };
 const STDIO_GRACE = 200;
+/**
+ * Runs a command as the leader of its process group, reporting the group and the exit code on
+ * stderr with marker lines. The token that makes them unforgeable comes on stdin, which the
+ * wrapper reads before the command starts: it is in no argv or environment the command can read.
+ */
 const EXEC_WRAPPER =
-  'printf "__cogitator_%s_pgid:%s\\n" "$2" "$$" >&2; sh -c "$1"; c=$?; printf "__cogitator_%s_exit:%s\\n" "$2" "$c" >&2; exit $c';
+  'IFS= read -r t; printf "__cogitator_%s_pgid:%s\\n" "$t" "$$" >&2; sh -c "$1" </dev/null; c=$?; printf "__cogitator_%s_exit:%s\\n" "$t" "$c" >&2; exit $c';
 const REMOVE_SCRIPT = [
   '[ -e "$1" ] || [ -L "$1" ] || exit 44',
   'case "$2" in',
@@ -309,7 +314,7 @@ export class DockerWorkspace implements Workspace {
       }
       rel = normalized === root ? '.' : normalized.slice(root.length + 1);
     } else {
-      rel = posix.normalize(mapped).replace(/\/+$/, '') || '.';
+      rel = trimTrailingSlashes(posix.normalize(mapped)) || '.';
     }
     if (rel === '..' || rel.startsWith('../')) {
       throw new WorkspaceError('OUTSIDE_ROOT', `${path} is outside the workspace`, { path });
@@ -397,7 +402,8 @@ export class DockerWorkspace implements Workspace {
 
   private ready(): Promise<DockerContainer> {
     if (this.state.disposed) {
-      return Promise.reject(new WorkspaceError('DISPOSED', `Workspace ${this.id} is disposed`));
+      const disposed: Error = new WorkspaceError('DISPOSED', `Workspace ${this.id} is disposed`);
+      return Promise.reject(disposed);
     }
     this.state.starting ??= this.launch().catch((error: unknown) => {
       this.state.starting = undefined;
@@ -529,25 +535,29 @@ export class DockerWorkspace implements Workspace {
       if (options.signal?.aborted) throw aborted(options.signal);
       const exec: DockerExec = await container
         .exec({
-          Cmd: ['sh', '-c', EXEC_WRAPPER, 'cogitator-exec', command, token],
+          Cmd: ['sh', '-c', EXEC_WRAPPER, 'cogitator-exec', command],
           Env: Object.entries(options.env).map(([key, value]) => `${key}=${value}`),
           WorkingDir: options.workingDir,
           AttachStdout: true,
           AttachStderr: true,
+          AttachStdin: true,
         })
         .catch((error: unknown) => {
           throw ioError('Could not run the command in the container', error);
         });
-      stream = await exec.start({ hijack: true, stdin: false }).catch((error: unknown) => {
+      stream = await exec.start({ hijack: true, stdin: true }).catch((error: unknown) => {
         throw ioError('Could not start the command in the container', error);
       });
       const active = stream;
+      active.write(`${token}\n`);
+      active.end();
       const finished = new Promise<void>((resolve, reject) => {
         active.on('end', () => resolve());
         active.on('close', () => resolve());
-        active.on('error', (error: unknown) =>
-          reject(ioError('The command output stream failed', error))
-        );
+        active.on('error', (error: unknown) => {
+          const failure: Error = ioError('The command output stream failed', error);
+          reject(failure);
+        });
       });
       active.on('data', (chunk: Buffer) => demuxer.push(chunk));
       if (options.signal?.aborted) stop('abort');
@@ -741,7 +751,7 @@ function normalizeCwd(cwd: string): string {
   if (cwd.startsWith('/')) {
     throw new WorkspaceError('INVALID_PATH', 'cwd must be relative to the root', { path: cwd });
   }
-  const normalized = posix.normalize(cwd).replace(/\/+$/, '');
+  const normalized = trimTrailingSlashes(posix.normalize(cwd));
   if (normalized === '..' || normalized.startsWith('../')) {
     throw new WorkspaceError('OUTSIDE_ROOT', `${cwd} is outside the workspace`, { path: cwd });
   }
@@ -813,4 +823,11 @@ class StreamText {
     }
     return new StringDecoder('utf8').end(Buffer.concat(this.chunks));
   }
+}
+
+/** `value` without its trailing slashes, in linear time. */
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') end--;
+  return value.slice(0, end);
 }

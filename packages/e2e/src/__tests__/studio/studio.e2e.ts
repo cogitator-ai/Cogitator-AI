@@ -38,7 +38,7 @@ function reply(messages: FakeMessage[]) {
   if (input.includes('note')) {
     return {
       toolCalls: [
-        { name: 'file_write', arguments: { path: 'note.md', content: 'hello from the studio' } },
+        { name: 'write_file', arguments: { path: 'note.md', content: 'hello from the studio' } },
       ],
     };
   }

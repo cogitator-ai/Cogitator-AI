@@ -82,7 +82,7 @@ The run's `agent.run` span reports what clearing did: `context.cleared_tool_outp
 
 ## Long Tool Results
 
-A tool result longer than the tool's `maxResultLength`, or `limits.maxToolResultLength` (100,000 characters by default), reaches the model cut: its start and end, with a note on how much was left out. When the run has a [workspace](/docs/tools/workspace) and the agent has `read_file`, nothing is lost: the full text is saved to `.cogitator/tool-results/<runId>/<toolCallId>.txt` in the workspace, and the model gets the cut preview plus a note with that path, so it can page through the rest with `read_file` (`offset` and `limit` for lines, `column` to continue a line too long for one page).
+A tool result longer than the tool's `maxResultLength`, or `limits.maxToolResultLength` (100,000 characters by default), reaches the model cut: its start and end, with a note on how much was left out. When the agent has the `read_file` of `workspaceTools()` and it reaches a [workspace](/docs/tools/workspace) (its bound one, else the run's), nothing is lost: the full text is saved to `.cogitator/tool-results/<runId>/<toolCallId>.txt` in that workspace, and the model gets the cut preview plus a note with that path, so it can page through the rest with `read_file` (`offset` and `limit` for lines, `column` to continue a line too long for one page).
 
 ```typescript
 import { Agent, LocalWorkspace, toolResultPath, workspaceTools } from '@cogitator-ai/core';
@@ -100,7 +100,7 @@ const result = await cog.run(agent, { input: 'Why did the build fail?' });
 const saved = toolResultPath(result.runId, result.toolCalls[0].id);
 ```
 
-The application still gets the whole result in `onToolResult` and `RunResult.toolCalls`. Saved results can hold secrets a tool returned: `.cogitator/` gets a `.gitignore` that keeps it out of git, and saving a result removes the results of runs older than `limits.toolResultRetention` (milliseconds, 7 days by default, `Infinity` keeps them all). Without a workspace or without `read_file` the result is only cut, as before, and when saving fails (the disk is full, the file is over the workspace's size limit) the result is only cut and the failure is logged as a warning. Errors are never saved, they are short.
+The application still gets the whole result in `onToolResult` and `RunResult.toolCalls`. Saved results can hold secrets a tool returned: `.cogitator/` gets a `.gitignore` that keeps it out of git, and saving a result removes the results of runs older than `limits.toolResultRetention` (milliseconds, 7 days by default, `Infinity` keeps them all). Without such a workspace, or with a `read_file` of another origin, the result is only cut, as before, and when saving fails (the disk is full, the file is over the workspace's size limit) the result is only cut and the failure is logged as a warning. Errors are never saved, they are short.
 
 ## Context Budget with Memory
 

@@ -10,7 +10,7 @@ import {
   symlink,
   unlink,
 } from 'node:fs/promises';
-import { basename, dirname, join, sep } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { nanoid } from 'nanoid';
 import { WorkspaceError } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
@@ -91,38 +91,70 @@ export async function placeNoReplace(from: string, to: string, kind: EntryKind):
 }
 
 /**
- * Moves `entry` (at a path only this process uses, in a holder of `.cogitator/pending/`) to
- * `target`, whose parent directory was verified inside the root with identity `parent`. The
- * entry first goes to a fresh random name in that directory, so the rename replaces nothing, and
- * the directory is checked to still be the verified one: when it was swapped for a symlink, the
- * entry is brought back from where it went and the move is refused. Only then does it get its
+ * Moves `entry` (at a path only this process uses, in a holder of `.cogitator/pending/`, with
+ * identity `identity`) to `target`, whose parent directory was verified inside the root with
+ * identity `parent`. The entry first goes to a fresh random name in that directory, so the rename
+ * replaces nothing. Then both are checked: the directory must still be the verified one, and the
+ * entry must be found under its random name. When the directory was swapped for a symlink and is
+ * still swapped, the entry is moved back into its holder and checked by identity. When it was
+ * swapped and swapped back already, the entry went outside the root under its random name and
+ * cannot be found again: the error says so. Only once both checks pass does the entry get its
  * final name, without replacing anything (see {@link placeNoReplace}).
  */
 export async function stageInto(
   entry: string,
   kind: EntryKind,
+  identity: Identity,
   target: string,
   parent: Identity,
   path: string
 ): Promise<void> {
   const dir = dirname(target);
-  const staging = join(dir, `${STAGING_PREFIX}${nanoid(12)}`);
+  const name = `${STAGING_PREFIX}${nanoid(12)}`;
+  const staging = join(dir, name);
   await rename(entry, staging);
+  const staged = await lstat(staging).catch(() => undefined);
   const now = await realpath(dir).catch(() => undefined);
   const nowInfo = now ? await lstat(now).catch(() => undefined) : undefined;
-  if (now !== dir || !nowInfo || !sameEntry(nowInfo, parent)) {
-    if (now) await rename(join(now, basename(staging)), entry).catch(() => undefined);
-    throw new WorkspaceError('OUTSIDE_ROOT', `${path} changed while it was being moved`, { path });
+  const dirIntact = now === dir && nowInfo !== undefined && sameEntry(nowInfo, parent);
+  const entryFound = staged !== undefined && sameEntry(staged, identity);
+  if (!dirIntact || !entryFound) {
+    if (entryFound) await bringBack(staging, entry, identity, path);
+    throw new WorkspaceError(
+      'OUTSIDE_ROOT',
+      entryFound
+        ? `${path} changed while it was being moved, the entry is back where it was`
+        : `${path} changed while it was being moved: a concurrent change moved the entry out of the workspace as ${name}, it could not be found again`,
+      { path }
+    );
   }
   try {
     await placeNoReplace(staging, target, kind);
   } catch (error) {
-    await rename(staging, entry).catch(() => undefined);
+    await bringBack(staging, entry, identity, path);
     if (errnoOf(error) === 'EEXIST') {
       throw new WorkspaceError('EXISTS', `${path} already exists`, { path, cause: error });
     }
     throw error;
   }
+}
+
+/** Moves an entry back from `from` to `to` (in its holder) and says honestly where it ended. */
+async function bringBack(
+  from: string,
+  to: string,
+  identity: Identity,
+  path: string
+): Promise<void> {
+  await rename(from, to).catch(() => undefined);
+  const back = await lstat(to).catch(() => undefined);
+  if (back && sameEntry(back, identity)) return;
+  getLogger().warn(
+    back
+      ? 'A workspace move brought back another entry than its own, which is kept in quarantine'
+      : 'A workspace move lost track of an entry after a concurrent change',
+    { path, ...(back ? { quarantine: to } : { lastSeen: from }) }
+  );
 }
 
 /** An entry moved into a holder of `.cogitator/pending/`, see {@link pinEntry}. */
@@ -131,6 +163,7 @@ export interface PinnedEntry {
   at: string;
   holder: string;
   kind: EntryKind;
+  identity: Identity;
   /** Where it came from, and the identity of that directory */
   from: string;
   fromParent: Identity;
@@ -139,11 +172,11 @@ export interface PinnedEntry {
 /**
  * Moves the entry at `absolute` into `holder` (an empty directory just created under
  * `.cogitator/pending/`) and checks it is the one `before` describes. When a parent directory was
- * swapped for a symlink in between, the entry moved is another one: it is put back, without
- * replacing anything, into the directory outside the root the parent pointed to, and the
- * operation is refused. When that directory cannot be told (the symlink was swapped back), the
- * entry stays quarantined in the holder, logged, and nothing is deleted. `undefined` when the
- * entry is on another device than the holder, so it cannot be moved there.
+ * swapped for a symlink in between, the entry moved is another one, possibly from outside the
+ * root: it is not moved again to a path that would have to be resolved anew (which the same
+ * concurrent change could steer), but kept quarantined in the holder, and the error names it.
+ * Processes that can read the root can read the quarantine too. `undefined` when the entry is
+ * on another device than the holder, so it cannot be moved there.
  */
 export async function pinEntry(
   absolute: string,
@@ -162,42 +195,59 @@ export async function pinEntry(
   }
   const moved = await lstat(at).catch(() => undefined);
   if (moved && sameEntry(moved, before)) {
-    return { at, holder, kind: kindOf(moved), from: absolute, fromParent };
+    return {
+      at,
+      holder,
+      kind: kindOf(moved),
+      identity: moved,
+      from: absolute,
+      fromParent,
+    };
   }
-  const now = await realpath(dirname(absolute)).catch(() => undefined);
-  let returned = false;
-  if (moved && now && !isWithin(root, now)) {
-    returned = await placeNoReplace(at, join(now, basename(absolute)), kindOf(moved)).then(
-      () => true,
-      () => false
-    );
-  }
-  if (returned) await rmdir(holder).catch(() => undefined);
-  else {
-    getLogger().warn('A workspace entry swapped in during a move is kept in quarantine', {
-      path,
-      quarantine: holder,
-    });
-  }
-  throw new WorkspaceError('OUTSIDE_ROOT', `${path} changed while it was being resolved`, {
+  const quarantine = toPosixRelative(root, at);
+  getLogger().warn('An entry swapped in during a workspace move is kept in quarantine', {
     path,
+    quarantine,
   });
+  throw new WorkspaceError(
+    'OUTSIDE_ROOT',
+    `${path} changed while it was being resolved: the entry moved instead is kept in ${quarantine}`,
+    { path }
+  );
 }
 
 /**
  * Puts a pinned entry back where it came from, without replacing anything. When that fails
  * (its directory was swapped or something new took its name), it stays in its holder, logged.
+ * An entry no longer in its holder (a failed move already reported where it went) is left alone.
  */
 export async function unpinEntry(pinned: PinnedEntry, path: string): Promise<void> {
+  const here = await lstat(pinned.at).catch(() => undefined);
+  if (!here || !sameEntry(here, pinned.identity)) return;
   try {
-    await stageInto(pinned.at, pinned.kind, pinned.from, pinned.fromParent, path);
+    await stageInto(pinned.at, pinned.kind, pinned.identity, pinned.from, pinned.fromParent, path);
     await rmdir(pinned.holder).catch(() => undefined);
-  } catch {
-    getLogger().warn('A workspace entry could not be put back and is kept in quarantine', {
-      path,
-      quarantine: pinned.holder,
-    });
+  } catch (error) {
+    const still = await lstat(pinned.at).catch(() => undefined);
+    if (still && sameEntry(still, pinned.identity)) {
+      getLogger().warn('A workspace entry could not be put back and is kept in quarantine', {
+        path,
+        quarantine: pinned.at,
+      });
+    } else {
+      getLogger().warn('A workspace entry could not be put back', {
+        path,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
+}
+
+function toPosixRelative(root: string, path: string): string {
+  return path
+    .slice(root.length + 1)
+    .split(sep)
+    .join('/');
 }
 
 /** Deletes a pinned entry (a directory with its contents only when `recursive`), then its holder. */

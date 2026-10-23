@@ -13,11 +13,22 @@ const MAX_GREP_MATCHES = 2000;
 const MAX_GREP_FILES = 5000;
 const MAX_GREP_FILE_BYTES = 1024 * 1024;
 const MAX_GREP_SCANNED_BYTES = 50 * 1024 * 1024;
-const MAX_GREP_LINE_TESTED = 10_000;
 const MAX_GREP_LINE_SHOWN = 500;
 const BINARY_SNIFF_BYTES = 8192;
 const DEFAULT_GREP_TIMEOUT = 5_000;
 const DEFAULT_SKIP_DIRS = ['.git', 'node_modules'];
+
+/** The `read_file` tools `workspaceTools()` made, with the workspace each was bound to (if any). */
+const readFileBindings = new WeakMap<Tool, { workspace?: Workspace }>();
+
+/**
+ * Which workspace a `read_file` tool reads: `{ workspace }` for one `workspaceTools()` made (its
+ * bound workspace, or `undefined` when it reads the run's), `undefined` for any other tool,
+ * whose reach cannot be told.
+ */
+export function readFileBinding(tool: Tool): { workspace?: Workspace } | undefined {
+  return readFileBindings.get(tool);
+}
 
 /** Names of the tools `workspaceTools()` returns. */
 export const WORKSPACE_TOOL_NAMES = [
@@ -367,7 +378,6 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
         pattern,
         flags,
         timeout: options.grepTimeout ?? DEFAULT_GREP_TIMEOUT,
-        maxTested: MAX_GREP_LINE_TESTED,
         maxShown: MAX_GREP_LINE_SHOWN,
       });
       const onAbort = () => matcher.stop(new Error('The search was cancelled'));
@@ -460,6 +470,7 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
     },
   });
 
+  readFileBindings.set(readFile, workspace ? { workspace } : {});
   const all = [readFile, writeFile, editFile, listFiles, glob, grep, runCommand];
   const wanted = options.tools ? new Set<string>(options.tools) : undefined;
   return wanted ? all.filter((t) => wanted.has(t.name)) : all;

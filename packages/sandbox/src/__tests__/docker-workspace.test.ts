@@ -50,7 +50,10 @@ const docker = await connectDocker();
  * The path guard itself is LocalWorkspace's, covered in core and in the e2e suite.
  */
 function directoryHost(root: string): Workspace & { disposed: boolean } {
-  const unsupported = () => Promise.reject(new WorkspaceError('UNSUPPORTED', 'not in this test'));
+  const unsupported = () => {
+    const error: Error = new WorkspaceError('UNSUPPORTED', 'not in this test');
+    return Promise.reject(error);
+  };
   const host: Workspace & { disposed: boolean } = {
     id: 'host',
     root,

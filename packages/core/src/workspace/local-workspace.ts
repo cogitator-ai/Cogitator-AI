@@ -31,6 +31,8 @@ import {
   type WorkspaceStat,
   type WorkspaceWriteOptions,
 } from '@cogitator-ai/types';
+import { getLogger } from '../logger';
+import { trimTrailingSlashes } from '../utils/url';
 import { globMatcher } from './glob';
 import {
   deletePinned,
@@ -103,6 +105,11 @@ export interface LocalWorkspaceOptions {
    * file, so they never reach the other links either way
    */
   refuseHardLinks?: boolean;
+  /**
+   * Milliseconds a leftover of an interrupted write or move must have been untouched (by its
+   * inode change time) before starting the workspace cleans it up (default: one hour)
+   */
+  leftoverAge?: number;
   exec?: LocalWorkspaceExecConfig;
 }
 
@@ -149,6 +156,7 @@ interface FileIdentity {
 interface LocalWorkspaceState {
   realRoot?: string;
   starting?: Promise<string>;
+  sweeping?: Promise<void>;
   disposed: boolean;
   groups: ProcessGroups;
 }
@@ -194,6 +202,7 @@ export class LocalWorkspace implements Workspace {
   private readonly create: boolean;
   private readonly maxFileBytes: number;
   private readonly refuseHardLinks: boolean;
+  private readonly leftoverAge: number;
   private readonly execConfig: LocalWorkspaceExecConfig;
   private readonly state: LocalWorkspaceState;
 
@@ -205,6 +214,9 @@ export class LocalWorkspace implements Workspace {
     this.create = options.create ?? true;
     this.maxFileBytes = positive(options.maxFileBytes, DEFAULT_MAX_FILE_BYTES, 'maxFileBytes');
     this.refuseHardLinks = options.refuseHardLinks ?? false;
+    this.leftoverAge = options.leftoverAge ?? LEFTOVER_AGE;
+    if (!(this.leftoverAge >= 0))
+      throw new RangeError('leftoverAge must be 0 or more milliseconds');
     this.execConfig = options.exec ?? {};
     positive(this.execConfig.timeout, DEFAULT_EXEC_TIMEOUT, 'exec.timeout');
     positive(this.execConfig.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES, 'exec.maxOutputBytes');
@@ -217,8 +229,13 @@ export class LocalWorkspace implements Workspace {
     return this.state.realRoot ?? this.givenRoot;
   }
 
+  /**
+   * Opens the workspace and waits for the cleanup of what interrupted writes and moves left
+   * behind. A workspace started by its first operation runs that cleanup in the background
+   */
   async start(): Promise<void> {
     await this.ready();
+    await this.state.sweeping;
   }
 
   async dispose(): Promise<void> {
@@ -405,6 +422,7 @@ export class LocalWorkspace implements Workspace {
 
   async remove(path: string, options: WorkspaceRemoveOptions = {}): Promise<WorkspaceRemoveResult> {
     const { absolute, relative: rel } = await this.locate(path, false);
+    this.refuseWhileBusy(path);
     if (rel === '.') {
       throw new WorkspaceError('INVALID_PATH', 'The root cannot be removed', { path });
     }
@@ -433,7 +451,7 @@ export class LocalWorkspace implements Workspace {
         });
       }
       try {
-        await stageInto(pinned.at, pinned.kind, target, targetParent, path);
+        await stageInto(pinned.at, pinned.kind, pinned.identity, target, targetParent, path);
       } catch (error) {
         await unpinEntry(pinned, path);
         throw ioError(error, path);
@@ -459,6 +477,7 @@ export class LocalWorkspace implements Workspace {
   async rename(from: string, to: string, options: WorkspaceRenameOptions = {}): Promise<void> {
     const source = await this.locate(from, false);
     const target = await this.locate(to, false);
+    this.refuseWhileBusy(from);
     if (source.relative === '.' || target.relative === '.') {
       throw new WorkspaceError('INVALID_PATH', 'The root cannot be moved', { path: from });
     }
@@ -506,7 +525,7 @@ export class LocalWorkspace implements Workspace {
       );
     }
     try {
-      await stageInto(pinned.at, pinned.kind, target.absolute, targetParent, to);
+      await stageInto(pinned.at, pinned.kind, pinned.identity, target.absolute, targetParent, to);
     } catch (error) {
       await unpinEntry(pinned, from);
       if (replaced) await unpinEntry(replaced, to);
@@ -577,7 +596,8 @@ export class LocalWorkspace implements Workspace {
 
   private ready(): Promise<string> {
     if (this.state.disposed) {
-      return Promise.reject(new WorkspaceError('DISPOSED', `Workspace ${this.id} is disposed`));
+      const disposed: Error = new WorkspaceError('DISPOSED', `Workspace ${this.id} is disposed`);
+      return Promise.reject(disposed);
     }
     this.state.starting ??= this.open().catch((error: unknown) => {
       this.state.starting = undefined;
@@ -597,7 +617,7 @@ export class LocalWorkspace implements Workspace {
         );
       }
       this.state.realRoot = real;
-      void sweepLeftovers(real).catch(() => undefined);
+      this.state.sweeping = sweepLeftovers(real, this.leftoverAge).catch(() => undefined);
       return real;
     } catch (error) {
       if (error instanceof WorkspaceError) throw error;
@@ -672,6 +692,20 @@ export class LocalWorkspace implements Workspace {
       }
     } catch (error) {
       if (errnoOf(error) !== 'EEXIST') throw ioError(error, `${WORKSPACE_SERVICE_DIR}/.gitignore`);
+    }
+  }
+
+  /**
+   * Refuses to move entries while a process the workspace started runs: such a process can
+   * write the root, and swapping a directory at the right moment could otherwise race a move.
+   */
+  private refuseWhileBusy(path: string): void {
+    if (this.state.groups.busy()) {
+      throw new WorkspaceError(
+        'BUSY',
+        `${path} cannot be moved or removed while a command started in the workspace is still running (or left processes in the background): wait for it, or remove it with a command`,
+        { path }
+      );
     }
   }
 
@@ -858,12 +892,17 @@ async function syncDirectory(dir: string): Promise<void> {
 }
 
 /**
- * Removes what an interrupted write or move left behind (`.cogitator-tmp-*`, `.cogitator-place-*`)
- * when it is older than an hour, and empty holders of `.cogitator/pending/`, walking at most
- * a few thousand directories and skipping `.git` and `node_modules`.
+ * Cleans up after interrupted writes and moves, walking at most a few thousand directories and
+ * skipping `.git` and `node_modules`. A temporary write file (`.cogitator-tmp-*`, a regular file
+ * with one link) whose inode has not changed for `leftoverAge` is deleted: it never was the only copy
+ * of anything. An entry left mid-move (`.cogitator-place-*`) may be the only copy of what was
+ * moved, so it is never deleted: once untouched for `leftoverAge` (by its inode change time,
+ * which a rename updates) it is moved into `.cogitator/pending/recovered-*` and logged. Empty holders of
+ * `.cogitator/pending/` are removed.
  */
-async function sweepLeftovers(root: string): Promise<void> {
-  const cutoff = Date.now() - LEFTOVER_AGE;
+async function sweepLeftovers(root: string, age: number): Promise<void> {
+  const cutoff = age === 0 ? Infinity : Date.now() - age;
+  const pending = join(root, ...PENDING_DIR.split('/'));
   const queue = [root];
   let visited = 0;
   while (queue.length > 0 && visited < SWEEP_MAX_DIRS) {
@@ -872,21 +911,44 @@ async function sweepLeftovers(root: string): Promise<void> {
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
       const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (entry.name === '.git' || entry.name === 'node_modules') continue;
-        if (dir === join(root, ...PENDING_DIR.split('/'))) {
-          await rmdir(full).catch(() => undefined);
-          continue;
-        }
-        if (!entry.name.startsWith(STAGING_PREFIX)) queue.push(full);
+      if (dir === pending) {
+        const holder = entry.isDirectory() ? await lstat(full).catch(() => undefined) : undefined;
+        if (holder && holder.ctimeMs <= cutoff) await rmdir(full).catch(() => undefined);
         continue;
       }
-      if (!entry.name.startsWith(TEMP_PREFIX) && !entry.name.startsWith(STAGING_PREFIX)) continue;
+      if (entry.name.startsWith(STAGING_PREFIX)) {
+        await recoverStaged(root, full, cutoff);
+        continue;
+      }
+      if (entry.isDirectory()) {
+        if (entry.name !== '.git' && entry.name !== 'node_modules') queue.push(full);
+        continue;
+      }
+      if (!entry.name.startsWith(TEMP_PREFIX)) continue;
       const info = await lstat(full).catch(() => undefined);
-      if (info && !info.isDirectory() && info.mtimeMs < cutoff) {
+      if (info?.isFile() && info.nlink === 1 && info.ctimeMs <= cutoff) {
         await unlink(full).catch(() => undefined);
       }
     }
+  }
+}
+
+/** Moves an entry an interrupted move left under its staging name into `.cogitator/pending/`. */
+async function recoverStaged(root: string, staged: string, cutoff: number): Promise<void> {
+  const info = await lstat(staged).catch(() => undefined);
+  if (!info || info.ctimeMs > cutoff) return;
+  const holder = join(root, ...PENDING_DIR.split('/'), `recovered-${nanoid(12)}`);
+  try {
+    await mkdir(holder, { recursive: true });
+    if (!isWithin(root, await realpath(holder))) return;
+    const kept = join(holder, basename(staged));
+    await rename(staged, kept);
+    getLogger().warn('An entry an interrupted workspace move left behind was recovered', {
+      was: relative(root, staged).split(sep).join('/'),
+      now: relative(root, kept).split(sep).join('/'),
+    });
+  } catch {
+    await rmdir(holder).catch(() => undefined);
   }
 }
 
@@ -924,7 +986,7 @@ export function normalizeCwd(cwd: string | undefined): string {
   if (isAbsolute(cwd)) {
     throw new WorkspaceError('INVALID_PATH', 'cwd must be relative to the root', { path: cwd });
   }
-  const normalized = posix.normalize(toPosix(cwd)).replace(/\/+$/, '');
+  const normalized = trimTrailingSlashes(posix.normalize(toPosix(cwd)));
   if (normalized === '..' || normalized.startsWith('../')) throw outside(cwd, 'the root');
   return normalized === '' || normalized === '.' ? '.' : normalized;
 }

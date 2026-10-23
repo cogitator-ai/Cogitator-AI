@@ -280,6 +280,35 @@ describe('offload housekeeping', () => {
     expect(existsSync(join(runWorkspace.root, '.cogitator'))).toBe(false);
   });
 
+  it("saves to the workspace read_file reads, its bound one over the run's", async () => {
+    const { backend, requests } = scriptedBackend([{ id: 'call_1', name: 'dump', arguments: {} }]);
+    const agent = new Agent({
+      name: 'a',
+      model: 'mock/m',
+      instructions: 'x',
+      tools: [dump, ...workspaceTools(agentWorkspace, { tools: ['read_file'] })],
+    });
+    const result = await new Cogitator({ llm: { backends: { mock: backend } } }).run(agent, {
+      input: 'dump',
+      workspace: runWorkspace,
+    });
+    const path = toolResultPath(result.runId, 'call_1');
+    expect(await agentWorkspace.read(path)).toBe(LONG);
+    expect(await runWorkspace.exists(path)).toBe(false);
+    expect(toolMessages(requests)[0]).toContain(path);
+  });
+
+  it('does not offload when read_file is a tool of another origin', async () => {
+    const reader = tool({
+      name: 'read_file',
+      description: 'My own reader',
+      parameters: z.object({ path: z.string() }),
+      execute: async () => 'x',
+    });
+    const { message } = await dumpOnce({ tools: [reader] });
+    expect(message).not.toContain('.cogitator/tool-results');
+  });
+
   it('refuses a negative retention', () => {
     expect(() => new Cogitator({ limits: { toolResultRetention: -1 } })).toThrow(
       /toolResultRetention/

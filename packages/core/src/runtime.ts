@@ -49,6 +49,7 @@ import type {
 } from '@cogitator-ai/types';
 import { memoryAgentId, type Agent } from './agent';
 import { ToolRegistry } from './registry';
+import { readFileBinding } from './tools/workspace-tools';
 import { createLLMBackend } from './llm/index';
 import { memoryCompactionMiddleware, type CompactionRun } from './middleware/memory-compaction';
 import { memoryExtractionMiddleware } from './middleware/memory-extraction';
@@ -1550,16 +1551,16 @@ export class Cogitator implements ToolInvoker {
 
           options.onToolResult?.(result);
 
-          const runWorkspace = workspaceOf(active);
+          const offloadTo = offloadWorkspace(registry, workspaceOf(active));
           const toolMessage = await createToolMessageWithOffload(
             toolCall,
             result,
             registry.get(toolCall.name)?.maxResultLength ??
               this.config.limits?.maxToolResultLength ??
               DEFAULT_TOOL_RESULT_MAX_LENGTH,
-            runWorkspace && registry.get('read_file')
+            offloadTo
               ? {
-                  workspace: runWorkspace,
+                  workspace: offloadTo,
                   runId,
                   retention: this.config.limits?.toolResultRetention,
                 }
@@ -3511,4 +3512,21 @@ interface PausedTurn {
 
 function isArgumentRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Where long tool results of a turn are saved: the workspace the agent's `read_file` reads, so
+ * the path in the note is one the model can open. That is its bound workspace when
+ * `workspaceTools(workspace)` made it, else the run's. A `read_file` of another origin (or none)
+ * means the reach cannot be told, and results are only cut.
+ */
+function offloadWorkspace(
+  registry: ToolRegistry,
+  runWorkspace: Workspace | undefined
+): Workspace | undefined {
+  const reader = registry.get('read_file');
+  if (!reader) return undefined;
+  const binding = readFileBinding(reader);
+  if (!binding) return undefined;
+  return binding.workspace ?? runWorkspace;
 }
