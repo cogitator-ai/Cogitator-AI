@@ -183,6 +183,7 @@ describe('TelegramChannel', () => {
           userId: '5',
           messageId: '30',
           topicId: '8',
+          groupId: '-100200',
           data: 'pick:2',
         })
       );

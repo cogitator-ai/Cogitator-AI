@@ -85,7 +85,21 @@ function findSplit(text: string, maxLength: number): ChunkSplit {
   const space = text.lastIndexOf(' ', maxLength);
   if (space > 0) return { end: space, resume: space + 1 };
 
-  return { end: maxLength, resume: maxLength };
+  const cut = cutBetweenCharacters(text, maxLength);
+  return { end: cut, resume: cut };
+}
+
+/**
+ * `at`, or one earlier when it falls between the two halves of a surrogate pair (an emoji), so a
+ * hard cut never leaves half a character on either side. A pair at the very start moves past it.
+ */
+function cutBetweenCharacters(text: string, at: number): number {
+  if (at <= 0 || at >= text.length) return at;
+  const high = text.charCodeAt(at - 1);
+  const low = text.charCodeAt(at);
+  const splitsPair = high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff;
+  if (!splitsPair) return at;
+  return at - 1 > 0 ? at - 1 : at + 1;
 }
 
 function openFenceAtEnd(text: string): string | null {
@@ -130,7 +144,10 @@ export function chunkMessage(text: string, limit: number): string[] {
       const room = maxLength - reserve;
       if (room > fence.length + 1) {
         split = findSplit(remaining, room);
-        if (split.resume <= fence.length + 1) split = { end: room, resume: room };
+        if (split.resume <= fence.length + 1) {
+          const cut = cutBetweenCharacters(remaining, room);
+          split = { end: cut, resume: cut };
+        }
         chunk = remaining.slice(0, split.end);
         const stillOpen = openFenceAtEnd(chunk);
         if (stillOpen && split.resume > stillOpen.length + 1) {

@@ -45,19 +45,19 @@ const gateway = new Gateway({
 
 ## Platform Support
 
-| Platform | Edit Support                                 | Rate Limit                     | Max Length         |
-| -------- | -------------------------------------------- | ------------------------------ | ------------------ |
-| Telegram | Yes (`editMessageText`)                      | ~30 edits/sec                  | 4,096 chars        |
-| Discord  | Yes (`message.edit`)                         | ~5 edits/sec                   | 2,000 chars        |
-| Slack    | Yes (`chat.update`)                          | ~20 edits/sec                  | 40,000 chars       |
-| WhatsApp | Yes (message edit)                           | -                              | 65,536 chars       |
-| WebChat  | Yes (WebSocket `edit` event)                 | No limit                       | No limit           |
-| Terminal | Yes (output rewritten in place)              | No limit                       | No limit           |
-| Bluesky  | No (sent finished)                           | -                              | 300 per post       |
-| Threads  | No (sent finished)                           | -                              | 500 per post       |
-| GitHub   | Sent finished, or edited with `stream: true` | one edit per comment every 3 s | 65,536 per comment |
-| Email    | No (sent finished)                           | -                              | No limit           |
-| Teams    | Yes (`PUT` activity)                         | 7 requests/sec per chat        | 13,653 chars       |
+| Platform | Edit Support                                 | Rate Limit                                | Max Length         |
+| -------- | -------------------------------------------- | ----------------------------------------- | ------------------ |
+| Telegram | Yes (`editMessageText`)                      | ~30 edits/sec                             | 4,096 chars        |
+| Discord  | Yes (`message.edit`)                         | ~5 edits/sec                              | 2,000 chars        |
+| Slack    | Yes (`chat.update`)                          | ~20 edits/sec                             | 40,000 chars       |
+| WhatsApp | Yes (message edit)                           | -                                         | 65,536 chars       |
+| WebChat  | Yes (WebSocket `edit` event)                 | No limit                                  | No limit           |
+| Terminal | Yes (output rewritten in place)              | No limit                                  | No limit           |
+| Bluesky  | No (sent finished)                           | -                                         | 300 per post       |
+| Threads  | No (sent finished)                           | -                                         | 500 per post       |
+| GitHub   | Sent finished, or edited with `stream: true` | one edit per comment every 3 s            | 65,536 per comment |
+| Email    | No (sent finished)                           | -                                         | No limit           |
+| Teams    | Yes (`PUT` activity)                         | 1 edit/sec, inside Teams' limits per chat | 13,653 chars       |
 
 A channel that cannot edit what it sent says so with `editable: false`, as Bluesky, Threads and email do: the Gateway then sends its answers finished, as with streaming off, and the channel splits a long one into a thread of posts. GitHub could edit, but notifies people of a comment's first text, so it says `editable: false` unless `githubChannel({ stream: true })`, and then spaces the edits of a comment at least 3 seconds apart, whatever `flushInterval` is.
 

@@ -182,6 +182,43 @@ describe('Gateway buttons', () => {
     );
   });
 
+  it('answers a press in a group as a message of that group', async () => {
+    const hooks = createHookRegistry();
+    const received: ChannelMessage[] = [];
+    hooks.on('message:received', async ({ msg }) => void received.push(msg));
+    await startGateway({ hooks });
+    await channel.trigger(message('Publish the noon edition', { groupId: 'team-1' }));
+    await gateway.idle();
+
+    await channel.press({ data: APPROVE_ACTION, groupId: 'team-1' });
+    await gateway.idle();
+
+    expect(received.map((msg) => msg.groupId)).toEqual(['team-1', 'team-1']);
+    expect(cogitator.resume).toHaveBeenCalled();
+  });
+
+  it('keeps a request waiting when Approve is pressed while the gateway stops', async () => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    channel = createChannel({ stop: vi.fn(() => gate) });
+    await startGateway();
+    await channel.trigger(message('Publish the noon edition'));
+    await gateway.idle();
+
+    const stopped = gateway.stop();
+    await channel.press({ data: APPROVE_ACTION });
+    expect(channel.answerAction).toHaveBeenLastCalledWith('press_1', {
+      text: expect.stringContaining('restarting'),
+      alert: true,
+    });
+    expect(channel.editButtons).not.toHaveBeenCalled();
+    expect(cogitator.resume).not.toHaveBeenCalled();
+    release();
+    await stopped;
+  });
+
   it('declines when Deny is pressed', async () => {
     await startGateway();
     await channel.trigger(message('Publish the noon edition'));

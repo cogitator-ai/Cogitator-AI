@@ -182,7 +182,7 @@ const AssistantChannelsSchema = z.object({
     .object({
       /** Owner ids: Entra object ids (`aadObjectId`) of the users given owner rights */
       ownerIds: OwnerIdsSchema,
-      /** `SingleTenant` (default), `MultiTenant` (legacy bots) or `UserAssignedMSI` */
+      /** `SingleTenant` (default) or `MultiTenant` (legacy bots), a managed identity needs code */
       appType: z.enum(['SingleTenant', 'MultiTenant', 'UserAssignedMSI']).optional(),
       /** The tenant of the app registration (default `TEAMS_TENANT_ID` from the env) */
       tenantId: z.string().trim().min(1).optional(),
@@ -208,6 +208,10 @@ const AssistantChannelsSchema = z.object({
     .refine((teams) => teams.appType !== 'MultiTenant' || teams.tenants !== undefined, {
       message: 'A MultiTenant bot needs tenants: the tenants it answers, or *',
       path: ['tenants'],
+    })
+    .refine((teams) => teams.appType !== 'UserAssignedMSI', {
+      message: 'A UserAssignedMSI bot needs a tokenProvider: create it with teamsChannel() in code',
+      path: ['appType'],
     })
     .optional(),
 });

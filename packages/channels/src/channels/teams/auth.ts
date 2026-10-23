@@ -15,6 +15,8 @@ const KEYS_MAX_AGE = 24 * 60 * 60 * 1000;
 const UNKNOWN_KEY_REFRESH = 5 * 60 * 1000;
 /** How long after the keys failed to load requests are refused before they are tried again, in ms. */
 const FAILED_LOAD_BACKOFF = 10 * 1000;
+/** How long loading the metadata or the keys may take by default, in ms. */
+const KEYS_TIMEOUT = 10_000;
 /** The longest token taken, in characters: Bot Framework tokens are about 1.5 KB. */
 const MAX_TOKEN_LENGTH = 16 * 1024;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
@@ -74,6 +76,8 @@ export interface TeamsTokenVerifierOptions {
   fetch?: typeof fetch;
   /** The current time in ms, for tests */
   now?: () => number;
+  /** How long loading the metadata or the keys may take, in ms (default 10 000) */
+  timeout?: number;
 }
 
 interface SigningKey {
@@ -96,6 +100,7 @@ export class TeamsTokenVerifier {
   private readonly metadataUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
+  private readonly timeout: number;
   private keys = new Map<string, SigningKey>();
   private loadedAt = 0;
   private lastUnknownRefresh = Number.NEGATIVE_INFINITY;
@@ -106,6 +111,7 @@ export class TeamsTokenVerifier {
     this.metadataUrl = options.metadataUrl ?? BOT_FRAMEWORK_OPENID_METADATA;
     this.fetchImpl = options.fetch ?? fetch;
     this.now = options.now ?? Date.now;
+    this.timeout = options.timeout ?? KEYS_TIMEOUT;
   }
 
   /** Checks a token, resolving with what it proves, or throws a {@link TeamsAuthError}. */
@@ -158,43 +164,46 @@ export class TeamsTokenVerifier {
   }
 
   /**
-   * The signing key of `kid`: from the cache while it is younger than a day, otherwise loaded
-   * again. A key the cache lacks loads the keys again, at most every five minutes.
+   * The signing key of `kid`. Cached keys are used at once, and once they are a day old they are
+   * loaded again in the background. Only a cache that is still empty waits for the keys. A key
+   * the cache lacks loads them again, at most every five minutes.
    */
   private async keyFor(kid: string): Promise<SigningKey | undefined> {
-    if (this.keys.size === 0 || this.now() - this.loadedAt > KEYS_MAX_AGE) {
-      await this.refresh(this.keys.size === 0);
-    }
+    if (this.keys.size === 0) await this.refresh();
+    else if (this.now() - this.loadedAt > KEYS_MAX_AGE) void this.refresh().catch(() => undefined);
     const known = this.keys.get(kid);
     if (known) return known;
     if (this.now() - this.lastUnknownRefresh < UNKNOWN_KEY_REFRESH) return undefined;
     this.lastUnknownRefresh = this.now();
-    await this.refresh(false);
+    await this.refresh().catch(() => undefined);
     return this.keys.get(kid);
   }
 
   /**
-   * Loads the keys once for every caller waiting. A failure keeps the keys loaded before, and
-   * only fails the request when there are none (`required`).
+   * Loads the keys once for every caller waiting. After a failure no load is tried for ten
+   * seconds, however many requests come, and the keys loaded before stay in use.
    */
-  private async refresh(required: boolean): Promise<void> {
-    if (this.keys.size === 0 && this.now() - this.lastFailure < FAILED_LOAD_BACKOFF) {
-      throw new TeamsAuthError(503, 'The Bot Framework signing keys could not be loaded');
+  private refresh(): Promise<void> {
+    if (this.loading) return this.loading;
+    if (this.now() - this.lastFailure < FAILED_LOAD_BACKOFF) {
+      return Promise.reject(
+        new TeamsAuthError(503, 'The Bot Framework signing keys could not be loaded')
+      );
     }
-    this.loading ??= this.load().finally(() => {
-      this.loading = undefined;
-    });
-    try {
-      await this.loading;
-    } catch (error) {
-      this.lastFailure = this.now();
-      if (required || this.keys.size === 0) {
+    this.loading = this.load()
+      .catch((error: unknown) => {
+        this.lastFailure = this.now();
+        if (this.keys.size > 0) {
+          console.warn('[teams] Could not reload the Bot Framework signing keys:', error);
+        }
         throw new TeamsAuthError(503, 'The Bot Framework signing keys could not be loaded', {
           cause: error,
         });
-      }
-      console.warn('[teams] Could not reload the Bot Framework signing keys:', error);
-    }
+      })
+      .finally(() => {
+        this.loading = undefined;
+      });
+    return this.loading;
   }
 
   private async load(): Promise<void> {
@@ -226,7 +235,10 @@ export class TeamsTokenVerifier {
   }
 
   private async json(url: string): Promise<unknown> {
-    const response = await this.fetchImpl(url, { headers: { accept: 'application/json' } });
+    const response = await this.fetchImpl(url, {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(this.timeout),
+    });
     if (!response.ok) throw new Error(`GET ${url} answered ${response.status}`);
     return response.json();
   }

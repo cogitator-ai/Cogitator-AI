@@ -70,28 +70,44 @@ await gateway.start();
 
 Teams writes a channel thread as `<channel id>;messageid=<root>`, which the channel splits into `channelId` and `topicId`, so the Gateway's default thread key `teams:<conversation>:<user>` gives every personal chat, group chat and channel thread a conversation of its own. A top-level post that mentions the bot starts a thread, and the answer goes in it. `userId` is the user's Entra object id (`aadObjectId`), the Teams user id when there is none, and `userName` their display name. Use the object id as an owner id.
 
-In group chats and channels Teams sends a bot only the messages that @mention it, and the channel strips the mention of the bot (`<at>Bot</at>`) from the text, leaving mentions of other people. An app with the resource-specific consent `ChannelMessage.Read.Group` or `ChatMessage.Read.Chat` gets every message: the channel still answers only mentions, unless `trigger: 'all'`. Personal chats are always answered.
+In group chats and channels Teams sends a bot only the messages that @mention it, and the channel strips the mention of the bot (`<at>Bot</at>`) from the text, leaving mentions of other people. An app with resource-specific consent gets every message: its manifest needs `webApplicationInfo` with the App ID as `id`, and the permission `ChannelMessage.Read.Group` (channels) or `ChatMessage.Read.Chat` (group chats) under `authorization.permissions.resourceSpecific`, which a team or chat owner grants when they add the app. The channel still answers only mentions then, unless `trigger: 'all'`. Personal chats are always answered.
 
-Files a user sends in a personal chat reach the agent by their download URL, and images pasted into a message are downloaded with the bot's token, from the Bot Connector the activity came through only.
+```json title="manifest.json (resource-specific consent)"
+{
+  "webApplicationInfo": { "id": "<TEAMS_APP_ID>" },
+  "authorization": {
+    "permissions": {
+      "resourceSpecific": [
+        { "name": "ChannelMessage.Read.Group", "type": "Application" },
+        { "name": "ChatMessage.Read.Chat", "type": "Application" }
+      ]
+    }
+  }
+}
+```
+
+Files a user sends in a personal chat reach the agent by their download URL, as images, audio (for [speech to text](/docs/channels/gateway)), video or files by their type, and images and recordings attached to a message are downloaded with the bot's token, from the Bot Connector the activity came through only.
 
 ## Answers
 
-Answers are Markdown, sent with `textFormat: 'extendedmarkdown'`, which renders code blocks and tables. Teams takes messages up to 100 KB and advises staying under 80 KB, so a message holds at most 13653 characters (`TEAMS_MESSAGE_CHARS`), 80 KB of JSON whatever they are, and a longer answer goes out as several messages. With `replyTo` the first one replies to that message. Answers can be edited (`PUT`), so the Gateway [streams](/docs/channels/streaming) them into a message it edits. Requests to one conversation are spaced at least 143 ms apart (`TEAMS_CONVERSATION_INTERVAL`), under Teams' 7 messages a second, and edits of one message go out one at a time with the latest text, the edits made meanwhile folded in. `sendTyping` shows the typing indicator, and `deleteMessage` deletes a message.
+Answers are Markdown, sent with `textFormat: 'extendedmarkdown'`, which renders code blocks and tables. Teams takes messages up to 100 KB and advises staying under 80 KB, so a message holds at most 13653 characters (`TEAMS_MESSAGE_CHARS`), 80 KB of JSON whatever they are, and a longer answer goes out as several messages. With `replyTo` the first one replies to that message. Answers can be edited (`PUT`), so the Gateway [streams](/docs/channels/streaming) them into a message it edits. Images in an answer (`![alt](url)`) are sent as links, outside code: Teams loads an image as soon as it shows the message, so an answer steered by injected text could send what the agent read to any address in an image URL. `sendTyping` shows the typing indicator, and `deleteMessage` deletes a message.
 
-- **Buttons.** Buttons are an Adaptive Card under the text, one row per action set. A button with `data` is an `Action.Execute`: its press comes as an `adaptiveCard/action` invoke, answered within a few seconds with the text `answerAction` gives, or else the message's card as it is now. It falls back to `Action.Submit` on clients without Universal Actions, whose press comes as a message with a `value`, and `answerAction` then sends its text as a message. Both reach `onAction`, so [approval](/docs/channels/gateway#approvals) prompts get Approve and Deny buttons, and `editButtons` changes or removes them (a disabled button shows as text in its color). A `url` button opens it, and a `copyText` button shows the text to copy.
-- **Files.** Bots can upload files only in personal chats: `sendFile` with a `buffer` sends a file consent card, and once the user accepts it the file is uploaded to their OneDrive and shown in the chat. In group chats and channels Teams needs Microsoft Graph for files, so there a file needs a public `url`: an image is shown inline, another file is sent as a link, and a `buffer` is refused with an error.
+Teams limits a bot in one conversation to 7 requests a second, 8 in 2 seconds, 60 in 30 seconds and 1800 an hour (`TEAMS_RATE_LIMITS`), and the channel keeps every request of a conversation (a channel with all its threads) inside all four. A request waits for the earliest moment every window has room. Edits and typing indicators use at most three quarters of each limit, so new messages always find room: edits of one message go out one at a time, at least a second apart (`TEAMS_MIN_EDIT_INTERVAL`) and later when the conversation is busy, with the latest text and the edits made meanwhile folded in, and a typing indicator with no room now is skipped. A request Teams throttles anyway holds the whole conversation back for `Retry-After` or the backoff. Once Teams answers `MessageWritesBlocked` (the user blocked the bot or removed the app), the channel sends nothing more to that conversation until an activity comes from it.
+
+- **Buttons.** Buttons are an Adaptive Card under the text, one row per action set. A button with `data` is an `Action.Execute`: its press comes as an `adaptiveCard/action` invoke, answered within a few seconds with the text `answerAction` gives, or else the message's card once the press is handled, so it shows what the press changed, such as an approval's decision. It falls back to `Action.Submit` on clients without Universal Actions, whose press comes as a message with a `value`, and `answerAction` then sends its text as a message, except an `alert` (such as an expired prompt), which is meant for the one who pressed and is not posted where everyone reads it. Both reach `onAction`, so [approval](/docs/channels/gateway#approvals) prompts get Approve and Deny buttons, and `editButtons` changes or removes them (a disabled button shows as text in its color). A `url` button opens it, and a `copyText` button shows the text to copy.
+- **Files.** Bots can upload files only in personal chats: `sendFile` with a `buffer` sends a file consent card, and once the user accepts it the file is uploaded to their OneDrive and shown in the chat. A declined card is answered "The file was not sent.", and one the bot cannot act on any more (it restarted, or an hour passed) with a note to ask again. An empty file is refused. In group chats and channels Teams needs Microsoft Graph for files, so there a file needs a public `url`: an image is shown inline, another file is sent as a link, and a `buffer` is refused with an error.
 - **Reactions.** Bots cannot react to messages in Teams, so the channel has no `setReaction`.
 
 ## Webhook Requests
 
 Every request must carry `Authorization: Bearer <JWT>`, and the channel checks it before it reads the activity:
 
-- RS256 only, signed by a key of the JWKS that the OpenID metadata at `https://login.botframework.com/v1/.well-known/openidconfiguration` names. The keys are cached and loaded again once a day, and a token signed by a key not seen yet loads them again, at most every five minutes, so a rotated key is picked up and a flood of forged tokens costs nothing.
+- RS256 only, signed by a key of the JWKS that the OpenID metadata at `https://login.botframework.com/v1/.well-known/openidconfiguration` names. The keys are cached, and once a day they are loaded again in the background while the cached ones keep answering. A token signed by a key not seen yet loads them again, at most every five minutes, and after a failed load none is tried for ten seconds, so a rotated key is picked up and a flood of forged tokens costs nothing. Loading the metadata or the keys gives up after ten seconds.
 - `iss` is `https://api.botframework.com`, `aud` is the App ID, and `nbf` and `exp` hold now, with five minutes of clock skew.
 - The `serviceurl` claim equals the activity's `serviceUrl`, so a token issued for one Bot Connector cannot send the bot's answers to another.
 - The signing key is endorsed for the activity's `channelId` (`msteams`). A key without it gets `403`.
 
-A request that fails any of these gets `401` and never reaches the agent. A verified activity is answered at once and handled after: a message once the Gateway took it (a queueing Gateway takes it at once) or after 3 seconds, an `Action.Execute` press with its answer. Each activity is handled once, by its conversation and id (the latest 1000 in memory), and the bot's own activities are skipped. A message the Gateway refuses because it stops is answered `503`, and one it drops after its request was answered is logged, since Bot Framework does not send it again. Once `stop()` was called, requests are answered `503`.
+A request that fails the endorsement gets `403`, one that fails any other check `401`, and neither reaches the agent. So does an activity whose `serviceUrl` is not `https` (plain `http` passes only with a test `openIdMetadataUrl`), and one that names two different tenants. A verified activity is answered at once and handled after: a message once the Gateway took it (a queueing Gateway takes it at once) or after 3 seconds, an `Action.Execute` press with its answer. Each activity is handled once, by its conversation and id (the latest 1000 in memory), and the bot's own activities are skipped. A message that comes while no `onMessage` handler is set yet, or that the Gateway refuses because it stops, is answered `503`, so Bot Framework sends it again. One the Gateway drops after its request was answered is logged, since Bot Framework does not send it again. Once `stop()` was called, requests are answered `503`, and the channel's own server lets the requests under way finish, for up to three seconds, before it closes their connections.
 
 Without `port`, mount `handleWebhook` in your own server with the raw body, or `webhookListener()` as a Node request listener. A [WebChat](/docs/channels/webchat) server takes it as a route, `webchatChannel({ port, routes: { '/api/messages': teams.webhookListener() } })`, and the Teams server takes the routes of other channels the same way, `webhook: { port, routes: { '/github/webhook': github.webhookListener() } }`.
 
@@ -115,11 +131,11 @@ The channel's own server takes bodies up to 1 MB (`webhook.maxBody`, `413` beyon
 
 Answers are sent with a client credentials token of the app registration, from `https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token` with the scope `https://api.botframework.com/.default`. It is cached until five minutes before it expires, requests that need it while it is renewed wait for the same renewal, and a token the Bot Connector refuses is renewed once.
 
-| `appType`                | Token                                                                         |
-| ------------------------ | ----------------------------------------------------------------------------- |
-| `SingleTenant` (default) | from `tenantId`, with `appPassword`                                           |
-| `MultiTenant`            | from `botframework.com`, for bots created before August 2025                  |
-| `UserAssignedMSI`        | from `tokenProvider`, such as a managed identity token from `@azure/identity` |
+| `appType`                | Token                                                                                       |
+| ------------------------ | ------------------------------------------------------------------------------------------- |
+| `SingleTenant` (default) | from `tenantId`, with `appPassword`                                                         |
+| `MultiTenant`            | from `botframework.com`, for bots created before August 2025                                |
+| `UserAssignedMSI`        | from `tokenProvider`, such as a managed identity token from `@azure/identity`, in code only |
 
 ```typescript
 import { ManagedIdentityCredential } from '@azure/identity';
@@ -137,7 +153,7 @@ const teams = teamsChannel({
 });
 ```
 
-Requests Teams throttles or fails for a moment (`429`, `412`, `502`, `504`) and network errors are tried again up to 3 times (`retry`), waiting `Retry-After` when Teams sends it and otherwise a time that doubles from 500 ms, with jitter. Failed requests throw a `TeamsApiError`, a `FeedError` (feed `teams`) with the Bot Connector's `errorCode`:
+Requests Teams throttles or fails for a moment (`429`, `412`, `502`, `504`) and network errors are tried again up to 3 times (`retry`), waiting `Retry-After` when Teams sends it and otherwise a time that doubles from 500 ms, with jitter. A request gives up after 30 seconds (`requestTimeout`, a token request after 15), and a `POST` that timed out is not tried again, since Teams may have taken it. Failed requests throw a `TeamsApiError`, a `FeedError` (feed `teams`) with the Bot Connector's `errorCode`:
 
 | Response                     | `code`         | Note                                                                  |
 | ---------------------------- | -------------- | --------------------------------------------------------------------- |
@@ -157,7 +173,7 @@ Everyone who can message the bot writes text the agent reads, and the agent hold
 - **Who may talk to it.** The bot answers users of its own tenant only. List others in `tenants`, or `'*'` for every tenant its app is installed in, and narrow it to people with `users`. An activity from another tenant never reaches the agent.
 - **Where it answers.** Only verified activities set a conversation's Bot Connector, and `serviceUrlHosts` (such as `['smba.trafficmanager.net']`) refuses every other host, so the bot's token never goes to a host someone else names. Images are downloaded with the bot's token from that Bot Connector only.
 - **The secret.** `TEAMS_APP_PASSWORD` sends messages as the bot to everyone it can reach: keep it out of the repository and rotate it in the app registration. A managed identity has no secret at all.
-- **Prompt injection.** A message can tell the agent to ignore its instructions or to call a tool. Give the agent only the tools the bot needs and ask [approval](/docs/channels/gateway#approvals) for tools that write or delete: only the person asked can press Approve.
+- **Prompt injection.** A message can tell the agent to ignore its instructions, to call a tool, or to put what it read in the URL of an image, which is why answers carry images as links. Give the agent only the tools the bot needs and ask [approval](/docs/channels/gateway#approvals) for tools that write or delete: only the person asked can press Approve.
 
 ## Configuration
 
@@ -181,13 +197,14 @@ interface TeamsChannelConfig {
   serviceUrl?: string; // default https://smba.trafficmanager.net/teams/
   serviceUrlHosts?: string[];
   retry?: { retries?: number; baseDelay?: number; maxDelay?: number };
+  requestTimeout?: number; // default 30 000 ms
   openIdMetadataUrl?: string; // for tests
   loginUrl?: string; // default https://login.microsoftonline.com
   fetch?: typeof fetch;
 }
 ```
 
-In `cogitator.yml`, `channels.teams` takes `ownerIds` (Entra object ids), `appType`, `tenantId`, `tenants` (a list or `*`), `users`, `trigger`, `serviceUrlHosts` and `webhook` (`port`, default `3978`, and `path`, starting with `/`). It reads `TEAMS_APP_ID`, `TEAMS_APP_PASSWORD` and `TEAMS_TENANT_ID`. A `MultiTenant` bot needs `tenants`, and a `UserAssignedMSI` bot is built in code with its `tokenProvider`.
+In `cogitator.yml`, `channels.teams` takes `ownerIds` (Entra object ids), `appType`, `tenantId`, `tenants` (a list or `*`), `users`, `trigger`, `serviceUrlHosts` and `webhook` (`port`, default `3978`, and `path`, starting with `/`). It reads `TEAMS_APP_ID`, `TEAMS_APP_PASSWORD` and `TEAMS_TENANT_ID`. A `MultiTenant` bot needs `tenants`. `UserAssignedMSI` is refused there: such a bot is built in code with its `tokenProvider`.
 
 ```yaml title="cogitator.yml"
 channels:

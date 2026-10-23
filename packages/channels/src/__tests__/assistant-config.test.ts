@@ -270,6 +270,7 @@ describe('AssistantConfigSchema', () => {
     expect(valid({ webhook: { path: 'api/messages' } })).toBe(false);
     expect(valid({ appType: 'MultiTenant' })).toBe(false);
     expect(valid({ appType: 'MultiTenant', tenants: '*' })).toBe(true);
+    expect(valid({ appType: 'UserAssignedMSI' })).toBe(false);
     expect(valid({ trigger: 'everything' })).toBe(false);
   });
 });

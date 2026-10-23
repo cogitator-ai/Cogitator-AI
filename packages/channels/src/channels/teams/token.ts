@@ -10,6 +10,8 @@ export const BOT_FRAMEWORK_TENANT = 'botframework.com';
 
 /** How long before it expires a token is renewed, in ms. */
 const RENEW_BEFORE = 5 * 60 * 1000;
+/** How long a token request may take by default, in ms. */
+const TOKEN_TIMEOUT = 15_000;
 
 /** An access token with the time it expires, in ms since the epoch. */
 export interface TeamsAccessToken {
@@ -42,6 +44,8 @@ export interface TeamsCredentialsOptions {
   tenant: string;
   provider?: TeamsTokenProvider;
   loginUrl?: string;
+  /** How long a token request may take, in ms (default 15 000) */
+  timeout?: number;
   fetch?: typeof fetch;
   now?: () => number;
 }
@@ -85,6 +89,7 @@ export class TeamsCredentials {
     const base = this.options.loginUrl ?? MICROSOFT_LOGIN_URL;
     const url = `${base}/${encodeURIComponent(tenant)}/oauth2/v2.0/token`;
     let response: Response;
+    let text: string;
     try {
       response = await (this.options.fetch ?? fetch)(url, {
         method: 'POST',
@@ -95,13 +100,14 @@ export class TeamsCredentials {
           client_secret: appPassword,
           scope: BOT_FRAMEWORK_SCOPE,
         }).toString(),
+        signal: AbortSignal.timeout(this.options.timeout ?? TOKEN_TIMEOUT),
       });
+      text = await response.text();
     } catch (error) {
       throw new FeedError('teams', 'unavailable', `The token request failed: ${String(error)}`, {
         cause: error,
       });
     }
-    const text = await response.text();
     let body: unknown;
     try {
       body = text ? JSON.parse(text) : undefined;

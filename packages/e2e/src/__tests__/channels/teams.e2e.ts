@@ -271,8 +271,12 @@ for (const target of targets) {
         body: '{}',
       });
       expect(forged.status).toBe(401);
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      expect(microsoft.messages()).toEqual([]);
+      backend.setResponse({ content: 'Only this one.' });
+      await deliver(port, microsoft.serviceUrl, { id: 'after-the-noise', text: 'Are you there?' });
+      await waitFor(() => microsoft.messages().length > 0);
+      expect(microsoft.messages().map((call) => call.path)).toEqual([
+        '/teams/v3/conversations/a:ann-personal/activities/after-the-noise',
+      ]);
     });
 
     it.skipIf(!scripted)(

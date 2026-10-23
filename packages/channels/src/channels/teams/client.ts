@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { FeedError, type FeedErrorCode, feedErrorCode, retryAfterOf } from '../../feeds/errors';
+import type { ConversationPacer, Priority } from './pacer';
 import type { TeamsCredentials } from './token';
 
 /** The statuses Microsoft asks bots to retry with a backoff. */
@@ -34,14 +35,23 @@ const ErrorBodySchema = z.object({
 export class TeamsApiError extends FeedError {
   /** The Bot Connector error code, such as `MessageWritesBlocked` or `BadArgument` */
   readonly errorCode?: string;
+  /** Whether the request got no answer in time */
+  readonly timedOut: boolean;
 
   constructor(
     code: FeedErrorCode,
     message: string,
-    options: { status?: number; retryAfter?: number; errorCode?: string; cause?: unknown }
+    options: {
+      status?: number;
+      retryAfter?: number;
+      errorCode?: string;
+      timedOut?: boolean;
+      cause?: unknown;
+    }
   ) {
     super('teams', code, message, options);
     this.name = 'TeamsApiError';
+    this.timedOut = options.timedOut === true;
     if (options.errorCode !== undefined) this.errorCode = options.errorCode;
   }
 }
@@ -60,23 +70,51 @@ function sleep(ms: number): Promise<void> {
 export interface TeamsClientOptions {
   credentials: TeamsCredentials;
   retry?: TeamsRetryOptions;
+  /** How long one request may take, in ms (default 30 000) */
+  timeout?: number;
+  pacer?: ConversationPacer;
   fetch?: typeof fetch;
+}
+
+/** The conversation a request counts against, and whether it may wait behind new messages. */
+export interface TeamsPacing {
+  key: string;
+  priority?: Priority;
+  /** The slot of the first try is taken already, with `tryAcquire` */
+  reserved?: boolean;
+}
+
+/** How long a Bot Connector request may take by default, in ms. */
+export const TEAMS_REQUEST_TIMEOUT = 30_000;
+
+function isTimeout(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
 }
 
 /** Calls the Bot Connector REST API of a service URL, retrying what Microsoft says to retry. */
 export class TeamsClient {
   constructor(private readonly options: TeamsClientOptions) {}
 
-  /** Sends one request, resolving with its parsed JSON body, or `undefined` for an empty one. */
+  /**
+   * Sends one request, resolving with its parsed JSON body, or `undefined` for an empty one.
+   * With `pacing` every try waits for a slot of its conversation, and a throttled try keeps the
+   * whole conversation back until Teams says it may go on. A `POST` that timed out is not tried
+   * again, since Teams may have taken it.
+   */
   async request(
     method: TeamsMethod | 'GET',
     serviceUrl: string,
     path: string,
-    body?: unknown
+    body?: unknown,
+    pacing?: TeamsPacing
   ): Promise<unknown> {
     const retries = this.options.retry?.retries ?? 3;
+    const pacer = pacing ? this.options.pacer : undefined;
     let refreshed = false;
+    let slotTaken = pacing?.reserved === true;
     for (let attempt = 0; ; attempt++) {
+      if (pacer && pacing && !slotTaken) await pacer.acquire(pacing.key, pacing.priority);
+      slotTaken = false;
       try {
         return await this.once(method, serviceUrl, path, body);
       } catch (error) {
@@ -87,10 +125,15 @@ export class TeamsClient {
           attempt--;
           continue;
         }
+        const timedOut = error instanceof TeamsApiError && error.timedOut;
         const retried =
-          error.status === undefined ? error.code === 'unavailable' : RETRIED.has(error.status);
+          error.status === undefined
+            ? error.code === 'unavailable' && !(timedOut && method === 'POST')
+            : RETRIED.has(error.status);
         if (!retried || attempt >= retries) throw error;
-        await sleep(this.delay(attempt, error.retryAfter));
+        const wait = this.delay(attempt, error.retryAfter);
+        if (pacer && pacing) pacer.block(pacing.key, wait);
+        else await sleep(wait);
       }
     }
   }
@@ -112,7 +155,9 @@ export class TeamsClient {
   ): Promise<unknown> {
     const token = await this.options.credentials.token();
     const url = `${trimTrailingSlashes(serviceUrl)}${path}`;
+    const timeout = this.options.timeout ?? TEAMS_REQUEST_TIMEOUT;
     let response: Response;
+    let text: string;
     try {
       response = await (this.options.fetch ?? fetch)(url, {
         method,
@@ -122,13 +167,19 @@ export class TeamsClient {
           ...(body !== undefined && { 'content-type': 'application/json; charset=utf-8' }),
         },
         ...(body !== undefined && { body: JSON.stringify(body) }),
+        signal: AbortSignal.timeout(timeout),
       });
+      text = await response.text();
     } catch (error) {
-      throw new TeamsApiError('unavailable', `${method} ${path} failed: ${String(error)}`, {
-        cause: error,
-      });
+      const timedOut = isTimeout(error);
+      throw new TeamsApiError(
+        'unavailable',
+        timedOut
+          ? `${method} ${path} got no answer within ${timeout} ms`
+          : `${method} ${path} failed: ${String(error)}`,
+        { cause: error, timedOut }
+      );
     }
-    const text = await response.text();
     let parsed: unknown;
     try {
       parsed = text ? JSON.parse(text) : undefined;

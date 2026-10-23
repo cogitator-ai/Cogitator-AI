@@ -422,6 +422,9 @@ export class TelegramChannel implements Channel {
         channelId: String(message?.chat?.id ?? query.from.id),
         userId: String(query.from.id),
         userName: query.from.first_name + (query.from.last_name ? ` ${query.from.last_name}` : ''),
+        ...(message?.chat?.id !== undefined && message.chat.type !== 'private'
+          ? { groupId: String(message.chat.id) }
+          : {}),
         ...(message ? { messageId: String(message.message_id) } : {}),
         ...(topic !== undefined ? { topicId: topic } : {}),
         data: query.data,

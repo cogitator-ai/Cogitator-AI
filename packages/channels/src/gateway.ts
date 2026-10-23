@@ -46,6 +46,7 @@ import {
   DEFAULT_DENY_WORDS,
   DEFAULT_NOT_ALLOWED_MESSAGE,
   DEFAULT_EXPIRED_MESSAGE,
+  DEFAULT_STOPPING_MESSAGE,
   APPROVE_ACTION,
   DENY_ACTION,
   formatApprovalPrompt,
@@ -548,6 +549,13 @@ export class Gateway {
     action: ChannelAction,
     answer: (options?: { text?: string; alert?: boolean }) => Promise<void>
   ): Promise<void> {
+    if (this.stopping) {
+      await answer({
+        text: this.config.approvals?.stoppingMessage ?? DEFAULT_STOPPING_MESSAGE,
+        alert: true,
+      });
+      return;
+    }
     const approve = action.data === APPROVE_ACTION;
     const msg: ChannelMessage = {
       id: action.messageId ?? action.id,
@@ -555,7 +563,7 @@ export class Gateway {
       channelId: action.channelId,
       userId: action.userId,
       ...(action.userName ? { userName: action.userName } : {}),
-      ...(action.channelId.startsWith('-') ? { groupId: action.channelId } : {}),
+      ...(action.groupId ? { groupId: action.groupId } : {}),
       ...(action.topicId ? { topicId: action.topicId } : {}),
       ...(action.conversationId ? { conversationId: action.conversationId } : {}),
       text: (approve ? this.approvalWords.approveWords : this.approvalWords.denyWords)[0] ?? '',

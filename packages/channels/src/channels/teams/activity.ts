@@ -89,10 +89,24 @@ export function conversationTypeOf(id: string, declared?: string): TeamsConversa
   return id.includes('@thread.tacv2') || id.includes('@thread.skype') ? 'channel' : 'groupChat';
 }
 
-/** The tenant an activity comes from. */
+/**
+ * The tenant an activity comes from, or `undefined` when it names none, or two that differ in
+ * `channelData.tenant.id` and `conversation.tenantId`, which no activity of Teams does.
+ */
 export function tenantOf(activity: TeamsActivity): string | undefined {
+  if (tenantsDisagree(activity)) return undefined;
   const data = ChannelDataSchema.safeParse(activity.channelData);
   return (data.success ? data.data.tenant?.id : undefined) ?? activity.conversation.tenantId;
+}
+
+/** Whether an activity names two tenants that differ. */
+export function tenantsDisagree(activity: TeamsActivity): boolean {
+  const data = ChannelDataSchema.safeParse(activity.channelData);
+  const fromData = data.success ? data.data.tenant?.id : undefined;
+  const fromConversation = activity.conversation.tenantId;
+  return (
+    !!fromData && !!fromConversation && fromData.toLowerCase() !== fromConversation.toLowerCase()
+  );
 }
 
 /** The team a channel activity comes from. */
@@ -175,10 +189,22 @@ const MIME_TYPES: Record<string, string> = {
   wav: 'audio/wav',
   ogg: 'audio/ogg',
   mp4: 'video/mp4',
+  mov: 'video/quicktime',
+  webm: 'video/webm',
+  aac: 'audio/aac',
+  flac: 'audio/flac',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 };
+
+/** What kind of attachment a MIME type is, so images reach vision and audio speech to text. */
+export function attachmentTypeOf(mimeType: string): 'image' | 'audio' | 'video' | 'file' {
+  if (mimeType.startsWith('image/')) return 'image';
+  if (mimeType.startsWith('audio/')) return 'audio';
+  if (mimeType.startsWith('video/')) return 'video';
+  return 'file';
+}
 
 /** The MIME type of a file type (an extension, as Teams names it). */
 export function mimeTypeOf(fileType: string | undefined): string {

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { formatProject, scaffold } from 'create-cogitator-app';
+import { formatProject, scaffold, type ChannelKind } from 'create-cogitator-app';
 import {
   cogitatorDependencies,
   exec,
@@ -25,33 +25,53 @@ const dir = join(root, 'social-bot');
 let available = false;
 let scripts: Record<string, string> = {};
 
-beforeAll(async () => {
-  available = await hasBinary('pnpm');
-  if (!available) return;
+/**
+ * Smaller bots that serve webhooks without WebChat: GitHub's on the Teams port, and Teams
+ * alone on its own port. Each is generated and typechecked.
+ */
+const webhookBots = [
+  { name: 'github-teams-bot', channels: ['github', 'teams'] as const },
+  { name: 'teams-bot', channels: ['teams'] as const },
+];
+
+async function generate(name: string, channels: readonly ChannelKind[]): Promise<string> {
+  const directory = join(root, name);
   await scaffold(
     {
-      name: 'social-bot',
+      name,
       preset: 'channels',
       app: 'channels',
-      channels: ['bluesky', 'threads', 'github', 'email', 'teams', 'webchat'],
+      channels: [...channels],
       memory: 'sqlite',
       features: [],
       provider: 'ollama',
       model: 'qwen3.5:4b',
       packageManager: 'pnpm',
     },
-    { directory: dir, install: false, git: false }
+    { directory, install: false, git: false }
   );
-  useTarballs(dir, 'pnpm', await packWorkspace(cogitatorDependencies(dir)));
-  await mustExec('pnpm', installArgs('pnpm'), { cwd: dir, timeoutMs: 900_000, env: { CI: '1' } });
-  const formatted = await formatProject(dir);
+  useTarballs(directory, 'pnpm', await packWorkspace(cogitatorDependencies(directory)));
+  await mustExec('pnpm', installArgs('pnpm'), {
+    cwd: directory,
+    timeoutMs: 900_000,
+    env: { CI: '1' },
+  });
+  const formatted = await formatProject(directory);
   if (formatted.status === 'failed') throw formatted.error;
+  return directory;
+}
+
+beforeAll(async () => {
+  available = await hasBinary('pnpm');
+  if (!available) return;
+  await generate('social-bot', ['bluesky', 'threads', 'github', 'email', 'teams', 'webchat']);
   scripts = (
     JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as {
       scripts: Record<string, string>;
     }
   ).scripts;
-}, 1_000_000);
+  for (const bot of webhookBots) await generate(bot.name, bot.channels);
+}, 2_000_000);
 
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
@@ -62,6 +82,21 @@ describe('a generated bot on Bluesky, Threads, GitHub, email, Teams and WebChat'
       if (!scripts[script]) return context.skip(`the project has no ${script} script`);
       const [command, args] = runArgs('pnpm', script);
       const result = await exec(command, args, { cwd: dir, env: { CI: '1' }, timeoutMs: 600_000 });
+      expect(result.code, result.output.split('\n').slice(-40).join('\n')).toBe(0);
+    }, 620_000);
+  }
+});
+
+describe('generated bots that serve webhooks without WebChat', () => {
+  for (const bot of webhookBots) {
+    it(`typechecks ${bot.channels.join(' and ')}`, async (context) => {
+      if (!available) return context.skip('pnpm is not installed');
+      const [command, args] = runArgs('pnpm', 'typecheck');
+      const result = await exec(command, args, {
+        cwd: join(root, bot.name),
+        env: { CI: '1' },
+        timeoutMs: 600_000,
+      });
       expect(result.code, result.output.split('\n').slice(-40).join('\n')).toBe(0);
     }, 620_000);
   }

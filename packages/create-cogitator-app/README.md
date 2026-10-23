@@ -65,7 +65,7 @@ Requires Node.js 22.12+.
 | `--example <name[#ref]>`              | A runnable example of the Cogitator repository, see `--list-examples`                                                      |
 | `--app <kind>`                        | `script`, `server`, `next`, `channels`, `worker`                                                                           |
 | `--server <framework>`                | `hono`, `express`, `fastify`, `koa`, `tetsu`                                                                               |
-| `--channels <list>`                   | `telegram`, `discord`, `slack`, `webchat`, `bluesky`, `threads`, `github`, `email`                                         |
+| `--channels <list>`                   | `telegram`, `discord`, `slack`, `webchat`, `bluesky`, `threads`, `github`, `email`, `teams`                                |
 | `--memory <kind>`                     | `none`, `memory`, `sqlite`, `postgres`, `redis`, `mongodb`                                                                 |
 | `--vector-store <store>`              | For RAG: `memory`, `postgres`, `qdrant`                                                                                    |
 | `--features <list>`                   | Add-ons: `harness`, `mcp`, `rag`, `workflows`, `durable`, `swarms`, `evals`, `otel`, `langfuse`, `voice`, `sandbox`, `a2a` |

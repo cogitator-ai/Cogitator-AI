@@ -9,8 +9,10 @@ import type {
   ChannelMessage,
   SendOptions,
 } from '@cogitator-ai/types';
+import { protectCode } from '../../formatters/code-protect';
 import { chunkMessage } from '../../formatters/markdown';
 import {
+  attachmentTypeOf,
   attachmentsOf,
   conversationTypeOf,
   downloadInfoOf,
@@ -22,6 +24,7 @@ import {
   splitConversation,
   teamOf,
   tenantOf,
+  tenantsDisagree,
   textWithoutMention,
   type FileConsentAnswer,
   type TeamsActivity,
@@ -37,7 +40,13 @@ import {
   submitDataOf,
   type AdaptiveCard,
 } from './cards';
-import { TeamsClient, type TeamsRetryOptions } from './client';
+import {
+  TEAMS_REQUEST_TIMEOUT,
+  TeamsApiError,
+  TeamsClient,
+  type TeamsRetryOptions,
+} from './client';
+import { ConversationPacer, type Priority } from './pacer';
 import { BOT_FRAMEWORK_TENANT, TeamsCredentials, type TeamsTokenProvider } from './token';
 
 /** The largest message Teams is advised to take, in bytes of the activity JSON. */
@@ -55,8 +64,12 @@ export const TEAMS_DEFAULT_PATH = '/api/messages';
 export const TEAMS_GLOBAL_SERVICE_URL = 'https://smba.trafficmanager.net/teams/';
 /** The largest webhook body the channel's own server takes by default, in bytes. */
 export const TEAMS_DEFAULT_MAX_BODY = 1024 * 1024;
-/** The shortest time between two requests to one conversation, under Teams' 7 messages a second. */
-export const TEAMS_CONVERSATION_INTERVAL = Math.ceil(1000 / 7);
+/**
+ * The shortest time between two updates of one message, in ms, so a streamed answer takes at
+ * most one of the 60 requests a conversation may have in 30 seconds every second, and new
+ * messages always find room.
+ */
+export const TEAMS_MIN_EDIT_INTERVAL = 1000;
 
 const MAX_TRACKED = 1000;
 const MAX_CONVERSATIONS = 10_000;
@@ -76,6 +89,11 @@ const HANDOVER_TIMEOUT = 3000;
 const INVOKE_TIMEOUT = 4000;
 /** What a button press is answered with when nothing else is said and its card is not known. */
 const ACTION_RECEIVED = 'Done';
+/** How long `stop()` waits for requests under way before it closes their connections, in ms. */
+const STOP_GRACE = 3000;
+/** Answers to a file consent card the bot can no longer act on, or that was declined. */
+const UPLOAD_GONE = 'That file is no longer available, ask for it again.';
+const UPLOAD_DECLINED = 'The file was not sent.';
 const ACTIVITY_MESSAGE = 'application/vnd.microsoft.activity.message';
 
 /**
@@ -144,6 +162,8 @@ export interface TeamsChannelConfig {
   serviceUrlHosts?: string[];
   /** How requests Teams throttles or fails for a moment are tried again */
   retry?: TeamsRetryOptions;
+  /** How long one Bot Connector request may take, in ms (default 30 000) */
+  requestTimeout?: number;
   /** The OpenID metadata of inbound tokens (default Bot Framework's), for tests */
   openIdMetadataUrl?: string;
   /** Where outbound tokens come from (default `https://login.microsoftonline.com`), for tests and national clouds */
@@ -183,6 +203,8 @@ interface UpdateState {
   next: SentEntry;
   /** Whether `next` changed since the last update went out */
   dirty: boolean;
+  /** When the last update of the message went out, in ms */
+  lastAt: number;
   running?: Promise<void>;
 }
 
@@ -229,6 +251,19 @@ function textFormatOf(format: SendOptions['format']): string {
   return 'extendedmarkdown';
 }
 
+/**
+ * Markdown with its images turned into links (`![alt](url)` becomes `[alt](url)`), outside code:
+ * Teams loads an image as soon as it shows the message, so an answer steered by injected text
+ * could send what it read to any address in the query of an image URL.
+ */
+export function withoutImages(text: string): string {
+  return protectCode(text, (prose) => prose.split('![').join('['));
+}
+
+function bodyFor(text: string, textFormat: string): string {
+  return textFormat === 'extendedmarkdown' ? withoutImages(text) : text;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -254,6 +289,11 @@ function remember<V>(map: Map<string, V>, key: string, value: V, max = MAX_TRACK
   map.delete(key);
   map.set(key, value);
   forgetOldest(map, max);
+}
+
+/** The conversation whose limits a request counts against: a channel with all its threads. */
+function paceKeyOf(conversationId: string): string {
+  return splitConversation(conversationId).channelId;
 }
 
 function activitiesPath(conversationId: string, activityId?: string): string {
@@ -321,7 +361,14 @@ export class TeamsChannel implements Channel {
   private readonly conversations = new Map<string, ConversationEntry>();
   private readonly sent = new Map<string, SentEntry>();
   private readonly updates = new Map<string, UpdateState>();
-  private readonly slots = new Map<string, number>();
+  private readonly pacer = new ConversationPacer();
+  /** Conversations whose messages Teams blocks (`MessageWritesBlocked`), by pacing key */
+  private readonly blocked = new Set<string>();
+  /** Messages whose webhook request was answered before the gateway took them, by delivery key */
+  private readonly answeredEarly = new Set<string>();
+  private readonly activeRequests = new Set<Promise<void>>();
+  /** Waits that end at once when the channel stops */
+  private readonly onHalt = new Set<() => void>();
   private readonly answers = new Map<string, PendingAnswer>();
   /** The conversation of each button press, to answer it with a message once its request is over */
   private readonly actionConversations = new Map<string, string>();
@@ -365,7 +412,9 @@ export class TeamsChannel implements Channel {
     });
     this.client = new TeamsClient({
       credentials: this.credentials,
+      pacer: this.pacer,
       ...(config.retry && { retry: config.retry }),
+      ...(config.requestTimeout !== undefined && { timeout: config.requestTimeout }),
       ...(config.fetch && { fetch: config.fetch }),
     });
   }
@@ -405,12 +454,23 @@ export class TeamsChannel implements Channel {
     this.stopped = true;
     for (const answer of this.answers.values()) answer.resolve({});
     this.answers.clear();
+    for (const halt of this.onHalt) halt();
+    this.onHalt.clear();
     const server = this.server;
     this.server = undefined;
-    if (server) {
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
+    if (!server) return;
+    const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+    server.closeIdleConnections();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.allSettled([...this.activeRequests]),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, STOP_GRACE);
+      }),
+    ]);
+    clearTimeout(timer);
+    server.closeAllConnections();
+    await closed;
   }
 
   /**
@@ -421,19 +481,22 @@ export class TeamsChannel implements Channel {
    */
   async redeliver(msg: ChannelMessage): Promise<void> {
     const key = this.deliveryKeys.get(msg.id);
-    if (key && this.inFlight.has(key)) {
+    if (key && this.inFlight.has(key) && !this.answeredEarly.has(key)) {
       this.refused.add(key);
       return;
     }
     if (key) this.delivered.delete(key);
-    console.warn(`[teams] The message ${msg.id} in ${msg.channelId} was dropped unanswered`);
+    console.warn(
+      `[teams] The message ${msg.id} in ${msg.channelId} was dropped unanswered after its request was answered, so Bot Framework will not send it again`
+    );
   }
 
   /**
    * Answers a request Bot Framework posts: checks its token, answers at once and hands the
    * activity to the agent after. A button press of an Adaptive Card (`Action.Execute`) is
    * answered with the press's answer in the response, within a few seconds. Mount it in any HTTP
-   * server with the raw body. It works before `start()` too and answers `503` once stopped.
+   * server with the raw body. It works before `start()` too, answers a message `503` while no
+   * `onMessage` handler is set, so Bot Framework sends it again, and answers `503` once stopped.
    */
   async handleWebhook(request: TeamsWebhookRequest): Promise<TeamsWebhookResponse> {
     if (this.stopped) return textResponse(503, 'The channel is stopped');
@@ -468,15 +531,22 @@ export class TeamsChannel implements Channel {
     if (activity.from.id === activity.recipient?.id) {
       return textResponse(202, 'Ignored');
     }
+    const pressed = activity.type === 'message' ? submitDataOf(activity.value) : undefined;
+    if (activity.type === 'message' && pressed === undefined && !this.handler) {
+      return textResponse(503, 'Not ready, send it again later');
+    }
     const key = activity.id ? `${activity.conversation.id}|${activity.id}` : undefined;
     if (key !== undefined) {
-      if (this.delivered.has(key)) return textResponse(200, 'Already received');
+      if (this.delivered.has(key)) {
+        return activity.type === 'invoke'
+          ? jsonResponse(200, { statusCode: 200, type: ACTIVITY_MESSAGE, value: ACTION_RECEIVED })
+          : textResponse(200, 'Already received');
+      }
       this.delivered.add(key);
       forgetOldest(this.delivered);
     }
     if (activity.type === 'invoke') return this.invoke(activity);
     if (activity.type !== 'message') return textResponse(202, 'Accepted');
-    const pressed = submitDataOf(activity.value);
     if (pressed !== undefined) {
       if (this.admits(activity)) {
         void this.press(activity, pressed).catch((error: unknown) =>
@@ -544,9 +614,11 @@ export class TeamsChannel implements Channel {
   }
 
   /**
-   * Replaces the text of a message the bot sent, keeping its buttons. Updates of one message go
-   * out one at a time, and those made while one is under way are folded into the next, the latest
-   * text winning, so a streamed answer never queues more than Teams takes.
+   * Replaces the text of a message the bot sent, keeping its buttons as they are now, also when
+   * a change of them is still on its way, unless `buttons` are given. Updates of one message go
+   * out one at a time, at least {@link TEAMS_MIN_EDIT_INTERVAL} apart and behind new messages
+   * when the conversation nears its limits, and those made meanwhile are folded into the next,
+   * the latest text winning, so a streamed answer never queues more than Teams takes.
    */
   async editText(
     channelId: string,
@@ -557,13 +629,13 @@ export class TeamsChannel implements Channel {
     if (text.length > TEAMS_MESSAGE_CHARS) {
       throw new Error(`[teams] A message holds at most ${TEAMS_MESSAGE_CHARS} characters`);
     }
-    const known = this.sent.get(messageId);
+    const known = this.updates.get(messageId)?.next ?? this.sent.get(messageId);
     const textFormat = textFormatOf(options?.format);
-    const card = options?.buttons?.length ? buttonsCard(options.buttons) : known?.card;
+    const card = options?.buttons?.length ? buttonsCard(options.buttons) : undefined;
     return this.update(
       known?.conversationId ?? joinConversation(channelId, options?.topicId),
       messageId,
-      (current) => ({ ...current, text, textFormat, ...(card ? { card } : {}) })
+      (current) => ({ ...current, text, textFormat, ...(card && { card }) })
     );
   }
 
@@ -593,23 +665,27 @@ export class TeamsChannel implements Channel {
   /** Deletes a message the bot sent. */
   async deleteMessage(channelId: string, messageId: string): Promise<void> {
     const conversationId = this.sent.get(messageId)?.conversationId ?? channelId;
-    await this.pace(conversationId);
-    await this.client.request(
-      'DELETE',
-      this.serviceUrlOf(conversationId),
-      activitiesPath(conversationId, messageId)
-    );
+    await this.call('DELETE', conversationId, activitiesPath(conversationId, messageId));
     this.sent.delete(messageId);
   }
 
+  /**
+   * Shows the typing indicator. It is skipped when the conversation has no room for it now, or
+   * Teams blocks the bot's messages there, since a late indicator says nothing.
+   */
   async sendTyping(channelId: string, options?: Pick<SendOptions, 'topicId'>): Promise<void> {
     const conversationId = joinConversation(channelId, options?.topicId);
-    await this.pace(conversationId);
-    await this.client.request(
+    const key = paceKeyOf(conversationId);
+    if (this.blocked.has(key) || !this.pacer.tryAcquire(key)) return;
+    await this.call(
       'POST',
-      this.serviceUrlOf(conversationId),
+      conversationId,
       activitiesPath(conversationId),
-      { type: 'typing' }
+      { type: 'typing' },
+      {
+        priority: 'background',
+        reserved: true,
+      }
     );
   }
 
@@ -625,6 +701,7 @@ export class TeamsChannel implements Channel {
     const filename = file.filename ?? (file.type === 'image' ? 'image' : 'file');
     const textFormat = textFormatOf(options?.format);
     if (file.buffer) {
+      if (file.buffer.length === 0) throw new Error('[teams] The file is empty');
       if (this.typeOf(conversationId) !== 'personal') {
         throw new Error(
           '[teams] Teams takes uploads from bots in personal chats only: in group chats and channels send a file with a public url'
@@ -684,7 +761,8 @@ export class TeamsChannel implements Channel {
   /**
    * Answers a button press. An `Action.Execute` press still waiting for its answer gets it in
    * the response, shown to the user who pressed. Otherwise a `text` is sent to the conversation
-   * as a message, since Teams has no other way to answer a press.
+   * as a message, since Teams has no other way to answer a press. An `alert`, meant for the one
+   * who pressed only (such as "this prompt expired"), is not posted where everyone reads it.
    */
   async answerAction(
     actionId: string,
@@ -698,7 +776,7 @@ export class TeamsChannel implements Channel {
     }
     const conversationId = this.actionConversations.get(actionId);
     this.actionConversations.delete(actionId);
-    if (!options?.text || !conversationId) return;
+    if (!options?.text || options.alert || !conversationId) return;
     await this.post(conversationId, { text: options.text, textFormat: 'plain' });
   }
 
@@ -709,6 +787,7 @@ export class TeamsChannel implements Channel {
 
   /** Whether the sender of an activity may talk to the bot: by their tenant and the user list. */
   private admits(activity: TeamsActivity): boolean {
+    if (tenantsDisagree(activity)) return false;
     if (this.config.tenants !== '*') {
       const tenant = tenantOf(activity)?.toLowerCase();
       if (!tenant || !this.allowedTenants().some((allowed) => allowed.toLowerCase() === tenant)) {
@@ -730,7 +809,8 @@ export class TeamsChannel implements Channel {
     } catch {
       return false;
     }
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+    const plainAllowed = this.config.openIdMetadataUrl !== undefined;
+    if (url.protocol !== 'https:' && !(plainAllowed && url.protocol === 'http:')) return false;
     const hosts = this.config.serviceUrlHosts;
     if (!hosts?.length) return true;
     const host = url.hostname.toLowerCase();
@@ -745,6 +825,7 @@ export class TeamsChannel implements Channel {
       type: conversationTypeOf(id, conversationType),
     };
     remember(this.conversations, id, entry, MAX_CONVERSATIONS);
+    this.blocked.delete(paceKeyOf(id));
     const { channelId } = splitConversation(id);
     if (channelId !== id) remember(this.conversations, channelId, entry, MAX_CONVERSATIONS);
   }
@@ -762,13 +843,38 @@ export class TeamsChannel implements Channel {
     return this.conversations.get(conversationId)?.type ?? conversationTypeOf(conversationId);
   }
 
-  /** Waits for the next free slot of a conversation, so it gets at most 7 requests a second. */
-  private async pace(conversationId: string): Promise<void> {
-    const key = splitConversation(conversationId).channelId;
-    const now = Date.now();
-    const slot = Math.max(now, this.slots.get(key) ?? 0);
-    remember(this.slots, key, slot + TEAMS_CONVERSATION_INTERVAL);
-    if (slot > now) await sleep(slot - now);
+  /**
+   * Calls the Bot Connector for a conversation, paced by its limits. A conversation where Teams
+   * blocks the bot's messages is not called again until an activity comes from it.
+   */
+  private async call(
+    method: 'POST' | 'PUT' | 'DELETE',
+    conversationId: string,
+    path: string,
+    body?: unknown,
+    options: { priority?: Priority; reserved?: boolean } = {}
+  ): Promise<unknown> {
+    const key = paceKeyOf(conversationId);
+    if (this.blocked.has(key)) {
+      throw new TeamsApiError(
+        'auth',
+        `${method} ${path} skipped: Teams blocks the bot's messages in this conversation (MessageWritesBlocked) until the user writes again`,
+        { status: 403, errorCode: 'MessageWritesBlocked' }
+      );
+    }
+    try {
+      return await this.client.request(method, this.serviceUrlOf(conversationId), path, body, {
+        key,
+        ...(options.priority && { priority: options.priority }),
+        ...(options.reserved && { reserved: true }),
+      });
+    } catch (error) {
+      if (error instanceof TeamsApiError && error.errorCode === 'MessageWritesBlocked') {
+        this.blocked.add(key);
+        forgetOldest(this.blocked);
+      }
+      throw error;
+    }
   }
 
   /** Where a message of an activity goes: the chat, and the channel thread it is in. */
@@ -792,7 +898,8 @@ export class TeamsChannel implements Channel {
 
   /**
    * Hands a message to the gateway and answers its request once the gateway took it, or after
-   * a few seconds. One the gateway refuses because it stops is answered `503`.
+   * a few seconds. One the gateway refuses because it stops is answered `503`, and one it gives
+   * back after its request was answered is logged by `redeliver`.
    */
   private async handOver(
     activity: TeamsActivity,
@@ -812,11 +919,17 @@ export class TeamsChannel implements Channel {
       if (key !== undefined) this.delivered.delete(key);
       return textResponse(503, 'Not taken now, send it again later');
     }
+    if (handedOver === pending && key !== undefined) {
+      this.answeredEarly.add(key);
+      forgetOldest(this.answeredEarly);
+      void accepted.finally(() => this.answeredEarly.delete(key));
+    }
     return textResponse(202, 'Accepted');
   }
 
   private async receive(activity: TeamsActivity, key: string | undefined): Promise<Acceptance> {
-    if (!this.handler || !this.admits(activity)) return 'skipped';
+    const handler = this.handler;
+    if (!handler || !this.admits(activity)) return 'skipped';
     const conversation = activity.conversation;
     const type = conversationTypeOf(conversation.id, conversation.conversationType);
     if (type !== 'personal' && this.config.trigger !== 'all' && !mentionsBot(activity)) {
@@ -844,7 +957,7 @@ export class TeamsChannel implements Channel {
     remember(this.deliveryKeys, id, flightKey);
     this.inFlight.add(flightKey);
     try {
-      await this.handler(message);
+      await handler(message);
     } catch (error) {
       console.error('[teams] Message handler error:', error);
     } finally {
@@ -866,14 +979,15 @@ export class TeamsChannel implements Channel {
       if (info && /^https:\/\//i.test(info.downloadUrl)) {
         const mimeType = mimeTypeOf(info.fileType);
         attachments.push({
-          type: mimeType.startsWith('image/') ? 'image' : 'file',
+          type: attachmentTypeOf(mimeType),
           url: info.downloadUrl,
           mimeType,
           ...(attachment.name && { filename: attachment.name }),
         });
         continue;
       }
-      if (!attachment.contentType.startsWith('image/') || !attachment.contentUrl) continue;
+      const kind = attachmentTypeOf(attachment.contentType);
+      if (kind === 'file' || !attachment.contentUrl) continue;
       let url: URL;
       try {
         url = new URL(attachment.contentUrl);
@@ -882,12 +996,12 @@ export class TeamsChannel implements Channel {
       }
       if (url.host !== serviceHost) continue;
       const buffer = await this.download(url.href).catch((error: unknown) => {
-        console.warn('[teams] Could not download an image of a message:', error);
+        console.warn('[teams] Could not download a file of a message:', error);
         return undefined;
       });
       if (!buffer) continue;
       attachments.push({
-        type: 'image',
+        type: kind,
         buffer,
         mimeType: attachment.contentType,
         ...(attachment.name && { filename: attachment.name }),
@@ -898,7 +1012,10 @@ export class TeamsChannel implements Channel {
 
   private async download(url: string): Promise<Buffer | undefined> {
     const token = await this.credentials.token();
-    const response = await this.fetchImpl(url, { headers: { authorization: `Bearer ${token}` } });
+    const response = await this.fetchImpl(url, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(this.config.requestTimeout ?? TEAMS_REQUEST_TIMEOUT),
+    });
     if (!response.ok) throw new Error(`GET ${url} answered ${response.status}`);
     const length = Number(response.headers.get('content-length'));
     if (Number.isFinite(length) && length > MAX_INBOUND_FILE) return undefined;
@@ -919,6 +1036,7 @@ export class TeamsChannel implements Channel {
       ...(activity.from.name && { userName: activity.from.name }),
       ...(activity.replyToId && { messageId: activity.replyToId }),
       ...(place.topicId && { topicId: place.topicId }),
+      ...(place.groupId && { groupId: place.groupId }),
       data,
       raw: activity,
     };
@@ -933,7 +1051,11 @@ export class TeamsChannel implements Channel {
     if (activity.name === 'adaptiveCard/action') return this.execute(activity);
     if (activity.name === 'fileConsent/invoke') {
       const answer = fileConsentOf(activity.value);
-      if (answer && this.admits(activity)) this.consented(activity, answer);
+      if (answer && this.admits(activity)) {
+        void this.consented(activity, answer).catch((error: unknown) =>
+          console.error('[teams] Answering a file consent failed:', error)
+        );
+      }
       return jsonResponse(200, {});
     }
     return textResponse(501, 'Not implemented');
@@ -941,16 +1063,17 @@ export class TeamsChannel implements Channel {
 
   /**
    * Answers an `Action.Execute` press within the time Teams waits: with the text the press is
-   * answered with, or else the message's card as it is now.
+   * answered with, or else the message's card once the press is handled (so it shows what the
+   * press changed, such as an approval's decision), or as it is when time runs out.
    */
   private async execute(activity: TeamsActivity): Promise<TeamsWebhookResponse> {
     const data = executeDataOf(activity.value);
     if (data === undefined || !this.admits(activity)) {
       return jsonResponse(200, {
-        statusCode: data === undefined ? 400 : 403,
+        statusCode: 400,
         type: 'application/vnd.microsoft.error',
         value: {
-          code: data === undefined ? 'BadRequest' : 'Forbidden',
+          code: 'BadRequest',
           message: data === undefined ? 'Unknown action' : 'Not allowed',
         },
       });
@@ -968,8 +1091,18 @@ export class TeamsChannel implements Channel {
           return {};
         }
       );
+      const deadline = Date.now() + INVOKE_TIMEOUT;
       answered = await within(Promise.race([answer, handled]), INVOKE_TIMEOUT, {});
       this.answers.delete(action.id);
+      if (!answered.text && !this.stopped) {
+        let halt = () => {};
+        const halted = new Promise<object>((resolve) => {
+          halt = () => resolve({});
+        });
+        this.onHalt.add(halt);
+        await within(Promise.race([handled, halted]), Math.max(0, deadline - Date.now()), {});
+        this.onHalt.delete(halt);
+      }
     }
     if (answered.text) {
       return jsonResponse(200, { statusCode: 200, type: ACTIVITY_MESSAGE, value: answered.text });
@@ -982,17 +1115,33 @@ export class TeamsChannel implements Channel {
     return jsonResponse(200, { statusCode: 200, type: ACTIVITY_MESSAGE, value: ACTION_RECEIVED });
   }
 
-  /** Uploads a file the user accepted, in the conversation the consent card was sent to. */
-  private consented(activity: TeamsActivity, answer: FileConsentAnswer): void {
+  /**
+   * Uploads a file the user accepted, in the conversation the consent card was sent to. A card
+   * the bot no longer knows (it restarted, or the file expired) and a declined one are answered
+   * with a short message.
+   */
+  private async consented(activity: TeamsActivity, answer: FileConsentAnswer): Promise<void> {
+    const conversationId = activity.conversation.id;
     const uploadId = answer.context?.uploadId;
     const upload = uploadId ? this.uploads.get(uploadId) : undefined;
-    if (!uploadId || upload?.conversationId !== activity.conversation.id) return;
+    if (!uploadId || upload?.conversationId !== conversationId) {
+      if (answer.action === 'accept') {
+        await this.post(conversationId, { text: UPLOAD_GONE, textFormat: 'plain' });
+      }
+      return;
+    }
     this.uploads.delete(uploadId);
-    if (answer.action !== 'accept' || !answer.uploadInfo) return;
-    const info = answer.uploadInfo;
-    void this.upload(upload, info).catch((error: unknown) =>
-      console.error(`[teams] Uploading ${upload.filename} failed:`, error)
-    );
+    if (answer.action !== 'accept' || !answer.uploadInfo) {
+      await this.post(conversationId, { text: UPLOAD_DECLINED, textFormat: 'plain' });
+      return;
+    }
+    await this.upload(upload, answer.uploadInfo).catch(async (error: unknown) => {
+      console.error(`[teams] Uploading ${upload.filename} failed:`, error);
+      await this.post(conversationId, {
+        text: `The file ${upload.filename} could not be uploaded.`,
+        textFormat: 'plain',
+      });
+    });
   }
 
   private async upload(
@@ -1001,18 +1150,18 @@ export class TeamsChannel implements Channel {
   ): Promise<void> {
     if (!/^https:\/\//i.test(info.uploadUrl)) throw new Error('The upload URL is not https');
     const size = upload.buffer.length;
-    for (let start = 0; start < size || start === 0; start += UPLOAD_FRAGMENT) {
+    for (let start = 0; start < size; start += UPLOAD_FRAGMENT) {
       const end = Math.min(start + UPLOAD_FRAGMENT, size);
       const response = await this.fetchImpl(info.uploadUrl, {
         method: 'PUT',
         headers: {
           'content-length': String(end - start),
-          'content-range': `bytes ${start}-${Math.max(end - 1, 0)}/${size}`,
+          'content-range': `bytes ${start}-${end - 1}/${size}`,
         },
         body: new Uint8Array(upload.buffer.subarray(start, end)),
+        signal: AbortSignal.timeout(this.config.requestTimeout ?? TEAMS_REQUEST_TIMEOUT),
       });
       if (!response.ok) throw new Error(`The upload answered ${response.status}`);
-      if (size === 0) break;
     }
     await this.post(upload.conversationId, {
       text: upload.caption ?? '',
@@ -1047,19 +1196,21 @@ export class TeamsChannel implements Channel {
     },
     replyTo?: string
   ): Promise<string> {
-    await this.pace(conversationId);
     const attachments = content.card
       ? [{ contentType: ADAPTIVE_CARD, content: content.card }]
       : content.attachments;
     const activity = {
       type: 'message',
-      ...(content.text && { text: content.text, textFormat: content.textFormat }),
+      ...(content.text && {
+        text: bodyFor(content.text, content.textFormat),
+        textFormat: content.textFormat,
+      }),
       ...(attachments && { attachments }),
       ...(replyTo && { replyToId: replyTo }),
     };
-    const response = await this.client.request(
+    const response = await this.call(
       'POST',
-      this.serviceUrlOf(conversationId),
+      conversationId,
       activitiesPath(conversationId, replyTo),
       activity
     );
@@ -1092,7 +1243,7 @@ export class TeamsChannel implements Channel {
         text: '',
         textFormat: 'extendedmarkdown',
       };
-      state = { conversationId, next: base, dirty: false };
+      state = { conversationId, next: base, dirty: false, lastAt: 0 };
       remember(this.updates, messageId, state);
     }
     state.next = change(state.next);
@@ -1101,26 +1252,39 @@ export class TeamsChannel implements Channel {
     return state.running;
   }
 
+  /**
+   * Sends the updates of a message one at a time. When one fails while a newer state waits,
+   * the newer one is still sent, so a streamed answer ends with its final text, and only a
+   * failure of the latest state reaches the callers.
+   */
   private async drainUpdates(messageId: string, state: UpdateState): Promise<void> {
     try {
       while (state.dirty) {
-        await this.pace(state.conversationId);
+        const wait = state.lastAt + TEAMS_MIN_EDIT_INTERVAL - Date.now();
+        if (wait > 0) await sleep(wait);
         state.dirty = false;
         const entry = state.next;
-        await this.client.request(
-          'PUT',
-          this.serviceUrlOf(state.conversationId),
-          activitiesPath(state.conversationId, messageId),
-          {
-            type: 'message',
-            id: messageId,
-            text: entry.text,
-            textFormat: entry.textFormat,
-            ...(entry.card && {
-              attachments: [{ contentType: ADAPTIVE_CARD, content: entry.card }],
-            }),
-          }
-        );
+        state.lastAt = Date.now();
+        try {
+          await this.call(
+            'PUT',
+            state.conversationId,
+            activitiesPath(state.conversationId, messageId),
+            {
+              type: 'message',
+              id: messageId,
+              text: bodyFor(entry.text, entry.textFormat),
+              textFormat: entry.textFormat,
+              ...(entry.card && {
+                attachments: [{ contentType: ADAPTIVE_CARD, content: entry.card }],
+              }),
+            },
+            { priority: 'background' }
+          );
+        } catch (error) {
+          if (state.dirty && !this.blocked.has(paceKeyOf(state.conversationId))) continue;
+          throw error;
+        }
         remember(this.sent, messageId, entry);
       }
     } finally {
@@ -1133,6 +1297,9 @@ export class TeamsChannel implements Channel {
     const listener = this.webhookListener();
     const routes = this.config.webhook?.routes ?? {};
     const server = createServer((req, res) => {
+      const finished = new Promise<void>((resolve) => res.once('close', resolve));
+      this.activeRequests.add(finished);
+      void finished.then(() => this.activeRequests.delete(finished));
       let pathname: string;
       try {
         pathname = new URL(req.url ?? '/', 'http://localhost').pathname;

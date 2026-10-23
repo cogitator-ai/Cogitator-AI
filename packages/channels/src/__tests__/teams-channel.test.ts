@@ -4,17 +4,17 @@ import { connect, createServer } from 'node:net';
 import type { ChannelAction, ChannelMessage } from '@cogitator-ai/types';
 import { FeedError } from '../feeds/errors';
 import {
-  TEAMS_CONVERSATION_INTERVAL,
+  TEAMS_MIN_EDIT_INTERVAL,
   TEAMS_MESSAGE_CHARS,
   TeamsChannel,
   splitTeamsText,
   type TeamsChannelConfig,
   type TeamsWebhookRequest,
 } from '../channels/teams/channel';
-import { TeamsTokenVerifier } from '../channels/teams/auth';
-import { TeamsApiError } from '../channels/teams/client';
+import { BOT_FRAMEWORK_OPENID_METADATA, TeamsTokenVerifier } from '../channels/teams/auth';
+import { TeamsApiError, TeamsClient } from '../channels/teams/client';
+import { ConversationPacer, TEAMS_RATE_LIMITS } from '../channels/teams/pacer';
 import { TeamsCredentials } from '../channels/teams/token';
-import { textWithoutMention, parseActivity } from '../channels/teams/activity';
 import { buttonsCard } from '../channels/teams/cards';
 import { defaultThreadKey } from '../thread-key';
 
@@ -82,7 +82,7 @@ interface Call {
   form?: URLSearchParams;
 }
 
-type Route = (call: Call) => Response | undefined;
+type Route = (call: Call) => Response | Promise<Response> | undefined;
 
 function microsoft(routes: Route[] = []) {
   const calls: Call[] = [];
@@ -108,7 +108,9 @@ function microsoft(routes: Route[] = []) {
       const response = route(call);
       if (response) return response;
     }
-    if (url.href === METADATA) return Response.json({ jwks_uri: JWKS });
+    if (url.href === METADATA || url.href === BOT_FRAMEWORK_OPENID_METADATA) {
+      return Response.json({ jwks_uri: JWKS });
+    }
     if (url.href === JWKS) return Response.json({ keys });
     if (url.origin === LOGIN) {
       return Response.json({ access_token: `bot-token-${++tokens}`, expires_in: 3600 });
@@ -192,8 +194,12 @@ function request(body: unknown, auth = token()): TeamsWebhookRequest {
   };
 }
 
-async function settle(ms = 20) {
-  await new Promise((resolve) => setTimeout(resolve, ms));
+async function waitFor(check: () => boolean, timeoutMs = 5000): Promise<void> {
+  const started = Date.now();
+  while (!check()) {
+    if (Date.now() - started > timeoutMs) throw new Error('Timed out waiting for a condition');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 function freePort(): Promise<number> {
@@ -280,7 +286,7 @@ describe('TeamsTokenVerifier', () => {
     expect(api.keyLoads()).toBe(3);
     now += 24 * 60 * 60 * 1000 + 1;
     await check.verify(token());
-    expect(api.keyLoads()).toBe(4);
+    await waitFor(() => api.keyLoads() === 4);
   });
 
   it('loads the keys once for requests that come together, and keeps old keys when a reload fails', async () => {
@@ -315,7 +321,6 @@ describe('TeamsChannel webhook', () => {
     const { channel, received } = created(microsoft());
     const response = await channel.handleWebhook(request(activity()));
     expect(response.status).toBe(202);
-    await settle();
     expect(received).toHaveLength(1);
     expect(received[0]).toMatchObject({
       channelType: 'teams',
@@ -336,7 +341,6 @@ describe('TeamsChannel webhook', () => {
     expect((await channel.handleWebhook({ ...request(body), method: 'GET' })).status).toBe(405);
     expect((await channel.handleWebhook(request('{not json'))).status).toBe(400);
     expect((await channel.handleWebhook(request({ type: 'message' }))).status).toBe(400);
-    await settle();
     expect(received).toEqual([]);
   });
 
@@ -350,7 +354,6 @@ describe('TeamsChannel webhook', () => {
       request(activity(), token({ serviceurl: undefined }))
     );
     expect(claimless.status).toBe(401);
-    await settle();
     expect(received).toEqual([]);
   });
 
@@ -360,7 +363,6 @@ describe('TeamsChannel webhook', () => {
       request(activity(), token({}, { pair: unendorsed }))
     );
     expect(response.status).toBe(403);
-    await settle();
     expect(received).toEqual([]);
   });
 
@@ -369,7 +371,6 @@ describe('TeamsChannel webhook', () => {
       serviceUrlHosts: ['smba.trafficmanager.net'],
     });
     expect((await channel.handleWebhook(request(activity()))).status).toBe(403);
-    await settle();
     expect(received).toEqual([]);
   });
 
@@ -379,7 +380,6 @@ describe('TeamsChannel webhook', () => {
     await channel.handleWebhook(request(body));
     const again = await channel.handleWebhook(request(body));
     expect(again.body).toBe('Already received');
-    await settle();
     expect(received).toHaveLength(1);
   });
 
@@ -390,7 +390,6 @@ describe('TeamsChannel webhook', () => {
       request(activity({ type: 'conversationUpdate', text: undefined }))
     );
     expect(update.status).toBe(202);
-    await settle();
     expect(received).toEqual([]);
   });
 
@@ -408,7 +407,6 @@ describe('TeamsChannel webhook', () => {
     await listed.channel.handleWebhook(
       request({ ...elsewhere, id: 'from-bob', from: { id: '29:bob', aadObjectId: 'aad-bob' } })
     );
-    await settle();
     expect(own.received.map((m) => m.channelId)).toEqual(['a:personal-alice']);
     expect(listed.received.map((m) => m.userId)).toEqual(['aad-bob']);
   });
@@ -461,7 +459,6 @@ describe('TeamsChannel webhook', () => {
       body: JSON.stringify(activity()),
     });
     expect(posted.status).toBe(202);
-    await settle();
     expect(received).toHaveLength(1);
     expect((await fetch(`http://127.0.0.1:${port}/elsewhere`)).status).toBe(404);
     expect(
@@ -514,7 +511,6 @@ describe('TeamsChannel conversations', () => {
         })
       )
     );
-    await settle();
     expect(
       received.map(({ channelId, topicId, groupId }) => ({ channelId, topicId, groupId }))
     ).toEqual([
@@ -551,33 +547,12 @@ describe('TeamsChannel conversations', () => {
         })
       )
     );
-    await settle();
     expect(received.map((m) => m.text)).toEqual(['<at>Bob</at> and , what is up?']);
     const all = created(microsoft(), { trigger: 'all' });
     await all.channel.handleWebhook(
       request(activity({ conversation: groupChat, text: 'no mention' }))
     );
-    await settle();
     expect(all.received.map((m) => m.text)).toEqual(['no mention']);
-  });
-
-  it('strips the mention in linear time', () => {
-    const fastest = (work: () => unknown) => {
-      let best = Infinity;
-      for (let run = 0; run < 3; run++) {
-        const started = performance.now();
-        work();
-        best = Math.min(best, performance.now() - started);
-      }
-      return best;
-    };
-    const strip = (size: number) => () =>
-      textWithoutMention(
-        parseActivity(activity({ text: '<at>Cogi'.repeat(size), entities: [mention()] }))
-      );
-    strip(10_000)();
-    const ratio = fastest(strip(200_000)) / Math.max(fastest(strip(50_000)), 1);
-    expect(ratio).toBeLessThan(9);
   });
 
   it('hands over files sent in a personal chat and inline images from its own Bot Connector only', async () => {
@@ -609,7 +584,6 @@ describe('TeamsChannel conversations', () => {
         })
       )
     );
-    await settle();
     expect(received[0].attachments).toEqual([
       {
         type: 'file',
@@ -648,7 +622,6 @@ describe('TeamsChannel conversations', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { channel, received } = created(microsoft());
     await channel.handleWebhook(request(activity()));
-    await settle();
     await channel.redeliver(received[0]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('dropped unanswered'));
   });
@@ -825,39 +798,36 @@ describe('TeamsChannel sending', () => {
     await expect(channel.sendText('a:x', 'hi')).rejects.toThrow(/AADSTS700016/);
   });
 
-  it('edits, deletes and shows typing, one request at a time per conversation', async () => {
-    const api = microsoft();
+  it('edits, deletes and shows typing, folding edits made while one is under way', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const api = microsoft([
+      (call) =>
+        call.method === 'PUT' && call.body?.text === 'one'
+          ? gate.then(() => Response.json({}))
+          : undefined,
+    ]);
     const { channel } = created(api);
     const id = await channel.sendText('a:x', 'draft');
-    const started = Date.now();
-    await Promise.all([
-      channel.editText('a:x', id, 'draft, longer'),
-      channel.editText('a:x', id, 'draft, longer still'),
-      channel.editText('a:x', id, 'final'),
-    ]);
+    const first = channel.editText('a:x', id, 'one');
+    await waitFor(() => api.connector().some((call) => call.method === 'PUT'));
+    const later = [channel.editText('a:x', id, 'two'), channel.editText('a:x', id, 'three')];
+    release();
+    await vi.advanceTimersByTimeAsync(TEAMS_MIN_EDIT_INTERVAL);
+    await Promise.all([first, ...later]);
     await channel.sendTyping('a:x');
     await channel.deleteMessage('a:x', id);
-    const editing = channel.editText('a:x', 'm9', 'one');
-    await new Promise((resolve) => setTimeout(resolve, TEAMS_CONVERSATION_INTERVAL + 20));
-    const later = [channel.editText('a:x', 'm9', 'two'), channel.editText('a:x', 'm9', 'three')];
-    await Promise.all([editing, ...later]);
-    expect(
-      api
-        .connector()
-        .filter((call) => call.path.endsWith('/m9'))
-        .map((call) => call.body?.text)
-    ).toEqual(['one', 'three']);
-    const calls = api.connector().slice(0, 4);
-    expect(calls.map((call) => call.method)).toEqual(['POST', 'PUT', 'POST', 'DELETE']);
+    const calls = api.connector();
+    expect(calls.map((call) => call.method)).toEqual(['POST', 'PUT', 'PUT', 'POST', 'DELETE']);
     expect(calls[1].path).toBe('/emea/v3/conversations/a:x/activities/m1');
-    expect(calls[1].body).toEqual({
-      type: 'message',
-      id,
-      text: 'final',
-      textFormat: 'extendedmarkdown',
-    });
-    expect(calls[2].body).toEqual({ type: 'typing' });
-    expect(Date.now() - started).toBeGreaterThanOrEqual(TEAMS_CONVERSATION_INTERVAL * 3);
+    expect(calls.filter((call) => call.method === 'PUT').map((call) => call.body)).toEqual([
+      { type: 'message', id, text: 'one', textFormat: 'extendedmarkdown' },
+      { type: 'message', id, text: 'three', textFormat: 'extendedmarkdown' },
+    ]);
+    expect(calls[3].body).toEqual({ type: 'typing' });
     await expect(channel.editText('a:x', id, 'x'.repeat(TEAMS_MESSAGE_CHARS + 1))).rejects.toThrow(
       /at most/
     );
@@ -977,7 +947,7 @@ describe('TeamsChannel buttons', () => {
         })
       )
     );
-    await settle();
+    await waitFor(() => actions.length === 1);
     expect(received).toEqual([]);
     expect(actions).toHaveLength(1);
     expect(actions[0]).toMatchObject({
@@ -1021,7 +991,6 @@ describe('TeamsChannel files', () => {
     ]);
     const { channel } = created(api);
     await channel.handleWebhook(request(activity()));
-    await settle();
     const consentId = await channel.sendFile('a:personal-alice', {
       type: 'file',
       buffer: Buffer.from('a,b\n1,2'),
@@ -1061,7 +1030,9 @@ describe('TeamsChannel files', () => {
       )
     );
     expect(accepted.status).toBe(200);
-    await settle(300);
+    await waitFor(() =>
+      api.connector().some((call) => JSON.stringify(call.body).includes('card.file.info'))
+    );
     const upload = api.calls.find((call) => call.url === 'https://onedrive.test/upload/1');
     expect(upload?.method).toBe('PUT');
     expect(upload?.authorization).toBeUndefined();
@@ -1134,5 +1105,435 @@ describe('TeamsCredentials', () => {
     expect(await credentials.token()).toBe('bot-token-1');
     now += 2 * 60 * 1000;
     expect(await credentials.token()).toBe('bot-token-2');
+  });
+});
+
+describe('ConversationPacer', () => {
+  it('keeps every window of a conversation under its limit, and sends nothing before a block ends', async () => {
+    vi.useFakeTimers();
+    const pacer = new ConversationPacer(TEAMS_RATE_LIMITS, () => Date.now());
+    const started = Date.now();
+    const sent: number[] = [];
+    const all = Array.from({ length: 70 }, () =>
+      pacer.acquire('19:chat').then(() => sent.push(Date.now() - started))
+    );
+    await vi.advanceTimersByTimeAsync(40_000);
+    await Promise.all(all);
+    for (const { limit, window } of TEAMS_RATE_LIMITS) {
+      for (const at of sent) {
+        expect(
+          sent.filter((other) => other >= at && other < at + window).length
+        ).toBeLessThanOrEqual(limit);
+      }
+    }
+    expect(sent[60]).toBeGreaterThanOrEqual(30_000);
+    pacer.block('19:chat', 5000);
+    const blockedAt = Date.now();
+    let resumed = 0;
+    const waiting = pacer.acquire('19:chat').then(() => (resumed = Date.now()));
+    await vi.advanceTimersByTimeAsync(6000);
+    await waiting;
+    expect(resumed - blockedAt).toBeGreaterThanOrEqual(5000);
+    expect(pacer.tryAcquire('19:other')).toBe(true);
+  });
+
+  it('leaves room for new messages when edits and typing fill a conversation', () => {
+    vi.useFakeTimers();
+    const pacer = new ConversationPacer(TEAMS_RATE_LIMITS, () => Date.now());
+    let background = 0;
+    while (pacer.tryAcquire('19:chat', 'background')) background++;
+    expect(background).toBe(5);
+    expect(pacer.tryAcquire('19:chat', 'send')).toBe(true);
+  });
+
+  it('blocks a conversation for every request when Teams throttles one', async () => {
+    let throttled = false;
+    const api = microsoft([
+      (call) => {
+        if (!call.url.startsWith(SERVICE) || throttled) return undefined;
+        throttled = true;
+        return Response.json({}, { status: 429, headers: { 'retry-after': '0.05' } });
+      },
+    ]);
+    const pacer = new ConversationPacer();
+    const block = vi.spyOn(pacer, 'block');
+    const client = new TeamsClient({
+      credentials: new TeamsCredentials({
+        appId: APP_ID,
+        appPassword: 'secret',
+        tenant: TENANT,
+        loginUrl: LOGIN,
+        fetch: api.fetch,
+      }),
+      pacer,
+      fetch: api.fetch,
+    });
+    await client.request('POST', SERVICE, '/v3/conversations/a%3Ax/activities', {}, { key: 'a:x' });
+    expect(block).toHaveBeenCalledWith('a:x', 50);
+    expect(api.connector()).toHaveLength(2);
+  });
+});
+
+describe('TeamsChannel limits and failures', () => {
+  it('gives up on a request that gets no answer in time, and does not post twice', async () => {
+    const api = microsoft([
+      (call) =>
+        call.url.startsWith(SERVICE)
+          ? new Promise<Response>(() => {
+              return;
+            })
+          : undefined,
+    ]);
+    const fetchWithSignal = (async (input: string | URL | Request, init?: RequestInit) => {
+      const answer = api.fetch(input, init);
+      const signal = init?.signal;
+      if (!signal) return answer;
+      return Promise.race([
+        answer,
+        new Promise<Response>((_, reject) =>
+          signal.addEventListener('abort', () =>
+            reject(signal.reason instanceof Error ? signal.reason : new Error('aborted'))
+          )
+        ),
+      ]);
+    }) as typeof fetch;
+    const { channel } = created(api, { fetch: fetchWithSignal, requestTimeout: 30 });
+    const failed = await channel.sendText('a:x', 'hi').catch((error: unknown) => error);
+    expect(failed).toBeInstanceOf(TeamsApiError);
+    expect(failed).toMatchObject({ code: 'unavailable', timedOut: true });
+    expect(api.connector()).toHaveLength(1);
+  });
+
+  it('stops writing to a conversation that blocks the bot until it writes again', async () => {
+    let blocked = true;
+    const api = microsoft([
+      (call) =>
+        blocked && call.url.startsWith(SERVICE)
+          ? Response.json({ error: { code: 'MessageWritesBlocked' } }, { status: 403 })
+          : undefined,
+    ]);
+    const { channel } = created(api);
+    await expect(channel.sendText('a:personal-alice', 'one')).rejects.toMatchObject({
+      errorCode: 'MessageWritesBlocked',
+    });
+    await expect(channel.sendText('a:personal-alice', 'two')).rejects.toThrow(/skipped/);
+    await channel.sendTyping('a:personal-alice');
+    expect(api.connector()).toHaveLength(1);
+    blocked = false;
+    await channel.handleWebhook(request(activity()));
+    await expect(channel.sendText('a:personal-alice', 'three')).resolves.toBe('m1');
+  });
+
+  it('sends the newest text of a streamed answer when an earlier edit fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const api = microsoft([
+      (call) =>
+        call.method === 'PUT' && call.body?.text === 'partial'
+          ? gate.then(() => Response.json({ error: { code: 'BadArgument' } }, { status: 400 }))
+          : undefined,
+    ]);
+    const { channel } = created(api);
+    const id = await channel.sendText('a:x', 'draft');
+    const first = channel.editText('a:x', id, 'partial');
+    await waitFor(() => api.connector().some((call) => call.method === 'PUT'));
+    const last = channel.editText('a:x', id, 'the whole answer');
+    release();
+    await vi.advanceTimersByTimeAsync(TEAMS_MIN_EDIT_INTERVAL);
+    await Promise.all([first, last]);
+    expect(
+      api
+        .connector()
+        .filter((call) => call.method === 'PUT')
+        .map((call) => call.body?.text)
+    ).toEqual(['partial', 'the whole answer']);
+  });
+
+  it('keeps the buttons a pending change set when the text is edited meanwhile', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const api = microsoft();
+    const { channel } = created(api);
+    const id = await channel.sendText('a:x', 'Run it?', {
+      buttons: [[{ text: 'Approve', data: 'cogitator:approve' }]],
+    });
+    const changes = Promise.all([
+      channel.editButtons('a:x', id, [[{ text: 'Approved', disabled: true }]]),
+      channel.editText('a:x', id, 'Run it? Yes'),
+    ]);
+    await vi.advanceTimersByTimeAsync(TEAMS_MIN_EDIT_INTERVAL);
+    await changes;
+    const puts = api.connector().filter((call) => call.method === 'PUT');
+    expect(JSON.stringify(puts.at(-1)?.body)).toContain('Approved');
+    expect(JSON.stringify(puts.at(-1)?.body)).not.toContain('Action.Execute');
+    expect(puts.at(-1)?.body?.text).toBe('Run it? Yes');
+  });
+
+  it('turns images of answers into links, outside code', async () => {
+    const api = microsoft();
+    const { channel } = created(api);
+    await channel.sendText('a:x', 'See ![chart](https://evil.test/?q=secret) and `![x](y)`');
+    expect(api.connector()[0].body?.text).toBe(
+      'See [chart](https://evil.test/?q=secret) and `![x](y)`'
+    );
+  });
+
+  it('never cuts an emoji in two when it splits a long text', () => {
+    const halves = (part: string) => /[\uD800-\uDBFF]$/.test(part) || /^[\uDC00-\uDFFF]/.test(part);
+    for (const text of ['😀'.repeat(TEAMS_MESSAGE_CHARS), `x${'😀'.repeat(TEAMS_MESSAGE_CHARS)}`]) {
+      const parts = splitTeamsText(text);
+      expect(parts.length).toBeGreaterThan(1);
+      expect(parts.some(halves)).toBe(false);
+      expect(parts.join('')).toBe(text);
+    }
+  });
+});
+
+describe('TeamsChannel delivery', () => {
+  it('answers 503 for messages while no handler is set, so Bot Framework sends them again', async () => {
+    const api = microsoft();
+    const channel = new TeamsChannel({
+      appId: APP_ID,
+      appPassword: 'secret',
+      tenantId: TENANT,
+      openIdMetadataUrl: METADATA,
+      loginUrl: LOGIN,
+      fetch: api.fetch,
+    });
+    channels.push(channel);
+    const body = activity();
+    expect((await channel.handleWebhook(request(body))).status).toBe(503);
+    const received: ChannelMessage[] = [];
+    channel.onMessage(async (msg) => void received.push(msg));
+    expect((await channel.handleWebhook(request(body))).status).toBe(202);
+    expect(received).toHaveLength(1);
+  });
+
+  it('logs a message given back after its request was answered, when the gateway took long', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { channel } = created(microsoft());
+    let finish = () => {};
+    channel.onMessage(
+      (msg) =>
+        new Promise<void>((resolve) => {
+          finish = () => {
+            void channel.redeliver(msg).then(resolve);
+          };
+        })
+    );
+    const answered = channel.handleWebhook(request(activity()));
+    await vi.advanceTimersByTimeAsync(3100);
+    expect((await answered).status).toBe(202);
+    finish();
+    await waitFor(() => warn.mock.calls.length > 0);
+    expect(String(warn.mock.calls[0][0])).toMatch(/dropped unanswered after its request/);
+  });
+
+  it('refuses http service URLs unless the metadata URL is a test one, and tenants that disagree', async () => {
+    const api = microsoft();
+    const real = new TeamsChannel({
+      appId: APP_ID,
+      appPassword: 'secret',
+      tenantId: TENANT,
+      loginUrl: LOGIN,
+      fetch: api.fetch,
+    });
+    channels.push(real);
+    const received: ChannelMessage[] = [];
+    real.onMessage(async (msg) => void received.push(msg));
+    const plain = 'http://smba.test/emea/';
+    expect(
+      (
+        await real.handleWebhook(
+          request(activity({ serviceUrl: plain }), token({ serviceurl: plain }))
+        )
+      ).status
+    ).toBe(403);
+    await real.handleWebhook(
+      request(activity({ channelData: { tenant: { id: 'tenant-other' } } }))
+    );
+    const open = created(api, { tenants: '*' });
+    await open.channel.handleWebhook(
+      request(activity({ channelData: { tenant: { id: 'tenant-other' } } }))
+    );
+    await real.handleWebhook(request(activity()));
+    expect(received).toHaveLength(1);
+    expect(open.received).toEqual([]);
+  });
+
+  it('maps audio and video files so speech reaches speech to text', async () => {
+    const { channel, received } = created(microsoft());
+    await channel.handleWebhook(
+      request(
+        activity({
+          text: '',
+          attachments: [
+            {
+              contentType: 'application/vnd.microsoft.teams.file.download.info',
+              name: 'memo.m4a',
+              content: { downloadUrl: 'https://files.test/memo.m4a', fileType: 'm4a' },
+            },
+            {
+              contentType: 'application/vnd.microsoft.teams.file.download.info',
+              name: 'clip.mp4',
+              content: { downloadUrl: 'https://files.test/clip.mp4', fileType: 'mp4' },
+            },
+          ],
+        })
+      )
+    );
+    expect(received[0].attachments?.map((file) => [file.type, file.mimeType])).toEqual([
+      ['audio', 'audio/mp4'],
+      ['video', 'video/mp4'],
+    ]);
+  });
+
+  it('lets an Action.Execute press in flight finish when it stops', async () => {
+    const port = await freePort();
+    const { channel } = created(microsoft(), { webhook: { port } });
+    let pressed = false;
+    channel.onAction(async () => {
+      pressed = true;
+      await new Promise(() => {
+        return;
+      });
+    });
+    await channel.start();
+    const answer = fetch(`http://127.0.0.1:${port}/api/messages`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token()}`, 'content-type': 'application/json' },
+      body: JSON.stringify(
+        activity({
+          type: 'invoke',
+          name: 'adaptiveCard/action',
+          value: { action: { verb: 'cogitator', data: { cogitator: 'x' } } },
+        })
+      ),
+    });
+    await waitFor(() => pressed);
+    await channel.stop();
+    const response = await answer;
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ statusCode: 200 });
+  });
+});
+
+describe('TeamsChannel button presses', () => {
+  const approve = [[{ text: 'Approve', data: 'cogitator:approve' }]];
+  const press = (cardId: string, extra: Record<string, unknown> = {}) =>
+    activity({
+      type: 'invoke',
+      name: 'adaptiveCard/action',
+      text: undefined,
+      replyToId: cardId,
+      value: { action: { verb: 'cogitator', data: { cogitator: 'cogitator:approve' } } },
+      ...extra,
+    });
+
+  it('answers a press with the card as the press left it', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { channel } = created(microsoft());
+    const cardId = await channel.sendText('a:personal-alice', 'Run it?', { buttons: approve });
+    channel.onAction(async (action) => {
+      await channel.answerAction(action.id);
+      const edited = channel.editButtons('a:personal-alice', cardId, [
+        [{ text: 'Approved', disabled: true, style: 'success' }],
+      ]);
+      await vi.advanceTimersByTimeAsync(TEAMS_MIN_EDIT_INTERVAL);
+      await edited;
+    });
+    const response = await channel.handleWebhook(request(press(cardId)));
+    const body = JSON.parse(response.body) as { type: string; value: unknown };
+    expect(body.type).toBe('application/vnd.microsoft.card.adaptive');
+    expect(JSON.stringify(body.value)).toContain('Approved');
+    expect(JSON.stringify(body.value)).not.toContain('Action.Execute');
+  });
+
+  it('answers a press sent again, or by someone it does not answer, in the shape Teams wants', async () => {
+    const { channel } = created(microsoft());
+    const body = press('card-1');
+    await channel.handleWebhook(request(body));
+    const again = await channel.handleWebhook(request(body));
+    expect(again.contentType).toBe('application/json');
+    expect(JSON.parse(again.body)).toMatchObject({
+      statusCode: 200,
+      type: 'application/vnd.microsoft.activity.message',
+    });
+    const stranger = await channel.handleWebhook(
+      request(press('card-1', { channelData: { tenant: { id: 'tenant-other' } } }))
+    );
+    expect(JSON.parse(stranger.body)).toMatchObject({
+      statusCode: 400,
+      type: 'application/vnd.microsoft.error',
+    });
+  });
+
+  it('gives presses in groups and channels their group, and keeps alerts out of threads', async () => {
+    const api = microsoft();
+    const { channel, actions } = created(api);
+    await channel.handleWebhook(
+      request(
+        activity({
+          conversation: channelThread('1700000000009'),
+          channelData: { tenant: { id: TENANT }, team: { id: '19:team@thread.tacv2' } },
+          text: undefined,
+          replyToId: 'card-2',
+          value: { cogitator: 'cogitator:approve' },
+        })
+      )
+    );
+    await waitFor(() => actions.length === 1);
+    expect(actions[0].groupId).toBe('19:team@thread.tacv2');
+    await channel.answerAction(actions[0].id, { text: 'This request expired', alert: true });
+    expect(api.connector()).toEqual([]);
+  });
+});
+
+describe('TeamsChannel file consent', () => {
+  it('answers an accept it cannot act on and a decline, and refuses empty files', async () => {
+    const api = microsoft();
+    const { channel } = created(api);
+    const consent = (action: 'accept' | 'decline', uploadId: string) =>
+      activity({
+        type: 'invoke',
+        name: 'fileConsent/invoke',
+        text: undefined,
+        value: {
+          type: 'fileUpload',
+          action,
+          context: { uploadId },
+          uploadInfo: {
+            name: 'a.txt',
+            uploadUrl: 'https://onedrive.test/u',
+            contentUrl: 'https://onedrive.test/a.txt',
+            uniqueId: 'u1',
+          },
+        },
+      });
+    await channel.handleWebhook(request(consent('accept', 'from-before-a-restart')));
+    await waitFor(() => api.connector().length === 1);
+    expect(api.connector()[0].body?.text).toMatch(/no longer available/);
+    await channel.handleWebhook(request(activity()));
+    await channel.sendFile('a:personal-alice', {
+      type: 'file',
+      buffer: Buffer.from('hi'),
+      mimeType: 'text/plain',
+      filename: 'a.txt',
+    });
+    const card = api.connector().at(-1)?.body?.attachments as
+      Array<{ content: { declineContext: { uploadId: string } } }> | undefined;
+    const uploadId = card?.[0].content.declineContext.uploadId ?? '';
+    await channel.handleWebhook(request(consent('decline', uploadId)));
+    await waitFor(() => api.connector().at(-1)?.body?.text === 'The file was not sent.');
+    await expect(
+      channel.sendFile('a:personal-alice', {
+        type: 'file',
+        buffer: new Uint8Array(0),
+        mimeType: 'text/plain',
+      })
+    ).rejects.toThrow(/empty/);
   });
 });

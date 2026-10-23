@@ -120,6 +120,11 @@ export interface ChannelAction {
   readonly channelId: string;
   readonly userId: string;
   userName?: string;
+  /**
+   * The group the button was pressed in (`ChannelMessage.groupId`): set in group chats and
+   * channels, so a press is checked by the group policy like a message there
+   */
+  groupId?: string;
   /** The message the button is under */
   messageId?: string;
   /** The topic of the message the button is under (`ChannelMessage.topicId`) */
