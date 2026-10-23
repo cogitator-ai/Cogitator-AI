@@ -54,7 +54,7 @@
   },
   "devDependencies": {
     "@atproto/api": "0.24.0",
-    "@types/node": "^22.20.4",
+    "@types/node": "^26.6.5",
     "@types/nodemailer": "^8.0.2",
     "@types/ws": "^8.18.2",
     "@whiskeysockets/baileys": "7.0.0-rc14",
