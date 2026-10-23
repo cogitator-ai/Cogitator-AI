@@ -1300,6 +1300,15 @@ describe('TeamsChannel limits and failures', () => {
       ['\\![not an image](u)', '\\![not an image](u)'],
       ['`span\n![i](u)` over two lines', '`span\n![i](u)` over two lines'],
       ['`open\n\n![j](u)` in the next paragraph', '`open\n\n[j](u)` in the next paragraph'],
+      ['`\n- ![l](https://e/?q=s)`', '`\n- [l](https://e/?q=s)`'],
+      ['`\n1. ![m](u)`', '`\n1. [m](u)`'],
+      ['`\n# ![n](u)\n`', '`\n# [n](u)\n`'],
+      ['`\n> ![o](u)`', '`\n> [o](u)`'],
+      ['`a\n***\n![p](u)`', '`a\n***\n[p](u)`'],
+      [
+        '- item `code\n  ![q](u)` still one paragraph',
+        '- item `code\n  ![q](u)` still one paragraph',
+      ],
     ];
     for (const [input, expected] of cases) expect(imagesAsLinks(input)).toBe(expected);
     const hostile = `x${'`'.repeat(100_000)}![k](u)${'`` '.repeat(50_000)}`;

@@ -76,6 +76,46 @@ function rewriteProse(prose: string): string {
   return out;
 }
 
+/**
+ * How `line` starts a block that ends the paragraph before it: a list item, heading, block
+ * quote, thematic break or HTML block. `single` blocks (headings, breaks) end on their own line.
+ * Splitting more often than CommonMark does only protects less as code, which stays safe.
+ */
+function blockStart(line: string): 'single' | 'open' | undefined {
+  let at = 0;
+  while (at < 3 && line[at] === ' ') at++;
+  const first = line[at];
+  const after = (index: number) =>
+    index >= line.length || line[index] === ' ' || line[index] === '\t';
+  if (first === '>' || first === '<') return 'open';
+  if (first === '#') {
+    let level = at;
+    while (level < line.length && line[level] === '#') level++;
+    return level - at <= 6 && after(level) ? 'single' : undefined;
+  }
+  if (first === '-' || first === '*' || first === '_') {
+    let marks = 0;
+    let onlyMarks = true;
+    for (let i = at; i < line.length; i++) {
+      if (line[i] === first) marks++;
+      else if (line[i] !== ' ' && line[i] !== '\t') {
+        onlyMarks = false;
+        break;
+      }
+    }
+    if (onlyMarks && marks >= 3) return 'single';
+    return first !== '_' && after(at + 1) ? 'open' : undefined;
+  }
+  if (first === '+') return after(at + 1) ? 'open' : undefined;
+  let digits = at;
+  while (digits < line.length && digits - at < 9 && line[digits] >= '0' && line[digits] <= '9')
+    digits++;
+  if (digits > at && (line[digits] === '.' || line[digits] === ')') && after(digits + 1)) {
+    return 'open';
+  }
+  return undefined;
+}
+
 function rewriteParagraph(paragraph: string): string {
   let out = '';
   let from = 0;
@@ -119,7 +159,10 @@ export function imagesAsLinks(text: string): string {
       out.push(line);
       continue;
     }
+    const block = blockStart(line);
+    if (block) flush();
     paragraph.push(line);
+    if (block === 'single') flush();
   }
   flush();
   return out.join('\n');
