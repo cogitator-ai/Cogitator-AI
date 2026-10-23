@@ -143,15 +143,34 @@ describe('TwilioMediaStream', () => {
       expect(digits).toEqual(['7']);
     });
 
-    it('reports malformed JSON and events, and ignores unknown events', async () => {
+    it('ignores unknown events', async () => {
+      const { socket, errors } = await started();
+      socket.receive({ event: 'something-new', streamSid: STREAM_SID });
+      expect(errors).toEqual([]);
+      expect(socket.closed).toBeNull();
+    });
+
+    it('closes the stream on malformed JSON with 1008', async () => {
       const { socket, errors } = await started();
       socket.emit('message', Buffer.from('{oops'), false);
+      expect(socket.closed?.code).toBe(1008);
+      expect(errors[0]?.message).toContain('invalid JSON');
+    });
+
+    it('closes the stream on a malformed event with 1008', async () => {
+      const { socket, stream } = await started();
+      const audio = vi.fn();
+      stream.on('audio', audio);
       socket.receive({ event: 'media', streamSid: STREAM_SID, media: {} });
-      socket.receive({ event: 'something-new', streamSid: STREAM_SID });
-      expect(errors.map((e) => e.message)).toEqual([
-        expect.stringContaining('Invalid JSON'),
-        expect.stringContaining('Malformed Twilio media event'),
-      ]);
+      socket.receive(media(Buffer.from([1])));
+      expect(socket.closed?.code).toBe(1008);
+      expect(audio).not.toHaveBeenCalled();
+    });
+
+    it('closes the stream on a binary frame with 1003', async () => {
+      const { socket } = await started();
+      socket.emit('message', Buffer.from([1, 2, 3]), true);
+      expect(socket.closed?.code).toBe(1003);
     });
 
     it('refuses a media format other than μ-law at 8 kHz', () => {
@@ -205,10 +224,48 @@ describe('TwilioMediaStream', () => {
       expect(audio).toEqual([Buffer.from([2])]);
     });
 
-    it('refuses a second start', async () => {
-      const { socket, errors } = await started();
-      socket.receive(startEvent());
-      expect(errors.map((e) => e.message)).toContain('Twilio media stream started twice');
+    it('closes the stream on a second start, also while the first is being checked', async () => {
+      const first = await started();
+      first.socket.receive(startEvent());
+      expect(first.socket.closed?.code).toBe(1008);
+      expect(first.errors.map((e) => e.message)).toContain(
+        'Twilio media stream closed: started twice'
+      );
+
+      const authorize = vi.fn(() => new Promise<boolean>(() => {}));
+      const second = setup({ authorize });
+      second.socket.receive(startEvent());
+      second.socket.receive(startEvent());
+      expect(authorize).toHaveBeenCalledTimes(1);
+      expect(second.socket.closed?.code).toBe(1008);
+    });
+
+    it('closes a socket that sends no start in time', async () => {
+      vi.useFakeTimers();
+      try {
+        const { socket, stream } = setup({ startTimeout: 1_000 });
+        socket.receive({ event: 'connected', protocol: 'Call', version: '1.0.0' });
+        vi.advanceTimersByTime(999);
+        expect(socket.closed).toBeNull();
+        vi.advanceTimersByTime(1);
+        expect(socket.closed?.code).toBe(1008);
+        expect(stream.start).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('keeps a stream that started in time', async () => {
+      vi.useFakeTimers();
+      try {
+        const { socket, stream } = setup({ startTimeout: 1_000 });
+        socket.receive(startEvent());
+        await vi.waitFor(() => expect(stream.start).not.toBeNull());
+        vi.advanceTimersByTime(5_000);
+        expect(socket.closed).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
@@ -317,6 +374,40 @@ describe('TwilioMediaStream', () => {
       expect(stopped).toHaveBeenCalledTimes(1);
       expect(socket.closed?.code).toBe(1000);
       await expect(stream.mark()).resolves.toBe(false);
+    });
+
+    it('counts a mark whose echo does not come in time as not played', async () => {
+      vi.useFakeTimers();
+      try {
+        const { stream } = await started({ markTimeoutMargin: 1_000 });
+        stream.sendAudio(Buffer.alloc(1600));
+        let played: boolean | undefined;
+        void stream.mark().then((value) => (played = value));
+        await vi.advanceTimersByTimeAsync(1_199);
+        expect(played).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(played).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('waits longer for a mark behind more queued audio', async () => {
+      vi.useFakeTimers();
+      try {
+        const { socket, stream } = await started({ markTimeoutMargin: 1_000 });
+        stream.sendAudio(Buffer.alloc(8000 * 5));
+        let played: boolean | undefined;
+        const pending = stream.mark((value) => (played = value));
+        await vi.advanceTimersByTimeAsync(5_500);
+        expect(played).toBeUndefined();
+        const name = (socket.sent.at(-1)!.mark as { name: string }).name;
+        socket.receive({ event: 'mark', streamSid: STREAM_SID, mark: { name } });
+        expect(played).toBe(true);
+        await expect(pending).resolves.toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('drops pending marks when the socket closes', async () => {

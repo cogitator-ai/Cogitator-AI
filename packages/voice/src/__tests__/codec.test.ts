@@ -9,7 +9,26 @@ import {
   pcm16ToMulaw,
 } from '../codec';
 
+/** The μ-law compressor of the ITU-T G.191 software tools (`ulaw_compress`), on 16-bit input */
+function itu191Compress(sample: number): number {
+  let absno = sample < 0 ? (~sample >> 2) + 33 : (sample >> 2) + 33;
+  if (absno > 0x1fff) absno = 0x1fff;
+  let segno = 1;
+  for (let i = absno >> 6; i !== 0; i >>= 1) segno++;
+  const high = 0x8 - segno;
+  const low = 0xf - ((absno >> segno) & 0xf);
+  return ((high << 4) | low | (sample >= 0 ? 0x80 : 0)) & 0xff;
+}
+
 describe('G.711 μ-law', () => {
+  it('encodes every 16-bit sample like the ITU-T G.191 reference', () => {
+    let mismatches = 0;
+    for (let sample = -32768; sample <= 32767; sample++) {
+      if (linearToMulaw(sample) !== itu191Compress(sample)) mismatches++;
+    }
+    expect(mismatches).toBe(0);
+  });
+
   it('encodes the reference values', () => {
     expect(linearToMulaw(0)).toBe(MULAW_SILENCE);
     expect(linearToMulaw(-1)).toBe(0x7f);

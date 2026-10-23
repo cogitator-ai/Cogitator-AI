@@ -28,6 +28,17 @@ interface OpenAIRealtimeEvents {
   error: [error: Error];
 }
 
+/** The assistant audio item being played, placed on the timeline of all audio emitted */
+interface AudioItem {
+  itemId: string;
+  contentIndex: number;
+  /** Where the item starts on the session's audio timeline, in ms */
+  start: number;
+  /** How much audio of the item was emitted, in ms */
+  ms: number;
+  truncated: boolean;
+}
+
 interface FunctionCallItem {
   name: string;
   callId: string;
@@ -62,6 +73,8 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
   private connected = false;
   private responseActive = false;
   private calls: AbortController | null = null;
+  private audioItem: AudioItem | null = null;
+  private emittedMs = 0;
 
   constructor(config: RealtimeSessionConfig) {
     super();
@@ -161,6 +174,26 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
     this.send({ type: 'response.cancel' });
   }
 
+  /**
+   * Tells the model how much of its answer the listener heard: `playedMs` is a position on the
+   * timeline of all the audio this adapter emitted. When the latest audio item was not played to
+   * its end, it is truncated there (`conversation.item.truncate`), so the conversation keeps
+   * only what was heard.
+   */
+  truncate(playedMs: number): void {
+    const item = this.audioItem;
+    if (!item || item.truncated) return;
+    const end = Math.max(0, Math.floor(playedMs - item.start));
+    if (end >= Math.floor(item.ms)) return;
+    item.truncated = true;
+    this.send({
+      type: 'conversation.item.truncate',
+      item_id: item.itemId,
+      content_index: item.contentIndex,
+      audio_end_ms: end,
+    });
+  }
+
   close(): void {
     const ws = this.ws;
     this.connected = false;
@@ -229,7 +262,9 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
           );
           break;
         }
-        this.emit('audio', Buffer.from(delta, 'base64'));
+        const audio = Buffer.from(delta, 'base64');
+        this.trackAudio(event, audio.length);
+        this.emit('audio', audio);
         break;
       }
 
@@ -268,6 +303,22 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
         break;
       }
     }
+  }
+
+  private trackAudio(event: Record<string, unknown>, bytes: number): void {
+    const ms = bytes / (this.config.audioFormat === 'pcmu' ? 8 : 48);
+    const itemId = typeof event.item_id === 'string' ? event.item_id : undefined;
+    if (itemId !== undefined && this.audioItem?.itemId !== itemId) {
+      this.audioItem = {
+        itemId,
+        contentIndex: typeof event.content_index === 'number' ? event.content_index : 0,
+        start: this.emittedMs,
+        ms: 0,
+        truncated: false,
+      };
+    }
+    if (this.audioItem && this.audioItem.itemId === itemId) this.audioItem.ms += ms;
+    this.emittedMs += ms;
   }
 
   private handleResponseDone(response: unknown): void {

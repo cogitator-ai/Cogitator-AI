@@ -6,6 +6,7 @@ import type {
   STTStreamOptions,
   TTSOptions,
   VADEvent,
+  VADProvider,
   VoicePipelineConfig,
   VoicePlayback,
   VoiceTurn,
@@ -119,7 +120,7 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
   readonly id: string;
   private readonly stt: VoicePipelineConfig['stt'];
   private readonly tts: VoicePipelineConfig['tts'];
-  private readonly vad: VoicePipelineConfig['vad'];
+  private readonly vad: VADProvider | undefined;
   private readonly agent: VoicePipelineConfig['agent'];
   private readonly ttsOptions: VoicePipelineConfig['ttsOptions'];
   private readonly input: RawAudioFormat | undefined;
@@ -142,7 +143,7 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
     this.id = options.sessionId ?? nanoid();
     this.stt = config.stt;
     this.tts = config.tts;
-    this.vad = config.vad;
+    this.vad = typeof config.vad === 'function' ? config.vad() : config.vad;
     this.agent = config.agent;
     this.ttsOptions = options.ttsOptions
       ? { ...config.ttsOptions, ...options.ttsOptions }
@@ -150,7 +151,7 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
     this.input = options.input;
     this.sttEncodesInput =
       this.input?.encoding !== 'mulaw' || (config.stt.streamEncodings ?? []).includes('mulaw');
-    const vadRate = config.vad?.sampleRate;
+    const vadRate = this.vad?.sampleRate;
     this.vadResampler =
       this.input && vadRate !== undefined && vadRate !== this.input.sampleRate
         ? new Resampler(this.input.sampleRate, vadRate)

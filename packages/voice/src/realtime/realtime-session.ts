@@ -114,6 +114,16 @@ export class RealtimeSession extends EventEmitter<RealtimeSessionEvents> {
     this.adapter.interrupt();
   }
 
+  /**
+   * Tells the model how much of its audio the listener heard, as a position in ms on the
+   * timeline of all the audio the session emitted. OpenAI truncates the answer being played
+   * there, Gemini drops an interrupted answer itself.
+   */
+  truncate(playedMs: number): void {
+    if (this._closed) return;
+    this.adapter.truncate(playedMs);
+  }
+
   close(): void {
     if (this._closed) return;
     this._closed = true;

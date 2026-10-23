@@ -138,4 +138,14 @@ describe('EnergyVAD', () => {
     const event = vad.process(generateSilence(480));
     expect(event.type).toBe('speech');
   });
+
+  it('clones with the same settings and a fresh state', () => {
+    const vad = new EnergyVAD({ threshold: 0.1, silenceDuration: 100, sampleRate: 8000 });
+    expect(vad.process(new Float32Array(160).fill(0.5)).type).toBe('speech_start');
+    const copy = vad.clone();
+    expect(copy.sampleRate).toBe(8000);
+    expect(copy.process(new Float32Array(160).fill(0.05)).type).toBe('silence');
+    expect(copy.process(new Float32Array(160).fill(0.5)).type).toBe('speech_start');
+    expect(vad.process(new Float32Array(160).fill(0.5)).type).toBe('speech');
+  });
 });

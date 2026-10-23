@@ -270,11 +270,13 @@ for (const target of targets) {
         await waitUntil(() => calls.length === 1, 5_000);
         await call.speak([...tone(200, 0), ...tone(600, 0.4), ...tone(700, 0)]);
 
-        await waitUntil(() => call!.marks().length >= 2, 90_000);
-        const [first, second] = call.marks();
+        await waitUntil(() => call!.marks().length >= 1, 90_000);
+        const [first] = call.marks();
         const heard = call.audioBefore(first);
         expect(heard.trim().length).toBeGreaterThan(0);
         call.echo(first!);
+        await waitUntil(() => call!.marks().length >= 2, 90_000);
+        const second = call.marks()[1];
         expect(call.audioBefore(second).length).toBeGreaterThan(heard.length);
         expect(call.frameSizes().every((size) => size > 0 && size <= FRAME)).toBe(true);
 

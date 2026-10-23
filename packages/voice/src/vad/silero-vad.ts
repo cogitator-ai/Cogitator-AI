@@ -25,6 +25,18 @@ interface OnnxRuntime {
 
 type ModelVersion = 'v4' | 'v5';
 
+interface SileroModel {
+  ort: OnnxRuntime;
+  session: OnnxSession;
+  version: ModelVersion;
+}
+
+/** The model the clones of one VAD share */
+interface SharedModel {
+  model?: SileroModel;
+  loading?: Promise<SileroModel>;
+}
+
 const V4_STATE_SIZE = 2 * 1 * 64;
 const V5_STATE_SIZE = 2 * 1 * 128;
 
@@ -32,10 +44,13 @@ const V5_STATE_SIZE = 2 * 1 * 128;
  * Silero VAD (ONNX). Supports both the v4 (`h`/`c` state) and v5 (`state`) model
  * signatures, detected from the model inputs. Audio of any length is accepted:
  * samples are buffered and evaluated in fixed-size frames (512 @ 16kHz, 256 @ 8kHz).
+ * `clone()` gives a VAD with its own state that shares the loaded model, one per session.
  */
 export class SileroVAD implements VADProvider {
   readonly name = 'silero';
 
+  private readonly config: SileroVADConfig;
+  private shared: SharedModel = {};
   private readonly modelPath: string;
   private readonly threshold: number;
   private readonly silenceDuration: number;
@@ -63,6 +78,7 @@ export class SileroVAD implements VADProvider {
     if (sampleRate !== 16000 && sampleRate !== 8000) {
       throw new Error(`SileroVAD: sampleRate must be 8000 or 16000, got ${sampleRate}`);
     }
+    this.config = config;
     this.modelPath = config.modelPath;
     this.threshold = config.threshold ?? 0.5;
     this.silenceDuration = config.silenceDuration ?? 500;
@@ -74,23 +90,29 @@ export class SileroVAD implements VADProvider {
 
   async init(): Promise<void> {
     if (this.session) return;
+    const shared = this.shared;
+    shared.loading ??= this.load().then(
+      (model) => (shared.model = model),
+      (err: unknown) => {
+        shared.loading = undefined;
+        throw err;
+      }
+    );
+    this.adopt(await shared.loading);
+  }
 
-    const moduleName = 'onnxruntime-node';
-    let ort: OnnxRuntime;
-    try {
-      ort = (await import(/* webpackIgnore: true */ moduleName)) as OnnxRuntime;
-    } catch {
-      throw new Error(
-        'onnxruntime-node is required for SileroVAD. Install it with: npm install onnxruntime-node'
-      );
+  /** A VAD with the same settings and a fresh state, sharing this one's loaded model */
+  clone(): SileroVAD {
+    const copy = new SileroVAD(this.config);
+    copy.shared = this.shared;
+    if (this.session && this.ort) {
+      copy.adopt({ ort: this.ort, session: this.session, version: this.version });
     }
-    const session = await ort.InferenceSession.create(this.modelPath);
-    this.version = session.inputNames?.includes('state') ? 'v5' : 'v4';
-    this.ort = ort;
-    this.session = session;
+    return copy;
   }
 
   async process(samples: Float32Array): Promise<VADEvent> {
+    if (!this.session && this.shared.model) this.adopt(this.shared.model);
     if (!this.session || !this.ort) {
       throw new Error('SileroVAD: must call init() before process()');
     }
@@ -136,9 +158,30 @@ export class SileroVAD implements VADProvider {
     this.pending = new Float32Array(0);
   }
 
+  private async load(): Promise<SileroModel> {
+    const moduleName = 'onnxruntime-node';
+    let ort: OnnxRuntime;
+    try {
+      ort = (await import(/* webpackIgnore: true */ moduleName)) as OnnxRuntime;
+    } catch {
+      throw new Error(
+        'onnxruntime-node is required for SileroVAD. Install it with: npm install onnxruntime-node'
+      );
+    }
+    const session = await ort.InferenceSession.create(this.modelPath);
+    return { ort, session, version: session.inputNames?.includes('state') ? 'v5' : 'v4' };
+  }
+
+  private adopt(model: SileroModel): void {
+    this.ort = model.ort;
+    this.session = model.session;
+    this.version = model.version;
+  }
+
   dispose(): void {
     this.session = null;
     this.ort = null;
+    this.shared = {};
     this.reset();
   }
 

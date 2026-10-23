@@ -62,6 +62,11 @@ export interface TwilioStreamOptions {
    * (or when it returns nothing) the key is only reported in the `dtmf` event
    */
   dtmfInput?: (digit: string, call: TwilioCall) => string | undefined;
+  /**
+   * Longest wait for the stream's authorized `start` after the socket opened, in ms (default
+   * 10 000). A socket that does not start in time is closed with 1008
+   */
+  startTimeout?: number;
 }
 
 export interface TwilioTransportConfig extends TwilioStreamOptions {
@@ -73,7 +78,13 @@ export interface TwilioTransportConfig extends TwilioStreamOptions {
   path?: string;
   /** Most concurrent streams (default 100) */
   maxConnections?: number;
+  /** Largest message Twilio may send, in bytes (default 64 KiB) */
+  maxPayload?: number;
 }
+
+const TWILIO_MAX_PAYLOAD = 64 * 1024;
+/** How often a realtime session marks its audio on a call, to learn how much was played */
+const REALTIME_MARK_INTERVAL_MS = 200;
 
 interface VoiceAgentEvents {
   session_start: [sessionId: string];
@@ -136,7 +147,7 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
   private readonly config: VoiceAgentConfig;
   private transport: WebSocketTransport | null = null;
   private twilioTransport: UpgradeTransport<TwilioMediaStream> | null = null;
-  private readonly waitingStreams = new Set<TwilioMediaStream>();
+  private readonly twilioStreams = new Set<TwilioMediaStream>();
   private readonly sessions = new Map<string, SessionEntry>();
   private pipeline: VoicePipeline | null = null;
   private readonly realtimeTools: RealtimeTool[] | undefined;
@@ -212,6 +223,7 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
       {
         path,
         maxConnections: config.maxConnections,
+        maxPayload: config.maxPayload ?? TWILIO_MAX_PAYLOAD,
         verifyClient: (req) =>
           verifyTwilioUpgrade(req, { authToken: config.authToken, streamUrl: config.streamUrl })
             ? true
@@ -225,7 +237,9 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
 
   /**
    * Serves one Twilio media stream on a WebSocket the caller accepted, for a server that handles
-   * the upgrade itself. Check the upgrade with `verifyTwilioUpgrade` before accepting it.
+   * the upgrade itself. Check the upgrade with `verifyTwilioUpgrade` before accepting it, and cap
+   * the connections and the message size (`maxPayload`) on your server. `close()` closes the
+   * socket too.
    */
   handleTwilio(ws: WebSocket, options: TwilioStreamOptions): TwilioMediaStream {
     return this.acceptTwilio(ws, options, this.prepareTwilio(options));
@@ -234,13 +248,14 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
   async close(): Promise<void> {
     const entries = [...this.sessions.entries()];
     this.sessions.clear();
-    for (const stream of this.waitingStreams) stream.close(1001, 'server shutting down');
-    this.waitingStreams.clear();
+    const streams = [...this.twilioStreams];
+    this.twilioStreams.clear();
 
     await Promise.allSettled(entries.map(([, entry]) => this.cleanupSession(entry)));
     for (const [id] of entries) {
       this.emit('session_end', id);
     }
+    for (const stream of streams) stream.close(1001, 'server shutting down');
 
     if (this.transport) {
       const transport = this.transport;
@@ -314,7 +329,13 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
     if (!options.tokens && !options.authorize) {
       throw new Error('Twilio streams need tokens or authorize to check each stream');
     }
-    return this.config.mode === 'pipeline' ? phoneOutput(this.config.tts!) : null;
+    if (this.config.mode !== 'pipeline') return null;
+    if (!this.config.vad) {
+      throw new Error(
+        'A pipeline VoiceAgent needs a vad to serve phone calls: Twilio never says when the caller stopped speaking'
+      );
+    }
+    return phoneOutput(this.config.tts!);
   }
 
   private acceptTwilio(
@@ -325,19 +346,23 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
     let grant: TwilioSessionGrant | undefined;
     const stream = new TwilioMediaStream(ws, {
       outbound: output?.outbound ?? TWILIO_AUDIO_FORMAT,
+      ...(options.startTimeout !== undefined && { startTimeout: options.startTimeout }),
       authorize: async (start) => {
         if (options.tokens) {
-          grant = options.tokens.consume(start.customParameters[TWILIO_SESSION_TOKEN_PARAMETER]);
+          grant = options.tokens.consume(
+            start.customParameters[TWILIO_SESSION_TOKEN_PARAMETER],
+            start.callSid
+          );
           if (!grant) return false;
         }
         return options.authorize ? options.authorize(start) : true;
       },
     });
-    this.waitingStreams.add(stream);
+    this.twilioStreams.add(stream);
     stream.on('error', (err) => this.reportError(err));
-    stream.once('close', () => this.waitingStreams.delete(stream));
+    stream.once('close', () => this.twilioStreams.delete(stream));
     stream.once('start', (start) => {
-      if (!this.waitingStreams.delete(stream)) return;
+      if (!this.twilioStreams.has(stream)) return;
       this.startCall(stream, start, grant, options, output);
     });
     return stream;
@@ -368,6 +393,7 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
     this.sessions.set(sessionId, entry);
     stream.on('close', () => this.endSession(entry));
 
+    let interruptRealtime: (() => void) | undefined;
     stream.on('dtmf', (digit) => {
       this.emit('dtmf', sessionId, digit);
       let text: string | undefined;
@@ -379,13 +405,16 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
       }
       if (!text || text.trim().length === 0) return;
       if (entry.pipelineSession) void entry.pipelineSession.sendText(text);
-      entry.realtimeSession?.sendText(text);
+      if (entry.realtimeSession) {
+        interruptRealtime?.();
+        entry.realtimeSession.sendText(text);
+      }
     });
 
     if (output) {
       this.setupPhonePipeline(entry, stream, output);
     } else {
-      this.setupPhoneRealtime(entry, stream);
+      interruptRealtime = this.setupPhoneRealtime(entry, stream);
     }
 
     this.emit('session_start', sessionId);
@@ -409,15 +438,42 @@ export class VoiceAgent extends EventEmitter<VoiceAgentEvents> {
     session.on('error', (err: Error) => this.reportError(err));
   }
 
-  private setupPhoneRealtime(entry: SessionEntry, stream: TwilioMediaStream): void {
+  /**
+   * Wires a realtime session to a call. The session's audio is marked every 200 ms and at the
+   * end of each turn, so the position of the last mark Twilio played is what the caller heard.
+   * When the caller speaks, the audio Twilio holds is cleared and the model's answer truncated
+   * at that position. Returns the interruption, for a key press that sends text.
+   */
+  private setupPhoneRealtime(entry: SessionEntry, stream: TwilioMediaStream): () => void {
     const session = this.createRealtimeSession(entry, 'pcmu');
+    let sentMs = 0;
+    let markedMs = 0;
+    let playedMs = 0;
+    const markPosition = () => {
+      const at = sentMs;
+      markedMs = at;
+      void stream.mark((played) => {
+        if (played) playedMs = Math.max(playedMs, at);
+      });
+    };
+    const interrupt = () => {
+      stream.clear();
+      session.truncate(playedMs);
+    };
+
     stream.on('audio', (chunk) => session.pushAudio(chunk));
-    session.on('audio', (chunk: Buffer) => stream.sendAudio(chunk));
-    session.on('speech_start', () => stream.clear());
-    session.on('turn_end', () => {
-      void stream.mark();
+    session.on('audio', (chunk: Buffer) => {
+      stream.sendAudio(chunk);
+      sentMs += chunk.length / (TWILIO_AUDIO_FORMAT.sampleRate / 1000);
+      if (sentMs - markedMs >= REALTIME_MARK_INTERVAL_MS) markPosition();
     });
+    session.on('speech_start', interrupt);
+    session.on('turn_end', markPosition);
     this.connectRealtime(entry, session);
+    return () => {
+      session.interrupt();
+      interrupt();
+    };
   }
 
   private handleControlMessage(entry: SessionEntry, msg: Record<string, unknown>): void {

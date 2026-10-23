@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { VoicePipeline } from '../../pipeline/voice-pipeline';
-import type { STTProvider, TTSProvider, VADProvider } from '../../types';
+import type { STTProvider, TTSProvider, VADEvent, VADProvider } from '../../types';
+import { float32ToPcm16 } from '../../audio';
 
 function createMockSTT(): STTProvider {
   return {
@@ -57,6 +58,88 @@ describe('VoicePipeline', () => {
     };
     const p = new VoicePipeline({ stt, tts, agent, vad, sampleRate: 48000 });
     expect(p).toBeInstanceOf(VoicePipeline);
+  });
+
+  describe('a VAD per session', () => {
+    /** Starts speaking on loud audio, and stays speaking until reset */
+    class LatchVAD implements VADProvider {
+      readonly name = 'latch';
+      speaking = false;
+      resets = 0;
+      process(samples: Float32Array): VADEvent {
+        if (this.speaking) return { type: 'speech', probability: 1 };
+        if (samples.some((s) => Math.abs(s) > 0.1)) {
+          this.speaking = true;
+          return { type: 'speech_start' };
+        }
+        return { type: 'silence' };
+      }
+      reset(): void {
+        this.speaking = false;
+        this.resets++;
+      }
+    }
+
+    const loud = float32ToPcm16(new Float32Array(160).fill(0.5));
+
+    it('gives each session a VAD from the factory', async () => {
+      const made: LatchVAD[] = [];
+      const p = new VoicePipeline({
+        stt,
+        tts,
+        agent,
+        vad: () => {
+          const vad = new LatchVAD();
+          made.push(vad);
+          return vad;
+        },
+      });
+      const first = p.createSession();
+      const second = p.createSession();
+      expect(made).toHaveLength(2);
+
+      const started = vi.fn();
+      second.on('speech_start', started);
+      first.pushAudio(loud);
+      await vi.waitFor(() => expect(made[0]!.speaking).toBe(true));
+      expect(made[1]!.speaking).toBe(false);
+      expect(started).not.toHaveBeenCalled();
+
+      first.interrupt();
+      expect(made[0]!.resets).toBe(1);
+      expect(made[1]!.resets).toBe(0);
+    });
+
+    it('clones an instance that can be cloned', () => {
+      const clones: LatchVAD[] = [];
+      const template = Object.assign(new LatchVAD(), {
+        clone: () => {
+          const vad = new LatchVAD();
+          clones.push(vad);
+          return vad;
+        },
+      });
+      const p = new VoicePipeline({ stt, tts, agent, vad: template });
+      p.createSession().pushAudio(loud);
+      p.createSession();
+      expect(clones).toHaveLength(2);
+      expect(template.speaking).toBe(false);
+    });
+
+    it('warns when sessions share a VAD without clone', () => {
+      const warn = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
+      try {
+        const p = new VoicePipeline({ stt, tts, agent, vad: new LatchVAD() });
+        p.createSession();
+        expect(warn).not.toHaveBeenCalled();
+        p.createSession();
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('no clone()'), {
+          code: 'COGITATOR_SHARED_VAD',
+        });
+      } finally {
+        warn.mockRestore();
+      }
+    });
   });
 
   describe('process()', () => {

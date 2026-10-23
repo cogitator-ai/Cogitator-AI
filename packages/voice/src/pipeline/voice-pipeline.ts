@@ -1,4 +1,4 @@
-import type { VoicePipelineConfig } from '../types.js';
+import type { VADProvider, VoicePipelineConfig } from '../types.js';
 import { PipelineSession, type PipelineSessionOptions } from './pipeline-session.js';
 
 export interface VoicePipelineResult {
@@ -9,6 +9,7 @@ export interface VoicePipelineResult {
 
 export class VoicePipeline {
   private readonly config: VoicePipelineConfig;
+  private sharedVADSessions = 0;
 
   constructor(config: VoicePipelineConfig) {
     this.config = config;
@@ -38,7 +39,27 @@ export class VoicePipeline {
     return { transcript, response, audio: outputAudio };
   }
 
+  /**
+   * A session with a VAD of its own: from the `vad` factory, or a `clone()` of the `vad`
+   * instance. An instance without `clone` is shared by every session, with a warning from the
+   * second session on.
+   */
   createSession(options?: PipelineSessionOptions): PipelineSession {
-    return new PipelineSession(this.config, options);
+    return new PipelineSession({ ...this.config, vad: this.sessionVAD() }, options);
+  }
+
+  private sessionVAD(): VADProvider | undefined {
+    const vad = this.config.vad;
+    if (vad === undefined) return undefined;
+    if (typeof vad === 'function') return vad();
+    if (vad.clone) return vad.clone();
+    if (++this.sharedVADSessions === 2) {
+      process.emitWarning(
+        `VAD "${vad.name}" has no clone(), so every session of the pipeline shares its state. ` +
+          'Pass a factory (vad: () => new MyVAD()) to give each session its own.',
+        { code: 'COGITATOR_SHARED_VAD' }
+      );
+    }
+    return vad;
   }
 }

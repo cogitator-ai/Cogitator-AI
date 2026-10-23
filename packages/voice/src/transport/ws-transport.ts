@@ -118,6 +118,7 @@ export class UpgradeTransport<TClient extends TransportClient> extends EventEmit
   private readonly path: string;
   private readonly maxConnections: number;
   private readonly verifyClient?: WebSocketTransportConfig['verifyClient'];
+  private readonly maxPayload: number | undefined;
   private wss: WebSocketServer | null = null;
   private server: http.Server | null = null;
   private ownsServer = false;
@@ -135,6 +136,7 @@ export class UpgradeTransport<TClient extends TransportClient> extends EventEmit
     this.path = config?.path ?? '/voice';
     this.maxConnections = config?.maxConnections ?? 100;
     this.verifyClient = config?.verifyClient;
+    this.maxPayload = config?.maxPayload;
   }
 
   async listen(port: number): Promise<void> {
@@ -192,7 +194,10 @@ export class UpgradeTransport<TClient extends TransportClient> extends EventEmit
   }
 
   private setupWss(server: http.Server): void {
-    this.wss = new WebSocketServer({ noServer: true });
+    this.wss = new WebSocketServer({
+      noServer: true,
+      ...(this.maxPayload !== undefined && { maxPayload: this.maxPayload }),
+    });
 
     this.upgradeHandler = (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
       let pathname: string;

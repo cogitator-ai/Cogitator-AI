@@ -35,7 +35,7 @@ const EXPONENT_TABLE = (() => {
 export function linearToMulaw(sample: number): number {
   let pcm = Math.max(-32768, Math.min(32767, Math.trunc(sample)));
   const sign = pcm < 0 ? 0x80 : 0;
-  if (sign) pcm = -pcm;
+  if (sign) pcm = ~pcm;
   if (pcm > MULAW_CLIP) pcm = MULAW_CLIP;
   pcm += MULAW_BIAS;
   const exponent = EXPONENT_TABLE[(pcm >> 7) & 0xff]!;

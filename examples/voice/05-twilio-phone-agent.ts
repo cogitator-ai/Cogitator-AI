@@ -72,7 +72,7 @@ async function main() {
     tts: elevenLabsKey
       ? new ElevenLabsTTS({ apiKey: elevenLabsKey })
       : new OpenAITTS({ apiKey: openaiKey! }),
-    vad: new EnergyVAD({ threshold: 0.02, sampleRate: 8000 }),
+    vad: () => new EnergyVAD({ threshold: 0.02, sampleRate: 8000 }),
     bargeIn: true,
   });
   voiceAgent.on('call_start', (call) =>
@@ -102,8 +102,12 @@ async function main() {
           res.writeHead(403).end();
           return;
         }
-        const from = new URLSearchParams(body).get('From') ?? 'unknown';
-        const twiml = twilioStreamTwiml({ url: streamUrl, token: tokens.issue({ from }) });
+        const params = new URLSearchParams(body);
+        const token = tokens.issue({
+          callSid: params.get('CallSid') ?? undefined,
+          metadata: { from: params.get('From') ?? 'unknown' },
+        });
+        const twiml = twilioStreamTwiml({ url: streamUrl, token });
         res.writeHead(200, { 'Content-Type': 'text/xml' }).end(twiml);
       })
       .catch(() => res.writeHead(400).end());

@@ -16,12 +16,22 @@ export interface TwilioStreamTwimlOptions {
   statusCallbackMethod?: 'GET' | 'POST';
 }
 
-/** True for a character XML 1.0 does not allow: control characters other than tab and newlines */
+/**
+ * True for a character XML 1.0 does not allow: control characters other than tab and newlines,
+ * U+FFFE and U+FFFF, and a surrogate without its pair
+ */
 function hasInvalidXmlChar(value: string): boolean {
   for (let i = 0; i < value.length; i++) {
     const code = value.charCodeAt(i);
     if (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) return true;
     if (code === 0xfffe || code === 0xffff) return true;
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      i++;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return true;
+    }
   }
   return false;
 }
@@ -29,7 +39,7 @@ function hasInvalidXmlChar(value: string): boolean {
 /** Escapes text for an XML attribute */
 export function escapeXml(value: string): string {
   if (hasInvalidXmlChar(value)) {
-    throw new Error('TwiML values cannot contain control characters');
+    throw new Error('TwiML values cannot contain control characters or unpaired surrogates');
   }
   return value
     .replace(/&/g, '&amp;')
@@ -56,6 +66,22 @@ function assertStreamUrl(url: string): void {
   if (parsed.search || url.includes('?')) {
     throw new Error('Stream url cannot have a query string, pass values as parameters');
   }
+  if (parsed.hash || url.includes('#')) throw new Error('Stream url cannot have a fragment');
+  if (parsed.username || parsed.password) {
+    throw new Error('Stream url cannot carry credentials');
+  }
+}
+
+function assertCallbackUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`statusCallback is not a URL: ${url}`);
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error(`statusCallback must use http:// or https://, got ${parsed.protocol}`);
+  }
 }
 
 /**
@@ -66,6 +92,7 @@ function assertStreamUrl(url: string): void {
  */
 export function twilioStreamTwiml(options: TwilioStreamTwimlOptions): string {
   assertStreamUrl(options.url);
+  if (options.statusCallback !== undefined) assertCallbackUrl(options.statusCallback);
   const parameters: Array<[string, string]> = Object.entries(options.parameters ?? {});
   if (options.token !== undefined) {
     if (options.parameters && TWILIO_SESSION_TOKEN_PARAMETER in options.parameters) {

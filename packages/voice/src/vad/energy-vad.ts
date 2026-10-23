@@ -60,6 +60,15 @@ export class EnergyVAD implements VADProvider {
     return { type: 'speech', probability: 0 };
   }
 
+  /** A VAD with the same settings and a fresh state, one per session */
+  clone(): EnergyVAD {
+    return new EnergyVAD({
+      threshold: this.threshold,
+      silenceDuration: this.silenceDuration,
+      sampleRate: this.sampleRate,
+    });
+  }
+
   reset(): void {
     this.state = 'idle';
     this.silenceMs = 0;

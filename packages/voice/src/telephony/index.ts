@@ -14,6 +14,7 @@ export {
   type TwilioParams,
   type TwilioSessionGrant,
   type TwilioSessionTokensOptions,
+  type TwilioTokenIssueOptions,
   type ValidateTwilioSignatureOptions,
   type ValidateTwilioWebhookOptions,
   type VerifyTwilioUpgradeOptions,

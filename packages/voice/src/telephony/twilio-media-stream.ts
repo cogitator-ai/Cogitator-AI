@@ -13,6 +13,9 @@ export const TWILIO_AUDIO_FORMAT: Readonly<RawAudioFormat> = Object.freeze({
 
 const TWILIO_MEDIA_ENCODING = 'audio/x-mulaw';
 const DEFAULT_FRAME_MS = 20;
+const DEFAULT_START_TIMEOUT_MS = 10_000;
+const DEFAULT_MARK_MARGIN_MS = 3_000;
+const MULAW_BYTES_PER_MS = TWILIO_AUDIO_FORMAT.sampleRate / 1000;
 const WS_POLICY_VIOLATION = 1008;
 const WS_UNSUPPORTED_DATA = 1003;
 
@@ -89,6 +92,23 @@ export interface TwilioMediaStreamOptions {
    * check fails, is closed with 1008. Audio that arrives before the answer is dropped.
    */
   authorize?: (start: TwilioStreamStart) => boolean | Promise<boolean>;
+  /**
+   * Longest wait for an authorized `start` after the socket opened, in ms (default 10 000). A
+   * stream that does not start in time is closed with 1008, so sockets that never start cannot
+   * hold connections.
+   */
+  startTimeout?: number;
+  /**
+   * How long past the expected end of the audio before it a mark may take to come back, in ms
+   * (default 3 000). A mark that does not come back in time counts as not played, so a lost
+   * echo cannot leave a session speaking.
+   */
+  markTimeoutMargin?: number;
+}
+
+interface PendingMark {
+  resolve: (played: boolean) => void;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 interface TwilioMediaStreamEvents {
@@ -119,7 +139,9 @@ function rawDataToString(data: WebSocket.RawData): string {
  * `mark` and resolves once Twilio played the audio before it, and `clear()` sends `clear`, which
  * drops the audio Twilio still holds: the marks pending then resolve false, their audio was not
  * heard. A mark that comes back after `clear` was sent counts as not heard, also when the audio
- * before it finished playing just before.
+ * before it finished playing just before, and so does a mark that does not come back within the
+ * duration of the audio queued before it plus `markTimeoutMargin`. A binary frame, malformed JSON
+ * or event, a second `start`, or no `start` within `startTimeout` closes the stream.
  */
 export class TwilioMediaStream
   extends EventEmitter<TwilioMediaStreamEvents>
@@ -135,7 +157,10 @@ export class TwilioMediaStream
   private frame: Buffer[] = [];
   private frameLength = 0;
   private markSeq = 0;
-  private readonly pending = new Map<string, (played: boolean) => void>();
+  private readonly pending = new Map<string, PendingMark>();
+  private readonly markMargin: number;
+  private startTimer: ReturnType<typeof setTimeout> | null;
+  private playbackEnd = 0;
   private mediaSinceMark = false;
   private alive = true;
 
@@ -154,11 +179,20 @@ export class TwilioMediaStream
     if (!(frameMs > 0)) throw new RangeError(`frameMs must be positive, got ${frameMs}`);
     this.frameBytes = Math.max(1, Math.round((TWILIO_AUDIO_FORMAT.sampleRate * frameMs) / 1000));
     this.authorize = options.authorize;
+    this.markMargin = options.markTimeoutMargin ?? DEFAULT_MARK_MARGIN_MS;
+    const startTimeout = options.startTimeout ?? DEFAULT_START_TIMEOUT_MS;
+    this.startTimer = setTimeout(() => {
+      this.startTimer = null;
+      if (this.state === 'started' || this.state === 'ended') return;
+      this.refuse(WS_POLICY_VIOLATION, `no start within ${startTimeout} ms`);
+    }, startTimeout);
+    this.startTimer.unref();
 
     ws.on('message', (data: WebSocket.RawData, isBinary: boolean) => {
       this.alive = true;
+      if (this.state === 'ended') return;
       if (isBinary) {
-        this.fail(new Error('Twilio media stream sent a binary frame'));
+        this.refuse(WS_UNSUPPORTED_DATA, 'binary frames are not part of the protocol');
         return;
       }
       this.handleMessage(rawDataToString(data));
@@ -168,6 +202,7 @@ export class TwilioMediaStream
     });
     ws.on('close', () => {
       this.state = 'ended';
+      this.stopStartTimer();
       this.settleMarks(false);
       this.emit('close');
     });
@@ -187,14 +222,17 @@ export class TwilioMediaStream
     return this.info?.callSid;
   }
 
+  /** @internal Keepalive state for the transport */
   get isAlive(): boolean {
     return this.alive;
   }
 
+  /** @internal */
   markDead(): void {
     this.alive = false;
   }
 
+  /** @internal */
   ping(): void {
     if (this.ws.readyState === WebSocket.OPEN) this.ws.ping();
   }
@@ -207,17 +245,29 @@ export class TwilioMediaStream
 
   /**
    * Sends a `mark` after the audio sent so far, which Twilio echoes once that audio was played.
-   * Resolves true then, false when `clear` dropped it or the stream ended first.
+   * Resolves true then, false when `clear` dropped it, the stream ended or the echo did not come
+   * in time. `onSettled` hears the same answer at once, before the promise's callbacks run, so
+   * an echo is known before the next Twilio event is handled.
    */
-  mark(): Promise<boolean> {
-    if (!this.canSend()) return Promise.resolve(false);
+  mark(onSettled?: (played: boolean) => void): Promise<boolean> {
+    if (!this.canSend()) {
+      onSettled?.(false);
+      return Promise.resolve(false);
+    }
     this.queue(this.outbound.flush());
     this.sendFrames(true);
     const name = `m${++this.markSeq}`;
+    const wait = Math.max(0, this.playbackEnd - Date.now()) + this.markMargin;
     const played = new Promise<boolean>((resolve) => {
-      this.pending.set(name, (value) => {
-        this.emit('mark', name, value);
-        resolve(value);
+      const timer = setTimeout(() => this.settleMark(name, false), wait);
+      timer.unref();
+      this.pending.set(name, {
+        timer,
+        resolve: (value) => {
+          onSettled?.(value);
+          this.emit('mark', name, value);
+          resolve(value);
+        },
       });
     });
     this.mediaSinceMark = false;
@@ -232,6 +282,7 @@ export class TwilioMediaStream
     this.frameLength = 0;
     const queued = this.pending.size > 0 || this.mediaSinceMark;
     this.mediaSinceMark = false;
+    this.playbackEnd = Date.now();
     if (queued && this.canSend()) {
       this.send({ event: 'clear', streamSid: this.info!.streamSid });
     }
@@ -255,14 +306,14 @@ export class TwilioMediaStream
     try {
       json = JSON.parse(raw);
     } catch (err) {
-      this.fail(new Error(`Invalid JSON from Twilio: ${(err as Error).message}`));
+      this.refuse(WS_POLICY_VIOLATION, `invalid JSON: ${(err as Error).message}`);
       return;
     }
     const kind = (json as { event?: unknown } | null)?.event;
     if (typeof kind !== 'string' || !KNOWN_EVENTS.has(kind)) return;
     const parsed = inboundEvent.safeParse(json);
     if (!parsed.success) {
-      this.fail(new Error(`Malformed Twilio ${kind} event: ${parsed.error.message}`));
+      this.refuse(WS_POLICY_VIOLATION, `malformed ${kind} event: ${parsed.error.message}`);
       return;
     }
     const message = parsed.data;
@@ -305,7 +356,7 @@ export class TwilioMediaStream
 
   private async handleStart(start: TwilioStreamStart): Promise<void> {
     if (this.state !== 'waiting') {
-      this.fail(new Error('Twilio media stream started twice'));
+      this.refuse(WS_POLICY_VIOLATION, 'started twice');
       return;
     }
     const format = start.mediaFormat;
@@ -342,6 +393,7 @@ export class TwilioMediaStream
       return;
     }
     this.state = 'started';
+    this.stopStartTimer();
     try {
       this.emit('start', start);
     } catch (err) {
@@ -358,17 +410,36 @@ export class TwilioMediaStream
   /** A mark came back: it and every mark sent before it were played */
   private handleMark(name: string): void {
     if (!this.pending.has(name)) return;
-    for (const [pendingName, resolve] of this.pending) {
-      this.pending.delete(pendingName);
-      resolve(true);
+    for (const pendingName of [...this.pending.keys()]) {
+      this.settleMark(pendingName, true);
       if (pendingName === name) break;
     }
   }
 
+  private settleMark(name: string, played: boolean): void {
+    const mark = this.pending.get(name);
+    if (!mark) return;
+    this.pending.delete(name);
+    clearTimeout(mark.timer);
+    mark.resolve(played);
+  }
+
   private settleMarks(played: boolean): void {
-    const pending = [...this.pending.values()];
-    this.pending.clear();
-    for (const resolve of pending) resolve(played);
+    for (const name of [...this.pending.keys()]) this.settleMark(name, played);
+  }
+
+  private stopStartTimer(): void {
+    if (this.startTimer) clearTimeout(this.startTimer);
+    this.startTimer = null;
+  }
+
+  /** Ends a stream that broke the protocol or was not allowed */
+  private refuse(code: number, reason: string): void {
+    this.state = 'ended';
+    this.stopStartTimer();
+    this.settleMarks(false);
+    this.fail(new Error(`Twilio media stream closed: ${reason}`));
+    this.ws.close(code, reason.slice(0, 120));
   }
 
   private queue(audio: Buffer): void {
@@ -392,7 +463,10 @@ export class TwilioMediaStream
         media: { payload: audio.subarray(offset, end).toString('base64') },
       });
     }
-    if (whole > 0) this.mediaSinceMark = true;
+    if (whole > 0) {
+      this.mediaSinceMark = true;
+      this.playbackEnd = Math.max(Date.now(), this.playbackEnd) + whole / MULAW_BYTES_PER_MS;
+    }
     const rest = audio.subarray(whole);
     this.frame = rest.length > 0 ? [Buffer.from(rest)] : [];
     this.frameLength = rest.length;

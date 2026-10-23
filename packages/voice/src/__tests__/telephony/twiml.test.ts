@@ -38,6 +38,15 @@ describe('twilioStreamTwiml', () => {
       'query string'
     );
     expect(() => twilioStreamTwiml({ url: 'not a url' })).toThrow('not a URL');
+    expect(() => twilioStreamTwiml({ url: 'wss://voice.example.com/twilio#x' })).toThrow(
+      'fragment'
+    );
+    expect(() => twilioStreamTwiml({ url: 'wss://user:pass@voice.example.com/twilio' })).toThrow(
+      'credentials'
+    );
+    expect(() =>
+      twilioStreamTwiml({ url: 'wss://a.example/s', statusCallback: 'javascript:alert(1)' })
+    ).toThrow('http');
   });
 
   it('refuses parameters that are too long or take the token name', () => {
@@ -55,6 +64,9 @@ describe('twilioStreamTwiml', () => {
 
   it('refuses control characters XML cannot hold', () => {
     expect(() => escapeXml('a\u0001b')).toThrow('control characters');
+    expect(() => escapeXml('a\ud800b')).toThrow('unpaired surrogates');
+    expect(() => escapeXml('a\udc00')).toThrow('unpaired surrogates');
+    expect(escapeXml('emoji \ud83d\ude00')).toBe('emoji \ud83d\ude00');
     expect(escapeXml('tab\tline\n')).toBe('tab\tline\n');
   });
 });

@@ -186,4 +186,34 @@ describe('SileroVAD', () => {
 
     expect(mockRun).toHaveBeenCalledTimes(2);
   });
+
+  describe('clone()', () => {
+    it('shares the loaded model and keeps a state of its own', async () => {
+      await vad.init();
+      const other = vad.clone();
+      expect(other).not.toBe(vad);
+      expect(other.sampleRate).toBe(vad.sampleRate);
+
+      mockModelOutput(0.9);
+      expect((await vad.process(new Float32Array(512))).type).toBe('speech_start');
+      mockModelOutput(0.1);
+      expect((await other.process(new Float32Array(512))).type).toBe('silence');
+      expect(mockCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it('loads the model once for a template and clones made before init', async () => {
+      const early = vad.clone();
+      await Promise.all([vad.init(), early.init()]);
+      expect(mockCreate).toHaveBeenCalledTimes(1);
+      const late = vad.clone();
+      await expect(late.process(new Float32Array(512))).resolves.toEqual({ type: 'silence' });
+    });
+
+    it('lets a clone load the model the template has not loaded yet', async () => {
+      const early = vad.clone();
+      await early.init();
+      await expect(vad.process(new Float32Array(512))).resolves.toEqual({ type: 'silence' });
+      expect(mockCreate).toHaveBeenCalledTimes(1);
+    });
+  });
 });

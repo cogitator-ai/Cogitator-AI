@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
@@ -69,9 +69,18 @@ describe('Twilio request signatures', () => {
     ).toBe(true);
   });
 
-  it('sorts repeated parameter values', () => {
-    const signature = twilioSignature(AUTH_TOKEN, 'https://x.test/a', { a: ['2', '1'] });
-    expect(signature).toBe(twilioSignature(AUTH_TOKEN, 'https://x.test/a', { a: ['1', '2'] }));
+  it('signs the distinct values of a repeated parameter in order, as the Twilio libraries do', () => {
+    const expected = createHmac('sha1', AUTH_TOKEN).update('https://x.test/aa1a2').digest('base64');
+    expect(expected).toBe('wwF/3j86LUmu17mrXthAh4n8lu0=');
+    expect(twilioSignature(AUTH_TOKEN, 'https://x.test/a', { a: ['2', '1', '2'] })).toBe(expected);
+    expect(
+      validateTwilioWebhook({
+        authToken: AUTH_TOKEN,
+        signature: expected,
+        url: 'https://x.test/a',
+        body: 'a=2&a=1&a=2',
+      })
+    ).toBe(true);
   });
 
   describe('validateTwilioWebhook', () => {
@@ -146,12 +155,33 @@ describe('TwilioSessionTokens', () => {
 
   it('grants a token once, with its metadata', () => {
     const tokens = new TwilioSessionTokens();
-    const token = tokens.issue({ caller: '+15550001' });
+    const token = tokens.issue({ metadata: { caller: '+15550001' } });
     expect(token).toMatch(/^[A-Za-z0-9_-]{32}$/);
     expect(tokens.size).toBe(1);
     expect(tokens.consume(token)?.metadata).toEqual({ caller: '+15550001' });
     expect(tokens.consume(token)).toBeUndefined();
     expect(tokens.size).toBe(0);
+  });
+
+  it('binds a token to the call it was issued for', () => {
+    const tokens = new TwilioSessionTokens();
+    const bound = tokens.issue({ callSid: 'CA1' });
+    expect(tokens.consume(bound, 'CA1')?.callSid).toBe('CA1');
+    const stolen = tokens.issue({ callSid: 'CA1' });
+    expect(tokens.consume(stolen, 'CA2')).toBeUndefined();
+    expect(tokens.consume(stolen, 'CA1')).toBeUndefined();
+    const free = tokens.issue();
+    expect(tokens.consume(free, 'CA9')).toBeDefined();
+  });
+
+  it('caps the tokens waiting to be used', () => {
+    const tokens = new TwilioSessionTokens({ maxPending: 2 });
+    const first = tokens.issue();
+    tokens.issue();
+    expect(() => tokens.issue()).toThrow('Too many');
+    tokens.consume(first);
+    expect(() => tokens.issue()).not.toThrow();
+    expect(() => new TwilioSessionTokens({ maxPending: 0 })).toThrow(RangeError);
   });
 
   it('refuses an unknown or missing token', () => {

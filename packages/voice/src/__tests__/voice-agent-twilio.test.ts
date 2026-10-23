@@ -8,6 +8,8 @@ import type {
   STTProvider,
   STTStream,
   TTSProvider,
+  VADEvent,
+  VADProvider,
   VoiceAgentConfig,
   VoiceAgentRunner,
 } from '../types';
@@ -26,6 +28,7 @@ const mocks = await vi.hoisted(async () => {
     pushAudio = vi.fn();
     sendText = vi.fn();
     interrupt = vi.fn();
+    truncate = vi.fn();
     close = vi.fn();
     connect = vi.fn(async () => {});
     constructor(config: RealtimeSessionConfig) {
@@ -97,9 +100,8 @@ class FakeCall {
     );
   }
 
-  echoMarks(): void {
-    for (const mark of this.of('mark'))
-      this.send({ event: 'mark', streamSid: STREAM_SID, mark: mark.mark });
+  echo(mark: TwilioMessage): void {
+    this.send({ event: 'mark', streamSid: STREAM_SID, mark: mark.mark });
   }
 }
 
@@ -134,6 +136,23 @@ function sttWith(written: Buffer[]): STTProvider {
   };
 }
 
+/** A VAD that hears speech from the first chunk on */
+function talkingVAD(): VADProvider {
+  let speaking = false;
+  return {
+    name: 'talking',
+    sampleRate: 8000,
+    process(): VADEvent {
+      if (speaking) return { type: 'speech', probability: 1 };
+      speaking = true;
+      return { type: 'speech_start' };
+    },
+    reset() {
+      speaking = false;
+    },
+  };
+}
+
 const servers: http.Server[] = [];
 const agents: VoiceAgent[] = [];
 const sockets: WebSocket[] = [];
@@ -156,6 +175,7 @@ async function serve(config: Partial<VoiceAgentConfig>, tokens = new TwilioSessi
     agent: runner,
     stt: sttWith([]),
     tts: ttsWith({ mulaw: 8000 }),
+    vad: talkingVAD,
     ...config,
   } as VoiceAgentConfig);
   agents.push(voice);
@@ -227,7 +247,10 @@ describe('VoiceAgent with Twilio media streams', () => {
 
     const call = await dial(port);
     call.start({
-      [TWILIO_SESSION_TOKEN_PARAMETER]: tokens.issue({ from: '+15550001' }),
+      [TWILIO_SESSION_TOKEN_PARAMETER]: tokens.issue({
+        callSid: 'CA0001',
+        metadata: { from: '+15550001' },
+      }),
       lang: 'en',
     });
     await vi.waitFor(() => expect(calls).toHaveLength(1));
@@ -291,6 +314,7 @@ describe('VoiceAgent with Twilio media streams', () => {
       agent: { run: vi.fn() },
       stt: sttWith([]),
       tts: ttsWith(undefined),
+      vad: talkingVAD,
     });
     const server = http.createServer();
     expect(() =>
@@ -310,9 +334,62 @@ describe('VoiceAgent with Twilio media streams', () => {
         tokens: new TwilioSessionTokens(),
       })
     ).toThrow('authToken');
+
+    const deaf = new VoiceAgent({
+      mode: 'pipeline',
+      agent: { run: vi.fn() },
+      stt: sttWith([]),
+      tts: ttsWith({ mulaw: 8000 }),
+    });
+    expect(() =>
+      deaf.attachTwilio(server, {
+        authToken: AUTH_TOKEN,
+        streamUrl: STREAM_URL,
+        tokens: new TwilioSessionTokens(),
+      })
+    ).toThrow('needs a vad');
   });
 
-  it('runs a realtime session in μ-law, clearing on barge-in and marking each turn', async () => {
+  it('refuses a token issued for another call', async () => {
+    const { port, tokens, voice } = await serve({});
+    const starts = vi.fn();
+    voice.on('session_start', starts);
+    const call = await dial(port);
+    call.start({ [TWILIO_SESSION_TOKEN_PARAMETER]: tokens.issue({ callSid: 'CA-other' }) });
+    await vi.waitFor(() => expect(call.closeCode).toBe(1008));
+    expect(starts).not.toHaveBeenCalled();
+  });
+
+  it('closes a socket that never starts the stream', async () => {
+    const voice = new VoiceAgent({
+      mode: 'pipeline',
+      agent: { run: vi.fn() },
+      stt: sttWith([]),
+      tts: ttsWith({ mulaw: 8000 }),
+      vad: talkingVAD,
+    });
+    agents.push(voice);
+    const server = http.createServer();
+    servers.push(server);
+    voice.attachTwilio(server, {
+      authToken: AUTH_TOKEN,
+      streamUrl: STREAM_URL,
+      tokens: new TwilioSessionTokens(),
+      startTimeout: 50,
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const call = await dial((server.address() as AddressInfo).port);
+    await vi.waitFor(() => expect(call.closeCode).toBe(1008));
+  });
+
+  it('refuses messages larger than 64 KiB', async () => {
+    const { port } = await serve({});
+    const call = await dial(port);
+    call.send({ event: 'connected', padding: 'x'.repeat(70 * 1024) });
+    await vi.waitFor(() => expect(call.closeCode).toBe(1009));
+  });
+
+  it('runs a realtime session in μ-law, truncating at the last played mark on barge-in and key presses', async () => {
     const { port, tokens } = await serve({
       mode: 'realtime',
       realtimeProvider: 'openai',
@@ -327,23 +404,179 @@ describe('VoiceAgent with Twilio media streams', () => {
     call.media(Buffer.alloc(160, 0x10));
     await vi.waitFor(() => expect(session.pushAudio).toHaveBeenCalledWith(Buffer.alloc(160, 0x10)));
 
-    session.emit('audio', Buffer.alloc(320, 0x20));
-    session.emit('speech_start');
+    session.emit('audio', Buffer.alloc(1600, 0x20));
+    session.emit('audio', Buffer.alloc(1600, 0x20));
+    await vi.waitFor(() => expect(call.of('mark')).toHaveLength(2));
+    expect(call.outboundAudio()).toEqual(Buffer.alloc(3200, 0x20));
+
+    call.echo(call.of('mark')[0]!);
+    call.send({ event: 'dtmf', streamSid: STREAM_SID, dtmf: { digit: '5' } });
+    await vi.waitFor(() => expect(session.sendText).toHaveBeenCalledWith('pressed 5'));
+    expect(session.interrupt).toHaveBeenCalledTimes(1);
+    expect(session.truncate).toHaveBeenCalledWith(200);
+    expect(session.truncate.mock.invocationCallOrder[0]).toBeLessThan(
+      session.sendText.mock.invocationCallOrder[0]!
+    );
     await vi.waitFor(() => expect(call.of('clear')).toHaveLength(1));
-    expect(call.outboundAudio()).toEqual(Buffer.alloc(320, 0x20));
+
+    session.emit('audio', Buffer.alloc(800, 0x30));
+    session.emit('speech_start');
+    await vi.waitFor(() => expect(call.of('clear')).toHaveLength(2));
+    expect(session.truncate).toHaveBeenLastCalledWith(200);
 
     session.emit('audio', Buffer.alloc(100, 0x30));
     session.emit('turn_end');
-    await vi.waitFor(() => expect(call.of('mark')).toHaveLength(1));
-    expect(call.received.map((m) => m.event)).toEqual(['media', 'media', 'clear', 'media', 'mark']);
+    await vi.waitFor(() => expect(call.of('mark')).toHaveLength(3));
+    expect(call.received.at(-1)!.event).toBe('mark');
   });
 
-  it('serves a stream accepted by a server of the caller with handleTwilio', async () => {
+  it('transcodes PCM16 from a TTS without μ-law into 20 ms μ-law frames', async () => {
+    const { port, tokens, voice } = await serve({ tts: ttsWith({ pcm16: 24000 }) });
+    const call = await dial(port);
+    call.start({ [TWILIO_SESSION_TOKEN_PARAMETER]: tokens.issue() });
+    await vi.waitFor(() => expect(voice.activeSessions).toBe(1));
+    call.send({ event: 'dtmf', streamSid: STREAM_SID, dtmf: { digit: '1' } });
+    await vi.waitFor(() => expect(call.of('mark')).toHaveLength(1));
+    const frames = call
+      .of('media')
+      .map((m) => Buffer.from((m.media as { payload: string }).payload, 'base64').length);
+    expect(frames.reduce((a, b) => a + b, 0)).toBe(800);
+    expect(frames.every((length) => length === 160)).toBe(true);
+  });
+
+  it('ends the session when Twilio stops the stream', async () => {
+    const { port, tokens, voice } = await serve({});
+    const ended = vi.fn();
+    voice.on('session_end', ended);
+    const call = await dial(port);
+    call.start({ [TWILIO_SESSION_TOKEN_PARAMETER]: tokens.issue() });
+    await vi.waitFor(() => expect(voice.activeSessions).toBe(1));
+    call.send({ event: 'stop', streamSid: STREAM_SID, stop: { callSid: 'CA0001' } });
+    await vi.waitFor(() => expect(ended).toHaveBeenCalledTimes(1));
+    expect(voice.activeSessions).toBe(0);
+  });
+
+  it('refuses configurations that cannot serve a call', () => {
+    const voice = new VoiceAgent({
+      mode: 'pipeline',
+      agent: { run: vi.fn() },
+      stt: sttWith([]),
+      tts: ttsWith(undefined),
+      vad: talkingVAD,
+    });
+    const server = http.createServer();
+    expect(() =>
+      voice.attachTwilio(server, {
+        authToken: AUTH_TOKEN,
+        streamUrl: STREAM_URL,
+        tokens: new TwilioSessionTokens(),
+      })
+    ).toThrow('rawSampleRates');
+    expect(() =>
+      voice.attachTwilio(server, { authToken: AUTH_TOKEN, streamUrl: STREAM_URL })
+    ).toThrow('tokens or authorize');
+    expect(() =>
+      voice.attachTwilio(server, {
+        authToken: '',
+        streamUrl: STREAM_URL,
+        tokens: new TwilioSessionTokens(),
+      })
+    ).toThrow('authToken');
+
+    const deaf = new VoiceAgent({
+      mode: 'pipeline',
+      agent: { run: vi.fn() },
+      stt: sttWith([]),
+      tts: ttsWith({ mulaw: 8000 }),
+    });
+    expect(() =>
+      deaf.attachTwilio(server, {
+        authToken: AUTH_TOKEN,
+        streamUrl: STREAM_URL,
+        tokens: new TwilioSessionTokens(),
+      })
+    ).toThrow('needs a vad');
+  });
+
+  it('refuses a token issued for another call', async () => {
+    const { port, tokens, voice } = await serve({});
+    const starts = vi.fn();
+    voice.on('session_start', starts);
+    const call = await dial(port);
+    call.start({ [TWILIO_SESSION_TOKEN_PARAMETER]: tokens.issue({ callSid: 'CA-other' }) });
+    await vi.waitFor(() => expect(call.closeCode).toBe(1008));
+    expect(starts).not.toHaveBeenCalled();
+  });
+
+  it('closes a socket that never starts the stream', async () => {
+    const voice = new VoiceAgent({
+      mode: 'pipeline',
+      agent: { run: vi.fn() },
+      stt: sttWith([]),
+      tts: ttsWith({ mulaw: 8000 }),
+      vad: talkingVAD,
+    });
+    agents.push(voice);
+    const server = http.createServer();
+    servers.push(server);
+    voice.attachTwilio(server, {
+      authToken: AUTH_TOKEN,
+      streamUrl: STREAM_URL,
+      tokens: new TwilioSessionTokens(),
+      startTimeout: 50,
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const call = await dial((server.address() as AddressInfo).port);
+    await vi.waitFor(() => expect(call.closeCode).toBe(1008));
+  });
+
+  it('refuses messages larger than 64 KiB', async () => {
+    const { port } = await serve({});
+    const call = await dial(port);
+    call.send({ event: 'connected', padding: 'x'.repeat(70 * 1024) });
+    await vi.waitFor(() => expect(call.closeCode).toBe(1009));
+  });
+
+  it('runs a realtime session in μ-law, truncating at the last played mark on barge-in and key presses', async () => {
+    const { port, tokens } = await serve({
+      mode: 'realtime',
+      realtimeProvider: 'openai',
+      realtimeApiKey: 'key',
+    });
+    const call = await dial(port);
+    call.start({ [TWILIO_SESSION_TOKEN_PARAMETER]: tokens.issue() });
+    await vi.waitFor(() => expect(mocks.sessions).toHaveLength(1));
+    const session = mocks.sessions[0]!;
+    expect(session.config.audioFormat).toBe('pcmu');
+
+    call.media(Buffer.alloc(160, 0x10));
+    await vi.waitFor(() => expect(session.pushAudio).toHaveBeenCalledWith(Buffer.alloc(160, 0x10)));
+
+    session.emit('audio', Buffer.alloc(1600, 0x20));
+    session.emit('audio', Buffer.alloc(1600, 0x20));
+    await vi.waitFor(() => expect(call.of('mark')).toHaveLength(2));
+    call.echo(call.of('mark')[0]!);
+    await vi.waitFor(() => expect(call.received.filter((m) => m.event === 'mark')).toHaveLength(2));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    session.emit('speech_start');
+    await vi.waitFor(() => expect(call.of('clear')).toHaveLength(1));
+    expect(session.truncate).toHaveBeenCalledWith(200);
+    expect(call.outboundAudio()).toEqual(Buffer.alloc(3200, 0x20));
+
+    session.emit('audio', Buffer.alloc(100, 0x30));
+    session.emit('turn_end');
+    await vi.waitFor(() => expect(call.of('mark')).toHaveLength(3));
+    expect(call.received.at(-1)!.event).toBe('mark');
+  });
+
+  it('serves a stream accepted by a server of the caller with handleTwilio, and closes it on close()', async () => {
     const voice = new VoiceAgent({
       mode: 'pipeline',
       agent: { run: vi.fn(async () => ({ content: 'ok' })) },
       stt: sttWith([]),
       tts: ttsWith({ mulaw: 8000 }),
+      vad: talkingVAD,
     });
     agents.push(voice);
     const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
@@ -362,6 +595,9 @@ describe('VoiceAgent with Twilio media streams', () => {
       call.start({ key: 'secret' });
       await vi.waitFor(() => expect(voice.activeSessions).toBe(1));
       expect(authorize).toHaveBeenCalledTimes(1);
+
+      await voice.close();
+      await vi.waitFor(() => expect(call.closeCode).toBe(1001));
     } finally {
       for (const client of wss.clients) client.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));

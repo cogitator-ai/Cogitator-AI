@@ -46,26 +46,35 @@ const voiceAgent = new VoiceAgent({
   agent: createCogitatorRunner(cogitator, agent),
   stt: new DeepgramSTT({ apiKey: process.env.DEEPGRAM_API_KEY! }),
   tts: new ElevenLabsTTS({ apiKey: process.env.ELEVENLABS_API_KEY! }),
-  vad: new EnergyVAD({ threshold: 0.02, sampleRate: 8000 }),
+  vad: () => new EnergyVAD({ threshold: 0.02, sampleRate: 8000 }),
   bargeIn: true,
 });
 
 const tokens = new TwilioSessionTokens();
 
-const server = http.createServer(async (req, res) => {
-  const body = await readBody(req);
-  const signature = req.headers['x-twilio-signature'];
-  const valid = validateTwilioWebhook({
-    authToken,
-    signature: Array.isArray(signature) ? signature[0] : signature,
-    url: webhookUrl,
-    body,
-  });
-  if (!valid) return res.writeHead(403).end();
+const server = http.createServer((req, res) => {
+  if (req.method !== 'POST' || req.url !== '/voice') return void res.writeHead(404).end();
+  let body = '';
+  req.setEncoding('utf8');
+  req.on('data', (chunk: string) => (body += chunk));
+  req.on('end', () => {
+    const signature = req.headers['x-twilio-signature'];
+    const valid = validateTwilioWebhook({
+      authToken,
+      signature: Array.isArray(signature) ? signature[0] : signature,
+      url: webhookUrl,
+      body,
+    });
+    if (!valid) return void res.writeHead(403).end();
 
-  const from = new URLSearchParams(body).get('From') ?? 'unknown';
-  res.writeHead(200, { 'Content-Type': 'text/xml' });
-  res.end(twilioStreamTwiml({ url: streamUrl, token: tokens.issue({ from }) }));
+    const params = new URLSearchParams(body);
+    const token = tokens.issue({
+      callSid: params.get('CallSid') ?? undefined,
+      metadata: { from: params.get('From') ?? 'unknown' },
+    });
+    res.writeHead(200, { 'Content-Type': 'text/xml' });
+    res.end(twilioStreamTwiml({ url: streamUrl, token }));
+  });
 });
 
 voiceAgent.attachTwilio(server, { authToken, streamUrl, tokens });
@@ -78,17 +87,23 @@ Point the voice webhook of your Twilio number at `POST https://voice.example.com
 
 A media stream is a WebSocket anyone can try to open, so each stream is checked twice before it reaches the agent.
 
-**The upgrade is signed.** Twilio sends `X-Twilio-Signature` with the upgrade: an HMAC-SHA1 keyed with your Auth Token over the stream URL, with no parameters. `attachTwilio` checks it for `streamUrl` and for `streamUrl` with a trailing slash, compares in constant time, and refuses anything else with 403. A server that handles upgrades itself checks with `verifyTwilioUpgrade(req, { authToken, streamUrl })` and then hands the socket to `voiceAgent.handleTwilio(ws, { tokens })`.
+**The upgrade is signed.** Twilio sends `X-Twilio-Signature` with the upgrade: an HMAC-SHA1 keyed with your Auth Token over the stream URL, with no parameters. `attachTwilio` checks it for `streamUrl` and for `streamUrl` with a trailing slash, compares in constant time, and refuses anything else with 403. The signature covers only the URL, so it is the same for every call and could be replayed by anyone who saw one: it keeps strangers out, and the session token below is what ties a stream to a call. A server that handles upgrades itself checks with `verifyTwilioUpgrade(req, { authToken, streamUrl })` and then hands the socket to `voiceAgent.handleTwilio(ws, { tokens })`.
 
-**The stream carries a one-time token.** `tokens.issue()` in the webhook creates a token, and `twilioStreamTwiml({ token })` passes it as a `<Parameter>` of the `<Stream>` (Twilio allows no query string in the stream URL). It comes back in the `start` event's `customParameters`, and the stream is refused (closed with 1008) unless the token was issued, has not expired (`ttl`, one minute by default) and was not used before. What `issue` was given comes back in the `call_start` event as `call.grant.metadata`.
+**The stream carries a one-time token.** `tokens.issue()` in the webhook creates a token, and `twilioStreamTwiml({ token })` passes it as a `<Parameter>` of the `<Stream>` (Twilio allows no query string in the stream URL). It comes back in the `start` event's `customParameters`, and the stream is refused (closed with 1008) unless the token was issued, has not expired (`ttl`, one minute by default) and was not used before. Given the webhook's `CallSid`, a token works only for a stream of that call. What `issue` was given comes back in the `call_start` event as `call.grant`. At most `maxPending` tokens (10 000) wait to be used at once.
 
-Tokens live in the memory of the process. When the webhook and the stream may hit different instances, pass `authorize` and check a shared store:
+**The stream must behave.** A socket that sends no `start` within `startTimeout` (10 seconds) is closed with 1008, so sockets opened with a replayed signature cannot hold connections. Messages are capped at 64 KiB (`maxPayload`), a binary frame closes the stream with 1003, and malformed JSON, a malformed event or a second `start` close it with 1008. `handleTwilio` serves a socket your server accepted, so cap connections and message size there.
+
+Tokens live in the memory of the process. When the webhook and the stream may hit different instances, pass `authorize` and check a store they share (`sharedTokens` here is yours, with a `consume` that answers like `TwilioSessionTokens.consume`):
 
 ```typescript
 voiceAgent.attachTwilio(server, {
   authToken,
   streamUrl,
-  authorize: async (start) => redisTokens.consume(start.customParameters.sessionToken),
+  authorize: async (start) =>
+    (await sharedTokens.consume(
+      start.customParameters[TWILIO_SESSION_TOKEN_PARAMETER],
+      start.callSid
+    )) !== undefined,
 });
 ```
 
@@ -100,17 +115,19 @@ Twilio streams G.711 μ-law at 8 kHz, mono, in both directions.
 
 ### Pipeline mode
 
-| Step | What happens                                                                                                                                                                                              |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| STT  | A provider that lists `mulaw` in `streamEncodings` gets the call's audio as is: Deepgram streams with `encoding=mulaw&sample_rate=8000`, OpenAI STT decodes it before upload. Any other gets 8 kHz PCM16. |
-| VAD  | Gets the audio decoded, resampled to its `sampleRate`. Give `SileroVAD` `sampleRate: 8000` for its 256-sample windows, or `EnergyVAD` `sampleRate: 8000`.                                                 |
-| TTS  | Asked for `mulaw` when `rawSampleRates` lists it at 8000 (ElevenLabs `ulaw_8000`), else for `pcm16` (OpenAI TTS at 24 kHz), which is resampled with a band-limited filter and encoded on the way out.     |
+| Step | What happens                                                                                                                                                                                                                                     |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| STT  | A provider that lists `mulaw` in `streamEncodings` gets the call's audio as is: Deepgram streams with `encoding=mulaw&sample_rate=8000`, OpenAI STT decodes it before upload. Any other gets 8 kHz PCM16.                                        |
+| VAD  | Required, since Twilio never says when the caller stopped speaking. Each call gets its own (a factory, or a `clone()` of the instance) and the audio decoded, resampled to its `sampleRate`. Give `SileroVAD` or `EnergyVAD` `sampleRate: 8000`. |
+| TTS  | Asked for `mulaw` when `rawSampleRates` lists it at 8000 (ElevenLabs `ulaw_8000`), else for `pcm16` (OpenAI TTS at 24 kHz), which is resampled with a band-limited filter and encoded on the way out.                                            |
 
 A TTS provider of your own declares what it returns with `rawSampleRates`, such as `{ pcm16: 22050 }`. A provider without it cannot serve a call, and `attachTwilio` says so.
 
 ### Realtime mode
 
-The session runs with `audioFormat: 'pcmu'`. OpenAI Realtime takes and returns `audio/pcmu` natively. Gemini Live takes PCM16, so the adapter decodes and resamples the call's audio to 16 kHz, and turns the model's 24 kHz audio into 8 kHz μ-law. A `speech_start` from the provider clears the call's audio, and each turn ends with a mark.
+The session runs with `audioFormat: 'pcmu'`. OpenAI Realtime takes and returns `audio/pcmu` natively. Gemini Live takes PCM16, so the adapter decodes and resamples the call's audio to 16 kHz, and turns the model's 24 kHz audio into 8 kHz μ-law.
+
+The model's audio is marked every 200 ms and at the end of each turn. When the caller speaks (OpenAI's `speech_started`, or Gemini's transcription of the caller, which also comes after the model finished while its audio still plays), the call's audio is cleared, and the OpenAI answer is truncated with `conversation.item.truncate` at the last mark that was played, so the model's context holds what the caller heard. Gemini drops an interrupted answer itself. A key press with `dtmfInput` interrupts the same way before its text is sent.
 
 ```typescript
 const voiceAgent = new VoiceAgent({
@@ -124,9 +141,9 @@ voiceAgent.attachTwilio(server, { authToken, streamUrl, tokens });
 
 ## What the caller heard
 
-Audio goes to Twilio faster than it is played, so "sent" is not "heard". After each spoken sentence the session sends a `mark`, and Twilio echoes it once the audio before it was played. The session uses that:
+Audio goes to Twilio faster than it is played, so "sent" is not "heard". After each spoken sentence the pipeline session sends a `mark`, and Twilio echoes it once the audio before it was played. A mark whose echo does not come within the duration of the audio before it plus `markTimeoutMargin` (3 seconds) counts as not played, so a lost echo cannot hang a call. The session uses that:
 
-- A turn stays `speaking` until its last mark comes back, so `turn_end` means the caller heard the whole answer, and a barge-in while Twilio is still playing stops it.
+- A turn stays `speaking` until its last mark comes back, so in pipeline mode `turn_end` means the caller heard the whole answer, and a barge-in while Twilio is still playing stops it. In realtime mode `turn_end` means the model finished its answer.
 - A barge-in (with `bargeIn` and a VAD) or an interruption sends `clear`, which drops the audio Twilio still holds. The marks still pending come back as not played.
 - A streamed turn settles with the sentences whose marks were played, up to the first that was not. With `createCogitatorRunner`, the conversation keeps only those, marked `metadata.interrupted`.
 
@@ -146,7 +163,7 @@ voiceAgent.attachTwilio(server, {
 voiceAgent.on('dtmf', (sessionId, digit) => console.log(sessionId, digit));
 ```
 
-When the caller hangs up, Twilio stops the stream, and the session ends with `session_end`.
+When the caller hangs up, Twilio stops the stream, and the session ends with `session_end`. `voiceAgent.close()` ends every call, also those served with `handleTwilio`.
 
 ## Events
 

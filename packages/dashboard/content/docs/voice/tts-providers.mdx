@@ -131,7 +131,7 @@ for await (const chunk of tts.streamSynthesize('Streaming audio...')) {
 | `voiceId` | `string` | `21m00Tcm4TlvDq8ikWAM` | Default voice ID   |
 | `model`   | `string` | `eleven_flash_v2_5`    | Model ID           |
 
-Formats map to ElevenLabs output formats: `mp3` → 44.1kHz 128kbps (default), `pcm16` → 24kHz, `mulaw` → μ-law 8kHz (`ulaw_8000`), `opus` → 48kHz, `flac` → 22.05kHz; `wav` and `aac` throw. Requests use `stability: 0.5` and `similarity_boost: 0.75` and time out after 60 seconds.
+Formats map to ElevenLabs output formats: `mp3` → 44.1kHz 128kbps (default), `pcm16` → 24kHz, `mulaw` → μ-law 8kHz (`ulaw_8000`), `opus` → 48kHz, `flac` → 22.05kHz, while `wav` and `aac` throw. Requests use `stability: 0.5` and `similarity_boost: 0.75` and time out after 60 seconds.
 
 ## TTS Options
 

@@ -5,6 +5,7 @@ import type { IncomingMessage } from 'node:http';
 export const TWILIO_SESSION_TOKEN_PARAMETER = 'cogitatorSessionToken';
 
 const DEFAULT_TOKEN_TTL_MS = 60_000;
+const DEFAULT_MAX_PENDING_TOKENS = 10_000;
 
 /** Parameters of a Twilio request: one value, or several for a repeated key */
 export type TwilioParams = Readonly<Record<string, string | readonly string[]>>;
@@ -17,14 +18,14 @@ function equalStrings(a: string, b: string): boolean {
 
 /**
  * The `X-Twilio-Signature` of a request: base64 HMAC-SHA1, keyed with the account's Auth Token,
- * of the full URL followed by each POST parameter's name and value, sorted by name (the values of
- * a repeated name sorted too).
+ * of the full URL followed by each POST parameter's name and value, sorted by name (the distinct
+ * values of a repeated name sorted too, as the Twilio libraries do).
  */
 export function twilioSignature(authToken: string, url: string, params: TwilioParams = {}): string {
   let data = url;
   for (const key of Object.keys(params).sort()) {
     const value = params[key]!;
-    const values = typeof value === 'string' ? [value] : [...value].sort();
+    const values = typeof value === 'string' ? [value] : [...new Set(value)].sort();
     for (const item of values) data += key + item;
   }
   return createHmac('sha1', authToken).update(data, 'utf8').digest('base64');
@@ -126,7 +127,10 @@ export interface VerifyTwilioUpgradeOptions {
 
 /**
  * Checks the `X-Twilio-Signature` of a media stream's WebSocket upgrade: Twilio signs the stream
- * URL with no parameters. The URL with and without a trailing slash are both accepted.
+ * URL with no parameters. The URL with and without a trailing slash are both accepted. The
+ * signature covers only the URL, so it is the same for every call and can be replayed: it keeps
+ * out strangers, and the one-time session token checked on `start` is what ties a stream to a
+ * call.
  */
 export function verifyTwilioUpgrade(
   req: IncomingMessage,
@@ -150,6 +154,8 @@ export function verifyTwilioUpgrade(
 export interface TwilioSessionGrant {
   /** What `issue` was given, such as the caller's number from the webhook */
   metadata: Readonly<Record<string, string>>;
+  /** The call the token was issued for, when `issue` was given its `CallSid` */
+  callSid?: string;
   /** When the token was issued, in ms since the epoch */
   issuedAt: number;
 }
@@ -157,6 +163,17 @@ export interface TwilioSessionGrant {
 export interface TwilioSessionTokensOptions {
   /** How long a token is valid after it is issued, in ms (default 60 000) */
   ttl?: number;
+  /** Most tokens waiting to be used at once (default 10 000): `issue` throws beyond it */
+  maxPending?: number;
+}
+
+export interface TwilioTokenIssueOptions {
+  /**
+   * The `CallSid` of the webhook request: the token then works only for a stream of that call
+   */
+  callSid?: string;
+  /** Returned with the grant, such as the caller's number */
+  metadata?: Record<string, string>;
 }
 
 interface PendingToken {
@@ -174,11 +191,16 @@ interface PendingToken {
  */
 export class TwilioSessionTokens {
   private readonly ttl: number;
+  private readonly maxPending: number;
   private readonly pending = new Map<string, PendingToken>();
 
   constructor(options: TwilioSessionTokensOptions = {}) {
     this.ttl = options.ttl ?? DEFAULT_TOKEN_TTL_MS;
     if (!(this.ttl > 0)) throw new RangeError(`ttl must be positive, got ${String(options.ttl)}`);
+    this.maxPending = options.maxPending ?? DEFAULT_MAX_PENDING_TOKENS;
+    if (!(this.maxPending >= 1)) {
+      throw new RangeError(`maxPending must be 1 or more, got ${String(options.maxPending)}`);
+    }
   }
 
   /** Tokens issued and neither used nor expired */
@@ -187,25 +209,37 @@ export class TwilioSessionTokens {
     return this.pending.size;
   }
 
-  /** Issues a token valid for one stream within `ttl` */
-  issue(metadata: Record<string, string> = {}): string {
+  /** Issues a token valid for one stream within `ttl`, of the call `callSid` when given */
+  issue(options: TwilioTokenIssueOptions = {}): string {
     const now = Date.now();
     this.sweep(now);
+    if (this.pending.size >= this.maxPending) {
+      throw new Error(`Too many Twilio session tokens waiting to be used (${this.maxPending})`);
+    }
     const token = randomBytes(24).toString('base64url');
     this.pending.set(token, {
-      grant: { metadata: { ...metadata }, issuedAt: now },
+      grant: {
+        metadata: { ...options.metadata },
+        issuedAt: now,
+        ...(options.callSid !== undefined && { callSid: options.callSid }),
+      },
       expiresAt: now + this.ttl,
     });
     return token;
   }
 
-  /** Uses a token: its grant when it is valid, else `undefined`. A token works once */
-  consume(token: string | undefined): TwilioSessionGrant | undefined {
+  /**
+   * Uses a token: its grant when it is valid, else `undefined`. A token works once, also when it
+   * is refused because it was issued for another call than `callSid`
+   */
+  consume(token: string | undefined, callSid?: string): TwilioSessionGrant | undefined {
     if (!token) return undefined;
     const entry = this.pending.get(token);
     if (!entry) return undefined;
     this.pending.delete(token);
-    return Date.now() < entry.expiresAt ? entry.grant : undefined;
+    if (Date.now() >= entry.expiresAt) return undefined;
+    if (entry.grant.callSid !== undefined && entry.grant.callSid !== callSid) return undefined;
+    return entry.grant;
   }
 
   private sweep(now: number): void {

@@ -721,4 +721,60 @@ describe('OpenAIRealtimeAdapter', () => {
       expect(mockWs.send).not.toHaveBeenCalled();
     });
   });
+
+  describe('truncate()', () => {
+    function audioDelta(itemId: string, bytes: number): string {
+      return JSON.stringify({
+        type: 'response.output_audio.delta',
+        item_id: itemId,
+        content_index: 0,
+        delta: Buffer.alloc(bytes).toString('base64'),
+      });
+    }
+
+    function truncations(): unknown[] {
+      return mockWs.send.mock.calls
+        .map((call) => JSON.parse(call[0] as string))
+        .filter((event) => event.type === 'conversation.item.truncate');
+    }
+
+    it('truncates the item being played where the listener stopped hearing it', async () => {
+      adapter = new OpenAIRealtimeAdapter(createConfig({ audioFormat: 'pcmu' }));
+      await adapter.connect();
+      mockWs.emit('message', audioDelta('item_1', 1600));
+      mockWs.emit('message', audioDelta('item_1', 1600));
+
+      adapter.truncate(150);
+      adapter.truncate(100);
+      expect(truncations()).toEqual([
+        {
+          type: 'conversation.item.truncate',
+          item_id: 'item_1',
+          content_index: 0,
+          audio_end_ms: 150,
+        },
+      ]);
+    });
+
+    it('places each item on the timeline of all the audio emitted', async () => {
+      adapter = new OpenAIRealtimeAdapter(createConfig());
+      await adapter.connect();
+      mockWs.emit('message', audioDelta('item_1', 48 * 400));
+      mockWs.emit('message', audioDelta('item_2', 48 * 100));
+
+      adapter.truncate(450);
+      expect(truncations()).toEqual([
+        expect.objectContaining({ item_id: 'item_2', audio_end_ms: 50 }),
+      ]);
+    });
+
+    it('leaves an item that was heard to its end', async () => {
+      adapter = new OpenAIRealtimeAdapter(createConfig({ audioFormat: 'pcmu' }));
+      await adapter.connect();
+      mockWs.emit('message', audioDelta('item_1', 800));
+      adapter.truncate(100);
+      adapter.truncate(5_000);
+      expect(truncations()).toEqual([]);
+    });
+  });
 });

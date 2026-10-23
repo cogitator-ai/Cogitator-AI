@@ -97,6 +97,7 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
   private readonly runningCalls = new Map<string, AbortController>();
   private readonly inputTranscoder: AudioTranscoder | null;
   private outputTranscoder: AudioTranscoder | null = null;
+  private userSpeaking = false;
 
   constructor(config: RealtimeSessionConfig) {
     super();
@@ -228,6 +229,9 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
     }
   }
 
+  /** Gemini keeps no truncatable audio items: it drops an interrupted answer itself */
+  truncate(_playedMs: number): void {}
+
   close(): void {
     const ws = this.ws;
     this.connected = false;
@@ -278,6 +282,7 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
     const inputText = content.inputTranscription?.text;
     if (inputText) {
       this.userTranscript += inputText;
+      this.userStartedSpeaking();
     }
 
     const outputText = content.outputTranscription?.text;
@@ -306,7 +311,7 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
       this.flushAssistantTranscript();
       this.modelTurnActive = false;
       this.interrupting = false;
-      this.emit('speech_start');
+      this.userStartedSpeaking();
     }
 
     if (content.turnComplete) {
@@ -343,7 +348,19 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
     if (tail.length > 0 && !this.interrupting) this.emit('audio', tail);
   }
 
+  /**
+   * `speech_start` once per user turn: on the first transcription of the user's speech, which
+   * also comes after the model finished generating while its audio still plays, or on an
+   * interruption
+   */
+  private userStartedSpeaking(): void {
+    if (this.userSpeaking) return;
+    this.userSpeaking = true;
+    this.emit('speech_start');
+  }
+
   private flushUserTranscript(): void {
+    this.userSpeaking = false;
     const text = this.userTranscript.trim();
     this.userTranscript = '';
     if (text) this.emit('transcript', text, 'user');
@@ -357,6 +374,7 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
   }
 
   private resetTurn(): void {
+    this.userSpeaking = false;
     this.outputTranscoder?.reset();
     this.inputTranscoder?.reset();
     this.modelTurnActive = false;

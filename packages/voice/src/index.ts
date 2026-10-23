@@ -13,6 +13,7 @@ export type {
   TTSProvider,
   VADEvent,
   VADProvider,
+  VADFactory,
   VoicePipelineConfig,
   VoiceAgentRunner,
   VoiceRunContext,

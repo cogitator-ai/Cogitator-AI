@@ -108,7 +108,16 @@ export interface VADProvider {
   readonly sampleRate?: number;
   process(samples: Float32Array): VADEvent | Promise<VADEvent>;
   reset(): void;
+  /**
+   * A VAD with the same settings and none of this one's state, sharing what is costly to load
+   * (a model). A VAD keeps the state of one audio stream, so `VoicePipeline` gives each session
+   * a clone. Without it, every session of a pipeline shares this VAD.
+   */
+  clone?(): VADProvider;
 }
+
+/** Makes a VAD for one session */
+export type VADFactory = () => VADProvider;
 
 export interface VoiceRunContext {
   /** Identifier of the voice session (one per connected client / pipeline session). */
@@ -170,7 +179,12 @@ export interface VoiceAgentRunner {
 export interface VoicePipelineConfig {
   stt: STTProvider;
   tts: TTSProvider;
-  vad?: VADProvider;
+  /**
+   * Detects speech in each session's audio. A VAD holds the state of one stream, so each session
+   * gets its own: from the factory, or a `clone()` of the instance. An instance without `clone`
+   * is shared by every session, which mixes the audio of concurrent sessions.
+   */
+  vad?: VADProvider | VADFactory;
   agent: VoiceAgentRunner;
   /**
    * Options passed to every `tts.synthesize` / `tts.streamSynthesize` call, e.g.
@@ -296,6 +310,8 @@ export type VerifyClientResult = boolean | { code: number; message: string };
 export interface WebSocketTransportConfig {
   path?: string;
   maxConnections?: number;
+  /** Largest message a client may send, in bytes (default 100 MiB, the `ws` default) */
+  maxPayload?: number;
   /**
    * Authorize an incoming upgrade request. Return `true` to accept, `false`
    * to reject with 401, or `{ code, message }` to reject with that status.
@@ -308,7 +324,8 @@ export interface VoiceAgentConfig {
   mode: 'pipeline' | 'realtime';
   stt?: STTProvider;
   tts?: TTSProvider;
-  vad?: VADProvider;
+  /** One VAD per session, see `VoicePipelineConfig.vad` */
+  vad?: VADProvider | VADFactory;
   /** Pipeline-mode options passed to every TTS call (see `VoicePipelineConfig.ttsOptions`). */
   ttsOptions?: TTSOptions;
   /** Pipeline mode: interrupt the reply when the user starts speaking (see `VoicePipelineConfig.bargeIn`). */
