@@ -13,6 +13,16 @@ export function defineSkill(config: SkillConfig): Skill {
   };
 }
 
+/** Whether `value` is a skill defined in code (`defineSkill`) rather than a source of `SKILL.md` skills. */
+export function isCodeSkill(value: unknown): value is Skill {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    Array.isArray((value as { tools?: unknown }).tools) &&
+    typeof (value as { version?: unknown }).version === 'string'
+  );
+}
+
 export function mergeSkillsIntoAgent(
   tools: Tool[],
   instructions: string,

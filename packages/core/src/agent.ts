@@ -8,7 +8,7 @@ import type {
   SerializedAgentConfig,
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
-import { mergeSkillsIntoAgent } from './skill';
+import { isCodeSkill, mergeSkillsIntoAgent } from './skill';
 
 const SNAPSHOT_VERSION = '1.0.0';
 
@@ -72,8 +72,9 @@ export class Agent<TDeps = unknown> implements IAgent<TDeps> {
     this.name = config.name;
 
     let finalConfig = { ...config };
-    if (config.skills && config.skills.length > 0) {
-      const merged = mergeSkillsIntoAgent(config.tools ?? [], config.instructions, config.skills);
+    const codeSkills = (config.skills ?? []).filter(isCodeSkill);
+    if (codeSkills.length > 0) {
+      const merged = mergeSkillsIntoAgent(config.tools ?? [], config.instructions, codeSkills);
       finalConfig = { ...finalConfig, tools: merged.tools, instructions: merged.instructions };
     }
 
@@ -171,6 +172,7 @@ export class Agent<TDeps = unknown> implements IAgent<TDeps> {
         maxIterations: this.config.maxIterations,
         ...(this.config.onIterationLimit && { onIterationLimit: this.config.onIterationLimit }),
         timeout: this.config.timeout,
+        ...(this.config.todos !== undefined && { todos: this.config.todos }),
       },
       metadata: {
         serializedAt: new Date().toISOString(),
@@ -241,6 +243,7 @@ export class Agent<TDeps = unknown> implements IAgent<TDeps> {
         onIterationLimit: snapshot.config.onIterationLimit,
       }),
       timeout: snapshot.config.timeout,
+      ...(snapshot.config.todos !== undefined && { todos: snapshot.config.todos }),
       ...overrides,
     });
   }

@@ -297,6 +297,14 @@ export class StudioHost {
         if (!this.als.getStore()) return;
         this.emit({ type: 'run.span', runId: run.runId, span: rawSpan(span) });
       },
+      onTodos: (todos, run) => {
+        if (!this.als.getStore()) return;
+        this.emit({
+          type: 'run.todos',
+          runId: run.runId,
+          todos: todos.map(({ id, content, status }) => ({ id, content, status })),
+        });
+      },
       onRunComplete: (result) => {
         const context = this.als.getStore();
         if (!context || result.runId === context.rootRunId) return;

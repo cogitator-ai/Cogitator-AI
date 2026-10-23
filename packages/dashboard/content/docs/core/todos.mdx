@@ -1,0 +1,67 @@
+---
+title: Todo Lists
+description: Let an agent plan a long task as a todo list with write_todos, kept in the thread across runs and compaction, reported to your code and to Cogitator Studio.
+---
+
+## Overview
+
+An agent working through a task of many steps loses track of them as the conversation grows. With `todos: true` it gets the built-in `write_todos` tool: it writes the plan as a todo list, keeps one item in progress and marks items completed as it goes.
+
+```typescript
+import { Agent, Cogitator, LocalWorkspace, workspaceTools } from '@cogitator-ai/core';
+
+const workspace = new LocalWorkspace({ root: './app' });
+const agent = new Agent({
+  name: 'migrator',
+  model: 'anthropic/claude-sonnet-5-5',
+  instructions: 'You migrate code bases. Plan the work before you start.',
+  tools: workspaceTools(),
+  workspace,
+  todos: true,
+});
+
+const cog = new Cogitator({ memory: { adapter: 'memory' } });
+const result = await cog.run(agent, {
+  input: 'Move every test from Jest to Vitest',
+  threadId: 'migration',
+  onTodos: (todos) => console.table(todos),
+});
+
+console.log(result.todos);
+```
+
+## The tool
+
+```typescript
+write_todos({
+  todos: [
+    { id: 'inventory', content: 'List every Jest test file', status: 'completed' },
+    { id: 'config', content: 'Add vitest.config.ts', status: 'in_progress' },
+    { id: 'rewrite', content: 'Rewrite the mocks', status: 'pending' },
+  ],
+});
+```
+
+Each call replaces the whole list. The ids must be unique, at most one item may be `in_progress` and a list holds at most 100 items: a call that breaks a rule fails with a validation error the model reads, and the list stays as it was. The model reads the new list back after each change:
+
+```
+Todo list (1 of 3 completed):
+[x] inventory: List every Jest test file
+[>] config: Add vitest.config.ts
+[ ] rewrite: Rewrite the mocks
+```
+
+## Where the list lives
+
+The list is read from the conversation itself: the newest successful `write_todos` call in the messages a run goes on from. So a resumed run, a fork and an agent the run hands over to all see it. On top of that:
+
+- **Thread metadata**: each change is copied to the metadata of the run's thread, under `todos`, for a run that saves to memory (on a branch run with `activate: false` it is not). A later run of the thread whose history no longer holds the `write_todos` calls (memory compacted them, or the history limit cut them) gets the list from there, as a system message just before the new input.
+- **Compaction**: clearing tool outputs never clears a `write_todos` result, and when compaction of the conversation drops the newest one, the list comes back as a system message.
+- **`RunResult.todos`**: the list as the run left it, when the agent keeps one and it was written in this run or an earlier run of the thread.
+- **`onTodos`**: `RunOptions.onTodos` and `RunObserver.onTodos` get the whole list each time it changes.
+
+[Cogitator Studio](/docs/getting-started/studio) shows the list of a run in a Todos panel, live while the run works.
+
+## Reading lists yourself
+
+`todosIn(messages)` returns the list a conversation last wrote, `parseTodos(value)` checks a list you read from thread metadata (`TODOS_METADATA_KEY`), and `renderTodos(todos)` formats one as the model reads it.

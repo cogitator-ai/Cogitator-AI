@@ -48,5 +48,6 @@ export * from './channel';
 export * from './feed';
 export * from './decision';
 export * from './skill';
+export * from './todos';
 export * from './web';
 export * from './workspace';

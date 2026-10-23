@@ -2,13 +2,14 @@ import { useEffect, useState, type ReactNode } from 'react';
 import {
   Activity,
   GitFork,
+  ListTodo,
   MessageSquare,
   RotateCcw,
   SquareTerminal,
   Workflow,
   Wrench,
 } from 'lucide-react';
-import type { RunRecord, StepRecord, WorkflowInfo } from '../../protocol';
+import type { RunRecord, StepRecord, TodoRecord, WorkflowInfo } from '../../protocol';
 import { api } from '../api';
 import { CopyButton, Empty, ErrorText, messageOf, StatusBadge, Topbar } from '../components/common';
 import { Markdown } from '../components/markdown';
@@ -103,6 +104,43 @@ function Properties({ run, runs }: { run: RunRecord; runs: Record<string, RunRec
         <CopyButton value={run.id} label="Copy run id" />
       </Prop>
     </aside>
+  );
+}
+
+const TODO_MARKS: Record<TodoRecord['status'], string> = {
+  completed: '✓',
+  in_progress: '▸',
+  pending: '○',
+};
+
+function TodosPanel({ todos }: { todos: TodoRecord[] }) {
+  const done = todos.filter((todo) => todo.status === 'completed').length;
+  return (
+    <section className="panel" data-testid="todos-panel">
+      <div className="panel-head">
+        <div className="panel-title">
+          <ListTodo size={14} />
+          Todos{' '}
+          <span className="count">
+            {done}/{todos.length}
+          </span>
+        </div>
+      </div>
+      {todos.length === 0 ? (
+        <div className="panel-body muted">The list is empty</div>
+      ) : (
+        <ul className="todo-list">
+          {todos.map((todo) => (
+            <li key={todo.id} className={`todo todo-${todo.status}`} data-status={todo.status}>
+              <span className="todo-mark" aria-label={todo.status.replace('_', ' ')}>
+                {TODO_MARKS[todo.status]}
+              </span>
+              <span className="todo-content">{todo.content}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -456,6 +494,8 @@ export function RunView({ runId }: { runId: string }) {
                   </div>
                 </div>
               </section>
+
+              {run.todos && <TodosPanel todos={run.todos} />}
 
               {run.kind === 'workflow' && <WorkflowRunPanel run={run} workflow={workflow} />}
 

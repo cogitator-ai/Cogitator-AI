@@ -658,6 +658,13 @@ export class StudioStore {
         }
         return { runs: [run] };
       }
+      case 'run.todos': {
+        const run = this.runs.get(event.runId);
+        if (!run) return { runs: [] };
+        run.todos = event.todos.map((todo) => ({ ...todo }));
+        this.persist(run);
+        return { runs: [run] };
+      }
       case 'run.completed': {
         const run = this.runs.get(event.runId);
         if (!run) return { runs: [] };

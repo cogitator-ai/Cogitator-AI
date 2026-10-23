@@ -45,7 +45,10 @@ export interface ClearToolOutputsConfig {
   trigger?: number;
   /** How many of the most recent tool results are never cleared (default 3) */
   keep?: number;
-  /** Names of tools whose outputs are never cleared */
+  /**
+   * Names of tools whose outputs are never cleared, on top of the built-in `use_skill`,
+   * `tool_search` and `write_todos`, which never are
+   */
   exclude?: readonly string[];
   /**
    * Also replace the arguments of the cleared calls in the assistant messages that made them

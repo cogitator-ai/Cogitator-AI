@@ -945,6 +945,42 @@ textarea.input {
   padding: 16px;
 }
 
+.todo-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px 16px 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.todo {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.todo-mark {
+  width: 14px;
+  flex: none;
+  text-align: center;
+  color: var(--text-3);
+}
+
+.todo-in_progress .todo-mark,
+.todo-in_progress .todo-content {
+  color: var(--accent-text);
+  font-weight: 500;
+}
+
+.todo-completed .todo-mark {
+  color: var(--ok);
+}
+
+.todo-completed .todo-content {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+
 .panel-desc {
   margin: 0 0 14px;
   color: var(--text-2);

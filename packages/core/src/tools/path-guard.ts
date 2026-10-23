@@ -88,6 +88,7 @@ export function restrictFileTools(
       ...(original.maxResultLength !== undefined && {
         maxResultLength: original.maxResultLength,
       }),
+      ...(original.deferred && { deferred: true }),
       execute: async (params: unknown, context: ToolContext) => {
         const given = isRecord(params) && typeof params.path === 'string' ? params.path : null;
         if (given === null) {

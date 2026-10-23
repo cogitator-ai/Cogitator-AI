@@ -6,6 +6,7 @@
     "remote-workspaces",
     "wasm-tools",
     "custom-tools",
+    "tool-search",
     "approvals",
     "agent-as-tool",
     "tool-caching"

@@ -106,10 +106,12 @@ export class ToolRegistry {
    * tools that carry a JSON Schema of their own (MCP, AI SDK) keep it, made self-contained by
    * `toToolParameters`.
    *
+   * @param include - Only the tools it returns true for (default: every tool)
    * @returns Array of tool schemas in OpenAPI format
    */
-  getSchemas(): ToolSchema[] {
-    return this.getAll().map((tool) => {
+  getSchemas(include?: (tool: Tool) => boolean): ToolSchema[] {
+    const tools = include ? this.getAll().filter(include) : this.getAll();
+    return tools.map((tool) => {
       if (typeof tool.toJSON !== 'function') return toolToSchema(tool);
       const schema = tool.toJSON();
       return { ...schema, parameters: toToolParameters(schema.parameters) };

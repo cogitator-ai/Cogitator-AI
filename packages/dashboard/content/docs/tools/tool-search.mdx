@@ -1,0 +1,54 @@
+---
+title: Tool Search
+description: Give an agent many tools without sending every schema each turn, deferred tools it finds with the built-in tool_search and loads when it needs them.
+---
+
+## Overview
+
+Every tool schema an agent has goes to the model with every turn. Forty tools from a few MCP servers can take thousands of tokens of each request before the conversation starts, and the more tools a model sees, the worse it picks among them.
+
+Mark the tools the agent rarely needs as `deferred`. Their schemas stay out of the requests, the model gets the built-in `tool_search` instead, and the tools a search finds are sent from the next turn on.
+
+```typescript
+import { Agent, Cogitator, tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const createInvoice = tool({
+  name: 'create_invoice',
+  description: 'Bill a customer for an order',
+  parameters: z.object({ customerId: z.string(), amountCents: z.number() }),
+  deferred: true,
+  execute: async ({ customerId, amountCents }) => billing.invoice(customerId, amountCents),
+});
+
+const agent = new Agent({
+  name: 'back-office',
+  model: 'openai/gpt-6.1-sol',
+  instructions: 'You run the back office.',
+  tools: [lookupCustomer, createInvoice, refundOrder, exportLedger],
+});
+```
+
+`deferred` works on any tool: one made with `tool()`, an MCP tool (`tool.deferred = true` on the imported tools of a server you rarely use), or one that `restrictFileTools()` wraps.
+
+## How a search loads tools
+
+1. The first turn sends the schemas of the tools that are not deferred, plus `tool_search`. A run whose agent has no deferred tool gets no `tool_search`.
+2. The model calls `tool_search({ query, limit })` with what it needs: `"bill a customer"`, `"refund"`, or a tool name. `limit` is 5 by default, 20 at most.
+3. The search ranks the deferred tools with BM25 over their names, descriptions and parameter names and descriptions. Identifiers are split into words (`createInvoice`, `create_invoice` and `create-invoice` all match `invoice`), and a query that names a tool exactly finds it first.
+4. The result names the tools it found with their descriptions, and from the next turn on the run sends their schemas too.
+
+```json
+{
+  "tools": [{ "name": "create_invoice", "description": "Bill a customer for an order" }],
+  "note": "These tools are loaded: call them from your next turn."
+}
+```
+
+The loaded tools are read back from the `tool_search` results in the conversation on every turn, not kept on the side. So they stay loaded in a run resumed after an approval, in a fork, after a handoff (when the other agent has them) and in a later run of the thread, as long as the search is in its history. Clearing tool outputs never clears a `tool_search` result.
+
+A call to a deferred tool that no search loaded still runs: its arguments are checked against its schema as for any call. A model that knows the tool from an earlier conversation does not have to search for it again. A run that forces a deferred tool with `toolChoice` sends its schema from the first turn.
+
+## Prompt caching
+
+Providers cache the tools together with the rest of the prompt prefix (Anthropic caches the tools first, then the system prompt, then the messages). A search that loads tools changes the tool list, so the next turn writes the cache again from the start. Once loaded, tools stay in the list, so the cache holds again from the turn after. Defer the tools a run seldom needs, and keep the ones it uses on most runs loaded.

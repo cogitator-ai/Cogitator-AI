@@ -82,6 +82,7 @@ console.log(result.output);
 - **Resilience** - Retry, circuit breaker, and fallback patterns
 - **PII Masking** - Personal data and secrets replaced with placeholders before they reach the provider
 - **Run Middleware** - Hooks around every model and tool call, tripwire guards that stop a run
+- **Agent Skills** - `SKILL.md` skills from the host or the workspace, activated on demand with `use_skill`, `write_todos` planning kept in the thread, deferred tools found with `tool_search`
 - **Workspace** - Files and commands confined to one directory (`LocalWorkspace`, `DockerWorkspace`), `workspaceTools()`, long tool results saved there for the model to page through
 - **Observability** - OpenTelemetry GenAI spans, one trace across runs, workflows and swarms, OTLP and Langfuse exporters
 
@@ -354,6 +355,41 @@ const restored = Agent.deserialize(snapshot, { toolRegistry: registry });
 To run an agent in another process (queue jobs, workflow jobs, distributed swarm turns), send it in the agent wire format instead: `toAgentWire(agent)` keeps every setting (stop sequences, timeout, handoffs, the response schema as JSON Schema, ...) and `fromAgentWire(payload, { cogitator, tools })` rebuilds it, refusing unknown keys and routing the model exactly as the sender would. `toAgentWireRunResult` / `fromAgentWireRunResult` do the same for a run's outcome, cost included.
 
 See [Agents](https://cogitator.app/docs/core/agents).
+
+### Agent Skills from SKILL.md
+
+Skills in the [Agent Skills](https://agentskills.io/specification) format are folders with a `SKILL.md` (YAML frontmatter with `name` and `description`, then instructions) and the files they need. A `SkillRegistry` finds them in `dirs`, in the run's workspace (`.agents/skills`, `.cogitator/skills`, `.claude/skills`), in a `project` folder and, with `user`, in the home folder, the first of a name winning. The model sees each skill's name and description in an `<available_skills>` section of the system prompt and activates one with the built-in `use_skill({ skill })`, which returns the body, the skill folder and its files. Host skills' files are read with `read_skill_file({ skill, path })`, confined to the skill folder, workspace skills' with `read_file`:
+
+```typescript
+import { Agent, SkillRegistry } from '@cogitator-ai/core';
+
+const agent = new Agent({
+  name: 'maintainer',
+  model: 'anthropic/claude-sonnet-5-5',
+  instructions: 'You maintain this project.',
+  skills: [new SkillRegistry({ project: process.cwd(), user: true })],
+});
+```
+
+Frontmatter is read leniently: a skill without a description is skipped, other problems (a name that breaks the rules or differs from its folder, wrong types) load with a warning in the catalog's `diagnostics`. `allowed-tools` is kept on the skill as `allowedTools`, not enforced. A repeated `use_skill` returns a short note, and `use_skill` results survive tool output clearing and compaction. See [Skills](https://cogitator.app/docs/core/skills).
+
+### Todo Lists and Tool Search
+
+`todos: true` gives the agent `write_todos({ todos: [{ id, content, status }] })`: each call replaces the list, at most one item is `in_progress`. The list is read back from the conversation, copied to the thread's metadata (`todos`) for later runs, reported with `onTodos` and returned as `result.todos`.
+
+A tool marked `deferred: true` keeps its schema out of the requests. The run offers `tool_search({ query, limit })` instead, which ranks the deferred tools with BM25 over names, descriptions and parameters and loads the best ones from the next turn on. The loaded set is read from the `tool_search` results in the history, so resumed and forked runs keep it. A call to a deferred tool that was never loaded still runs. Loading a tool changes the tool list and so the prompt cache prefix.
+
+```typescript
+const agent = new Agent({
+  name: 'back-office',
+  model: 'openai/gpt-6.1-sol',
+  instructions: 'You run the back office. Plan multi-step work with write_todos.',
+  tools: [lookupCustomer, tool({ ...invoiceConfig, deferred: true })],
+  todos: true,
+});
+```
+
+See [Todo Lists](https://cogitator.app/docs/core/todos) and [Tool Search](https://cogitator.app/docs/tools/tool-search).
 
 ### Structured Output
 

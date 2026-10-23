@@ -156,6 +156,32 @@ describe('StudioStore', () => {
     });
   });
 
+  it('keeps the newest todo list of a run, also after it loads again', () => {
+    const { store: first, dir } = store();
+    first.apply(started('r', 'r', 0));
+    first.apply({
+      type: 'run.todos',
+      runId: 'r',
+      todos: [{ id: 'plan', content: 'Plan it', status: 'in_progress' }],
+    });
+    first.apply({
+      type: 'run.todos',
+      runId: 'r',
+      todos: [
+        { id: 'plan', content: 'Plan it', status: 'completed' },
+        { id: 'ship', content: 'Ship it', status: 'in_progress' },
+      ],
+    });
+    first.apply(done('r', 10));
+
+    const expected = [
+      { id: 'plan', content: 'Plan it', status: 'completed' },
+      { id: 'ship', content: 'Ship it', status: 'in_progress' },
+    ];
+    expect(first.getRun('r')?.todos).toEqual(expected);
+    expect(new StudioStore(dir, () => null).getRun('r')?.todos).toEqual(expected);
+  });
+
   it('fails the runs of a host that went away and their pending approvals', () => {
     const { store: s } = store();
     s.apply(started('r', 'r', 0));

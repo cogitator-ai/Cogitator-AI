@@ -43,6 +43,25 @@ export {
   DEFAULT_TOOL_RESULT_MAX_LENGTH,
 } from './tool-content';
 export { defineSkill, validateSkill, mergeSkillsIntoAgent } from './skill';
+export * from './skills/index';
+export {
+  toolSearchTool,
+  rankTools,
+  toolsFoundIn,
+  withIdentifierWords,
+  TOOL_SEARCH,
+  type ToolSearchOptions,
+} from './tools/tool-search';
+export {
+  writeTodosTool,
+  renderTodos,
+  todosIn,
+  parseTodos,
+  todoListSchema,
+  WRITE_TODOS,
+  TODOS_METADATA_KEY,
+  MAX_TODOS,
+} from './tools/write-todos';
 export { agentAsTool } from './agent-tool';
 export {
   decisionTool,

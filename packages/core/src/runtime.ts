@@ -46,6 +46,8 @@ import type {
   RunMiddlewareContext,
   ModelCallRequest,
   RunMiddleware,
+  TodoItem,
+  ToolSchema,
 } from '@cogitator-ai/types';
 import { memoryAgentId, type Agent } from './agent';
 import { ToolRegistry } from './registry';
@@ -191,6 +193,8 @@ import {
   addContextToMessages,
 } from './cogitator/message-builder';
 import { RunMemory } from './cogitator/run-memory';
+import { RunHarness, todoNote } from './cogitator/harness';
+import { parseTodos, TODOS_METADATA_KEY } from './tools/write-todos';
 import { createSpan, getTextContent } from './cogitator/span-factory';
 import {
   runToolCall,
@@ -1002,6 +1006,10 @@ export class Cogitator implements ToolInvoker {
         options.onRunComplete?.(result);
         notify('onRunComplete', (observer) => observer.onRunComplete?.(result));
       },
+      onTodos: (todos) => {
+        options.onTodos?.(todos);
+        notify('onTodos', (observer) => observer.onTodos?.(todos, { runId: runId() }));
+      },
       onRunError: (error, id, usage) => {
         options.onRunError?.(error, id, usage);
         notify('onRunError', (observer) => observer.onRunError?.(error, id, usage));
@@ -1168,6 +1176,16 @@ export class Cogitator implements ToolInvoker {
         ...(workspaceOf(active) && { workspace: workspaceOf(active) }),
       });
 
+      const harness = new RunHarness({
+        conversation: () => messages,
+        registry: () => registry,
+        workspaceOf,
+        onTodos: async (todos) => {
+          options.onTodos?.(todos);
+          await this.keepTodos(threadId, todos, runMemory);
+        },
+      });
+      await harness.prepare(active);
       const buildRegistry = (owner: Agent) => {
         const ownerRegistry = new ToolRegistry();
         const handoff = handoffTools(owner);
@@ -1176,10 +1194,13 @@ export class Cogitator implements ToolInvoker {
         ownerRegistry.registerMany(this.tools.getAll().filter((t) => !own.has(t.name)));
         ownerRegistry.registerMany(owner.tools);
         ownerRegistry.registerMany(handoff.tools);
+        harness.addTools(owner, ownerRegistry);
         return { registry: ownerRegistry, targets: handoff.targets };
       };
       let { registry, targets: handoffTargets } = buildRegistry(active);
       const requestedToolChoice = options.toolChoice;
+      const forcedTool =
+        typeof requestedToolChoice === 'object' ? requestedToolChoice.function.name : undefined;
       if (
         typeof requestedToolChoice === 'object' &&
         !registry.get(requestedToolChoice.function.name)
@@ -1243,10 +1264,16 @@ export class Cogitator implements ToolInvoker {
         if (!runMemory.aside) await this.abandonPausedRun(agent, runOptions, threadId);
         messages = await this.prepareMessages(
           agent,
+          harness.systemPrompt(agent),
           runOptions,
           threadId,
           runMemory,
-          this.historyBudget(agent, effectiveModel, routeProvider, registry),
+          this.historyBudget(
+            agent,
+            effectiveModel,
+            routeProvider,
+            harness.schemas(registry, [], forcedTool)
+          ),
           (initial) =>
             waitForAbortable(
               pipeline.beforeRun({ input, messages: initial }, middlewareContext()),
@@ -1260,6 +1287,14 @@ export class Cogitator implements ToolInvoker {
             ];
           }
         );
+      }
+
+      if (active.config.todos) {
+        const kept = await harness.restoreTodos(messages, () =>
+          this.keptTodos(threadId, options, runMemory)
+        );
+        if (kept && !checkpoint)
+          messages.splice(Math.max(messages.length - 1, 0), 0, todoNote(kept));
       }
 
       let candidates = this.modelCandidates(active, effectiveModel, routeProvider, {
@@ -1313,7 +1348,8 @@ export class Cogitator implements ToolInvoker {
       }
 
       const memoryNotes: Promise<void>[] = [];
-      const switchTo = (target: Agent, reason: unknown) => {
+      const switchTo = async (target: Agent, reason: unknown) => {
+        await harness.prepare(target);
         const event: HandoffEvent = {
           from: active.name,
           to: target.name,
@@ -1322,12 +1358,14 @@ export class Cogitator implements ToolInvoker {
         handoffs.push(event);
         options.onHandoff?.(event);
         const system = messages[0];
+        const fromPrompt = harness.systemPrompt(active);
+        const toPrompt = harness.systemPrompt(target);
         const content =
           system?.role === 'system' &&
           typeof system.content === 'string' &&
-          system.content.startsWith(active.instructions)
-            ? target.instructions + system.content.slice(active.instructions.length)
-            : target.instructions;
+          system.content.startsWith(fromPrompt)
+            ? toPrompt + system.content.slice(fromPrompt.length)
+            : toPrompt;
         if (system?.role === 'system') messages[0] = { role: 'system', content };
         else messages.unshift({ role: 'system', content });
         spans.push(
@@ -1612,7 +1650,7 @@ export class Cogitator implements ToolInvoker {
         messages.push(...reflectionMessages);
         const handoff = toolCalls.find((call) => handoffTargets.has(call.name));
         const target = handoff && handoffTargets.get(handoff.name);
-        if (handoff && target) switchTo(target, handoff.arguments.reason);
+        if (handoff && target) await switchTo(target, handoff.arguments.reason);
         return undefined;
       };
 
@@ -1762,6 +1800,11 @@ export class Cogitator implements ToolInvoker {
         const turnToolChoice = limit.closingTurn
           ? 'none'
           : toolChoiceForTurn(requestedToolChoice, allToolCalls.length > 0, registry);
+        const turnTools = harness.schemas(
+          registry,
+          messages,
+          typeof turnToolChoice === 'object' ? turnToolChoice.function.name : undefined
+        );
 
         const holdsStream = streaming && pipeline.holdsStream;
         let streamed = false;
@@ -1784,11 +1827,11 @@ export class Cogitator implements ToolInvoker {
               const turnMessages =
                 candidate === candidates[0]
                   ? messages
-                  : await this.fitToModel(messages, candidate.name, active, registry);
+                  : await this.fitToModel(messages, candidate.name, active, turnTools);
               const request: ChatRequest = {
                 model: candidate.model,
                 messages: turnMessages,
-                tools: registry.getSchemas(),
+                tools: turnTools,
                 ...(turnToolChoice && { toolChoice: turnToolChoice }),
                 temperature: active.config.temperature,
                 topP: active.config.topP,
@@ -1797,7 +1840,7 @@ export class Cogitator implements ToolInvoker {
                 responseFormat,
                 reasoning,
                 cache: promptCache,
-                cachePrefix: active.instructions,
+                cachePrefix: harness.systemPrompt(active),
                 signal: abortController.signal,
               };
               const call: ModelCallRequest = {
@@ -2052,6 +2095,7 @@ export class Cogitator implements ToolInvoker {
           pendingApprovals: pausedTurn.pending,
           ...(runMemory.summary() && { memory: runMemory.summary() }),
           ...(handoffs.length > 0 && { handoffs, finalAgent: active.name }),
+          ...(harness.todos && { todos: harness.todos }),
           checkpoint: pausedCheckpoint,
           usage: {
             inputTokens: totalInputTokens,
@@ -2171,6 +2215,7 @@ export class Cogitator implements ToolInvoker {
           ? await this.state.reflectionEngine.getSummary(agent.id)
           : undefined,
         ...(runMemory.summary() && { memory: runMemory.summary() }),
+        ...(harness.todos && { todos: harness.todos }),
       };
 
       if (prompt) await this.recordPrompt(prompt, result, Date.now() - startTime);
@@ -2268,13 +2313,15 @@ export class Cogitator implements ToolInvoker {
   }
 
   /**
-   * The messages a new run starts with: the thread's history and the input,
+   * The messages a new run starts with: `systemPrompt` (the agent's instructions with what the
+   * run adds to them), the thread's history and the input,
    * once the input passed `checkInput` (the `beforeRun` hooks), with the
    * input saved to memory. `historyBudget` is the context builder's budget
    * for this run, when `memory.contextBuilder.maxTokens` sets none.
    */
   private async prepareMessages(
     agent: Agent,
+    systemPrompt: string,
     options: RunOptions,
     threadId: string,
     runMemory: RunMemory,
@@ -2283,7 +2330,7 @@ export class Cogitator implements ToolInvoker {
     onContext?: (built: BuiltContext) => void
   ): Promise<Message[]> {
     const messages = await buildInitialMessages(
-      agent,
+      { id: agent.id, name: agent.name, config: agent.config, instructions: systemPrompt },
       options,
       threadId,
       this.state.memoryAdapter,
@@ -2306,6 +2353,40 @@ export class Cogitator implements ToolInvoker {
     });
 
     return messages;
+  }
+
+  /**
+   * Keeps `todos` in the metadata of thread `threadId` (`todos`), so a later run of the thread
+   * finds the list after its `write_todos` calls left the history. Only for a run that saves to
+   * memory on the thread's active branch. A failed write is logged, the run goes on.
+   */
+  private async keepTodos(
+    threadId: string,
+    todos: readonly TodoItem[],
+    runMemory: RunMemory
+  ): Promise<void> {
+    const memory = this.state.memoryAdapter;
+    if (!memory || !runMemory.enabled || !runMemory.isOpen || runMemory.aside) return;
+    const updated = await memory.updateThread(threadId, { [TODOS_METADATA_KEY]: todos });
+    if (!updated.success) {
+      getLogger().warn('Could not keep the todo list in the thread metadata', {
+        threadId,
+        error: updated.error,
+      });
+    }
+  }
+
+  /** The todo list kept in the metadata of thread `threadId`, for a run that reads memory. */
+  private async keptTodos(
+    threadId: string,
+    options: RunOptions,
+    runMemory: RunMemory
+  ): Promise<TodoItem[] | undefined> {
+    const memory = this.state.memoryAdapter;
+    if (!memory || options.useMemory === false || !runMemory.isOpen) return undefined;
+    const thread = await memory.getThread(threadId);
+    if (!thread.success || !thread.data) return undefined;
+    return parseTodos(thread.data.metadata[TODOS_METADATA_KEY]);
   }
 
   /**
@@ -2547,14 +2628,14 @@ export class Cogitator implements ToolInvoker {
     agent: Agent,
     modelString: string,
     explicitProvider: string | undefined,
-    registry: ToolRegistry
+    tools: readonly ToolSchema[]
   ): number | undefined {
     if (!this.state.contextBuilder || this.config.memory?.contextBuilder?.maxTokens !== undefined) {
       return undefined;
     }
     const window = this.servedWindow(modelString, explicitProvider);
     const answer = answerRoom(agent, window);
-    const fixed = countTokens(JSON.stringify(registry.getSchemas()));
+    const fixed = countTokens(JSON.stringify(tools));
     const compressAt = this.state.contextManager?.compressionThreshold(modelString);
     const budget = Math.floor(Math.min(window - answer, compressAt ?? Infinity) - fixed);
     if (budget > MIN_HISTORY_BUDGET) return budget;
@@ -2584,11 +2665,10 @@ export class Cogitator implements ToolInvoker {
     messages: Message[],
     modelString: string,
     agent: Agent,
-    registry: ToolRegistry
+    tools: readonly ToolSchema[]
   ): Promise<Message[]> {
     const window = this.servedWindow(modelString);
-    const room =
-      window - answerRoom(agent, window) - countTokens(JSON.stringify(registry.getSchemas()));
+    const room = window - answerRoom(agent, window) - countTokens(JSON.stringify(tools));
     const current = countMessagesTokens(messages);
     if (current <= room) return messages;
     const cut = await new TruncateStrategy().compress({

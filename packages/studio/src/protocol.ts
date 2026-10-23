@@ -93,6 +93,13 @@ export interface ToolCallRecord {
 
 export type RunStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'stopped';
 
+/** An item of the todo list an agent keeps with `write_todos`. */
+export interface TodoRecord {
+  id: string;
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed';
+}
+
 export interface WorkflowNodeRecord {
   name: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
@@ -140,6 +147,8 @@ export interface RunRecord {
   /** Where the run wrote in the memory of its thread. */
   memory?: MemoryPlace;
   nodes?: WorkflowNodeRecord[];
+  /** The agent's todo list as `write_todos` last wrote it in the run. */
+  todos?: TodoRecord[];
   /** The workflow manager's id of the run, which a rerun starts from. */
   workflowRunId?: string;
   rerunOf?: { runId: string; fromNode: string };
@@ -287,6 +296,7 @@ export type HostEvent =
       reason?: string;
     }
   | { type: 'run.span'; runId: string; span: RawSpan }
+  | { type: 'run.todos'; runId: string; todos: TodoRecord[] }
   | {
       type: 'run.completed';
       runId: string;

@@ -29,7 +29,7 @@ interface AgentConfig<TDeps = unknown> {
   fallbackModels?: Array<string | { model: string; provider?: string }>; // tried when model fails
   instructions: string;
   tools?: Tool<unknown, unknown, TDeps>[];
-  skills?: Skill[]; // bundles of tools + instructions, merged in
+  skills?: AgentSkillSource[]; // defineSkill() bundles, merged in, or SKILL.md sources (SkillRegistry)
   temperature?: number; // default: 0.7
   topP?: number;
   maxTokens?: number;
@@ -40,6 +40,7 @@ interface AgentConfig<TDeps = unknown> {
   maxIterations?: number; // default: 10
   onIterationLimit?: 'answer' | 'stop'; // default: 'answer'
   timeout?: number; // default: limits.defaultTimeout of the Cogitator, else 120000 (2 min)
+  todos?: boolean; // the write_todos tool and a todo list kept in the thread, default: false
   middleware?: RunMiddleware<TDeps>[]; // hooks around its model and tool calls
 }
 ```
@@ -233,7 +234,7 @@ const restored = Agent.deserialize(saved, {
 
 Tools are stored by name in the snapshot. During deserialization, each tool name is resolved from `toolRegistry` (any `{ get(name) }`, such as a `ToolRegistry`) when given, otherwise from the `tools` array; a missing tool throws `AgentDeserializationError`. `overrides` replaces any config field of the restored agent.
 
-A snapshot keeps the model, `fallbackModels`, instructions, sampling parameters, `reasoning`, `maxIterations`, `onIterationLimit` and `timeout`, but not `handoffs`, `skills` (their tools are kept by name) or `middleware`. A `json_schema` response format is saved by name only, so pass the Zod schema back as `overrides.responseFormat`. `Agent.validateSnapshot(value)` checks a parsed snapshot, it rejects snapshots without a `model`, so give agents you serialize an explicit model.
+A snapshot keeps the model, `fallbackModels`, instructions, sampling parameters, `reasoning`, `maxIterations`, `onIterationLimit`, `timeout` and `todos`, but not `handoffs`, `skills` (their tools are kept by name) or `middleware`. A `json_schema` response format is saved by name only, so pass the Zod schema back as `overrides.responseFormat`. `Agent.validateSnapshot(value)` checks a parsed snapshot, it rejects snapshots without a `model`, so give agents you serialize an explicit model.
 
 ### Sending an agent to another process
 
@@ -247,13 +248,26 @@ const wire = toAgentWire(agent); // plain JSON
 const received = fromAgentWire(JSON.parse(payload), { cogitator, tools: [searchWeb, readUrl] });
 ```
 
-`toAgentWire` carries the whole configuration: model and provider, fallback models (up to 16), instructions, sampling, `stopSequences`, `reasoning`, `responseFormat` (a Zod schema as JSON Schema, turned back into one on arrival), `maxIterations`, `onIterationLimit`, `timeout`, the tool schemas and every agent the agent can hand over to (handoff graphs with cycles included). Skills arrive merged into the tools and instructions. An explicit `provider` also prefixes the model, so the agent runs on the same route wherever it lands. Pass `resolveModel` for an agent without a model, e.g. `toAgentWire(agent, { resolveModel: (a) => cogitator.resolveModel(a) })`. [Middleware](/docs/core/middleware) is code and stays behind, `toAgentWire` warns when the agent has some: the receiving side runs the agent with its Cogitator's own middleware.
+`toAgentWire` carries the whole configuration: model and provider, fallback models (up to 16), instructions, sampling, `stopSequences`, `reasoning`, `responseFormat` (a Zod schema as JSON Schema, turned back into one on arrival), `maxIterations`, `onIterationLimit`, `timeout`, `todos`, the tool schemas and every agent the agent can hand over to (handoff graphs with cycles included). Skills defined in code arrive merged into the tools and instructions. Sources of `SKILL.md` skills stay behind, since they read folders of the sending side: give the received agent its own. An explicit `provider` also prefixes the model, so the agent runs on the same route wherever it lands. Pass `resolveModel` for an agent without a model, e.g. `toAgentWire(agent, { resolveModel: (a) => cogitator.resolveModel(a) })`. [Middleware](/docs/core/middleware) is code and stays behind, `toAgentWire` warns when the agent has some: the receiving side runs the agent with its Cogitator's own middleware.
 
 `fromAgentWire` validates the payload (`agentWireSchema`, or `parseAgentWire` alone), refuses keys it does not know instead of dropping them, resolves the tools by name from `tools` and throws `AgentWireError` for a missing tool or a provider the receiving Cogitator cannot route to. `toAgentWireRunResult(result)` and `fromAgentWireRunResult(wire, { agentId })` carry a run's outcome the same way: answer, structured output, usage with cost and duration, tool calls with their outputs, and the `truncated`, `blocked` and `iterationLimitReached` flags. `@cogitator-ai/worker` and distributed swarms use both.
 
 ## Skills
 
-A skill bundles tools with the instructions for using them. `skills` on an agent adds each skill's tools (unless the agent already has a tool of that name) and appends its instructions to the agent's:
+`skills` takes two kinds of skills. Skills in the [Agent Skills](https://agentskills.io) format are folders with a `SKILL.md`: the model sees their names and descriptions and loads one with the built-in `use_skill` tool when a task needs it, see [Skills](/docs/core/skills).
+
+```typescript
+import { SkillRegistry } from '@cogitator-ai/core';
+
+const agent = new Agent({
+  name: 'maintainer',
+  model: 'anthropic/claude-sonnet-5-5',
+  instructions: 'You maintain this project.',
+  skills: [new SkillRegistry({ project: process.cwd(), user: true })],
+});
+```
+
+A skill defined in code bundles tools with the instructions for using them. `skills` on an agent adds each such skill's tools (unless the agent already has a tool of that name) and appends its instructions to the agent's:
 
 ```typescript
 import { defineSkill } from '@cogitator-ai/core';

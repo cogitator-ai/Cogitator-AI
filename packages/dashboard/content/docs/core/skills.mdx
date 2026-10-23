@@ -1,0 +1,153 @@
+---
+title: Skills
+description: Give an agent skills in the Agent Skills format, folders with a SKILL.md it activates when a task needs one, from the host or from its workspace.
+---
+
+## Overview
+
+A skill is a folder with a `SKILL.md` and whatever else the task needs: scripts, references, templates. It follows the [Agent Skills](https://agentskills.io/specification) format, so the skills you already keep for other agents (in `.agents/skills` or `.claude/skills`) work as they are.
+
+```
+.agents/skills/
+└── release/
+    ├── SKILL.md
+    ├── checklist.md
+    └── scripts/
+        └── bump.sh
+```
+
+```markdown
+---
+name: release
+description: Release a new version of the project. Use when asked to ship, release or tag a version.
+license: MIT
+metadata:
+  owner: platform-team
+---
+
+1. Read checklist.md.
+2. Run scripts/bump.sh with the new version.
+3. Write the release notes.
+```
+
+Skills load in three steps, so a hundred skills cost the context almost nothing until one is used:
+
+1. **Metadata**: the name and description of every skill go into the system prompt, in an `<available_skills>` block.
+2. **Instructions**: when a task matches, the model calls the built-in `use_skill` tool, which returns the body of `SKILL.md` (without its frontmatter), the skill folder and the list of its files.
+3. **Files**: the model reads the files the instructions point to when it needs them.
+
+Skills written in code with `defineSkill` are different: their tools and instructions join the agent's right away, see [Agents](/docs/core/agents#skills). An agent can have both.
+
+## Adding skills to an agent
+
+Pass a `SkillRegistry` (or the configuration of one) in `skills`:
+
+```typescript
+import {
+  Agent,
+  Cogitator,
+  LocalWorkspace,
+  SkillRegistry,
+  workspaceTools,
+} from '@cogitator-ai/core';
+
+const workspace = new LocalWorkspace({ root: './project' });
+
+const agent = new Agent({
+  name: 'maintainer',
+  model: 'anthropic/claude-sonnet-5-5',
+  instructions: 'You maintain this project.',
+  tools: workspaceTools(),
+  workspace,
+  skills: [new SkillRegistry({ user: true, dirs: ['./shared-skills'] })],
+});
+
+await new Cogitator().run(agent, { input: 'Ship version 2.1.0' });
+```
+
+`skills: [{ user: true }]` does the same with a registry made for you. The search happens when a run starts, and an agent whose search finds nothing runs without any skill tool or prompt section.
+
+## Where skills are found
+
+A `SkillRegistry` searches, in this order:
+
+| Option      | Where                                                                                            | Default |
+| ----------- | ------------------------------------------------------------------------------------------------ | ------- |
+| `dirs`      | Each folder given: a folder of skill folders, or a skill folder itself                           | none    |
+| `workspace` | `.agents/skills`, `.cogitator/skills` and `.claude/skills` under the root of the run's workspace | `true`  |
+| `project`   | The same three folders under a project folder on the host                                        | none    |
+| `user`      | The same three folders in the home folder (`true`) or in the folder named                        | `false` |
+
+When two skills share a name, the first one found wins: `dirs` before the workspace, the workspace before the project, the project before the user, and `.agents/skills` before `.cogitator/skills` before `.claude/skills`. So a project overrides a skill of the same name in your home folder.
+
+Folders on the host are scanned once per registry, call `registry.reload()` after you change them. The workspace is scanned on every run, since the agent may add a skill there itself.
+
+## The SKILL.md format
+
+The frontmatter is YAML. The registry reads it leniently, the way the format recommends:
+
+| Field           | Rule                                                                  | When it is broken                                                                  |
+| --------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `description`   | Required, 1 to 1024 characters                                        | Missing or empty: the skill is skipped. Too long: kept, with a warning             |
+| `name`          | 1 to 64 lowercase letters, digits and single hyphens, the folder name | Missing: the folder name is used. Other rules: kept, with a warning                |
+| `license`       | A string                                                              | Ignored, with a warning                                                            |
+| `compatibility` | 1 to 500 characters                                                   | Too long: kept, with a warning                                                     |
+| `metadata`      | A map of strings                                                      | A number or boolean is read as a string, anything else is left out, with a warning |
+| `allowed-tools` | Space separated tool names (a YAML list works too)                    | Ignored, with a warning                                                            |
+
+A file without frontmatter, with YAML that does not parse or with frontmatter that is not a mapping is skipped. Fields the format does not define are ignored. Every problem lands in the catalog's `diagnostics` and is logged once:
+
+```typescript
+const catalog = await new SkillRegistry({ project: '.' }).discover();
+for (const problem of catalog.diagnostics)
+  console.log(problem.level, problem.path, problem.message);
+```
+
+`allowed-tools` is experimental in the format. The registry keeps it on the skill (`allowedTools`) and `use_skill` tells the model which tools the skill expects, but nothing approves or restricts tools by it.
+
+## What the model gets
+
+The system prompt ends with the catalog:
+
+```
+<available_skills>
+<skill name="release">Release a new version of the project. Use when asked to ship, release or tag a version.</skill>
+</available_skills>
+Skills hold instructions and files for particular tasks. When a task matches a skill's description, call use_skill with that skill before you start, then follow what it returns.
+```
+
+Descriptions fill at most 12 000 characters, the skills past them are listed by name only. `use_skill({ skill })` takes any of the names and returns:
+
+```
+<skill_content name="release">
+1. Read checklist.md.
+...
+</skill_content>
+
+Skill folder: .agents/skills/release (in the workspace, relative to its root). Paths in the instructions are relative to it.
+
+Files of the skill, read them with read_file, by these paths:
+- .agents/skills/release/checklist.md
+- .agents/skills/release/scripts/bump.sh
+```
+
+The files are read with the tool that reaches them:
+
+- A skill in the run's workspace, when the agent has the `read_file` of `workspaceTools()`: with `read_file`, by their workspace paths. Its scripts run with `run_command` like any other file of the workspace.
+- A skill on the host (or in a workspace the agent has no `read_file` for): with the built-in `read_skill_file({ skill, path })`, which reads only inside the skill folder. A path with `..`, an absolute path elsewhere and a symlink that points out of the folder are refused.
+
+The registry never runs a script. Running one is up to the tools you give the agent, inside the boundaries of its workspace.
+
+## Active skills stay in the conversation
+
+A skill activated once stays active for the run and the thread:
+
+- Calling `use_skill` again for a skill whose instructions are still in the conversation returns a short note instead of the whole body again.
+- Clearing tool outputs (`context.clearToolOutputs`) never clears a `use_skill` result.
+- When compaction of the conversation (`context`) drops a `use_skill` result, the instructions come back as a system message right after the system prompt.
+
+Once the instructions are gone from the history (a later run after the thread was compacted in memory, say), `use_skill` returns the whole body again.
+
+## Writing your own loader
+
+`skills` takes anything with `discover(context)` that returns a `SkillCatalog`: the skill manifests (`name`, `description`, `license`, `compatibility`, `metadata`, `allowedTools`, `location`, `source`), the diagnostics, and `body(name)`, `files(name)` and `readFile(name, path)`. Use it to serve skills from a database or a package. `parseSkillFile(text, origin)` and `splitSkillFile(text)` parse a `SKILL.md` the way the registry does.

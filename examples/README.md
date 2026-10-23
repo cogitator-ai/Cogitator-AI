@@ -48,7 +48,7 @@ YAML configuration loading, environment variable overrides, and Cogitator runtim
 
 ### [`core/`](./core/) — Core Runtime Features
 
-Agent creation, tools, streaming, caching, reasoning, reflection, optimization, security, workspaces with long tool results saved to files, and more.
+Agent creation, tools, streaming, caching, reasoning, reflection, optimization, security, workspaces with long tool results saved to files, skills from `SKILL.md` folders with todo lists and tool search, and more.
 
 ### [`memory/`](./memory/) — Memory & Knowledge
 

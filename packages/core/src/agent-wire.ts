@@ -33,7 +33,8 @@ export const AGENT_CONFIG_WIRE_FIELDS = {
   fallbackModels: 'carried, each routed like model',
   instructions: 'carried',
   tools: 'carried as schemas, resolved by name on the receiving side',
-  skills: 'merged into tools and instructions by the Agent constructor',
+  skills:
+    "code skills merged into tools and instructions by the Agent constructor, SKILL.md sources not carried: they read the sending side's folders, the receiving side passes its own",
   temperature: 'carried',
   topP: 'carried',
   maxTokens: 'carried',
@@ -44,6 +45,7 @@ export const AGENT_CONFIG_WIRE_FIELDS = {
   maxIterations: 'carried',
   onIterationLimit: 'carried',
   timeout: 'carried',
+  todos: 'carried',
   middleware: 'not carried: it is code, the receiving side runs its own (config middleware)',
   workspace: 'not carried: it is a live directory or container, the receiving side passes its own',
 } as const satisfies Record<keyof AgentConfig, string>;
@@ -107,6 +109,7 @@ const agentShape = {
   maxIterations: z.number().int().positive().optional(),
   onIterationLimit: z.enum(['answer', 'stop']).optional(),
   timeout: z.number().positive().optional(),
+  todos: z.boolean().optional(),
   tools: z.array(toolSchemaSchema),
   handoffs: z.array(handoffSchema).optional(),
 };
@@ -278,6 +281,7 @@ function agentToWire(agent: IAgent, options: ToAgentWireOptions): AgentWireAgent
     ...(config.maxIterations !== undefined && { maxIterations: config.maxIterations }),
     ...(config.onIterationLimit !== undefined && { onIterationLimit: config.onIterationLimit }),
     ...(config.timeout !== undefined && { timeout: config.timeout }),
+    ...(config.todos !== undefined && { todos: config.todos }),
     tools: agent.tools.map((tool): ToolSchema => tool.toJSON()),
     ...(handoffs.length > 0 && { handoffs }),
   };
@@ -411,6 +415,7 @@ export function fromAgentWire(value: unknown, runtime: AgentWireRuntime): Agent 
         ...(item.maxIterations !== undefined && { maxIterations: item.maxIterations }),
         ...(item.onIterationLimit !== undefined && { onIterationLimit: item.onIterationLimit }),
         ...(item.timeout !== undefined && { timeout: item.timeout }),
+        ...(item.todos !== undefined && { todos: item.todos }),
         tools: item.tools.map((schema) => tools.get(schema.name)!),
         ...(item.handoffs && { handoffs }),
       })

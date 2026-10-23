@@ -103,6 +103,7 @@ export function tool<TParams, TResult, TDeps = unknown>(
     sandbox: config.sandbox,
     maxResultLength: config.maxResultLength,
     ...(config.providerTypes && { providerTypes: config.providerTypes }),
+    ...(config.deferred && { deferred: true }),
     toJSON(): ToolSchema {
       return toolToSchema(this);
     },
@@ -134,6 +135,7 @@ export function withParsedArguments<TParams, TResult>(
     ...(tool.sandbox !== undefined && { sandbox: tool.sandbox }),
     ...(tool.maxResultLength !== undefined && { maxResultLength: tool.maxResultLength }),
     ...(tool.providerTypes && { providerTypes: tool.providerTypes }),
+    ...(tool.deferred && { deferred: true }),
     toJSON: () => tool.toJSON(),
   };
 }

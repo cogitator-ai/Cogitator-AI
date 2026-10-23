@@ -67,6 +67,8 @@ export interface AgentWireAgent {
   onIterationLimit?: 'answer' | 'stop';
   /** Run timeout in ms, as in `AgentConfig.timeout` */
   timeout?: number;
+  /** Whether the agent keeps a todo list with `write_todos`, as in `AgentConfig.todos` */
+  todos?: boolean;
   /** Tool schemas; tools are resolved by name on the receiving side */
   tools: ToolSchema[];
   /** Agents this one can hand the conversation over to */

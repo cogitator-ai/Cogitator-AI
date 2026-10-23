@@ -27,7 +27,7 @@ import {
 import { CogitatorError, ErrorCode, historyMessage } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
 import { ensureThreadAccess, threadMetadata } from './threads';
-import { memoryAgentId, type Agent } from '../agent';
+import { memoryAgentId } from '../agent';
 import type { ReflectionEngine } from '../reflection/index';
 import type { AgentContext } from '@cogitator-ai/types';
 import { sanitizeToolHistory } from '../utils/tool-history';
@@ -120,8 +120,19 @@ export function buildUserContent(input: string, images?: ImageInput[]): string |
   return parts;
 }
 
+/**
+ * What `buildInitialMessages` reads of the agent: its ids for memory, and `instructions`, the
+ * system prompt the run sends, which may hold more than the agent's own instructions
+ */
+export interface PromptAgent {
+  readonly id: string;
+  readonly name: string;
+  readonly instructions: string;
+  readonly config: { readonly id?: string };
+}
+
 export async function buildInitialMessages(
-  agent: Agent,
+  agent: PromptAgent,
   options: RunOptions,
   threadId: string,
   memoryAdapter: MemoryAdapter | undefined,

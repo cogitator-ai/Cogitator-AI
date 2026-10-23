@@ -3,6 +3,8 @@
   "pages": [
     "cogitator",
     "agents",
+    "skills",
+    "todos",
     "tools",
     "middleware",
     "llm-backends",

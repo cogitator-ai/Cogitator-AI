@@ -22,6 +22,9 @@ import {
   recalledCallId,
   RECALL_TOOL_OUTPUT,
 } from '../tools/recall-tool-output';
+import { USE_SKILL } from '../skills/skill-tools';
+import { TOOL_SEARCH } from '../tools/tool-search';
+import { WRITE_TODOS } from '../tools/write-todos';
 
 const optionsSchema = z.object({
   trigger: z.number().int().nonnegative().default(100_000),
@@ -32,6 +35,13 @@ const optionsSchema = z.object({
 });
 
 const STATE_KEY = 'cogitator:clear-tool-outputs';
+
+/**
+ * Tools whose outputs are never cleared, whatever `exclude` says: the instructions of an active
+ * skill, the tools a search loaded and the todo list, which the model needs as long as the run
+ * goes on
+ */
+const NEVER_CLEARED: readonly string[] = [USE_SKILL, TOOL_SEARCH, WRITE_TODOS];
 const CLEARED_ARGUMENTS_TEXT = 'Arguments cleared to save context';
 
 /** What the clearing of a run did so far, kept in the run's middleware state. */
@@ -133,7 +143,8 @@ interface Candidate {
 /**
  * Clears the outputs of old tool calls from a run's conversation, see `ClearToolOutputsConfig`.
  * Before a turn whose conversation has `trigger` tokens or more, every tool result but the
- * `keep` most recent ones and those of `exclude`d tools gets a note in place of its output, once
+ * `keep` most recent ones and those of `exclude`d tools (and of `use_skill`, `tool_search` and
+ * `write_todos`, always) gets a note in place of its output, once
  * that frees `clearAtLeast` tokens. Each result keeps its message, so every provider still gets
  * a result for each tool call. The run goes on with the cleared conversation, so a cleared
  * output is not counted again, and `restoreClearedOutputs` gives the outputs back in what outlives
@@ -154,7 +165,7 @@ export function clearToolOutputsMiddleware(config: ClearToolOutputsConfig = {}):
     });
   }
   const { trigger, keep, clearInputs, clearAtLeast } = parsed.data;
-  const exclude = new Set(parsed.data.exclude);
+  const exclude = new Set([...NEVER_CLEARED, ...parsed.data.exclude]);
   const onBeforeClear = config.onBeforeClear;
 
   const candidatesIn = (messages: readonly Message[]): Candidate[] => {

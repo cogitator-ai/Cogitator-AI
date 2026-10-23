@@ -5,7 +5,7 @@ export const agents: Section = {
   title: 'Agents & Tools',
   icon: '🤖',
   description:
-    'Cache expensive tools, pause for approval, hand conversations between agents, keep long chats inside the context window, fall back to another model, give tools per-request deps.',
+    'Cache expensive tools, pause for approval, hand conversations between agents, keep long chats inside the context window, fall back to another model, give tools per-request deps, load skills from SKILL.md.',
   recipes: [
     {
       id: 'tool-caching',
@@ -667,6 +667,72 @@ await cog.close();`,
           href: '/docs/core/agents#dependencies-for-tools',
           label: 'Dependencies for Tools',
         },
+      ],
+    },
+    {
+      id: 'agent-skills',
+      title: 'Give an Agent Skills from SKILL.md',
+      difficulty: 'easy',
+      time: '10 min',
+      problem:
+        'You keep instructions for recurring tasks (release notes, reviews, deploys) as Agent Skills folders, and want an agent to load one only when a task needs it instead of carrying them all in its prompt.',
+      points: [
+        '`SkillRegistry` finds `SKILL.md` folders in `dirs`, the workspace, the project and the home folder',
+        'The model sees names and descriptions, `use_skill` loads the instructions and lists the files',
+        '`todos: true` adds `write_todos`, the list is kept in the thread and returned as `result.todos`',
+      ],
+      file: 'agent-skills.ts',
+      code: `import { Agent, Cogitator, SkillRegistry } from '@cogitator-ai/core';
+
+const agent = new Agent({
+  name: 'release-manager',
+  model: 'ollama/qwen2.5:0.5b',
+  instructions: 'You prepare releases. Activate the matching skill before you work on a task.',
+  skills: [new SkillRegistry({ dirs: ['./skills'] })],
+  todos: true,
+});
+
+const cog = new Cogitator({ memory: { adapter: 'memory' } });
+const result = await cog.run(agent, {
+  input: 'Activate the release-notes skill with use_skill, then write release notes for 2.1.0.',
+  threadId: 'release-2.1.0',
+  onToolCall: (call) => console.log(call.name, call.arguments),
+});
+
+console.log(result.output);
+console.log(result.todos);
+await cog.close();`,
+      install: 'pnpm add @cogitator-ai/core',
+      setup: 'ollama pull qwen2.5:0.5b',
+      env: [],
+      run: 'npx tsx agent-skills.ts',
+      repoRun: 'npx tsx examples/core/23-skills-and-todos.ts',
+      extra: [
+        {
+          title: 'skills/release-notes/SKILL.md',
+          language: 'bash',
+          code: `mkdir -p skills/release-notes
+cat > skills/release-notes/SKILL.md <<'EOF'
+---
+name: release-notes
+description: Write release notes for a new version from a list of changes. Use when asked for release notes or a changelog entry.
+---
+
+Sort every change into Added, Changed or Fixed, one line per change, in the past tense.
+EOF`,
+        },
+      ],
+      notes: [
+        {
+          type: 'tip',
+          text: 'Mark rarely used tools `deferred: true`: their schemas stay out of the requests until the model finds them with `tool_search`.',
+        },
+      ],
+      example: 'core/23-skills-and-todos.ts',
+      docs: [
+        { href: '/docs/core/skills', label: 'Skills' },
+        { href: '/docs/core/todos', label: 'Todo Lists' },
+        { href: '/docs/tools/tool-search', label: 'Tool Search' },
       ],
     },
   ],
