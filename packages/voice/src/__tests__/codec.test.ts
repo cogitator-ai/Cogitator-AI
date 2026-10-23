@@ -55,12 +55,14 @@ describe('G.711 μ-law', () => {
   });
 
   it('keeps the round-trip error within the quantization step of each segment', () => {
+    const outside: number[] = [];
     for (let sample = -32768; sample <= 32767; sample++) {
       const clipped = Math.sign(sample) * Math.min(Math.abs(sample), 32635);
       const error = Math.abs(mulawToLinear(linearToMulaw(sample)) - clipped);
-      if (Math.abs(sample) < 256) expect(error).toBeLessThanOrEqual(8);
-      else expect(error / Math.abs(clipped)).toBeLessThan(0.0625);
+      const within = Math.abs(sample) < 256 ? error <= 8 : error / Math.abs(clipped) < 0.0625;
+      if (!within) outside.push(sample);
     }
+    expect(outside).toEqual([]);
   });
 
   it('is monotonic', () => {
