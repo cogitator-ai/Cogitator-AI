@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import type { DocumentLoader, RAGDocument } from '@cogitator-ai/types';
+import type { RAGDocument } from '@cogitator-ai/types';
 import { JSONLoader, type JSONLoaderOptions } from './json-loader.js';
 
 export type JSONLLoaderOptions = JSONLoaderOptions;
