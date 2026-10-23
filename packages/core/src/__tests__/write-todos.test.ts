@@ -6,6 +6,10 @@ import { Agent } from '../agent';
 import { keepThroughCompaction } from '../cogitator/harness';
 import { renderTodos, todoListSchema, todosIn } from '../tools/write-todos';
 import { clearToolOutputsMiddleware, PINNED_TOOL_OUTPUTS } from '../middleware/clear-tool-outputs';
+import { compactionMiddleware } from '../middleware/builtins';
+import { ContextManager } from '../context/index';
+import { tool } from '../tool';
+import { z } from 'zod';
 import { getLogger } from '../logger';
 
 function call(id: string, name: string, args: Record<string, unknown>): ToolCall {
@@ -142,11 +146,17 @@ describe('write_todos in a run', () => {
     });
     expect(later.todos).toEqual(progressed);
     const sent = backend.getLastCall()!.messages;
-    expect(sent.at(-2)).toEqual({
-      role: 'system',
-      content: `Your todo list from earlier in this conversation (update it with write_todos):\n${renderTodos(progressed)}`,
+    expect(sent.at(-3)).toMatchObject({ role: 'user', content: 'Go on' });
+    expect(sent.at(-2)).toMatchObject({
+      role: 'assistant',
+      toolCalls: [{ name: 'write_todos', arguments: { todos: progressed } }],
     });
-    expect(sent.at(-1)).toMatchObject({ role: 'user', content: 'Go on' });
+    expect(sent.at(-1)).toMatchObject({
+      role: 'tool',
+      name: 'write_todos',
+      content: renderTodos(progressed),
+    });
+    expect(todosIn(sent)).toEqual(progressed);
     await cog.close();
   });
 
@@ -280,6 +290,81 @@ describe('write_todos in a run', () => {
   });
 });
 
+describe('a todo list compaction kept', () => {
+  function compactingPlanner(): { cog: Cogitator; backend: MockLLMBackend; agent: Agent } {
+    class SmallWindow extends ContextManager {
+      override getModelContextLimit(): number {
+        return 1_200;
+      }
+    }
+    const backend = new MockLLMBackend().setResponses([
+      { toolCalls: [call('t1', 'write_todos', { todos: progressed })] },
+      { toolCalls: [call('p1', 'pad', {})] },
+      { toolCalls: [call('w1', 'wire', {})] },
+      { content: 'Done.' },
+    ]);
+    const pad = tool({
+      name: 'pad',
+      description: 'Pads the conversation',
+      parameters: z.object({}),
+      execute: async () => 'p'.repeat(8_000),
+    });
+    const wire = tool({
+      name: 'wire',
+      description: 'Needs approval',
+      parameters: z.object({}),
+      requiresApproval: true,
+      execute: async () => 'wired',
+    });
+    const cog = new Cogitator({ llm: { backends: { mock: backend }, retry: false } });
+    const agent = new Agent({
+      name: 'planner',
+      model: 'mock/m',
+      instructions: 'Plan.',
+      todos: true,
+      tools: [pad, wire],
+      middleware: [
+        compactionMiddleware(new SmallWindow({ strategy: 'truncate', outputReserve: 0 })),
+      ],
+    });
+    return { cog, backend, agent };
+  }
+
+  it('is restored when a paused run resumes without memory', async () => {
+    const { cog, agent } = compactingPlanner();
+    const paused = await cog.run(agent, { input: 'Plan', onApproval: () => 'pause' });
+    expect(paused.status).toBe('paused');
+    expect(paused.todos).toEqual(progressed);
+    expect(paused.checkpoint!.messages.some((m) => m.toolCallId === 't1')).toBe(false);
+
+    const reported: (readonly TodoItem[])[] = [];
+    const resumed = await cog.resume(agent, paused.checkpoint!, {
+      decisions: { w1: { approved: true } },
+      onTodos: (todos) => reported.push(todos),
+    });
+    expect(resumed.todos).toEqual(progressed);
+    expect(reported).toEqual([progressed]);
+    await cog.close();
+  });
+
+  it('is restored when a run goes on from the messages as history', async () => {
+    const { cog, agent } = compactingPlanner();
+    const paused = await cog.run(agent, { input: 'Plan', onApproval: () => 'pause' });
+    const history = paused.messages.filter((m) => m.role !== 'system');
+    expect(history.some((m) => m.toolCallId === 't1')).toBe(false);
+    expect(history.some((m) => m.toolCallId?.startsWith('cogitator_todos_'))).toBe(true);
+    const next = new MockLLMBackend().setResponse({ content: 'Still planning.' });
+    const later = new Cogitator({ llm: { backends: { mock: next }, retry: false } });
+    const result = await later.run(
+      new Agent({ name: 'planner', model: 'mock/m', instructions: 'Plan.', todos: true }),
+      { input: 'Status?', history }
+    );
+    expect(result.todos).toEqual(progressed);
+    await cog.close();
+    await later.close();
+  });
+});
+
 describe('the todo list through clearing and compaction', () => {
   const written: Message[] = [
     { role: 'system', content: 'Plan.' },
@@ -334,9 +419,11 @@ describe('the todo list through clearing and compaction', () => {
       );
       const compacted = messages.filter((m) => m.role === 'system' || m.content === `more ${step}`);
       messages = keepThroughCompaction(messages, compacted);
-      const notes = messages.filter((m) => String(m.content).startsWith('Your todo list'));
-      expect(notes).toHaveLength(1);
-      expect(String(notes[0]?.content)).toContain(`s${step}: Step ${step}`);
+      const shown = messages.filter((m) => m.role === 'tool' && m.name === 'write_todos');
+      expect(shown).toHaveLength(1);
+      expect(String(shown[0]?.content)).toContain(`s${step}: Step ${step}`);
+      expect(todosIn(messages)).toEqual(todos);
+      expect(messages.at(-1)).toBe(shown[0]);
     }
   });
 
@@ -346,14 +433,27 @@ describe('the todo list through clearing and compaction', () => {
       { role: 'user', content: 'next' },
     ];
     const kept = keepThroughCompaction(written, compacted);
-    expect(kept).toEqual([
-      { role: 'system', content: 'Plan.' },
+    expect(kept.slice(0, 2)).toEqual(compacted);
+    expect(kept.slice(2)).toEqual([
       {
-        role: 'system',
-        content: `Your todo list from earlier in this conversation (update it with write_todos):\n${renderTodos(progressed)}`,
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          {
+            id: expect.stringMatching(/^cogitator_todos_/),
+            name: 'write_todos',
+            arguments: { todos: progressed },
+          },
+        ],
       },
-      { role: 'user', content: 'next' },
+      {
+        role: 'tool',
+        content: renderTodos(progressed),
+        toolCallId: expect.stringMatching(/^cogitator_todos_/),
+        name: 'write_todos',
+      },
     ]);
+    expect(todosIn(kept)).toEqual(progressed);
     expect(keepThroughCompaction(kept, kept)).toEqual(kept);
     expect(keepThroughCompaction(written, written.slice(3))).toEqual(written.slice(3));
   });

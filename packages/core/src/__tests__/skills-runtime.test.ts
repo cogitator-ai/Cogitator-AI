@@ -430,6 +430,58 @@ describe('skills across a run', () => {
     await cog.close();
   });
 
+  it('tells skills at the same path of two workspaces apart across a handoff', async () => {
+    const triageSpace = new LocalWorkspace({ root: join(base, 'triage-space') });
+    const billingSpace = new LocalWorkspace({ root: join(base, 'billing-space') });
+    addSkill(join(triageSpace.root, '.agents/skills'), 'deploy', 'Deploy.', 'Triage deploy.');
+    addSkill(join(billingSpace.root, '.agents/skills'), 'deploy', 'Deploy.', 'Billing deploy.');
+    const billing = new Agent({
+      name: 'billing',
+      model: 'mock/m',
+      instructions: 'Billing.',
+      workspace: billingSpace,
+      skills: [new SkillRegistry()],
+    });
+    const triage = new Agent({
+      name: 'triage',
+      model: 'mock/m',
+      instructions: 'Triage.',
+      workspace: triageSpace,
+      skills: [new SkillRegistry()],
+      handoffs: [billing],
+    });
+    const backend = new MockLLMBackend().setResponses([
+      { toolCalls: [call('u1', 'use_skill', { skill: 'deploy' })] },
+      { toolCalls: [call('h1', 'transfer_to_billing', {})] },
+      { toolCalls: [call('u2', 'use_skill', { skill: 'deploy' })] },
+      { content: 'Done.' },
+    ]);
+    const cog = cogitatorWith(backend);
+    const result = await cog.run(triage, { input: 'deploy' });
+
+    const [first, , second] = toolTexts(result.messages);
+    expect(first).toContain('Triage deploy.');
+    expect(second).toContain('Billing deploy.');
+    expect(second).toContain(`workspace="${billingSpace.id}"`);
+
+    const harness = new RunHarness({
+      conversation: () => [],
+      registry: () => new ToolRegistry(),
+      workspaceOf: (owner) => owner.config.workspace,
+      onTodos: async () => undefined,
+      signal: new AbortController().signal,
+    });
+    await harness.prepare(billing);
+    const kept: Message[] = [
+      { role: 'system', content: 'Triage.' },
+      { role: 'system', content: first! },
+    ];
+    expect(harness.forHandoff(billing, kept)).toEqual([kept[0]]);
+    await triageSpace.dispose();
+    await billingSpace.dispose();
+    await cog.close();
+  });
+
   it('drops kept instructions of skills the agent handed over to does not have', async () => {
     const triageSkills = join(base, 'triage-skills');
     const billingSkills = join(base, 'billing-skills');

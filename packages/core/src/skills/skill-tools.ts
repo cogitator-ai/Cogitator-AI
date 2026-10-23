@@ -66,15 +66,23 @@ export function availableSkillsSection(skills: readonly SkillManifest[]): string
 
 /**
  * What tells a skill from another of the same name (of another agent, or found elsewhere): where
- * its folder is
+ * its folder is, in which workspace for a skill found in one
  */
-export function skillKey(skill: Pick<SkillManifest, 'source' | 'location'>): string {
-  return `${skill.source}:${skill.location}`;
+export function skillKey(
+  skill: Pick<SkillManifest, 'source' | 'location' | 'workspaceId'>
+): string {
+  return skill.source === 'workspace'
+    ? `workspace:${skill.workspaceId ?? ''}:${skill.location}`
+    : `host:${skill.location}`;
 }
 
 /** The opening tag `use_skill` starts the instructions of `skill` with. */
 function skillContentTag(skill: SkillManifest): string {
-  return `<skill_content name="${escapeXml(skill.name)}" source="${skill.source}" location="${escapeXml(skill.location)}">`;
+  const workspace =
+    skill.source === 'workspace' && skill.workspaceId !== undefined
+      ? ` workspace="${escapeXml(skill.workspaceId)}"`
+      : '';
+  return `<skill_content name="${escapeXml(skill.name)}" source="${skill.source}"${workspace} location="${escapeXml(skill.location)}">`;
 }
 
 /**
@@ -104,22 +112,37 @@ export function mayHoldSkill(message: Message): boolean {
 
 /** The skill whose instructions `text` holds, when it starts with them: its name and key. */
 export function skillContentOf(text: string): { name: string; key: string } | undefined {
-  const prefix = '<skill_content name="';
+  const prefix = '<skill_content ';
   if (!text.startsWith(prefix)) return undefined;
-  const nameEnd = text.indexOf('" source="', prefix.length);
-  if (nameEnd === -1) return undefined;
-  const sourceStart = nameEnd + '" source="'.length;
-  const sourceEnd = text.indexOf('" location="', sourceStart);
-  if (sourceEnd === -1) return undefined;
-  const locationStart = sourceEnd + '" location="'.length;
-  const locationEnd = text.indexOf('">', locationStart);
-  if (locationEnd === -1) return undefined;
-  const source = text.slice(sourceStart, sourceEnd);
+  const end = text.indexOf('>', prefix.length);
+  if (end === -1) return undefined;
+  const attributes = tagAttributes(text.slice(prefix.length, end));
+  const name = attributes.get('name');
+  const source = attributes.get('source');
+  const location = attributes.get('location');
+  const workspace = attributes.get('workspace');
+  if (name === undefined || location === undefined) return undefined;
   if (source !== 'host' && source !== 'workspace') return undefined;
   return {
-    name: unescapeXml(text.slice(prefix.length, nameEnd)),
-    key: skillKey({ source, location: unescapeXml(text.slice(locationStart, locationEnd)) }),
+    name,
+    key: skillKey({ source, location, ...(workspace !== undefined && { workspaceId: workspace }) }),
   };
+}
+
+/** The `key="value"` attributes of a tag written by {@link skillContentTag}, unescaped. One pass. */
+function tagAttributes(text: string): Map<string, string> {
+  const attributes = new Map<string, string>();
+  let position = 0;
+  while (position < text.length) {
+    const equals = text.indexOf('="', position);
+    if (equals === -1) break;
+    const close = text.indexOf('"', equals + 2);
+    if (close === -1) break;
+    const key = text.slice(position, equals).trim();
+    attributes.set(key, unescapeXml(text.slice(equals + 2, close)));
+    position = close + 1;
+  }
+  return attributes;
 }
 
 export interface SkillToolsOptions {

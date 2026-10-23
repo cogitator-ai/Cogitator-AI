@@ -194,7 +194,7 @@ import {
   addContextToMessages,
 } from './cogitator/message-builder';
 import { RunMemory } from './cogitator/run-memory';
-import { RunHarness, todoNote } from './cogitator/harness';
+import { RunHarness, todosRecall } from './cogitator/harness';
 import { parseKeptTodos, TODOS_METADATA_KEY, type KeptTodos } from './tools/write-todos';
 import { createSpan, getTextContent } from './cogitator/span-factory';
 import {
@@ -1316,7 +1316,7 @@ export class Cogitator implements ToolInvoker {
           this.keptTodos(threadId, options, runMemory)
         );
         if (restored?.from === 'kept' && !checkpoint) {
-          messages.splice(Math.max(messages.length - 1, 0), 0, todoNote(restored.todos));
+          messages.push(...todosRecall(restored.todos));
         }
         if (restored) reportTodos(restored.todos);
       }

@@ -60,6 +60,8 @@ export interface SkillManifest {
   readonly location: string;
   /** Whether the folder is on the host or in the run's workspace */
   readonly source: 'host' | 'workspace';
+  /** The `id` of the workspace a skill found there is in, which tells it from a skill at the same path of another workspace */
+  readonly workspaceId?: string;
 }
 
 /** Something wrong with a `SKILL.md` that a skill loader found, and skipped or tolerated. */

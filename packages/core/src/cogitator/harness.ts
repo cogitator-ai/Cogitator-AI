@@ -5,6 +5,7 @@ import {
   type SkillCatalog,
   type TodoItem,
   type Tool,
+  type ToolCall,
   type ToolSchema,
   type Workspace,
 } from '@cogitator-ai/types';
@@ -29,20 +30,46 @@ import {
   toolsFoundIn,
 } from '../tools/tool-search';
 import { renderTodos, todosIn, WRITE_TODOS, writeTodosTool } from '../tools/write-todos';
+import { nanoid } from 'nanoid';
 import { readFileBinding } from '../tools/workspace-tools';
 import { getTextContent } from './span-factory';
-
-/** How a note of the todo list starts, when the run shows the list without a `write_todos` result. */
-const TODO_NOTE_HEADER =
-  'Your todo list from earlier in this conversation (update it with write_todos):';
 
 /** How the note about skill instructions compaction left out starts. */
 const DROPPED_SKILLS_HEADER =
   'Skills activated earlier whose instructions were left out to save context';
 
-/** A system message that shows the model its todo list. */
-export function todoNote(todos: readonly TodoItem[]): Message {
-  return { role: 'system', content: `${TODO_NOTE_HEADER}\n${renderTodos(todos)}` };
+/** How the ids of the `write_todos` calls the run makes up to show a kept todo list start. */
+const RECALLED_TODOS_ID = 'cogitator_todos_';
+
+/**
+ * A `write_todos` call with its result, made up to show the model a todo list it wrote before
+ * (kept in the thread metadata, or dropped by a compaction): the model reads it as its own call,
+ * and `todosIn()` reads the list back from it, also from a checkpoint or a `history` that goes on
+ * from these messages. It goes after the newest message, where a call and its result fit for
+ * every provider.
+ */
+export function todosRecall(todos: readonly TodoItem[]): Message[] {
+  const id = `${RECALLED_TODOS_ID}${nanoid(10)}`;
+  const call: Message & { toolCalls: ToolCall[] } = {
+    role: 'assistant',
+    content: '',
+    toolCalls: [
+      { id, name: WRITE_TODOS, arguments: { todos: todos.map((todo) => ({ ...todo })) } },
+    ],
+  };
+  return [call, { role: 'tool', content: renderTodos(todos), toolCallId: id, name: WRITE_TODOS }];
+}
+
+/** Whether `message` is part of a {@link todosRecall}. */
+function isTodosRecall(message: Message): boolean {
+  if (message.role === 'tool') return message.toolCallId?.startsWith(RECALLED_TODOS_ID) === true;
+  if (message.role !== 'assistant' || !('toolCalls' in message)) return false;
+  const calls: unknown = message.toolCalls;
+  return (
+    Array.isArray(calls) &&
+    calls.length === 1 &&
+    (calls as ToolCall[])[0]?.id.startsWith(RECALLED_TODOS_ID) === true
+  );
 }
 
 export interface RunHarnessOptions {
@@ -260,8 +287,8 @@ function abortReason(signal: AbortSignal): Error {
 interface Pinned {
   /** Instructions of active skills, oldest first, by skill key */
   skills: Map<string, { name: string; text: string }>;
-  /** The newest todo list as `renderTodos` wrote it */
-  todos?: string;
+  /** The newest todo list */
+  todos?: TodoItem[];
   /** Tools `tool_search` loaded */
   tools: Set<string>;
 }
@@ -276,7 +303,7 @@ function pinnedIn(messages: readonly Message[]): Pinned {
     skills.delete(content.key);
     skills.set(content.key, { name: content.name, text });
   }
-  const todos = latestTodoText(messages);
+  const todos = todosIn(messages);
   return { skills, ...(todos !== undefined && { todos }), tools: toolsFoundIn(messages) };
 }
 
@@ -286,7 +313,6 @@ function isHarnessNote(message: Message): boolean {
   const text = getTextContent(message.content);
   return (
     skillContentOf(text) !== undefined ||
-    text.startsWith(`${TODO_NOTE_HEADER}\n`) ||
     text.startsWith(DROPPED_SKILLS_HEADER) ||
     isLoadedToolsNote(message)
   );
@@ -295,8 +321,9 @@ function isHarnessNote(message: Message): boolean {
 /**
  * The system messages that put back into `after` what the model must not lose from `before`:
  * the instructions of active skills `after` lacks (the newest first, at most
- * {@link MAX_PINNED_SKILL_CHARS} characters, a short note naming the rest), the newest todo list
- * when `after` does not show it, and the tools `tool_search` loaded that `after` does not name.
+ * {@link MAX_PINNED_SKILL_CHARS} characters, a short note naming the rest) and the tools
+ * `tool_search` loaded that `after` does not name. The todo list comes back apart, see
+ * {@link todosToRecall}.
  */
 function notesFor(pinned: Pinned, after: readonly Message[]): Message[] {
   const active = activeSkillsIn(after);
@@ -319,9 +346,6 @@ function notesFor(pinned: Pinned, after: readonly Message[]): Message[] {
       content: `${DROPPED_SKILLS_HEADER}: ${left.join(', ')}. Call ${USE_SKILL} again for one before you rely on it.`,
     });
   }
-  if (pinned.todos !== undefined && latestTodoText(after) !== pinned.todos) {
-    notes.push({ role: 'system', content: `${TODO_NOTE_HEADER}\n${pinned.todos}` });
-  }
   const shown = toolsFoundIn(after);
   const missing = [...pinned.tools].filter((name) => !shown.has(name));
   if (missing.length > 0) notes.push(loadedToolsNote(missing));
@@ -333,38 +357,40 @@ function notesFor(pinned: Pinned, after: readonly Message[]): Message[] {
  * everything: what to keep room for when compacting
  */
 export function pinnedNotes(messages: readonly Message[]): Message[] {
-  return notesFor(pinnedIn(messages), []);
+  const pinned = pinnedIn(messages);
+  return [...notesFor(pinned, []), ...todosToRecall(pinned, [])];
+}
+
+/** The {@link todosRecall} of the newest todo list of `pinned`, when `after` does not hold it. */
+function todosToRecall(pinned: Pinned, after: readonly Message[]): Message[] {
+  if (pinned.todos === undefined) return [];
+  const shown = todosIn(after);
+  return shown && JSON.stringify(shown) === JSON.stringify(pinned.todos)
+    ? []
+    : todosRecall(pinned.todos);
 }
 
 /**
- * `after`, a compaction of `before`, with what the model must not lose put back as system
- * messages after the system prompt: the instructions of the skills `before` activated and
- * `after` dropped (within {@link MAX_PINNED_SKILL_CHARS}), the todo list when `after` no longer
- * shows its newest state, and the tools a `tool_search` of `before` loaded. Notes an earlier
- * compaction put back are replaced, never piled up. Unchanged when nothing was lost.
+ * `after`, a compaction of `before`, with what the model must not lose put back: the
+ * instructions of the skills `before` activated and `after` dropped (within
+ * {@link MAX_PINNED_SKILL_CHARS}) and the tools a `tool_search` of `before` loaded as system
+ * messages after the system prompt, and the newest todo list, when `after` no longer holds it, as
+ * a {@link todosRecall} after the newest message. What an earlier compaction put back is
+ * replaced, never piled up. Unchanged when nothing was lost.
  */
 export function keepThroughCompaction(
   before: readonly Message[],
   after: readonly Message[]
 ): Message[] {
-  const base = after.filter((message, index) => index === 0 || !isHarnessNote(message));
-  const notes = notesFor(pinnedIn(before), base);
-  if (notes.length === 0 && base.length === after.length) return [...after];
+  const pinned = pinnedIn(before);
+  const recall = todosToRecall(pinned, after);
+  const base = after.filter(
+    (message, index) =>
+      index === 0 || (!isHarnessNote(message) && (recall.length === 0 || !isTodosRecall(message)))
+  );
+  const notes = notesFor(pinned, base);
+  if (notes.length === 0 && recall.length === 0 && base.length === after.length) return [...after];
   let systemEnd = 0;
   while (systemEnd < base.length && base[systemEnd]?.role === 'system') systemEnd++;
-  return [...base.slice(0, systemEnd), ...notes, ...base.slice(systemEnd)];
-}
-
-/** The newest todo list `messages` show the model, as `renderTodos` wrote it. */
-function latestTodoText(messages: readonly Message[]): string | undefined {
-  let latest: string | undefined;
-  for (const message of messages) {
-    const text = getTextContent(message.content);
-    if (message.role === 'tool' && message.name === WRITE_TODOS && text.startsWith('Todo list')) {
-      latest = text;
-    } else if (message.role === 'system' && text.startsWith(`${TODO_NOTE_HEADER}\n`)) {
-      latest = text.slice(TODO_NOTE_HEADER.length + 1);
-    }
-  }
-  return latest;
+  return [...base.slice(0, systemEnd), ...notes, ...base.slice(systemEnd), ...recall];
 }

@@ -276,6 +276,37 @@ describe('SkillRegistry catalog', () => {
     await workspace.dispose();
   });
 
+  it('refuses a skill folder swapped for a symlink after discovery', async () => {
+    const workspace = new LocalWorkspace({ root: join(base, 'workspace') });
+    const skills = join(workspace.root, '.agents/skills');
+    addSkill(skills, 'foo', 'Foo.', 'Foo body.');
+    write(join(workspace.root, 'secret.txt'), 'SECRET');
+    write(join(workspace.root, 'SKILL.md'), '---\nname: foo\ndescription: Root.\n---\nRoot body.');
+    const catalog = await new SkillRegistry().discover({ workspace });
+    expect(await catalog.body('foo')).toBe('Foo body.');
+
+    rmSync(join(skills, 'foo'), { recursive: true });
+    symlinkSync(workspace.root, join(skills, 'foo'));
+
+    await expect(catalog.readFile('foo', 'secret.txt')).rejects.toThrow('symbolic link');
+    await expect(catalog.body('foo')).rejects.toThrow('symbolic link');
+    await expect(catalog.files('foo')).rejects.toThrow('symbolic link');
+    await workspace.dispose();
+  });
+
+  it('refuses a folder above the skill swapped for a symlink', async () => {
+    const workspace = new LocalWorkspace({ root: join(base, 'workspace') });
+    addSkill(join(workspace.root, '.agents/skills'), 'foo', 'Foo.', 'Foo body.');
+    write(join(workspace.root, 'other/skills/foo/secret.txt'), 'SECRET');
+    const catalog = await new SkillRegistry().discover({ workspace });
+
+    rmSync(join(workspace.root, '.agents'), { recursive: true });
+    symlinkSync(join(workspace.root, 'other'), join(workspace.root, '.agents'));
+
+    await expect(catalog.readFile('foo', 'secret.txt')).rejects.toThrow('symbolic link');
+    await workspace.dispose();
+  });
+
   it('merges catalogs, the first winning a name', async () => {
     const first = join(base, 'first');
     const second = join(base, 'second');

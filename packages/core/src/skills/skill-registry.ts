@@ -285,16 +285,23 @@ async function scanWorkspaceRoot(root: { dir: string; workspace: Workspace }): P
       source: 'workspace',
     });
     result.diagnostics.push(...parsed.diagnostics);
-    if (parsed.manifest) result.skills.push({ manifest: parsed.manifest, workspace });
+    if (parsed.manifest) {
+      result.skills.push({
+        manifest: { ...parsed.manifest, workspaceId: workspace.id },
+        workspace,
+      });
+    }
   }
   return result;
 }
 
 /**
  * The text of `path` inside the workspace folder `folder`, reached through real folders only:
- * every step of the path must be a folder and the last one a file, never a symbolic link, so the
- * read cannot leave `folder`. Throws `NOT_FOUND` for a step that is missing, `DENIED` for a link
- * and an error for a path that leaves the folder.
+ * every step from the workspace root down to the file (the skill folder and every folder above
+ * it included) must be a folder and the last one a file, never a symbolic link, checked on each
+ * read, so the read cannot leave `folder` even after a folder was swapped for a link. Throws
+ * `NOT_FOUND` for a step that is missing, `DENIED` for a link and an error for a path that leaves
+ * the folder.
  */
 async function readWorkspaceFile(
   workspace: Workspace,
@@ -306,27 +313,47 @@ async function readWorkspaceFile(
   if (posix.isAbsolute(path) || !target.startsWith(`${folder}/`)) {
     throw new Error(`${path} is outside the folder of the skill (${folder})`);
   }
-  const steps = target.slice(folder.length + 1).split('/');
-  let dir = folder;
+  if (posix.isAbsolute(target) || target.startsWith('../')) {
+    throw new Error(`${path} is outside the workspace`);
+  }
+  await assertRealPath(workspace, target, 'file', path);
+  return workspace.read(target, { maxBytes });
+}
+
+/**
+ * Checks that every step of `target`, a path relative to the workspace root, is a real folder
+ * (`kind` for the last one), never a symbolic link. `shown` names the path in errors.
+ */
+async function assertRealPath(
+  workspace: Workspace,
+  target: string,
+  kind: 'file' | 'directory',
+  shown: string
+): Promise<void> {
+  const steps = target.split('/').filter((step) => step !== '' && step !== '.');
+  let dir = '.';
   for (const [index, step] of steps.entries()) {
     const entry = (await workspace.list(dir, { includeHidden: true })).find(
       (candidate) => candidate.name === step
     );
-    const last = index === steps.length - 1;
-    if (!entry) throw new WorkspaceError('NOT_FOUND', `${path} does not exist`, { path });
+    const expected = index === steps.length - 1 ? kind : 'directory';
+    if (!entry) throw new WorkspaceError('NOT_FOUND', `${shown} does not exist`, { path: shown });
     if (entry.type === 'symlink') {
       throw new WorkspaceError(
         'DENIED',
-        `${path} is a symbolic link or passes one, skills only read their own files`,
-        { path }
+        `${shown} is a symbolic link or passes one, skills only read their own files`,
+        { path: shown }
       );
     }
-    if (last ? entry.type !== 'file' : entry.type !== 'directory') {
-      throw new WorkspaceError('NOT_A_FILE', `${path} is not a file`, { path });
+    if (entry.type !== expected) {
+      throw new WorkspaceError(
+        expected === 'file' ? 'NOT_A_FILE' : 'NOT_A_DIRECTORY',
+        `${shown} is not a ${expected === 'file' ? 'file' : 'folder'}`,
+        { path: shown }
+      );
     }
-    dir = posix.join(dir, step);
+    dir = dir === '.' ? step : posix.join(dir, step);
   }
-  return workspace.read(target, { maxBytes });
 }
 
 /** `body` cut to `max` characters at a line end, with a note saying where the rest is. */
@@ -380,6 +407,7 @@ class FolderSkillCatalog implements SkillCatalog {
     const skill = this.require(name);
     const location = skill.manifest.location;
     if (skill.workspace) {
+      await assertRealPath(skill.workspace, location, 'directory', location);
       const entries = await skill.workspace.list(location, {
         recursive: true,
         includeHidden: true,

@@ -90,7 +90,7 @@ The instructions of a skill reach the model as they are, and the model is told t
 
 - Host folders (`dirs`, `project`, `user`) are yours, and win a shared name by default.
 - The workspace may hold skills a cloned repository brought along or the agent wrote itself. Turn it off with `workspace: false` for a workspace you do not trust, or keep the default `precedence: 'host'` so it cannot replace a skill you chose.
-- In the workspace, only real folders and files count: a skill folder, a `SKILL.md` or a file that is a symbolic link (or sits behind one) is never read, so a skill cannot reach `.env` or anything else outside its folder.
+- In the workspace, only real folders and files count: a skill folder, a `SKILL.md` or a file that is a symbolic link (or sits behind one, from the workspace root down) is never read, checked again on every read, so a skill cannot reach `.env` or anything else outside its folder, also after a folder was swapped for a link.
 
 ## The SKILL.md format
 
@@ -129,7 +129,7 @@ Skills hold instructions and files for particular tasks. When a task matches a s
 Descriptions fill at most 12 000 characters, the skills past them are listed by name only. `use_skill({ skill })` takes any of the names and returns:
 
 ```
-<skill_content name="release" source="workspace" location=".agents/skills/release">
+<skill_content name="release" source="workspace" workspace="ws_3f9a" location=".agents/skills/release">
 1. Read checklist.md.
 ...
 </skill_content>
@@ -154,7 +154,7 @@ The registry never runs a script. Running one is up to the tools you give the ag
 
 A skill activated once stays active for the run and the thread:
 
-- Calling `use_skill` again for a skill whose instructions are still in the conversation returns a short note instead of the whole body again. A skill is told apart by its folder, so another agent's skill of the same name loads its own instructions.
+- Calling `use_skill` again for a skill whose instructions are still in the conversation returns a short note instead of the whole body again. A skill is told apart by its folder, and by its workspace for one found there, so another agent's skill of the same name, also one at the same path of another workspace, loads its own instructions.
 - Clearing tool outputs (`context.clearToolOutputs`) leaves the newest `use_skill` results of the run alone, up to 40 000 characters of instructions in all. Older ones past that are cleared like any tool output.
 - When compaction of the conversation (`context`) drops a `use_skill` result, the instructions come back as a system message right after the system prompt, the newest first within the same 40 000 characters, and a short note names the skills left out. Compaction keeps room for them, so the conversation and what comes back fit the window together.
 - A handoff takes along the instructions kept this way only for the skills the agent it hands over to has.
