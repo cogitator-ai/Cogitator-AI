@@ -126,7 +126,7 @@ function script(body: string): string {
  */
 export const START = `root=$1
 missing=
-for tool in setsid realpath find stat mv tar xargs mkdir rmdir head sort tr od; do
+for tool in setsid realpath find stat mv tar xargs mkdir rmdir head sort tr od date; do
   command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
 if [ -z "$missing" ]; then
@@ -137,6 +137,7 @@ if [ -z "$missing" ]; then
   find / -maxdepth 0 -printf '' >/dev/null 2>&1 || missing="$missing find-printf(GNU-findutils)"
   tar --null --no-recursion -cf /dev/null -T /dev/null >/dev/null 2>&1 || missing="$missing GNU-tar"
   setsid -w true >/dev/null 2>&1 || missing="$missing setsid-w(util-linux)"
+  case $(date +%s%N) in *N|'') missing="$missing date-N(GNU-coreutils)" ;; esac
 fi
 [ -z "$missing" ] || { printf '%s' "$missing" >&2; exit ${E.missingTools}; }
 if [ -e "$root" ] && [ ! -d "$root" ]; then exit ${E.notADirectory}; fi
@@ -144,12 +145,18 @@ if [ "$2" = 1 ]; then mkdir -p -- "$root" || exit 1; fi
 [ -e "$root" ] || exit ${E.notFound}
 [ -d "$root" ] || exit ${E.notADirectory}
 r=$(realpath -e -- "$root" && printf x) || exit 1
+find "\${TMPDIR:-/tmp}" -mindepth 1 -maxdepth 1 \\( -name 'cogitator-read-*' -o -name 'cogitator-env.*' \\) -mmin +60 -exec rm -rf -- {} + 2>/dev/null
 printf '%s' "\${r%?x}"`;
 
-/** Creates `.cogitator/pending` and `.cogitator/snapshots`, refusing them when they lead out of the root. */
+/**
+ * Creates `.cogitator/pending` and `.cogitator/snapshots`, refusing them when they lead out of the
+ * root, and removes what interrupted operations left in `pending` over an hour ago.
+ */
 export const ENSURE_SERVICE =
   script(`for d in "$root/.cogitator/pending" "$root/.cogitator/snapshots"; do mkdirs "$d"; done
-gitignore`);
+gitignore
+find "$root/.cogitator/pending" -mindepth 1 -maxdepth 1 -mmin +60 -exec rm -rf -- {} + 2>/dev/null
+exit 0`);
 
 /** `$1` path: exits 0 when it resolves inside the root. */
 export const CONTAINS = script(`resolve "$1" 1 || exit $?`);
@@ -165,9 +172,10 @@ find "$p" -maxdepth 0 -printf '%y\\0%s\\0%T@\\0' || exit 1
 printf '%s\\0' "$rel"`);
 
 /**
- * `$1` path, `$2` byte limit, `$3` a fresh file of `.cogitator/pending`: copies at most one byte
- * over the limit of the regular file there, so a file that grows meanwhile is caught without
- * moving more than that. Prints the size when it is over the limit.
+ * `$1` path, `$2` byte limit, `$3` a fresh file name: copies at most one byte over the limit of
+ * the regular file there to that name in the sandbox's temporary directory (mode 0600, the root
+ * is not written), so a file that grows meanwhile is caught without moving more than that. Prints
+ * the copy's path, or the size when it is over the limit. A failed read leaves no copy.
  */
 export const READ = script(`resolve "$1" 1 || exit $?
 present "$p" || exit ${E.notFound}
@@ -175,14 +183,26 @@ present "$p" || exit ${E.notFound}
 [ -f "$p" ] || exit ${E.notRegular}
 s=$(stat -c %s -- "$p") || exit 1
 [ "$s" -le "$2" ] || { printf '%s' "$s"; exit ${E.tooLarge}; }
-t=$3
-head -c "$(($2 + 1))" -- "$p" > "$t" || { rm -f -- "$t"; exit 1; }
-s=$(stat -c %s -- "$t") || { rm -f -- "$t"; exit 1; }
-[ "$s" -le "$2" ] || { rm -f -- "$t"; printf '%s' "$s"; exit ${E.tooLarge}; }
-exit 0`);
+t="\${TMPDIR:-/tmp}/$3"
+ok=0
+trap '[ "$ok" = 1 ] || rm -f -- "$t"' EXIT
+(umask 077; set -C; head -c "$(($2 + 1))" -- "$p" > "$t") || exit 1
+s=$(stat -c %s -- "$t") || exit 1
+[ "$s" -le "$2" ] || { printf '%s' "$s"; exit ${E.tooLarge}; }
+ok=1
+printf '%s' "$t"`);
 
-/** `$1` a file of `.cogitator/pending`: removes it. */
-export const DISCARD = script(`case $1 in "$root"/.cogitator/pending/*) rm -f -- "$1" ;; esac
+/**
+ * Removes files the workspace made for one operation, nothing else: its own files of
+ * `.cogitator/pending` by path, and its read copies in the temporary directory by name.
+ */
+export const DISCARD = script(`for f in "$@"; do
+  case $f in
+    "$root"/.cogitator/pending/*) rm -f -- "$f" ;;
+    */*) ;;
+    cogitator-read-*) rm -f -- "\${TMPDIR:-/tmp}/$f" ;;
+  esac
+done
 exit 0`);
 
 /**
@@ -213,21 +233,26 @@ case $rel in .cogitator/*) gitignore ;; esac
 mv -f -T -- "$t" "$p" || exit 1`);
 
 /**
- * `$1` directory, `$2` how many entries at most (empty for all), then the \`find\` expression
- * that prints its entries as `path SOH type SOH size SOH mtime NUL`: prints the directory relative
- * to the root and a NUL, then the entries sorted in tree order (each directory's entries right
- * after it, as \`/\` turned into STX sorts before every other byte), cut at the limit, so a big
- * tree is never shipped whole. Entries \`find\` cannot read are left out.
+ * `$1` directory, `$2` how many entries at most (empty for all), `$3` the most bytes to print,
+ * `$4` `sorted` or `raw`, then the \`find\` expression that prints its entries. Prints the
+ * directory relative to the root and a NUL, then the entries. \`sorted\` entries are
+ * `path SOH type SOH size SOH mtime SOH depth NUL`, sorted in tree order (\`/\` turned into STX
+ * sorts before every other byte) and cut at the limit, so a big tree is never shipped whole.
+ * \`raw\` entries are `type NUL size NUL mtime NUL depth NUL path NUL`, unsorted and hex-encoded,
+ * for names holding SOH or STX. The output stops one byte past `$3`. Entries \`find\` cannot
+ * read are left out.
  */
 export const LIST = script(`resolve "$1" 1 || exit $?
 present "$p" || exit ${E.notFound}
 [ -d "$p" ] || exit ${E.notADirectory}
-n=$2; shift 2
+n=$2; cap=$(($3 + 1)); mode=$4; shift 4
 printf '%s\\0' "$rel"
-if [ -n "$n" ]; then
-  find "$p" -mindepth 1 "$@" 2>/dev/null | tr '/' '\\002' | LC_ALL=C sort -z | head -z -n "$n"
+if [ "$mode" = raw ]; then
+  find "$p" -mindepth 1 "$@" 2>/dev/null | head -c "$cap" | od -An -v -tx1 | tr -d ' \\n'
+elif [ -n "$n" ]; then
+  find "$p" -mindepth 1 "$@" 2>/dev/null | tr '/' '\\002' | LC_ALL=C sort -z | head -z -n "$n" | head -c "$cap"
 else
-  find "$p" -mindepth 1 "$@" 2>/dev/null | tr '/' '\\002' | LC_ALL=C sort -z
+  find "$p" -mindepth 1 "$@" 2>/dev/null | tr '/' '\\002' | LC_ALL=C sort -z | head -c "$cap"
 fi
 exit 0`);
 
@@ -295,9 +320,13 @@ exit 0`);
  * Runs a command as the leader of its own session and process group (under `setsid -w`),
  * reporting the group, a bad directory and the exit code on stderr with marker lines. The token
  * that makes them unforgeable comes on stdin, read before the command starts: it is in no argv
- * or environment the command can read. `$1` is the directory, `$2` the command.
+ * or environment the command can read. `$1` is the deadline in milliseconds since the epoch,
+ * past which the command is not run (a provider that started it that late was given up on), `$2`
+ * the root, `$3` the directory and `$4` the command.
  */
 export const EXEC_WRAPPER = `IFS= read -r t || exit 125
+[ "$(( $(date +%s%N) / 1000000 ))" -le "$1" ] || exit 125
+shift
 printf '__cogitator_%s_pgid:%s\\n' "$t" "$$" >&2
 ${PRELUDE}resolve "$1" 1 || { e=$?; printf '__cogitator_%s_cwd:%s\\n' "$t" "$e" >&2; exit 125; }
 if ! [ -d "$p" ]; then
@@ -322,12 +351,14 @@ done
 exit 0`;
 
 /**
- * Prints type, size and path (relative to the root) of everything in the root, NUL-separated and
- * hex-encoded, so names that are not UTF-8 arrive as they are, but for the workspace's own
- * pending files and snapshots.
+ * `$1` the most bytes to print, then the \`find\` tests (`-o -path ./dir`, `-o -name dir`) of the
+ * directories to leave out with everything in them: prints type, size and path (relative to the
+ * root) of everything else in the root, NUL-separated and hex-encoded, so names that are not
+ * UTF-8 arrive as they are. `.cogitator` is always left out. The output stops one byte past `$1`.
  */
 export const SNAPSHOT_TREE = script(`cd -- "$root" || exit 1
-find . -mindepth 1 \\( -path ./.cogitator/snapshots -o -path ./.cogitator/pending \\) -prune -o -printf '%y\\0%s\\0%P\\0' 2>/dev/null | od -An -v -tx1 | tr -d ' \\n'
+cap=$(($1 + 1)); shift
+find . -mindepth 1 \\( -path ./.cogitator "$@" \\) -prune -o -printf '%y\\0%s\\0%P\\0' 2>/dev/null | head -c "$cap" | od -An -v -tx1 | tr -d ' \\n'
 exit 0`);
 
 /**
@@ -349,11 +380,12 @@ export const SNAPSHOT_DISCARD = script(`cd -- "$root/.cogitator/snapshots" 2>/de
 [ -f "$1.json" ] || rm -f -- "$1.list" "$1.dirs" "$1.tar" "$1.tar.part"
 exit 0`);
 
-/** Prints the records of the snapshots, each followed by a NUL. */
-export const SNAPSHOT_RECORDS = script(`for f in "$root"/.cogitator/snapshots/*.json; do
+/** `$1` the most bytes to print: prints the records of the snapshots, each followed by a NUL. */
+export const SNAPSHOT_RECORDS = script(`cap=$(($1 + 1))
+for f in "$root"/.cogitator/snapshots/*.json; do
   [ -f "$f" ] || continue
   cat -- "$f" && printf '\\0'
-done
+done | head -c "$cap"
 exit 0`);
 
 /**

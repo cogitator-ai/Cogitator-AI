@@ -79,22 +79,32 @@ export function delay(ms: number): Promise<void> {
 
 /**
  * Calls `extend` at most once at a time and only when half of `lifetime` has passed since the
- * last call, so a keepalive asked for before every operation reaches the provider rarely.
+ * last call, so a keepalive asked for before every operation reaches the provider rarely. A
+ * failed call (a plan limit, a network error) counts as a call, and each failure in a row doubles
+ * the wait, up to the whole lifetime.
  */
 export function throttledKeepAlive(
   lifetime: number,
   extend: () => Promise<void>
 ): () => Promise<void> {
   let last = Date.now();
+  let wait = lifetime / 2;
   let pending: Promise<void> | undefined;
   return () => {
     if (pending) return pending;
-    if (Date.now() - last < lifetime / 2) return Promise.resolve();
+    if (Date.now() - last < wait) return Promise.resolve();
     pending = extend()
-      .then(() => {
-        last = Date.now();
-      })
+      .then(
+        () => {
+          wait = lifetime / 2;
+        },
+        (error: unknown) => {
+          wait = Math.min(wait * 2, lifetime);
+          throw error;
+        }
+      )
       .finally(() => {
+        last = Date.now();
         pending = undefined;
       });
     return pending;

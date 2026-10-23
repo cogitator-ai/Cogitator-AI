@@ -200,6 +200,7 @@ class DaytonaConnection implements RemoteShellConnection {
   readonly sandboxId: string;
   private readonly idle: string[] = [];
   private readonly sessions = new Set<string>();
+  private envDir?: Promise<string>;
 
   constructor(
     private readonly sdk: DaytonaModule,
@@ -261,8 +262,10 @@ class DaytonaConnection implements RemoteShellConnection {
     } catch (error) {
       throw commandError(PROVIDER, error);
     }
+    let envFile: string | undefined;
     try {
-      const command = await this.commandWithEnv(argv, options.cwd, options.env);
+      const { command, file } = await this.commandWithEnv(argv, options.cwd, options.env);
+      envFile = file;
       const started = await shell.executeSessionCommand(session, {
         command,
         runAsync: true,
@@ -272,6 +275,11 @@ class DaytonaConnection implements RemoteShellConnection {
       await shell.sendSessionCommandInput(session, commandId, options.stdin);
     } catch (error) {
       await this.closeSession(session);
+      if (envFile) {
+        await this.run(['rm', '-f', '--', envFile], { cwd: '/', timeout: 60_000 }).catch(
+          () => undefined
+        );
+      }
       throw commandError(PROVIDER, error);
     }
     let detached = false;
@@ -312,18 +320,20 @@ class DaytonaConnection implements RemoteShellConnection {
   }
 
   /**
-   * The line that runs `argv` in `cwd` with `env`: the variables go into a file of `/tmp` that a
-   * subshell sources and removes before it runs the program, so Daytona never records their
-   * values with the command.
+   * The line that runs `argv` in `cwd` with `env`, and the file it reads `env` from. The
+   * variables go into a file of a private directory (mode 0700) that a subshell sources and
+   * removes before anything else, so Daytona never records their values with the command and the
+   * file is gone even when `cd` fails.
    */
   private async commandWithEnv(
     argv: readonly string[],
     cwd: string,
     env: Record<string, string>
-  ): Promise<string> {
+  ): Promise<{ command: string; file?: string }> {
     const entries = Object.entries(env);
-    if (entries.length === 0) return `cd ${shellQuote(cwd)} && ${shellCommand(argv)}`;
-    const file = `/tmp/cogitator-env-${randomUUID()}`;
+    if (entries.length === 0) {
+      return { command: `cd ${shellQuote(cwd)} && ${shellCommand(argv)}` };
+    }
     const lines = entries.map(([name, value]) => {
       if (!isEnvName(name)) {
         throw new WorkspaceError(
@@ -333,15 +343,44 @@ class DaytonaConnection implements RemoteShellConnection {
       }
       return `export ${name}=${shellQuote(value)}\n`;
     });
-    lines.push(`rm -f -- ${shellQuote(file)}\n`);
+    const file = `${await this.privateDir()}/${randomUUID()}`;
     await this.writeFile(file, Buffer.from(lines.join(''), 'utf8'));
-    return `cd ${shellQuote(cwd)} && ( . ${shellQuote(file)} && exec ${shellCommand(argv)} )`;
+    const quoted = shellQuote(file);
+    return {
+      command: `( . ${quoted}; rm -f -- ${quoted}; cd ${shellQuote(cwd)} && exec ${shellCommand(argv)} )`,
+      file,
+    };
+  }
+
+  /** A directory of the temporary directory only the sandbox user can enter, made once. */
+  private privateDir(): Promise<string> {
+    this.envDir ??= this.run(
+      ['sh', '-c', 'umask 077 && mktemp -d "${TMPDIR:-/tmp}/cogitator-env.XXXXXXXX"'],
+      { cwd: '/', timeout: 60_000 }
+    ).then(({ exitCode, stdout, stderr }) => {
+      const dir = stdout.trim();
+      if (exitCode !== 0 || !dir.startsWith('/')) {
+        throw new WorkspaceError('IO', `Could not make a private directory: ${stderr.trim()}`);
+      }
+      return dir;
+    });
+    const made = this.envDir;
+    return made.catch((error: unknown) => {
+      if (this.envDir === made) this.envDir = undefined;
+      throw error;
+    });
   }
 
   async close(): Promise<void> {
     if (this.disposal === 'destroy') {
       await this.sandbox.delete().catch(() => undefined);
       return;
+    }
+    const dir = await this.envDir?.catch(() => undefined);
+    if (dir) {
+      await this.run(['rm', '-rf', '--', dir], { cwd: '/', timeout: 60_000 }).catch(
+        () => undefined
+      );
     }
     await Promise.all([...this.sessions].map((session) => this.closeSession(session)));
     if (this.disposal === 'stop') await this.sandbox.stop().catch(() => undefined);

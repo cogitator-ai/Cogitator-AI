@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { sdkError } from '../workspace/remote/provider';
+import { sdkError, throttledKeepAlive } from '../workspace/remote/provider';
 import * as scripts from '../workspace/remote/scripts';
 
 /** How a fake sandbox answers the workspace: its scripts by name, its commands by marker lines. */
@@ -49,10 +49,10 @@ function scriptOf(command: string): keyof typeof scripts | undefined {
 function answer(script: keyof typeof scripts | undefined, words: string[]): string {
   if (script === 'START') return fake.state.root;
   if (script === 'READ') {
-    const [target, , copy] = words.slice(-3);
+    const [target, , name] = words.slice(-3);
     const bytes = fake.state.files.get(target);
-    if (bytes) fake.state.files.set(copy, bytes);
-    return '';
+    if (bytes) fake.state.files.set(`/tmp/${name}`, bytes);
+    return `/tmp/${name}`;
   }
   if (script === 'EXISTS') return '1';
   return '';
@@ -193,6 +193,13 @@ vi.mock('@daytona/sdk', () => {
       ) => {
         fake.record('executeSessionCommand', session, req);
         if (req.runAsync) return Promise.resolve({ cmdId: 'cmd-1' });
+        if (req.command.includes('mktemp -d')) {
+          return Promise.resolve({
+            cmdId: 'cmd-sync',
+            exitCode: 0,
+            stdout: '/tmp/cogitator-env.x\n',
+          });
+        }
         const script = scriptOf(req.command);
         return Promise.resolve({
           cmdId: 'cmd-sync',
@@ -380,7 +387,7 @@ describe('E2BWorkspace', () => {
     fake.state.files.set('/home/user/a.txt', new TextEncoder().encode('content'));
     expect(await workspace.read('a.txt')).toBe('content');
     const [read] = fake.callsOf('files.read');
-    expect(read.args[0]).toMatch(/^\/home\/user\/\.cogitator\/pending\/read-[a-f0-9]{32}$/);
+    expect(read.args[0]).toMatch(/^\/tmp\/cogitator-read-[a-f0-9]{32}$/);
     expect(read.args[1]).toEqual({ format: 'bytes' });
     await expect(workspace.write('b.txt', 'x')).rejects.toMatchObject({ code: 'DENIED' });
     const upload = fake.callsOf('files.write')[0];
@@ -454,16 +461,17 @@ describe('DaytonaWorkspace', () => {
       );
     const started = commands.find((command) => command.runAsync);
     expect(started).toMatchObject({ suppressInputEcho: true });
-    expect(started?.command).toMatch(
-      /^cd '\/home\/daytona' && \( \. '\/tmp\/cogitator-env-[^']+' && exec 'setsid' '-w'/
-    );
-    expect(started?.command).not.toContain("it'\\''s");
     const envFile = fake
       .callsOf('fs.uploadFile')
-      .find((call) => String(call.args[1]).startsWith('/tmp/cogitator-env-'));
-    expect(String(envFile?.args[0])).toBe(
-      `export A='it'\\''s'\nrm -f -- '${String(envFile?.args[1])}'\n`
-    );
+      .find((call) => String(call.args[1]).startsWith('/tmp/cogitator-env.x/'));
+    const file = String(envFile?.args[1]);
+    expect(String(envFile?.args[0])).toBe(`export A='it'\\''s'\n`);
+    expect(
+      started?.command.startsWith(
+        `( . '${file}'; rm -f -- '${file}'; cd '/home/daytona' && exec 'setsid' '-w'`
+      )
+    ).toBe(true);
+    expect(started?.command).not.toContain("it'\\''s");
     const script = commands.find((command) => !command.runAsync);
     expect(script?.command).toMatch(/<\/dev\/null$/);
     expect(fake.callsOf('sendSessionCommandInput')[0].args[1]).toMatch(/^[a-f0-9]{32}\n$/);
@@ -628,5 +636,37 @@ describe('remote workspaces without their SDK', () => {
     expect(sdkError('E2BWorkspace', 'e2b', new SyntaxError('Unexpected token')).message).toBe(
       'E2BWorkspace could not load the e2b package: Unexpected token'
     );
+  });
+});
+
+describe('throttledKeepAlive', () => {
+  it('backs off after a failed extension instead of retrying every operation', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      let calls = 0;
+      let fail = true;
+      const keepAlive = throttledKeepAlive(60_000, () => {
+        calls++;
+        return fail ? Promise.reject(new Error('plan limit')) : Promise.resolve();
+      });
+      await keepAlive();
+      expect(calls).toBe(0);
+      vi.setSystemTime(Date.now() + 30_000);
+      await expect(keepAlive()).rejects.toThrow('plan limit');
+      await keepAlive();
+      expect(calls).toBe(1);
+      vi.setSystemTime(Date.now() + 30_000);
+      await keepAlive();
+      expect(calls).toBe(1);
+      vi.setSystemTime(Date.now() + 30_000);
+      fail = false;
+      await keepAlive();
+      expect(calls).toBe(2);
+      vi.setSystemTime(Date.now() + 30_000);
+      await keepAlive();
+      expect(calls).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

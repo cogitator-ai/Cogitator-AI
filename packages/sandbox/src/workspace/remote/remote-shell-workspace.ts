@@ -41,6 +41,8 @@ const DEFAULT_KILL_GRACE = 2_000;
 const DEFAULT_MAX_STREAM_BYTES = 64 * 1024 * 1024;
 const DEFAULT_MAX_SNAPSHOT_BYTES = 1024 * 1024 * 1024;
 const INTERNAL_TIMEOUT = 10 * 60_000;
+/** Bytes a listing or a snapshot's tree may ship from the sandbox before it is refused. */
+const LISTING_CAP = 64 * 1024 * 1024;
 const KEEP_ALIVE_INTERVAL = 60_000;
 const STDIO_GRACE = 200;
 /** Exit code of a command stopped with SIGTERM (128 + 15), what a command stopped for its output reports. */
@@ -109,6 +111,19 @@ interface RemoteState {
   running: number;
   /** Process groups of commands that may still have processes */
   groups: Set<number>;
+}
+
+interface Listing {
+  /** The listed directory, relative to the root */
+  base: string;
+  entries: ListedEntry[];
+}
+
+interface ListedEntry {
+  type: string;
+  size: string;
+  modified: string;
+  path: string;
 }
 
 interface TreeEntry {
@@ -259,14 +274,17 @@ export class RemoteShellWorkspace implements Workspace {
   async readBytes(path: string, options: WorkspaceReadOptions = {}): Promise<Uint8Array> {
     const limit = positive(options.maxBytes, this.maxFileBytes, 'maxBytes');
     const target = await this.lexical(path);
-    await this.ensureService();
-    const copy = this.servicePath(PENDING_DIR, `read-${randomUUID().replace(/-/g, '')}`);
-    const { code, stdout } = await this.script(scripts.READ, [target, integer(limit), copy], path);
-    if (code === SCRIPT_EXIT.tooLarge) throw tooLarge(path, Number(stdout), limit);
-    this.check(code, path);
+    const name = `cogitator-read-${randomUUID().replace(/-/g, '')}`;
     try {
+      const { code, stdout } = await this.script(
+        scripts.READ,
+        [target, integer(limit), name],
+        path
+      );
+      if (code === SCRIPT_EXIT.tooLarge) throw tooLarge(path, Number(stdout), limit);
+      this.check(code, path);
       const connection = await this.ready();
-      const bytes = await connection.readFile(copy).catch((error: unknown) => {
+      const bytes = await connection.readFile(stdout).catch((error: unknown) => {
         throw new WorkspaceError(
           'IO',
           `Could not read ${path} from the sandbox: ${message(error)}`,
@@ -279,7 +297,7 @@ export class RemoteShellWorkspace implements Workspace {
       if (bytes.byteLength > limit) throw tooLarge(path, bytes.byteLength, limit);
       return bytes;
     } finally {
-      await this.script(scripts.DISCARD, [copy], path).catch(() => undefined);
+      await this.discard([name], path);
     }
   }
 
@@ -306,7 +324,10 @@ export class RemoteShellWorkspace implements Workspace {
         String(bytes.byteLength),
       ],
       path
-    );
+    ).catch(async (error: unknown) => {
+      await this.discard([upload], path);
+      throw error;
+    });
     if (code === SCRIPT_EXIT.uploadChanged) {
       throw new WorkspaceError('IO', `${path}: the upload changed before it was moved into place`, {
         path,
@@ -319,39 +340,95 @@ export class RemoteShellWorkspace implements Workspace {
     const target = await this.lexical(path);
     const remoteLimit =
       options.limit === undefined || options.glob ? '' : integer(Math.max(0, options.limit));
-    const { code, stdout } = await this.script(
-      scripts.LIST,
-      [target, remoteLimit, ...findExpression(options)],
-      path
-    );
-    this.check(code, path);
-    const records = stdout.split('\0');
-    const base = records[0] ?? '.';
+    const listed =
+      (await this.listing(target, path, remoteLimit, 'sorted', options)) ??
+      (await this.listing(target, path, '', 'raw', options));
     const matches = options.glob ? workspaceGlobMatcher(options.glob) : undefined;
     const entries: { segments: string[]; entry: WorkspaceEntry }[] = [];
-    for (const record of records.slice(1)) {
-      const fields = record.split('\u0001');
-      if (fields.length < 4) continue;
-      const modified = fields.pop();
-      const size = fields.pop();
-      const type = fields.pop();
-      const relToList = fields.join('\u0001').replaceAll('\u0002', '/');
-      if (matches && !matches(relToList)) continue;
-      const segments = relToList.split('/');
+    for (const found of listed.entries) {
+      if (matches && !matches(found.path)) continue;
+      const segments = found.path.split('/');
       entries.push({
         segments,
         entry: {
           name: segments[segments.length - 1],
-          path: base === '.' ? relToList : `${base}/${relToList}`,
-          type: entryType(type),
-          size: Number(size),
-          modifiedAt: Number(modified) * 1000,
+          path: listed.base === '.' ? found.path : `${listed.base}/${found.path}`,
+          type: entryType(found.type),
+          size: Number(found.size),
+          modifiedAt: Number(found.modified) * 1000,
         },
       });
     }
     entries.sort((a, b) => compareSegments(a.segments, b.segments));
     const limit = options.limit ?? Infinity;
     return entries.slice(0, limit).map(({ entry }) => entry);
+  }
+
+  /**
+   * The entries of a listing as the sandbox sends them. `sorted` sends them in tree order and cut
+   * at the limit, but cannot tell a `/` from an STX byte in a name, so it answers `undefined` when
+   * a name holds SOH or STX, and `raw` (hex-encoded, every entry) is asked instead.
+   */
+  private async listing(
+    target: string,
+    path: string,
+    limit: string,
+    mode: 'raw',
+    options: WorkspaceListOptions
+  ): Promise<Listing>;
+  private async listing(
+    target: string,
+    path: string,
+    limit: string,
+    mode: 'sorted',
+    options: WorkspaceListOptions
+  ): Promise<Listing | undefined>;
+  private async listing(
+    target: string,
+    path: string,
+    limit: string,
+    mode: 'sorted' | 'raw',
+    options: WorkspaceListOptions
+  ): Promise<Listing | undefined> {
+    const { code, stdout } = await this.script(
+      scripts.LIST,
+      [target, limit, integer(LISTING_CAP), mode, ...findExpression(options, mode)],
+      path
+    );
+    this.check(code, path);
+    const end = stdout.indexOf('\0');
+    const base = end === -1 ? '.' : stdout.slice(0, end);
+    const body = end === -1 ? '' : stdout.slice(end + 1);
+    const shipped = mode === 'raw' ? body.length / 2 : Buffer.byteLength(body, 'utf8');
+    if (shipped > LISTING_CAP) {
+      throw new WorkspaceError(
+        'TOO_LARGE',
+        `The listing of ${path} is over ${LISTING_CAP} bytes: narrow it with skipDirs, glob or limit`,
+        { path }
+      );
+    }
+    const entries: ListedEntry[] = [];
+    if (mode === 'raw') {
+      const fields = Buffer.from(body, 'hex').toString('utf8').split('\0');
+      for (let i = 0; i + 4 < fields.length; i += 5) {
+        entries.push({
+          type: fields[i],
+          size: fields[i + 1],
+          modified: fields[i + 2],
+          path: fields[i + 4],
+        });
+      }
+      return { base, entries };
+    }
+    for (const record of body.split('\0')) {
+      if (!record) continue;
+      const fields = record.split('\u0001');
+      if (fields.length !== 5) return undefined;
+      const [key, type, size, modified, depth] = fields;
+      if (count(key, '\u0002') !== Number(depth) - 1) return undefined;
+      entries.push({ type, size, modified, path: key.replaceAll('\u0002', '/') });
+    }
+    return { base, entries };
   }
 
   async stat(path: string): Promise<WorkspaceStat> {
@@ -494,7 +571,7 @@ export class RemoteShellWorkspace implements Workspace {
     };
     await this.ensureService();
     const excluded = excludedBy(exclude);
-    const kept = (await this.tree()).filter((entry) => !excluded(entry.name));
+    const kept = (await this.tree(exclude)).filter((entry) => !excluded(entry.name));
     const bytes = kept.reduce(
       (sum, entry) => sum + (entry.type === 'directory' ? 0 : entry.size),
       0
@@ -540,7 +617,7 @@ export class RemoteShellWorkspace implements Workspace {
     const excluded = excludedBy(record.exclude);
     const files: string[] = [];
     const dirs: string[] = [];
-    for (const entry of await this.tree()) {
+    for (const entry of await this.tree(record.exclude)) {
       if (excluded(entry.name)) continue;
       if (entry.type === 'directory') {
         if (!savedDirectories.has(entry.key)) dirs.push(entry.key);
@@ -553,21 +630,33 @@ export class RemoteShellWorkspace implements Workspace {
     const filesList = this.servicePath(PENDING_DIR, `restore-${tag}.files`);
     const dirsList = this.servicePath(PENDING_DIR, `restore-${tag}.dirs`);
     await this.ensureService();
-    await this.writeRaw(filesList, nulList(files), 'restore');
-    await this.writeRaw(dirsList, nulList(dirs), 'restore');
-    const { code } = await this.script(
-      scripts.SNAPSHOT_RESTORE,
-      [record.id, filesList, dirsList],
-      'restore'
-    );
+    let code: number;
+    try {
+      await this.writeRaw(filesList, nulList(files), 'restore');
+      await this.writeRaw(dirsList, nulList(dirs), 'restore');
+      ({ code } = await this.script(
+        scripts.SNAPSHOT_RESTORE,
+        [record.id, filesList, dirsList],
+        'restore'
+      ));
+    } finally {
+      await this.discard([filesList, dirsList], 'restore');
+    }
     if (code === SCRIPT_EXIT.notFound) throw snapshotMissing(snapshotId);
     this.check(code, 'restore');
   }
 
   /** The snapshots kept in the sandbox, oldest first. */
   async listSnapshots(): Promise<WorkspaceSnapshot[]> {
-    const { code, stdout } = await this.script(scripts.SNAPSHOT_RECORDS, [], 'snapshots');
+    const { code, stdout } = await this.script(
+      scripts.SNAPSHOT_RECORDS,
+      [integer(LISTING_CAP)],
+      'snapshots'
+    );
     this.check(code, 'snapshots');
+    if (Buffer.byteLength(stdout, 'utf8') > LISTING_CAP) {
+      throw new WorkspaceError('TOO_LARGE', `The snapshot records are over ${LISTING_CAP} bytes`);
+    }
     const records: WorkspaceSnapshot[] = [];
     for (const text of stdout.split('\0')) {
       if (!text) continue;
@@ -610,10 +699,21 @@ export class RemoteShellWorkspace implements Workspace {
    * Everything under the root, but the workspace's pending files and snapshots, parents first:
    * `key` is the path's bytes as a `latin1` string, `name` the path read as UTF-8 (for globs).
    */
-  private async tree(): Promise<TreeEntry[]> {
-    const { code, stdout } = await this.script(scripts.SNAPSHOT_TREE, [], 'snapshot');
+  private async tree(exclude: readonly string[]): Promise<TreeEntry[]> {
+    const { code, stdout } = await this.script(
+      scripts.SNAPSHOT_TREE,
+      [integer(LISTING_CAP), ...pruneTests(exclude)],
+      'snapshot'
+    );
     this.check(code, 'snapshot');
-    const fields = Buffer.from(stdout.trim(), 'hex').toString('latin1').split('\0');
+    const hex = stdout.trim();
+    if (hex.length / 2 > LISTING_CAP) {
+      throw new WorkspaceError(
+        'TOO_LARGE',
+        `The file tree to snapshot is over ${LISTING_CAP} bytes of names: exclude what can be rebuilt (node_modules/**, build output)`
+      );
+    }
+    const fields = Buffer.from(hex, 'hex').toString('latin1').split('\0');
     const entries: TreeEntry[] = [];
     for (let i = 0; i + 2 < fields.length; i += 3) {
       const key = fields[i + 2];
@@ -725,6 +825,7 @@ export class RemoteShellWorkspace implements Workspace {
             '-c',
             scripts.EXEC_WRAPPER,
             'cogitator-exec',
+            String(started + options.timeout),
             this.root,
             options.cwd,
             command,
@@ -939,6 +1040,11 @@ export class RemoteShellWorkspace implements Workspace {
     for (const group of groups) this.state.groups.delete(group);
   }
 
+  /** Removes files an operation made in `.cogitator/pending` or read copies, best effort. */
+  private async discard(files: string[], path: string): Promise<void> {
+    await this.script(scripts.DISCARD, files, path).catch(() => undefined);
+  }
+
   /** Uploads bytes to a fresh file of `.cogitator/pending`, the workspace's own directory. */
   private async upload(bytes: Uint8Array, path: string): Promise<string> {
     await this.ensureService();
@@ -1047,21 +1153,99 @@ function snapshotMissing(snapshotId: string): WorkspaceError {
 }
 
 /**
- * The `find` expression that prints a listing's entries (path relative to the listed directory,
- * type, size and modification time, SOH-separated, each entry ended by a NUL): hidden entries
- * left out unless asked, and `skipDirs` listed but not entered.
+ * The `find` expression that prints a listing's entries in the format of `mode` (see
+ * `scripts.LIST`): hidden entries left out unless asked, `skipDirs` listed but not entered, and,
+ * when the glob's last segment can be told to `find`, only entries whose name matches it.
  */
-function findExpression(options: WorkspaceListOptions): string[] {
-  const format = '%P\\001%y\\001%s\\001%T@\\0';
+function findExpression(options: WorkspaceListOptions, mode: 'sorted' | 'raw'): string[] {
+  const format =
+    mode === 'raw' ? '%y\\0%s\\0%T@\\0%d\\0%P\\0' : '%P\\001%y\\001%s\\001%T@\\001%d\\0';
+  const names = options.glob ? globNames(options.glob) : undefined;
+  const print = names
+    ? [
+        '(',
+        ...names.flatMap((name, i) => [...(i > 0 ? ['-o'] : []), '-name', name]),
+        ')',
+        '-printf',
+        format,
+      ]
+    : ['-printf', format];
   const expression: string[] = options.recursive ? [] : ['-maxdepth', '1'];
   if (!options.includeHidden) expression.push('(', '-name', '.*', '-prune', ')', '-o');
   const skip = options.skipDirs ?? [];
   if (options.recursive && skip.length > 0) {
-    const names = skip.flatMap((name, i) => [...(i > 0 ? ['-o'] : []), '-name', globLiteral(name)]);
-    expression.push('(', '-type', 'd', '(', ...names, ')', '-printf', format, '-prune', ')', '-o');
+    const skipped = skip.flatMap((name, i) => [
+      ...(i > 0 ? ['-o'] : []),
+      '-name',
+      globLiteral(name),
+    ]);
+    expression.push('(', '-type', 'd', '(', ...skipped, ')', '-prune', ...print, ')', '-o');
   }
-  expression.push('-printf', format);
+  expression.push(...print);
   return expression;
+}
+
+/**
+ * The `find -name` patterns an entry's name must match for `glob` to match its path: the glob's
+ * last segment, its `{a,b}` alternatives spelled out. `undefined` when that segment spans
+ * directories (`**`) or its braces cannot be spelled out, and every entry is sent.
+ */
+function globNames(glob: string): string[] | undefined {
+  let braces = 0;
+  let slash = -1;
+  for (let i = 0; i < glob.length; i++) {
+    const char = glob[i];
+    if (char === '\\') i++;
+    else if (char === '{') braces++;
+    else if (char === '}' && braces > 0) braces--;
+    else if (char === '/' && braces === 0) slash = i;
+  }
+  if (braces !== 0) return undefined;
+  const last = glob.slice(slash + 1);
+  if (last === '' || last.includes('**')) return undefined;
+  const open = last.indexOf('{');
+  if (open === -1) return last.includes('}') ? undefined : [last];
+  const close = last.indexOf('}', open);
+  const rest = last.slice(close + 1);
+  const inner = last.slice(open + 1, close);
+  if (close === -1 || inner.includes('{') || rest.includes('{') || rest.includes('}')) {
+    return undefined;
+  }
+  if (last.slice(0, open).includes('\\') || inner.includes('\\')) return undefined;
+  return inner.split(',').map((choice) => `${last.slice(0, open)}${choice}${rest}`);
+}
+
+/**
+ * The `find` tests that leave out, with everything in them, the directories `exclude` names
+ * plainly: `dir/**` and `dir` as `-path ./dir`, `**\/name/**` as a directory named `name`
+ * anywhere. Other globs are applied to the entries the sandbox sends.
+ */
+function pruneTests(exclude: readonly string[]): string[] {
+  const tests: string[] = [];
+  for (const glob of exclude) {
+    const deep = glob.startsWith('**/') && glob.endsWith('/**') ? glob.slice(3, -3) : undefined;
+    if (deep !== undefined && deep !== '' && isLiteral(deep) && !deep.includes('/')) {
+      tests.push('-o', '(', '-type', 'd', '-name', deep, ')');
+      continue;
+    }
+    const dir = glob.endsWith('/**') ? glob.slice(0, -3) : glob;
+    if (dir !== '' && isLiteral(dir) && !dir.startsWith('/') && !dir.split('/').includes('..')) {
+      tests.push('-o', '-path', `./${trimTrailingSlashes(dir)}`);
+    }
+  }
+  return tests;
+}
+
+/** Whether `text` has none of the characters globs and `find` patterns treat specially. */
+function isLiteral(text: string): boolean {
+  for (const char of text) if ('*?[]{}\\'.includes(char)) return false;
+  return true;
+}
+
+function count(text: string, char: string): number {
+  let found = 0;
+  for (const each of text) if (each === char) found++;
+  return found;
 }
 
 /** `name` as a `find -name` pattern that matches only itself. */

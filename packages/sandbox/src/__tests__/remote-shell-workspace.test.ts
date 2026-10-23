@@ -794,6 +794,76 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', () => {
     return workspace;
   }
 
+  it('reads without writing the root, also after .cogitator was removed', async () => {
+    const { workspace, root } = fresh();
+    await workspace.write('a.txt', 'one');
+    await workspace.exec('rm -rf .cogitator');
+    expect(await workspace.read('a.txt')).toBe('one');
+    await workspace.write('b.txt', 'two');
+    expect(await workspace.read('b.txt')).toBe('two');
+    if (process.getuid?.() !== 0) {
+      chmodSync(root, 0o555);
+      try {
+        expect(await workspace.read('a.txt')).toBe('one');
+      } finally {
+        chmodSync(root, 0o755);
+      }
+    }
+    const left = await workspace.exec('ls "${TMPDIR:-/tmp}" | grep -c cogitator-read- || true');
+    expect(left.stdout.trim()).toBe('0');
+  });
+
+  it('removes what interrupted operations left in .cogitator/pending an hour ago', async () => {
+    const { workspace } = fresh();
+    await workspace.exec(
+      'mkdir -p .cogitator/pending && touch .cogitator/pending/fresh && touch -d "2 hours ago" .cogitator/pending/stale'
+    );
+    await workspace.write('a.txt', 'x');
+    const left = await workspace.list('.cogitator/pending', { includeHidden: true });
+    expect(left.map((entry) => entry.name)).toEqual(['fresh']);
+  });
+
+  it('does not run a command the provider started after the deadline, even unkilled', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const late: Promise<RemoteProcess>[] = [];
+    const workspace = overridden((connection) => ({
+      spawn: (argv, options) => {
+        const started = gate
+          .then(() => connection.spawn(argv, options))
+          .then((process) => ({ wait: () => process.wait(), kill: () => Promise.resolve() }));
+        late.push(started);
+        return started;
+      },
+    }));
+    await workspace.mkdir('dir');
+    const result = await workspace.exec('touch ran', { timeout: 200 });
+    expect(result.timedOut).toBe(true);
+    release();
+    const process = await late[0];
+    expect(await process.wait()).toBe(125);
+    expect(await workspace.exists('ran')).toBe(false);
+  });
+
+  it('lists names holding control bytes exactly', async () => {
+    const { workspace } = fresh();
+    await workspace.exec(
+      `mkdir -p "$(printf 'd\\002x')" && touch "$(printf 'd\\002x/a\\001b')" plain`
+    );
+    const entries = await workspace.list('.', { recursive: true });
+    expect(entries.map((entry) => entry.path)).toEqual(['d\u0002x', 'd\u0002x/a\u0001b', 'plain']);
+    expect(await workspace.list('.', { recursive: true, limit: 2 })).toEqual(entries.slice(0, 2));
+  });
+
+  it('narrows a glob listing to matching names in the sandbox', async () => {
+    const { workspace } = fresh();
+    await workspace.exec('mkdir -p src/lib && touch src/a.ts src/b.md src/c.js src/lib/d.ts');
+    const found = await workspace.list('.', { recursive: true, glob: 'src/**/*.{ts,md}' });
+    expect(found.map((entry) => entry.path)).toEqual(['src/a.ts', 'src/b.md', 'src/lib/d.ts']);
+  });
+
   it('reads through a copy of at most the limit and one byte, removed afterwards', async () => {
     const read: string[] = [];
     const workspace = overridden((connection) => ({
@@ -805,8 +875,8 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', () => {
     await workspace.write('a.txt', 'content');
     expect(await workspace.read('a.txt', { maxBytes: 1e21 })).toBe('content');
     expect(read).toHaveLength(1);
-    expect(read[0]).toMatch(/\/\.cogitator\/pending\/read-[a-f0-9]{32}$/);
-    expect(await workspace.list('.cogitator/pending', { includeHidden: true })).toEqual([]);
+    expect(read[0]).toMatch(/\/cogitator-read-[a-f0-9]{32}$/);
+    expect(await workspace.exists('.cogitator')).toBe(true);
     await expect(workspace.read('a.txt', { maxBytes: 3 })).rejects.toMatchObject({
       code: 'TOO_LARGE',
     });
@@ -886,6 +956,15 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', () => {
     await workspace.restore(snapshot.id);
     const check = await workspace.exec(`cat ${name}; cat ${name}.d/f`);
     expect(check).toMatchObject({ stdout: 'datain', exitCode: 0 });
+  });
+
+  it('leaves directories excluded by name alone, wherever they are', async () => {
+    const { workspace } = fresh();
+    await workspace.exec('mkdir -p a/cache b && echo old > a/cache/c && echo v1 > b/f');
+    const snapshot = await workspace.snapshot({ exclude: ['**/cache/**', 'b/**'] });
+    await workspace.exec('echo new > a/cache/c && echo v2 > b/f && echo n > a/n');
+    await workspace.restore(snapshot.id);
+    expect((await workspace.exec('cat a/cache/c b/f; ls a')).stdout).toBe('new\nv2\ncache\n');
   });
 
   it('refuses a snapshot over maxSnapshotBytes and leaves nothing behind', async () => {

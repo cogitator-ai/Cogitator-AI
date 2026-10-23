@@ -1,5 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type {
   RemoteProcess,
   RemoteRunOptions,
@@ -42,6 +44,8 @@ export function shellHost(base: string): ShellHost | undefined {
     return skipped(`could not pull ${IMAGE}, run: docker pull ${IMAGE}`);
   }
   const user = `${process.getuid?.() ?? 0}:${process.getgid?.() ?? 0}`;
+  const temp = join(base, '.tmp');
+  mkdirSync(temp, { recursive: true });
   const started = spawnSync(
     'docker',
     [
@@ -49,6 +53,8 @@ export function shellHost(base: string): ShellHost | undefined {
       '-d',
       '--rm',
       '--init',
+      '-e',
+      `TMPDIR=${temp}`,
       '--user',
       user,
       '-v',
