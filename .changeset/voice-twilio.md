@@ -1,0 +1,13 @@
+---
+'@cogitator-ai/voice': minor
+'@cogitator-ai/types': minor
+---
+
+Voice: phone calls through Twilio Media Streams, G.711 μ-law and a band-limited resampler.
+
+- `voiceAgent.attachTwilio(server, { authToken, streamUrl, tokens })` serves bidirectional Twilio media streams (`<Connect><Stream>`) on an existing HTTP server, and `handleTwilio(ws, options)` serves one stream on a socket your own server accepted. Every upgrade must carry a valid `X-Twilio-Signature` for the stream URL (with or without a trailing slash, compared in constant time), and every stream must bring a one-time token from `TwilioSessionTokens` in its `start` event, or pass `authorize`. A refused stream is closed with 1008. `twilioStreamTwiml` builds the TwiML with escaped values, the token as a `<Parameter>` and an optional `statusCallback`, and `validateTwilioWebhook` checks the voice webhook, form or JSON (`bodySHA256`).
+- In pipeline mode the call's μ-law goes to the STT as is when it lists `mulaw` in `streamEncodings` (Deepgram, OpenAI STT), decoded otherwise, and to the VAD decoded and resampled to its `sampleRate`. The TTS is asked for `mulaw` when `rawSampleRates` lists it at 8 kHz (ElevenLabs `ulaw_8000`), else for PCM16 (OpenAI TTS at 24 kHz), transcoded on the way out. In realtime mode the session runs with the new `audioFormat: 'pcmu'`: native `audio/pcmu` with OpenAI Realtime, decoded and resampled to and from Gemini Live.
+- The session marks every spoken sentence on the stream and learns from Twilio's echoes what the caller actually heard: a turn ends when its audio was played, a barge-in or an interrupt sends `clear`, and a streamed turn settles with only the sentences that were played, so `createCogitatorRunner` keeps only what the caller heard. Key presses come as `dtmf` events and, with `dtmfInput`, as text input. `call_start` reports the call, and the session ends when Twilio stops the stream.
+- `PipelineSession` (`createSession`) takes `input` (the format of the pushed audio), `ttsOptions` over the pipeline's own, and a `playback` (`VoicePlayback`) that reports what was played. `TwilioMediaStream` is the stream on its own.
+- `resample` now filters with a Kaiser-windowed sinc low-pass instead of interpolating linearly, so downsampling no longer aliases (fractional rates still interpolate linearly). `Resampler` resamples a stream chunk by chunk, `AudioTranscoder` converts between PCM16 and μ-law at any rates, and `linearToMulaw`, `mulawToLinear`, `float32ToMulaw`, `mulawToFloat32`, `pcm16ToMulaw` and `mulawToPcm16` implement G.711 μ-law.
+- `VoiceAudioFormat` gains `mulaw`, ElevenLabs returns it as `ulaw_8000`, and OpenAI TTS refuses it with a clear error.

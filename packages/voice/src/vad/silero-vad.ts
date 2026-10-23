@@ -39,7 +39,7 @@ export class SileroVAD implements VADProvider {
   private readonly modelPath: string;
   private readonly threshold: number;
   private readonly silenceDuration: number;
-  private readonly sampleRate: number;
+  readonly sampleRate: number;
   private readonly frameSize: number;
   private readonly contextSize: number;
 

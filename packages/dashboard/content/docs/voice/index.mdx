@@ -102,6 +102,7 @@ The realtime model gets the agent's own tools, run through [`createRealtimeTools
 | [VAD](/docs/voice/vad)                     | Energy-based and Silero neural voice activity detection |
 | [Pipeline](/docs/voice/pipeline)           | Batch and streaming STT -> Agent -> TTS processing      |
 | [Realtime](/docs/voice/realtime)           | Native speech-to-speech with OpenAI and Gemini          |
+| [Twilio](/docs/voice/twilio)               | Phone calls through Twilio Media Streams                |
 
 ## Audio Format
 
@@ -112,6 +113,7 @@ All raw audio in the voice package is **PCM16**: 16-bit signed integers, little-
 | Pipeline (STT streams, VAD) | 16kHz (Deepgram and VAD take a `sampleRate`) | MP3 by default, or `ttsOptions.format` |
 | OpenAI Realtime             | 24kHz                                        | 24kHz                                  |
 | Gemini Live                 | 16kHz                                        | 24kHz                                  |
+| Twilio phone call           | μ-law 8kHz                                   | μ-law 8kHz                             |
 
 STT providers also accept containerized files (wav, mp3, ogg, flac, webm, mp4); the container is detected from magic bytes. The pipeline passes its `ttsOptions` to every TTS call; without them it gets the provider's default format (MP3). Set `ttsOptions: { format: 'pcm16' }` on the pipeline or `VoiceAgent` for raw 24kHz PCM (see [TTS options](/docs/voice/pipeline#tts-options)).
 
@@ -159,3 +161,4 @@ const agent = new Agent({
 - [VAD](/docs/voice/vad) — detect when users start and stop speaking
 - [Pipeline Mode](/docs/voice/pipeline) — batch and streaming voice processing
 - [Realtime Mode](/docs/voice/realtime) — native speech-to-speech APIs
+- [Twilio](/docs/voice/twilio) - answer phone calls with the agent

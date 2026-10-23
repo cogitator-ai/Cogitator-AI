@@ -257,8 +257,11 @@ Audio from the client is forwarded to the realtime API, and audio/`transcript`/`
 | `tools`        | `Array<RealtimeTool>`  | No       | Tools the model can invoke                                                                      |
 | `sessionId`    | `string`               | No       | Id handed to tools as `context.sessionId` (`VoiceAgent` sets the client id)                     |
 | `toolImages`   | `boolean`              | No       | Send images that tools return to the model (default `false`), see [Tool Results](#tool-results) |
+| `audioFormat`  | `'pcm' \| 'pcmu'`      | No       | `pcm` (default) is PCM16 at the provider's rates, `pcmu` is G.711 μ-law 8kHz in both directions |
 
 `VoiceAgentConfig` takes `toolImages` too and passes it to every realtime session it opens.
+
+With `audioFormat: 'pcmu'` the session takes and gives the audio of a phone call. OpenAI Realtime handles `audio/pcmu` natively, without transcoding. Gemini Live takes PCM16, so the adapter decodes the μ-law and resamples it to 16kHz with a band-limited filter, and resamples the model's 24kHz audio to 8kHz μ-law. A `VoiceAgent` serving a [Twilio](/docs/voice/twilio) call sets it for you.
 
 ### RealtimeTool
 

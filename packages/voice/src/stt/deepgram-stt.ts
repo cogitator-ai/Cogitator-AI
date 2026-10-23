@@ -7,6 +7,7 @@ import type {
   STTStreamOptions,
   STTStream,
   TranscribeResult,
+  RawAudioEncoding,
 } from '../types.js';
 
 export interface DeepgramSTTConfig {
@@ -19,6 +20,7 @@ export interface DeepgramSTTConfig {
 
 const DEFAULT_MODEL = 'nova-3';
 const DEFAULT_SAMPLE_RATE = 16000;
+const MULAW_SAMPLE_RATE = 8000;
 const BASE_URL = 'https://api.deepgram.com/v1/listen';
 const WS_URL = 'wss://api.deepgram.com/v1/listen';
 
@@ -64,6 +66,7 @@ function mapWords(words: DeepgramWord[] | undefined): TranscribeResult['words'] 
 
 export class DeepgramSTT implements STTProvider {
   readonly name = 'deepgram';
+  readonly streamEncodings: readonly RawAudioEncoding[] = ['pcm16', 'mulaw'];
 
   private readonly apiKey: string;
   private readonly model: string;
@@ -116,10 +119,16 @@ export class DeepgramSTT implements STTProvider {
     return this.mapBatchResponse(data);
   }
 
+  /**
+   * Streams raw audio to Deepgram: PCM16 at `options.sampleRate` (default the configured rate),
+   * or μ-law (`encoding: 'mulaw'`, 8 kHz unless `sampleRate` says otherwise) as it comes from a
+   * phone call.
+   */
   createStream(options?: STTStreamOptions): STTStream {
+    const mulaw = options?.encoding === 'mulaw';
     return new DeepgramSTTStream(this.apiKey, this.model, this.language, {
       ...options,
-      sampleRate: options?.sampleRate ?? this.sampleRate,
+      sampleRate: options?.sampleRate ?? (mulaw ? MULAW_SAMPLE_RATE : this.sampleRate),
     });
   }
 
@@ -166,7 +175,7 @@ class DeepgramSTTStream extends EventEmitter implements STTStream {
       model,
       punctuate: 'true',
       interim_results: String(options.interimResults ?? true),
-      encoding: 'linear16',
+      encoding: options.encoding === 'mulaw' ? 'mulaw' : 'linear16',
       sample_rate: String(options.sampleRate),
       channels: '1',
     });

@@ -1,5 +1,5 @@
 import type { SpeechCreateParams } from 'openai/resources/audio/speech';
-import type { TTSProvider, TTSOptions, VoiceAudioFormat } from '../types.js';
+import type { RawAudioEncoding, TTSProvider, TTSOptions, VoiceAudioFormat } from '../types.js';
 import { lazyOpenAIClient, type OpenAIClientFactory } from '../openai-client.js';
 
 export interface OpenAITTSConfig {
@@ -14,11 +14,17 @@ const DEFAULT_VOICE = 'alloy';
 
 function mapFormat(format: VoiceAudioFormat): string {
   if (format === 'pcm16') return 'pcm';
+  if (format === 'mulaw') {
+    throw new Error(
+      'OpenAI TTS does not return μ-law. Use pcm16 (24 kHz) and transcode it, as a phone session does.'
+    );
+  }
   return format;
 }
 
 export class OpenAITTS implements TTSProvider {
   readonly name = 'openai';
+  readonly rawSampleRates: Readonly<Partial<Record<RawAudioEncoding, number>>> = { pcm16: 24000 };
 
   private readonly client: OpenAIClientFactory;
   private readonly model: string;

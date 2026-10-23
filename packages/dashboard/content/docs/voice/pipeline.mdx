@@ -160,7 +160,9 @@ session.interrupt();
 
 After interruption, the session returns to idle and is ready for new audio input.
 
-A streamed turn that stops early (an interruption, `sendText()` during a turn, a barge-in, closing, or a model or TTS error) is settled with `spoken`: the sentences whose audio was sent in full. The server cannot know how much of that audio the client played, so keep the client's playback buffer short.
+A streamed turn that stops early (an interruption, `sendText()` during a turn, a barge-in, closing, or a model or TTS error) is settled with `spoken`: the sentences whose audio was sent in full. A WebSocket client does not report how much of that audio it played, so keep its playback buffer short. A session with a `playback` knows: `createSession({ playback })` takes a `VoicePlayback` (`mark()` resolving once the audio before it was played, `clear()` dropping what was not), the session marks the end of each spoken sentence, waits for the marks before the turn ends, clears on interruption, and settles with only the sentences that were played. A [Twilio](/docs/voice/twilio) call works this way.
+
+`createSession` also takes `input` (the format of the pushed audio, such as `{ encoding: 'mulaw', sampleRate: 8000 }`: the STT stream is opened at that rate and gets μ-law when it lists `mulaw` in `streamEncodings`, the VAD gets decoded audio resampled to its `sampleRate`) and `ttsOptions` over the pipeline's own.
 
 With `createCogitatorRunner()` the thread then holds what the user heard. A fully spoken answer leaves the thread as a plain run does. An answer interrupted while it was spoken is replaced by its spoken part, with `metadata.interrupted: true`. When the model was still generating, the spoken part is saved after the run's `interrupt` event, marked the same way. When nothing was spoken, there is no assistant message for the answer. Text said alongside tool calls stays as the run saved it. The model reads an interrupted reply with `[interrupted by the user]` after it.
 

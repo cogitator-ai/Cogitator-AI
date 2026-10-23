@@ -8,9 +8,11 @@ Examples require various API keys depending on the providers used:
 
 ```bash
 export OPENAI_API_KEY=your-key          # 01 (STT/TTS), 02 (alternative to Gemini)
-export GOOGLE_API_KEY=your-key          # 01 (agent), 02, 03 (agent), 04
-export DEEPGRAM_API_KEY=your-key        # 03
-export ELEVENLABS_API_KEY=your-key      # 03
+export GOOGLE_API_KEY=your-key          # 01 (agent), 02, 03 (agent), 04, 05 (agent)
+export DEEPGRAM_API_KEY=your-key        # 03, 05
+export ELEVENLABS_API_KEY=your-key      # 03, 05 (or OPENAI_API_KEY)
+export TWILIO_AUTH_TOKEN=your-token     # 05
+export PUBLIC_HOST=abc.ngrok.app        # 05, the public host Twilio reaches
 ```
 
 ## Examples
@@ -45,4 +47,12 @@ npx tsx examples/voice/03-voice-agent.ts
 
 ```bash
 npx tsx examples/voice/04-realtime-voice-agent.ts
+```
+
+### 05 - Twilio Phone Agent
+
+A phone agent on one HTTP server: the voice webhook checks Twilio's signature and answers with TwiML that connects the call to a media stream, passing a one-time session token, and `VoiceAgent.attachTwilio` serves the stream (signed upgrade, token checked on `start`). Deepgram takes the call's μ-law natively, the answer is spoken by ElevenLabs in μ-law or by OpenAI TTS transcoded from 24 kHz, a barge-in clears what Twilio still holds, and the agent's memory keeps only what the caller heard. Pressing 0 asks for the opening hours. Expose the port with a tunnel such as ngrok and point your number's voice webhook at `https://PUBLIC_HOST/voice`.
+
+```bash
+npx tsx examples/voice/05-twilio-phone-agent.ts
 ```

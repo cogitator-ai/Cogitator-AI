@@ -1,4 +1,4 @@
-import type { TTSProvider, TTSOptions, VoiceAudioFormat } from '../types.js';
+import type { RawAudioEncoding, TTSProvider, TTSOptions, VoiceAudioFormat } from '../types.js';
 
 export interface ElevenLabsTTSConfig {
   apiKey: string;
@@ -15,6 +15,8 @@ function mapFormat(format?: VoiceAudioFormat): string {
   switch (format) {
     case 'pcm16':
       return 'pcm_24000';
+    case 'mulaw':
+      return 'ulaw_8000';
     case 'opus':
       return 'opus_48000_32';
     case 'flac':
@@ -33,6 +35,10 @@ function mapFormat(format?: VoiceAudioFormat): string {
 
 export class ElevenLabsTTS implements TTSProvider {
   readonly name = 'elevenlabs';
+  readonly rawSampleRates: Readonly<Partial<Record<RawAudioEncoding, number>>> = {
+    pcm16: 24000,
+    mulaw: 8000,
+  };
 
   private readonly apiKey: string;
   private readonly voiceId: string;

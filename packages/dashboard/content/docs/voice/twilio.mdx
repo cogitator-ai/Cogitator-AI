@@ -1,0 +1,191 @@
+---
+title: Twilio Phone Calls
+description: Answer phone calls with a Cogitator agent through Twilio Media Streams - signed upgrades, one-time session tokens, μ-law audio, barge-in and memory of only what the caller heard.
+---
+
+## Overview
+
+A phone call becomes a voice session of the agent through a bidirectional [Twilio Media Stream](https://www.twilio.com/docs/voice/media-streams). When a call comes in, Twilio asks your voice webhook what to do. The webhook answers with TwiML that connects the call to a WebSocket stream, and `VoiceAgent` serves that stream: the caller's audio goes to the agent, the agent's voice goes back to the call.
+
+```
+caller -> Twilio -> POST /voice (TwiML webhook) -> <Connect><Stream url="wss://.../twilio">
+                 -> wss://.../twilio (media stream) <-> VoiceAgent <-> STT, agent, TTS
+```
+
+Both pipeline mode (STT -> agent -> TTS) and realtime mode (OpenAI Realtime, Gemini Live) work over a call.
+
+## Quick start
+
+```typescript
+import http from 'node:http';
+import { Agent, Cogitator } from '@cogitator-ai/core';
+import {
+  VoiceAgent,
+  DeepgramSTT,
+  ElevenLabsTTS,
+  EnergyVAD,
+  TwilioSessionTokens,
+  createCogitatorRunner,
+  twilioStreamTwiml,
+  validateTwilioWebhook,
+} from '@cogitator-ai/voice';
+
+const authToken = process.env.TWILIO_AUTH_TOKEN!;
+const webhookUrl = 'https://voice.example.com/voice';
+const streamUrl = 'wss://voice.example.com/twilio';
+
+const cogitator = new Cogitator({ memory: { adapter: 'memory' } });
+const agent = new Agent({
+  name: 'phone-assistant',
+  model: 'google/gemini-3.5-flash-lite',
+  instructions: 'You answer phone calls. Speak in one or two short sentences.',
+});
+
+const voiceAgent = new VoiceAgent({
+  mode: 'pipeline',
+  agent: createCogitatorRunner(cogitator, agent),
+  stt: new DeepgramSTT({ apiKey: process.env.DEEPGRAM_API_KEY! }),
+  tts: new ElevenLabsTTS({ apiKey: process.env.ELEVENLABS_API_KEY! }),
+  vad: new EnergyVAD({ threshold: 0.02, sampleRate: 8000 }),
+  bargeIn: true,
+});
+
+const tokens = new TwilioSessionTokens();
+
+const server = http.createServer(async (req, res) => {
+  const body = await readBody(req);
+  const signature = req.headers['x-twilio-signature'];
+  const valid = validateTwilioWebhook({
+    authToken,
+    signature: Array.isArray(signature) ? signature[0] : signature,
+    url: webhookUrl,
+    body,
+  });
+  if (!valid) return res.writeHead(403).end();
+
+  const from = new URLSearchParams(body).get('From') ?? 'unknown';
+  res.writeHead(200, { 'Content-Type': 'text/xml' });
+  res.end(twilioStreamTwiml({ url: streamUrl, token: tokens.issue({ from }) }));
+});
+
+voiceAgent.attachTwilio(server, { authToken, streamUrl, tokens });
+server.listen(8080);
+```
+
+Point the voice webhook of your Twilio number at `POST https://voice.example.com/voice`. The full runnable version is [`examples/voice/05-twilio-phone-agent.ts`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/examples/voice/05-twilio-phone-agent.ts).
+
+## Security
+
+A media stream is a WebSocket anyone can try to open, so each stream is checked twice before it reaches the agent.
+
+**The upgrade is signed.** Twilio sends `X-Twilio-Signature` with the upgrade: an HMAC-SHA1 keyed with your Auth Token over the stream URL, with no parameters. `attachTwilio` checks it for `streamUrl` and for `streamUrl` with a trailing slash, compares in constant time, and refuses anything else with 403. A server that handles upgrades itself checks with `verifyTwilioUpgrade(req, { authToken, streamUrl })` and then hands the socket to `voiceAgent.handleTwilio(ws, { tokens })`.
+
+**The stream carries a one-time token.** `tokens.issue()` in the webhook creates a token, and `twilioStreamTwiml({ token })` passes it as a `<Parameter>` of the `<Stream>` (Twilio allows no query string in the stream URL). It comes back in the `start` event's `customParameters`, and the stream is refused (closed with 1008) unless the token was issued, has not expired (`ttl`, one minute by default) and was not used before. What `issue` was given comes back in the `call_start` event as `call.grant.metadata`.
+
+Tokens live in the memory of the process. When the webhook and the stream may hit different instances, pass `authorize` and check a shared store:
+
+```typescript
+voiceAgent.attachTwilio(server, {
+  authToken,
+  streamUrl,
+  authorize: async (start) => redisTokens.consume(start.customParameters.sessionToken),
+});
+```
+
+**The webhook is signed too.** `validateTwilioWebhook` checks the signature over the full URL and the sorted form parameters, and for a JSON body (a URL with a `bodySHA256` query parameter) the signature over the URL and the SHA-256 of the body. It accepts the URL with and without its default port. `validateTwilioSignature` and `twilioSignature` are the building blocks.
+
+## Audio
+
+Twilio streams G.711 μ-law at 8 kHz, mono, in both directions.
+
+### Pipeline mode
+
+| Step | What happens                                                                                                                                                                                              |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| STT  | A provider that lists `mulaw` in `streamEncodings` gets the call's audio as is: Deepgram streams with `encoding=mulaw&sample_rate=8000`, OpenAI STT decodes it before upload. Any other gets 8 kHz PCM16. |
+| VAD  | Gets the audio decoded, resampled to its `sampleRate`. Give `SileroVAD` `sampleRate: 8000` for its 256-sample windows, or `EnergyVAD` `sampleRate: 8000`.                                                 |
+| TTS  | Asked for `mulaw` when `rawSampleRates` lists it at 8000 (ElevenLabs `ulaw_8000`), else for `pcm16` (OpenAI TTS at 24 kHz), which is resampled with a band-limited filter and encoded on the way out.     |
+
+A TTS provider of your own declares what it returns with `rawSampleRates`, such as `{ pcm16: 22050 }`. A provider without it cannot serve a call, and `attachTwilio` says so.
+
+### Realtime mode
+
+The session runs with `audioFormat: 'pcmu'`. OpenAI Realtime takes and returns `audio/pcmu` natively. Gemini Live takes PCM16, so the adapter decodes and resamples the call's audio to 16 kHz, and turns the model's 24 kHz audio into 8 kHz μ-law. A `speech_start` from the provider clears the call's audio, and each turn ends with a mark.
+
+```typescript
+const voiceAgent = new VoiceAgent({
+  mode: 'realtime',
+  agent: createCogitatorRunner(cogitator, agent),
+  realtimeProvider: 'openai',
+  realtimeApiKey: process.env.OPENAI_API_KEY!,
+});
+voiceAgent.attachTwilio(server, { authToken, streamUrl, tokens });
+```
+
+## What the caller heard
+
+Audio goes to Twilio faster than it is played, so "sent" is not "heard". After each spoken sentence the session sends a `mark`, and Twilio echoes it once the audio before it was played. The session uses that:
+
+- A turn stays `speaking` until its last mark comes back, so `turn_end` means the caller heard the whole answer, and a barge-in while Twilio is still playing stops it.
+- A barge-in (with `bargeIn` and a VAD) or an interruption sends `clear`, which drops the audio Twilio still holds. The marks still pending come back as not played.
+- A streamed turn settles with the sentences whose marks were played, up to the first that was not. With `createCogitatorRunner`, the conversation keeps only those, marked `metadata.interrupted`.
+
+A sentence cut in the middle by a barge-in counts as not heard, and so does a mark Twilio echoes after the `clear` was sent.
+
+## Key presses and the end of a call
+
+Key presses (DTMF) arrive as `dtmf` events. `dtmfInput` turns a key into text the agent gets as the caller's input:
+
+```typescript
+voiceAgent.attachTwilio(server, {
+  authToken,
+  streamUrl,
+  tokens,
+  dtmfInput: (digit, call) => (digit === '0' ? 'Connect me to a person.' : undefined),
+});
+voiceAgent.on('dtmf', (sessionId, digit) => console.log(sessionId, digit));
+```
+
+When the caller hangs up, Twilio stops the stream, and the session ends with `session_end`.
+
+## Events
+
+| Event           | Arguments            | When                                                                                                                           |
+| --------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `call_start`    | `call: TwilioCall`   | A stream passed its checks: `sessionId`, `callSid`, `streamSid`, `accountSid`, `customParameters` (without the token), `grant` |
+| `session_start` | `sessionId`          | The voice session of the call started                                                                                          |
+| `dtmf`          | `sessionId`, `digit` | The caller pressed a key                                                                                                       |
+| `session_end`   | `sessionId`          | The call ended                                                                                                                 |
+| `error`         | `error`              | A refused stream, a malformed event, or a provider error                                                                       |
+
+## TwiML
+
+`twilioStreamTwiml` builds `<Response><Connect><Stream>` with escaped values:
+
+```typescript
+twilioStreamTwiml({
+  url: 'wss://voice.example.com/twilio',
+  token: tokens.issue(),
+  parameters: { language: 'en' },
+  statusCallback: 'https://voice.example.com/stream-status',
+  statusCallbackMethod: 'POST',
+});
+```
+
+The URL must use `wss://` and have no query string, and each parameter's name and value hold at most 500 characters together.
+
+## TwilioMediaStream
+
+`TwilioMediaStream` is the stream on its own, for a custom setup. It reads Twilio's events (`connected`, `start`, `media`, `mark`, `dtmf`, `stop`, numbers sent as strings included), emits `start`, `audio`, `dtmf`, `mark` and `stop`, and sends audio back as base64 μ-law `media` messages of 20 ms (`frameMs`). `inbound` and `outbound` set the formats on your side, transcoded to and from μ-law at 8 kHz. It implements `VoicePlayback`: `mark()` resolves true once Twilio played the audio before it, and `clear()` drops what was not played.
+
+```typescript
+const stream = new TwilioMediaStream(ws, {
+  inbound: { encoding: 'pcm16', sampleRate: 16000 },
+  outbound: { encoding: 'pcm16', sampleRate: 24000 },
+  authorize: (start) =>
+    tokens.consume(start.customParameters[TWILIO_SESSION_TOKEN_PARAMETER]) !== undefined,
+});
+stream.on('audio', (pcm16k) => recognizer.write(pcm16k));
+stream.sendAudio(pcm24k);
+const heard = await stream.mark();
+```

@@ -93,7 +93,7 @@ Telegram assistant with owner commands, YAML-style super assistant built with `R
 
 ### [`voice/`](./voice/) — Voice & Realtime Agents
 
-STT/TTS pipeline, realtime speech-to-speech, WebSocket voice agent server.
+STT/TTS pipeline, realtime speech-to-speech, WebSocket voice agent server, a phone agent on Twilio Media Streams.
 
 ### [`advanced/`](./advanced/) — Advanced Features
 

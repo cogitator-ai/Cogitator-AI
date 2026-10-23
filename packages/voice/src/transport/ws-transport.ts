@@ -94,24 +94,43 @@ export class VoiceClient extends EventEmitter<VoiceClientEvents> {
   }
 }
 
-interface TransportEvents {
-  connection: [client: VoiceClient];
+/** A connection a transport keeps alive and closes */
+export interface TransportClient {
+  readonly isAlive: boolean;
+  markDead(): void;
+  ping(): void;
+  close(code?: number, reason?: string): void;
+  terminate(): void;
+  once(event: 'close', listener: () => void): this;
 }
 
-export class WebSocketTransport extends EventEmitter<TransportEvents> {
+interface TransportEvents<TClient> {
+  connection: [client: TClient];
+}
+
+/**
+ * Serves WebSocket upgrades on one path: authorizes them with `verifyClient`, caps the
+ * connections, pings them, and wraps each socket with `accept`
+ */
+export class UpgradeTransport<TClient extends TransportClient> extends EventEmitter<
+  TransportEvents<TClient>
+> {
   private readonly path: string;
   private readonly maxConnections: number;
   private readonly verifyClient?: WebSocketTransportConfig['verifyClient'];
   private wss: WebSocketServer | null = null;
   private server: http.Server | null = null;
   private ownsServer = false;
-  private clients = new Set<VoiceClient>();
+  private clients = new Set<TClient>();
   private upgradeHandler:
     ((req: http.IncomingMessage, socket: Duplex, head: Buffer) => void) | null = null;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
   private pendingUpgrades = 0;
 
-  constructor(config?: WebSocketTransportConfig) {
+  constructor(
+    config: WebSocketTransportConfig | undefined,
+    private readonly accept: (ws: WebSocket, req: http.IncomingMessage) => TClient
+  ) {
     super();
     this.path = config?.path ?? '/voice';
     this.maxConnections = config?.maxConnections ?? 100;
@@ -240,9 +259,9 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> {
       }
 
       wss.handleUpgrade(req, socket, head, (ws) => {
-        const client = new VoiceClient(ws);
+        const client = this.accept(ws, req);
         this.clients.add(client);
-        client.on('close', () => this.clients.delete(client));
+        client.once('close', () => this.clients.delete(client));
         this.emit('connection', client);
       });
     } finally {
@@ -270,5 +289,12 @@ export class WebSocketTransport extends EventEmitter<TransportEvents> {
       clearInterval(this.pingInterval);
       this.pingInterval = null;
     }
+  }
+}
+
+/** Serves `VoiceClient`s: PCM16 audio in binary frames and JSON control messages */
+export class WebSocketTransport extends UpgradeTransport<VoiceClient> {
+  constructor(config?: WebSocketTransportConfig) {
+    super(config, (ws) => new VoiceClient(ws));
   }
 }

@@ -29,9 +29,10 @@ Full documentation: [cogitator.app/docs/voice](https://cogitator.app/docs/voice)
 - **2 TTS Providers** - OpenAI (gpt-4o-mini-tts) and ElevenLabs (eleven_flash_v2_5, ~75ms latency)
 - **2 VAD Providers** - Energy-based (zero deps) and Silero (ONNX neural network)
 - **WebSocket Transport** - Built-in server for browser/mobile clients
+- **Phone Calls** - Twilio Media Streams with signed upgrades, one-time session tokens, barge-in and memory of only what the caller heard
 - **Agent Tools** - Drop-in `transcribe_audio` and `speak_text` tools for any Cogitator agent
 - **Interruption Handling** - explicit interrupts, opt-in barge-in in pipeline mode (`bargeIn`) and provider VAD in realtime mode
-- **Audio Utilities** - PCM/WAV conversion, resampling, RMS calculation
+- **Audio Utilities** - PCM/WAV conversion, G.711 μ-law, band-limited resampling, RMS calculation
 
 ---
 
@@ -140,7 +141,7 @@ Docs: [TTS providers](https://cogitator.app/docs/voice/tts-providers).
 | `OpenAITTS`     | `gpt-4o-mini-tts`   | Yes       | alloy, ash, ballad, coral, echo, fable, onyx, nova, sage, shimmer, verse, marin, cedar | Also supports `tts-1`, `tts-1-hd`. Supports `instructions` for voice style control      |
 | `ElevenLabsTTS` | `eleven_flash_v2_5` | Yes       | By voice ID                                                                            | ~75ms latency. Also supports `eleven_turbo_v2_5`, `eleven_multilingual_v2`, `eleven_v3` |
 
-Default output is MP3. `format: 'pcm16'` returns raw PCM16 mono at **24kHz** for both providers. ElevenLabs supports `speed` (0.7–1.2) but not `wav`/`aac` output.
+Default output is MP3. `format: 'pcm16'` returns raw PCM16 mono at **24kHz** for both providers, and `format: 'mulaw'` returns G.711 μ-law at 8 kHz from ElevenLabs (OpenAI TTS has no μ-law, a phone call transcodes its PCM16). Each provider lists its raw formats and their rates in `rawSampleRates`. ElevenLabs supports `speed` (0.7–1.2) but not `wav`/`aac` output.
 
 ### OpenAI TTS
 
@@ -610,6 +611,70 @@ What is not the same as a text run:
 
 ---
 
+## Telephony with Twilio
+
+A phone call becomes a voice session of the agent through a bidirectional [Twilio Media Stream](https://www.twilio.com/docs/voice/media-streams). Your voice webhook answers the call with TwiML that connects it to the stream, and `VoiceAgent.attachTwilio` serves the stream on the same HTTP server:
+
+```typescript
+import http from 'node:http';
+import {
+  VoiceAgent,
+  DeepgramSTT,
+  ElevenLabsTTS,
+  EnergyVAD,
+  TwilioSessionTokens,
+  createCogitatorRunner,
+  twilioStreamTwiml,
+  validateTwilioWebhook,
+} from '@cogitator-ai/voice';
+
+const authToken = process.env.TWILIO_AUTH_TOKEN!;
+const streamUrl = 'wss://voice.example.com/twilio';
+const tokens = new TwilioSessionTokens();
+
+const voiceAgent = new VoiceAgent({
+  mode: 'pipeline',
+  agent: createCogitatorRunner(cogitator, agent),
+  stt: new DeepgramSTT({ apiKey: process.env.DEEPGRAM_API_KEY! }),
+  tts: new ElevenLabsTTS({ apiKey: process.env.ELEVENLABS_API_KEY! }),
+  vad: new EnergyVAD({ sampleRate: 8000 }),
+  bargeIn: true,
+});
+
+const server = http.createServer(async (req, res) => {
+  const body = await readBody(req);
+  const valid = validateTwilioWebhook({
+    authToken,
+    signature: req.headers['x-twilio-signature'] as string | undefined,
+    url: 'https://voice.example.com/voice',
+    body,
+  });
+  if (!valid) return res.writeHead(403).end();
+  const from = new URLSearchParams(body).get('From') ?? 'unknown';
+  res.writeHead(200, { 'Content-Type': 'text/xml' });
+  res.end(twilioStreamTwiml({ url: streamUrl, token: tokens.issue({ from }) }));
+});
+
+voiceAgent.attachTwilio(server, { authToken, streamUrl, tokens });
+voiceAgent.on('call_start', (call) => console.log(call.callSid, call.grant?.metadata.from));
+server.listen(8080);
+```
+
+Each stream is checked twice. The WebSocket upgrade must carry a valid `X-Twilio-Signature`: an HMAC-SHA1 with your Auth Token over the stream URL, with or without a trailing slash, compared in constant time. Then the stream's `start` event must bring the one-time token the webhook issued, passed as a `<Parameter>` (Twilio allows no query string in the stream URL). A token expires after a minute (`ttl`) and works once, so a replayed stream is refused with close code 1008. Tokens live in memory: with several instances, check a shared store in `authorize` instead. A server that accepts upgrades itself calls `verifyTwilioUpgrade(req, { authToken, streamUrl })` and then `voiceAgent.handleTwilio(ws, { tokens })`.
+
+The caller's audio is G.711 μ-law at 8 kHz:
+
+- **Pipeline mode**: an STT that lists `mulaw` in `streamEncodings` gets it as is (Deepgram streams with `encoding=mulaw&sample_rate=8000`), any other gets it decoded to 8 kHz PCM16. The VAD gets it decoded and resampled to its `sampleRate` (give Silero `sampleRate: 8000` for 256-sample windows). The answer is asked from the TTS as μ-law when its `rawSampleRates` lists `mulaw: 8000` (ElevenLabs `ulaw_8000`), else as PCM16 (OpenAI TTS at 24 kHz) and resampled and encoded on the way out.
+- **Realtime mode**: the session runs with `audioFormat: 'pcmu'`. OpenAI Realtime takes and returns `audio/pcmu` natively, the Gemini adapter decodes the call's audio to 16 kHz PCM and turns the model's 24 kHz audio into μ-law. A `speech_start` from the provider clears the call's audio, and each turn ends with a mark.
+
+Audio goes back as `media` messages of 20 ms, and the session sends a `mark` after each spoken sentence. Twilio echoes a mark once the audio before it was played, so the server knows what the caller actually heard rather than what it sent: a turn ends (`turn_end`) when its last mark comes back, and a streamed turn settles with only the sentences whose marks were played. A barge-in or an interrupt sends `clear`, which drops the audio Twilio still holds, and the sentences whose marks were pending count as not heard. With `createCogitatorRunner`, the conversation keeps only what the caller heard.
+
+Key presses come as `dtmf` events (`voiceAgent.on('dtmf', (sessionId, digit) => ...)`), and `dtmfInput` turns them into text the agent gets as the caller's input. The session ends when Twilio stops the stream (the caller hung up).
+
+`TwilioMediaStream` is the stream on its own: Twilio's events in, `sendAudio`, `mark()` and `clear()` out, with any `inbound` and `outbound` audio format. `validateTwilioSignature` and `twilioSignature` check other webhooks, and `validateTwilioWebhook` also checks JSON bodies through `bodySHA256`. `twilioStreamTwiml` escapes every value and takes an optional `statusCallback`.
+
+---
+
 ## Agent Integration
 
 `createCogitatorRunner(cogitator, agent, options?)` connects a Cogitator agent to the voice pipeline and to `VoiceAgent`. Its runner offers:
@@ -682,6 +747,28 @@ const rms = calculateRMS(float32Samples);
 
 const format = detectAudioFormat(fileBuffer); // 'wav' | 'mp3' | 'ogg' | 'flac' | 'webm' | 'mp4' | null (raw PCM)
 if (format) audioMimeType(format); // e.g. 'audio/wav'
+```
+
+`resample` filters with a Kaiser-windowed sinc low-pass (cutoff at 90% of the lower Nyquist frequency, over 100 dB down from 4.2 kHz when going from 24 kHz to 8 kHz), so downsampling does not alias. Rates that are not integers fall back to linear interpolation. For a stream cut in chunks, a `Resampler` keeps the filter's state across chunks, and `AudioTranscoder` converts between PCM16 and μ-law at any rates:
+
+```typescript
+import {
+  Resampler,
+  AudioTranscoder,
+  linearToMulaw,
+  mulawToLinear,
+  float32ToMulaw,
+  mulawToFloat32,
+} from '@cogitator-ai/voice';
+
+const resampler = new Resampler(24000, 8000);
+const out = resampler.process(chunk); // any chunk size, call flush() at the end of the stream
+
+const toPhone = new AudioTranscoder(
+  { encoding: 'pcm16', sampleRate: 24000 },
+  { encoding: 'mulaw', sampleRate: 8000 }
+);
+const mulaw = Buffer.concat([toPhone.push(pcm), toPhone.flush()]);
 ```
 
 ---
@@ -770,6 +857,20 @@ if (format) audioMimeType(format); // e.g. 'audio/wav'
 | `maxConnections` | `number`                                                | `100`    | Maximum concurrent connections                                                                        |
 | `verifyClient`   | `(req) => boolean \| { code, message } \| Promise<...>` | —        | Authorize upgrades: `false` rejects with 401, `{ code, message }` with that status, throwing with 500 |
 
+### `TwilioTransportConfig`
+
+The options of `attachTwilio`. `handleTwilio` takes `tokens`, `authorize` and `dtmfInput`.
+
+| Field            | Type                                     | Default             | Description                                              |
+| ---------------- | ---------------------------------------- | ------------------- | -------------------------------------------------------- |
+| `authToken`      | `string`                                 | required            | Account Auth Token, the key of `X-Twilio-Signature`      |
+| `streamUrl`      | `string`                                 | required            | Public `wss://` URL of the stream, as in the TwiML       |
+| `path`           | `string`                                 | path of `streamUrl` | Path served on the HTTP server                           |
+| `tokens`         | `TwilioSessionTokens`                    | -                   | One-time tokens checked on `start` (this or `authorize`) |
+| `authorize`      | `(start) => boolean \| Promise<boolean>` | -                   | Custom check of the `start` event, after the token       |
+| `dtmfInput`      | `(digit, call) => string \| undefined`   | -                   | Turns a key press into text input for the agent          |
+| `maxConnections` | `number`                                 | `100`               | Most concurrent streams                                  |
+
 ---
 
 ## Examples
@@ -780,6 +881,7 @@ See [`examples/voice/`](https://github.com/cogitator-ai/Cogitator-AI/tree/main/e
 - **02-realtime.ts** — Realtime session with tool calling (Gemini Live or OpenAI Realtime)
 - **03-voice-agent.ts** — WebSocket `VoiceAgent` with Deepgram STT, ElevenLabs TTS and EnergyVAD
 - **04-realtime-voice-agent.ts** — Realtime `VoiceAgent` (Gemini Live) with a server-side tool and a WebSocket client
+- **05-twilio-phone-agent.ts** - A phone agent: the TwiML webhook and a Twilio media stream on one HTTP server
 
 ---
 

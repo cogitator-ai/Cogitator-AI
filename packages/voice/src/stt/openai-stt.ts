@@ -4,6 +4,7 @@ import type {
   TranscriptionVerbose,
 } from 'openai/resources/audio/transcriptions';
 import { audioMimeType, detectAudioFormat, pcmToWav } from '../audio.js';
+import { mulawToPcm16 } from '../codec.js';
 import { lazyOpenAIClient, type OpenAIClientFactory } from '../openai-client.js';
 import type {
   STTProvider,
@@ -11,6 +12,7 @@ import type {
   STTStreamOptions,
   STTStream,
   TranscribeResult,
+  RawAudioEncoding,
 } from '../types.js';
 
 export interface OpenAISTTConfig {
@@ -21,6 +23,7 @@ export interface OpenAISTTConfig {
 
 const DEFAULT_MODEL = 'gpt-transcribe';
 const DEFAULT_SAMPLE_RATE = 16000;
+const MULAW_SAMPLE_RATE = 8000;
 
 function supportsVerboseJson(model: string): boolean {
   return model.startsWith('whisper');
@@ -58,6 +61,7 @@ function hasContainerHeader(audio: Buffer): boolean {
 
 export class OpenAISTT implements STTProvider {
   readonly name = 'openai';
+  readonly streamEncodings: readonly RawAudioEncoding[] = ['pcm16', 'mulaw'];
 
   private readonly client: OpenAIClientFactory;
   private readonly model: string;
@@ -78,9 +82,22 @@ export class OpenAISTT implements STTProvider {
     return this.transcribeFile(toUploadFile(audio, DEFAULT_SAMPLE_RATE), options);
   }
 
+  /**
+   * Collects the stream's audio and transcribes it on `close`. Raw audio is PCM16 at
+   * `options.sampleRate` (default 16 kHz), or μ-law with `encoding: 'mulaw'` (default 8 kHz),
+   * decoded before upload.
+   */
   createStream(options?: STTStreamOptions): STTStream {
-    const sampleRate = options?.sampleRate ?? DEFAULT_SAMPLE_RATE;
+    const mulaw = options?.encoding === 'mulaw';
+    const sampleRate = options?.sampleRate ?? (mulaw ? MULAW_SAMPLE_RATE : DEFAULT_SAMPLE_RATE);
     return new OpenAISTTStream((audio, opts) => {
+      if (mulaw) {
+        const wav = pcmToWav(mulawToPcm16(audio), sampleRate);
+        return this.transcribeFile(
+          new File([new Uint8Array(wav)], 'audio.wav', { type: 'audio/wav' }),
+          opts
+        );
+      }
       const file = hasContainerHeader(audio)
         ? toUploadFile(audio, sampleRate)
         : new File([new Uint8Array(pcmToWav(audio, sampleRate))], 'audio.wav', {

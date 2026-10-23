@@ -1,3 +1,5 @@
+import { resampleBandLimited } from './resampler.js';
+
 export function float32ToPcm16(samples: Float32Array): Buffer {
   const buffer = Buffer.alloc(samples.length * 2);
   const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
@@ -78,11 +80,26 @@ export function wavToPcm(wav: Buffer): { samples: Float32Array; sampleRate: numb
   throw new Error('WAV file missing data chunk');
 }
 
+/**
+ * Converts float samples from one rate to another. Integer rates go through a band-limited
+ * windowed-sinc filter (`Resampler`): downsampling removes what the new rate cannot hold instead
+ * of aliasing it, and upsampling interpolates without imaging. Fractional rates fall back to
+ * linear interpolation, which aliases on downsampling. The output has
+ * `round(samples.length * toRate / fromRate)` samples. Use a `Resampler` for a stream cut in
+ * chunks, so the filter's state carries across them.
+ */
 export function resample(samples: Float32Array, fromRate: number, toRate: number): Float32Array {
   if (fromRate <= 0 || toRate <= 0) {
     throw new Error(`Sample rates must be positive, got fromRate=${fromRate}, toRate=${toRate}`);
   }
   if (fromRate === toRate) return new Float32Array(samples);
+  if (Number.isInteger(fromRate) && Number.isInteger(toRate)) {
+    return resampleBandLimited(samples, fromRate, toRate);
+  }
+  return resampleLinear(samples, fromRate, toRate);
+}
+
+function resampleLinear(samples: Float32Array, fromRate: number, toRate: number): Float32Array {
   const ratio = fromRate / toRate;
   const outputLength = Math.round(samples.length / ratio);
   const output = new Float32Array(outputLength);

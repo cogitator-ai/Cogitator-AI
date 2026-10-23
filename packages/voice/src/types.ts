@@ -9,6 +9,32 @@ import type {
 
 export type { TranscribeResult, VoiceAudioFormat };
 
+/** Encoding of headerless audio: 16-bit little-endian PCM, or G.711 μ-law (one byte a sample) */
+export type RawAudioEncoding = 'pcm16' | 'mulaw';
+
+/** Headerless mono audio: its encoding and sample rate */
+export interface RawAudioFormat {
+  encoding: RawAudioEncoding;
+  sampleRate: number;
+}
+
+/**
+ * Where a session's audio is played, for a transport that learns what the listener actually
+ * heard, such as a phone line whose provider reports when the audio before a mark was played.
+ * `PipelineSession` marks the end of each sentence it speaks and keeps in the turn's spoken text
+ * only the sentences whose marks were played.
+ */
+export interface VoicePlayback {
+  /**
+   * Marks the end of the audio sent so far. Resolves true once the listener played all of it,
+   * false when it was dropped: by `clear`, or because the connection closed. It must resolve in
+   * either case.
+   */
+  mark(): Promise<boolean>;
+  /** Drops the audio not played yet, resolving the pending marks false */
+  clear(): void;
+}
+
 export interface STTOptions {
   language?: string;
   prompt?: string;
@@ -17,12 +43,23 @@ export interface STTOptions {
 export interface STTStreamOptions extends STTOptions {
   interimResults?: boolean;
   endpointing?: number;
-  /** Sample rate of the raw PCM16 audio written to the stream. Defaults to 16000. */
+  /** Sample rate of the raw audio written to the stream. Defaults to 16000. */
   sampleRate?: number;
+  /**
+   * Encoding of the raw audio written to the stream (default `pcm16`). Pass `mulaw` only to a
+   * provider whose `streamEncodings` lists it.
+   */
+  encoding?: RawAudioEncoding;
 }
 
 export interface STTProvider {
   readonly name: string;
+  /**
+   * The raw encodings `createStream` takes (`pcm16` when not set). A session that gets μ-law, a
+   * phone call, writes it as is to a provider that lists `mulaw`, and decodes it to PCM16 for
+   * any other.
+   */
+  readonly streamEncodings?: readonly RawAudioEncoding[];
   transcribe(audio: Buffer, options?: STTOptions): Promise<TranscribeResult>;
   createStream(options?: STTStreamOptions): STTStream;
 }
@@ -46,6 +83,12 @@ export interface TTSOptions {
 
 export interface TTSProvider {
   readonly name: string;
+  /**
+   * Sample rate of the raw formats the provider returns, by format (`{ pcm16: 24000 }`). A
+   * session that needs μ-law at 8 kHz, a phone call, asks for `mulaw` when it is listed at
+   * 8000, and else for `pcm16`, which it resamples and encodes.
+   */
+  readonly rawSampleRates?: Readonly<Partial<Record<RawAudioEncoding, number>>>;
   synthesize(text: string, options?: TTSOptions): Promise<Buffer>;
   streamSynthesize(text: string, options?: TTSOptions): AsyncGenerator<Buffer>;
 }
@@ -58,6 +101,11 @@ export type VADEvent =
 
 export interface VADProvider {
   readonly name: string;
+  /**
+   * Sample rate the VAD expects. A session whose audio comes at another rate, such as 8 kHz
+   * from a phone call, resamples it for the VAD.
+   */
+  readonly sampleRate?: number;
   process(samples: Float32Array): VADEvent | Promise<VADEvent>;
   reset(): void;
 }
@@ -73,7 +121,8 @@ export interface VoiceRunContext {
 export interface VoiceTurnOutcome {
   /**
    * The text whose audio was sent to the client in full, a prefix of the text the turn yielded.
-   * The server cannot know how much of that audio the client played before it stopped.
+   * A plain WebSocket client does not report how much of that audio it played before it stopped.
+   * With a `VoicePlayback` that does (a Twilio call), it is the text whose audio was played.
    */
   spoken: string;
   /**
@@ -228,7 +277,18 @@ export interface RealtimeSessionConfig {
    */
   toolImages?: boolean;
   voice?: string;
+  /**
+   * Audio of the session in both directions: `pcm` (default) is PCM16 mono at the provider's
+   * rates (24 kHz with OpenAI, 16 kHz in and 24 kHz out with Gemini), `pcmu` is G.711 μ-law at
+   * 8 kHz, the audio of a phone call. OpenAI takes and returns `audio/pcmu` natively, the Gemini
+   * adapter decodes and resamples it to 16 kHz PCM and turns the model's 24 kHz audio into
+   * μ-law.
+   */
+  audioFormat?: RealtimeAudioFormat;
 }
+
+/** Audio of a realtime session, see `RealtimeSessionConfig.audioFormat` */
+export type RealtimeAudioFormat = 'pcm' | 'pcmu';
 
 /** `true` accepts, `false` rejects with 401, `{ code, message }` rejects with that status. */
 export type VerifyClientResult = boolean | { code: number; message: string };

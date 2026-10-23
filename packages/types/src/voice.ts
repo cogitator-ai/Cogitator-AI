@@ -10,7 +10,11 @@ export interface TranscribeResult {
   }>;
 }
 
-export type VoiceAudioFormat = 'pcm16' | 'mp3' | 'opus' | 'aac' | 'flac' | 'wav';
+/**
+ * Audio format of synthesized speech. `pcm16` is raw 16-bit little-endian PCM, `mulaw` raw G.711
+ * μ-law at 8 kHz (telephone audio).
+ */
+export type VoiceAudioFormat = 'pcm16' | 'mulaw' | 'mp3' | 'opus' | 'aac' | 'flac' | 'wav';
 
 export interface VoiceConfig {
   mode: 'pipeline' | 'realtime';

@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
-import type { RealtimeSessionConfig } from '../types.js';
+import type { RawAudioFormat, RealtimeSessionConfig } from '../types.js';
+import { AudioTranscoder } from '../transcoder.js';
 import {
   assertRealtimeTools,
   realtimeToolError,
@@ -13,7 +14,17 @@ const DEFAULT_VOICE = 'Puck';
 const BASE_URL =
   'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 const CONNECT_TIMEOUT_MS = 30_000;
-const INPUT_MIME_TYPE = 'audio/pcm;rate=16000';
+const INPUT_RATE = 16000;
+const INPUT_MIME_TYPE = `audio/pcm;rate=${INPUT_RATE}`;
+const DEFAULT_OUTPUT_RATE = 24000;
+const MULAW_8K: RawAudioFormat = { encoding: 'mulaw', sampleRate: 8000 };
+
+/** The rate of a `audio/pcm;rate=N` MIME type */
+function pcmRate(mimeType: string | undefined): number {
+  const match = /rate=(\d+)/.exec(mimeType ?? '');
+  const rate = match ? Number(match[1]) : NaN;
+  return Number.isInteger(rate) && rate > 0 ? rate : DEFAULT_OUTPUT_RATE;
+}
 
 interface GeminiRealtimeEvents {
   connected: [];
@@ -68,8 +79,9 @@ function rawDataToString(data: WebSocket.RawData): string {
 }
 
 /**
- * Gemini Live API adapter. Input audio is PCM16 mono at 16kHz,
- * output audio is PCM16 mono at 24kHz.
+ * Gemini Live API adapter. Input audio is PCM16 mono at 16kHz, output audio is PCM16 mono at
+ * 24kHz. With `audioFormat: 'pcmu'` both are G.711 μ-law at 8 kHz: the adapter decodes and
+ * resamples the input to 16 kHz, and resamples and encodes the model's audio.
  */
 export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
   private readonly config: RealtimeSessionConfig;
@@ -83,12 +95,18 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
   private assistantText = '';
   private calls: AbortController | null = null;
   private readonly runningCalls = new Map<string, AbortController>();
+  private readonly inputTranscoder: AudioTranscoder | null;
+  private outputTranscoder: AudioTranscoder | null = null;
 
   constructor(config: RealtimeSessionConfig) {
     super();
     assertRealtimeTools(config.tools);
     this.config = config;
     this.model = config.model ?? DEFAULT_MODEL;
+    this.inputTranscoder =
+      config.audioFormat === 'pcmu'
+        ? new AudioTranscoder(MULAW_8K, { encoding: 'pcm16', sampleRate: INPUT_RATE })
+        : null;
   }
 
   get isConnected(): boolean {
@@ -185,9 +203,11 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
   }
 
   pushAudio(chunk: Buffer): void {
+    const audio = this.inputTranscoder ? this.inputTranscoder.push(chunk) : chunk;
+    if (audio.length === 0) return;
     this.send({
       realtimeInput: {
-        audio: { mimeType: INPUT_MIME_TYPE, data: chunk.toString('base64') },
+        audio: { mimeType: INPUT_MIME_TYPE, data: audio.toString('base64') },
       },
     });
   }
@@ -204,6 +224,7 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
   interrupt(): void {
     if (this.modelTurnActive) {
       this.interrupting = true;
+      this.outputTranscoder?.reset();
     }
   }
 
@@ -273,7 +294,7 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
     for (const part of parts) {
       if (part.thought) continue;
       if (part.inlineData?.data && !this.interrupting) {
-        this.emit('audio', Buffer.from(part.inlineData.data, 'base64'));
+        this.emitAudio(Buffer.from(part.inlineData.data, 'base64'), part.inlineData.mimeType);
       }
       if (part.text) {
         this.assistantText += part.text;
@@ -281,6 +302,7 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
     }
 
     if (content.interrupted) {
+      this.outputTranscoder?.reset();
       this.flushAssistantTranscript();
       this.modelTurnActive = false;
       this.interrupting = false;
@@ -288,12 +310,37 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
     }
 
     if (content.turnComplete) {
+      this.flushOutputAudio();
       this.flushUserTranscript();
       this.flushAssistantTranscript();
       this.modelTurnActive = false;
       this.interrupting = false;
       this.emit('turn_end');
     }
+  }
+
+  private emitAudio(audio: Buffer, mimeType: string | undefined): void {
+    if (this.config.audioFormat !== 'pcmu') {
+      this.emit('audio', audio);
+      return;
+    }
+    const rate = pcmRate(mimeType);
+    if (this.outputTranscoder?.from.sampleRate !== rate) {
+      this.flushOutputAudio();
+      this.outputTranscoder = new AudioTranscoder(
+        { encoding: 'pcm16', sampleRate: rate },
+        MULAW_8K
+      );
+    }
+    const encoded = this.outputTranscoder.push(audio);
+    if (encoded.length > 0) this.emit('audio', encoded);
+  }
+
+  /** Emits the end of the model's audio the resampler still holds */
+  private flushOutputAudio(): void {
+    if (!this.outputTranscoder) return;
+    const tail = this.outputTranscoder.flush();
+    if (tail.length > 0 && !this.interrupting) this.emit('audio', tail);
   }
 
   private flushUserTranscript(): void {
@@ -310,6 +357,8 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
   }
 
   private resetTurn(): void {
+    this.outputTranscoder?.reset();
+    this.inputTranscoder?.reset();
     this.modelTurnActive = false;
     this.interrupting = false;
     this.userTranscript = '';

@@ -127,6 +127,23 @@ describe('OpenAIRealtimeAdapter', () => {
       });
     });
 
+    it('uses G.711 μ-law in both directions with audioFormat pcmu', async () => {
+      adapter = new OpenAIRealtimeAdapter(createConfig({ audioFormat: 'pcmu' }));
+      await adapter.connect();
+
+      const sent = JSON.parse(mockWs.send.mock.calls[0]![0] as string);
+      expect(sent.session.audio.input.format).toEqual({ type: 'audio/pcmu' });
+      expect(sent.session.audio.output.format).toEqual({ type: 'audio/pcmu' });
+    });
+
+    it('keeps PCM16 at 24 kHz with audioFormat pcm', async () => {
+      adapter = new OpenAIRealtimeAdapter(createConfig({ audioFormat: 'pcm' }));
+      await adapter.connect();
+
+      const sent = JSON.parse(mockWs.send.mock.calls[0]![0] as string);
+      expect(sent.session.audio.input.format).toEqual({ type: 'audio/pcm', rate: 24000 });
+    });
+
     it('uses default voice "marin" when none specified', async () => {
       adapter = new OpenAIRealtimeAdapter(createConfig());
       await adapter.connect();

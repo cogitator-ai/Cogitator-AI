@@ -15,6 +15,7 @@ const DEFAULT_TRANSCRIPTION_MODEL = 'gpt-live-transcribe';
 const BASE_URL = 'wss://api.openai.com/v1/realtime';
 const CONNECT_TIMEOUT_MS = 30_000;
 const PCM_FORMAT = { type: 'audio/pcm', rate: 24000 } as const;
+const PCMU_FORMAT = { type: 'audio/pcmu' } as const;
 
 interface OpenAIRealtimeEvents {
   connected: [];
@@ -51,8 +52,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * OpenAI Realtime API (GA interface) adapter. Audio in both directions is
- * PCM16 mono at 24kHz.
+ * OpenAI Realtime API (GA interface) adapter. Audio in both directions is PCM16 mono at 24kHz,
+ * or G.711 μ-law at 8 kHz (`audio/pcmu`) with `audioFormat: 'pcmu'`.
  */
 export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
   private readonly config: RealtimeSessionConfig;
@@ -173,17 +174,18 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
   }
 
   private sendSessionUpdate(): void {
+    const format = this.config.audioFormat === 'pcmu' ? PCMU_FORMAT : PCM_FORMAT;
     const session: Record<string, unknown> = {
       type: 'realtime',
       output_modalities: ['audio'],
       audio: {
         input: {
-          format: PCM_FORMAT,
+          format,
           transcription: { model: DEFAULT_TRANSCRIPTION_MODEL },
           turn_detection: { type: 'server_vad' },
         },
         output: {
-          format: PCM_FORMAT,
+          format,
           voice: this.config.voice ?? DEFAULT_VOICE,
         },
       },

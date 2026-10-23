@@ -12,7 +12,7 @@ export class EnergyVAD implements VADProvider {
 
   private readonly threshold: number;
   private readonly silenceDuration: number;
-  private readonly sampleRate: number;
+  readonly sampleRate: number;
 
   private state: 'idle' | 'speaking' = 'idle';
   private speechSamples = 0;

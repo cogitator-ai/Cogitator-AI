@@ -1,4 +1,4 @@
 {
   "title": "Voice",
-  "pages": ["index", "stt-providers", "tts-providers", "vad", "pipeline", "realtime"]
+  "pages": ["index", "stt-providers", "tts-providers", "vad", "pipeline", "realtime", "twilio"]
 }
