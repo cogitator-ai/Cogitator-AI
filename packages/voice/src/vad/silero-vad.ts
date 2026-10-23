@@ -45,12 +45,14 @@ const V5_STATE_SIZE = 2 * 1 * 128;
  * signatures, detected from the model inputs. Audio of any length is accepted:
  * samples are buffered and evaluated in fixed-size frames (512 @ 16kHz, 256 @ 8kHz).
  * `clone()` gives a VAD with its own state that shares the loaded model, one per session.
+ * `init()` loads the model ahead of time, else the first `process()` loads it.
  */
 export class SileroVAD implements VADProvider {
   readonly name = 'silero';
 
   private readonly config: SileroVADConfig;
   private shared: SharedModel = {};
+  private queue: Promise<void> = Promise.resolve();
   private readonly modelPath: string;
   private readonly threshold: number;
   private readonly silenceDuration: number;
@@ -111,10 +113,25 @@ export class SileroVAD implements VADProvider {
     return copy;
   }
 
-  async process(samples: Float32Array): Promise<VADEvent> {
+  /**
+   * Evaluates the samples. Calls are handled one after another, in order, so overlapping calls
+   * never share a frame or fork the model's state. The model is loaded on the first call when
+   * `init()` was not called.
+   */
+  process(samples: Float32Array): Promise<VADEvent> {
+    const result = this.queue.then(() => this.processNow(samples));
+    this.queue = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
+  }
+
+  private async processNow(samples: Float32Array): Promise<VADEvent> {
     if (!this.session && this.shared.model) this.adopt(this.shared.model);
+    if (!this.session) await this.init();
     if (!this.session || !this.ort) {
-      throw new Error('SileroVAD: must call init() before process()');
+      throw new Error('SileroVAD: the model is not loaded');
     }
 
     if (samples.length === 0) {
@@ -178,6 +195,7 @@ export class SileroVAD implements VADProvider {
     this.version = model.version;
   }
 
+  /** Drops this VAD's state and its reference to the model, which its clones keep */
   dispose(): void {
     this.session = null;
     this.ort = null;

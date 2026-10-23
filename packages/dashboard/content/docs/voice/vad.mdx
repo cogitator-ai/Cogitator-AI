@@ -147,7 +147,7 @@ session.on('transcript', (text, isFinal) => {
 session.pushAudio(pcm16Chunk);
 ```
 
-A VAD keeps the state of one audio stream, so each session gets its own. The pipeline above gives every session a `clone()` of the `EnergyVAD`, and a `SileroVAD` clone shares the loaded model. A VAD of your own either has `clone()` or comes from a factory, `vad: () => new MyVAD()`. An instance without `clone` is shared by all sessions, with a warning: concurrent sessions would mix their audio in it, and one session's interruption would reset it for all.
+A VAD keeps the state of one audio stream, so each session gets its own. The pipeline above gives every session a `clone()` of the `EnergyVAD`, and a `SileroVAD` clone shares the loaded model. A VAD of your own either has `clone()` or comes from a factory, `vad: () => new MyVAD()`, and the session calls its optional `dispose()` when it closes. A `SileroVAD` from a factory loads its model on the first `process()`, so a clone of one initialized instance is cheaper. An instance without `clone` is shared by all sessions, with a warning: concurrent sessions would mix their audio in it, and one session's interruption would reset it for all.
 
 A session whose audio comes at another rate than the VAD's `sampleRate`, such as an 8 kHz phone call, resamples it for the VAD.
 

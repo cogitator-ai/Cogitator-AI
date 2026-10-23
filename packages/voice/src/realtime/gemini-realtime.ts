@@ -17,6 +17,11 @@ const CONNECT_TIMEOUT_MS = 30_000;
 const INPUT_RATE = 16000;
 const INPUT_MIME_TYPE = `audio/pcm;rate=${INPUT_RATE}`;
 const DEFAULT_OUTPUT_RATE = 24000;
+/**
+ * A transcript of the user that comes this long after the previous one, or after one marked
+ * `finished`, starts a new utterance; a closer one continues the previous utterance
+ */
+const UTTERANCE_GAP_MS = 1_500;
 const MULAW_8K: RawAudioFormat = { encoding: 'mulaw', sampleRate: 8000 };
 
 /** The rate of a `audio/pcm;rate=N` MIME type */
@@ -45,7 +50,7 @@ interface GeminiPart {
 
 interface GeminiServerContent {
   modelTurn?: { parts?: GeminiPart[] };
-  inputTranscription?: { text?: string };
+  inputTranscription?: { text?: string; finished?: boolean };
   outputTranscription?: { text?: string };
   interrupted?: boolean;
   turnComplete?: boolean;
@@ -97,7 +102,8 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
   private readonly runningCalls = new Map<string, AbortController>();
   private readonly inputTranscoder: AudioTranscoder | null;
   private outputTranscoder: AudioTranscoder | null = null;
-  private userSpeaking = false;
+  private utteranceOpen = false;
+  private lastUserTranscriptAt = 0;
 
   constructor(config: RealtimeSessionConfig) {
     super();
@@ -282,7 +288,7 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
     const inputText = content.inputTranscription?.text;
     if (inputText) {
       this.userTranscript += inputText;
-      this.userStartedSpeaking();
+      this.trackUtterance(content.inputTranscription?.finished === true);
     }
 
     const outputText = content.outputTranscription?.text;
@@ -311,7 +317,9 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
       this.flushAssistantTranscript();
       this.modelTurnActive = false;
       this.interrupting = false;
-      this.userStartedSpeaking();
+      this.utteranceOpen = true;
+      this.lastUserTranscriptAt = Date.now();
+      this.emit('speech_start');
     }
 
     if (content.turnComplete) {
@@ -349,18 +357,22 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
   }
 
   /**
-   * `speech_start` once per user turn: on the first transcription of the user's speech, which
-   * also comes after the model finished generating while its audio still plays, or on an
-   * interruption
+   * `speech_start` for new speech of the user. While the model generates, only Gemini's
+   * `interrupted` counts: transcripts come independently of the model's output, so one that
+   * arrives then may be the tail of the utterance being answered. When the model is not
+   * generating, the first transcript of a new utterance counts (one after a `finished`
+   * transcript or after a pause of `UTTERANCE_GAP_MS`), which also catches the user speaking
+   * while the model's last answer still plays.
    */
-  private userStartedSpeaking(): void {
-    if (this.userSpeaking) return;
-    this.userSpeaking = true;
-    this.emit('speech_start');
+  private trackUtterance(finished: boolean): void {
+    const now = Date.now();
+    const continues = this.utteranceOpen && now - this.lastUserTranscriptAt < UTTERANCE_GAP_MS;
+    this.lastUserTranscriptAt = now;
+    this.utteranceOpen = !finished;
+    if (!continues && !this.modelTurnActive) this.emit('speech_start');
   }
 
   private flushUserTranscript(): void {
-    this.userSpeaking = false;
     const text = this.userTranscript.trim();
     this.userTranscript = '';
     if (text) this.emit('transcript', text, 'user');
@@ -374,7 +386,7 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
   }
 
   private resetTurn(): void {
-    this.userSpeaking = false;
+    this.utteranceOpen = false;
     this.outputTranscoder?.reset();
     this.inputTranscoder?.reset();
     this.modelTurnActive = false;

@@ -114,6 +114,8 @@ export interface VADProvider {
    * a clone. Without it, every session of a pipeline shares this VAD.
    */
   clone?(): VADProvider;
+  /** Frees what this VAD holds. A session calls it when it closes, for a VAD it made */
+  dispose?(): void;
 }
 
 /** Makes a VAD for one session */

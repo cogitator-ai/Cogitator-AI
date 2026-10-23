@@ -16,6 +16,10 @@ const BASE_URL = 'wss://api.openai.com/v1/realtime';
 const CONNECT_TIMEOUT_MS = 30_000;
 const PCM_FORMAT = { type: 'audio/pcm', rate: 24000 } as const;
 const PCMU_FORMAT = { type: 'audio/pcmu' } as const;
+/** Longest wait for the active response to end before a new one is created anyway */
+const CREATE_WAIT_MS = 3_000;
+/** Audio items kept for truncation, the oldest dropped first */
+const MAX_AUDIO_ITEMS = 64;
 
 interface OpenAIRealtimeEvents {
   connected: [];
@@ -73,8 +77,9 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
   private connected = false;
   private responseActive = false;
   private calls: AbortController | null = null;
-  private audioItem: AudioItem | null = null;
+  private readonly audioItems: AudioItem[] = [];
   private emittedMs = 0;
+  private pendingCreate: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: RealtimeSessionConfig) {
     super();
@@ -166,6 +171,27 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
         content: [{ type: 'input_text', text }],
       },
     });
+    this.createResponse();
+  }
+
+  /**
+   * Asks for a response, once the active one ended (`response.done`, as after a cancel) or after
+   * `CREATE_WAIT_MS`: a `response.create` while a response is active fails
+   */
+  private createResponse(): void {
+    if (!this.responseActive) {
+      this.send({ type: 'response.create' });
+      return;
+    }
+    if (this.pendingCreate) return;
+    this.pendingCreate = setTimeout(() => this.flushCreate(), CREATE_WAIT_MS);
+    this.pendingCreate.unref();
+  }
+
+  private flushCreate(): void {
+    if (!this.pendingCreate) return;
+    clearTimeout(this.pendingCreate);
+    this.pendingCreate = null;
     this.send({ type: 'response.create' });
   }
 
@@ -175,29 +201,34 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
   }
 
   /**
-   * Tells the model how much of its answer the listener heard: `playedMs` is a position on the
-   * timeline of all the audio this adapter emitted. When the latest audio item was not played to
-   * its end, it is truncated there (`conversation.item.truncate`), so the conversation keeps
-   * only what was heard.
+   * Tells the model how much of its audio the listener heard: `playedMs` is a position on the
+   * timeline of all the audio this adapter emitted. The item playing there is truncated at that
+   * point and the items after it at 0 (`conversation.item.truncate`), so the conversation keeps
+   * only what was heard. The item of an active response is cut at its end even when all of it
+   * was heard, and audio of a truncated item that still arrives is dropped.
    */
   truncate(playedMs: number): void {
-    const item = this.audioItem;
-    if (!item || item.truncated) return;
-    const end = Math.max(0, Math.floor(playedMs - item.start));
-    if (end >= Math.floor(item.ms)) return;
-    item.truncated = true;
-    this.send({
-      type: 'conversation.item.truncate',
-      item_id: item.itemId,
-      content_index: item.contentIndex,
-      audio_end_ms: end,
-    });
+    const growing = this.responseActive ? this.audioItems.at(-1) : undefined;
+    for (const item of this.audioItems) {
+      if (item.truncated) continue;
+      const end = Math.min(Math.max(0, Math.floor(playedMs - item.start)), Math.floor(item.ms));
+      if (end >= Math.floor(item.ms) && item !== growing) continue;
+      item.truncated = true;
+      this.send({
+        type: 'conversation.item.truncate',
+        item_id: item.itemId,
+        content_index: item.contentIndex,
+        audio_end_ms: end,
+      });
+    }
   }
 
   close(): void {
     const ws = this.ws;
     this.connected = false;
     this.responseActive = false;
+    if (this.pendingCreate) clearTimeout(this.pendingCreate);
+    this.pendingCreate = null;
     this.abortCalls('Realtime session closed');
     if (!ws) return;
     this.ws = null;
@@ -263,7 +294,7 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
           break;
         }
         const audio = Buffer.from(delta, 'base64');
-        this.trackAudio(event, audio.length);
+        if (!this.trackAudio(event, audio.length)) break;
         this.emit('audio', audio);
         break;
       }
@@ -290,6 +321,7 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
 
       case 'response.done':
         this.responseActive = false;
+        this.flushCreate();
         this.handleResponseDone(event.response);
         break;
 
@@ -305,20 +337,28 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
     }
   }
 
-  private trackAudio(event: Record<string, unknown>, bytes: number): void {
+  /** Places a delta on the audio timeline: false for audio of a truncated item, to drop */
+  private trackAudio(event: Record<string, unknown>, bytes: number): boolean {
     const ms = bytes / (this.config.audioFormat === 'pcmu' ? 8 : 48);
     const itemId = typeof event.item_id === 'string' ? event.item_id : undefined;
-    if (itemId !== undefined && this.audioItem?.itemId !== itemId) {
-      this.audioItem = {
-        itemId,
-        contentIndex: typeof event.content_index === 'number' ? event.content_index : 0,
-        start: this.emittedMs,
-        ms: 0,
-        truncated: false,
-      };
+    if (itemId !== undefined) {
+      let item = this.audioItems.find((candidate) => candidate.itemId === itemId);
+      if (!item) {
+        item = {
+          itemId,
+          contentIndex: typeof event.content_index === 'number' ? event.content_index : 0,
+          start: this.emittedMs,
+          ms: 0,
+          truncated: false,
+        };
+        this.audioItems.push(item);
+        if (this.audioItems.length > MAX_AUDIO_ITEMS) this.audioItems.shift();
+      }
+      if (item.truncated) return false;
+      item.ms += ms;
     }
-    if (this.audioItem && this.audioItem.itemId === itemId) this.audioItem.ms += ms;
     this.emittedMs += ms;
+    return true;
   }
 
   private handleResponseDone(response: unknown): void {

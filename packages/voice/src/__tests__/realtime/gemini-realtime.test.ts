@@ -744,55 +744,100 @@ describe('GeminiRealtimeAdapter', () => {
   });
 
   describe('speech_start', () => {
-    it('fires when the user speaks after the model finished, while its audio may still play', async () => {
+    const user = (text: string, finished?: boolean) =>
+      mockWs.emit(
+        'message',
+        JSON.stringify({
+          serverContent: { inputTranscription: { text, ...(finished && { finished }) } },
+        })
+      );
+    const model = () =>
+      mockWs.emit(
+        'message',
+        JSON.stringify({
+          serverContent: {
+            modelTurn: {
+              parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: 'AAAA' } }],
+            },
+          },
+        })
+      );
+    const complete = () =>
+      mockWs.emit('message', JSON.stringify({ serverContent: { turnComplete: true } }));
+
+    it('fires once for an utterance whose transcript keeps coming while the model answers', async () => {
+      adapter = new GeminiRealtimeAdapter(createConfig({ audioFormat: 'pcmu' }));
+      await adapter.connect();
+      const started = vi.fn();
+      adapter.on('speech_start', started);
+
+      user('What is');
+      model();
+      user(' the weather?');
+      model();
+      user(' today');
+      expect(started).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores a late tail of the answered utterance after the model finished', async () => {
       adapter = new GeminiRealtimeAdapter(createConfig());
       await adapter.connect();
       const started = vi.fn();
       adapter.on('speech_start', started);
 
-      mockWs.emit(
-        'message',
-        JSON.stringify({ serverContent: { inputTranscription: { text: 'Hello' } } })
-      );
-      mockWs.emit(
-        'message',
-        JSON.stringify({ serverContent: { inputTranscription: { text: ' there' } } })
-      );
+      user('Hello');
+      model();
+      complete();
+      user(' there');
       expect(started).toHaveBeenCalledTimes(1);
+    });
 
-      mockWs.emit(
-        'message',
-        JSON.stringify({
-          serverContent: { modelTurn: { parts: [{ inlineData: { data: 'AAAA' } }] } },
-        })
-      );
-      mockWs.emit('message', JSON.stringify({ serverContent: { turnComplete: true } }));
-      expect(started).toHaveBeenCalledTimes(1);
+    it('fires for new speech after the model finished, once the last utterance ended', async () => {
+      adapter = new GeminiRealtimeAdapter(createConfig());
+      await adapter.connect();
+      const started = vi.fn();
+      adapter.on('speech_start', started);
 
-      mockWs.emit(
-        'message',
-        JSON.stringify({ serverContent: { inputTranscription: { text: 'Wait' } } })
-      );
+      user('Hello there', true);
+      model();
+      complete();
+      user('Wait');
+      user(' a moment');
       expect(started).toHaveBeenCalledTimes(2);
     });
 
-    it('fires once for an interruption and the speech that caused it', async () => {
+    it('fires for speech after a pause when no transcript was marked finished', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        adapter = new GeminiRealtimeAdapter(createConfig());
+        await adapter.connect();
+        const started = vi.fn();
+        adapter.on('speech_start', started);
+
+        user('Hello');
+        model();
+        complete();
+        vi.setSystemTime(Date.now() + 1_500);
+        user('Wait');
+        expect(started).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('counts only an interruption as barge-in while the model generates', async () => {
       adapter = new GeminiRealtimeAdapter(createConfig());
       await adapter.connect();
       const started = vi.fn();
       adapter.on('speech_start', started);
-      mockWs.emit(
-        'message',
-        JSON.stringify({
-          serverContent: { modelTurn: { parts: [{ inlineData: { data: 'AAAA' } }] } },
-        })
-      );
-      mockWs.emit('message', JSON.stringify({ serverContent: { interrupted: true } }));
-      mockWs.emit(
-        'message',
-        JSON.stringify({ serverContent: { inputTranscription: { text: 'Stop' } } })
-      );
+
+      user('Tell me a story', true);
+      model();
+      user('Stop');
       expect(started).toHaveBeenCalledTimes(1);
+      mockWs.emit('message', JSON.stringify({ serverContent: { interrupted: true } }));
+      user(' please');
+      expect(started).toHaveBeenCalledTimes(2);
     });
 
     it('has nothing to truncate', async () => {

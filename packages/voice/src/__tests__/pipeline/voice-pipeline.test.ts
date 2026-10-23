@@ -126,6 +126,31 @@ describe('VoicePipeline', () => {
       expect(template.speaking).toBe(false);
     });
 
+    it('disposes the VAD a session made when it closes, never a shared one', async () => {
+      const made: Array<LatchVAD & { dispose: ReturnType<typeof vi.fn> }> = [];
+      const fromFactory = new VoicePipeline({
+        stt,
+        tts,
+        agent,
+        vad: () => {
+          const vad = Object.assign(new LatchVAD(), { dispose: vi.fn() });
+          made.push(vad);
+          return vad;
+        },
+      });
+      await fromFactory.createSession().close();
+      expect(made[0]!.dispose).toHaveBeenCalledTimes(1);
+
+      const shared = Object.assign(new LatchVAD(), { dispose: vi.fn() });
+      const warn = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
+      try {
+        await new VoicePipeline({ stt, tts, agent, vad: shared }).createSession().close();
+      } finally {
+        warn.mockRestore();
+      }
+      expect(shared.dispose).not.toHaveBeenCalled();
+    });
+
     it('warns when sessions share a VAD without clone', () => {
       const warn = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
       try {

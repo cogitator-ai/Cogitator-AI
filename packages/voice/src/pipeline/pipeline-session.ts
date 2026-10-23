@@ -98,6 +98,15 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | typ
   });
 }
 
+/** Frees a VAD the session made, whatever its `dispose` does */
+function disposeVAD(vad: VADProvider | undefined): void {
+  try {
+    vad?.dispose?.();
+  } catch {
+    return;
+  }
+}
+
 /** The text of the segments played, up to the first one that was not */
 async function heard(segments: SpokenSegment[]): Promise<{ spoken: string; heardAll: boolean }> {
   let spoken = '';
@@ -121,6 +130,7 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
   private readonly stt: VoicePipelineConfig['stt'];
   private readonly tts: VoicePipelineConfig['tts'];
   private readonly vad: VADProvider | undefined;
+  private readonly ownsVAD: boolean;
   private readonly agent: VoicePipelineConfig['agent'];
   private readonly ttsOptions: VoicePipelineConfig['ttsOptions'];
   private readonly input: RawAudioFormat | undefined;
@@ -143,6 +153,7 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
     this.id = options.sessionId ?? nanoid();
     this.stt = config.stt;
     this.tts = config.tts;
+    this.ownsVAD = typeof config.vad === 'function';
     this.vad = typeof config.vad === 'function' ? config.vad() : config.vad;
     this.agent = config.agent;
     this.ttsOptions = options.ttsOptions
@@ -233,6 +244,10 @@ export class PipelineSession extends EventEmitter<PipelineSessionEvents> {
       await this.activeProcessing.catch(() => {});
     }
     await bounded(this.settling, this.settleTimeout);
+    if (this.ownsVAD) {
+      await this.vadQueue;
+      disposeVAD(this.vad);
+    }
 
     this.removeAllListeners();
   }

@@ -194,7 +194,7 @@ Docs: [VAD](https://cogitator.app/docs/voice/vad).
 | `EnergyVAD` | Basic    | None               | Fast       | RMS energy threshold, good for quiet environments |
 | `SileroVAD` | High     | `onnxruntime-node` | ~3ms/frame | Neural network, works in noisy environments       |
 
-A VAD keeps the state of one audio stream, so every session of a pipeline gets its own: pass a factory (`vad: () => new EnergyVAD()`) or an instance with `clone()`, which both built-in VADs have (a Silero clone shares the loaded model). An instance without `clone` is shared by all sessions, with a warning, and concurrent sessions then mix their audio in it.
+A VAD keeps the state of one audio stream, so every session of a pipeline gets its own: pass a factory (`vad: () => new EnergyVAD()`) or an instance with `clone()`, which both built-in VADs have (a Silero clone shares the loaded model). The session frees a VAD it made with `dispose()` when it closes, and a `SileroVAD` loads its model on the first `process()` when `init()` was not called. An instance without `clone` is shared by all sessions, with a warning, and concurrent sessions then mix their audio in it.
 
 ### Energy VAD
 
@@ -683,7 +683,7 @@ The caller's audio is G.711 μ-law at 8 kHz:
 Audio goes back as `media` messages of 20 ms, followed by `mark`s. Twilio echoes a mark once the audio before it was played, so the server knows what the caller actually heard rather than what it sent. A mark whose echo does not come within the duration of the audio before it plus `markTimeoutMargin` (3 seconds) counts as not heard.
 
 - In pipeline mode each spoken sentence is marked. A turn ends (`turn_end`) when its last mark comes back, a barge-in or an interrupt sends `clear`, which drops the audio Twilio still holds, and a streamed turn settles with only the sentences whose marks were played. With `createCogitatorRunner`, the conversation keeps only what the caller heard.
-- In realtime mode the audio is marked every 200 ms and at the end of each turn (`turn_end` there still means the model finished, not that the caller heard it). When the caller speaks (OpenAI's `speech_started`, or Gemini's transcription of the caller, also after the model finished while its audio still plays), the call's audio is cleared and the OpenAI answer is truncated (`conversation.item.truncate`) at the last mark that was played, so the model's context holds what the caller heard.
+- In realtime mode the audio is marked every 200 ms and at the end of each turn (`turn_end` there still means the model finished, not that the caller heard it). When the caller speaks (OpenAI's `speech_started`, or Gemini's transcription of the caller, also after the model finished while its audio still plays), the call's audio is cleared and the OpenAI answer is truncated (`conversation.item.truncate`) at the last mark that was played, later audio items at 0, and their audio still on its way is dropped, so the model's context holds what the caller heard. Gemini counts a transcript of the caller only when the model is not generating and it starts a new utterance, so the late tail of the question being answered does not cut the answer.
 
 Key presses come as `dtmf` events (`voiceAgent.on('dtmf', (sessionId, digit) => ...)`), and `dtmfInput` turns them into text the agent gets as the caller's input, interrupting the answer being played first. The session ends when Twilio stops the stream (the caller hung up), and `close()` closes every call.
 
