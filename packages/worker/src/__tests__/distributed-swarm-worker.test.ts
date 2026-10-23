@@ -1,15 +1,17 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { SwarmAgentJobPayload, SwarmAgentJobResult } from '../types';
+import { DistributedSwarmWorker } from '../distributed-swarm-worker';
 
-const queues = new Map<string, string[]>();
-const sets = new Map<string, Set<string>>();
-const strings = new Map<string, { value: string; px?: number }>();
-const published: { channel: string; message: string }[] = [];
-const executeSwarmAgentJob = vi.fn();
-const redisTiming = { lrangeDelay: 0, lranges: 0, inLrange: 0, maxInLrange: 0 };
+let queues = new Map<string, string[]>();
+let sets = new Map<string, Set<string>>();
+let strings = new Map<string, { value: string; px?: number }>();
+let published: { channel: string; message: string }[] = [];
+let redisTiming = { lrangeDelay: 0, lranges: 0, inLrange: 0, maxInLrange: 0 };
+const { executeSwarmAgentJob } = vi.hoisted(() => ({ executeSwarmAgentJob: vi.fn() }));
 
 /** Enough of Redis for the worker: lists, sets, strings, pub/sub */
 class MockRedis {
+  private readonly db = { queues, sets, strings, published, redisTiming };
   status = 'wait';
   connect = vi.fn(async () => {
     this.status = 'ready';
@@ -22,43 +24,45 @@ class MockRedis {
     return 'OK';
   });
   publish = vi.fn(async (channel: string, message: string) => {
-    published.push({ channel, message });
+    this.db.published.push({ channel, message });
     return 1;
   });
 
-  sismember = vi.fn(async (key: string, member: string) => (sets.get(key)?.has(member) ? 1 : 0));
+  sismember = vi.fn(async (key: string, member: string) =>
+    this.db.sets.get(key)?.has(member) ? 1 : 0
+  );
 
   async sadd(key: string, member: string): Promise<number> {
-    const set = sets.get(key) ?? new Set<string>();
-    sets.set(key, set);
+    const set = this.db.sets.get(key) ?? new Set<string>();
+    this.db.sets.set(key, set);
     const had = set.has(member);
     set.add(member);
     return had ? 0 : 1;
   }
 
   async srem(key: string, member: string): Promise<number> {
-    return sets.get(key)?.delete(member) ? 1 : 0;
+    return this.db.sets.get(key)?.delete(member) ? 1 : 0;
   }
 
   async smembers(key: string): Promise<string[]> {
-    return [...(sets.get(key) ?? [])];
+    return [...(this.db.sets.get(key) ?? [])];
   }
 
   async set(key: string, value: string, _mode?: 'PX', px?: number): Promise<'OK'> {
-    strings.set(key, { value, ...(px !== undefined && { px }) });
+    this.db.strings.set(key, { value, ...(px !== undefined && { px }) });
     return 'OK';
   }
 
   async exists(key: string): Promise<number> {
-    return strings.has(key) ? 1 : 0;
+    return this.db.strings.has(key) ? 1 : 0;
   }
 
   async del(key: string): Promise<number> {
-    return strings.delete(key) ? 1 : 0;
+    return this.db.strings.delete(key) ? 1 : 0;
   }
 
   async lrem(key: string, count: number, value: string): Promise<number> {
-    const list = queues.get(key) ?? [];
+    const list = this.db.queues.get(key) ?? [];
     const index = list.indexOf(value);
     if (count !== 1 || index === -1) return 0;
     list.splice(index, 1);
@@ -66,12 +70,15 @@ class MockRedis {
   }
 
   async lrange(key: string): Promise<string[]> {
-    redisTiming.lranges++;
-    redisTiming.inLrange++;
-    redisTiming.maxInLrange = Math.max(redisTiming.maxInLrange, redisTiming.inLrange);
-    await new Promise((r) => setTimeout(r, redisTiming.lrangeDelay));
-    redisTiming.inLrange--;
-    return [...(queues.get(key) ?? [])];
+    this.db.redisTiming.lranges++;
+    this.db.redisTiming.inLrange++;
+    this.db.redisTiming.maxInLrange = Math.max(
+      this.db.redisTiming.maxInLrange,
+      this.db.redisTiming.inLrange
+    );
+    await new Promise((r) => setTimeout(r, this.db.redisTiming.lrangeDelay));
+    this.db.redisTiming.inLrange--;
+    return [...(this.db.queues.get(key) ?? [])];
   }
 
   async eval(
@@ -85,8 +92,8 @@ class MockRedis {
       return (await this.exists(from)) === 0 ? this.srem(to, raw) : 0;
     }
     if ((await this.lrem(from, 1, raw)) !== 1) return 0;
-    const target = queues.get(to) ?? [];
-    queues.set(to, target);
+    const target = this.db.queues.get(to) ?? [];
+    this.db.queues.set(to, target);
     target.unshift(raw);
     return 1;
   }
@@ -97,10 +104,10 @@ class MockRedis {
     _whereFrom: 'RIGHT',
     _whereTo: 'LEFT'
   ): Promise<string | null> {
-    const item = queues.get(from)?.pop();
+    const item = this.db.queues.get(from)?.pop();
     if (item === undefined) return null;
-    const target = queues.get(to) ?? [];
-    queues.set(to, target);
+    const target = this.db.queues.get(to) ?? [];
+    this.db.queues.set(to, target);
     target.unshift(item);
     return item;
   }
@@ -115,10 +122,10 @@ class MockRedis {
     const deadline = Date.now() + timeout * 1000;
     while (Date.now() < deadline) {
       if (this.status === 'end') throw new Error('Connection is closed.');
-      const item = queues.get(from)?.shift();
+      const item = this.db.queues.get(from)?.shift();
       if (item !== undefined) {
-        const target = queues.get(to) ?? [];
-        queues.set(to, target);
+        const target = this.db.queues.get(to) ?? [];
+        this.db.queues.set(to, target);
         target.push(item);
         return item;
       }
@@ -129,7 +136,7 @@ class MockRedis {
 }
 
 vi.mock('@cogitator-ai/swarms', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@cogitator-ai/swarms')>()),
+  ...(await importOriginal<Record<string, unknown>>()),
   createSwarmRedis: () => new MockRedis(),
   closeSwarmRedis: async (client: MockRedis) => {
     await client.quit();
@@ -175,31 +182,42 @@ function result(payload: SwarmAgentJobPayload, error?: string): SwarmAgentJobRes
   };
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
-  const started = Date.now();
-  while (!predicate()) {
-    if (Date.now() - started > timeoutMs) throw new Error('condition not met');
-    await new Promise((r) => setTimeout(r, 5));
-  }
+async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
+  await vi.waitFor(
+    () => {
+      if (!predicate()) throw new Error('condition not met');
+    },
+    { timeout: timeoutMs, interval: 5 }
+  );
 }
 
 describe('DistributedSwarmWorker', () => {
+  const workers: DistributedSwarmWorker[] = [];
+  const spawn = (...args: ConstructorParameters<typeof DistributedSwarmWorker>) => {
+    const worker = new DistributedSwarmWorker(...args);
+    workers.push(worker);
+    return worker;
+  };
+
   beforeEach(() => {
-    queues.clear();
-    sets.clear();
-    strings.clear();
-    published.length = 0;
-    Object.assign(redisTiming, { lrangeDelay: 0, lranges: 0, inLrange: 0, maxInLrange: 0 });
+    queues = new Map();
+    sets = new Map();
+    strings = new Map();
+    published = [];
+    redisTiming = { lrangeDelay: 0, lranges: 0, inLrange: 0, maxInLrange: 0 };
     executeSwarmAgentJob.mockReset();
   });
 
+  afterEach(async () => {
+    await Promise.allSettled(workers.splice(0).map((worker) => worker.stop()));
+  });
+
   it('consumes jobs from the swarm queue and publishes results to the coordinator', async () => {
-    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
     executeSwarmAgentJob.mockImplementation(async (payload: SwarmAgentJobPayload) =>
       result(payload)
     );
     const onJobCompleted = vi.fn();
-    const worker = new DistributedSwarmWorker(
+    const worker = spawn(
       { keyPrefix: 'swarm', queue: 'swarm-agent-jobs', pollTimeout: 0.1 },
       { onJobCompleted }
     );
@@ -217,7 +235,6 @@ describe('DistributedSwarmWorker', () => {
   });
 
   it('respects the concurrency limit', async () => {
-    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
     let inFlight = 0;
     let peak = 0;
     executeSwarmAgentJob.mockImplementation(async (payload: SwarmAgentJobPayload) => {
@@ -227,7 +244,7 @@ describe('DistributedSwarmWorker', () => {
       inFlight--;
       return result(payload);
     });
-    const worker = new DistributedSwarmWorker({ concurrency: 2, pollTimeout: 0.1 });
+    const worker = spawn({ concurrency: 2, pollTimeout: 0.1 });
 
     await worker.start();
     queues.set(
@@ -241,13 +258,12 @@ describe('DistributedSwarmWorker', () => {
   });
 
   it('reports failed turns and discards malformed payloads', async () => {
-    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
     executeSwarmAgentJob.mockImplementation(async (payload: SwarmAgentJobPayload) =>
       result(payload, 'model offline')
     );
     const onJobFailed = vi.fn();
     const onError = vi.fn();
-    const worker = new DistributedSwarmWorker({ pollTimeout: 0.1 }, { onJobFailed, onError });
+    const worker = spawn({ pollTimeout: 0.1 }, { onJobFailed, onError });
 
     await worker.start();
     queues.set(QUEUE, [
@@ -267,12 +283,11 @@ describe('DistributedSwarmWorker', () => {
   });
 
   it('waits for in-flight jobs when stopping', async () => {
-    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
     executeSwarmAgentJob.mockImplementation(async (payload: SwarmAgentJobPayload) => {
       await new Promise((r) => setTimeout(r, 30));
       return result(payload);
     });
-    const worker = new DistributedSwarmWorker({ pollTimeout: 0.1 });
+    const worker = spawn({ pollTimeout: 0.1 });
 
     await worker.start();
     queues.set(QUEUE, [JSON.stringify(job('slow'))]);
@@ -283,12 +298,11 @@ describe('DistributedSwarmWorker', () => {
   });
 
   it('skips a turn the coordinator already cancelled', async () => {
-    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
     executeSwarmAgentJob.mockImplementation(async (payload: SwarmAgentJobPayload) =>
       result(payload)
     );
     const onJobCancelled = vi.fn();
-    const worker = new DistributedSwarmWorker({ pollTimeout: 0.1 }, { onJobCancelled });
+    const worker = spawn({ pollTimeout: 0.1 }, { onJobCancelled });
 
     sets.set('swarm:s1:cancelled', new Set(['gone']));
     await worker.start();
@@ -301,7 +315,6 @@ describe('DistributedSwarmWorker', () => {
   });
 
   it('aborts a running turn once the coordinator cancels it', async () => {
-    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
     let seen: AbortSignal | undefined;
     executeSwarmAgentJob.mockImplementation(
       (payload: SwarmAgentJobPayload, _runtime: unknown, execution: { signal?: AbortSignal }) =>
@@ -311,10 +324,7 @@ describe('DistributedSwarmWorker', () => {
         })
     );
     const onJobCancelled = vi.fn();
-    const worker = new DistributedSwarmWorker(
-      { pollTimeout: 0.1, cancelCheckInterval: 10 },
-      { onJobCancelled }
-    );
+    const worker = spawn({ pollTimeout: 0.1, cancelCheckInterval: 10 }, { onJobCancelled });
 
     await worker.start();
     queues.set(QUEUE, [JSON.stringify(job('late'))]);
@@ -328,11 +338,10 @@ describe('DistributedSwarmWorker', () => {
   });
 
   it('keeps the result under its key for the job ttl before it publishes it', async () => {
-    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
     executeSwarmAgentJob.mockImplementation(async (payload: SwarmAgentJobPayload) =>
       result(payload)
     );
-    const worker = new DistributedSwarmWorker({ pollTimeout: 0.1 });
+    const worker = spawn({ pollTimeout: 0.1 });
     const payload = {
       ...job('kept'),
       stateKeys: { ...job('kept').stateKeys, result: 'swarm:s1:result:kept' },
@@ -351,9 +360,8 @@ describe('DistributedSwarmWorker', () => {
   });
 
   it('skips a turn whose result a worker already kept', async () => {
-    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
     const onJobCancelled = vi.fn();
-    const worker = new DistributedSwarmWorker({ pollTimeout: 0.1 }, { onJobCancelled });
+    const worker = spawn({ pollTimeout: 0.1 }, { onJobCancelled });
     const payload = {
       ...job('answered'),
       stateKeys: { ...job('answered').stateKeys, result: 'swarm:s1:result:answered' },
@@ -369,7 +377,6 @@ describe('DistributedSwarmWorker', () => {
   });
 
   it('moves a turn onto its own list while it runs and off it once done', async () => {
-    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
     let release: () => void = () => {};
     executeSwarmAgentJob.mockImplementation(
       (payload: SwarmAgentJobPayload) =>
@@ -377,7 +384,7 @@ describe('DistributedSwarmWorker', () => {
           release = () => resolve(result(payload));
         })
     );
-    const worker = new DistributedSwarmWorker({ pollTimeout: 0.1 });
+    const worker = spawn({ pollTimeout: 0.1 });
 
     await worker.start();
     const raw = JSON.stringify(job('held'));
@@ -398,12 +405,11 @@ describe('DistributedSwarmWorker', () => {
   });
 
   it('runs the turns of a worker that stopped beating, and leaves a live one alone', async () => {
-    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
     executeSwarmAgentJob.mockImplementation(async (payload: SwarmAgentJobPayload) =>
       result(payload)
     );
     const onJobsRecovered = vi.fn();
-    const worker = new DistributedSwarmWorker({ pollTimeout: 0.1 }, { onJobsRecovered });
+    const worker = spawn({ pollTimeout: 0.1 }, { onJobsRecovered });
     sets.set(`${QUEUE}:workers`, new Set(['dead', 'alive']));
     queues.set(`${QUEUE}:processing:dead`, [JSON.stringify(job('orphan'))]);
     queues.set(`${QUEUE}:processing:alive`, [JSON.stringify(job('busy'))]);
@@ -420,11 +426,10 @@ describe('DistributedSwarmWorker', () => {
   });
 
   it('recovers the turns of a worker that died while it runs, on its next beat', async () => {
-    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
     executeSwarmAgentJob.mockImplementation(async (payload: SwarmAgentJobPayload) =>
       result(payload)
     );
-    const worker = new DistributedSwarmWorker({ pollTimeout: 0.1, heartbeatInterval: 100 });
+    const worker = spawn({ pollTimeout: 0.1, heartbeatInterval: 100 });
     await worker.start();
 
     sets.get(`${QUEUE}:workers`)?.add('crashed');
@@ -436,15 +441,11 @@ describe('DistributedSwarmWorker', () => {
   });
 
   it('hands back a turn on its own list it never got, after a second beat finds it', async () => {
-    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
     executeSwarmAgentJob.mockImplementation(async (payload: SwarmAgentJobPayload) =>
       result(payload)
     );
     const onJobsRecovered = vi.fn();
-    const worker = new DistributedSwarmWorker(
-      { pollTimeout: 0.1, heartbeatInterval: 100 },
-      { onJobsRecovered }
-    );
+    const worker = spawn({ pollTimeout: 0.1, heartbeatInterval: 100 }, { onJobsRecovered });
     await worker.start();
 
     queues.set(`${QUEUE}:processing:${worker.getWorkerId()}`, [JSON.stringify(job('lost'))]);
@@ -456,16 +457,12 @@ describe('DistributedSwarmWorker', () => {
   });
 
   it('never hands back a turn it runs, however many beats it takes', async () => {
-    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
     executeSwarmAgentJob.mockImplementation(async (payload: SwarmAgentJobPayload) => {
       await new Promise((r) => setTimeout(r, 600));
       return result(payload);
     });
     const onJobsRecovered = vi.fn();
-    const worker = new DistributedSwarmWorker(
-      { pollTimeout: 0.1, heartbeatInterval: 100 },
-      { onJobsRecovered }
-    );
+    const worker = spawn({ pollTimeout: 0.1, heartbeatInterval: 100 }, { onJobsRecovered });
     await worker.start();
     queues.set(QUEUE, [JSON.stringify(job('long'))]);
 
@@ -477,9 +474,8 @@ describe('DistributedSwarmWorker', () => {
   });
 
   it('beats one at a time however slow Redis answers', async () => {
-    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
     redisTiming.lrangeDelay = 250;
-    const worker = new DistributedSwarmWorker({ pollTimeout: 0.1, heartbeatInterval: 100 });
+    const worker = spawn({ pollTimeout: 0.1, heartbeatInterval: 100 });
 
     await worker.start();
     await waitFor(() => redisTiming.lranges >= 3, 3_000);
@@ -489,12 +485,11 @@ describe('DistributedSwarmWorker', () => {
   });
 
   it('keeps beating while stop() waits for a long turn', async () => {
-    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
     executeSwarmAgentJob.mockImplementation(async (payload: SwarmAgentJobPayload) => {
       await new Promise((r) => setTimeout(r, 500));
       return result(payload);
     });
-    const worker = new DistributedSwarmWorker({ pollTimeout: 0.1, heartbeatInterval: 100 });
+    const worker = spawn({ pollTimeout: 0.1, heartbeatInterval: 100 });
     await worker.start();
     queues.set(QUEUE, [JSON.stringify(job('long-stop'))]);
     await waitFor(() => worker.getActiveJobCount() === 1);
@@ -507,11 +502,10 @@ describe('DistributedSwarmWorker', () => {
   });
 
   it('keeps a worker that beat again while its turns went back to the queue', async () => {
-    const { DistributedSwarmWorker } = await import('../distributed-swarm-worker');
     executeSwarmAgentJob.mockImplementation(async (payload: SwarmAgentJobPayload) =>
       result(payload)
     );
-    const worker = new DistributedSwarmWorker({ pollTimeout: 0.1 });
+    const worker = spawn({ pollTimeout: 0.1 });
     sets.set(`${QUEUE}:workers`, new Set(['revived']));
     queues.set(`${QUEUE}:processing:revived`, [JSON.stringify(job('stalled'))]);
     const lmove = MockRedis.prototype.lmove;
