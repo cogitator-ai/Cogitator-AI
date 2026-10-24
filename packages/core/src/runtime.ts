@@ -1859,7 +1859,7 @@ export class Cogitator implements ToolInvoker {
                     middleware: pipeline,
                     context: middlewareContext(),
                     ...(timeouts.toolMs !== undefined && { defaultTimeout: timeouts.toolMs }),
-                    ...(stepGate && !runsAlone(toolCall) && { step: { gate: stepGate } }),
+                    ...(stepGate && { step: { gate: stepGate, alone: runsAlone(toolCall) } }),
                     ...(options.onToolUpdate && {
                       onUpdate: (progress: ToolProgress) =>
                         options.onToolUpdate?.({

@@ -200,6 +200,25 @@ describe('AgentStreamSession', () => {
     for (const event of events) StreamEventSchema.parse(event);
   });
 
+  it('announces again a dropped call a middleware gave another tool under the same id', () => {
+    const { events, session: s } = session('t');
+    s.callbacks.onToolInputStart({ toolCallId: 'x', toolName: 'read' });
+    s.callbacks.onToolInputAvailable({ toolCallId: 'x', toolName: 'read', input: {} });
+    s.callbacks.onToolInputAbandoned({ toolCallId: 'x', toolName: 'read', reason: 'discarded' });
+    s.callbacks.onToolCall({ id: 'x', name: 'write', arguments: { path: 'a' } });
+    s.callbacks.onToolResult({ callId: 'x', name: 'write', result: 'ok' });
+
+    expect(events.filter((event) => event.type.startsWith('tool'))).toEqual([
+      { type: 'tool-call-start', id: 'x', toolName: 'read' },
+      { type: 'tool-call-end', id: 'x' },
+      expect.objectContaining({ type: 'tool-result', toolCallId: 'x', dropped: true }),
+      { type: 'tool-call-start', id: 'x', toolName: 'write' },
+      { type: 'tool-call-delta', id: 'x', argsTextDelta: '{"path":"a"}' },
+      { type: 'tool-call-end', id: 'x' },
+      expect.objectContaining({ type: 'tool-result', toolCallId: 'x', result: 'ok' }),
+    ]);
+  });
+
   it('drops a finished call the run did not keep, and keeps the calls that run or wait', () => {
     const { events, session: s } = session('t');
     s.callbacks.onToolInputStart({ toolCallId: 'a', toolName: 'write' });

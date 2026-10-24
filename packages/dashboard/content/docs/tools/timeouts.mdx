@@ -65,4 +65,6 @@ await cog.run(agent, {
 
 The call's signal aborts when it runs out, so a tool that passes `context.signal` to `fetch` or a child process stops its work. The `ToolResult` has `errorCode: 'TOOL_TIMEOUT'` (`ErrorCode.TOOL_TIMEOUT`), and the tool call's span records it as `error.type`. A tool's own `timeout` always wins over `toolMs`.
 
-The clock starts when the tool starts: time a call waits for its [lock keys](/docs/tools/concurrency#lock-keys), or for its turn among the calls of the step, does not count toward `toolMs` or the tool's `timeout`, while `totalMs` goes on. A call that timed out keeps its lock keys until the tool's own promise settles, so a tool that ignores its signal holds the file it writes until it really stops, and the next writer of that file waits for it.
+The clock starts when the tool starts: time a call waits for its [lock keys](/docs/tools/concurrency#lock-keys), or for its turn among the calls of the step, does not count toward `toolMs` or the tool's `timeout`, while `totalMs` goes on. A call that timed out keeps its lock keys until the tool's own promise settles, so a tool that ignores its signal holds the file it writes until it really stops, and the next writer of that file waits for it. With `parallelToolCalls` a call of the step that runs alone waits the same way for a safe call that timed out and still runs.
+
+A sandboxed command that runs out of time fails the same way, in Docker as in WASM: the call gets `errorCode: 'TOOL_TIMEOUT'` and an error naming the sandbox, instead of a result with `timedOut: true`.

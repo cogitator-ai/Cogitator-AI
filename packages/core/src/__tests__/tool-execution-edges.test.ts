@@ -202,6 +202,58 @@ describe('a middleware that changes the arguments of a safe call', () => {
   });
 });
 
+describe('a safe call that timed out and still runs', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('keeps the call the step runs alone after it waiting until it really stops', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const log: string[] = [];
+    const stuck = deferred();
+    const reader = tool({
+      name: 'reader',
+      description: 'Reads, ignoring its signal',
+      parameters: z.object({}),
+      isConcurrencySafe: true,
+      execute: async () => {
+        log.push('start reader');
+        await stuck.promise;
+        log.push('end reader');
+        return 'read';
+      },
+    });
+    const writer = tool({
+      name: 'writer',
+      description: 'Writes',
+      parameters: z.object({}),
+      execute: async () => {
+        log.push('start writer');
+        return 'written';
+      },
+    });
+    const { cog } = setup([
+      callTools([
+        { id: 'r', name: 'reader', arguments: {} },
+        { id: 'w', name: 'writer', arguments: {} },
+      ]),
+      answer('Done.'),
+    ]);
+    const run = cog.run(agentWith([reader, writer]), {
+      input: 'Go',
+      parallelToolCalls: true,
+      timeouts: { toolMs: 1000 },
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(log).toEqual(['start reader']);
+    stuck.resolve();
+    await run;
+    expect(log).toEqual(['start reader', 'end reader', 'start writer']);
+    await cog.close();
+  });
+});
+
 describe('a resumed run', () => {
   it('runs its tools the way the paused run did unless told otherwise', async () => {
     const log: string[] = [];

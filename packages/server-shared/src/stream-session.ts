@@ -96,8 +96,11 @@ export class AgentStreamSession {
   readonly callbacks: AgentStreamCallbacks;
 
   private open: { kind: PartKind; id: string } | undefined;
-  /** Tool calls announced, by id: written, ended, running (or about to) or settled */
-  private readonly toolCalls = new Map<string, 'open' | 'ended' | 'running' | 'settled'>();
+  /** Tool calls announced, by id: written, ended, running (or about to), dropped or settled */
+  private readonly toolCalls = new Map<
+    string,
+    'open' | 'ended' | 'running' | 'dropped' | 'settled'
+  >();
   private streamedText = false;
   private streamedReasoning = false;
 
@@ -131,7 +134,7 @@ export class AgentStreamSession {
       onToolInputAbandoned: ({ toolCallId, reason }) => this.dropToolCall(toolCallId, reason),
       onToolCall: (call) => {
         const state = this.toolCalls.get(call.id);
-        if (state === undefined) {
+        if (state === undefined || state === 'dropped') {
           this.endPart();
           this.emit(createToolCallStartEvent(call.id, call.name));
           this.emit(createToolCallDeltaEvent(call.id, JSON.stringify(call.arguments)));
@@ -202,7 +205,7 @@ export class AgentStreamSession {
     const state = this.toolCalls.get(id);
     if (state !== 'open' && state !== 'ended') return;
     if (state === 'open') this.emit(createToolCallEndEvent(id, true));
-    this.toolCalls.set(id, 'settled');
+    this.toolCalls.set(id, 'dropped');
     this.emit(createToolDroppedEvent(generateId('res'), id, reason));
   }
 

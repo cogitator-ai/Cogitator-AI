@@ -1047,7 +1047,7 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
       ]);
     });
 
-    it('ends a call once the next one starts, also when their pieces interleave', async () => {
+    it('ends a complete call once the next one starts, and keeps an unfinished one open for its later pieces', async () => {
       const call = (index: number, extra: Record<string, unknown>) => ({
         id: 'c',
         choices: [{ delta: { tool_calls: [{ index, ...extra }] } }],
@@ -1072,10 +1072,11 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
       expect(chunks.flatMap((chunk) => chunk.delta.toolInput ?? [])).toEqual([
         { type: 'start', toolCallId: 'call_a', toolName: 'read' },
         { type: 'delta', toolCallId: 'call_a', delta: '{"path":' },
-        { type: 'end', toolCallId: 'call_a' },
         { type: 'start', toolCallId: 'call_b', toolName: 'read' },
         { type: 'delta', toolCallId: 'call_b', delta: '{"path":"b"}' },
         { type: 'end', toolCallId: 'call_b' },
+        { type: 'delta', toolCallId: 'call_a', delta: '"a"}' },
+        { type: 'end', toolCallId: 'call_a' },
       ]);
       expect(chunks.at(-1)!.delta.toolCalls).toEqual([
         { id: 'call_a', name: 'read', arguments: { path: 'a' } },

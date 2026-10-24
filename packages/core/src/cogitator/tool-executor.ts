@@ -64,8 +64,11 @@ export interface ToolCallExecution {
   defaultTimeout?: number;
   /** Hears what the tool reports with `context.update()` while it runs */
   onUpdate?: (progress: ToolProgress) => void;
-  /** The step of calls the run started together that this call belongs to, see `StepGate` */
-  step?: { gate: StepGate };
+  /**
+   * The step of calls the run schedules together that this call belongs to, and whether the
+   * schedule runs it alone, see `StepGate`
+   */
+  step?: { gate: StepGate; alone: boolean };
 }
 
 /**
@@ -194,9 +197,10 @@ const parseCallArguments: ToolArgumentsParser = (call, changed) => {
 };
 
 /**
- * Runs the tool of `call` once it may: a call the run started alongside others (`step`) takes
- * its share of the step, or the step alone when its arguments as a middleware left them are not
- * safe to run beside others, then it holds the locks of its `lockKeys`, keys a call it runs
+ * Runs the tool of `call` once it may: a call of a step the run schedules (`step`) takes its
+ * share of the step, or the step alone when the schedule runs it alone or its arguments as a
+ * middleware left them are not safe to run beside others, so it also waits for a call that timed
+ * out and still runs, then it holds the locks of its `lockKeys`, keys a call it runs
  * inside holds already taken again without waiting. Both are let go once the tool's own promise
  * settles, also when the call timed out or was aborted before. What the tool returned is read
  * then: a `toolOutput()` result gives the model its `content`, the application its `details` and
@@ -237,7 +241,7 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
   try {
     if (step) {
       releases.push(
-        await (isConcurrencySafe(tool, record)
+        await (!step.alone && isConcurrencySafe(tool, record)
           ? step.gate.share(signal)
           : step.gate.exclusive(signal))
       );
@@ -567,6 +571,16 @@ async function executeInSandbox(
         result: result.data.stdout,
       };
     }
+  }
+
+  if (result.data.timedOut) {
+    return {
+      callId: toolCall.id,
+      name: toolCall.name,
+      result: null,
+      error: `Tool "${tool.name}" timed out in the Docker sandbox after ${result.data.duration}ms`,
+      errorCode: ErrorCode.TOOL_TIMEOUT,
+    };
   }
 
   return {

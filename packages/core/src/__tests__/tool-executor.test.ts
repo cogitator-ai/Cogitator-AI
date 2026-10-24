@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ToolCall, ToolContext, ToolResult } from '@cogitator-ai/types';
+import { ErrorCode } from '@cogitator-ai/types';
 import { z } from 'zod';
 import { ToolRegistry } from '../registry';
 import { tool } from '../tool';
@@ -381,6 +382,47 @@ describe('executeTool', () => {
   });
 });
 
+describe('executeTool in the Docker sandbox', () => {
+  it('reports a command that ran out of time as a TOOL_TIMEOUT error', async () => {
+    const registry = new ToolRegistry();
+    registry.register(
+      tool({
+        name: 'shell',
+        description: 'Shell',
+        parameters: z.object({ command: z.string() }),
+        sandbox: { type: 'docker', image: 'alpine:latest' },
+        execute: async () => ({ native: true }),
+      })
+    );
+    const manager: SandboxManager = {
+      initialize: async () => undefined,
+      execute: async () => ({
+        success: true,
+        data: { stdout: 'part', stderr: '', exitCode: 137, timedOut: true, duration: 2000 },
+      }),
+      isDockerAvailable: async () => true,
+      shutdown: async () => undefined,
+    };
+    const result = await executeTool(
+      registry,
+      { id: 'tc_1', name: 'shell', arguments: { command: 'sleep 9' } },
+      'run_1',
+      'agent_1',
+      manager,
+      undefined,
+      false,
+      async () => manager
+    );
+    expect(result).toEqual({
+      callId: 'tc_1',
+      name: 'shell',
+      result: null,
+      error: 'Tool "shell" timed out in the Docker sandbox after 2000ms',
+      errorCode: ErrorCode.TOOL_TIMEOUT,
+    });
+  });
+});
+
 describe('executeTool in the WASM sandbox', () => {
   const wasmTool = () =>
     tool({
@@ -444,6 +486,7 @@ describe('executeTool in the WASM sandbox', () => {
     });
 
     expect(result.error).toBe('Tool "calculate" timed out in the WASM sandbox after 5000ms');
+    expect(result.errorCode).toBe(ErrorCode.TOOL_TIMEOUT);
   });
 
   it('reports output cut at the sandbox limit as an error', async () => {

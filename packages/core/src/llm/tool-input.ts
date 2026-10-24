@@ -1,4 +1,5 @@
 import type { ToolInputStreamPart } from '@cogitator-ai/types';
+import { toolCallArguments } from './turn';
 
 interface StreamedCall {
   id?: string;
@@ -31,7 +32,8 @@ export interface StreamedToolCall<K> {
  * `toolInput` parts of stream chunks they make. A call keeps the first id and name it got, so an
  * empty or changed id in a later piece neither restarts nor renames it. It starts once its id and
  * name are known, argument text that came before goes out right after its start, and it ends
- * once with {@link end}.
+ * once with {@link end}. A piece of a call that already ended adds to its arguments without a
+ * delta, so end a call only once its text is complete.
  */
 export class ToolInputStream<K = number> {
   private readonly calls = new Map<K, StreamedCall>();
@@ -74,9 +76,20 @@ export class ToolInputStream<K = number> {
     return [{ type: 'end', toolCallId: call.id }];
   }
 
-  /** The end parts of every call but `except` that has not ended yet */
+  /**
+   * The end parts of every call but `except` whose arguments read as a complete JSON object, for
+   * a provider that tells a call is done only by starting the next one. A call whose text is not
+   * complete yet stays open, so pieces of it that come later still go out
+   */
   endOthers(except: K): ToolInputStreamPart[] {
-    return [...this.calls.keys()].filter((key) => key !== except).flatMap((key) => this.end(key));
+    return [...this.calls.entries()]
+      .filter(
+        ([key, call]) =>
+          key !== except &&
+          call.arguments.trim() !== '' &&
+          toolCallArguments(call.arguments).argumentsError === undefined
+      )
+      .flatMap(([key]) => this.end(key));
   }
 
   /** The end parts of every call that has not ended yet */
