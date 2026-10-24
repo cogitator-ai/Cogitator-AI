@@ -546,3 +546,50 @@ describe('fifth review round budgets', () => {
     await cog.close();
   });
 });
+
+describe('sixth review round budgets', () => {
+  it('a budget the host passes to the resume wins over a limit an answer lifted', async () => {
+    const asker = tool({
+      name: 'asker',
+      description: 'Asks',
+      parameters: z.object({ n: z.number() }),
+      execute: async (_args, context) =>
+        context.interrupt?.({ reason: 'confirm', message: 'Sure?' }),
+    });
+    const backend = new MockLLMBackend().setResponses([
+      {
+        content: '',
+        toolCalls: [{ id: 'q1', name: 'asker', arguments: { n: 1 } }],
+        usage: spend(1),
+      },
+      {
+        content: '',
+        toolCalls: [{ id: 'q2', name: 'asker', arguments: { n: 2 } }],
+        usage: spend(1),
+      },
+      answer(0),
+    ]);
+    const cog = new Cogitator({
+      memory: { adapter: 'memory' },
+      llm: { backends: { mock: backend } },
+      budget: { session: { maxCostUsd: 0.5 }, allowRaise: true },
+    });
+    const agent = new Agent({ name: 'a', model: 'mock/m', instructions: 'x', tools: [asker] });
+    await cog.run(agent, { input: 'go', threadId: 'b-lifted' });
+    const budgetPause = await cog.resume(agent, 'b-lifted', { responses: { 'q1#0': 'yes' } });
+    expect(budgetPause.interrupts?.[0].id).toBe('budget:session.cost');
+    const asked = await cog.resume(agent, 'b-lifted', {
+      responses: { 'budget:session.cost': { action: 'continue' } },
+    });
+    expect(asked.interrupts?.[0].kind).toBe('input');
+    expect(backend.getCallCount()).toBe(2);
+    const held = await cog.resume(agent, 'b-lifted', {
+      responses: { 'q2#0': 'yes' },
+      budget: { session: { maxCostUsd: 0.5 } },
+    });
+    expect(held.status).toBe('paused');
+    expect(held.interrupts?.[0].id).toBe('budget:session.cost');
+    expect(backend.getCallCount()).toBe(2);
+    await cog.close();
+  });
+});

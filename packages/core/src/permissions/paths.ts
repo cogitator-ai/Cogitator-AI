@@ -3,8 +3,9 @@
  * them with: `//abs`, `~/home`, `/from-the-settings`, `relative` and `./relative`
  */
 
+import { stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, posix, resolve, win32 } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, resolve, win32 } from 'node:path';
 import type { PermissionBehavior } from '@cogitator-ai/types';
 import { resolveReal } from '../tools/path-guard';
 
@@ -211,12 +212,29 @@ function segmentsMatch(
   return visit(0, 0);
 }
 
-/** Whether `path` (normalized, absolute) or one of its parents matches `pattern` */
-export function pathMatches(pattern: PathPattern, path: string): 'self' | 'parent' | undefined {
-  const segments = segmentsOf(path);
-  if (segmentsMatch(pattern.segments, segments, false)) return 'self';
+/**
+ * A path or a glob as rules compare it: Unicode in NFC, so a name written precomposed and one
+ * written decomposed compare equal, and lowercase where the file system ignores case
+ */
+export function foldPath(text: string, ignoreCase: boolean): string {
+  const composed = text.normalize('NFC');
+  return ignoreCase ? composed.toLowerCase() : composed;
+}
+
+/**
+ * Whether `path` (normalized, absolute) or one of its parents matches `pattern`, without case on
+ * a file system that `ignoreCase` says ignores it
+ */
+export function pathMatches(
+  pattern: PathPattern,
+  path: string,
+  ignoreCase = false
+): 'self' | 'parent' | undefined {
+  const globs = pattern.segments.map((segment) => foldPath(segment, ignoreCase));
+  const segments = segmentsOf(foldPath(path, ignoreCase));
+  if (segmentsMatch(globs, segments, false)) return 'self';
   for (let end = segments.length - 1; end >= 0; end--) {
-    if (segmentsMatch(pattern.segments, segments.slice(0, end), false)) return 'parent';
+    if (segmentsMatch(globs, segments.slice(0, end), false)) return 'parent';
   }
   return undefined;
 }
@@ -225,9 +243,69 @@ export function pathMatches(pattern: PathPattern, path: string): 'self' | 'paren
  * Whether something inside the directory `path` could match `pattern`, for a command that reads
  * a directory recursively: the pattern covers the directory, or goes on below it
  */
-export function patternReachesInto(pattern: PathPattern, path: string): boolean {
-  if (pathMatches(pattern, path)) return true;
-  return segmentsMatch(pattern.segments, segmentsOf(path), true);
+export function patternReachesInto(
+  pattern: PathPattern,
+  path: string,
+  ignoreCase = false
+): boolean {
+  if (pathMatches(pattern, path, ignoreCase)) return true;
+  return segmentsMatch(
+    pattern.segments.map((segment) => foldPath(segment, ignoreCase)),
+    segmentsOf(foldPath(path, ignoreCase)),
+    true
+  );
+}
+
+const caseProbes = new Map<string, Promise<boolean>>();
+
+/**
+ * Whether the file system `dir` lives on ignores the case of names (APFS and NTFS by default),
+ * probed once per directory: the nearest name with letters in it is looked up with its case
+ * flipped. When the probe cannot tell, macOS and Windows count as ignoring case
+ */
+export function pathsIgnoreCase(
+  dir: string,
+  platform: NodeJS.Platform = process.platform
+): Promise<boolean> {
+  const key = resolve(dir);
+  let probe = caseProbes.get(key);
+  if (!probe) {
+    probe = probeCase(key, platform === 'darwin' || platform === 'win32');
+    caseProbes.set(key, probe);
+  }
+  return probe;
+}
+
+async function probeCase(dir: string, fallback: boolean): Promise<boolean> {
+  let current = dir;
+  for (;;) {
+    const name = basename(current);
+    const flipped = flipCase(name);
+    if (flipped !== name) {
+      const own = await stat(current).catch(() => undefined);
+      if (!own) return fallback;
+      try {
+        const other = await stat(join(dirname(current), flipped));
+        return other.dev === own.dev && other.ino === own.ino;
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code === 'ENOENT' ? false : fallback;
+      }
+    }
+    const parent = dirname(current);
+    if (parent === current) return fallback;
+    current = parent;
+  }
+}
+
+/** `name` with the case of its ASCII letters flipped, whose flip every file system maps back */
+function flipCase(name: string): string {
+  let flipped = '';
+  for (const char of name) {
+    if (char >= 'a' && char <= 'z') flipped += char.toUpperCase();
+    else if (char >= 'A' && char <= 'Z') flipped += char.toLowerCase();
+    else flipped += char;
+  }
+  return flipped;
 }
 
 /** The paths a rule compares for a call's path: as the call names it, and with symlinks followed */

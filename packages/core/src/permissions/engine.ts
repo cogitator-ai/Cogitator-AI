@@ -20,7 +20,9 @@ import { isPathAllowed } from '../tools/path-guard';
 import {
   compilePathPattern,
   normalizeRulePath,
+  foldPath,
   pathMatches,
+  pathsIgnoreCase,
   patternReachesInto,
   resolveCallPath,
   type PathPattern,
@@ -211,6 +213,11 @@ export interface PermissionContext {
    * commands, whose repository config could otherwise run code
    */
   trustRepository?: boolean;
+  /**
+   * Whether path rules compare names without case and so match `SECRET.TXT` with `secret.txt`.
+   * By default the file system of the workspace root is probed once (APFS and NTFS ignore case)
+   */
+  ignoreCase?: boolean;
 }
 
 /** A command line of a call with where and how it runs */
@@ -237,7 +244,9 @@ class CallSubject {
     readonly tool: Tool,
     readonly args: Record<string, unknown>,
     readonly base: string,
-    readonly cwd: string
+    readonly cwd: string,
+    /** Whether path rules compare names without case, see `PermissionContext.ignoreCase` */
+    readonly ignoreCase: boolean
   ) {
     const parsed =
       typeof tool.parameters.safeParse === 'function' ? tool.parameters.safeParse(args) : undefined;
@@ -398,16 +407,17 @@ function anyPathMatches(
     anchorsOf(rule, subject, projectRoot)
   );
   if ('error' in pattern) {
+    const tail = foldPath(`/${specifier.replace(/^\.?\//, '')}`, subject.ignoreCase);
     return paths.some(
       (path) =>
-        path.requested.endsWith(`/${specifier.replace(/^\.?\//, '')}`) ||
-        path.real.endsWith(`/${specifier.replace(/^\.?\//, '')}`)
+        foldPath(path.requested, subject.ignoreCase).endsWith(tail) ||
+        foldPath(path.real, subject.ignoreCase).endsWith(tail)
     );
   }
   if (pattern.negated) return false;
   for (const path of paths) {
     for (const candidate of [path.requested, path.real]) {
-      const how = pathMatches(pattern, candidate);
+      const how = pathMatches(pattern, candidate, subject.ignoreCase);
       if (how && !carvedOut(rule, pattern, how, candidate, subject, projectRoot)) return true;
     }
   }
@@ -429,7 +439,9 @@ function reachesInto(
   );
   if ('error' in pattern || pattern.negated) return false;
   return dirs.some(
-    (dir) => patternReachesInto(pattern, dir.requested) || patternReachesInto(pattern, dir.real)
+    (dir) =>
+      patternReachesInto(pattern, dir.requested, subject.ignoreCase) ||
+      patternReachesInto(pattern, dir.real, subject.ignoreCase)
   );
 }
 
@@ -553,7 +565,7 @@ function carvedOut(
       rule.ref.behavior,
       anchorsOf(later, subject, projectRoot)
     );
-    if (!('error' in negation) && pathMatches(negation, path)) return true;
+    if (!('error' in negation) && pathMatches(negation, path, subject.ignoreCase)) return true;
   }
   return false;
 }
@@ -646,8 +658,8 @@ async function allowingRule(
         );
         if ('error' in pattern || pattern.negated) return false;
         return (
-          pathMatches(pattern, path.requested) !== undefined &&
-          pathMatches(pattern, path.real) !== undefined
+          pathMatches(pattern, path.requested, subject.ignoreCase) !== undefined &&
+          pathMatches(pattern, path.real, subject.ignoreCase) !== undefined
         );
       });
       if (!rule) return undefined;
@@ -744,6 +756,16 @@ function ruleReason(ref: PermissionRuleRef, verb: string): string {
   return `${verb} by the rule ${ref.rule} (${source})`;
 }
 
+/** Whether path rules of a decision compare names without case, see `PermissionContext.ignoreCase` */
+function ignoresCase(
+  context: Pick<PermissionContext, 'ignoreCase'>,
+  base: string
+): Promise<boolean> {
+  return context.ignoreCase === undefined
+    ? pathsIgnoreCase(base)
+    : Promise.resolve(context.ignoreCase);
+}
+
 /** The working directory and the base of relative call paths, from the context */
 function placesOf(context: Pick<PermissionContext, 'workspace' | 'cwd' | 'projectRoot'>): {
   base: string;
@@ -802,7 +824,7 @@ async function decide(
 ): Promise<PermissionDecision> {
   const { mode, rules } = context;
   const { base, cwd, projectRoot } = placesOf(context);
-  const subject = new CallSubject(tool, args, base, cwd);
+  const subject = new CallSubject(tool, args, base, cwd, await ignoresCase(context, base));
   const decision = (
     verdict: PermissionBehavior,
     decidedBy: PermissionDecision['decidedBy'],
@@ -915,7 +937,7 @@ export async function ruleAllowsCall(
   rule: string,
   tool: Tool,
   args: Record<string, unknown>,
-  context: Pick<PermissionContext, 'workspace' | 'cwd' | 'projectRoot'>,
+  context: Pick<PermissionContext, 'workspace' | 'cwd' | 'projectRoot' | 'ignoreCase'>,
   anchor?: string
 ): Promise<boolean> {
   const rules = new PermissionRuleSet([
@@ -925,7 +947,7 @@ export async function ruleAllowsCall(
   const { base, cwd, projectRoot } = placesOf(context);
   return (
     (await allowingRule(
-      new CallSubject(tool, args, base, cwd),
+      new CallSubject(tool, args, base, cwd, await ignoresCase(context, base)),
       rules.rules('allow'),
       projectRoot,
       looseAllow(context)
@@ -949,7 +971,7 @@ export function rememberableRules(
   context: Pick<PermissionContext, 'workspace' | 'cwd' | 'projectRoot'>
 ): string[] {
   const { base, cwd } = placesOf(context);
-  const subject = new CallSubject(tool, args, base, cwd);
+  const subject = new CallSubject(tool, args, base, cwd, false);
   if (subject.kind === 'command') {
     const call = subject.command();
     if (!call || !call.line.certain || call.line.commands.length !== 1 || !call.envSafe) return [];
@@ -1008,7 +1030,7 @@ let readProbe: Tool | undefined;
 export async function readAllowed(
   path: string,
   rules: PermissionRuleSet,
-  context: Pick<PermissionContext, 'workspace' | 'cwd' | 'projectRoot'>
+  context: Pick<PermissionContext, 'workspace' | 'cwd' | 'projectRoot' | 'ignoreCase'>
 ): Promise<boolean> {
   readProbe ??= {
     name: 'read_file',
@@ -1023,7 +1045,7 @@ export async function readAllowed(
     }),
   };
   const { base, cwd, projectRoot } = placesOf(context);
-  const subject = new CallSubject(readProbe, { path }, base, cwd);
+  const subject = new CallSubject(readProbe, { path }, base, cwd, await ignoresCase(context, base));
   for (const rule of rules.rules('deny')) {
     if (rule.target.kind !== 'family' || rule.target.family !== 'read') continue;
     if (rule.parsed.specifier === undefined) return false;

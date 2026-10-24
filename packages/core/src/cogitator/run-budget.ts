@@ -237,7 +237,7 @@ export interface RunBudgetOptions {
   ownLimits?: Omit<SessionBudgetConfig, 'onWarning'>;
   /**
    * The budgets the caller passed to this very call (`run()` or `resume()`): the host's decision,
-   * which wins over limits an earlier answer raised
+   * which wins over limits an earlier answer raised or lifted
    */
   explicit?: SessionBudgetConfig;
 }
@@ -351,8 +351,10 @@ export class RunBudget {
       configured: number | undefined,
       given?: number
     ) => {
-      const limit = this.limitOf(keyOf(usage), configured, given);
-      if (limit === undefined || this.lifted.has(keyOf(usage))) return;
+      const key = keyOf(usage);
+      if (given !== undefined) this.lifted.delete(key);
+      const limit = this.limitOf(key, configured, given);
+      if (limit === undefined || this.lifted.has(key)) return;
       states.push({ usage: { ...usage, limit } });
     };
     for (const metric of metrics) {

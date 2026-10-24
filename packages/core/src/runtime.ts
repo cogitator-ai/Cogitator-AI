@@ -294,7 +294,6 @@ import {
   type PermissionCall,
 } from './cogitator/run-permissions';
 import { exitPlanModeTool } from './cogitator/plan-mode';
-import { accessKindOf } from './permissions/rules';
 import {
   DEFAULT_CLASSIFIER_TRANSCRIPT,
   isPermissionClassifier,
@@ -2168,6 +2167,8 @@ export class Cogitator implements ToolInvoker {
         const runArguments = new Map<string, ToolCall>();
         const pending: ToolApprovalRequest[] = [];
         const automatic = new Set(resumed?.automatic ?? []);
+        /** Calls of the turn the `auto` classifier allowed */
+        const classified = new Set<string>();
         /** Approvals asked for the arguments a middleware changed calls to, which their decisions decide */
         const changedAsked = new Map(
           (resumed?.changed ?? []).map((request) => [request.toolCallId, request])
@@ -2246,6 +2247,7 @@ export class Cogitator implements ToolInvoker {
             else if (verdict.decidedBy !== 'default') {
               decisions.set(toolCall.id, { approved: true });
               automatic.add(toolCall.id);
+              if (verdict.decidedBy === 'classifier') classified.add(toolCall.id);
             }
             await permissions.record(decisionEvent(toolCall, verdict));
             continue;
@@ -2462,16 +2464,16 @@ export class Cogitator implements ToolInvoker {
           throw new ToolInterruptSignal(approvalInterrupt(outcome.pause));
         };
         /**
-         * Decides a call that touches paths or runs a command again right before it runs: an
-         * earlier call of the turn may have moved what its paths point to (a symlink, a `cd`).
-         * Why it may not run, or undefined when it still may. A call a person approved stops only
-         * at a deny, one the rules allowed also when it would now ask
+         * Decides a call again right before it runs: the mode may have changed since the turn
+         * decided it (`setPermissionMode()`), and an earlier call of the turn may have moved what
+         * its paths point to (a symlink). Why it may not run, or undefined when it still may. A
+         * call a person approved stops only at a deny, one the rules allowed also when it would
+         * now ask. A call the `auto` classifier allowed is not judged again while the run stays
+         * in `auto` mode
          */
         const recheck = async (toolCall: ToolCall): Promise<string | undefined> => {
           const tool = registry.get(toolCall.name);
           if (!permissions.active || !tool) return undefined;
-          const kind = accessKindOf(tool);
-          if (kind !== 'read' && kind !== 'edit' && kind !== 'command') return undefined;
           const runCall = runArguments.get(toolCall.id) ?? toolCall;
           const human =
             decisions.get(toolCall.id)?.approved === true && !automatic.has(toolCall.id);
@@ -2479,14 +2481,17 @@ export class Cogitator implements ToolInvoker {
             !human &&
             (needsApproval(tool, runCall.arguments) ||
               this.state.constitutionalAI?.toolNeedsApproval(tool, runCall.arguments) === true);
+          const judged = classified.has(toolCall.id) && permissions.mode === 'auto';
+          const call = permissionCall(tool, runCall, needs);
+          const { classifierInput: _judgedBefore, ...unjudged } = call;
           const verdict = await permissions.decide(
             tool,
             runCall.arguments,
-            permissionCall(tool, runCall, needs)
+            judged ? unjudged : call
           );
           if (verdict.decision === 'deny') return verdict.reason;
-          if (verdict.decision === 'ask' && !human) {
-            return `the call no longer passes the rules when it runs (${verdict.reason}), an earlier call of the turn changed what it touches`;
+          if (verdict.decision === 'ask' && !human && !judged) {
+            return `the call no longer passes the permissions when it runs (${verdict.reason}): the mode, or what it touches, changed since the turn decided it`;
           }
           return undefined;
         };
@@ -2566,13 +2571,14 @@ export class Cogitator implements ToolInvoker {
               toolSpanEnd: Date.now(),
             };
           }
-          if (!askedBefore.some((entry) => entry.toolCallId === toolCall.id)) {
+          const countCall = () => {
+            if (askedBefore.some((entry) => entry.toolCallId === toolCall.id)) return;
             runBudget.noteToolCalls(active.id, 1);
             for (const ancestor of budgetAncestors) {
               const parent = this.runBudgets.get(ancestor);
               parent?.budget.noteToolCalls(parent.agentId(), 1);
             }
-          }
+          };
           let result: ToolResult;
           try {
             result = await waitForAbortable(
@@ -2610,6 +2616,7 @@ export class Cogitator implements ToolInvoker {
                       permit: (tool: Tool, args: Record<string, unknown>) =>
                         permitChanged(toolCall, tool, args),
                     }),
+                    onDispatch: countCall,
                     ...(timeouts.toolMs !== undefined && { defaultTimeout: timeouts.toolMs }),
                     ...(stepGate && { step: { gate: stepGate, alone: runsAlone(toolCall) } }),
                     ...(options.onToolUpdate && {

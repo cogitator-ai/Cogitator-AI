@@ -87,6 +87,8 @@ export interface ToolCallExecution {
    * permissions decide such arguments instead of the tool's own approval setting
    */
   permit?: (tool: Tool, args: Record<string, unknown>) => Promise<ChangedCallPermit>;
+  /** Hears the tool start, once nothing stops the call any more: the call counts from then on */
+  onDispatch?: () => void;
 }
 
 /**
@@ -320,6 +322,7 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
       releaseAll();
       return aborted;
     }
+    execution.onDispatch?.();
     const result = await insideLockOwner(owner, () =>
       tool.sandbox?.type === 'docker' || tool.sandbox?.type === 'wasm'
         ? executeInSandbox(

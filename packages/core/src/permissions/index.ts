@@ -22,6 +22,7 @@ export {
   compilePathPattern,
   normalizeRulePath,
   pathMatches,
+  pathsIgnoreCase,
   type PathAnchors,
   type PathPattern,
 } from './paths';

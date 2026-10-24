@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -18,6 +26,7 @@ import {
   parseCommandLine,
   parseRule,
   pathMatches,
+  pathsIgnoreCase,
   resolvePermission,
   ruleAllowsCall,
   suggestRule,
@@ -1029,3 +1038,68 @@ describe('fourth review round', () => {
     expect(decision.decision).toBe('deny');
   });
 });
+
+describe('sixth review round', () => {
+  const decide = (
+    name: string,
+    args: Record<string, unknown>,
+    settings: Omit<PermissionLayerSettings, 'layer'>,
+    ignoreCase?: boolean
+  ) =>
+    resolvePermission(ws(name), args, {
+      mode: 'default',
+      rules: rules(settings),
+      needsApproval: true,
+      workspace,
+      projectRoot: root,
+      ...(ignoreCase !== undefined && { ignoreCase }),
+    }).then((decision) => decision.decision);
+
+  it('compares path rules without case where the file system ignores it', async () => {
+    const deny = { deny: ['Read(secret.txt)'], allow: ['Read', 'Bash'] };
+    expect(await decide('read_file', { path: 'SECRET.TXT' }, deny, true)).toBe('deny');
+    expect(await decide('read_file', { path: 'Secret.Txt' }, deny, true)).toBe('deny');
+    expect(await decide('run_command', { command: 'cat SECRET.TXT' }, deny, true)).toBe('deny');
+    expect(await decide('read_file', { path: 'SECRET.TXT' }, deny, false)).toBe('allow');
+    const edits = { allow: ['Edit(src/**)'] };
+    expect(await decide('write_file', { path: 'SRC/a.ts', content: '' }, edits, true)).toBe(
+      'allow'
+    );
+    expect(await decide('write_file', { path: 'SRC/a.ts', content: '' }, edits, false)).toBe('ask');
+  });
+
+  it('probes the file system of the workspace for whether it ignores case', async () => {
+    const probeRoot = join(base, 'CaseProbe');
+    mkdirSync(probeRoot, { recursive: true });
+    const ignores = existsSync(join(base, 'caseprobe'));
+    expect(await pathsIgnoreCase(probeRoot)).toBe(ignores);
+    const probed = new LocalWorkspace({ root: probeRoot });
+    const decision = await resolvePermission(
+      ws('read_file'),
+      { path: 'SECRET.TXT' },
+      {
+        mode: 'default',
+        rules: rules({ deny: ['Read(secret.txt)'], allow: ['Read'] }),
+        needsApproval: true,
+        workspace: probed,
+        projectRoot: probeRoot,
+      }
+    );
+    expect(decision.decision).toBe(ignores ? 'deny' : 'allow');
+  });
+
+  it('compares names in one Unicode form', async () => {
+    const deny = { deny: ['Read(caf\u00e9.txt)'], allow: ['Read'] };
+    expect(await decide('read_file', { path: 'cafe\u0301.txt' }, deny, false)).toBe('deny');
+    expect(pathMatches(compiled('cafe\u0301/**'), '/x/caf\u00e9/a')).toBe('self');
+  });
+});
+
+function compiled(specifier: string) {
+  const pattern = compilePathPattern(specifier, 'deny', {
+    cwd: '/x',
+    source: '/x',
+  });
+  if ('error' in pattern) throw new Error(pattern.error);
+  return pattern;
+}
