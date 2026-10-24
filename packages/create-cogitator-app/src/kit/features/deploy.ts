@@ -14,13 +14,17 @@ const ROOT_ARTIFACTS: Record<string, string> = {
   'fly.toml': 'fly.toml',
 };
 
+const OLLAMA_SERVICE_NOTE =
+  ' The deployment runs Ollama in a container next to the app and pulls the models of `cogitator.yml` on its first start, `cogitator deploy logs ollama-pull` shows the download.';
+
 /**
  * Generates the Dockerfile, `.dockerignore` and `fly.toml` with
  * `@cogitator-ai/deploy` itself: the planned project is laid out in a temporary
  * directory, analyzed the way `cogitator deploy` analyzes it, and the artifacts
  * of its generator are kept. There is one Dockerfile template, the deployer's.
  * The lockfile the install writes is stood in for, since the image installs
- * from it.
+ * from it. When the analyzer gives the deployment an Ollama container, the
+ * README's Deploy section says so, so it runs before the README is written.
  */
 export function emitDeployArtifacts(project: ProjectBuilder): void {
   const { spec } = project;
@@ -42,6 +46,10 @@ export function emitDeployArtifacts(project: ProjectBuilder): void {
       if (path) project.file(path, artifact.content);
     }
     for (const warning of analysis.warnings) project.warn(`deploy: ${warning}`);
+    const readme = project.readme.find((section) => section.title === 'Deploy');
+    if (readme && analysis.deployConfig.services?.ollama) {
+      readme.body = `${readme.body.trimEnd()}${OLLAMA_SERVICE_NOTE}`;
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -67,7 +75,7 @@ export const deployFeature: FeatureModule = {
         ${runScript(pm, 'deploy')}       # build and ${spec.deploy === 'fly' ? 'deploy to Fly.io' : 'run with Docker'}
         \`\`\`
 
-        Secrets listed under \`deploy.secrets\` in \`cogitator.yml\` must be set in the environment you deploy from.${spec.provider === 'ollama' && spec.deploy === 'docker' ? ' The deployment runs Ollama in a container next to the app and pulls the models of `cogitator.yml` on its first start, `cogitator deploy logs ollama-pull` shows the download.' : ''}
+        Secrets listed under \`deploy.secrets\` in \`cogitator.yml\` must be set in the environment you deploy from.
       `
     );
     project.section(

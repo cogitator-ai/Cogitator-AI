@@ -125,6 +125,9 @@ describe('FlyProvider.logsCommand', () => {
     expect(() => provider.logsCommand({ app: 'api' }, '/srv', { tail: '50' })).toThrow(
       /no line count/
     );
+    expect(() => provider.logsCommand({ app: 'api' }, '/srv', { timestamps: true })).toThrow(
+      /always carry timestamps/
+    );
   });
 
   it('fails without flyctl', () => {

@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import { spawn } from 'node:child_process';
+import { constants } from 'node:os';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { findConfigFile, loadConfig, loadEnvConfig } from '@cogitator-ai/config';
@@ -249,7 +250,13 @@ async function runDeploy(flags: DeployFlags): Promise<void> {
     return;
   }
 
-  const deploySpinner = spin('Deploying...', flags);
+  const pulls = plan.config.services?.ollama ? (plan.config.ollama?.models ?? []) : [];
+  const deploySpinner = spin(
+    pulls.length > 0
+      ? `Deploying, a first start downloads ${pulls.join(', ')} first (cogitator deploy logs ollama-pull -f shows the progress)...`
+      : 'Deploying...',
+    flags
+  );
 
   let result: DeployResult;
   try {
@@ -380,7 +387,10 @@ function runAttached(command: DeployCommand): Promise<number> {
     child.on('error', (error) =>
       reject(new CommandError(`Failed to run ${command.command}: ${error.message}`))
     );
-    child.on('exit', (code, signal) => resolvePromise(code ?? (signal ? EXIT.failed : EXIT.ok)));
+    child.on('exit', (code, signal) => {
+      if (code !== null) resolvePromise(code);
+      else resolvePromise(signal ? 128 + (constants.signals[signal] ?? 0) : EXIT.ok);
+    });
   });
 }
 
@@ -398,9 +408,22 @@ export async function runDeployLogs(
   const inputs = loadDeployInputs(projectDir, flags);
   const target = resolveTarget(inputs.target, deployer.availableTargets());
 
+  if (target === 'fly') {
+    const docker = [
+      service !== undefined && 'a service name',
+      flags.tail !== undefined && '--tail',
+      flags.timestamps && '--timestamps',
+    ].filter((item): item is string => typeof item === 'string');
+    if (docker.length > 0) {
+      throw new UsageError(`${docker.join(', ')} apply to the docker target only`, [
+        'flyctl logs shows the one app with timestamps, add --follow to stream',
+      ]);
+    }
+  }
+
   let command: DeployCommand;
   try {
-    command = deployer.logsCommand(target, { ...inputs.overrides, target }, projectDir, {
+    command = await deployer.logsCommand(target, { ...inputs.overrides, target }, projectDir, {
       configPath: inputs.configPath,
       follow: flags.follow === true,
       ...(flags.tail !== undefined && { tail: flags.tail }),
@@ -415,10 +438,49 @@ export async function runDeployLogs(
   if (code !== EXIT.ok) process.exitCode = code;
 }
 
+const LOGS_FLAGS = [
+  ['follow', '--follow'],
+  ['tail', '--tail'],
+  ['timestamps', '--timestamps'],
+] as const;
+
+/**
+ * Refuses the flags that do nothing for `action`: the logs flags anywhere but
+ * `deploy logs`, and the deploy flags (`--json`, `--dry-run`, `--registry`,
+ * `--no-push`, `--region`) on it.
+ */
+export function checkDeployFlags(action: string | undefined, flags: DeployFlags): void {
+  const name = action === undefined ? 'cogitator deploy' : `cogitator deploy ${action}`;
+  const misplaced =
+    action === 'logs'
+      ? [
+          flags.json && '--json',
+          flags.dryRun && '--dry-run',
+          flags.registry !== undefined && '--registry',
+          !flags.push && '--no-push',
+          flags.region !== undefined && '--region',
+        ]
+      : LOGS_FLAGS.map(([key, flag]) => flags[key] !== undefined && flags[key] !== false && flag);
+  const unused = misplaced.filter((flag): flag is string => typeof flag === 'string');
+  if (unused.length > 0) {
+    throw new UsageError(
+      `${unused.join(', ')} ${unused.length > 1 ? 'do' : 'does'} not apply to ${name}`,
+      [
+        action === 'logs'
+          ? 'cogitator deploy logs takes -t, -c, -f, -n and --timestamps'
+          : 'Use them with cogitator deploy logs',
+      ]
+    );
+  }
+}
+
 export const deployCommand = new Command('deploy')
   .description('Deploy your Cogitator project')
   .argument('[action]', 'Action to perform: status, logs, destroy')
-  .argument('[service]', 'Service whose logs to show (app, ollama, redis, postgres), docker only')
+  .argument(
+    '[service]',
+    'Service whose logs to show (app, ollama, ollama-pull, redis, postgres), docker only'
+  )
   .option('-t, --target <target>', 'Deploy target (docker, fly)')
   .option('-c, --config <path>', 'Config file path')
   .option('--registry <url>', 'Container registry URL')
@@ -432,7 +494,10 @@ export const deployCommand = new Command('deploy')
     'logs: lines to show (or "all"), docker only, 100 by default',
     parseTailOption
   )
-  .option('--timestamps', 'logs: show timestamps, docker only (Fly logs always have them)')
+  .option(
+    '--timestamps',
+    'logs: show timestamps, docker only (no -t, that is --target, Fly logs always have them)'
+  )
   .addHelpText(
     'after',
     examplesHelp([
@@ -450,6 +515,9 @@ export const deployCommand = new Command('deploy')
       throw new UsageError(`Unexpected argument: "${service}"`, [
         'Only "cogitator deploy logs" takes a service name',
       ]);
+    }
+    if (action === undefined || action === 'status' || action === 'logs' || action === 'destroy') {
+      checkDeployFlags(action, flags);
     }
     switch (action) {
       case 'status':

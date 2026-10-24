@@ -11,16 +11,16 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawn: spawnMock,
 }));
 
-import { runDeployLogs } from '../commands/deploy.js';
+import { checkDeployFlags, runDeployLogs } from '../commands/deploy.js';
+import { UsageError } from '../utils/cli.js';
 
 describe('cogitator deploy logs', () => {
   let dir: string;
-  const saved = { ...process.env };
 
-  function exitingWith(code: number) {
+  function exitingWith(code: number | null, signal: NodeJS.Signals | null = null) {
     spawnMock.mockImplementation(() => {
       const child = new EventEmitter();
-      queueMicrotask(() => child.emit('exit', code, null));
+      queueMicrotask(() => child.emit('exit', code, signal));
       return child;
     });
   }
@@ -34,7 +34,7 @@ describe('cogitator deploy logs', () => {
     dir = mkdtempSync(join(tmpdir(), 'cli-deploy-logs-'));
     vi.spyOn(process, 'cwd').mockReturnValue(dir);
     for (const key of Object.keys(process.env)) {
-      if (key.startsWith('COGITATOR_DEPLOY_')) delete process.env[key];
+      if (key.startsWith('COGITATOR_DEPLOY_')) vi.stubEnv(key, undefined);
     }
     writeFileSync(
       join(dir, 'package.json'),
@@ -45,8 +45,8 @@ describe('cogitator deploy logs', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     spawnMock.mockReset();
-    process.env = { ...saved };
     process.exitCode = undefined;
     rmSync(dir, { recursive: true, force: true });
   });
@@ -93,6 +93,12 @@ describe('cogitator deploy logs', () => {
       expect(process.exitCode).toBe(3);
     });
 
+    it('exits with 128 and the signal number when a signal stops it', async () => {
+      exitingWith(null, 'SIGTERM');
+      await runDeployLogs(undefined, { push: true });
+      expect(process.exitCode).toBe(143);
+    });
+
     it('fails before spawning anything without a deployment', async () => {
       rmSync(join(dir, '.cogitator'), { recursive: true });
       await expect(runDeployLogs(undefined, { push: true })).rejects.toThrow(
@@ -108,7 +114,7 @@ describe('cogitator deploy logs', () => {
       mkdirSync(bin);
       writeFileSync(join(bin, 'flyctl'), '#!/bin/sh\n');
       chmodSync(join(bin, 'flyctl'), 0o755);
-      process.env.PATH = bin;
+      vi.stubEnv('PATH', bin);
       writeFileSync(join(dir, 'cogitator.yml'), 'deploy:\n  target: fly\n  app: acme-prod\n');
     });
 
@@ -125,9 +131,40 @@ describe('cogitator deploy logs', () => {
       expect(spawned().args).toEqual(['logs', '--app', 'acme-prod']);
     });
 
-    it('refuses a service name, which a Fly app does not have', async () => {
-      await expect(runDeployLogs('ollama', { push: true })).rejects.toThrow(/no service name/);
+    it('refuses the docker-only service name, --tail and --timestamps as usage errors', async () => {
+      for (const [service, flags] of [
+        ['ollama', {}],
+        [undefined, { tail: '50' }],
+        [undefined, { timestamps: true }],
+      ] as const) {
+        await expect(runDeployLogs(service, { push: true, ...flags })).rejects.toBeInstanceOf(
+          UsageError
+        );
+      }
       expect(spawnMock).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('checkDeployFlags', () => {
+  it('refuses the logs flags on the other actions', () => {
+    for (const action of [undefined, 'status', 'destroy']) {
+      expect(() => checkDeployFlags(action, { push: true, follow: true })).toThrow(UsageError);
+      expect(() => checkDeployFlags(action, { push: true, tail: '10' })).toThrow(/--tail/);
+      expect(() => checkDeployFlags(action, { push: true, timestamps: true })).toThrow(
+        /--timestamps does not apply/
+      );
+    }
+    expect(() => checkDeployFlags('status', { push: true, json: true })).not.toThrow();
+  });
+
+  it('refuses the deploy flags on logs', () => {
+    expect(() => checkDeployFlags('logs', { push: true, json: true, dryRun: true })).toThrow(
+      '--json, --dry-run do not apply to cogitator deploy logs'
+    );
+    expect(() => checkDeployFlags('logs', { push: false })).toThrow(/--no-push/);
+    expect(() =>
+      checkDeployFlags('logs', { push: true, follow: true, tail: '5', timestamps: true })
+    ).not.toThrow();
   });
 });

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ProjectAnalyzer } from '../analyzer';
+import type { DeployConfig } from '@cogitator-ai/types';
 import type { ProjectBuild } from '../index';
 
 describe('ProjectAnalyzer', () => {
@@ -87,10 +88,13 @@ describe('ProjectAnalyzer.analyze', () => {
     writeFileSync(join(dir, file), content);
   }
 
+  const analyze = (overrides?: Partial<DeployConfig>) =>
+    analyzer.analyze(dir, overrides, { env: {} });
+
   it('carries detected services and secrets into the deploy config', () => {
     write('package.json', JSON.stringify({ name: '@acme/My Agent' }));
     write('cogitator.yaml', 'llm:\n  defaultModel: openai/gpt-4o\nmemory:\n  adapter: postgres\n');
-    const result = analyzer.analyze(dir);
+    const result = analyze();
     expect(result.deployConfig.services).toEqual({ redis: false, postgres: true });
     expect(result.deployConfig.secrets).toEqual(['OPENAI_API_KEY']);
     expect(result.deployConfig.image).toBe('my-agent');
@@ -101,23 +105,23 @@ describe('ProjectAnalyzer.analyze', () => {
       'cogitator.yml',
       'llm:\n  defaultProvider: anthropic\n  defaultModel: claude-sonnet-4-6\n'
     );
-    expect(analyzer.analyze(dir).secrets).toEqual(['ANTHROPIC_API_KEY']);
+    expect(analyze().secrets).toEqual(['ANTHROPIC_API_KEY']);
   });
 
   it('reports invalid config files as warnings instead of silently ignoring them', () => {
     write('cogitator.yml', 'llm:\n  defaultProvider: not-a-provider\n');
-    const result = analyzer.analyze(dir);
+    const result = analyze();
     expect(result.warnings.some((w) => w.includes('Ignoring invalid'))).toBe(true);
   });
 
   it('reports malformed package.json', () => {
     write('package.json', '{ nope');
-    expect(analyzer.analyze(dir).warnings.some((w) => w.includes('package.json'))).toBe(true);
+    expect(analyze().warnings.some((w) => w.includes('package.json'))).toBe(true);
   });
 
   it('lets overrides win over detection', () => {
     write('cogitator.yml', 'llm:\n  defaultModel: openai/gpt-4o\nmemory:\n  adapter: redis\n');
-    const result = analyzer.analyze(dir, {
+    const result = analyze({
       services: { postgres: true },
       secrets: ['CUSTOM'],
       image: 'explicit',
@@ -145,7 +149,7 @@ describe('ProjectAnalyzer.analyze', () => {
       ].join('\n')
     );
 
-    const result = analyzer.analyze(dir);
+    const result = analyze();
 
     expect(result.deployConfig).toMatchObject({
       port: 8080,
@@ -161,7 +165,7 @@ describe('ProjectAnalyzer.analyze', () => {
       'deploy:\n  port: 8080\n  health:\n    path: /api/health\n    interval: 10s\n'
     );
 
-    const result = analyzer.analyze(dir, { port: 9000, health: { interval: '1m' } });
+    const result = analyze({ port: 9000, health: { interval: '1m' } });
 
     expect(result.deployConfig.port).toBe(9000);
     expect(result.deployConfig.health).toEqual({ path: '/api/health', interval: '1m' });
@@ -221,7 +225,7 @@ describe('ProjectAnalyzer.analyze', () => {
   });
 
   it('warns when instances > 1 is requested for docker', () => {
-    const result = analyzer.analyze(dir, { target: 'docker', instances: 3 });
+    const result = analyze({ target: 'docker', instances: 3 });
     expect(result.warnings.some((w) => w.includes('instances'))).toBe(true);
   });
 

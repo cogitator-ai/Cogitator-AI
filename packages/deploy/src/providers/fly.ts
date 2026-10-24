@@ -285,6 +285,9 @@ export class FlyProvider implements DeployProvider {
     if (options.tail) {
       throw new Error('flyctl logs takes no line count: drop --tail, or --follow to stream');
     }
+    if (options.timestamps) {
+      throw new Error('Fly logs always carry timestamps: drop --timestamps');
+    }
     const binary = resolveFlyBinary();
     if (!binary) throw new Error('flyctl is not installed');
     const app = this.appName(config);

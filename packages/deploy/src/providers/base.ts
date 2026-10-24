@@ -22,7 +22,7 @@ export interface DeployLogsOptions {
   tail?: string;
   /** The Docker Compose service to show (`app`, `ollama`, `redis`), every one when unset. Docker target only */
   service?: string;
-  /** Prefix lines with their time. Fly logs always carry it */
+  /** Prefix lines with their time. Docker target only, Fly logs always carry it */
   timestamps?: boolean;
 }
 
@@ -42,5 +42,9 @@ export interface DeployProvider {
    * The command that shows the logs of the deployment. It throws when the
    * deployment cannot be found or the options do not apply to the target.
    */
-  logsCommand?(config: DeployConfig, projectDir: string, options: DeployLogsOptions): DeployCommand;
+  logsCommand?(
+    config: DeployConfig,
+    projectDir: string,
+    options: DeployLogsOptions
+  ): DeployCommand | Promise<DeployCommand>;
 }

@@ -66,16 +66,18 @@ describe('generateDockerCompose with Ollama', () => {
     expect(file.volumes).toHaveProperty('ollama-data');
   });
 
-  it('points every Ollama URL variable of the app at the service', () => {
-    const environment = service(compose(withOllama({ models: ['llama3.2'] })), 'app').environment;
-    for (const name of [
-      'COGITATOR_OLLAMA_BASE_URL',
-      'OLLAMA_BASE_URL',
-      'OLLAMA_URL',
-      'OLLAMA_HOST',
-    ]) {
-      expect(environment?.[name]).toBe(COMPOSE_OLLAMA_URL);
-    }
+  it('leaves the Ollama URL of the app to the env the analyzer decides', () => {
+    const plain = service(compose(withOllama({ models: ['llama3.2'] })), 'app').environment;
+    expect(plain).not.toHaveProperty('OLLAMA_HOST');
+
+    const wired = service(
+      compose({
+        ...withOllama({ models: ['llama3.2'] }),
+        env: { OLLAMA_HOST: COMPOSE_OLLAMA_URL },
+      }),
+      'app'
+    ).environment;
+    expect(wired?.OLLAMA_HOST).toBe(COMPOSE_OLLAMA_URL);
   });
 
   it('pulls the models as arguments of a one-shot service the app waits for', () => {
@@ -97,8 +99,8 @@ describe('generateDockerCompose with Ollama', () => {
   it('skips a model the volume has already, so a restart without network still starts', () => {
     const script = service(compose(withOllama({ models: ['llama3.2'] })), 'ollama-pull')
       .entrypoint?.[2];
-    expect(script).toContain('ollama show "$$model"');
-    expect(script).toContain('|| ollama pull "$$model"');
+    expect(script).toContain('ollama show -- "$$model"');
+    expect(script).toContain('|| ollama pull -- "$$model"');
   });
 
   it('keeps a $ in a model name away from compose interpolation', () => {
@@ -123,22 +125,6 @@ describe('generateDockerCompose with Ollama', () => {
     const file = compose(withOllama({ image: 'ollama/ollama:rocm', models: ['llama3.2'] }));
     expect(service(file, 'ollama').image).toBe('ollama/ollama:rocm');
     expect(service(file, 'ollama-pull').image).toBe('ollama/ollama:rocm');
-  });
-
-  it('leaves the Ollama URL to the config when env or secrets set one', () => {
-    const fromSecret = service(
-      compose({ ...withOllama(), secrets: ['OLLAMA_HOST'] }),
-      'app'
-    ).environment;
-    expect(fromSecret?.OLLAMA_HOST).toBe('${OLLAMA_HOST:-}');
-    expect(fromSecret).not.toHaveProperty('COGITATOR_OLLAMA_BASE_URL');
-
-    const fromEnv = service(
-      compose({ ...withOllama(), env: { OLLAMA_URL: 'http://gpu-box:11434' } }),
-      'app'
-    ).environment;
-    expect(fromEnv?.OLLAMA_URL).toBe('http://gpu-box:11434');
-    expect(fromEnv).not.toHaveProperty('OLLAMA_HOST');
   });
 
   it('keeps redis and postgres next to the ollama service', () => {

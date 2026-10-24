@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { isFlyAppName, isFlyOrgSlug } from '@cogitator-ai/types';
+import { isFlyAppName, isFlyOrgSlug, isOllamaModelName } from '@cogitator-ai/types';
 
 export const OLLAMA_LOCAL_URL = 'http://localhost:11434';
 export const OLLAMA_CLOUD_URL = 'https://ollama.com';
@@ -705,12 +705,10 @@ export const DeployVolumeSchema = z.object({
   size: z.number().int().positive().optional(),
 });
 
-const OLLAMA_MODEL_NAME = /^[A-Za-z0-9][\w.:/@+-]*$/;
-
 export const DeployOllamaSchema = z.object({
   models: z
     .array(
-      z.string().regex(OLLAMA_MODEL_NAME, {
+      z.string().refine(isOllamaModelName, {
         message: 'Expected an Ollama model name, such as llama3.2 or qwen3:8b',
       })
     )

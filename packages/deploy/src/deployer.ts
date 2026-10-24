@@ -146,12 +146,12 @@ export class Deployer {
    * The command that shows the logs of the deployment on `target`, for the
    * caller to run: `docker compose logs` for Docker, `flyctl logs` for Fly.
    */
-  logsCommand(
+  async logsCommand(
     target: DeployTargetName,
     config: DeployConfig,
     projectDir: string,
     options: DeployLogsOptions & DeployLookupOptions = {}
-  ): DeployCommand {
+  ): Promise<DeployCommand> {
     const provider = this.getProvider(target);
     if (!provider.logsCommand) {
       throw new Error(`The ${provider.name} target has no logs command`);

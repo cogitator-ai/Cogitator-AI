@@ -147,7 +147,7 @@ Probe `127.0.0.1` rather than `localhost`: in Alpine images `localhost` resolves
 
 ## Ollama in the Deployed Stack
 
-When the project's models run on a local Ollama (an `ollama/...` model that is not Ollama Cloud, or `memory.embedding` with `provider: ollama`), the Compose stack `cogitator deploy` generates runs Ollama next to the app. The `ollama` service keeps the models in the `ollama-data` volume, and a one-shot `ollama-pull` service pulls the chat and embedding models on the first start, before the app starts. The app reaches it at `http://ollama:11434` through `OLLAMA_BASE_URL`, `OLLAMA_URL` and `OLLAMA_HOST`.
+When the project's models run on a local Ollama (an `ollama/...` model that is not Ollama Cloud, or `memory.embedding` with `provider: ollama`), the Compose stack `cogitator deploy` generates runs Ollama next to the app. The `ollama` service keeps the models in the `ollama-data` volume, and a one-shot `ollama-pull` service pulls the chat and embedding models on the first start, before the app starts. The app reaches it at `http://ollama:11434` through `COGITATOR_OLLAMA_BASE_URL`, `OLLAMA_BASE_URL`, `OLLAMA_URL` and `OLLAMA_HOST`. With `llm.defaultProvider: ollama` a model needs no `ollama/` prefix (`defaultModel: qwen3:8b`), and the pulls use the bare name either way.
 
 ```yaml title="cogitator.yml"
 llm:
@@ -168,7 +168,7 @@ cogitator deploy logs -f             # every service of the stack
 cogitator deploy logs app -n 200     # the last 200 lines of the app
 ```
 
-`deploy.ollama.models` replaces the detected list, `deploy.services.ollama: false` reaches the Ollama of the Docker host through `host.docker.internal` instead. `cogitator deploy destroy` keeps the volume, so the next deploy finds the models.
+Each role keeps an Ollama URL that points beyond this machine: a chat model on a GPU box stays there while the embeddings run in the container, as long as `memory.embedding.baseUrl` follows a variable of its own such as `${OLLAMA_EMBEDDING_URL:-http://localhost:11434}`. `deploy.ollama.models` replaces the detected list (models agents name in code are not detected), `deploy.services.ollama: false` reaches the Ollama of the Docker host through `host.docker.internal` instead. `cogitator deploy destroy` keeps the volume, so the next deploy finds the models.
 
 ## GPU and CPU-Only Mode
 

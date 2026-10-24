@@ -46,18 +46,18 @@ if (!result.success) throw new Error(result.error);
 console.log(result.url); // https://my-app.fly.dev
 ```
 
-| Method                                              | Description                                                                              |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `plan(options)`                                     | Analyze + preflight. Returns `config`, `preflight`, `warnings`, `analysis`, `provider`   |
-| `deploy(options)`                                   | `plan`, generate artifacts, deploy. Returns `DeployResult` (`url`, `endpoints`, `error`) |
-| `status(target, config, projectDir, options?)`      | `DeployStatus` (`running`, `url`, `instances`, `uptime`)                                 |
-| `destroy(target, config, projectDir, options?)`     | Tears down the deployment, throws when it fails                                          |
-| `logsCommand(target, config, projectDir, options?)` | The command that shows the logs (`follow`, `tail`, `service`, `timestamps`), as argv     |
-| `availableTargets()`                                | Names of registered providers (`['docker', 'fly']` by default)                           |
-| `registerProvider(provider)`                        | Add a custom `DeployProvider`                                                            |
-| `getProvider(target)`                               | The registered provider, throws for an unknown target                                    |
+| Method                                              | Description                                                                                       |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `plan(options)`                                     | Analyze + preflight. Returns `config`, `preflight`, `warnings`, `analysis`, `provider`            |
+| `deploy(options)`                                   | `plan`, generate artifacts, deploy. Returns `DeployResult` (`url`, `endpoints`, `error`)          |
+| `status(target, config, projectDir, options?)`      | `DeployStatus` (`running`, `url`, `instances`, `uptime`)                                          |
+| `destroy(target, config, projectDir, options?)`     | Tears down the deployment, throws when it fails                                                   |
+| `logsCommand(target, config, projectDir, options?)` | A promise of the command that shows the logs (`follow`, `tail`, `service`, `timestamps`), as argv |
+| `availableTargets()`                                | Names of registered providers (`['docker', 'fly']` by default)                                    |
+| `registerProvider(provider)`                        | Add a custom `DeployProvider`                                                                     |
+| `getProvider(target)`                               | The registered provider, throws for an unknown target                                             |
 
-`DeployOptions`: `projectDir`, `target`, `dryRun` (plan and generate, then return `{ success: true, url: '(dry run)' }` without writing artifacts or deploying), `noPush` (drop the registry), `configOverrides` (a partial `DeployConfig`), `configPath` (the config file to read, by default the first of `cogitator.yml`, `cogitator.yaml`, `.cogitator.yml`, `.cogitator.yaml` in `projectDir`, the same lookup as `loadConfig`) and `env` (where secrets come from, by default the project's `.env` under the process environment). `status`, `destroy` and `logsCommand` take `{ configPath }` too. `deploy()` does not throw on failed preflight checks: it returns `{ success: false, error }` listing each failed check and its fix.
+`DeployOptions`: `projectDir`, `target`, `dryRun` (plan and generate, then return `{ success: true, url: '(dry run)' }` without writing artifacts or deploying), `noPush` (drop the registry), `configOverrides` (a partial `DeployConfig`), `configPath` (the config file to read, by default the first of `cogitator.yml`, `cogitator.yaml`, `.cogitator.yml`, `.cogitator.yaml` in `projectDir`, the same lookup as `loadConfig`) and `env` (where secrets come from, by default the project's `.env` under the process environment). `status`, `destroy` and `logsCommand` take `{ configPath }` too, and `logsCommand` resolves to the command. `deploy()` does not throw on failed preflight checks: it returns `{ success: false, error }` listing each failed check and its fix.
 
 `ProjectAnalyzer` (`analyze(projectDir, overrides?, { configPath, env }?)`, `detectBuild(projectDir)`), `ArtifactGenerator`, `DockerProvider` and `FlyProvider` are exported for building your own pipeline.
 
@@ -99,7 +99,7 @@ deploy:
   ollama: # docker, with services.ollama
     models: [qwen3:8b, nomic-embed-text] # default: the local Ollama models of the config
     gpu: true # reserve the host's NVIDIA GPUs (needs the NVIDIA Container Toolkit)
-    image: ollama/ollama:0.40.0 # default shown
+    image: ollama/ollama:0.40.10 # default shown
 ```
 
 ### Server or worker
@@ -131,13 +131,13 @@ A SQLite memory (`memory.adapter: sqlite`) keeps its database directory on a vol
 
 ### Local Ollama
 
-When the project's models run on a local Ollama, the docker target runs one next to the app (`services.ollama`, on by default then). Local means an Ollama model that is not Ollama Cloud with no Ollama URL pointing beyond this machine, among `llm.defaultModel`, `context.summaryModel` and the models of the memory stages, or `memory.embedding` with `provider: ollama` (its model, `nomic-embed-text` by default).
+When the project's models run on a local Ollama, the docker target runs one next to the app (`services.ollama`, on by default then). Each role is looked at on its own. The chat role is every Ollama model of the config that is not Ollama Cloud: `llm.defaultModel`, `context.summaryModel`, the models of the memory stages, `reflection.reflectionModel`, `guardrails.model` and `security.promptInjection.llmModel`. A model an agent names in code is not in the config, list it in `ollama.models`. The embedding role is `memory.embedding` with `provider: ollama` (its model, `nomic-embed-text` by default). A role is local when its URL points at this machine, a role whose URL points beyond it keeps that URL and its variables are forwarded. A model name that `ollama pull` would refuse or read as a flag, such as `ollama/--insecure`, fails preflight.
 
-The Compose file gets an `ollama` service on the `ollama/ollama` image with the models in the `ollama-data` volume and a health check, and a one-shot `ollama-pull` service that pulls the models on the first start: each model is an argument of the job, and one the volume has already is skipped, so later starts need no network. The app waits for both, and `COGITATOR_OLLAMA_BASE_URL`, `OLLAMA_BASE_URL`, `OLLAMA_URL` and `OLLAMA_HOST` point it at `http://ollama:11434`, unless `env` or `secrets` set one of them. The first deploy takes as long as the download, `cogitator deploy logs ollama-pull` shows it. `ollama.models` replaces the detected list, `ollama.gpu: true` reserves the NVIDIA GPUs of the host, `ollama.image` runs another release or `ollama/ollama:rocm`.
+The Compose file gets an `ollama` service on the `ollama/ollama` image with the models in the `ollama-data` volume and a health check, and a one-shot `ollama-pull` service that pulls the models on the first start: each model is an argument of the job, and one the volume has already is skipped, so later starts need no network. The app waits for both. A local chat role gets `COGITATOR_OLLAMA_BASE_URL`, `OLLAMA_BASE_URL`, `OLLAMA_URL` and `OLLAMA_HOST` pointing at `http://ollama:11434`, also when one of them was detected as a secret with a localhost value, and a variable named in `deploy.env` or `deploy.secrets` is left to you. The first deploy takes as long as the download, `cogitator deploy logs ollama-pull -f` shows it, and a failed download fails the deploy with the last lines of the job. With `services.ollama: true` and no model running on the container, the analyzer warns. `ollama.models` replaces the detected list, `ollama.gpu: true` reserves the NVIDIA GPUs of the host, `ollama.image` runs another release or `ollama/ollama:rocm`.
 
-The embedding service reads its URL from `memory.embedding.baseUrl` only, so a URL written there as `http://localhost:11434` would miss the container: write it as `${OLLAMA_BASE_URL:-http://localhost:11434}` (the analyzer warns otherwise).
+The embedding service reads its URL from `memory.embedding.baseUrl` only, so the deployment points the variables that value follows at the container: write it as `${OLLAMA_BASE_URL:-http://localhost:11434}`, or `${OLLAMA_EMBEDDING_URL:-http://localhost:11434}` when the chat models use another Ollama. A variable is only set when it moves no role that stays remote, so a chat model on a GPU box keeps its URL while the embeddings run in the container, and the analyzer warns when the embeddings cannot be reached (a literal localhost URL, or a variable the remote chat URL reads too).
 
-With `services.ollama: false` the app reaches the Ollama of the host instead: the Compose file maps `host.docker.internal` to the host and points the same variables at it, keeping the port of your local URL. On Linux, Ollama must listen beyond localhost (`OLLAMA_HOST=0.0.0.0 ollama serve`). An Ollama URL that already points to another machine is passed through as it is. Other targets warn, since they have no Ollama.
+With `services.ollama: false` the local roles reach the Ollama of the host instead: the Compose file maps `host.docker.internal` to the host and points the same variables at it, keeping the port of your local URL, and a warning lists the models to pull there. On Linux, Ollama must listen beyond localhost (`OLLAMA_HOST=0.0.0.0 ollama serve`). An Ollama URL that already points to another machine is passed through as it is. Other targets warn, since they have no Ollama.
 
 ## Auto-Detection
 
@@ -171,7 +171,7 @@ Preflight checks: Docker installed, daemon running, Compose v2 available, regist
 
 ### Fly.io
 
-Generates `.cogitator/fly.toml` (your own `fly.toml` is never overwritten) with `[env]`, VM size from `resources`, a `[mounts]` volume when there is one, and for a server an HTTP service with checks from `health` and `min_machines_running` from `instances` (machines auto-stop and auto-start). A worker gets no checks and is never auto-stopped. The app is `deploy.app`, else the image name. `deploy` creates the app when needed (`fly apps create --org <org>` with `deploy.org`, your default organization without it) and its volume, stages secrets, runs `fly deploy --config .cogitator/fly.toml --dockerfile .cogitator/Dockerfile`, and scales to `instances`. For a server the result lists `https://<app>.fly.dev`, its health URL and the A2A agent card (`/.well-known/agent.json`). Fly runs no Redis or Postgres next to the app: with those services, `REDIS_URL` / `DATABASE_URL` become required secrets (create them with `fly redis create`, `fly postgres create` or any hosted service). `status` reads `fly status`, `logsCommand` builds `fly logs --app <app>` (`--no-tail` unless following), `destroy` runs `fly apps destroy`. Preflight checks: the app name follows the Fly rules (lowercase letters, digits and dashes, starting and ending with a letter or digit, 63 characters at most) and `deploy.org` is a slug, `flyctl` installed, `fly auth whoami`, secrets. Works with either `flyctl` or `fly` on `PATH`.
+Generates `.cogitator/fly.toml` (your own `fly.toml` is never overwritten) with `[env]`, VM size from `resources`, a `[mounts]` volume when there is one, and for a server an HTTP service with checks from `health` and `min_machines_running` from `instances` (machines auto-stop and auto-start). A worker gets no checks and is never auto-stopped. The app is `deploy.app`, else the image name. `deploy` creates the app when needed (`fly apps create --org <org>` with `deploy.org`, your default organization without it) and its volume, stages secrets, runs `fly deploy --config .cogitator/fly.toml --dockerfile .cogitator/Dockerfile`, and scales to `instances`. For a server the result lists `https://<app>.fly.dev`, its health URL and the A2A agent card (`/.well-known/agent.json`). Fly runs no Redis or Postgres next to the app: with those services, `REDIS_URL` / `DATABASE_URL` become required secrets (create them with `fly redis create`, `fly postgres create` or any hosted service). `status` reads `fly status`, `logsCommand` builds `fly logs --app <app>` (`--no-tail` unless following, no service, `tail` or `timestamps`, which it refuses), `destroy` runs `fly apps destroy`. Preflight checks: the app name follows the Fly rules (lowercase letters, digits and dashes, starting and ending with a letter or digit, 63 characters at most) and `deploy.org` is a slug, `flyctl` installed, `fly auth whoami`, secrets. Works with either `flyctl` or `fly` on `PATH`.
 
 ## Custom Providers
 
@@ -214,7 +214,11 @@ class KubernetesProvider implements DeployProvider {
     return { running: true };
   }
   async destroy(config: DeployConfig, projectDir: string): Promise<void> {}
-  logsCommand(config: DeployConfig, projectDir: string, options: DeployLogsOptions): DeployCommand {
+  async logsCommand(
+    config: DeployConfig,
+    projectDir: string,
+    options: DeployLogsOptions
+  ): Promise<DeployCommand> {
     return {
       command: 'kubectl',
       args: ['logs', 'deploy/agents', ...(options.follow ? ['-f'] : [])],
@@ -227,7 +231,7 @@ deployer.registerProvider(new KubernetesProvider());
 await deployer.deploy({ projectDir: process.cwd(), target: 'kubernetes' });
 ```
 
-`Deployer.deploy()` runs preflight, calls your provider's `generate(config, projectDir)` and hands the result to its `deploy()` (with `dryRun` it stops after `generate()`). Writing the files to disk is up to the provider. `logsCommand` is optional: `Deployer.logsCommand(target, config, projectDir, options)` returns the command for the caller to run with the terminal attached, the way `cogitator deploy logs` does. The example reuses the built-in Dockerfile: `ProjectAnalyzer.detectBuild(projectDir)` reports the TypeScript setup, package manager, lockfile, build script and start command that `ArtifactGenerator` needs.
+`Deployer.deploy()` runs preflight, calls your provider's `generate(config, projectDir)` and hands the result to its `deploy()` (with `dryRun` it stops after `generate()`). Writing the files to disk is up to the provider. `logsCommand` is optional and may return the command or a promise of it: `Deployer.logsCommand(target, config, projectDir, options)` resolves to the command for the caller to run with the terminal attached, the way `cogitator deploy logs` does. The example reuses the built-in Dockerfile: `ProjectAnalyzer.detectBuild(projectDir)` reports the TypeScript setup, package manager, lockfile, build script and start command that `ArtifactGenerator` needs.
 
 All external commands are executed without a shell, so paths with spaces and user-supplied values are passed verbatim.
 

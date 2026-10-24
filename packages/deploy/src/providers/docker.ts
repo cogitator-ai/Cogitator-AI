@@ -161,7 +161,15 @@ export class DockerProvider implements DeployProvider {
       env,
     });
     if (!upResult.success) {
-      return { success: false, error: `docker compose up failed: ${upResult.error}` };
+      return {
+        success: false,
+        error: [
+          `docker compose up failed: ${upResult.error}`,
+          this.pullLogs(config, projectDir, env),
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      };
     }
 
     const startupError = await this.verifyStartup(config, projectDir, env);
@@ -177,6 +185,30 @@ export class DockerProvider implements DeployProvider {
       url,
       endpoints: { api: url, ...(health ? { health: `${url}${health}` } : {}) },
     };
+  }
+
+  /**
+   * The last lines of the `ollama-pull` job when the deployment runs one, so a
+   * failed `docker compose up` shows why a model did not download (an unknown
+   * model, no network, a full disk) instead of only that the job failed.
+   */
+  private pullLogs(config: DeployConfig, projectDir: string, env: NodeJS.ProcessEnv): string {
+    if (!config.services?.ollama || (config.ollama?.models ?? []).length === 0) return '';
+    const logs = run(
+      'docker',
+      this.composeArgs(
+        config,
+        projectDir,
+        'logs',
+        '--no-color',
+        '--tail',
+        LOG_TAIL_LINES,
+        'ollama-pull'
+      ),
+      { cwd: projectDir, env }
+    );
+    const output = logs.output.trim();
+    return output ? `Last lines of ollama-pull:\n${output}` : '';
   }
 
   /**

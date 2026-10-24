@@ -94,27 +94,27 @@ describe('Deployer.logsCommand', () => {
     return {
       ...silentProvider(),
       seen,
-      logsCommand: (config, _projectDir, options) => {
+      logsCommand: async (config, _projectDir, options) => {
         seen.push(config);
         return { command: 'logs', args: options.follow ? ['-f'] : [] };
       },
     };
   }
 
-  it('hands the provider the config resolved from the project', () => {
+  it('hands the provider the config resolved from the project', async () => {
     const deployer = new Deployer();
     const provider = recordingProvider();
     deployer.registerProvider(provider);
 
-    const command = deployer.logsCommand('custom', {}, dir, { follow: true });
+    const command = await deployer.logsCommand('custom', {}, dir, { follow: true });
 
     expect(command).toEqual({ command: 'logs', args: ['-f'] });
     expect(provider.seen[0]).toMatchObject({ app: 'acme-prod', image: 'acme-api' });
   });
 
-  it('fails for a provider without logs', () => {
+  it('fails for a provider without logs', async () => {
     const deployer = new Deployer();
     deployer.registerProvider(silentProvider());
-    expect(() => deployer.logsCommand('custom', {}, dir)).toThrow(/has no logs command/);
+    await expect(deployer.logsCommand('custom', {}, dir)).rejects.toThrow(/has no logs command/);
   });
 });

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { ArtifactGenerator, ProjectAnalyzer } from '@cogitator-ai/deploy';
 
 const composeAvailable =
-  spawnSync('docker', ['compose', 'version'], { stdio: 'ignore' }).status === 0;
+  spawnSync('docker', ['compose', 'version'], { stdio: 'ignore', timeout: 10_000 }).status === 0;
 const describeCompose = composeAvailable ? describe : describe.skip;
 
 interface ResolvedService {

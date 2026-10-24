@@ -75,6 +75,56 @@ describe('DockerProvider.deploy', () => {
   });
 });
 
+describe('DockerProvider.deploy with Ollama', () => {
+  it('shows the last lines of the model download when compose up fails', async () => {
+    runMock.mockImplementation((_command, args) => {
+      if (args.includes('up')) {
+        return {
+          success: false,
+          output: '',
+          error: 'service "ollama-pull" didn\'t complete successfully: exit 1',
+        };
+      }
+      if (args.includes('logs')) return ok('Error: pull model manifest: file does not exist');
+      return ok();
+    });
+
+    const result = await new DockerProvider({ startupCheckMs: 0 }).deploy(
+      {
+        kind: 'worker',
+        image: 'bot',
+        services: { ollama: true },
+        ollama: { models: ['qwen9:nope'] },
+      },
+      artifacts,
+      dir
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('ollama-pull');
+    expect(result.error).toContain('pull model manifest: file does not exist');
+    const logs = runMock.mock.calls.find(([, args]) => args.includes('logs'))?.[1];
+    expect(logs?.slice(-4)).toEqual(['--no-color', '--tail', '30', 'ollama-pull']);
+  });
+
+  it('reads no pull logs for a stack without models to pull', async () => {
+    runMock.mockImplementation((_command, args) =>
+      args.includes('up')
+        ? { success: false, output: '', error: 'port is already allocated' }
+        : ok()
+    );
+
+    const result = await new DockerProvider({ startupCheckMs: 0 }).deploy(
+      { kind: 'worker', image: 'bot' },
+      artifacts,
+      dir
+    );
+
+    expect(result.error).toBe('docker compose up failed: port is already allocated');
+    expect(runMock.mock.calls.some(([, args]) => args.includes('logs'))).toBe(false);
+  });
+});
+
 describe('FlyProvider.deploy', () => {
   function flyCalls(): (readonly string[])[] {
     return runMock.mock.calls.map(([, args]) => args);

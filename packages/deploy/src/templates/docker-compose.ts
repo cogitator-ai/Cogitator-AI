@@ -1,5 +1,4 @@
 import type { DeployConfig } from '@cogitator-ai/types';
-import { PROVIDER_ENV, providerEnvNames } from '@cogitator-ai/config';
 import { volumeMountPath, volumeName } from '../volumes.js';
 import { servesHttp } from './health.js';
 import { trimTrailing } from '../utils/text.js';
@@ -8,15 +7,15 @@ export const COMPOSE_DATABASE_URL = 'postgresql://cogitator:cogitator@postgres:5
 export const COMPOSE_REDIS_URL = 'redis://redis:6379';
 export const COMPOSE_OLLAMA_URL = 'http://ollama:11434';
 /** The Ollama release the `ollama` service runs unless `ollama.image` names another. */
-export const OLLAMA_IMAGE = 'ollama/ollama:0.40.0';
+export const OLLAMA_IMAGE = 'ollama/ollama:0.40.10';
 
 /**
  * Pulls each model it gets as an argument unless the volume has it already, so a
- * restart without network still starts. The models are arguments, never part of
- * the script, and `$$` is a literal `$` for docker compose.
+ * restart without network still starts. The models are arguments after `--`, never
+ * part of the script or read as flags, and `$$` is a literal `$` for docker compose.
  */
 const OLLAMA_PULL_SCRIPT =
-  'for model in "$$@"; do ollama show "$$model" > /dev/null 2>&1 || ollama pull "$$model" || exit 1; done';
+  'for model in "$$@"; do ollama show -- "$$model" > /dev/null 2>&1 || ollama pull -- "$$model" || exit 1; done';
 
 function yamlString(value: string): string {
   return JSON.stringify(value);
@@ -31,14 +30,11 @@ function yamlList(items: readonly string[]): string {
   return `[${items.map(yamlString).join(', ')}]`;
 }
 
-/** Variables the app reads the Ollama URL from, every name `loadConfig` and the Ollama SDK look at. */
-function ollamaUrlEnvNames(): string[] {
-  return PROVIDER_ENV.ollama
-    .filter((setting) => setting.field === 'baseUrl')
-    .flatMap((setting) => providerEnvNames(setting));
-}
-
-/** The models the `ollama` service pulls before the app starts, undefined when the deployment runs no Ollama. */
+/**
+ * The models the `ollama` service pulls before the app starts, undefined when the
+ * deployment runs no Ollama. Which variables point the app at the service is the
+ * analyzer's call (`env`), since it knows which roles of the config run there.
+ */
 function ollamaModels(config: DeployConfig): string[] | undefined {
   return config.services?.ollama ? [...new Set(config.ollama?.models ?? [])] : undefined;
 }
@@ -104,13 +100,6 @@ export function generateDockerCompose(config: DeployConfig): string {
   const serviceUrls = new Map<string, string>();
   if (config.services?.redis) serviceUrls.set('REDIS_URL', COMPOSE_REDIS_URL);
   if (config.services?.postgres) serviceUrls.set('DATABASE_URL', COMPOSE_DATABASE_URL);
-  if (models) {
-    const names = ollamaUrlEnvNames();
-    const explicit = names.some(
-      (name) => name in (config.env ?? {}) || (config.secrets ?? []).includes(name)
-    );
-    if (!explicit) for (const name of names) serviceUrls.set(name, COMPOSE_OLLAMA_URL);
-  }
 
   const environment = new Map<string, string>([['NODE_ENV', yamlString('production')]]);
   if (http) environment.set('PORT', yamlString(String(port)));

@@ -90,13 +90,13 @@ export function planProject(input: unknown, options: PlanOptions = {}): ProjectP
   emitYarnrc(project);
   emitGitignore(project);
   emitAgentsMd(project);
-  emitReadme(project);
   adaptImportsForBundler(project);
   emitPackageJson(project, {
     packageManagerSpec: options.packageManagerSpec,
     cogitator: { ...manifest },
   });
   emitDeployArtifacts(project);
+  emitReadme(project);
 
   const files = [...project.files.values()].sort((a, b) => a.path.localeCompare(b.path));
   return {

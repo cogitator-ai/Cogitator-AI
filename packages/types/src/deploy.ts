@@ -88,6 +88,7 @@ export interface DeployConfig {
 
 const FLY_APP_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const FLY_ORG_SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const OLLAMA_MODEL_NAME = /^[A-Za-z0-9][\w.:/@+-]*$/;
 
 /**
  * Whether `name` is a valid Fly.io app name: lowercase letters, digits and dashes,
@@ -141,4 +142,12 @@ export interface DeployStatus {
   url?: string;
   instances?: number;
   uptime?: string;
+}
+
+/**
+ * Whether `name` can be handed to `ollama pull`: a model such as `llama3.2`, `qwen3:8b`
+ * or `hf.co/user/repo:Q4_K_M`, starting with a letter or digit, so it never reads as a flag.
+ */
+export function isOllamaModelName(name: string): boolean {
+  return OLLAMA_MODEL_NAME.test(name);
 }
