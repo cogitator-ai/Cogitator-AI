@@ -49,7 +49,7 @@
     "koa": "^3.2.1",
     "openai": "^7.25.0",
     "grammy": "^1.46.0",
-    "zod": "^4.6.5",
+    "zod": "^4.6.6",
     "ws": "^8.22.0",
     "@cogitator-ai/types": "workspace:*"
   },
