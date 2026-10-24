@@ -1,9 +1,109 @@
-import { describe, it, expect } from 'vitest';
-import { formatSize, formatDate } from '../commands/models.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+const { resolveOllamaConnection, resolveOllamaUrl, listOllamaModels, pullOllamaModel } = vi.hoisted(
+  () => ({
+    resolveOllamaConnection: vi.fn(),
+    resolveOllamaUrl: vi.fn(),
+    listOllamaModels: vi.fn(),
+    pullOllamaModel: vi.fn(),
+  })
+);
+
+vi.mock('../utils/ollama.js', () => ({
+  resolveOllamaConnection,
+  resolveOllamaUrl,
+  listOllamaModels,
+  pullOllamaModel,
+}));
+
+import { log } from '../utils/logger.js';
+import { formatSize, formatDate, modelsCommand } from '../commands/models.js';
 
 const DAY = 1000 * 60 * 60 * 24;
 const NOW = new Date('2026-10-02T12:00:00Z');
 const ago = (days: number) => new Date(NOW.getTime() - days * DAY).toISOString();
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  resolveOllamaConnection.mockReturnValue({ baseUrl: 'http://localhost:11434' });
+  resolveOllamaUrl.mockReturnValue('http://localhost:11434');
+  listOllamaModels.mockResolvedValue([]);
+  pullOllamaModel.mockResolvedValue(undefined);
+  vi.spyOn(log, 'warn').mockImplementation(() => {});
+  vi.spyOn(log, 'dim').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+});
+
+describe('modelsCommand', () => {
+  it('forwards configured Ollama credentials when listing models', async () => {
+    const headers = { 'X-Gateway-Key': 'secret' };
+    resolveOllamaConnection.mockReturnValue({
+      baseUrl: 'http://localhost:11434',
+      apiKey: 'config-key',
+      headers,
+    });
+
+    await modelsCommand.parseAsync(['--json'], { from: 'user' });
+
+    expect(listOllamaModels).toHaveBeenCalledWith('http://localhost:11434', {
+      apiKey: 'config-key',
+      headers,
+    });
+  });
+
+  it('forwards configured Ollama credentials when pulling a model', async () => {
+    const headers = { 'X-Gateway-Key': 'secret' };
+    resolveOllamaConnection.mockReturnValue({
+      baseUrl: 'http://localhost:11434',
+      apiKey: 'config-key',
+      headers,
+    });
+
+    await modelsCommand.parseAsync(['--pull', 'qwen3:8b', '--json'], { from: 'user' });
+
+    expect(pullOllamaModel).toHaveBeenCalledWith(
+      'http://localhost:11434',
+      'qwen3:8b',
+      expect.any(Function),
+      { apiKey: 'config-key', headers }
+    );
+  });
+
+  it('passes an explicit --url to the shared config helper', async () => {
+    resolveOllamaConnection.mockReturnValue({ baseUrl: 'http://other.example' });
+
+    await modelsCommand.parseAsync(['--url', 'http://other.example', '--json'], { from: 'user' });
+
+    expect(resolveOllamaConnection).toHaveBeenCalledWith({ url: 'http://other.example' });
+    expect(listOllamaModels).toHaveBeenCalledWith(
+      'http://other.example',
+      expect.objectContaining({})
+    );
+  });
+
+  it('warns and falls back to the environment when the config cannot be read', async () => {
+    resolveOllamaConnection.mockImplementation(() => {
+      throw new Error('COGITATOR_CONFIG points to a missing file: missing.yml');
+    });
+    resolveOllamaUrl.mockReturnValue('http://env.example');
+    vi.stubEnv('OLLAMA_API_KEY', 'env-key');
+
+    await modelsCommand.parseAsync(['--json'], { from: 'user' });
+
+    expect(resolveOllamaUrl).toHaveBeenCalledWith(process.env, undefined);
+    expect(listOllamaModels).toHaveBeenCalledWith('http://env.example', {
+      apiKey: 'env-key',
+      headers: undefined,
+    });
+    expect(vi.mocked(log.warn)).toHaveBeenCalledWith(
+      expect.stringContaining('COGITATOR_CONFIG points to a missing file')
+    );
+  });
+});
 
 describe('formatSize', () => {
   it('formats bytes less than 1 GB as MB', () => {

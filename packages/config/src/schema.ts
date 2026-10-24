@@ -261,6 +261,7 @@ export const EmbeddingConfigSchema = z.discriminatedUnion('provider', [
     model: z.string().optional(),
     baseUrl: z.string().optional(),
     dimensions: EmbeddingDimensionsSchema.optional(),
+    headers: ProviderHeadersSchema.optional(),
   }),
   z.object({
     provider: z.literal('google'),

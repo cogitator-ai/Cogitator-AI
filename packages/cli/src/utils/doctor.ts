@@ -269,7 +269,11 @@ async function modelCheck(
     const baseUrl = resolveOllamaUrl(env, config?.llm?.providers?.ollama?.baseUrl);
     let models;
     try {
-      models = await listOllamaModels(baseUrl, { apiKey: env.OLLAMA_API_KEY, timeoutMs: 3000 });
+      models = await listOllamaModels(baseUrl, {
+        apiKey: config?.llm?.providers?.ollama?.apiKey ?? env.OLLAMA_API_KEY,
+        headers: config?.llm?.providers?.ollama?.headers,
+        timeoutMs: 3000,
+      });
     } catch {
       return {
         id: 'model',

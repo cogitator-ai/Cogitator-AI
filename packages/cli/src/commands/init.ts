@@ -229,10 +229,19 @@ async function collectAnswers(nameArg?: string): Promise<InitAnswers> {
 
   const spinner = p.spinner();
   spinner.start('Fetching available models...');
-  const modelOptions =
-    provider === 'ollama'
-      ? await fetchOllamaModelOptions(resolveOllamaUrl(), process.env.OLLAMA_API_KEY)
-      : await fetchProviderModels(provider);
+  let modelOptions;
+  if (provider === 'ollama') {
+    /*
+     * The environment only: a cogitator.yml in the directory init runs in is
+     * another project's and never decides which server init lists models from.
+     */
+    modelOptions = await fetchOllamaModelOptions(
+      resolveOllamaUrl(process.env),
+      process.env.OLLAMA_API_KEY
+    );
+  } else {
+    modelOptions = await fetchProviderModels(provider);
+  }
   spinner.stop(`Found ${modelOptions.length} models`);
 
   const model = answer(await p.select({ message: 'Default model', options: modelOptions }));

@@ -303,7 +303,7 @@ cogitator models --url http://gpu-box:11434
 cogitator models --json                # name, size and date of each model
 ```
 
-The Ollama URL defaults to `OLLAMA_BASE_URL`, then `OLLAMA_URL`, then `OLLAMA_HOST` (read like Ollama reads it: port 11434 when none is given, `0.0.0.0` as `localhost`), then `http://localhost:11434`, `OLLAMA_API_KEY` is sent as a bearer token. Pull errors reported by Ollama (e.g. unknown model) fail the command.
+The Ollama URL is chosen in this order: an explicit `--url`, the configured `llm.providers.ollama.baseUrl`, `OLLAMA_BASE_URL` (then the `OLLAMA_URL` and `OLLAMA_HOST` aliases Ollama itself reads, port 11434 when none is given and `0.0.0.0` as `localhost`), and finally `http://localhost:11434`. An explicit `--url` uses that server's own connection, so the configured server's `apiKey` and `headers` are never sent to it. `OLLAMA_API_KEY` is sent as a bearer token. Custom headers in `llm.providers.ollama.headers` are sent with model discovery, pulls, `run` model detection, `doctor` and `status` probes, `Content-Type` and the API key's `Authorization` take precedence. Pull errors reported by Ollama (e.g. unknown model) fail the command.
 
 ---
 

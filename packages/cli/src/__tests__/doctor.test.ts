@@ -22,6 +22,7 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   await Promise.all(servers.splice(0).map((server) => new Promise((r) => server.close(r))));
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 
 async function project(spec: Partial<ProjectSpecInput> = {}): Promise<string> {
@@ -144,6 +145,52 @@ describe('runDoctor', () => {
     const model = checks.find((c) => c.id === 'model');
     expect(model?.status).toBe('fail');
     expect(model?.fix).toContain('platform.openai.com');
+  });
+
+  it('sends configured Ollama headers and lets the config apiKey replace custom authorization', async () => {
+    const dir = await project({ provider: 'ollama', model: 'llama3.2' });
+    for (const name of [
+      '@cogitator-ai/core',
+      '@cogitator-ai/config',
+      '@cogitator-ai/cli',
+      '@cogitator-ai/test-utils',
+    ]) {
+      installFake(dir, name, '1.0.0');
+    }
+    writeFileSync(
+      join(dir, 'cogitator.yml'),
+      [
+        'llm:',
+        '  defaultModel: ollama/llama3.2',
+        '  providers:',
+        '    ollama:',
+        '      baseUrl: http://ollama.example',
+        '      apiKey: config-key',
+        '      headers:',
+        '        X-Gateway-Key: secret',
+        '        authorization: Bearer custom',
+        '',
+      ].join('\n')
+    );
+    const fetchMock = vi.fn(async () =>
+      Response.json({ models: [{ name: 'llama3.2:latest', size: 1, modified_at: '' }] })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const checks = await runDoctor({
+      projectDir: dir,
+      env: { OLLAMA_API_KEY: 'env-key' },
+      nodeVersion: 'v24.1.0',
+      probe: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://ollama.example/api/tags',
+      expect.objectContaining({
+        headers: { 'X-Gateway-Key': 'secret', Authorization: 'Bearer config-key' },
+      })
+    );
+    expect(checks.find((c) => c.id === 'model')).toMatchObject({ status: 'pass' });
   });
 
   it('checks that the memory service answers', async () => {

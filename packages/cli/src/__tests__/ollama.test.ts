@@ -84,6 +84,35 @@ describe('listOllamaModels', () => {
     );
   });
 
+  it('sends custom headers and lets the API key replace their authorization', async () => {
+    const fetchMock = vi.fn(async () => Response.json({ models: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+    await listOllamaModels('http://h:1', {
+      apiKey: 'k',
+      headers: { 'X-Gateway-Key': 'secret', authorization: 'Bearer custom' },
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://h:1/api/tags',
+      expect.objectContaining({
+        headers: { 'X-Gateway-Key': 'secret', Authorization: 'Bearer k' },
+      })
+    );
+  });
+
+  it('keeps a custom authorization when there is no API key', async () => {
+    const fetchMock = vi.fn(async () => Response.json({ models: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+    await listOllamaModels('http://h:1', {
+      headers: { authorization: 'Bearer custom' },
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://h:1/api/tags',
+      expect.objectContaining({ headers: { authorization: 'Bearer custom' } })
+    );
+  });
+
   it('throws on HTTP errors and malformed payloads', async () => {
     vi.stubGlobal(
       'fetch',
@@ -152,5 +181,27 @@ describe('pullOllamaModel', () => {
     await pullOllamaModel('http://h:1', 'qwen2.5:0.5b', () => {});
     const init = fetchMock.mock.calls[0]?.[1];
     expect(JSON.parse(String(init?.body))).toEqual({ model: 'qwen2.5:0.5b', stream: true });
+  });
+
+  it('sends custom headers, keeping the JSON content type and the API key authorization', async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init?: RequestInit) => new Response(streamOf(['{"status":"success"}']))
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    await pullOllamaModel('http://h:1', 'm', () => {}, {
+      apiKey: 'k',
+      headers: {
+        'X-Gateway-Key': 'secret',
+        'content-type': 'text/plain',
+        authorization: 'Bearer custom',
+      },
+    });
+
+    const init = fetchMock.mock.calls[0]?.[1];
+    expect(init?.headers).toEqual({
+      'X-Gateway-Key': 'secret',
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer k',
+    });
   });
 });
