@@ -43,7 +43,7 @@
   },
   "dependencies": {
     "@cogitator-ai/types": "workspace:*",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "optionalDependencies": {
     "@extism/extism": "^2.0.0-rc13",
