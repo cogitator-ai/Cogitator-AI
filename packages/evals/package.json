@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/evals",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "Evaluation framework for Cogitator AI agents",
   "keywords": [
     "cogitator",
@@ -52,7 +52,7 @@
     "zod": "^4.6.5"
   },
   "peerDependencies": {
-    "@cogitator-ai/core": "workspace:>=0.63.1",
+    "@cogitator-ai/core": "workspace:>=0.64.0",
     "vitest": ">=3.0.0"
   },
   "peerDependenciesMeta": {

@@ -1,5 +1,12 @@
 # @cogitator-ai/memory
 
+## 0.26.3
+
+### Patch Changes
+
+- Updated dependencies [[`2da3c07`](https://github.com/cogitator-ai/Cogitator-AI/commit/2da3c07a7409c6785d3dfdac276fa94f5ed8f9f8)]:
+  - @cogitator-ai/types@0.74.0
+
 ## 0.26.2
 
 ### Patch Changes
