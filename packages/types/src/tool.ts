@@ -30,11 +30,11 @@ export interface ToolConfig<TParams = unknown, TResult = unknown, TDeps = unknow
   tags?: string[];
   parameters: ZodType<TParams>;
   /**
-   * Schema of the tool's result. Nothing checks it in a run, it describes the result: an MCP
-   * server advertises it and returns the result as `structuredContent`, tools imported from an
-   * MCP server get the server's output schema here
+   * Schema of the tool's result, the `content` of a `toolOutput()` result. Nothing checks it in a
+   * run, it describes what the model reads: an MCP server advertises it and returns that as
+   * `structuredContent`, tools imported from an MCP server get the server's output schema here
    */
-  outputSchema?: ZodType<TResult>;
+  outputSchema?: ZodType<ToolOutputContent<TResult>>;
   /** How the tool behaves, as MCP tool annotations describe it */
   annotations?: ToolAnnotations;
   /**
@@ -109,11 +109,11 @@ export interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
   tags?: string[];
   parameters: ZodType<TParams>;
   /**
-   * Schema of the tool's result. Nothing checks it in a run, it describes the result: an MCP
-   * server advertises it and returns the result as `structuredContent`, tools imported from an
-   * MCP server get the server's output schema here
+   * Schema of the tool's result, the `content` of a `toolOutput()` result. Nothing checks it in a
+   * run, it describes what the model reads: an MCP server advertises it and returns that as
+   * `structuredContent`, tools imported from an MCP server get the server's output schema here
    */
-  outputSchema?: ZodType<TResult>;
+  outputSchema?: ZodType<ToolOutputContent<TResult>>;
   /** How the tool behaves, as MCP tool annotations describe it */
   annotations?: ToolAnnotations;
   execute(params: TParams, context: BaseToolContext<TDeps>): Promise<TResult>;
@@ -141,14 +141,14 @@ export interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
    */
   deferred?: boolean;
   /** Whether a call may run beside other safe calls of its step, see `ToolConfig.isConcurrencySafe` */
-  isConcurrencySafe?: boolean | ToolCallCheck;
+  isConcurrencySafe?: boolean | ToolCallCheck<TParams>;
   /** Keys of what a call changes, see `ToolConfig.lockKeys` */
   lockKeys?(
     params: TParams,
     context: BaseToolContext<TDeps>
   ): readonly string[] | Promise<readonly string[]>;
   /** How clients show a call of the tool, see `ToolConfig.presentation` */
-  presentation?: ToolPresentation | ToolPresenter;
+  presentation?: ToolPresentation | ToolPresenter<TParams>;
   onInputStart?(event: ToolInputStart): void;
   onInputDelta?(event: ToolInputDelta): void;
   onInputAvailable?(event: ToolInputAvailable): void;
@@ -183,11 +183,22 @@ export interface ToolAnnotations {
 
 export type ApprovalCheck = (params: Record<string, unknown>) => boolean;
 
-/** A check of a call's arguments, as the model sent them */
-export type ToolCallCheck = (params: Record<string, unknown>) => boolean;
+/**
+ * What the model reads of a tool's result `TResult`: the `content` of a `toolOutput()` result,
+ * any other result as it is. A tool's `outputSchema` describes this
+ */
+export type ToolOutputContent<TResult> =
+  TResult extends ToolOutputResult<infer TContent, unknown> ? TContent : TResult;
 
-/** The presentation of a call, from its arguments as the model sent them */
-export type ToolPresenter = (params: Record<string, unknown>) => ToolPresentation;
+/** A check of a call's arguments, as the tool's schema read them */
+export type ToolCallCheck<TParams = unknown> = {
+  check(params: TParams): boolean;
+}['check'];
+
+/** The presentation of a call, from its arguments as the tool's schema read them */
+export type ToolPresenter<TParams = unknown> = {
+  present(params: TParams): ToolPresentation;
+}['present'];
 
 /**
  * How a client shows a tool call in a list of steps, without the tool's code: a label, an icon

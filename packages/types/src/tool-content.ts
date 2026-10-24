@@ -6,6 +6,7 @@
 import type {
   ToolContentPart,
   ToolContentResult,
+  ToolOutputContent,
   ToolOutputResult,
   ToolResourcePart,
 } from './tool';
@@ -30,8 +31,8 @@ export function isToolOutputResult(value: unknown): value is ToolOutputResult {
  * What the model reads of a tool's result: the `content` of a `toolOutput()` result, any other
  * result as it is.
  */
-export function toolOutputContent(value: unknown): unknown {
-  return isToolOutputResult(value) ? value.content : value;
+export function toolOutputContent<T>(value: T): ToolOutputContent<T> {
+  return (isToolOutputResult(value) ? value.content : value) as ToolOutputContent<T>;
 }
 
 function isToolContentPart(value: unknown): value is ToolContentPart {

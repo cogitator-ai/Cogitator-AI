@@ -1,10 +1,14 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
+import type { ZodType } from 'zod';
 import type {
   ChatStreamChunk,
+  Tool,
+  ToolOutputContent,
+  ToolOutputResult,
   RunMiddleware,
   ToolInputAbandoned,
   ToolInputAvailable,
@@ -13,6 +17,8 @@ import { ErrorCode } from '@cogitator-ai/types';
 import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { tool } from '../tool';
+import { toolOutput } from '../tool-content';
+import { isConcurrencySafe } from '../cogitator/tool-executor';
 import { StepGate } from '../cogitator/tool-locks';
 import { streamChatRequest } from '../cogitator/streaming';
 import { workspaceTools } from '../tools/workspace-tools';
@@ -237,6 +243,143 @@ describe('a tool that reports after its run stopped', () => {
     await expect(run).rejects.toThrow('stop');
     report?.();
     expect(updates).toEqual(['still here']);
+    await cog.close();
+  });
+});
+
+describe('a schema that turns the arguments into another value', () => {
+  const files = tool({
+    name: 'files',
+    description: 'Reads or writes',
+    parameters: z
+      .object({ mode: z.enum(['read', 'write']) })
+      .transform((args) => args.mode === 'read'),
+    isConcurrencySafe: (readOnly) => {
+      expectTypeOf(readOnly).toEqualTypeOf<boolean>();
+      return readOnly;
+    },
+    presentation: (readOnly) => ({ label: readOnly ? 'Read' : 'Write' }),
+    execute: async (readOnly) => (readOnly ? 'read' : 'written'),
+  });
+
+  it('hands the safety check and the presentation the value the schema made', async () => {
+    expect(isConcurrencySafe(files, { mode: 'read' })).toBe(true);
+    expect(isConcurrencySafe(files, { mode: 'write' })).toBe(false);
+    const cog = new Cogitator();
+    expect(await cog.invokeTool(files, { mode: 'write' })).toMatchObject({
+      result: 'written',
+      presentation: { label: 'Write' },
+    });
+    await cog.close();
+  });
+});
+
+describe('an outputSchema and a toolOutput result', () => {
+  it('type the schema by the content the model reads', () => {
+    const edit = tool({
+      name: 'edit',
+      description: 'Edits',
+      parameters: z.object({}),
+      outputSchema: z.object({ replacements: z.number() }),
+      execute: async () =>
+        toolOutput({ content: { replacements: 1 }, details: { diff: '-a\n+b' } }),
+    });
+    expectTypeOf(edit.outputSchema).toEqualTypeOf<ZodType<{ replacements: number }> | undefined>();
+    expectTypeOf<Awaited<ReturnType<typeof edit.execute>>>().toEqualTypeOf<
+      ToolOutputResult<{ replacements: number }, { diff: string }>
+    >();
+    expectTypeOf<
+      ToolOutputContent<ToolOutputResult<{ n: number }, { d: string }>>
+    >().toEqualTypeOf<{ n: number }>();
+    expectTypeOf<ToolOutputContent<string>>().toEqualTypeOf<string>();
+    const own = tool({
+      name: 'own',
+      description: 'Returns an object with a content field of its own',
+      parameters: z.object({}),
+      execute: async () => ({ content: 'hello' }),
+    });
+    expectTypeOf(own).toEqualTypeOf<Tool<Record<string, never>, { content: string }>>();
+    expect(edit.outputSchema?.safeParse({ replacements: 1 }).success).toBe(true);
+  });
+});
+
+describe('a call aborted while it works out its lock keys', () => {
+  it('never runs, also when it turns out to need no key', async () => {
+    const keysAsked = deferred();
+    const keysGiven = deferred();
+    const execute = vi.fn(async () => 'ran');
+    const late = tool({
+      name: 'late',
+      description: 'Works out its keys slowly',
+      parameters: z.object({}),
+      lockKeys: async () => {
+        keysAsked.resolve();
+        await keysGiven.promise;
+        return [];
+      },
+      execute,
+    });
+    const cog = new Cogitator();
+    const controller = new AbortController();
+    const call = cog.invokeTool(late, {}, { signal: controller.signal });
+    await keysAsked.promise;
+    controller.abort(new Error('stopped'));
+    keysGiven.resolve();
+    expect(await call).toMatchObject({ error: 'stopped' });
+    expect(execute).not.toHaveBeenCalled();
+    await cog.close();
+  });
+});
+
+describe('code a tool left running after it let its keys go', () => {
+  it('waits for the keys like any other call', async () => {
+    const cog = new Cogitator();
+    const log: string[] = [];
+    const later = deferred();
+    const holderGate = deferred();
+    let leftBehind: Promise<unknown> | undefined;
+    const inner = tool({
+      name: 'inner',
+      description: 'Writes K',
+      parameters: z.object({}),
+      lockKeys: () => ['K'],
+      execute: async () => {
+        log.push('inner');
+        return 'inner';
+      },
+    });
+    const outer = tool({
+      name: 'outer',
+      description: 'Writes K and leaves work behind',
+      parameters: z.object({}),
+      lockKeys: () => ['K'],
+      execute: async () => {
+        leftBehind = later.promise.then(() => cog.invokeTool(inner, {}));
+        return 'outer';
+      },
+    });
+    const holder = tool({
+      name: 'holder',
+      description: 'Holds K',
+      parameters: z.object({}),
+      lockKeys: () => ['K'],
+      execute: async () => {
+        log.push('holder start');
+        await holderGate.promise;
+        log.push('holder end');
+        return 'holder';
+      },
+    });
+    await cog.invokeTool(outer, {});
+    const holding = cog.invokeTool(holder, {});
+    await settle();
+    later.resolve();
+    await settle();
+    expect(log).toEqual(['holder start']);
+    holderGate.resolve();
+    await holding;
+    await leftBehind;
+    expect(log).toEqual(['holder start', 'holder end', 'inner']);
     await cog.close();
   });
 });

@@ -2,9 +2,7 @@ import type {
   ApprovalCheck,
   BaseToolContext,
   Tool,
-  ToolCallCheck,
   ToolConfig,
-  ToolPresenter,
   ToolSchema,
 } from '@cogitator-ai/types';
 import { z, type ZodType } from 'zod';
@@ -106,24 +104,14 @@ export function tool<TParams, TResult, TDeps = unknown>(
     maxResultLength: config.maxResultLength,
     ...(config.providerTypes && { providerTypes: config.providerTypes }),
     ...(config.deferred && { deferred: true }),
-    ...(config.isConcurrencySafe !== undefined && {
-      isConcurrencySafe:
-        typeof config.isConcurrencySafe === 'function'
-          ? (config.isConcurrencySafe as ToolCallCheck)
-          : config.isConcurrencySafe,
-    }),
+    ...(config.isConcurrencySafe !== undefined && { isConcurrencySafe: config.isConcurrencySafe }),
     ...(config.lockKeys && {
       lockKeys: config.lockKeys as (
         params: TParams,
         context: BaseToolContext<TDeps>
       ) => readonly string[] | Promise<readonly string[]>,
     }),
-    ...(config.presentation !== undefined && {
-      presentation:
-        typeof config.presentation === 'function'
-          ? (config.presentation as ToolPresenter)
-          : config.presentation,
-    }),
+    ...(config.presentation !== undefined && { presentation: config.presentation }),
     ...(config.onInputStart && { onInputStart: config.onInputStart }),
     ...(config.onInputDelta && { onInputDelta: config.onInputDelta }),
     ...(config.onInputAvailable && { onInputAvailable: config.onInputAvailable }),

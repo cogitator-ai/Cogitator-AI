@@ -4,10 +4,26 @@ import { toAbortError } from '../utils/abort';
 
 /**
  * Who holds or waits for lock keys: a tool call, inside the call that started it when a tool
- * runs another agent or `invokeTool()`
+ * runs another agent or `invokeTool()`. It knows the keys it holds right now, so code it left
+ * behind (a timer that fires after the tool returned) takes them again only while it holds them
  */
-export interface LockOwner {
-  readonly parent?: LockOwner;
+export class LockOwner {
+  private readonly keys = new Set<string>();
+
+  constructor(readonly parent?: LockOwner) {}
+
+  /** The keys this call holds now */
+  get holding(): ReadonlySet<string> {
+    return this.keys;
+  }
+
+  hold(keys: readonly string[]): void {
+    for (const key of keys) this.keys.add(key);
+  }
+
+  letGo(): void {
+    this.keys.clear();
+  }
 }
 
 /** A call that would wait on calls that wait on it, through its own keys: it fails at once */
@@ -49,7 +65,7 @@ export class KeyedLock {
   async acquire(
     keys: readonly string[],
     signal?: AbortSignal,
-    owner: LockOwner = {}
+    owner: LockOwner = new LockOwner()
   ): Promise<() => void> {
     const unique = [...new Set(keys)];
     let grant!: () => void;
@@ -143,31 +159,28 @@ function runsInside(owner: LockOwner, outer: LockOwner): boolean {
 /** The locks tool calls of every run of the process share: a file is one, whoever writes it */
 export const toolLocks = new KeyedLock();
 
-interface HeldLocks {
-  readonly keys: ReadonlySet<string>;
-  readonly owner?: LockOwner;
-}
-
-const held = new AsyncLocalStorage<HeldLocks>();
-const NONE: ReadonlySet<string> = new Set();
+const inside = new AsyncLocalStorage<LockOwner>();
 
 /**
- * The lock keys the tool calls this code runs inside hold: a run started from a tool, and its own
- * tool calls, run inside the call that started it. Such a call takes again a key its caller holds
- * without waiting, else it would wait for the call that waits for it.
+ * The lock keys the tool calls this code runs inside hold now: a run started from a tool, and its
+ * own tool calls, run inside the call that started it. Such a call takes again a key its caller
+ * holds without waiting, else it would wait for the call that waits for it. A key the caller let
+ * go no longer counts, also for code it left running
  */
 export function heldLockKeys(): ReadonlySet<string> {
-  return held.getStore()?.keys ?? NONE;
+  const keys = new Set<string>();
+  for (let at = inside.getStore(); at; at = at.parent) for (const key of at.holding) keys.add(key);
+  return keys;
 }
 
 /** The call this code runs inside, as a {@link LockOwner}, if any */
 export function currentLockOwner(): LockOwner | undefined {
-  return held.getStore()?.owner;
+  return inside.getStore();
 }
 
-/** Runs `run` as code inside the tool call `owner` that holds `keys`, on top of the keys held already */
-export function holdingLockKeys<T>(owner: LockOwner, keys: readonly string[], run: () => T): T {
-  return held.run({ keys: new Set([...heldLockKeys(), ...keys]), owner }, run);
+/** Runs `run` as code inside the tool call `owner` */
+export function insideLockOwner<T>(owner: LockOwner, run: () => T): T {
+  return inside.run(owner, run);
 }
 
 /**

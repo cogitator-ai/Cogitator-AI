@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { z } from 'zod';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { Cogitator, tool } from '@cogitator-ai/core';
+import { Cogitator, tool, toolOutput } from '@cogitator-ai/core';
 import type { Tool } from '@cogitator-ai/types';
 import { MCPServer } from '../server/mcp-server';
 import { MCPClient, MCPToolError } from '../client/mcp-client';
@@ -180,7 +180,7 @@ describe('output schemas MCP cannot carry', () => {
     description: 'Scores by player',
     parameters: z.object({}),
     outputSchema: z.record(z.string(), z.number()),
-    execute: async () => ({ ann: 3 }),
+    execute: async (): Promise<Record<string, number>> => ({ ann: 3 }),
   });
 
   it('cogitatorToMCP leaves out a record output schema, as MCPServer does', () => {
@@ -252,6 +252,14 @@ describe('MCPServer tool metadata over HTTP', () => {
       execute: async () => ({ n: '5' }),
     }) as Tool,
     tool({
+      name: 'edit_notes',
+      description: 'Edit the notes',
+      parameters: z.object({}),
+      outputSchema: z.object({ replacements: z.number() }),
+      execute: async () =>
+        toolOutput({ content: { replacements: 2 }, details: { diff: 'secret diff' } }),
+    }) as Tool,
+    tool({
       name: 'count',
       description: 'Count things',
       parameters: z.object({}),
@@ -313,6 +321,20 @@ describe('MCPServer tool metadata over HTTP', () => {
       celsius: 21,
       city: 'Oslo',
     });
+  });
+
+  it('checks and sends the content of a toolOutput result, never its details', async () => {
+    const raw = new Client({ name: 'raw', version: '1.0.0' });
+    await raw.connect(new StreamableHTTPClientTransport(new URL(url)));
+    try {
+      await raw.listTools();
+      const result = await raw.callTool({ name: 'edit_notes', arguments: {} });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toEqual({ replacements: 2 });
+      expect(JSON.stringify(result)).not.toContain('secret diff');
+    } finally {
+      await raw.close();
+    }
   });
 
   it('sends the result as the output schema parses it, so SDK clients accept it', async () => {

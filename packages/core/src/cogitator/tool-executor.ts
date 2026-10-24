@@ -23,10 +23,10 @@ import { createLinkedAbortController, toAbortError } from '../utils/abort';
 import {
   currentLockOwner,
   heldLockKeys,
-  holdingLockKeys,
+  insideLockOwner,
   LockCycleError,
+  LockOwner,
   toolLocks,
-  type LockOwner,
   type StepGate,
 } from './tool-locks';
 import { guardrailsMiddleware } from '../middleware/builtins';
@@ -146,8 +146,8 @@ export function isConcurrencySafe(tool: Tool, args: Record<string, unknown>): bo
   return safeWith(tool, parsedArguments(tool, args));
 }
 
-/** {@link isConcurrencySafe} for arguments the tool's schema already read */
-function safeWith(tool: Tool, parsed: Record<string, unknown>): boolean {
+/** {@link isConcurrencySafe} for arguments the tool's schema already read, whatever their shape */
+function safeWith(tool: Tool, parsed: unknown): boolean {
   const declared = tool.isConcurrencySafe ?? tool.annotations?.readOnlyHint === true;
   if (typeof declared !== 'function') return declared;
   try {
@@ -158,7 +158,7 @@ function safeWith(tool: Tool, parsed: Record<string, unknown>): boolean {
 }
 
 /** How a client shows a call of `tool` with the arguments its schema read, from its `presentation` */
-function presentationOf(tool: Tool, parsed: Record<string, unknown>): ToolPresentation | undefined {
+function presentationOf(tool: Tool, parsed: unknown): ToolPresentation | undefined {
   const declared = tool.presentation;
   if (typeof declared !== 'function') return declared;
   try {
@@ -172,14 +172,11 @@ function presentationOf(tool: Tool, parsed: Record<string, unknown>): ToolPresen
   }
 }
 
-function parsedArguments(tool: Tool, args: Record<string, unknown>): Record<string, unknown> {
+/** The arguments as the tool's schema reads them, transforms applied, or as sent when it refuses them */
+function parsedArguments(tool: Tool, args: Record<string, unknown>): unknown {
   if (typeof tool.parameters.safeParse !== 'function') return args;
   const parsed = tool.parameters.safeParse(args);
-  return parsed.success && isRecord(parsed.data) ? parsed.data : args;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return parsed.success ? parsed.data : args;
 }
 
 /** The arguments of `call` as its tool's Zod schema reads them, or as they are without one. */
@@ -226,8 +223,7 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
     error,
     ...(errorCode && { errorCode }),
   });
-  const owner: LockOwner = { parent: currentLockOwner() };
-  const record = isRecord(args) ? args : toolCall.arguments;
+  const owner = new LockOwner(currentLockOwner());
 
   let keys: readonly string[] = [];
   if (tool.lockKeys) {
@@ -246,21 +242,30 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
     }
   }
 
-  const releases: Array<() => void> = [];
+  const releases: Array<() => void> = [() => owner.letGo()];
   const releaseAll = () => {
     for (const release of releases.splice(0).reverse()) release();
   };
+  const abortedNow = (): ToolResult | undefined =>
+    signal?.aborted
+      ? failed(toAbortError(signal.reason, `Tool "${tool.name}" aborted`).message)
+      : undefined;
+  const abortedAfterKeys = abortedNow();
+  if (abortedAfterKeys) return abortedAfterKeys;
   try {
     if (step) {
       releases.push(
-        await (!step.alone && safeWith(tool, record)
+        await (!step.alone && safeWith(tool, args)
           ? step.gate.share(signal)
           : step.gate.exclusive(signal))
       );
     }
     const held = heldLockKeys();
     const fresh = keys.filter((key) => !held.has(key));
-    if (fresh.length > 0) releases.push(await toolLocks.acquire(fresh, signal, owner));
+    if (fresh.length > 0) {
+      releases.push(await toolLocks.acquire(fresh, signal, owner));
+      owner.hold(fresh);
+    }
   } catch (error) {
     releaseAll();
     if (error instanceof LockCycleError) return failed(error.message, error.code);
@@ -276,7 +281,12 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
     },
   };
   try {
-    const result = await holdingLockKeys(owner, keys, () =>
+    const aborted = abortedNow();
+    if (aborted) {
+      releaseAll();
+      return aborted;
+    }
+    const result = await insideLockOwner(owner, () =>
       tool.sandbox?.type === 'docker' || tool.sandbox?.type === 'wasm'
         ? executeInSandbox(
             tool,
@@ -292,7 +302,7 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
           )
         : executeNatively(tool, toolCall, args, runId, agentId, signal, extraContext, native)
     );
-    return readOutput(tool, record, result);
+    return readOutput(tool, args, result);
   } finally {
     if (running) void running.then(releaseAll, releaseAll);
     else releaseAll();
@@ -300,7 +310,7 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
 }
 
 /** `result` with a `toolOutput()` result taken apart and the call's presentation, see {@link runTool} */
-function readOutput(tool: Tool, args: Record<string, unknown>, result: ToolResult): ToolResult {
+function readOutput(tool: Tool, args: unknown, result: ToolResult): ToolResult {
   const output = isToolOutputResult(result.result) ? result.result : undefined;
   const presentation = output?.presentation ?? presentationOf(tool, args);
   if (!output && !presentation) return result;
