@@ -53,6 +53,8 @@ Calls the run answers without running the tool (an unknown tool, unreadable argu
 
 Without `parallelToolCalls` every call runs after the one before it, safe or not, as before.
 
+A `wrapToolCall` [middleware](/docs/core/middleware) may change a call's arguments before it runs. A call scheduled as safe is checked again with the arguments the middleware left: when they are not safe, the call waits for the calls of the step running beside it and runs alone, and the calls after it wait for it. `StepGate` from `@cogitator-ai/core` is that gate, for code that runs calls of its own: `share(signal)` waits for a share of the step, `exclusive(signal)` until no other call runs, each returns the function that lets go.
+
 ## Questions and Aborts
 
 A call that asks a person with [`context.interrupt()`](/docs/core/run-control#interrupts) ends the step: calls already running finish, no further call starts, and the run pauses. The calls that never started run once the answer came. So a call that depends on an answer never runs before it, also with `parallelToolCalls: true`.
@@ -85,9 +87,11 @@ A tool that is safe and has lock keys gets the best of both: writes of different
 - `lockKeys(args, context)` returns the keys, or a promise of them, and gets the same context as `execute`. A function that throws fails the call with `Could not tell what the call changes: <message>`, and the tool does not run
 - a call takes its place in the queue of every one of its keys at once, so two calls never wait on each other
 - a call whose run aborts while it waits gives up its place and fails with the abort reason
-- a tool that runs another agent (such as an [agent as tool](/docs/tools/agent-as-tool)) must not hold a key the tools of that agent take, or the two wait on each other forever
+- keys are let go only once the tool's own promise settles. A call that hit its timeout or was aborted reports that to the run at once, while the file stays locked until the tool really stopped, so a late write never meets the next one
+- keys are re-entrant along the call lineage: a call run inside a call that holds a key, such as the tool calls of an [agent as tool](/docs/tools/agent-as-tool) or a `cog.invokeTool()` started from the tool, takes that key again without waiting. A run of another process, or one started outside the tool call, still waits
+- time a call waits for its keys, or for its turn in the step, does not count toward `timeouts.toolMs` or the tool's `timeout` (see [Stage Timeouts](/docs/tools/timeouts)), the run's `totalMs` still runs
 
-`fileLockKey(path)` is `file:` and the real path of the file, every symlink followed, also for a file not written yet. Two calls that write one file through different paths or a link still go one after another.
+`fileLockKey(path)` is `file:` and the real path of the file, every symlink followed, also for a file not written yet. Two calls that write one file through different paths or a link still go one after another. The `write_file` and `edit_file` of `workspaceTools()` resolve a relative path against the workspace root, and an absolute path inside the root gets the same key as the relative one.
 
 The locks live in `toolLocks`, a `KeyedLock` the whole process shares. Code of your own can wait in the same queues, and `new KeyedLock()` gives work that should not meet the tools' locks queues of its own:
 
@@ -115,6 +119,10 @@ Locks are held per process. Runs on several machines that share files need a loc
 | `file_write`, `file_delete`                                                           | no   | the real path of the file |
 
 `restrictFileTools()` keeps `isConcurrencySafe`, `presentation` and the input hooks of the tools it wraps, and their `lockKeys` get the path it resolved against its `base`.
+
+## Resuming
+
+A run that pauses (an [approval](/docs/tools/approvals), a question) keeps how it ran its tools in `checkpoint.toolExecution` (`parallelToolCalls`, `maxParallelToolCalls`, `timeouts`), and `cog.resume()` runs the rest the same way unless its own options set them. A checkpoint saved before this has none and resumes with what the resume passes.
 
 ## Migrating from `parallelToolCalls: true`
 

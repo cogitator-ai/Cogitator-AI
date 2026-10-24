@@ -258,6 +258,7 @@ export class GoogleBackend extends BaseLLMBackend {
                     toolCallId: toolCall.id,
                     delta: JSON.stringify(toolCall.arguments),
                   },
+                  { type: 'end', toolCallId: toolCall.id },
                 ],
               },
             } as ChatStreamChunk;

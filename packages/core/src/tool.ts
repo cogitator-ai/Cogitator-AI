@@ -127,6 +127,7 @@ export function tool<TParams, TResult, TDeps = unknown>(
     ...(config.onInputStart && { onInputStart: config.onInputStart }),
     ...(config.onInputDelta && { onInputDelta: config.onInputDelta }),
     ...(config.onInputAvailable && { onInputAvailable: config.onInputAvailable }),
+    ...(config.onInputAbandoned && { onInputAbandoned: config.onInputAbandoned }),
     toJSON(): ToolSchema {
       return toolToSchema(this);
     },
@@ -147,6 +148,7 @@ export function executionFieldsOf<TParams, TResult, TDeps>(
   | 'onInputStart'
   | 'onInputDelta'
   | 'onInputAvailable'
+  | 'onInputAbandoned'
 > {
   return {
     ...(tool.isConcurrencySafe !== undefined && { isConcurrencySafe: tool.isConcurrencySafe }),
@@ -155,6 +157,7 @@ export function executionFieldsOf<TParams, TResult, TDeps>(
     ...(tool.onInputStart && { onInputStart: (event) => tool.onInputStart!(event) }),
     ...(tool.onInputDelta && { onInputDelta: (event) => tool.onInputDelta!(event) }),
     ...(tool.onInputAvailable && { onInputAvailable: (event) => tool.onInputAvailable!(event) }),
+    ...(tool.onInputAbandoned && { onInputAbandoned: (event) => tool.onInputAbandoned!(event) }),
   };
 }
 

@@ -330,6 +330,69 @@ describe('useCogitatorChat', () => {
     expect(onFinish).toHaveBeenCalledWith(expect.objectContaining({ toolCalls: [toolCall] }));
   });
 
+  it('leaves out the calls the stream drops, and passes the details of a result on', async () => {
+    installFetch((call) => {
+      call.stream.push({ type: 'start', messageId: 'a1' });
+      call.stream.push({ type: 'tool-call-start', id: 'kept', toolName: 'search' });
+      call.stream.push({ type: 'tool-call-delta', id: 'kept', argsTextDelta: '{"q":"x"}' });
+      call.stream.push({ type: 'tool-call-end', id: 'kept' });
+      call.stream.push({ type: 'tool-call-start', id: 'later', toolName: 'search' });
+      call.stream.push({ type: 'tool-call-delta', id: 'later', argsTextDelta: '{}' });
+      call.stream.push({ type: 'tool-call-end', id: 'later' });
+      call.stream.push({ type: 'tool-call-start', id: 'cut', toolName: 'search' });
+      call.stream.push({ type: 'tool-call-delta', id: 'cut', argsTextDelta: '{"q' });
+      call.stream.push({ type: 'tool-call-end', id: 'cut', dropped: true });
+      call.stream.push({
+        type: 'tool-result',
+        id: 'r0',
+        toolCallId: 'cut',
+        dropped: true,
+        reason: 'incomplete',
+      });
+      call.stream.push({
+        type: 'tool-result',
+        id: 'r1',
+        toolCallId: 'later',
+        dropped: true,
+        reason: 'discarded',
+      });
+      call.stream.push({
+        type: 'tool-result',
+        id: 'r2',
+        toolCallId: 'kept',
+        result: 1,
+        details: { rows: 3 },
+        presentation: { label: 'Search', detail: 'x' },
+      });
+      call.stream.push({ type: 'finish', messageId: 'a1' });
+      call.stream.close();
+      return undefined;
+    });
+    const onToolCall = vi.fn();
+    const onToolResult = vi.fn();
+    const onToolCallDropped = vi.fn();
+    const onFinish = vi.fn();
+    const hook = setup({ onToolCall, onToolResult, onToolCallDropped, onFinish });
+
+    await hook.result.current.send('find x');
+
+    expect(onToolCall.mock.calls.map(([call]) => call.id)).toEqual(['kept', 'later']);
+    expect(onToolCallDropped.mock.calls).toEqual([['cut'], ['later']]);
+    expect(onToolResult).toHaveBeenCalledTimes(1);
+    expect(onToolResult).toHaveBeenCalledWith({
+      id: 'r2',
+      toolCallId: 'kept',
+      result: 1,
+      details: { rows: 3 },
+      presentation: { label: 'Search', detail: 'x' },
+    });
+    expect(onFinish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCalls: [{ id: 'kept', name: 'search', arguments: { q: 'x' } }],
+      })
+    );
+  });
+
   it('aborts the in-flight request on unmount', async () => {
     const { calls } = installFetch();
     const hook = setup();

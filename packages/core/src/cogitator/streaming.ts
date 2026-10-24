@@ -16,7 +16,8 @@ import type {
 } from '@cogitator-ai/types';
 import { countMessagesTokens } from '@cogitator-ai/memory';
 import { ToolRegistry } from '../registry';
-import { normalizeTurn } from '../llm/turn';
+import { normalizeTurn, toolCallArguments } from '../llm/turn';
+import { getLogger } from '../logger';
 import type { Agent } from '../agent';
 
 export interface StreamChatResult {
@@ -118,13 +119,7 @@ export async function streamChatRequest(
   let outputTokens = 0;
   let hasUsageFromStream = false;
 
-  const inputs = new Map<string, { name: string }>();
-  const startInput = (toolCallId: string, toolName: string): boolean => {
-    if (inputs.has(toolCallId)) return false;
-    inputs.set(toolCallId, { name: toolName });
-    sink.onToolInputStart?.({ toolCallId, toolName });
-    return true;
-  };
+  const inputs = new ToolInputReporter(sink);
 
   for await (const chunk of chunksOf(backend.chatStream(request), options.chunkTimeout)) {
     throwIfStreamAborted(signal);
@@ -139,18 +134,9 @@ export async function streamChatRequest(
       timing.firstChunkAt = Date.now();
     }
     for (const part of chunk.delta.toolInput ?? []) {
-      if (part.type === 'start') {
-        startInput(part.toolCallId, part.toolName);
-        continue;
-      }
-      const input = inputs.get(part.toolCallId);
-      if (input && part.delta) {
-        sink.onToolInputDelta?.({
-          toolCallId: part.toolCallId,
-          toolName: input.name,
-          delta: part.delta,
-        });
-      }
+      if (part.type === 'start') inputs.start(part.toolCallId, part.toolName);
+      else if (part.type === 'delta') inputs.delta(part.toolCallId, part.delta);
+      else inputs.end(part.toolCallId);
     }
 
     if (chunk.delta.content) {
@@ -195,13 +181,7 @@ export async function streamChatRequest(
               toolCall.argumentsError = partial.argumentsError;
             }
             toolCalls.push(toolCall);
-            if (startInput(toolCall.id, toolCall.name) && toolCall.argumentsError === undefined) {
-              sink.onToolInputDelta?.({
-                toolCallId: toolCall.id,
-                toolName: toolCall.name,
-                delta: JSON.stringify(toolCall.arguments),
-              });
-            }
+            inputs.whole(toolCall);
           }
         } else if (toolCalls.length > 0 && partial.arguments) {
           const last = toolCalls[toolCalls.length - 1];
@@ -242,15 +222,68 @@ export async function streamChatRequest(
     },
     ...(reasoning && { reasoning }),
   });
-  for (const call of turn.toolCalls ?? []) {
-    if (call.argumentsError !== undefined) continue;
-    sink.onToolInputAvailable?.({
-      toolCallId: call.id,
-      toolName: call.name,
-      input: call.arguments,
-    });
-  }
+  for (const call of turn.toolCalls ?? []) inputs.whole(call);
   return turn;
+}
+
+/**
+ * Hands the tool calls of a stream to a sink as the model writes them: each call starts once,
+ * its argument text follows in deltas, and it is available once its arguments are complete and
+ * read as an object, when the provider says it ended or when it arrives whole. A call that never
+ * had a delta gets its arguments as one before it is available. A sink callback that throws is
+ * logged, the stream goes on.
+ */
+class ToolInputReporter {
+  private readonly calls = new Map<string, { name: string; text: string; available: boolean }>();
+
+  constructor(private readonly sink: ModelStreamSink) {}
+
+  start(toolCallId: string, toolName: string): void {
+    if (this.calls.has(toolCallId)) return;
+    this.calls.set(toolCallId, { name: toolName, text: '', available: false });
+    this.notify('onToolInputStart', () => this.sink.onToolInputStart?.({ toolCallId, toolName }));
+  }
+
+  delta(toolCallId: string, delta: string): void {
+    const call = this.calls.get(toolCallId);
+    if (!call || call.available || !delta) return;
+    call.text += delta;
+    this.notify('onToolInputDelta', () =>
+      this.sink.onToolInputDelta?.({ toolCallId, toolName: call.name, delta })
+    );
+  }
+
+  end(toolCallId: string): void {
+    const call = this.calls.get(toolCallId);
+    if (!call || call.available) return;
+    const read = toolCallArguments(call.text);
+    if (read.argumentsError === undefined) this.available(toolCallId, read.arguments);
+  }
+
+  whole(toolCall: ToolCall): void {
+    this.start(toolCall.id, toolCall.name);
+    if (toolCall.argumentsError === undefined) this.available(toolCall.id, toolCall.arguments);
+  }
+
+  private available(toolCallId: string, input: Record<string, unknown>): void {
+    const call = this.calls.get(toolCallId);
+    if (!call || call.available) return;
+    if (!call.text) this.delta(toolCallId, JSON.stringify(input));
+    call.available = true;
+    this.notify('onToolInputAvailable', () =>
+      this.sink.onToolInputAvailable?.({ toolCallId, toolName: call.name, input })
+    );
+  }
+
+  private notify(callback: string, call: () => void): void {
+    try {
+      call();
+    } catch (error) {
+      getLogger().warn(`${callback} failed`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 }
 
 /**

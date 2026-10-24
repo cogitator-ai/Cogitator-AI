@@ -1028,6 +1028,7 @@ describe('OpenAIBackend (Responses API)', () => {
         { type: 'start', toolCallId: weatherCall.call_id, toolName: 'get_weather' },
         { type: 'delta', toolCallId: weatherCall.call_id, delta: '{"ci' },
         { type: 'delta', toolCallId: weatherCall.call_id, delta: 'ty":"Paris"}' },
+        { type: 'end', toolCallId: weatherCall.call_id },
       ]);
       const final = chunks.at(-1)!;
       expect(final.finishReason).toBe('tool_calls');

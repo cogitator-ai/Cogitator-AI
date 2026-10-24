@@ -179,16 +179,59 @@ describe('AgentStreamSession', () => {
     for (const event of events) expect(StreamEventSchema.parse(event)).toEqual(event);
   });
 
-  it('closes a call the model began and never finished before the stream ends', () => {
+  it('drops a call the model began and never finished before the stream ends', () => {
     const { events, session: s } = session('t');
     s.callbacks.onToolInputStart({ toolCallId: 'cut', toolName: 'write' });
     s.callbacks.onToolInputDelta({ toolCallId: 'cut', toolName: 'write', delta: '{"pa' });
     s.fail('cut off');
-    expect(events.map((event) => event.type)).toEqual([
-      'tool-call-start',
-      'tool-call-delta',
-      'tool-call-end',
-      'error',
+    expect(events).toEqual([
+      { type: 'tool-call-start', id: 'cut', toolName: 'write' },
+      { type: 'tool-call-delta', id: 'cut', argsTextDelta: '{"pa' },
+      { type: 'tool-call-end', id: 'cut', dropped: true },
+      {
+        type: 'tool-result',
+        id: expect.any(String),
+        toolCallId: 'cut',
+        dropped: true,
+        reason: 'incomplete',
+      },
+      { type: 'error', message: 'cut off' },
+    ]);
+    for (const event of events) StreamEventSchema.parse(event);
+  });
+
+  it('drops a finished call the run did not keep, and keeps the calls that run or wait', () => {
+    const { events, session: s } = session('t');
+    s.callbacks.onToolInputStart({ toolCallId: 'a', toolName: 'write' });
+    s.callbacks.onToolInputAvailable({ toolCallId: 'a', toolName: 'write', input: {} });
+    s.callbacks.onToolInputStart({ toolCallId: 'b', toolName: 'write' });
+    s.callbacks.onToolInputAvailable({ toolCallId: 'b', toolName: 'write', input: {} });
+    s.callbacks.onToolInputStart({ toolCallId: 'c', toolName: 'write' });
+    s.callbacks.onToolInputAvailable({ toolCallId: 'c', toolName: 'write', input: {} });
+    s.callbacks.onToolInputAbandoned({ toolCallId: 'a', toolName: 'write', reason: 'discarded' });
+    s.callbacks.onToolCall({ id: 'b', name: 'write', arguments: {} });
+    s.complete(conformancePausedResult('t'));
+
+    const tools = events.filter((event) => event.type.startsWith('tool'));
+    expect(
+      tools.map((event) => [
+        event.type,
+        'id' in event ? event.id : '',
+        'toolCallId' in event ? event.toolCallId : '',
+      ])
+    ).toEqual([
+      ['tool-call-start', 'a', ''],
+      ['tool-call-end', 'a', ''],
+      ['tool-call-start', 'b', ''],
+      ['tool-call-end', 'b', ''],
+      ['tool-call-start', 'c', ''],
+      ['tool-call-end', 'c', ''],
+      ['tool-result', expect.any(String), 'a'],
+      ['tool-result', expect.any(String), 'c'],
+    ]);
+    expect(tools.filter((event) => event.type === 'tool-result')).toEqual([
+      expect.objectContaining({ toolCallId: 'a', dropped: true, reason: 'discarded' }),
+      expect.objectContaining({ toolCallId: 'c', dropped: true, reason: 'discarded' }),
     ]);
   });
 });

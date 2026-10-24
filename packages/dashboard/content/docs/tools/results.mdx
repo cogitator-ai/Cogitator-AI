@@ -52,7 +52,12 @@ await cog.run(agent, {
 });
 ```
 
-`cog.invokeTool()` takes the result apart the same way, its `ToolResult` carries `details` and `presentation`. `isToolOutputResult(value)` tells a `toolOutput()` result from any other.
+`cog.invokeTool()` takes the result apart the same way, its `ToolResult` carries `details` and `presentation`. `isToolOutputResult(value)` tells a `toolOutput()` result from any other, and `toolOutputContent(value)` (from `@cogitator-ai/core` or `@cogitator-ai/types`) is what a model reads of any result: the `content` of a `toolOutput()` result, any other result as it is.
+
+The split holds where a tool runs outside a run too:
+
+- [`toAISDKTool()`](/docs/integrations/ai-sdk) without an `invoker` returns the whole `toolOutput()` result to the AI SDK application, while its `toModelOutput` (and `experimental_toToolResultContent` on ai@4) gives the model only `content`. With an `invoker` the call goes through `cog.invokeTool()` and the application gets `content`
+- the [realtime voice](/docs/voice/realtime) adapters (OpenAI, Gemini) send the model only `content` when a `RealtimeTool` returns a `toolOutput()` result
 
 ## Presentation
 

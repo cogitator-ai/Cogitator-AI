@@ -572,6 +572,7 @@ describe('GoogleBackend', () => {
       expect(toolInput).toEqual([
         { type: 'start', toolCallId: toolCalls[0].id, toolName: 'get_weather' },
         { type: 'delta', toolCallId: toolCalls[0].id, delta: '{"city":"Tokyo"}' },
+        { type: 'end', toolCallId: toolCalls[0].id },
       ]);
     });
 

@@ -16,6 +16,7 @@ export type AgentStreamCallbacks = Pick<
   | 'onToolInputStart'
   | 'onToolInputDelta'
   | 'onToolInputAvailable'
+  | 'onToolInputAbandoned'
 >;
 
 /** The last event of every successful stream, kept for clients of the other Cogitator adapters. */

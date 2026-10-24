@@ -151,23 +151,23 @@ type ToolContext<TDeps = unknown> = unknown extends TDeps
 
 ### Tool Interfaces
 
-| Type                                                     | Description                                                                                                                    |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `ToolConfig<TParams, TResult>`                           | Tool definition with execute function                                                                                          |
-| `Tool<TParams, TResult>`                                 | Full tool with toJSON() method                                                                                                 |
-| `ToolContext`                                            | Execution context with agentId, runId, signal, threadId, userId, channel and the run's `deps`                                  |
-| `SideEffectType`                                         | `'filesystem' \| 'network' \| 'database' \| 'process' \| 'external'`                                                           |
-| `ApprovalCheck`                                          | `(params) => boolean` form of `requiresApproval`                                                                               |
-| `ToolSchema`                                             | JSON Schema representation for LLM                                                                                             |
-| `ToolCategory`                                           | `'math' \| 'text' \| 'file' \| 'network' \| 'system' \| 'utility' \| 'web' \| 'database' \| 'communication' \| 'development'`  |
-| `ToolContentResult`                                      | A result made of parts, built with `toolContent()` of `@cogitator-ai/core`                                                     |
-| `ToolContentPart`                                        | `ToolTextPart \| ToolImagePart \| ToolFilePart \| ToolJsonPart \| ToolResourcePart`                                            |
-| `ToolOutputResult`                                       | A result split by reader, built with `toolOutput()`: `content` for the model, `details` and `presentation` for the application |
-| `ToolPresentation`                                       | How a client shows a call: `label`, `icon?`, `detail?`                                                                         |
-| `ToolProgress`, `ToolUpdate`                             | What `context.update()` reports, and what `onToolUpdate` gets (with `callId` and `name`)                                       |
-| `ToolInputStart`, `ToolInputDelta`, `ToolInputAvailable` | A tool call as the model writes it, in a streamed run                                                                          |
-| `ToolInputStreamPart`                                    | A `start` or `delta` part of `ChatStreamChunk.delta.toolInput`, for backends that stream tool input                            |
-| `RunTimeouts`                                            | `totalMs`, `stepMs`, `chunkMs`, `toolMs` of `RunOptions.timeouts` and `AgentConfig.timeouts`                                   |
+| Type                                                                           | Description                                                                                                                    |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `ToolConfig<TParams, TResult>`                                                 | Tool definition with execute function                                                                                          |
+| `Tool<TParams, TResult>`                                                       | Full tool with toJSON() method                                                                                                 |
+| `ToolContext`                                                                  | Execution context with agentId, runId, signal, threadId, userId, channel and the run's `deps`                                  |
+| `SideEffectType`                                                               | `'filesystem' \| 'network' \| 'database' \| 'process' \| 'external'`                                                           |
+| `ApprovalCheck`                                                                | `(params) => boolean` form of `requiresApproval`                                                                               |
+| `ToolSchema`                                                                   | JSON Schema representation for LLM                                                                                             |
+| `ToolCategory`                                                                 | `'math' \| 'text' \| 'file' \| 'network' \| 'system' \| 'utility' \| 'web' \| 'database' \| 'communication' \| 'development'`  |
+| `ToolContentResult`                                                            | A result made of parts, built with `toolContent()` of `@cogitator-ai/core`                                                     |
+| `ToolContentPart`                                                              | `ToolTextPart \| ToolImagePart \| ToolFilePart \| ToolJsonPart \| ToolResourcePart`                                            |
+| `ToolOutputResult`                                                             | A result split by reader, built with `toolOutput()`: `content` for the model, `details` and `presentation` for the application |
+| `ToolPresentation`                                                             | How a client shows a call: `label`, `icon?`, `detail?`                                                                         |
+| `ToolProgress`, `ToolUpdate`                                                   | What `context.update()` reports, and what `onToolUpdate` gets (with `callId` and `name`)                                       |
+| `ToolInputStart`, `ToolInputDelta`, `ToolInputAvailable`, `ToolInputAbandoned` | A tool call as the model writes it, or one that will not run, in a streamed run                                                |
+| `ToolInputStreamPart`                                                          | A `start`, `delta` or `end` part of `ChatStreamChunk.delta.toolInput`, for backends that stream tool input                     |
+| `RunTimeouts`                                                                  | `totalMs`, `stepMs`, `chunkMs`, `toolMs` of `RunOptions.timeouts` and `AgentConfig.timeouts`                                   |
 
 ### Tool Options
 

@@ -177,7 +177,8 @@ export interface ChatUsage {
 /** A piece of a tool call the model is writing, see `ChatStreamChunk.delta.toolInput` */
 export type ToolInputStreamPart =
   | { type: 'start'; toolCallId: string; toolName: string }
-  | { type: 'delta'; toolCallId: string; delta: string };
+  | { type: 'delta'; toolCallId: string; delta: string }
+  | { type: 'end'; toolCallId: string };
 
 export interface ChatStreamChunk {
   id: string;
@@ -188,9 +189,10 @@ export interface ChatStreamChunk {
     toolCalls?: Partial<ToolCall>[];
     /**
      * Tool calls as the model writes them, before they are complete: a `start` once the call's
-     * id and name are known, then `delta`s of its JSON arguments. The complete call still comes
-     * in `toolCalls`. Backends that get whole calls only leave it out, the runtime then reports
-     * each call in one piece when it arrives
+     * id and name are known, then `delta`s of its JSON arguments, and an `end` once the model
+     * finished writing the call, when the provider says so. The complete call still comes in
+     * `toolCalls`. Backends that get whole calls only leave it out, the runtime then reports each
+     * call in one piece when it arrives
      */
     toolInput?: ToolInputStreamPart[];
   };

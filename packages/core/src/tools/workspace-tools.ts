@@ -5,7 +5,7 @@ import {
   type ToolContext,
   type Workspace,
 } from '@cogitator-ai/types';
-import { join as joinPath } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { tool } from '../tool';
 import { fileLockKey } from './path-guard';
@@ -102,7 +102,7 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
     needsApproval(name) ? { requiresApproval: true } : {};
   const lockFile = async (path: string, context: ToolContext): Promise<string[]> => {
     const ws = resolveWorkspace(context);
-    return [await fileLockKey(joinPath(ws.root, path))];
+    return [await fileLockKey(isAbsolute(path) ? path : resolve(ws.root, path))];
   };
 
   const readFile = tool({

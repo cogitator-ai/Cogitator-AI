@@ -514,6 +514,7 @@ describe('BedrockBackend', () => {
         { type: 'start', toolCallId: 'tc-1', toolName: 'search' },
         { type: 'delta', toolCallId: 'tc-1', delta: '{"query":' },
         { type: 'delta', toolCallId: 'tc-1', delta: '"cats"}' },
+        { type: 'end', toolCallId: 'tc-1' },
       ]);
 
       expect(toolCalls).toHaveLength(1);

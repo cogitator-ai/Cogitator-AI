@@ -222,20 +222,21 @@ export function Chat() {
 
 ### UseChatOptions
 
-| Option               | Type                                     | Description                                                                                |
-| -------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `api`                | `string`                                 | API endpoint URL (required)                                                                |
-| `threadId`           | `string`                                 | Initial thread ID for conversation context                                                 |
-| `initialMessages`    | `ChatMessage[]`                          | Pre-populate the message list                                                              |
-| `headers`            | `Record<string, string>`                 | Custom headers sent with each request                                                      |
-| `onError`            | `(error: Error) => void`                 | Error callback                                                                             |
-| `onFinish`           | `(message: ChatMessage) => void`         | Called when assistant message is complete (not after an `error` event)                     |
-| `onToolCall`         | `(toolCall: ToolCall) => void`           | Called when a tool is invoked                                                              |
-| `onToolResult`       | `(result: ToolResultEvent) => void`      | Called when a tool returns a result                                                        |
-| `onReasoning`        | `(delta: string) => void`                | Called with each piece of the reasoning summary; the pieces collect in `message.reasoning` |
-| `onApprovalRequired` | `(approvals: PendingApproval[]) => void` | Called when the run pauses for [approvals](#approvals)                                     |
-| `resumeApi`          | `string`                                 | Endpoint of a `createResumeHandler`, for `resume`, `approve` and `deny`                    |
-| `retry`              | `RetryConfig`                            | Retry on network failures and 408/429/502/503/504                                          |
+| Option               | Type                                     | Description                                                                                                                                                                                     |
+| -------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `api`                | `string`                                 | API endpoint URL (required)                                                                                                                                                                     |
+| `threadId`           | `string`                                 | Initial thread ID for conversation context                                                                                                                                                      |
+| `initialMessages`    | `ChatMessage[]`                          | Pre-populate the message list                                                                                                                                                                   |
+| `headers`            | `Record<string, string>`                 | Custom headers sent with each request                                                                                                                                                           |
+| `onError`            | `(error: Error) => void`                 | Error callback                                                                                                                                                                                  |
+| `onFinish`           | `(message: ChatMessage) => void`         | Called when assistant message is complete (not after an `error` event)                                                                                                                          |
+| `onToolCall`         | `(toolCall: ToolCall) => void`           | Called when a tool is invoked                                                                                                                                                                   |
+| `onToolResult`       | `(result: ToolResultEvent) => void`      | Called when a tool returns a result, with its `details` and `presentation` when it has them                                                                                                     |
+| `onToolCallDropped`  | `(toolCallId: string) => void`           | A call the stream announced never runs ([Streaming Tool Input](/docs/tools/streaming-input#over-the-wire)), it is gone from the message's `toolCalls`, `onToolCall` may have reported it before |
+| `onReasoning`        | `(delta: string) => void`                | Called with each piece of the reasoning summary, the pieces collect in `message.reasoning`                                                                                                      |
+| `onApprovalRequired` | `(approvals: PendingApproval[]) => void` | Called when the run pauses for [approvals](#approvals)                                                                                                                                          |
+| `resumeApi`          | `string`                                 | Endpoint of a `createResumeHandler`, for `resume`, `approve` and `deny`                                                                                                                         |
+| `retry`              | `RetryConfig`                            | Retry on network failures and 408/429/502/503/504                                                                                                                                               |
 
 ### Return Values
 

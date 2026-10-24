@@ -76,8 +76,9 @@ export interface ToolConfig<TParams = unknown, TResult = unknown, TDeps = unknow
   /**
    * Keys of what a call changes, such as `await fileLockKey(path)` for a file it writes: calls
    * whose keys meet never run at the same time, in this run or any other of the process, and go
-   * one after another in the order they asked. A tool that runs another agent must not hold a key
-   * that agent's tools take, or the two wait on each other
+   * one after another in the order they asked. A call run inside a call that holds a key, such as
+   * a tool of an agent the tool runs, takes that key again without waiting. The keys are let go
+   * once the tool's own promise settles, also after it timed out
    */
   lockKeys?: (
     params: TParams,
@@ -95,6 +96,8 @@ export interface ToolConfig<TParams = unknown, TResult = unknown, TDeps = unknow
   onInputDelta?: (event: ToolInputDelta) => void;
   /** The model finished a call of this tool and its arguments are read, in a run with `stream: true` */
   onInputAvailable?: (event: ToolInputAvailable) => void;
+  /** A call of this tool the model began to write will not run, in a run with `stream: true` */
+  onInputAbandoned?: (event: ToolInputAbandoned) => void;
 }
 
 export interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
@@ -149,6 +152,7 @@ export interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
   onInputStart?(event: ToolInputStart): void;
   onInputDelta?(event: ToolInputDelta): void;
   onInputAvailable?(event: ToolInputAvailable): void;
+  onInputAbandoned?(event: ToolInputAbandoned): void;
   toJSON(): ToolSchema;
 }
 
@@ -242,6 +246,16 @@ export interface ToolInputAvailable {
   toolCallId: string;
   toolName: string;
   input: Record<string, unknown>;
+}
+
+/**
+ * A tool call the model began to write that will not run: `incomplete` when its arguments never
+ * came complete, `discarded` when they did and the turn did not keep the call
+ */
+export interface ToolInputAbandoned {
+  toolCallId: string;
+  toolName: string;
+  reason: 'incomplete' | 'discarded';
 }
 
 /** What a tool call runs with, whether or not the tool reads the run's `deps`. */

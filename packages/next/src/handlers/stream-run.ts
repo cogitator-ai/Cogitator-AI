@@ -24,6 +24,7 @@ export type StreamCallbacks = Required<
     | 'onToolInputStart'
     | 'onToolInputDelta'
     | 'onToolInputAvailable'
+    | 'onToolInputAbandoned'
   >
 >;
 

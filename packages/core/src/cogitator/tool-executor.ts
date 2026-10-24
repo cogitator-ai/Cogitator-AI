@@ -20,7 +20,7 @@ import type { SandboxManager } from './initializers';
 type SandboxRunOutput = NonNullable<Awaited<ReturnType<SandboxManager['execute']>>['data']>;
 import type { ConstitutionalAI } from '../constitutional/index';
 import { createLinkedAbortController, toAbortError } from '../utils/abort';
-import { toolLocks } from './tool-locks';
+import { heldLockKeys, holdingLockKeys, toolLocks, type StepGate } from './tool-locks';
 import { guardrailsMiddleware } from '../middleware/builtins';
 import { MiddlewarePipeline, type ToolArgumentsParser } from '../middleware/pipeline';
 import { isTripwire } from '../middleware/tripwire';
@@ -64,6 +64,8 @@ export interface ToolCallExecution {
   defaultTimeout?: number;
   /** Hears what the tool reports with `context.update()` while it runs */
   onUpdate?: (progress: ToolProgress) => void;
+  /** The step of calls the run started together that this call belongs to, see `StepGate` */
+  step?: { gate: StepGate };
 }
 
 /**
@@ -192,23 +194,27 @@ const parseCallArguments: ToolArgumentsParser = (call, changed) => {
 };
 
 /**
- * Runs the tool of `call` once it holds the locks of its `lockKeys`, and reads what it returned:
- * a `toolOutput()` result gives the model its `content`, the application its `details` and
+ * Runs the tool of `call` once it may: a call the run started alongside others (`step`) takes
+ * its share of the step, or the step alone when its arguments as a middleware left them are not
+ * safe to run beside others, then it holds the locks of its `lockKeys`, keys a call it runs
+ * inside holds already taken again without waiting. Both are let go once the tool's own promise
+ * settles, also when the call timed out or was aborted before. What the tool returned is read
+ * then: a `toolOutput()` result gives the model its `content`, the application its `details` and
  * `presentation`, any other result gets the tool's own `presentation`.
  */
 async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Promise<ToolResult> {
   const { tool, toolCall, args } = call;
-  const { runId, agentId, signal, extraContext } = execution;
+  const { runId, agentId, signal, extraContext, step } = execution;
   const failed = (error: string): ToolResult => ({
     callId: toolCall.id,
     name: toolCall.name,
     result: null,
     error,
   });
+  const record = isRecord(args) ? args : toolCall.arguments;
 
-  let release: (() => void) | undefined;
+  let keys: readonly string[] = [];
   if (tool.lockKeys) {
-    let keys: readonly string[];
     try {
       keys = await tool.lockKeys(args as Parameters<NonNullable<Tool['lockKeys']>>[0], {
         ...extraContext,
@@ -222,17 +228,40 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
         `Could not tell what the call changes: ${error instanceof Error ? error.message : String(error)}`
       );
     }
-    try {
-      if (keys.length > 0) release = await toolLocks.acquire(keys, signal);
-    } catch (error) {
-      return failed(toAbortError(error, `Tool "${tool.name}" aborted`).message);
-    }
   }
 
+  const releases: Array<() => void> = [];
+  const releaseAll = () => {
+    for (const release of releases.splice(0).reverse()) release();
+  };
   try {
-    const result =
+    if (step) {
+      releases.push(
+        await (isConcurrencySafe(tool, record)
+          ? step.gate.share(signal)
+          : step.gate.exclusive(signal))
+      );
+    }
+    const held = heldLockKeys();
+    const fresh = keys.filter((key) => !held.has(key));
+    if (fresh.length > 0) releases.push(await toolLocks.acquire(fresh, signal));
+  } catch (error) {
+    releaseAll();
+    return failed(toAbortError(error, `Tool "${tool.name}" aborted`).message);
+  }
+
+  let running: Promise<unknown> | undefined;
+  const native: NativeRunOptions = {
+    defaultTimeout: execution.defaultTimeout,
+    onUpdate: execution.onUpdate,
+    onStart: (started) => {
+      running = started;
+    },
+  };
+  try {
+    const result = await holdingLockKeys(keys, () =>
       tool.sandbox?.type === 'docker' || tool.sandbox?.type === 'wasm'
-        ? await executeInSandbox(
+        ? executeInSandbox(
             tool,
             { ...toolCall, arguments: args as Record<string, unknown> },
             runId,
@@ -242,15 +271,14 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
             execution.allowNativeFallback,
             signal,
             extraContext,
-            execution.defaultTimeout
+            native
           )
-        : await executeNatively(tool, toolCall, args, runId, agentId, signal, extraContext, {
-            defaultTimeout: execution.defaultTimeout,
-            onUpdate: execution.onUpdate,
-          });
-    return readOutput(tool, isRecord(args) ? args : toolCall.arguments, result);
+        : executeNatively(tool, toolCall, args, runId, agentId, signal, extraContext, native)
+    );
+    return readOutput(tool, record, result);
   } finally {
-    release?.();
+    if (running) void running.then(releaseAll, releaseAll);
+    else releaseAll();
   }
 }
 
@@ -325,6 +353,11 @@ export async function executeTool(
 interface NativeRunOptions {
   defaultTimeout?: number;
   onUpdate?: (progress: ToolProgress) => void;
+  /**
+   * Gets the tool's own promise once it started: a call that timed out or was aborted returns
+   * before the tool stops, and the locks it holds wait for that promise to settle
+   */
+  onStart?: (execution: Promise<unknown>) => void;
 }
 
 /** Milliseconds a call of `tool` may take: its own `timeout`, else `defaultTimeout` */
@@ -368,6 +401,7 @@ async function executeNatively(
 
   try {
     const execution = tool.execute(args as Parameters<typeof tool.execute>[0], context);
+    options.onStart?.(execution);
     const result = abort
       ? await raceWithAbort(execution, abort.signal, () =>
           abort.timedOut
@@ -427,8 +461,9 @@ async function executeInSandbox(
   allowNativeFallback: boolean,
   signal?: AbortSignal,
   extraContext?: ExtraToolContext,
-  defaultTimeout?: number
+  native: NativeRunOptions = {}
 ): Promise<ToolResult> {
+  const { defaultTimeout } = native;
   const manager = sandboxManager ?? (await initializeSandbox());
 
   if (!manager) {
@@ -455,7 +490,7 @@ async function executeInSandbox(
       agentId,
       signal,
       extraContext,
-      { defaultTimeout }
+      native
     );
   }
 

@@ -224,6 +224,12 @@ export class AnthropicBackend extends BaseLLMBackend {
             currentThinking = null;
           } else if (currentToolUse) {
             toolUses.push(currentToolUse);
+            if (currentToolUse.name !== JSON_RESPONSE_TOOL) {
+              yield {
+                id,
+                delta: { toolInput: [{ type: 'end', toolCallId: currentToolUse.id }] },
+              };
+            }
             currentToolUse = null;
           }
         } else if (event.type === 'message_delta') {

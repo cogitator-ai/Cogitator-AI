@@ -79,8 +79,15 @@ export const ToolCallDeltaEventSchema = z
   .describe('The next text of the JSON arguments of the tool call `id`');
 
 export const ToolCallEndEventSchema = z
-  .object({ type: z.literal('tool-call-end'), id: z.string() })
-  .describe('The arguments of the tool call are complete');
+  .object({
+    type: z.literal('tool-call-end'),
+    id: z.string(),
+    dropped: z
+      .literal(true)
+      .optional()
+      .describe('The model stopped before the arguments were complete, the call never runs'),
+  })
+  .describe('The model finished writing the tool call `id`');
 
 export const ToolPresentationSchema = z
   .object({
@@ -98,8 +105,13 @@ export const ToolResultEventSchema = z
     result: z.unknown().optional(),
     details: z.unknown().optional().describe('Data for the application, never sent to the model'),
     presentation: ToolPresentationSchema.optional(),
+    dropped: z.literal(true).optional().describe('The call never ran and has no result: remove it'),
+    reason: z
+      .enum(['incomplete', 'discarded'])
+      .optional()
+      .describe('Why a dropped call never ran: never finished, or not kept by the run'),
   })
-  .describe('What the tool call `toolCallId` returned');
+  .describe('What the tool call `toolCallId` returned, or that it never ran');
 
 export const ToolUpdateEventSchema = z
   .object({

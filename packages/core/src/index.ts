@@ -31,7 +31,7 @@ export {
 export type { PausableRun, PausedRun, PausedRunInfo } from './run-pause';
 export { tool, toolset, toolToSchema, withParsedArguments } from './tool';
 export { isConcurrencySafe } from './cogitator/tool-executor';
-export { KeyedLock, toolLocks } from './cogitator/tool-locks';
+export { KeyedLock, StepGate, toolLocks } from './cogitator/tool-locks';
 export {
   scheduleToolCalls,
   DEFAULT_MAX_PARALLEL_TOOL_CALLS,
@@ -50,6 +50,7 @@ export {
   toolOutput,
   isToolContentResult,
   isToolOutputResult,
+  toolOutputContent,
   toolResultParts,
   toolPartsToMessageContent,
   toolPartsToText,

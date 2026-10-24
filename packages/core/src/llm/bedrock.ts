@@ -405,6 +405,8 @@ export class BedrockBackend extends BaseLLMBackend {
         toolUses.push({ ...toolCall, thinking: state.thinking });
         toolCallInputs.delete(idx);
         state.thinking = [];
+        const toolInput = state.toolInputs.end(idx);
+        if (toolInput.length > 0) yield { id, delta: { toolInput } };
       }
     }
 

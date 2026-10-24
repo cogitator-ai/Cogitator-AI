@@ -95,9 +95,14 @@ export interface ToolCallDeltaEvent {
   argsTextDelta: string;
 }
 
+/**
+ * The model finished writing the tool call `id`. `dropped` when it stopped before the arguments
+ * were complete: the call never runs, and a `tool-result` with `dropped` follows
+ */
 export interface ToolCallEndEvent {
   type: 'tool-call-end';
   id: string;
+  dropped?: true;
 }
 
 export interface ToolResultEvent {
@@ -110,6 +115,12 @@ export interface ToolResultEvent {
   details?: unknown;
   /** How to show the call: a label, an icon and one line about it */
   presentation?: ToolPresentation;
+  /**
+   * The call never ran and has no result: the model never finished it (`incomplete`), or the run
+   * did not keep it (`discarded`, such as a turn cut at the token limit). A client removes it
+   */
+  dropped?: true;
+  reason?: 'incomplete' | 'discarded';
 }
 
 /**
@@ -236,8 +247,17 @@ export function createToolCallDeltaEvent(id: string, argsTextDelta: string): Too
   return { type: 'tool-call-delta', id, argsTextDelta };
 }
 
-export function createToolCallEndEvent(id: string): ToolCallEndEvent {
-  return { type: 'tool-call-end', id };
+export function createToolCallEndEvent(id: string, dropped = false): ToolCallEndEvent {
+  return { type: 'tool-call-end', id, ...(dropped && { dropped: true as const }) };
+}
+
+/** The `tool-result` of a call that will never run, see `ToolResultEvent.dropped` */
+export function createToolDroppedEvent(
+  id: string,
+  toolCallId: string,
+  reason: 'incomplete' | 'discarded'
+): ToolResultEvent {
+  return { type: 'tool-result', id, toolCallId, dropped: true, reason };
 }
 
 export function createToolResultEvent(

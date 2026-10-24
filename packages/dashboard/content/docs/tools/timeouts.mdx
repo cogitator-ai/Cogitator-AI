@@ -37,6 +37,8 @@ Every field is off unless set, so a run without `timeouts` behaves as before. `R
 
 `totalMs` is the run's deadline, as `timeout` is. The first one set wins, in this order: the run's `timeouts.totalMs`, the run's `timeout`, the agent's `timeouts.totalMs`, the agent's `timeout`, `limits.defaultTimeout` of the Cogitator, and 2 minutes. So a run's `timeout` still overrides what an agent says in `timeouts`.
 
+A paused run keeps its own `timeouts` in `checkpoint.toolExecution`, and `cog.resume()` uses them again unless its options set them. A kept `totalMs` gives the resumed run that deadline anew, unless the resume passes `timeouts.totalMs` or `timeout`.
+
 ## Model Calls
 
 `stepMs` bounds one model turn as the run sees it: every retry of `llm.retry` and every model of `fallbackModels` it tried count against it. A call that runs out fails the run with `RUN_STEP_TIMEOUT` (`details.stepMs`), also when the backend ignores the abort.
@@ -62,3 +64,5 @@ await cog.run(agent, {
 ```
 
 The call's signal aborts when it runs out, so a tool that passes `context.signal` to `fetch` or a child process stops its work. The `ToolResult` has `errorCode: 'TOOL_TIMEOUT'` (`ErrorCode.TOOL_TIMEOUT`), and the tool call's span records it as `error.type`. A tool's own `timeout` always wins over `toolMs`.
+
+The clock starts when the tool starts: time a call waits for its [lock keys](/docs/tools/concurrency#lock-keys), or for its turn among the calls of the step, does not count toward `toolMs` or the tool's `timeout`, while `totalMs` goes on. A call that timed out keeps its lock keys until the tool's own promise settles, so a tool that ignores its signal holds the file it writes until it really stops, and the next writer of that file waits for it.

@@ -5,6 +5,7 @@
 import type { Message, ToolCall, ToolCallMessage, ToolResult, ToolResultMessage } from './message';
 import type {
   Tool,
+  ToolInputAbandoned,
   ToolInputAvailable,
   ToolInputDelta,
   ToolInputStart,
@@ -344,6 +345,13 @@ export interface RunOptions<TDeps = unknown> {
    * may change them. `onToolCall` reports the calls that run
    */
   onToolInputAvailable?: (event: ToolInputAvailable) => void;
+  /**
+   * A call the model began to write will not run: its arguments never came complete (the turn
+   * was cut at the token limit, failed or was aborted), or the turn did not keep it (an
+   * `afterModel` middleware, a turn that may not call tools). Every call `onToolInputStart`
+   * reported ends in `onToolCall` or here
+   */
+  onToolInputAbandoned?: (event: ToolInputAbandoned) => void;
   /**
    * The agent's todo list each time `write_todos` changes it (`AgentConfig.todos`), the whole
    * list every time
@@ -705,6 +713,15 @@ export interface RunCheckpoint {
    * the same place
    */
   branch?: { parentId?: string | null; activate: boolean; branchPoint?: string | null };
+  /**
+   * How the paused run ran its tools, so `resume()` runs them the same way unless its options
+   * say otherwise. Missing in checkpoints saved before it existed
+   */
+  toolExecution?: {
+    parallelToolCalls?: boolean;
+    maxParallelToolCalls?: number;
+    timeouts?: RunTimeouts;
+  };
 }
 
 /** Where a run's entries went in the thread's tree of memory */

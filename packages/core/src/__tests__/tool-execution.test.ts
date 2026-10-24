@@ -692,8 +692,8 @@ describe('tool input as the model writes it', () => {
     expect(listener.events).toEqual([
       'start c1 read',
       'delta c1 {"path":"a"}',
-      'start c2 read',
       'available c1 {"path":"a"}',
+      'start c2 read',
     ]);
   });
 

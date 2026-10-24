@@ -106,7 +106,8 @@ interface RunOptions<TDeps = unknown> {
   onToolUpdate?: (update: ToolUpdate) => void; // each context.update() of a running tool
   onToolInputStart?: (event: ToolInputStart) => void; // needs stream: true, as the next two
   onToolInputDelta?: (event: ToolInputDelta) => void; // a piece of the JSON arguments
-  onToolInputAvailable?: (event: ToolInputAvailable) => void; // a call of the settled turn, arguments read
+  onToolInputAvailable?: (event: ToolInputAvailable) => void; // a call is complete, arguments read
+  onToolInputAbandoned?: (event: ToolInputAbandoned) => void; // a begun call will not run: 'incomplete' | 'discarded'
   useMemory?: boolean; // default: true when an adapter is configured
   loadHistory?: boolean; // default: true
   saveHistory?: boolean; // default: true
@@ -300,6 +301,7 @@ interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
   onInputStart?(event: ToolInputStart): void;
   onInputDelta?(event: ToolInputDelta): void;
   onInputAvailable?(event: ToolInputAvailable): void;
+  onInputAbandoned?(event: ToolInputAbandoned): void;
   toJSON(): ToolSchema;
 }
 
@@ -328,6 +330,7 @@ interface ToolConfig<TParams = unknown, TResult = unknown, TDeps = unknown> {
   onInputStart?: (event: ToolInputStart) => void; // { toolCallId, toolName }
   onInputDelta?: (event: ToolInputDelta) => void; // { toolCallId, toolName, delta }
   onInputAvailable?: (event: ToolInputAvailable) => void; // { toolCallId, toolName, input }
+  onInputAbandoned?: (event: ToolInputAbandoned) => void; // { toolCallId, toolName, reason }
 }
 
 // How a client shows a tool call, saved in metadata.presentation of its tool_result entry

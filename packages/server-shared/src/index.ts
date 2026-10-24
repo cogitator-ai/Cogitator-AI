@@ -11,6 +11,7 @@ export {
   createToolCallEndEvent,
   createToolResultEvent,
   createToolUpdateEvent,
+  createToolDroppedEvent,
   createApprovalRequiredEvent,
   createInterruptRequiredEvent,
   createErrorEvent,

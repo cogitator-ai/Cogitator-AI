@@ -82,7 +82,8 @@ Standardized Server-Sent Events protocol for agent runs, workflow runs, swarm ru
 - `createReasoningEndEvent(id)`: Closes the reasoning summary segment.
 - `createToolCallStartEvent(id, toolName)`: Signals a tool call with its provider ID and name. In a streamed run it goes out as soon as the model picked the tool.
 - `createToolCallDeltaEvent(id, argsTextDelta)`: Emits raw JSON argument deltas for a tool call. In a streamed run each piece the model writes is a delta, else the arguments come in one delta right before the call runs.
-- `createToolCallEndEvent(id)`: Closes a tool call once it is complete. A call the model began and never finished is closed before the stream ends.
+- `createToolCallEndEvent(id, dropped?)`: Closes a tool call as soon as it is complete, so the events of two calls never interleave. With `dropped` it closes a call the model never finished, which never runs.
+- `createToolDroppedEvent(id, toolCallId, reason)`: The `tool-result` of a call that will never run, `{ dropped: true, reason }` with `reason` `'incomplete'` (the model never finished it) or `'discarded'` (the run did not keep it). A client removes the call, one that does not know `dropped` sees a call with an empty result.
 - `createToolUpdateEvent(toolCallId, { content?, details?, presentation? })`: Emits what a running tool reported with `context.update()`, between its `tool-call-end` and its `tool-result`.
 - `createToolResultEvent(id, toolCallId, result, { details?, presentation? })`: Emits the result of an executed tool call linked by `toolCallId`: `result` is what the model read, `details` and `presentation` come from a `toolOutput()` result or the tool's `presentation`.
 - `createApprovalRequiredEvent(threadId, approvals)`: Emits an `approval-required` event when tool calls require human-in-the-loop review, pausing the run.
@@ -104,9 +105,9 @@ Standardized Server-Sent Events protocol for agent runs, workflow runs, swarm ru
 - `ReasoningEndEvent`: Structure of the `reasoning-end` event.
 - `ToolCallStartEvent`: Structure of the `tool-call-start` event.
 - `ToolCallDeltaEvent`: Structure of the `tool-call-delta` event.
-- `ToolCallEndEvent`: Structure of the `tool-call-end` event.
+- `ToolCallEndEvent`: Structure of the `tool-call-end` event, with optional `dropped`.
 - `ToolUpdateEvent`: Structure of the `tool-update` event.
-- `ToolResultEvent`: Structure of the `tool-result` event, with optional `details` and `presentation` (`ToolPresentation`: `label`, `icon?`, `detail?`).
+- `ToolResultEvent`: Structure of the `tool-result` event, with optional `details` and `presentation` (`ToolPresentation`: `label`, `icon?`, `detail?`), or `dropped` and `reason` for a call that never ran.
 - `ApprovalRequiredEvent`: Structure of the `approval-required` event.
 - `PendingApproval`: Client-facing tool approval request (`toolCallId`, `toolName`, `arguments`, `description`, optional `sideEffects`).
 - `InterruptRequiredEvent`: Structure of the `interrupt-required` event.
@@ -153,7 +154,7 @@ Wire formatting and keep-alive ping mechanisms to maintain streaming connections
 
 Stateful session manager coordinating stream event ordering, part transitions, and runtime event hooks.
 
-- `AgentStreamSession`: High-level session coordinator for streaming agent runs. Guarantees that parts never interleave (closes an open text or reasoning part before emitting tool calls or ending), generates IDs, emits `start`, buffers non-streamed results, handles tool approvals, and emits `finish` or `error`. Exposes `callbacks` (`onToken`, `onReasoning`, `onToolCall`, `onToolResult`, `onToolUpdate`, `onToolInputStart`, `onToolInputDelta`, `onToolInputAvailable`) ready to spread into `cogitator.run({ stream: true, ...session.callbacks })`.
+- `AgentStreamSession`: High-level session coordinator for streaming agent runs. Guarantees that parts never interleave (closes an open text or reasoning part before emitting tool calls or ending, and ends each streamed tool call as soon as it is complete), drops the calls it announced that never came to run (a `tool-call-end` with `dropped` when the call was never finished, then a dropped `tool-result`, also at `complete` and `fail`, while calls that run or wait for approval are kept), generates IDs, emits `start`, buffers non-streamed results, handles tool approvals, and emits `finish` or `error`. Exposes `callbacks` (`onToken`, `onReasoning`, `onToolCall`, `onToolResult`, `onToolUpdate`, `onToolInputStart`, `onToolInputDelta`, `onToolInputAvailable`, `onToolInputAbandoned`) ready to spread into `cogitator.run({ stream: true, ...session.callbacks })`.
 - `createThreadId()`: Generates a cryptographically random thread identifier (`thread_${crypto.randomUUID()}`).
 - `AgentStreamCallbacks`: Required callback interface matching Cogitator's streaming callbacks.
 - `AgentStreamSessionOptions`: Options interface accepting an optional client-supplied `threadId`.

@@ -179,6 +179,8 @@ export async function* readResponsesStream(
         const item = items.get(event.output_index);
         if (item?.type === 'function_call') {
           items.set(event.output_index, { ...item, arguments: event.arguments });
+          const toolInput = toolInputs.end(event.output_index);
+          if (toolInput.length > 0) yield { id: responseId, delta: { toolInput } };
         }
         break;
       }

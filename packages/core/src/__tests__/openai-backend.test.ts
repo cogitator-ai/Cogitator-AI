@@ -989,9 +989,128 @@ describe('OpenAIBackend (Chat Completions wire API)', () => {
         { type: 'start', toolCallId: 'call_a', toolName: 'write' },
         { type: 'delta', toolCallId: 'call_a', delta: '{"pa' },
         { type: 'delta', toolCallId: 'call_a', delta: 'th":"a"}' },
+        { type: 'end', toolCallId: 'call_a' },
         { type: 'start', toolCallId: 'call_b', toolName: 'read' },
         { type: 'delta', toolCallId: 'call_b', delta: '{}' },
+        { type: 'end', toolCallId: 'call_b' },
       ]);
+    });
+
+    it('keeps the first id and name of a call when later chunks send an empty or other one', async () => {
+      mockCreate.mockResolvedValueOnce(
+        (async function* () {
+          yield {
+            id: 'c',
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    { index: 0, id: 'call_a', function: { name: 'write', arguments: '{"a"' } },
+                  ],
+                },
+              },
+            ],
+          };
+          yield {
+            id: 'c',
+            choices: [
+              {
+                delta: {
+                  tool_calls: [{ index: 0, id: '', function: { name: '', arguments: ':1' } }],
+                },
+              },
+            ],
+          };
+          yield {
+            id: 'c',
+            choices: [
+              {
+                delta: { tool_calls: [{ index: 0, id: 'call_z', function: { arguments: '}' } }] },
+                finish_reason: 'tool_calls',
+              },
+            ],
+          };
+        })()
+      );
+
+      const chunks = [];
+      for await (const chunk of backend.chatStream({ model: 'gpt-4o-mini', messages: [] })) {
+        chunks.push(chunk);
+      }
+
+      const parts = chunks.flatMap((chunk) => chunk.delta.toolInput ?? []);
+      expect(parts.filter((part) => part.type === 'start')).toEqual([
+        { type: 'start', toolCallId: 'call_a', toolName: 'write' },
+      ]);
+      expect(chunks.at(-1)!.delta.toolCalls).toEqual([
+        { id: 'call_a', name: 'write', arguments: { a: 1 } },
+      ]);
+    });
+
+    it('ends a call once the next one starts, also when their pieces interleave', async () => {
+      const call = (index: number, extra: Record<string, unknown>) => ({
+        id: 'c',
+        choices: [{ delta: { tool_calls: [{ index, ...extra }] } }],
+      });
+      mockCreate.mockResolvedValueOnce(
+        (async function* () {
+          yield call(0, { id: 'call_a', function: { name: 'read', arguments: '{"path":' } });
+          yield call(1, { id: 'call_b', function: { name: 'read', arguments: '{"path":"b"}' } });
+          yield call(0, { function: { arguments: '"a"}' } });
+          yield {
+            id: 'c',
+            choices: [{ delta: {}, finish_reason: 'tool_calls' }],
+          };
+        })()
+      );
+
+      const chunks = [];
+      for await (const chunk of backend.chatStream({ model: 'gpt-4o-mini', messages: [] })) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks.flatMap((chunk) => chunk.delta.toolInput ?? [])).toEqual([
+        { type: 'start', toolCallId: 'call_a', toolName: 'read' },
+        { type: 'delta', toolCallId: 'call_a', delta: '{"path":' },
+        { type: 'end', toolCallId: 'call_a' },
+        { type: 'start', toolCallId: 'call_b', toolName: 'read' },
+        { type: 'delta', toolCallId: 'call_b', delta: '{"path":"b"}' },
+        { type: 'end', toolCallId: 'call_b' },
+      ]);
+      expect(chunks.at(-1)!.delta.toolCalls).toEqual([
+        { id: 'call_a', name: 'read', arguments: { path: 'a' } },
+        { id: 'call_b', name: 'read', arguments: { path: 'b' } },
+      ]);
+    });
+
+    it('does not end the call a turn cut at the token limit was writing', async () => {
+      mockCreate.mockResolvedValueOnce(
+        (async function* () {
+          yield {
+            id: 'c',
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    { index: 0, id: 'call_a', function: { name: 'write', arguments: '{"pa' } },
+                  ],
+                },
+                finish_reason: 'length',
+              },
+            ],
+          };
+        })()
+      );
+
+      const chunks = [];
+      for await (const chunk of backend.chatStream({ model: 'gpt-4o-mini', messages: [] })) {
+        chunks.push(chunk);
+      }
+
+      expect(
+        chunks.flatMap((chunk) => chunk.delta.toolInput ?? []).map((part) => part.type)
+      ).toEqual(['start', 'delta']);
+      expect(chunks.at(-1)!.delta.toolCalls).toBeUndefined();
     });
 
     it('includes stream options', async () => {
