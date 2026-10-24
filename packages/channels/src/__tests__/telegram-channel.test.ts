@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { createServer } from 'node:net';
 import type { ChannelAction, ChannelMessage, ChannelStop } from '@cogitator-ai/types';
 
 type Handler = (ctx: unknown) => Promise<void>;
@@ -75,6 +76,17 @@ function ctx(message: Record<string, unknown>, chatType = 'private') {
 
 function apiError(code: number, description: string) {
   return Object.assign(new Error(description), { error_code: code });
+}
+
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once('error', reject);
+    probe.listen(0, () => {
+      const address = probe.address();
+      probe.close(() => resolve(typeof address === 'object' && address ? address.port : 0));
+    });
+  });
 }
 
 async function started(config: Record<string, unknown> = {}) {
@@ -643,7 +655,7 @@ describe('TelegramChannel', () => {
   });
 
   it('webhook mode serves updates over HTTP and registers the webhook', async () => {
-    const port = 41000 + Math.floor(Math.random() * 1000);
+    const port = await freePort();
     const { channel, bot, raw } = await started({
       webhook: { url: 'https://bot.example.com/tg/hook', port, secretToken: 's3cret' },
     });
