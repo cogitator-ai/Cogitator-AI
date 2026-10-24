@@ -51,7 +51,7 @@
     "@cogitator-ai/test-utils": "workspace:*",
     "@qdrant/js-client-rest": "^1.19.0",
     "@types/better-sqlite3": "^9.6.0",
-    "@types/node": "^22.20.4",
+    "@types/node": "^26.6.5",
     "@types/pg": "^8.23.1",
     "better-sqlite3": "^13.0.3",
     "ioredis": "^6.0.0",

@@ -52,7 +52,7 @@
   "devDependencies": {
     "@daytona/sdk": "^0.226.0",
     "@types/dockerode": "^4.0.1",
-    "@types/node": "^22.20.4",
+    "@types/node": "^26.6.5",
     "@vercel/sandbox": "^3.9.0",
     "e2b": "^2.59.0",
     "typescript": "^6.0.3",
