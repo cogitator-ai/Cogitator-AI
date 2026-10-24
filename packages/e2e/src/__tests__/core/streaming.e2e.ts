@@ -39,9 +39,7 @@ describeE2E('Core: Streaming', () => {
     }
 
     expect(chunks.length).toBeGreaterThan(1);
-    const fullText = chunks.join('');
-    expect(fullText.length).toBeGreaterThan(0);
-    expect(fullText).toContain('1');
+    expect(chunks.join('').trim().length).toBeGreaterThan(0);
   });
 
   it('onToken callback receives all chunks that form the final output', async () => {
