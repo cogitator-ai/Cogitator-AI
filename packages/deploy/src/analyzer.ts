@@ -761,24 +761,26 @@ export class ProjectAnalyzer {
   private ollamaWiring(input: OllamaWiringInput): OllamaWiring {
     const { model, defaultProvider, target, env, configPath, configured, appSecrets, warnings } =
       input;
-    const yaml = this.yamlInput(configPath, env);
+    const deployEnv: NodeJS.ProcessEnv = { ...env, ...configured.env };
+    const yaml = this.yamlInput(configPath, deployEnv);
     const chatModels = this.ollamaChatModels(yaml, model, defaultProvider);
     const chatUsed = chatModels.length > 0 || (model === '' && defaultProvider === 'ollama');
     const chatUrl = this.configValue(configPath, ['llm', 'providers', 'ollama', 'baseUrl']);
-    const embedding = this.ollamaEmbedding(configPath, env);
-    const host = this.ollamaUrls(configPath, env);
+    const embedding = this.ollamaEmbedding(configPath, deployEnv);
+    const host = this.ollamaUrls(configPath, deployEnv);
 
     const chatLocal = chatUsed && isLoopbackUrl(host.chat);
     const chatRemote = chatUsed && !chatLocal;
     const embeddingLocal = embedding !== undefined && isLoopbackUrl(host.embedding);
     const embeddingRemote = embedding !== undefined && !embeddingLocal;
+    const fromHost = (name: string) => !(name in (configured.env ?? {}));
     const remoteValues = (names: readonly string[]) =>
-      names.filter((name) => this.isRemoteValue(env[name]));
+      names.filter((name) => fromHost(name) && this.isRemoteValue(env[name]));
+    const setValues = (names: readonly string[]) =>
+      names.filter((name) => fromHost(name) && isSet(env, name));
     const forwarded = unique([
-      ...(chatRemote
-        ? [...remoteValues(OLLAMA_URL_NAMES), ...remoteValues(chatUrl.variables)]
-        : []),
-      ...(embeddingRemote ? remoteValues(embedding.variables) : []),
+      ...(chatRemote ? [...remoteValues(OLLAMA_URL_NAMES), ...setValues(chatUrl.variables)] : []),
+      ...(embeddingRemote ? setValues(embedding.variables) : []),
     ]);
     const local = unique([
       ...(chatLocal ? chatModels.filter((name) => !this.isOllamaCloud(name)) : []),
@@ -822,19 +824,36 @@ export class ProjectAnalyzer {
       (!chatRemote || urls.chat === baseline.chat) &&
       (!embeddingRemote || urls.embedding === baseline.embedding);
 
-    const candidates: [string, string][] = [
-      ...(chatRemote ? [] : OLLAMA_URL_NAMES.map((name): [string, string] => [name, chatTarget])),
-      ...(embeddingLocal
-        ? embedding.variables.map((name): [string, string] => [name, embeddingTarget])
-        : []),
-    ];
+    const skipped = (name: string) =>
+      name in appEnv || explicit.has(name) || forwarded.includes(name);
     const kept: string[] = [];
-    for (const [name, value] of candidates) {
-      if (name in appEnv || explicit.has(name) || forwarded.includes(name)) continue;
-      appEnv[name] = value;
-      if (!keepsRemoteRoles(this.ollamaUrls(configPath, containerEnv()))) {
-        delete appEnv[name];
-        kept.push(name);
+    if (!chatRemote) {
+      for (const name of OLLAMA_URL_NAMES) {
+        if (skipped(name)) continue;
+        appEnv[name] = chatTarget;
+        if (!keepsRemoteRoles(this.ollamaUrls(configPath, containerEnv()))) {
+          delete appEnv[name];
+          kept.push(name);
+        }
+      }
+    }
+    if (embeddingLocal) {
+      for (const name of embedding.variables) {
+        if (skipped(name)) continue;
+        const value = this.rewriteFor(embeddingTarget).find((candidate) => {
+          appEnv[name] = candidate;
+          const urls = this.ollamaUrls(configPath, containerEnv());
+          return keepsRemoteRoles(urls) && urls.embedding === embeddingTarget;
+        });
+        if (value === undefined) {
+          delete appEnv[name];
+          if (
+            !keepsRemoteRoles(
+              this.ollamaUrls(configPath, { ...containerEnv(), [name]: embeddingTarget })
+            )
+          )
+            kept.push(name);
+        }
       }
     }
 
@@ -845,7 +864,7 @@ export class ProjectAnalyzer {
         shared.length > 0
           ? `memory.embedding.baseUrl follows ${shared.join(', ')}, which the Ollama URL of the chat models reads too, so the deployment cannot point it at ${embeddingTarget} without moving them: ` +
               'give the embeddings a variable of their own, such as ${OLLAMA_EMBEDDING_URL:-http://localhost:11434}'
-          : `memory.embedding.baseUrl ${embedding.baseUrl ? `"${embedding.baseUrl}" follows no variable` : 'is unset'}, so the deployed app looks for its Ollama embeddings at ${reached.embedding}: ` +
+          : `memory.embedding.baseUrl ${embedding.baseUrl === undefined ? 'is unset' : embedding.variables.length > 0 ? `"${embedding.baseUrl}" builds its URL from ${embedding.variables.join(', ')} in a way the deployment cannot point at ${embeddingTarget}` : `"${embedding.baseUrl}" follows no variable`}, so the deployed app looks for its Ollama embeddings at ${reached.embedding}: ` +
               `write it as \${OLLAMA_EMBEDDING_URL:-http://localhost:11434}, the deployment points the variable it follows at ${embeddingTarget}`
       );
     }
@@ -893,6 +912,17 @@ export class ProjectAnalyzer {
     return { secrets: forwarded, env: appEnv, hostGateway: true, invalidModels: [] };
   }
 
+  /**
+   * Values a variable of a URL can take to make the URL `target`: the whole URL,
+   * the host alone (`http://${EMBED_HOST:-localhost}:11434`) and host and port. A
+   * value is kept only when the URL it gives is checked to be `target`, so a
+   * variable that is part of a URL never gets the whole URL written into it.
+   */
+  private rewriteFor(target: string): string[] {
+    const url = new URL(target);
+    return unique([target, url.hostname, url.host]);
+  }
+
   /** Whether `value` is an Ollama URL beyond this machine. */
   private isRemoteValue(value: string | undefined): boolean {
     const url = resolveOllamaHost(value);
@@ -928,10 +958,12 @@ export class ProjectAnalyzer {
   }
 
   /**
-   * The Ollama models of the config, Ollama Cloud ones included, as `ollama pull`
-   * names them: the default model, the summary model of context compression, the
-   * models of the memory stages, of reflection, of the guardrails and of prompt
-   * injection detection. Models that agents name in code are not in the config,
+   * The Ollama models of the config the runtime uses, Ollama Cloud ones included,
+   * as `ollama pull` names them: the default model, the summary model of context
+   * compression unless `context.enabled` is false, the models of the memory stages
+   * that are set, of reflection when `reflection.enabled`, of the guardrails unless
+   * `guardrails.enabled` is false, and of prompt injection detection with
+   * `classifier: llm`. Models that agents name in code are not in the config,
    * list them in `deploy.ollama.models`.
    */
   private ollamaChatModels(
@@ -940,17 +972,18 @@ export class ProjectAnalyzer {
     defaultProvider: string | undefined
   ): string[] {
     const memory = yaml?.memory;
+    const injection = yaml?.security?.promptInjection;
     const candidates = [
       model,
-      yaml?.context?.summaryModel,
+      yaml?.context && yaml.context.enabled !== false ? yaml.context.summaryModel : undefined,
       memory?.compaction?.summaryModel,
       memory?.extraction?.model,
       memory?.brief?.model,
       memory?.observations?.model,
       memory?.consolidation?.model,
-      yaml?.reflection?.reflectionModel,
-      yaml?.guardrails?.model,
-      yaml?.security?.promptInjection?.llmModel,
+      yaml?.reflection?.enabled ? yaml.reflection.reflectionModel : undefined,
+      yaml?.guardrails && yaml.guardrails.enabled !== false ? yaml.guardrails.model : undefined,
+      injection?.classifier === 'llm' ? injection.llmModel : undefined,
     ];
     return unique(
       candidates

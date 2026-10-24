@@ -222,7 +222,7 @@ describe('what a project deploys as', () => {
     it('pulls the models of reflection, guardrails and prompt injection detection', () => {
       write(
         'cogitator.yml',
-        `${ollamaYml}reflection:\n  enabled: true\n  reflectionModel: ollama/qwen3:1.7b\nguardrails:\n  model: ollama/llama-guard3:1b\nsecurity:\n  promptInjection:\n    llmModel: ollama/qwen3:0.6b\n`
+        `${ollamaYml}reflection:\n  enabled: true\n  reflectionModel: ollama/qwen3:1.7b\nguardrails:\n  model: ollama/llama-guard3:1b\nsecurity:\n  promptInjection:\n    classifier: llm\n    llmModel: ollama/qwen3:0.6b\n`
       );
       expect(analyze('docker').deployConfig.ollama?.models).toEqual([
         'qwen3.5:9b',
@@ -230,6 +230,28 @@ describe('what a project deploys as', () => {
         'llama-guard3:1b',
         'qwen3:0.6b',
       ]);
+    });
+
+    it('pulls no model of a subsystem the runtime leaves off', () => {
+      write(
+        'cogitator.yml',
+        `${ollamaYml}reflection:\n  enabled: false\n  reflectionModel: ollama/qwen3:1.7b\nguardrails:\n  enabled: false\n  model: ollama/llama-guard3:1b\nsecurity:\n  promptInjection:\n    classifier: local\n    llmModel: ollama/qwen3:0.6b\ncontext:\n  enabled: false\n  summaryModel: ollama/qwen3:4b\n`
+      );
+      expect(analyze('docker').deployConfig.ollama?.models).toEqual(['qwen3.5:9b']);
+    });
+
+    it('decides the chat role from deploy.env, which the deployment sets', () => {
+      write(
+        'cogitator.yml',
+        `${ollamaYml}deploy:\n  env:\n    COGITATOR_OLLAMA_BASE_URL: http://gpu-box:11434\n`
+      );
+      const result = analyze('docker');
+
+      expect(result.deployConfig.services?.ollama).toBeUndefined();
+      expect(result.deployConfig.ollama).toBeUndefined();
+      expect(result.deployConfig.env).toEqual({
+        COGITATOR_OLLAMA_BASE_URL: 'http://gpu-box:11434',
+      });
     });
 
     it('fails preflight on a model name that would reach ollama as a flag', () => {
@@ -387,6 +409,42 @@ describe('what a project deploys as', () => {
         expect(check(analyze('docker'), 'Ollama models')).toBeUndefined();
         write('cogitator.yml', 'llm:\n  defaultModel: ollama/--odd\n');
         expect(check(analyze('fly'), 'Ollama models')).toBeUndefined();
+      });
+
+      it('writes only the host into a variable that is the host part of the embedding URL', () => {
+        write(
+          'cogitator.yml',
+          `llm:\n  defaultModel: openai/gpt-5\n${embeddingYml('http://${EMBED_HOST:-localhost}:11434')}`
+        );
+        const result = analyze('docker', { OPENAI_API_KEY: 'sk' });
+
+        expect(result.deployConfig.env).toMatchObject({ EMBED_HOST: 'ollama' });
+        expect(result.warnings.some((w) => w.includes('memory.embedding.baseUrl'))).toBe(false);
+      });
+
+      it('leaves a variable alone when no value of it gives the service URL, and warns', () => {
+        write(
+          'cogitator.yml',
+          `llm:\n  defaultModel: openai/gpt-5\n${embeddingYml('http://localhost:${EMBED_PORT:-11434}/v1')}`
+        );
+        const result = analyze('docker', { OPENAI_API_KEY: 'sk' });
+
+        expect(result.deployConfig.env ?? {}).not.toHaveProperty('EMBED_PORT');
+        expect(
+          result.warnings.some((w) => w.includes('builds its URL from EMBED_PORT in a way'))
+        ).toBe(true);
+      });
+
+      it('forwards a host-part variable of a remote chat URL as it is', () => {
+        write(
+          'cogitator.yml',
+          'llm:\n  defaultModel: ollama/qwen3:32b\n  providers:\n    ollama:\n      baseUrl: http://${GPU_HOST}:11434\n'
+        );
+        const result = analyze('docker', { GPU_HOST: 'gpu-box' });
+
+        expect(result.deployConfig.secrets).toContain('GPU_HOST');
+        expect(result.deployConfig.env ?? {}).not.toHaveProperty('GPU_HOST');
+        expect(result.deployConfig.services?.ollama).toBeUndefined();
       });
 
       it('keeps remote embeddings when only the chat model runs locally', () => {
