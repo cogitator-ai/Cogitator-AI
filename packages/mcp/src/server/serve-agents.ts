@@ -14,10 +14,12 @@ import type {
   ToolInvoker,
   ToolSchema,
 } from '@cogitator-ai/types';
+import { pendingQuestions } from '@cogitator-ai/core';
 import { z } from 'zod';
 import type { MCPServerConfig, MCPToolContext } from '../types';
 import { MCPServer } from './mcp-server';
 import { elicitApproval } from './approval';
+import { elicitAnswers } from './questions';
 
 /**
  * What serving agents needs from a Cogitator: running them and resuming paused runs. A host that
@@ -63,7 +65,9 @@ const resumeSchema = z.object({
  * thread to continue) and answers with the agent's reply, plus a
  * `<agent>_resume` tool for agents whose tools need approval. Approvals are
  * asked from the person at the client through MCP elicitation; a client that
- * cannot answer gets a paused answer to resume once the user decided.
+ * cannot answer gets a paused answer to resume once the user decided. Questions
+ * the agent's tools ask (`context.interrupt()`) are asked through elicitation
+ * too; when the client cannot answer one, the call fails with an error naming it.
  */
 export function agentTools(
   host: AgentHost,
@@ -84,12 +88,15 @@ export function agentTools(
         `Ask the ${agent.name} agent. ${firstSentence(agent.instructions)}`,
       parameters: askSchema,
       execute: async ({ task, threadId }, context) =>
-        answer(
+        settle(
+          host,
+          agent,
           await host.run(agent, {
             input: task,
             ...(threadId && { threadId }),
             ...runContext(context),
           }),
+          context,
           resumeName
         ),
     });
@@ -100,11 +107,14 @@ export function agentTools(
       description: `Continue a ${agent.name} answer that waits for the user's approval, with the user's decision.`,
       parameters: resumeSchema,
       execute: async ({ threadId, approved, reason }, context) =>
-        answer(
+        settle(
+          host,
+          agent,
           await host.resume(agent, threadId, {
             defaultDecision: approved ? { approved: true } : { approved: false, reason },
             ...runContext(context),
           }),
+          context,
           resumeName
         ),
     });
@@ -150,6 +160,32 @@ function runContext(context: MCPToolContext) {
     onApproval: async (request: ToolApprovalRequest): Promise<ToolApprovalDecision | 'pause'> =>
       (await elicitApproval(elicit, request)) ?? 'pause',
   };
+}
+
+/**
+ * The answer of a run, after the questions its tools asked (`context.interrupt()`) were put to
+ * the person at the client through elicitation and the run resumed with their answers, as often
+ * as it asks. A question nobody can answer there fails the call with an error that names it,
+ * since resuming without an answer would only pause on it again.
+ */
+async function settle(
+  host: AgentHost,
+  agent: Agent,
+  initial: RunResult,
+  context: MCPToolContext,
+  resumeName: string
+): Promise<AgentToolAnswer> {
+  let result = initial;
+  let questions = pendingQuestions(result);
+  while (questions.length > 0) {
+    const responses = await elicitAnswers(context.elicit, questions, agent.name);
+    result = await host.resume(agent, result.checkpoint ?? result.threadId, {
+      responses,
+      ...runContext(context),
+    });
+    questions = pendingQuestions(result);
+  }
+  return answer(result, resumeName);
 }
 
 function answer(result: RunResult, resumeName: string): AgentToolAnswer {

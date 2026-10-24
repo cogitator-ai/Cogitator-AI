@@ -101,6 +101,8 @@ When the model calls a function the client declared, the turn ends with the call
 
 Agent tools that need an approval (`requiresApproval`) are not run when nothing approves them (`guardrails.onToolApproval`): the model is told the tool was not run.
 
+A tool that asks a question (`context.interrupt()`) has no way to reach the client over these APIs, which only carry function calls. The request fails instead (500, `server_error`) with a message that names each question, such as `paused to ask confirm_plan ("Go ahead with the migration?")`, rather than answering with an empty `tool_calls` turn or resuming without an answer.
+
 `tool_choice: 'none'` runs the agent without any tool. `required` and `{ type: 'function', ... }` become the run's `toolChoice`: the model must call a tool (or the named one) before it answers, and the run goes back to `auto` once it has.
 
 ## Chat Completions
@@ -442,6 +444,8 @@ Steps are kept with their run, so they live in memory and leave with it (`maxSto
 Server-side `tools` run inside Cogitator. Assistant tools of type `function` are executed by the API client: when the model calls one, the run moves to `requires_action` with the pending calls, and continues after all outputs are submitted (runs waiting longer than 10 minutes expire). Outputs must cover every pending call; missing or unknown `tool_call_id`s are rejected. With the OpenAI SDK use `submitToolOutputsAndPoll` / `submitToolOutputsStream`.
 
 Server-side tools that need approval (`requiresApproval`, or the guardrails) come to the client the same way, as calls of functions it never declared: the run waits in `requires_action` instead of completing without them. The output decides the call: `{"approved": true}` (or `approve`) runs it, `{"approved": false, "reason": "..."}` declines it with the reason, and any other text declines it with that text, so nothing ambiguous runs a server tool. A configured `guardrails.onToolApproval` decides server tools itself and they never reach the client. While the run waits it is paused rather than running, so the run timeout (`limits.defaultTimeout`, 120 s by default) does not count the client's time: only `expires_at` (10 minutes per wait) does.
+
+A server-side tool that asks a question (`context.interrupt()`) fails the run (`status: 'failed'`), with `last_error.message` naming each question, since `submit_tool_outputs` can carry function outputs only. The run never waits in `requires_action` with no calls to submit.
 
 ```typescript
 const run = adapter.getRun(thread.id, runId);

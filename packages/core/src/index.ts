@@ -22,7 +22,12 @@ export {
   AGENT_CONFIG_WIRE_FIELDS,
 } from './agent-wire';
 export type { ToAgentWireOptions, AgentWireRuntime } from './agent-wire';
-export { isPausedRun, AgentRunPausedError, findAgentRunPausedError } from './run-pause';
+export {
+  isPausedRun,
+  pendingQuestions,
+  AgentRunPausedError,
+  findAgentRunPausedError,
+} from './run-pause';
 export type { PausableRun, PausedRun, PausedRunInfo } from './run-pause';
 export { tool, toolset, toolToSchema, withParsedArguments } from './tool';
 export { toToolParameters } from './tool-schema';

@@ -1,4 +1,9 @@
-import type { Agent, ToolApprovalDecision, ToolApprovalRequest } from '@cogitator-ai/types';
+import type {
+  Agent,
+  RunInterrupt,
+  ToolApprovalDecision,
+  ToolApprovalRequest,
+} from '@cogitator-ai/types';
 
 /** The A2A protocol version this package speaks, as Agent Cards declare it. */
 export const A2A_PROTOCOL_VERSION = '0.3.0';
@@ -310,11 +315,14 @@ export interface AgentRunResult {
   structured?: unknown;
   requiresInput?: boolean;
   /**
-   * `paused` when tool calls wait for approval: the task goes to `input-required` with the calls
-   * in a tool approval request data part, and the decisions resume the run
+   * `paused` when tool calls wait for approval or tools asked questions: the task goes to
+   * `input-required` with the calls in a tool approval request data part and the questions in an
+   * interrupt request data part, and the decisions and answers resume the run
    */
   status?: 'completed' | 'paused';
   pendingApprovals?: readonly ToolApprovalRequest[];
+  /** What a paused run waits on: approvals (`kind: 'approval'`) and questions of its tools */
+  interrupts?: readonly RunInterrupt[];
   runId: string;
   agentId: string;
   threadId: string;
@@ -344,8 +352,8 @@ export interface CogitatorLike {
     }
   ): Promise<AgentRunResult>;
   /**
-   * Continue the run a thread paused for tool approvals, with the client's decisions. Without
-   * it a task waiting for approvals fails when the client answers
+   * Continue the run a thread paused for tool approvals or questions, with the client's decisions
+   * and answers. Without it a task waiting on either fails when the client answers
    */
   resume?(
     agent: unknown,
@@ -353,6 +361,8 @@ export interface CogitatorLike {
     options: {
       decisions?: Record<string, ToolApprovalDecision>;
       defaultDecision?: ToolApprovalDecision;
+      /** Answers to the questions of the run's tools, by interrupt id */
+      responses?: Record<string, unknown>;
       signal?: AbortSignal;
       stream?: boolean;
       onToken?: (token: string) => void;

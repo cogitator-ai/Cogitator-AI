@@ -2,7 +2,7 @@ import type { Agent, Cogitator } from '@cogitator-ai/core';
 import type { RunResult, ToolResult } from '@cogitator-ai/types';
 import {
   AgentRunner,
-  PAUSE_WARNING,
+  pauseWarning,
   runFinish,
   runMetadata,
   toolCallPreambles,
@@ -86,6 +86,12 @@ function toV1Call(options: LanguageModelV1CallOptions): V1Call {
         objectTool: options.mode.tool,
       };
   }
+}
+
+/** The warning of a paused run, which a v1 model can never ask about. */
+function pausedWarnings(result: RunResult): Array<{ type: 'other'; message: string }> {
+  const message = pauseWarning(result, false);
+  return message ? [{ type: 'other', message }] : [];
 }
 
 /** Why the turn ended; a run waiting for tool approvals ends with `other` and a warning. */
@@ -186,10 +192,7 @@ export class AgentLanguageModelV1 implements LanguageModelV1 {
         timestamp: new Date(),
         modelId: result.modelUsed ?? prepared.model,
       },
-      warnings: [
-        ...this.warnings(prepared, options),
-        ...(result.status === 'paused' ? [{ type: 'other' as const, message: PAUSE_WARNING }] : []),
-      ],
+      warnings: [...this.warnings(prepared, options), ...pausedWarnings(result)],
       providerMetadata: runMetadata(result, prepared.model, results),
     };
   }

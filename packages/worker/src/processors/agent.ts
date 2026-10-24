@@ -24,6 +24,7 @@ export async function processAgentJob(
     ? await resolved.cogitator.resume(agent, resume.checkpoint ?? threadId, {
         ...(resume.decisions && { decisions: resume.decisions }),
         ...(resume.defaultDecision && { defaultDecision: resume.defaultDecision }),
+        ...(resume.responses && { responses: resume.responses }),
         ...(userId !== undefined && { userId }),
         ...(execution.signal && { signal: execution.signal }),
       })

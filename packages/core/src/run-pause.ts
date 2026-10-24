@@ -10,6 +10,8 @@ import {
 export interface PausableRun {
   readonly status?: string;
   readonly pendingApprovals?: readonly ToolApprovalRequest[];
+  /** What a paused run waits on, questions of its tools among them */
+  readonly interrupts?: readonly RunInterrupt[];
 }
 
 /** A run outcome that waits for tool approvals, as {@link isPausedRun} narrows it. */
@@ -26,6 +28,17 @@ export type PausedRun<T extends PausableRun> = T & {
  */
 export function isPausedRun<T extends PausableRun>(result: T): result is PausedRun<T> {
   return result.status === 'paused';
+}
+
+/**
+ * The questions a paused run's tools asked (`context.interrupt()`) that wait for an answer: the
+ * interrupts that are not approvals. Code that decides approvals and resumes on its own must
+ * stop at a pause with any: no decision answers them, and resuming without answers only pauses
+ * again. Empty for a run that is not paused
+ */
+export function pendingQuestions(result: PausableRun): RunInterrupt[] {
+  if (result.status !== 'paused') return [];
+  return (result.interrupts ?? []).filter((entry) => entry.kind !== 'approval');
 }
 
 /** The run a {@link AgentRunPausedError} reports. */
@@ -62,8 +75,9 @@ function describeCalls(approvals: readonly ToolApprovalRequest[]): string {
 }
 
 /**
- * An agent run paused for tool approvals where the caller cannot wait for them: a workflow node
- * without an approval store, a swarm turn, a queued workflow job. It carries what the run waits
+ * An agent run paused where the caller cannot wait for it: for tool approvals in a workflow node
+ * without an approval store, a swarm turn, a queued workflow job, or for questions its tools
+ * asked, which only a person answers. It carries what the run waits
  * on and the `checkpoint` to resume it with `cogitator.resume()` once someone decided.
  */
 export class AgentRunPausedError extends CogitatorError {
@@ -71,6 +85,8 @@ export class AgentRunPausedError extends CogitatorError {
   readonly threadId: string;
   readonly runId?: string;
   readonly pendingApprovals: readonly ToolApprovalRequest[];
+  /** The questions of its tools the run waits on, answered in `responses` of the resume */
+  readonly interrupts: readonly RunInterrupt[];
   readonly checkpoint?: RunCheckpoint;
 
   /**
@@ -90,6 +106,7 @@ export class AgentRunPausedError extends CogitatorError {
         threadId: run.threadId,
         ...(run.runId !== undefined && { runId: run.runId }),
         pendingApprovals,
+        ...(run.interrupts?.length && { interrupts: [...run.interrupts] }),
       },
     });
     this.name = 'AgentRunPausedError';
@@ -97,6 +114,7 @@ export class AgentRunPausedError extends CogitatorError {
     this.threadId = run.threadId;
     this.runId = run.runId;
     this.pendingApprovals = pendingApprovals;
+    this.interrupts = [...(run.interrupts ?? [])];
     this.checkpoint = run.checkpoint;
   }
 }

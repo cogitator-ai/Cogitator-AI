@@ -87,6 +87,28 @@ describe('run flags', () => {
   });
 });
 
+describe('a run paused on a question of a tool', () => {
+  it('is flagged paused like an approval pause, with no approvals waiting', async () => {
+    const cogitator = {
+      run: vi.fn(async () => ({
+        output: 'Let me ask.',
+        status: 'paused',
+        pendingApprovals: [],
+        interrupts: [{ id: 'q1#0', kind: 'input', reason: 'confirm_plan', message: 'Go ahead?' }],
+      })),
+    };
+    const suite = new EvalSuite({
+      dataset: Dataset.from([{ input: 'plan' }]),
+      target: { agent: {}, cogitator },
+    });
+
+    const result = await suite.run();
+
+    expect(result.results[0]).toMatchObject({ output: 'Let me ask.', paused: true });
+    expect(cogitator.run).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('reports of run flags', () => {
   it('passes the flags of a case on to what the reporters write', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'evals-flags-'));

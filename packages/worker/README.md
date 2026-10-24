@@ -288,6 +288,9 @@ const state: JobState = await queue.getJobState('job-id');
 // | 'waiting-children' | 'unknown'
 
 await queue.resumeAgentJob(agentConfig, pausedResult, { decisions }); // see Job Results
+await queue.resumeAgentJob(agentConfig, askedResult, {
+  responses: { [askedResult.interrupts![0].id]: 'eu' },
+}); // a tool's question
 
 const metrics = await queue.getMetrics();
 // { waiting, active, completed, failed, delayed, depth, workerCount }

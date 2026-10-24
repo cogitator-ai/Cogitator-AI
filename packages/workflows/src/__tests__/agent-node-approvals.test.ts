@@ -269,3 +269,52 @@ describe('agentNode asks for each paused call on its own', () => {
     expect(refundImpl).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('agentNode with a tool that asks a question', () => {
+  it('fails the node with the question instead of resuming without an answer', async () => {
+    const ask = vi.fn(async (_params: Record<string, never>, context) =>
+      context.interrupt!({ reason: 'pick_order', message: 'Which order?' })
+    );
+    const asker = new Agent({
+      name: 'clerk',
+      model: 'mock/m',
+      instructions: 'Ask first.',
+      tools: [tool({ name: 'ask', description: 'Asks', parameters: z.object({}), execute: ask })],
+    });
+    const asking: LLMBackend = {
+      provider: 'openai',
+      chat: vi.fn(async () => ({
+        id: 'r1',
+        content: '',
+        toolCalls: [{ id: 'a1', name: 'ask', arguments: {} }],
+        finishReason: 'tool_calls' as const,
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      })),
+      chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {
+        yield { id: 's', delta: {}, finishReason: 'stop' };
+      }),
+    };
+    const askingCogitator = new Cogitator({ llm: { backends: { mock: asking } } });
+    for (const approvals of [undefined, false] as const) {
+      const workflow = new WorkflowBuilder<RefundState>('questions')
+        .initialState({})
+        .addNode(
+          'ask',
+          agentNode<RefundState>(asker, {
+            inputMapper: () => 'Refund something',
+            ...(approvals === false && { approvals: false }),
+          })
+        )
+        .build();
+      const result = await new WorkflowExecutor(askingCogitator).execute(workflow, undefined, {
+        approvalStore: new InMemoryApprovalStore(),
+      });
+      const paused = findAgentRunPausedError(result.error);
+      expect(paused).toBeInstanceOf(AgentRunPausedError);
+      expect(paused?.interrupts.map((entry) => entry.id)).toEqual(['a1#0']);
+      expect(paused?.message).toContain('answers to pick_order');
+    }
+    expect(ask).toHaveBeenCalledTimes(2);
+    await askingCogitator.close();
+  });
+});

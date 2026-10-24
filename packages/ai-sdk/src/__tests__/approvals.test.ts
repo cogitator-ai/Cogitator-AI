@@ -7,6 +7,7 @@ import type {
   ChatStreamChunk,
   LLMBackend,
   ToolCall,
+  ToolContext,
 } from '@cogitator-ai/types';
 import * as ai5 from 'ai-v5';
 import * as ai6 from 'ai-v6';
@@ -348,6 +349,93 @@ describe('agent models whose run pauses for approval', () => {
       pendingApprovals: [expect.objectContaining({ toolCallId: 'c1', toolName: 'refund' })],
     });
     expect(refundImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('runs paused on a question of a tool', () => {
+  const confirm = tool({
+    name: 'confirm_plan',
+    description: 'Asks the user to confirm a plan',
+    parameters: z.object({ plan: z.string() }),
+    execute: async ({ plan }: { plan: string }, context: ToolContext) => {
+      const reply = await context.interrupt!({
+        reason: 'confirm_plan',
+        message: `Go ahead with ${plan}?`,
+        responseSchema: z.object({ ok: z.boolean() }),
+      });
+      return { plan, ok: reply.ok };
+    },
+  });
+  const planner = new Agent({
+    name: 'planner',
+    model: 'mock/m',
+    instructions: 'Plan.',
+    tools: [confirm],
+  });
+  const asking: LLMBackend = {
+    provider: 'openai',
+    chat: async () => ({
+      id: 'r1',
+      content: '',
+      toolCalls: [{ id: 'q1', name: 'confirm_plan', arguments: { plan: 'the move' } }],
+      finishReason: 'tool_calls',
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+    }),
+    chatStream: async function* (): AsyncGenerator<ChatStreamChunk> {
+      yield { id: 's', delta: {}, finishReason: 'stop' };
+    },
+  };
+
+  it('ends with finishReason other, the question in a warning and the metadata (ai@7, v4)', async () => {
+    const asker = new Cogitator({ llm: { backends: { mock: asking } } });
+    const model = cogitatorModel(asker, planner, { specificationVersion: 'v4' });
+
+    const result = await ai7.generateText({ model, prompt: 'Plan the move' });
+
+    expect(result.finishReason).toBe('other');
+    expect(result.content.some((part) => part.type === 'tool-approval-request')).toBe(false);
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({
+        type: 'other',
+        message: expect.stringContaining('paused to ask confirm_plan ("Go ahead with the move?")'),
+      })
+    );
+    expect(result.providerMetadata?.cogitator).toMatchObject({
+      status: 'paused',
+      pendingApprovals: [],
+      pendingQuestions: [expect.objectContaining({ id: 'q1#0', reason: 'confirm_plan' })],
+    });
+    await asker.close();
+  });
+
+  it('names the question instead of approvals where approvals are not supported (ai@5, v2)', async () => {
+    const asker = new Cogitator({ llm: { backends: { mock: asking } } });
+    const model = cogitatorModel(asker, planner, { specificationVersion: 'v2' });
+
+    const result = await ai5.generateText({ model, prompt: 'Plan the move' });
+
+    expect(result.finishReason).toBe('other');
+    expect(result.warnings).toEqual([
+      expect.objectContaining({ message: expect.stringContaining('paused to ask confirm_plan') }),
+    ]);
+    await asker.close();
+  });
+
+  it('names the question in the warning of a v1 model', async () => {
+    const asker = new Cogitator({ llm: { backends: { mock: asking } } });
+    const model = cogitatorModel(asker, planner, { specificationVersion: 'v1' });
+
+    const result = await model.doGenerate({
+      inputFormat: 'prompt',
+      mode: { type: 'regular' },
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'Plan the move' }] }],
+    });
+
+    expect(result.finishReason).toBe('other');
+    expect(result.warnings).toEqual([
+      { type: 'other', message: expect.stringContaining('paused to ask confirm_plan') },
+    ]);
+    await asker.close();
   });
 });
 

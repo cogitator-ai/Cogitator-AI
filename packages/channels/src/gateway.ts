@@ -17,6 +17,7 @@ import type {
   Message,
   MultitaskStrategy,
   QueueMode,
+  RunInterrupt,
   RunOptions,
   RunResult,
   Session,
@@ -26,7 +27,7 @@ import type {
 } from '@cogitator-ai/types';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import type { Agent, Cogitator } from '@cogitator-ai/core';
-import { parseModel } from '@cogitator-ai/core';
+import { parseModel, pendingQuestions } from '@cogitator-ai/core';
 import { SessionManager, CompactionService } from '@cogitator-ai/memory';
 import type { SummarizeFn } from '@cogitator-ai/memory';
 import { StreamBuffer } from './stream-buffer';
@@ -108,6 +109,8 @@ type GatewaySessionManager = ISessionManager & {
 interface PausedThread {
   userId: string;
   approvals: readonly ToolApprovalRequest[];
+  /** Questions the run's tools asked (`context.interrupt()`), answered by the user's next message */
+  questions?: readonly RunInterrupt[];
   /** The entry the paused run's input went after, where a rollback of its resume branches from */
   branchFrom?: string | null;
 }
@@ -144,6 +147,20 @@ const QUEUE_STRATEGIES: Record<QueueMode, MultitaskStrategy | undefined> = {
   interrupt: 'interrupt',
   rollback: 'rollback',
 };
+
+/**
+ * A chat message as the answer to `question`: parsed as JSON when its schema asks for anything
+ * but a string and the text reads as JSON, else the text itself
+ */
+function answerOf(question: RunInterrupt, text: string): unknown {
+  const type = question.responseSchema?.type;
+  if (type === undefined || type === 'string') return text;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
+  }
+}
 
 function isThreadBusy(error: unknown): boolean {
   return CogitatorError.isCogitatorError(error) && error.code === ErrorCode.THREAD_BUSY;
@@ -947,7 +964,8 @@ export class Gateway {
       });
     }
 
-    const decision = this.readApprovalReply(msg, threadId, known !== undefined);
+    const question = this.waitingQuestion(msg, threadId);
+    const decision = question ? null : this.readApprovalReply(msg, threadId, known !== undefined);
 
     if (!decision && this.config.memory && this.config.session?.compaction) {
       try {
@@ -975,9 +993,10 @@ export class Gateway {
       await typing().catch(() => {});
       tracker?.setPhase('thinking');
 
-      const resumed =
-        decision !== null &&
-        (await this.resumeWithReply(agent, msg, channel, threadId, decision, tracker, signal));
+      const resumed = question
+        ? await this.resumeWithAnswer(agent, msg, channel, threadId, question, tracker, signal)
+        : decision !== null &&
+          (await this.resumeWithReply(agent, msg, channel, threadId, decision, tracker, signal));
       if (!resumed) {
         await this.runMessage(agent, msg, channel, threadId, tracker, signal);
       }
@@ -1005,6 +1024,66 @@ export class Gateway {
     if (isScheduled(msg) || msg.attachments?.length) return null;
     if (seenBefore && !this.pausedThreads.has(threadId)) return null;
     return parseApprovalReply(msg.text, this.approvalWords);
+  }
+
+  /**
+   * The question a paused run of this thread waits on that `msg` answers: the first one, when
+   * the user it was asked asks back in the thread with a plain message
+   */
+  private waitingQuestion(msg: ChannelMessage, threadId: string): RunInterrupt | undefined {
+    if (isScheduled(msg) || msg.attachments?.length) return undefined;
+    const paused = this.pausedThreads.get(threadId);
+    return paused?.userId === msg.userId ? paused.questions?.[0] : undefined;
+  }
+
+  /**
+   * Resumes the paused run with `msg` as the answer to `question`. An answer the run refuses
+   * (`VALIDATION_ERROR`) is told to the user and the question keeps waiting, an expired one ends
+   * the pause, and a thread with no paused run any more runs the message as a new turn (false)
+   */
+  private async resumeWithAnswer(
+    agent: Agent,
+    msg: ChannelMessage,
+    channel: Channel,
+    threadId: string,
+    question: RunInterrupt,
+    tracker: StatusReactionTracker | undefined,
+    signal: AbortSignal | undefined
+  ): Promise<boolean> {
+    const paused = this.pausedThreads.get(threadId);
+    const origin = signal ? this.runPlaces.get(signal)?.origin : undefined;
+    if (origin && paused?.branchFrom !== undefined) this.runStarts.set(origin, paused.branchFrom);
+    const options = {
+      ...this.buildRunOptions(msg, tracker, signal),
+      responses: { [question.id]: answerOf(question, msg.text) },
+    };
+    try {
+      await this.deliver(agent, msg, channel, threadId, signal, async (extra) => {
+        const result = await this.config.cogitator.resume(agent, threadId, {
+          ...options,
+          ...extra,
+        });
+        if (this.pausedThreads.get(threadId) === paused) this.pausedThreads.delete(threadId);
+        return result;
+      });
+      return true;
+    } catch (error) {
+      if (!CogitatorError.isCogitatorError(error)) throw error;
+      if (error.code === ErrorCode.RUN_NOT_PAUSED) {
+        this.pausedThreads.delete(threadId);
+        return false;
+      }
+      if (error.code === ErrorCode.VALIDATION_ERROR || error.code === ErrorCode.INTERRUPT_EXPIRED) {
+        if (error.code === ErrorCode.INTERRUPT_EXPIRED) this.pausedThreads.delete(threadId);
+        const text =
+          error.code === ErrorCode.INTERRUPT_EXPIRED
+            ? `The question "${question.message}" expired, send your message again to go on.`
+            : `That does not answer "${question.message}": ${error.message}`;
+        await this.sendReply(channel, msg, threadId, adaptFor(channel, msg, text), msg.id);
+        return true;
+      }
+      throw error;
+    }
   }
 
   private async runMessage(
@@ -1133,6 +1212,19 @@ export class Gateway {
     replyTo: string | undefined
   ): Promise<void> {
     const approvals = result.status === 'paused' ? (result.pendingApprovals ?? []) : [];
+    const questions = pendingQuestions(result);
+    if (approvals.length === 0 && questions.length > 0) {
+      this.pausedThreads.set(threadId, {
+        userId: msg.userId,
+        approvals: [],
+        questions,
+        ...(result.memory && { branchFrom: result.memory.branchPoint }),
+      });
+      const [first] = questions;
+      const prompt = first && adaptFor(channel, msg, first.message);
+      if (prompt) await this.sendReply(channel, msg, threadId, prompt, replyTo);
+      return;
+    }
     if (approvals.length === 0) return;
 
     this.pausedThreads.set(threadId, {

@@ -325,3 +325,75 @@ describe('distributed swarm turns that pause', () => {
     expect(result.pendingApprovals?.map((p) => p.toolName)).toEqual(['refund']);
   });
 });
+
+describe('agent jobs that pause on a question of a tool', () => {
+  const ask = tool({
+    name: 'ask_region',
+    description: 'Asks where to deploy',
+    parameters: z.object({}),
+    execute: async (_params, context) =>
+      context.interrupt!({
+        reason: 'pick_region',
+        message: 'Which region?',
+        responseSchema: z.object({ region: z.string() }),
+      }),
+  });
+  const askCall: ToolCall = { id: 'q1', name: 'ask_region', arguments: {} };
+  const askingBackend = (): LLMBackend => ({
+    provider: 'openai',
+    chat: async (request: ChatRequest): Promise<ChatResponse> => {
+      const results = request.messages.filter((m) => m.role === 'tool');
+      return results.length === 0
+        ? {
+            id: 'r1',
+            content: '',
+            toolCalls: [askCall],
+            finishReason: 'tool_calls',
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          }
+        : {
+            id: 'r2',
+            content: `Deploying: ${String(results[0]?.content)}`,
+            finishReason: 'stop',
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          };
+    },
+    chatStream: async function* (): AsyncGenerator<ChatStreamChunk> {
+      yield { id: 's', delta: {}, finishReason: 'stop' };
+    },
+  });
+  const asker = serializeAgent(
+    new Agent({ name: 'ops', model: 'mock/m', instructions: 'Deploy.', tools: [ask] })
+  );
+  const askingWorker = () => {
+    const cogitator = new Cogitator({ llm: { backends: { mock: askingBackend() } } });
+    cogitators.push(cogitator);
+    return { cogitator, tools: [ask] };
+  };
+
+  it('complete with the question, and resume with its answer on another worker', async () => {
+    const paused = roundTrip(
+      await processAgentJob(
+        { type: 'agent', jobId: 'q-j1', agentConfig: asker, input: 'Deploy', threadId: 'q-t1' },
+        askingWorker()
+      )
+    );
+    expect(paused.status).toBe('paused');
+    expect(paused.pendingApprovals).toEqual([]);
+    expect(paused.interrupts?.map((entry) => entry.id)).toEqual(['q1#0']);
+
+    const result = await processAgentJob(
+      {
+        type: 'agent',
+        jobId: 'q-j2',
+        agentConfig: asker,
+        input: '',
+        threadId: 'q-t1',
+        resume: { checkpoint: paused.checkpoint, responses: { 'q1#0': { region: 'eu' } } },
+      },
+      askingWorker()
+    );
+    expect(result.status).toBe('completed');
+    expect(result.output).toBe('Deploying: {"region":"eu"}');
+  });
+});

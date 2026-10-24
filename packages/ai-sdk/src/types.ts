@@ -162,7 +162,8 @@ export interface CogitatorUsageV3 {
 
 /**
  * Why a v3 or v4 model's turn ended: `stop` when the agent answered, `tool-calls` (raw `paused`)
- * when its run waits for tool approvals, `content-filter` when the answer was withheld (raw
+ * when its run waits for tool approvals, `other` (raw `paused`) when it waits only on questions
+ * its tools asked (`context.interrupt()`), `content-filter` when the answer was withheld (raw
  * `content_filter` for a provider's filter, `refusal` when the model declined), `length` when the
  * answer stopped at the output token limit, and `other` (raw `iteration-limit`) when tool calls
  * used up the agent's `maxIterations`.
@@ -170,13 +171,14 @@ export interface CogitatorUsageV3 {
 export type CogitatorFinishReasonV3 =
   | { unified: 'stop'; raw: 'stop' }
   | { unified: 'tool-calls'; raw: 'paused' }
+  | { unified: 'other'; raw: 'paused' }
   | { unified: 'content-filter'; raw: 'content_filter' | 'refusal' }
   | { unified: 'length'; raw: 'length' }
   | { unified: 'other'; raw: 'iteration-limit' };
 
 /**
- * Why a v2 model's turn ended: `other` when the run waits for tool approvals or used up its
- * iterations, `content-filter` when the answer was withheld, `length` when it was cut off.
+ * Why a v2 model's turn ended: `other` when the run waits for tool approvals or questions of its
+ * tools, or used up its iterations, `content-filter` when the answer was withheld, `length` when it was cut off.
  */
 export type CogitatorFinishReasonV2 = 'stop' | 'other' | 'content-filter' | 'length';
 

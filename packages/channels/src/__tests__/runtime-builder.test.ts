@@ -287,6 +287,7 @@ vi.mock('@cogitator-ai/core', async (importOriginal) => {
     createDeviceTools,
     parseModel,
     restrictFileTools: actual.restrictFileTools,
+    pendingQuestions: actual.pendingQuestions,
     tool: toolFactory,
   };
 });

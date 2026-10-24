@@ -152,6 +152,14 @@ A pending approval is an interrupt of `kind: 'approval'`, its id the tool call i
 
 A pause on questions writes an `interrupt` entry `{ status: 'paused', interrupts: [{ id, kind, reason, message }] }`, and a resume that answers them one with `{ status: 'resumed', interrupts: [{ id, kind, reason, response }] }`. A pause for approvals writes the `approval` entry it always wrote.
 
+### Across Cogitator
+
+Code that decides approvals and resumes on its own stops at a pause on questions, since no decision answers them (`pendingQuestions(result)` from `@cogitator-ai/core` lists them):
+
+- A workflow `agentNode`, a swarm turn and a queued workflow job fail with `AgentRunPausedError`, the questions in `error.interrupts` and the `checkpoint` to resume. `JobQueue.resumeAgentJob(config, paused, { responses })` answers a paused agent job.
+- The [Gateway](/docs/channels/gateway) asks the question in the chat and takes the user's next message as the answer, the voice runner says it and takes the caller's next turn.
+- A2A tasks wait in `input-required` with an `interrupt-request` part, MCP servers ask through elicitation, and the OpenAI-compatible APIs, Cogitator Studio and delegated `agentAsTool` runs end with an error that names the questions.
+
 ### Over HTTP
 
 The JSON answer of a paused run and the `finish` event of its stream carry `interrupts` when tools asked questions, and the stream sends `interrupt-required` with them instead of `approval-required`. Resume with `responses` in the body of `POST /agents/:name/resume` (see [Server Adapters](/docs/server-adapters)).

@@ -24,6 +24,20 @@ const publish = tool({
   execute: async ({ title }) => `published ${title}`,
 });
 
+const confirmPlan = tool({
+  name: 'confirm_plan',
+  description: 'Asks the user to confirm a plan',
+  parameters: z.object({ plan: z.string() }),
+  execute: async ({ plan }, context) => {
+    const reply = await context.interrupt!({
+      reason: 'confirm_plan',
+      message: `Go ahead with ${plan}?`,
+      responseSchema: z.object({ ok: z.boolean() }),
+    });
+    return reply.ok ? `going ahead with ${plan}` : 'stopped';
+  },
+});
+
 const researcher = new Agent({
   name: 'researcher',
   description: 'Finds facts',
@@ -39,6 +53,7 @@ const assistant = new Agent({
   tools: [
     lookupWeather,
     publish,
+    confirmPlan,
     agentAsTool(cogitator, researcher, { name: 'researcher', description: 'Delegate research' }),
   ],
 });

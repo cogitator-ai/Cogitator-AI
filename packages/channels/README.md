@@ -470,6 +470,10 @@ hooks.on('approval:resolved', ({ threadId, decision, superseded }) => {
 
 `parseApprovalReply(text, words)` and `formatApprovalPrompt(approvals, words)` are exported for custom channels and UIs.
 
+### Questions of tools
+
+A tool that asks with `context.interrupt()` pauses the run too. The Gateway sends the run's text and then the first question's `message`, and the next plain message of the user the run belongs to answers it (`cogitator.resume(agent, threadId, { responses: { [id]: text } })`, the text parsed as JSON when the question's `responseSchema` asks for anything but a string). An answer the run refuses (`VALIDATION_ERROR`) is told to the user and the question keeps waiting, an expired one ends the pause, and a run that asks again sends the next question. A message of anyone else runs as a new turn, which answers the waiting call with "The user moved on without answering".
+
 ## Status Reactions
 
 Emoji progress indicators on the user's message:

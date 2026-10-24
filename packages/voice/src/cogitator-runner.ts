@@ -4,6 +4,7 @@ import type {
   MemoryEntry,
   MemoryResult,
   Message,
+  RunInterrupt,
   RunMemoryPlace,
   RunMiddleware,
   Tool,
@@ -34,11 +35,28 @@ export interface CogitatorRunnerRunOptions {
   saveInterruptedReply?: boolean;
 }
 
+/** What `createCogitatorRunner` reads from a run's result */
+export interface CogitatorRunnerResult {
+  readonly output: string;
+  readonly memory?: RunMemoryPlace;
+  readonly status?: string;
+  /** What a paused run waits on: a question of a tool is spoken, the next turn answers it */
+  readonly interrupts?: readonly RunInterrupt[];
+}
+
+/** The options `createCogitatorRunner` passes to `cogitator.resume` to answer a question */
+export type CogitatorRunnerResumeOptions = Omit<CogitatorRunnerRunOptions, 'input'> & {
+  responses: Record<string, unknown>;
+};
+
 export interface CogitatorLike<TAgent> {
-  run(
+  run(agent: TAgent, options: CogitatorRunnerRunOptions): Promise<CogitatorRunnerResult>;
+  /** Lets the caller's next turn answer a question a tool asked, as a `Cogitator` does */
+  resume?(
     agent: TAgent,
-    options: CogitatorRunnerRunOptions
-  ): Promise<{ readonly output: string; readonly memory?: RunMemoryPlace }>;
+    threadId: string,
+    options: CogitatorRunnerResumeOptions
+  ): Promise<CogitatorRunnerResult>;
   /** Lets a streamed turn keep only what was spoken in the thread when it is interrupted */
   getMemory?(): Promise<MemoryAdapter | undefined>;
   /** Lets the runner offer the agent's tools to a realtime session (`realtimeTools`) */
@@ -82,6 +100,77 @@ const MESSAGE_OVERHEAD = 4;
  * hooks, reflection), at most `tailTimeout` ms, so the runs of a thread overlap only when such a
  * tail takes longer than that
  */
+/** The question a paused run of each voice thread waits on, answered by the caller's next turn */
+class WaitingQuestions {
+  private readonly byThread = new Map<string, RunInterrupt>();
+
+  get(threadId: string | undefined): RunInterrupt | undefined {
+    return threadId === undefined ? undefined : this.byThread.get(threadId);
+  }
+
+  /** Notes what `result` waits on in `threadId`, the text to say for it when it waits on a question */
+  note(threadId: string | undefined, result: CogitatorRunnerResult): string | undefined {
+    if (threadId === undefined) return undefined;
+    const question =
+      result.status === 'paused'
+        ? result.interrupts?.find((entry) => entry.kind !== 'approval')
+        : undefined;
+    if (!question) {
+      this.byThread.delete(threadId);
+      return undefined;
+    }
+    this.byThread.set(threadId, question);
+    return question.message;
+  }
+
+  drop(threadId: string): void {
+    this.byThread.delete(threadId);
+  }
+}
+
+/** The error code of `error`, when it carries one */
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
+  return typeof error.code === 'string' ? error.code : undefined;
+}
+
+/**
+ * Answers `question` with what the caller said, or runs the turn as a new one when the run no
+ * longer waits on it. An answer the run refuses is said back and the question keeps waiting
+ */
+async function answerOrRun<TAgent>(
+  cogitator: CogitatorLike<TAgent>,
+  agent: TAgent,
+  questions: WaitingQuestions,
+  threadId: string | undefined,
+  options: CogitatorRunnerRunOptions
+): Promise<CogitatorRunnerResult & { readonly said?: string }> {
+  const question = questions.get(threadId);
+  if (!question || threadId === undefined || !cogitator.resume) {
+    return cogitator.run(agent, options);
+  }
+  const { input, ...rest } = options;
+  try {
+    return await cogitator.resume(agent, threadId, {
+      ...rest,
+      responses: { [question.id]: input },
+    });
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === 'VALIDATION_ERROR') {
+      return {
+        output: '',
+        status: 'paused',
+        interrupts: [question],
+        said: `That does not answer my question. ${question.message}`,
+      };
+    }
+    if (code !== 'RUN_NOT_PAUSED' && code !== 'INTERRUPT_EXPIRED') throw error;
+    questions.drop(threadId);
+    return cogitator.run(agent, options);
+  }
+}
+
 class ThreadLanes {
   private readonly settles = new Map<string, Promise<void>>();
   private readonly answers = new Map<string, Promise<void>>();
@@ -204,15 +293,18 @@ export function createCogitatorRunner<TAgent extends CogitatorRunnerAgent>(
     throw new RangeError(`tailTimeout must be 0 or more, got ${String(options.tailTimeout)}`);
   }
   const lanes = new ThreadLanes(tailTimeout);
+  const questions = new WaitingQuestions();
   const runner: VoiceAgentRunner = {
     instructions: agent.instructions,
     async run(input, context) {
-      const result = await cogitator.run(agent, {
+      const threadId = context && resolveThreadId(context);
+      const result = await answerOrRun(cogitator, agent, questions, threadId, {
         input,
-        ...(context && { threadId: resolveThreadId(context) }),
+        ...(threadId !== undefined && { threadId }),
         ...(context?.signal && { signal: context.signal }),
       });
-      return { content: result.output };
+      const question = questions.note(threadId, result);
+      return { content: result.said ?? question ?? result.output };
     },
     stream(input, context) {
       return new CogitatorVoiceTurn(
@@ -221,7 +313,8 @@ export function createCogitatorRunner<TAgent extends CogitatorRunnerAgent>(
         input,
         resolveThreadId(context),
         context,
-        lanes
+        lanes,
+        questions
       );
     },
   };
@@ -273,7 +366,8 @@ class CogitatorVoiceTurn<TAgent> implements VoiceTurn {
     private readonly input: string,
     private readonly threadId: string,
     private readonly context: VoiceRunContext,
-    private readonly lanes: ThreadLanes
+    private readonly lanes: ThreadLanes,
+    private readonly questions: WaitingQuestions
   ) {}
 
   [Symbol.asyncIterator](): AsyncIterator<string, string | undefined, undefined> {
@@ -317,7 +411,7 @@ class CogitatorVoiceTurn<TAgent> implements VoiceTurn {
     const turnsBefore = this.lanes.idle(this.threadId);
     this.finished = unlessAborted(turnsBefore, this.controller.signal)
       .then(() =>
-        this.cogitator.run(this.agent, {
+        answerOrRun(this.cogitator, this.agent, this.questions, this.threadId, {
           input: this.input,
           threadId: this.threadId,
           signal: this.controller.signal,
@@ -340,7 +434,11 @@ class CogitatorVoiceTurn<TAgent> implements VoiceTurn {
         })
       )
       .then(
-        (result) => this.endRun(result.output),
+        (result) => {
+          const question = this.questions.note(this.threadId, result);
+          if (question !== undefined) this.ask(result.said ?? question);
+          else this.endRun(result.output);
+        },
         (error: unknown) => {
           this.failure = error instanceof Error ? error : new Error(String(error));
           if (this.tokens.ended) return;
@@ -370,6 +468,14 @@ class CogitatorVoiceTurn<TAgent> implements VoiceTurn {
    * a runtime that does not stream): end the stream with its output, said only when nothing was
    * streamed at all, since otherwise it was already said
    */
+  /** The run paused on a question of a tool: say it after what was said, it ends the turn */
+  private ask(question: string): void {
+    if (this.tokens.ended) return;
+    if (this.streamed.length > 0 && !this.streamed.endsWith('\n')) this.say('\n');
+    this.say(question);
+    this.tokens.end(question);
+  }
+
   private endRun(output: string): void {
     if (this.tokens.ended) return;
     if (this.streamed.length === 0) this.say(output);

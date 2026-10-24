@@ -4,7 +4,7 @@
  * Implements the OpenAI Assistants API semantics on top of Cogitator.
  */
 
-import { type Cogitator, Agent, isPausedRun } from '@cogitator-ai/core';
+import { type Cogitator, Agent, isPausedRun, pendingQuestions } from '@cogitator-ai/core';
 import {
   CogitatorError,
   type ImageInput,
@@ -29,7 +29,7 @@ import {
   type StoredThread,
 } from './thread-manager';
 import type { ThreadStorage } from './storage';
-import { InvalidRequestError } from './errors';
+import { InvalidRequestError, unansweredQuestionsError } from './errors';
 import { RunStepRecorder, isSettledStep, settledEvent, type RunStepEventType } from './run-steps';
 import type {
   Assistant,
@@ -1126,6 +1126,8 @@ export class OpenAIAdapter {
       });
 
       while (isPausedRun(result)) {
+        const questions = pendingQuestions(result);
+        if (questions.length > 0) throw unansweredQuestionsError(questions, 'Assistants API');
         if (!result.checkpoint) {
           throw new Error(`Run ${run.id} paused without a checkpoint to resume from`);
         }

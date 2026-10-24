@@ -225,3 +225,69 @@ describe('VERSION', () => {
     expect(VERSION).toBe(packageJson.version);
   });
 });
+
+describe('createCogitatorRunner and questions of tools', () => {
+  const agent = { instructions: 'Be brief.' };
+  const question = {
+    id: 'q1#0',
+    kind: 'input' as const,
+    reason: 'pick_region',
+    message: 'Which region?',
+    toolCallId: 'q1',
+  };
+  const paused = { output: '', status: 'paused', interrupts: [question] };
+
+  it('says the question and answers it with the next turn', async () => {
+    const cogitator = {
+      run: vi.fn().mockResolvedValue(paused),
+      resume: vi.fn().mockResolvedValue({ output: 'Deployed to eu.' }),
+    };
+    const runner = createCogitatorRunner(cogitator, agent);
+
+    await expect(runner.run('Deploy', { sessionId: 's' })).resolves.toEqual({
+      content: 'Which region?',
+    });
+    await expect(runner.run('eu', { sessionId: 's' })).resolves.toEqual({
+      content: 'Deployed to eu.',
+    });
+    expect(cogitator.resume).toHaveBeenCalledWith(agent, 'voice:s', {
+      threadId: 'voice:s',
+      responses: { 'q1#0': 'eu' },
+    });
+    expect(cogitator.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks again when the run refuses the answer', async () => {
+    const cogitator = {
+      run: vi.fn().mockResolvedValue(paused),
+      resume: vi
+        .fn()
+        .mockRejectedValueOnce(Object.assign(new Error('bad'), { code: 'VALIDATION_ERROR' }))
+        .mockResolvedValueOnce({ output: 'Done.' }),
+    };
+    const runner = createCogitatorRunner(cogitator, agent);
+    await runner.run('Deploy', { sessionId: 's' });
+    await expect(runner.run('mars', { sessionId: 's' })).resolves.toEqual({
+      content: 'That does not answer my question. Which region?',
+    });
+    await expect(runner.run('eu', { sessionId: 's' })).resolves.toEqual({ content: 'Done.' });
+  });
+
+  it('streams the question as the end of a turn that paused on it', async () => {
+    const cogitator = {
+      run: vi.fn(async (_agent: unknown, options: CogitatorRunnerRunOptions) => {
+        options.onToken?.('Let me check.');
+        options.onModelTurn?.({
+          content: 'Let me check.',
+          toolCalls: [{ id: 'q1', name: 'deploy', arguments: {} }],
+          model: 'mock/m',
+        });
+        return paused;
+      }),
+    };
+    const runner = createCogitatorRunner(cogitator, agent);
+    const deltas: string[] = [];
+    for await (const delta of runner.stream!('Deploy', { sessionId: 's' })) deltas.push(delta);
+    expect(deltas).toEqual(['Let me check.', '\n', 'Which region?']);
+  });
+});

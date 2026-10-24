@@ -5,6 +5,7 @@ import type {
   ModelFallbackEvent,
   Message,
   ReasoningEffort,
+  RunInterrupt,
   RunResult,
   ToolApprovalDecision,
   ToolCall,
@@ -121,6 +122,31 @@ export const PAUSE_WARNING =
   'The agent run paused for tool approvals, which this AI SDK version cannot ask for. ' +
   'providerMetadata.cogitator has the threadId and pendingApprovals: resume the run with ' +
   'cogitator.resume(agent, threadId, { decisions }).';
+
+/** The questions a paused run's tools asked (`context.interrupt()`), which no AI SDK part carries. */
+export function runQuestions(result: RunResult): RunInterrupt[] {
+  if (result.status !== 'paused') return [];
+  return (result.interrupts ?? []).filter((entry) => entry.kind !== 'approval');
+}
+
+/**
+ * The warning of a paused run the response cannot ask about: approvals for a model version
+ * without approval parts (`PAUSE_WARNING`), or questions of its tools, which none can ask.
+ * Undefined for a run that is not paused.
+ */
+export function pauseWarning(result: RunResult, asksApprovals: boolean): string | undefined {
+  if (result.status !== 'paused') return undefined;
+  const questions = runQuestions(result);
+  if (questions.length > 0) {
+    const asked = questions.map((entry) => `${entry.reason} ("${entry.message}")`).join(', ');
+    return (
+      `The agent run paused to ask ${asked}, which no AI SDK version can ask. ` +
+      'providerMetadata.cogitator has the threadId and pendingQuestions: answer them with ' +
+      'cogitator.resume(agent, threadId, { responses }).'
+    );
+  }
+  return asksApprovals && (result.pendingApprovals ?? []).length > 0 ? undefined : PAUSE_WARNING;
+}
 
 const APPROVAL_ID_PREFIX = 'cogitator:';
 
@@ -634,12 +660,18 @@ export function toolResultValue(result: ToolResult): {
 
 /**
  * Why a run's answer ended, as the AI SDK finish reasons name it: `tool-calls` when it waits for
- * tool approvals, `content-filter` when the answer was withheld (`raw` says whether by a filter
+ * tool approvals, `other` (raw `paused`) when it waits only on questions of its tools, `content-filter` when the answer was withheld (`raw` says whether by a filter
  * or a refusal), `length` when it stopped at the token limit, `other` when tool calls used up
  * the agent's iterations, `stop` otherwise.
  */
 export function runFinish(result: RunResult): CogitatorFinishReasonV3 {
-  if (result.status === 'paused') return { unified: 'tool-calls', raw: 'paused' };
+  if (result.status === 'paused') {
+    const asksOnly =
+      (result.pendingApprovals ?? []).length === 0 && runQuestions(result).length > 0;
+    return asksOnly
+      ? { unified: 'other', raw: 'paused' }
+      : { unified: 'tool-calls', raw: 'paused' };
+  }
   if (result.blocked) return { unified: 'content-filter', raw: result.blocked };
   if (result.truncated) return { unified: 'length', raw: 'length' };
   if (result.iterationLimitReached) return { unified: 'other', raw: 'iteration-limit' };
@@ -680,6 +712,8 @@ export function runMetadata(
   if (result.status === 'paused') {
     metadata.status = 'paused';
     metadata.pendingApprovals = toJSONValue(result.pendingApprovals ?? []) ?? [];
+    const questions = runQuestions(result);
+    if (questions.length > 0) metadata.pendingQuestions = toJSONValue(questions) ?? [];
   }
   if (result.truncated) metadata.truncated = true;
   if (result.blocked) metadata.blocked = result.blocked;

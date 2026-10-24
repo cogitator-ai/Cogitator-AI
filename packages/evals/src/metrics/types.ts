@@ -113,7 +113,7 @@ export interface EvalCaseResult {
   truncated?: boolean;
   /** Tool calls used up the agent's `maxIterations` before it answered */
   iterationLimitReached?: boolean;
-  /** The run paused for tool approvals, so `output` holds no answer */
+  /** The run paused for tool approvals or questions of its tools, so `output` holds no answer */
   paused?: boolean;
 }
 

@@ -165,6 +165,8 @@ export class JobQueue {
       decisions?: Record<string, ToolApprovalDecision>;
       /** Decision for every waiting call `decisions` leaves out */
       defaultDecision?: ToolApprovalDecision;
+      /** Answers to the questions the run's tools asked, by interrupt id */
+      responses?: Record<string, unknown>;
       /** Who resumes the run; when set it must be the user the run belongs to */
       userId?: string;
       priority?: number;
@@ -194,6 +196,7 @@ export class JobQueue {
         ...(paused.checkpoint && { checkpoint: paused.checkpoint }),
         ...(options?.decisions && { decisions: options.decisions }),
         ...(options?.defaultDecision && { defaultDecision: options.defaultDecision }),
+        ...(options?.responses && { responses: options.responses }),
       },
       metadata: options?.metadata,
     };

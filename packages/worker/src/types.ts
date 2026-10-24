@@ -136,6 +136,11 @@ export interface AgentJobResume {
   decisions?: Record<string, ToolApprovalDecision>;
   /** Decision for every waiting call `decisions` leaves out, e.g. one "approve all" answer */
   defaultDecision?: ToolApprovalDecision;
+  /**
+   * Answers to the questions the run's tools asked (`interrupts` of the paused result), by
+   * interrupt id, see `ResumeOptions.responses`
+   */
+  responses?: Record<string, unknown>;
 }
 
 export interface AgentJobPayload {
@@ -186,7 +191,8 @@ export type AgentJobUsage = AgentWireUsage;
  * (`truncated`), withheld (`blocked`) or given at the iteration limit. A run that paused for tool
  * approvals completes the job with `status: 'paused'`, the calls in `pendingApprovals` and the
  * `checkpoint`: its `output` is not the answer, and `JobQueue.resumeAgentJob` continues it once
- * the calls are decided.
+ * the calls are decided. A run whose tools asked questions pauses the same way, the questions in
+ * `interrupts`, answered with `responses`.
  */
 export interface AgentJobResult extends AgentWireRunResult {
   type: 'agent';

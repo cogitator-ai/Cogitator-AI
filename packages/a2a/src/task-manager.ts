@@ -1,6 +1,11 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import type { ToolApprovalRequest } from '@cogitator-ai/types';
+import {
+  CogitatorError,
+  ErrorCode,
+  type ToolApprovalDecision,
+  type ToolApprovalRequest,
+} from '@cogitator-ai/types';
 import type {
   A2ATask,
   A2AMessage,
@@ -14,6 +19,7 @@ import type {
   Artifact,
   CogitatorLike,
   AgentRunResult,
+  DataPart,
 } from './types.js';
 import { InMemoryTaskStore } from './task-store.js';
 import { isStreamFinalState, isTerminalState } from './types.js';
@@ -26,6 +32,14 @@ import {
   taskPendingApprovals,
   toolApprovalRequestPart,
 } from './approvals.js';
+import {
+  TASK_PENDING_QUESTIONS_KEY,
+  answersFromMessage,
+  interruptRequestPart,
+  taskPendingQuestions,
+  toTaskQuestion,
+  type TaskQuestion,
+} from './questions.js';
 import { agentMessage, newArtifactId, textPart } from './protocol.js';
 
 export interface TaskManagerConfig {
@@ -45,6 +59,19 @@ export interface ExecuteTaskOptions {
 
 /** What the task manager emits on `event`: the task changes a stream or a webhook relays. */
 export type TaskEvent = TaskStatusUpdateEvent | TaskArtifactUpdateEvent;
+
+/** What a task's paused run waits on, as the task keeps it. */
+interface PendingInput {
+  approvals: readonly ToolApprovalRequest[];
+  questions: readonly TaskQuestion[];
+}
+
+/** What resumes a task's paused run: the decisions and answers of the message continuing it. */
+interface ResumeInput {
+  decisions?: Record<string, ToolApprovalDecision>;
+  defaultDecision?: ToolApprovalDecision;
+  responses?: Record<string, unknown>;
+}
 
 /** States a task takes a new message in: those where it waits on the client. */
 const CONTINUABLE_STATES: readonly TaskState[] = ['input-required', 'auth-required'];
@@ -168,24 +195,31 @@ export class TaskManager extends EventEmitter {
       }
       abortController.signal.throwIfAborted();
 
-      const decisions = taskPendingApprovals(task) && readToolApprovalResponse(message);
+      const resumeWith = this.resumeInput(task, message);
       let result: AgentRunResult;
-      if (decisions) {
+      if (resumeWith) {
         if (!cogitator.resume) {
           throw new A2AError(
             errors.unsupportedOperation(
-              'resuming a run paused for tool approvals (the server Cogitator has no resume)'
+              'resuming a run paused for tool approvals or questions (the server Cogitator has no resume)'
             )
           );
         }
-        result = await cogitator.resume(agent, task.contextId, {
-          ...decisions,
-          signal: abortController.signal,
-          stream: !!onToken,
-          onToken,
-          timeout: options.timeout,
-          ...(options.userId !== undefined && { userId: options.userId }),
-        });
+        try {
+          result = await cogitator.resume(agent, task.contextId, {
+            ...resumeWith,
+            signal: abortController.signal,
+            stream: !!onToken,
+            onToken,
+            timeout: options.timeout,
+            ...(options.userId !== undefined && { userId: options.userId }),
+          });
+        } catch (error) {
+          if (resumeWith.responses && isRefusedAnswer(error) && !abortController.signal.aborted) {
+            return await this.askAgain(task.id, error.message);
+          }
+          throw error;
+        }
       } else {
         const priorHistory = await this.priorHistory(task, message);
         result = await cogitator.run(agent, {
@@ -201,7 +235,7 @@ export class TaskManager extends EventEmitter {
       }
 
       if (result.status === 'paused') {
-        return await this.requestApproval(task.id, result, streamer);
+        return await this.requestPausedInput(task.id, result, streamer);
       }
 
       if (result.requiresInput) {
@@ -441,11 +475,26 @@ export class TaskManager extends EventEmitter {
   }
 
   /**
-   * A run that paused for tool approvals: the task waits in `input-required`, its status message
-   * carries the calls in a tool approval request data part, and the client's decisions (a tool
-   * approval response data part in the message that continues the task) resume the run.
+   * The decisions and answers a message gives to the run its task paused: a tool approval
+   * response for waiting calls, answers to waiting questions (an interrupt response, or for one
+   * question the message itself). Undefined when it gives none, so a new run answers it.
    */
-  private async requestApproval(
+  private resumeInput(task: A2ATask, message: A2AMessage): ResumeInput | undefined {
+    const decisions = taskPendingApprovals(task) ? readToolApprovalResponse(message) : undefined;
+    const questions = taskPendingQuestions(task);
+    const responses = questions ? answersFromMessage(message, questions) : undefined;
+    if (!decisions && !responses) return undefined;
+    return { ...decisions, ...(responses && { responses }) };
+  }
+
+  /**
+   * A run that paused for tool approvals or questions of its tools: the task waits in
+   * `input-required`. Its status message carries the calls in a tool approval request data part
+   * and the questions in an interrupt request data part, and the message that continues the task
+   * (a tool approval response, an interrupt response, or the answer to a single question)
+   * resumes the run.
+   */
+  private async requestPausedInput(
     taskId: string,
     result: AgentRunResult,
     streamer?: ReplyStreamer | null
@@ -453,18 +502,20 @@ export class TaskManager extends EventEmitter {
     const existing = await this.store.get(taskId);
     if (!existing) throw new A2AError(errors.taskNotFound(taskId));
 
-    const pending = result.pendingApprovals ?? [];
-    const calls = pending.map((approval) => approval.toolName).join(', ') || 'tool calls';
+    const pending: PendingInput = {
+      approvals: result.pendingApprovals ?? [],
+      questions: (result.interrupts ?? [])
+        .filter((entry) => entry.kind !== 'approval')
+        .map(toTaskQuestion),
+    };
+    const parts = pendingParts(pending);
     const reply = agentMessage(existing, [
       ...(result.output ? [textPart(result.output)] : []),
-      toolApprovalRequestPart(pending),
+      ...parts,
     ]);
     const status: TaskStatus = {
       state: 'input-required',
-      message: agentMessage(existing, [
-        textPart(`Waiting for approval of ${calls}`),
-        toolApprovalRequestPart(pending),
-      ]),
+      message: agentMessage(existing, [textPart(waitingText(pending)), ...parts]),
       timestamp: new Date().toISOString(),
     };
 
@@ -476,6 +527,32 @@ export class TaskManager extends EventEmitter {
       streamer,
       pending
     );
+  }
+
+  /**
+   * The resumed run refused the answers the client gave (one that does not match its question's
+   * schema, or names no waiting question): the task waits in `input-required` again on what it
+   * waited on before, with why.
+   */
+  private async askAgain(taskId: string, problem: string): Promise<A2ATask> {
+    const existing = await this.store.get(taskId);
+    if (!existing) throw new A2AError(errors.taskNotFound(taskId));
+    const pending: PendingInput = {
+      approvals: taskPendingApprovals(existing) ?? [],
+      questions: taskPendingQuestions(existing) ?? [],
+    };
+    const message = agentMessage(existing, [
+      textPart(`${problem}\n${waitingText(pending)}`),
+      ...pendingParts(pending),
+    ]);
+    await this.store.update(taskId, {
+      status: { state: 'input-required', message, timestamp: new Date().toISOString() },
+      history: [...(existing.history ?? []), message],
+    });
+    const updated = await this.store.get(taskId);
+    if (!updated) throw new A2AError(errors.taskNotFound(taskId));
+    this.emitStatusUpdate(updated);
+    return updated;
   }
 
   private async requestInput(
@@ -497,22 +574,29 @@ export class TaskManager extends EventEmitter {
   }
 
   /**
-   * The metadata update that records the calls a task waits on, or drops the record once the
-   * task stopped waiting; nothing when there is nothing to change.
+   * The metadata update that records the calls and questions a task waits on, or drops the
+   * records once the task stopped waiting; nothing when there is nothing to change.
    */
-  private withPendingApprovals(
+  private withPending(
     task: A2ATask,
-    pending: readonly ToolApprovalRequest[] | undefined
+    pending: PendingInput | undefined
   ): Pick<A2ATask, 'metadata'> | Record<string, never> {
     const metadata = { ...task.metadata };
-    if (pending && pending.length > 0) {
-      metadata[TASK_PENDING_APPROVALS_KEY] = pending.map((approval) => ({ ...approval }));
-    } else if (TASK_PENDING_APPROVALS_KEY in metadata) {
-      delete metadata[TASK_PENDING_APPROVALS_KEY];
-    } else {
-      return {};
+    const records: [string, readonly object[]][] = [
+      [TASK_PENDING_APPROVALS_KEY, pending?.approvals ?? []],
+      [TASK_PENDING_QUESTIONS_KEY, pending?.questions ?? []],
+    ];
+    let changed = false;
+    for (const [key, entries] of records) {
+      if (entries.length > 0) {
+        metadata[key] = entries.map((entry) => ({ ...entry }));
+        changed = true;
+      } else if (key in metadata) {
+        delete metadata[key];
+        changed = true;
+      }
     }
-    return { metadata };
+    return changed ? { metadata } : {};
   }
 
   /**
@@ -526,14 +610,14 @@ export class TaskManager extends EventEmitter {
     reply: A2AMessage,
     result: AgentRunResult,
     streamer?: ReplyStreamer | null,
-    pendingApprovals?: readonly ToolApprovalRequest[]
+    pending?: PendingInput
   ): Promise<A2ATask> {
     const built = this.buildArtifacts(existing, result, streamer);
     await this.store.update(existing.id, {
       status,
       artifacts: [...(existing.artifacts ?? []), ...built.map(({ artifact }) => artifact)],
       history: [...(existing.history ?? []), reply],
-      ...this.withPendingApprovals(existing, pendingApprovals),
+      ...this.withPending(existing, pending),
     });
 
     const updatedTask = await this.store.get(existing.id);
@@ -568,4 +652,28 @@ export class TaskManager extends EventEmitter {
   private emitEvent(event: TaskEvent): void {
     this.emit('event', event);
   }
+}
+
+/** Whether a resume refused the client's answers, which it may give again. */
+function isRefusedAnswer(error: unknown): error is CogitatorError {
+  return CogitatorError.isCogitatorError(error) && error.code === ErrorCode.VALIDATION_ERROR;
+}
+
+/** The data parts that tell the client what a paused run waits on. */
+function pendingParts({ approvals, questions }: PendingInput): DataPart[] {
+  if (approvals.length === 0 && questions.length === 0) return [toolApprovalRequestPart([])];
+  return [
+    ...(approvals.length > 0 ? [toolApprovalRequestPart(approvals)] : []),
+    ...(questions.length > 0 ? [interruptRequestPart(questions)] : []),
+  ];
+}
+
+/** The status text of a paused run: the calls it waits to have approved, the questions it asks. */
+function waitingText({ approvals, questions }: PendingInput): string {
+  const lines = questions.map((question) => question.message);
+  if (approvals.length > 0 || lines.length === 0) {
+    const calls = approvals.map((approval) => approval.toolName).join(', ') || 'tool calls';
+    lines.unshift(`Waiting for approval of ${calls}`);
+  }
+  return lines.join('\n');
 }

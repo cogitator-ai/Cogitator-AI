@@ -108,6 +108,7 @@ describe('loading the project', () => {
     ).toEqual([
       ['lookup_weather', false],
       ['publish', true],
+      ['confirm_plan', false],
       ['researcher', false],
     ]);
     expect(state.host.registry.workflows).toEqual([
@@ -259,6 +260,16 @@ describe('approvals', () => {
     const { run: record } = await settled(runId);
     expect(record.status).toBe('stopped');
     expect(record.toolCalls[0].approval?.status).toBe('rejected');
+  });
+});
+
+describe('questions of tools', () => {
+  it('end the run with the question, not as an approval of no calls', async () => {
+    const { runId } = await chat('confirm the plan');
+    const { run: record } = await settled(runId);
+    expect(record.status).toBe('failed');
+    expect(record.error).toContain('paused to ask confirm_plan ("Go ahead with the move?")');
+    expect(record.error).not.toContain('approval');
   });
 });
 
