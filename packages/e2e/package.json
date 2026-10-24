@@ -54,7 +54,7 @@
     "ai": "^7.0.127",
     "create-cogitator-app": "workspace:*",
     "express": "^5.2.1",
-    "fastify": "^5.12.5",
+    "fastify": "^5.12.6",
     "hono": "^4.13.12",
     "koa": "^3.2.1",
     "mongodb": "^7.7.0",

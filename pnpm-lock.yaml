@@ -214,8 +214,8 @@ importers:
         specifier: ^5.2.1
         version: 5.2.1(supports-color@10.2.2)
       fastify:
-        specifier: ^5.12.5
-        version: 5.12.5
+        specifier: ^5.12.6
+        version: 5.12.7
       grammy:
         specifier: ^1.46.0
         version: 1.46.0(supports-color@10.2.2)
@@ -267,7 +267,7 @@ importers:
         version: 5.2.1(supports-color@10.2.2)
       fastify:
         specifier: '>=4.0.0'
-        version: 5.12.5
+        version: 5.12.7
       hono:
         specifier: '>=4.0.0'
         version: 4.13.12
@@ -854,8 +854,8 @@ importers:
         specifier: ^5.2.1
         version: 5.2.1(supports-color@10.2.2)
       fastify:
-        specifier: ^5.12.5
-        version: 5.12.5
+        specifier: ^5.12.6
+        version: 5.12.7
       hono:
         specifier: ^4.13.12
         version: 4.13.12
@@ -1010,8 +1010,8 @@ importers:
         specifier: ^8.18.2
         version: 8.18.2
       fastify:
-        specifier: ^5.12.5
-        version: 5.12.5
+        specifier: ^5.12.6
+        version: 5.12.7
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -1173,8 +1173,8 @@ importers:
         specifier: ^5.2.1
         version: 5.2.1(supports-color@10.2.2)
       fastify:
-        specifier: ^5.12.5
-        version: 5.12.5
+        specifier: ^5.12.6
+        version: 5.12.7
       hono:
         specifier: ^4.13.12
         version: 4.13.12
@@ -1490,8 +1490,8 @@ importers:
         specifier: ^10.1.2
         version: 10.1.2
       fastify:
-        specifier: ^5.12.5
-        version: 5.12.5
+        specifier: ^5.12.6
+        version: 5.12.7
       ioredis:
         specifier: ^5.0.0 || ^6.0.0
         version: 6.0.0(supports-color@10.2.2)
@@ -5771,8 +5771,8 @@ packages:
   fastify-plugin@6.0.0:
     resolution: {integrity: sha512-fZOty7z3O7vOliF6d8bHE3wiEh1KcNnKEQensSgTk9C1DvN6nRLS++XVd86v33Hw/8u9Un8A1zDrQ8ujcQDHEg==}
 
-  fastify@5.12.5:
-    resolution: {integrity: sha512-OB2k1dlxs5/NAABqeKV2FUHkSD2BbENsCak8yULVcymn3fHIPDVa9TI3SDnJSWYSllZmSYuZXy2gTnsT+Sut1A==}
+  fastify@5.12.7:
+    resolution: {integrity: sha512-v4pEPsTRPuqlDIYiQFB+BHjVN4SdHX9u0ABk0ZDUKbbdY1vsNryUd1j4Z+jQEZajvYIVk047Kimva9/AJ79GYw==}
 
   fastq@1.20.1:
     resolution: {integrity: sha512-GGToxJ/w1x32s/D2EKND7kTil4n8OVk/9mycTc4VDza13lOvpUZTGX3mFSCtV9ksdGBVzvsyAVLM6mHFThxXxw==}
@@ -12707,7 +12707,7 @@ snapshots:
 
   fastify-plugin@6.0.0: {}
 
-  fastify@5.12.5:
+  fastify@5.12.7:
     dependencies:
       '@fastify/ajv-compiler': 4.0.5
       '@fastify/error': 4.2.0
