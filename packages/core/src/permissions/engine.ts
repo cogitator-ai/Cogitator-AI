@@ -227,6 +227,8 @@ class CallSubject {
     writes: ResolvedPath[];
   }>;
   readonly parsed: unknown;
+  /** The arguments as the tool gets them: read by its schema, defaults and transforms applied */
+  readonly values: Record<string, unknown>;
   readonly kind: AccessKind | undefined;
   readonly schemaKeys: ReadonlySet<string>;
 
@@ -239,6 +241,7 @@ class CallSubject {
     const parsed =
       typeof tool.parameters.safeParse === 'function' ? tool.parameters.safeParse(args) : undefined;
     this.parsed = parsed?.success ? parsed.data : args;
+    this.values = isPlainRecord(this.parsed) ? this.parsed : args;
     this.kind = accessKindOf(tool);
     this.schemaKeys = new Set([...Object.keys(args), ...shapeKeys(tool.parameters)]);
   }
@@ -252,7 +255,7 @@ class CallSubject {
         return [];
       }
     }
-    const value = this.args.path ?? this.args.file_path ?? this.args.filePath;
+    const value = this.values.path ?? this.values.file_path ?? this.values.filePath;
     if (typeof value === 'string') return [value];
     return this.kind === 'read' ? ['.'] : [];
   }
@@ -275,11 +278,11 @@ class CallSubject {
     try {
       text = access?.command
         ? access.command(this.parsed)
-        : typeof this.args.command === 'string'
-          ? this.args.command
+        : typeof this.values.command === 'string'
+          ? this.values.command
           : undefined;
-      cwd = access?.cwd ? access.cwd(this.parsed) : stringOf(this.args.cwd);
-      env = access?.env ? access.env(this.parsed) : recordOf(this.args.env);
+      cwd = access?.cwd ? access.cwd(this.parsed) : stringOf(this.values.cwd);
+      env = access?.env ? access.env(this.parsed) : recordOf(this.values.env);
     } catch {
       return undefined;
     }
@@ -301,17 +304,19 @@ class CallSubject {
       const readsInto: ResolvedPath[] = [];
       const writes: ResolvedPath[] = [];
       const seen = new Set<string>();
-      const resolveOnce = async (path: string, into: ResolvedPath[]) => {
-        const key = `${into === reads ? 'r' : into === writes ? 'w' : 'd'}\u0000${path}`;
+      const resolveOnce = async (path: string, into: ResolvedPath[], from: string) => {
+        const key = `${into === reads ? 'r' : into === writes ? 'w' : 'd'}\u0000${from}\u0000${path}`;
         if (seen.has(key) || seen.size > MAX_SHELL_PATHS) return;
         seen.add(key);
-        into.push(await resolveCallPath(path, call.cwd));
+        into.push(await resolveCallPath(path, from));
       };
       for (const candidate of call.line.candidates) {
+        const from = dirOf(call, candidate);
+        if (from === undefined) continue;
         const files = filesOf(candidate);
-        for (const path of files.reads) await resolveOnce(path, reads);
-        for (const path of files.readsInto) await resolveOnce(path, readsInto);
-        for (const path of files.writes) await resolveOnce(path, writes);
+        for (const path of files.reads) await resolveOnce(path, reads, from);
+        for (const path of files.readsInto) await resolveOnce(path, readsInto, from);
+        for (const path of files.writes) await resolveOnce(path, writes, from);
       }
       return { reads, readsInto, writes };
     })();
@@ -321,6 +326,19 @@ class CallSubject {
 
 /** Most distinct paths of a command line resolved for path rules */
 const MAX_SHELL_PATHS = 2000;
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** The directory `command` of a call runs in, undefined when a `cd` makes it unknown */
+function dirOf(call: CommandCall, command: ShellCommand): string | undefined {
+  return command.dir === undefined ? undefined : resolve(call.cwd, command.dir);
+}
+
+function isMove(command: ShellCommand): boolean {
+  return ['cd', 'pushd', 'chdir'].includes(command.argv[0] ?? '');
+}
 
 function stringOf(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
@@ -412,7 +430,7 @@ function domainMatches(subject: CallSubject, specifier: string): boolean | undef
   if (domain === '' || /\s/.test(domain)) return undefined;
   let url: unknown;
   try {
-    url = subject.tool.access?.url ? subject.tool.access.url(subject.parsed) : subject.args.url;
+    url = subject.tool.access?.url ? subject.tool.access.url(subject.parsed) : subject.values.url;
   } catch {
     return false;
   }
@@ -463,7 +481,7 @@ async function restrictiveMatch(
   }
   if (subject.kind === 'agent') return agentMatches(subject, specifier);
   const parameter = parameterSpecifier(specifier, tool, subject.schemaKeys);
-  if (parameter) return parameterMatches(subject.args[parameter.name], parameter.value);
+  if (parameter) return parameterMatches(subject.values[parameter.name], parameter.value);
   if (rule.target.kind === 'names' && rule.target.pathRulesNeverMatch) return false;
   if (subject.kind === 'command') {
     const call = subject.command();
@@ -533,9 +551,11 @@ async function allowableLine(call: CommandCall, allow: AllowContext): Promise<bo
   if (!(await allow.inside(call.cwd))) return false;
   for (const command of call.line.commands) {
     if (!allowableCommand(command)) return false;
+    const from = dirOf(call, command);
+    if (from === undefined || !(await allow.inside(from))) return false;
     for (const redirect of command.redirects) {
       if (!redirect.writes || isDevice(redirect.target)) continue;
-      if (!(await allow.writable(await resolveCallPath(redirect.target, call.cwd)))) return false;
+      if (!(await allow.writable(await resolveCallPath(redirect.target, from)))) return false;
     }
   }
   return true;
@@ -575,6 +595,7 @@ async function allowingRule(
     if (!call || !(await allowableLine(call, allow))) return undefined;
     let first: CompiledRule | undefined;
     for (const command of call.line.commands) {
+      if (isMove(command)) continue;
       const rule = specific.find((candidate) =>
         matchesCommandPattern(command.text, commandSpecifier(candidate.parsed.specifier ?? ''))
       );
@@ -652,6 +673,9 @@ async function editsInside(
     if (!(await inside(call.cwd))) return false;
     for (const command of call.line.commands) {
       if (!allowableCommand(command)) return false;
+      const from = dirOf(call, command);
+      if (from === undefined || !(await inside(from))) return false;
+      if (isMove(command)) continue;
       const paths = editCommandPaths(command);
       if (!paths || paths.length === 0) return false;
       const targets = [
@@ -665,7 +689,7 @@ async function editsInside(
           if (isDevice(path)) continue;
           return false;
         }
-        if (!(await inside(isAbsolute(path) ? path : resolve(call.cwd, path)))) return false;
+        if (!(await inside(isAbsolute(path) ? path : resolve(from, path)))) return false;
       }
     }
     return true;

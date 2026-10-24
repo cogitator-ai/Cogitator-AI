@@ -621,12 +621,20 @@ describe('shell commands an allow rule cannot be fooled by', () => {
       GIT_CONFIG_KEY_0: 'core.fsmonitor',
       GIT_CONFIG_VALUE_0: 'x',
     };
-    expect(await run('git status', { allow: ['Bash(git status)'] }, 'default', { env })).toBe(
-      'ask'
-    );
-    expect(
-      await run('git status', { allow: ['Bash(git status)'] }, 'default', { env: { CI: '1' } })
-    ).toBe('allow');
+    const viaExec = (extra: Record<string, unknown>) =>
+      resolvePermission(
+        exec,
+        { command: 'git status', cwd: root, ...extra },
+        {
+          mode: 'default',
+          rules: rules({ allow: ['Bash(git status)'] }),
+          needsApproval: true,
+          workspace,
+          projectRoot: root,
+        }
+      ).then((decision) => decision.decision);
+    expect(await viaExec({ env })).toBe('ask');
+    expect(await viaExec({ env: { CI: '1' } })).toBe('allow');
     expect(
       await run('git status', { allow: ['Bash(git status)'] }, 'default', { cwd: '/etc' })
     ).toBe('ask');
@@ -861,6 +869,70 @@ describe('what the parser does not take at face value', () => {
     ['git log --oneline -n 3', 'allow'],
     ['ls -la src', 'allow'],
   ])('plan mode checks the options of %j: %s', async (command, expected) => {
+    expect(await run(command, {}, 'plan')).toBe(expected);
+  });
+});
+
+describe('third review round', () => {
+  const run = (
+    command: string,
+    settings: Omit<PermissionLayerSettings, 'layer'>,
+    mode: PermissionMode = 'default'
+  ) =>
+    resolvePermission(
+      ws('run_command'),
+      { command },
+      { mode, rules: rules(settings), needsApproval: true, workspace, projectRoot: root }
+    ).then((decision) => decision.decision);
+
+  it('follows cd through the command line', async () => {
+    const read = { deny: ['Read(./secret.txt)'], allow: ['Bash'] };
+    expect(await run('cd src && cat ../secret.txt', read)).toBe('deny');
+    expect(await run('cd src; cat ../secret.txt', read, 'bypassPermissions')).toBe('deny');
+    expect(await run('cd $DIR && cat secret.txt', read)).toBe('ask');
+    expect(await run('cd $DIR && cat secret.txt', read, 'bypassPermissions')).toBe('deny');
+    expect(await run('popd && cat secret.txt', read, 'bypassPermissions')).toBe('deny');
+    expect(await run('cd src && npm test', { allow: ['Bash(npm test *)'] })).toBe('allow');
+    expect(await run('cd /etc && npm test', { allow: ['Bash(npm test *)'] })).toBe('ask');
+    expect(await run('cd src || npm test', { allow: ['Bash(npm test *)'] })).toBe('ask');
+    expect(parseCommandLine('cd src && cd lib && ls').commands[2].dir).toBe('src/lib');
+  });
+
+  it('matches parameter rules on the arguments the tool gets, defaults applied', async () => {
+    const mailer = tool({
+      name: 'mailer',
+      description: 'Mail',
+      parameters: z.object({ to: z.string().default('blocked@example.com') }),
+      execute: async () => '',
+    });
+    const decision = await resolvePermission(
+      mailer,
+      {},
+      {
+        mode: 'default',
+        rules: rules({ deny: ['mailer(to:blocked@example.com)'] }),
+        needsApproval: false,
+      }
+    );
+    expect(decision.decision).toBe('deny');
+  });
+
+  it.each([
+    ['git branch review-new', 'deny'],
+    ['git branch -d old', 'deny'],
+    ['git branch -a', 'allow'],
+    ['git branch --list feat*', 'deny'],
+    ["git branch --list 'feat*'", 'allow'],
+    ['git tag v1', 'deny'],
+    ['git tag -l', 'allow'],
+    ['git stash', 'deny'],
+    ['git stash list', 'allow'],
+    ['git worktree add x', 'deny'],
+    ['git worktree list', 'allow'],
+    ['git remote add x y', 'deny'],
+    ['git remote -v', 'allow'],
+    ['cd src && ls', 'allow'],
+  ])('plan mode reads %j as %s', async (command, expected) => {
     expect(await run(command, {}, 'plan')).toBe(expected);
   });
 });

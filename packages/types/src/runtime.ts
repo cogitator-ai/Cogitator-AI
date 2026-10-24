@@ -761,6 +761,11 @@ export interface RunCheckpoint {
     completed?: string[];
     /** Calls of the turn the permissions refused, with why, by tool call id */
     denied?: Record<string, string>;
+    /**
+     * Calls of the turn the rules, the mode or the classifier allowed rather than a person: a
+     * resume decides them again under its own mode and rules
+     */
+    automatic?: string[];
   };
   /**
    * What the run waits on, approvals among them (`kind: 'approval'`), and the answers given so

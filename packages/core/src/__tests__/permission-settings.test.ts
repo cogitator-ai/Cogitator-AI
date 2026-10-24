@@ -7,6 +7,7 @@ import {
   addAllowRule,
   loadPermissionSettings,
   rememberFile,
+  settingsChanged,
 } from '../permissions/index';
 
 let base: string;
@@ -148,5 +149,17 @@ describe('addAllowRule', () => {
     write(file, '[1]');
     await expect(addAllowRule(file, 'Edit')).rejects.toThrow(/JSON object/);
     expect(rememberFile('user', root, { userDirs: [user] })).toBe(join(user, 'settings.json'));
+  });
+});
+
+describe('settingsChanged', () => {
+  it('notices a drop-in file added after the first read', async () => {
+    mkdirSync(managed, { recursive: true });
+    const first = await load();
+    expect(await settingsChanged(first.files, first.dirs)).toBe(false);
+    write(join(managed, 'managed-settings.d', 'deny.json'), { permissions: { deny: ['Bash'] } });
+    expect(await settingsChanged(first.files, first.dirs)).toBe(true);
+    const second = await load();
+    expect(second.layers.some((layer) => layer.deny?.includes('Bash'))).toBe(true);
   });
 });

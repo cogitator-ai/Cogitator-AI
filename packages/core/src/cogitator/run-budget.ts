@@ -210,6 +210,11 @@ export interface RunBudgetOptions {
   agentBudgets?: boolean;
   /** The run's own budgets, kept in the checkpoint */
   ownLimits?: Omit<SessionBudgetConfig, 'onWarning'>;
+  /**
+   * The budgets the caller passed to this very call (`run()` or `resume()`): the host's decision,
+   * which wins over limits an earlier answer raised
+   */
+  explicit?: SessionBudgetConfig;
 }
 
 interface LimitState {
@@ -265,6 +270,11 @@ export class RunBudget {
     add(this.spent, agentId, { costUsd, tokens });
   }
 
+  /** What the run spent so far, its delegates included */
+  runTotals(): { costUsd: number; tokens: number } {
+    return { costUsd: this.spent.costUsd, tokens: this.spent.tokens };
+  }
+
   noteToolCalls(agentId: string, count: number): void {
     add(this.spent, agentId, { toolCalls: count });
   }
@@ -285,9 +295,17 @@ export class RunBudget {
     this.recorded = copySpend(this.spent);
   }
 
-  private limitOf(key: string, configured: number | undefined): number | undefined {
+  private limitOf(
+    key: string,
+    configured: number | undefined,
+    explicit: number | undefined
+  ): number | undefined {
     return (
-      this.sessionRaised[key] ?? this.session.raised?.[key] ?? this.runRaised[key] ?? configured
+      explicit ??
+      this.sessionRaised[key] ??
+      this.session.raised?.[key] ??
+      this.runRaised[key] ??
+      configured
     );
   }
 
@@ -302,8 +320,13 @@ export class RunBudget {
     const agentLimits = this.options.agentLimits(agentId) ?? this.options.config.agent;
     const session = this.options.config.session;
     const states: LimitState[] = [];
-    const push = (usage: Omit<BudgetUsage, 'limit'>, configured: number | undefined) => {
-      const limit = this.limitOf(keyOf(usage), configured);
+    const explicit = this.options.explicit;
+    const push = (
+      usage: Omit<BudgetUsage, 'limit'>,
+      configured: number | undefined,
+      given?: number
+    ) => {
+      const limit = this.limitOf(keyOf(usage), configured, given);
       if (limit === undefined || this.lifted.has(keyOf(usage))) return;
       states.push({ usage: { ...usage, limit } });
     };
@@ -311,8 +334,16 @@ export class RunBudget {
       const field = metric === 'cost' ? 'costUsd' : metric;
       const option =
         metric === 'cost' ? 'maxCostUsd' : metric === 'tokens' ? 'maxTokens' : 'maxToolCalls';
-      push({ scope: 'session', metric, used: totals[field] }, session?.[option]);
-      push({ scope: 'agent', metric, used: agentTotals[field], agentId }, agentLimits?.[option]);
+      push(
+        { scope: 'session', metric, used: totals[field] },
+        session?.[option],
+        explicit?.session?.[option]
+      );
+      push(
+        { scope: 'agent', metric, used: agentTotals[field], agentId },
+        agentLimits?.[option],
+        explicit?.agent?.[option]
+      );
     }
     if (metrics.includes('tokens') && this.options.maxTokensPerRun !== undefined) {
       push({ scope: 'run', metric: 'tokens', used: runTokens }, this.options.maxTokensPerRun);

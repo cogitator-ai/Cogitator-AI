@@ -33,6 +33,7 @@ export {
   permissionSettingsPlaces,
   readPermissionLayer,
   rememberFile,
+  settingsChanged,
   type LoadedPermissionSettings,
   type PermissionSettingsPlaces,
 } from './settings';

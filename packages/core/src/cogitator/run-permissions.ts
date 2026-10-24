@@ -94,7 +94,7 @@ export class PermissionService {
     let loading = this.settingsCache.get(root);
     if (loading) {
       const loaded = await loading.catch(() => undefined);
-      if (!loaded || (await settingsChanged(loaded.files))) loading = undefined;
+      if (!loaded || (await settingsChanged(loaded.files, loaded.dirs))) loading = undefined;
     }
     if (!loading) {
       loading = loadPermissionSettings(root, options);
@@ -167,6 +167,8 @@ export interface PermissionCall {
   skillRules?: ReadonlyArray<{ name: string; rules: readonly string[] }>;
   /** What the `auto` classifier reads about the call, besides why it would ask */
   classifierInput?: () => Omit<PermissionClassifierInput, 'reason'>;
+  /** A mode to decide in instead of the run's */
+  mode?: PermissionMode;
 }
 
 /** The run's own rules: those of the run's options, else those its checkpoint kept, list by list */
@@ -371,10 +373,11 @@ export class RunPermissions {
             mode: 'default',
           };
     }
-    const classifier = this.currentMode === 'auto' ? this.options.service.classifier() : undefined;
+    const mode = call.mode ?? this.currentMode;
+    const classifier = mode === 'auto' ? this.options.service.classifier() : undefined;
     const input = call.classifierInput;
     return resolvePermission(tool, args, {
-      mode: this.currentMode,
+      mode,
       rules: this.rules(call.skillRules),
       needsApproval: call.needsApproval,
       ...this.context(call.workspace),

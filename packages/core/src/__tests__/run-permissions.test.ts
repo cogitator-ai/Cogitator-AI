@@ -755,3 +755,39 @@ describe('permissions in the second review round', () => {
     await quiet.cog.close();
   });
 });
+
+describe('third review round in the run loop', () => {
+  it('decides the calls a paused turn allowed automatically again under the resumed mode', async () => {
+    const { cog } = setup([
+      turn(
+        call('c1', 'write_file', { path: 'src/app.ts', content: 'rule' }),
+        call('c2', 'send_email', { to: 'a@b.co', body: 'hi' })
+      ),
+    ]);
+    const agent = coder({ permissions: { allow: ['Edit(src/**)'] } });
+    const paused = await cog.run(agent, { input: 'go', threadId: 't-auto-resume' });
+    expect(paused.checkpoint?.turn.automatic).toEqual(['c1']);
+    await cog.resume(agent, 't-auto-resume', {
+      decisions: { c2: { approved: false } },
+      permissions: { mode: 'plan' },
+    });
+    expect(readFileSync(join(root, 'src', 'app.ts'), 'utf8')).toBe('old');
+    await cog.close();
+  });
+
+  it('a person approval does not carry a write into plan mode', async () => {
+    const { cog } = setup(
+      [turn(call('c1', 'write_file', { path: 'src/app.ts', content: 'person' }))],
+      {
+        permissions: {},
+      }
+    );
+    await cog.run(coder(), { input: 'go', threadId: 't-human-plan' });
+    await cog.resume(coder(), 't-human-plan', {
+      decisions: { c1: { approved: true } },
+      permissions: { mode: 'plan' },
+    });
+    expect(readFileSync(join(root, 'src', 'app.ts'), 'utf8')).toBe('old');
+    await cog.close();
+  });
+});

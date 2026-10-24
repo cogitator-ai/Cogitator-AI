@@ -62,6 +62,8 @@ export interface LoadedPermissionSettings {
   warnings: string[];
   /** Every file it looked at, with the time it changed (0 for a missing one) */
   files: Map<string, number>;
+  /** Each drop-in directory it looked at, with what it held, so a file added there is noticed */
+  dirs: Map<string, string>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -207,6 +209,13 @@ export async function loadPermissionSettings(
   const wanted = new Set<FileLayer>(options.layers ?? ['managed', 'user', 'project', 'local']);
   const warnings: string[] = [];
   const files = new Map<string, number>();
+  const dirs = new Map<string, string>();
+  if (wanted.has('managed')) {
+    for (const dir of options.managedDirs ?? defaultManagedDirs()) {
+      const dropIns = join(dir, 'managed-settings.d');
+      dirs.set(dropIns, await listingOf(dropIns));
+    }
+  }
   const layers: PermissionLayerSettings[] = [];
   for (const layer of ['managed', 'local', 'project', 'user'] as const) {
     if (!wanted.has(layer)) continue;
@@ -237,7 +246,7 @@ export async function loadPermissionSettings(
       );
     }
   }
-  return { layers, warnings, files };
+  return { layers, warnings, files, dirs };
 }
 
 /** The file an "always allow" rule of `layer` is saved to */
@@ -289,9 +298,28 @@ async function writeAllowRule(file: string, rule: string): Promise<void> {
 }
 
 /** Whether any of `files` changed since it was read */
-export async function settingsChanged(files: ReadonlyMap<string, number>): Promise<boolean> {
+export async function settingsChanged(
+  files: ReadonlyMap<string, number>,
+  dirs: ReadonlyMap<string, string> = new Map()
+): Promise<boolean> {
   for (const [file, time] of files) {
     if ((await changedAt(file)) !== time) return true;
   }
+  for (const [dir, listing] of dirs) {
+    if ((await listingOf(dir)) !== listing) return true;
+  }
   return false;
+}
+
+/** The `*.json` files of a directory with the times they changed, empty for a missing one */
+async function listingOf(dir: string): Promise<string> {
+  let names: string[];
+  try {
+    names = (await readdir(dir)).filter((name) => name.endsWith('.json')).sort();
+  } catch {
+    return '';
+  }
+  const entries: string[] = [];
+  for (const name of names) entries.push(`${name}:${await changedAt(join(dir, name))}`);
+  return entries.join('\n');
 }

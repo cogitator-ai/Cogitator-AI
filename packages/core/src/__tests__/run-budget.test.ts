@@ -390,3 +390,84 @@ describe('budgets in the second review round', () => {
     await cog.close();
   });
 });
+
+describe('third review round budgets', () => {
+  it('stops a delegate at the caller session limit', async () => {
+    const inner = new MockLLMBackend().setResponses([
+      { content: '', toolCalls: [call('i1')], usage: spend(0.4) },
+      { content: '', toolCalls: [call('i2')], usage: spend(0.4) },
+      { content: '', toolCalls: [call('i3')], usage: spend(0.4) },
+      answer(0.4),
+    ]);
+    const outer = new MockLLMBackend().setResponses([
+      {
+        content: '',
+        toolCalls: [{ id: 'd1', name: 'helper', arguments: { task: 'x' } }],
+        usage: spend(0),
+      },
+      answer(0),
+    ]);
+    const cog = new Cogitator({
+      memory: { adapter: 'memory' },
+      llm: { backends: { inner, outer } },
+      budget: { session: { maxCostUsd: 0.5 } },
+    });
+    const helper = new Agent({
+      name: 'helper-agent',
+      model: 'inner/m',
+      instructions: 'x',
+      tools: [lookup],
+    });
+    const lead = new Agent({
+      name: 'lead',
+      model: 'outer/m',
+      instructions: 'x',
+      tools: [agentAsTool(cog, helper, { name: 'helper', description: 'Helps' })],
+    });
+    await cog.run(lead, { input: 'go', threadId: 'b-delegate-cost' });
+    expect(inner.getCallCount()).toBe(2);
+    await cog.close();
+  });
+
+  it('does not count a tool that asked a question twice against maxToolCalls', async () => {
+    const asker = tool({
+      name: 'asker',
+      description: 'Asks',
+      parameters: z.object({}),
+      execute: async (_args, context) => {
+        const answer = await context.interrupt?.({ reason: 'confirm', message: 'Sure?' });
+        return answer;
+      },
+    });
+    const backend = new MockLLMBackend().setResponses([
+      { content: '', toolCalls: [{ id: 'q1', name: 'asker', arguments: {} }], usage: spend(0) },
+      answer(0),
+    ]);
+    const cog = new Cogitator({
+      memory: { adapter: 'memory' },
+      llm: { backends: { mock: backend } },
+      budget: { session: { maxToolCalls: 1 } },
+    });
+    const agent = new Agent({ name: 'a', model: 'mock/m', instructions: 'x', tools: [asker] });
+    const paused = await cog.run(agent, { input: 'go', threadId: 'b-asked' });
+    expect(paused.interrupts?.[0].kind).toBe('input');
+    const done = await cog.resume(agent, 'b-asked', { responses: { 'q1#0': 'yes' } });
+    expect(done.status).toBe('completed');
+    expect(done.budgetStop).toBeUndefined();
+    await cog.close();
+  });
+
+  it('a budget the host passes to the resume wins over a limit an answer raised', async () => {
+    const { cog, agent } = setup([toolTurn(1, 'a'), toolTurn(1, 'b'), answer(0), answer(0)], {
+      budget: { session: { maxCostUsd: 0.5 }, allowRaise: true },
+    });
+    await cog.run(agent, { input: 'find', threadId: 'b-host-wins' });
+    const again = await cog.resume(agent, 'b-host-wins', {
+      responses: { 'budget:session.cost': { action: 'continue', limit: 1.5 } },
+    });
+    expect(again.status).toBe('paused');
+    const done = await cog.resume(agent, 'b-host-wins', { budget: { session: { maxCostUsd: 5 } } });
+    expect(done.status).toBe('completed');
+    await cog.close();
+  });
+});

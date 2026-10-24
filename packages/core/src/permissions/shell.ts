@@ -5,7 +5,7 @@
  * allow rule only matches a command the parser fully understands
  */
 
-import { basename } from 'node:path';
+import { basename, posix } from 'node:path';
 import { wildcardMatch } from './wildcard';
 
 /** A redirection of a command */
@@ -37,6 +37,13 @@ export interface ShellCommand {
    * `builtin`, `noglob`, a bare `xargs`), which are taken off `argv`
    */
   understood: boolean;
+  /**
+   * The directory the command runs in, relative to where the line starts (`.`), after the `cd`
+   * and `pushd` to literal directories before it. Undefined when it cannot be told: after a `cd`
+   * to a target that is not literal, `popd`, a subshell or a `cd` whose effect depends on how the
+   * line goes on (`||`, `|`, `&`)
+   */
+  dir?: string;
 }
 
 /** A command line taken apart, see {@link parseCommandLine} */
@@ -921,9 +928,44 @@ function command(
   argv: string[],
   assigned: string[],
   redirects: ShellRedirect[],
-  understood: boolean
+  understood: boolean,
+  dir: string | undefined
 ): ShellCommand {
-  return { argv, text: argv.join(' '), assigned, redirects, understood };
+  return {
+    argv,
+    text: argv.join(' '),
+    assigned,
+    redirects,
+    understood,
+    ...(dir !== undefined && { dir }),
+  };
+}
+
+/** `command` run from `base`, relative to the line it is nested in */
+function placed(child: ShellCommand, base: string | undefined): ShellCommand {
+  const { dir: own, ...rest } = child;
+  if (base === undefined || own === undefined) return rest;
+  return { ...rest, dir: posix.join(base, own) };
+}
+
+/** The directory a `cd` or `pushd` moves to, or undefined when it cannot be told from the words */
+function cdTarget(argv: readonly string[], dir: string): string | undefined {
+  const operands: string[] = [];
+  let options = true;
+  for (const word of argv.slice(1)) {
+    if (options && word === '--') {
+      options = false;
+      continue;
+    }
+    if (options && (word === '-L' || word === '-P' || word === '-e' || word === '-@')) continue;
+    operands.push(word);
+  }
+  if (operands.length !== 1) return undefined;
+  const target = operands[0];
+  if (target === '' || target === '-' || target.startsWith('~') || target.startsWith('+')) {
+    return undefined;
+  }
+  return posix.isAbsolute(target) ? posix.normalize(target) : posix.join(dir, target);
 }
 
 const MAX_DEPTH = 8;
@@ -946,12 +988,13 @@ export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
   let words: Word[] = [];
   let redirects: ShellRedirect[] = [];
   let plain = true;
-  const close = () => {
+  let dir: string | undefined = '.';
+  const close = (ending?: string) => {
     if (words.length === 0 && redirects.length === 0) {
       plain = true;
       return;
     }
-    let understood = plain;
+    let understood = plain && dir !== undefined;
     let rest = words;
     const keyworded = rest.length > 0 && KEYWORDS.has(rest[0].value) && !rest[0].quoted;
     if (keyworded) understood = false;
@@ -988,7 +1031,14 @@ export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
       understood = false;
     }
     if (!understood) certain = false;
-    const own = command(effective.length > 0 ? effective : argv, assigned, redirects, understood);
+    const here = dir;
+    const own = command(
+      effective.length > 0 ? effective : argv,
+      assigned,
+      redirects,
+      understood,
+      here
+    );
     commands.push(own);
     if (argv.length === 0) candidates.push(own);
     const seen = new Set<string>();
@@ -996,7 +1046,7 @@ export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
       const key = variant.join('\u0000');
       if (seen.has(key) || variant.length === 0) return;
       seen.add(key);
-      candidates.push(command(variant, assigned, redirects, understood));
+      candidates.push(command(variant, assigned, redirects, understood, here));
       const git = withoutGitOptions(variant);
       if (git) add(git);
     };
@@ -1017,8 +1067,20 @@ export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
       }
     }
     if (depth < MAX_DEPTH) {
-      for (const inner of loose.lines)
-        candidates.push(...parseCommandLine(inner, depth + 1).candidates);
+      for (const inner of loose.lines) {
+        candidates.push(
+          ...parseCommandLine(inner, depth + 1).candidates.map((entry) => placed(entry, here))
+        );
+      }
+    }
+    const mover = basename(effective[0] ?? '');
+    if (mover === 'cd' || mover === 'pushd' || mover === 'popd' || mover === 'chdir') {
+      const moved =
+        mover === 'popd' || !understood || here === undefined
+          ? undefined
+          : cdTarget(effective, here);
+      const lasting = ending === undefined || ending === '&&' || ending === ';' || ending === '\n';
+      dir = lasting ? moved : undefined;
     }
     words = [];
     redirects = [];
@@ -1038,15 +1100,22 @@ export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
       close();
       certain = false;
       plain = false;
+      dir = undefined;
     } else {
-      close();
+      close(token.op);
     }
   }
   close();
 
   if (depth < MAX_DEPTH) {
+    const moved = commands.some((entry) => entry.dir !== '.');
     for (const inner of nested) {
-      if (inner.trim() !== '') candidates.push(...parseCommandLine(inner, depth + 1).candidates);
+      if (inner.trim() === '') continue;
+      candidates.push(
+        ...parseCommandLine(inner, depth + 1).candidates.map((entry) =>
+          placed(entry, moved ? undefined : '.')
+        )
+      );
     }
   }
   return { commands, candidates, certain: certain && commands.every((entry) => entry.understood) };
@@ -1333,6 +1402,8 @@ interface ReadOnlySpec {
   maxOperands?: number;
   /** Any argument, the command reads nothing from them (`echo`, `pwd`) */
   anything?: boolean;
+  /** Operands are allowed only with one of these flags (`git branch -l <pattern>` lists, `git branch <name>` creates) */
+  operandsWith?: readonly string[];
 }
 
 const READ_ONLY: Record<string, ReadOnlySpec> = {
@@ -1347,6 +1418,7 @@ const READ_ONLY: Record<string, ReadOnlySpec> = {
   wc: { flags: 'lwcmL', long: ['--lines', '--words', '--chars', '--bytes'] },
   pwd: { flags: 'LP', maxOperands: 0 },
   echo: { anything: true },
+  cd: { flags: 'LPe', maxOperands: 1 },
   printf: { anything: true },
   true: { anything: true },
   false: { anything: true },
@@ -1514,7 +1586,38 @@ const READ_ONLY_GIT: Record<string, ReadOnlySpec> = {
     long: ['--tags', '--always', '--dirty', '--long'],
     longValued: ['--abbrev', '--match'],
   },
-  branch: { flags: 'avrl', long: ['--list', '--all', '--remotes', '--show-current', '--verbose'] },
+  branch: {
+    flags: 'avrl',
+    long: ['--list', '--all', '--remotes', '--show-current', '--verbose'],
+    longValued: [
+      '--contains',
+      '--no-contains',
+      '--merged',
+      '--no-merged',
+      '--format',
+      '--sort',
+      '--points-at',
+    ],
+    operandsWith: ['-l', '--list'],
+  },
+  tag: {
+    flags: 'l',
+    valued: ['-n'],
+    long: ['--list'],
+    longValued: [
+      '--contains',
+      '--no-contains',
+      '--merged',
+      '--no-merged',
+      '--format',
+      '--sort',
+      '--points-at',
+    ],
+    operandsWith: ['-l', '--list'],
+  },
+  remote: { flags: 'v', long: ['--verbose'], maxOperands: 0 },
+  'stash list': { flags: 'p', long: ['--stat'], longValued: ['--format', '--pretty'] },
+  'worktree list': { long: ['--porcelain', '--verbose'], maxOperands: 0 },
 };
 
 /** Whether `args` only uses the options `spec` allows, with at most its operands */
@@ -1556,6 +1659,16 @@ function argsAllowed(args: readonly string[], spec: ReadOnlySpec): boolean {
     }
     operands++;
   }
+  if (operands > 0 && spec.operandsWith) {
+    const listing = args.some(
+      (word) =>
+        spec.operandsWith?.includes(word) ||
+        (word.startsWith('-') &&
+          !word.startsWith('--') &&
+          spec.operandsWith?.some((flag) => flag.length === 2 && word.includes(flag[1])))
+    );
+    if (!listing) return false;
+  }
   return spec.maxOperands === undefined || operands <= spec.maxOperands;
 }
 
@@ -1567,7 +1680,12 @@ export function isReadOnlyCommand(command: ShellCommand): boolean {
   if (!command.understood || command.redirects.some((redirect) => redirect.writes)) return false;
   const program = command.argv[0] ?? '';
   if (program === 'git') {
-    const spec = READ_ONLY_GIT[command.argv[1] ?? ''];
+    const sub = command.argv[1] ?? '';
+    if (sub === 'stash' || sub === 'worktree') {
+      const spec = READ_ONLY_GIT[`${sub} ${command.argv[2] ?? ''}`];
+      return spec !== undefined && argsAllowed(command.argv.slice(3), spec);
+    }
+    const spec = Object.hasOwn(READ_ONLY_GIT, sub) ? READ_ONLY_GIT[sub] : undefined;
     return spec !== undefined && argsAllowed(command.argv.slice(2), spec);
   }
   if (program === 'find') {
