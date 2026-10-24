@@ -108,6 +108,8 @@ type GatewaySessionManager = ISessionManager & {
 interface PausedThread {
   userId: string;
   approvals: readonly ToolApprovalRequest[];
+  /** The entry the paused run's input went after, where a rollback of its resume branches from */
+  branchFrom?: string | null;
 }
 
 /** Markdown as the channel takes it: as written when it renders Markdown itself. */
@@ -142,6 +144,10 @@ const QUEUE_STRATEGIES: Record<QueueMode, MultitaskStrategy | undefined> = {
   interrupt: 'interrupt',
   rollback: 'rollback',
 };
+
+function isThreadBusy(error: unknown): boolean {
+  return CogitatorError.isCogitatorError(error) && error.code === ErrorCode.THREAD_BUSY;
+}
 
 /** How a message the gateway took ended, see `route` */
 type MessageOutcome = 'answered' | 'unanswered' | 'refused';
@@ -248,6 +254,11 @@ export class Gateway {
   private readonly pausedThreads = new Map<string, PausedThread>();
   /** The stop of every run in progress */
   private readonly runs = new Set<AbortController>();
+  /**
+   * Messages whose run the runtime refused with `THREAD_BUSY` (a run of the thread going on
+   * outside the gateway, `multitaskStrategy: 'reject'`), by `answerKey`, until `route` reads it
+   */
+  private readonly busyKeys = new Set<string>();
   /** The stop of each run, by the signal the run was given */
   private readonly stops = new WeakMap<AbortSignal, AbortController>();
   /**
@@ -690,7 +701,7 @@ export class Gateway {
       const outcome = await answered;
       if (outcome === 'refused' && untilAnswered) {
         throw new Error(
-          'The message was refused: its thread was answering another (queueMode reject)'
+          'The message was refused: its thread was busy with another run (THREAD_BUSY)'
         );
       }
       if (outcome !== 'answered' && untilAnswered) {
@@ -751,15 +762,22 @@ export class Gateway {
   private async route(incoming: ChannelMessage): Promise<MessageOutcome> {
     const msg = await this.locateScheduled(incoming);
     const queue = this.messageQueue;
-    if (!queue) return (await this.processMessage(msg)) ? 'answered' : 'unanswered';
     const threadId = this.getThreadId(msg);
-    if (queue.refuses(threadId)) {
-      void Promise.resolve(
-        this.hooks?.emit('message:rejected', { msg, threadId, reason: 'busy' })
-      ).catch((error: unknown) => this.config.onError?.(toError(error), msg));
+    if (queue?.refuses(threadId)) {
+      this.emitRejected(msg, threadId);
       return 'refused';
     }
-    return (await queue.push(msg, threadId)) ? 'answered' : 'unanswered';
+    const done = queue ? await queue.push(msg, threadId) : await this.processMessage(msg);
+    const busy = this.busyKeys.delete(answerKey(msg));
+    if (done) return 'answered';
+    return busy ? 'refused' : 'unanswered';
+  }
+
+  /** Tells the `message:rejected` hook that `msg` was refused, its thread busy */
+  private emitRejected(msg: ChannelMessage, threadId: string): void {
+    void Promise.resolve(
+      this.hooks?.emit('message:rejected', { msg, threadId, reason: 'busy' })
+    ).catch((error: unknown) => this.config.onError?.(toError(error), msg));
   }
 
   /**
@@ -854,6 +872,11 @@ export class Gateway {
       if (this.answeredKeys.has(key)) return true;
       return signal?.aborted !== true && stop.signal.reason !== GATEWAY_STOPPED;
     } catch (error) {
+      if (isThreadBusy(error) && !this.answeredKeys.has(key)) {
+        if (this.queueMode !== 'collect') this.busyKeys.add(key);
+        this.emitRejected(msg, threadId);
+        return false;
+      }
       if (!runSignal.aborted) this.config.onError?.(toError(error), msg);
       return this.answeredKeys.has(key);
     } finally {
@@ -1044,7 +1067,10 @@ export class Gateway {
     tracker: StatusReactionTracker | undefined,
     signal: AbortSignal | undefined
   ): Promise<boolean> {
-    const approvals = this.pausedThreads.get(threadId)?.approvals;
+    const paused = this.pausedThreads.get(threadId);
+    const approvals = paused?.approvals;
+    const origin = signal ? this.runPlaces.get(signal)?.origin : undefined;
+    if (origin && paused?.branchFrom !== undefined) this.runStarts.set(origin, paused.branchFrom);
     const options = { ...this.buildRunOptions(msg, tracker, signal), defaultDecision: decision };
 
     try {
@@ -1109,7 +1135,11 @@ export class Gateway {
     const approvals = result.status === 'paused' ? (result.pendingApprovals ?? []) : [];
     if (approvals.length === 0) return;
 
-    this.pausedThreads.set(threadId, { userId: msg.userId, approvals });
+    this.pausedThreads.set(threadId, {
+      userId: msg.userId,
+      approvals,
+      ...(result.memory && { branchFrom: result.memory.branchPoint }),
+    });
     const event: ApprovalRequestedEvent = { msg, threadId, userId: msg.userId, approvals };
     await this.hooks?.emit('approval:requested', event);
 

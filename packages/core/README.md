@@ -592,13 +592,13 @@ handle.inject('The release moved to Friday'); // context for the next model call
 const result = await handle.result; // or handle.abort(), which returns what was not delivered
 ```
 
-`queue: { steering, followUp }` takes queued messages `'one-at-a-time'` (default) or `'all'` at once. Each delivered message is saved to the thread as a user message with `metadata.queued`, and a run that pauses returns the rest in `result.undelivered`.
+`queue: { steering, followUp }` takes queued messages `'one-at-a-time'` (default) or `'all'` at once. Each delivered message is saved to the thread as a user message with `metadata.queued`, and a run that pauses returns the rest in `result.undelivered`. Queued messages pass the same `beforeRun` input checks as the input (PII `block`, prompt injection, input guardrails): a refused one is dropped and listed in `handle.refused` (`onRefusedMessage`), the run goes on.
 
 `multitaskStrategy` (per run, or for every run in the config) says what a run does when its thread has a run going on: `enqueue`, `reject` (`THREAD_BUSY`), `interrupt` (the running one fails with `RUN_INTERRUPTED`) or `rollback` (interrupt, then branch from where the interrupted run started). Unset, runs of one thread go on side by side as before.
 
 A tool pauses the run to ask a person with `context.interrupt({ reason, message, responseSchema, expiresAt })`. The run returns `status: 'paused'` with the question in `result.interrupts`, and `cog.resume(agent, threadId, { responses: { [interrupt.id]: answer } })` checks the answer against the schema (or fails with `VALIDATION_ERROR`, `INTERRUPT_EXPIRED` after `expiresAt`) and runs the tool again, where `interrupt()` now returns the answer. Pending approvals are listed there too, as `kind: 'approval'`.
 
-An aborted run keeps the text it streamed as an assistant message with `metadata.interrupted: true`, answers the tool calls it never started with `ABORTED_BEFORE_DISPATCH`, and never writes the late result of a tool that ignored the signal. History read from memory answers tool calls a crash left without a result with `OUTCOME_UNKNOWN` ("outcome unknown, verify before retrying"), without rewriting the log. See [Steering, Interrupts and Cancellation](https://cogitator.app/docs/core/run-control).
+An aborted run keeps the text it streamed as an assistant message with `metadata.interrupted: true` (unless `saveInterruptedReply: false`), answers the tool calls it never started with `ABORTED_BEFORE_DISPATCH`, and never writes the late result of a tool that ignored the signal. History read from memory answers tool calls a crash left without a result with `OUTCOME_UNKNOWN` ("outcome unknown, verify before retrying"), without rewriting the log. See [Steering, Interrupts and Cancellation](https://cogitator.app/docs/core/run-control).
 
 ### PII Masking
 

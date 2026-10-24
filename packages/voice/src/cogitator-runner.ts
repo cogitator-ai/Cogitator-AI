@@ -30,6 +30,8 @@ export interface CogitatorRunnerRunOptions {
   onToken?: (token: string) => void;
   onModelTurn?: (turn: KeptModelTurn) => void;
   onMemoryEntry?: (entry: MemoryEntry) => void;
+  /** Always false: the runner keeps what was spoken of an interrupted answer itself */
+  saveInterruptedReply?: boolean;
 }
 
 export interface CogitatorLike<TAgent> {
@@ -320,6 +322,7 @@ class CogitatorVoiceTurn<TAgent> implements VoiceTurn {
           threadId: this.threadId,
           signal: this.controller.signal,
           stream: true,
+          saveInterruptedReply: false,
           onToken: (token) => this.say(token),
           onModelTurn: (turn) => {
             if (turn.toolCalls.length > 0) {

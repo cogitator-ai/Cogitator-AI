@@ -230,4 +230,46 @@ describe('runs of one thread at once', () => {
     expect((await alice).output).toBe('first done');
     await cog.close();
   });
+
+  it('refuses a stranger on a thread whose run has not written anything yet', async () => {
+    const events: string[] = [];
+    const first = heldReply(events, 'first');
+    const { backend } = byInput({ 'first question': first.reply });
+    const cog = cogitator(backend);
+    const alice = cog.run(agent, { input: 'first question', threadId: 'fresh', userId: 'alice' });
+    await expect(
+      cog.run(agent, {
+        input: 'mine',
+        threadId: 'fresh',
+        userId: 'mallory',
+        multitaskStrategy: 'interrupt',
+      })
+    ).rejects.toMatchObject({ code: ErrorCode.THREAD_ACCESS_DENIED });
+    await first.began.promise;
+    first.release.resolve();
+    expect((await alice).output).toBe('first done');
+    await cog.close();
+  });
+
+  it('changes nothing for a run whose signal aborted before it asked for its thread', async () => {
+    const events: string[] = [];
+    const first = heldReply(events, 'first');
+    const { backend } = byInput({ 'first question': first.reply });
+    const cog = cogitator(backend);
+    const running = cog.run(agent, { input: 'first question', threadId: 't' });
+    await first.began.promise;
+    const controller = new AbortController();
+    controller.abort(new Error('never mind'));
+    await expect(
+      cog.run(agent, {
+        input: 'newer',
+        threadId: 't',
+        signal: controller.signal,
+        multitaskStrategy: 'interrupt',
+      })
+    ).rejects.toThrow('never mind');
+    first.release.resolve();
+    expect((await running).output).toBe('first done');
+    await cog.close();
+  });
 });

@@ -6,8 +6,22 @@ export interface ThreadSeat {
   readonly signal: AbortSignal;
   /** The trace the run belongs to, once it started: runs started inside it are not held back */
   traceId?: string;
+  /** The user the run acts for */
+  readonly userId?: string;
   /** The entry the run's first entry went after, once it wrote one (null at the thread's root) */
   branchPoint?: () => string | null | undefined;
+}
+
+/** A run asking for a seat on its thread */
+export interface RunOnThread {
+  readonly strategy: MultitaskStrategy | undefined;
+  /** Waiting ends when it aborts, and a run whose signal aborted already changes nothing */
+  readonly signal: AbortSignal | undefined;
+  /** The trace the run joins: a run inside one of the thread's runs is not held back */
+  readonly traceId: string | undefined;
+  readonly userId: string | undefined;
+  /** The run may use a thread of other users (`threadAccess: 'shared'`) */
+  readonly shared: boolean;
 }
 
 /** What a run admitted on its thread gets: its seat, and where to branch from on a rollback */
@@ -38,16 +52,21 @@ export class ThreadRuns {
    * Seats a run on `threadId`, once `strategy` lets it: `enqueue` waits for the runs before it,
    * `reject` fails while there are any, `interrupt` and `rollback` abort them and wait until they
    * are done. Undefined for a run inside one of the thread's runs (`traceId`), which goes on
-   * unseated. Waiting ends with the run's own `signal`.
+   * unseated. Waiting ends with the run's own `signal`. Before anything changes, a run whose
+   * signal aborted fails, and a run with a strategy fails with `THREAD_ACCESS_DENIED` while a
+   * run of another user goes on in the thread, unless it may use shared threads
    */
-  async admit(
-    threadId: string,
-    strategy: MultitaskStrategy | undefined,
-    signal: AbortSignal | undefined,
-    traceId: string | undefined
-  ): Promise<ThreadAdmission | undefined> {
+  async admit(threadId: string, run: RunOnThread): Promise<ThreadAdmission | undefined> {
+    const { strategy, signal, traceId, userId } = run;
+    if (signal?.aborted) throw abortReason(signal);
     const seats = this.threads.get(threadId) ?? [];
     if (traceId !== undefined && seats.some((seat) => seat.traceId === traceId)) return undefined;
+    if (strategy !== undefined && !run.shared && seats.some((seat) => seat.userId !== userId)) {
+      throw new CogitatorError({
+        message: `Thread ${threadId} belongs to another user`,
+        code: ErrorCode.THREAD_ACCESS_DENIED,
+      });
+    }
     if (strategy === 'reject' && seats.length > 0) {
       throw new CogitatorError({
         message: `Thread ${threadId} has a run going on`,
@@ -57,7 +76,7 @@ export class ThreadRuns {
     }
 
     const ahead = [...seats];
-    const seat = createSeat();
+    const seat = createSeat(userId);
     seats.push(seat);
     this.threads.set(threadId, seats);
     const release = () => {
@@ -92,13 +111,19 @@ export class ThreadRuns {
   }
 }
 
-function createSeat(): Seat {
+function createSeat(userId: string | undefined): Seat {
   const controller = new AbortController();
   let finish: () => void = () => undefined;
   const done = new Promise<void>((resolve) => {
     finish = resolve;
   });
-  return { controller, signal: controller.signal, done, finish };
+  return {
+    controller,
+    signal: controller.signal,
+    done,
+    finish,
+    ...(userId !== undefined && { userId }),
+  };
 }
 
 /** Resolves once every seat in `seats` is done, rejects when one of `signals` aborts first */

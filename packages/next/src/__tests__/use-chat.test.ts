@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook } from './helpers/fake-react.js';
-import type { StreamEvent } from '../streaming/protocol.js';
+import type { PendingApproval, PendingInterrupt, StreamEvent } from '../streaming/protocol.js';
 import type { ChatMessage, UseChatOptions } from '../types.js';
 
 vi.mock('react', async () => (await import('./helpers/fake-react.js')).reactApi);
@@ -524,28 +524,328 @@ describe('useCogitatorChat multitask strategies', () => {
   });
 
   it.each(['interrupt', 'rollback'] as const)(
-    'aborts the running request when the strategy is %s',
+    'hands the running request over to the server when the strategy is %s',
     async (multitaskStrategy) => {
       const { calls } = installFetch();
-      const hook = setup({ multitaskStrategy });
+      const onError = vi.fn();
+      const onFinish = vi.fn();
+      const hook = setup({ multitaskStrategy, onError, onFinish });
       const { first } = await startStreaming(hook, calls);
 
       const second = hook.result.current.send('two');
-      await first;
       await vi.waitFor(() => expect(calls).toHaveLength(2));
 
-      expect(calls[0].signal.aborted).toBe(true);
+      expect(calls[0].signal.aborted).toBe(false);
       expect(calls[1].body).toMatchObject({ threadId: 'thread_1', multitaskStrategy });
+
+      calls[0].stream.push({ type: 'text-delta', id: 't1', delta: 'late' });
+      calls[0].stream.push({ type: 'error', message: 'Run interrupted', code: 'RUN_INTERRUPTED' });
+      calls[0].stream.close();
+      await first;
+      await hook.flush();
+
+      expect(contents(hook)).toEqual([
+        ['user', 'one'],
+        ['assistant', 'Hel'],
+        ['user', 'two'],
+      ]);
+      expect(hook.result.current.error).toBeNull();
+      expect(hook.result.current.isLoading).toBe(true);
 
       completeStream(calls[1].stream, 'a2', 'Second', 'thread_1');
       await second;
       await hook.flush();
+
       expect(contents(hook)).toEqual([
         ['user', 'one'],
         ['assistant', 'Hel'],
         ['user', 'two'],
         ['assistant', 'Second'],
       ]);
+      expect(onError).not.toHaveBeenCalled();
+      expect(onFinish.mock.calls.map(([message]) => message.content)).toEqual(['Second']);
+      expect(hook.result.current.isLoading).toBe(false);
     }
   );
+
+  it('aborts a handed-over request the server left open once the new one is done', async () => {
+    const { calls } = installFetch();
+    const hook = setup({ multitaskStrategy: 'rollback' });
+    const { first } = await startStreaming(hook, calls);
+
+    const second = hook.result.current.send('two');
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    completeStream(calls[1].stream, 'a2', 'Second', 'thread_1');
+    await second;
+
+    expect(calls[0].signal.aborted).toBe(true);
+    await first;
+    await hook.flush();
+    expect(hook.result.current.error).toBeNull();
+    expect(hook.result.current.isLoading).toBe(false);
+  });
+
+  it('aborts the handed-over request when the new one fails before it runs', async () => {
+    const { calls } = installFetch((call) =>
+      call.body.messages.length > 1
+        ? new Response(JSON.stringify({ error: { message: 'Forbidden' } }), {
+            status: 403,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        : undefined
+    );
+    const hook = setup({ multitaskStrategy: 'interrupt' });
+    const { first } = await startStreaming(hook, calls);
+
+    await hook.result.current.send('two');
+    await first;
+    await hook.flush();
+
+    expect(calls[0].signal.aborted).toBe(true);
+    expect(hook.result.current.error).toMatchObject({ status: 403 });
+    expect(hook.result.current.isLoading).toBe(false);
+  });
+
+  it('stops a handed-over request on stop', async () => {
+    const { calls } = installFetch();
+    const hook = setup({ multitaskStrategy: 'rollback' });
+    const { first } = await startStreaming(hook, calls);
+
+    const second = hook.result.current.send('two');
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    hook.result.current.stop();
+    await Promise.all([first, second]);
+    await hook.flush();
+
+    expect(calls.map((call) => call.signal.aborted)).toEqual([true, true]);
+    expect(hook.result.current.isLoading).toBe(false);
+  });
+});
+
+describe('useCogitatorChat multitask strategies on a new thread', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('sends messages in a row to the thread the server picks for the first', async () => {
+    const { calls } = installFetch();
+    const hook = setup({ multitaskStrategy: 'enqueue' });
+
+    const first = hook.result.current.send('one');
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    const second = hook.result.current.send('two');
+    const third = hook.result.current.send('three');
+    await hook.flush();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body.threadId).toBeUndefined();
+
+    calls[0].stream.push({ type: 'start', messageId: 'a1', threadId: 'thread_new' });
+    await vi.waitFor(() => expect(calls).toHaveLength(3));
+
+    expect(calls.slice(1).map((call) => call.body.threadId)).toEqual(['thread_new', 'thread_new']);
+    expect(calls.slice(1).map((call) => call.body.messages.at(-1)?.content)).toEqual([
+      'two',
+      'three',
+    ]);
+
+    completeStream(calls[0].stream, 'a1', 'A', 'thread_new');
+    completeStream(calls[1].stream, 'a2', 'B', 'thread_new');
+    completeStream(calls[2].stream, 'a3', 'C', 'thread_new');
+    await Promise.all([first, second, third]);
+    await hook.flush();
+    expect(hook.result.current.threadId).toBe('thread_new');
+    expect(hook.result.current.isLoading).toBe(false);
+  });
+
+  it('rolls back on the thread of a first message that has not named it yet', async () => {
+    const { calls } = installFetch();
+    const hook = setup({ multitaskStrategy: 'rollback' });
+
+    const first = hook.result.current.send('one');
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    const second = hook.result.current.send('two');
+    const third = hook.result.current.send('three');
+    await hook.flush();
+    expect(calls).toHaveLength(1);
+
+    calls[0].stream.push({ type: 'start', messageId: 'a1', threadId: 'thread_new' });
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    await second;
+
+    expect(calls[0].signal.aborted).toBe(false);
+    expect(calls[1].body).toMatchObject({ threadId: 'thread_new', multitaskStrategy: 'rollback' });
+    expect(calls[1].body.messages.map((m) => m.content)).toEqual(['one', 'two', 'three']);
+
+    completeStream(calls[1].stream, 'a3', 'Third', 'thread_new');
+    await third;
+    await first;
+    await hook.flush();
+
+    expect(calls).toHaveLength(2);
+    expect(hook.result.current.messages.map((m) => m.content)).toEqual([
+      'one',
+      'two',
+      'three',
+      'Third',
+    ]);
+    expect(hook.result.current.threadId).toBe('thread_new');
+  });
+
+  it('lets the next message start a thread when the first one ends without naming one', async () => {
+    const { calls } = installFetch();
+    const hook = setup({ multitaskStrategy: 'enqueue' });
+
+    const first = hook.result.current.send('one');
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    const second = hook.result.current.send('two');
+
+    calls[0].stream.close();
+    await first;
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+
+    expect(calls[1].body.threadId).toBeUndefined();
+    completeStream(calls[1].stream, 'a2', 'Second', 'thread_two');
+    await second;
+    await hook.flush();
+    expect(hook.result.current.threadId).toBe('thread_two');
+  });
+
+  it('never sends a message that was stopped while it waited for the thread', async () => {
+    const { calls } = installFetch();
+    const hook = setup({ multitaskStrategy: 'enqueue' });
+
+    const first = hook.result.current.send('one');
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    const second = hook.result.current.send('two');
+
+    hook.result.current.stop();
+    await Promise.all([first, second]);
+    await hook.flush();
+
+    expect(calls).toHaveLength(1);
+    expect(hook.result.current.isLoading).toBe(false);
+    expect(hook.result.current.error).toBeNull();
+  });
+
+  it('starts a new thread after the thread id is cleared', async () => {
+    const { calls } = installFetch();
+    const hook = setup({ multitaskStrategy: 'enqueue' });
+
+    const first = hook.result.current.send('one');
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    completeStream(calls[0].stream, 'a1', 'A', 'thread_old');
+    await first;
+    hook.result.current.setThreadId(undefined);
+
+    const second = hook.result.current.send('fresh');
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].body.threadId).toBeUndefined();
+    completeStream(calls[1].stream, 'a2', 'B', 'thread_fresh');
+    await second;
+  });
+});
+
+describe('useCogitatorChat pauses across enqueued messages', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const refundApproval: PendingApproval = {
+    toolCallId: 'call_1',
+    toolName: 'refund',
+    arguments: { order: 'A-1' },
+    description: 'Refund an order',
+  };
+
+  const orderQuestion: PendingInterrupt = {
+    id: 'int_1',
+    kind: 'input',
+    reason: 'pick_order',
+    message: 'Which order should be refunded?',
+  };
+
+  async function pauseFirstBehindSecond(pause: StreamEvent) {
+    const { calls } = installFetch();
+    const hook = setup({ multitaskStrategy: 'enqueue' });
+    const first = hook.result.current.send('one');
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    calls[0].stream.push({ type: 'start', messageId: 'a1', threadId: 'thread_1' });
+    const second = hook.result.current.send('two');
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+
+    calls[0].stream.push(pause);
+    calls[0].stream.push({ type: 'finish', messageId: 'a1', threadId: 'thread_1' });
+    calls[0].stream.push('[DONE]');
+    calls[0].stream.close();
+    await first;
+    await hook.flush();
+    return { calls, hook, second };
+  }
+
+  it('drops the pause of a message once the enqueued one after it finishes', async () => {
+    const { calls, hook, second } = await pauseFirstBehindSecond({
+      type: 'approval-required',
+      threadId: 'thread_1',
+      approvals: [refundApproval],
+    });
+    expect(hook.result.current.pendingApprovals).toEqual([refundApproval]);
+
+    completeStream(calls[1].stream, 'a2', 'Second', 'thread_1');
+    await second;
+    await hook.flush();
+
+    expect(hook.result.current.pendingApprovals).toEqual([]);
+    expect(hook.result.current.pendingInterrupts).toEqual([]);
+  });
+
+  it('shows the pause of the enqueued message in place of the earlier one', async () => {
+    const { calls, hook, second } = await pauseFirstBehindSecond({
+      type: 'interrupt-required',
+      threadId: 'thread_1',
+      interrupts: [orderQuestion],
+    });
+    expect(hook.result.current.pendingInterrupts).toEqual([orderQuestion]);
+
+    calls[1].stream.push({ type: 'start', messageId: 'a2', threadId: 'thread_1' });
+    calls[1].stream.push({
+      type: 'approval-required',
+      threadId: 'thread_1',
+      approvals: [refundApproval],
+    });
+    calls[1].stream.push({ type: 'finish', messageId: 'a2', threadId: 'thread_1' });
+    calls[1].stream.close();
+    await second;
+    await hook.flush();
+
+    expect(hook.result.current.pendingInterrupts).toEqual([]);
+    expect(hook.result.current.pendingApprovals).toEqual([refundApproval]);
+  });
+
+  it('keeps the pause of a message when the one after it is rejected', async () => {
+    const { calls } = installFetch();
+    const hook = setup({ multitaskStrategy: 'reject' });
+    const first = hook.result.current.send('one');
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    calls[0].stream.push({ type: 'start', messageId: 'a1', threadId: 'thread_1' });
+    const second = hook.result.current.send('two');
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+
+    calls[1].stream.push({ type: 'start', messageId: 'a2', threadId: 'thread_1' });
+    calls[1].stream.push({ type: 'error', message: 'Thread is busy', code: 'THREAD_BUSY' });
+    calls[1].stream.close();
+    await second;
+
+    calls[0].stream.push({
+      type: 'approval-required',
+      threadId: 'thread_1',
+      approvals: [refundApproval],
+    });
+    calls[0].stream.push({ type: 'finish', messageId: 'a1', threadId: 'thread_1' });
+    calls[0].stream.close();
+    await first;
+    await hook.flush();
+
+    expect(hook.result.current.pendingApprovals).toEqual([refundApproval]);
+  });
 });

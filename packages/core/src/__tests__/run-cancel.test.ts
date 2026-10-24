@@ -202,4 +202,24 @@ describe('aborting a run', () => {
     expect(toolResultsOf(after)).toEqual([]);
     await cog.close();
   });
+
+  it('leaves the streamed text to the caller with saveInterruptedReply: false', async () => {
+    const { cog } = setup([{ stream: ['Hel', 'lo'], thenWait: true }]);
+    const shown = deferred();
+    const controller = new AbortController();
+    const run = cog.run(plain, {
+      input: 'Greet me',
+      threadId: 'own-reply',
+      stream: true,
+      saveInterruptedReply: false,
+      signal: controller.signal,
+      onToken: () => shown.resolve(),
+    });
+    await shown.promise;
+    controller.abort(new Error('barge-in'));
+    await expect(run).rejects.toThrow('barge-in');
+    const entries = await entriesOf(cog, 'own-reply');
+    expect(entries.some((entry) => entry.message.role === 'assistant')).toBe(false);
+    await cog.close();
+  });
 });

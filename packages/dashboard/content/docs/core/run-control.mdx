@@ -52,6 +52,10 @@ const handle = cog.start(agent, {
 
 A follow-up starts a new turn, so it gets the agent's `maxIterations` again instead of sharing what the run used up.
 
+### Input Checks
+
+A queued message goes through the same input checks as the run's input before it reaches the model or the thread: every `beforeRun` hook sees it as its `input` (PII in `block` mode, prompt injection, the input guardrails and your own [middleware](/docs/core/middleware#beforerun)). A message a check refuses is dropped, not the run: it never reaches the model or the thread, `handle.refused` lists it with the error (`PII_DETECTED`, `PROMPT_INJECTION_DETECTED`, `LLM_CONTENT_FILTERED`, or what your hook threw), `onRefusedMessage` in the options of `start()` hears of it at once, and the run goes on without it. An injected message saved at the end of the run is checked the same way.
+
 ### What Is Not Delivered
 
 A run that pauses for an approval or an interrupt, or that stops at `maxIterations` with `onIterationLimit: 'stop'`, returns the messages it did not take in `result.undelivered`. They never reached the thread, send them again when you resume or start the next run. `abort()` returns them the same way, and a failed run leaves them in `handle.queued`. An injected message the run had no model call left for is saved to the thread instead, unless the run saves no history (`saveHistory: false`, no memory), then it is in `undelivered` too.
@@ -76,6 +80,7 @@ await cog.run(agent, { input: 'Actually, use Postgres', threadId, multitaskStrat
 `CogitatorConfig.multitaskStrategy` applies to every run that sets none. Without either, runs of one thread go on side by side, as they always did. The runtime tracks the runs going on per thread id, in the process: a run counts once it names its `threadId`, and stops counting when it settles.
 
 - An interrupted run is aborted, so it leaves the thread as [Cancellation](#cancellation) describes: its streamed text as an interrupted message, the tool calls it never started answered.
+- A run with a strategy may only touch runs of its own user: while a run of another user goes on in the thread it fails with `THREAD_ACCESS_DENIED` before it waits, interrupts or rolls back anything, unless it uses shared threads (`threadAccess: 'shared'`). A run whose `signal` aborted already changes nothing.
 - `rollback` uses the branches of the session log (see [Runs on Branches](/docs/core/cogitator#runs-on-branches)). The interrupted run's entries are not deleted, they stay on a branch of their own, and the thread's active branch goes on from before them. A rollback run that names its own `branch` keeps it, and a resumed run treats `rollback` as `interrupt`.
 - A run started from a tool of the run going on (it belongs to the same trace) is never held back, it would wait for itself.
 - A run on a branch that leaves the active leaf where it is (`branch.activate: false`) does not count as the thread's run.
@@ -118,7 +123,9 @@ On resume the tool runs again from its start, and this time `interrupt()` return
 
 - Tool calls of a step run one after another by default, and the step stops at the first question: the calls after it run once the answer came, so nothing a question guards runs before it is answered.
 - With `parallelToolCalls: true` every call of the step starts at once, so the others run (and finish) before the answer. Put calls that depend on an answer in a later step.
-- A resume that leaves a question unanswered pauses again on the same question, as it was asked: its tool does not run again, and its `expiresAt` stays what it was.
+- A resume that leaves a question unanswered pauses again on the same question, as it was asked: its tool does not run again, and its `expiresAt` stays what it was. Once it expired, the resume answers its tool call with the error `Nobody answered "<message>" before it expired at <expiresAt>` instead, so the model can go on, and a question asked next to it can be answered alone.
+- A new message on the thread instead of an answer answers the call that asked with "The user moved on without answering", and calls of the step that never ran with "Not started".
+- Resume a checkpoint with the same or a newer version of Cogitator: an older one does not know `turn.completed` and would run the step's finished calls again.
 - The answer is checked with the Zod schema the tool asked with while the process that asked keeps it, refinements included, and with the stored JSON Schema (the schema's input side) otherwise. A tool that gets an answer its Zod schema refuses after all, in another process, asks the same question again.
 
 | Field            | Meaning                                                                                   |
@@ -153,7 +160,7 @@ The JSON answer of a paused run and the `finish` event of its stream carry `inte
 
 A run is cancelled by its `signal`, its `timeout`, `handle.abort()` or a newer run that interrupts it. The run then fails with the abort's reason and leaves the thread whole:
 
-- **Text already streamed** to `onToken` is saved as an assistant message with `metadata.interrupted: true`, the format a voice turn the user talked over leaves. A later run reads it with `[interrupted by the user]` after it (`historyMessage()`), so the model does not take the part that was shown for a finished answer.
+- **Text already streamed** to `onToken` is saved as an assistant message with `metadata.interrupted: true`, the format a voice turn the user talked over leaves. `saveInterruptedReply: false` leaves it to your code, as the voice runner keeps only what was spoken. A later run reads it with `[interrupted by the user]` after it (`historyMessage()`), so the model does not take the part that was shown for a finished answer.
 - **Tool calls not started yet** get the result `Aborted before dispatch: the run stopped before this tool call started` (`ABORTED_BEFORE_DISPATCH`).
 - **Tool calls that finished** before the abort keep their results.
 - **A tool still running** gets no result in the log: its outcome is unknown. A tool that ignores the signal keeps running as before, but its late result is never written.

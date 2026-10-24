@@ -2,6 +2,7 @@ import type {
   MessageContent,
   QueueDrainMode,
   QueuedRunMessage,
+  RefusedRunMessage,
   RunQueueKind,
   RunQueueOptions,
 } from '@cogitator-ai/types';
@@ -16,11 +17,16 @@ import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
  */
 export class RunQueue {
   private readonly items: QueuedRunMessage[] = [];
+  private readonly refusals: RefusedRunMessage[] = [];
   private closed = false;
   private readonly steering: QueueDrainMode;
   private readonly followUp: QueueDrainMode;
 
-  constructor(options: RunQueueOptions = {}) {
+  /** @param onRefused hears of each message the run's input checks refused */
+  constructor(
+    options: RunQueueOptions = {},
+    private readonly onRefused?: (refused: RefusedRunMessage) => void
+  ) {
     this.steering = drainMode(options.steering, 'queue.steering');
     this.followUp = drainMode(options.followUp, 'queue.followUp');
   }
@@ -41,6 +47,22 @@ export class RunQueue {
   /** The messages waiting, in the order they came */
   get pending(): readonly QueuedRunMessage[] {
     return [...this.items];
+  }
+
+  /** The messages the run's input checks refused, in the order it refused them */
+  get refused(): readonly RefusedRunMessage[] {
+    return [...this.refusals];
+  }
+
+  /**
+   * Notes that the run's input checks refused `message`, taken out of the queue already or now:
+   * it never reaches the model or the thread
+   */
+  refuse(message: QueuedRunMessage, error: Error): void {
+    this.claim(message);
+    const refused: RefusedRunMessage = { kind: message.kind, content: message.content, error };
+    this.refusals.push(refused);
+    this.onRefused?.(refused);
   }
 
   /** Whether the run still takes messages */

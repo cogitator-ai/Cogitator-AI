@@ -335,6 +335,37 @@ describe('interrupts in a turn of several calls', () => {
     expect(sent.map((message) => message.toolCallId)).toEqual(['c1', 'd1']);
   });
 
+  it('tells calls that never ran why when the user moves on', async () => {
+    const deleteAll = tool({
+      name: 'delete_all',
+      description: 'Deletes',
+      parameters: z.object({}),
+      execute: async () => 'deleted',
+    });
+    const agent = new Agent({
+      name: 'a',
+      model: 'mock/m',
+      instructions: 'x',
+      tools: [confirm, deleteAll],
+    });
+    const { cog, requests } = setup([
+      callTools([confirmCall, { id: 'd1', name: 'delete_all', arguments: {} }]),
+      echoTools(),
+    ]);
+    await cog.run(agent, { input: 'Clean up', threadId: 'moved-on-seq' });
+    await cog.run(agent, { input: 'Forget it', threadId: 'moved-on-seq' });
+    const sent = requests.at(-1)!.messages.filter((message) => message.role === 'tool');
+    expect(sent.map((message) => message.content)).toEqual([
+      JSON.stringify({
+        error: 'The user moved on without answering: Go ahead with the migration?',
+      }),
+      JSON.stringify({
+        error:
+          'Not started: the user moved on while an earlier tool call of this step waited for an answer',
+      }),
+    ]);
+  });
+
   it('hands over after the resume when a finished call of the turn was a handoff', async () => {
     const specialist = new Agent({ name: 'specialist', model: 'mock/m', instructions: 'Expert.' });
     const triage = new Agent({
@@ -370,7 +401,7 @@ describe('interrupts in a turn of several calls', () => {
         return context.interrupt!({
           reason: 'when',
           message: 'When?',
-          expiresAt: asks === 1 ? '2000-01-01T00:00:00.000Z' : '2999-01-01T00:00:00.000Z',
+          expiresAt: asks === 1 ? '2999-01-01T00:00:00.000Z' : '2000-01-01T00:00:00.000Z',
         });
       },
     });
@@ -382,9 +413,48 @@ describe('interrupts in a turn of several calls', () => {
     expect(again.status).toBe('paused');
     expect(again.interrupts).toEqual(first.interrupts);
     expect(asks).toBe(1);
-    await expect(
-      cog.resume(agent, roundTrip(again.checkpoint), { responses: { 'w1#0': 'now' } })
-    ).rejects.toMatchObject({ code: ErrorCode.INTERRUPT_EXPIRED });
+  });
+
+  it('answers an expired question nobody answered with an error, instead of pausing on it', async () => {
+    const parallelAsk = (id: string, expiresAt: string) =>
+      tool({
+        name: `ask_${id}`,
+        description: 'Asks',
+        parameters: z.object({}),
+        execute: async (_params, context) =>
+          context.interrupt!({ reason: id, message: `Question ${id}?`, expiresAt }),
+      });
+    const agent = new Agent({
+      name: 'a',
+      model: 'mock/m',
+      instructions: 'x',
+      tools: [
+        parallelAsk('one', '2999-01-01T00:00:00.000Z'),
+        parallelAsk('two', '2000-01-01T00:00:00.000Z'),
+      ],
+    });
+    const { cog, requests } = setup([
+      callTools([
+        { id: 'q1', name: 'ask_one', arguments: {} },
+        { id: 'q2', name: 'ask_two', arguments: {} },
+      ]),
+      echoTools(),
+    ]);
+    const paused = await cog.run(agent, { input: 'Go', parallelToolCalls: true });
+    expect(paused.interrupts?.map((entry) => entry.id)).toEqual(['q1#0', 'q2#0']);
+
+    const done = await cog.resume(agent, roundTrip(paused.checkpoint), {
+      parallelToolCalls: true,
+      responses: { 'q1#0': 'yes' },
+    });
+    expect(done.status).toBe('completed');
+    const sent = requests.at(-1)!.messages.filter((message) => message.role === 'tool');
+    expect(sent.map((message) => message.content)).toEqual([
+      '"yes"',
+      JSON.stringify({
+        error: 'Nobody answered "Question two?" before it expired at 2000-01-01T00:00:00.000Z',
+      }),
+    ]);
   });
 });
 
@@ -466,6 +536,34 @@ describe('answers checked by the Zod schema the tool asked with', () => {
     });
     expect(again.status).toBe('paused');
     expect(again.interrupts?.map((entry) => entry.id)).toEqual(['p1#0']);
+    expect(again.checkpoint?.interrupts?.map((entry) => entry.id)).toEqual(['p1#0']);
     expect(seen).toEqual([]);
+
+    const third = setup([answer('done')]);
+    const done = await third.cog.resume(agent, roundTrip(again.checkpoint), {
+      responses: { 'p1#0': { n: 9 } },
+    });
+    expect(done.status).toBe('completed');
+    expect(seen).toEqual([{ n: 9 }]);
+  });
+
+  it('keeps the schemas of waiting questions only, and forgets them when the run ends', async () => {
+    const agent = agentWith(z.object({ n: z.number() }));
+    const { cog } = setup([callTools([pickCall]), answer('done')]);
+    const schemas = (cog as unknown as { interruptSchemas: { size: number } }).interruptSchemas;
+    const paused = await cog.run(agent, { input: 'Go', threadId: 'kept' });
+    expect(schemas.size).toBe(1);
+    await cog.resume(agent, roundTrip(paused.checkpoint), { responses: { 'p1#0': { n: 1 } } });
+    expect(schemas.size).toBe(0);
+
+    const again = setup([callTools([pickCall]), answer('done')]);
+    const left = (again.cog as unknown as { interruptSchemas: { size: number } }).interruptSchemas;
+    await again.cog.run(agent, { input: 'Go', threadId: 'moved' });
+    expect(left.size).toBe(1);
+    await again.cog.run(agent, { input: 'Something else', threadId: 'moved' });
+    expect(left.size).toBe(0);
+    await again.cog.run(agent, { input: 'Go', threadId: 'closing' });
+    await again.cog.close();
+    expect(left.size).toBe(0);
   });
 });

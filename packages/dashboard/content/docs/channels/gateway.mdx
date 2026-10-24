@@ -260,7 +260,7 @@ const gateway = new Gateway({
 
 For personal assistants, `sequential` or `collect` usually give the best UX. Queues are keyed by the same thread id as sessions.
 
-Each run the gateway starts names the runtime strategy its queue mode stands for (`multitaskStrategy`: `enqueue` for `sequential`, `enqueue` and `collect`, and `reject`, `interrupt` or `rollback` for those modes), so a `multitaskStrategy` in the Cogitator config never contradicts the queue. `parallel` names none, and the config's applies.
+Each run the gateway starts names the runtime strategy its queue mode stands for (`multitaskStrategy`: `enqueue` for `sequential`, `enqueue` and `collect`, and `reject`, `interrupt` or `rollback` for those modes), so a `multitaskStrategy` in the Cogitator config never contradicts the queue. `parallel` names none, and the config's applies. A run the runtime refuses with `THREAD_BUSY`, because a run of the thread goes on outside the gateway, counts as refused the same way: the `message:rejected` hook hears of it, `injectMessage` rejects, and the channel never gets it back.
 
 With a queue, a channel's message handler returns once the message is queued, so a channel that reads its updates one by one (Telegram long polling, the Bluesky and Threads polls) goes on to other chats, button presses and stop buttons while a thread is busy. `await gateway.injectMessage(msg)` still resolves once the message is answered (with `reject` it rejects for a message refused while its thread was busy), and `await gateway.idle()` waits until every queued message is answered.
 

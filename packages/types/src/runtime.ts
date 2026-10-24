@@ -283,6 +283,12 @@ export interface RunOptions<TDeps = unknown> {
    * turns that call tools only from here
    */
   onModelTurn?: (turn: KeptModelTurn) => void;
+  /**
+   * Whether an aborted run saves the text it already streamed to `onToken` as an assistant
+   * message with `metadata.interrupted: true` (default true). Turn it off when your code keeps
+   * what the user really got itself, as a voice runner keeps only what was spoken
+   */
+  saveInterruptedReply?: boolean;
   /** Overrides the agent's `reasoning` for this run */
   reasoning?: ReasoningConfig;
   /**

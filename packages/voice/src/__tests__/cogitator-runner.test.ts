@@ -72,6 +72,7 @@ describe('createCogitatorRunner streaming and tools', () => {
       threadId: 'voice:abc',
       signal: expect.any(AbortSignal),
       stream: true,
+      saveInterruptedReply: false,
       onToken: expect.any(Function),
       onModelTurn: expect.any(Function),
       onMemoryEntry: expect.any(Function),

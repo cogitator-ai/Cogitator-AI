@@ -364,4 +364,39 @@ describe('cogitator.start()', () => {
     expect(handle.queued).toEqual([]);
     await cog.close();
   });
+
+  it('refuses queued messages the input checks block, and the run goes on without them', async () => {
+    const scripted = scriptedBackend([answer('first'), answer('second')]);
+    const cog = new Cogitator({
+      llm: { backends: { mock: scripted.backend } },
+      memory: { adapter: 'memory' },
+      security: { pii: { mode: 'block' } },
+    });
+    const heard: string[] = [];
+    let handle: ReturnType<Cogitator['start']> | undefined;
+    handle = cog.start(plain, {
+      input: 'Hi',
+      threadId: 'checked',
+      onRefusedMessage: (refused) => heard.push(`${refused.kind}:${refused.error.message}`),
+      onModelTurn: () => {
+        if (scripted.requests.length === 1) handle?.inject('Reach me at ann@example.com');
+      },
+    });
+    handle.steer('My email is ann@example.com');
+    handle.followUp('Now say goodbye');
+    const result = await handle.result;
+
+    expect(result.output).toBe('second');
+    expect(handle.refused.map((refused) => [refused.kind, refused.error.message])).toEqual([
+      ['steer', 'The input contains personal data: email'],
+      ['inject', 'The input contains personal data: email'],
+    ]);
+    expect(heard).toHaveLength(2);
+    const sent = scripted.requests.flatMap((request) => userTexts(request)).join('\n');
+    expect(sent).not.toContain('ann@example.com');
+    const entries = await threadEntries(cog, 'checked');
+    expect(entries.some((entry) => String(entry.message.content).includes('ann@'))).toBe(false);
+    expect(handle.queued).toEqual([]);
+    await cog.close();
+  });
 });

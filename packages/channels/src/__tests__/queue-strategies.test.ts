@@ -9,6 +9,7 @@ import type {
 import { MessageQueue, type MessageProcessing } from '../message-queue';
 import { Gateway } from '../gateway';
 import { createHookRegistry } from '../hooks';
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 
 function makeMsg(text: string, id = text): ChannelMessage {
   return { id, channelType: 'test', channelId: 'c1', userId: 'u1', text, raw: {} };
@@ -288,5 +289,79 @@ describe('Gateway queue strategies', () => {
       expect(run.mock.calls[0]?.[1].multitaskStrategy).toBe(strategy);
       await gateway.stop();
     }
+  });
+
+  it('rollback of a resumed run branches from where the paused run started', async () => {
+    const channel = createChannel();
+    const resumeStarted = defer();
+    const options: RunOptions[] = [];
+    const paused = {
+      output: 'Approve?',
+      status: 'paused',
+      threadId: 't',
+      runId: 'r1',
+      pendingApprovals: [
+        { toolCallId: 'c1', toolName: 'refund', arguments: {}, description: 'Refund' },
+      ],
+      memory: { threadId: 't', branchPoint: 'before-question' },
+    };
+    const run = vi.fn(async (_agent: unknown, opts: RunOptions) => {
+      options.push(opts);
+      return options.length === 1 ? paused : { output: `answer to ${opts.input}` };
+    });
+    const resume = vi.fn(
+      (_agent: unknown, _thread: string, opts: RunOptions) =>
+        new Promise((_, reject) => {
+          resumeStarted.resolve();
+          opts.signal?.addEventListener('abort', () => reject(new Error('stopped')), {
+            once: true,
+          });
+        })
+    );
+    const gateway = new Gateway({
+      agent,
+      channels: [channel],
+      cogitator: { run, resume } as never,
+      queueMode: 'rollback',
+    });
+    await gateway.start();
+    await channel.trigger(makeMsg('refund it', 'm1'));
+    await gateway.idle();
+    await channel.trigger(makeMsg('yes', 'm2'));
+    await resumeStarted.promise;
+    await channel.trigger(makeMsg('actually something else', 'm3'));
+    await gateway.idle();
+
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(options.at(-1)?.branch).toEqual({ fromEntryId: 'before-question' });
+    await gateway.stop();
+  });
+
+  it('counts a run the runtime refuses as busy as a refused message', async () => {
+    const channel = { ...createChannel(), redeliver: vi.fn().mockResolvedValue(undefined) };
+    const run = vi.fn(async () => {
+      throw new CogitatorError({ message: 'busy', code: ErrorCode.THREAD_BUSY });
+    });
+    const onError = vi.fn();
+    const hooks = createHookRegistry();
+    const rejected: MessageRejectedEvent[] = [];
+    hooks.on('message:rejected', (event) => {
+      rejected.push(event);
+    });
+    const gateway = new Gateway({
+      agent,
+      channels: [channel],
+      cogitator: { run } as never,
+      hooks,
+      onError,
+    });
+    await gateway.start();
+    await expect(gateway.injectMessage(makeMsg('hi', 'm1'))).rejects.toThrow(/THREAD_BUSY/);
+    await channel.trigger(makeMsg('again', 'm2'));
+    await gateway.idle();
+    await gateway.stop();
+    expect(rejected).toHaveLength(2);
+    expect(onError).not.toHaveBeenCalled();
+    expect(channel.redeliver).not.toHaveBeenCalled();
   });
 });

@@ -45,8 +45,18 @@ export interface RunQueueOptions {
   followUp?: QueueDrainMode;
 }
 
+/** A queued message the run's input checks refused, see {@link RunHandle.refused} */
+export interface RefusedRunMessage extends QueuedRunMessage {
+  /** Why: the error a `beforeRun` check threw, such as `PII_DETECTED` */
+  readonly error: Error;
+}
+
 /** Options of `cogitator.start()`: a run's options and how it takes its queued messages */
-export type StartOptions<TDeps = unknown> = RunOptions<TDeps> & { queue?: RunQueueOptions };
+export type StartOptions<TDeps = unknown> = RunOptions<TDeps> & {
+  queue?: RunQueueOptions;
+  /** Hears of each queued message the run's input checks refused, see {@link RunHandle.refused} */
+  onRefusedMessage?: (refused: RefusedRunMessage) => void;
+};
 
 /**
  * A run going on, as `cogitator.start()` returns it. Each message it delivers becomes a user
@@ -64,6 +74,12 @@ export interface RunHandle {
   inject(message: MessageContent): boolean;
   /** The messages queued and not delivered yet, in the order they came */
   readonly queued: readonly QueuedRunMessage[];
+  /**
+   * Queued messages the run's input checks refused (the `beforeRun` hooks: PII in `block` mode,
+   * prompt injection, input guardrails), with why. A refused message never reaches the model or
+   * the thread, and the run goes on without it
+   */
+  readonly refused: readonly RefusedRunMessage[];
   /**
    * Stops the run, as an abort of its `signal` does, and returns the messages it had not
    * delivered: they never reach the run or the thread

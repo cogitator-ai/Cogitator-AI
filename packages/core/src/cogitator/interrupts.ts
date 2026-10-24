@@ -51,6 +51,11 @@ export function checkpointInterrupts(checkpoint: RunCheckpoint): RunInterrupt[] 
     );
 }
 
+/** Whether `entry` lapsed by `now`: its `expiresAt` came */
+export function isExpired(entry: RunInterrupt, now: number): boolean {
+  return entry.expiresAt !== undefined && Date.parse(entry.expiresAt) <= now;
+}
+
 /** Whether `entry` has its answer */
 export function isAnswered(entry: RunInterrupt): boolean {
   return Object.hasOwn(entry, 'response') && entry.response !== undefined;
@@ -93,7 +98,6 @@ export function toolInterrupter(
     const kept = interrupts.find((entry) => entry.id === id);
     const schema = request.responseSchema;
     const zod = schema !== undefined && isZodSchema(schema) ? schema : undefined;
-    if (zod) onZodSchema?.(id, zod);
     if (kept && isAnswered(kept)) {
       if (!zod) return kept.response as T;
       const parsed = zod.safeParse(kept.response);
@@ -102,8 +106,10 @@ export function toolInterrupter(
         interruptId: id,
         problem: z.prettifyError(parsed.error),
       });
+      onZodSchema?.(id, zod);
       throw new ToolInterruptSignal(withoutAnswer(kept));
     }
+    if (zod) onZodSchema?.(id, zod);
     if (kept) throw new ToolInterruptSignal(kept);
     throw new ToolInterruptSignal({
       id,
@@ -122,6 +128,58 @@ function withoutAnswer(entry: RunInterrupt): RunInterrupt {
   const copy = { ...entry };
   delete copy.response;
   return copy;
+}
+
+/** How many Zod schemas of questions {@link InterruptSchemas} keeps at most */
+const MAX_KEPT_SCHEMAS = 1000;
+
+/**
+ * The Zod schemas tools asked their questions with in this process, by run and interrupt id,
+ * so a resume here checks answers with refinements JSON Schema loses. It keeps the questions
+ * still waiting for an answer, forgets a run's once it ends, and at most
+ * {@link MAX_KEPT_SCHEMAS}, the oldest dropped first: a resume without the schema checks the
+ * stored JSON Schema instead
+ */
+export class InterruptSchemas {
+  private readonly schemas = new Map<string, ZodType>();
+
+  get size(): number {
+    return this.schemas.size;
+  }
+
+  remember(runId: string, interruptId: string, schema: ZodType): void {
+    const key = schemaKey(runId, interruptId);
+    this.schemas.delete(key);
+    this.schemas.set(key, schema);
+    while (this.schemas.size > MAX_KEPT_SCHEMAS) {
+      const oldest = this.schemas.keys().next();
+      if (oldest.done) break;
+      this.schemas.delete(oldest.value);
+    }
+  }
+
+  get(runId: string, interruptId: string): ZodType | undefined {
+    return this.schemas.get(schemaKey(runId, interruptId));
+  }
+
+  forget(runId: string, interruptId: string): void {
+    this.schemas.delete(schemaKey(runId, interruptId));
+  }
+
+  forgetRun(runId: string): void {
+    const prefix = schemaKey(runId, '');
+    for (const key of [...this.schemas.keys()]) {
+      if (key.startsWith(prefix)) this.schemas.delete(key);
+    }
+  }
+
+  clear(): void {
+    this.schemas.clear();
+  }
+}
+
+function schemaKey(runId: string, interruptId: string): string {
+  return `${runId}\n${interruptId}`;
 }
 
 /** The decisions and the interrupts after a resume answered some, see {@link answerInterrupts} */
@@ -170,7 +228,7 @@ export function answerInterrupts(
         details: { interruptId: id },
       });
     }
-    if (entry.expiresAt !== undefined && Date.parse(entry.expiresAt) <= now) {
+    if (isExpired(entry, now)) {
       throw new CogitatorError({
         message: `Interrupt "${id}" expired at ${entry.expiresAt}, its answer is refused`,
         code: ErrorCode.INTERRUPT_EXPIRED,
