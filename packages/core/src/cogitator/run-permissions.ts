@@ -231,16 +231,17 @@ export class RunPermissions {
     this.agentScope = options.agent;
     this.ownScope = runScope(options.run, checkpoint);
     this.root = options.root;
+    this.remembered = [
+      ...service.rememberedFor(options.threadId),
+      ...(checkpoint?.remembered?.allow ?? []),
+    ];
     this.activated =
       service.config !== undefined ||
       options.runtime.options !== undefined ||
       options.agent.options !== undefined ||
       this.ownScope !== undefined ||
-      checkpoint !== undefined;
-    this.remembered = [
-      ...service.rememberedFor(options.threadId),
-      ...(checkpoint?.remembered?.allow ?? []),
-    ];
+      checkpoint !== undefined ||
+      this.remembered.length > 0;
     this.currentMode = 'default';
   }
 

@@ -1297,3 +1297,115 @@ describe('tenth review round invokeTool', () => {
     await cog.close();
   });
 });
+
+describe('eleventh review round', () => {
+  it('runs the guardrail filter on the arguments an approval of changed ones gives', async () => {
+    const ran = vi.fn(async ({ command }: { command: string }) => `ran ${command}`);
+    const shell = tool({
+      name: 'shell',
+      description: 'Runs a command',
+      parameters: z.object({ command: z.string() }),
+      sideEffects: ['process'],
+      execute: ran,
+    });
+    const retag = {
+      name: 'retag',
+      wrapToolCall: async (
+        call: { toolCall: ToolCall },
+        next: (call: never) => Promise<unknown>
+      ) => {
+        call.toolCall.arguments = { command: 'echo changed' };
+        return next(call as never);
+      },
+    };
+    const { cog } = setup([turn(call('s1', 'shell', { command: 'echo hi' }))], {
+      permissions: { allow: ['shell(echo hi)'], ask: ['shell'] },
+      middleware: [retag as never],
+      guardrails: { filterToolCalls: true, filterInput: false, filterOutput: false },
+    });
+    const agent = new Agent({ name: 'ops', model: 'mock/m', instructions: 'x', tools: [shell] });
+    const result = await cog.run(agent, {
+      input: 'go',
+      onApproval: (request) =>
+        request.arguments.command === 'echo changed'
+          ? { approved: true, updatedArguments: { command: 'rm -rf /' } }
+          : { approved: true },
+    });
+    expect(ran).not.toHaveBeenCalled();
+    expect(toolTexts(result.messages).join('\n')).toContain('Tool blocked');
+    await cog.close();
+  });
+});
+
+describe('eleventh review round classifier', () => {
+  it('does not ask the classifier again right before a call it allowed after a middleware', async () => {
+    const mailed = vi.fn(async () => 'mailed');
+    const mailer = tool({
+      name: 'send_email',
+      description: 'Send an email',
+      parameters: z.object({ to: z.string(), body: z.string() }),
+      requiresApproval: (args) => args.to !== 'a@b.co',
+      execute: mailed,
+    });
+    const classify = vi.fn().mockResolvedValue({ decision: 'allow', reason: 'fine' });
+    const redirect = {
+      name: 'redirect-mail',
+      wrapToolCall: async (
+        call: { toolCall: ToolCall },
+        next: (call: never) => Promise<unknown>
+      ) => {
+        call.toolCall.arguments = { ...call.toolCall.arguments, to: 'c@d.co' };
+        return next(call as never);
+      },
+    };
+    const { cog } = setup([turn(call('c1', 'send_email', { to: 'a@b.co', body: 'hi' }))], {
+      permissions: { mode: 'auto', classifier: { classify } },
+      middleware: [redirect as never],
+    });
+    await cog.run(new Agent({ name: 'm', model: 'mock/m', instructions: 'x', tools: [mailer] }), {
+      input: 'mail',
+    });
+    expect(mailed).toHaveBeenCalledTimes(1);
+    expect(classify).toHaveBeenCalledTimes(1);
+
+    classify.mockClear();
+    mailed.mockClear();
+    const direct = new Cogitator({
+      permissions: { mode: 'auto', classifier: { classify } },
+      middleware: [redirect as never],
+    });
+    await direct.invokeTool(mailer, { to: 'a@b.co', body: '' });
+    expect(mailed).toHaveBeenCalledTimes(1);
+    expect(classify).toHaveBeenCalledTimes(1);
+    await direct.close();
+    await cog.close();
+  });
+});
+
+describe('eleventh review round session rules', () => {
+  it('keeps the rules a person allowed for the session on the next run without permissions', async () => {
+    sent.mockClear();
+    const { cog } = setup([
+      turn(call('c1', 'send_email', { to: 'a@b.co', body: '1' })),
+      { content: 'sent' },
+      turn(call('c2', 'send_email', { to: 'a@b.co', body: '2' })),
+    ]);
+    await cog.run(coder(), {
+      input: 'mail',
+      threadId: 't-session-rule',
+      permissions: { mode: 'default' },
+      onApproval: () => ({ approved: true, remember: true }),
+    });
+    expect(sent).toHaveBeenCalledTimes(1);
+    const asked = vi.fn(() => 'pause' as const);
+    const second = await cog.run(coder(), {
+      input: 'mail again',
+      threadId: 't-session-rule',
+      onApproval: asked,
+    });
+    expect(asked).not.toHaveBeenCalled();
+    expect(second.status).toBe('completed');
+    expect(sent).toHaveBeenCalledTimes(2);
+    await cog.close();
+  });
+});

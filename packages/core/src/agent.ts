@@ -382,5 +382,14 @@ function copyPermissions(options: PermissionOptions): PermissionOptions {
     ...(options.allow && { allow: [...options.allow] }),
     ...(options.ask && { ask: [...options.ask] }),
     ...(options.deny && { deny: [...options.deny] }),
+    ...(options.inherited && {
+      inherited: options.inherited.map((entry) => ({
+        root: entry.root,
+        cwd: entry.cwd,
+        ...(entry.allow && { allow: [...entry.allow] }),
+        ...(entry.ask && { ask: [...entry.ask] }),
+        ...(entry.deny && { deny: [...entry.deny] }),
+      })),
+    }),
   };
 }

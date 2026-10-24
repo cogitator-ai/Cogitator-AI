@@ -88,6 +88,11 @@ export interface ToolCallExecution {
    */
   permit?: (tool: Tool, args: Record<string, unknown>) => Promise<ChangedCallPermit>;
   /**
+   * The guardrails whose tool call filter (`filterToolCalls`) checks arguments the call ends up
+   * with after its middleware, the ones an approval of changed arguments gave
+   */
+  guardrails?: ConstitutionalAI;
+  /**
    * Decides the call again once its locks are held, with the arguments it runs with: why it may
    * not run, or undefined when it may. The tool starts right after, nothing awaited in between
    */
@@ -265,6 +270,21 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
       );
       if (!parsed.ok) return failed(parsed.error);
       args = parsed.args;
+      if (execution.guardrails) {
+        const guard = await execution.guardrails.guardTool(
+          tool,
+          args as Record<string, unknown>,
+          {
+            ...extraContext,
+            agentId,
+            runId,
+            signal: signal ?? new AbortController().signal,
+            toolCallId: toolCall.id,
+          },
+          { approvedByUser: true }
+        );
+        if (!guard.approved) return failed(`Tool blocked: ${guard.reason ?? 'Policy violation'}`);
+      }
     }
   }
   const owner = new LockOwner(currentLockOwner());

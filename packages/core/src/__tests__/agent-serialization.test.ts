@@ -398,3 +398,18 @@ describe('Agent Serialization', () => {
     });
   });
 });
+
+describe('permissions in a snapshot', () => {
+  it('keeps inherited rules with their root and working directory', () => {
+    const permissions = {
+      mode: 'default' as const,
+      deny: ['Bash(rm *)'],
+      inherited: [{ root: '/base/project', cwd: '/base/project/src', deny: ['Read(/private/**)'] }],
+    };
+    const agent = new Agent({ name: 'a', model: 'mock/m', instructions: 'x', permissions });
+    const snapshot = JSON.parse(JSON.stringify(agent.serialize()));
+    const restored = Agent.deserialize(snapshot);
+    expect(restored.config.permissions).toEqual(permissions);
+    expect(restored.config.permissions?.inherited?.[0]).not.toBe(permissions.inherited[0]);
+  });
+});

@@ -900,6 +900,7 @@ export class Cogitator implements ToolInvoker {
 
     let approvedByUser = verdict.decision === 'allow' && verdict.decidedBy !== 'default';
     let personApproved = false;
+    let changedJudged = false;
     let callToRun = toolCall;
     if (verdict.decision === 'allow') await permissions.record(event(verdict));
     if (verdict.decision === 'ask') {
@@ -1019,6 +1020,7 @@ export class Cogitator implements ToolInvoker {
       },
       approved: approvedByUser,
       allowNativeFallback: this.config.sandbox?.allowNativeFallback !== false,
+      ...(constitutionalAI && { guardrails: constitutionalAI }),
       ...(permissions.active && {
         permit: async (changedTool: Tool, changedArgs: Record<string, unknown>) => {
           const changed = { ...toolCall, arguments: changedArgs };
@@ -1052,6 +1054,7 @@ export class Cogitator implements ToolInvoker {
           });
           if (!('pause' in outcome)) {
             if (outcome.allowed && outcome.byPerson) personApproved = true;
+            if (outcome.allowed && outcome.byClassifier) changedJudged = true;
             return outcome;
           }
           changedRequest = outcome.pause;
@@ -1081,7 +1084,7 @@ export class Cogitator implements ToolInvoker {
               }),
             },
             human: personApproved,
-            judged: verdict.decidedBy === 'classifier',
+            judged: verdict.decidedBy === 'classifier' || changedJudged,
           }),
       }),
       ...(options.onUpdate && {
@@ -2569,6 +2572,7 @@ export class Cogitator implements ToolInvoker {
           });
           if (!('pause' in outcome)) {
             if (outcome.allowed && outcome.byPerson) answeredChanges.add(toolCall.id);
+            if (outcome.allowed && outcome.byClassifier) classified.add(toolCall.id);
             return outcome;
           }
           changedRequests.set(toolCall.id, outcome.pause);
@@ -2722,6 +2726,9 @@ export class Cogitator implements ToolInvoker {
                         permitChanged(toolCall, tool, args),
                     }),
                     dispatch,
+                    ...(this.state.constitutionalAI && {
+                      guardrails: this.state.constitutionalAI,
+                    }),
                     ...(permissions.active && {
                       recheck: (_tool: Tool, args: Record<string, unknown>) =>
                         recheck(toolCall, args),
@@ -4363,7 +4370,8 @@ export class Cogitator implements ToolInvoker {
    * decide the ones the model sent: a deny refuses, an allow goes on, and an ask takes a decision
    * of its own from `decide`, since an approval of the old arguments does not carry over to new
    * ones. `pause` holds the request the call waits for when nobody decided it, `byPerson` marks
-   * an answer a person gave
+   * an answer a person gave, `byClassifier` an allow of the `auto` classifier, which the final
+   * check before the call runs does not ask again
    */
   private async permitChangedArguments(changed: {
     tool: Tool;
@@ -4372,13 +4380,15 @@ export class Cogitator implements ToolInvoker {
     call: PermissionCall;
     request: Pick<ToolApprovalRequest, 'agentId' | 'threadId' | 'userId'>;
     decide: (request: ToolApprovalRequest) => Promise<ToolApprovalDecision | 'pause'>;
-  }): Promise<(ChangedCallPermit & { byPerson?: true }) | { pause: ToolApprovalRequest }> {
+  }): Promise<
+    (ChangedCallPermit & { byPerson?: true; byClassifier?: true }) | { pause: ToolApprovalRequest }
+  > {
     const { tool, toolCall, permissions, call } = changed;
     const verdict = await permissions.decide(tool, toolCall.arguments, call);
     if (verdict.decision !== 'ask') {
       await permissions.record({ ...verdict, toolCallId: toolCall.id, toolName: toolCall.name });
       return verdict.decision === 'allow'
-        ? { allowed: true }
+        ? { allowed: true, ...(verdict.decidedBy === 'classifier' && { byClassifier: true }) }
         : {
             allowed: false,
             reason: `the arguments a middleware changed the call to: ${verdict.reason}`,
