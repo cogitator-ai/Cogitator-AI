@@ -218,7 +218,7 @@ config: {
 
 ## Streaming
 
-The `/agents/:name/stream` endpoint returns an SSE stream: `start`, `text-start`/`text-delta`/`text-end` blocks, `tool-call-start`/`tool-call-delta`/`tool-call-end` (the id is the model's tool call id, matching `tool-result.toolCallId`), `tool-result`, then `finish` and `[DONE]` — or an `error` event. Disconnecting aborts the run. Read it with `fetch` (EventSource cannot send a POST body):
+The `/agents/:name/stream` endpoint returns an SSE stream: `start`, `text-start`/`text-delta`/`text-end` blocks, `tool-call-start`/`tool-call-delta`/`tool-call-end` as the model writes the call (the id is the model's tool call id, matching `tool-result.toolCallId`), `tool-update` while the tool runs, `tool-result`, then `finish` and `[DONE]`, or an `error` event. Disconnecting aborts the run. Read it with `fetch` (EventSource cannot send a POST body):
 
 ```typescript
 const response = await fetch('http://localhost:3000/cogitator/agents/assistant/stream', {

@@ -2,6 +2,8 @@
  * Message types for LLM conversations
  */
 
+import type { ToolPresentation } from './tool';
+
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
 
 export type MessageContent = string | ContentPart[];
@@ -100,6 +102,13 @@ export interface ToolCallReplayState {
 export interface ToolResult {
   callId: string;
   name: string;
+  /** What the tool returned, the part the model reads (`content` of a `toolOutput()` result) */
   result: unknown;
   error?: string;
+  /** Why the call failed, when a code says it: `TOOL_TIMEOUT` for a call that ran out of time */
+  errorCode?: string;
+  /** Data the tool gave the application only (`toolOutput({ details })`), never sent to the model */
+  details?: unknown;
+  /** How a client shows the call, see `ToolPresentation` */
+  presentation?: ToolPresentation;
 }

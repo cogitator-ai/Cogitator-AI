@@ -7,17 +7,20 @@ import type {
   ToolCall,
   ToolCallRequest,
   ToolContext,
+  ToolPresentation,
+  ToolProgress,
   ToolResult,
   Workspace,
 } from '@cogitator-ai/types';
-import { WorkspaceError } from '@cogitator-ai/types';
+import { ErrorCode, isToolOutputResult, WorkspaceError } from '@cogitator-ai/types';
 import { ToolRegistry } from '../registry';
 import { getLogger } from '../logger';
 import type { SandboxManager } from './initializers';
 
 type SandboxRunOutput = NonNullable<Awaited<ReturnType<SandboxManager['execute']>>['data']>;
 import type { ConstitutionalAI } from '../constitutional/index';
-import { createLinkedAbortController } from '../utils/abort';
+import { createLinkedAbortController, toAbortError } from '../utils/abort';
+import { toolLocks } from './tool-locks';
 import { guardrailsMiddleware } from '../middleware/builtins';
 import { MiddlewarePipeline, type ToolArgumentsParser } from '../middleware/pipeline';
 import { isTripwire } from '../middleware/tripwire';
@@ -57,6 +60,10 @@ export interface ToolCallExecution {
   /** The `wrapToolCall` hooks the call goes through, and what they are told */
   middleware: MiddlewarePipeline;
   context: RunMiddlewareContext;
+  /** Milliseconds a call of a tool without a `timeout` of its own may take (`timeouts.toolMs`) */
+  defaultTimeout?: number;
+  /** Hears what the tool reports with `context.update()` while it runs */
+  onUpdate?: (progress: ToolProgress) => void;
 }
 
 /**
@@ -116,6 +123,50 @@ export function needsApproval(tool: Tool, args: Record<string, unknown>): boolea
   }
 }
 
+/**
+ * Whether a call of `tool` with `args` may run at the same time as other safe calls of its step:
+ * its `isConcurrencySafe`, or that function's answer for the arguments as its schema reads them,
+ * else its `annotations.readOnlyHint`. A check that throws, and a tool that declares nothing,
+ * say no.
+ */
+export function isConcurrencySafe(tool: Tool, args: Record<string, unknown>): boolean {
+  const declared = tool.isConcurrencySafe ?? tool.annotations?.readOnlyHint === true;
+  if (typeof declared !== 'function') return declared;
+  try {
+    return declared(parsedArguments(tool, args));
+  } catch {
+    return false;
+  }
+}
+
+/** How a client shows a call of `tool` with `args`, from the tool's `presentation` */
+export function presentationOf(
+  tool: Tool,
+  args: Record<string, unknown>
+): ToolPresentation | undefined {
+  const declared = tool.presentation;
+  if (typeof declared !== 'function') return declared;
+  try {
+    return declared(parsedArguments(tool, args));
+  } catch (error) {
+    getLogger().debug('Tool presentation failed', {
+      tool: tool.name,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+}
+
+function parsedArguments(tool: Tool, args: Record<string, unknown>): Record<string, unknown> {
+  if (typeof tool.parameters.safeParse !== 'function') return args;
+  const parsed = tool.parameters.safeParse(args);
+  return parsed.success && isRecord(parsed.data) ? parsed.data : args;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 /** The arguments of `call` as its tool's Zod schema reads them, or as they are without one. */
 const parseToolArguments: ToolArgumentsParser = ({ tool, toolCall }) => {
   if (typeof tool.parameters.safeParse !== 'function') {
@@ -140,22 +191,80 @@ const parseCallArguments: ToolArgumentsParser = (call, changed) => {
   };
 };
 
-function runTool(call: ToolCallRequest, execution: ToolCallExecution): Promise<ToolResult> {
+/**
+ * Runs the tool of `call` once it holds the locks of its `lockKeys`, and reads what it returned:
+ * a `toolOutput()` result gives the model its `content`, the application its `details` and
+ * `presentation`, any other result gets the tool's own `presentation`.
+ */
+async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Promise<ToolResult> {
   const { tool, toolCall, args } = call;
   const { runId, agentId, signal, extraContext } = execution;
-  return tool.sandbox?.type === 'docker' || tool.sandbox?.type === 'wasm'
-    ? executeInSandbox(
-        tool,
-        { ...toolCall, arguments: args as Record<string, unknown> },
-        runId,
+  const failed = (error: string): ToolResult => ({
+    callId: toolCall.id,
+    name: toolCall.name,
+    result: null,
+    error,
+  });
+
+  let release: (() => void) | undefined;
+  if (tool.lockKeys) {
+    let keys: readonly string[];
+    try {
+      keys = await tool.lockKeys(args as Parameters<NonNullable<Tool['lockKeys']>>[0], {
+        ...extraContext,
         agentId,
-        execution.sandboxManager,
-        execution.initializeSandbox,
-        execution.allowNativeFallback,
-        signal,
-        extraContext
-      )
-    : executeNatively(tool, toolCall, args, runId, agentId, signal, extraContext);
+        runId,
+        signal: signal ?? new AbortController().signal,
+        toolCallId: toolCall.id,
+      });
+    } catch (error) {
+      return failed(
+        `Could not tell what the call changes: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    try {
+      if (keys.length > 0) release = await toolLocks.acquire(keys, signal);
+    } catch (error) {
+      return failed(toAbortError(error, `Tool "${tool.name}" aborted`).message);
+    }
+  }
+
+  try {
+    const result =
+      tool.sandbox?.type === 'docker' || tool.sandbox?.type === 'wasm'
+        ? await executeInSandbox(
+            tool,
+            { ...toolCall, arguments: args as Record<string, unknown> },
+            runId,
+            agentId,
+            execution.sandboxManager,
+            execution.initializeSandbox,
+            execution.allowNativeFallback,
+            signal,
+            extraContext,
+            execution.defaultTimeout
+          )
+        : await executeNatively(tool, toolCall, args, runId, agentId, signal, extraContext, {
+            defaultTimeout: execution.defaultTimeout,
+            onUpdate: execution.onUpdate,
+          });
+    return readOutput(tool, isRecord(args) ? args : toolCall.arguments, result);
+  } finally {
+    release?.();
+  }
+}
+
+/** `result` with a `toolOutput()` result taken apart and the call's presentation, see {@link runTool} */
+function readOutput(tool: Tool, args: Record<string, unknown>, result: ToolResult): ToolResult {
+  const output = isToolOutputResult(result.result) ? result.result : undefined;
+  const presentation = output?.presentation ?? presentationOf(tool, args);
+  if (!output && !presentation) return result;
+  return {
+    ...result,
+    ...(output && { result: output.content }),
+    ...(output?.details !== undefined && { details: output.details }),
+    ...(presentation && { presentation }),
+  };
 }
 
 /**
@@ -212,6 +321,18 @@ export async function executeTool(
   });
 }
 
+/** How a native call runs beyond its tool: the default timeout and where its updates go */
+interface NativeRunOptions {
+  defaultTimeout?: number;
+  onUpdate?: (progress: ToolProgress) => void;
+}
+
+/** Milliseconds a call of `tool` may take: its own `timeout`, else `defaultTimeout` */
+function timeoutOf(tool: Tool, defaultTimeout: number | undefined): number | undefined {
+  if (tool.timeout && tool.timeout > 0) return tool.timeout;
+  return defaultTimeout && defaultTimeout > 0 ? defaultTimeout : undefined;
+}
+
 async function executeNatively(
   tool: Tool,
   toolCall: ToolCall,
@@ -219,16 +340,30 @@ async function executeNatively(
   runId: string,
   agentId: string,
   signal?: AbortSignal,
-  extraContext?: ExtraToolContext
+  extraContext?: ExtraToolContext,
+  options: NativeRunOptions = {}
 ): Promise<ToolResult> {
-  const timeoutMs = tool.timeout && tool.timeout > 0 ? tool.timeout : undefined;
+  const timeoutMs = timeoutOf(tool, options.defaultTimeout);
   const abort = timeoutMs ? createLinkedAbortController(signal, timeoutMs) : undefined;
+  let running = true;
+  const { onUpdate } = options;
   const context: ToolContext = {
     ...extraContext,
     agentId,
     runId,
     signal: abort?.signal ?? signal ?? new AbortController().signal,
     toolCallId: toolCall.id,
+    update: (progress) => {
+      if (!running || !onUpdate) return;
+      try {
+        onUpdate(progress);
+      } catch (error) {
+        getLogger().warn('onToolUpdate failed', {
+          tool: tool.name,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
   };
 
   try {
@@ -237,7 +372,7 @@ async function executeNatively(
       ? await raceWithAbort(execution, abort.signal, () =>
           abort.timedOut
             ? new Error(`Tool "${tool.name}" timed out after ${timeoutMs}ms`)
-            : toError(abort.signal.reason, `Tool "${tool.name}" aborted`)
+            : toAbortError(abort.signal.reason, `Tool "${tool.name}" aborted`)
         )
       : await execution;
     return {
@@ -252,8 +387,10 @@ async function executeNatively(
       name: toolCall.name,
       result: null,
       error: error instanceof Error ? error.message : String(error),
+      ...(abort?.timedOut && { errorCode: ErrorCode.TOOL_TIMEOUT }),
     };
   } finally {
+    running = false;
     abort?.cleanup();
   }
 }
@@ -280,12 +417,6 @@ function raceWithAbort<T>(
   });
 }
 
-function toError(reason: unknown, fallbackMessage: string): Error {
-  if (reason instanceof Error) return reason;
-  if (reason === undefined || reason === null) return new Error(fallbackMessage);
-  return new Error(String(reason));
-}
-
 async function executeInSandbox(
   tool: Tool,
   toolCall: ToolCall,
@@ -295,7 +426,8 @@ async function executeInSandbox(
   initializeSandbox: () => Promise<SandboxManager | undefined>,
   allowNativeFallback: boolean,
   signal?: AbortSignal,
-  extraContext?: ExtraToolContext
+  extraContext?: ExtraToolContext,
+  defaultTimeout?: number
 ): Promise<ToolResult> {
   const manager = sandboxManager ?? (await initializeSandbox());
 
@@ -322,7 +454,8 @@ async function executeInSandbox(
       runId,
       agentId,
       signal,
-      extraContext
+      extraContext,
+      { defaultTimeout }
     );
   }
 
@@ -334,14 +467,14 @@ async function executeInSandbox(
     ? {
         command: [],
         stdin: JSON.stringify(args),
-        timeout: tool.timeout,
+        timeout: timeoutOf(tool, defaultTimeout),
         signal,
       }
     : {
         command: ['sh', '-c', String(args.command ?? '')],
         cwd: args.cwd as string | undefined,
         env: args.env as Record<string, string> | undefined,
-        timeout: tool.timeout,
+        timeout: timeoutOf(tool, defaultTimeout),
         signal,
       };
 
@@ -352,7 +485,7 @@ async function executeInSandbox(
       callId: toolCall.id,
       name: toolCall.name,
       result: null,
-      error: toError(signal.reason, `Tool "${tool.name}" aborted`).message,
+      error: toAbortError(signal.reason, `Tool "${tool.name}" aborted`).message,
     };
   }
 
@@ -377,7 +510,13 @@ async function executeInSandbox(
   if (isWasm) {
     const failure = wasmFailure(tool, result.data);
     if (failure) {
-      return { callId: toolCall.id, name: toolCall.name, result: null, error: failure };
+      return {
+        callId: toolCall.id,
+        name: toolCall.name,
+        result: null,
+        error: failure,
+        ...(result.data.timedOut && { errorCode: ErrorCode.TOOL_TIMEOUT }),
+      };
     }
     try {
       const parsed = JSON.parse(result.data.stdout);

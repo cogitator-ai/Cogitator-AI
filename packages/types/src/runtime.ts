@@ -3,7 +3,13 @@
  */
 
 import type { Message, ToolCall, ToolCallMessage, ToolResult, ToolResultMessage } from './message';
-import type { Tool } from './tool';
+import type {
+  Tool,
+  ToolInputAvailable,
+  ToolInputDelta,
+  ToolInputStart,
+  ToolProgress,
+} from './tool';
 import type {
   LLMBackend,
   LLMProvider,
@@ -263,7 +269,13 @@ export interface RunOptions<TDeps = unknown> {
    */
   workspace?: Workspace;
   threadId?: string;
+  /** Milliseconds the whole run may take (`RUN_TIMEOUT`), see also `timeouts` */
   timeout?: number;
+  /**
+   * Deadlines of the stages of the run, over the agent's `timeouts` field by field. Each unset
+   * one is off, `totalMs` falls back to `timeout`
+   */
+  timeouts?: RunTimeouts;
   /** Abort signal for cancelling the run. */
   signal?: AbortSignal;
   stream?: boolean;
@@ -316,6 +328,22 @@ export interface RunOptions<TDeps = unknown> {
     | Promise<ToolApprovalDecision | 'pause' | undefined>;
   onToolCall?: (call: ToolCall) => void;
   onToolResult?: (result: ToolResult) => void;
+  /** What a running tool has so far, each time it reports it with `context.update()` */
+  onToolUpdate?: (update: ToolUpdate) => void;
+  /**
+   * The model began to write a tool call: its id and name, before the arguments. Needs
+   * `stream: true`, as do `onToolInputDelta` and `onToolInputAvailable`. A backend that gets whole
+   * calls only (Gemini, Ollama) reports each call in one piece when it arrives
+   */
+  onToolInputStart?: (event: ToolInputStart) => void;
+  /** The next piece of the JSON arguments of the call the model writes, see `onToolInputStart` */
+  onToolInputDelta?: (event: ToolInputDelta) => void;
+  /**
+   * A call the model wrote is complete, with its arguments read, see `onToolInputStart`. It may
+   * still not run: a turn cut at the token limit keeps no calls, and an `afterModel` middleware
+   * may change them. `onToolCall` reports the calls that run
+   */
+  onToolInputAvailable?: (event: ToolInputAvailable) => void;
   /**
    * The agent's todo list each time `write_todos` changes it (`AgentConfig.todos`), the whole
    * list every time
@@ -383,8 +411,16 @@ export interface RunOptions<TDeps = unknown> {
    */
   asOf?: Date;
 
-  /** Execute tool calls in parallel. Default: false (sequential execution) */
+  /**
+   * Run the tool calls of a step that are safe to run together at the same time
+   * (`isConcurrencySafe`, by default a tool's `annotations.readOnlyHint`), at most
+   * `maxParallelToolCalls` at once. A call that is not safe waits for the calls before it and
+   * runs alone. Results reach the conversation in the order of the calls either way. Default:
+   * false, every call runs after the one before it
+   */
   parallelToolCalls?: boolean;
+  /** Most calls of a step that run at once with `parallelToolCalls` (default 10) */
+  maxParallelToolCalls?: number;
 
   /**
    * What the run does when another run of this runtime goes on in its thread (`threadId`), see
@@ -420,6 +456,29 @@ export interface RunOptions<TDeps = unknown> {
   topicId?: string;
   /** The conversation the run serves (`ChannelMessage.conversationId`), as its tools get it */
   conversationId?: string;
+}
+
+/**
+ * Deadlines of the stages of a run, in ms, each off unless set:
+ * - `totalMs`: the whole run, `RUN_TIMEOUT` (it replaces `timeout`)
+ * - `stepMs`: one model call, from sending it to its last chunk, retries and fallback models
+ *   included, `RUN_STEP_TIMEOUT`
+ * - `chunkMs`: a streamed model call without a chunk for this long, the first one included,
+ *   `RUN_CHUNK_TIMEOUT`
+ * - `toolMs`: a tool call of a tool without a `timeout` of its own: the call fails with
+ *   `errorCode: 'TOOL_TIMEOUT'` and the model reads why, the run goes on
+ */
+export interface RunTimeouts {
+  totalMs?: number;
+  stepMs?: number;
+  chunkMs?: number;
+  toolMs?: number;
+}
+
+/** What a running tool reported with `context.update()`, see `RunOptions.onToolUpdate` */
+export interface ToolUpdate extends ToolProgress {
+  callId: string;
+  name: string;
 }
 
 /**
@@ -500,6 +559,8 @@ export interface ToolInvocationOptions {
   agent?: ToolInvocationAgent;
   /** Cancels the call */
   signal?: AbortSignal;
+  /** What the tool has so far, each time it reports it with `context.update()` */
+  onUpdate?: (update: ToolUpdate) => void;
   threadId?: string;
   /** The user the call acts for */
   userId?: string;

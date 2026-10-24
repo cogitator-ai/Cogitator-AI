@@ -1,16 +1,29 @@
 import { realpath } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { Tool, ToolContext } from '@cogitator-ai/types';
-import { tool } from '../tool';
+import { executionFieldsOf, tool } from '../tool';
 
-async function resolveReal(path: string): Promise<string> {
+/**
+ * `path` made absolute with every symlink followed, also for a file that does not exist yet: the
+ * real path of its nearest existing parent, with the rest appended.
+ */
+export async function resolveReal(path: string): Promise<string> {
   try {
-    return await realpath(path);
+    return await realpath(resolve(path));
   } catch {
-    const parent = dirname(path);
-    if (parent === path) return path;
-    return join(await resolveReal(parent), basename(path));
+    const absolute = resolve(path);
+    const parent = dirname(absolute);
+    if (parent === absolute) return absolute;
+    return join(await resolveReal(parent), basename(absolute));
   }
+}
+
+/**
+ * The lock key of a file, for a tool's `lockKeys`: `file:` and its real path, so two calls that
+ * write one file through different paths or a symlink still go one after another.
+ */
+export async function fileLockKey(path: string): Promise<string> {
+  return `file:${await resolveReal(path)}`;
 }
 
 function isWithin(root: string, target: string): boolean {
@@ -28,9 +41,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * link inside a root that points outside of it does not count as inside.
  */
 export async function isPathAllowed(path: string, roots: readonly string[]): Promise<boolean> {
-  const target = await resolveReal(resolve(path));
+  const target = await resolveReal(path);
   for (const root of roots) {
-    if (isWithin(await resolveReal(resolve(root)), target)) return true;
+    if (isWithin(await resolveReal(root), target)) return true;
   }
   return false;
 }
@@ -76,7 +89,15 @@ export function restrictFileTools(
 
   return tools.map((original) => {
     const approval = approvalOf(original, options.requireApproval?.(original) ?? false);
-    return tool({
+    const withPath = (params: unknown): unknown => {
+      if (!isRecord(params) || typeof params.path !== 'string') return params;
+      return base && !isAbsolute(params.path)
+        ? { ...params, path: resolve(base, params.path) }
+        : params;
+    };
+    const fields = executionFieldsOf(original);
+    const ownLockKeys = fields.lockKeys;
+    const wrapped = tool({
       name: original.name,
       description: `${original.description} Only paths inside: ${allowedList}${base ? `, relative to ${base}` : ''}.`,
       parameters: original.parameters,
@@ -103,5 +124,12 @@ export function restrictFileTools(
         return original.execute(isRecord(params) ? { ...params, path } : params, context);
       },
     });
+    return {
+      ...wrapped,
+      ...fields,
+      ...(ownLockKeys && {
+        lockKeys: (params: unknown, context: ToolContext) => ownLockKeys(withPath(params), context),
+      }),
+    };
   });
 }

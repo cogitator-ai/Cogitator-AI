@@ -88,9 +88,10 @@ interface RunOptions<TDeps = unknown> {
   context?: Record<string, unknown>; // sent as data in the turn context, in front of the input
   deps?: TDeps; // tools get them as context.deps; never sent to the model, memory or checkpoints
   threadId?: string;
-  timeout?: number;
+  timeout?: number; // ms the whole run may take, RUN_TIMEOUT
+  timeouts?: RunTimeouts; // deadlines of the stages, over the agent's field by field
   signal?: AbortSignal;
-  stream?: boolean; // streams only together with onToken
+  stream?: boolean; // streams only together with onToken, onReasoning or a tool input callback
   onToken?: (token: string) => void;
   onReasoning?: (delta: string) => void;
   onHandoff?: (handoff: HandoffEvent) => void;
@@ -102,6 +103,10 @@ interface RunOptions<TDeps = unknown> {
   ) => ToolApprovalDecision | 'pause' | Promise<ToolApprovalDecision | 'pause'>;
   onToolCall?: (call: ToolCall) => void;
   onToolResult?: (result: ToolResult) => void;
+  onToolUpdate?: (update: ToolUpdate) => void; // each context.update() of a running tool
+  onToolInputStart?: (event: ToolInputStart) => void; // needs stream: true, as the next two
+  onToolInputDelta?: (event: ToolInputDelta) => void; // a piece of the JSON arguments
+  onToolInputAvailable?: (event: ToolInputAvailable) => void; // a call of the settled turn, arguments read
   useMemory?: boolean; // default: true when an adapter is configured
   loadHistory?: boolean; // default: true
   saveHistory?: boolean; // default: true
@@ -113,12 +118,25 @@ interface RunOptions<TDeps = unknown> {
   onMemoryEntry?: (entry: MemoryEntry) => void | Promise<void>; // each saved entry, also of an aborted or failed run
   branch?: { fromEntryId: string | null; activate?: boolean }; // run on a branch of the thread, activate default: true
   brief?: string; // notes for this turn only, sent with the input and not saved
-  parallelToolCalls?: boolean; // default: false
+  parallelToolCalls?: boolean; // run concurrency-safe calls of a step together, default: false
+  maxParallelToolCalls?: number; // most calls at once with parallelToolCalls, default: 10
   middleware?: RunMiddleware<TDeps>[]; // after the Cogitator's and the agent's, pass again to resume()
   userId?: string; // owns new threads, scopes facts, reaches tools as context.userId
   threadAccess?: 'owner' | 'shared'; // default: 'owner'
   channelType?: string;
   channelId?: string;
+}
+
+interface RunTimeouts {
+  totalMs?: number; // the whole run, RUN_TIMEOUT, over timeout
+  stepMs?: number; // one model call, retries and fallback models included, RUN_STEP_TIMEOUT
+  chunkMs?: number; // a streamed model call without a chunk for this long, RUN_CHUNK_TIMEOUT
+  toolMs?: number; // a call of a tool without its own timeout, fails with errorCode TOOL_TIMEOUT
+}
+
+interface ToolUpdate extends ToolProgress {
+  callId: string;
+  name: string;
 }
 
 interface RunResult {
@@ -273,6 +291,15 @@ interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
   sandbox?: SandboxConfig;
   maxResultLength?: number; // characters of a result the model reads, over limits.maxToolResultLength
   providerTypes?: ProviderToolTypes; // sent to that provider instead of the schema
+  isConcurrencySafe?: boolean | ToolCallCheck; // default: annotations.readOnlyHint
+  lockKeys?(
+    params: TParams,
+    context: BaseToolContext<TDeps>
+  ): readonly string[] | Promise<readonly string[]>;
+  presentation?: ToolPresentation | ToolPresenter;
+  onInputStart?(event: ToolInputStart): void;
+  onInputDelta?(event: ToolInputDelta): void;
+  onInputAvailable?(event: ToolInputAvailable): void;
   toJSON(): ToolSchema;
 }
 
@@ -292,7 +319,41 @@ interface ToolConfig<TParams = unknown, TResult = unknown, TDeps = unknown> {
   sandbox?: SandboxConfig;
   maxResultLength?: number;
   providerTypes?: ProviderToolTypes;
+  isConcurrencySafe?: boolean | ((params: TParams) => boolean); // may run beside other safe calls
+  lockKeys?: (
+    params: TParams,
+    context: ToolContext<TDeps>
+  ) => readonly string[] | Promise<readonly string[]>;
+  presentation?: ToolPresentation | ((params: TParams) => ToolPresentation);
+  onInputStart?: (event: ToolInputStart) => void; // { toolCallId, toolName }
+  onInputDelta?: (event: ToolInputDelta) => void; // { toolCallId, toolName, delta }
+  onInputAvailable?: (event: ToolInputAvailable) => void; // { toolCallId, toolName, input }
 }
+
+// How a client shows a tool call, saved in metadata.presentation of its tool_result entry
+interface ToolPresentation {
+  label: string; // such as 'Edit file'
+  icon?: string; // an icon name, Lucide names by convention
+  detail?: string; // one line about the call, such as the path
+}
+
+// What toolOutput() builds: the model reads content, the application gets the rest too
+interface ToolOutputResult<TContent = unknown, TDetails = unknown> {
+  type: 'tool-output';
+  content: TContent;
+  details?: TDetails;
+  presentation?: ToolPresentation;
+}
+
+// What context.update() reports
+interface ToolProgress {
+  content?: unknown;
+  details?: unknown;
+  presentation?: ToolPresentation;
+}
+
+type ToolCallCheck = (params: Record<string, unknown>) => boolean;
+type ToolPresenter = (params: Record<string, unknown>) => ToolPresentation;
 
 // The tool's type in a provider's own catalog, such as { anthropic: 'memory_20250818' }
 interface ProviderToolTypes {
@@ -333,6 +394,7 @@ interface BaseToolContext<TDeps = unknown> {
   channelType?: string;
   channelId?: string;
   deps?: TDeps; // RunOptions.deps
+  update?: (progress: ToolProgress) => void; // what the tool has so far, see onToolUpdate
 }
 
 // ToolContext<AppDeps> has deps present and typed, for tools that read them
@@ -356,8 +418,11 @@ interface ToolCallReplayState {
 interface ToolResult {
   callId: string;
   name: string;
-  result: unknown;
+  result: unknown; // what the model read, the content of a toolOutput() result
   error?: string;
+  errorCode?: string; // TOOL_TIMEOUT for a call that ran out of time
+  details?: unknown; // toolOutput({ details }), never sent to the model
+  presentation?: ToolPresentation;
 }
 
 interface ToolSchema {
@@ -1160,6 +1225,8 @@ enum ErrorCode {
   RUN_TOKEN_LIMIT_EXCEEDED = 'RUN_TOKEN_LIMIT_EXCEEDED',
   RUN_NOT_PAUSED = 'RUN_NOT_PAUSED',
   RUN_TIMEOUT = 'RUN_TIMEOUT',
+  RUN_STEP_TIMEOUT = 'RUN_STEP_TIMEOUT', // a model call outlasted timeouts.stepMs
+  RUN_CHUNK_TIMEOUT = 'RUN_CHUNK_TIMEOUT', // a streamed model call sent no chunk for timeouts.chunkMs
   BUDGET_EXCEEDED = 'BUDGET_EXCEEDED',
   WORKFLOW_NOT_FOUND = 'WORKFLOW_NOT_FOUND',
   WORKFLOW_STEP_FAILED = 'WORKFLOW_STEP_FAILED',
@@ -1177,7 +1244,7 @@ enum ErrorCode {
 }
 ```
 
-`cog.run()` throws a `CogitatorError` when a run hits its `timeout` (`Run timed out after <n>ms`, `RUN_TIMEOUT`), when cost routing finds the budget exceeded (`Budget exceeded: …`, `BUDGET_EXCEEDED`), and when guardrails block the input or output (`Input blocked: …` / `Output blocked: …`, `LLM_CONTENT_FILTERED`, with `details.harmScores`), so server adapters answer with that status and message.
+`cog.run()` throws a `CogitatorError` when a run hits its `timeout` (`Run timed out after <n>ms`, `RUN_TIMEOUT`), a model call its `timeouts.stepMs` (`RUN_STEP_TIMEOUT`) or a stream its `timeouts.chunkMs` (`RUN_CHUNK_TIMEOUT`, both 504), when cost routing finds the budget exceeded (`Budget exceeded: …`, `BUDGET_EXCEEDED`), and when guardrails block the input or output (`Input blocked: …` / `Output blocked: …`, `LLM_CONTENT_FILTERED`, with `details.harmScores`), so server adapters answer with that status and message.
 
 `ERROR_STATUS_CODES` maps each code to an HTTP status (for example `RUN_TIMEOUT` → 504, `BUDGET_EXCEEDED` → 429, `LLM_CONTENT_FILTERED` → 400, `LLM_QUOTA_EXCEEDED` → 402), `isRetryableError(error)` and `getRetryDelay(error, defaultDelay = 1000)` read `retryable` / `retryAfter` (and treat plain errors mentioning timeouts, connection resets, rate limits, 429 or 503 as retryable).
 

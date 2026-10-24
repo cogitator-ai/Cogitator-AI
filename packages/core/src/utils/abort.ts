@@ -59,3 +59,10 @@ export function getAbortErrorMessage(
   }
   return `${action} aborted`;
 }
+
+/** `reason` of an aborted signal as an error: itself when it is one, else an error saying it */
+export function toAbortError(reason: unknown, fallbackMessage: string): Error {
+  if (reason instanceof Error) return reason;
+  if (reason === undefined || reason === null) return new Error(fallbackMessage);
+  return new Error(String(reason));
+}

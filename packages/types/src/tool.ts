@@ -65,6 +65,36 @@ export interface ToolConfig<TParams = unknown, TResult = unknown, TDeps = unknow
    * cost no context until used. A call to a deferred tool that was not loaded yet still runs
    */
   deferred?: boolean;
+  /**
+   * Whether a call of the tool may run at the same time as other such calls of its step, when the
+   * run schedules them (`RunOptions.parallelToolCalls: true`): `true`, or a check of the call's
+   * arguments. A call that is not safe waits for every call before it and runs alone, the calls
+   * after it wait for it. Default: `annotations.readOnlyHint`, so a tool that declares neither runs
+   * alone. A check that throws counts as not safe
+   */
+  isConcurrencySafe?: boolean | ((params: TParams) => boolean);
+  /**
+   * Keys of what a call changes, such as `await fileLockKey(path)` for a file it writes: calls
+   * whose keys meet never run at the same time, in this run or any other of the process, and go
+   * one after another in the order they asked. A tool that runs another agent must not hold a key
+   * that agent's tools take, or the two wait on each other
+   */
+  lockKeys?: (
+    params: TParams,
+    context: ToolContext<TDeps>
+  ) => readonly string[] | Promise<readonly string[]>;
+  /**
+   * How clients show a call of the tool, saved with its result so a client draws the row without
+   * the tool's code: a value, or one made from the call's arguments. A result made with
+   * `toolOutput({ presentation })` wins over it
+   */
+  presentation?: ToolPresentation | ((params: TParams) => ToolPresentation);
+  /** The model began to write a call of this tool, in a run with `stream: true` */
+  onInputStart?: (event: ToolInputStart) => void;
+  /** The next piece of the JSON arguments of a call the model writes, in a run with `stream: true` */
+  onInputDelta?: (event: ToolInputDelta) => void;
+  /** The model finished a call of this tool and its arguments are read, in a run with `stream: true` */
+  onInputAvailable?: (event: ToolInputAvailable) => void;
 }
 
 export interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
@@ -107,6 +137,18 @@ export interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
    * cost no context until used. A call to a deferred tool that was not loaded yet still runs
    */
   deferred?: boolean;
+  /** Whether a call may run beside other safe calls of its step, see `ToolConfig.isConcurrencySafe` */
+  isConcurrencySafe?: boolean | ToolCallCheck;
+  /** Keys of what a call changes, see `ToolConfig.lockKeys` */
+  lockKeys?(
+    params: TParams,
+    context: BaseToolContext<TDeps>
+  ): readonly string[] | Promise<readonly string[]>;
+  /** How clients show a call of the tool, see `ToolConfig.presentation` */
+  presentation?: ToolPresentation | ToolPresenter;
+  onInputStart?(event: ToolInputStart): void;
+  onInputDelta?(event: ToolInputDelta): void;
+  onInputAvailable?(event: ToolInputAvailable): void;
   toJSON(): ToolSchema;
 }
 
@@ -136,6 +178,71 @@ export interface ToolAnnotations {
 }
 
 export type ApprovalCheck = (params: Record<string, unknown>) => boolean;
+
+/** A check of a call's arguments, as the model sent them */
+export type ToolCallCheck = (params: Record<string, unknown>) => boolean;
+
+/** The presentation of a call, from its arguments as the model sent them */
+export type ToolPresenter = (params: Record<string, unknown>) => ToolPresentation;
+
+/**
+ * How a client shows a tool call in a list of steps, without the tool's code: a label, an icon
+ * and one line about the call. A run saves it with the call's result (`metadata.presentation` of
+ * the `tool_result` entry) and reports it in `onToolResult` and `onToolUpdate`.
+ */
+export interface ToolPresentation {
+  /** What the call does, for people, such as `Edit file` */
+  label: string;
+  /** Name of an icon the client knows, such as `file-pen` (Lucide names by convention) */
+  icon?: string;
+  /** One line about this call, such as the path it edits */
+  detail?: string;
+}
+
+/**
+ * A tool result whose parts go to different readers, built with `toolOutput()` from
+ * `@cogitator-ai/core`: the model reads `content`, the application and its UI get `details` and
+ * `presentation` too. A run saves `details` and `presentation` in the metadata of the call's
+ * `tool_result` entry, never in what the model reads.
+ */
+export interface ToolOutputResult<TContent = unknown, TDetails = unknown> {
+  type: 'tool-output';
+  /** What the model reads: any JSON value, or a `toolContent()` result */
+  content: TContent;
+  /** Data for the application only, such as a diff or a row count: never sent to the model */
+  details?: TDetails;
+  /** How to show this call, instead of the tool's `presentation` */
+  presentation?: ToolPresentation;
+}
+
+/** What a running tool has so far, reported with `context.update()` */
+export interface ToolProgress {
+  /** The result so far, in the shape of `content` */
+  content?: unknown;
+  details?: unknown;
+  presentation?: ToolPresentation;
+}
+
+/** The model began to write a tool call */
+export interface ToolInputStart {
+  toolCallId: string;
+  toolName: string;
+}
+
+/** The next piece of the JSON arguments of a tool call the model writes */
+export interface ToolInputDelta {
+  toolCallId: string;
+  toolName: string;
+  /** The text that follows what came before, not valid JSON on its own */
+  delta: string;
+}
+
+/** The model finished a tool call and its arguments are read */
+export interface ToolInputAvailable {
+  toolCallId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+}
 
 /** What a tool call runs with, whether or not the tool reads the run's `deps`. */
 export interface BaseToolContext<TDeps = unknown> {
@@ -172,6 +279,13 @@ export interface BaseToolContext<TDeps = unknown> {
    * not in `invokeTool()` or a sandboxed tool
    */
   interrupt?: <T = unknown>(request: InterruptRequest<T>) => Promise<T>;
+  /**
+   * Reports what the tool has so far while it runs, such as lines of a command's output or the
+   * rows found: the run hands it to `onToolUpdate` and a server streams it as `tool-update`.
+   * Nothing of it reaches the model or memory, the tool's result does. Present in a run and in
+   * `invokeTool()`
+   */
+  update?: (progress: ToolProgress) => void;
 }
 
 /**

@@ -1,6 +1,8 @@
 import { nanoid } from 'nanoid';
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import type {
   ChatRequest,
+  ChatStreamChunk,
   ChatUsage,
   FinishReason,
   LLMBackend,
@@ -77,16 +79,31 @@ export interface StreamTiming {
   firstChunkAt?: number;
 }
 
+/** How `streamChatRequest` reads a stream beyond its sink */
+export interface StreamChatOptions {
+  /**
+   * Milliseconds the stream may go without a chunk, the first one included: then it fails with
+   * `RUN_CHUNK_TIMEOUT` (`timeouts.chunkMs` of a run)
+   */
+  chunkTimeout?: number;
+}
+
 /**
  * Streams `request` from `backend`: text and reasoning reach `sink` as they arrive, and the turn
  * comes back assembled and settled by `normalizeTurn`. `timing` gets the time of the first chunk
  * that carries any of the answer.
+ *
+ * Tool calls reach the sink as the model writes them: `onToolInputStart` once a call's id and
+ * name are known, `onToolInputDelta` with each piece of its JSON arguments, and
+ * `onToolInputAvailable` for each call of the settled turn whose arguments could be read. A
+ * backend that only gets whole calls has each reported as a start and one delta when it arrives.
  */
 export async function streamChatRequest(
   backend: LLMBackend,
   request: ChatRequest,
   sink: ModelStreamSink,
-  timing?: StreamTiming
+  timing?: StreamTiming,
+  options: StreamChatOptions = {}
 ): Promise<StreamChatResult> {
   const { messages, signal } = request;
   throwIfStreamAborted(signal);
@@ -101,16 +118,39 @@ export async function streamChatRequest(
   let outputTokens = 0;
   let hasUsageFromStream = false;
 
-  const stream = backend.chatStream(request);
+  const inputs = new Map<string, { name: string }>();
+  const startInput = (toolCallId: string, toolName: string): boolean => {
+    if (inputs.has(toolCallId)) return false;
+    inputs.set(toolCallId, { name: toolName });
+    sink.onToolInputStart?.({ toolCallId, toolName });
+    return true;
+  };
 
-  for await (const chunk of stream) {
+  for await (const chunk of chunksOf(backend.chatStream(request), options.chunkTimeout)) {
     throwIfStreamAborted(signal);
     if (
       timing &&
       timing.firstChunkAt === undefined &&
-      (chunk.delta.content || chunk.delta.reasoning || chunk.delta.toolCalls?.length)
+      (chunk.delta.content ||
+        chunk.delta.reasoning ||
+        chunk.delta.toolCalls?.length ||
+        chunk.delta.toolInput?.length)
     ) {
       timing.firstChunkAt = Date.now();
+    }
+    for (const part of chunk.delta.toolInput ?? []) {
+      if (part.type === 'start') {
+        startInput(part.toolCallId, part.toolName);
+        continue;
+      }
+      const input = inputs.get(part.toolCallId);
+      if (input && part.delta) {
+        sink.onToolInputDelta?.({
+          toolCallId: part.toolCallId,
+          toolName: input.name,
+          delta: part.delta,
+        });
+      }
     }
 
     if (chunk.delta.content) {
@@ -155,6 +195,13 @@ export async function streamChatRequest(
               toolCall.argumentsError = partial.argumentsError;
             }
             toolCalls.push(toolCall);
+            if (startInput(toolCall.id, toolCall.name) && toolCall.argumentsError === undefined) {
+              sink.onToolInputDelta?.({
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                delta: JSON.stringify(toolCall.arguments),
+              });
+            }
           }
         } else if (toolCalls.length > 0 && partial.arguments) {
           const last = toolCalls[toolCalls.length - 1];
@@ -181,7 +228,7 @@ export async function streamChatRequest(
     outputTokens = Math.ceil(content.length / 4);
   }
 
-  return normalizeTurn({
+  const turn = normalizeTurn({
     id: `stream_${nanoid(8)}`,
     content,
     toolCalls,
@@ -194,6 +241,55 @@ export async function streamChatRequest(
       totalTokens: inputTokens + outputTokens,
     },
     ...(reasoning && { reasoning }),
+  });
+  for (const call of turn.toolCalls ?? []) {
+    if (call.argumentsError !== undefined) continue;
+    sink.onToolInputAvailable?.({
+      toolCallId: call.id,
+      toolName: call.name,
+      input: call.arguments,
+    });
+  }
+  return turn;
+}
+
+/**
+ * The chunks of `stream`, failing with `RUN_CHUNK_TIMEOUT` when the next one takes longer than
+ * `timeout` ms. The stream is closed either way.
+ */
+async function* chunksOf(
+  stream: AsyncGenerator<ChatStreamChunk>,
+  timeout: number | undefined
+): AsyncGenerator<ChatStreamChunk> {
+  if (timeout === undefined || timeout <= 0) {
+    yield* stream;
+    return;
+  }
+  try {
+    for (;;) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const stalled = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(chunkTimeoutError(timeout)), timeout);
+      });
+      let next: IteratorResult<ChatStreamChunk>;
+      try {
+        next = await Promise.race([stream.next(), stalled]);
+      } finally {
+        clearTimeout(timer);
+      }
+      if (next.done) return;
+      yield next.value;
+    }
+  } finally {
+    stream.return(undefined).catch(() => undefined);
+  }
+}
+
+function chunkTimeoutError(timeout: number): Error {
+  return new CogitatorError({
+    message: `The model sent nothing for ${timeout}ms`,
+    code: ErrorCode.RUN_CHUNK_TIMEOUT,
+    details: { chunkMs: timeout },
   });
 }
 

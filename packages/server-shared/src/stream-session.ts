@@ -16,13 +16,24 @@ import {
   createToolCallEndEvent,
   createToolCallStartEvent,
   createToolResultEvent,
+  createToolUpdateEvent,
   type StreamEvent,
 } from './protocol.js';
 import { toAgentRunOutcome, toPendingApprovals, toPendingInterrupts } from './response.js';
 
 /** The run callbacks through which a streamed agent run reaches its client */
 export type AgentStreamCallbacks = Required<
-  Pick<RunOptions, 'onToken' | 'onReasoning' | 'onToolCall' | 'onToolResult'>
+  Pick<
+    RunOptions,
+    | 'onToken'
+    | 'onReasoning'
+    | 'onToolCall'
+    | 'onToolResult'
+    | 'onToolUpdate'
+    | 'onToolInputStart'
+    | 'onToolInputDelta'
+    | 'onToolInputAvailable'
+  >
 >;
 
 export interface AgentStreamSessionOptions {
@@ -65,6 +76,12 @@ export function createThreadId(): string {
  * questions (`interrupt-required`) a paused run waits on, and `finish` with the usage, the thread and how the run ended. `fail` closes
  * the open part and sends `error`.
  *
+ * A tool call goes out as `tool-call-start`, `tool-call-delta` and `tool-call-end`. In a streamed
+ * run they follow the model as it writes the call, the deltas carrying its JSON arguments piece by
+ * piece, else they all go out once the call is about to run, the arguments in one delta. A call
+ * the model began and never finished is closed with `tool-call-end` before the stream ends.
+ * `tool-update` carries what a running tool reported, `tool-result` what it returned.
+ *
  * Pass the thread to the run (`threadId: session.threadId`) and spread `callbacks` into its
  * options together with `stream: true`.
  */
@@ -74,6 +91,8 @@ export class AgentStreamSession {
   readonly callbacks: AgentStreamCallbacks;
 
   private open: { kind: PartKind; id: string } | undefined;
+  /** Tool calls announced, by id: whether their `tool-call-end` went out */
+  private readonly toolCalls = new Map<string, boolean>();
   private streamedText = false;
   private streamedReasoning = false;
 
@@ -93,14 +112,39 @@ export class AgentStreamSession {
         this.streamedReasoning = true;
         this.delta('reasoning', delta);
       },
-      onToolCall: (call) => {
+      onToolInputStart: ({ toolCallId, toolName }) => {
+        if (this.toolCalls.has(toolCallId)) return;
         this.endPart();
+        this.toolCalls.set(toolCallId, false);
+        this.emit(createToolCallStartEvent(toolCallId, toolName));
+      },
+      onToolInputDelta: ({ toolCallId, delta }) => {
+        if (this.toolCalls.get(toolCallId) !== false || !delta) return;
+        this.emit(createToolCallDeltaEvent(toolCallId, delta));
+      },
+      onToolInputAvailable: ({ toolCallId }) => this.endToolCall(toolCallId),
+      onToolCall: (call) => {
+        if (this.toolCalls.has(call.id)) {
+          this.endToolCall(call.id);
+          return;
+        }
+        this.endPart();
+        this.toolCalls.set(call.id, true);
         this.emit(createToolCallStartEvent(call.id, call.name));
         this.emit(createToolCallDeltaEvent(call.id, JSON.stringify(call.arguments)));
         this.emit(createToolCallEndEvent(call.id));
       },
+      onToolUpdate: (update) => {
+        this.endPart();
+        this.emit(createToolUpdateEvent(update.callId, update));
+      },
       onToolResult: (toolResult) => {
-        this.emit(createToolResultEvent(generateId('res'), toolResult.callId, toolResult.result));
+        this.emit(
+          createToolResultEvent(generateId('res'), toolResult.callId, toolResult.result, {
+            details: toolResult.details,
+            presentation: toolResult.presentation,
+          })
+        );
       },
     };
   }
@@ -113,6 +157,7 @@ export class AgentStreamSession {
     if (!this.streamedReasoning && result.reasoning) this.delta('reasoning', result.reasoning);
     if (!this.streamedText && result.output) this.delta('text', result.output);
     this.endPart();
+    this.endToolCalls();
     if (result.status === 'paused') {
       const interrupts = toPendingInterrupts(result.interrupts ?? []);
       this.emit(
@@ -134,7 +179,18 @@ export class AgentStreamSession {
 
   fail(message: string, code?: string): void {
     this.endPart();
+    this.endToolCalls();
     this.emit(createErrorEvent(message, code));
+  }
+
+  private endToolCall(id: string): void {
+    if (this.toolCalls.get(id) !== false) return;
+    this.toolCalls.set(id, true);
+    this.emit(createToolCallEndEvent(id));
+  }
+
+  private endToolCalls(): void {
+    for (const [id, ended] of this.toolCalls) if (!ended) this.endToolCall(id);
   }
 
   private delta(kind: PartKind, delta: string): void {

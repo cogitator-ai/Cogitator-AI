@@ -1,0 +1,64 @@
+---
+title: Stage Timeouts
+description: Give the whole run, each model call, each streamed chunk and each tool call a deadline of its own.
+---
+
+## Overview
+
+A run's `timeout` bounds the whole run. That is often too coarse: a model call that hangs uses up all of it, and so does one slow tool. `timeouts` gives each stage of a run its own deadline:
+
+```typescript
+const agent = new Agent({
+  name: 'researcher',
+  model: 'openai/gpt-5.5',
+  instructions: 'Research the question and answer with sources.',
+  tools: [webSearch, fetchPage],
+  timeouts: { totalMs: 300_000, stepMs: 60_000, toolMs: 20_000 },
+});
+
+await cog.run(agent, {
+  input: 'What changed in the latest TypeScript release?',
+  stream: true,
+  onToken: (token) => process.stdout.write(token),
+  timeouts: { chunkMs: 15_000 }, // over the agent's, field by field
+});
+```
+
+| Field     | Bounds                                                                                  | When it runs out                                          |
+| --------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `totalMs` | the whole run                                                                           | the run fails with `RUN_TIMEOUT` (504)                    |
+| `stepMs`  | one model call, from sending it to its last chunk, retries and fallback models included | the run fails with `RUN_STEP_TIMEOUT` (504)               |
+| `chunkMs` | a streamed model call without a chunk for this long, the first one included             | the run fails with `RUN_CHUNK_TIMEOUT` (504), not retried |
+| `toolMs`  | each call of a tool that has no `timeout` of its own                                    | the call fails, the model reads why and the run goes on   |
+
+Every field is off unless set, so a run without `timeouts` behaves as before. `RunOptions.timeouts` and `AgentConfig.timeouts` (a `RunTimeouts`) merge field by field, the run's fields winning. The agent's `timeouts` travel with it in `agent.serialize()` and the [agent wire format](/docs/core/agents#sending-an-agent-to-another-process).
+
+## The Whole Run
+
+`totalMs` is the run's deadline, as `timeout` is. The first one set wins, in this order: the run's `timeouts.totalMs`, the run's `timeout`, the agent's `timeouts.totalMs`, the agent's `timeout`, `limits.defaultTimeout` of the Cogitator, and 2 minutes. So a run's `timeout` still overrides what an agent says in `timeouts`.
+
+## Model Calls
+
+`stepMs` bounds one model turn as the run sees it: every retry of `llm.retry` and every model of `fallbackModels` it tried count against it. A call that runs out fails the run with `RUN_STEP_TIMEOUT` (`details.stepMs`), also when the backend ignores the abort.
+
+`chunkMs` watches a streamed call: once it waited that long for the next chunk (or the first one), the stream is closed and the run fails with `RUN_CHUNK_TIMEOUT` (`details.chunkMs`). It only applies to runs that stream (`stream: true` with `onToken`, `onReasoning` or a [tool input callback](/docs/tools/streaming-input)).
+
+Both are different from `llm.retry.requestTimeout`, which aborts one attempt and retries it as `LLM_TIMEOUT` (see [Retries](/docs/core/llm-backends#retries)). A stage timeout ends the run instead: use `requestTimeout` for a provider that sometimes hangs, `stepMs` and `chunkMs` for a ceiling on how long a turn may take.
+
+## Tool Calls
+
+`toolMs` is the timeout of every tool call whose tool sets no `timeout` of its own, sandboxed tools included. A call that runs out fails like any tool error, so the model reads it and the run goes on:
+
+```typescript
+await cog.run(agent, {
+  input: 'Check the status page',
+  timeouts: { toolMs: 10_000 },
+  onToolResult: (result) => {
+    if (result.errorCode === 'TOOL_TIMEOUT')
+      metrics.increment('tool.timeout', { tool: result.name });
+  },
+});
+// the model reads: { "error": "Tool \"fetch_page\" timed out after 10000ms" }
+```
+
+The call's signal aborts when it runs out, so a tool that passes `context.signal` to `fetch` or a child process stops its work. The `ToolResult` has `errorCode: 'TOOL_TIMEOUT'` (`ErrorCode.TOOL_TIMEOUT`), and the tool call's span records it as `error.type`. A tool's own `timeout` always wins over `toolMs`.

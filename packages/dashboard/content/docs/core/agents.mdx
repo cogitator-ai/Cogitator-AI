@@ -40,6 +40,7 @@ interface AgentConfig<TDeps = unknown> {
   maxIterations?: number; // default: 10
   onIterationLimit?: 'answer' | 'stop'; // default: 'answer'
   timeout?: number; // default: limits.defaultTimeout of the Cogitator, else 120000 (2 min)
+  timeouts?: RunTimeouts; // { totalMs, stepMs, chunkMs, toolMs }, see Stage Timeouts
   todos?: boolean; // the write_todos tool and a todo list kept in the thread, default: false
   middleware?: RunMiddleware<TDeps>[]; // hooks around its model and tool calls
 }

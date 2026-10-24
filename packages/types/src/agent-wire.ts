@@ -6,7 +6,13 @@
 
 import type { LLMBackendProvider, ReasoningConfig } from './llm';
 import type { ToolSchema } from './tool';
-import type { HandoffEvent, RunBlockReason, RunCheckpoint, ToolApprovalRequest } from './runtime';
+import type {
+  HandoffEvent,
+  RunBlockReason,
+  RunCheckpoint,
+  RunTimeouts,
+  ToolApprovalRequest,
+} from './runtime';
 import type { RunInterrupt } from './run-control';
 
 /**
@@ -68,6 +74,8 @@ export interface AgentWireAgent {
   onIterationLimit?: 'answer' | 'stop';
   /** Run timeout in ms, as in `AgentConfig.timeout` */
   timeout?: number;
+  /** Deadlines of the stages of a run, as in `AgentConfig.timeouts` */
+  timeouts?: RunTimeouts;
   /** Whether the agent keeps a todo list with `write_todos`, as in `AgentConfig.todos` */
   todos?: boolean;
   /** Tool schemas; tools are resolved by name on the receiving side */

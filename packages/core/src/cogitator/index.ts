@@ -25,4 +25,9 @@ export {
   toolResultPath,
   TOOL_RESULTS_DIR,
 } from './tool-executor';
-export { streamChat, streamChatRequest, type StreamChatResult } from './streaming';
+export {
+  streamChat,
+  streamChatRequest,
+  type StreamChatOptions,
+  type StreamChatResult,
+} from './streaming';

@@ -1039,6 +1039,50 @@ describe('AnthropicBackend', () => {
 
       expect(contents).toContain('{"name":"John"}');
     });
+
+    it('streams tool input as the model writes it, and keeps the JSON answer tool out', async () => {
+      const mockEvents = [
+        { type: 'message_start', message: { usage: { input_tokens: 10 } } },
+        {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: 'toolu_1', name: 'write' },
+        },
+        { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '' } },
+        { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '{"pa' } },
+        {
+          type: 'content_block_delta',
+          delta: { type: 'input_json_delta', partial_json: 'th":"a"}' },
+        },
+        { type: 'content_block_stop' },
+        {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: 'toolu_2', name: '__json_response' },
+        },
+        { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '{}' } },
+        { type: 'content_block_stop' },
+        { type: 'message_delta', usage: { output_tokens: 10 }, delta: { stop_reason: 'tool_use' } },
+        { type: 'message_stop' },
+      ];
+      mockStream.mockReturnValueOnce(
+        (async function* () {
+          for (const event of mockEvents) yield event;
+        })()
+      );
+
+      const parts: unknown[] = [];
+      for await (const chunk of backend.chatStream({
+        model: 'claude-sonnet-4-20250514',
+        messages: [{ role: 'user', content: 'Write' }],
+      })) {
+        parts.push(...(chunk.delta.toolInput ?? []));
+      }
+
+      expect(parts).toEqual([
+        { type: 'start', toolCallId: 'toolu_1', toolName: 'write' },
+        { type: 'delta', toolCallId: 'toolu_1', delta: '{"pa' },
+        { type: 'delta', toolCallId: 'toolu_1', delta: 'th":"a"}' },
+      ]);
+    });
   });
 
   describe('audit regressions', () => {

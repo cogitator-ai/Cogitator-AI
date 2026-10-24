@@ -12,7 +12,19 @@ const SSE_HEADERS = {
 
 /** The run options a streamed run or resume is given by the stream. */
 export type StreamCallbacks = Required<
-  Pick<RunOptions, 'stream' | 'signal' | 'onToken' | 'onReasoning' | 'onToolCall' | 'onToolResult'>
+  Pick<
+    RunOptions,
+    | 'stream'
+    | 'signal'
+    | 'onToken'
+    | 'onReasoning'
+    | 'onToolCall'
+    | 'onToolResult'
+    | 'onToolUpdate'
+    | 'onToolInputStart'
+    | 'onToolInputDelta'
+    | 'onToolInputAvailable'
+  >
 >;
 
 export interface StreamRunOptions {

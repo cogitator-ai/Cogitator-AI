@@ -65,6 +65,7 @@ console.log(result.output);
 
 - **Multi-Provider LLM Support** - Ollama, OpenAI, Anthropic, Google, Azure OpenAI, Bedrock, vLLM, Mistral, Groq, Together, DeepSeek
 - **Type-Safe Tools** - Zod-validated tool definitions, `toolset()` for typed tool tuples
+- **Tool Execution** - Concurrency-safe calls run together, lock keys keep writes of one file apart, `toolOutput()` with details and presentation for the UI, progress with `context.update()`, tool input streamed as the model writes it, stage timeouts
 - **Streaming Responses** - Real-time token and reasoning streaming
 - **Structured Output** - `responseFormat` with a Zod schema, validated and repaired once on mismatch
 - **Handoffs & Approvals** - Pass a conversation to another agent; pause runs for human approval and resume them later
@@ -635,8 +636,51 @@ interface ToolContext {
   topicId?: string; // the topic of the chat, such as a Telegram forum topic or a Slack thread
   conversationId?: string; // the conversation, when channelId does not name it (Bluesky, Threads)
   deps?: unknown; // the run's deps, typed with ToolContext<YourDeps>
+  interrupt?: <T>(request: InterruptRequest<T>) => Promise<T>; // pause the run to ask a person
+  update?: (progress: ToolProgress) => void; // what the tool has so far, see Tool Execution
 }
 ```
+
+### Tool Execution
+
+Tool calls of a step run one after another by default. With `parallelToolCalls: true` the calls that are safe to run together run as a pool of `maxParallelToolCalls` (default 10), and a call that is not safe is a barrier: it waits for every call before it, runs alone, then the rest go on. Results reach the model in call order. `isConcurrencySafe` (`true`, or a check of the call's arguments) defaults to the MCP `annotations.readOnlyHint`, so a tool that declares neither runs alone. After a call that asks a question (`context.interrupt()`) no further call of the step starts.
+
+`lockKeys` names what a call changes: calls whose keys meet never run at the same time, in this run or any other of the process (`toolLocks`, a FIFO `KeyedLock`). `fileLockKey(path)` is `file:` and the real path, symlinks followed. The read tools of `workspaceTools()` and `file_read` / `file_list` / `file_exists` are concurrency-safe, `write_file`, `edit_file`, `file_write` and `file_delete` lock the file they change.
+
+```typescript
+import { fileLockKey, tool, toolOutput } from '@cogitator-ai/core';
+
+const saveNote = tool({
+  name: 'save_note',
+  description: 'Writes a note',
+  parameters: z.object({ path: z.string(), text: z.string() }),
+  isConcurrencySafe: true, // different files are written together
+  lockKeys: async ({ path }) => [await fileLockKey(path)], // one file, one writer at a time
+  presentation: ({ path }) => ({ label: 'Save note', icon: 'file-plus', detail: path }),
+  execute: async ({ path, text }, context) => {
+    context.update?.({ content: 'writing' }); // reaches onToolUpdate, never the model
+    const diff = await notes.write(path, text);
+    return toolOutput({ content: { path, saved: true }, details: { diff } });
+  },
+});
+
+await cog.run(agent, {
+  input: 'Save the meeting notes',
+  parallelToolCalls: true,
+  stream: true,
+  timeouts: { stepMs: 60_000, chunkMs: 15_000, toolMs: 20_000 },
+  onToolUpdate: ({ name, content }) => console.log(name, content),
+  onToolInputDelta: ({ toolCallId, delta }) => preview(toolCallId, delta), // arguments as the model writes them
+  onToolResult: ({ result, details, presentation }) => ui.step(presentation, result, details),
+});
+```
+
+- `toolOutput({ content, details?, presentation? })`: the model reads `content`, `onToolResult` gets `details` and `presentation` too, and memory keeps them in the metadata of the call's `tool_result` entry, never in what a model reads back. A tool's own `presentation` (a value or a function of the arguments) is used when the result carries none, failed calls too.
+- `context.update({ content?, details?, presentation? })` reports progress to `onToolUpdate` (`invokeTool(..., { onUpdate })`), and servers stream it as the `tool-update` event. Updates after the tool returned are dropped.
+- In a streamed run `onToolInputStart`, `onToolInputDelta` and `onToolInputAvailable` (and the tool's own `onInputStart` / `onInputDelta` / `onInputAvailable`) see each call while the model writes it. OpenAI-compatible backends, OpenAI Responses, Anthropic and Bedrock stream the arguments piece by piece, Gemini and Ollama report each whole call as a start and one delta. A custom backend emits `delta.toolInput` parts in `chatStream`.
+- `timeouts` (run or agent, merged field by field, all off by default): `totalMs` the whole run (`RUN_TIMEOUT`), `stepMs` one model call with its retries and fallbacks (`RUN_STEP_TIMEOUT`), `chunkMs` a streamed call without a chunk (`RUN_CHUNK_TIMEOUT`), `toolMs` the calls of tools without their own `timeout`, which fail with `errorCode: 'TOOL_TIMEOUT'` while the run goes on.
+
+See [Concurrency](https://cogitator.app/docs/tools/concurrency), [Results and Progress](https://cogitator.app/docs/tools/results), [Streaming Tool Input](https://cogitator.app/docs/tools/streaming-input) and [Stage Timeouts](https://cogitator.app/docs/tools/timeouts).
 
 ### Tool Dependencies
 
@@ -986,6 +1030,7 @@ const result = await cog.run(agent, {
   deps: { db }, // values for the tools (context.deps), never sent to the model
 
   timeout: 60000,
+  timeouts: { stepMs: 30_000, toolMs: 10_000 }, // deadlines of a model call and of a tool call
   signal: controller.signal,
   stream: true,
   onToken: (token) => process.stdout.write(token),
@@ -999,7 +1044,8 @@ const result = await cog.run(agent, {
   branch: { fromEntryId: entryId, activate: false }, // run on a branch of the thread's memory
   brief: `Current date and time: ${new Date().toISOString()}`, // notes for this turn, sent with the input, not saved
   asOf: new Date('2026-03-09T18:00:00Z'), // the moment memory reads the turn at, now by default
-  parallelToolCalls: false, // default: tool calls of one turn run one after another
+  parallelToolCalls: true, // run the concurrency-safe calls of a step together (default: false)
+  maxParallelToolCalls: 4, // most calls at once (default: 10)
   multitaskStrategy: 'enqueue', // wait while another run of this thread goes on
   toolChoice: 'required', // force a tool call until the model makes one, then 'auto'
 
@@ -1008,6 +1054,8 @@ const result = await cog.run(agent, {
   onModelFallback: ({ from, to }) => console.warn(`${from} failed, using ${to}`),
   onToolCall: (call) => console.log('Tool:', call.name),
   onToolResult: (result) => console.log('Result:', result.result),
+  onToolUpdate: (update) => console.log('Progress:', update.name, update.content),
+  onToolInputDelta: ({ toolCallId, delta }) => console.log(toolCallId, delta), // needs stream: true
   onSpan: (span) => console.log('Span:', span.name),
   onRunStart: ({ runId }) => console.log('Started:', runId),
   onRunComplete: (result) => console.log('Completed'),

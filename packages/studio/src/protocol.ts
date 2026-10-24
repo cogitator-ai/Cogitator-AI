@@ -82,12 +82,24 @@ export interface SpanRecord {
   attributes: Record<string, unknown>;
 }
 
+/** How a tool call is shown, as the tool presents it: a label, an icon name and a detail line. */
+export interface ToolPresentationRecord {
+  label: string;
+  icon?: string;
+  detail?: string;
+}
+
 export interface ToolCallRecord {
   id: string;
   name: string;
   arguments: unknown;
   result?: unknown;
   error?: string;
+  presentation?: ToolPresentationRecord;
+  /** Data the tool gave the application only, never sent to the model. */
+  details?: unknown;
+  /** What the running tool reported last with `context.update()`. */
+  progress?: unknown;
   approval?: { id: string; status: 'waiting' | 'approved' | 'rejected'; reason?: string };
 }
 
@@ -278,7 +290,23 @@ export type HostEvent =
   | { type: 'run.token'; runId: string; text: string }
   | { type: 'run.reasoning'; runId: string; text: string }
   | { type: 'run.tool.call'; runId: string; call: { id: string; name: string; arguments: unknown } }
-  | { type: 'run.tool.result'; runId: string; callId: string; result: unknown; error?: string }
+  | {
+      type: 'run.tool.result';
+      runId: string;
+      callId: string;
+      result: unknown;
+      error?: string;
+      details?: unknown;
+      presentation?: ToolPresentationRecord;
+    }
+  | {
+      type: 'run.tool.update';
+      runId: string;
+      callId: string;
+      content?: unknown;
+      details?: unknown;
+      presentation?: ToolPresentationRecord;
+    }
   | {
       type: 'run.approval';
       runId: string;

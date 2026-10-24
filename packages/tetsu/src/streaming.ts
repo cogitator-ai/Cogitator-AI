@@ -6,7 +6,16 @@ import type { ShutdownSignal } from './types.js';
 /** The run options a streamed agent run or resume is given by its transport. */
 export type AgentStreamCallbacks = Pick<
   RunOptions,
-  'stream' | 'signal' | 'onToken' | 'onReasoning' | 'onToolCall' | 'onToolResult'
+  | 'stream'
+  | 'signal'
+  | 'onToken'
+  | 'onReasoning'
+  | 'onToolCall'
+  | 'onToolResult'
+  | 'onToolUpdate'
+  | 'onToolInputStart'
+  | 'onToolInputDelta'
+  | 'onToolInputAvailable'
 >;
 
 /** The last event of every successful stream, kept for clients of the other Cogitator adapters. */

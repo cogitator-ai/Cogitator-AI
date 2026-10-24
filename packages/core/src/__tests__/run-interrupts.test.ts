@@ -421,6 +421,7 @@ describe('interrupts in a turn of several calls', () => {
         name: `ask_${id}`,
         description: 'Asks',
         parameters: z.object({}),
+        isConcurrencySafe: true,
         execute: async (_params, context) =>
           context.interrupt!({ reason: id, message: `Question ${id}?`, expiresAt }),
       });

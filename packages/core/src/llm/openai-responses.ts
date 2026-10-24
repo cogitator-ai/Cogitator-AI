@@ -40,6 +40,7 @@ import {
 } from './openai-profiles';
 import { createLLMError, llmInvalidResponse, type LLMError, type LLMErrorContext } from './errors';
 import { classifyProviderError, statusOfKind } from './error-tables';
+import { ToolInputStream } from './tool-input';
 import { finishRunsTools, normalizeTurn, toolCallArguments } from './turn';
 
 export const DEFAULT_OPENAI_MODEL = 'gpt-6.1-sol';
@@ -126,6 +127,7 @@ export async function* readResponsesStream(
   ctx: LLMErrorContext
 ): AsyncGenerator<ChatStreamChunk> {
   const items = new Map<number, ResponseOutputItem>();
+  const toolInputs = new ToolInputStream();
   let responseId = '';
 
   for await (const event of stream) {
@@ -149,14 +151,26 @@ export async function* readResponsesStream(
         break;
 
       case 'response.output_item.added':
-      case 'response.output_item.done':
+      case 'response.output_item.done': {
         items.set(event.output_index, event.item);
+        const item = event.item;
+        if (item.type === 'function_call') {
+          const toolInput = toolInputs.piece(event.output_index, {
+            id: item.call_id,
+            name: item.name,
+            ...(event.type === 'response.output_item.added' && { arguments: item.arguments }),
+          });
+          if (toolInput.length > 0) yield { id: responseId, delta: { toolInput } };
+        }
         break;
+      }
 
       case 'response.function_call_arguments.delta': {
         const item = items.get(event.output_index);
         if (item?.type === 'function_call') {
           items.set(event.output_index, { ...item, arguments: item.arguments + event.delta });
+          const toolInput = toolInputs.piece(event.output_index, { arguments: event.delta });
+          if (toolInput.length > 0) yield { id: responseId, delta: { toolInput } };
         }
         break;
       }

@@ -30,6 +30,13 @@ export {
 } from './run-pause';
 export type { PausableRun, PausedRun, PausedRunInfo } from './run-pause';
 export { tool, toolset, toolToSchema, withParsedArguments } from './tool';
+export { isConcurrencySafe } from './cogitator/tool-executor';
+export { KeyedLock, toolLocks } from './cogitator/tool-locks';
+export {
+  scheduleToolCalls,
+  DEFAULT_MAX_PARALLEL_TOOL_CALLS,
+  type ToolCallSchedule,
+} from './cogitator/tool-scheduler';
 export { toToolParameters } from './tool-schema';
 export {
   TOOL_NAME_MAX_LENGTH,
@@ -40,7 +47,9 @@ export {
 } from './tool-name';
 export {
   toolContent,
+  toolOutput,
   isToolContentResult,
+  isToolOutputResult,
   toolResultParts,
   toolPartsToMessageContent,
   toolPartsToText,
@@ -133,6 +142,7 @@ export {
   createSchedulerTools,
   restrictFileTools,
   isPathAllowed,
+  fileLockKey,
   workspaceTools,
   WORKSPACE_TOOL_NAMES,
   createCapabilitiesTool,

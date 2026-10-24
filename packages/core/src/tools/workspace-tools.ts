@@ -5,8 +5,10 @@ import {
   type ToolContext,
   type Workspace,
 } from '@cogitator-ai/types';
+import { join as joinPath } from 'node:path';
 import { z } from 'zod';
 import { tool } from '../tool';
+import { fileLockKey } from './path-guard';
 import { RegexWorker } from './regex-worker';
 
 const DEFAULT_READ_LINES = 2000;
@@ -98,6 +100,10 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
   };
   const approval = (name: WorkspaceToolName) =>
     needsApproval(name) ? { requiresApproval: true } : {};
+  const lockFile = async (path: string, context: ToolContext): Promise<string[]> => {
+    const ws = resolveWorkspace(context);
+    return [await fileLockKey(joinPath(ws.root, path))];
+  };
 
   const readFile = tool({
     name: 'read_file',
@@ -127,6 +133,8 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
         .describe(`Number of lines to read (default: ${DEFAULT_READ_LINES})`),
     }),
     category: 'file',
+    isConcurrencySafe: true,
+    presentation: ({ path }) => ({ label: 'Read file', icon: 'file-text', detail: path }),
     ...approval('read_file'),
     execute: async ({ path, offset = 1, column = 1, limit = DEFAULT_READ_LINES }, context) => {
       const ws = resolveWorkspace(context);
@@ -193,6 +201,8 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
     }),
     category: 'file',
     sideEffects: ['filesystem'],
+    lockKeys: ({ path }, context) => lockFile(path, context),
+    presentation: ({ path }) => ({ label: 'Write file', icon: 'file-plus', detail: path }),
     ...approval('write_file'),
     execute: async ({ path, content }, context) => {
       const ws = resolveWorkspace(context);
@@ -217,6 +227,8 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
     }),
     category: 'file',
     sideEffects: ['filesystem'],
+    lockKeys: ({ path }, context) => lockFile(path, context),
+    presentation: ({ path }) => ({ label: 'Edit file', icon: 'file-pen', detail: path }),
     ...approval('edit_file'),
     execute: async ({ path, oldString, newString, replaceAll = false }, context) => {
       const ws = resolveWorkspace(context);
@@ -265,6 +277,8 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
         .describe('Include entries whose name starts with a dot (default: false)'),
     }),
     category: 'file',
+    isConcurrencySafe: true,
+    presentation: ({ path }) => ({ label: 'List files', icon: 'folder', detail: path ?? '.' }),
     ...approval('list_files'),
     execute: async ({ path = '.', recursive = false, includeHidden = false }, context) => {
       const ws = resolveWorkspace(context);
@@ -289,6 +303,8 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
       path: z.string().optional().describe('Directory to search in (default: the root)'),
     }),
     category: 'file',
+    isConcurrencySafe: true,
+    presentation: ({ pattern }) => ({ label: 'Find files', icon: 'search', detail: pattern }),
     ...approval('glob'),
     execute: async ({ pattern, path = '.' }, context) => {
       const ws = resolveWorkspace(context);
@@ -336,6 +352,12 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
         .describe(`Stop after this many matches (default: ${DEFAULT_GREP_MATCHES})`),
     }),
     category: 'file',
+    isConcurrencySafe: true,
+    presentation: ({ pattern }) => ({
+      label: 'Search files',
+      icon: 'text-search',
+      detail: pattern,
+    }),
     ...approval('grep'),
     execute: async (
       {
@@ -458,6 +480,7 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
     }),
     category: 'system',
     sideEffects: ['process', 'filesystem', 'network'],
+    presentation: ({ command }) => ({ label: 'Run command', icon: 'terminal', detail: command }),
     ...approval('run_command'),
     execute: async ({ command, cwd, timeout, background }, context) => {
       const ws = resolveWorkspace(context);

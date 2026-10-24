@@ -1,0 +1,88 @@
+---
+title: Streaming Tool Input
+description: See a tool call while the model writes it, its name first, then its arguments piece by piece, before the call runs.
+---
+
+## Overview
+
+A model that writes a long tool call, such as a file of a few hundred lines, can take many seconds before the call is complete. In a streamed run the call shows up as it is written: its id and name as soon as the model picked the tool, then each piece of its JSON arguments.
+
+```typescript
+let written = '';
+
+await cog.run(agent, {
+  input: 'Write a README for this project',
+  stream: true,
+  onToolInputStart: ({ toolCallId, toolName }) => ui.open(toolCallId, toolName),
+  onToolInputDelta: ({ toolCallId, delta }) => {
+    written += delta;
+    ui.preview(toolCallId, written);
+  },
+  onToolInputAvailable: ({ toolCallId, input }) => ui.complete(toolCallId, input),
+});
+```
+
+| Callback               | Gets                              | When                                                        |
+| ---------------------- | --------------------------------- | ----------------------------------------------------------- |
+| `onToolInputStart`     | `{ toolCallId, toolName }`        | the model began a call, its id and name are known           |
+| `onToolInputDelta`     | `{ toolCallId, toolName, delta }` | the next piece of the call's JSON arguments                 |
+| `onToolInputAvailable` | `{ toolCallId, toolName, input }` | the turn is complete and the call's arguments could be read |
+
+A `delta` is the text that follows what came before, not valid JSON on its own: join the pieces of a call, or feed them to a partial JSON parser, to show the arguments as they grow.
+
+These callbacks need `stream: true`, and a run with them streams also without `onToken`. A run without `stream: true` reports nothing to them.
+
+`onToolInputAvailable` fires once the turn is settled, for each of its calls whose arguments could be read. A call may still not run after it: an `afterModel` [middleware](/docs/core/middleware) may change or drop it, and a person may decline it at an [approval](/docs/tools/approvals). `onToolCall` reports the calls that run, with the arguments they run with.
+
+## Hooks on the Tool
+
+A tool hears the calls of its own with the same events, under the names of the AI SDK:
+
+```typescript
+const writeFile = tool({
+  name: 'write_file',
+  description: 'Writes a file',
+  parameters: z.object({ path: z.string(), content: z.string() }),
+  onInputStart: ({ toolCallId }) => editor.openDraft(toolCallId),
+  onInputDelta: ({ toolCallId, delta }) => editor.append(toolCallId, delta),
+  onInputAvailable: ({ toolCallId, input }) => editor.settle(toolCallId, input),
+  execute: async ({ path, content }) => files.write(path, content),
+});
+```
+
+The hooks run for every streamed run that has the tool, next to the run's own callbacks, and a run whose agent has a tool with such hooks streams too.
+
+## Providers
+
+| Backend                                                                           | What it streams                                                             |
+| --------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| OpenAI-compatible (OpenAI, Azure OpenAI, OpenRouter and other compatible servers) | the call's id and name, then its arguments as the model writes them         |
+| OpenAI Responses                                                                  | the same                                                                    |
+| Anthropic                                                                         | the same                                                                    |
+| Bedrock                                                                           | the same                                                                    |
+| Gemini, Ollama                                                                    | whole calls only: each is reported as a start and one delta when it arrives |
+
+A run with [middleware](/docs/core/middleware) that holds the stream back until the turn is checked, such as output guardrails, gets no input events, as it gets no tokens.
+
+## Over the Wire
+
+In a streamed run of a [server adapter](/docs/server-adapters#streaming-protocol), `tool-call-start`, `tool-call-delta` and `tool-call-end` follow the model: `tool-call-start` once the call's id and name are known, a `tool-call-delta` with each piece of its arguments in `argsTextDelta`, and `tool-call-end` once the call is complete. Without input events (a run whose stream is held back), the three go out at once right before the call runs, the arguments in one delta, as before. A call the model began and never finished is closed with `tool-call-end` before the stream ends.
+
+## Custom Backends
+
+A backend of your own streams tool input in `delta.toolInput` of its `chatStream` chunks: a `{ type: 'start', toolCallId, toolName }` part once the call's id and name are known, then `{ type: 'delta', toolCallId, delta }` parts of its JSON arguments. The complete call still comes in `delta.toolCalls`. A backend that leaves `toolInput` out has each call reported in one piece when it arrives.
+
+```typescript
+async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk> {
+  yield { id, delta: { toolInput: [{ type: 'start', toolCallId: 'call_1', toolName: 'search' }] } };
+  yield { id, delta: { toolInput: [{ type: 'delta', toolCallId: 'call_1', delta: '{"query":' }] } };
+  yield { id, delta: { toolInput: [{ type: 'delta', toolCallId: 'call_1', delta: '"cats"}' }] } };
+  yield {
+    id,
+    delta: { toolCalls: [{ id: 'call_1', name: 'search', arguments: { query: 'cats' } }] },
+    finishReason: 'tool_calls',
+  };
+}
+```
+
+`MockLLMBackend` of `@cogitator-ai/test-utils` takes `toolInput` in the chunks of `setStreamChunks()`, to test code that reads tool input without a model.

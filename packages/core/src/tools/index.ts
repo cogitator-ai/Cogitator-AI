@@ -45,7 +45,12 @@ export {
 
 export { createSchedulerTools, type SchedulerToolsConfig } from './scheduler-tools';
 
-export { restrictFileTools, isPathAllowed, type RestrictFileToolsOptions } from './path-guard';
+export {
+  restrictFileTools,
+  isPathAllowed,
+  fileLockKey,
+  type RestrictFileToolsOptions,
+} from './path-guard';
 
 export {
   workspaceTools,

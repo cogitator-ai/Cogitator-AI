@@ -59,8 +59,17 @@ export function ToolCallCard({ call }: { call: ToolCallRecord }) {
       >
         <ChevronRight size={13} className="tool-chevron" />
         <Wrench size={13} />
-        <span className="tool-name">{call.name}</span>
-        <span className="tool-args">{summarize(call.arguments)}</span>
+        <span className="tool-name" title={call.presentation ? call.name : undefined}>
+          {call.presentation?.label ?? call.name}
+        </span>
+        <span className="tool-args">
+          {call.presentation ? (call.presentation.detail ?? '') : summarize(call.arguments)}
+        </span>
+        {running && call.progress !== undefined && (
+          <span className="tool-result" data-testid="tool-progress">
+            {excerpt(pretty(call.progress), 60)}
+          </span>
+        )}
         {running && <span className="spinner" aria-label="running" />}
         {waiting && <StatusBadge status="waiting" />}
         {approval && approval.status !== 'waiting' && (
@@ -82,6 +91,7 @@ export function ToolCallCard({ call }: { call: ToolCallRecord }) {
           {call.result !== undefined && !(call.error && call.result === null) && (
             <JsonBlock label="Result" value={call.result} />
           )}
+          {call.details !== undefined && <JsonBlock label="Details" value={call.details} />}
           {approval?.reason && <div className="notice">Rejected because: {approval.reason}</div>}
           {call.error && <ErrorText>{call.error}</ErrorText>}
         </div>

@@ -10,8 +10,10 @@ import type {
   LLMResponseFormat,
   MessageContent,
   ContentPart,
+  ToolInputStreamPart,
 } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
+import { ToolInputStream } from './tool-input';
 import {
   LLMError,
   abortReason,
@@ -236,6 +238,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
 
     const toolCallsAccum = new Map<number, { id?: string; name?: string }>();
     const toolCallArgsAccum = new Map<number, string>();
+    const toolInputs = new ToolInputStream();
     let refused = false;
 
     for await (const chunk of this.guardStream(stream, request.signal, (error) =>
@@ -258,8 +261,16 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
       const refusalDelta = refusalOf(delta);
       if (refusalDelta) refused = true;
 
+      const toolInput: ToolInputStreamPart[] = [];
       if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
+          toolInput.push(
+            ...toolInputs.piece(tc.index, {
+              ...(tc.id && { id: tc.id }),
+              ...(tc.function?.name && { name: tc.function.name }),
+              ...(tc.function?.arguments && { arguments: tc.function.arguments }),
+            })
+          );
           const existing = toolCallsAccum.get(tc.index) ?? {};
           toolCallsAccum.set(tc.index, {
             id: tc.id ?? existing.id,
@@ -288,6 +299,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
           content: content || undefined,
           ...(reasoningDelta && { reasoning: reasoningDelta }),
           toolCalls: end?.toolCalls,
+          ...(toolInput.length > 0 && { toolInput }),
         },
         finishReason: end?.finishReason,
         ...(usage ? { usage } : {}),

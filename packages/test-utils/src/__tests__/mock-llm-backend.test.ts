@@ -151,6 +151,27 @@ describe('MockLLMBackend', () => {
       expect(chunks[0].delta.toolCalls![0].name).toBe('calculator');
     });
 
+    it('streams tool input pieces before the complete call', async () => {
+      backend.setStreamChunks([
+        { toolInput: [{ type: 'start', toolCallId: 'call_1', toolName: 'calculator' }] },
+        { toolInput: [{ type: 'delta', toolCallId: 'call_1', delta: '{"expr":"2+2"}' }] },
+        {
+          toolCalls: [{ id: 'call_1', name: 'calculator', arguments: { expr: '2+2' } }],
+          finishReason: 'tool_calls',
+        },
+      ]);
+
+      const parts = [];
+      for await (const chunk of backend.chatStream({ model: 'test', messages: [] })) {
+        parts.push(...(chunk.delta.toolInput ?? []));
+      }
+
+      expect(parts).toEqual([
+        { type: 'start', toolCallId: 'call_1', toolName: 'calculator' },
+        { type: 'delta', toolCallId: 'call_1', delta: '{"expr":"2+2"}' },
+      ]);
+    });
+
     it('includes usage in last chunk', async () => {
       backend.setStreamChunks([{ content: 'Test' }]);
 

@@ -209,6 +209,7 @@ export class Agent<TDeps = unknown> implements IAgent<TDeps> {
         maxIterations: this.config.maxIterations,
         ...(this.config.onIterationLimit && { onIterationLimit: this.config.onIterationLimit }),
         timeout: this.config.timeout,
+        ...(this.config.timeouts && { timeouts: { ...this.config.timeouts } }),
         ...(this.config.todos !== undefined && { todos: this.config.todos }),
       },
       metadata: {
@@ -280,6 +281,7 @@ export class Agent<TDeps = unknown> implements IAgent<TDeps> {
         onIterationLimit: snapshot.config.onIterationLimit,
       }),
       timeout: snapshot.config.timeout,
+      ...(snapshot.config.timeouts && { timeouts: { ...snapshot.config.timeouts } }),
       ...(snapshot.config.todos !== undefined && { todos: snapshot.config.todos }),
       ...overrides,
     });

@@ -2,7 +2,9 @@ import type {
   ApprovalCheck,
   BaseToolContext,
   Tool,
+  ToolCallCheck,
   ToolConfig,
+  ToolPresenter,
   ToolSchema,
 } from '@cogitator-ai/types';
 import { z, type ZodType } from 'zod';
@@ -104,9 +106,55 @@ export function tool<TParams, TResult, TDeps = unknown>(
     maxResultLength: config.maxResultLength,
     ...(config.providerTypes && { providerTypes: config.providerTypes }),
     ...(config.deferred && { deferred: true }),
+    ...(config.isConcurrencySafe !== undefined && {
+      isConcurrencySafe:
+        typeof config.isConcurrencySafe === 'function'
+          ? (config.isConcurrencySafe as ToolCallCheck)
+          : config.isConcurrencySafe,
+    }),
+    ...(config.lockKeys && {
+      lockKeys: config.lockKeys as (
+        params: TParams,
+        context: BaseToolContext<TDeps>
+      ) => readonly string[] | Promise<readonly string[]>,
+    }),
+    ...(config.presentation !== undefined && {
+      presentation:
+        typeof config.presentation === 'function'
+          ? (config.presentation as ToolPresenter)
+          : config.presentation,
+    }),
+    ...(config.onInputStart && { onInputStart: config.onInputStart }),
+    ...(config.onInputDelta && { onInputDelta: config.onInputDelta }),
+    ...(config.onInputAvailable && { onInputAvailable: config.onInputAvailable }),
     toJSON(): ToolSchema {
       return toolToSchema(this);
     },
+  };
+}
+
+/**
+ * The fields of `tool` that decide how its calls are scheduled and shown, to keep on a tool that
+ * wraps it: concurrency, lock keys, presentation and input hooks.
+ */
+export function executionFieldsOf<TParams, TResult, TDeps>(
+  tool: Tool<TParams, TResult, TDeps>
+): Pick<
+  Tool<TParams, TResult, TDeps>,
+  | 'isConcurrencySafe'
+  | 'lockKeys'
+  | 'presentation'
+  | 'onInputStart'
+  | 'onInputDelta'
+  | 'onInputAvailable'
+> {
+  return {
+    ...(tool.isConcurrencySafe !== undefined && { isConcurrencySafe: tool.isConcurrencySafe }),
+    ...(tool.lockKeys && { lockKeys: (params, context) => tool.lockKeys!(params, context) }),
+    ...(tool.presentation !== undefined && { presentation: tool.presentation }),
+    ...(tool.onInputStart && { onInputStart: (event) => tool.onInputStart!(event) }),
+    ...(tool.onInputDelta && { onInputDelta: (event) => tool.onInputDelta!(event) }),
+    ...(tool.onInputAvailable && { onInputAvailable: (event) => tool.onInputAvailable!(event) }),
   };
 }
 
@@ -136,6 +184,7 @@ export function withParsedArguments<TParams, TResult>(
     ...(tool.maxResultLength !== undefined && { maxResultLength: tool.maxResultLength }),
     ...(tool.providerTypes && { providerTypes: tool.providerTypes }),
     ...(tool.deferred && { deferred: true }),
+    ...executionFieldsOf(tool),
     toJSON: () => tool.toJSON(),
   };
 }

@@ -140,6 +140,57 @@ describe('AgentStreamSession', () => {
       'error',
     ]);
   });
+  it('streams the arguments of a call as the model writes them, and sends them once only', () => {
+    const { events, session: s } = session('t');
+    s.callbacks.onToken('Let me write.');
+    s.callbacks.onToolInputStart({ toolCallId: 'w1', toolName: 'write' });
+    s.callbacks.onToolInputDelta({ toolCallId: 'w1', toolName: 'write', delta: '{"path":' });
+    s.callbacks.onToolInputDelta({ toolCallId: 'w1', toolName: 'write', delta: '"a"}' });
+    s.callbacks.onToolInputAvailable({ toolCallId: 'w1', toolName: 'write', input: { path: 'a' } });
+    s.callbacks.onToolCall({ id: 'w1', name: 'write', arguments: { path: 'a' } });
+    s.callbacks.onToolUpdate({ callId: 'w1', name: 'write', content: 'half' });
+    s.callbacks.onToolResult({
+      callId: 'w1',
+      name: 'write',
+      result: { ok: true },
+      details: { bytes: 3 },
+      presentation: { label: 'Write file', detail: 'a' },
+    });
+
+    const tools = events.filter((event) => event.type.startsWith('tool'));
+    expect(tools).toEqual([
+      { type: 'tool-call-start', id: 'w1', toolName: 'write' },
+      { type: 'tool-call-delta', id: 'w1', argsTextDelta: '{"path":' },
+      { type: 'tool-call-delta', id: 'w1', argsTextDelta: '"a"}' },
+      { type: 'tool-call-end', id: 'w1' },
+      { type: 'tool-update', toolCallId: 'w1', content: 'half' },
+      {
+        type: 'tool-result',
+        id: expect.any(String),
+        toolCallId: 'w1',
+        result: { ok: true },
+        details: { bytes: 3 },
+        presentation: { label: 'Write file', detail: 'a' },
+      },
+    ]);
+    expect(events.indexOf(tools[0]!)).toBeGreaterThan(
+      events.findIndex((event) => event.type === 'text-end')
+    );
+    for (const event of events) expect(StreamEventSchema.parse(event)).toEqual(event);
+  });
+
+  it('closes a call the model began and never finished before the stream ends', () => {
+    const { events, session: s } = session('t');
+    s.callbacks.onToolInputStart({ toolCallId: 'cut', toolName: 'write' });
+    s.callbacks.onToolInputDelta({ toolCallId: 'cut', toolName: 'write', delta: '{"pa' });
+    s.fail('cut off');
+    expect(events.map((event) => event.type)).toEqual([
+      'tool-call-start',
+      'tool-call-delta',
+      'tool-call-end',
+      'error',
+    ]);
+  });
 });
 
 describe('withSwarm', () => {

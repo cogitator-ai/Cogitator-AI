@@ -1,0 +1,129 @@
+---
+title: Results and Progress
+description: Give the model one result and your application another, tell clients how to show a call, and report what a running tool has so far.
+---
+
+## Overview
+
+What a tool returns is what the model reads. Often the application wants more than that: a diff to render, a row count, a label for the step list. `toolOutput()` splits a result by reader, `presentation` tells a client how to show a call without the tool's code, and `context.update()` reports progress while the tool runs.
+
+```typescript
+import { tool, toolOutput } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const editFile = tool({
+  name: 'edit_file',
+  description: 'Replaces text in a file',
+  parameters: z.object({ path: z.string(), oldText: z.string(), newText: z.string() }),
+  execute: async ({ path, oldText, newText }) => {
+    const diff = await applyEdit(path, oldText, newText);
+    return toolOutput({
+      content: { path, replacements: 1 }, // the model reads this
+      details: { diff }, // the application only
+      presentation: { label: 'Edit file', icon: 'file-pen', detail: path },
+    });
+  },
+});
+```
+
+## Split Results with `toolOutput`
+
+`toolOutput({ content, details?, presentation? })` builds a `ToolOutputResult`:
+
+| Field          | Reaches                       | What it is                                                                                     |
+| -------------- | ----------------------------- | ---------------------------------------------------------------------------------------------- |
+| `content`      | the model and the application | Any JSON value, or a [`toolContent()`](/docs/core/tools#media-results-with-toolcontent) result |
+| `details`      | the application only          | Data for your code and UI, such as a diff or the rows a query found                            |
+| `presentation` | the application only          | How a client shows this call, over the tool's own `presentation`                               |
+
+The run takes the result apart before anything else reads it:
+
+- the model reads `content`, cut to [`maxResultLength`](/docs/core/tools#result-size) like any result
+- `onToolResult` gets a `ToolResult` whose `result` is the whole `content`, with `details` and `presentation` next to it
+- memory keeps what the model read in the `toolResults` of the call's `tool_result` entry, and `details` and `presentation` in its metadata (`metadata.details`, `metadata.presentation`), so a client that reads the thread later draws the same row. A model never reads them back from history
+
+```typescript
+await cog.run(agent, {
+  input: 'Rename foo to bar in src/a.ts',
+  onToolResult: ({ name, result, details, presentation }) => {
+    ui.step(presentation?.label ?? name, presentation?.detail);
+    if (details) ui.diff(details);
+  },
+});
+```
+
+`cog.invokeTool()` takes the result apart the same way, its `ToolResult` carries `details` and `presentation`. `isToolOutputResult(value)` tells a `toolOutput()` result from any other.
+
+## Presentation
+
+A `ToolPresentation` is what a list of steps needs: a `label` for people (`Edit file`), an optional `icon` (an icon name your client knows, Lucide names by convention) and an optional `detail` line about the call, such as the path it edits.
+
+A tool declares one for all its calls, or one made from the call's arguments:
+
+```typescript
+const fetchPage = tool({
+  name: 'fetch_page',
+  description: 'Fetches a web page',
+  parameters: z.object({ url: z.string() }),
+  presentation: ({ url }) => ({ label: 'Fetch page', icon: 'globe', detail: url }),
+  execute: async ({ url }) => (await fetch(url)).text(),
+});
+```
+
+The function gets the arguments as the tool's schema reads them. The run uses the tool's presentation when the result carries none, for failed calls too, so a client shows `Fetch page https://example.com` with its error instead of a bare tool name. A presentation function that throws leaves the call without one.
+
+[`workspaceTools()`](/docs/tools/workspace) present their calls by what they touch:
+
+| Tool          | Label          | Icon          | Detail          |
+| ------------- | -------------- | ------------- | --------------- |
+| `read_file`   | `Read file`    | `file-text`   | the path        |
+| `write_file`  | `Write file`   | `file-plus`   | the path        |
+| `edit_file`   | `Edit file`    | `file-pen`    | the path        |
+| `list_files`  | `List files`   | `folder`      | the path or `.` |
+| `glob`        | `Find files`   | `search`      | the pattern     |
+| `grep`        | `Search files` | `text-search` | the pattern     |
+| `run_command` | `Run command`  | `terminal`    | the command     |
+
+## Progress with `context.update`
+
+A tool that takes a while reports what it has so far with `context.update({ content?, details?, presentation? })`, as often as it likes:
+
+```typescript
+const runTests = tool({
+  name: 'run_tests',
+  description: 'Runs the test suite',
+  parameters: z.object({}),
+  execute: async (_params, context) => {
+    const failed: string[] = [];
+    for await (const file of testFiles()) {
+      const ok = await runFile(file);
+      if (!ok) failed.push(file);
+      context.update?.({
+        content: `${file}: ${ok ? 'passed' : 'failed'}`,
+        presentation: { label: 'Run tests', detail: file },
+      });
+    }
+    return { failed };
+  },
+});
+
+await cog.run(agent, {
+  input: 'Run the tests',
+  onToolUpdate: ({ callId, name, content }) => console.log(`[${name} ${callId}]`, content),
+});
+```
+
+`onToolUpdate` gets each update with the call's `callId` and tool `name`, and `cog.invokeTool(tool, args, { onUpdate })` takes the same callback. Updates are for people watching: nothing of them reaches the model or memory, the tool's result does. An update after the tool returned (from a timer it left behind, say) is dropped, and a callback that throws is logged without failing the call. A tool that runs in a [sandbox](/docs/core/tools#sandboxed-execution) reports no updates.
+
+## Over the Wire
+
+The [streaming protocol](/docs/server-adapters#streaming-protocol) of every server adapter carries both:
+
+- `tool-update` (`toolCallId`, `content?`, `details?`, `presentation?`) for each `context.update()`, between the call's `tool-call-end` and its `tool-result`
+- `tool-result` carries `details` and `presentation` next to `result`
+
+`createToolUpdateEvent`, `ToolUpdateEventSchema` and `ToolPresentationSchema` come from `@cogitator-ai/server-shared`. [Cogitator Studio](/docs/getting-started/studio) shows the label and detail of each call, the latest progress while it runs, and its details in a block of their own.
+
+## Errors with a Code
+
+A failed call has its message in `error`, and `errorCode` when a code says why: `TOOL_TIMEOUT` for a call that ran out of time (see [Timeouts](/docs/tools/timeouts)). The model reads the error, the code is for your code, and spans record it as `error.type`.

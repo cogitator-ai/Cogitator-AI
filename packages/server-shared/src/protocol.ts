@@ -1,3 +1,4 @@
+import type { ToolPresentation } from '@cogitator-ai/types';
 import { toRunUsage } from './usage.js';
 import type { AgentRunOutcome } from './response.js';
 
@@ -31,6 +32,7 @@ export type StreamEvent =
   | ToolCallDeltaEvent
   | ToolCallEndEvent
   | ToolResultEvent
+  | ToolUpdateEvent
   | ApprovalRequiredEvent
   | InterruptRequiredEvent
   | ErrorEvent
@@ -104,6 +106,22 @@ export interface ToolResultEvent {
   toolCallId: string;
   /** What the tool returned, absent when it returned nothing */
   result?: unknown;
+  /** Data the tool gave the application only, never sent to the model */
+  details?: unknown;
+  /** How to show the call: a label, an icon and one line about it */
+  presentation?: ToolPresentation;
+}
+
+/**
+ * What a running tool has so far (`context.update()` in the tool), sent between its
+ * `tool-call-end` and its `tool-result`, as often as the tool reports it
+ */
+export interface ToolUpdateEvent {
+  type: 'tool-update';
+  toolCallId: string;
+  content?: unknown;
+  details?: unknown;
+  presentation?: ToolPresentation;
 }
 
 /** A tool call waiting for approval; the shape of core's `ToolApprovalRequest` */
@@ -225,9 +243,30 @@ export function createToolCallEndEvent(id: string): ToolCallEndEvent {
 export function createToolResultEvent(
   id: string,
   toolCallId: string,
-  result: unknown
+  result: unknown,
+  extras: Pick<ToolResultEvent, 'details' | 'presentation'> = {}
 ): ToolResultEvent {
-  return { type: 'tool-result', id, toolCallId, result };
+  return {
+    type: 'tool-result',
+    id,
+    toolCallId,
+    result,
+    ...(extras.details !== undefined && { details: extras.details }),
+    ...(extras.presentation && { presentation: extras.presentation }),
+  };
+}
+
+export function createToolUpdateEvent(
+  toolCallId: string,
+  update: Pick<ToolUpdateEvent, 'content' | 'details' | 'presentation'>
+): ToolUpdateEvent {
+  return {
+    type: 'tool-update',
+    toolCallId,
+    ...(update.content !== undefined && { content: update.content }),
+    ...(update.details !== undefined && { details: update.details }),
+    ...(update.presentation && { presentation: update.presentation }),
+  };
 }
 
 export function createApprovalRequiredEvent(

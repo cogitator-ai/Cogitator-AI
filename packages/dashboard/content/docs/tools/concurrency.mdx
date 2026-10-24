@@ -1,0 +1,149 @@
+---
+title: Concurrency and Locks
+description: Run the safe tool calls of a step together, keep the others alone, and keep calls that change the same thing apart across every run of the process.
+---
+
+## Overview
+
+A model often asks for several tools in one turn: read three files, search two folders, then write one. By default the calls of a step run one after another, in the order the model wrote them. With `parallelToolCalls: true` the calls that are safe to run together run at the same time, and a call that is not safe runs alone:
+
+```typescript
+import { tool } from '@cogitator-ai/core';
+import { z } from 'zod';
+
+const fetchPage = tool({
+  name: 'fetch_page',
+  description: 'Fetches a web page',
+  parameters: z.object({ url: z.string().url() }),
+  isConcurrencySafe: true, // reads only, any number may run at once
+  execute: async ({ url }) => (await fetch(url)).text(),
+});
+
+const saveReport = tool({
+  name: 'save_report',
+  description: 'Saves the report',
+  parameters: z.object({ text: z.string() }),
+  execute: async ({ text }) => reports.save(text), // not safe: runs alone
+});
+
+const result = await cog.run(agent, {
+  input: 'Compare these three pages and save a report',
+  parallelToolCalls: true,
+  maxParallelToolCalls: 4, // default 10
+});
+```
+
+Results reach the model in the order of the calls either way, whichever finished first.
+
+## Safe Calls
+
+`isConcurrencySafe` says whether a call may run beside other safe calls of its step:
+
+- `true` or `false` for every call of the tool
+- a function of the call's arguments, such as `({ mode }) => mode === 'read'`. It gets the arguments as the tool's schema reads them, and a check that throws counts as not safe
+- left out, it is the tool's `annotations.readOnlyHint`, so an [MCP tool](/docs/integrations/mcp) the server marks read-only is safe, and a tool that declares neither is not
+
+With `parallelToolCalls: true` the run walks the step in call order. Consecutive safe calls run as a pool of at most `maxParallelToolCalls` at once. A call that is not safe is a barrier: it waits until every call before it is done, runs alone, and the calls after it start once it is done. For the calls `read a`, `read b`, `write c`, `read d`:
+
+```
+[read a, read b]  then  [write c]  then  [read d]
+```
+
+Calls the run answers without running the tool (an unknown tool, unreadable arguments, a declined approval) never hold the others back.
+
+Without `parallelToolCalls` every call runs after the one before it, safe or not, as before.
+
+## Questions and Aborts
+
+A call that asks a person with [`context.interrupt()`](/docs/core/run-control#interrupts) ends the step: calls already running finish, no further call starts, and the run pauses. The calls that never started run once the answer came. So a call that depends on an answer never runs before it, also with `parallelToolCalls: true`.
+
+An aborted run answers the calls it never started with `Aborted before dispatch`, and [steering](/docs/core/run-control#run-handles) messages still land after the whole step, never between its calls.
+
+## Lock Keys
+
+`lockKeys` names what a call changes. Calls whose keys meet never run at the same time, in this run or in any other run of the process, and they go one after another in the order they asked:
+
+```typescript
+import { fileLockKey, tool } from '@cogitator-ai/core';
+import { writeFile } from 'node:fs/promises';
+
+const saveNote = tool({
+  name: 'save_note',
+  description: 'Writes a note to a file',
+  parameters: z.object({ path: z.string(), text: z.string() }),
+  isConcurrencySafe: true, // notes of different files may be written together
+  lockKeys: async ({ path }) => [await fileLockKey(path)], // one file, one writer at a time
+  execute: async ({ path, text }) => {
+    await writeFile(path, text);
+    return { path, written: text.length };
+  },
+});
+```
+
+A tool that is safe and has lock keys gets the best of both: writes of different files run together, writes of one file wait for each other. Lock keys also hold without `parallelToolCalls`, between runs that go on side by side and between `cog.invokeTool()` calls.
+
+- `lockKeys(args, context)` returns the keys, or a promise of them, and gets the same context as `execute`. A function that throws fails the call with `Could not tell what the call changes: <message>`, and the tool does not run
+- a call takes its place in the queue of every one of its keys at once, so two calls never wait on each other
+- a call whose run aborts while it waits gives up its place and fails with the abort reason
+- a tool that runs another agent (such as an [agent as tool](/docs/tools/agent-as-tool)) must not hold a key the tools of that agent take, or the two wait on each other forever
+
+`fileLockKey(path)` is `file:` and the real path of the file, every symlink followed, also for a file not written yet. Two calls that write one file through different paths or a link still go one after another.
+
+The locks live in `toolLocks`, a `KeyedLock` the whole process shares. Code of your own can wait in the same queues, and `new KeyedLock()` gives work that should not meet the tools' locks queues of its own:
+
+```typescript
+import { fileLockKey, toolLocks } from '@cogitator-ai/core';
+
+const release = await toolLocks.acquire([await fileLockKey('notes.md')], signal);
+try {
+  await rewriteNotes();
+} finally {
+  release();
+}
+```
+
+Locks are held per process. Runs on several machines that share files need a lock of their own, such as one in Redis.
+
+## Built-in Tools
+
+| Tools                                                                                 | Safe | Lock keys                 |
+| ------------------------------------------------------------------------------------- | ---- | ------------------------- |
+| [`workspaceTools()`](/docs/tools/workspace) `read_file`, `list_files`, `glob`, `grep` | yes  |                           |
+| `workspaceTools()` `write_file`, `edit_file`                                          | no   | the real path of the file |
+| `workspaceTools()` `run_command`                                                      | no   |                           |
+| [`file_read`, `file_list`, `file_exists`](/docs/tools/built-in#file-system)           | yes  |                           |
+| `file_write`, `file_delete`                                                           | no   | the real path of the file |
+
+`restrictFileTools()` keeps `isConcurrencySafe`, `presentation` and the input hooks of the tools it wraps, and their `lockKeys` get the path it resolved against its `base`.
+
+## Migrating from `parallelToolCalls: true`
+
+Before, `parallelToolCalls: true` ran every call of a step at once. Now only the concurrency-safe ones run together, so a step of tools that declare nothing runs one call after another. Mark the tools that may run side by side:
+
+```typescript
+tool({ name: 'search', isConcurrencySafe: true, ... });
+// or, as MCP describes it
+tool({ name: 'search', annotations: { readOnlyHint: true }, ... });
+```
+
+## Scheduling Your Own Calls
+
+`scheduleToolCalls()` is the scheduler a run uses, for code that runs calls of its own the same way:
+
+```typescript
+import {
+  DEFAULT_MAX_PARALLEL_TOOL_CALLS,
+  isConcurrencySafe,
+  scheduleToolCalls,
+} from '@cogitator-ai/core';
+
+const outcomes = await scheduleToolCalls({
+  count: calls.length,
+  safe: (index) => isConcurrencySafe(tools[index], calls[index].arguments),
+  maxParallel: DEFAULT_MAX_PARALLEL_TOOL_CALLS,
+  run: (index) => runCall(calls[index]),
+  stops: (outcome) => outcome.asked, // no call starts after this one
+});
+```
+
+Outcomes come back in call order, without those of calls that never started. The first call that throws rejects the whole schedule: calls running go on, no other starts.

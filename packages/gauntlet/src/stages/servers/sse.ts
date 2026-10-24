@@ -13,6 +13,7 @@ const PROTOCOL_TYPES: Record<StreamEvent['type'], true> = {
   'tool-call-delta': true,
   'tool-call-end': true,
   'tool-result': true,
+  'tool-update': true,
   'approval-required': true,
   'interrupt-required': true,
   error: true,

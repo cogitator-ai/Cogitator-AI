@@ -174,6 +174,11 @@ export interface ChatUsage {
   cost?: number;
 }
 
+/** A piece of a tool call the model is writing, see `ChatStreamChunk.delta.toolInput` */
+export type ToolInputStreamPart =
+  | { type: 'start'; toolCallId: string; toolName: string }
+  | { type: 'delta'; toolCallId: string; delta: string };
+
 export interface ChatStreamChunk {
   id: string;
   delta: {
@@ -181,6 +186,13 @@ export interface ChatStreamChunk {
     /** Piece of the reasoning summary */
     reasoning?: string;
     toolCalls?: Partial<ToolCall>[];
+    /**
+     * Tool calls as the model writes them, before they are complete: a `start` once the call's
+     * id and name are known, then `delta`s of its JSON arguments. The complete call still comes
+     * in `toolCalls`. Backends that get whole calls only leave it out, the runtime then reports
+     * each call in one piece when it arrives
+     */
+    toolInput?: ToolInputStreamPart[];
   };
   /** Set on the chunk that ends the turn */
   finishReason?: FinishReason;

@@ -8,6 +8,7 @@ import type { ZodType } from 'zod';
 import type { ReasoningConfig } from './llm';
 import type { RunMiddleware } from './middleware';
 import type { Workspace } from './workspace';
+import type { RunTimeouts } from './runtime';
 
 /**
  * An agent's configuration. `TDeps` is the type of the `deps` its runs pass (`RunOptions.deps`):
@@ -64,6 +65,8 @@ export interface AgentConfig<TDeps = unknown> {
    */
   onIterationLimit?: 'answer' | 'stop';
   timeout?: number;
+  /** Deadlines of the stages of this agent's runs, see `RunTimeouts`. A run's `timeouts` win field by field */
+  timeouts?: RunTimeouts;
   /**
    * Gives the model the built-in `write_todos` tool, to plan a long task as a todo list and keep
    * it current: each call replaces the list, with at most one item in progress. The list is kept
@@ -144,6 +147,7 @@ export interface SerializedAgentConfig {
   maxIterations?: number;
   onIterationLimit?: 'answer' | 'stop';
   timeout?: number;
+  timeouts?: RunTimeouts;
   todos?: boolean;
 }
 
