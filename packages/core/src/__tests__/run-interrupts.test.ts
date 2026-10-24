@@ -221,7 +221,8 @@ describe('interrupts from tools', () => {
       echoTools(),
     ]);
     const paused = await cog.run(planner, { input: 'Migrate' });
-    expect(paused.checkpoint?.turn.toolCalls.map((call) => call.id)).toEqual(['c1']);
+    expect(paused.checkpoint?.turn.toolCalls.map((call) => call.id)).toEqual(['l1', 'c1']);
+    expect(paused.checkpoint?.turn.completed).toEqual(['l1']);
 
     const result = await cog.resume(planner, roundTrip(paused.checkpoint), {
       responses: { 'c1#0': { ok: true } },
@@ -297,5 +298,174 @@ describe('approvals as interrupts', () => {
     expect(result.output).toContain('The user declined this tool call: too much');
     expect(refundImpl).not.toHaveBeenCalled();
     await cog.close();
+  });
+});
+
+describe('interrupts in a turn of several calls', () => {
+  it('runs nothing after the asking call in sequential mode until the answer comes', async () => {
+    const deleteAll = vi.fn(async () => 'deleted');
+    const agent = new Agent({
+      name: 'a',
+      model: 'mock/m',
+      instructions: 'x',
+      tools: [
+        confirm,
+        tool({
+          name: 'delete_all',
+          description: 'Deletes',
+          parameters: z.object({}),
+          execute: deleteAll,
+        }),
+      ],
+    });
+    const { cog, requests } = setup([
+      callTools([confirmCall, { id: 'd1', name: 'delete_all', arguments: {} }]),
+      echoTools(),
+    ]);
+    const paused = await cog.run(agent, { input: 'Clean up', threadId: 'seq' });
+    expect(paused.status).toBe('paused');
+    expect(deleteAll).not.toHaveBeenCalled();
+
+    const result = await cog.resume(agent, roundTrip(paused.checkpoint), {
+      responses: { 'c1#0': { ok: true } },
+    });
+    expect(deleteAll).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe('completed');
+    const sent = requests.at(-1)!.messages.filter((message) => message.role === 'tool');
+    expect(sent.map((message) => message.toolCallId)).toEqual(['c1', 'd1']);
+  });
+
+  it('hands over after the resume when a finished call of the turn was a handoff', async () => {
+    const specialist = new Agent({ name: 'specialist', model: 'mock/m', instructions: 'Expert.' });
+    const triage = new Agent({
+      name: 'triage',
+      model: 'mock/m',
+      instructions: 'Route.',
+      tools: [confirm],
+      handoffs: [specialist],
+    });
+    const { cog } = setup([
+      callTools([{ id: 'h1', name: 'transfer_to_specialist', arguments: {} }, confirmCall]),
+      answer('From the specialist.'),
+    ]);
+    const paused = await cog.run(triage, { input: 'Help', threadId: 'handoff' });
+    expect(paused.status).toBe('paused');
+    expect(paused.handoffs).toBeUndefined();
+
+    const result = await cog.resume(triage, roundTrip(paused.checkpoint), {
+      responses: { 'c1#0': { ok: true } },
+    });
+    expect(result.finalAgent).toBe('specialist');
+    expect(result.handoffs).toEqual([{ from: 'triage', to: 'specialist' }]);
+  });
+
+  it('keeps an unanswered question as it was asked, and does not run its tool again', async () => {
+    let asks = 0;
+    const late = tool({
+      name: 'late',
+      description: 'Asks with a deadline',
+      parameters: z.object({}),
+      execute: async (_params, context) => {
+        asks++;
+        return context.interrupt!({
+          reason: 'when',
+          message: 'When?',
+          expiresAt: asks === 1 ? '2000-01-01T00:00:00.000Z' : '2999-01-01T00:00:00.000Z',
+        });
+      },
+    });
+    const agent = new Agent({ name: 'a', model: 'mock/m', instructions: 'x', tools: [late] });
+    const { cog } = setup([callTools([{ id: 'w1', name: 'late', arguments: {} }]), echoTools()]);
+    const first = await cog.run(agent, { input: 'Go' });
+
+    const again = await cog.resume(agent, roundTrip(first.checkpoint), {});
+    expect(again.status).toBe('paused');
+    expect(again.interrupts).toEqual(first.interrupts);
+    expect(asks).toBe(1);
+    await expect(
+      cog.resume(agent, roundTrip(again.checkpoint), { responses: { 'w1#0': 'now' } })
+    ).rejects.toMatchObject({ code: ErrorCode.INTERRUPT_EXPIRED });
+  });
+});
+
+describe('answers checked by the Zod schema the tool asked with', () => {
+  const seen: unknown[] = [];
+  const pick = (schema: z.ZodType) =>
+    tool({
+      name: 'pick',
+      description: 'Asks for a pick',
+      parameters: z.object({}),
+      execute: async (_params, context) => {
+        const answer = await context.interrupt!({
+          reason: 'pick',
+          message: 'Pick',
+          responseSchema: schema,
+        });
+        seen.push(answer);
+        return 'picked';
+      },
+    });
+  const pickCall = { id: 'p1', name: 'pick', arguments: {} };
+  const agentWith = (schema: z.ZodType) =>
+    new Agent({ name: 'a', model: 'mock/m', instructions: 'x', tools: [pick(schema)] });
+
+  it('stores the input schema, fills defaults and drops keys it does not know', async () => {
+    seen.length = 0;
+    const agent = agentWith(z.object({ n: z.number(), note: z.string().default('') }));
+    const { cog } = setup([callTools([pickCall]), answer('done')]);
+    const paused = await cog.run(agent, { input: 'Go' });
+    expect(paused.interrupts?.[0]?.responseSchema).toMatchObject({ required: ['n'] });
+    await cog.resume(agent, roundTrip(paused.checkpoint), {
+      responses: { 'p1#0': { n: 1, extra: true } },
+    });
+    expect(seen).toEqual([{ n: 1, note: '' }]);
+  });
+
+  it('coerces and pipes the answer as the schema says', async () => {
+    seen.length = 0;
+    const agent = agentWith(
+      z.object({ n: z.coerce.number(), s: z.string().pipe(z.string().min(2)) })
+    );
+    const { cog } = setup([callTools([pickCall]), answer('done')]);
+    const paused = await cog.run(agent, { input: 'Go' });
+    await expect(
+      cog.resume(agent, roundTrip(paused.checkpoint), { responses: { 'p1#0': { n: '5', s: 'a' } } })
+    ).rejects.toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+    await cog.resume(agent, roundTrip(paused.checkpoint), {
+      responses: { 'p1#0': { n: '5', s: 'ab' } },
+    });
+    expect(seen).toEqual([{ n: 5, s: 'ab' }]);
+  });
+
+  it('refuses an answer a refinement rejects and keeps the run resumable', async () => {
+    seen.length = 0;
+    const agent = agentWith(
+      z.object({ n: z.number() }).refine((value) => value.n > 5, 'too small')
+    );
+    const { cog } = setup([callTools([pickCall]), answer('done')]);
+    const paused = await cog.run(agent, { input: 'Go', threadId: 'refined' });
+    await expect(cog.resume(agent, 'refined', { responses: { 'p1#0': { n: 1 } } })).rejects.toThrow(
+      /too small/
+    );
+    const done = await cog.resume(agent, 'refined', { responses: { 'p1#0': { n: 9 } } });
+    expect(done.status).toBe('completed');
+    expect(seen).toEqual([{ n: 9 }]);
+    expect(paused.status).toBe('paused');
+  });
+
+  it('asks again when another process resumes with an answer only the refinement refuses', async () => {
+    seen.length = 0;
+    const agent = agentWith(
+      z.object({ n: z.number() }).refine((value) => value.n > 5, 'too small')
+    );
+    const first = setup([callTools([pickCall]), answer('done')]);
+    const paused = await first.cog.run(agent, { input: 'Go' });
+    const other = setup([answer('done')]);
+    const again = await other.cog.resume(agent, roundTrip(paused.checkpoint), {
+      responses: { 'p1#0': { n: 1 } },
+    });
+    expect(again.status).toBe('paused');
+    expect(again.interrupts?.map((entry) => entry.id)).toEqual(['p1#0']);
+    expect(seen).toEqual([]);
   });
 });

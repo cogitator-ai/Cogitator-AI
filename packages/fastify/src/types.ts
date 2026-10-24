@@ -387,7 +387,7 @@ const MULTITASK_STRATEGY_SCHEMA = {
   type: 'string',
   enum: MULTITASK_STRATEGIES,
   description:
-    "What the run does when its thread has a run going on: wait (`enqueue`), fail with 409 THREAD_BUSY (`reject`), stop that run (`interrupt`), or stop it and branch from where it started (`rollback`). Default: the server's `multitaskStrategy`",
+    "What the run does when its thread has a run going on: wait (`enqueue`), fail with THREAD_BUSY (`reject`), stop that run, which fails with RUN_INTERRUPTED (`interrupt`), or stop it and branch from where it started (`rollback`). The run route answers both codes with 409, a stream sends them as an `error` event with that code. Default: the server's `multitaskStrategy`",
 } as const;
 
 const CONTEXT_SCHEMA = {

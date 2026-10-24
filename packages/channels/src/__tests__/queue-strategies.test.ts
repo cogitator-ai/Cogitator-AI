@@ -58,14 +58,15 @@ describe('MessageQueue strategies', () => {
     expect(calls.map((call) => call.text)).toEqual(['a', 'b']);
   });
 
-  it('reject refuses a message while its thread is busy, and counts it as handled', async () => {
+  it('reject refuses a message while its thread is busy, as not handled', async () => {
     const { processor, calls, started, releases } = heldProcessor();
     const rejected = vi.fn();
     const queue = new MessageQueue('reject', processor, rejected);
     const first = queue.push(makeMsg('a'), 't');
     await started[0].promise;
 
-    expect(await queue.push(makeMsg('b'), 't')).toBe(true);
+    expect(queue.refuses('t')).toBe(true);
+    expect(await queue.push(makeMsg('b'), 't')).toBe(false);
     expect(rejected).toHaveBeenCalledWith(expect.objectContaining({ text: 'b' }), 't');
     const other = queue.push(makeMsg('c'), 'u');
     await started[1].promise;
@@ -198,6 +199,7 @@ describe('Gateway queue strategies', () => {
     await gateway.idle();
 
     expect(options[0].branch).toBeUndefined();
+    expect(options.map((opts) => opts.multitaskStrategy)).toEqual(['rollback', 'rollback']);
     expect(options[1].branch).toEqual({ fromEntryId: 'before-first' });
     expect(onError).not.toHaveBeenCalled();
     expect(channel.sendText.mock.calls.map((call) => call[1])).toEqual(['answer to second']);
@@ -233,9 +235,58 @@ describe('Gateway queue strategies', () => {
     await gateway.idle();
 
     expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0]?.[1].multitaskStrategy).toBe('reject');
     expect(rejected).toEqual([
       expect.objectContaining({ reason: 'busy', msg: expect.objectContaining({ text: 'second' }) }),
     ]);
     await gateway.stop();
+  });
+
+  it('reject makes injectMessage fail for the refused message, and never hands it back', async () => {
+    const channel = { ...createChannel(), redeliver: vi.fn().mockResolvedValue(undefined) };
+    const firstStarted = defer();
+    const release = defer();
+    const run = vi.fn(async (_agent: unknown, opts: RunOptions) => {
+      firstStarted.resolve();
+      await release.promise;
+      return { output: `answer to ${opts.input}` };
+    });
+    const gateway = new Gateway({
+      agent,
+      channels: [channel],
+      cogitator: { run } as never,
+      queueMode: 'reject',
+    });
+    await gateway.start();
+    await channel.trigger(makeMsg('first', 'm1'));
+    await firstStarted.promise;
+    await expect(gateway.injectMessage(makeMsg('second', 'm2'))).rejects.toThrow(/refused/);
+    await channel.trigger(makeMsg('third', 'm3'));
+    release.resolve();
+    await gateway.idle();
+    await gateway.stop();
+    expect(channel.redeliver).not.toHaveBeenCalled();
+  });
+
+  it('runs a sequential queue as enqueue and an interrupt queue as interrupt', async () => {
+    for (const [queueMode, strategy] of [
+      ['sequential', 'enqueue'],
+      ['interrupt', 'interrupt'],
+      ['parallel', undefined],
+    ] as const) {
+      const channel = createChannel();
+      const run = vi.fn(async (_agent: unknown, opts: RunOptions) => ({ output: opts.input }));
+      const gateway = new Gateway({
+        agent,
+        channels: [channel],
+        cogitator: { run } as never,
+        queueMode,
+      });
+      await gateway.start();
+      await channel.trigger(makeMsg('hi', `m-${queueMode}`));
+      await gateway.idle();
+      expect(run.mock.calls[0]?.[1].multitaskStrategy).toBe(strategy);
+      await gateway.stop();
+    }
   });
 });

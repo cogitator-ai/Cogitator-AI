@@ -15,6 +15,7 @@ import type {
   ImageInput,
   MemoryEntry,
   Message,
+  MultitaskStrategy,
   QueueMode,
   RunOptions,
   RunResult,
@@ -128,6 +129,23 @@ async function settleMicrotasks(): Promise<void> {
 }
 
 /** The key of a message whose answer the gateway tracks: its channel, chat and id. */
+/**
+ * The run strategy each queue mode stands for, passed with every run, so the runtime's own
+ * `multitaskStrategy` never contradicts the queue. `parallel` has none: the runtime's applies
+ */
+const QUEUE_STRATEGIES: Record<QueueMode, MultitaskStrategy | undefined> = {
+  parallel: undefined,
+  sequential: 'enqueue',
+  enqueue: 'enqueue',
+  collect: 'enqueue',
+  reject: 'reject',
+  interrupt: 'interrupt',
+  rollback: 'rollback',
+};
+
+/** How a message the gateway took ended, see `route` */
+type MessageOutcome = 'answered' | 'unanswered' | 'refused';
+
 function answerKey(msg: ChannelMessage): string {
   return `${msg.channelType}\u0000${msg.channelId}\u0000${msg.id}`;
 }
@@ -251,7 +269,7 @@ export class Gateway {
   private readonly threads = new Map<string, Omit<GatewaySessionInfo, 'threadId' | 'active'>>();
   private readonly inFlight = new Map<string, number>();
   /** Messages taken and not answered yet, for {@link idle} */
-  private readonly pending = new Set<Promise<boolean>>();
+  private readonly pending = new Set<Promise<MessageOutcome>>();
   /** The stop in progress, which a second {@link stop} call returns */
   private stopping: Promise<void> | null = null;
   /** Calls of `channel.redeliver` in progress */
@@ -261,7 +279,7 @@ export class Gateway {
    * it settles. Those still here once `stop()` gave up on the runs are handed back.
    */
   private readonly unanswered = new Map<
-    Promise<boolean>,
+    Promise<MessageOutcome>,
     { channel: Channel; handled: ChannelMessage; messages: ChannelMessage[] }
   >();
   /**
@@ -295,14 +313,8 @@ export class Gateway {
     this.messageQueue =
       queueMode === 'parallel'
         ? null
-        : new MessageQueue(
-            queueMode,
-            (msg, signal, processing) => this.processMessage(msg, signal, processing),
-            (msg, threadId) => {
-              void Promise.resolve(
-                this.hooks?.emit('message:rejected', { msg, threadId, reason: 'busy' })
-              ).catch((error: unknown) => this.config.onError?.(toError(error), msg));
-            }
+        : new MessageQueue(queueMode, (msg, signal, processing) =>
+            this.processMessage(msg, signal, processing)
           );
 
     this.debouncer = config.debounce?.enabled
@@ -675,8 +687,13 @@ export class Gateway {
     const answered = this.dispatch(msg);
     if (channel?.redeliver && !untilAnswered) this.watchUnanswered(channel, msg, [msg], answered);
     if (untilAnswered || !this.messageQueue) {
-      const done = await answered;
-      if (!done && untilAnswered) {
+      const outcome = await answered;
+      if (outcome === 'refused' && untilAnswered) {
+        throw new Error(
+          'The message was refused: its thread was answering another (queueMode reject)'
+        );
+      }
+      if (outcome !== 'answered' && untilAnswered) {
         throw new Error('The message was not answered: its run failed or was aborted');
       }
       return;
@@ -703,20 +720,20 @@ export class Gateway {
     channel: Channel,
     handled: ChannelMessage,
     messages: ChannelMessage[],
-    answered: Promise<boolean>
+    answered: Promise<MessageOutcome>
   ): void {
     const entry = { channel, handled, messages };
     this.unanswered.set(answered, entry);
-    void answered.then((done) => {
+    void answered.then((outcome) => {
       if (this.unanswered.get(answered) !== entry) return;
       this.unanswered.delete(answered);
-      if (done || this.running) return;
+      if (outcome !== 'unanswered' || this.running) return;
       for (const msg of messages) void this.redeliver(channel, msg);
     });
   }
 
   /** Puts a message through the queue of its thread, resolving once it is done with */
-  private dispatch(msg: ChannelMessage): Promise<boolean> {
+  private dispatch(msg: ChannelMessage): Promise<MessageOutcome> {
     const answered = this.route(msg);
     this.pending.add(answered);
     const forget = () => {
@@ -726,11 +743,23 @@ export class Gateway {
     return answered;
   }
 
-  /** Resolves `true` once the message is handled, `false` when it failed or was dropped */
-  private async route(incoming: ChannelMessage): Promise<boolean> {
+  /**
+   * How the message ended: `answered`, `unanswered` when its run failed or it was dropped, or
+   * `refused` when `queueMode: 'reject'` turned it away while its thread answered another (the
+   * `message:rejected` hook hears of it, and a channel never gets it back to deliver again)
+   */
+  private async route(incoming: ChannelMessage): Promise<MessageOutcome> {
     const msg = await this.locateScheduled(incoming);
-    if (this.messageQueue) return this.messageQueue.push(msg, this.getThreadId(msg));
-    return this.processMessage(msg);
+    const queue = this.messageQueue;
+    if (!queue) return (await this.processMessage(msg)) ? 'answered' : 'unanswered';
+    const threadId = this.getThreadId(msg);
+    if (queue.refuses(threadId)) {
+      void Promise.resolve(
+        this.hooks?.emit('message:rejected', { msg, threadId, reason: 'busy' })
+      ).catch((error: unknown) => this.config.onError?.(toError(error), msg));
+      return 'refused';
+    }
+    return (await queue.push(msg, threadId)) ? 'answered' : 'unanswered';
   }
 
   /**
@@ -1164,8 +1193,10 @@ export class Gateway {
     signal: AbortSignal | undefined
   ) {
     const brief = this.config.brief?.(msg);
+    const multitaskStrategy = QUEUE_STRATEGIES[this.queueMode];
     return {
       useMemory: !!this.config.memory,
+      ...(multitaskStrategy && { multitaskStrategy }),
       ...(brief && { brief }),
       userId: msg.userId,
       channelType: msg.channelType,

@@ -212,4 +212,22 @@ describe('runs of one thread at once', () => {
     expect(events).toEqual(['first-start', 'first-end']);
     await cog.close();
   });
+
+  it('refuses a stranger before it touches the run going on in the thread', async () => {
+    const events: string[] = [];
+    const first = heldReply(events, 'first');
+    const { backend } = byInput({ 'first question': first.reply });
+    const cog = cogitator(backend);
+    const alice = cog.run(agent, { input: 'first question', threadId: 't', userId: 'alice' });
+    await first.began.promise;
+
+    for (const multitaskStrategy of ['interrupt', 'rollback', 'reject', 'enqueue'] as const) {
+      await expect(
+        cog.run(agent, { input: 'mine now', threadId: 't', userId: 'bob', multitaskStrategy })
+      ).rejects.toMatchObject({ code: ErrorCode.THREAD_ACCESS_DENIED });
+    }
+    first.release.resolve();
+    expect((await alice).output).toBe('first done');
+    await cog.close();
+  });
 });

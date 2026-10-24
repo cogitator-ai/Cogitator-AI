@@ -593,6 +593,12 @@ export interface RunCheckpoint {
   turn: {
     toolCalls: ToolCall[];
     decisions: Record<string, ToolApprovalDecision>;
+    /**
+     * Calls of the turn that already ran, their results in `messages`: a pause on a question of a
+     * tool keeps them in the turn so the resumed run does not run them again and still hands
+     * over when one of them was a handoff. Missing when no call of the turn ran yet
+     */
+    completed?: string[];
   };
   /**
    * What the run waits on, approvals among them (`kind: 'approval'`), and the answers given so

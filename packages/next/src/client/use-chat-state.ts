@@ -47,7 +47,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, isLoading: false };
 
     case 'SET_ERROR':
-      return { ...state, error: action.payload, isLoading: false };
+      return { ...state, error: action.payload };
 
     case 'ADD_USER_MESSAGE':
       return { ...state, messages: [...state.messages, action.payload] };

@@ -15,6 +15,7 @@ import {
   json,
   pagedMemory,
   pausedResult,
+  readStream,
   runResult,
 } from './helpers.js';
 
@@ -374,6 +375,25 @@ describe('OpenAPI document of multitask strategies and interrupts', () => {
       expect(res.status).toBe(status);
       await assertDescribed(document, operation, res);
     }
+  });
+
+  test('streams a busy thread and an expired interrupt as an error event with the code', async () => {
+    const busy = await readStream(
+      await request(
+        '/api/agents/chat/stream',
+        json({ input: 'Refund', threadId: 'busy', multitaskStrategy: 'reject' })
+      )
+    );
+    const expired = await readStream(
+      await request(
+        '/api/agents/chat/resume/stream',
+        json({ threadId: 'expired', responses: { 'int-1': 'A-1' } })
+      )
+    );
+
+    expect(busy.events.map((event) => event.type)).toEqual(['start', 'error']);
+    expect(busy.events.at(-1)).toMatchObject({ code: 'THREAD_BUSY' });
+    expect(expired.events.at(-1)).toMatchObject({ type: 'error', code: 'INTERRUPT_EXPIRED' });
   });
 });
 

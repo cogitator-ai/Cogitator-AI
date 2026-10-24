@@ -54,12 +54,12 @@ describe('chatReducer', () => {
     expect(state.isLoading).toBe(false);
   });
 
-  it('SET_ERROR', () => {
+  it('SET_ERROR leaves loading to the requests still open', () => {
     const loading = { ...initial, isLoading: true };
     const err = new Error('fail');
     const state = chatReducer(loading, { type: 'SET_ERROR', payload: err });
     expect(state.error).toBe(err);
-    expect(state.isLoading).toBe(false);
+    expect(state.isLoading).toBe(true);
   });
 
   it('ADD_USER_MESSAGE', () => {

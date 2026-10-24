@@ -11,7 +11,8 @@ import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
  * The messages given to a run going on (`cogitator.start()`), waiting for the run to take them.
  * The run takes steering and injected messages before each model call, and steering or
  * follow-up messages when it would stop. Once the run no longer takes messages it closes the
- * queue: later messages are refused, and what was left stays readable as {@link pending}.
+ * queue: later messages are refused, and what was left stays readable as {@link pending} until
+ * the run saves it ({@link claim}) or the caller cancels the run ({@link cancel}).
  */
 export class RunQueue {
   private readonly items: QueuedRunMessage[] = [];
@@ -66,6 +67,26 @@ export class RunQueue {
   close(): QueuedRunMessage[] {
     this.closed = true;
     return [...this.items];
+  }
+
+  /**
+   * Stops taking messages and takes every one left out of the queue: the run will not deliver or
+   * save any of them, so they are exactly what never reached it
+   */
+  cancel(): QueuedRunMessage[] {
+    this.closed = true;
+    return this.items.splice(0);
+  }
+
+  /**
+   * Takes `message` out of the queue for the run to save it, false when it is no longer there,
+   * such as after {@link cancel}
+   */
+  claim(message: QueuedRunMessage): boolean {
+    const index = this.items.indexOf(message);
+    if (index === -1) return false;
+    this.items.splice(index, 1);
+    return true;
   }
 
   private take(

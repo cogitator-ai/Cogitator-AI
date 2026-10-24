@@ -124,7 +124,7 @@ const ResumeForbidden = failureEnvelope(
 );
 const ResumeConflict = failureEnvelope(
   409,
-  'The thread has no paused run (`RUN_NOT_PAUSED`), or the agent is already running'
+  "The thread has no paused run (`RUN_NOT_PAUSED`), the agent is already running, or the resumed run met another run of the thread: the server's `multitaskStrategy` is `reject` (`THREAD_BUSY`), or a newer run stopped it (`RUN_INTERRUPTED`)"
 );
 const InterruptExpired = failureEnvelope(
   410,
@@ -150,7 +150,7 @@ const BlackboardDisabled = errorEnvelope(
 const STREAM_DESCRIPTION =
   'Server-sent events in the Cogitator stream protocol, one JSON event per `data:` line, ending with `data: [DONE]`.';
 
-const AGENT_STREAM_DESCRIPTION = `${STREAM_DESCRIPTION} The \`finish\` event carries the run usage, the same as \`usage\` in the JSON response of \`/run\`, with the reasoning and cache token counts the model reported.`;
+const AGENT_STREAM_DESCRIPTION = `${STREAM_DESCRIPTION} The \`finish\` event carries the run usage, the same as \`usage\` in the JSON response of \`/run\`, with the reasoning and cache token counts the model reported. The stream is open before the run meets the other runs of its thread, so a run refused or stopped by one (\`THREAD_BUSY\`, \`RUN_INTERRUPTED\`) and a resume that answers an expired interrupt (\`INTERRUPT_EXPIRED\`) end it with an \`error\` event carrying that code, where \`/run\` and \`/resume\` answer 409 and 410.`;
 
 type RequestSchemas = ReturnType<typeof requestSchemas>;
 type SwarmRunRequest = z.output<RequestSchemas['SwarmRunBody']>;

@@ -49,11 +49,7 @@ function parseDefaultInput(body: unknown, acceptContext: ContextPolicy | undefin
   const multitaskStrategy = MULTITASK_STRATEGIES.find(
     (strategy) => strategy === body.multitaskStrategy
   );
-  if (
-    body.multitaskStrategy !== undefined &&
-    body.multitaskStrategy !== null &&
-    multitaskStrategy === undefined
-  ) {
+  if (body.multitaskStrategy !== undefined && multitaskStrategy === undefined) {
     return {
       ok: false,
       error: `multitaskStrategy must be one of ${MULTITASK_STRATEGIES.join(', ')}`,

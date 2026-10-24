@@ -9,6 +9,7 @@ import {
   type ToolApprovalRequest,
   type ToolCall,
 } from '@cogitator-ai/types';
+import { getLogger } from '../logger';
 
 /** JSON Schema of an approval's answer, a `ToolApprovalDecision` */
 export const APPROVAL_RESPONSE_SCHEMA: Record<string, unknown> = {
@@ -37,8 +38,9 @@ export function approvalInterrupt(request: ToolApprovalRequest): RunInterrupt {
  */
 export function checkpointInterrupts(checkpoint: RunCheckpoint): RunInterrupt[] {
   if (checkpoint.interrupts) return checkpoint.interrupts.map((entry) => ({ ...entry }));
+  const completed = new Set(checkpoint.turn.completed ?? []);
   return checkpoint.turn.toolCalls
-    .filter((call) => !Object.hasOwn(checkpoint.turn.decisions, call.id))
+    .filter((call) => !completed.has(call.id) && !Object.hasOwn(checkpoint.turn.decisions, call.id))
     .map((call) =>
       approvalInterrupt({
         toolCallId: call.id,
@@ -74,31 +76,52 @@ export function isToolInterrupt(error: unknown): error is ToolInterruptSignal {
 
 /**
  * The `context.interrupt()` of one execution of `toolCall`: its `n`-th call answers with the
- * answer `interrupts` keep for the `n`-th question of the call, and without one throws a
- * {@link ToolInterruptSignal}, which pauses the run
+ * answer `interrupts` keep for the `n`-th question of the call, parsed by a Zod `responseSchema`,
+ * and without one throws a {@link ToolInterruptSignal}, which pauses the run. A question asked
+ * before keeps its record (its `expiresAt` among it), and an answer the Zod schema refuses (a
+ * refinement JSON Schema cannot express) asks again. `onZodSchema` hears of each Zod schema, so
+ * a resume in this process checks answers with it
  */
 export function toolInterrupter(
   toolCall: ToolCall,
-  interrupts: readonly RunInterrupt[]
+  interrupts: readonly RunInterrupt[],
+  onZodSchema?: (id: string, schema: ZodType) => void
 ): <T = unknown>(request: InterruptRequest<T>) => Promise<T> {
   let asked = 0;
   return async <T>(request: InterruptRequest<T>): Promise<T> => {
     const id = toolInterruptId(toolCall.id, asked++);
     const kept = interrupts.find((entry) => entry.id === id);
-    if (kept && isAnswered(kept)) return answerAs(request.responseSchema, kept.response, id);
+    const schema = request.responseSchema;
+    const zod = schema !== undefined && isZodSchema(schema) ? schema : undefined;
+    if (zod) onZodSchema?.(id, zod);
+    if (kept && isAnswered(kept)) {
+      if (!zod) return kept.response as T;
+      const parsed = zod.safeParse(kept.response);
+      if (parsed.success) return parsed.data;
+      getLogger().warn('The answer to an interrupt does not match its schema, asking again', {
+        interruptId: id,
+        problem: z.prettifyError(parsed.error),
+      });
+      throw new ToolInterruptSignal(withoutAnswer(kept));
+    }
+    if (kept) throw new ToolInterruptSignal(kept);
     throw new ToolInterruptSignal({
       id,
       kind: 'input',
       reason: nonBlank(request.reason, 'reason'),
       message: nonBlank(request.message, 'message'),
-      ...(request.responseSchema !== undefined && {
-        responseSchema: jsonSchemaOf(request.responseSchema),
-      }),
+      ...(schema !== undefined && { responseSchema: jsonSchemaOf(schema) }),
       ...(request.expiresAt !== undefined && { expiresAt: isoTime(request.expiresAt) }),
       toolCallId: toolCall.id,
       toolName: toolCall.name,
     });
   };
+}
+
+function withoutAnswer(entry: RunInterrupt): RunInterrupt {
+  const copy = { ...entry };
+  delete copy.response;
+  return copy;
 }
 
 /** The decisions and the interrupts after a resume answered some, see {@link answerInterrupts} */
@@ -113,7 +136,8 @@ export interface AnsweredInterrupts {
 
 /**
  * Fills `responses` into the interrupts of a paused run. Each answer must name an interrupt the
- * run waits on, come before its `expiresAt` and match its `responseSchema`
+ * run waits on, come before its `expiresAt` and match its schema: the Zod schema the tool asked
+ * with when this process still has it (`zodSchemaOf`), else its JSON `responseSchema`
  *
  * @throws CogitatorError `VALIDATION_ERROR` for an unknown, already answered or malformed answer,
  * `INTERRUPT_EXPIRED` for an answer that came too late
@@ -121,7 +145,8 @@ export interface AnsweredInterrupts {
 export function answerInterrupts(
   interrupts: readonly RunInterrupt[],
   responses: Record<string, unknown>,
-  now: number
+  now: number,
+  zodSchemaOf?: (id: string) => ZodType | undefined
 ): AnsweredInterrupts {
   const result: AnsweredInterrupts = {
     interrupts: interrupts.map((entry) => ({ ...entry })),
@@ -152,9 +177,15 @@ export function answerInterrupts(
         details: { interruptId: id, expiresAt: entry.expiresAt },
       });
     }
-    const problem = entry.responseSchema
-      ? schemaProblem(entry.responseSchema, response)
-      : undefined;
+    const zod = zodSchemaOf?.(id);
+    const parsed = zod?.safeParse(response);
+    const problem = parsed
+      ? parsed.success
+        ? undefined
+        : z.prettifyError(parsed.error)
+      : entry.responseSchema
+        ? schemaProblem(entry.responseSchema, response)
+        : undefined;
     if (problem !== undefined) {
       throw new CogitatorError({
         message: `The answer to interrupt "${id}" does not match its schema: ${problem}`,
@@ -197,24 +228,11 @@ function isZodSchema<T>(schema: ZodType<T> | Record<string, unknown>): schema is
 
 function jsonSchemaOf<T>(schema: ZodType<T> | Record<string, unknown>): Record<string, unknown> {
   if (!isZodSchema(schema)) return structuredClone(schema);
-  const json: Record<string, unknown> = { ...z.toJSONSchema(schema, { unrepresentable: 'any' }) };
+  const json: Record<string, unknown> = {
+    ...z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }),
+  };
   delete json.$schema;
   return json;
-}
-
-function answerAs<T>(
-  schema: ZodType<T> | Record<string, unknown> | undefined,
-  response: unknown,
-  id: string
-): T {
-  if (schema === undefined || !isZodSchema(schema)) return response as T;
-  const parsed = schema.safeParse(response);
-  if (parsed.success) return parsed.data;
-  throw new CogitatorError({
-    message: `The answer to interrupt "${id}" does not match its schema: ${z.prettifyError(parsed.error)}`,
-    code: ErrorCode.VALIDATION_ERROR,
-    details: { interruptId: id },
-  });
 }
 
 function nonBlank(value: string, field: string): string {

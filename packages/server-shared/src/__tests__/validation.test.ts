@@ -153,3 +153,12 @@ describe('double-texting and interrupt answers in requests', () => {
     });
   });
 });
+
+describe('parseSwarmRunRequest and multitaskStrategy', () => {
+  it('reads a swarm body without its multitaskStrategy, whatever it holds', () => {
+    expect(parseSwarmRunRequest({ input: 'hi', multitaskStrategy: 'later', timeout: 5 })).toEqual({
+      ok: true,
+      value: { input: 'hi', timeout: 5 },
+    });
+  });
+});

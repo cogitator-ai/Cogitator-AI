@@ -298,4 +298,70 @@ describe('cogitator.start()', () => {
     expect(result.undelivered).toEqual([{ kind: 'followUp', content: 'And email them' }]);
     await cog.close();
   });
+
+  it('runs the first tool call of a follow-up even when it repeats the last one', async () => {
+    const lookup = vi.fn(async () => 'found');
+    const agent = new Agent({
+      name: 'finder',
+      model: 'mock/m',
+      instructions: 'Find.',
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Looks up',
+          parameters: z.object({}),
+          execute: lookup,
+        }),
+      ],
+    });
+    const { cog } = setup([
+      callTools([{ id: 'l1', name: 'lookup', arguments: {} }]),
+      answer('first'),
+      callTools([{ id: 'l2', name: 'lookup', arguments: {} }]),
+      answer('second'),
+    ]);
+    const handle = cog.start(agent, { input: 'Find it' });
+    handle.followUp('Find it again');
+    const result = await handle.result;
+    expect(lookup).toHaveBeenCalledTimes(2);
+    expect(result.output).toBe('second');
+    await cog.close();
+  });
+
+  it('saves nothing abort handed back, even when the abort comes after the last model turn', async () => {
+    let handle: ReturnType<Cogitator['start']> | undefined;
+    let left: readonly unknown[] = [];
+    const { cog } = setup([answer('Done.')], true);
+    handle = cog.start(plain, {
+      input: 'Hi',
+      threadId: 'late-abort',
+      onModelTurn: () => {
+        handle?.inject('Too late');
+        left = handle?.abort() ?? [];
+      },
+    });
+    await handle.result.catch(() => undefined);
+    expect(left).toEqual([{ kind: 'inject', content: 'Too late' }]);
+    const entries = await threadEntries(cog, 'late-abort');
+    expect(entries.some((entry) => entry.metadata?.queued !== undefined)).toBe(false);
+    expect(handle.queued).toEqual([]);
+    await cog.close();
+  });
+
+  it('no longer lists an injected message once the run saved it', async () => {
+    let handle: ReturnType<Cogitator['start']> | undefined;
+    const { cog } = setup(
+      [
+        () => {
+          handle?.inject('Keep this');
+          return answer('Noted.');
+        },
+      ],
+      true
+    );
+    handle = cog.start(plain, { input: 'Hi', threadId: 'saved-inject' });
+    await handle.result;
+    expect(handle.queued).toEqual([]);
+    await cog.close();
+  });
 });

@@ -541,10 +541,12 @@ const gateway = new Gateway({
 - **interrupt** - abort the current run (its signal is passed to `cogitator.run`), start the new message
 - **collect** - buffer during processing, merge per chat and topic on idle
 - **enqueue** - the same as `sequential`, by the name of the runtime's double-texting strategy (`multitaskStrategy`)
-- **reject** - refuse a message while its thread answers another: nothing runs for it, the `message:rejected` hook hears of it, and it is not delivered again
-- **rollback** - do what `interrupt` does, then answer the new message on a branch of the thread from where the stopped answer started, as if it never happened (needs memory)
+- **reject** - refuse a message while its thread answers another: nothing runs for it and the `message:rejected` hook hears of it. The channel does not get it back to deliver again, but `injectMessage` rejects for it, since it was not answered
+- **rollback** - do what `interrupt` does, then answer the new message on a branch of the thread from where the stopped answer started, as if it never happened. Branching needs memory: without it there is no stored history to branch from, so it behaves as `interrupt`
 
-With a queue, a channel's message handler returns once the message is queued, so a channel that reads its updates one by one (Telegram long polling, the Bluesky and Threads polls) goes on to other chats, button presses and stop buttons while a thread is busy. `injectMessage` still resolves once the message is answered, and `idle()` waits for every queued message. Since the channel has confirmed a queued message to its platform already, `stop()` drains the queues before it stops the channels: it waits up to `drainTimeout` (default 30000 ms) for the queued messages and the runs in progress, then aborts the runs still going and drops what still waits. Messages that come in while it stops are dropped and reported to `onError`, a second `stop()` returns the same promise, and `injectMessage` rejects when its message was not answered (failed run, aborted or dropped by `stop()`).
+Each run the gateway starts names the runtime strategy its queue mode stands for (`multitaskStrategy`: `enqueue` for `sequential`, `enqueue` and `collect`, and `reject`, `interrupt` or `rollback` for those modes), so a `multitaskStrategy` in the Cogitator config never contradicts the queue. `parallel` names none, and the config's applies.
+
+With a queue, a channel's message handler returns once the message is queued, so a channel that reads its updates one by one (Telegram long polling, the Bluesky and Threads polls) goes on to other chats, button presses and stop buttons while a thread is busy. `injectMessage` still resolves once the message is answered (with `reject` it rejects for a message refused while its thread was busy), and `idle()` waits for every queued message. Since the channel has confirmed a queued message to its platform already, `stop()` drains the queues before it stops the channels: it waits up to `drainTimeout` (default 30000 ms) for the queued messages and the runs in progress, then aborts the runs still going and drops what still waits. Messages that come in while it stops are dropped and reported to `onError`, a second `stop()` returns the same promise, and `injectMessage` rejects when its message was not answered (failed run, aborted or dropped by `stop()`, refused by `queueMode: 'reject'`).
 
 ## Formatting Pipeline
 
@@ -622,21 +624,22 @@ const gateway = new Gateway({ /* ... */ hooks });
 
 Handlers are typed by hook name through `HookPayloads` (exported here and from `@cogitator-ai/types`, which also exports each event type):
 
-| Hook                 | Payload                  | Fields                                                                          |
-| -------------------- | ------------------------ | ------------------------------------------------------------------------------- |
-| `message:received`   | `MessageReceivedEvent`   | `msg`, `threadId`, `user`                                                       |
-| `message:sending`    | `MessageSendingEvent`    | `msg`, `threadId`, `text`, `channelId`                                          |
-| `message:sent`       | `MessageSentEvent`       | `msg`, `threadId`, `text`, `messageId` (first chunk)                            |
-| `agent:before_run`   | `AgentBeforeRunEvent`    | `msg`, `threadId`, `agent` (agent name)                                         |
-| `agent:after_run`    | `AgentAfterRunEvent`     | `msg`, `threadId`, `output`                                                     |
-| `agent:error`        | `AgentErrorEvent`        | `msg`, `threadId`, `error` (always an `Error`)                                  |
-| `session:created`    | `SessionCreatedEvent`    | `session`, `threadId`                                                           |
-| `session:compacted`  | `SessionCompactedEvent`  | `threadId`, `result` (`CompactionResult`)                                       |
-| `stream:started`     | `StreamStartedEvent`     | `msg`, `threadId`                                                               |
-| `stream:finished`    | `StreamFinishedEvent`    | `msg`, `threadId`, `messageIds`                                                 |
-| `approval:requested` | `ApprovalRequestedEvent` | `msg`, `threadId`, `userId`, `approvals`                                        |
-| `approval:resolved`  | `ApprovalResolvedEvent`  | `msg`, `threadId`, `userId`, `decision`, `approvals?`, `superseded`             |
-| `action:received`    | `ActionReceivedEvent`    | `action`, `answer(options?)`: a button press the Gateway does not handle itself |
+| Hook                 | Payload                  | Fields                                                                                                 |
+| -------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `message:received`   | `MessageReceivedEvent`   | `msg`, `threadId`, `user`                                                                              |
+| `message:sending`    | `MessageSendingEvent`    | `msg`, `threadId`, `text`, `channelId`                                                                 |
+| `message:sent`       | `MessageSentEvent`       | `msg`, `threadId`, `text`, `messageId` (first chunk)                                                   |
+| `agent:before_run`   | `AgentBeforeRunEvent`    | `msg`, `threadId`, `agent` (agent name)                                                                |
+| `agent:after_run`    | `AgentAfterRunEvent`     | `msg`, `threadId`, `output`                                                                            |
+| `agent:error`        | `AgentErrorEvent`        | `msg`, `threadId`, `error` (always an `Error`)                                                         |
+| `session:created`    | `SessionCreatedEvent`    | `session`, `threadId`                                                                                  |
+| `session:compacted`  | `SessionCompactedEvent`  | `threadId`, `result` (`CompactionResult`)                                                              |
+| `stream:started`     | `StreamStartedEvent`     | `msg`, `threadId`                                                                                      |
+| `stream:finished`    | `StreamFinishedEvent`    | `msg`, `threadId`, `messageIds`                                                                        |
+| `approval:requested` | `ApprovalRequestedEvent` | `msg`, `threadId`, `userId`, `approvals`                                                               |
+| `approval:resolved`  | `ApprovalResolvedEvent`  | `msg`, `threadId`, `userId`, `decision`, `approvals?`, `superseded`                                    |
+| `action:received`    | `ActionReceivedEvent`    | `action`, `answer(options?)`: a button press the Gateway does not handle itself                        |
+| `message:rejected`   | `MessageRejectedEvent`   | `msg`, `threadId`, `reason: 'busy'`: `queueMode: 'reject'` refused a message while its thread was busy |
 
 A handler typed `HookHandler` (`unknown` payload) is still accepted for any hook. Errors in one handler don't affect others (they are logged). Unsubscribe with `hooks.off(name, handler)`. Docs: [Lifecycle Hooks](https://cogitator.app/docs/channels/gateway#lifecycle-hooks).
 

@@ -13,7 +13,12 @@ interface ControlledStream {
 }
 
 interface FetchCall {
-  body: { messages: ChatMessage[]; threadId?: string; metadata?: Record<string, unknown> };
+  body: {
+    messages: ChatMessage[];
+    threadId?: string;
+    metadata?: Record<string, unknown>;
+    multitaskStrategy?: string;
+  };
   signal: AbortSignal;
   stream: ControlledStream;
 }
@@ -336,4 +341,211 @@ describe('useCogitatorChat', () => {
 
     expect(calls[0].signal.aborted).toBe(true);
   });
+});
+
+describe('useCogitatorChat multitask strategies', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function contents(hook: ReturnType<typeof setup>) {
+    return hook.result.current.messages.map((m) => [m.role, m.content]);
+  }
+
+  async function startStreaming(hook: ReturnType<typeof setup>, calls: FetchCall[]) {
+    const first = hook.result.current.send('one');
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    calls[0].stream.push({ type: 'start', messageId: 'a1', threadId: 'thread_1' });
+    calls[0].stream.push({ type: 'text-delta', id: 't1', delta: 'Hel' });
+    await hook.flush();
+    return { first };
+  }
+
+  function finishStream(stream: ControlledStream, id: string, text: string) {
+    stream.push({ type: 'text-delta', id: `${id}_t`, delta: text });
+    stream.push({ type: 'finish', messageId: id, threadId: 'thread_1' });
+    stream.push('[DONE]');
+    stream.close();
+  }
+
+  it('lets an enqueued message through and shows its answer after the running one', async () => {
+    const { calls } = installFetch();
+    const onFinish = vi.fn();
+    const hook = setup({ multitaskStrategy: 'enqueue', onFinish });
+    const { first } = await startStreaming(hook, calls);
+
+    const second = hook.result.current.send('two');
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    calls[1].stream.push({ type: 'start', messageId: 'a2', threadId: 'thread_1' });
+    await hook.flush();
+
+    expect(calls[0].signal.aborted).toBe(false);
+    expect(calls[1].body).toMatchObject({ threadId: 'thread_1', multitaskStrategy: 'enqueue' });
+    expect(contents(hook)).toEqual([
+      ['user', 'one'],
+      ['user', 'two'],
+      ['assistant', 'Hel'],
+    ]);
+
+    finishStream(calls[0].stream, 'a1', 'lo');
+    await first;
+    await hook.flush();
+    expect(hook.result.current.isLoading).toBe(true);
+
+    finishStream(calls[1].stream, 'a2', 'Second');
+    await second;
+    await hook.flush();
+
+    expect(contents(hook)).toEqual([
+      ['user', 'one'],
+      ['user', 'two'],
+      ['assistant', 'Hello'],
+      ['assistant', 'Second'],
+    ]);
+    expect(onFinish.mock.calls.map(([message]) => message.content)).toEqual(['Hello', 'Second']);
+    expect(hook.result.current.isLoading).toBe(false);
+  });
+
+  it('keeps the answer of an enqueued message that arrives before the running one ends', async () => {
+    const { calls } = installFetch();
+    const hook = setup({ multitaskStrategy: 'enqueue' });
+    const { first } = await startStreaming(hook, calls);
+
+    const second = hook.result.current.send('two');
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    calls[1].stream.push({ type: 'start', messageId: 'a2', threadId: 'thread_1' });
+    finishStream(calls[1].stream, 'a2', 'Second');
+    await second;
+    await hook.flush();
+
+    expect(contents(hook)).toEqual([
+      ['user', 'one'],
+      ['user', 'two'],
+      ['assistant', 'Hel'],
+    ]);
+    expect(hook.result.current.isLoading).toBe(true);
+
+    finishStream(calls[0].stream, 'a1', 'lo');
+    await first;
+    await hook.flush();
+
+    expect(contents(hook)).toEqual([
+      ['user', 'one'],
+      ['user', 'two'],
+      ['assistant', 'Hello'],
+      ['assistant', 'Second'],
+    ]);
+    expect(hook.result.current.isLoading).toBe(false);
+  });
+
+  it('reports a message the server rejects without touching the running answer', async () => {
+    const { calls } = installFetch();
+    const onError = vi.fn();
+    const onFinish = vi.fn();
+    const hook = setup({ multitaskStrategy: 'reject', onError, onFinish });
+    const { first } = await startStreaming(hook, calls);
+
+    const second = hook.result.current.send('two');
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    calls[1].stream.push({ type: 'start', messageId: 'a2', threadId: 'thread_1' });
+    calls[1].stream.push({ type: 'error', message: 'Thread is busy', code: 'THREAD_BUSY' });
+    calls[1].stream.close();
+    await second;
+    await hook.flush();
+
+    expect(calls[0].signal.aborted).toBe(false);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'Thread is busy' }));
+    expect(hook.result.current.error?.message).toBe('Thread is busy');
+    expect(hook.result.current.isLoading).toBe(true);
+
+    finishStream(calls[0].stream, 'a1', 'lo');
+    await first;
+    await hook.flush();
+
+    expect(contents(hook)).toEqual([
+      ['user', 'one'],
+      ['user', 'two'],
+      ['assistant', 'Hello'],
+    ]);
+    expect(onFinish).toHaveBeenCalledOnce();
+    expect(onFinish).toHaveBeenCalledWith(expect.objectContaining({ content: 'Hello' }));
+    expect(hook.result.current.isLoading).toBe(false);
+  });
+
+  it('reports a 409 answer to a rejected message and keeps streaming the running one', async () => {
+    const { calls } = installFetch((call) =>
+      call.body.messages.length > 1
+        ? new Response(
+            JSON.stringify({ error: { message: 'Thread is busy', code: 'THREAD_BUSY' } }),
+            { status: 409, headers: { 'Content-Type': 'application/json' } }
+          )
+        : undefined
+    );
+    const hook = setup({ multitaskStrategy: 'reject' });
+    const { first } = await startStreaming(hook, calls);
+
+    await hook.result.current.send('two');
+    await hook.flush();
+
+    expect(hook.result.current.error).toMatchObject({ status: 409 });
+    expect(hook.result.current.isLoading).toBe(true);
+
+    finishStream(calls[0].stream, 'a1', 'lo');
+    await first;
+    await hook.flush();
+
+    expect(contents(hook)).toEqual([
+      ['user', 'one'],
+      ['user', 'two'],
+      ['assistant', 'Hello'],
+    ]);
+    expect(hook.result.current.isLoading).toBe(false);
+  });
+
+  it('stops every open request on stop', async () => {
+    const { calls } = installFetch();
+    const hook = setup({ multitaskStrategy: 'enqueue' });
+    const { first } = await startStreaming(hook, calls);
+
+    const second = hook.result.current.send('two');
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+
+    hook.result.current.stop();
+    await Promise.all([first, second]);
+    await hook.flush();
+
+    expect(calls.map((call) => call.signal.aborted)).toEqual([true, true]);
+    expect(hook.result.current.isLoading).toBe(false);
+    expect(contents(hook)).toEqual([
+      ['user', 'one'],
+      ['user', 'two'],
+      ['assistant', 'Hel'],
+    ]);
+  });
+
+  it.each(['interrupt', 'rollback'] as const)(
+    'aborts the running request when the strategy is %s',
+    async (multitaskStrategy) => {
+      const { calls } = installFetch();
+      const hook = setup({ multitaskStrategy });
+      const { first } = await startStreaming(hook, calls);
+
+      const second = hook.result.current.send('two');
+      await first;
+      await vi.waitFor(() => expect(calls).toHaveLength(2));
+
+      expect(calls[0].signal.aborted).toBe(true);
+      expect(calls[1].body).toMatchObject({ threadId: 'thread_1', multitaskStrategy });
+
+      completeStream(calls[1].stream, 'a2', 'Second', 'thread_1');
+      await second;
+      await hook.flush();
+      expect(contents(hook)).toEqual([
+        ['user', 'one'],
+        ['assistant', 'Hel'],
+        ['user', 'two'],
+        ['assistant', 'Second'],
+      ]);
+    }
+  );
 });

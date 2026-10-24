@@ -554,6 +554,27 @@ describe('multitask strategies and interrupt answers', () => {
     expect(await res.json()).toMatchObject({ error: { code: 'THREAD_BUSY' } });
   });
 
+  it('streams a run on a busy thread as 200 and an error event with THREAD_BUSY', async () => {
+    const app = buildApp({
+      run: vi
+        .fn()
+        .mockRejectedValue(
+          new CogitatorError({ message: 'Thread is busy', code: ErrorCode.THREAD_BUSY })
+        ),
+    });
+
+    const res = await app.request(
+      '/agents/bot/stream',
+      post({ input: 'hi', threadId: 'thread-1', multitaskStrategy: 'reject' })
+    );
+
+    expect(res.status).toBe(200);
+    expect(parseSSE(await res.text()).map((event) => [event.type, event.code])).toEqual([
+      ['start', undefined],
+      ['error', 'THREAD_BUSY'],
+    ]);
+  });
+
   it('hands the answers of HTTP resumes and resume streams to cogitator.resume()', async () => {
     const resume = vi.fn().mockResolvedValue(result());
     const app = buildApp({ resume });

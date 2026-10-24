@@ -6,6 +6,7 @@ import type {
   UseChatOptions,
   UseChatReturn,
   ChatMessage,
+  MultitaskStrategy,
   PendingApproval,
   PendingInterrupt,
   ResumeDecisions,
@@ -46,7 +47,29 @@ function isEventStream(response: Response): boolean {
   return response.headers.get('Content-Type')?.includes('text/event-stream') ?? false;
 }
 
-type ResponseHandler = (response: Response, controller: AbortController) => Promise<void>;
+/**
+ * One request of the hook. Requests that are let through to the server while another one
+ * streams (`multitaskStrategy` of `enqueue` or `reject`) wait in line: only the first open
+ * request writes the assistant message, a later one keeps its events until its turn comes.
+ */
+interface ChatRequest {
+  readonly controller: AbortController;
+  readonly toolCalls: Map<string, { name: string; args: string }>;
+  readonly backlog: StreamEvent[];
+  readonly onFailure?: (error: Error) => void;
+  errored: boolean;
+  ended: boolean;
+}
+
+type ResponseHandler = (response: Response, request: ChatRequest) => Promise<void>;
+
+function lineUpBehindRunning(strategy: MultitaskStrategy | undefined): boolean {
+  return strategy === 'enqueue' || strategy === 'reject';
+}
+
+function isRefusal(request: ChatRequest): boolean {
+  return request.backlog.every((event) => event.type === 'start');
+}
 
 function pendingAssistantMessage(state: ChatState): ChatMessage | null {
   if (!state.currentMessageId) return null;
@@ -82,7 +105,7 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
   );
 
   const stateRef = useRef<ChatState>(state);
-  const activeRequestRef = useRef<AbortController | null>(null);
+  const requestsRef = useRef<ChatRequest[]>([]);
 
   const apply = useCallback((action: ChatAction) => {
     stateRef.current = chatReducer(stateRef.current, action);
@@ -91,19 +114,42 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
 
   useEffect(() => {
     return () => {
-      activeRequestRef.current?.abort();
-      activeRequestRef.current = null;
+      const open = requestsRef.current;
+      requestsRef.current = [];
+      for (const request of open) request.controller.abort();
     };
   }, []);
 
+  const isOpen = useCallback((request: ChatRequest) => requestsRef.current.includes(request), []);
+
   const interrupt = useCallback(() => {
-    const active = activeRequestRef.current;
-    if (!active) return;
-    activeRequestRef.current = null;
-    active.abort();
+    const open = requestsRef.current;
+    if (open.length === 0) return;
+    requestsRef.current = [];
+    for (const request of open) request.controller.abort();
     apply({ type: 'FINISH_ASSISTANT_MESSAGE' });
     apply({ type: 'STOP_LOADING' });
   }, [apply]);
+
+  const release = useCallback(
+    (request: ChatRequest): boolean => {
+      const wasCurrent = requestsRef.current[0] === request;
+      requestsRef.current = requestsRef.current.filter((open) => open !== request);
+      if (wasCurrent) apply({ type: 'FINISH_ASSISTANT_MESSAGE' });
+      if (requestsRef.current.length === 0) apply({ type: 'STOP_LOADING' });
+      return wasCurrent;
+    },
+    [apply]
+  );
+
+  const report = useCallback(
+    (request: ChatRequest, error: Error) => {
+      request.onFailure?.(error);
+      apply({ type: 'SET_ERROR', payload: error });
+      onError?.(error);
+    },
+    [apply, onError]
+  );
 
   const followThread = useCallback(
     (threadId: string) => {
@@ -142,6 +188,7 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
       switch (event.type) {
         case 'start':
           apply({ type: 'START_ASSISTANT_MESSAGE', payload: event.messageId });
+          if (event.threadId) followThread(event.threadId);
           return false;
 
         case 'text-delta':
@@ -225,44 +272,62 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     ]
   );
 
+  const advance = useCallback(() => {
+    for (let head = requestsRef.current[0]; head; head = requestsRef.current[0]) {
+      for (const event of head.backlog.splice(0)) {
+        if (handleStreamEvent(event, head.toolCalls)) head.errored = true;
+      }
+      if (requestsRef.current[0] !== head) continue;
+      if (!head.ended) return;
+
+      const finished = pendingAssistantMessage(stateRef.current);
+      release(head);
+      if (finished && !head.errored) onFinish?.(finished);
+    }
+  }, [handleStreamEvent, onFinish, release]);
+
+  const deliver = useCallback(
+    (request: ChatRequest, event: StreamEvent) => {
+      if (requestsRef.current[0] === request) {
+        if (handleStreamEvent(event, request.toolCalls)) request.errored = true;
+      } else if (event.type === 'error' && isRefusal(request)) {
+        release(request);
+        report(request, new Error(event.message));
+      } else {
+        request.backlog.push(event);
+      }
+    },
+    [handleStreamEvent, release, report]
+  );
+
   const processStream = useCallback(
-    async (response: Response, controller: AbortController) => {
+    async (response: Response, request: ChatRequest) => {
       if (!response.body) {
         throw new Error('Response body is null');
       }
 
       const reader = response.body.getReader();
-      const toolCalls = new Map<string, { name: string; args: string }>();
-      let errored = false;
 
       try {
         for await (const event of parseSSEStream(reader)) {
-          if (activeRequestRef.current !== controller) return;
-          if (handleStreamEvent(event, toolCalls)) errored = true;
+          if (!isOpen(request)) return;
+          deliver(request, event);
         }
       } finally {
         reader.releaseLock();
       }
 
-      if (activeRequestRef.current !== controller) return;
-      activeRequestRef.current = null;
-
-      const finished = pendingAssistantMessage(stateRef.current);
-      apply({ type: 'FINISH_ASSISTANT_MESSAGE' });
-      apply({ type: 'STOP_LOADING' });
-
-      if (finished && !errored) {
-        onFinish?.(finished);
-      }
+      if (!isOpen(request)) return;
+      request.ended = true;
+      if (requestsRef.current[0] === request) advance();
     },
-    [apply, handleStreamEvent, onFinish]
+    [advance, deliver, isOpen]
   );
 
   const processResult = useCallback(
-    async (response: Response, controller: AbortController) => {
+    async (response: Response, request: ChatRequest) => {
       const result = (await response.json()) as AgentResponse;
-      if (activeRequestRef.current !== controller) return;
-      activeRequestRef.current = null;
+      if (!isOpen(request)) return;
 
       const message: ChatMessage = {
         id: generateClientId(),
@@ -282,10 +347,11 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
       } else {
         requireApproval(approvals, result.threadId);
       }
-      apply({ type: 'STOP_LOADING' });
+      const wasCurrent = release(request);
       onFinish?.(message);
+      if (wasCurrent) advance();
     },
-    [apply, followThread, onFinish, requireAnswers, requireApproval]
+    [advance, apply, followThread, isOpen, onFinish, release, requireAnswers, requireApproval]
   );
 
   const request = useCallback(
@@ -296,7 +362,15 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
       onFailure?: (error: Error) => void
     ) => {
       const controller = new AbortController();
-      activeRequestRef.current = controller;
+      const chatRequest: ChatRequest = {
+        controller,
+        toolCalls: new Map(),
+        backlog: [],
+        onFailure,
+        errored: false,
+        ended: false,
+      };
+      requestsRef.current = [...requestsRef.current, chatRequest];
 
       apply({ type: 'START_LOADING' });
 
@@ -320,25 +394,17 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
 
       try {
         const response = await withRetry(doFetch, retry, controller.signal);
-        await handle(response, controller);
+        await handle(response, chatRequest);
       } catch (err) {
-        if (activeRequestRef.current !== controller) return;
-        activeRequestRef.current = null;
-
-        apply({ type: 'FINISH_ASSISTANT_MESSAGE' });
-
-        if (isAbortError(err)) {
-          apply({ type: 'STOP_LOADING' });
-          return;
+        if (!isOpen(chatRequest)) return;
+        const wasCurrent = release(chatRequest);
+        if (!isAbortError(err)) {
+          report(chatRequest, err instanceof Error ? err : new Error('Unknown error'));
         }
-
-        const error = err instanceof Error ? err : new Error('Unknown error');
-        onFailure?.(error);
-        apply({ type: 'SET_ERROR', payload: error });
-        onError?.(error);
+        if (wasCurrent) advance();
       }
     },
-    [apply, headers, onError, retry]
+    [advance, apply, headers, isOpen, release, report, retry]
   );
 
   const sendWithMessages = useCallback(
@@ -372,7 +438,7 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
       const messageContent = inputOverride ?? stateRef.current.input;
       if (!messageContent.trim()) return;
 
-      interrupt();
+      if (!lineUpBehindRunning(multitaskStrategy)) interrupt();
 
       const userMessage: ChatMessage = {
         id: generateClientId(),
@@ -388,7 +454,7 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
       const current = stateRef.current;
       await sendWithMessages(current.messages, current.threadId, metadata);
     },
-    [apply, interrupt, sendWithMessages]
+    [apply, interrupt, multitaskStrategy, sendWithMessages]
   );
 
   const stop = useCallback(() => {
@@ -441,9 +507,9 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
       await request(
         resumeApi,
         { threadId, ...decisions },
-        async (response, controller) => {
+        async (response, chatRequest) => {
           clearPause();
-          await (isEventStream(response) ? processStream : processResult)(response, controller);
+          await (isEventStream(response) ? processStream : processResult)(response, chatRequest);
         },
         (error) => {
           if (error instanceof HttpError && error.status === 409) clearPause();

@@ -67,7 +67,7 @@ const RunContext = JsonObject.describe(
 const MultitaskStrategy = z
   .enum(MULTITASK_STRATEGIES)
   .describe(
-    "What the run does when its thread has a run going on: wait (`enqueue`), fail with 409 THREAD_BUSY (`reject`), stop that run (`interrupt`), or stop it and branch from where it started (`rollback`). Default: the server's `multitaskStrategy`"
+    "What the run does when its thread has a run going on: wait (`enqueue`), fail with `THREAD_BUSY` (`reject`), stop that run, which fails with `RUN_INTERRUPTED` (`interrupt`), or stop it and branch from where it started (`rollback`). `/run` answers both codes with 409, a stream sends them as an `error` event with that code. Default: the server's `multitaskStrategy`"
   );
 
 export const RunBody = z.object({
@@ -535,7 +535,10 @@ export const RUN_FAILURES = {
     402,
     'The model provider account is out of credits or over a quota, retrying soon does not help'
   ),
-  409: failureEnvelope(409, 'The agent is already running'),
+  409: failureEnvelope(
+    409,
+    "The agent is already running, the thread has a run going on and the run's `multitaskStrategy` is `reject` (`THREAD_BUSY`), or a newer run on the thread with `interrupt` or `rollback` stopped this one (`RUN_INTERRUPTED`)"
+  ),
   429: failureEnvelope(429, 'The model provider is rate limiting requests; see Retry-After'),
   500: failureEnvelope(500, 'A tool, a workflow step or the sandbox failed'),
   502: failureEnvelope(502, 'The model provider answered with something unusable'),

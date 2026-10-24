@@ -139,6 +139,15 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
     }),
     415: { description: 'The body is not JSON (UNSUPPORTED_MEDIA_TYPE)', content: errorContent },
   };
+  const busyThread = {
+    description:
+      "The thread has a run going on and the run's `multitaskStrategy` is `reject` (THREAD_BUSY), or a newer run on the thread with `interrupt` or `rollback` stopped this one (RUN_INTERRUPTED)",
+    content: errorContent,
+  };
+  const interruptExpired = {
+    description: 'An answer in `responses` came after its interrupt expired (INTERRUPT_EXPIRED)',
+    content: errorContent,
+  };
   const runFailures = {
     429: {
       description:
@@ -180,6 +189,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
           ...runFailures,
           403: threadForbidden,
           404: { description: 'Agent not found' },
+          409: busyThread,
         },
       },
     };
@@ -205,7 +215,12 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
           ...runFailures,
           403: threadForbidden,
           404: { description: 'Agent not found' },
-          409: { description: 'The thread has no paused run (RUN_NOT_PAUSED)' },
+          409: {
+            description:
+              "The thread has no paused run (RUN_NOT_PAUSED), or the resumed run met another run of the thread: the server's `multitaskStrategy` is `reject` (THREAD_BUSY), or a newer run stopped it (RUN_INTERRUPTED)",
+            content: errorContent,
+          },
+          410: interruptExpired,
         },
       },
     };
@@ -223,7 +238,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
         responses: {
           200: {
             description:
-              'SSE stream of protocol events. The start event (StreamStartEvent) names the thread of the run, and the finish event (StreamFinishEvent) repeats it with the usage and the outcome of the JSON run response',
+              'SSE stream of protocol events. The start event (StreamStartEvent) names the thread of the run, and the finish event (StreamFinishEvent) repeats it with the usage and the outcome of the JSON run response. The stream is open before the run meets the other runs of its thread, so THREAD_BUSY and RUN_INTERRUPTED end it with an error event carrying that code, where /run answers 409',
             content: SSE_CONTENT,
           },
           ...refusals,
@@ -244,7 +259,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
         responses: {
           200: {
             description:
-              'SSE stream of protocol events, as on /stream. A thread with no paused run ends the stream with an error event (RUN_NOT_PAUSED)',
+              'SSE stream of protocol events, as on /stream. A thread with no paused run, a run of the thread in the way and an answer after its interrupt expired end the stream with an error event carrying the code /resume answers with (RUN_NOT_PAUSED, THREAD_BUSY, RUN_INTERRUPTED, INTERRUPT_EXPIRED)',
             content: SSE_CONTENT,
           },
           ...refusals,
@@ -618,7 +633,7 @@ const MULTITASK_STRATEGY_SCHEMA = {
   type: 'string',
   enum: [...MULTITASK_STRATEGIES],
   description:
-    'What the run does when its thread has a run going on: wait (`enqueue`), fail with 409 THREAD_BUSY (`reject`), stop that run (`interrupt`), or stop it and branch from where it started (`rollback`)',
+    'What the run does when its thread has a run going on: wait (`enqueue`), fail with THREAD_BUSY (`reject`), stop that run, which fails with RUN_INTERRUPTED (`interrupt`), or stop it and branch from where it started (`rollback`). The run route answers both codes with 409, a stream sends them as an `error` event with that code',
 };
 
 const RUN_OUTCOME_PROPERTIES = {

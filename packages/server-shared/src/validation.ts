@@ -37,7 +37,8 @@ export interface RunRequestBody {
   threadId?: string;
   /**
    * What the run does when its thread has a run going on, as LangGraph's `multitask_strategy`:
-   * `enqueue`, `reject` (`409 THREAD_BUSY`), `interrupt` or `rollback`. The server's
+   * `enqueue`, `reject` (`THREAD_BUSY`: `409` on a JSON route, an `error` event on a stream),
+   * `interrupt` or `rollback`. The server's
    * `multitaskStrategy` (in the Cogitator config) applies when the request names none
    */
   multitaskStrategy?: MultitaskStrategy;
@@ -85,7 +86,7 @@ export interface RunRequestOptions {
 export const MAX_RUN_TIMEOUT_MS = 2_147_483_647;
 
 /** The body of `POST /swarms/:name/run` and `/swarms/:name/stream` */
-export interface SwarmRunRequestBody extends RunRequestBody {
+export interface SwarmRunRequestBody extends Omit<RunRequestBody, 'multitaskStrategy'> {
   timeout?: number;
 }
 
@@ -149,7 +150,7 @@ export function parseSwarmRunRequest(
   body: unknown,
   options: RunRequestOptions = {}
 ): ParseResult<SwarmRunRequestBody> {
-  const parsed = parseRunRequest(body, options);
+  const parsed = parseRunRequest(withoutMultitaskStrategy(body), options);
   if (!parsed.ok) return parsed;
 
   const timeout = isJsonObject(body) ? body.timeout : undefined;
@@ -161,6 +162,13 @@ export function parseSwarmRunRequest(
     return fail(`Field "timeout" must be at most ${MAX_RUN_TIMEOUT_MS} ms`);
   }
   return { ok: true, value: { ...parsed.value, timeout } };
+}
+
+/** A swarm run takes no `multitaskStrategy`: its body is read without one, whatever it holds */
+function withoutMultitaskStrategy(body: unknown): unknown {
+  if (!isJsonObject(body) || !Object.hasOwn(body, 'multitaskStrategy')) return body;
+  const { multitaskStrategy: _ignored, ...rest } = body;
+  return rest;
 }
 
 /** The body of `POST /agents/:name/resume` and `/agents/:name/resume/stream` */

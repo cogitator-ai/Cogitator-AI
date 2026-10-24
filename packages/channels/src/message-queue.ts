@@ -144,14 +144,19 @@ export class MessageQueue {
     });
   }
 
+  /** Whether `reject` mode refuses a message of `threadId` now: the thread handles another */
+  refuses(threadId: string): boolean {
+    return this.mode === 'reject' && this.threads.get(threadId)?.processing === true;
+  }
+
   /**
-   * Refuses the message while its thread handles another: it counts as handled, so a channel
-   * does not deliver it again, and `onRejected` hears of it
+   * Refuses the message while its thread handles another: it is not handled (`false`), and
+   * `onRejected` hears of it
    */
   private pushReject(msg: ChannelMessage, threadId: string): Promise<boolean> {
-    if (this.threads.get(threadId)?.processing) {
+    if (this.refuses(threadId)) {
       this.onRejected?.(msg, threadId);
-      return Promise.resolve(true);
+      return Promise.resolve(false);
     }
     return this.enqueue(msg, threadId, (state) => this.drainSequential(threadId, state));
   }

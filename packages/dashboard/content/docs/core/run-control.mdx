@@ -35,7 +35,7 @@ const result = await handle.result;
 | `inject(message)`   | With the next model call, as context. It never wakes the agent: one left when the run ends is saved to the thread, so the next run there reads it                                    |
 | `abort(reason?)`    | Stops the run as an abort of its `signal` does, and returns the messages it did not deliver                                                                                          |
 
-Each method returns `false` once the run no longer takes messages (it finished, paused or was aborted). `handle.queued` lists what waits.
+Each method returns `false` once the run no longer takes messages (it finished, paused or was aborted). `abort()` is final: the messages it returns were never delivered or saved. One that comes after the run's last model turn has nothing left to stop, so the run may still complete. `handle.queued` lists what waits.
 
 A delivered message becomes a user message of the run and is saved to the thread as a `message` entry with `metadata.queued` set to `'steer'`, `'followUp'` or `'inject'`. A later run reads it in its history like any other message.
 
@@ -63,7 +63,7 @@ A user who sends a second message while the first is answered starts a second ru
 | Strategy    | What the new run does                                                                                                                      |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `enqueue`   | Waits until the runs before it on the thread are done, then runs                                                                           |
-| `reject`    | Fails at once with `THREAD_BUSY` (HTTP 409)                                                                                                |
+| `reject`    | Fails at once with `THREAD_BUSY` (HTTP 409 on a JSON route, an `error` event on a stream)                                                  |
 | `interrupt` | Stops the runs going on (each fails with `RUN_INTERRUPTED`), waits until they are done, then runs                                          |
 | `rollback`  | Does what `interrupt` does, then runs on a branch from where the interrupted run started: the thread goes on as if that run never happened |
 
@@ -114,7 +114,12 @@ const result = await cog.resume(agent, threadId, {
 });
 ```
 
-On resume the tool runs again from its start, and this time `interrupt()` returns the answer, parsed by the Zod schema. Keep what the tool does before it asks safe to do twice. A tool may ask several times: the run pauses at each question nobody answered yet, and earlier answers come back in order. Other tool calls of the same step that finished keep their results and do not run again.
+On resume the tool runs again from its start, and this time `interrupt()` returns the answer, parsed by the Zod schema. Keep what the tool does before it asks safe to do twice. A tool may ask several times: the run pauses at each question nobody answered yet, and earlier answers come back in order. Other tool calls of the same step that finished keep their results and do not run again, and a handoff among them hands over once the resumed step is done.
+
+- Tool calls of a step run one after another by default, and the step stops at the first question: the calls after it run once the answer came, so nothing a question guards runs before it is answered.
+- With `parallelToolCalls: true` every call of the step starts at once, so the others run (and finish) before the answer. Put calls that depend on an answer in a later step.
+- A resume that leaves a question unanswered pauses again on the same question, as it was asked: its tool does not run again, and its `expiresAt` stays what it was.
+- The answer is checked with the Zod schema the tool asked with while the process that asked keeps it, refinements included, and with the stored JSON Schema (the schema's input side) otherwise. A tool that gets an answer its Zod schema refuses after all, in another process, asks the same question again.
 
 | Field            | Meaning                                                                                   |
 | ---------------- | ----------------------------------------------------------------------------------------- |

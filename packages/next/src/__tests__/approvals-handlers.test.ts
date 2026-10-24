@@ -422,6 +422,27 @@ describe('multitask strategies and interrupt answers', () => {
     expect(run).toHaveBeenCalledOnce();
   });
 
+  it('refuses a null multitask strategy of a chat request like the shared run validator', async () => {
+    const { cogitator, run } = fakeCogitator();
+    const messages = [{ role: 'user', content: 'hi' }];
+
+    const chat = await createChatHandler(
+      cogitator,
+      fakeAgent
+    )(post('/api/chat', { messages, multitaskStrategy: null }));
+    const agent = await createAgentHandler(
+      cogitator,
+      fakeAgent
+    )(post('/api/agent', { input: 'hi', multitaskStrategy: null }));
+
+    expect(chat.status).toBe(400);
+    expect(await chat.json()).toMatchObject({
+      error: { code: 'INVALID_INPUT', message: expect.stringContaining('multitaskStrategy') },
+    });
+    expect(agent.status).toBe(400);
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it('hands the answers of a resume to cogitator.resume()', async () => {
     const { cogitator, resume } = fakeCogitator();
     const handler = createResumeHandler(cogitator, fakeAgent);
