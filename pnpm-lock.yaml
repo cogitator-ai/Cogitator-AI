@@ -435,8 +435,8 @@ importers:
         specifier: ^2.7.0
         version: 2.7.0
       nodemailer:
-        specifier: ^10.0.13
-        version: 10.0.13
+        specifier: ^10.1.4
+        version: 10.2.1
       postal-mime:
         specifier: ^4.1.2
         version: 4.1.2
@@ -561,7 +561,7 @@ importers:
         version: 6.0.1
       nodemailer:
         specifier: ^6.0.0 || ^7.0.0 || ^8.0.0 || ^9.0.0 || ^10.0.0
-        version: 10.0.13
+        version: 10.2.1
       openai:
         specifier: ^7.25.0
         version: 7.25.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@7.30.0)(ws@8.22.0)(zod@4.6.5)
@@ -894,8 +894,8 @@ importers:
         specifier: ^6.0.0
         version: 6.0.0(supports-color@10.2.2)
       nodemailer:
-        specifier: ^10.0.13
-        version: 10.0.13
+        specifier: ^10.1.4
+        version: 10.2.1
       openai:
         specifier: ^7.25.0
         version: 7.25.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@7.30.0)(ws@8.22.0)(zod@4.6.5)
@@ -7116,8 +7116,8 @@ packages:
     resolution: {integrity: sha512-s+w+rBWnpTMwSFbaE0UXsRlg7hU4FjekKU4eyAih5T8nJuNZT1nNsskXpxmeqSK9UzkBl6UgRlnKc8hz8IEqOw==}
     hasBin: true
 
-  nodemailer@10.0.13:
-    resolution: {integrity: sha512-SzG86OlvcW/NNhUFC6uROMwRTL4n7MswfQqC/T8mhkmnY1YVa23zUEMYi4ijSeXSl9GLz9ZeTJDUatEDuY5FeQ==}
+  nodemailer@10.2.1:
+    resolution: {integrity: sha512-ZrDNsPFoDMwefNs7sJwrYiEJ/CG4ClJWDZv05iNJsEBWa8GRDry1QJHTJxsuTAY9eDDKjX4k+q3SxslXJOao7w==}
     engines: {node: '>=20.0.0'}
 
   npm-run-path@4.0.1:
@@ -14358,7 +14358,7 @@ snapshots:
       detect-libc: 2.1.2
     optional: true
 
-  nodemailer@10.0.13: {}
+  nodemailer@10.2.1: {}
 
   npm-run-path@4.0.1:
     dependencies:
