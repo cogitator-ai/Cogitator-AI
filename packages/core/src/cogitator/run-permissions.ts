@@ -273,6 +273,18 @@ export class RunPermissions {
       this.root = root;
       if (this.activated) this.settings = await this.options.service.settingsLayers(root);
     }
+    const problem = this.activated ? this.modeProblem(this.currentMode) : undefined;
+    if (problem) {
+      this.options.service.warnOnce(
+        'The permission mode cannot be used after the handoff, the run goes on in default mode',
+        {
+          mode: this.currentMode,
+          problem,
+        }
+      );
+      this.currentMode = 'default';
+      for (const listener of this.listeners) listener('default');
+    }
   }
 
   /** Hears every mode change */
@@ -382,6 +394,7 @@ export class RunPermissions {
       needsApproval: call.needsApproval,
       ...this.context(call.workspace),
       planTools: this.planTools,
+      trustRepository: this.options.service.settingsOptions?.trusted === true,
       ...(classifier &&
         input && {
           classify: (reason: string) => classifier.classify({ ...input(), reason }),

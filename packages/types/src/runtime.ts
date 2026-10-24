@@ -766,6 +766,11 @@ export interface RunCheckpoint {
      * resume decides them again under its own mode and rules
      */
     automatic?: string[];
+    /**
+     * Approvals the turn asked for the arguments a `wrapToolCall` middleware changed calls to: a
+     * decision for such a call decides these arguments, not the ones the model sent
+     */
+    changed?: ToolApprovalRequest[];
   };
   /**
    * What the run waits on, approvals among them (`kind: 'approval'`), and the answers given so

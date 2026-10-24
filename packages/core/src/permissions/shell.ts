@@ -38,10 +38,9 @@ export interface ShellCommand {
    */
   understood: boolean;
   /**
-   * The directory the command runs in, relative to where the line starts (`.`), after the `cd`
-   * and `pushd` to literal directories before it. Undefined when it cannot be told: after a `cd`
-   * to a target that is not literal, `popd`, a subshell or a `cd` whose effect depends on how the
-   * line goes on (`||`, `|`, `&`)
+   * `.` when the command runs where the line starts. Undefined after a `cd`, `pushd`, `popd` or a
+   * subshell earlier in the line: the directory is not followed (a failed `cd` stays, `cd -P`
+   * resolves physically), so such a command is never understood
    */
   dir?: string;
 }
@@ -948,25 +947,8 @@ function placed(child: ShellCommand, base: string | undefined): ShellCommand {
   return { ...rest, dir: posix.join(base, own) };
 }
 
-/** The directory a `cd` or `pushd` moves to, or undefined when it cannot be told from the words */
-function cdTarget(argv: readonly string[], dir: string): string | undefined {
-  const operands: string[] = [];
-  let options = true;
-  for (const word of argv.slice(1)) {
-    if (options && word === '--') {
-      options = false;
-      continue;
-    }
-    if (options && (word === '-L' || word === '-P' || word === '-e' || word === '-@')) continue;
-    operands.push(word);
-  }
-  if (operands.length !== 1) return undefined;
-  const target = operands[0];
-  if (target === '' || target === '-' || target.startsWith('~') || target.startsWith('+')) {
-    return undefined;
-  }
-  return posix.isAbsolute(target) ? posix.normalize(target) : posix.join(dir, target);
-}
+/** Commands that change the directory the commands after them run in */
+const MOVERS = new Set(['cd', 'pushd', 'popd', 'chdir']);
 
 const MAX_DEPTH = 8;
 
@@ -989,7 +971,7 @@ export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
   let redirects: ShellRedirect[] = [];
   let plain = true;
   let dir: string | undefined = '.';
-  const close = (ending?: string) => {
+  const close = () => {
     if (words.length === 0 && redirects.length === 0) {
       plain = true;
       return;
@@ -1073,15 +1055,7 @@ export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
         );
       }
     }
-    const mover = basename(effective[0] ?? '');
-    if (mover === 'cd' || mover === 'pushd' || mover === 'popd' || mover === 'chdir') {
-      const moved =
-        mover === 'popd' || !understood || here === undefined
-          ? undefined
-          : cdTarget(effective, here);
-      const lasting = ending === undefined || ending === '&&' || ending === ';' || ending === '\n';
-      dir = lasting ? moved : undefined;
-    }
+    if (loose.variants.some((variant) => MOVERS.has(basename(variant[0] ?? '')))) dir = undefined;
     words = [];
     redirects = [];
     plain = true;
@@ -1102,7 +1076,7 @@ export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
       plain = false;
       dir = undefined;
     } else {
-      close(token.op);
+      close();
     }
   }
   close();
@@ -1552,6 +1526,9 @@ const READ_ONLY_GIT: Record<string, ReadOnlySpec> = {
     flags: 'p',
     valued: ['-n'],
     long: [
+      '--patch',
+      '--no-ext-diff',
+      '--no-textconv',
       '--oneline',
       '--graph',
       '--all',
@@ -1694,14 +1671,29 @@ function argsAllowed(args: readonly string[], spec: ReadOnlySpec): boolean {
 
 /**
  * Whether `command` only reads: a known read-only program with options known to only read
- * (no `sort -o`, `rg --pre`, a second `uniq` operand), and no output redirection
+ * (no `sort -o`, `rg --pre`, a second `uniq` operand), and no output redirection. `git` only in a
+ * repository you trust (`trustRepository`): its config can run code (`diff.external`, textconv
+ * and filter drivers, `core.fsmonitor`, hooks, a pager, aliases), and a command that shows a diff
+ * only with `--no-ext-diff --no-textconv`
  */
-export function isReadOnlyCommand(command: ShellCommand): boolean {
+export function isReadOnlyCommand(
+  command: ShellCommand,
+  options: { trustRepository?: boolean } = {}
+): boolean {
   if (!command.understood || command.redirects.some((redirect) => redirect.writes)) return false;
   if (!assignsOnlySafeVariables(command)) return false;
   const program = command.argv[0] ?? '';
   if (program === 'git') {
+    if (options.trustRepository !== true) return false;
     const sub = command.argv[1] ?? '';
+    const args = command.argv.slice(2);
+    const patches =
+      sub === 'diff' ||
+      sub === 'show' ||
+      (sub === 'log' && args.some((word) => word === '-p' || word === '--patch' || word === '-u'));
+    if (patches && !(args.includes('--no-ext-diff') && args.includes('--no-textconv'))) {
+      return false;
+    }
     if (sub === 'stash' || sub === 'worktree') {
       const spec = READ_ONLY_GIT[`${sub} ${command.argv[2] ?? ''}`];
       return spec !== undefined && argsAllowed(command.argv.slice(3), spec);

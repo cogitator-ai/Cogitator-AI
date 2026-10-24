@@ -177,11 +177,12 @@ import {
   isAnswered,
   isToolInterrupt,
   toolInterrupter,
+  ToolInterruptSignal,
 } from './cogitator/interrupts';
 import { MEMORY_AGENTS, noteThreadRun } from './cogitator/message-builder';
 import { normalizeTurn } from './llm/turn';
 import { withPiiDecisions, withPiiMasking } from './security/pii';
-import { MiddlewarePipeline } from './middleware/pipeline';
+import { canonicalArguments, MiddlewarePipeline } from './middleware/pipeline';
 import {
   compactionMiddleware,
   guardrailsMiddleware,
@@ -239,6 +240,7 @@ import {
   createToolMessageWithOffload,
   isConcurrencySafe,
   needsApproval,
+  type ChangedCallPermit,
 } from './cogitator/tool-executor';
 import { DEFAULT_MAX_PARALLEL_TOOL_CALLS, scheduleToolCalls } from './cogitator/tool-scheduler';
 import { ToolInputLedger } from './cogitator/tool-input-ledger';
@@ -952,6 +954,7 @@ export class Cogitator implements ToolInvoker {
     const registry = new ToolRegistry();
     registry.register(tool);
     const runId = options.runId ?? `run_${nanoid(12)}`;
+    let changedRequest: ToolApprovalRequest | undefined;
     const result = await runToolCall({
       registry,
       toolCall: callToRun,
@@ -976,6 +979,45 @@ export class Cogitator implements ToolInvoker {
       },
       approved: approvedByUser,
       allowNativeFallback: this.config.sandbox?.allowNativeFallback !== false,
+      ...(permissions.active && {
+        permit: async (changedTool: Tool, changedArgs: Record<string, unknown>) => {
+          const changed = { ...toolCall, arguments: changedArgs };
+          const outcome = await this.permitChangedArguments({
+            tool: changedTool,
+            toolCall: changed,
+            permissions,
+            call: {
+              ...permissionCall,
+              needsApproval:
+                needsApproval(changedTool, changedArgs) ||
+                constitutionalAI?.toolNeedsApproval(changedTool, changedArgs) === true,
+              classifierInput: () => ({
+                toolName: tool.name,
+                description: tool.description,
+                arguments: changedArgs,
+                request: 'A direct call of the tool by the application, outside an agent run',
+                transcript: [],
+                ...(signal && { signal }),
+              }),
+            },
+            request: {
+              ...((options.agentId !== undefined || agent) && { agentId }),
+              ...(options.threadId !== undefined && { threadId: options.threadId }),
+              ...(options.userId !== undefined && { userId: options.userId }),
+            },
+            decide: (request) => {
+              const deciding = this.decideApproval(request, options.onApproval);
+              return signal ? waitForAbortable(deciding, signal) : deciding;
+            },
+          });
+          if (!('pause' in outcome)) return outcome;
+          changedRequest = outcome.pause;
+          return {
+            allowed: false,
+            reason: `the arguments a middleware changed the call to need approval, and nobody approved them`,
+          };
+        },
+      }),
       ...(options.onUpdate && {
         onUpdate: (progress: ToolProgress) =>
           options.onUpdate?.({ ...progress, callId: toolCall.id, name: tool.name }),
@@ -1004,7 +1046,11 @@ export class Cogitator implements ToolInvoker {
         }),
       },
     });
-    return withPermission(result);
+    return withPermission(
+      changedRequest && result.errorCode === 'PERMISSION_DENIED'
+        ? { ...result, pendingApproval: changedRequest }
+        : result
+    );
   }
 
   /**
@@ -2078,6 +2124,8 @@ export class Cogitator implements ToolInvoker {
           automatic?: readonly string[];
           /** Decisions a person gave with the resume, not before the pause */
           fresh?: readonly string[];
+          /** Approvals asked for the arguments a middleware changed calls to */
+          changed?: readonly ToolApprovalRequest[];
         }
       ): Promise<PausedTurn | undefined> => {
         const done = new Set(resumed?.completed ?? []);
@@ -2120,6 +2168,17 @@ export class Cogitator implements ToolInvoker {
         const runArguments = new Map<string, ToolCall>();
         const pending: ToolApprovalRequest[] = [];
         const automatic = new Set(resumed?.automatic ?? []);
+        /** Approvals asked for the arguments a middleware changed calls to, which their decisions decide */
+        const changedAsked = new Map(
+          (resumed?.changed ?? []).map((request) => [request.toolCallId, request])
+        );
+        /** Approvals this turn asks for the arguments a middleware changed calls to */
+        const changedRequests = new Map<string, ToolApprovalRequest>();
+        const keptChanged = (kept: (id: string) => boolean) => {
+          const requests = new Map([...changedAsked, ...changedRequests]);
+          const list = [...requests.values()].filter((request) => kept(request.toolCallId));
+          return list.length > 0 ? { changed: list } : {};
+        };
         if (resumed && permissions.active) {
           for (const toolCall of open) {
             const kept = decisions.get(toolCall.id);
@@ -2130,10 +2189,17 @@ export class Cogitator implements ToolInvoker {
               byRules &&
               (needsApproval(tool, toolCall.arguments) ||
                 this.state.constitutionalAI?.toolNeedsApproval(tool, toolCall.arguments) === true);
-            const verdict = await permissions.decide(tool, toolCall.arguments, {
-              ...permissionCall(tool, toolCall, needs),
-              ...(!byRules && permissions.mode === 'dontAsk' && { mode: 'default' as const }),
-            });
+            const decide = (call: ToolCall) =>
+              permissions.decide(tool, call.arguments, {
+                ...permissionCall(tool, call, needs),
+                ...(!byRules && permissions.mode === 'dontAsk' && { mode: 'default' as const }),
+              });
+            const changedTo = changedAsked.get(toolCall.id)?.arguments;
+            const sent = await decide(toolCall);
+            const verdict =
+              changedTo && sent.decision !== 'deny'
+                ? await decide({ ...toolCall, arguments: changedTo })
+                : sent;
             if (verdict.decision === 'allow' || (verdict.decision === 'ask' && !byRules)) continue;
             decisions.delete(toolCall.id);
             automatic.delete(toolCall.id);
@@ -2153,9 +2219,23 @@ export class Cogitator implements ToolInvoker {
           ) {
             continue;
           }
+          const changedRequest = changedAsked.get(toolCall.id);
+          if (changedRequest) {
+            const decision = resumed?.fallback
+              ? forEveryCall(resumed.fallback)
+              : await this.decideApproval(changedRequest, options.onApproval);
+            if (decision === 'pause') {
+              pending.push(changedRequest);
+            } else {
+              decisions.set(toolCall.id, decision);
+              fresh.add(toolCall.id);
+            }
+            continue;
+          }
           const needs =
             needsApproval(tool, toolCall.arguments) ||
             this.state.constitutionalAI?.toolNeedsApproval(tool, toolCall.arguments) === true;
+          if (!needs && !permissions.active) continue;
           const verdict = await permissions.decide(
             tool,
             toolCall.arguments,
@@ -2199,6 +2279,20 @@ export class Cogitator implements ToolInvoker {
           const decision = decisions.get(toolCall.id);
           const tool = registry.get(toolCall.name);
           if (!decision || !tool) continue;
+          const changedTo = changedAsked.get(toolCall.id)?.arguments;
+          if (changedTo) {
+            if (fresh.has(toolCall.id) && !decision.approved) {
+              const changed = { ...toolCall, arguments: changedTo };
+              await this.answerChangedArguments(
+                tool,
+                changed,
+                decision,
+                permissions,
+                permissionCall(tool, changed, false)
+              );
+            }
+            continue;
+          }
           const answered = fresh.has(toolCall.id);
           let event: PermissionDecisionEvent | undefined = answered
             ? {
@@ -2255,6 +2349,7 @@ export class Cogitator implements ToolInvoker {
             decisions: keptDecisions(),
             ...(denied.size > 0 && { denied: Object.fromEntries(denied) }),
             ...keptAutomatic(),
+            ...keptChanged((id) => open.some((call) => call.id === id)),
             pending,
             interrupts: pending.map(approvalInterrupt),
             completed: [...done],
@@ -2297,6 +2392,7 @@ export class Cogitator implements ToolInvoker {
             decisions: keptDecisions(),
             ...(denied.size > 0 && { denied: Object.fromEntries(denied) }),
             ...keptAutomatic(),
+            ...keptChanged((id) => open.some((call) => call.id === id)),
             pending: [],
             interrupts: [
               ...(resumed?.interrupts ?? []).filter(
@@ -2318,6 +2414,53 @@ export class Cogitator implements ToolInvoker {
         if (resumed) checkpointKept = false;
         if (resumed && !runMemory.aside) await this.runCheckpointStore().delete(threadId);
 
+        /**
+         * Decides the arguments a `wrapToolCall` middleware changed a call to: a deny refuses, an
+         * ask takes a decision of its own, and pauses the run when nobody gives one. A decision
+         * given for the approval asked for these arguments decides them
+         */
+        const permitChanged = async (
+          toolCall: ToolCall,
+          tool: Tool,
+          args: Record<string, unknown>
+        ): Promise<ChangedCallPermit> => {
+          const changed = { ...toolCall, arguments: args };
+          const needs =
+            needsApproval(tool, args) ||
+            this.state.constitutionalAI?.toolNeedsApproval(tool, args) === true;
+          const call = permissionCall(tool, changed, needs);
+          const asked = changedAsked.get(toolCall.id);
+          const decision = decisions.get(toolCall.id);
+          if (
+            asked &&
+            decision &&
+            canonicalArguments(asked.arguments) === canonicalArguments(args)
+          ) {
+            const verdict = await permissions.decide(tool, args, {
+              ...permissionCall(tool, changed, false),
+              ...(permissions.mode === 'dontAsk' && { mode: 'default' as const }),
+            });
+            if (verdict.decision === 'deny') {
+              await permissions.record(decisionEvent(changed, verdict));
+              return {
+                allowed: false,
+                reason: `the arguments a middleware changed the call to: ${verdict.reason}`,
+              };
+            }
+            return this.answerChangedArguments(tool, changed, decision, permissions, call);
+          }
+          const outcome = await this.permitChangedArguments({
+            tool,
+            toolCall: changed,
+            permissions,
+            call,
+            request: {},
+            decide: (request) => this.decideApproval(request, options.onApproval),
+          });
+          if (!('pause' in outcome)) return outcome;
+          changedRequests.set(toolCall.id, outcome.pause);
+          throw new ToolInterruptSignal(approvalInterrupt(outcome.pause));
+        };
         /**
          * Decides a call that touches paths or runs a command again right before it runs: an
          * earlier call of the turn may have moved what its paths point to (a symlink, a `cd`).
@@ -2407,7 +2550,7 @@ export class Cogitator implements ToolInvoker {
               toolSpanEnd: toolSpanStart,
             };
           }
-          const stale = await recheck(toolCall);
+          const stale = permissions.active ? await recheck(toolCall) : undefined;
           if (stale !== undefined) {
             return {
               toolCall,
@@ -2463,6 +2606,10 @@ export class Cogitator implements ToolInvoker {
                     allowNativeFallback: this.config.sandbox?.allowNativeFallback !== false,
                     middleware: pipeline,
                     context: middlewareContext(),
+                    ...(permissions.active && {
+                      permit: (tool: Tool, args: Record<string, unknown>) =>
+                        permitChanged(toolCall, tool, args),
+                    }),
                     ...(timeouts.toolMs !== undefined && { defaultTimeout: timeouts.toolMs }),
                     ...(stepGate && { step: { gate: stepGate, alone: runsAlone(toolCall) } }),
                     ...(options.onToolUpdate && {
@@ -2659,18 +2806,26 @@ export class Cogitator implements ToolInvoker {
             open.filter((call) => !finished.has(call.id)).map((call) => call.id)
           );
           const deniedLeft = [...denied].filter(([id]) => left.has(id));
+          const keptLater = [...automatic].filter(
+            (id) => left.has(id) && decisions.has(id) && !changedRequests.has(id)
+          );
           return {
             toolCalls,
             decisions: Object.fromEntries(
               [...decisions]
-                .filter(([id]) => left.has(id))
+                .filter(([id]) => left.has(id) && !changedRequests.has(id))
                 .map(([id, decision]) => [id, withoutRemember(decision)])
             ),
             ...(deniedLeft.length > 0 && { denied: Object.fromEntries(deniedLeft) }),
-            ...([...automatic].some((id) => left.has(id) && decisions.has(id)) && {
-              automatic: [...automatic].filter((id) => left.has(id) && decisions.has(id)),
+            ...(keptLater.length > 0 && { automatic: keptLater }),
+            ...keptChanged((id) => left.has(id)),
+            pending: asked.flatMap((outcome) => {
+              const request =
+                outcome.interrupt?.kind === 'approval'
+                  ? changedRequests.get(outcome.toolCall.id)
+                  : undefined;
+              return request ? [request] : [];
             }),
-            pending: [],
             interrupts: [
               ...new Map(
                 [
@@ -2764,6 +2919,7 @@ export class Cogitator implements ToolInvoker {
             ...(checkpoint.turn.completed && { completed: checkpoint.turn.completed }),
             ...(checkpoint.turn.denied && { denied: checkpoint.turn.denied }),
             ...(checkpoint.turn.automatic && { automatic: checkpoint.turn.automatic }),
+            ...(checkpoint.turn.changed && { changed: checkpoint.turn.changed }),
             fresh: [...Object.keys(answeredDecisions), ...Object.keys(resumeFrom.decisions)],
           });
           if (!pausedTurn) reachedLimit();
@@ -2786,10 +2942,11 @@ export class Cogitator implements ToolInvoker {
           this.assertTokenBudget(totalInputTokens + totalOutputTokens);
           this.assertCostBudget(costMeter.total(costModel));
         }
+        const spentWithDelegates = runBudget.runTotals();
         const reachedBudget = runBudget.beforeModel(
           active.id,
-          costMeter.total(costModel),
-          totalInputTokens + totalOutputTokens
+          Math.max(costMeter.total(costModel), spentWithDelegates.costUsd),
+          Math.max(totalInputTokens + totalOutputTokens, spentWithDelegates.tokens)
         );
         const callerReached = budgetAncestors
           .map((ancestor) => {
@@ -3266,6 +3423,8 @@ export class Cogitator implements ToolInvoker {
               Object.keys(pausedTurn.denied).length > 0 && { denied: pausedTurn.denied }),
             ...(pausedTurn.automatic &&
               pausedTurn.automatic.length > 0 && { automatic: pausedTurn.automatic }),
+            ...(pausedTurn.changed &&
+              pausedTurn.changed.length > 0 && { changed: pausedTurn.changed }),
           },
           interrupts: pausedTurn.interrupts,
           iterations,
@@ -4014,6 +4173,101 @@ export class Cogitator implements ToolInvoker {
     else this.sessionSpends.set(threadId, total);
     budget.markRecorded(total);
     return total;
+  }
+
+  /**
+   * Decides the arguments a `wrapToolCall` middleware changed a call to, as the permissions
+   * decide the ones the model sent: a deny refuses, an allow goes on, and an ask takes a decision
+   * of its own from `decide`, since an approval of the old arguments does not carry over to new
+   * ones. `pause` holds the request the call waits for when nobody decided it
+   */
+  private async permitChangedArguments(changed: {
+    tool: Tool;
+    toolCall: ToolCall;
+    permissions: RunPermissions;
+    call: PermissionCall;
+    request: Pick<ToolApprovalRequest, 'agentId' | 'threadId' | 'userId'>;
+    decide: (request: ToolApprovalRequest) => Promise<ToolApprovalDecision | 'pause'>;
+  }): Promise<ChangedCallPermit | { pause: ToolApprovalRequest }> {
+    const { tool, toolCall, permissions, call } = changed;
+    const verdict = await permissions.decide(tool, toolCall.arguments, call);
+    if (verdict.decision !== 'ask') {
+      await permissions.record({ ...verdict, toolCallId: toolCall.id, toolName: toolCall.name });
+      return verdict.decision === 'allow'
+        ? { allowed: true }
+        : {
+            allowed: false,
+            reason: `the arguments a middleware changed the call to: ${verdict.reason}`,
+          };
+    }
+    const suggestedRule = permissions.suggest(tool, toolCall.arguments, call.workspace);
+    const request: ToolApprovalRequest = {
+      toolCallId: toolCall.id,
+      toolName: toolCall.name,
+      arguments: toolCall.arguments,
+      description: tool.description,
+      ...(tool.sideEffects && { sideEffects: [...tool.sideEffects] }),
+      ...changed.request,
+      reason: `A middleware changed the arguments of the call: ${verdict.reason}`,
+      ...(verdict.rule && { rule: verdict.rule }),
+      ...(suggestedRule !== undefined && { suggestedRule }),
+      mode: verdict.mode,
+    };
+    const decision = await changed.decide(request);
+    if (decision === 'pause') return { pause: request };
+    return this.answerChangedArguments(tool, toolCall, decision, permissions, call);
+  }
+
+  /**
+   * What a person's decision on the arguments a middleware changed a call to lets the call do,
+   * recorded: a decline refuses it, an approval runs it, with the arguments the approval changed
+   * the call to once they pass the schema and the rules, and saves the rule it asks to remember
+   */
+  private async answerChangedArguments(
+    tool: Tool,
+    toolCall: ToolCall,
+    decision: ToolApprovalDecision,
+    permissions: RunPermissions,
+    call: PermissionCall
+  ): Promise<ChangedCallPermit> {
+    const answered: PermissionDecisionEvent = {
+      toolCallId: toolCall.id,
+      toolName: toolCall.name,
+      decision: decision.approved ? 'allow' : 'deny',
+      decidedBy: 'user',
+      mode: permissions.mode,
+      reason: decision.approved
+        ? 'Approved by the user'
+        : `Declined by the user${decision.reason ? `: ${decision.reason}` : ''}`,
+    };
+    if (!decision.approved) {
+      await permissions.record(answered);
+      return {
+        allowed: false,
+        reason: `the user declined the arguments a middleware changed the call to${decision.reason ? `: ${decision.reason}` : ''}`,
+      };
+    }
+    let args = toolCall.arguments;
+    let event = answered;
+    const updated = this.acceptedUpdate(decision, permissions);
+    if (updated) {
+      const checked = await this.checkUpdatedArguments(tool, updated, permissions, {
+        ...call,
+        needsApproval: false,
+      });
+      if ('error' in checked) {
+        await permissions.record({ ...answered, decision: 'deny', reason: checked.error });
+        return { allowed: false, reason: checked.error };
+      }
+      args = checked.args;
+      event = { ...event, updatedArguments: checked.args };
+    }
+    if (decision.remember) {
+      const remembered = await permissions.remember(tool, args, decision.remember, call.workspace);
+      if (remembered) event = { ...event, remembered };
+    }
+    await permissions.record(event);
+    return { allowed: true, ...(updated && { args }) };
   }
 
   /**
@@ -5226,6 +5480,8 @@ interface PausedTurn {
   denied?: Record<string, string>;
   /** Calls the rules or the mode allowed, not a person */
   automatic?: string[];
+  /** Approvals asked for the arguments a middleware changed calls to */
+  changed?: ToolApprovalRequest[];
   pending: ToolApprovalRequest[];
   /** What the turn waits on: its approvals, or the questions its tools asked and their answers */
   interrupts: RunInterrupt[];

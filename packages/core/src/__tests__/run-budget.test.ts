@@ -512,3 +512,37 @@ describe('fourth review round budgets', () => {
     });
   });
 });
+
+describe('fifth review round budgets', () => {
+  it('counts what delegates spent against the run limits of the parent', async () => {
+    const inner = new MockLLMBackend().setResponses([{ content: 'helped', usage: spend(0, 100) }]);
+    const outer = new MockLLMBackend().setResponses([
+      {
+        content: '',
+        toolCalls: [{ id: 'd1', name: 'helper', arguments: { task: 'x' } }],
+        usage: spend(0, 1),
+      },
+      answer(0),
+    ]);
+    const cog = new Cogitator({
+      memory: { adapter: 'memory' },
+      llm: { backends: { inner, outer } },
+      limits: { maxTokensPerRun: 50, onExceeded: 'interrupt' },
+    });
+    const helper = new Agent({ name: 'helper-agent', model: 'inner/m', instructions: 'x' });
+    const lead = new Agent({
+      name: 'lead',
+      model: 'outer/m',
+      instructions: 'x',
+      tools: [agentAsTool(cog, helper, { name: 'helper', description: 'Helps' })],
+    });
+    const result = await cog.run(lead, { input: 'go', threadId: 'b-parent-limit' });
+    expect(result.status).toBe('paused');
+    expect(result.interrupts?.[0]).toMatchObject({
+      id: 'budget:run.tokens',
+      details: { scope: 'run', metric: 'tokens', limit: 50 },
+    });
+    expect(outer.getCallCount()).toBe(1);
+    await cog.close();
+  });
+});

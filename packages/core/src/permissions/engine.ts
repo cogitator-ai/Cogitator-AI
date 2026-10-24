@@ -206,6 +206,11 @@ export interface PermissionContext {
   planTools?: ReadonlySet<Tool>;
   /** Decides a call that would ask in `auto` mode */
   classify?: (reason: string) => Promise<PermissionClassification>;
+  /**
+   * Whether the repository of the workspace is trusted, so `plan` mode runs read-only `git`
+   * commands, whose repository config could otherwise run code
+   */
+  trustRepository?: boolean;
 }
 
 /** A command line of a call with where and how it runs */
@@ -723,14 +728,14 @@ function isReadOnly(tool: Tool, planTools: ReadonlySet<Tool> | undefined): boole
 }
 
 /** Whether a command call only reads, for `plan` mode */
-function readOnlyCommandCall(subject: CallSubject): boolean {
+function readOnlyCommandCall(subject: CallSubject, trustRepository: boolean): boolean {
   const call = subject.command();
   return (
     call !== undefined &&
     call.line.certain &&
     call.envSafe &&
     call.line.commands.length > 0 &&
-    call.line.commands.every(isReadOnlyCommand)
+    call.line.commands.every((command) => isReadOnlyCommand(command, { trustRepository }))
   );
 }
 
@@ -827,7 +832,8 @@ async function decide(
       'The command line names more files than the rules can check'
     );
   }
-  const readOnlyCommand = subject.kind === 'command' && readOnlyCommandCall(subject);
+  const readOnlyCommand =
+    subject.kind === 'command' && readOnlyCommandCall(subject, context.trustRepository === true);
   if (mode === 'plan' && !isReadOnly(tool, context.planTools) && !readOnlyCommand) {
     return decision(
       'deny',

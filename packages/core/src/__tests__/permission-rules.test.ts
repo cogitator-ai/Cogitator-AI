@@ -757,9 +757,10 @@ describe('modes and names beyond the workspace tools', () => {
   });
 
   it('plan mode runs read-only commands and never trusts what an MCP server claims', async () => {
-    expect((await decideWith(exec, { command: 'ls -la && git status' }, {}, 'plan')).decision).toBe(
+    expect((await decideWith(exec, { command: 'ls -la && pwd' }, {}, 'plan')).decision).toBe(
       'allow'
     );
+    expect((await decideWith(exec, { command: 'git status' }, {}, 'plan')).decision).toBe('deny');
     expect((await decideWith(exec, { command: 'git push' }, {}, 'plan')).decision).toBe('deny');
     expect((await decideWith(exec, { command: 'ls > out' }, {}, 'plan')).decision).toBe('deny');
     const mcpReader = tool({
@@ -786,7 +787,14 @@ describe('what the parser does not take at face value', () => {
     resolvePermission(
       ws('run_command'),
       { command },
-      { mode, rules: rules(settings), needsApproval: true, workspace, projectRoot: root }
+      {
+        mode,
+        rules: rules(settings),
+        needsApproval: true,
+        workspace,
+        projectRoot: root,
+        trustRepository: true,
+      }
     ).then((decision) => decision.decision);
   const touch = { deny: ['Bash(touch *)'], allow: ['Bash(echo *)'] };
   const read = { deny: ['Read(./secret.txt)'], allow: ['Bash(cat *)'] };
@@ -884,20 +892,26 @@ describe('third review round', () => {
     resolvePermission(
       ws('run_command'),
       { command },
-      { mode, rules: rules(settings), needsApproval: true, workspace, projectRoot: root }
+      {
+        mode,
+        rules: rules(settings),
+        needsApproval: true,
+        workspace,
+        projectRoot: root,
+        trustRepository: true,
+      }
     ).then((decision) => decision.decision);
 
-  it('follows cd through the command line', async () => {
+  it('does not follow cd: what comes after one is not understood', async () => {
     const read = { deny: ['Read(./secret.txt)'], allow: ['Bash'] };
-    expect(await run('cd src && cat ../secret.txt', read)).toBe('deny');
+    expect(await run('cd src && cat ../secret.txt', read)).toBe('ask');
     expect(await run('cd src; cat ../secret.txt', read, 'bypassPermissions')).toBe('deny');
-    expect(await run('cd $DIR && cat secret.txt', read)).toBe('ask');
-    expect(await run('cd $DIR && cat secret.txt', read, 'bypassPermissions')).toBe('deny');
-    expect(await run('popd && cat secret.txt', read, 'bypassPermissions')).toBe('deny');
-    expect(await run('cd src && npm test', { allow: ['Bash(npm test *)'] })).toBe('allow');
-    expect(await run('cd /etc && npm test', { allow: ['Bash(npm test *)'] })).toBe('ask');
-    expect(await run('cd src || npm test', { allow: ['Bash(npm test *)'] })).toBe('ask');
-    expect(parseCommandLine('cd src && cd lib && ls').commands[2].dir).toBe('src/lib');
+    expect(await run('cd missing; cat secret.txt', read, 'bypassPermissions')).toBe('deny');
+    expect(await run('cd -P link && cat ../x', read, 'dontAsk')).toBe('deny');
+    expect(await run('builtin cd src && cat x', read, 'bypassPermissions')).toBe('deny');
+    expect(await run('cd src && npm test', { allow: ['Bash(npm test *)'] })).toBe('ask');
+    expect(await run('npm test', { allow: ['Bash(npm test *)'] })).toBe('allow');
+    expect(parseCommandLine('cd src && ls').commands[1].understood).toBe(false);
   });
 
   it('matches parameter rules on the arguments the tool gets, defaults applied', async () => {
@@ -933,10 +947,39 @@ describe('third review round', () => {
     ['git worktree list', 'allow'],
     ['git remote add x y', 'deny'],
     ['git remote -v', 'allow'],
-    ['cd src && ls', 'allow'],
+    ['cd src && ls', 'deny'],
   ])('plan mode reads %j as %s', async (command, expected) => {
     expect(await run(command, {}, 'plan')).toBe(expected);
   });
+
+  it.each([
+    ['git status', 'deny', false],
+    ['git status', 'allow', true],
+    ['git diff', 'deny', true],
+    ['git diff --no-ext-diff --no-textconv', 'allow', true],
+    ['git show HEAD --no-ext-diff', 'deny', true],
+    ['git log -p --no-ext-diff --no-textconv', 'allow', true],
+    ['git log -p', 'deny', true],
+    ['npm run build', 'deny', true],
+    ['make', 'deny', true],
+  ])(
+    'plan mode runs %j as %s with a trusted repository: %s',
+    async (command, expected, trusted) => {
+      const decision = await resolvePermission(
+        ws('run_command'),
+        { command },
+        {
+          mode: 'plan',
+          rules: rules({}),
+          needsApproval: true,
+          workspace,
+          projectRoot: root,
+          trustRepository: trusted,
+        }
+      );
+      expect(decision.decision).toBe(expected);
+    }
+  );
 });
 
 describe('fourth review round', () => {
