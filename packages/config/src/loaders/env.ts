@@ -9,6 +9,9 @@ import { PROVIDER_ENV, type ProviderEnvSetting } from '../provider-env';
 
 const ENV_PREFIX = 'COGITATOR_';
 
+/** The variables the loaders read, `process.env` by default. */
+export type ConfigEnv = Readonly<Record<string, string | undefined>>;
+
 /**
  * Load the configuration environment variables set over cogitator.yml.
  * `PROVIDER_ENV` lists the variables of every provider.
@@ -69,11 +72,11 @@ function isValidProvider(value: string): value is LLMProvider {
   return LLMProviderSchema.safeParse(value).success;
 }
 
-export function loadEnvConfig(): CogitatorConfigInput {
+export function loadEnvConfig(env: ConfigEnv = process.env): CogitatorConfigInput {
   const config: CogitatorConfigInput = {};
 
-  const defaultProvider = getEnv('LLM_DEFAULT_PROVIDER');
-  const defaultModel = getEnv('LLM_DEFAULT_MODEL');
+  const defaultProvider = getEnv('LLM_DEFAULT_PROVIDER', env);
+  const defaultModel = getEnv('LLM_DEFAULT_MODEL', env);
 
   if (defaultProvider || defaultModel) {
     config.llm = {
@@ -84,19 +87,19 @@ export function loadEnvConfig(): CogitatorConfigInput {
     };
   }
 
-  const providers = loadProviderConfigs();
+  const providers = loadProviderConfigs(env);
   if (Object.keys(providers).length > 0) {
     config.llm = { ...config.llm, providers };
   }
 
-  const limits = loadLimitsConfig();
+  const limits = loadLimitsConfig(env);
   if (Object.keys(limits).length > 0) {
     config.limits = limits;
   }
 
-  const deployTarget = getEnv('DEPLOY_TARGET');
-  const deployPort = getEnvNumber('DEPLOY_PORT');
-  const deployRegistry = getEnv('DEPLOY_REGISTRY');
+  const deployTarget = getEnv('DEPLOY_TARGET', env);
+  const deployPort = getEnvNumber('DEPLOY_PORT', env);
+  const deployRegistry = getEnv('DEPLOY_REGISTRY', env);
   if (deployTarget || deployPort || deployRegistry) {
     const parsedTarget = DeployTargetSchema.safeParse(deployTarget);
     config.deploy = {
@@ -119,8 +122,8 @@ export function loadEnvConfig(): CogitatorConfigInput {
  *   read the way Ollama reads OLLAMA_HOST (port 11434 when none is given,
  *   `0.0.0.0` reached as localhost)
  */
-export function loadEnvDefaults(): CogitatorConfigInput {
-  const baseUrl = resolveOllamaHost(firstSet(settingOf('ollama', 'baseUrl').fallbackEnv));
+export function loadEnvDefaults(env: ConfigEnv = process.env): CogitatorConfigInput {
+  const baseUrl = resolveOllamaHost(firstSet(settingOf('ollama', 'baseUrl').fallbackEnv, env));
   return baseUrl ? { llm: { providers: { ollama: { baseUrl } } } } : {};
 }
 
@@ -134,19 +137,19 @@ function settingOf(provider: LLMProviderName, field: string): ProviderEnvSetting
   return setting;
 }
 
-function firstSet(names: readonly string[] | undefined): string | undefined {
+function firstSet(names: readonly string[] | undefined, env: ConfigEnv): string | undefined {
   for (const name of names ?? []) {
-    const value = process.env[name];
+    const value = env[name];
     if (value !== undefined && value.trim() !== '') return value;
   }
   return undefined;
 }
 
 /** `provider`'s settings from the variables set over cogitator.yml. */
-function readProvider(provider: LLMProviderName): ProviderValues {
+function readProvider(provider: LLMProviderName, env: ConfigEnv): ProviderValues {
   const values: ProviderValues = {};
   for (const setting of PROVIDER_ENV[provider]) {
-    values[setting.field] = firstSet(setting.env);
+    values[setting.field] = firstSet(setting.env, env);
   }
   return values;
 }
@@ -159,10 +162,10 @@ function definedValues(values: ProviderValues): Record<string, string> {
   return result;
 }
 
-function loadProviderConfigs(): ProvidersConfig {
+function loadProviderConfigs(env: ConfigEnv): ProvidersConfig {
   const providers: ProvidersConfig = {};
 
-  const ollama = readProvider('ollama');
+  const ollama = readProvider('ollama', env);
   const ollamaBaseUrl = resolveOllamaHost(ollama.baseUrl);
   if (ollamaBaseUrl || ollama.apiKey) {
     providers.ollama = {
@@ -171,12 +174,12 @@ function loadProviderConfigs(): ProvidersConfig {
     };
   }
 
-  const openai = readProvider('openai');
+  const openai = readProvider('openai', env);
   if (openai.apiKey) {
     providers.openai = { apiKey: openai.apiKey, baseUrl: openai.baseUrl };
   }
 
-  const anthropic = readProvider('anthropic');
+  const anthropic = readProvider('anthropic', env);
   if (anthropic.apiKey) {
     providers.anthropic = {
       apiKey: anthropic.apiKey,
@@ -184,7 +187,7 @@ function loadProviderConfigs(): ProvidersConfig {
     };
   }
 
-  const google = readProvider('google');
+  const google = readProvider('google', env);
   if (google.apiKey) {
     providers.google = {
       apiKey: google.apiKey,
@@ -192,10 +195,10 @@ function loadProviderConfigs(): ProvidersConfig {
     };
   }
 
-  const vllm = readProvider('vllm').baseUrl;
+  const vllm = readProvider('vllm', env).baseUrl;
   if (vllm) providers.vllm = { baseUrl: vllm };
 
-  const azure = readProvider('azure');
+  const azure = readProvider('azure', env);
   if (azure.apiKey && azure.endpoint) {
     providers.azure = {
       apiKey: azure.apiKey,
@@ -205,25 +208,25 @@ function loadProviderConfigs(): ProvidersConfig {
     };
   }
 
-  const bedrock = definedValues(readProvider('bedrock'));
-  const sdkCredentials = PROVIDER_ENV.bedrock.some((s) => firstSet(s.sdkEnv) !== undefined);
+  const bedrock = definedValues(readProvider('bedrock', env));
+  const sdkCredentials = PROVIDER_ENV.bedrock.some((s) => firstSet(s.sdkEnv, env) !== undefined);
   if (Object.keys(bedrock).length > 0 || sdkCredentials) {
     providers.bedrock = bedrock;
   }
 
-  const mistral = readProvider('mistral').apiKey;
+  const mistral = readProvider('mistral', env).apiKey;
   if (mistral) providers.mistral = { apiKey: mistral };
 
-  const groq = readProvider('groq').apiKey;
+  const groq = readProvider('groq', env).apiKey;
   if (groq) providers.groq = { apiKey: groq };
 
-  const together = readProvider('together').apiKey;
+  const together = readProvider('together', env).apiKey;
   if (together) providers.together = { apiKey: together };
 
-  const deepseek = readProvider('deepseek').apiKey;
+  const deepseek = readProvider('deepseek', env).apiKey;
   if (deepseek) providers.deepseek = { apiKey: deepseek };
 
-  const openrouter = readProvider('openrouter');
+  const openrouter = readProvider('openrouter', env);
   if (openrouter.apiKey) {
     providers.openrouter = {
       apiKey: openrouter.apiKey,
@@ -234,13 +237,13 @@ function loadProviderConfigs(): ProvidersConfig {
   return providers;
 }
 
-function loadLimitsConfig(): LimitsConfig {
+function loadLimitsConfig(env: ConfigEnv): LimitsConfig {
   const limits: LimitsConfig = {};
 
-  const maxConcurrentRuns = getEnvNumber('LIMITS_MAX_CONCURRENT_RUNS');
-  const defaultTimeout = getEnvNumber('LIMITS_DEFAULT_TIMEOUT');
-  const maxTokensPerRun = getEnvNumber('LIMITS_MAX_TOKENS_PER_RUN');
-  const maxToolResultLength = getEnvNumber('LIMITS_MAX_TOOL_RESULT_LENGTH');
+  const maxConcurrentRuns = getEnvNumber('LIMITS_MAX_CONCURRENT_RUNS', env);
+  const defaultTimeout = getEnvNumber('LIMITS_DEFAULT_TIMEOUT', env);
+  const maxTokensPerRun = getEnvNumber('LIMITS_MAX_TOKENS_PER_RUN', env);
+  const maxToolResultLength = getEnvNumber('LIMITS_MAX_TOOL_RESULT_LENGTH', env);
 
   if (maxConcurrentRuns !== undefined) limits.maxConcurrentRuns = maxConcurrentRuns;
   if (defaultTimeout !== undefined) limits.defaultTimeout = defaultTimeout;
@@ -250,12 +253,12 @@ function loadLimitsConfig(): LimitsConfig {
   return limits;
 }
 
-function getEnv(key: string): string | undefined {
-  return process.env[`${ENV_PREFIX}${key}`];
+function getEnv(key: string, env: ConfigEnv): string | undefined {
+  return env[`${ENV_PREFIX}${key}`];
 }
 
-function getEnvNumber(key: string): number | undefined {
-  const value = getEnv(key);
+function getEnvNumber(key: string, env: ConfigEnv): number | undefined {
+  const value = getEnv(key, env);
   if (value === undefined) return undefined;
   if (!/^\d+$/.test(value)) return undefined;
   return parseInt(value, 10);

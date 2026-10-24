@@ -240,6 +240,38 @@ describe('what a project deploys as', () => {
       expect(analyze('docker').deployConfig.ollama?.models).toEqual(['qwen3.5:9b']);
     });
 
+    it('pulls the model COGITATOR_LLM_DEFAULT_MODEL selects, like loadConfig', () => {
+      expect(
+        analyze('docker', { COGITATOR_LLM_DEFAULT_MODEL: 'ollama/llama3.2' }).deployConfig.ollama
+          ?.models
+      ).toEqual(['llama3.2']);
+
+      write(
+        'cogitator.yml',
+        `${ollamaYml}deploy:\n  env:\n    COGITATOR_LLM_DEFAULT_MODEL: ollama/gemma3:4b\n`
+      );
+      expect(analyze('docker').deployConfig.ollama?.models).toEqual(['gemma3:4b']);
+    });
+
+    it('merges deploy.ollama and deploy.services of overrides field by field', () => {
+      write(
+        'cogitator.yml',
+        `${ollamaYml}deploy:\n  services:\n    redis: true\n  ollama:\n    models: [qwen3:8b]\n    image: ollama/ollama:rocm\n`
+      );
+      const result = analyzer.analyze(
+        dir,
+        { target: 'docker', ollama: { gpu: true }, services: { ollama: true } },
+        { env: {} }
+      );
+
+      expect(result.deployConfig.ollama).toEqual({
+        models: ['qwen3:8b'],
+        image: 'ollama/ollama:rocm',
+        gpu: true,
+      });
+      expect(result.deployConfig.services).toMatchObject({ redis: true, ollama: true });
+    });
+
     it('pulls the model deploy.env selects for the app', () => {
       write(
         'cogitator.yml',

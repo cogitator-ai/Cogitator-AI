@@ -58,8 +58,11 @@ const config = loadConfig({
   skipEnv: false, // true: ignore environment variables
   skipYaml: false, // true: ignore config files
   overrides: { limits: { maxConcurrentRuns: 4 } },
+  env: process.env, // the variables ${VAR}, COGITATOR_* and OLLAMA_HOST are read from
 });
 ```
+
+`env` reads the config the way another environment would see it, such as the one a deployment gives the app. `loadEnvConfig(env)` and `loadEnvDefaults(env)` take it too.
 
 `loadConfig()` does not read `.env` files. Load them first with `process.loadEnvFile()` (Node 20.12+), or parse one with `loadDotenvFile(path)` / `parseDotenv(text)` from the same package.
 

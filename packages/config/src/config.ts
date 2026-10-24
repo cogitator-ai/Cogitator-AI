@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { CogitatorConfig } from '@cogitator-ai/types';
 import { CogitatorConfigSchema, type CogitatorConfigInput } from './schema';
 import { loadYamlConfig } from './loaders/yaml';
-import { loadEnvConfig, loadEnvDefaults } from './loaders/env';
+import { loadEnvConfig, loadEnvDefaults, type ConfigEnv } from './loaders/env';
 
 export interface LoadConfigOptions {
   /** Path to YAML config file */
@@ -17,6 +17,12 @@ export interface LoadConfigOptions {
   skipYaml?: boolean;
   /** Override config values */
   overrides?: CogitatorConfigInput;
+  /**
+   * Environment the config is read in: the `${VAR}` references of the file and the
+   * `COGITATOR_*` and shared variables over it, `process.env` by default. A deployment
+   * passes the environment its app gets.
+   */
+  env?: ConfigEnv;
 }
 
 /**
@@ -33,18 +39,18 @@ export function loadConfig(options: LoadConfigOptions = {}): CogitatorConfig {
   const configs: CogitatorConfigInput[] = [];
 
   if (!options.skipEnv) {
-    configs.push(loadEnvDefaults());
+    configs.push(loadEnvDefaults(options.env));
   }
 
   if (!options.skipYaml) {
-    const yamlConfig = loadYamlConfig(options.configPath);
+    const yamlConfig = loadYamlConfig(options.configPath, options.env);
     if (yamlConfig) {
       configs.push(yamlConfig);
     }
   }
 
   if (!options.skipEnv) {
-    const envConfig = loadEnvConfig();
+    const envConfig = loadEnvConfig(options.env);
     configs.push(envConfig);
   }
 

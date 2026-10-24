@@ -312,3 +312,40 @@ describe('loadConfig hardening', () => {
     expect(Object.prototype).not.toHaveProperty('polluted');
   });
 });
+
+describe('loadConfig with an env of its own', () => {
+  const path = 'test-own-env-config.yaml';
+
+  afterEach(() => {
+    if (existsSync(path)) unlinkSync(path);
+  });
+
+  it('reads the file references, COGITATOR_* and shared variables from env, not process.env', () => {
+    writeFileSync(
+      path,
+      'llm:\n  defaultModel: ${CHAT_MODEL:-ollama/qwen3:8b}\nmemory:\n  embedding:\n    provider: ollama\n    baseUrl: ${EMBED_URL:-http://localhost:11434}\n'
+    );
+    const config = loadConfig({
+      configPath: path,
+      env: {
+        CHAT_MODEL: 'ollama/llama3.2',
+        EMBED_URL: 'http://ollama:11434',
+        COGITATOR_LLM_DEFAULT_PROVIDER: 'ollama',
+        OLLAMA_HOST: 'gpu-box',
+      },
+    });
+
+    expect(config.llm?.defaultModel).toBe('ollama/llama3.2');
+    expect(config.llm?.defaultProvider).toBe('ollama');
+    expect(config.llm?.providers?.ollama?.baseUrl).toBe('http://gpu-box:11434');
+    expect(config.memory?.embedding).toMatchObject({ baseUrl: 'http://ollama:11434' });
+  });
+
+  it('lets COGITATOR_LLM_DEFAULT_MODEL of env win over the file', () => {
+    writeFileSync(path, 'llm:\n  defaultModel: ollama/qwen3:8b\n');
+    expect(
+      loadConfig({ configPath: path, env: { COGITATOR_LLM_DEFAULT_MODEL: 'openai/gpt-5' } }).llm
+        ?.defaultModel
+    ).toBe('openai/gpt-5');
+  });
+});

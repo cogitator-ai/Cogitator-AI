@@ -56,12 +56,6 @@ const OLLAMA_OVERRIDE_NAMES: readonly string[] = OLLAMA_BASE_URL_SETTING?.env ??
 const OLLAMA_FALLBACK_NAMES: readonly string[] = OLLAMA_BASE_URL_SETTING?.fallbackEnv ?? [];
 /** Every variable the app reads the Ollama URL of its chat models from. */
 const OLLAMA_URL_NAMES: readonly string[] = [...OLLAMA_OVERRIDE_NAMES, ...OLLAMA_FALLBACK_NAMES];
-/** Variables the Ollama API key comes from, which make a URL-less Ollama mean Ollama Cloud. */
-const OLLAMA_API_KEY_NAMES: readonly string[] = PROVIDER_ENV.ollama
-  .filter((setting) => setting.field === 'apiKey')
-  .flatMap((setting) => providerEnvNames(setting));
-/** Where `llm.providers.ollama` goes with an API key and no URL, like the config schema. */
-const OLLAMA_CLOUD_URL = 'https://ollama.com';
 /** The model the Ollama embedding service of `@cogitator-ai/memory` uses without `memory.embedding.model`. */
 const OLLAMA_EMBEDDING_MODEL = 'nomic-embed-text';
 const OLLAMA_LOCAL_URL = `http://localhost:${OLLAMA_DEFAULT_PORT}`;
@@ -193,7 +187,7 @@ function mergeSection<T extends object>(
 /**
  * The deploy config the project asks for: the `deploy` section of its
  * cogitator.yml under explicit overrides, merging the nested sections
- * (services, env, health, resources) field by field.
+ * (services, env, health, resources, ollama) field by field.
  */
 function mergeDeployConfig(
   file: DeployConfig | undefined,
@@ -206,6 +200,7 @@ function mergeDeployConfig(
     env: mergeSection(file?.env, overrides?.env),
     health: mergeSection(file?.health, overrides?.health),
     resources: mergeSection(file?.resources, overrides?.resources),
+    ollama: mergeSection(file?.ollama, overrides?.ollama),
   };
 }
 
@@ -591,7 +586,7 @@ export class ProjectAnalyzer {
     }
 
     const deployLlm = fullConfig
-      ? this.yamlInput(configPath, { ...env, ...configured.env })?.llm
+      ? this.effectiveConfig(configPath, { ...env, ...configured.env })?.llm
       : undefined;
     const model = deployLlm?.defaultModel ?? fullConfig?.llm?.defaultModel ?? '';
     const defaultProvider = deployLlm?.defaultProvider ?? fullConfig?.llm?.defaultProvider;
@@ -764,8 +759,8 @@ export class ProjectAnalyzer {
     const { model, defaultProvider, target, env, configPath, configured, appSecrets, warnings } =
       input;
     const deployEnv: NodeJS.ProcessEnv = { ...env, ...configured.env };
-    const yaml = this.yamlInput(configPath, deployEnv);
-    const chatModels = this.ollamaChatModels(yaml, model, defaultProvider);
+    const effective = this.effectiveConfig(configPath, deployEnv);
+    const chatModels = this.ollamaChatModels(effective, model, defaultProvider);
     const chatUsed = chatModels.length > 0 || (model === '' && defaultProvider === 'ollama');
     const chatUrl = this.configValue(configPath, ['llm', 'providers', 'ollama', 'baseUrl']);
     const embedding = this.ollamaEmbedding(configPath, deployEnv);
@@ -963,31 +958,47 @@ export class ProjectAnalyzer {
   }
 
   /**
-   * The Ollama URLs the app ends up with in `env`, the way the runtime reads them:
-   * the chat URL from `COGITATOR_OLLAMA_BASE_URL`, then `llm.providers.ollama.baseUrl`,
-   * then `OLLAMA_BASE_URL`, `OLLAMA_URL` and `OLLAMA_HOST`, then Ollama Cloud when an
-   * API key is set and `http://localhost:11434` otherwise, the embedding URL from
-   * `memory.embedding.baseUrl` alone, `http://localhost:11434` without one.
+   * The config the app reads in `env`, loaded the way the runtime loads it: the
+   * file with its `${VAR}` references, under the `COGITATOR_*` variables and over
+   * the variables other tools share (`OLLAMA_HOST`), undefined when it is invalid.
+   */
+  private effectiveConfig(
+    configPath: string | undefined,
+    env: NodeJS.ProcessEnv
+  ): CogitatorConfig | undefined {
+    try {
+      return configPath && existsSync(configPath)
+        ? loadConfig({ configPath, env })
+        : loadConfig({ skipYaml: true, env });
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * The Ollama URLs the app ends up with in `env`: the chat URL of
+   * `llm.providers.ollama` in the config the runtime loads (`COGITATOR_OLLAMA_BASE_URL`
+   * over the file over `OLLAMA_BASE_URL`, `OLLAMA_URL` and `OLLAMA_HOST`, Ollama Cloud
+   * for an API key without a URL), the embedding URL from `memory.embedding.baseUrl`
+   * alone, both `http://localhost:11434` without one.
    */
   private ollamaUrls(configPath: string | undefined, env: NodeJS.ProcessEnv): OllamaUrls {
-    const yaml = this.yamlInput(configPath, env);
-    const firstUrl = (names: readonly string[]) =>
-      names.map((name) => resolveOllamaHost(env[name])).find((url) => url !== undefined);
-    const ollama = yaml?.llm?.providers?.ollama;
-    const apiKey =
-      (typeof ollama?.apiKey === 'string' && ollama.apiKey.trim() !== '') ||
-      OLLAMA_API_KEY_NAMES.some((name) => isSet(env, name));
-    const embedding = yaml?.memory?.embedding;
+    const config = this.effectiveConfig(configPath, env);
+    const embedding = this.ollamaEmbeddingConfig(config);
     return {
-      chat:
-        firstUrl(OLLAMA_OVERRIDE_NAMES) ??
-        resolveOllamaHost(ollama?.baseUrl) ??
-        firstUrl(OLLAMA_FALLBACK_NAMES) ??
-        (apiKey ? OLLAMA_CLOUD_URL : OLLAMA_LOCAL_URL),
-      embedding:
-        (embedding?.provider === 'ollama' ? resolveOllamaHost(embedding.baseUrl) : undefined) ??
-        OLLAMA_LOCAL_URL,
+      chat: resolveOllamaHost(config?.llm?.providers?.ollama?.baseUrl) ?? OLLAMA_LOCAL_URL,
+      embedding: resolveOllamaHost(embedding?.baseUrl) ?? OLLAMA_LOCAL_URL,
     };
+  }
+
+  /** `memory.embedding` of `config` when it is an Ollama embedding config. */
+  private ollamaEmbeddingConfig(
+    config: CogitatorConfig | undefined
+  ): { model?: string; baseUrl?: string } | undefined {
+    const embedding = config?.memory?.embedding;
+    return embedding && 'provider' in embedding && embedding.provider === 'ollama'
+      ? embedding
+      : undefined;
   }
 
   /**
@@ -1000,22 +1011,24 @@ export class ProjectAnalyzer {
    * list them in `deploy.ollama.models`.
    */
   private ollamaChatModels(
-    yaml: CogitatorConfigInput | undefined,
+    config: CogitatorConfig | undefined,
     model: string,
     defaultProvider: string | undefined
   ): string[] {
-    const memory = yaml?.memory;
-    const injection = yaml?.security?.promptInjection;
+    const memory = config?.memory;
+    const injection = config?.security?.promptInjection;
     const candidates = [
       model,
-      yaml?.context && yaml.context.enabled !== false ? yaml.context.summaryModel : undefined,
+      config?.context && config.context.enabled !== false ? config.context.summaryModel : undefined,
       memory?.compaction?.summaryModel,
       memory?.extraction?.model,
       memory?.brief?.model,
       memory?.observations?.model,
       memory?.consolidation?.model,
-      yaml?.reflection?.enabled ? yaml.reflection.reflectionModel : undefined,
-      yaml?.guardrails && yaml.guardrails.enabled !== false ? yaml.guardrails.model : undefined,
+      config?.reflection?.enabled ? config.reflection.reflectionModel : undefined,
+      config?.guardrails && config.guardrails.enabled !== false
+        ? config.guardrails.model
+        : undefined,
       injection?.classifier === 'llm' ? injection.llmModel : undefined,
     ];
     return unique(
@@ -1034,8 +1047,8 @@ export class ProjectAnalyzer {
     configPath: string | undefined,
     env: NodeJS.ProcessEnv
   ): { model: string; baseUrl?: string; variables: string[] } | undefined {
-    const embedding = this.yamlInput(configPath, env)?.memory?.embedding;
-    if (embedding?.provider !== 'ollama') return undefined;
+    const embedding = this.ollamaEmbeddingConfig(this.effectiveConfig(configPath, env));
+    if (!embedding) return undefined;
     const { raw, variables } = this.configValue(configPath, ['memory', 'embedding', 'baseUrl']);
     return {
       model: embedding.model ?? OLLAMA_EMBEDDING_MODEL,

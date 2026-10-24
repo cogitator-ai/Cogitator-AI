@@ -51,6 +51,12 @@ const config = loadConfig({
   },
 });
 
+// The same config as another environment sees it, such as a deployed app's
+const deployed = loadConfig({
+  configPath: './cogitator.yml',
+  env: { COGITATOR_LLM_DEFAULT_MODEL: 'ollama/llama3.2', OLLAMA_HOST: 'ollama' },
+});
+
 // Or define config programmatically with type safety
 const programmatic = defineConfig({
   llm: {

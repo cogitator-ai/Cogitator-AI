@@ -80,7 +80,7 @@ export {
   findConfigFile,
   CONFIG_FILE_NAMES,
 } from './loaders/yaml';
-export { loadEnvConfig, loadEnvDefaults } from './loaders/env';
+export { loadEnvConfig, loadEnvDefaults, type ConfigEnv } from './loaders/env';
 export { resolveOllamaHost, OLLAMA_DEFAULT_PORT } from './ollama';
 export {
   PROVIDER_ENV,
