@@ -317,3 +317,76 @@ describe('run limits', () => {
     await cog.close();
   });
 });
+
+describe('budgets in the second review round', () => {
+  it('adds up what runs of one thread spend at the same time', async () => {
+    const backend = new MockLLMBackend().setResponse({ ...answer(0.1), delay: 20 });
+    const cog = new Cogitator({
+      memory: { adapter: 'memory' },
+      llm: { backends: { mock: backend } },
+      budget: { session: { maxCostUsd: 100 } },
+    });
+    const agent = new Agent({ name: 'a', model: 'mock/m', instructions: 'x' });
+    await cog.run(agent, { input: 'first', threadId: 'b-parallel' });
+    await Promise.all([
+      cog.run(agent, { input: 'a', threadId: 'b-parallel' }),
+      cog.run(agent, { input: 'b', threadId: 'b-parallel' }),
+    ]);
+    const memory = await cog.getMemory();
+    const thread = await memory!.getThread('b-parallel');
+    const spent = thread.success ? thread.data?.metadata[SESSION_BUDGET_KEY] : undefined;
+    expect(spent).toMatchObject({ costUsd: expect.closeTo(0.3), tokens: 30 });
+    await cog.close();
+  });
+
+  it('charges the tool calls of a delegated agent to the caller and stops them at its limit', async () => {
+    const inner = new MockLLMBackend().setResponses([
+      { content: '', toolCalls: [call('i1'), call('i2')], usage: spend(0) },
+      answer(0),
+    ]);
+    const outer = new MockLLMBackend().setResponses([
+      {
+        content: '',
+        toolCalls: [{ id: 'd1', name: 'helper', arguments: { task: 'x' } }],
+        usage: spend(0),
+      },
+      answer(0),
+    ]);
+    lookups.mockClear();
+    const cog = new Cogitator({
+      memory: { adapter: 'memory' },
+      llm: { backends: { inner, outer } },
+      budget: { session: { maxToolCalls: 2 } },
+    });
+    const helper = new Agent({
+      name: 'helper-agent',
+      model: 'inner/m',
+      instructions: 'x',
+      tools: [lookup],
+    });
+    const lead = new Agent({
+      name: 'lead',
+      model: 'outer/m',
+      instructions: 'x',
+      tools: [agentAsTool(cog, helper, { name: 'helper', description: 'Helps' })],
+    });
+    await cog.run(lead, { input: 'go', threadId: 'b-delegate-tools' });
+    expect(lookups).not.toHaveBeenCalled();
+    await cog.close();
+  });
+
+  it('pauses instead of failing when the hourly budget is spent before the run starts', async () => {
+    const backend = new MockLLMBackend().setResponse(answer(1));
+    const cog = new Cogitator({
+      llm: { backends: { mock: backend } },
+      limits: { onExceeded: 'interrupt' },
+      costRouting: { enabled: true, budget: { maxCostPerHour: 0.5 } },
+    });
+    const agent = new Agent({ name: 'a', model: 'mock/m', instructions: 'x' });
+    await cog.run(agent, { input: '1', threadId: 'b-hour' });
+    const second = await cog.run(agent, { input: '2', threadId: 'b-hour-2' });
+    expect(second.status).toBe('paused');
+    expect(second.interrupts?.[0].details).toMatchObject({ scope: 'hour', metric: 'cost' });
+    await cog.close();
+  });
+});

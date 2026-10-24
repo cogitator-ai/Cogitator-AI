@@ -4,6 +4,7 @@
  */
 
 import type { PermissionBehavior, Tool } from '@cogitator-ai/types';
+import { wildcardMatch } from './wildcard';
 
 /** A rule read from its text */
 export interface ParsedRule {
@@ -22,8 +23,8 @@ export type AccessKind = 'read' | 'edit' | 'command' | 'fetch' | 'search' | 'age
 export type RuleTarget =
   | { kind: 'family'; family: AccessKind }
   | { kind: 'names'; names: readonly string[]; pathRulesNeverMatch?: boolean }
-  | { kind: 'mcp'; server: string; tool?: string; toolGlob?: RegExp }
-  | { kind: 'glob'; regex: RegExp }
+  | { kind: 'mcp'; server: string; tool?: string; toolGlob?: string }
+  | { kind: 'glob'; glob: string }
   | { kind: 'name'; name: string };
 
 /**
@@ -103,14 +104,6 @@ export function parseRule(text: string): ParsedRule | { error: string } {
     : { text: trimmed, tool, specifier };
 }
 
-function globRegex(glob: string): RegExp {
-  const source = glob
-    .split('*')
-    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
-    .join('[\\s\\S]*');
-  return new RegExp(`^${source}$`);
-}
-
 /** An MCP server or tool name as it appears in `mcp__<server>__<tool>` names */
 export function mcpNamePart(name: string): string {
   return name.replace(/[^A-Za-z0-9_-]/g, '_');
@@ -136,17 +129,17 @@ export function ruleTarget(
       if (behavior === 'allow') {
         return { error: `the allow rule "${rule.text}" must name its MCP server without "*"` };
       }
-      return { kind: 'glob', regex: globRegex(name) };
+      return { kind: 'glob', glob: name };
     }
     if (tool === undefined || tool === '*') return { kind: 'mcp', server };
-    if (tool.includes('*')) return { kind: 'mcp', server, toolGlob: globRegex(tool) };
+    if (tool.includes('*')) return { kind: 'mcp', server, toolGlob: tool };
     return { kind: 'mcp', server, tool };
   }
   if (name.includes('*')) {
     if (behavior === 'allow') {
       return { error: `the allow rule "${rule.text}" names tools with "*", which allows nothing` };
     }
-    return { kind: 'glob', regex: globRegex(name) };
+    return { kind: 'glob', glob: name };
   }
   return { kind: 'name', name };
 }
@@ -172,20 +165,21 @@ export function targetCovers(target: RuleTarget, tool: Tool): boolean {
       return tool.name === target.name;
     case 'glob':
       return (
-        target.regex.test(tool.name) || (tool.mcp !== undefined && target.regex.test(mcpName(tool)))
+        wildcardMatch(tool.name, target.glob) ||
+        (tool.mcp !== undefined && wildcardMatch(mcpName(tool), target.glob))
       );
     case 'mcp': {
       const origin = tool.mcp;
       const literal = `mcp__${target.server}__`;
       if (origin && mcpNamePart(origin.server) === target.server) {
         if (target.tool !== undefined) return mcpNamePart(origin.tool) === target.tool;
-        if (target.toolGlob) return target.toolGlob.test(mcpNamePart(origin.tool));
+        if (target.toolGlob) return wildcardMatch(mcpNamePart(origin.tool), target.toolGlob);
         return true;
       }
       if (!tool.name.startsWith(literal)) return false;
       const rest = tool.name.slice(literal.length);
       if (target.tool !== undefined) return rest === target.tool;
-      if (target.toolGlob) return target.toolGlob.test(rest);
+      if (target.toolGlob) return wildcardMatch(rest, target.toolGlob);
       return true;
     }
   }
@@ -197,7 +191,14 @@ function mcpName(tool: Tool): string {
     : tool.name;
 }
 
-const PARAMETER_FORM = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([\s\S]*)$/;
+/** `name:value` of a parameter specifier, the name an identifier, spaces around `:` allowed */
+function parameterForm(specifier: string): { name: string; value: string } | undefined {
+  const colon = specifier.indexOf(':');
+  if (colon === -1) return undefined;
+  const name = specifier.slice(0, colon).trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return undefined;
+  return { name, value: specifier.slice(colon + 1) };
+}
 
 /** The fields of a call that carry what its rules match, which a `param:value` rule cannot name */
 const PRIMARY_FIELDS = new Set([
@@ -216,9 +217,9 @@ export function parameterSpecifier(
   schemaKeys: ReadonlySet<string>
 ): { name: string; value: string } | undefined {
   if (specifier.trimEnd().endsWith(':*') && accessKindOf(tool) === 'command') return undefined;
-  const match = PARAMETER_FORM.exec(specifier);
+  const match = parameterForm(specifier);
   if (!match) return undefined;
-  const [, name, value] = match;
+  const { name, value } = match;
   if (PRIMARY_FIELDS.has(name)) return undefined;
   const kind = accessKindOf(tool);
   if (kind !== undefined && !schemaKeys.has(name)) return undefined;
@@ -231,5 +232,5 @@ export function parameterMatches(value: unknown, pattern: string): boolean {
   if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
     return false;
   }
-  return globRegex(pattern).test(String(value));
+  return wildcardMatch(String(value), pattern);
 }

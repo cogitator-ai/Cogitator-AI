@@ -21,6 +21,7 @@ import {
   compilePathPattern,
   normalizeRulePath,
   pathMatches,
+  patternReachesInto,
   resolveCallPath,
   type PathPattern,
   type ResolvedPath,
@@ -220,7 +221,11 @@ interface CommandCall {
 class CallSubject {
   private pathsPromise?: Promise<ResolvedPath[]>;
   private commandCall?: CommandCall | null;
-  private shellFiles?: Promise<{ reads: ResolvedPath[]; writes: ResolvedPath[] }>;
+  private shellFiles?: Promise<{
+    reads: ResolvedPath[];
+    readsInto: ResolvedPath[];
+    writes: ResolvedPath[];
+  }>;
   readonly parsed: unknown;
   readonly kind: AccessKind | undefined;
   readonly schemaKeys: ReadonlySet<string>;
@@ -288,22 +293,34 @@ class CallSubject {
   }
 
   /** The files the command line reads and changes, best effort, for path rules */
-  files(): Promise<{ reads: ResolvedPath[]; writes: ResolvedPath[] }> {
+  files(): Promise<{ reads: ResolvedPath[]; readsInto: ResolvedPath[]; writes: ResolvedPath[] }> {
     this.shellFiles ??= (async () => {
       const call = this.command();
-      if (!call) return { reads: [], writes: [] };
+      if (!call) return { reads: [], readsInto: [], writes: [] };
       const reads: ResolvedPath[] = [];
+      const readsInto: ResolvedPath[] = [];
       const writes: ResolvedPath[] = [];
+      const seen = new Set<string>();
+      const resolveOnce = async (path: string, into: ResolvedPath[]) => {
+        const key = `${into === reads ? 'r' : into === writes ? 'w' : 'd'}\u0000${path}`;
+        if (seen.has(key) || seen.size > MAX_SHELL_PATHS) return;
+        seen.add(key);
+        into.push(await resolveCallPath(path, call.cwd));
+      };
       for (const candidate of call.line.candidates) {
         const files = filesOf(candidate);
-        for (const path of files.reads) reads.push(await resolveCallPath(path, call.cwd));
-        for (const path of files.writes) writes.push(await resolveCallPath(path, call.cwd));
+        for (const path of files.reads) await resolveOnce(path, reads);
+        for (const path of files.readsInto) await resolveOnce(path, readsInto);
+        for (const path of files.writes) await resolveOnce(path, writes);
       }
-      return { reads, writes };
+      return { reads, readsInto, writes };
     })();
     return this.shellFiles;
   }
 }
+
+/** Most distinct paths of a command line resolved for path rules */
+const MAX_SHELL_PATHS = 2000;
 
 function stringOf(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
@@ -355,6 +372,25 @@ function anyPathMatches(
   return false;
 }
 
+/** Whether a path rule covers something inside one of the directories a command reads through */
+function reachesInto(
+  rule: CompiledRule,
+  specifier: string,
+  dirs: readonly ResolvedPath[],
+  subject: CallSubject,
+  projectRoot: string
+): boolean {
+  const pattern = compilePathPattern(
+    specifier,
+    rule.ref.behavior,
+    anchorsOf(rule, subject, projectRoot)
+  );
+  if ('error' in pattern || pattern.negated) return false;
+  return dirs.some(
+    (dir) => patternReachesInto(pattern, dir.requested) || patternReachesInto(pattern, dir.real)
+  );
+}
+
 /** The host a URL names, lowercase, undefined for one that cannot be read */
 function hostOf(url: unknown): string | undefined {
   if (typeof url !== 'string') return undefined;
@@ -367,9 +403,13 @@ function hostOf(url: unknown): string | undefined {
 
 /** Whether a `domain:...` specifier matches the URL of a fetch call: the host or a subdomain */
 function domainMatches(subject: CallSubject, specifier: string): boolean | undefined {
-  const match = /^\s*domain\s*:\s*(\S+)\s*$/.exec(specifier);
-  if (!match) return undefined;
-  const domain = match[1].toLowerCase();
+  const colon = specifier.indexOf(':');
+  if (colon === -1 || specifier.slice(0, colon).trim() !== 'domain') return undefined;
+  const domain = specifier
+    .slice(colon + 1)
+    .trim()
+    .toLowerCase();
+  if (domain === '' || /\s/.test(domain)) return undefined;
   let url: unknown;
   try {
     url = subject.tool.access?.url ? subject.tool.access.url(subject.parsed) : subject.args.url;
@@ -402,11 +442,12 @@ async function restrictiveMatch(
     specifier !== undefined;
   if (pathFamily && subject.kind === 'command') {
     const files = await subject.files();
-    const paths =
-      rule.target.kind === 'family' && rule.target.family === 'edit'
-        ? files.writes
-        : [...files.reads, ...files.writes];
+    const editing = rule.target.kind === 'family' && rule.target.family === 'edit';
+    const paths = editing ? files.writes : [...files.reads, ...files.writes];
     if (anyPathMatches(rule, specifier, paths, subject, projectRoot)) return true;
+    if (!editing && reachesInto(rule, specifier, files.readsInto, subject, projectRoot)) {
+      return true;
+    }
   }
   const crossRead =
     rule.ref.behavior === 'deny' &&
@@ -577,9 +618,9 @@ function allowableCommand(command: ShellCommand): boolean {
   return command.understood && assignsOnlySafeVariables(command);
 }
 
-/** Whether a deny or ask rule could name a command or a file a command line hides */
-function guardsCommands(rules: PermissionRuleSet, tool: Tool): boolean {
-  return [...rules.rules('deny'), ...rules.rules('ask')].some((rule) => {
+/** Whether a deny (and an ask) rule could name a command or a file a command line hides */
+function guardsCommands(rules: PermissionRuleSet, tool: Tool, denyOnly = false): boolean {
+  return [...rules.rules('deny'), ...(denyOnly ? [] : rules.rules('ask'))].some((rule) => {
     if (rule.parsed.specifier === undefined) return false;
     if (
       rule.target.kind === 'family' &&
@@ -752,13 +793,14 @@ async function decide(
   }
   const allowing = await allowingRule(subject, rules.rules('allow'), projectRoot, allow);
   if (allowing) return decision('allow', 'rule', ruleReason(allowing.ref, 'Allowed'), allowing.ref);
+  const call = subject.kind === 'command' ? subject.command() : undefined;
+  const hidden = call !== undefined && guarded && !(await allowableLine(call, allow));
   if (mode === 'bypassPermissions') {
-    const call = subject.kind === 'command' ? subject.command() : undefined;
-    if (call && guarded && !(await allowableLine(call, allow))) {
+    if (hidden && guardsCommands(rules, tool, true)) {
       return decision(
-        'ask',
+        'deny',
         'mode',
-        'The command line may hide a command or a file a deny or ask rule names, so it asks even in bypassPermissions mode'
+        'The command line is not plain enough to tell whether it runs a command or reads a file a deny rule names, and bypassPermissions mode never asks'
       );
     }
     return decision('allow', 'mode', 'bypassPermissions mode runs every call no deny rule refuses');
@@ -773,15 +815,16 @@ async function decide(
   if (mode === 'plan' && readOnlyCommand) {
     return decision('allow', 'mode', 'plan mode runs read-only commands');
   }
-  const editAsks = subject.kind === 'edit';
+  const editAsks = subject.kind === 'edit' || hidden;
   if (!context.needsApproval && !editAsks) {
     return decision('allow', 'default', `${tool.name} needs no approval`);
   }
-  const reason =
-    editAsks && !context.needsApproval
+  const reason = hidden
+    ? 'The command line is not plain enough to tell whether it runs a command or reads a file a deny or ask rule names'
+    : editAsks && !context.needsApproval
       ? `${tool.name} edits files, which asks unless a rule allows it or the mode is acceptEdits`
       : `${tool.name} needs approval for this call`;
-  if (mode === 'auto' && context.classify) {
+  if (mode === 'auto' && context.classify && !hidden) {
     try {
       const classified = await context.classify(reason);
       return decision(classified.decision, 'classifier', classified.reason);

@@ -6,6 +6,7 @@
  */
 
 import { basename } from 'node:path';
+import { wildcardMatch } from './wildcard';
 
 /** A redirection of a command */
 export interface ShellRedirect {
@@ -59,6 +60,8 @@ interface Word {
   expands: boolean;
   /** Some of it was quoted or escaped */
   quoted: boolean;
+  /** It holds an unquoted glob (`*`, `?`, `[...]`) or brace expansion, so the shell rewrites it */
+  globbed: boolean;
 }
 
 type Token =
@@ -105,6 +108,98 @@ function closingParen(line: string, open: number): number {
   return -1;
 }
 
+/** Reads the `}` or `]` that closes the `{` or `[` at `open`, nesting and quotes respected */
+function closingBracket(line: string, open: number): number {
+  const opener = line[open];
+  const closer = opener === '{' ? '}' : ']';
+  let depth = 0;
+  let quote: '"' | "'" | undefined;
+  for (let i = open; i < line.length; i++) {
+    const char = line[i];
+    if (quote === "'") {
+      if (char === "'") quote = undefined;
+      continue;
+    }
+    if (char === '\\') {
+      i++;
+      continue;
+    }
+    if (quote === '"') {
+      if (char === '"') quote = undefined;
+      continue;
+    }
+    if (char === "'" || char === '"') quote = char;
+    else if (char === opener) depth++;
+    else if (char === closer) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+const ANSI_ESCAPES: Record<string, string> = {
+  a: '\x07',
+  b: '\b',
+  e: '\x1b',
+  E: '\x1b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+  v: '\v',
+  '\\': '\\',
+  "'": "'",
+  '"': '"',
+  '?': '?',
+};
+
+/** The value of an ANSI-C quoted string (`$'...'`) starting after its `'`, and where it ends */
+function ansiC(line: string, from: number): { value: string; end: number } {
+  let value = '';
+  for (let i = from; i < line.length; i++) {
+    const char = line[i];
+    if (char === "'") return { value, end: i };
+    if (char !== '\\') {
+      value += char;
+      continue;
+    }
+    const next = line[i + 1] ?? '';
+    if (next in ANSI_ESCAPES) {
+      value += ANSI_ESCAPES[next];
+      i++;
+      continue;
+    }
+    if (next === 'x' || next === 'u' || next === 'U') {
+      const size = next === 'x' ? 2 : next === 'u' ? 4 : 8;
+      let digits = '';
+      while (digits.length < size && /[0-9A-Fa-f]/.test(line[i + 2 + digits.length] ?? '')) {
+        digits += line[i + 2 + digits.length];
+      }
+      value += digits ? String.fromCodePoint(Number.parseInt(digits, 16)) : `\\${next}`;
+      i += 1 + digits.length;
+      continue;
+    }
+    if (/[0-7]/.test(next)) {
+      let digits = '';
+      while (digits.length < 3 && /[0-7]/.test(line[i + 1 + digits.length] ?? '')) {
+        digits += line[i + 1 + digits.length];
+      }
+      value += String.fromCharCode(Number.parseInt(digits, 8));
+      i += digits.length;
+      continue;
+    }
+    if (next === 'c') {
+      value += String.fromCharCode((line.charCodeAt(i + 2) || 0) & 31);
+      i += 2;
+      continue;
+    }
+    value += `\\${next}`;
+    i++;
+  }
+  return { value, end: -1 };
+}
+
 function lex(line: string): Lexed {
   const tokens: Token[] = [];
   const nested: string[] = [];
@@ -112,33 +207,75 @@ function lex(line: string): Lexed {
   let i = 0;
 
   let word: Word | undefined;
-  const start = (): Word => (word ??= { value: '', expands: false, quoted: false });
+  const start = (): Word => (word ??= { value: '', expands: false, quoted: false, globbed: false });
+  let braceAt: number | undefined;
+  let bracketAt: number | undefined;
+
+  /** The command lines inside `text`: `$(...)` and backticks, also inside `${...}` and `$((...))` */
+  const collect = (text: string, depth = 0): void => {
+    if (depth > 8) return;
+    for (let at = 0; at < text.length; at++) {
+      const char = text[at];
+      if (char === '\\') {
+        at++;
+        continue;
+      }
+      if (char === "'") {
+        const end = text.indexOf("'", at + 1);
+        if (end === -1) return;
+        at = end;
+        continue;
+      }
+      if (char === '`') {
+        let end = at + 1;
+        while (end < text.length && text[end] !== '`') end += text[end] === '\\' ? 2 : 1;
+        nested.push(text.slice(at + 1, end));
+        at = end;
+        continue;
+      }
+      if (char === '$' && (text[at + 1] === '(' || text[at + 1] === '{' || text[at + 1] === '[')) {
+        const open = text[at + 1];
+        const end = open === '(' ? closingParen(text, at + 1) : closingBracket(text, at + 1);
+        if (end === -1) {
+          unfinished = true;
+          return;
+        }
+        const inner = text.slice(at + 2, end);
+        if (open === '(' && !inner.startsWith('(')) nested.push(inner);
+        else collect(inner, depth + 1);
+        at = end;
+      }
+    }
+  };
   const flush = () => {
     if (word) tokens.push({ type: 'word', word });
     word = undefined;
+    braceAt = undefined;
+    bracketAt = undefined;
   };
 
   /** Reads a `$`-expansion at `i`, adding to `current`. Returns the index after it */
-  const expansion = (current: Word, at: number): number => {
+  const expansion = (current: Word, at: number, quoted = false): number => {
     const next = line[at + 1];
-    current.expands = true;
-    if (next === '(') {
-      const end = closingParen(line, at + 1);
+    if (!quoted && next === "'") {
+      const { value, end } = ansiC(line, at + 2);
       if (end === -1) {
         unfinished = true;
         return line.length;
       }
-      const inner = line.slice(at + 2, end);
-      nested.push(inner.startsWith('(') && inner.endsWith(')') ? '' : inner);
-      current.value += line.slice(at, end + 1);
+      current.value += value;
+      current.quoted = true;
       return end + 1;
     }
-    if (next === '{') {
-      const end = line.indexOf('}', at + 2);
+    if (!quoted && next === '"') return at + 1;
+    current.expands = true;
+    if (next === '(' || next === '{' || next === '[') {
+      const end = next === '(' ? closingParen(line, at + 1) : closingBracket(line, at + 1);
       if (end === -1) {
         unfinished = true;
         return line.length;
       }
+      collect(line.slice(at, end + 1));
       current.value += line.slice(at, end + 1);
       return end + 1;
     }
@@ -182,6 +319,7 @@ function lex(line: string): Lexed {
           continue;
         }
         if (at + 1 >= line.length) {
+          unfinished = true;
           at++;
           continue;
         }
@@ -227,7 +365,7 @@ function lex(line: string): Lexed {
             continue;
           }
           if (inner === '$') {
-            at = expansion(current, at);
+            at = expansion(current, at, true);
             continue;
           }
           if (inner === '`') {
@@ -275,7 +413,16 @@ function lex(line: string): Lexed {
       ) {
         return at;
       }
-      start().value += char;
+      const current = start();
+      if (char === '*' || char === '?') current.globbed = true;
+      if (char === '[') bracketAt = current.value.length;
+      if (char === ']' && bracketAt !== undefined) current.globbed = true;
+      if (char === '{') braceAt = current.value.length;
+      if (char === '}' && braceAt !== undefined) {
+        const inside = current.value.slice(braceAt + 1);
+        if (inside.includes(',') || inside.includes('..')) current.globbed = true;
+      }
+      current.value += char;
       at++;
     }
     return at;
@@ -303,16 +450,16 @@ function lex(line: string): Lexed {
       if (fd) word = undefined;
       else flush();
       let op = char;
-      const rest = line.slice(i + 1);
+      const next = (text: string) => line.startsWith(text, i + 1);
       if (char === '>') {
-        if (rest.startsWith('>')) op = '>>';
-        else if (rest.startsWith('|')) op = '>|';
-        else if (rest.startsWith('&')) op = '>&';
-      } else if (rest.startsWith('<<')) op = '<<<';
-      else if (rest.startsWith('<-')) op = '<<-';
-      else if (rest.startsWith('<')) op = '<<';
-      else if (rest.startsWith('>')) op = '<>';
-      else if (rest.startsWith('&')) op = '<&';
+        if (next('>')) op = '>>';
+        else if (next('|')) op = '>|';
+        else if (next('&')) op = '>&';
+      } else if (next('<<')) op = '<<<';
+      else if (next('<-')) op = '<<-';
+      else if (next('<')) op = '<<';
+      else if (next('>')) op = '<>';
+      else if (next('&')) op = '<&';
       const { target, end } = readTarget(i + op.length);
       i = end;
       if (!target) {
@@ -426,6 +573,11 @@ const RUNS_OTHER_CODE = new Set([
   'trap',
   'alias',
   'nohup',
+  'xargs',
+  'busybox',
+  'toybox',
+  'command',
+  'builtin',
 ]);
 
 const FIND_ACTIONS = new Set([
@@ -535,13 +687,7 @@ function safeUnwrap(argv: string[]): string[] | undefined {
       rest = rest.slice(i);
       continue;
     }
-    if (head === 'command' || head === 'builtin' || head === 'noglob') {
-      if (rest[1]?.startsWith('-')) return undefined;
-      rest = rest.slice(1);
-      continue;
-    }
-    if (head === 'xargs') {
-      if (rest[1] === undefined || rest[1].startsWith('-')) return undefined;
+    if (head === 'noglob') {
       rest = rest.slice(1);
       continue;
     }
@@ -602,6 +748,8 @@ const LOOSE_WRAPPERS = new Set([
   'strace',
   'ltrace',
   'runuser',
+  'busybox',
+  'toybox',
 ]);
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'csh', 'tcsh']);
@@ -625,9 +773,31 @@ function looseUnwrap(argv: readonly string[]): { variants: string[][]; lines: st
       break;
     }
     if (SHELLS.has(program) || program === 'su') {
-      const script = rest.findIndex((word, index) => index > 0 && /^-[a-z]*c[a-z]*$/.test(word));
-      if (script !== -1 && rest[script + 1] !== undefined) lines.push(rest[script + 1]);
+      const script = rest.findIndex((word, index) => index > 0 && isScriptFlag(word));
+      let at = script + 1;
+      while (rest[at] === '--') at++;
+      if (script !== -1 && rest[at] !== undefined) lines.push(rest[at]);
       break;
+    }
+    if (program === 'git') {
+      for (let at = 1; at < rest.length - 1; at++) {
+        if (rest[at] !== '-c') continue;
+        const setting = rest[at + 1];
+        const bang = setting.indexOf('=!');
+        if (setting.startsWith('alias.') && bang !== -1) lines.push(setting.slice(bang + 2));
+      }
+    }
+    if (program === 'env') {
+      for (let at = 1; at < rest.length; at++) {
+        const word = rest[at];
+        if ((word === '-S' || word === '--split-string') && rest[at + 1] !== undefined) {
+          lines.push(rest.slice(at + 1).join(' '));
+        } else if (word.startsWith('--split-string=')) {
+          lines.push([word.slice('--split-string='.length), ...rest.slice(at + 1)].join(' '));
+        } else if (word.startsWith('-S') && word.length > 2) {
+          lines.push([word.slice(2), ...rest.slice(at + 1)].join(' '));
+        }
+      }
     }
     if (program === 'find') {
       const action = rest.findIndex(
@@ -675,6 +845,78 @@ function looseUnwrap(argv: readonly string[]): { variants: string[][]; lines: st
   return { variants, lines };
 }
 
+/** A shell option that takes a script, such as `-c`, `-lc`, `-ce` */
+function isScriptFlag(word: string): boolean {
+  if (word.length < 2 || !word.startsWith('-') || word.startsWith('--')) return false;
+  let script = false;
+  for (let at = 1; at < word.length; at++) {
+    const char = word[at];
+    if (char === 'c') script = true;
+    else if (char < 'a' || char > 'z') return false;
+  }
+  return script;
+}
+
+/** Interpreters, and the options that hand them program text on the command line */
+const INTERPRETERS: Record<string, readonly string[]> = {
+  python: ['-c'],
+  python2: ['-c'],
+  python3: ['-c'],
+  pypy: ['-c'],
+  pypy3: ['-c'],
+  node: ['-e', '-p', '--eval', '--print'],
+  nodejs: ['-e', '-p', '--eval', '--print'],
+  deno: ['eval'],
+  bun: ['-e', '--eval', '-p', '--print'],
+  perl: ['-e', '-E'],
+  ruby: ['-e'],
+  php: ['-r'],
+  lua: ['-e'],
+  luajit: ['-e'],
+  tclsh: [],
+  osascript: ['-e'],
+  Rscript: ['-e'],
+  R: ['-e'],
+  julia: ['-e', '--eval'],
+};
+
+/**
+ * Whether `argv` runs program text an allow rule cannot judge: an interpreter given code on the
+ * command line (`python3 -c`, `node -e`, `perl -e`, `deno eval`...) or reading it from stdin (no
+ * script operand), or `awk` and its kin, whose program is their first operand
+ */
+export function runsInlineCode(argv: readonly string[]): boolean {
+  const program = basename(argv[0] ?? '');
+  if (program === 'awk' || program === 'gawk' || program === 'mawk' || program === 'nawk')
+    return true;
+  const flags = INTERPRETERS[program] ?? INTERPRETERS[withoutVersion(program)];
+  if (!flags) return false;
+  const operands = argv.slice(1).filter((word) => !word.startsWith('-'));
+  if (operands.length === 0 || operands[0] === '-') return true;
+  return argv
+    .slice(1)
+    .some((word) =>
+      flags.some((flag) =>
+        flag.startsWith('--')
+          ? word === flag || word.startsWith(`${flag}=`)
+          : flag.startsWith('-')
+            ? word === flag ||
+              (word.startsWith('-') && !word.startsWith('--') && word.includes(flag[1]))
+            : word === flag
+      )
+    );
+}
+
+/** `python3.12` as `python`: the name without the digits and dots at its end */
+function withoutVersion(program: string): string {
+  let end = program.length;
+  while (end > 0 && /[\d.]/.test(program[end - 1])) end--;
+  return program.slice(0, end);
+}
+
+/** Whether the file system compares names without case, so `TOUCH` runs `touch` */
+const CASE_INSENSITIVE = process.platform === 'darwin' || process.platform === 'win32';
+
 function command(
   argv: string[],
   assigned: string[],
@@ -720,7 +962,7 @@ export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
       if (rest[0].expands) understood = false;
       rest = rest.slice(1);
     }
-    if (rest.some((word) => word.expands)) understood = false;
+    if (rest.some((word) => word.expands || word.globbed)) understood = false;
     let argv = rest.map((word) => word.value);
     if (argv[0] === 'env') {
       let i = 1;
@@ -738,7 +980,7 @@ export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
       else effective = unwrapped;
     }
     const program = effective[0] ?? '';
-    if (RUNS_OTHER_CODE.has(basename(program))) understood = false;
+    if (RUNS_OTHER_CODE.has(basename(program)) || runsInlineCode(effective)) understood = false;
     if (basename(program) === 'git' && effective[1]?.startsWith('-')) {
       if (!['--version', '--help'].includes(effective[1])) understood = false;
     }
@@ -748,6 +990,7 @@ export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
     if (!understood) certain = false;
     const own = command(effective.length > 0 ? effective : argv, assigned, redirects, understood);
     commands.push(own);
+    if (argv.length === 0) candidates.push(own);
     const seen = new Set<string>();
     const add = (variant: string[]) => {
       const key = variant.join('\u0000');
@@ -760,7 +1003,19 @@ export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
     add(argv);
     add(effective);
     const loose = looseUnwrap(argv);
-    for (const variant of loose.variants) add(variant);
+    for (const variant of loose.variants) {
+      add(variant);
+      const name = basename(variant[0] ?? '');
+      if (CASE_INSENSITIVE && name.toLowerCase() !== name) {
+        add([name.toLowerCase(), ...variant.slice(1)]);
+      }
+    }
+    const runner = basename(argv[0] ?? '');
+    if (SHELLS.has(runner) || INTERPRETERS[runner] !== undefined) {
+      for (const redirect of redirects) {
+        if (redirect.op === '<<<') loose.lines.push(redirect.target);
+      }
+    }
     if (depth < MAX_DEPTH) {
       for (const inner of loose.lines)
         candidates.push(...parseCommandLine(inner, depth + 1).candidates);
@@ -839,70 +1094,27 @@ export function matchesCommandPattern(command: string, pattern: string): boolean
   if (spec === '*' || spec === '') return true;
   const wildcards = spec.split('*').length - 1;
   if (wildcards === 1 && spec.endsWith(' *') && command === spec.slice(0, -2)) return true;
-  const source = spec
-    .split('*')
-    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
-    .join('[\\s\\S]*');
-  return new RegExp(`^${source}$`).test(command);
+  return wildcardMatch(command, spec);
 }
 
-/** Programs that read the files they name, for `Read(...)` deny and ask rules */
-const READERS = new Set([
-  'cat',
-  'head',
-  'tail',
-  'less',
-  'more',
+/** Programs that read the directories they name with everything inside */
+const RECURSIVE_READERS = new Set(['rg', 'ag', 'ack', 'tar', 'bsdtar', 'rsync', 'scp']);
+
+/** Programs that read directories recursively with `-r`, `-R` or `--recursive` */
+const RECURSIVE_WITH_FLAG = new Set([
   'grep',
   'egrep',
   'fgrep',
-  'rg',
-  'ag',
-  'sed',
-  'awk',
-  'gawk',
-  'cut',
-  'sort',
-  'uniq',
-  'xxd',
-  'od',
-  'hexdump',
-  'strings',
-  'base64',
-  'nl',
-  'tac',
-  'wc',
-  'file',
+  'cp',
+  'zip',
+  'ls',
+  'chmod',
+  'chown',
   'diff',
-  'cmp',
-  'jq',
-  'yq',
-  'md5sum',
-  'sha1sum',
-  'sha256sum',
-  'shasum',
-  'bat',
-  'view',
-  'vi',
-  'vim',
-  'nano',
-  'source',
-  '.',
 ]);
 
-/** Programs whose first operand is a pattern or a script rather than a file */
-const PATTERN_FIRST = new Set([
-  'grep',
-  'egrep',
-  'fgrep',
-  'rg',
-  'ag',
-  'sed',
-  'awk',
-  'gawk',
-  'jq',
-  'yq',
-]);
+/** Programs whose first operand is a pattern rather than a file */
+const PATTERN_FIRST = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack']);
 
 /** Programs that change the files they name */
 const EDITORS = new Set([
@@ -932,13 +1144,32 @@ function operandsOf(argv: readonly string[]): string[] {
   return operands;
 }
 
+/** The paths a word may name: itself, what follows `=` (`if=x`, `--file=x`) and `:` (`HEAD:x`) */
+function pathsIn(word: string): string[] {
+  const paths = [word];
+  const equals = word.indexOf('=');
+  if (equals !== -1 && equals < word.length - 1) paths.push(word.slice(equals + 1));
+  const colon = word.indexOf(':');
+  if (colon !== -1 && colon < word.length - 1 && !word.includes('://')) {
+    paths.push(word.slice(colon + 1));
+  }
+  return paths;
+}
+
 /**
- * The files a command reads and the files it changes, best effort as Claude Code reads them: the
- * operands of readers (`cat`, `grep`, `sed`...), the sources and the target of `cp`, `mv`,
- * `install` and `ln`, the operands of `tee`, `touch`, `rm`..., and the targets of redirections
+ * The files a command may read, the directories it may read through, and the files it changes,
+ * best effort: every word after the program counts as a file it may read (with what follows `=`
+ * or `:` in it), whatever the program, the operands of recursive readers (`grep -r`, `rg`, `tar`,
+ * `cp -r`...) as directories, and the targets of `cp`, `mv`, `install` and `ln`, the operands of
+ * `tee`, `touch`, `rm`, `sed -i`... and output redirections as changed files
  */
-export function filesOf(command: ShellCommand): { reads: string[]; writes: string[] } {
+export function filesOf(command: ShellCommand): {
+  reads: string[];
+  readsInto: string[];
+  writes: string[];
+} {
   const reads: string[] = [];
+  const readsInto: string[] = [];
   const writes: string[] = [];
   for (const redirect of command.redirects) {
     if (redirect.reads) reads.push(redirect.target);
@@ -946,22 +1177,33 @@ export function filesOf(command: ShellCommand): { reads: string[]; writes: strin
   }
   const program = basename(command.argv[0] ?? '');
   const operands = operandsOf(command.argv);
-  if (READERS.has(program)) {
-    const files =
-      PATTERN_FIRST.has(program) && !command.argv.some((word) => word === '-e' || word === '-f')
-        ? operands.slice(1)
-        : operands;
-    reads.push(...files);
-    if (
-      program === 'sed' &&
-      command.argv.some((word) => word.startsWith('-i') || word === '--in-place')
-    ) {
-      writes.push(...files);
-    }
-  } else if (['cp', 'mv', 'install', 'ln', 'rsync', 'scp'].includes(program)) {
+  for (const word of command.argv.slice(1)) reads.push(...pathsIn(word));
+  const recursive =
+    RECURSIVE_READERS.has(program) ||
+    (RECURSIVE_WITH_FLAG.has(program) &&
+      command.argv.some(
+        (word) =>
+          word === '--recursive' ||
+          word === '-a' ||
+          (word.startsWith('-') && !word.startsWith('--') && /[rR]/.test(word))
+      ));
+  if (recursive) {
+    const searched =
+      PATTERN_FIRST.has(program) && !command.argv.includes('-e') ? operands.slice(1) : operands;
+    readsInto.push(...(searched.length > 0 ? searched : ['.']));
+  }
+  if (
+    (program === 'sed' || program === 'gsed' || program === 'perl') &&
+    command.argv.some((word) => word.startsWith('-i') || word === '--in-place')
+  ) {
+    writes.push(...operands.slice(1));
+  }
+  if (['cp', 'mv', 'install', 'ln', 'rsync', 'scp'].includes(program)) {
     const target = command.argv.findIndex((word) => word === '-t' || word === '--target-directory');
     const attached = command.argv.find(
-      (word) => /^-t./.test(word) || word.startsWith('--target-directory=')
+      (word) =>
+        (word.startsWith('-t') && word.length > 2 && !word.startsWith('--')) ||
+        word.startsWith('--target-directory=')
     );
     if (target !== -1 || attached) {
       const dir = attached
@@ -970,16 +1212,14 @@ export function filesOf(command: ShellCommand): { reads: string[]; writes: strin
           : attached.slice(2)
         : command.argv[target + 1];
       if (dir) writes.push(dir);
-      reads.push(...operands.filter((operand) => operand !== dir));
-    } else {
-      reads.push(...operands.slice(0, -1));
-      if (operands.length > 0) writes.push(operands[operands.length - 1]);
+    } else if (operands.length > 0) {
+      writes.push(operands[operands.length - 1]);
     }
     if (program === 'mv') writes.push(...operands.slice(0, -1));
   } else if (EDITORS.has(program)) {
     writes.push(...(program === 'chmod' || program === 'chown' ? operands.slice(1) : operands));
   }
-  return { reads, writes };
+  return { reads, readsInto, writes };
 }
 
 /** The options of the commands `acceptEdits` runs, and which of them take a path or a value */
@@ -1080,59 +1320,284 @@ export function editCommandPaths(command: ShellCommand): string[] | undefined {
   return paths;
 }
 
-/** Commands `plan` mode runs: they read and never change anything */
-const READ_ONLY_COMMANDS = new Set([
-  'ls',
-  'cat',
-  'head',
-  'tail',
-  'wc',
-  'pwd',
-  'echo',
-  'grep',
-  'egrep',
-  'fgrep',
-  'rg',
-  'tree',
-  'file',
-  'stat',
-  'du',
-  'df',
-  'which',
-  'whoami',
-  'date',
-  'uname',
-  'diff',
-  'cmp',
-  'sort',
-  'uniq',
-  'cut',
-  'nl',
-  'basename',
-  'dirname',
-  'realpath',
-  'true',
-  'false',
-]);
+/**
+ * The commands `plan` mode runs, with the options each may take: short flags without a value,
+ * short and long options with a value, long flags, and the most operands (`uniq in out` writes
+ * `out`). Any other option makes the command not read-only
+ */
+interface ReadOnlySpec {
+  flags?: string;
+  valued?: readonly string[];
+  long?: readonly string[];
+  longValued?: readonly string[];
+  maxOperands?: number;
+  /** Any argument, the command reads nothing from them (`echo`, `pwd`) */
+  anything?: boolean;
+}
 
-const READ_ONLY_GIT = new Set([
-  'status',
-  'log',
-  'diff',
-  'show',
-  'blame',
-  'rev-parse',
-  'ls-files',
-  'grep',
-  'shortlog',
-  'describe',
-]);
+const READ_ONLY: Record<string, ReadOnlySpec> = {
+  ls: {
+    flags: 'laAhRtSr1dFGiopsucUX',
+    long: ['--all', '--almost-all', '--human-readable', '--recursive', '--color'],
+    longValued: ['--color', '--sort', '--time-style'],
+  },
+  cat: { flags: 'nbsAvETeut', long: ['--number', '--show-all'] },
+  head: { flags: 'qvz', valued: ['-n', '-c'], longValued: ['--lines', '--bytes'] },
+  tail: { flags: 'qvzfF', valued: ['-n', '-c'], longValued: ['--lines', '--bytes'] },
+  wc: { flags: 'lwcmL', long: ['--lines', '--words', '--chars', '--bytes'] },
+  pwd: { flags: 'LP', maxOperands: 0 },
+  echo: { anything: true },
+  printf: { anything: true },
+  true: { anything: true },
+  false: { anything: true },
+  whoami: { maxOperands: 0 },
+  date: {
+    flags: 'uR',
+    valued: ['-d', '-r'],
+    long: ['--utc', '--rfc-3339'],
+    longValued: ['--date', '--rfc-3339', '--iso-8601'],
+    maxOperands: 1,
+  },
+  uname: { flags: 'asnrvmpio', maxOperands: 0 },
+  grep: {
+    flags: 'rRinvwlLcoqsEFGPhHxzZabIUT',
+    valued: ['-e', '-f', '-A', '-B', '-C', '-m', '-d', '-D'],
+    long: [
+      '--recursive',
+      '--ignore-case',
+      '--invert-match',
+      '--word-regexp',
+      '--count',
+      '--files-with-matches',
+      '--line-number',
+      '--color',
+      '--no-messages',
+      '--extended-regexp',
+      '--fixed-strings',
+    ],
+    longValued: [
+      '--include',
+      '--exclude',
+      '--exclude-dir',
+      '--color',
+      '--colour',
+      '--max-count',
+      '--context',
+      '--after-context',
+      '--before-context',
+      '--regexp',
+    ],
+  },
+  rg: {
+    flags: 'iswlcnNvFHLuUS0',
+    valued: ['-e', '-g', '-t', '-T', '-A', '-B', '-C', '-m', '-M'],
+    long: [
+      '--hidden',
+      '--no-ignore',
+      '--files',
+      '--count',
+      '--json',
+      '--line-number',
+      '--ignore-case',
+      '--smart-case',
+      '--word-regexp',
+      '--fixed-strings',
+      '--files-with-matches',
+      '--no-heading',
+      '--heading',
+      '--follow',
+    ],
+    longValued: [
+      '--glob',
+      '--type',
+      '--type-not',
+      '--max-count',
+      '--context',
+      '--after-context',
+      '--before-context',
+      '--regexp',
+      '--max-depth',
+      '--color',
+    ],
+  },
+  tree: { flags: 'adfiLlpshDCJ', valued: ['-L', '-I', '-P'] },
+  file: { flags: 'bLhiN' },
+  stat: { flags: 'Lft', valued: ['-c'], longValued: ['--format', '--printf'] },
+  du: { flags: 'shacbkmLxH', valued: ['-d'], longValued: ['--max-depth'] },
+  df: { flags: 'hHkiTlaP' },
+  which: { flags: 'a' },
+  basename: { flags: 'az', valued: ['-s'] },
+  dirname: { flags: 'z' },
+  realpath: { flags: 'eLPqsz', valued: [] },
+  nl: { flags: 'bnpw', valued: ['-b', '-n', '-s', '-v', '-w'] },
+  cut: {
+    flags: 'nsz',
+    valued: ['-d', '-f', '-c', '-b'],
+    longValued: ['--delimiter', '--fields', '--characters', '--bytes'],
+  },
+  sort: {
+    flags: 'rnufbdghiMRVsz',
+    valued: ['-k', '-t'],
+    longValued: ['--key', '--field-separator'],
+  },
+  uniq: { flags: 'cdiuzD', valued: ['-f', '-s', '-w'], maxOperands: 1 },
+  diff: {
+    flags: 'uqrNiwbBaEsy',
+    valued: ['-U', '-C'],
+    long: ['--brief', '--recursive', '--unified'],
+    longValued: ['--unified', '--color'],
+  },
+  cmp: { flags: 'lsb', valued: ['-n', '-i'] },
+};
 
-/** Whether `command` only reads: a known read-only program, without output redirections */
+const READ_ONLY_GIT: Record<string, ReadOnlySpec> = {
+  status: {
+    flags: 'sbuz',
+    long: ['--short', '--branch', '--porcelain', '--long'],
+    longValued: ['--porcelain', '--untracked-files'],
+  },
+  log: {
+    flags: 'p',
+    valued: ['-n'],
+    long: [
+      '--oneline',
+      '--graph',
+      '--all',
+      '--stat',
+      '--decorate',
+      '--reverse',
+      '--name-only',
+      '--name-status',
+    ],
+    longValued: [
+      '--max-count',
+      '--since',
+      '--until',
+      '--author',
+      '--grep',
+      '--format',
+      '--pretty',
+      '--decorate',
+    ],
+  },
+  diff: {
+    flags: 'pw',
+    valued: ['-U'],
+    long: [
+      '--stat',
+      '--cached',
+      '--staged',
+      '--name-only',
+      '--name-status',
+      '--no-ext-diff',
+      '--no-textconv',
+      '--color',
+    ],
+    longValued: ['--unified', '--color'],
+  },
+  show: {
+    flags: 'p',
+    long: ['--stat', '--oneline', '--name-only', '--no-ext-diff', '--no-textconv'],
+    longValued: ['--format', '--pretty'],
+  },
+  blame: { flags: 'lsewp', valued: ['-L'] },
+  'rev-parse': {
+    long: ['--show-toplevel', '--abbrev-ref', '--git-dir', '--is-inside-work-tree', '--short'],
+    longValued: ['--short'],
+  },
+  'ls-files': {
+    flags: 'comdsz',
+    long: ['--others', '--cached', '--modified', '--deleted', '--exclude-standard'],
+  },
+  shortlog: { flags: 'sne' },
+  describe: {
+    long: ['--tags', '--always', '--dirty', '--long'],
+    longValued: ['--abbrev', '--match'],
+  },
+  branch: { flags: 'avrl', long: ['--list', '--all', '--remotes', '--show-current', '--verbose'] },
+};
+
+/** Whether `args` only uses the options `spec` allows, with at most its operands */
+function argsAllowed(args: readonly string[], spec: ReadOnlySpec): boolean {
+  if (spec.anything) return true;
+  let operands = 0;
+  let options = true;
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i];
+    if (options && word === '--') {
+      options = false;
+      continue;
+    }
+    if (options && word.startsWith('--')) {
+      const equals = word.indexOf('=');
+      const name = equals === -1 ? word : word.slice(0, equals);
+      if (equals !== -1) {
+        if (!spec.longValued?.includes(name)) return false;
+        continue;
+      }
+      if (spec.long?.includes(name)) continue;
+      if (spec.longValued?.includes(name) && i + 1 < args.length) {
+        i++;
+        continue;
+      }
+      return false;
+    }
+    if (options && word.startsWith('-') && word.length > 1) {
+      if (/^-\d+$/.test(word) && (spec.valued?.includes('-n') ?? false)) continue;
+      for (let at = 1; at < word.length; at++) {
+        const flag = `-${word[at]}`;
+        if (spec.valued?.includes(flag)) {
+          if (at === word.length - 1) i++;
+          break;
+        }
+        if (!spec.flags?.includes(word[at])) return false;
+      }
+      continue;
+    }
+    operands++;
+  }
+  return spec.maxOperands === undefined || operands <= spec.maxOperands;
+}
+
+/**
+ * Whether `command` only reads: a known read-only program with options known to only read
+ * (no `sort -o`, `rg --pre`, a second `uniq` operand), and no output redirection
+ */
 export function isReadOnlyCommand(command: ShellCommand): boolean {
   if (!command.understood || command.redirects.some((redirect) => redirect.writes)) return false;
   const program = command.argv[0] ?? '';
-  if (program === 'git') return READ_ONLY_GIT.has(command.argv[1] ?? '');
-  if (program === 'find') return !command.argv.some((word) => FIND_ACTIONS.has(word));
-  return READ_ONLY_COMMANDS.has(program);
+  if (program === 'git') {
+    const spec = READ_ONLY_GIT[command.argv[1] ?? ''];
+    return spec !== undefined && argsAllowed(command.argv.slice(2), spec);
+  }
+  if (program === 'find') {
+    return command.argv
+      .slice(1)
+      .every(
+        (word) =>
+          !word.startsWith('-') ||
+          [
+            '-name',
+            '-iname',
+            '-type',
+            '-path',
+            '-ipath',
+            '-maxdepth',
+            '-mindepth',
+            '-size',
+            '-mtime',
+            '-newer',
+            '-print',
+            '-not',
+            '-o',
+            '-a',
+            '-empty',
+            '-L',
+            '-H',
+            '-P',
+          ].includes(word)
+      );
+  }
+  const spec = Object.hasOwn(READ_ONLY, program) ? READ_ONLY[program] : undefined;
+  return spec !== undefined && argsAllowed(command.argv.slice(1), spec);
 }

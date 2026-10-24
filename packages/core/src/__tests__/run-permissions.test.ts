@@ -676,3 +676,82 @@ describe('permissions across the run lifecycle', () => {
     await cog.close();
   });
 });
+
+describe('permissions in the second review round', () => {
+  const ran = vi.fn(async () => 'ran');
+  const opsTool = tool({
+    name: 'ops_task',
+    description: 'Ops work',
+    parameters: z.object({}),
+    execute: ran,
+  });
+
+  beforeEach(() => {
+    ran.mockClear();
+  });
+
+  it('does not hand over when the handoff call is refused', async () => {
+    const backend = new MockLLMBackend().setResponses([
+      turn(call('h1', 'transfer_to_ops', {})),
+      { content: 'stayed' },
+    ]);
+    const cog = new Cogitator({ llm: { backends: { mock: backend }, retry: false } });
+    const ops = new Agent({ name: 'ops', model: 'mock/m', instructions: 'Ops.', tools: [opsTool] });
+    const triage = new Agent({
+      name: 'triage',
+      model: 'mock/m',
+      instructions: 'Triage.',
+      handoffs: [ops],
+    });
+    const result = await cog.run(triage, {
+      input: 'go',
+      permissions: { deny: ['transfer_to_ops'] },
+    });
+    expect(result.finalAgent).toBeUndefined();
+    expect(toolTexts(result.messages)[0]).toContain('Permission denied');
+    await cog.close();
+  });
+
+  it('a deny rule given with the resume wins over an approval given with it', async () => {
+    const { cog } = setup([turn(call('c1', 'send_email', { to: 'a@b.co', body: 'hi' }))], {
+      permissions: {},
+    });
+    await cog.run(coder(), { input: 'mail', threadId: 't-fresh-deny' });
+    await cog.resume(coder(), 't-fresh-deny', {
+      decisions: { c1: { approved: true } },
+      permissions: { deny: ['send_email'] },
+    });
+    expect(sent).not.toHaveBeenCalled();
+    await cog.close();
+  });
+
+  it('switching a run into plan mode offers exit_plan_mode', async () => {
+    const { cog, backend } = setup([turn(call('p1', EXIT_PLAN_MODE, { plan: 'Do it' }))]);
+    const handle = cog.start(coder(), { input: 'plan', threadId: 't-switch-plan' });
+    handle.setPermissionMode('plan');
+    const result = await handle.result;
+    expect(backend.getCalls()[0].tools?.map((t) => t.name)).toContain(EXIT_PLAN_MODE);
+    expect(result.interrupts?.[0].kind).toBe('plan');
+    await cog.close();
+  });
+
+  it('invokeTool asks the auto mode classifier, and a transcript of 0 messages sends none', async () => {
+    const classify = vi.fn().mockResolvedValue({ decision: 'allow', reason: 'fine' });
+    const cog = new Cogitator({ permissions: { mode: 'auto', classifier: { classify } } });
+    const result = await cog.invokeTool(sendEmail, { to: 'a@b.co', body: '' });
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(result.result).toBe('sent to a@b.co');
+    await cog.close();
+
+    const judge = new MockLLMBackend().setResponse({
+      content: '{"decision": "allow", "reason": "ok"}',
+    });
+    const quiet = setup([turn(call('c1', 'send_email', { to: 'a@b.co', body: '1' }))], {
+      llm: { backends: { judge } },
+      permissions: { mode: 'auto', classifier: { model: 'judge/j', transcriptMessages: 0 } },
+    });
+    await quiet.cog.run(coder(), { input: 'mail' });
+    expect(String(judge.getLastCall()?.messages[1].content)).not.toContain('<recent_conversation>');
+    await quiet.cog.close();
+  });
+});

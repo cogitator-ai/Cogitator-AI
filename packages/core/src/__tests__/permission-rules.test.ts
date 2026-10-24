@@ -15,6 +15,7 @@ import {
   normalizeRulePath,
   parseCommandLine,
   parseRule,
+  pathMatches,
   resolvePermission,
   ruleAllowsCall,
   suggestRule,
@@ -151,7 +152,7 @@ describe('command patterns', () => {
   it('takes known wrappers and assignments off, and knows an unfinished line', () => {
     expect(parseCommandLine('timeout 30 npm test').commands[0].text).toBe('npm test');
     expect(parseCommandLine('time nice -n 5 npm test').commands[0].text).toBe('npm test');
-    expect(parseCommandLine('xargs grep pattern').commands[0].text).toBe('grep pattern');
+    expect(parseCommandLine('xargs grep pattern').commands[0].understood).toBe(false);
     expect(parseCommandLine('xargs -n1 grep pattern').commands[0].understood).toBe(false);
     const assigned = parseCommandLine('NODE_ENV=test FOO=bar npm test').commands[0];
     expect(assigned).toMatchObject({ text: 'npm test', assigned: ['NODE_ENV', 'FOO'] });
@@ -205,7 +206,7 @@ describe('path patterns', () => {
   const matches = (spec: string, path: string, behavior: 'allow' | 'deny' = 'allow') => {
     const pattern = compilePathPattern(spec, behavior, anchors());
     if ('error' in pattern) throw new Error(pattern.error);
-    return pattern.regex.test(path);
+    return pathMatches(pattern, path) === 'self';
   };
 
   it.each([
@@ -575,10 +576,12 @@ describe('shell commands an allow rule cannot be fooled by', () => {
   });
 
   it.each(['$(echo rm) -rf /', 'f=rm; $f -rf /', 'find . -delete'])(
-    'a line that may hide a denied command asks: %j',
+    'a line that may hide a denied command asks, and is refused in modes that never ask: %j',
     async (command) => {
       expect(await run(command, { deny: ['Bash(rm *)'], allow: ['Bash'] })).toBe('ask');
-      expect(await run(command, { deny: ['Bash(rm *)'] }, 'bypassPermissions')).toBe('ask');
+      expect(await run(command, { deny: ['Bash(rm *)'] }, 'bypassPermissions')).toBe('deny');
+      expect(await run(command, { deny: ['Bash(rm *)'] }, 'dontAsk')).toBe('deny');
+      expect(await run(command, { ask: ['Bash(rm *)'] }, 'bypassPermissions')).toBe('allow');
     }
   );
 
@@ -761,5 +764,103 @@ describe('modes and names beyond the workspace tools', () => {
     expect((await decideWith(mcpReader, { path: '.env' }, { deny: ['Read(.env)'] })).decision).toBe(
       'allow'
     );
+  });
+});
+
+describe('what the parser does not take at face value', () => {
+  const run = (
+    command: string,
+    settings: Omit<PermissionLayerSettings, 'layer'>,
+    mode: PermissionMode = 'default'
+  ) =>
+    resolvePermission(
+      ws('run_command'),
+      { command },
+      { mode, rules: rules(settings), needsApproval: true, workspace, projectRoot: root }
+    ).then((decision) => decision.decision);
+  const touch = { deny: ['Bash(touch *)'], allow: ['Bash(echo *)'] };
+  const read = { deny: ['Read(./secret.txt)'], allow: ['Bash(cat *)'] };
+
+  it.each([
+    "$'touch' x",
+    "$'\\x74ouch' x",
+    "$'\\164ouch' x",
+    '$"touch" x',
+    '{touch,x}',
+    '{touch,x} y',
+    'touc[h] x',
+    'tou?h x',
+    '/usr/bin/tou*h x',
+    ...(process.platform === 'darwin' || process.platform === 'win32'
+      ? ['TOUCH x', '/usr/bin/TOUCH x']
+      : []),
+    'T=touch; $T x',
+    'touch${IFS}x',
+    'echo ${v:-$(touch x)}',
+    'echo $((1+$(touch x)))',
+    'echo $[$(touch x)]',
+    'env -i touch x',
+    'env -S "touch x"',
+    'busybox touch x',
+    'xargs touch <<< x',
+    'echo x | xargs -0 touch',
+    "bash -c -- 'touch x'",
+    'echo touch x | sh',
+    'sh <<< "touch x"',
+    'python3 -c "import os; os.system(\'touch x\')"',
+    "node -e \"require('child_process').execSync('touch x')\"",
+    'perl -e \'system("touch x")\'',
+    'awk \'BEGIN{system("touch x")}\'',
+    "git -c alias.x='!touch x' x",
+  ])('never runs %j where a touch deny or a mode that never asks applies', async (command) => {
+    expect(await run(command, touch)).not.toBe('allow');
+    expect(await run(command, touch, 'bypassPermissions')).toBe('deny');
+    expect(await run(command, touch, 'dontAsk')).toBe('deny');
+  });
+
+  it.each([
+    'cat secret.tx?',
+    'cat secre*',
+    'cat *',
+    'cat [s]ecret.txt',
+    'cat {secret,x}.txt',
+    'paste secret.txt',
+    'dd if=secret.txt',
+    'rev secret.txt',
+    'tar -cf - secret.txt',
+    'gzip -c secret.txt',
+    'git show HEAD:secret.txt',
+    'git diff --no-index /dev/null secret.txt',
+    'grep -r password .',
+    'rg password',
+    'xargs cat <<< secret.txt',
+    'echo "$(<secret.txt)"',
+    'while read l; do echo $l; done < secret.txt',
+    'python3 -c "print(open(\'secret.txt\').read())"',
+  ])('keeps %j from reading a denied file', async (command) => {
+    expect(await run(command, read)).not.toBe('allow');
+    expect(await run(command, read, 'bypassPermissions')).toBe('deny');
+  });
+
+  it('flags a dangling backslash as unfinished', () => {
+    expect(parseCommandLine('echo x \\').certain).toBe(false);
+  });
+
+  it.each([
+    ['sort -o target.txt input.txt', 'deny'],
+    ['uniq input.txt target.txt', 'deny'],
+    ['rg --pre=./script x', 'deny'],
+    ['date -s 2020-01-01', 'deny'],
+    ['git diff --output=x', 'deny'],
+    ['find . -fprint x', 'deny'],
+    ['sort -k2 -n input.txt', 'allow'],
+    ['uniq -c input.txt', 'allow'],
+    ["rg -i --glob='*.ts' todo", 'allow'],
+    ['rg -i --glob=*.ts todo', 'deny'],
+    ['head -n 5 a.txt', 'allow'],
+    ['git log --oneline -n 3', 'allow'],
+    ['ls -la src', 'allow'],
+  ])('plan mode checks the options of %j: %s', async (command, expected) => {
+    expect(await run(command, {}, 'plan')).toBe(expected);
   });
 });

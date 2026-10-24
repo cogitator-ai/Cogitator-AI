@@ -363,6 +363,7 @@ const TRANSCRIPT_MESSAGE_CHARS = 1000;
  * results are left out: they come from outside and could talk the classifier into a decision
  */
 function transcriptOf(messages: readonly Message[], count: number): string[] {
+  if (count <= 0) return [];
   return messages
     .filter((message) => message.role === 'user' || message.role === 'assistant')
     .slice(-count)
@@ -537,6 +538,8 @@ export class Cogitator implements ToolInvoker {
   private classifier?: PermissionClassifier;
   /** What each session spent, for threads without memory to keep it in */
   private readonly sessionSpends = new Map<string, SessionSpend>();
+  /** The write of each thread's spending going on, so concurrent runs add up instead of overwriting */
+  private readonly spendWrites = new Map<string, Promise<void>>();
   /** The budgets of the runs going on, so a run started from a tool charges its caller's too */
   private readonly runBudgets = new Map<string, { budget: RunBudget; agentId: () => string }>();
   /** Global tool registry shared across all runs */
@@ -811,6 +814,14 @@ export class Cogitator implements ToolInvoker {
         needsApproval(baseTool, toolCall.arguments) ||
         constitutionalAI?.toolNeedsApproval(baseTool, toolCall.arguments) === true,
       ...(workspace && { workspace }),
+      classifierInput: () => ({
+        toolName: tool.name,
+        description: tool.description,
+        arguments: toolCall.arguments,
+        request: 'A direct call of the tool by the application, outside an agent run',
+        transcript: [],
+        ...(signal && { signal }),
+      }),
     };
     const verdict = await permissions.decide(baseTool, toolCall.arguments, permissionCall);
     const withPermission = (result: ToolInvocationResult): ToolInvocationResult =>
@@ -1680,8 +1691,11 @@ export class Cogitator implements ToolInvoker {
           )
           .catch(() => undefined);
       });
-      const planTool = permissions.active ? exitPlanModeTool(permissions) : undefined;
-      if (planTool) permissions.allowInPlan(planTool);
+      const planTool = exitPlanModeTool(permissions);
+      permissions.allowInPlan(planTool);
+      permissions.onModeChange((mode) => {
+        if (mode === 'plan' && !registry.has(planTool.name)) registry.register(planTool);
+      });
       const buildRegistry = (owner: Agent) => {
         const ownerRegistry = new ToolRegistry();
         const handoff = handoffTools(owner);
@@ -1691,7 +1705,9 @@ export class Cogitator implements ToolInvoker {
         ownerRegistry.registerMany(owner.tools);
         ownerRegistry.registerMany(handoff.tools);
         harness.addTools(owner, ownerRegistry);
-        if (planTool && !ownerRegistry.has(planTool.name)) ownerRegistry.register(planTool);
+        if (permissions.active && !ownerRegistry.has(planTool.name)) {
+          ownerRegistry.register(planTool);
+        }
         return { registry: ownerRegistry, targets: handoff.targets };
       };
       let { registry, targets: handoffTargets } = buildRegistry(active);
@@ -1746,7 +1762,7 @@ export class Cogitator implements ToolInvoker {
         }
         ({ backend, model } = this.turnRoute(effectiveModel, routeProvider));
 
-        if (costRouter) {
+        if (costRouter && this.config.limits?.onExceeded !== 'interrupt') {
           const budgetCheck = recommendation
             ? costRouter.checkBudget(recommendation.estimatedCost)
             : costRouter.checkRunBudget(input, this.pricedModel(effectiveModel, routeProvider));
@@ -2092,7 +2108,7 @@ export class Cogitator implements ToolInvoker {
           for (const toolCall of open) {
             const kept = decisions.get(toolCall.id);
             const tool = registry.get(toolCall.name);
-            if (!kept?.approved || fresh.has(toolCall.id) || !tool) continue;
+            if (!kept?.approved || !tool) continue;
             const verdict = await permissions.decide(
               tool,
               toolCall.arguments,
@@ -2222,6 +2238,24 @@ export class Cogitator implements ToolInvoker {
             decisions.get(toolCall.id)?.approved !== false
         ).length;
         const toolBudget = runnable > 0 ? runBudget.beforeTools(active.id, runnable) : undefined;
+        const callerBudget = budgetAncestors
+          .map((ancestor) => {
+            const parent = this.runBudgets.get(ancestor);
+            return runnable > 0
+              ? parent?.budget.beforeTools(parent.agentId(), runnable)
+              : undefined;
+          })
+          .find((usage) => usage !== undefined);
+        if (callerBudget && !toolBudget) {
+          for (const toolCall of open) {
+            if (!denied.has(toolCall.id) && decisions.get(toolCall.id)?.approved !== false) {
+              denied.set(
+                toolCall.id,
+                `the run that started this one would pass its tool call budget (${callerBudget.used} of ${callerBudget.limit})`
+              );
+            }
+          }
+        }
         if (toolBudget) {
           return {
             toolCalls,
@@ -2307,6 +2341,13 @@ export class Cogitator implements ToolInvoker {
               toolSpanEnd: toolSpanStart,
             };
           }
+          if (!askedBefore.some((entry) => entry.toolCallId === toolCall.id)) {
+            runBudget.noteToolCalls(active.id, 1);
+            for (const ancestor of budgetAncestors) {
+              const parent = this.runBudgets.get(ancestor);
+              parent?.budget.noteToolCalls(parent.agentId(), 1);
+            }
+          }
           let result: ToolResult;
           try {
             result = await waitForAbortable(
@@ -2365,7 +2406,6 @@ export class Cogitator implements ToolInvoker {
               toolSpanEnd: Date.now(),
             };
           }
-          runBudget.noteToolCalls(active.id, 1);
           const toolSpanEnd = Date.now();
           return { toolCall, result, toolSpanId, toolSpanStart, toolSpanEnd };
         };
@@ -2562,7 +2602,16 @@ export class Cogitator implements ToolInvoker {
             completed: ran,
           };
         }
-        const handoff = toolCalls.find((call) => handoffTargets.has(call.name));
+        const handedOver = (call: ToolCall): boolean => {
+          const result = finished.get(call.id);
+          if (result) return result.error === undefined;
+          if (!done.has(call.id)) return false;
+          const message = messages.find(
+            (entry) => entry.role === 'tool' && entry.toolCallId === call.id
+          );
+          return message !== undefined && !getTextContent(message.content).startsWith('{"error"');
+        };
+        const handoff = toolCalls.find((call) => handoffTargets.has(call.name) && handedOver(call));
         const target = handoff && handoffTargets.get(handoff.name);
         if (handoff && target) await switchTo(target, handoff.arguments.reason);
         return undefined;
@@ -3821,6 +3870,27 @@ export class Cogitator implements ToolInvoker {
     budget: RunBudget
   ): Promise<SessionSpend | undefined> {
     if (!budget.keepsSession) return undefined;
+    const before = this.spendWrites.get(threadId) ?? Promise.resolve();
+    const writing = before
+      .catch(() => undefined)
+      .then(() => this.writeSessionSpend(threadId, options, budget));
+    const settled = writing.then(
+      () => undefined,
+      () => undefined
+    );
+    this.spendWrites.set(threadId, settled);
+    void settled.then(() => {
+      if (this.spendWrites.get(threadId) === settled) this.spendWrites.delete(threadId);
+    });
+    return writing;
+  }
+
+  /** {@link keepSessionSpend} itself, one write of a thread at a time */
+  private async writeSessionSpend(
+    threadId: string,
+    options: RunOptions,
+    budget: RunBudget
+  ): Promise<SessionSpend> {
     const { spend, raised } = budget.pendingRecord();
     const total = addToSession(await this.loadSessionSpend(threadId, options), spend, raised);
     const memory = this.state.memoryAdapter;

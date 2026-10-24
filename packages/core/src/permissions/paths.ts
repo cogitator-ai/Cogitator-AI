@@ -24,10 +24,18 @@ export interface PathPattern {
   negated: boolean;
   /** Whether it starts from the working directory (the patterns a `!` pattern can carve from) */
   relative: boolean;
-  regex: RegExp;
+  /** Its segments from the file system root: `**` for any number of directories, else a glob */
+  segments: readonly string[];
 }
 
 const ESCAPABLE = new Set(['*', '?', '[', ']', '!', '#', '\\', ' ', '(', ')', '{', '}']);
+
+/** `text` without the `/` characters at its end, in one pass */
+export function trimTrailingSlashes(text: string): string {
+  let end = text.length;
+  while (end > 0 && text[end - 1] === '/') end--;
+  return text.slice(0, end);
+}
 
 /** A path as rules compare it: POSIX separators, a Windows drive as `/c/...` */
 export function normalizeRulePath(
@@ -36,9 +44,15 @@ export function normalizeRulePath(
 ): string {
   if (platform !== 'win32') return posix.normalize(path);
   const resolved = win32.resolve(path);
-  const drive = /^([A-Za-z]):[\\/]?/.exec(resolved);
-  const rest = resolved.replace(/^[A-Za-z]:[\\/]?/, '').replace(/\\/g, '/');
-  return posix.normalize(drive ? `/${drive[1].toLowerCase()}/${rest}` : `/${rest}`);
+  const hasDrive = /^[A-Za-z]:/.test(resolved);
+  let rest = hasDrive ? resolved.slice(2) : resolved;
+  if (rest.startsWith('\\') || rest.startsWith('/')) rest = rest.slice(1);
+  rest = rest.split('\\').join('/');
+  return posix.normalize(hasDrive ? `/${resolved[0].toLowerCase()}/${rest}` : `/${rest}`);
+}
+
+function segmentsOf(path: string): string[] {
+  return path.split('/').filter((segment) => segment !== '');
 }
 
 /**
@@ -65,7 +79,7 @@ export function compilePathPattern(
     i++;
   }
   if (pattern === '' || pattern === '*' || pattern === '**') {
-    return { negated, relative: true, regex: /^[\s\S]*$/ };
+    return { negated, relative: true, segments: ['**'] };
   }
   let base: string;
   let rest: string;
@@ -84,7 +98,7 @@ export function compilePathPattern(
     relative = true;
     const explicit = pattern.startsWith('./');
     rest = explicit ? pattern.slice(2) : pattern;
-    const trimmed = rest.replace(/\/+$/, '');
+    const trimmed = trimTrailingSlashes(rest);
     const segments = trimmed.split('/');
     if (!explicit && !trimmed.includes('/')) {
       rest = `**/${trimmed}`;
@@ -98,68 +112,122 @@ export function compilePathPattern(
       rest = `**/${trimmed}`;
     }
   }
-  rest = rest.replace(/\/+$/, '');
-  const prefix = base === '/' ? '' : base.replace(/\/+$/, '');
-  return { negated, relative, regex: new RegExp(`^${escapeRegex(prefix)}/${globSource(rest)}$`) };
+  const globs = segmentsOf(trimTrailingSlashes(rest));
+  return { negated, relative, segments: [...segmentsOf(base).map(literalGlob), ...globs] };
 }
 
-function escapeRegex(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** A path segment as a glob that matches only itself */
+function literalGlob(segment: string): string {
+  let glob = '';
+  for (const char of segment) glob += ESCAPABLE.has(char) ? `\\${char}` : char;
+  return glob;
 }
 
-/** The regex source of a gitignore glob: `**` across directories, `*` and `?` within one */
-function globSource(glob: string): string {
-  let source = '';
-  for (let i = 0; i < glob.length; i++) {
-    const char = glob[i];
-    if (char === '\\' && i + 1 < glob.length) {
-      source += escapeRegex(glob[i + 1]);
-      i++;
-    } else if (char === '*' && glob[i + 1] === '*') {
-      const atStart = i === 0 || glob[i - 1] === '/';
-      const atEnd = i + 2 === glob.length || glob[i + 2] === '/';
-      if (atStart && atEnd) {
-        if (glob[i + 2] === '/') {
-          source += '(?:[^/]*/)*';
-          i += 2;
-        } else {
-          source += '[\\s\\S]*';
-          i += 1;
+/** Whether a segment of a path matches a segment glob: `*`, `?`, `[...]`, `\` escapes */
+function segmentMatches(glob: string, text: string): boolean {
+  let g = 0;
+  let t = 0;
+  let starG = -1;
+  let starT = 0;
+  while (t < text.length) {
+    if (g < glob.length) {
+      const char = glob[g];
+      if (char === '*') {
+        starG = g++;
+        starT = t;
+        continue;
+      }
+      if (char === '?') {
+        g++;
+        t++;
+        continue;
+      }
+      if (char === '[') {
+        const end = glob.indexOf(']', g + 2);
+        if (end !== -1) {
+          const negated = glob[g + 1] === '!' || glob[g + 1] === '^';
+          const body = glob.slice(negated ? g + 2 : g + 1, end);
+          if (inClass(body, text[t]) !== negated) {
+            g = end + 1;
+            t++;
+            continue;
+          }
+        } else if (text[t] === '[') {
+          g++;
+          t++;
+          continue;
         }
       } else {
-        source += '[^/]*';
-        i += 1;
+        const literal = char === '\\' && g + 1 < glob.length ? glob[g + 1] : char;
+        if (literal === text[t]) {
+          g += char === '\\' && g + 1 < glob.length ? 2 : 1;
+          t++;
+          continue;
+        }
       }
-    } else if (char === '*') {
-      source += '[^/]*';
-    } else if (char === '?') {
-      source += '[^/]';
-    } else if (char === '[') {
-      const end = glob.indexOf(']', i + 1);
-      if (end === -1) {
-        source += '\\[';
-      } else {
-        const body = glob.slice(i + 1, end).replace(/\\/g, '\\\\');
-        source += `[${body.startsWith('!') ? `^${body.slice(1)}` : body}]`;
-        i = end;
-      }
-    } else {
-      source += escapeRegex(char);
+    }
+    if (starG === -1) return false;
+    g = starG + 1;
+    t = ++starT;
+  }
+  while (g < glob.length && glob[g] === '*') g++;
+  return g === glob.length;
+}
+
+function inClass(body: string, char: string): boolean {
+  for (let i = 0; i < body.length; i++) {
+    if (body[i + 1] === '-' && i + 2 < body.length) {
+      if (char >= body[i] && char <= body[i + 2]) return true;
+      i += 2;
+    } else if (body[i] === char) {
+      return true;
     }
   }
-  return source;
+  return false;
+}
+
+/**
+ * Whether the path segments from `p` and `t` on match: `**` takes any number of segments. Linear
+ * in the product of the two lengths, no regex
+ */
+function segmentsMatch(
+  pattern: readonly string[],
+  path: readonly string[],
+  prefixOnly: boolean
+): boolean {
+  const seen = new Set<number>();
+  const visit = (p: number, t: number): boolean => {
+    const key = p * (path.length + 1) + t;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    if (t === path.length) {
+      if (prefixOnly) return p < pattern.length;
+      return pattern.slice(p).every((segment) => segment === '**');
+    }
+    if (p === pattern.length) return false;
+    if (pattern[p] === '**') return visit(p + 1, t) || visit(p, t + 1);
+    return segmentMatches(pattern[p], path[t]) && visit(p + 1, t + 1);
+  };
+  return visit(0, 0);
 }
 
 /** Whether `path` (normalized, absolute) or one of its parents matches `pattern` */
 export function pathMatches(pattern: PathPattern, path: string): 'self' | 'parent' | undefined {
-  if (pattern.regex.test(path)) return 'self';
-  let current = path;
-  for (;;) {
-    const parent = posix.dirname(current);
-    if (parent === current) return undefined;
-    if (pattern.regex.test(parent)) return 'parent';
-    current = parent;
+  const segments = segmentsOf(path);
+  if (segmentsMatch(pattern.segments, segments, false)) return 'self';
+  for (let end = segments.length - 1; end >= 0; end--) {
+    if (segmentsMatch(pattern.segments, segments.slice(0, end), false)) return 'parent';
   }
+  return undefined;
+}
+
+/**
+ * Whether something inside the directory `path` could match `pattern`, for a command that reads
+ * a directory recursively: the pattern covers the directory, or goes on below it
+ */
+export function patternReachesInto(pattern: PathPattern, path: string): boolean {
+  if (pathMatches(pattern, path)) return true;
+  return segmentsMatch(pattern.segments, segmentsOf(path), true);
 }
 
 /** The paths a rule compares for a call's path: as the call names it, and with symlinks followed */
