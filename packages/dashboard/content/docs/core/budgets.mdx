@@ -52,7 +52,7 @@ if (result.status === 'paused') {
 }
 ```
 
-Without `budget.allowRaise: true` a client can only answer `{ action: 'stop' }` (the interrupt's `responseSchema` allows nothing else): raising a limit is the host's decision, made by resuming with a higher `budget` of its own (`cog.resume(agent, threadId, { budget: { session: { maxCostUsd: 5 } } })`). A budget the host passes to `resume()` wins over a limit an earlier answer raised or lifted. With `allowRaise: true`:
+Without `budget.allowRaise: true` a client can only answer `{ action: 'stop' }` (the interrupt's `responseSchema` allows nothing else): raising a limit is the host's decision, made by resuming with a higher `budget` of its own (`cog.resume(agent, threadId, { budget: { session: { maxCostUsd: 5 } } })`). A budget the host passes to `resume()` wins over a limit an earlier answer raised or lifted, and changes only the limits it names: `{ session: { maxCostUsd: 5 } }` keeps the run's `maxToolCalls`. With `allowRaise: true`:
 
 | Answer                             | What happens                                                                                                             |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |

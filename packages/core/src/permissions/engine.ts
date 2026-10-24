@@ -256,6 +256,16 @@ class CallSubject {
     this.schemaKeys = new Set([...Object.keys(args), ...shapeKeys(tool.parameters)]);
   }
 
+  /** Whether the call touches everything under its paths, see `ToolAccess.subtree` */
+  subtree(): boolean {
+    if (this.kind !== 'read' && this.kind !== 'edit') return false;
+    try {
+      return this.tool.access?.subtree?.(this.parsed) === true;
+    } catch {
+      return true;
+    }
+  }
+
   rawPaths(): string[] {
     if (this.kind !== 'read' && this.kind !== 'edit') return [];
     if (this.tool.access?.paths) {
@@ -525,7 +535,11 @@ async function restrictiveMatch(
     return call.line.candidates.some((command) => matchesCommandPattern(command.text, spec));
   }
   if (subject.kind === 'read' || subject.kind === 'edit') {
-    return anyPathMatches(rule, specifier, await subject.paths(), subject, projectRoot);
+    const paths = await subject.paths();
+    return (
+      anyPathMatches(rule, specifier, paths, subject, projectRoot) ||
+      (subject.subtree() && reachesInto(rule, specifier, paths, subject, projectRoot))
+    );
   }
   return false;
 }

@@ -134,7 +134,11 @@ export const fileList = tool({
   description: 'List contents of a directory. Returns files and subdirectories with their sizes.',
   parameters: fileListParams,
   isConcurrencySafe: true,
-  access: { kind: 'read', paths: ({ path }) => [resolvePath(path)] },
+  access: {
+    kind: 'read',
+    paths: ({ path }) => [resolvePath(path)],
+    subtree: ({ recursive }) => recursive === true,
+  },
   execute: async ({ path, recursive = false, includeHidden = false }) => {
     try {
       const entries = await listDir(path, recursive, includeHidden);
@@ -201,7 +205,11 @@ export const fileDelete = tool({
   parameters: fileDeleteParams,
   sideEffects: ['filesystem'],
   lockKeys: async ({ path }) => [await fileLockKey(path)],
-  access: { kind: 'edit', paths: ({ path }) => [resolvePath(path)] },
+  access: {
+    kind: 'edit',
+    paths: ({ path }) => [resolvePath(path)],
+    subtree: ({ recursive }) => recursive === true,
+  },
   execute: async ({ path, recursive = false }) => {
     try {
       const stats = await stat(path);

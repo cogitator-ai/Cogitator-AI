@@ -1079,3 +1079,33 @@ describe('sixth review round', () => {
     await cog.close();
   });
 });
+
+describe('seventh review round', () => {
+  it('charges the model calls of the auto classifier to the run', async () => {
+    sent.mockClear();
+    const judge = new MockLLMBackend().setResponse({
+      content: '{"decision": "allow", "reason": "ok"}',
+      usage: { inputTokens: 100, outputTokens: 5, totalTokens: 105, cost: 0.25 },
+    });
+    const { cog } = setup(
+      [
+        {
+          ...turn(call('c1', 'send_email', { to: 'a@b.co', body: '1' })),
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, cost: 0 },
+        },
+      ],
+      {
+        llm: { backends: { judge } },
+        permissions: { mode: 'auto', classifier: { model: 'judge/j' } },
+        budget: { session: { maxCostUsd: 0.2 } },
+      }
+    );
+    const result = await cog.run(coder(), { input: 'mail', threadId: 't-judge-cost' });
+    expect(sent).toHaveBeenCalledTimes(1);
+    expect(result.usage.inputTokens).toBeGreaterThanOrEqual(101);
+    expect(result.usage.cost).toBeGreaterThanOrEqual(0.25);
+    expect(result.status).toBe('paused');
+    expect(result.interrupts?.[0].id).toBe('budget:session.cost');
+    await cog.close();
+  });
+});

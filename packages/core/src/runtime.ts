@@ -552,6 +552,11 @@ export class Cogitator implements ToolInvoker {
   /** Permission rules, settings files and session rules of this runtime's runs */
   private permissionService?: PermissionService;
   private classifier?: PermissionClassifier;
+  /** What the model calls of the `auto` classifier cost, charged to the run, by its abort signal */
+  private readonly classifierCharges = new WeakMap<
+    AbortSignal,
+    (usage: ChatResponse['usage'], model: string) => void
+  >();
   /** What each session spent, for threads without memory to keep it in */
   private readonly sessionSpends = new Map<string, SessionSpend>();
   /** The write of each thread's spending going on, so concurrent runs add up instead of overwriting */
@@ -1899,7 +1904,11 @@ export class Cogitator implements ToolInvoker {
         ...(cachedInputTokens > 0 && { cachedInputTokens }),
         ...(cacheWriteTokens > 0 && { cacheWriteTokens }),
       });
-      const ownBudget = options.budget ?? withoutRaise(checkpoint?.budget?.limits);
+      const keptBudget = withoutRaise(checkpoint?.budget?.limits);
+      const ownBudget =
+        keptBudget && options.budget
+          ? mergeBudgets(keptBudget, options.budget)
+          : (options.budget ?? keptBudget);
       const budgetConfig = mergeBudgets(this.config.budget, ownBudget);
       const anyAgentBudget = reachableAgents([agent, active]).some(
         (owner) => owner.config.budget !== undefined
@@ -1933,6 +1942,32 @@ export class Cogitator implements ToolInvoker {
       budget = runBudget;
       const budgetAncestors = currentToolRuns().filter((id) => id !== runId);
       this.runBudgets.set(runId, { budget: runBudget, agentId: () => active.id });
+      this.classifierCharges.set(abortController.signal, (usage, model) => {
+        const spentBefore = costMeter.total(costModel);
+        costMeter.add(usage, model);
+        const cost = costMeter.total(costModel) - spentBefore;
+        const tokens = usage.inputTokens + usage.outputTokens;
+        totalInputTokens += usage.inputTokens;
+        totalOutputTokens += usage.outputTokens;
+        cachedInputTokens += usage.cachedInputTokens ?? 0;
+        cacheWriteTokens += usage.cacheWriteTokens ?? 0;
+        reasoningTokens += usage.reasoningTokens ?? 0;
+        runBudget.noteModel(active.id, cost, tokens);
+        for (const ancestor of budgetAncestors) {
+          const parent = this.runBudgets.get(ancestor);
+          parent?.budget.noteModel(parent.agentId(), cost, tokens);
+        }
+        if (usage.cost === undefined) this.pricer.noteUnpriced(model);
+        this.state.costRouter?.recordCost({
+          runId,
+          agentId: agent.id,
+          threadId,
+          model,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          cost,
+        });
+      });
       let budgetStop: BudgetUsage | undefined;
       for (const entry of answeredNow) {
         if (entry.kind !== 'budget') continue;
@@ -3777,6 +3812,7 @@ export class Cogitator implements ToolInvoker {
       if (!pausedOut && !checkpointKept) this.interruptSchemas.forgetRun(runId);
       if (this.runMemories.get(runId) === runMemory) this.runMemories.delete(runId);
       if (this.runBudgets.get(runId)?.budget === budget) this.runBudgets.delete(runId);
+      this.classifierCharges.delete(abortController.signal);
       this.afterRunSpend.delete(runId);
       releaseRunSlot?.();
       if (timeoutId) {
@@ -4056,9 +4092,10 @@ export class Cogitator implements ToolInvoker {
     this.permissionService ??= new PermissionService(this.config.permissions, (config) => {
       if (!config) return undefined;
       if (isPermissionClassifier(config)) return config;
-      this.classifier ??= modelClassifier(async (messages, signal) => {
+      this.classifier ??= modelClassifier(async (messages, signal, input) => {
         const { backend, model } = this.route(config.model);
         const response = await backend.chat({ model, messages, temperature: 0, signal });
+        if (input.signal) this.classifierCharges.get(input.signal)?.(response.usage, config.model);
         return response.content;
       }, config);
       return this.classifier;

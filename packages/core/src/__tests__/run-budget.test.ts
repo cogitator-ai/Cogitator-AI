@@ -593,3 +593,20 @@ describe('sixth review round budgets', () => {
     await cog.close();
   });
 });
+
+describe('seventh review round budgets', () => {
+  it('a resume budget changes only the limits it names', async () => {
+    const { cog, agent } = setup([toolTurn(1, 'a'), toolTurn(0, 'b'), answer(0)]);
+    const first = await cog.run(agent, {
+      input: 'find',
+      threadId: 'b-merge',
+      budget: { session: { maxCostUsd: 0.5, maxToolCalls: 1 } },
+    });
+    expect(first.interrupts?.[0].id).toBe('budget:session.cost');
+    const second = await cog.resume(agent, 'b-merge', { budget: { session: { maxCostUsd: 5 } } });
+    expect(second.status).toBe('paused');
+    expect(second.interrupts?.[0].id).toBe('budget:session.toolCalls');
+    expect(lookups).toHaveBeenCalledTimes(1);
+    await cog.close();
+  });
+});

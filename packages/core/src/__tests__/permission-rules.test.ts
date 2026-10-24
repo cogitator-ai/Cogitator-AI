@@ -15,7 +15,7 @@ import type { PermissionLayerSettings, PermissionMode, Tool } from '@cogitator-a
 import { tool } from '../tool';
 import { workspaceTools } from '../tools/workspace-tools';
 import { exec } from '../tools/exec';
-import { fileRead } from '../tools/filesystem';
+import { fileDelete, fileList, fileRead } from '../tools/filesystem';
 import { restrictFileTools } from '../tools/path-guard';
 import { LocalWorkspace } from '../workspace/local-workspace';
 import {
@@ -1103,3 +1103,96 @@ function compiled(specifier: string) {
   if ('error' in pattern) throw new Error(pattern.error);
   return pattern;
 }
+
+describe('seventh review round', () => {
+  const run = (
+    command: string,
+    settings: Omit<PermissionLayerSettings, 'layer'>,
+    mode: PermissionMode = 'default'
+  ) =>
+    resolvePermission(
+      ws('run_command'),
+      { command },
+      { mode, rules: rules(settings), needsApproval: true, workspace, projectRoot: root }
+    ).then((decision) => decision.decision);
+  const reads = { deny: ['Read(./src/lib/secret.ts)', 'Read(./notes.txt)'], allow: ['Bash'] };
+  const edits = { deny: ['Edit(./src/lib/keep.ts)'], allow: ['Bash'] };
+
+  it.each([
+    ['grep -r -e token', 'deny'],
+    ['grep -r -m 5 token', 'deny'],
+    ['grep -rn token src', 'deny'],
+    ['grep -R --include=*.ts token src', 'deny'],
+    ['grep -d recurse token src', 'deny'],
+    ['grep token app.txt', 'allow'],
+    ['rg -t ts token', 'deny'],
+    ['rg -g "*.md" token docs', 'allow'],
+    ['rg --files src', 'deny'],
+    ['ag token src', 'deny'],
+    ['find -name x', 'deny'],
+    ['find src -type f', 'deny'],
+    ['find docs -name x', 'allow'],
+    ['du -sh', 'deny'],
+    ['du -d 1 docs', 'allow'],
+    ['ls -R src', 'deny'],
+    ['ls src', 'allow'],
+    ['tar czf out.tgz src', 'deny'],
+    ['tar -C src -cf out.tar .', 'deny'],
+    ['zip -r out.zip src', 'deny'],
+    ['cp -r src out', 'deny'],
+    ['rsync -a src/ backup/', 'deny'],
+    ['diff -r src other', 'deny'],
+    ['grep -r --frobnicate token docs', 'deny'],
+  ])('a Read deny inside the subtree of %j: %s', async (command, expected) => {
+    expect(await run(command, reads)).toBe(expected);
+  });
+
+  it.each([
+    ['rm -rf src', 'deny'],
+    ['rm -r -f src/lib', 'deny'],
+    ['rm src/app.ts', 'allow'],
+    ['rmdir src/lib', 'deny'],
+    ['chmod -R 755 src', 'deny'],
+    ['chmod 755 src', 'allow'],
+    ['chown -R me src', 'deny'],
+    ['chgrp -R staff src', 'deny'],
+    ['find src -delete', 'deny'],
+    ['cp -r docs src', 'deny'],
+    ['mv src elsewhere', 'deny'],
+    ['tar -xzf a.tgz -C src', 'deny'],
+    ['tar xzf a.tgz', 'deny'],
+    ['unzip a.zip -d src', 'deny'],
+    ['rsync -a docs/ src/', 'deny'],
+    ['rm -rf docs', 'allow'],
+  ])('an Edit deny inside the subtree of %j: %s', async (command, expected) => {
+    expect(await run(command, edits)).toBe(expected);
+  });
+
+  it('does not understand a recursive command with an option it does not know', async () => {
+    const grepOnly = { allow: ['Bash(grep *)', 'Bash(rm *)'] };
+    expect(await run('grep -r token docs', grepOnly)).toBe('allow');
+    expect(await run('grep -r --frobnicate token docs', grepOnly)).toBe('ask');
+    expect(await run('rm -r --frobnicate docs', grepOnly)).toBe('ask');
+    expect(parseCommandLine('rg --pre=./x token').commands[0].understood).toBe(false);
+  });
+
+  it('refuses a recursive delete or listing of a directory a path rule covers inside', async () => {
+    const decide = (target: Tool, args: Record<string, unknown>, deny: string) =>
+      resolvePermission(target, args, {
+        mode: 'default',
+        rules: rules({ deny: [deny], allow: ['Edit', 'Read'] }),
+        needsApproval: false,
+        workspace,
+        projectRoot: root,
+      }).then((decision) => decision.decision);
+    const src = join(root, 'src');
+    expect(await decide(fileDelete, { path: src, recursive: true }, 'Edit(./src/app.ts)')).toBe(
+      'deny'
+    );
+    expect(await decide(fileDelete, { path: src }, 'Edit(./src/app.ts)')).toBe('allow');
+    expect(await decide(fileList, { path: src, recursive: true }, 'Read(./src/app.ts)')).toBe(
+      'deny'
+    );
+    expect(await decide(fileList, { path: src }, 'Read(./src/app.ts)')).toBe('allow');
+  });
+});

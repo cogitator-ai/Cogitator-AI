@@ -74,6 +74,9 @@ function rebased(
     ...(access.paths && {
       paths: (params: unknown) => (access.paths?.(withPath(params)) ?? []).map(absolute),
     }),
+    ...(access.subtree && {
+      subtree: (params: unknown) => access.subtree?.(withPath(params)) === true,
+    }),
     ...(access.command && { command: (params: unknown) => access.command?.(withPath(params)) }),
     ...(access.cwd && {
       cwd: (params: unknown) => {

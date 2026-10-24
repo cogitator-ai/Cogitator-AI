@@ -6,6 +6,7 @@
  */
 
 import { basename, posix } from 'node:path';
+import { copyOperands, subtreesOf, touchesSubtrees } from './subtree';
 import { wildcardMatch } from './wildcard';
 
 /** A redirection of a command */
@@ -1012,6 +1013,10 @@ export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
     if (basename(program) === 'find' && effective.some((word) => FIND_ACTIONS.has(word))) {
       understood = false;
     }
+    const programName = basename(program);
+    if (understood && touchesSubtrees(programName) && !subtreesOf(programName, effective).known) {
+      understood = false;
+    }
     if (!understood) certain = false;
     const here = dir;
     const own = command(
@@ -1140,25 +1145,6 @@ export function matchesCommandPattern(command: string, pattern: string): boolean
   return wildcardMatch(command, spec);
 }
 
-/** Programs that read the directories they name with everything inside */
-const RECURSIVE_READERS = new Set(['rg', 'ag', 'ack', 'tar', 'bsdtar', 'rsync', 'scp']);
-
-/** Programs that read directories recursively with `-r`, `-R` or `--recursive` */
-const RECURSIVE_WITH_FLAG = new Set([
-  'grep',
-  'egrep',
-  'fgrep',
-  'cp',
-  'zip',
-  'ls',
-  'chmod',
-  'chown',
-  'diff',
-]);
-
-/** Programs whose first operand is a pattern rather than a file */
-const PATTERN_FIRST = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack']);
-
 /** Programs that change the files they name */
 const EDITORS = new Set([
   'tee',
@@ -1169,6 +1155,7 @@ const EDITORS = new Set([
   'truncate',
   'chmod',
   'chown',
+  'chgrp',
   'shred',
   'unlink',
 ]);
@@ -1223,20 +1210,9 @@ export function filesOf(command: ShellCommand): {
   const program = basename(command.argv[0] ?? '');
   const operands = operandsOf(command.argv);
   for (const word of command.argv.slice(1)) reads.push(...pathsIn(word));
-  const recursive =
-    RECURSIVE_READERS.has(program) ||
-    (RECURSIVE_WITH_FLAG.has(program) &&
-      command.argv.some(
-        (word) =>
-          word === '--recursive' ||
-          word === '-a' ||
-          (word.startsWith('-') && !word.startsWith('--') && /[rR]/.test(word))
-      ));
-  if (recursive) {
-    const searched =
-      PATTERN_FIRST.has(program) && !command.argv.includes('-e') ? operands.slice(1) : operands;
-    readsInto.push(...(searched.length > 0 ? searched : ['.']));
-  }
+  const subtrees = subtreesOf(program, command.argv);
+  readsInto.push(...subtrees.readsInto);
+  writesInto.push(...subtrees.writesInto);
   if (
     (program === 'sed' || program === 'gsed' || program === 'perl') &&
     command.argv.some((word) => word.startsWith('-i') || word === '--in-place')
@@ -1244,45 +1220,41 @@ export function filesOf(command: ShellCommand): {
     writes.push(...operands.slice(1));
   }
   if (['cp', 'mv', 'install', 'ln', 'rsync', 'scp'].includes(program)) {
-    const target = command.argv.findIndex((word) => word === '-t' || word === '--target-directory');
-    const attached = command.argv.find(
-      (word) =>
-        (word.startsWith('-t') && word.length > 2 && !word.startsWith('--')) ||
-        word.startsWith('--target-directory=')
-    );
-    const dir =
-      target !== -1 || attached
-        ? attached
-          ? attached.startsWith('--')
-            ? attached.slice(attached.indexOf('=') + 1)
-            : attached.slice(2)
-          : command.argv[target + 1]
-        : operands[operands.length - 1];
-    const sources =
-      target !== -1 || attached
-        ? operands.filter((operand) => operand !== dir)
-        : operands.slice(0, -1);
-    if (dir) {
-      writes.push(dir);
-      for (const source of sources) writes.push(posix.join(dir, posix.basename(source)));
-      const whole =
-        program === 'mv' ||
-        program === 'rsync' ||
-        command.argv.some(
-          (word) =>
-            word === '--recursive' ||
-            word === '--archive' ||
-            (word.startsWith('-') && !word.startsWith('--') && /[rRa]/.test(word))
-        );
-      if (whole) {
-        writesInto.push(dir, ...sources.map((source) => posix.join(dir, posix.basename(source))));
-      }
+    const { sources, target } = copyOperands(program, command.argv) ?? looseCopy(command.argv);
+    if (target) {
+      writes.push(target);
+      for (const source of sources) writes.push(posix.join(target, posix.basename(source)));
     }
     if (program === 'mv') writes.push(...sources);
   } else if (EDITORS.has(program)) {
-    writes.push(...(program === 'chmod' || program === 'chown' ? operands.slice(1) : operands));
+    writes.push(...(['chmod', 'chown', 'chgrp'].includes(program) ? operands.slice(1) : operands));
   }
   return { reads, readsInto, writes, writesInto };
+}
+
+/**
+ * The sources and the target of a copy whose options are not all known: `-t` or the last operand
+ * as the target, the other operands as sources
+ */
+function looseCopy(argv: readonly string[]): { sources: string[]; target?: string } {
+  const operands = operandsOf(argv);
+  const flag = argv.findIndex((word) => word === '-t' || word === '--target-directory');
+  const attached = argv.find(
+    (word) =>
+      (word.startsWith('-t') && word.length > 2 && !word.startsWith('--')) ||
+      word.startsWith('--target-directory=')
+  );
+  if (attached) {
+    const target = attached.startsWith('--')
+      ? attached.slice(attached.indexOf('=') + 1)
+      : attached.slice(2);
+    return { sources: operands, target };
+  }
+  if (flag !== -1 && argv[flag + 1] !== undefined) {
+    const target = argv[flag + 1];
+    return { sources: operands.filter((operand) => operand !== target), target };
+  }
+  return { sources: operands.slice(0, -1), target: operands[operands.length - 1] };
 }
 
 /** The options of the commands `acceptEdits` runs, and which of them take a path or a value */

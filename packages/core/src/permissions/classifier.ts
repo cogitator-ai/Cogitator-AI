@@ -12,8 +12,12 @@ import type {
   PermissionClassifierModelConfig,
 } from '@cogitator-ai/types';
 
-/** Asks the classifier's model `messages`, giving back its text */
-export type ClassifierChat = (messages: Message[], signal: AbortSignal) => Promise<string>;
+/** Asks the classifier's model `messages` about the call `input` describes, giving back its text */
+export type ClassifierChat = (
+  messages: Message[],
+  signal: AbortSignal,
+  input: PermissionClassifierInput
+) => Promise<string>;
 
 export const DEFAULT_CLASSIFIER_TIMEOUT = 30_000;
 
@@ -131,7 +135,8 @@ export function modelClassifier(
           { role: 'system', content: instructions },
           { role: 'user', content: classifierPrompt(input) },
         ],
-        signal
+        signal,
+        input
       );
       return parseClassification(text);
     },

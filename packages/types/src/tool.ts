@@ -211,6 +211,11 @@ export type ApprovalCheck = (params: Record<string, unknown>) => boolean;
 export interface ToolAccess<TParams = unknown> {
   kind: 'read' | 'edit' | 'command' | 'fetch' | 'search' | 'agent';
   paths?(params: TParams): readonly string[];
+  /**
+   * Whether the call reads or changes everything under its paths (a recursive delete or
+   * listing), so a path rule for anything inside them applies to the call
+   */
+  subtree?(params: TParams): boolean;
   command?(params: TParams): string | undefined;
   cwd?(params: TParams): string | undefined;
   env?(params: TParams): Readonly<Record<string, string>> | undefined;
