@@ -250,7 +250,7 @@ describe('Gateway and questions of tools', () => {
       z.toJSONSchema(
         z.object({
           approved: z.boolean(),
-          mode: z.enum(['default', 'acceptEdits', 'auto', 'bypassPermissions']).optional(),
+          mode: z.enum(['default', 'acceptEdits', 'dontAsk']).optional(),
           feedback: z.string().optional(),
         }),
         { io: 'input' }

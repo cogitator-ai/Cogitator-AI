@@ -1,5 +1,7 @@
 export {
   PermissionRuleSet,
+  readAllowed,
+  rememberableRules,
   resolvePermission,
   ruleAllowsCall,
   suggestRule,
@@ -7,10 +9,14 @@ export {
 } from './engine';
 export { parseRule, mcpNamePart, type ParsedRule } from './rules';
 export {
+  editCommandPaths,
+  filesOf,
+  isReadOnlyCommand,
   matchesCommandPattern,
   parseCommandLine,
   type ParsedCommandLine,
   type ShellCommand,
+  type ShellRedirect,
 } from './shell';
 export {
   compilePathPattern,

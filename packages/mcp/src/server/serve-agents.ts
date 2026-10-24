@@ -35,7 +35,18 @@ export interface AgentHost extends Partial<ToolInvoker> {
   resume(agent: Agent, target: RunCheckpoint | string, options?: ResumeOptions): Promise<RunResult>;
 }
 
-export interface ServeAgentsConfig extends Partial<MCPServerConfig> {
+/** How the agent tools of {@link agentTools} answer approvals */
+export interface AgentToolsOptions {
+  /**
+   * Let an approval save an "always allow" rule (`remember: true`): the elicitation form offers
+   * it when a call suggests a rule, and `<agent>_resume` takes `remember`. Off by default, since
+   * the model at the client calls `<agent>_resume` and could otherwise allow calls for good on its
+   * own
+   */
+  allowRemember?: boolean;
+}
+
+export interface ServeAgentsConfig extends Partial<MCPServerConfig>, AgentToolsOptions {
   /** Tool name per agent, instead of the agent's name */
   toolNames?: Record<string, string>;
 }
@@ -63,6 +74,9 @@ const resumeSchema = z.object({
   threadId: z.string().min(1).describe('The threadId of the paused answer'),
   approved: z.boolean().describe("The user's decision on the calls the agent waits for"),
   reason: z.string().optional().describe('Why the user declined, when they did'),
+});
+
+const rememberingResumeSchema = resumeSchema.extend({
   remember: z
     .boolean()
     .optional()
@@ -74,26 +88,24 @@ const resumeSchema = z.object({
 /**
  * MCP tools for `agents`: one per agent that takes a task (and optionally the
  * thread to continue) and answers with the agent's reply, plus a
- * `<agent>_resume` tool for agents whose tools need approval or that set `permissions` (whose
- * `ask` rules and modes may pause them). Approvals are
- * asked from the person at the client through MCP elicitation; a client that
- * cannot answer gets a paused answer to resume once the user decided. Questions
- * the agent's tools ask (`context.interrupt()`) are asked through elicitation
- * too; when the client cannot answer one, the call fails with an error naming it.
+ * `<agent>_resume` tool for every agent: its tools, its `permissions` and the
+ * host's rules and settings files may all make a call ask, which the tools
+ * cannot know ahead. Approvals are asked from the person at the client through
+ * MCP elicitation; a client that cannot answer gets a paused answer to resume
+ * once the user decided. Questions the agent's tools ask (`context.interrupt()`)
+ * are asked through elicitation too; when the client cannot answer one, the
+ * call fails with an error naming it.
  */
 export function agentTools(
   host: AgentHost,
   agents: readonly Agent[],
-  toolNames: Record<string, string> = {}
+  toolNames: Record<string, string> = {},
+  options: AgentToolsOptions = {}
 ): Tool[] {
+  const allowRemember = options.allowRemember === true;
   return agents.flatMap((agent) => {
     const name = toolNames[agent.name] ?? toToolName(agent.name);
     const resumeName = `${name}_resume`;
-    const needsApprovals =
-      agent.config.permissions !== undefined ||
-      agent.tools.some(
-        (t) => t.requiresApproval === true || typeof t.requiresApproval === 'function'
-      );
 
     const ask = defineTool({
       name,
@@ -108,30 +120,34 @@ export function agentTools(
           await host.run(agent, {
             input: task,
             ...(threadId && { threadId }),
-            ...runContext(context),
+            ...runContext(context, allowRemember),
           }),
           context,
-          resumeName
+          resumeName,
+          allowRemember
         ),
     });
-    if (!needsApprovals) return [ask];
 
     const resume = defineTool({
       name: resumeName,
       description: `Continue a ${agent.name} answer that waits for the user's approval, with the user's decision.`,
-      parameters: resumeSchema,
-      execute: async ({ threadId, approved, reason, remember }, context) =>
+      parameters: allowRemember ? rememberingResumeSchema : resumeSchema,
+      execute: async (params: z.output<typeof rememberingResumeSchema>, context) =>
         settle(
           host,
           agent,
-          await host.resume(agent, threadId, {
-            defaultDecision: approved
-              ? { approved: true, ...(remember === true && { remember: true }) }
-              : { approved: false, reason },
-            ...runContext(context),
+          await host.resume(agent, params.threadId, {
+            defaultDecision: params.approved
+              ? {
+                  approved: true,
+                  ...(allowRemember && params.remember === true && { remember: true }),
+                }
+              : { approved: false, reason: params.reason },
+            ...runContext(context, allowRemember),
           }),
           context,
-          resumeName
+          resumeName,
+          allowRemember
         ),
     });
     return [ask, resume];
@@ -153,7 +169,7 @@ export async function serveAgents(
   config: ServeAgentsConfig = {}
 ): Promise<MCPServer> {
   const list = Array.isArray(agents) ? agents : [agents as Agent];
-  const { toolNames, ...serverConfig } = config;
+  const { toolNames, allowRemember, ...serverConfig } = config;
   const invokeTool = host.invokeTool?.bind(host);
   const server = new MCPServer({
     name: 'cogitator-agents',
@@ -163,18 +179,20 @@ export async function serveAgents(
     ...(invokeTool && { toolInvoker: { invokeTool } }),
     ...serverConfig,
   });
-  server.registerTools(agentTools(host, list, toolNames));
+  server.registerTools(
+    agentTools(host, list, toolNames, { ...(allowRemember !== undefined && { allowRemember }) })
+  );
   await server.start();
   return server;
 }
 
-function runContext(context: MCPToolContext) {
+function runContext(context: MCPToolContext, allowRemember: boolean) {
   const { elicit } = context;
   return {
     signal: context.signal,
     ...(context.userId !== undefined && { userId: context.userId }),
     onApproval: async (request: ToolApprovalRequest): Promise<ToolApprovalDecision | 'pause'> =>
-      (await elicitApproval(elicit, request)) ?? 'pause',
+      (await elicitApproval(elicit, request, { allowRemember })) ?? 'pause',
   };
 }
 
@@ -189,12 +207,13 @@ async function settle(
   agent: Agent,
   initial: RunResult,
   context: MCPToolContext,
-  resumeName: string
+  resumeName: string,
+  allowRemember: boolean
 ): Promise<AgentToolAnswer> {
   let result = initial;
   let questions = pendingQuestions(result);
   while (questions.length > 0) {
-    result = await resumeWithAnswers(host, agent, result, questions, context);
+    result = await resumeWithAnswers(host, agent, result, questions, context, allowRemember);
     questions = pendingQuestions(result);
   }
   return answer(result, resumeName);
@@ -214,7 +233,8 @@ async function resumeWithAnswers(
   agent: Agent,
   paused: RunResult,
   questions: readonly RunInterrupt[],
-  context: MCPToolContext
+  context: MCPToolContext,
+  allowRemember: boolean
 ): Promise<RunResult> {
   const responses: Record<string, unknown> = {};
   const problems = new Map<string, string>();
@@ -226,7 +246,7 @@ async function resumeWithAnswers(
     try {
       return await host.resume(agent, paused.checkpoint ?? paused.threadId, {
         responses: { ...responses },
-        ...runContext(context),
+        ...runContext(context, allowRemember),
       });
     } catch (error) {
       const refused = refusedQuestion(error, questions);

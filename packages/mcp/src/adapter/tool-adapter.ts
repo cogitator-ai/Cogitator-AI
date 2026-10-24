@@ -384,7 +384,9 @@ function toolNames(definitions: readonly MCPToolDefinition[], prefix: string): M
  * name. The Cogitator name is `namePrefix` plus the MCP name, normalized for LLM providers (see
  * `normalizeMCPToolName`). Calls are retried after a timeout only when the server marks the tool
  * read-only or idempotent. The tool keeps the server's `title`, `outputSchema` and annotations,
- * and needs approval when the server marks it destructive (see `requiresApproval`).
+ * and needs approval when the server marks it destructive (see `requiresApproval`). It names the
+ * server tool it calls in `mcp` (`ToolAdapterOptions.server`, else the name the server reports),
+ * which `mcp__<server>__<tool>` permission rules match.
  */
 export function mcpToCogitator(
   mcpTool: MCPToolDefinition,
@@ -413,6 +415,7 @@ export function mcpToCogitator(
   const annotations = Object.keys(hints).length > 0 ? hints : undefined;
   const idempotent = hints.readOnlyHint === true || hints.idempotentHint === true;
   const requiresApproval = approvalOf(mcpTool, options?.requiresApproval);
+  const server = options?.server ?? client.serverName;
 
   const tool: Tool = {
     name,
@@ -422,6 +425,7 @@ export function mcpToCogitator(
     ...(outputSchema && { outputSchema }),
     ...(annotations && { annotations }),
     ...(requiresApproval && { requiresApproval }),
+    ...(server !== undefined && { mcp: { server, tool: mcpTool.name } }),
 
     execute: async (params: unknown, context: ToolContext): Promise<unknown> => {
       return client.callTool(mcpTool.name, (params ?? {}) as Record<string, unknown>, {
@@ -480,8 +484,13 @@ export async function wrapMCPTools(
 ): Promise<Tool[]> {
   const definitions = await client.listToolDefinitions();
   const names = toolNames(definitions, options?.namePrefix ?? '');
+  const server = options?.server ?? client.serverName;
   return definitions.map((def) =>
-    mcpToCogitator(def, client, { ...options, name: names.get(def.name) })
+    mcpToCogitator(def, client, {
+      ...options,
+      ...(server !== undefined && { server }),
+      name: names.get(def.name),
+    })
   );
 }
 

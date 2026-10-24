@@ -497,7 +497,7 @@ export const AgentRunResponseSchema = {
           suggestedRule: { type: 'string' },
           mode: {
             type: 'string',
-            enum: ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'],
+            enum: ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'],
           },
         },
         required: ['toolCallId', 'toolName', 'arguments', 'description'],

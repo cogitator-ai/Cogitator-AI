@@ -20,13 +20,21 @@ export const SESSION_BUDGET_KEY = 'budget';
 
 const DEFAULT_WARN_AT = 0.8;
 
-/** JSON Schema of the answer to a budget interrupt, a `BudgetResponse` */
+/** JSON Schema of the answer to a budget interrupt, a `BudgetResponse`, when raising is allowed */
 export const BUDGET_RESPONSE_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
     action: { type: 'string', enum: ['continue', 'stop'] },
     limit: { type: 'number', exclusiveMinimum: 0 },
   },
+  required: ['action'],
+  additionalProperties: false,
+};
+
+/** JSON Schema of the answer to a budget interrupt when only the host may raise a limit */
+export const BUDGET_STOP_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: { action: { type: 'string', enum: ['stop'] } },
   required: ['action'],
   additionalProperties: false,
 };
@@ -131,14 +139,17 @@ function keyOf(usage: Pick<BudgetUsage, 'scope' | 'metric' | 'agentId'>): string
   return `${usage.scope === 'agent' ? `agent:${usage.agentId ?? ''}` : usage.scope}.${usage.metric}`;
 }
 
-/** The interrupt a run pauses with when it reaches `usage` */
-export function budgetInterrupt(usage: BudgetUsage): RunInterrupt {
+/**
+ * The interrupt a run pauses with when it reaches `usage`. Without `allowRaise` its answer can only
+ * stop the run: the host raises a limit by resuming with a higher `budget` of its own
+ */
+export function budgetInterrupt(usage: BudgetUsage, allowRaise = false): RunInterrupt {
   return {
     id: `budget:${keyOf(usage)}`,
     kind: 'budget',
     reason: 'budget_exceeded',
-    message: budgetMessage(usage),
-    responseSchema: BUDGET_RESPONSE_SCHEMA,
+    message: budgetMessage(usage, allowRaise),
+    responseSchema: allowRaise ? BUDGET_RESPONSE_SCHEMA : BUDGET_STOP_SCHEMA,
     details: { ...usage },
   };
 }
@@ -164,10 +175,13 @@ function whose(usage: BudgetUsage): string {
 }
 
 /** Why a run paused at `usage`, for the person who answers */
-export function budgetMessage(usage: BudgetUsage): string {
+export function budgetMessage(usage: BudgetUsage, allowRaise = false): string {
   const subject = whose(usage);
   const verb = usage.metric === 'toolCalls' ? 'would pass' : 'reached';
-  return `${subject} ${verb} its budget: ${amount(usage.metric, usage.used)} of ${amount(usage.metric, usage.limit)}. Answer { "action": "continue", "limit": <new limit> } to raise it, { "action": "continue" } to go on past it for this run, or { "action": "stop" }`;
+  const spent = `${subject} ${verb} its budget: ${amount(usage.metric, usage.used)} of ${amount(usage.metric, usage.limit)}.`;
+  return allowRaise
+    ? `${spent} Answer { "action": "continue", "limit": <new limit> } to raise it, { "action": "continue" } to go on past it for this run, or { "action": "stop" }`
+    : `${spent} Answer { "action": "stop" } to end the run. Only the host can raise the limit`;
 }
 
 /** Reads the answer to a budget interrupt */
@@ -192,6 +206,10 @@ export interface RunBudgetOptions {
   ) => Array<{ scope: 'run' | 'hour' | 'day'; used: number; limit: number }>;
   /** Hears each warning, besides `config.onWarning` */
   onWarning?: (warning: BudgetWarning) => void;
+  /** Whether an agent of the run has a `budget` of its own, so the session's spending is kept */
+  agentBudgets?: boolean;
+  /** The run's own budgets, kept in the checkpoint */
+  ownLimits?: Omit<SessionBudgetConfig, 'onWarning'>;
 }
 
 interface LimitState {
@@ -228,6 +246,7 @@ export class RunBudget {
     return (
       hasLimit(config.session) ||
       hasLimit(config.agent) ||
+      this.options.agentBudgets === true ||
       this.options.maxTokensPerRun !== undefined ||
       this.options.costLimits !== undefined
     );
@@ -235,7 +254,11 @@ export class RunBudget {
 
   /** Whether the run has session or agent budgets, so its spending is kept for the thread */
   get keepsSession(): boolean {
-    return hasLimit(this.options.config.session) || hasLimit(this.options.config.agent);
+    return (
+      hasLimit(this.options.config.session) ||
+      hasLimit(this.options.config.agent) ||
+      this.options.agentBudgets === true
+    );
   }
 
   noteModel(agentId: string, costUsd: number, tokens: number): void {
@@ -352,7 +375,7 @@ export class RunBudget {
    * is lifted for the rest of the run)
    */
   answer(usage: BudgetUsage, response: BudgetResponse): 'stop' | 'continue' {
-    if (response.action === 'stop') return 'stop';
+    if (response.action === 'stop' || this.options.config.allowRaise !== true) return 'stop';
     const key = keyOf(usage);
     if (response.limit === undefined) {
       this.lifted.add(key);
@@ -368,7 +391,9 @@ export class RunBudget {
   /** What a checkpoint keeps of the run's budgets */
   state(): NonNullable<RunCheckpoint['budget']> {
     const pending = this.pendingRecord();
+    const limits = this.options.ownLimits;
     return {
+      ...(limits && Object.keys(limits).length > 0 && { limits: { ...limits } }),
       spent: copySpend(this.spent),
       recorded: copySpend(this.recorded),
       ...(this.lifted.size > 0 && { lifted: [...this.lifted] }),

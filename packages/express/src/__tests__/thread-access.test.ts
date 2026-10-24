@@ -71,7 +71,7 @@ async function start(
   });
   await srv.init();
   server = await new Promise<Server>((resolve) => {
-    const s = app.listen(0, () => resolve(s));
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
   const { port } = server.address() as AddressInfo;
   return `http://127.0.0.1:${port}/api`;
@@ -190,7 +190,7 @@ describe('threads before any run', () => {
       config: { basePath: '/api', enableSwagger: false },
     }).init();
     server = await new Promise<Server>((resolve) => {
-      const s = app.listen(0, () => resolve(s));
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
     });
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
 

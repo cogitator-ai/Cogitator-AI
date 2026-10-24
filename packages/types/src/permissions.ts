@@ -11,17 +11,21 @@ export type PermissionBehavior = 'allow' | 'ask' | 'deny';
 
 /**
  * How a run decides the calls no rule decides, the modes of Claude Code:
- * - `default`: a call asks when its tool needs approval (`requiresApproval`, the guardrails)
+ * - `default`: a call asks when its tool needs approval (`requiresApproval`, the guardrails), and
+ *   every edit (tools whose `access` is `edit`) asks unless an allow rule covers it
  * - `acceptEdits`: as `default`, and edits of files inside the workspace (tools whose `access`
  *   is `edit`, and `mkdir`, `touch`, `mv`, `cp` commands on workspace paths) run without asking
- * - `plan`: only read-only tools (`annotations.readOnlyHint`) run, every other call is refused
- *   until the model presents its plan with `exit_plan_mode` and a person approves it
+ * - `plan`: only read-only tools of the runtime (`annotations.readOnlyHint` or `access.kind`
+ *   `read`, never those an MCP server describes) and read-only shell commands run, every other call
+ *   is refused until the model presents its plan with `exit_plan_mode` and a person approves it
  * - `auto`: a classifier model decides each call that would ask, with a reason in the audit log.
  *   An `ask` rule still asks, and a classifier that fails falls back to asking
- * - `bypassPermissions`: every call runs except the ones a `deny` rule refuses. Only for
- *   isolated environments (a container, a VM): nothing asks before a command or an edit
+ * - `dontAsk`: every call that would ask is refused instead, what the rules allow still runs
+ * - `bypassPermissions`: every call runs except the ones a `deny` rule refuses (and a command line
+ *   that could hide a denied command asks). Only for isolated environments (a container, a VM)
  */
-export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'auto' | 'bypassPermissions';
+export type PermissionMode =
+  'default' | 'acceptEdits' | 'plan' | 'auto' | 'dontAsk' | 'bypassPermissions';
 
 /** Every {@link PermissionMode}, in the order of the type */
 export const PERMISSION_MODES: readonly PermissionMode[] = [
@@ -29,6 +33,7 @@ export const PERMISSION_MODES: readonly PermissionMode[] = [
   'acceptEdits',
   'plan',
   'auto',
+  'dontAsk',
   'bypassPermissions',
 ];
 
@@ -222,6 +227,12 @@ export interface ToolPermissionsView {
   readonly mode: PermissionMode;
   /** The `session` rules of the run, for passing on to a run the tool starts */
   readonly rules: Required<PermissionRules>;
+  /**
+   * Whether no `Read(...)` deny rule covers `path` (relative to the workspace root, or absolute),
+   * for tools that read or list many files: `grep`, `glob` and `list_files` leave out what it
+   * refuses
+   */
+  canRead(path: string): Promise<boolean>;
 }
 
 /** A limit of money, tokens or tool calls */
@@ -247,6 +258,12 @@ export interface SessionBudgetConfig {
   agent?: BudgetLimits;
   /** Share of a limit at which `onWarning` hears of it, once per run (default 0.8) */
   warnAt?: number;
+  /**
+   * Whether an answer to a budget interrupt may go on past the limit or raise it
+   * (`{ action: 'continue', limit? }`). Off by default: a client can only stop the run, and raising
+   * a limit is the host's decision, by resuming with a higher `budget` of its own
+   */
+  allowRaise?: boolean;
   onWarning?: (warning: BudgetWarning) => void;
 }
 
@@ -303,8 +320,11 @@ export type BudgetResponse = { action: 'continue'; limit?: number } | { action: 
 /** The answer to an interrupt of kind `plan` */
 export interface PlanResponse {
   approved: boolean;
-  /** The mode the run goes on in once the plan is approved (default `default`) */
-  mode?: Exclude<PermissionMode, 'plan'>;
+  /**
+   * The mode the run goes on in once the plan is approved (default `default`). An answer cannot
+   * pick `auto` or `bypassPermissions`: the host switches to those with `setPermissionMode()`
+   */
+  mode?: 'default' | 'acceptEdits' | 'dontAsk';
   /** What to change in the plan, for a plan not approved */
   feedback?: string;
 }

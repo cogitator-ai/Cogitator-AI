@@ -87,7 +87,7 @@ export interface RunHandle {
    */
   abort(reason?: unknown): readonly QueuedRunMessage[];
   /** The run's permission mode, once the run started (see `PermissionMode`) */
-  readonly permissionMode: PermissionMode | undefined;
+  readonly permissionMode?: PermissionMode;
   /**
    * Switches the run's permission mode from its next tool call on, such as to `acceptEdits` once
    * a person trusts the edits, or to `plan` to stop them
@@ -95,7 +95,7 @@ export interface RunHandle {
    * @throws CogitatorError `CONFIGURATION_ERROR` for `bypassPermissions` or `auto` when a
    * settings file disables it, or `auto` without a classifier
    */
-  setPermissionMode(mode: PermissionMode): void;
+  setPermissionMode?(mode: PermissionMode): void;
 }
 
 /**

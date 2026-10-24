@@ -81,7 +81,7 @@ export function ToolCallCard({ call }: { call: ToolCallRecord }) {
           <span
             className="status"
             data-status={approval.status}
-            title={approval.remembered ? approval.suggestedRule : approval.reason}
+            title={approval.remembered ? approval.remembered.rule : approval.reason}
           >
             {approval.status === 'rejected'
               ? 'Rejected'
@@ -106,9 +106,10 @@ export function ToolCallCard({ call }: { call: ToolCallRecord }) {
           )}
           {call.details !== undefined && <JsonBlock label="Details" value={call.details} />}
           {approval?.reason && <div className="notice">Rejected because: {approval.reason}</div>}
-          {approval?.remembered && approval.suggestedRule && (
+          {approval?.remembered && (
             <div className="notice">
-              Allowed from now on by <code>{approval.suggestedRule}</code>
+              Allowed from now on by <code>{approval.remembered.rule}</code>, saved to the{' '}
+              {approval.remembered.layer} rules
             </div>
           )}
           {call.error && <ErrorText>{call.error}</ErrorText>}

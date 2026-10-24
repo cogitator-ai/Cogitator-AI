@@ -22,6 +22,8 @@ import {
 import { getLogger } from '../logger';
 import {
   PermissionRuleSet,
+  readAllowed,
+  rememberableRules,
   resolvePermission,
   ruleAllowsCall,
   suggestRule,
@@ -132,12 +134,22 @@ export class PermissionService {
 /** Where a run's permission decisions go besides the caller's result */
 export type PermissionRecorder = (event: PermissionDecisionEvent) => Promise<void>;
 
+/** Permissions in code, and what added them */
+export interface PermissionScope {
+  options: PermissionOptions | undefined;
+  origin: string;
+}
+
 /** What a run's permissions are made of */
 export interface RunPermissionsOptions {
   service: PermissionService;
   threadId: string;
-  /** The runtime's, the agent's and the run's permissions, lowest first */
-  scopes: Array<{ options: PermissionOptions | undefined; origin: string }>;
+  /** The runtime's permissions */
+  runtime: PermissionScope;
+  /** The permissions of the agent the run is in */
+  agent: PermissionScope;
+  /** The run's own permissions, `RunOptions.permissions` */
+  run: PermissionOptions | undefined;
   /** What the paused run kept, when it is resumed */
   checkpoint?: RunCheckpoint['permissions'];
   /** The project root of the settings files and of `/path` patterns of rules in code */
@@ -157,6 +169,24 @@ export interface PermissionCall {
   classifierInput?: () => Omit<PermissionClassifierInput, 'reason'>;
 }
 
+/** The run's own rules: those of the run's options, else those its checkpoint kept, list by list */
+function runScope(
+  run: PermissionOptions | undefined,
+  kept: RunCheckpoint['permissions'] | undefined
+): PermissionOptions | undefined {
+  const rules = kept?.rules;
+  if (!run && !rules) return undefined;
+  const allow = run?.allow ?? rules?.allow;
+  const ask = run?.ask ?? rules?.ask;
+  const deny = run?.deny ?? rules?.deny;
+  return {
+    ...(run?.mode !== undefined && { mode: run.mode }),
+    ...(allow && { allow: [...allow] }),
+    ...(ask && { ask: [...ask] }),
+    ...(deny && { deny: [...deny] }),
+  };
+}
+
 /**
  * The permissions of one run: its mode, which can change while it goes on, the rules of every
  * layer, and the record of each decision. Without any permission setup (`active` false) a call
@@ -169,12 +199,21 @@ export class RunPermissions {
   private readonly rememberedFiles: PermissionLayerSettings[] = [];
   private settings: PermissionLayerSettings[] = [];
   private readonly listeners = new Set<(mode: PermissionMode) => void>();
+  private agentScope: PermissionScope;
+  private readonly ownScope: PermissionOptions | undefined;
+  private root: string;
+  private readonly planTools = new Set<Tool>();
 
   private constructor(private readonly options: RunPermissionsOptions) {
-    const { service, scopes, checkpoint } = options;
+    const { service, checkpoint } = options;
+    this.agentScope = options.agent;
+    this.ownScope = runScope(options.run, checkpoint);
+    this.root = options.root;
     this.activated =
       service.config !== undefined ||
-      scopes.some((scope) => scope.options !== undefined) ||
+      options.runtime.options !== undefined ||
+      options.agent.options !== undefined ||
+      this.ownScope !== undefined ||
       checkpoint !== undefined;
     this.remembered = [
       ...service.rememberedFor(options.threadId),
@@ -187,12 +226,13 @@ export class RunPermissions {
     const run = new RunPermissions(options);
     if (!run.active) return run;
     run.settings = await options.service.settingsLayers(options.root);
-    const requested = [...options.scopes]
-      .reverse()
-      .find((scope) => scope.options?.mode !== undefined)?.options?.mode;
-    const fromRun = options.scopes.at(-1)?.options?.mode;
     const mode =
-      fromRun ?? options.checkpoint?.mode ?? requested ?? run.rules().defaultMode() ?? 'default';
+      options.run?.mode ??
+      options.checkpoint?.mode ??
+      options.agent.options?.mode ??
+      options.runtime.options?.mode ??
+      run.rules().defaultMode() ??
+      'default';
     const problem = run.modeProblem(mode);
     if (problem) {
       options.service.warnOnce('A permission mode cannot be used, the run starts in default mode', {
@@ -213,6 +253,24 @@ export class RunPermissions {
 
   get mode(): PermissionMode {
     return this.currentMode;
+  }
+
+  /** A tool of the run `plan` mode runs although it is not read-only, its `exit_plan_mode` */
+  allowInPlan(tool: Tool): void {
+    this.planTools.add(tool);
+  }
+
+  /**
+   * Takes the permissions of the agent a run handed over to, and the settings files of its
+   * project, from the next decision on
+   */
+  async switchAgent(agent: PermissionScope, root: string): Promise<void> {
+    this.agentScope = agent;
+    if (agent.options !== undefined) this.activated = true;
+    if (root !== this.root) {
+      this.root = root;
+      if (this.activated) this.settings = await this.options.service.settingsLayers(root);
+    }
   }
 
   /** Hears every mode change */
@@ -250,28 +308,46 @@ export class RunPermissions {
     for (const listener of this.listeners) listener(mode);
   }
 
+  private scopes(): PermissionScope[] {
+    return [this.options.runtime, this.agentScope, { options: this.ownScope, origin: 'run' }];
+  }
+
   /** The rules of every layer, those of active skills among the `session` ones */
   rules(skillRules: PermissionCall['skillRules'] = []): PermissionRuleSet {
     return new PermissionRuleSet([
       ...this.settings,
       ...this.rememberedFiles,
-      ...this.options.scopes.flatMap((scope) => codeLayer(scope.options, scope.origin)),
+      ...this.scopes().flatMap((scope) => codeLayer(scope.options, scope.origin)),
       ...codeLayer({ allow: this.remembered }, 'remembered'),
       ...skillRules.flatMap((skill) => codeLayer({ allow: skill.rules }, `skill:${skill.name}`)),
     ]);
   }
 
+  /** Whether a bare deny rule names `tool`, so the model is not offered it */
+  hides(tool: Tool): boolean {
+    return this.active && this.rules().deniesWhole(tool);
+  }
+
   /** What tools see of the run's permissions, `context.permissions` */
-  view(): ToolPermissionsView | undefined {
+  view(workspace?: Workspace): ToolPermissionsView | undefined {
     if (!this.active) return undefined;
     const merged = { allow: [] as string[], ask: [] as string[], deny: [] as string[] };
-    for (const scope of this.options.scopes) {
+    for (const scope of this.scopes()) {
       merged.allow.push(...(scope.options?.allow ?? []));
       merged.ask.push(...(scope.options?.ask ?? []));
       merged.deny.push(...(scope.options?.deny ?? []));
     }
     merged.allow.push(...this.remembered);
-    return { mode: this.currentMode, rules: merged };
+    const context = this.context(workspace);
+    return {
+      mode: this.currentMode,
+      rules: merged,
+      canRead: (path) => readAllowed(path, this.rules(), context),
+    };
+  }
+
+  private context(workspace: Workspace | undefined) {
+    return { ...(workspace && { workspace }), cwd: this.root, projectRoot: this.root };
   }
 
   /** The permission decision for a call of `tool` with `args` */
@@ -301,10 +377,8 @@ export class RunPermissions {
       mode: this.currentMode,
       rules: this.rules(call.skillRules),
       needsApproval: call.needsApproval,
-      ...(call.workspace && { workspace: call.workspace }),
-      cwd: this.options.root,
-      projectRoot: this.options.root,
-      planTools: new Set([EXIT_PLAN_MODE]),
+      ...this.context(call.workspace),
+      planTools: this.planTools,
       ...(classifier &&
         input && {
           classify: (reason: string) => classifier.classify({ ...input(), reason }),
@@ -315,17 +389,13 @@ export class RunPermissions {
   /** The rule an "always allow" answer to the call saves by default */
   suggest(tool: Tool, args: Record<string, unknown>, workspace?: Workspace): string | undefined {
     if (!this.active) return undefined;
-    return suggestRule(tool, args, {
-      ...(workspace && { workspace }),
-      cwd: this.options.root,
-      projectRoot: this.options.root,
-    });
+    return suggestRule(tool, args, this.context(workspace));
   }
 
   /**
    * Saves the allow rule of an "always allow" answer: to the run and the thread's session for
    * `session` (and whenever the runtime reads no settings files), else to the layer's settings
-   * file. A rule that does not allow the call it answers is not saved
+   * file. Only the suggested rule or the exact call may be saved, and only when it covers the call
    */
   async remember(
     tool: Tool,
@@ -334,23 +404,25 @@ export class RunPermissions {
     workspace?: Workspace
   ): Promise<{ rule: string; layer: PermissionRememberLayer } | undefined> {
     if (!this.active) return undefined;
-    const { service, root, threadId } = this.options;
+    const { service, threadId } = this.options;
+    const root = this.root;
     const config = service.config;
-    const rule = (choice === true ? undefined : choice.rule) ?? this.suggest(tool, args, workspace);
+    const context = this.context(workspace);
+    const offered = rememberableRules(tool, args, context);
+    const rule = (choice === true ? undefined : choice.rule) ?? offered[0];
     if (!rule) {
       service.warnOnce('An "always allow" answer has no rule to save, the call is approved once', {
         tool: tool.name,
       });
       return undefined;
     }
-    const context = { ...(workspace && { workspace }), cwd: root, projectRoot: root };
-    if (!(await ruleAllowsCall(rule, tool, args, context, root))) {
+    if (
+      !offered.includes(rule.trim()) ||
+      !(await ruleAllowsCall(rule, tool, args, context, root))
+    ) {
       service.warnOnce(
-        'An "always allow" rule does not cover the call it answers, it is not saved',
-        {
-          tool: tool.name,
-          rule,
-        }
+        'An "always allow" rule is broader than the call it answers or does not cover it, it is not saved',
+        { tool: tool.name, rule }
       );
       return undefined;
     }
@@ -391,9 +463,16 @@ export class RunPermissions {
   /** What a checkpoint keeps of the run's permissions */
   state(): RunCheckpoint['permissions'] {
     if (!this.active) return undefined;
+    const own = this.ownScope;
+    const rules = own && {
+      ...(own.allow && { allow: [...own.allow] }),
+      ...(own.ask && { ask: [...own.ask] }),
+      ...(own.deny && { deny: [...own.deny] }),
+    };
     return {
       mode: this.currentMode,
       ...(this.remembered.length > 0 && { remembered: { allow: [...this.remembered] } }),
+      ...(rules && Object.keys(rules).length > 0 && { rules }),
     };
   }
 }

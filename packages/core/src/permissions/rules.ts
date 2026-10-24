@@ -16,33 +16,68 @@ export interface ParsedRule {
 }
 
 /** What a rule's tool name stands for */
+/** What a tool's calls touch, see `ToolAccess.kind` */
+export type AccessKind = 'read' | 'edit' | 'command' | 'fetch' | 'search' | 'agent';
+
 export type RuleTarget =
-  | { kind: 'family'; family: 'read' | 'edit' | 'command' }
+  | { kind: 'family'; family: AccessKind }
   | { kind: 'names'; names: readonly string[]; pathRulesNeverMatch?: boolean }
   | { kind: 'mcp'; server: string; tool?: string; toolGlob?: RegExp }
   | { kind: 'glob'; regex: RegExp }
   | { kind: 'name'; name: string };
 
 /**
- * Claude Code's tool names for the workspace tools. `Read`, `Edit` and `Bash` name every tool of
- * their kind (`ToolAccess.kind`), so `Edit(src/**)` also covers `write_file`, as in Claude Code
+ * Claude Code's tool names. `Read`, `Edit`, `Bash`, `WebFetch`, `WebSearch` and `Agent` name every
+ * tool of their kind (`ToolAccess.kind`), so `Edit(src/**)` also covers `write_file`, as in Claude
+ * Code. `MultiEdit` and `NotebookEdit` match no tool here
  */
 const CLAUDE_NAMES: Record<string, RuleTarget> = {
   Bash: { kind: 'family', family: 'command' },
   Read: { kind: 'family', family: 'read' },
   Edit: { kind: 'family', family: 'edit' },
-  MultiEdit: { kind: 'family', family: 'edit' },
+  WebFetch: { kind: 'family', family: 'fetch' },
+  WebSearch: { kind: 'family', family: 'search' },
+  Agent: { kind: 'family', family: 'agent' },
+  Task: { kind: 'family', family: 'agent' },
+  MultiEdit: { kind: 'names', names: [], pathRulesNeverMatch: true },
   Write: { kind: 'names', names: ['write_file', 'file_write'], pathRulesNeverMatch: true },
   Glob: { kind: 'names', names: ['glob'], pathRulesNeverMatch: true },
   Grep: { kind: 'names', names: ['grep'], pathRulesNeverMatch: true },
+  LS: { kind: 'names', names: ['list_files', 'file_list'], pathRulesNeverMatch: true },
   NotebookEdit: { kind: 'names', names: [], pathRulesNeverMatch: true },
+  ExitPlanMode: { kind: 'names', names: ['exit_plan_mode'] },
+  Skill: { kind: 'names', names: ['use_skill', 'read_skill_file'] },
+  TodoWrite: { kind: 'names', names: ['write_todos'] },
 };
 
-/** The workspace tools of each family, for tools that declare no `access` */
-const FAMILY_NAMES: Record<'read' | 'edit' | 'command', readonly string[]> = {
+/** Claude Code tools Cogitator has no counterpart for: a rule naming one matches nothing */
+const UNMAPPED_CLAUDE_NAMES = new Set([
+  'NotebookRead',
+  'BashOutput',
+  'KillShell',
+  'KillBash',
+  'SlashCommand',
+  'TaskStop',
+  'TaskOutput',
+  'EndConversation',
+  'AskUserQuestion',
+  'PowerShell',
+  'Cd',
+]);
+
+/** Whether `name` is a Claude Code tool name that matches nothing in Cogitator */
+export function isUnmappedClaudeName(name: string): boolean {
+  return UNMAPPED_CLAUDE_NAMES.has(name) || name === 'MultiEdit' || name === 'NotebookEdit';
+}
+
+/** The built-in tools of each family, for tools that declare no `access` */
+const FAMILY_NAMES: Record<AccessKind, readonly string[]> = {
   read: ['read_file', 'list_files', 'glob', 'grep', 'file_read', 'file_list', 'file_exists'],
   edit: ['edit_file', 'write_file', 'file_write', 'file_delete'],
   command: ['run_command', 'exec'],
+  fetch: ['http_request', 'web_scrape'],
+  search: ['web_search'],
+  agent: [],
 };
 
 /**
@@ -117,9 +152,10 @@ export function ruleTarget(
 }
 
 /** The kind of what `tool`'s calls touch: its `access`, else the kind of a workspace tool of its name */
-export function accessKindOf(tool: Tool): 'read' | 'edit' | 'command' | undefined {
+export function accessKindOf(tool: Tool): AccessKind | undefined {
   if (tool.access) return tool.access.kind;
-  for (const family of ['read', 'edit', 'command'] as const) {
+  if (tool.mcp) return undefined;
+  for (const family of ['read', 'edit', 'command', 'fetch', 'search'] as const) {
     if (FAMILY_NAMES[family].includes(tool.name)) return family;
   }
   return undefined;
@@ -131,7 +167,7 @@ export function targetCovers(target: RuleTarget, tool: Tool): boolean {
     case 'family':
       return accessKindOf(tool) === target.family;
     case 'names':
-      return target.names.includes(tool.name);
+      return tool.mcp === undefined && target.names.includes(tool.name);
     case 'name':
       return tool.name === target.name;
     case 'glob':

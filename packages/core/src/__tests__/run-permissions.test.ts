@@ -205,10 +205,10 @@ describe('permission rules in a run', () => {
     await cog.run(coder(), {
       input: 'echo',
       threadId: 't-local',
-      onApproval: async () => ({ approved: true, remember: { rule: 'Bash(echo *)' } }),
+      onApproval: async () => ({ approved: true, remember: true }),
     });
     const saved = JSON.parse(readFileSync(join(root, '.cogitator', 'settings.local.json'), 'utf8'));
-    expect(saved).toEqual({ permissions: { allow: ['Bash(echo *)'] } });
+    expect(saved).toEqual({ permissions: { allow: ['run_command(echo hi *)'] } });
     await cog.close();
   });
 
@@ -495,6 +495,184 @@ describe('permissions outside the run loop', () => {
       toolName: 'run_command',
       rule: { origin: 'skill:release' },
     });
+    await cog.close();
+  });
+});
+
+describe('permissions across the run lifecycle', () => {
+  const danger = vi.fn(async () => 'boom');
+  const dangerTool = tool({
+    name: 'danger',
+    description: 'Does something dangerous',
+    parameters: z.object({}),
+    execute: danger,
+  });
+
+  beforeEach(() => {
+    danger.mockClear();
+  });
+
+  it('keeps the run rules of a paused run for its resume', async () => {
+    const { cog } = setup([
+      turn(call('c1', 'send_email', { to: 'a@b.co', body: 'hi' })),
+      turn(call('c2', 'danger', {})),
+    ]);
+    const agent = coder({ tools: [sendEmail, dangerTool] });
+    const paused = await cog.run(agent, {
+      input: 'go',
+      threadId: 't-run-rules',
+      permissions: { deny: ['danger'] },
+    });
+    expect(paused.checkpoint?.permissions?.rules).toEqual({ deny: ['danger'] });
+    await cog.resume(agent, 't-run-rules', { decisions: { c1: { approved: true } } });
+    expect(danger).not.toHaveBeenCalled();
+    await cog.close();
+  });
+
+  it('a deny rule added before the resume wins over a decision kept in the checkpoint', async () => {
+    const { cog } = setup([
+      turn(call('c1', 'danger', {}), call('c2', 'send_email', { to: 'a@b.co', body: 'hi' })),
+    ]);
+    const agent = coder({ tools: [sendEmail, dangerTool] });
+    const paused = await cog.run(agent, {
+      input: 'go',
+      threadId: 't-late-deny',
+      permissions: { allow: ['danger'] },
+    });
+    expect(paused.checkpoint?.turn.decisions).toEqual({ c1: { approved: true } });
+    const done = await cog.resume(agent, 't-late-deny', {
+      decisions: { c2: { approved: true } },
+      permissions: { deny: ['danger'] },
+    });
+    expect(danger).not.toHaveBeenCalled();
+    expect(toolTexts(done.messages)[0]).toContain('Permission denied');
+    await cog.close();
+  });
+
+  it('applies the permissions of the agent a run hands over to', async () => {
+    const backend = new MockLLMBackend().setResponses([
+      turn(call('h1', 'transfer_to_ops', {})),
+      turn(call('h2', 'danger', {})),
+      { content: 'done' },
+    ]);
+    const cog = new Cogitator({ llm: { backends: { mock: backend }, retry: false } });
+    const ops = new Agent({
+      name: 'ops',
+      model: 'mock/m',
+      instructions: 'Ops.',
+      tools: [dangerTool],
+      permissions: { deny: ['danger'] },
+    });
+    const triage = new Agent({
+      name: 'triage',
+      model: 'mock/m',
+      instructions: 'Triage.',
+      handoffs: [ops],
+    });
+    await cog.run(triage, { input: 'go' });
+    expect(danger).not.toHaveBeenCalled();
+    await cog.close();
+  });
+
+  it('invokeTool holds a call to the permissions of the agent it is made for', async () => {
+    const cog = new Cogitator();
+    const agent = new Agent({
+      name: 'a',
+      model: 'mock/m',
+      instructions: 'x',
+      permissions: { deny: ['danger'] },
+    });
+    const result = await cog.invokeTool(dangerTool, {}, { agent });
+    expect(result.errorCode).toBe('PERMISSION_DENIED');
+    await cog.close();
+  });
+
+  it('ignores changed arguments without permissions, and never applies one to every call', async () => {
+    const plain = setup([turn(call('c1', 'send_email', { to: 'a@b.co', body: 'draft' }))]);
+    await plain.cog.run(coder(), {
+      input: 'mail',
+      onApproval: async () => ({
+        approved: true,
+        updatedArguments: { to: 'x@y.co', body: 'evil' },
+      }),
+    });
+    expect(sent.mock.calls[0][0]).toEqual({ to: 'a@b.co', body: 'draft' });
+    await plain.cog.close();
+
+    sent.mockClear();
+    const guarded = setup(
+      [
+        turn(
+          call('c1', 'send_email', { to: 'a@b.co', body: '1' }),
+          call('c2', 'send_email', { to: 'c@d.co', body: '2' })
+        ),
+      ],
+      { permissions: {} }
+    );
+    await guarded.cog.run(coder(), { input: 'mail', threadId: 't-default-update' });
+    await guarded.cog.resume(coder(), 't-default-update', {
+      defaultDecision: { approved: true, updatedArguments: { to: 'x@y.co', body: 'same' } },
+    });
+    expect(sent.mock.calls.map((args) => args[0].to)).toEqual(['a@b.co', 'c@d.co']);
+    await guarded.cog.close();
+  });
+
+  it('does not offer the model a tool a bare deny rule names', async () => {
+    const { cog, backend } = setup([{ content: 'hi' }], {
+      permissions: { deny: ['send_email', 'Bash'] },
+    });
+    await cog.run(coder(), { input: 'hi' });
+    const offered = backend.getLastCall()?.tools?.map((t) => t.name) ?? [];
+    expect(offered).not.toContain('send_email');
+    expect(offered).not.toContain('run_command');
+    expect(offered).toContain('read_file');
+    await cog.close();
+  });
+
+  it('leaves the files a Read deny names out of grep, glob and list_files', async () => {
+    writeFileSync(join(root, '.env'), 'SECRET=1\n');
+    writeFileSync(join(root, 'src', 'notes.txt'), 'SECRET=2\n');
+    const { cog } = setup(
+      [
+        turn(
+          call('c1', 'grep', { pattern: 'SECRET', includeHidden: true }),
+          call('c2', 'glob', { pattern: '**/*.env' }),
+          call('c3', 'list_files', { includeHidden: true })
+        ),
+      ],
+      { permissions: { deny: ['Read(.env)'] } }
+    );
+    const result = await cog.run(coder(), { input: 'look' });
+    const [grep, glob, list] = toolTexts(result.messages);
+    expect(grep).toContain('notes.txt');
+    expect(grep).not.toContain('SECRET=1');
+    expect(JSON.parse(glob).files).toEqual([]);
+    expect(list).not.toContain('".env"');
+    await cog.close();
+  });
+
+  it('saves only the suggested or the exact rule of an "always allow" answer', async () => {
+    const { cog } = setup([turn(call('c1', 'run_command', { command: 'echo hi' }))], {
+      permissions: {},
+    });
+    await cog.run(coder(), {
+      input: 'echo',
+      threadId: 't-broad',
+      onApproval: async () => ({ approved: true, remember: { rule: 'run_command(echo *)' } }),
+    });
+    const events = (await approvalEvents(cog, 't-broad')).map((entry) => entry.event);
+    expect(events[0]).not.toHaveProperty('remembered');
+    await cog.close();
+  });
+
+  it('counts only the calls that run against a tool call budget', async () => {
+    const { cog } = setup(
+      [turn(call('c1', 'danger', {}), call('c2', 'read_file', { path: 'src/app.ts' }))],
+      { permissions: { deny: ['danger'] }, budget: { session: { maxToolCalls: 1 } } }
+    );
+    const agent = coder({ tools: [...workspaceTools(), dangerTool] });
+    const result = await cog.run(agent, { input: 'go', threadId: 't-count' });
+    expect(result.status).toBe('completed');
     await cog.close();
   });
 });

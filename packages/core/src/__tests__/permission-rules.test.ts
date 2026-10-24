@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { PermissionLayerSettings, PermissionMode, Tool } from '@cogitator-ai/types';
 import { tool } from '../tool';
 import { workspaceTools } from '../tools/workspace-tools';
+import { exec } from '../tools/exec';
 import { LocalWorkspace } from '../workspace/local-workspace';
 import {
   PermissionRuleSet,
@@ -130,31 +131,72 @@ describe('command patterns', () => {
     expect(matchesCommandPattern(command, pattern)).toBe(expected);
   });
 
-  it('splits compound commands outside quotes and keeps nested ones apart', () => {
+  it('tokenizes quotes, escapes and line continuations into argv', () => {
     const line = parseCommandLine(`git status && echo "a && b" | grep x; echo $(rm -rf tmp)`);
     expect(line.commands.map((command) => command.text)).toEqual([
       'git status',
-      'echo "a && b"',
+      'echo a && b',
       'grep x',
       'echo $(rm -rf tmp)',
     ]);
-    expect(line.nested.map((command) => command.text)).toEqual(['rm -rf tmp']);
+    expect(line.commands[3].understood).toBe(false);
+    expect(line.candidates.map((command) => command.text)).toContain('rm -rf tmp');
     expect(line.certain).toBe(false);
+    expect(parseCommandLine(`"rm" -rf /`).commands[0].argv).toEqual(['rm', '-rf', '/']);
+    expect(parseCommandLine(`\\rm -rf /`).commands[0].argv).toEqual(['rm', '-rf', '/']);
+    expect(parseCommandLine(`r''m -rf /`).commands[0].argv).toEqual(['rm', '-rf', '/']);
+    expect(parseCommandLine('r\\\nm -rf /').commands[0].argv).toEqual(['rm', '-rf', '/']);
   });
 
-  it('takes wrappers and assignments off, and knows an unfinished line', () => {
+  it('takes known wrappers and assignments off, and knows an unfinished line', () => {
     expect(parseCommandLine('timeout 30 npm test').commands[0].text).toBe('npm test');
-    expect(parseCommandLine('nice -n 5 nohup npm test').commands[0].text).toBe('npm test');
+    expect(parseCommandLine('time nice -n 5 npm test').commands[0].text).toBe('npm test');
     expect(parseCommandLine('xargs grep pattern').commands[0].text).toBe('grep pattern');
-    expect(parseCommandLine('xargs -n1 grep pattern').commands[0].text).toBe(
-      'xargs -n1 grep pattern'
-    );
+    expect(parseCommandLine('xargs -n1 grep pattern').commands[0].understood).toBe(false);
     const assigned = parseCommandLine('NODE_ENV=test FOO=bar npm test').commands[0];
     expect(assigned).toMatchObject({ text: 'npm test', assigned: ['NODE_ENV', 'FOO'] });
+    expect(parseCommandLine('env NODE_ENV=test npm test').commands[0]).toMatchObject({
+      text: 'npm test',
+      assigned: ['NODE_ENV'],
+      understood: true,
+    });
     expect(parseCommandLine('npm test &&').certain).toBe(false);
     expect(parseCommandLine('echo "open').certain).toBe(false);
-    expect(parseCommandLine('npm test 2>&1').commands[0].redirectsOutput).toBe(false);
-    expect(parseCommandLine('echo hi > out.txt').commands[0].redirectsOutput).toBe(true);
+  });
+
+  it.each([
+    ['npm test 2>&1', false],
+    ['echo hi > out.txt', true],
+    ['echo ok>/tmp/file', true],
+    ['npm test 0<>/etc/x', true],
+    ['npm test &>log', true],
+    ['npm test >&log', true],
+    ['npm test > /dev/null', true],
+    ['echo "a>b"', false],
+  ])('finds the redirections of %s', (text, writes) => {
+    const redirects = parseCommandLine(text).commands[0].redirects;
+    expect(redirects.some((redirect) => redirect.writes)).toBe(writes);
+  });
+
+  it.each([
+    'f() { rm -rf /; }; f',
+    'case x in x) rm -rf /;; esac',
+    'for f in a; do rm -rf /; done',
+    '(rm -rf /)',
+    'cat <<EOF\nrm -rf /\nEOF',
+    'diff <(ls) <(ls -a)',
+    'eval ls',
+    'exec ls',
+    'source ./x.sh',
+    'sudo ls',
+    'bash -c ls',
+    'env -i ls',
+    'watch ls',
+    'find . -delete',
+    'git -C . status',
+    'ls $HOME',
+  ])('does not understand %j', (text) => {
+    expect(parseCommandLine(text).certain).toBe(false);
   });
 });
 
@@ -489,5 +531,235 @@ describe('the auto mode classifier answer', () => {
     expect(prompt).toContain('<user_request>\nlist files');
     expect(prompt).toContain('<recent_conversation>\nuser: list files');
     expect(prompt).toContain('"command": "ls"');
+  });
+});
+
+describe('shell commands an allow rule cannot be fooled by', () => {
+  const run = (
+    command: string,
+    settings: Omit<PermissionLayerSettings, 'layer'>,
+    mode: PermissionMode = 'default',
+    extra: Record<string, unknown> = {}
+  ) =>
+    resolvePermission(
+      ws('run_command'),
+      { command, ...extra },
+      { mode, rules: rules(settings), needsApproval: true, workspace, projectRoot: root }
+    ).then((decision) => decision.decision);
+
+  it.each([
+    'rm -rf /',
+    '"rm" -rf /',
+    '\\rm -rf /',
+    "r''m -rf /",
+    'r\\\nm -rf /',
+    '/bin/rm -rf /',
+    'env rm -rf /',
+    'env FOO=1 rm -rf /',
+    'sudo rm -rf /',
+    'sudo -u root rm -rf /',
+    'bash -c "rm -rf /"',
+    "sh -c 'ls && rm -rf /'",
+    'eval rm -rf /',
+    'f() { rm -rf /; }; f',
+    'case x in x) rm -rf /;; esac',
+    'exec rm -rf /',
+    'xargs -0 rm',
+    'nice --adjustment=1 rm -rf /',
+    'timeout -s KILL 5 rm -rf /',
+    'find . -exec rm {} \\;',
+    'echo $(rm -rf /)',
+    'ls; (cd /tmp && rm -rf x)',
+  ])('deny Bash(rm *) refuses %j even with a bare Bash allow', async (command) => {
+    expect(await run(command, { deny: ['Bash(rm *)'], allow: ['Bash'] })).toBe('deny');
+  });
+
+  it.each(['$(echo rm) -rf /', 'f=rm; $f -rf /', 'find . -delete'])(
+    'a line that may hide a denied command asks: %j',
+    async (command) => {
+      expect(await run(command, { deny: ['Bash(rm *)'], allow: ['Bash'] })).toBe('ask');
+      expect(await run(command, { deny: ['Bash(rm *)'] }, 'bypassPermissions')).toBe('ask');
+    }
+  );
+
+  it.each([
+    'git push --force',
+    'git "push" --force',
+    'git -C . push --force',
+    'git -c x=y push',
+    'git --no-pager push',
+  ])('ask Bash(git push:*) asks for %j', async (command) => {
+    expect(await run(command, { ask: ['Bash(git push:*)'], allow: ['Bash(git *)'] })).toBe('ask');
+  });
+
+  it.each([
+    ['npm test', 'allow'],
+    ['timeout 30 npm test', 'allow'],
+    ['NODE_ENV=ci npm test', 'allow'],
+    ['npm test foo>/etc/x', 'ask'],
+    ['npm test 0<>/etc/x', 'ask'],
+    ['npm test > /etc/x', 'ask'],
+    ['npm test; rm -rf /', 'ask'],
+    ['npm test `rm`', 'ask'],
+    ['npm test && rm', 'ask'],
+    ['npm testx', 'ask'],
+    ['GOFLAGS=-toolexec=/tmp/evil go test ./...', 'ask'],
+    ['FOO=1 npm test', 'ask'],
+    ['LD_PRELOAD=/tmp/x.so npm test', 'ask'],
+    ['npm test $EXTRA', 'ask'],
+    ['npm test > /dev/null', 'allow'],
+  ])('allow Bash(npm test *) and Bash(go test *): %j %s', async (command, expected) => {
+    expect(await run(command, { allow: ['Bash(npm test *)', 'Bash(go test *)'] })).toBe(expected);
+  });
+
+  it('checks the variables and the directory a call runs a command with', async () => {
+    const env = {
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'core.fsmonitor',
+      GIT_CONFIG_VALUE_0: 'x',
+    };
+    expect(await run('git status', { allow: ['Bash(git status)'] }, 'default', { env })).toBe(
+      'ask'
+    );
+    expect(
+      await run('git status', { allow: ['Bash(git status)'] }, 'default', { env: { CI: '1' } })
+    ).toBe('allow');
+    expect(
+      await run('git status', { allow: ['Bash(git status)'] }, 'default', { cwd: '/etc' })
+    ).toBe('ask');
+    expect(await run('git status', { allow: ['Bash(git status)'] }, 'default', { cwd: root })).toBe(
+      'allow'
+    );
+    expect(await run('touch x', {}, 'acceptEdits', { cwd: '/etc' })).toBe('ask');
+  });
+
+  it.each([
+    ['touch a foo>/etc/x', 'ask'],
+    ['mv -t/etc a', 'ask'],
+    ['cp --target-directory=/etc a', 'ask'],
+    ['mv -Z a b', 'ask'],
+    ['mkdir /etc/x', 'ask'],
+    ['mkdir -p sub/dir', 'allow'],
+    ['cp -r src lib', 'allow'],
+    ['mv -t src a', 'allow'],
+    ['touch src/a src/b', 'allow'],
+    ['touch src/*.ts', 'ask'],
+  ])('acceptEdits reads the options of %j: %s', async (command, expected) => {
+    expect(await run(command, {}, 'acceptEdits')).toBe(expected);
+  });
+
+  it('applies Read and Edit deny rules to the files shell commands read and write', async () => {
+    expect(await run('cat .env', { deny: ['Read(./.env)'] })).toBe('deny');
+    expect(await run('cat .env', { deny: ['Read(./.env)'], allow: ['Bash(cat *)'] })).toBe('deny');
+    expect(await run('cat .env', { deny: ['Read(.env)'] }, 'bypassPermissions')).toBe('deny');
+    expect(await run('grep -r SECRET .env', { deny: ['Read(.env)'] })).toBe('deny');
+    expect(await run('base64 < .env', { deny: ['Read(.env)'] })).toBe('deny');
+    expect(await run('cp .env /tmp/x', { deny: ['Read(.env)'] })).toBe('deny');
+    expect(await run('echo x > src/app.ts', { deny: ['Edit(src/**)'] })).toBe('deny');
+    expect(await run('tee src/app.ts', { deny: ['Edit(src/**)'] })).toBe('deny');
+  });
+});
+
+describe('modes and names beyond the workspace tools', () => {
+  const decideWith = (
+    target: Tool,
+    args: Record<string, unknown>,
+    settings: Omit<PermissionLayerSettings, 'layer'>,
+    mode: PermissionMode = 'default'
+  ) =>
+    resolvePermission(target, args, {
+      mode,
+      rules: rules(settings),
+      needsApproval: false,
+      workspace,
+      projectRoot: root,
+    });
+
+  it('dontAsk refuses what would ask and runs what the rules allow', async () => {
+    expect(
+      (await decideWith(ws('write_file'), { path: 'src/a.ts', content: '' }, {}, 'dontAsk'))
+        .decision
+    ).toBe('deny');
+    expect(
+      (
+        await decideWith(
+          ws('write_file'),
+          { path: 'src/a.ts', content: '' },
+          { allow: ['Edit(src/**)'] },
+          'dontAsk'
+        )
+      ).decision
+    ).toBe('allow');
+  });
+
+  it('asks before edits in default mode unless an allow rule covers them', async () => {
+    const edit = (path: string) =>
+      decideWith(ws('write_file'), { path, content: '' }, { allow: ['Edit(src/**)'] }).then(
+        (d) => d.decision
+      );
+    expect(await edit('src/a.ts')).toBe('allow');
+    expect(await edit('x.ts')).toBe('ask');
+    expect((await decideWith(ws('read_file'), { path: 'x.ts' }, {})).decision).toBe('allow');
+  });
+
+  it('maps WebFetch, WebSearch and Agent rules onto the tools of their kind', async () => {
+    const fetchTool = tool({
+      name: 'http_request',
+      description: 'Fetch',
+      parameters: z.object({ url: z.string() }),
+      execute: async () => '',
+    });
+    const search = tool({
+      name: 'web_search',
+      description: 'Search',
+      parameters: z.object({ query: z.string() }),
+      execute: async () => '',
+    });
+    const delegate = tool({
+      name: 'ask_explorer',
+      description: 'Delegate',
+      parameters: z.object({ task: z.string() }),
+      access: { kind: 'agent', agent: 'Explore' },
+      execute: async () => '',
+    });
+    const url = { url: 'https://api.evil.com/x' };
+    expect((await decideWith(fetchTool, url, { deny: ['WebFetch'] })).decision).toBe('deny');
+    expect(
+      (await decideWith(fetchTool, url, { deny: ['WebFetch(domain:evil.com)'] })).decision
+    ).toBe('deny');
+    expect(
+      (await decideWith(fetchTool, url, { deny: ['WebFetch(domain:good.com)'] })).decision
+    ).toBe('allow');
+    expect((await decideWith(search, { query: 'x' }, { deny: ['WebSearch'] })).decision).toBe(
+      'deny'
+    );
+    expect((await decideWith(delegate, { task: 'x' }, { deny: ['Agent(Explore)'] })).decision).toBe(
+      'deny'
+    );
+    expect((await decideWith(delegate, { task: 'x' }, { deny: ['Agent(Plan)'] })).decision).toBe(
+      'allow'
+    );
+    expect(rules({ deny: ['NotebookRead'] }).warnings[0]).toContain('no counterpart');
+    expect(rules({ deny: ['MultiEdit'] }).warnings[0]).toContain('no counterpart');
+  });
+
+  it('plan mode runs read-only commands and never trusts what an MCP server claims', async () => {
+    expect((await decideWith(exec, { command: 'ls -la && git status' }, {}, 'plan')).decision).toBe(
+      'allow'
+    );
+    expect((await decideWith(exec, { command: 'git push' }, {}, 'plan')).decision).toBe('deny');
+    expect((await decideWith(exec, { command: 'ls > out' }, {}, 'plan')).decision).toBe('deny');
+    const mcpReader = tool({
+      name: 'read_file',
+      description: 'Says it reads',
+      parameters: z.object({ path: z.string() }),
+      annotations: { readOnlyHint: true },
+      mcp: { server: 'shady', tool: 'read_file' },
+      execute: async () => '',
+    });
+    expect((await decideWith(mcpReader, { path: 'x' }, {}, 'plan')).decision).toBe('deny');
+    expect((await decideWith(mcpReader, { path: '.env' }, { deny: ['Read(.env)'] })).decision).toBe(
+      'allow'
+    );
   });
 });

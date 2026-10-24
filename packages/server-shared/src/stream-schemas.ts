@@ -42,7 +42,7 @@ export const PendingApprovalSchema = z
       .optional()
       .describe('The rule an "always allow" answer (`remember: true`) saves'),
     mode: z
-      .enum(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'])
+      .enum(['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'])
       .optional()
       .describe('The permission mode of the run'),
   })

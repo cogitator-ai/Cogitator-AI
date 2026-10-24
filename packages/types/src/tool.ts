@@ -198,15 +198,25 @@ export interface ToolAnnotations {
 export type ApprovalCheck = (params: Record<string, unknown>) => boolean;
 
 /**
- * What a tool's calls touch, for permission rules: `read` tools read the paths `paths` gives,
- * `edit` tools change them, `command` tools run the shell command `command` gives. The functions
- * get the arguments as the tool's schema read them, and paths as the call names them, relative to
- * the workspace root or absolute
+ * What a tool's calls touch, for permission rules:
+ * - `read` tools read the paths `paths` gives, `edit` tools change them (paths as the call names
+ *   them: relative to the workspace root, or absolute)
+ * - `command` tools run the shell command `command` gives, in the directory `cwd` gives (relative
+ *   to the workspace root, default its current directory) with the variables `env` gives
+ * - `fetch` tools fetch the URL `url` gives (`WebFetch(domain:...)` rules), `search` tools search
+ *   the web (`WebSearch`), `agent` tools hand a task to the agent named `agent` (`Agent(...)`)
+ *
+ * The functions get the arguments as the tool's schema read them
  */
 export interface ToolAccess<TParams = unknown> {
-  kind: 'read' | 'edit' | 'command';
+  kind: 'read' | 'edit' | 'command' | 'fetch' | 'search' | 'agent';
   paths?(params: TParams): readonly string[];
   command?(params: TParams): string | undefined;
+  cwd?(params: TParams): string | undefined;
+  env?(params: TParams): Readonly<Record<string, string>> | undefined;
+  url?(params: TParams): string | undefined;
+  /** The name of the agent an `agent` tool hands its task to */
+  agent?: string;
 }
 
 /** An MCP server's tool, by the server's name and the tool's name there */

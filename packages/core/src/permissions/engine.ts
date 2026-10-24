@@ -3,7 +3,7 @@
  * of every layer and the run's mode
  */
 
-import { isAbsolute, posix, relative, resolve } from 'node:path';
+import { basename, isAbsolute, posix, relative, resolve } from 'node:path';
 import type {
   PermissionBehavior,
   PermissionClassification,
@@ -15,6 +15,7 @@ import type {
   Tool,
   Workspace,
 } from '@cogitator-ai/types';
+import { z } from 'zod';
 import { isPathAllowed } from '../tools/path-guard';
 import {
   compilePathPattern,
@@ -26,16 +27,22 @@ import {
 } from './paths';
 import {
   accessKindOf,
+  isUnmappedClaudeName,
   parameterMatches,
   parameterSpecifier,
   parseRule,
   ruleTarget,
   targetCovers,
+  type AccessKind,
   type ParsedRule,
   type RuleTarget,
 } from './rules';
 import {
   assignsOnlySafeVariables,
+  editCommandPaths,
+  filesOf,
+  isReadOnlyCommand,
+  isSafeVariable,
   matchesCommandPattern,
   parseCommandLine,
   type ParsedCommandLine,
@@ -87,6 +94,11 @@ export class PermissionRuleSet {
             this.warnings.push(`${where(layer)}: ${target.error}, the rule is ignored`);
             continue;
           }
+          if (isUnmappedClaudeName(parsed.tool)) {
+            this.warnings.push(
+              `${where(layer)}: ${parsed.text} names a Claude Code tool Cogitator has no counterpart for, it matches no tool`
+            );
+          }
           list.push({
             ref: {
               rule: parsed.text,
@@ -121,6 +133,13 @@ export class PermissionRuleSet {
       (layer.additionalDirectories ?? []).map((dir) =>
         isAbsolute(dir) ? dir : resolve(layer.anchor ?? process.cwd(), dir)
       )
+    );
+  }
+
+  /** Whether a `deny` rule without a specifier names `tool`, so the model is not offered it */
+  deniesWhole(tool: Tool): boolean {
+    return this.byBehavior.deny.some(
+      (rule) => rule.parsed.specifier === undefined && targetCovers(rule.target, tool)
     );
   }
 
@@ -182,18 +201,28 @@ export interface PermissionContext {
   cwd?: string;
   /** Where `/path` patterns of `session` rules start from (default: the working directory) */
   projectRoot?: string;
-  /** Tools `plan` mode runs although they are not read-only, such as `exit_plan_mode` */
-  planTools?: ReadonlySet<string>;
+  /** Tools of the run `plan` mode runs although they are not read-only, such as its `exit_plan_mode` */
+  planTools?: ReadonlySet<Tool>;
   /** Decides a call that would ask in `auto` mode */
   classify?: (reason: string) => Promise<PermissionClassification>;
+}
+
+/** A command line of a call with where and how it runs */
+interface CommandCall {
+  line: ParsedCommandLine;
+  /** The directory it runs in, absolute */
+  cwd: string;
+  /** Whether every variable the call sets for it is a safe one */
+  envSafe: boolean;
 }
 
 /** A call taken apart for matching, computed once per decision */
 class CallSubject {
   private pathsPromise?: Promise<ResolvedPath[]>;
-  private commandLine?: ParsedCommandLine | null;
+  private commandCall?: CommandCall | null;
+  private shellFiles?: Promise<{ reads: ResolvedPath[]; writes: ResolvedPath[] }>;
   readonly parsed: unknown;
-  readonly kind: 'read' | 'edit' | 'command' | undefined;
+  readonly kind: AccessKind | undefined;
   readonly schemaKeys: ReadonlySet<string>;
 
   constructor(
@@ -230,23 +259,59 @@ class CallSubject {
     return this.pathsPromise;
   }
 
-  command(): ParsedCommandLine | undefined {
-    if (this.commandLine !== undefined) return this.commandLine ?? undefined;
+  command(): CommandCall | undefined {
+    if (this.commandCall !== undefined) return this.commandCall ?? undefined;
+    this.commandCall = null;
+    if (this.kind !== 'command') return undefined;
+    const access = this.tool.access;
     let text: string | undefined;
-    if (this.kind === 'command') {
-      if (this.tool.access?.command) {
-        try {
-          text = this.tool.access.command(this.parsed);
-        } catch {
-          text = undefined;
-        }
-      } else if (typeof this.args.command === 'string') {
-        text = this.args.command;
-      }
+    let cwd: string | undefined;
+    let env: Readonly<Record<string, string>> | undefined;
+    try {
+      text = access?.command
+        ? access.command(this.parsed)
+        : typeof this.args.command === 'string'
+          ? this.args.command
+          : undefined;
+      cwd = access?.cwd ? access.cwd(this.parsed) : stringOf(this.args.cwd);
+      env = access?.env ? access.env(this.parsed) : recordOf(this.args.env);
+    } catch {
+      return undefined;
     }
-    this.commandLine = text === undefined ? null : parseCommandLine(text);
-    return this.commandLine ?? undefined;
+    if (text === undefined) return undefined;
+    this.commandCall = {
+      line: parseCommandLine(text),
+      cwd: cwd === undefined ? this.cwd : isAbsolute(cwd) ? resolve(cwd) : resolve(this.base, cwd),
+      envSafe: Object.keys(env ?? {}).every(isSafeVariable),
+    };
+    return this.commandCall;
   }
+
+  /** The files the command line reads and changes, best effort, for path rules */
+  files(): Promise<{ reads: ResolvedPath[]; writes: ResolvedPath[] }> {
+    this.shellFiles ??= (async () => {
+      const call = this.command();
+      if (!call) return { reads: [], writes: [] };
+      const reads: ResolvedPath[] = [];
+      const writes: ResolvedPath[] = [];
+      for (const candidate of call.line.candidates) {
+        const files = filesOf(candidate);
+        for (const path of files.reads) reads.push(await resolveCallPath(path, call.cwd));
+        for (const path of files.writes) writes.push(await resolveCallPath(path, call.cwd));
+      }
+      return { reads, writes };
+    })();
+    return this.shellFiles;
+  }
+}
+
+function stringOf(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function recordOf(value: unknown): Record<string, string> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, String(entry)]));
 }
 
 /** The top-level fields of a Zod object schema, none for another schema */
@@ -260,6 +325,69 @@ function anchorsOf(rule: CompiledRule, subject: CallSubject, projectRoot: string
   return { cwd: subject.cwd, source: rule.anchor ?? projectRoot };
 }
 
+/** Whether a path pattern rule matches one of `paths`, as named or with symlinks followed */
+function anyPathMatches(
+  rule: CompiledRule,
+  specifier: string,
+  paths: readonly ResolvedPath[],
+  subject: CallSubject,
+  projectRoot: string
+): boolean {
+  const pattern = compilePathPattern(
+    specifier,
+    rule.ref.behavior,
+    anchorsOf(rule, subject, projectRoot)
+  );
+  if ('error' in pattern) {
+    return paths.some(
+      (path) =>
+        path.requested.endsWith(`/${specifier.replace(/^\.?\//, '')}`) ||
+        path.real.endsWith(`/${specifier.replace(/^\.?\//, '')}`)
+    );
+  }
+  if (pattern.negated) return false;
+  for (const path of paths) {
+    for (const candidate of [path.requested, path.real]) {
+      const how = pathMatches(pattern, candidate);
+      if (how && !carvedOut(rule, pattern, how, candidate, subject, projectRoot)) return true;
+    }
+  }
+  return false;
+}
+
+/** The host a URL names, lowercase, undefined for one that cannot be read */
+function hostOf(url: unknown): string | undefined {
+  if (typeof url !== 'string') return undefined;
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a `domain:...` specifier matches the URL of a fetch call: the host or a subdomain */
+function domainMatches(subject: CallSubject, specifier: string): boolean | undefined {
+  const match = /^\s*domain\s*:\s*(\S+)\s*$/.exec(specifier);
+  if (!match) return undefined;
+  const domain = match[1].toLowerCase();
+  let url: unknown;
+  try {
+    url = subject.tool.access?.url ? subject.tool.access.url(subject.parsed) : subject.args.url;
+  } catch {
+    return false;
+  }
+  const host = hostOf(url);
+  if (host === undefined) return false;
+  if (domain.startsWith('*.')) return host.endsWith(domain.slice(1));
+  return host === domain || host.endsWith(`.${domain}`);
+}
+
+/** Whether an `Agent(name)` specifier names the agent of an agent tool */
+function agentMatches(subject: CallSubject, specifier: string): boolean {
+  const name = specifier.trim();
+  return subject.tool.access?.agent === name || subject.tool.name === name;
+}
+
 /** Whether `rule` (a `deny` or `ask` rule) covers the call */
 async function restrictiveMatch(
   rule: CompiledRule,
@@ -267,40 +395,60 @@ async function restrictiveMatch(
   projectRoot: string
 ): Promise<boolean> {
   const { tool } = subject;
+  const specifier = rule.parsed.specifier;
+  const pathFamily =
+    rule.target.kind === 'family' &&
+    (rule.target.family === 'read' || rule.target.family === 'edit') &&
+    specifier !== undefined;
+  if (pathFamily && subject.kind === 'command') {
+    const files = await subject.files();
+    const paths =
+      rule.target.kind === 'family' && rule.target.family === 'edit'
+        ? files.writes
+        : [...files.reads, ...files.writes];
+    if (anyPathMatches(rule, specifier, paths, subject, projectRoot)) return true;
+  }
   const crossRead =
     rule.ref.behavior === 'deny' &&
     rule.target.kind === 'family' &&
     rule.target.family === 'read' &&
-    rule.parsed.specifier !== undefined &&
+    specifier !== undefined &&
     subject.kind === 'edit';
   if (!crossRead && !targetCovers(rule.target, tool)) return false;
-  const specifier = rule.parsed.specifier;
   if (specifier === undefined) return true;
+  if (subject.kind === 'fetch') {
+    const domain = domainMatches(subject, specifier);
+    if (domain !== undefined) return domain;
+  }
+  if (subject.kind === 'agent') return agentMatches(subject, specifier);
   const parameter = parameterSpecifier(specifier, tool, subject.schemaKeys);
   if (parameter) return parameterMatches(subject.args[parameter.name], parameter.value);
   if (rule.target.kind === 'names' && rule.target.pathRulesNeverMatch) return false;
   if (subject.kind === 'command') {
-    const line = subject.command();
-    if (!line) return false;
-    return [...line.commands, ...line.nested].some((command) =>
-      matchesCommandPattern(command.text, specifier)
-    );
+    const call = subject.command();
+    if (!call) return true;
+    const spec = commandSpecifier(specifier);
+    return call.line.candidates.some((command) => matchesCommandPattern(command.text, spec));
   }
   if (subject.kind === 'read' || subject.kind === 'edit') {
-    const pattern = compilePathPattern(
-      specifier,
-      rule.ref.behavior,
-      anchorsOf(rule, subject, projectRoot)
-    );
-    if ('error' in pattern || pattern.negated) return false;
-    for (const path of await subject.paths()) {
-      for (const candidate of [path.requested, path.real]) {
-        const how = pathMatches(pattern, candidate);
-        if (how && !carvedOut(rule, pattern, how, candidate, subject, projectRoot)) return true;
-      }
-    }
+    return anyPathMatches(rule, specifier, await subject.paths(), subject, projectRoot);
   }
   return false;
+}
+
+/** A command pattern read as the shell reads words, so `git "push" *` is `git push *` */
+function commandSpecifier(specifier: string): string {
+  if (!/["'\\]/.test(specifier)) return specifier;
+  const trailing = specifier.trimEnd().endsWith(':*') ? ':*' : '';
+  const body = trailing ? specifier.trimEnd().slice(0, -2) : specifier;
+  const pieces = body.split('*').map((piece) => {
+    const parsed = parseCommandLine(piece);
+    const words = parsed.commands[0]?.argv ?? [];
+    const lead = /^\s/.test(piece) ? ' ' : '';
+    const tail = /\s$/.test(piece) ? ' ' : '';
+    return words.length > 0 ? `${lead}${words.join(' ')}${tail}` : piece;
+  });
+  return `${pieces.join('*')}${trailing}`;
 }
 
 /** Whether a `!` pattern after `rule` in its list takes `path` out of it */
@@ -328,39 +476,77 @@ function carvedOut(
   return false;
 }
 
+/** What an allow decision may take for granted about the call */
+interface AllowContext {
+  /** Whether a deny or ask rule could name a command the line hides */
+  guarded: boolean;
+  /** Whether the call may write `path` without asking (redirections of an allowed command) */
+  writable: (path: ResolvedPath) => Promise<boolean>;
+  /** Whether a directory is inside the workspace */
+  inside: (absolute: string) => Promise<boolean>;
+}
+
+/** Whether a command line of a call is plain enough for an allow: understood, safe env, inside */
+async function allowableLine(call: CommandCall, allow: AllowContext): Promise<boolean> {
+  if (!call.line.certain || call.line.commands.length === 0 || !call.envSafe) return false;
+  if (!(await allow.inside(call.cwd))) return false;
+  for (const command of call.line.commands) {
+    if (!allowableCommand(command)) return false;
+    for (const redirect of command.redirects) {
+      if (!redirect.writes || isDevice(redirect.target)) continue;
+      if (!(await allow.writable(await resolveCallPath(redirect.target, call.cwd)))) return false;
+    }
+  }
+  return true;
+}
+
+function isDevice(path: string): boolean {
+  return ['/dev/null', '/dev/stdout', '/dev/stderr', '/dev/tty'].includes(path);
+}
+
 /**
  * The allow rule that covers the call, when one does: for a command, every command of the line
- * must be covered by an allow rule (not the same one), for a path every path, as the call names
- * it and with symlinks followed
+ * must be understood and covered by an allow rule (not the same one), for a path every path, as
+ * the call names it and with symlinks followed
  */
 async function allowingRule(
   subject: CallSubject,
   rules: readonly CompiledRule[],
-  projectRoot: string
+  projectRoot: string,
+  allow: AllowContext
 ): Promise<CompiledRule | undefined> {
   const covering = rules.filter((rule) => targetCovers(rule.target, subject.tool));
   const bare = covering.find((rule) => rule.parsed.specifier === undefined);
-  if (bare) return bare;
+  if (bare) {
+    const call = subject.kind === 'command' ? subject.command() : undefined;
+    if (!call || !allow.guarded || (await allowableLine(call, allow))) return bare;
+  }
   const specific = covering.filter((rule) => {
     const specifier = rule.parsed.specifier;
     if (specifier === undefined) return false;
     if (rule.target.kind === 'names' && rule.target.pathRulesNeverMatch) return false;
+    if (subject.kind === 'fetch' && domainMatches(subject, specifier) !== undefined) return true;
     return !parameterSpecifier(specifier, subject.tool, subject.schemaKeys);
   });
   if (specific.length === 0) return undefined;
   if (subject.kind === 'command') {
-    const line = subject.command();
-    if (!line || !line.certain || line.commands.length === 0) return undefined;
+    const call = subject.command();
+    if (!call || !(await allowableLine(call, allow))) return undefined;
     let first: CompiledRule | undefined;
-    for (const command of line.commands) {
-      if (!allowableCommand(command)) return undefined;
+    for (const command of call.line.commands) {
       const rule = specific.find((candidate) =>
-        matchesCommandPattern(command.text, candidate.parsed.specifier ?? '')
+        matchesCommandPattern(command.text, commandSpecifier(candidate.parsed.specifier ?? ''))
       );
       if (!rule) return undefined;
       first ??= rule;
     }
     return first;
+  }
+  if (subject.kind === 'fetch') {
+    return specific.find((rule) => domainMatches(subject, rule.parsed.specifier ?? '') === true);
+  }
+  if (subject.kind === 'agent') {
+    return specific.find((rule) => agentMatches(subject, rule.parsed.specifier ?? ''));
   }
   if (subject.kind === 'read' || subject.kind === 'edit') {
     const paths = await subject.paths();
@@ -388,22 +574,28 @@ async function allowingRule(
 }
 
 function allowableCommand(command: ShellCommand): boolean {
-  return !command.redirectsOutput && assignsOnlySafeVariables(command);
+  return command.understood && assignsOnlySafeVariables(command);
 }
 
-const WORKSPACE_EDIT_COMMANDS = new Set(['mkdir', 'touch', 'mv', 'cp']);
+/** Whether a deny or ask rule could name a command or a file a command line hides */
+function guardsCommands(rules: PermissionRuleSet, tool: Tool): boolean {
+  return [...rules.rules('deny'), ...rules.rules('ask')].some((rule) => {
+    if (rule.parsed.specifier === undefined) return false;
+    if (
+      rule.target.kind === 'family' &&
+      (rule.target.family === 'read' || rule.target.family === 'edit')
+    ) {
+      return true;
+    }
+    return targetCovers(rule.target, tool);
+  });
+}
 
 /** Whether the call edits only inside the workspace (or the extra directories), for `acceptEdits` */
 async function editsInside(
   subject: CallSubject,
-  context: PermissionContext,
-  extra: readonly string[]
+  inside: (absolute: string) => Promise<boolean>
 ): Promise<boolean> {
-  const inside = async (absolute: string): Promise<boolean> => {
-    if (context.workspace && (await context.workspace.contains(absolute))) return true;
-    const roots = [...(context.workspace ? [] : [subject.cwd]), ...extra];
-    return roots.length > 0 && isPathAllowed(absolute, roots);
-  };
   if (subject.kind === 'edit') {
     const paths = subject.rawPaths();
     if (paths.length === 0) return false;
@@ -413,19 +605,26 @@ async function editsInside(
     return true;
   }
   if (subject.kind === 'command') {
-    const line = subject.command();
-    if (!line || !line.certain || line.commands.length === 0) return false;
-    for (const command of line.commands) {
-      if (!WORKSPACE_EDIT_COMMANDS.has(command.words[0] ?? '') || !allowableCommand(command)) {
-        return false;
-      }
-      const operands = command.words.slice(1).filter((word) => !word.startsWith('-'));
-      if (operands.length === 0) return false;
-      for (const operand of operands) {
-        if (/[*?$`~{]/.test(operand)) return false;
-        if (!(await inside(isAbsolute(operand) ? operand : resolve(subject.cwd, operand)))) {
+    const call = subject.command();
+    if (!call || !call.line.certain || call.line.commands.length === 0 || !call.envSafe)
+      return false;
+    if (!(await inside(call.cwd))) return false;
+    for (const command of call.line.commands) {
+      if (!allowableCommand(command)) return false;
+      const paths = editCommandPaths(command);
+      if (!paths || paths.length === 0) return false;
+      const targets = [
+        ...paths,
+        ...command.redirects
+          .filter((redirect) => redirect.writes || redirect.reads)
+          .map((redirect) => redirect.target),
+      ];
+      for (const path of targets) {
+        if (/[*?[$`~{]/.test(path) || isDevice(path)) {
+          if (isDevice(path)) continue;
           return false;
         }
+        if (!(await inside(isAbsolute(path) ? path : resolve(call.cwd, path)))) return false;
       }
     }
     return true;
@@ -433,11 +632,22 @@ async function editsInside(
   return false;
 }
 
-function isReadOnly(tool: Tool, planTools: ReadonlySet<string> | undefined): boolean {
+/** Whether `tool` only reads: the runtime's read-only tools, never what an MCP server claims */
+function isReadOnly(tool: Tool, planTools: ReadonlySet<Tool> | undefined): boolean {
+  if (planTools?.has(tool) === true) return true;
+  if (accessKindOf(tool) === 'read') return true;
+  return tool.mcp === undefined && tool.annotations?.readOnlyHint === true;
+}
+
+/** Whether a command call only reads, for `plan` mode */
+function readOnlyCommandCall(subject: CallSubject): boolean {
+  const call = subject.command();
   return (
-    tool.annotations?.readOnlyHint === true ||
-    accessKindOf(tool) === 'read' ||
-    planTools?.has(tool.name) === true
+    call !== undefined &&
+    call.line.certain &&
+    call.envSafe &&
+    call.line.commands.length > 0 &&
+    call.line.commands.every(isReadOnlyCommand)
   );
 }
 
@@ -459,14 +669,45 @@ function placesOf(context: Pick<PermissionContext, 'workspace' | 'cwd' | 'projec
   return { base, cwd, projectRoot: resolve(context.projectRoot ?? cwd) };
 }
 
+/** Whether `absolute` lies inside the workspace (else the working directory) or an extra directory */
+function insideOf(
+  context: PermissionContext,
+  cwd: string,
+  extra: readonly string[]
+): (absolute: string) => Promise<boolean> {
+  return async (absolute) => {
+    if (context.workspace && (await context.workspace.contains(absolute))) return true;
+    const roots = [...(context.workspace ? [] : [cwd]), ...extra];
+    return roots.length > 0 && isPathAllowed(absolute, roots);
+  };
+}
+
 /**
  * Decides a call of `tool` with `args`: `deny`, `ask` or `allow`, with why and the rule that
  * decided. In order: a `deny` rule of any layer refuses, `plan` mode refuses what is not
  * read-only, an `ask` rule asks (`bypassPermissions` runs it), an `allow` rule runs it,
- * `bypassPermissions` and `acceptEdits` (for edits inside the workspace) run it, a call whose
- * tool needs approval asks (`auto` mode lets its classifier decide), and any other call runs
+ * `bypassPermissions` and `acceptEdits` (for edits inside the workspace) run it, a read-only
+ * command runs in `plan` mode, an edit or a call whose tool needs approval asks (`auto` mode lets
+ * its classifier decide), and any other call runs. `dontAsk` mode refuses what would ask. A command
+ * line an allow rule cannot fully read never runs by a rule, and in `bypassPermissions` mode it asks
+ * when a deny or ask rule could name what it hides
  */
 export async function resolvePermission(
+  tool: Tool,
+  args: Record<string, unknown>,
+  context: PermissionContext
+): Promise<PermissionDecision> {
+  const decided = await decide(tool, args, context);
+  if (context.mode !== 'dontAsk' || decided.decision !== 'ask') return decided;
+  return {
+    ...decided,
+    decision: 'deny',
+    decidedBy: decided.decidedBy === 'rule' ? 'rule' : 'mode',
+    reason: `dontAsk mode refuses what would ask: ${decided.reason}`,
+  };
+}
+
+async function decide(
   tool: Tool,
   args: Record<string, unknown>,
   context: PermissionContext
@@ -480,44 +721,66 @@ export async function resolvePermission(
     reason: string,
     rule?: PermissionRuleRef
   ): PermissionDecision => ({ decision: verdict, reason, decidedBy, mode, ...(rule && { rule }) });
+  const inside = insideOf(context, cwd, rules.additionalDirectories);
+  const guarded = subject.kind === 'command' && guardsCommands(rules, tool);
+  const allow: AllowContext = {
+    guarded,
+    inside,
+    writable: async (path) =>
+      (mode === 'acceptEdits' || mode === 'bypassPermissions') &&
+      (await inside(path.requested)) &&
+      (await inside(path.real)),
+  };
 
   for (const rule of rules.rules('deny')) {
     if (await restrictiveMatch(rule, subject, projectRoot)) {
       return decision('deny', 'rule', ruleReason(rule.ref, 'Denied'), rule.ref);
     }
   }
-  if (mode === 'plan' && !isReadOnly(tool, context.planTools)) {
+  const readOnlyCommand = subject.kind === 'command' && readOnlyCommandCall(subject);
+  if (mode === 'plan' && !isReadOnly(tool, context.planTools) && !readOnlyCommand) {
     return decision(
       'deny',
       'mode',
-      `The run is in plan mode: only read-only tools run until the plan is approved (present it with exit_plan_mode)`
+      `The run is in plan mode: only read-only tools and commands run until the plan is approved (present it with exit_plan_mode)`
     );
   }
   for (const rule of rules.rules('ask')) {
     if (!(await restrictiveMatch(rule, subject, projectRoot))) continue;
-    if (mode === 'bypassPermissions') {
-      return decision(
-        'allow',
-        'mode',
-        'bypassPermissions mode runs every call no deny rule refuses'
-      );
-    }
+    if (mode === 'bypassPermissions') break;
     return decision('ask', 'rule', ruleReason(rule.ref, 'Asked'), rule.ref);
   }
-  const allowing = await allowingRule(subject, rules.rules('allow'), projectRoot);
+  const allowing = await allowingRule(subject, rules.rules('allow'), projectRoot, allow);
   if (allowing) return decision('allow', 'rule', ruleReason(allowing.ref, 'Allowed'), allowing.ref);
   if (mode === 'bypassPermissions') {
+    const call = subject.kind === 'command' ? subject.command() : undefined;
+    if (call && guarded && !(await allowableLine(call, allow))) {
+      return decision(
+        'ask',
+        'mode',
+        'The command line may hide a command or a file a deny or ask rule names, so it asks even in bypassPermissions mode'
+      );
+    }
     return decision('allow', 'mode', 'bypassPermissions mode runs every call no deny rule refuses');
   }
   if (
     mode === 'acceptEdits' &&
     (subject.kind === 'edit' || subject.kind === 'command') &&
-    (await editsInside(subject, context, rules.additionalDirectories))
+    (await editsInside(subject, inside))
   ) {
     return decision('allow', 'mode', 'acceptEdits mode runs edits inside the workspace');
   }
-  if (!context.needsApproval) return decision('allow', 'default', `${tool.name} needs no approval`);
-  const reason = `${tool.name} needs approval for this call`;
+  if (mode === 'plan' && readOnlyCommand) {
+    return decision('allow', 'mode', 'plan mode runs read-only commands');
+  }
+  const editAsks = subject.kind === 'edit';
+  if (!context.needsApproval && !editAsks) {
+    return decision('allow', 'default', `${tool.name} needs no approval`);
+  }
+  const reason =
+    editAsks && !context.needsApproval
+      ? `${tool.name} edits files, which asks unless a rule allows it or the mode is acceptEdits`
+      : `${tool.name} needs approval for this call`;
   if (mode === 'auto' && context.classify) {
     try {
       const classified = await context.classify(reason);
@@ -531,6 +794,19 @@ export async function resolvePermission(
     }
   }
   return decision('ask', 'tool', reason);
+}
+
+/** What allow checks need when no run decides: the call's workspace only */
+function looseAllow(
+  context: Pick<PermissionContext, 'workspace' | 'cwd' | 'projectRoot'>
+): AllowContext {
+  const { cwd } = placesOf(context);
+  const inside = insideOf(
+    { mode: 'default', rules: new PermissionRuleSet([]), needsApproval: false, ...context },
+    cwd,
+    []
+  );
+  return { guarded: false, inside, writable: async () => false };
 }
 
 /**
@@ -553,42 +829,55 @@ export async function ruleAllowsCall(
     (await allowingRule(
       new CallSubject(tool, args, base, cwd),
       rules.rules('allow'),
-      projectRoot
+      projectRoot,
+      looseAllow(context)
     )) !== undefined
   );
 }
 
 const PATH_SPECIALS = /[*?[\]!#\\()]/g;
+const COMMAND_SPECIALS = /[*"'\\()]/;
 
 /**
- * The allow rule an "always allow" answer to this call saves by default, in the tool's own name:
- * `run_command(npm test *)` for a command (its program and subcommand), `edit_file(./src/app.ts)`
- * for a path inside the working directory (`//...` outside it), the tool name for any other call.
- * Undefined for a command line of several commands, which no one rule allows
+ * The rules an "always allow" answer to this call may save, narrowest last: the default
+ * suggestion, `run_command(npm test *)` for a command (its program and subcommand, the command as
+ * the parser understood it, wrappers off), `edit_file(./src/app.ts)` for a path inside the working
+ * directory (`//...` outside it), the tool name for any other call, and the exact command. None
+ * for a command line the parser does not fully understand or of several commands
  */
-export function suggestRule(
+export function rememberableRules(
   tool: Tool,
   args: Record<string, unknown>,
   context: Pick<PermissionContext, 'workspace' | 'cwd' | 'projectRoot'>
-): string | undefined {
+): string[] {
   const { base, cwd } = placesOf(context);
   const subject = new CallSubject(tool, args, base, cwd);
   if (subject.kind === 'command') {
-    const line = subject.command();
-    if (!line || !line.certain || line.commands.length !== 1 || line.nested.length > 0) {
-      return undefined;
+    const call = subject.command();
+    if (!call || !call.line.certain || call.line.commands.length !== 1 || !call.envSafe) return [];
+    const command = call.line.commands[0];
+    const words = command.argv;
+    if (
+      words.length === 0 ||
+      !allowableCommand(command) ||
+      command.redirects.some((redirect) => redirect.writes) ||
+      words.some((word) => COMMAND_SPECIALS.test(word) || /\s/.test(word))
+    ) {
+      return [];
     }
-    const words = line.commands[0].words;
-    if (words.length === 0 || words.some((word) => /[()]/.test(word))) return undefined;
+    const program = words[0];
     const prefix =
-      words[1] !== undefined && /^[A-Za-z0-9][\w.:-]*$/.test(words[1])
-        ? `${words[0]} ${words[1]}`
-        : words[0];
-    return `${tool.name}(${prefix} *)`;
+      words[1] !== undefined && /^[A-Za-z0-9][\w.:-]*$/.test(words[1]) && !program.includes('/')
+        ? `${program} ${words[1]}`
+        : basename(program) === program
+          ? program
+          : undefined;
+    const exact = `${tool.name}(${words.join(' ')})`;
+    return prefix ? [`${tool.name}(${prefix} *)`, exact] : [exact];
   }
   if (subject.kind === 'read' || subject.kind === 'edit') {
     const paths = subject.rawPaths();
-    if (paths.length !== 1) return undefined;
+    if (paths.length !== 1) return [];
     const absolute = normalizeRulePath(
       isAbsolute(paths[0]) ? resolve(paths[0]) : resolve(base, paths[0])
     );
@@ -598,7 +887,59 @@ export function suggestRule(
       inside !== '' && !inside.startsWith('..') && !posix.isAbsolute(inside)
         ? `./${inside.split('\\').join('/')}`
         : `/${absolute}`;
-    return `${tool.name}(${spec.replace(PATH_SPECIALS, (char) => `\\${char}`)})`;
+    return [`${tool.name}(${spec.replace(PATH_SPECIALS, (char) => `\\${char}`)})`];
   }
-  return tool.name;
+  return [tool.name];
+}
+
+/** The allow rule an "always allow" answer to this call saves by default, see {@link rememberableRules} */
+export function suggestRule(
+  tool: Tool,
+  args: Record<string, unknown>,
+  context: Pick<PermissionContext, 'workspace' | 'cwd' | 'projectRoot'>
+): string | undefined {
+  return rememberableRules(tool, args, context)[0];
+}
+
+let readProbe: Tool | undefined;
+
+/**
+ * Whether no `Read(...)` deny rule of `rules` covers `path` (relative to the workspace root or
+ * absolute), for tools that read or list many files
+ */
+export async function readAllowed(
+  path: string,
+  rules: PermissionRuleSet,
+  context: Pick<PermissionContext, 'workspace' | 'cwd' | 'projectRoot'>
+): Promise<boolean> {
+  readProbe ??= {
+    name: 'read_file',
+    description: 'A read of one file',
+    parameters: z.object({ path: z.string() }),
+    access: { kind: 'read', paths: () => [] },
+    execute: async () => null,
+    toJSON: () => ({
+      name: 'read_file',
+      description: '',
+      parameters: { type: 'object', properties: {} },
+    }),
+  };
+  const { base, cwd, projectRoot } = placesOf(context);
+  const subject = new CallSubject(readProbe, { path }, base, cwd);
+  for (const rule of rules.rules('deny')) {
+    if (rule.target.kind !== 'family' || rule.target.family !== 'read') continue;
+    if (rule.parsed.specifier === undefined) return false;
+    if (
+      anyPathMatches(
+        rule,
+        rule.parsed.specifier,
+        [await resolveCallPath(path, base)],
+        subject,
+        projectRoot
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
 }

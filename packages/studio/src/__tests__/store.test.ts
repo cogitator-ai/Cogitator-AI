@@ -182,7 +182,7 @@ describe('StudioStore', () => {
     expect(new StudioStore(dir, () => null).getRun('r')?.todos).toEqual(expected);
   });
 
-  it('keeps why an approval asked once it is answered, and that it was allowed for good', () => {
+  it('keeps why an approval asked once it is answered, and the rule the runtime saved for it', () => {
     const { store: s } = store();
     s.apply(started('r', 'r', 0));
     s.apply({
@@ -204,12 +204,14 @@ describe('StudioStore', () => {
       rule: 'Bash(npm *)',
       suggestedRule: 'run_command(npm test *)',
     });
+    s.apply({ type: 'run.approval.decided', runId: 'r', approvalId: 'r:c', approved: true });
+    expect(s.getRun('r')?.toolCalls[0].approval).not.toHaveProperty('remembered');
     s.apply({
-      type: 'run.approval.decided',
+      type: 'run.approval.remembered',
       runId: 'r',
-      approvalId: 'r:c',
-      approved: true,
-      remembered: true,
+      callId: 'c',
+      rule: 'run_command(npm test *)',
+      layer: 'session',
     });
     expect(s.getRun('r')?.toolCalls[0].approval).toEqual({
       id: 'r:c',
@@ -217,7 +219,7 @@ describe('StudioStore', () => {
       askReason: 'The ask rule Bash(npm *) asks before the call',
       rule: 'Bash(npm *)',
       suggestedRule: 'run_command(npm test *)',
-      remembered: true,
+      remembered: { rule: 'run_command(npm test *)', layer: 'session' },
     });
   });
 

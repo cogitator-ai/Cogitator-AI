@@ -95,10 +95,18 @@ describe('loadPermissionSettings', () => {
     const trusted = await load();
     expect(trusted.layers[0].defaultMode).toBeUndefined();
     expect(trusted.warnings.join('\n')).toMatch(/only from user or managed settings/);
+    write(join(root, '.claude', 'settings.local.json'), {
+      permissions: { allow: ['Read'], deny: ['Read(.env)'], additionalDirectories: ['/'] },
+    });
     const untrusted = await load({ trusted: false });
-    expect(untrusted.layers[0]).toMatchObject({ deny: ['Bash(rm *)'] });
-    expect(untrusted.layers[0].allow).toBeUndefined();
-    expect(untrusted.layers[0].additionalDirectories).toBeUndefined();
+    const local = untrusted.layers.find((layer) => layer.layer === 'local');
+    expect(local).toMatchObject({ deny: ['Read(.env)'] });
+    expect(local?.allow).toBeUndefined();
+    expect(local?.additionalDirectories).toBeUndefined();
+    const project = untrusted.layers.find((layer) => layer.layer === 'project');
+    expect(project).toMatchObject({ deny: ['Bash(rm *)'] });
+    expect(project?.allow).toBeUndefined();
+    expect(project?.additionalDirectories).toBeUndefined();
   });
 
   it('reads only the layers asked for, and lets any layer disable a mode', async () => {

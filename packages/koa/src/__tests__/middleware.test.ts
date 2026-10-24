@@ -8,6 +8,7 @@ import { createErrorHandler } from '../middleware/error-handler.js';
 import { createAuthMiddleware } from '../middleware/auth.js';
 import { createContextMiddleware } from '../middleware/context.js';
 import type { CogitatorState, RouteContext } from '../types.js';
+import { serve } from './local-server';
 
 const mockCogitator = {} as RouteContext['runtime'];
 
@@ -84,7 +85,7 @@ function buildApp(opts?: {
 describe('createBodyParser', () => {
   it('parses valid JSON body on POST', async () => {
     const app = buildApp();
-    const res = await request(app.callback())
+    const res = await request(await serve(app))
       .post('/echo')
       .set('Content-Type', 'application/json')
       .send(JSON.stringify({ hello: 'world' }));
@@ -95,7 +96,7 @@ describe('createBodyParser', () => {
 
   it('parses valid JSON body on PUT', async () => {
     const app = buildApp();
-    const res = await request(app.callback())
+    const res = await request(await serve(app))
       .put('/echo')
       .set('Content-Type', 'application/json')
       .send(JSON.stringify({ method: 'put' }));
@@ -106,7 +107,7 @@ describe('createBodyParser', () => {
 
   it('parses valid JSON body on PATCH', async () => {
     const app = buildApp();
-    const res = await request(app.callback())
+    const res = await request(await serve(app))
       .patch('/echo')
       .set('Content-Type', 'application/json')
       .send(JSON.stringify({ method: 'patch' }));
@@ -117,7 +118,7 @@ describe('createBodyParser', () => {
 
   it('returns 400 for invalid JSON', async () => {
     const app = buildApp();
-    const res = await request(app.callback())
+    const res = await request(await serve(app))
       .post('/echo')
       .set('Content-Type', 'application/json')
       .send('{not valid json}');
@@ -130,7 +131,9 @@ describe('createBodyParser', () => {
 
   it('skips body parsing for GET requests', async () => {
     const app = buildApp();
-    const res = await request(app.callback()).get('/test').set('Content-Type', 'application/json');
+    const res = await request(await serve(app))
+      .get('/test')
+      .set('Content-Type', 'application/json');
 
     expect(res.status).toBe(200);
   });
@@ -139,7 +142,7 @@ describe('createBodyParser', () => {
     'refuses a %s body a cross-origin page can send without a preflight',
     async (type) => {
       const app = buildApp();
-      const res = await request(app.callback())
+      const res = await request(await serve(app))
         .post('/echo')
         .set('Content-Type', type)
         .send('{"input":"hi"}');
@@ -158,7 +161,7 @@ describe('createBodyParser', () => {
     const app = buildApp();
     const largeBody = JSON.stringify({ data: 'x'.repeat(1024 * 1024 + 1) });
 
-    const res = await request(app.callback())
+    const res = await request(await serve(app))
       .post('/echo')
       .set('Content-Type', 'application/json')
       .send(largeBody);
@@ -170,7 +173,7 @@ describe('createBodyParser', () => {
 describe('createErrorHandler', () => {
   it('returns proper status and message for CogitatorError', async () => {
     const app = buildApp();
-    const res = await request(app.callback()).get('/throw-cogitator');
+    const res = await request(await serve(app)).get('/throw-cogitator');
 
     expect(res.status).toBe(404);
     expect(res.body).toEqual({
@@ -181,7 +184,7 @@ describe('createErrorHandler', () => {
   it('returns 500 with generic message for unknown errors', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const app = buildApp();
-    const res = await request(app.callback()).get('/throw-unknown');
+    const res = await request(await serve(app)).get('/throw-unknown');
 
     expect(res.status).toBe(500);
     expect(res.body).toEqual({
@@ -194,7 +197,7 @@ describe('createErrorHandler', () => {
   it('does not leak internal error details to the client', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const app = buildApp();
-    const res = await request(app.callback()).get('/throw-unknown');
+    const res = await request(await serve(app)).get('/throw-unknown');
 
     expect(JSON.stringify(res.body)).not.toContain('postgres://');
     consoleSpy.mockRestore();
@@ -202,7 +205,7 @@ describe('createErrorHandler', () => {
 
   it('handles status 413 PayloadTooLargeError', async () => {
     const app = buildApp();
-    const res = await request(app.callback()).get('/throw-413');
+    const res = await request(await serve(app)).get('/throw-413');
 
     expect(res.status).toBe(413);
     expect(res.body).toEqual({
@@ -225,7 +228,7 @@ describe('createErrorHandler', () => {
 
     app.use(router.routes());
 
-    const res = await request(app.callback()).get('/partial');
+    const res = await request(await serve(app)).get('/partial');
     expect(res.status).toBe(200);
   });
 
@@ -248,7 +251,7 @@ describe('createErrorHandler', () => {
       });
       app.use(router.routes());
 
-      const res = await request(app.callback()).get('/err');
+      const res = await request(await serve(app)).get('/err');
       expect(res.status).toBe(expectedStatus);
       expect(res.body.error.code).toBe(code);
       expect(res.body.error.message).toBe(`error: ${code}`);
@@ -261,7 +264,7 @@ describe('createAuthMiddleware', () => {
     const authFn = vi.fn().mockResolvedValue({ userId: 'u1', roles: ['admin'] });
     const app = buildApp({ auth: authFn });
 
-    const res = await request(app.callback()).get('/test');
+    const res = await request(await serve(app)).get('/test');
     expect(res.status).toBe(200);
     expect(res.body.auth).toEqual({ userId: 'u1', roles: ['admin'] });
   });
@@ -270,7 +273,7 @@ describe('createAuthMiddleware', () => {
     const authFn = vi.fn().mockRejectedValue(new Error('invalid token'));
     const app = buildApp({ auth: authFn });
 
-    const res = await request(app.callback()).get('/test');
+    const res = await request(await serve(app)).get('/test');
     expect(res.status).toBe(401);
     expect(res.body).toEqual({
       error: { message: 'Unauthorized', code: 'UNAUTHORIZED' },
@@ -284,7 +287,7 @@ describe('createAuthMiddleware', () => {
     const authFn = vi.fn().mockRejectedValue(serverError);
     const app = buildApp({ auth: authFn });
 
-    const res = await request(app.callback()).get('/test');
+    const res = await request(await serve(app)).get('/test');
     expect(res.status).toBe(500);
     expect(res.body).toEqual({
       error: { message: 'Internal server error', code: ErrorCode.INTERNAL_ERROR },
@@ -296,7 +299,7 @@ describe('createAuthMiddleware', () => {
     const authFn = vi.fn().mockRejectedValue('string error');
     const app = buildApp({ auth: authFn });
 
-    const res = await request(app.callback()).get('/test');
+    const res = await request(await serve(app)).get('/test');
     expect(res.status).toBe(401);
     expect(res.body.error.message).toBe('Unauthorized');
   });
@@ -305,7 +308,7 @@ describe('createAuthMiddleware', () => {
     const authFn = vi.fn().mockResolvedValue(undefined);
     const app = buildApp({ auth: authFn });
 
-    const res = await request(app.callback()).get('/test');
+    const res = await request(await serve(app)).get('/test');
     expect(res.status).toBe(200);
     expect(res.body.auth).toBeUndefined();
   });
@@ -313,7 +316,7 @@ describe('createAuthMiddleware', () => {
   it('authFn is called for every request', async () => {
     const authFn = vi.fn().mockResolvedValue({ userId: 'u1' });
     const app = buildApp({ auth: authFn });
-    const server = app.callback();
+    const server = await serve(app);
 
     await request(server).get('/test');
     await request(server).get('/test');
@@ -331,7 +334,7 @@ describe('createAuthMiddleware', () => {
       throw new Error('bad token');
     });
     const app = buildApp({ auth: authFn });
-    const server = app.callback();
+    const server = await serve(app);
 
     const okRes = await request(server).get('/test').set('Authorization', 'Bearer valid-token');
     expect(okRes.status).toBe(200);
@@ -345,7 +348,7 @@ describe('createAuthMiddleware', () => {
 describe('createContextMiddleware', () => {
   it('sets cogitator context with runtime, agents, workflows, swarms', async () => {
     const app = buildApp();
-    const res = await request(app.callback()).get('/test');
+    const res = await request(await serve(app)).get('/test');
 
     expect(res.status).toBe(200);
     expect(res.body.ctx.runtime).toEqual({});
@@ -365,7 +368,7 @@ describe('createContextMiddleware', () => {
     });
     app.use(router.routes());
 
-    const res = await request(app.callback()).get('/test');
+    const res = await request(await serve(app)).get('/test');
     expect(res.body.agents).toEqual({});
     expect(res.body.workflows).toEqual({});
     expect(res.body.swarms).toEqual({});
@@ -373,7 +376,7 @@ describe('createContextMiddleware', () => {
 
   it('generates requestId starting with req_', async () => {
     const app = buildApp();
-    const res = await request(app.callback()).get('/test');
+    const res = await request(await serve(app)).get('/test');
 
     expect(res.body.requestId).toMatch(/^req_/);
     expect(res.body.requestId.length).toBeGreaterThan(4);
@@ -381,7 +384,7 @@ describe('createContextMiddleware', () => {
 
   it('generates unique request ids across concurrent requests', async () => {
     const app = buildApp();
-    const server = app.callback();
+    const server = await serve(app);
 
     const [res1, res2] = await Promise.all([
       request(server).get('/test'),
@@ -394,7 +397,7 @@ describe('createContextMiddleware', () => {
   it('sets startTime close to Date.now()', async () => {
     const app = buildApp();
     const before = Date.now();
-    const res = await request(app.callback()).get('/test');
+    const res = await request(await serve(app)).get('/test');
     const after = Date.now();
 
     expect(res.body.startTime).toBeGreaterThanOrEqual(before);

@@ -57,7 +57,9 @@ const approvalSchema = z.object({
     })
     .optional(),
   suggestedRule: z.string().optional(),
-  mode: z.enum(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions']).optional(),
+  mode: z
+    .enum(['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'])
+    .optional(),
 });
 
 const requestSchema = z.object({

@@ -6,9 +6,11 @@ import { EXIT_PLAN_MODE, type RunPermissions } from './run-permissions';
 const PlanAnswerSchema = z.object({
   approved: z.boolean().describe('Whether the plan may be carried out'),
   mode: z
-    .enum(['default', 'acceptEdits', 'auto', 'bypassPermissions'])
+    .enum(['default', 'acceptEdits', 'dontAsk'])
     .optional()
-    .describe('The permission mode to carry the plan out in (default: default)'),
+    .describe(
+      "The permission mode to carry the plan out in (default: default). The modes that ask less (auto, bypassPermissions) are the host's to set, not an answer's"
+    ),
   feedback: z.string().optional().describe('What to change in the plan, when it is not approved'),
 });
 

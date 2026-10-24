@@ -294,13 +294,21 @@ vi.mock('@cogitator-ai/core', async (importOriginal) => {
 
 const mcpServerTools = vi.hoisted(() => new Map<string, string[]>());
 const mcpToolOptions = vi.hoisted(
-  () => new Map<string, { namePrefix?: string; requiresApproval?: boolean } | undefined>()
+  () =>
+    new Map<
+      string,
+      { namePrefix?: string; requiresApproval?: boolean; server?: string } | undefined
+    >()
 );
 
 vi.mock('@cogitator-ai/mcp', () => ({
   MCPClient: {
     connect: vi.fn(async (config: { command: string }) => ({
-      getTools: async (options?: { namePrefix?: string; requiresApproval?: boolean }) => {
+      getTools: async (options?: {
+        namePrefix?: string;
+        requiresApproval?: boolean;
+        server?: string;
+      }) => {
         mcpToolOptions.set(config.command, options);
         return (mcpServerTools.get(config.command) ?? []).map((name) => ({
           name: `${options?.namePrefix ?? ''}${name}`,
@@ -1115,7 +1123,7 @@ describe('RuntimeBuilder', () => {
     await built.cleanup();
   });
 
-  it('hands the requiresApproval of an MCP server to its tools', async () => {
+  it('hands the requiresApproval and the name of an MCP server to its tools', async () => {
     mcpServerTools.set('trusted-mcp', ['drop']);
     mcpServerTools.set('other-mcp', ['drop']);
     const builder = new RuntimeBuilder(
@@ -1132,9 +1140,10 @@ describe('RuntimeBuilder', () => {
 
     expect(mcpToolOptions.get('trusted-mcp')).toEqual({
       namePrefix: 'mcp_trusted_',
+      server: 'trusted',
       requiresApproval: false,
     });
-    expect(mcpToolOptions.get('other-mcp')).toEqual({ namePrefix: 'mcp_other_' });
+    expect(mcpToolOptions.get('other-mcp')).toEqual({ namePrefix: 'mcp_other_', server: 'other' });
     await built.cleanup();
   });
 

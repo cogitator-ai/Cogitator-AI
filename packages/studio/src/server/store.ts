@@ -644,6 +644,14 @@ export class StudioStore {
         this.persist(run);
         return { runs: [run] };
       }
+      case 'run.approval.remembered': {
+        const run = this.runs.get(event.runId);
+        const call = run?.toolCalls.find((candidate) => candidate.id === event.callId);
+        if (!run || !call?.approval) return { runs: [] };
+        call.approval = { ...call.approval, remembered: { rule: event.rule, layer: event.layer } };
+        this.persist(run);
+        return { runs: [run] };
+      }
       case 'run.approval.decided': {
         const run = this.runs.get(event.runId);
         const call = run?.toolCalls.find(
@@ -655,7 +663,6 @@ export class StudioStore {
           id: event.approvalId,
           status: event.approved ? 'approved' : 'rejected',
           ...(event.reason && { reason: event.reason }),
-          ...(event.remembered && { remembered: true }),
         };
         if (
           run.status === 'waiting' &&

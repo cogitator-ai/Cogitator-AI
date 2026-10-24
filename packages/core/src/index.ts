@@ -446,6 +446,7 @@ export * from './permissions/index';
 export { EXIT_PLAN_MODE } from './cogitator/run-permissions';
 export {
   BUDGET_RESPONSE_SCHEMA,
+  BUDGET_STOP_SCHEMA,
   SESSION_BUDGET_KEY,
   budgetMessage,
   readSessionSpend,

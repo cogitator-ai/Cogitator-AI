@@ -231,7 +231,9 @@ export async function loadPermissionSettings(
       const settings = readPermissionLayer(json, layer, file, anchor, warnings);
       if (!settings) continue;
       layers.push(
-        layer === 'project' && options.trusted === false ? untrusted(settings) : settings
+        (layer === 'project' || layer === 'local') && options.trusted === false
+          ? untrusted(settings)
+          : settings
       );
     }
   }

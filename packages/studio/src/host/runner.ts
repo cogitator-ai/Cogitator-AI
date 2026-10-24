@@ -8,6 +8,7 @@ import type {
   ExecutionCheckpoint,
   MemoryEntry,
   RunObserver,
+  RunInterrupt,
   RunResult,
   Span,
   ToolApprovalDecision,
@@ -428,6 +429,16 @@ export class StudioHost {
           }),
         onRunStart: (event) => (current = event.runId),
         onApproval: (request) => this.ask(current, request),
+        onPermissionDecision: (event) => {
+          if (!event.remembered) return;
+          this.emit({
+            type: 'run.approval.remembered',
+            runId: current,
+            callId: event.toolCallId,
+            rule: event.remembered.rule,
+            layer: event.remembered.layer,
+          });
+        },
       })
     );
     this.finish(runId, done, controller);
@@ -519,10 +530,9 @@ export class StudioHost {
     const pending = this.approvals.get(approvalId);
     if (!pending) return { decided: false };
     this.approvals.delete(approvalId);
-    const remembered = approved && remember === true;
     pending.resolve(
       approved
-        ? { approved: true, ...(remembered && { remember: true }) }
+        ? { approved: true, ...(remember === true && { remember: true }) }
         : { approved: false, ...(reason && { reason }) }
     );
     this.emit({
@@ -531,7 +541,6 @@ export class StudioHost {
       approvalId,
       approved,
       ...(!approved && reason && { reason }),
-      ...(remembered && { remembered: true }),
     });
     return { decided: true };
   }
@@ -748,16 +757,49 @@ export class StudioHost {
 
 /**
  * Why a run the studio started ended paused: the questions its tools asked
- * (`context.interrupt()`), which the studio does not answer, or the calls it
- * waits to have approved outside a chat.
+ * (`context.interrupt()`), a plan it waits to have approved, a budget it
+ * reached, none of which the studio answers, or the calls it waits to have
+ * approved outside a chat.
  */
-function pauseError(result: RunResult): string {
-  const questions = (result.interrupts ?? []).filter((entry) => entry.kind !== 'approval');
-  if (questions.length > 0) {
-    const asked = questions.map((entry) => `${entry.reason} ("${entry.message}")`).join(', ');
-    return `The run paused to ask ${asked}: the studio does not answer questions of tools, mock the tool result in a fork instead`;
+export function pauseError(result: RunResult): string {
+  const waiting = (result.interrupts ?? []).filter((entry) => entry.kind !== 'approval');
+  if (waiting.length > 0) {
+    const kinds = new Set(waiting.map((entry) => entry.kind));
+    const what = waiting.map(pausedFor).join(', ');
+    const advice = [
+      kinds.has('input') &&
+        'The studio does not answer questions of tools, mock the tool result in a fork instead.',
+      kinds.has('plan') &&
+        'The studio does not approve plans, run the agent outside plan mode or mock exit_plan_mode in a fork.',
+      kinds.has('budget') &&
+        'The studio does not raise budgets, raise the budget of the project and run it again.',
+    ].filter((line): line is string => typeof line === 'string');
+    return `The run paused ${what}. ${advice.join(' ')}`;
   }
   const tools =
     (result.pendingApprovals ?? []).map((request) => request.toolName).join(', ') || 'tool calls';
   return `The run paused for approval of ${tools}: approvals are asked only in chats, mock the tool result in the fork instead`;
+}
+
+/** What a run waits on, as the end of "The run paused ..." */
+function pausedFor(entry: RunInterrupt): string {
+  switch (entry.kind) {
+    case 'plan':
+      return 'for the approval of its plan';
+    case 'budget': {
+      const scope = typeof entry.details?.scope === 'string' ? `${entry.details.scope} ` : '';
+      const metric = entry.details?.metric;
+      const counts =
+        metric === 'cost'
+          ? 'cost '
+          : metric === 'tokens'
+            ? 'token '
+            : metric === 'toolCalls'
+              ? 'tool call '
+              : '';
+      return `at a ${scope}${counts}budget it reached`;
+    }
+    default:
+      return `to ask ${entry.reason} ("${entry.message}")`;
+  }
 }

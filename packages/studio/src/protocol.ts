@@ -115,8 +115,8 @@ export interface ApprovalRecord {
   rule?: string;
   /** The rule an "always allow" answer saves, so calls like this one run without asking. */
   suggestedRule?: string;
-  /** The call was allowed for good: its `suggestedRule` was saved. */
-  remembered?: boolean;
+  /** The rule the runtime saved for an "always allow" answer, and where, once it saved it. */
+  remembered?: { rule: string; layer: 'session' | 'local' | 'project' | 'user' };
 }
 
 export type RunStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'stopped';
@@ -341,7 +341,13 @@ export type HostEvent =
       approvalId: string;
       approved: boolean;
       reason?: string;
-      remembered?: boolean;
+    }
+  | {
+      type: 'run.approval.remembered';
+      runId: string;
+      callId: string;
+      rule: string;
+      layer: 'session' | 'local' | 'project' | 'user';
     }
   | { type: 'run.span'; runId: string; span: RawSpan }
   | { type: 'run.todos'; runId: string; todos: TodoRecord[] }

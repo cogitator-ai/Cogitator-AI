@@ -434,6 +434,28 @@ describe('mcpToCogitator', () => {
     expect(tool.name).toBe('mcp_tool');
   });
 
+  it('names the server tool it calls under its MCP name, whatever the prefix', () => {
+    const mcpTool = {
+      name: 'create_issue',
+      description: 'Create an issue',
+      inputSchema: { type: 'object' as const, properties: {} },
+    };
+    const reporting = { callTool: vi.fn(), serverName: 'github' } as unknown as MCPClient;
+    const silent = { callTool: vi.fn(), serverName: undefined } as unknown as MCPClient;
+
+    const fromServer = mcpToCogitator(mcpTool, reporting, { namePrefix: 'github_' });
+    expect(fromServer.name).toBe('github_create_issue');
+    expect(fromServer.mcp).toEqual({ server: 'github', tool: 'create_issue' });
+
+    const named = mcpToCogitator(mcpTool, silent, { namePrefix: 'gh_', server: 'github' });
+    expect(named.mcp).toEqual({ server: 'github', tool: 'create_issue' });
+    expect(mcpToCogitator(mcpTool, reporting, { server: 'work' }).mcp).toEqual({
+      server: 'work',
+      tool: 'create_issue',
+    });
+    expect(mcpToCogitator(mcpTool, silent).mcp).toBeUndefined();
+  });
+
   it('should produce correct toJSON output', () => {
     const mcpTool = {
       name: 'search',

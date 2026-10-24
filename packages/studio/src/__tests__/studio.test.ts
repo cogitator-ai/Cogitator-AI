@@ -272,8 +272,7 @@ describe('approvals', () => {
     expect(record.status).toBe('completed');
     expect(record.toolCalls[0].approval).toMatchObject({
       status: 'approved',
-      remembered: true,
-      suggestedRule: approval.suggestedRule,
+      remembered: { rule: approval.suggestedRule, layer: 'session' },
     });
 
     const again = await api<{ runId: string }>('/api/chat', {
@@ -283,6 +282,22 @@ describe('approvals', () => {
     const { run: second } = await settled(again.runId, ['completed', 'failed', 'waiting']);
     expect(second.status).toBe('completed');
     expect(second.toolCalls[0].approval).toBeUndefined();
+  });
+
+  it('show no saved rule when the runtime saved none for an "always allow"', async () => {
+    const { runId } = await chat('please publish');
+    const waiting = await settled(runId, ['waiting']);
+    const approval = waiting.run.toolCalls.find((call) => call.name === 'publish')!.approval!;
+    expect(approval.suggestedRule).toBeUndefined();
+
+    await api(`/api/approvals/${encodeURIComponent(approval.id)}`, {
+      method: 'POST',
+      body: { approved: true, remember: true },
+    });
+    const { run: record } = await settled(runId);
+    expect(record.status).toBe('completed');
+    expect(record.toolCalls[0].approval?.status).toBe('approved');
+    expect(record.toolCalls[0].approval).not.toHaveProperty('remembered');
   });
 
   it('refuse a remember that is not true or false', async () => {

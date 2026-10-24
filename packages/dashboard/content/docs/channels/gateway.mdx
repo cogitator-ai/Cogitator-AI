@@ -65,6 +65,7 @@ interface GatewayConfig {
     format?: (approvals: readonly ToolApprovalRequest[], words: ApprovalReplyWords) => string;
     approveWords?: readonly string[]; // default: approve, yes, да, одобряю
     denyWords?: readonly string[]; // default: deny, no, нет, отклоняю
+    alwaysWords?: readonly string[]; // default: always, всегда (approve and save the suggested rule)
     notAllowedMessage?: string;
     cancelWords?: string[]; // cancel a question of a tool, default ['cancel', '/cancel', 'отмена']
     maxAnswerAttempts?: number; // answers that do not fit before a question is cancelled, default 3

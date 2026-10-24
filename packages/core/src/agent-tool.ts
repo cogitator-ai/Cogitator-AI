@@ -72,6 +72,7 @@ export function agentAsTool<TDeps = unknown>(
     parameters: DEFAULT_SCHEMA,
     timeout,
     sideEffects: ['external'],
+    access: { kind: 'agent', agent: agent.name },
 
     execute: async (
       params: { task: string },

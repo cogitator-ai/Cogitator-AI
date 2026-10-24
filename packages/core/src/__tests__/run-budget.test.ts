@@ -10,6 +10,7 @@ import {
 import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { tool } from '../tool';
+import { agentAsTool } from '../agent-tool';
 import { SESSION_BUDGET_KEY } from '../cogitator/run-budget';
 
 const lookups = vi.fn(async ({ id }: { id: string }) => `found ${id}`);
@@ -61,7 +62,7 @@ function setup(responses: MockChatResponse[], config: CogitatorConfig = {}) {
 describe('session budgets', () => {
   it('pauses before the model call that would pass the session budget, and goes on with a raised one', async () => {
     const { cog, backend, agent } = setup([toolTurn(0.6, 'a'), toolTurn(0.6, 'b'), answer(0.1)], {
-      budget: { session: { maxCostUsd: 1 } },
+      budget: { session: { maxCostUsd: 1 }, allowRaise: true },
     });
     const paused = await cog.run(agent, { input: 'find', threadId: 'b-raise' });
 
@@ -119,7 +120,7 @@ describe('session budgets', () => {
 
   it('goes on past a limit for the rest of the run when continue names none', async () => {
     const { cog, agent } = setup([toolTurn(1, 'a'), answer(0), answer(0)], {
-      budget: { session: { maxCostUsd: 0.5 } },
+      budget: { session: { maxCostUsd: 0.5 }, allowRaise: true },
     });
     await cog.run(agent, { input: 'one', threadId: 'b-lift' });
     const done = await cog.resume(agent, 'b-lift', {
@@ -198,6 +199,88 @@ describe('session budgets', () => {
   });
 });
 
+describe('who may raise a limit', () => {
+  it('lets a client only stop the run unless the host allows raising', async () => {
+    const { cog, agent } = setup([toolTurn(1, 'a'), answer(0), answer(0)], {
+      budget: { session: { maxCostUsd: 0.5 } },
+    });
+    const paused = await cog.run(agent, { input: 'find', threadId: 'b-host' });
+    expect(paused.interrupts?.[0].responseSchema).toMatchObject({
+      properties: { action: { enum: ['stop'] } },
+    });
+    await expect(
+      cog.resume(agent, 'b-host', {
+        responses: { 'budget:session.cost': { action: 'continue', limit: 100 } },
+      })
+    ).rejects.toMatchObject({ code: ErrorCode.INTERRUPT_ANSWER_INVALID });
+    const raised = await cog.resume(agent, 'b-host', { budget: { session: { maxCostUsd: 5 } } });
+    expect(raised.status).toBe('completed');
+    await cog.close();
+  });
+
+  it('keeps the run budget of a paused run for its resume', async () => {
+    const { cog, agent } = setup([toolTurn(0, 'a'), answer(0), answer(0)]);
+    const paused = await cog.run(agent, {
+      input: 'find',
+      threadId: 'b-own',
+      budget: { session: { maxTokens: 5 } },
+    });
+    expect(paused.status).toBe('paused');
+    expect(paused.checkpoint?.budget?.limits).toEqual({ session: { maxTokens: 5 } });
+    const again = await cog.resume(agent, 'b-own', {});
+    expect(again.status).toBe('paused');
+    await cog.close();
+  });
+
+  it('keeps the spending of an agent with a budget of its own across runs', async () => {
+    const backend = new MockLLMBackend().setResponses([answer(0), answer(0)]);
+    const cog = new Cogitator({
+      memory: { adapter: 'memory' },
+      llm: { backends: { mock: backend } },
+    });
+    const thrifty = new Agent({
+      name: 't',
+      model: 'mock/m',
+      instructions: 'x',
+      budget: { maxTokens: 15 },
+    });
+    await cog.run(thrifty, { input: '1', threadId: 'b-agent-own' });
+    await cog.run(thrifty, { input: '2', threadId: 'b-agent-own' });
+    const third = await cog.run(thrifty, { input: '3', threadId: 'b-agent-own' });
+    expect(third.status).toBe('paused');
+    await cog.close();
+  });
+
+  it('charges what a delegated agent spends to the caller session', async () => {
+    const inner = new MockLLMBackend().setResponse({ content: 'inner', usage: spend(0.4) });
+    const outer = new MockLLMBackend().setResponses([
+      {
+        content: '',
+        toolCalls: [{ id: 'd1', name: 'helper', arguments: { task: 'x' } }],
+        usage: spend(0.1),
+      },
+      answer(0.1),
+      answer(0.1),
+    ]);
+    const cog = new Cogitator({
+      memory: { adapter: 'memory' },
+      llm: { backends: { inner, outer } },
+      budget: { session: { maxCostUsd: 0.45 } },
+    });
+    const helper = new Agent({ name: 'helper-agent', model: 'inner/m', instructions: 'x' });
+    const lead = new Agent({
+      name: 'lead',
+      model: 'outer/m',
+      instructions: 'x',
+      tools: [agentAsTool(cog, helper, { name: 'helper', description: 'Helps' })],
+    });
+    const result = await cog.run(lead, { input: 'go', threadId: 'b-delegate' });
+    expect(result.status).toBe('paused');
+    expect(result.interrupts?.[0].details).toMatchObject({ used: expect.closeTo(0.5) });
+    await cog.close();
+  });
+});
+
 describe('run limits', () => {
   it('fail as before by default and pause with limits.onExceeded interrupt', async () => {
     const failing = setup([toolTurn(0, 'a'), answer(0)], { limits: { maxTokensPerRun: 5 } });
@@ -208,6 +291,7 @@ describe('run limits', () => {
 
     const pausing = setup([toolTurn(0, 'a'), answer(0)], {
       limits: { maxTokensPerRun: 5, onExceeded: 'interrupt' },
+      budget: { allowRaise: true },
     });
     const paused = await pausing.cog.run(pausing.agent, { input: 'find', threadId: 'b-run' });
     expect(paused.interrupts?.[0]).toMatchObject({

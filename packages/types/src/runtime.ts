@@ -626,6 +626,7 @@ export interface ToolInvocationAgent {
   readonly config: {
     readonly middleware?: readonly RunMiddleware[];
     readonly workspace?: Workspace;
+    readonly permissions?: PermissionOptions;
   };
 }
 
@@ -812,13 +813,24 @@ export interface RunCheckpoint {
    * The permission mode the run paused in and the rules a person allowed for the session, so the
    * resumed run goes on the same way. Missing for a run without permissions set up
    */
-  permissions?: { mode: PermissionMode; remembered?: PermissionRules };
+  permissions?: {
+    mode: PermissionMode;
+    /** Rules a person allowed for the session ("always allow" to the `session` layer) */
+    remembered?: PermissionRules;
+    /** The run's own rules (`RunOptions.permissions`), kept unless the resume passes its own */
+    rules?: PermissionRules;
+  };
   /**
    * What the run counted against its budgets before it paused: the tool calls it ran, the limits
    * an answer lifted or raised for the rest of the run, and how much of the run's spending the
    * session already holds. Missing for a run without budgets
    */
   budget?: {
+    /**
+     * The run's own budgets (`RunOptions.budget`, without `onWarning`), kept unless the resume
+     * passes its own
+     */
+    limits?: Omit<SessionBudgetConfig, 'onWarning'>;
     /** What the run spent so far, by agent too */
     spent: BudgetSpend;
     /** How much of `spent` the session's record already holds */
