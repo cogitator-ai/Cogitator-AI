@@ -68,7 +68,7 @@ await voiceAgent.listen(8080);
 
 Connect from any WebSocket client at `ws://localhost:8080/voice` — send binary PCM16 frames, receive binary audio + JSON events (see [WebSocket Protocol](#websocket-protocol)).
 
-`createCogitatorRunner()` adapts a `Cogitator` runtime + `Agent` to the `VoiceAgentRunner` interface (`run(input, { sessionId, signal })` and `stream(input, { sessionId, signal })`). Each voice session gets its own memory thread (`voice:<sessionId>`, override with `createCogitatorRunner(cogitator, agent, { threadId: ({ sessionId }) => ... })`), interrupted turns abort the underlying run, and the reply is spoken while it is generated (see [Streaming replies](#streaming-replies)). Any object with a compatible `run()` works as well.
+`createCogitatorRunner()` adapts a `Cogitator` runtime + `Agent` to the `VoiceAgentRunner` interface (`run(input, { sessionId, signal })` and `stream(input, { sessionId, signal })`). Each voice session gets its own memory thread (`voice:<sessionId>`, override with `createCogitatorRunner(cogitator, agent, { threadId: ({ sessionId }) => ... })`), interrupted turns abort the underlying run, and the reply is spoken while it is generated (see [Streaming replies](#streaming-replies)). Any object with a compatible `run()` works as well. A run that pauses on a question a tool asked (`context.interrupt()`) says the question, and the caller's next turn answers it through `cogitator.resume(agent, threadId, { responses })`: an answer the run refuses is said back with the question, and a run that no longer waits on it runs the turn as a new one.
 
 ---
 

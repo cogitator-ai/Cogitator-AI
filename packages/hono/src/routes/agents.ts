@@ -118,7 +118,7 @@ export function createAgentRoutes(): Hono<HonoEnv> {
     const parsed = parseResumeRequest(body.value);
     if (!parsed.ok) return invalidInput(c, parsed.message);
 
-    const { threadId, decisions, defaultDecision } = parsed.value;
+    const { threadId, decisions, defaultDecision, responses } = parsed.value;
     const refusal = await refuseThread(c, threadId);
     if (refusal) return sendError(c, refusal);
 
@@ -133,6 +133,7 @@ export function createAgentRoutes(): Hono<HonoEnv> {
         ...deps,
         decisions,
         defaultDecision,
+        responses,
         signal: abortController.signal,
       });
 
@@ -185,7 +186,7 @@ export function createAgentRoutes(): Hono<HonoEnv> {
     const parsed = parseResumeRequest(body.value);
     if (!parsed.ok) return invalidInput(c, parsed.message);
 
-    const { threadId, decisions, defaultDecision } = parsed.value;
+    const { threadId, decisions, defaultDecision, responses } = parsed.value;
     const refusal = await refuseThread(c, threadId);
     if (refusal) return sendError(c, refusal);
 
@@ -198,6 +199,7 @@ export function createAgentRoutes(): Hono<HonoEnv> {
         ...deps,
         decisions,
         defaultDecision,
+        responses,
         stream: true,
         signal,
         ...session.callbacks,

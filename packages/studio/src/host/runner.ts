@@ -431,13 +431,10 @@ export class StudioHost {
       .then(
         async (result) => {
           if (result.status === 'paused') {
-            const tools = (result.pendingApprovals ?? [])
-              .map((request) => request.toolName)
-              .join(', ');
             this.emit({
               type: 'run.failed',
               runId,
-              error: `The run paused for approval of ${tools}: approvals are asked only in chats, mock the tool result in the fork instead`,
+              error: pauseError(result),
               endedAt: Date.now(),
               stopped: false,
             });
@@ -720,4 +717,20 @@ export class StudioHost {
       (runId) => manager.replay(workflow, workflowRunId, fromNode, this.nodeCallbacks(runId))
     );
   }
+}
+
+/**
+ * Why a run the studio started ended paused: the questions its tools asked
+ * (`context.interrupt()`), which the studio does not answer, or the calls it
+ * waits to have approved outside a chat.
+ */
+function pauseError(result: RunResult): string {
+  const questions = (result.interrupts ?? []).filter((entry) => entry.kind !== 'approval');
+  if (questions.length > 0) {
+    const asked = questions.map((entry) => `${entry.reason} ("${entry.message}")`).join(', ');
+    return `The run paused to ask ${asked}: the studio does not answer questions of tools, mock the tool result in a fork instead`;
+  }
+  const tools =
+    (result.pendingApprovals ?? []).map((request) => request.toolName).join(', ') || 'tool calls';
+  return `The run paused for approval of ${tools}: approvals are asked only in chats, mock the tool result in the fork instead`;
 }

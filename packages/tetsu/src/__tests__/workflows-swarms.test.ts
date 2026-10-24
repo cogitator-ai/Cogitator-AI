@@ -165,6 +165,15 @@ describe('swarms', () => {
     expect(run).toHaveBeenCalled();
   });
 
+  test('ignores a multitask strategy in a swarm body, like every adapter', async () => {
+    const body = { input: 'hello', multitaskStrategy: 'queue' };
+    const res = await request('/swarms/team/run', json(body));
+    const streamed = await readStream(await request('/swarms/team/stream', json(body)));
+
+    expect(res.status).toBe(200);
+    expect(streamed.done).toBe(true);
+  });
+
   test('runs every swarm agent for the authenticated user', async () => {
     const { cogitator: owned, run: ownedRun } = fakeCogitator((runAgent) =>
       Promise.resolve(runResult({ output: `${runAgent.name} says hi` }))

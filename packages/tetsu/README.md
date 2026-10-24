@@ -99,13 +99,19 @@ Request bodies:
 
 ```typescript
 // POST /agents/:name/run, /agents/:name/stream
-{ input: string; context?: Record<string, unknown>; threadId?: string } // input and threadId must contain more than whitespace
+{
+  input: string; // must contain more than whitespace, like threadId
+  context?: Record<string, unknown>;
+  threadId?: string;
+  multitaskStrategy?: 'enqueue' | 'reject' | 'interrupt' | 'rollback'; // when the thread has a run going on
+}
 
 // POST /agents/:name/resume, /agents/:name/resume/stream
 {
   threadId: string;
   decisions?: Record<string, { approved: boolean; reason?: string }>; // by tool call id
   defaultDecision?: { approved: boolean; reason?: string };
+  responses?: Record<string, unknown>; // answers by interrupt id
 }
 
 // POST /swarms/:name/run, /swarms/:name/stream
@@ -162,6 +168,8 @@ Every error is answered in Tetsu's envelope:
 | 404     | `CHECKPOINT_NOT_FOUND`                                     | A workflow resume named a checkpoint that is missing, of another user or of another workflow                                                             |
 | 409     | `BLACKBOARD_DISABLED`                                      | The swarm has no blackboard                                                                                                                              |
 | 409     | `RUN_NOT_PAUSED`                                           | A resume named a thread without a paused run                                                                                                             |
+| 409     | `THREAD_BUSY`, `RUN_INTERRUPTED`                           | The thread has a run going on and the run's `multitaskStrategy` is `reject`, or a newer run with `interrupt` or `rollback` stopped this one              |
+| 410     | `INTERRUPT_EXPIRED`                                        | A resume answered a question after its `expiresAt`                                                                                                       |
 | 413     | `BODY_TOO_LARGE`                                           | The body is over the application's body limit                                                                                                            |
 | 415     | `UNSUPPORTED_MEDIA_TYPE`                                   | The body is not JSON (`text/plain`, a form)                                                                                                              |
 | 499     | `CLIENT_CLOSED_REQUEST`                                    | The client left before a `/run` or `/resume` answer was ready                                                                                            |
@@ -333,6 +341,10 @@ curl -X POST localhost:3000/cogitator/agents/support/resume \
 
 Approved calls run, declined ones answer the model with the `reason`, and calls without a decision (and no `defaultDecision`) pause the run again. `/agents/:name/resume/stream` streams the rest of the run like `/stream`. Only the user the run belongs to can resume it (`403 THREAD_ACCESS_DENIED` otherwise; `authorizeThread` is checked too), and a thread without a paused run answers `409 RUN_NOT_PAUSED`. Over the WebSocket, send `{ type: 'resume', id?, payload: { name, threadId, decisions?, defaultDecision? } }`.
 
+A tool can also ask the user a question with `context.interrupt()`, which pauses the run the same way. The answer then carries `interrupts` (`{ id, kind, reason, message, responseSchema?, expiresAt?, toolCallId?, toolName? }`), the stream sends `{"type":"interrupt-required","threadId":"…","interrupts":[…]}` instead of `approval-required`, and the client resumes with the answers by interrupt id in `responses`, over HTTP and the WebSocket alike. An answer that does not match its `responseSchema` is refused with `400 INTERRUPT_ANSWER_INVALID`, and one sent after `expiresAt` with `410 INTERRUPT_EXPIRED` (`/resume/stream` sends both as an `error` event with that `code`).
+
+A run or stream body, and a WebSocket `run` payload, may name a `multitaskStrategy` for a thread that already has a run going on in this Cogitator: `enqueue` waits for that run, `reject` refuses the new run with `THREAD_BUSY`, `interrupt` stops the running one (it fails with `RUN_INTERRUPTED`) and `rollback` stops it and branches from where it started. `/run` answers both codes with `409`. A stream has already answered `200` and sent `start` when its run meets the other runs of the thread, so it gets them as an `error` event instead (`{"type":"error","message":"…","code":"THREAD_BUSY"}`), and the WebSocket as an `error` frame with that `code`. Without one the Cogitator's `multitaskStrategy` applies. Swarm bodies have no thread queue: `multitaskStrategy` is left out of their schema and ignored.
+
 ## Streaming
 
 `/stream` endpoints answer with `text/event-stream` through `@tetsujs/sse`: keep-alive comments every `sseHeartbeatMs` (5 seconds by default, under the 10 second `idleTimeout` of `Bun.serve`), backpressure, and the run is aborted when the client goes away. Events follow the Cogitator stream protocol shared with the other adapters, one JSON object per `data:` line, ending with `data: [DONE]`:
@@ -384,7 +396,7 @@ A client that reads slowly gets every frame in order: once the socket pushes bac
 | Client sends                                                                                                  | Server answers                                                                                                                                              |
 | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `{ type: 'run', id?, payload: { type: 'agent' \| 'workflow' \| 'swarm', name, input, context?, threadId? } }` | `event` frames: `token`, `reasoning`, `tool-call`, `tool-result`, then `complete` with the result (for an agent, the JSON answer of `/run`), or `cancelled` |
-| `{ type: 'resume', id?, payload: { name, threadId, decisions?, defaultDecision? } }`                          | the same frames for an agent run paused for [approvals](#approvals)                                                                                         |
+| `{ type: 'resume', id?, payload: { name, threadId, decisions?, defaultDecision?, responses? } }`              | the same frames for an agent run paused for [approvals](#approvals) or questions                                                                            |
 | `{ type: 'stop', id? }`                                                                                       | `cancelled` for the run of that `id` at once, or for every run of the socket without an `id`                                                                |
 | `{ type: 'ping', id? }`                                                                                       | `{ type: 'pong', id }`                                                                                                                                      |
 

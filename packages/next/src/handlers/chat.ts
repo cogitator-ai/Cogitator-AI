@@ -1,6 +1,12 @@
 import type { Cogitator, Agent } from '@cogitator-ai/core';
 import type { ChatHandlerOptions, ChatInput, ChatMessage } from '../types.js';
-import { isNonBlankString, parseRunRequest, type ContextPolicy } from '@cogitator-ai/server-shared';
+import {
+  isNonBlankString,
+  MULTITASK_STRATEGIES,
+  parseRunRequest,
+  runRequestRunOptions,
+  type ContextPolicy,
+} from '@cogitator-ai/server-shared';
 import { generateId } from '../streaming/encoder.js';
 import {
   exceedsDeclaredSize,
@@ -40,6 +46,16 @@ function parseDefaultInput(body: unknown, acceptContext: ContextPolicy | undefin
     return { ok: false, error: 'metadata must be an object' };
   }
 
+  const multitaskStrategy = MULTITASK_STRATEGIES.find(
+    (strategy) => strategy === body.multitaskStrategy
+  );
+  if (body.multitaskStrategy !== undefined && multitaskStrategy === undefined) {
+    return {
+      ok: false,
+      error: `multitaskStrategy must be one of ${MULTITASK_STRATEGIES.join(', ')}`,
+    };
+  }
+
   if (isPlainObject(body.metadata)) {
     const context = parseRunRequest(
       { input: 'metadata', context: body.metadata },
@@ -68,6 +84,7 @@ function parseDefaultInput(body: unknown, acceptContext: ContextPolicy | undefin
       messages,
       threadId: typeof body.threadId === 'string' ? body.threadId : undefined,
       metadata: isPlainObject(body.metadata) ? body.metadata : undefined,
+      ...(multitaskStrategy !== undefined && { multitaskStrategy }),
     },
   };
 }
@@ -140,6 +157,7 @@ export function createChatHandler(
           input: userMessage,
           threadId,
           context: input.metadata,
+          ...runRequestRunOptions(input),
           ...runContext,
           ...callbacks,
         }),

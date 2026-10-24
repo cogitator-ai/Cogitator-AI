@@ -770,8 +770,12 @@ export const PromptsConfigSchema = z.object({
   autoDeployWinner: z.boolean().optional(),
 });
 
+/** What a run does when its thread has a run going on, see `CogitatorConfig.multitaskStrategy` */
+export const MultitaskStrategySchema = z.enum(['enqueue', 'reject', 'interrupt', 'rollback']);
+
 export const CogitatorConfigSchema = z.object({
   llm: LLMConfigSchema.optional(),
+  multitaskStrategy: MultitaskStrategySchema.optional(),
   prompts: PromptsConfigSchema.optional(),
   limits: LimitsConfigSchema.optional(),
   memory: MemoryConfigSchema.optional(),

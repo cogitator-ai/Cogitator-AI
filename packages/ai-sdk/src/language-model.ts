@@ -10,7 +10,7 @@ import type { Agent, Cogitator } from '@cogitator-ai/core';
 import type { ReasoningEffort, RunResult, ToolCall, ToolResult } from '@cogitator-ai/types';
 import {
   AgentRunner,
-  PAUSE_WARNING,
+  pauseWarning,
   approvalIdFor,
   runFinish,
   runMetadata,
@@ -195,9 +195,8 @@ abstract class AgentLanguageModel<
     const approvals = this.approvalRequests(result);
     content.push(...approvals);
     const warnings = prepared.warnings.map((warning) => this.toWarning(warning));
-    if (result.status === 'paused' && approvals.length === 0) {
-      warnings.push(this.toWarning({ type: 'other', message: PAUSE_WARNING }));
-    }
+    const paused = pauseWarning(result, approvals.length > 0);
+    if (paused) warnings.push(this.toWarning({ type: 'other', message: paused }));
 
     return {
       content,

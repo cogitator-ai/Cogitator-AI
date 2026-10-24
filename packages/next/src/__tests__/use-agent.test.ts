@@ -194,6 +194,37 @@ describe('useCogitatorAgent approvals', () => {
     expect(hook.result.current.pendingApprovals).toEqual([]);
   });
 
+  it('exposes the questions of a paused result and sends the answers with resume', async () => {
+    const question = { id: 'int_1', kind: 'input' as const, reason: 'pick', message: 'Which?' };
+    const calls = installFetch([
+      json({
+        ...agentResponse('Which order?'),
+        status: 'paused',
+        pendingApprovals: [],
+        interrupts: [question],
+      }),
+      json({ ...agentResponse('Refunded'), status: 'completed' }),
+    ]);
+    const hook = renderHook(() =>
+      useCogitatorAgent({ api: '/api/agent', resumeApi: '/api/agent/resume' })
+    );
+    expect(hook.result.current.pendingInterrupts).toEqual([]);
+
+    await hook.result.current.run({ input: 'Refund my order', multitaskStrategy: 'reject' });
+    await hook.flush();
+    expect(hook.result.current.pendingInterrupts).toEqual([question]);
+    expect(calls[0]?.body).toMatchObject({ multitaskStrategy: 'reject' });
+
+    await hook.result.current.resume({ responses: { int_1: 'A-1' } });
+    await hook.flush();
+
+    expect(calls[1]).toEqual({
+      url: '/api/agent/resume',
+      body: { threadId: 'thread_1', responses: { int_1: 'A-1' } },
+    });
+    expect(hook.result.current.pendingInterrupts).toEqual([]);
+  });
+
   it('reports an error when it cannot resume', async () => {
     const calls = installFetch([]);
     const onError = vi.fn();

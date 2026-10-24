@@ -22,7 +22,12 @@ export {
   AGENT_CONFIG_WIRE_FIELDS,
 } from './agent-wire';
 export type { ToAgentWireOptions, AgentWireRuntime } from './agent-wire';
-export { isPausedRun, AgentRunPausedError, findAgentRunPausedError } from './run-pause';
+export {
+  isPausedRun,
+  pendingQuestions,
+  AgentRunPausedError,
+  findAgentRunPausedError,
+} from './run-pause';
 export type { PausableRun, PausedRun, PausedRunInfo } from './run-pause';
 export { tool, toolset, toolToSchema, withParsedArguments } from './tool';
 export { toToolParameters } from './tool-schema';
@@ -420,6 +425,12 @@ export {
 } from './middleware/memory-extraction';
 
 export { InMemoryRunCheckpointStore, ThreadRunCheckpointStore } from './cogitator/run-checkpoints';
+export {
+  ABORTED_BEFORE_DISPATCH,
+  OUTCOME_UNKNOWN,
+  repairUnansweredToolCalls,
+} from './utils/tool-history';
+export { APPROVAL_RESPONSE_SCHEMA, isToolInterrupt } from './cogitator/interrupts';
 export { PromptRegistry, promptKey } from './cogitator/prompts';
 export {
   PiiMasker,

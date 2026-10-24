@@ -96,7 +96,7 @@ Creates a streaming chat handler. The handler:
 - passes request `metadata` to the run as `context`, only the keys `acceptContext` allows: the run sends `context` to the model as data the application supplied, so by default a request with `metadata` is refused with `400`
 - writes a `: keep-alive` comment every `sseHeartbeatMs` (5 s by default, `0` turns it off) while the run is silent, so a proxy or the platform does not close a stream that waits on a slow tool
 - aborts the run when the client disconnects (`req.signal`)
-- reads only JSON bodies (`415` for `text/plain` and forms, which browsers send across origins without a preflight), validates the body (JSON object, `messages` array, non-blank `threadId`, object `metadata`), limits it to 1 MB (413 otherwise) and returns `400` when there is no user message
+- reads only JSON bodies (`415` for `text/plain` and forms, which browsers send across origins without a preflight), validates the body (JSON object, `messages` array, non-blank `threadId`, object `metadata`, a `multitaskStrategy` of `enqueue`, `reject`, `interrupt` or `rollback`), limits it to 1 MB (413 otherwise) and returns `400` when there is no user message
 
 ```typescript
 import { createChatHandler } from '@cogitator-ai/next';
@@ -131,7 +131,7 @@ export const POST = createChatHandler(cogitator, agent, {
 
 ### `createAgentHandler`
 
-Creates a batch (non-streaming) handler for long-running tasks. The default parser is the validator every Cogitator adapter shares: a non-blank string `input`, an optional object `context` with only the keys `acceptContext` allows (none by default, since the model reads `context` as data the application supplied), and an optional non-blank `threadId` (`400 { error: { message, code: 'INVALID_INPUT' } }` otherwise, `415` for a body that is not JSON). A `parseInput` of your own decides for itself. The run is aborted if the client disconnects.
+Creates a batch (non-streaming) handler for long-running tasks. The default parser is the validator every Cogitator adapter shares: a non-blank string `input`, an optional object `context` with only the keys `acceptContext` allows (none by default, since the model reads `context` as data the application supplied), an optional non-blank `threadId` and an optional `multitaskStrategy` (`400 { error: { message, code: 'INVALID_INPUT' } }` otherwise, `415` for a body that is not JSON). A `parseInput` of your own decides for itself. The run is aborted if the client disconnects.
 
 ```typescript
 import { createAgentHandler } from '@cogitator-ai/next';
@@ -261,6 +261,14 @@ For one decision per call, use `resume({ decisions: { [toolCallId]: { approved: 
 
 `approve()` and `deny(reason?)` answer every pending call. The approvals clear once the resume is accepted, when the server has nothing paused anymore (`409`), or when the user sends a new message instead, which declines the waiting calls on the server. A JSON `resumeApi` works too: its answer is appended as one assistant message. `useCogitatorAgent({ api, resumeApi })` exposes `pendingApprovals` of the last result and `resume(decisions)`.
 
+A tool can also ask the user a question with `context.interrupt()`, which pauses the run the same way. `createAgentHandler` then answers with `interrupts` (`id`, `kind`, `reason`, `message`, `responseSchema`, `expiresAt`, `toolCallId`, `toolName`), and `createChatHandler` sends `{"type":"interrupt-required","threadId":"…","interrupts":[…]}` instead of `approval-required`. `createResumeHandler` takes the answers by interrupt id in `responses`, and both hooks expose the questions as `pendingInterrupts` and send the answers with `resume({ responses: { [id]: answer } })`. `useCogitatorChat` also calls `onInterruptRequired`. An answer that does not match its `responseSchema` is refused with `400 INTERRUPT_ANSWER_INVALID`, and one sent after `expiresAt` with `410 INTERRUPT_EXPIRED` (a streaming `createResumeHandler` sends both as an `error` event with that `code`).
+
+A run that names a thread may also name a `multitaskStrategy` for when the thread already has a run going on in this Cogitator: `enqueue` waits for that run, `reject` refuses the new run with `THREAD_BUSY`, `interrupt` stops the running one (it fails with `RUN_INTERRUPTED`) and `rollback` stops it and branches from where it started. `createAgentHandler` reads it from the body as `multitaskStrategy` and answers both codes with `409`. `createChatHandler` reads it too, but its stream has already answered `200` and sent `start` when the run meets the other runs of the thread, so it sends them as an `error` event with that `code`. Without one the Cogitator's `multitaskStrategy` applies.
+
+`useCogitatorChat({ multitaskStrategy })` sends it with every message. Without one, `send` aborts the request that is streaming first, as it always did. With `interrupt` or `rollback` it keeps that request open and lets the server stop its run: the old answer stays as far as it got and the hook ignores whatever else its stream sends, including the `RUN_INTERRUPTED` error, since closing the connection itself would abort the run before the server sees the new message and `rollback` would lose the point to branch from. The old request is aborted once the new one is done, or right away when the new one fails (a `403` for instance), so its run never goes on unseen. With `enqueue` or `reject` it leaves that request alone and lets the server decide: an enqueued answer streams in after the running one, and a rejected message ends up in `error` and `onError` while the running answer goes on. `isLoading` stays `true` until every request is done, and `stop` stops them all, the ones handed over to the server included.
+
+On a new conversation the server picks the thread and names it in `start`. A message sent under a strategy before the request ahead of it has named its thread waits for that `start`, so the messages share one thread instead of starting one each (a request that ends without naming one lets the next message start a thread of its own). Approvals and questions belong to the request that paused: when a later message runs on the thread, the server gives up the paused run, so `pendingApprovals` and `pendingInterrupts` clear once that message finishes, or show its own pause instead. A rejected message never ran, so the pause before it stays.
+
 ## Client Hooks
 
 ### `useCogitatorChat`
@@ -290,7 +298,8 @@ const {
 
   // Approvals (see "Approvals")
   pendingApprovals, // PendingApproval[]
-  resume, // (decisions: ResumeDecisions) => Promise<void>
+  pendingInterrupts, // PendingInterrupt[], the questions the run's tools asked
+  resume, // (decisions: ResumeDecisions) => Promise<void>, answers go in `responses`
   approve, // () => Promise<void>
   deny, // (reason?: string) => Promise<void>
 } = useCogitatorChat({
@@ -306,9 +315,13 @@ const {
   onToolResult: (result) => console.log('Tool result:', result),
   onReasoning: (delta) => console.log('Thinking:', delta),
   onApprovalRequired: (approvals) => console.log('Waiting for approval:', approvals),
+  onInterruptRequired: (interrupts) => console.log('Waiting for answers:', interrupts),
 
   // Endpoint of a createResumeHandler, for resume/approve/deny
   resumeApi: '/api/chat/resume',
+
+  // Sent with every message, for a thread that already has a run going on
+  multitaskStrategy: 'enqueue',
 
   // Retry configuration
   retry: {
@@ -424,7 +437,7 @@ data: [DONE]
 
 An agent with `reasoning: { summary: true }` also streams its reasoning summary as `reasoning-start`, `reasoning-delta` and `reasoning-end` events. A text or reasoning block opens with its first delta and is closed before a block of the other kind, a tool call or `finish`, so blocks never overlap. `useCogitatorChat` collects the deltas into `message.reasoning` (and calls `onReasoning` with each one), and `createAgentHandler` returns the summary as `reasoning` next to `usage.reasoningTokens`, `usage.cachedInputTokens` and `usage.cacheWriteTokens` when the provider reports them. The `finish` event of `createChatHandler` carries the same `usage`, these counts included.
 
-A run that pauses for [approvals](#approvals) sends `{"type":"approval-required","threadId":"…","approvals":[…]}` after the open block is closed and before `finish`.
+A run that pauses for [approvals](#approvals) sends `{"type":"approval-required","threadId":"…","approvals":[…]}` after the open block is closed and before `finish`, and one that pauses for questions its tools asked sends `{"type":"interrupt-required","threadId":"…","interrupts":[…]}` in its place.
 
 If the run fails, the open text or reasoning block is closed and an `{"type":"error","message":"...","code":"..."}` event is sent instead of `finish`. A `CogitatorError` keeps its message and code; any other error is logged on the server and sent as `"message":"Internal server error","code":"INTERNAL_ERROR"`.
 

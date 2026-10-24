@@ -7,6 +7,7 @@ import type {
   AuthorizeThread,
   ContextPolicy,
   PendingApproval,
+  PendingInterrupt,
   ReadinessCheckStatus,
   ReadinessResponse,
   RunLimits,
@@ -30,6 +31,7 @@ import type {
   SwarmEvent,
   SwarmMessage,
   ToolApprovalDecision,
+  MultitaskStrategy,
 } from '@cogitator-ai/types';
 
 export type {
@@ -48,6 +50,7 @@ export type {
   SwarmMessage,
   ToolApprovalDecision,
   PendingApproval,
+  PendingInterrupt,
   ReadinessResponse,
   ReadinessCheckStatus,
   RunLimits,
@@ -187,6 +190,8 @@ export interface AgentRunRequest {
   input: string;
   context?: Record<string, unknown>;
   threadId?: string;
+  /** What the run does when its thread has a run going on. Default: the Cogitator's `multitaskStrategy` */
+  multitaskStrategy?: MultitaskStrategy;
 }
 
 export type { AgentRunResponse };
@@ -195,6 +200,8 @@ export interface AgentResumeRequest {
   threadId: string;
   decisions?: Record<string, ToolApprovalDecision>;
   defaultDecision?: ToolApprovalDecision;
+  /** Answers to the paused run's interrupts, by interrupt id */
+  responses?: Record<string, unknown>;
 }
 
 export interface ThreadResponse {
@@ -311,12 +318,9 @@ export interface WebSocketMessage {
   payload?: unknown;
 }
 
-export interface WebSocketRunPayload {
+export interface WebSocketRunPayload extends AgentRunRequest {
   type: 'agent' | 'workflow' | 'swarm';
   name: string;
-  input: string;
-  context?: Record<string, unknown>;
-  threadId?: string;
 }
 
 export interface WebSocketResumePayload extends AgentResumeRequest {

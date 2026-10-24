@@ -81,3 +81,53 @@ export function sanitizeToolHistory(messages: Message[]): Message[] {
 
   return result;
 }
+
+/** What the model reads for a tool call a run did not start before it was aborted */
+export const ABORTED_BEFORE_DISPATCH =
+  'Aborted before dispatch: the run stopped before this tool call started';
+
+/** What the model reads for a tool call whose run stopped while it ran, as history restores it */
+export const OUTCOME_UNKNOWN =
+  'The run stopped before this tool call returned: outcome unknown, verify before retrying';
+
+/**
+ * A history restored from memory with an answer for every tool call left without one, such as
+ * the calls a crashed or aborted run had going ({@link OUTCOME_UNKNOWN}), so the model knows they
+ * may have run. The answers are only in the messages, the thread's log is not rewritten.
+ */
+export function repairUnansweredToolCalls(messages: readonly Message[]): Message[] {
+  const result: Message[] = [];
+  let index = 0;
+  while (index < messages.length) {
+    const message = messages[index];
+    result.push(message);
+    index++;
+    const toolCalls = getToolCalls(message);
+    if (toolCalls.length === 0) continue;
+    let end = index;
+    while (
+      end < messages.length &&
+      (messages[end].role === 'tool' || messages[end].role === 'system')
+    ) {
+      end++;
+    }
+    const exchange = messages.slice(index, end);
+    const tools = exchange.filter((candidate) => candidate.role === 'tool');
+    for (const call of toolCalls) {
+      const answer = tools.find((candidate) => candidate.toolCallId === call.id);
+      result.push(
+        answer ?? {
+          role: 'tool',
+          content: JSON.stringify({ error: OUTCOME_UNKNOWN }),
+          toolCallId: call.id,
+          name: call.name,
+        }
+      );
+    }
+    const callIds = new Set(toolCalls.map((call) => call.id));
+    result.push(...tools.filter((candidate) => !callIds.has(candidate.toolCallId ?? '')));
+    result.push(...exchange.filter((candidate) => candidate.role === 'system'));
+    index = end;
+  }
+  return result;
+}

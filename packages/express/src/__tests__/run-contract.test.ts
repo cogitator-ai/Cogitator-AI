@@ -272,6 +272,17 @@ describe('swarm resources', () => {
     }
   );
 
+  it.each(['/swarms/team/run', '/swarms/team/stream'])(
+    'ignores a multitask strategy in the body of %s, since a swarm has no thread queue',
+    async (path) => {
+      const { base } = await start();
+      const res = await post(`${base}${path}`, { input: 'go', multitaskStrategy: 'queue' });
+      await res.text();
+      expect(res.status).toBe(200);
+      expect(swarms.instances).toHaveLength(1);
+    }
+  );
+
   it('closes the swarm of a run that fails', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     swarms.fail = true;

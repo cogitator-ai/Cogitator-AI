@@ -16,6 +16,8 @@ export type {
   RetryConfig,
   ToolResultEvent,
   PendingApproval,
+  PendingInterrupt,
+  MultitaskStrategy,
   ResumeDecisions,
   ToolApprovalDecision,
 } from '../types.js';

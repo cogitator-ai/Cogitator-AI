@@ -7,6 +7,7 @@ import type {
   AuthorizeThread,
   ContextPolicy,
   PendingApproval,
+  PendingInterrupt,
   RunLimits,
   SwaggerConfig,
   ThreadMessageRole,
@@ -29,6 +30,7 @@ import type {
   SwarmEvent,
   SwarmMessage,
   ToolApprovalDecision,
+  MultitaskStrategy,
 } from '@cogitator-ai/types';
 
 export type {
@@ -47,6 +49,7 @@ export type {
   SwarmMessage,
   ToolApprovalDecision,
   PendingApproval,
+  PendingInterrupt,
   AgentRunResponse,
 };
 
@@ -190,12 +193,16 @@ export interface AgentRunRequest {
   input: string;
   context?: Record<string, unknown>;
   threadId?: string;
+  /** What the run does when its thread has a run going on. Default: the Cogitator's `multitaskStrategy` */
+  multitaskStrategy?: MultitaskStrategy;
 }
 
 export interface AgentResumeRequest {
   threadId: string;
   decisions?: Record<string, ToolApprovalDecision>;
   defaultDecision?: ToolApprovalDecision;
+  /** Answers to the paused run's interrupts, by interrupt id */
+  responses?: Record<string, unknown>;
 }
 
 export interface ThreadResponse {

@@ -7,7 +7,9 @@ export {
   DEFAULT_APPROVE_WORDS,
   DEFAULT_DENY_WORDS,
   DEFAULT_NOT_ALLOWED_MESSAGE,
+  DEFAULT_CANCEL_WORDS,
   DEFAULT_EXPIRED_MESSAGE,
+  DEFAULT_MAX_ANSWER_ATTEMPTS,
   DEFAULT_STOPPING_MESSAGE,
   APPROVE_ACTION,
   DENY_ACTION,
@@ -28,7 +30,7 @@ export type { HeartbeatConfig } from './heartbeat';
 export { StatusReactionTracker } from './status-reactions';
 export { InboundDebouncer } from './inbound-debounce';
 export { MessageQueue } from './message-queue';
-export type { MessageProcessor } from './message-queue';
+export type { MessageProcessing, MessageProcessor, RejectedMessageListener } from './message-queue';
 export {
   defaultThreadKey,
   legacyThreadKey,
@@ -149,6 +151,7 @@ export type {
   DebounceConfig,
   EnvelopeConfig,
   QueueMode,
+  MessageRejectedEvent,
   FeedChannel,
   FeedImage,
   FeedLimits,

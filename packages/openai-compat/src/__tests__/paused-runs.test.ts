@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import OpenAI from 'openai';
 import { z } from 'zod';
-import { Cogitator, tool } from '@cogitator-ai/core';
+import { Agent, Cogitator, tool } from '@cogitator-ai/core';
 import type {
   ChatRequest,
   ChatResponse,
@@ -9,6 +9,7 @@ import type {
   CogitatorConfig,
   LLMBackend,
   ToolCall,
+  ToolContext,
 } from '@cogitator-ai/types';
 import { OpenAIServer } from '../server/api-server';
 import { toolOutputToDecision } from '../client/openai-adapter';
@@ -67,6 +68,21 @@ const weatherFunction = {
     parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
   },
 };
+
+const confirmPlanImpl = vi.fn(async ({ plan }: { plan: string }, context: ToolContext) => {
+  const reply = await context.interrupt!({
+    reason: 'confirm_plan',
+    message: `Go ahead with ${plan}?`,
+    responseSchema: z.object({ ok: z.boolean() }),
+  });
+  return { plan, ok: reply.ok };
+});
+const confirmPlan = tool({
+  name: 'confirm_plan',
+  description: 'Asks the user to confirm a plan',
+  parameters: z.object({ plan: z.string() }),
+  execute: confirmPlanImpl,
+});
 
 const POLL = { pollIntervalMs: 10 };
 
@@ -272,6 +288,84 @@ describe('server tools decided by the operator policy', () => {
     expect(refundImpl).not.toHaveBeenCalled();
     await ctx.server.stop();
     await ctx.cogitator.close();
+  });
+});
+
+describe('runs whose tools ask a question', () => {
+  const planner = new Agent({
+    name: 'planner',
+    model: 'mock/m',
+    instructions: 'Plan.',
+    tools: [confirmPlan],
+  });
+  let cogitator: Cogitator;
+  let server: OpenAIServer;
+  let client: OpenAI;
+
+  beforeAll(async () => {
+    cogitator = new Cogitator({ llm: { backends: { mock: backend } } });
+    server = new OpenAIServer(cogitator, {
+      port: 0,
+      host: '127.0.0.1',
+      defaultModel: 'mock/m',
+      tools: [confirmPlan],
+      agents: { planner },
+      sseHeartbeatMs: 0,
+    });
+    await server.start();
+    client = new OpenAI({ baseURL: server.getBaseUrl(), apiKey: 'unused', maxRetries: 0 });
+  });
+
+  afterAll(async () => {
+    await server.stop();
+    await cogitator.close();
+  });
+
+  beforeEach(() => {
+    confirmPlanImpl.mockClear();
+    nextCall = { id: 'q1', name: 'confirm_plan', arguments: { plan: 'the migration' } };
+  });
+
+  it('fail an Assistants run with the question instead of requiring an empty action', async () => {
+    const assistant = await client.beta.assistants.create({ model: 'cogitator' });
+    const thread = await client.beta.threads.create({
+      messages: [{ role: 'user', content: 'Migrate' }],
+    });
+
+    const run = await client.beta.threads.runs.createAndPoll(
+      thread.id,
+      { assistant_id: assistant.id },
+      POLL
+    );
+
+    expect(run.status).toBe('failed');
+    expect(run.required_action).toBeNull();
+    expect(run.last_error?.message).toContain(
+      'paused to ask confirm_plan ("Go ahead with the migration?")'
+    );
+    expect(confirmPlanImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('answer a chat completion with the question as an error, not empty tool calls', async () => {
+    const failure = await client.chat.completions
+      .create({ model: 'planner', messages: [{ role: 'user', content: 'Migrate' }] })
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(OpenAI.InternalServerError);
+    expect((failure as Error).message).toContain(
+      'paused to ask confirm_plan ("Go ahead with the migration?")'
+    );
+    expect(confirmPlanImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('answer a response with the question as an error', async () => {
+    const failure = await client.responses
+      .create({ model: 'planner', input: 'Migrate' })
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(OpenAI.InternalServerError);
+    expect((failure as Error).message).toContain('paused to ask confirm_plan');
+    expect(confirmPlanImpl).toHaveBeenCalledTimes(1);
   });
 });
 

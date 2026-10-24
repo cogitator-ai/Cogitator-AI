@@ -1,6 +1,6 @@
 import type { Cogitator, Agent } from '@cogitator-ai/core';
 import type { AgentHandlerOptions, AgentInput } from '../types.js';
-import { parseRunRequest } from '@cogitator-ai/server-shared';
+import { parseRunRequest, runRequestRunOptions } from '@cogitator-ai/server-shared';
 import {
   exceedsDeclaredSize,
   depsOf,
@@ -62,6 +62,7 @@ export function createAgentHandler(
         input: input.input,
         threadId: input.threadId,
         context: input.context,
+        ...runRequestRunOptions(input),
         signal: req.signal,
         ...runContext,
       });

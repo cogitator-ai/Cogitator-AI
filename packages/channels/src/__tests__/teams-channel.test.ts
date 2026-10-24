@@ -245,8 +245,8 @@ describe('TeamsTokenVerifier', () => {
   });
 
   it('refuses expired tokens and tokens not valid yet, allowing five minutes of skew', async () => {
-    const check = verifier(microsoft());
     const now = Math.floor(Date.now() / 1000);
+    const check = verifier(microsoft(), () => now * 1000);
     await expect(check.verify(token({ exp: now - 301 }))).rejects.toThrow(/expired/);
     await expect(check.verify(token({ exp: now - 200 }))).resolves.toBeDefined();
     await expect(check.verify(token({ nbf: now + 301 }))).rejects.toThrow(/not valid yet/);

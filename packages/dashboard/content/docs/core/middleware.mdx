@@ -53,14 +53,14 @@ Middleware is code, so the [agent wire format](/docs/core/agents#sending-an-agen
 
 Every hook is optional. Each one gets the run's context as its last argument.
 
-| Hook            | When                                          | What it can do                                                                 |
-| --------------- | --------------------------------------------- | ------------------------------------------------------------------------------ |
-| `beforeRun`     | A new run's input, before it is saved or sent | Check it. Not called when a paused run resumes                                 |
-| `beforeModel`   | Before each model turn                        | Return `{ messages }` to change the conversation from then on                  |
-| `wrapModelCall` | Around each call, once per model a turn tries | Change the request or the stream sink, call `next` again, or answer without it |
-| `afterModel`    | After each answer, before the run uses it     | Return `{ content }` or `{ toolCalls }` to replace them                        |
-| `wrapToolCall`  | Around each tool call that passed approval    | Change the arguments, or answer for the tool                                   |
-| `afterRun`      | After a run finished and its writes settled   | Keep memory in shape for the next run, such as extraction or compaction        |
+| Hook            | When                                          | What it can do                                                                                 |
+| --------------- | --------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `beforeRun`     | A new run's input, before it is saved or sent | Check it. Also sees each queued message of `cog.start()`. Not called when a paused run resumes |
+| `beforeModel`   | Before each model turn                        | Return `{ messages }` to change the conversation from then on                                  |
+| `wrapModelCall` | Around each call, once per model a turn tries | Change the request or the stream sink, call `next` again, or answer without it                 |
+| `afterModel`    | After each answer, before the run uses it     | Return `{ content }` or `{ toolCalls }` to replace them                                        |
+| `wrapToolCall`  | Around each tool call that passed approval    | Change the arguments, or answer for the tool                                                   |
+| `afterRun`      | After a run finished and its writes settled   | Keep memory in shape for the next run, such as extraction or compaction                        |
 
 ### beforeRun
 

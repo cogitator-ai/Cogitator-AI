@@ -19,6 +19,7 @@ export function createHookRegistry(): HookRegistry {
     'approval:requested': new Set(),
     'approval:resolved': new Set(),
     'action:received': new Set(),
+    'message:rejected': new Set(),
   };
 
   return {

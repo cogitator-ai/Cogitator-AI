@@ -351,32 +351,22 @@ describe('WorkflowExecutor', () => {
 
   describe('parallel execution', () => {
     it('executes independent nodes in parallel', async () => {
-      const startTimes: Record<string, number> = {};
-      const endTimes: Record<string, number> = {};
+      const events: string[] = [];
+      let release!: () => void;
+      const bothStarted = new Promise<void>((resolve) => (release = resolve));
+      const node = (name: string) => async () => {
+        events.push(`${name}:start`);
+        if (events.filter((e) => e.endsWith(':start')).length === 2) release();
+        await Promise.race([bothStarted, new Promise((r) => setTimeout(r, 2000))]);
+        events.push(`${name}:end`);
+        return { output: name };
+      };
 
       const workflow = new WorkflowBuilder<TestState>('parallel')
         .initialState({ value: 0, steps: [] })
         .addNode('start', async () => ({ output: 'started' }))
-        .addNode(
-          'a',
-          async () => {
-            startTimes.a = Date.now();
-            await new Promise((r) => setTimeout(r, 50));
-            endTimes.a = Date.now();
-            return { output: 'a' };
-          },
-          { after: ['start'] }
-        )
-        .addNode(
-          'b',
-          async () => {
-            startTimes.b = Date.now();
-            await new Promise((r) => setTimeout(r, 50));
-            endTimes.b = Date.now();
-            return { output: 'b' };
-          },
-          { after: ['start'] }
-        )
+        .addNode('a', node('a'), { after: ['start'] })
+        .addNode('b', node('b'), { after: ['start'] })
         .addNode('merge', async () => ({ output: 'merged' }), {
           after: ['a', 'b'],
         })
@@ -385,8 +375,7 @@ describe('WorkflowExecutor', () => {
       const executor = new WorkflowExecutor(mockCogitator);
       await executor.execute(workflow);
 
-      const startDiff = Math.abs(startTimes.a - startTimes.b);
-      expect(startDiff).toBeLessThan(30);
+      expect(events.slice(0, 2).sort()).toEqual(['a:start', 'b:start']);
     });
   });
 

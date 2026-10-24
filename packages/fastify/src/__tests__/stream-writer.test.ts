@@ -125,6 +125,21 @@ describe('FastifyStreamWriter', () => {
     expect(writer.isClosed).toBe(true);
   });
 
+  it('interruptRequired() writes the interrupt-required event', () => {
+    const { reply, getOutput } = mockReply();
+    const writer = new FastifyStreamWriter(reply);
+    writer.interruptRequired('thread-1', [
+      { id: 'int_1', kind: 'input', reason: 'pick_order', message: 'Which order?' },
+    ]);
+    expect(getOutput()).toContain(
+      JSON.stringify({
+        type: 'interrupt-required',
+        threadId: 'thread-1',
+        interrupts: [{ id: 'int_1', kind: 'input', reason: 'pick_order', message: 'Which order?' }],
+      })
+    );
+  });
+
   it('error() writes error event', () => {
     const { reply, getOutput } = mockReply();
     const writer = new FastifyStreamWriter(reply);

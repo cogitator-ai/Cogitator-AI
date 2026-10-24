@@ -6,6 +6,7 @@ import {
   AgentStreamSession,
   parseResumeRequest,
   parseRunRequest,
+  runRequestRunOptions,
   toAgentRunResponse,
 } from '@cogitator-ai/server-shared';
 import { ExpressStreamWriter, setupSSEHeaders } from '../streaming/index.js';
@@ -93,6 +94,7 @@ export function createAgentRoutes(ctx: RouteContext): Router {
           input: body.input,
           context: body.context,
           threadId: body.threadId,
+          ...runRequestRunOptions(body),
           userId: req.cogitator?.auth?.userId,
           signal: abortController.signal,
           ...admitted,
@@ -122,7 +124,7 @@ export function createAgentRoutes(ctx: RouteContext): Router {
         sendError(res, 400, parsed.message, 'INVALID_INPUT');
         return;
       }
-      const { threadId, decisions, defaultDecision } = parsed.value;
+      const { threadId, decisions, defaultDecision, responses } = parsed.value;
 
       const admitted = await admitAgentRun(ctx, req, res, threadId, 'Agent resume error');
       if (!admitted) return;
@@ -135,6 +137,7 @@ export function createAgentRoutes(ctx: RouteContext): Router {
           userId: req.cogitator?.auth?.userId,
           decisions,
           defaultDecision,
+          responses,
           signal: abortController.signal,
           ...admitted,
         });
@@ -173,6 +176,7 @@ export function createAgentRoutes(ctx: RouteContext): Router {
           input: body.input,
           context: body.context,
           threadId: session.threadId,
+          ...runRequestRunOptions(body),
           userId: req.cogitator?.auth?.userId,
           signal,
           stream: true,
@@ -199,7 +203,7 @@ export function createAgentRoutes(ctx: RouteContext): Router {
         sendError(res, 400, parsed.message, 'INVALID_INPUT');
         return;
       }
-      const { threadId, decisions, defaultDecision } = parsed.value;
+      const { threadId, decisions, defaultDecision, responses } = parsed.value;
 
       const admitted = await admitAgentRun(ctx, req, res, threadId, 'Agent resume stream error');
       if (!admitted) return;
@@ -209,6 +213,7 @@ export function createAgentRoutes(ctx: RouteContext): Router {
           userId: req.cogitator?.auth?.userId,
           decisions,
           defaultDecision,
+          responses,
           signal,
           stream: true,
           ...session.callbacks,

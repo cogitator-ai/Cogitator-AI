@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderHook } from './helpers/fake-react.js';
-import type { PendingApproval, StreamEvent } from '../streaming/protocol.js';
+import type { PendingApproval, PendingInterrupt, StreamEvent } from '../streaming/protocol.js';
 import type { AgentResponse, UseChatOptions } from '../types.js';
 
 vi.mock('react', async () => (await import('./helpers/fake-react.js')).reactApi);
@@ -272,5 +272,173 @@ describe('useCogitatorChat approvals', () => {
     expect(hook.result.current.error?.message).toBe(
       'There is no thread with a paused run to resume'
     );
+  });
+});
+
+const orderQuestion: PendingInterrupt = {
+  id: 'int_1',
+  kind: 'input',
+  reason: 'pick_order',
+  message: 'Which order should be refunded?',
+  responseSchema: { type: 'string' },
+};
+
+function askingStream(): Response {
+  return sse([
+    { type: 'start', messageId: 'a1' },
+    { type: 'interrupt-required', threadId: 'thread_srv', interrupts: [orderQuestion] },
+    {
+      type: 'finish',
+      messageId: 'a1',
+      threadId: 'thread_srv',
+      status: 'paused',
+      pendingApprovals: [],
+      interrupts: [orderQuestion],
+    },
+    '[DONE]',
+  ]);
+}
+
+describe('useCogitatorChat interrupts', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('exposes the questions a paused stream waits on and answers them with resume', async () => {
+    const calls = installFetch([askingStream, () => resumedStream('Refunded A-1')]);
+    const onInterruptRequired = vi.fn();
+    const onApprovalRequired = vi.fn();
+    const hook = setup({ onInterruptRequired, onApprovalRequired });
+
+    expect(hook.result.current.pendingInterrupts).toEqual([]);
+    await pause(hook);
+
+    expect(hook.result.current.pendingInterrupts).toEqual([orderQuestion]);
+    expect(hook.result.current.pendingApprovals).toEqual([]);
+    expect(hook.result.current.threadId).toBe('thread_srv');
+    expect(onInterruptRequired).toHaveBeenCalledWith([orderQuestion]);
+    expect(onApprovalRequired).not.toHaveBeenCalled();
+
+    await hook.result.current.resume({ responses: { int_1: 'A-1' } });
+    await hook.flush();
+
+    expect(calls[1]).toEqual({
+      url: '/api/chat/resume',
+      body: { threadId: 'thread_srv', responses: { int_1: 'A-1' } },
+    });
+    expect(hook.result.current.pendingInterrupts).toEqual([]);
+  });
+
+  it('keeps the questions when the server refuses the answer of a streamed resume', async () => {
+    installFetch([
+      askingStream,
+      () =>
+        sse([
+          { type: 'start', messageId: 'a2', threadId: 'thread_srv' },
+          {
+            type: 'error',
+            message: 'The answer does not match its schema',
+            code: 'INTERRUPT_ANSWER_INVALID',
+          },
+          '[DONE]',
+        ]),
+      () => resumedStream('Refunded A-1'),
+    ]);
+    const hook = setup();
+    await pause(hook);
+
+    await hook.result.current.resume({ responses: { int_1: 42 } });
+    await hook.flush();
+    expect(hook.result.current.pendingInterrupts).toEqual([orderQuestion]);
+    expect(hook.result.current.error?.message).toBe('The answer does not match its schema');
+
+    await hook.result.current.resume({ responses: { int_1: 'A-1' } });
+    await hook.flush();
+    expect(hook.result.current.pendingInterrupts).toEqual([]);
+  });
+
+  it('keeps the approvals a run that also asks questions waits on', async () => {
+    installFetch([
+      () =>
+        sse([
+          { type: 'start', messageId: 'a1' },
+          {
+            type: 'interrupt-required',
+            threadId: 'thread_srv',
+            interrupts: [orderQuestion, { ...orderQuestion, id: 'call_1', kind: 'approval' }],
+          },
+          {
+            type: 'finish',
+            messageId: 'a1',
+            threadId: 'thread_srv',
+            status: 'paused',
+            pendingApprovals: [refundApproval],
+            interrupts: [orderQuestion],
+          },
+        ]),
+    ]);
+    const hook = setup();
+    await pause(hook);
+
+    expect(hook.result.current.pendingApprovals).toEqual([refundApproval]);
+    expect(hook.result.current.pendingInterrupts).toHaveLength(2);
+  });
+
+  it('exposes the questions of a JSON resume answer', async () => {
+    const answer: AgentResponse = {
+      output: 'Which order?',
+      threadId: 'thread_srv',
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      toolCalls: [],
+      status: 'paused',
+      pendingApprovals: [],
+      interrupts: [orderQuestion],
+      traceId: 'trace_1',
+    };
+    installFetch([pausedStream, () => json(answer)]);
+    const onApprovalRequired = vi.fn();
+    const hook = setup({ onApprovalRequired });
+    await pause(hook);
+
+    await hook.result.current.approve();
+    await hook.flush();
+
+    expect(hook.result.current.pendingInterrupts).toEqual([orderQuestion]);
+    expect(hook.result.current.pendingApprovals).toEqual([]);
+    expect(onApprovalRequired).toHaveBeenCalledOnce();
+  });
+
+  it('clears the questions when the user sends a new message instead', async () => {
+    installFetch([
+      askingStream,
+      () =>
+        sse([
+          { type: 'start', messageId: 'a2' },
+          { type: 'finish', messageId: 'a2', threadId: 'thread_srv' },
+        ]),
+    ]);
+    const hook = setup();
+    await pause(hook);
+
+    await hook.result.current.send('Never mind');
+    await hook.flush();
+
+    expect(hook.result.current.pendingInterrupts).toEqual([]);
+  });
+
+  it('sends its multitask strategy with every message', async () => {
+    const calls = installFetch([askingStream]);
+    const hook = setup({ multitaskStrategy: 'enqueue' });
+    await pause(hook);
+
+    expect(calls[0]?.body).toMatchObject({ multitaskStrategy: 'enqueue' });
+  });
+
+  it('sends no multitask strategy unless it has one', async () => {
+    const calls = installFetch([askingStream]);
+    const hook = setup();
+    await pause(hook);
+
+    expect(calls[0]?.body).not.toHaveProperty('multitaskStrategy');
   });
 });

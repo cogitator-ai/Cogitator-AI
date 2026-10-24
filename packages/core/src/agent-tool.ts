@@ -4,6 +4,7 @@ import type { Cogitator } from './runtime';
 import { tool } from './tool';
 import { z } from 'zod';
 import { isTripwire } from './middleware/tripwire';
+import { pendingQuestions } from './run-pause';
 
 export interface AgentAsToolOptions {
   name: string;
@@ -90,10 +91,14 @@ export function agentAsTool<TDeps = unknown>(
         });
 
         if (result.status === 'paused') {
+          const questions = pendingQuestions(result);
           return {
             output: result.output,
             success: false,
-            error: `The delegated agent paused for approval of ${(result.pendingApprovals ?? []).map((p) => p.toolName).join(', ')}, which a delegated run cannot wait for`,
+            error:
+              questions.length > 0
+                ? `The delegated agent paused to ask ${questions.map((question) => `"${question.message}"`).join(', ')}, which a delegated run cannot wait for`
+                : `The delegated agent paused for approval of ${(result.pendingApprovals ?? []).map((p) => p.toolName).join(', ')}, which a delegated run cannot wait for`,
           };
         }
 

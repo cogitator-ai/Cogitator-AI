@@ -346,6 +346,8 @@ interface MCPServerConfig {
   auth?: MCPAuthFunction; // Establishes the caller; undefined → 401
   sessions?: boolean; // Session per client (needed for elicitation); default: off
 
+  elicitationTimeoutMs?: number; // How long an elicitation waits for the user; default: 600000, 0 for as long as the call lasts
+
   logging?: boolean; // Diagnostic logging to stderr (stdout stays clean for stdio JSON-RPC)
 
   toolInvoker?: ToolInvoker; // Runs tool calls, e.g. your Cogitator; default: one of its own
@@ -654,7 +656,9 @@ const deleteBranch = tool({
 });
 ```
 
-Form fields (`MCPElicitField`) are strings (optionally with `enum`), numbers, integers and booleans. The reply is `{ action: 'accept', content }` or `{ action: 'decline' | 'cancel' }`.
+Form fields (`MCPElicitField`) are the primitives of the MCP elicitation schema (protocol 2025-11-25): strings (with `minLength`, `maxLength`, `format` of `email`, `uri`, `date` or `date-time`, a single choice as `enum` or as `oneOf` with labels), numbers and integers (with `minimum` and `maximum`), booleans, and multiple choices (`type: 'array'` with string `items`), each with an optional `title`, `description` and `default`. The reply is `{ action: 'accept', content }` or `{ action: 'decline' | 'cancel' }`.
+
+An elicitation waits for the user up to `elicitationTimeoutMs` (default 10 minutes, instead of the MCP SDK's 60 s request timeout, which is too short for a person, `0` waits as long as the tool call lasts), and stops when the tool call is cancelled. One nobody answers in time counts as dismissed (`cancel`): a tool call waiting for approval is then declined.
 
 ### Stdio Server (for Claude Desktop)
 
@@ -720,6 +724,7 @@ await serveAgents(cog, researcher, { transport: 'http', port: 3333, auth });
 - **Descriptions** — the agent's `description`, or `Ask the <name> agent.` plus the first sentence of its instructions.
 - **Answers** (`AgentToolAnswer`) — `{ status: 'completed', output, threadId }`; pass the `threadId` back to continue the conversation.
 - **Approvals** — when the agent has tools whose `requiresApproval` is `true` or a check function, each call that needs approval is asked from the person at the client through MCP elicitation (an Approve checkbox and an optional reason). A client that cannot answer gets `{ status: 'paused', threadId, pendingApprovals, next }`, and the agent gets a second tool, `<name>_resume` (registered only for such agents), taking `{ threadId, approved, reason? }` to continue the run with the user's decision.
+- **Questions** - a question an agent's tool asks with `context.interrupt()` is asked from the person at the client through MCP elicitation too, one form per question: a schema of one primitive (or none) becomes a single `answer` field, an object of primitives becomes that form, with the constraints the elicitation schema can carry (title, description, default, length, format, range, choices). The run resumes with the answers, as often as its tools ask, and checks them against the full schema. An answer it refuses (`INTERRUPT_ANSWER_INVALID`, say for a `pattern` the form cannot carry) is asked again, the form saying why, up to 3 times per question: then the call fails with an `isError` result naming the question. When nobody can answer (a client without elicitation, a declined or dismissed form, one nobody answers within `elicitationTimeoutMs`, or a schema that is no flat form) the call fails with an `isError` result naming the question, such as `paused to ask confirm_plan ("Go ahead?")`. Either way the run stays paused for `cogitator.resume()` with `responses`.
 - **Callers** — over HTTP with `auth`, the caller's `userId` is passed to the run, and the run's abort signal follows the MCP call's cancellation.
 
 `agentTools(host, agents, toolNames?)` returns the same tools without starting a server, to register them on an `MCPServer` of your own next to other tools. See [`examples/mcp/04-agent-as-mcp-server.ts`](https://github.com/cogitator-ai/Cogitator-AI/blob/main/examples/mcp/04-agent-as-mcp-server.ts).

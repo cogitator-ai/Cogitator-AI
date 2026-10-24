@@ -29,6 +29,16 @@ export {
 export type { ToolApprovalResponse } from './approvals.js';
 
 export {
+  INTERRUPT_REQUEST_KIND,
+  INTERRUPT_RESPONSE_KIND,
+  interruptRequestPart,
+  interruptResponsePart,
+  readInterruptRequest,
+  readInterruptResponse,
+} from './questions.js';
+export type { TaskQuestion } from './questions.js';
+
+export {
   toMessage,
   agentMessage,
   textPart,

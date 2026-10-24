@@ -11,6 +11,7 @@ export {
   createToolCallEndEvent,
   createToolResultEvent,
   createApprovalRequiredEvent,
+  createInterruptRequiredEvent,
   createErrorEvent,
   createFinishEvent,
   toRunUsage,
@@ -32,6 +33,8 @@ export type {
   ToolResultEvent,
   ApprovalRequiredEvent,
   PendingApproval,
+  InterruptRequiredEvent,
+  PendingInterrupt,
   ErrorEvent,
   FinishEvent,
 } from '@cogitator-ai/server-shared';

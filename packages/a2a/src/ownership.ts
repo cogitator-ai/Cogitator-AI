@@ -1,5 +1,7 @@
 import type { A2ATask } from './types.js';
 import { TASK_PENDING_APPROVALS_KEY } from './approvals.js';
+import { TASK_PENDING_QUESTIONS_KEY } from './questions.js';
+import { TASK_PAUSED_RUN_KEY } from './paused-run.js';
 
 /** Metadata key holding the user a task belongs to; never sent to clients. */
 export const TASK_OWNER_KEY = 'cogitator:owner';
@@ -39,6 +41,8 @@ export function taskCreatedAt(task: A2ATask): number {
 const INTERNAL_KEYS: readonly string[] = [
   TASK_OWNER_KEY,
   TASK_PENDING_APPROVALS_KEY,
+  TASK_PENDING_QUESTIONS_KEY,
+  TASK_PAUSED_RUN_KEY,
   TASK_CREATED_AT_KEY,
 ];
 

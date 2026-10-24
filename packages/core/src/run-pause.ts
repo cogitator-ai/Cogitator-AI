@@ -2,6 +2,7 @@ import {
   CogitatorError,
   ErrorCode,
   type RunCheckpoint,
+  type RunInterrupt,
   type ToolApprovalRequest,
 } from '@cogitator-ai/types';
 
@@ -9,6 +10,8 @@ import {
 export interface PausableRun {
   readonly status?: string;
   readonly pendingApprovals?: readonly ToolApprovalRequest[];
+  /** What a paused run waits on, questions of its tools among them */
+  readonly interrupts?: readonly RunInterrupt[];
 }
 
 /** A run outcome that waits for tool approvals, as {@link isPausedRun} narrows it. */
@@ -27,12 +30,43 @@ export function isPausedRun<T extends PausableRun>(result: T): result is PausedR
   return result.status === 'paused';
 }
 
+/**
+ * The questions a paused run's tools asked (`context.interrupt()`) that wait for an answer: the
+ * interrupts that are not approvals. Code that decides approvals and resumes on its own must
+ * stop at a pause with any: no decision answers them, and resuming without answers only pauses
+ * again. Empty for a run that is not paused
+ */
+export function pendingQuestions(result: PausableRun): RunInterrupt[] {
+  if (result.status !== 'paused') return [];
+  return (result.interrupts ?? []).filter((entry) => entry.kind !== 'approval');
+}
+
 /** The run a {@link AgentRunPausedError} reports. */
 export interface PausedRunInfo {
   readonly threadId: string;
   readonly runId?: string;
   readonly pendingApprovals?: readonly ToolApprovalRequest[];
+  /** What the run waits on, questions of its tools among them */
+  readonly interrupts?: readonly RunInterrupt[];
   readonly checkpoint?: RunCheckpoint;
+}
+
+/** What a paused run waits for, for the message of {@link AgentRunPausedError} */
+function describeWait(run: PausedRunInfo): string {
+  const approvals = run.pendingApprovals ?? [];
+  const questions = (run.interrupts ?? []).filter((entry) => entry.kind !== 'approval');
+  if (approvals.length === 0 && questions.length > 0) {
+    return `answers to ${questions.map((entry) => entry.reason).join(', ')}`;
+  }
+  return `approval of ${describeCalls(approvals)}`;
+}
+
+/** What the caller does to go on, for the message of {@link AgentRunPausedError} */
+function nextStep(run: PausedRunInfo): string {
+  const asks = (run.pendingApprovals ?? []).length === 0 && (run.interrupts ?? []).length > 0;
+  return asks
+    ? 'Answer them in the responses of cogitator.resume() to continue the run.'
+    : 'Decide the calls and continue the run with cogitator.resume(), or let the agent decide them with onApproval.';
 }
 
 function describeCalls(approvals: readonly ToolApprovalRequest[]): string {
@@ -41,8 +75,9 @@ function describeCalls(approvals: readonly ToolApprovalRequest[]): string {
 }
 
 /**
- * An agent run paused for tool approvals where the caller cannot wait for them: a workflow node
- * without an approval store, a swarm turn, a queued workflow job. It carries what the run waits
+ * An agent run paused where the caller cannot wait for it: for tool approvals in a workflow node
+ * without an approval store, a swarm turn, a queued workflow job, or for questions its tools
+ * asked, which only a person answers. It carries what the run waits
  * on and the `checkpoint` to resume it with `cogitator.resume()` once someone decided.
  */
 export class AgentRunPausedError extends CogitatorError {
@@ -50,6 +85,8 @@ export class AgentRunPausedError extends CogitatorError {
   readonly threadId: string;
   readonly runId?: string;
   readonly pendingApprovals: readonly ToolApprovalRequest[];
+  /** The questions of its tools the run waits on, answered in `responses` of the resume */
+  readonly interrupts: readonly RunInterrupt[];
   readonly checkpoint?: RunCheckpoint;
 
   /**
@@ -61,15 +98,15 @@ export class AgentRunPausedError extends CogitatorError {
     const pendingApprovals = [...(run.pendingApprovals ?? [])];
     super({
       message:
-        `Agent "${agentName}" paused${where ? ` in ${where}` : ''} to wait for approval of ` +
-        `${describeCalls(pendingApprovals)} (thread ${run.threadId}). Decide the calls and ` +
-        'continue the run with cogitator.resume(), or let the agent decide them with onApproval.',
+        `Agent "${agentName}" paused${where ? ` in ${where}` : ''} to wait for ${describeWait(run)} ` +
+        `(thread ${run.threadId}). ${nextStep(run)}`,
       code: ErrorCode.RUN_PAUSED,
       details: {
         agent: agentName,
         threadId: run.threadId,
         ...(run.runId !== undefined && { runId: run.runId }),
         pendingApprovals,
+        ...(run.interrupts?.length && { interrupts: [...run.interrupts] }),
       },
     });
     this.name = 'AgentRunPausedError';
@@ -77,6 +114,7 @@ export class AgentRunPausedError extends CogitatorError {
     this.threadId = run.threadId;
     this.runId = run.runId;
     this.pendingApprovals = pendingApprovals;
+    this.interrupts = [...(run.interrupts ?? [])];
     this.checkpoint = run.checkpoint;
   }
 }

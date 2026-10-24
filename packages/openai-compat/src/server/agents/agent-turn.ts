@@ -1,4 +1,4 @@
-import { type Cogitator, isPausedRun } from '@cogitator-ai/core';
+import { type Cogitator, isPausedRun, pendingQuestions } from '@cogitator-ai/core';
 import type {
   Agent,
   AgentConfig,
@@ -13,7 +13,7 @@ import type {
 } from '@cogitator-ai/types';
 import { nanoid } from 'nanoid';
 import { toZodParameters } from '../../client/openai-adapter';
-import { InvalidRequestError } from '../../client/errors';
+import { InvalidRequestError, unansweredQuestionsError } from '../../client/errors';
 
 /** One entry of a conversation, as Chat Completions and Responses both describe it. */
 export type ConversationItem =
@@ -292,6 +292,8 @@ export class AgentTurnRunner {
     let result = initial;
     let usage = addUsage(initialUsage, result);
     while (isPausedRun(result)) {
+      const questions = pendingQuestions(result);
+      if (questions.length > 0) throw unansweredQuestionsError(questions, 'OpenAI-compatible API');
       const serverCalls = result.pendingApprovals.filter((p) => !clientFunctions.has(p.toolName));
       if (serverCalls.length === 0) {
         return this.pause(agent, result, outputs, clientFunctions, usage);

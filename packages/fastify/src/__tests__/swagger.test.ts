@@ -6,8 +6,15 @@ import type { CogitatorPluginOptions } from '../types.js';
 
 type Options = CogitatorPluginOptions;
 
+interface Operation {
+  responses: Record<string, unknown>;
+  requestBody?: {
+    content: Record<string, { schema: { properties: Record<string, unknown> } }>;
+  };
+}
+
 interface Document {
-  paths: Record<string, Record<string, { responses: Record<string, unknown> }>>;
+  paths: Record<string, Record<string, Operation>>;
   components: { schemas: Record<string, { discriminator?: { mapping: Record<string, string> } }> };
 }
 
@@ -50,5 +57,21 @@ describe('swagger document', () => {
     expect(doc.paths['/api/agents/{name}/run']?.post?.responses['200']).not.toHaveProperty(
       'content.text/event-stream'
     );
+  });
+
+  it('documents the multitask strategy of runs and the answers of resumes', async () => {
+    const doc = await document();
+    const body = (path: string) =>
+      doc.paths[path]?.post?.requestBody?.content['application/json']?.schema.properties;
+
+    for (const path of ['/api/agents/{name}/run', '/api/agents/{name}/stream']) {
+      expect(body(path)?.multitaskStrategy, path).toMatchObject({
+        type: 'string',
+        enum: ['enqueue', 'reject', 'interrupt', 'rollback'],
+      });
+    }
+    for (const path of ['/api/agents/{name}/resume', '/api/agents/{name}/resume/stream']) {
+      expect(body(path)?.responses, path).toMatchObject({ type: 'object' });
+    }
   });
 });

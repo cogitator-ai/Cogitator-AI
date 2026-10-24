@@ -31,7 +31,8 @@ export interface StreamRunOptions {
 /**
  * Answers with the run streamed in the chat protocol, the same as every Cogitator adapter:
  * `start` naming the thread, text and reasoning parts, tool calls and results,
- * `approval-required` when it pauses, then `finish` with the thread and how the run ended,
+ * `approval-required` when it pauses for approvals or `interrupt-required` when it pauses for
+ * questions its tools asked, then `finish` with the thread and how the run ended,
  * or `error` when it fails. Heartbeat comments keep the stream open while the run is silent.
  */
 export function streamAgentRun({

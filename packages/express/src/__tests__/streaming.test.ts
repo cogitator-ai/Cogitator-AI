@@ -123,6 +123,23 @@ describe('ExpressStreamWriter', () => {
     expect(data).toContain('something went wrong');
   });
 
+  it('writes the interrupt-required event', () => {
+    const res = mockRes();
+    const writer = new ExpressStreamWriter(res);
+
+    writer.interruptRequired('thread-1', [
+      { id: 'int_1', kind: 'input', reason: 'pick_order', message: 'Which order?' },
+    ]);
+
+    expect(res._written).toEqual([
+      `data: ${JSON.stringify({
+        type: 'interrupt-required',
+        threadId: 'thread-1',
+        interrupts: [{ id: 'int_1', kind: 'input', reason: 'pick_order', message: 'Which order?' }],
+      })}\n\n`,
+    ]);
+  });
+
   it('writes tool call sequence', () => {
     const res = mockRes();
     const writer = new ExpressStreamWriter(res);

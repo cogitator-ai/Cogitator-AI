@@ -25,6 +25,7 @@ pnpm add @cogitator-ai/a2a @cogitator-ai/core
 - **Agent Card signing** - JWS (HS256) signatures in `signatures`
 - **Authenticated extended card** - `agent/getAuthenticatedExtendedCard`
 - **Tool approvals** - Paused runs wait in `input-required` with the calls in a data part
+- **Tool questions** - Questions tools ask with `context.interrupt()` reach the client in a data part, its answer resumes the run
 - **RedisTaskStore** - Production-grade task persistence
 - **Framework adapters** - Express, Hono, Fastify, Koa, Next.js
 - **No A2A SDK dependency** - Own implementation of the spec (runtime deps: `@cogitator-ai/types`, `@cogitator-ai/server-shared`, `zod`)
@@ -117,7 +118,7 @@ The client fills in `kind: 'message'` and a fresh `messageId` when a message lea
 
 `A2AClient` options: `headers` (sent with every request, e.g. `Authorization`), `timeout` (ms, default `30000`), `agentCardPath` (a card path relative to the base URL, no fallback), `rpcPath` (send requests to this path at the base URL instead of the card's `url`, without reading the card) and `agentName` (an agent of a Cogitator server hosting several: the client uses that agent's own card and endpoint).
 
-Other calls: `getTask(id, historyLength?)`, `cancelTask(id)`, `resubscribeTask(id)` (reconnect to a task's stream), `continueTask(id, text)`, `answerApprovals(id, decisions)`, `listTasks(filter?)` and the push notification calls below.
+Other calls: `getTask(id, historyLength?)`, `cancelTask(id)`, `resubscribeTask(id)` (reconnect to a task's stream), `continueTask(id, text)`, `answerApprovals(id, decisions)`, `answerQuestions(id, responses)`, `listTasks(filter?)` and the push notification calls below.
 
 ### Use Remote Agent as a Tool
 
@@ -140,7 +141,7 @@ const result = await cogitator.run(orchestrator, {
 
 `asToolFromCard` names the tool after the card, made into a name every LLM provider accepts (`Research Agent` becomes `Research_Agent`). Pass `{ name }` to choose it yourself.
 
-The tool returns `{ output, success, error?, taskId?, state?, pendingApprovals? }`. `output` is the remote agent's answer: the text of the task's status message, else of its last agent message, else of its artifacts. When the remote task waits on the client (`state: 'input-required'`), `success` is `false`, `output` carries the remote agent's question and `taskId` lets you answer with `client.continueTask()`. A remote task waiting for [tool approvals](#tool-approvals) lists the calls in `pendingApprovals`. The run's abort signal and the tool timeout are forwarded to the HTTP request.
+The tool returns `{ output, success, error?, taskId?, state?, pendingApprovals?, pendingQuestions? }`. `output` is the remote agent's answer: the text of the task's status message, else of its last agent message, else of its artifacts. When the remote task waits on the client (`state: 'input-required'`), `success` is `false`, `output` carries the remote agent's question and `taskId` lets you answer with `client.continueTask()`. A remote task waiting for [tool approvals](#tool-approvals) lists the calls in `pendingApprovals`, one waiting on [questions of its tools](#tool-questions) lists them in `pendingQuestions`. The run's abort signal and the tool timeout are forwarded to the HTTP request.
 
 ## Authentication
 
@@ -269,7 +270,26 @@ if (waiting) {
 }
 ```
 
-`toolApprovalResponsePart({ decisions?, defaultDecision? })` builds the part for a hand-written message. Calls left without a decision keep the task waiting. A text reply instead of decisions moves on: the waiting calls are declined and the agent answers the new message. The server resumes through `cogitator.resume()` by the task's `contextId`, so the paused run has to be where the server Cogitator keeps paused runs (its memory, or `runCheckpoints` shared by every server instance). `asTool()` reports such a remote task with `success: false`, the `taskId` and the calls in `pendingApprovals`.
+`toolApprovalResponsePart({ decisions?, defaultDecision? })` builds the part for a hand-written message. Calls left without a decision keep the task waiting. A text reply instead of decisions moves on: the waiting calls are declined and the agent answers the new message. The task keeps the paused run's id and checkpoint, and the server resumes exactly that run through `cogitator.resume()` from the checkpoint (by the task's `contextId` when the Cogitator returns none). Before it resumes, it checks with `cogitator.pausedRun(contextId)` that the run still waits, so the paused run has to be where the server Cogitator keeps paused runs (its memory, or `runCheckpoints` shared by every server instance). `asTool()` reports such a remote task with `success: false`, the `taskId` and the calls in `pendingApprovals`.
+
+## Tool Questions
+
+A tool can stop the run to ask a person something with `context.interrupt({ reason, message, responseSchema })`. The task then waits in `input-required` too: its status message says the question and carries it in a data part (`{ kind: 'interrupt-request', questions: [{ id, reason, message, responseSchema?, expiresAt?, toolName? }] }`). The client answers by question id with an `interrupt-response` data part in the message that continues the task, and the server resumes the run with those answers:
+
+```typescript
+import { readInterruptRequest } from '@cogitator-ai/a2a';
+
+const questions = task.kind === 'task' ? readInterruptRequest(task) : undefined;
+if (questions) {
+  const done = await client.answerQuestions(task.id, { [questions[0].id]: { ok: true } });
+}
+```
+
+`interruptResponsePart(responses)` builds the part for a hand-written message. A task waiting on a single question also takes the continuing message itself as the answer: its first data part, else its text, read by the question's `responseSchema` with `parseAnswer()` from `@cogitator-ai/types` (`yes` for a boolean, `3` for a number, a member of an enum, a comma-separated list). The status message names the answer form after each question, such as `Go ahead? (yes or no)`. A text that does not answer, an answer the run refuses as not matching the schema (`INTERRUPT_ANSWER_INVALID`) and an interrupt response naming no waiting question keep the task in `input-required` with why, so the client can answer again. Other resume errors fail the task.
+
+An answer after the question's `expiresAt` ends the task `failed`, its status message saying which question expired, and lifts the pause with `cogitator.cancelPause()` (the waiting calls answered as declined because the question expired), so the context goes on with its next message. A run that waits for approvals and questions at once carries both parts, and one message can answer both.
+
+A new task in the same context starts a run on the context's thread, and the runtime answers the calls an earlier task's paused run waits on with "The user moved on". That earlier task then ends `canceled`, its status message saying a newer message moved on, instead of waiting in `input-required` on a run that is gone: answer a task's questions before sending the context something new. A message that continues the task itself without answering (plain text while several questions wait) moves on the same way, as a new turn of the task. `asTool()` reports such a remote task with `success: false`, the `taskId` and the questions in `pendingQuestions`.
 
 ## Listing Tasks
 

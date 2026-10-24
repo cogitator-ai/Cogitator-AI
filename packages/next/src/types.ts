@@ -4,11 +4,21 @@ import type {
   ToolResult,
   RunResult,
   ToolApprovalDecision,
+  MultitaskStrategy,
 } from '@cogitator-ai/types';
 import type { AgentRunResponse, AnonymousPolicy, ContextPolicy } from '@cogitator-ai/server-shared';
-import type { PendingApproval } from './streaming/protocol.js';
+import type { PendingApproval, PendingInterrupt } from './streaming/protocol.js';
 
-export type { Message, ToolCall, ToolResult, RunResult, ToolApprovalDecision, PendingApproval };
+export type {
+  Message,
+  ToolCall,
+  ToolResult,
+  RunResult,
+  ToolApprovalDecision,
+  MultitaskStrategy,
+  PendingApproval,
+  PendingInterrupt,
+};
 
 export interface ChatMessage {
   id: string;
@@ -25,12 +35,16 @@ export interface ChatInput {
   messages: ChatMessage[];
   threadId?: string;
   metadata?: Record<string, unknown>;
+  /** What the run does when its thread has a run going on. Default: the Cogitator's `multitaskStrategy` */
+  multitaskStrategy?: MultitaskStrategy;
 }
 
 export interface AgentInput {
   input: string;
   context?: Record<string, unknown>;
   threadId?: string;
+  /** What the run does when its thread has a run going on. Default: the Cogitator's `multitaskStrategy` */
+  multitaskStrategy?: MultitaskStrategy;
 }
 
 /** What every handler takes to keep the server contract of the Cogitator adapters */
@@ -86,12 +100,14 @@ export interface AgentHandlerOptions extends ServerContractOptions {
   acceptContext?: ContextPolicy;
 }
 
-/** The decisions for the tool calls a paused run waits on */
+/** The decisions for the tool calls a paused run waits on, and the answers to its questions */
 export interface ResumeDecisions {
   /** Decisions by tool call id; calls left out pause the run again */
   decisions?: Record<string, ToolApprovalDecision>;
   /** Decision for every paused call `decisions` leaves out, e.g. one "approve all" answer */
   defaultDecision?: ToolApprovalDecision;
+  /** Answers to the questions the run's tools asked, by interrupt id */
+  responses?: Record<string, unknown>;
 }
 
 export interface ResumeInput extends ResumeDecisions {
@@ -152,8 +168,15 @@ export interface UseChatOptions {
   onReasoning?: (delta: string) => void;
   /** The run paused: these tool calls wait for `resume`, `approve` or `deny` */
   onApprovalRequired?: (approvals: PendingApproval[]) => void;
+  /** The run paused for questions its tools asked: answer them with `resume({ responses })` */
+  onInterruptRequired?: (interrupts: PendingInterrupt[]) => void;
   /** Endpoint of a `createResumeHandler`, used by `resume`, `approve` and `deny` */
   resumeApi?: string;
+  /**
+   * Sent with every message: what the run does when the thread already has a run going on.
+   * Default: the server's `multitaskStrategy`
+   */
+  multitaskStrategy?: MultitaskStrategy;
   retry?: RetryConfig;
 }
 
@@ -174,6 +197,8 @@ export interface UseChatReturn {
   setMessages: (messages: ChatMessage[]) => void;
   /** The tool calls the paused run of this thread waits on; empty when nothing is paused */
   pendingApprovals: PendingApproval[];
+  /** The questions the paused run of this thread waits on; empty when it asked none */
+  pendingInterrupts: PendingInterrupt[];
   /** Continues the paused run with these decisions and appends what the agent answers */
   resume: (decisions: ResumeDecisions) => Promise<void>;
   /** Approves every pending tool call and continues the run */
@@ -199,6 +224,8 @@ export interface UseAgentReturn {
   reasoning: string | undefined;
   /** The tool calls the last result waits on, when the run paused for approval */
   pendingApprovals: PendingApproval[];
+  /** The questions the last result waits on, when the run's tools asked any */
+  pendingInterrupts: PendingInterrupt[];
   /** Continues the paused run of the last result with these decisions */
   resume: (decisions: ResumeDecisions) => Promise<void>;
   isLoading: boolean;

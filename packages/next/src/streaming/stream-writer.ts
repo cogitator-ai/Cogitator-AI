@@ -17,9 +17,11 @@ import {
   createToolCallEndEvent,
   createToolResultEvent,
   createApprovalRequiredEvent,
+  createInterruptRequiredEvent,
   createErrorEvent,
   createFinishEvent,
   type PendingApproval,
+  type PendingInterrupt,
   type StreamEvent,
   type Usage,
 } from './protocol.js';
@@ -130,6 +132,13 @@ export class StreamWriter {
 
   async approvalRequired(threadId: string, approvals: readonly PendingApproval[]): Promise<void> {
     await this.write(createApprovalRequiredEvent(threadId, approvals));
+  }
+
+  async interruptRequired(
+    threadId: string,
+    interrupts: readonly PendingInterrupt[]
+  ): Promise<void> {
+    await this.write(createInterruptRequiredEvent(threadId, interrupts));
   }
 
   async error(message: string, code?: string): Promise<void> {

@@ -13,6 +13,8 @@ export * from './browser';
 export * from './llm';
 export * from './providers';
 export * from './runtime';
+export * from './run-control';
+export * from './answers';
 export * from './middleware';
 export * from './memory';
 export * from './memory-items';

@@ -9,6 +9,7 @@ import type {
 import {
   AgentRunPausedError,
   isPausedRun,
+  pendingQuestions,
   type Agent,
   type RunOptions,
   type RunResult,
@@ -101,6 +102,9 @@ export function agentNode<S extends WorkflowState = WorkflowState>(
         });
 
         while (isPausedRun(result)) {
+          if (pendingQuestions(result).length > 0 || result.pendingApprovals.length === 0) {
+            throw new AgentRunPausedError(result, agent.name, where);
+          }
           const decisions = await askApprovals(result.pendingApprovals);
           if (!decisions || !result.checkpoint) {
             throw new AgentRunPausedError(result, agent.name, where);

@@ -6,7 +6,9 @@ import type {
   UseChatOptions,
   UseChatReturn,
   ChatMessage,
+  MultitaskStrategy,
   PendingApproval,
+  PendingInterrupt,
   ResumeDecisions,
   ToolCall,
   ToolResultEvent,
@@ -45,7 +47,107 @@ function isEventStream(response: Response): boolean {
   return response.headers.get('Content-Type')?.includes('text/event-stream') ?? false;
 }
 
-type ResponseHandler = (response: Response, controller: AbortController) => Promise<void>;
+/**
+ * One request of the hook. Requests that are let through to the server while another one
+ * streams (`multitaskStrategy` of `enqueue` or `reject`) wait in line: only the first open
+ * request writes the assistant message, a later one keeps its events until its turn comes.
+ */
+interface ChatRequest {
+  readonly controller: AbortController;
+  readonly toolCalls: Map<string, { name: string; args: string }>;
+  readonly backlog: StreamEvent[];
+  readonly onFailure?: (error: Error) => void;
+  /**
+   * The thread the request runs on: the one it named, the one the server announced for it,
+   * or `undefined` once it settled without one
+   */
+  readonly thread: Promise<string | undefined>;
+  readonly announce: (threadId: string | undefined) => void;
+  /**
+   * Requests this one took over from without aborting them (`interrupt` and `rollback`):
+   * the server stops their runs, the hook aborts whatever is left once this one settles
+   */
+  supersedes: ChatRequest[];
+  /** Taken over by a later request: its stream is read to the end but no longer shown */
+  detached: boolean;
+  errored: boolean;
+  ended: boolean;
+  /** The code of the `error` event the stream sent, when it sent one */
+  errorCode?: string;
+}
+
+/** Codes of a resume the server refused before it ran: the paused run still waits */
+const REFUSED_RESUME_CODES = new Set(['INTERRUPT_ANSWER_INVALID', 'INTERRUPT_EXPIRED']);
+
+type ResponseHandler = (response: Response, request: ChatRequest) => Promise<void>;
+
+interface RequestPlan {
+  readonly url: string;
+  /** The thread the request names, `undefined` to let the server pick one */
+  readonly threadId: string | undefined;
+  readonly body: (threadId: string | undefined) => unknown;
+  readonly handle: ResponseHandler;
+  readonly onFailure?: (error: Error) => void;
+  readonly supersedes?: ChatRequest[];
+}
+
+/**
+ * What `send` does with the requests still open: `abort` them first (no strategy), `hand-over`
+ * to the new one and let the server stop them (`interrupt`, `rollback`), or `line-up` behind
+ * them and let the server decide (`enqueue`, `reject`)
+ */
+type Takeover = 'abort' | 'hand-over' | 'line-up';
+
+function takeoverOf(strategy: MultitaskStrategy | undefined): Takeover {
+  switch (strategy) {
+    case 'enqueue':
+    case 'reject':
+      return 'line-up';
+    case 'interrupt':
+    case 'rollback':
+      return 'hand-over';
+    default:
+      return 'abort';
+  }
+}
+
+function createChatRequest(
+  onFailure: ((error: Error) => void) | undefined,
+  supersedes: ChatRequest[]
+): ChatRequest {
+  let announce!: (threadId: string | undefined) => void;
+  const thread = new Promise<string | undefined>((resolve) => {
+    announce = resolve;
+  });
+  return {
+    controller: new AbortController(),
+    toolCalls: new Map(),
+    backlog: [],
+    onFailure,
+    thread,
+    announce,
+    supersedes,
+    detached: false,
+    errored: false,
+    ended: false,
+  };
+}
+
+function announcedThread(event: StreamEvent): string | undefined {
+  switch (event.type) {
+    case 'start':
+    case 'finish':
+    case 'approval-required':
+    case 'interrupt-required':
+      return event.threadId || undefined;
+    default:
+      return undefined;
+  }
+}
+
+function isRefusal(request: ChatRequest): boolean {
+  return request.backlog.every((event) => event.type === 'start');
+}
 
 function pendingAssistantMessage(state: ChatState): ChatMessage | null {
   if (!state.currentMessageId) return null;
@@ -69,7 +171,9 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     onToolResult,
     onReasoning,
     onApprovalRequired,
+    onInterruptRequired,
     resumeApi,
+    multitaskStrategy,
     retry,
   } = options;
 
@@ -79,7 +183,10 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
   );
 
   const stateRef = useRef<ChatState>(state);
-  const activeRequestRef = useRef<AbortController | null>(null);
+  const requestsRef = useRef<ChatRequest[]>([]);
+  const liveRef = useRef(new Set<ChatRequest>());
+  const pendingThreadRef = useRef<Promise<string | undefined> | null>(null);
+  const pausedByRef = useRef<ChatRequest | null>(null);
 
   const apply = useCallback((action: ChatAction) => {
     stateRef.current = chatReducer(stateRef.current, action);
@@ -87,37 +194,119 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
   }, []);
 
   useEffect(() => {
+    const live = liveRef.current;
     return () => {
-      activeRequestRef.current?.abort();
-      activeRequestRef.current = null;
+      requestsRef.current = [];
+      for (const request of live) request.controller.abort();
     };
   }, []);
 
-  const interrupt = useCallback(() => {
-    const active = activeRequestRef.current;
-    if (!active) return;
-    activeRequestRef.current = null;
-    active.abort();
+  const isOpen = useCallback((request: ChatRequest) => requestsRef.current.includes(request), []);
+
+  const closeOpen = useCallback((): ChatRequest[] => {
+    const open = requestsRef.current;
+    if (open.length === 0) return [];
+    requestsRef.current = [];
     apply({ type: 'FINISH_ASSISTANT_MESSAGE' });
     apply({ type: 'STOP_LOADING' });
+    return open;
   }, [apply]);
 
-  const requireApproval = useCallback(
-    (approvals: PendingApproval[], threadId: string) => {
+  const interrupt = useCallback(() => {
+    closeOpen();
+    for (const request of liveRef.current) request.controller.abort();
+  }, [closeOpen]);
+
+  const handOver = useCallback((): ChatRequest[] => {
+    const superseded: ChatRequest[] = [];
+    for (const request of closeOpen()) {
+      request.detached = true;
+      superseded.push(request, ...request.supersedes);
+      request.supersedes = [];
+    }
+    return superseded;
+  }, [closeOpen]);
+
+  const release = useCallback(
+    (request: ChatRequest): boolean => {
+      const wasCurrent = requestsRef.current[0] === request;
+      requestsRef.current = requestsRef.current.filter((open) => open !== request);
+      if (wasCurrent) apply({ type: 'FINISH_ASSISTANT_MESSAGE' });
+      if (requestsRef.current.length === 0) apply({ type: 'STOP_LOADING' });
+      return wasCurrent;
+    },
+    [apply]
+  );
+
+  const report = useCallback(
+    (request: ChatRequest, error: Error) => {
+      request.onFailure?.(error);
+      apply({ type: 'SET_ERROR', payload: error });
+      onError?.(error);
+    },
+    [apply, onError]
+  );
+
+  const followThread = useCallback(
+    (threadId: string) => {
       if (threadId && threadId !== stateRef.current.threadId) {
         apply({ type: 'SET_THREAD_ID', payload: threadId });
       }
+    },
+    [apply]
+  );
+
+  const clearPause = useCallback(() => {
+    pausedByRef.current = null;
+    apply({ type: 'SET_PENDING_APPROVALS', payload: [] });
+    apply({ type: 'SET_PENDING_INTERRUPTS', payload: [] });
+  }, [apply]);
+
+  /**
+   * Drops the pause of an earlier request once `request` ran on the thread: the server gives up
+   * a paused run when the next one starts, so its approvals and questions can no longer be answered
+   */
+  const supersedePause = useCallback(
+    (request: ChatRequest) => {
+      if (pausedByRef.current && pausedByRef.current !== request) clearPause();
+    },
+    [clearPause]
+  );
+
+  const pauseFor = useCallback(
+    (request: ChatRequest, threadId: string) => {
+      supersedePause(request);
+      pausedByRef.current = request;
+      followThread(threadId);
+    },
+    [followThread, supersedePause]
+  );
+
+  const requireApproval = useCallback(
+    (request: ChatRequest, approvals: PendingApproval[], threadId: string) => {
+      pauseFor(request, threadId);
       apply({ type: 'SET_PENDING_APPROVALS', payload: approvals });
       onApprovalRequired?.(approvals);
     },
-    [apply, onApprovalRequired]
+    [apply, onApprovalRequired, pauseFor]
+  );
+
+  const requireAnswers = useCallback(
+    (request: ChatRequest, interrupts: PendingInterrupt[], threadId: string) => {
+      pauseFor(request, threadId);
+      apply({ type: 'SET_PENDING_INTERRUPTS', payload: interrupts });
+      onInterruptRequired?.(interrupts);
+    },
+    [apply, onInterruptRequired, pauseFor]
   );
 
   const handleStreamEvent = useCallback(
-    (event: StreamEvent, toolCalls: Map<string, { name: string; args: string }>): boolean => {
+    (event: StreamEvent, request: ChatRequest): boolean => {
+      const { toolCalls } = request;
       switch (event.type) {
         case 'start':
           apply({ type: 'START_ASSISTANT_MESSAGE', payload: event.messageId });
+          if (event.threadId) followThread(event.threadId);
           return false;
 
         case 'text-delta':
@@ -164,16 +353,23 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
         }
 
         case 'approval-required':
-          requireApproval(event.approvals, event.threadId);
+          requireApproval(request, event.approvals, event.threadId);
+          return false;
+
+        case 'interrupt-required':
+          requireAnswers(request, event.interrupts, event.threadId);
           return false;
 
         case 'finish':
-          if (event.threadId && event.threadId !== stateRef.current.threadId) {
-            apply({ type: 'SET_THREAD_ID', payload: event.threadId });
+          supersedePause(request);
+          if (event.threadId) followThread(event.threadId);
+          if (event.interrupts?.length && event.pendingApprovals?.length) {
+            requireApproval(request, event.pendingApprovals, event.threadId ?? '');
           }
           return false;
 
         case 'error': {
+          if (event.code !== undefined) request.errorCode = event.code;
           const error = new Error(event.message);
           apply({ type: 'SET_ERROR', payload: error });
           onError?.(error);
@@ -184,47 +380,78 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
           return false;
       }
     },
-    [apply, onError, onReasoning, onToolCall, onToolResult, requireApproval]
+    [
+      apply,
+      followThread,
+      onError,
+      onReasoning,
+      onToolCall,
+      onToolResult,
+      requireAnswers,
+      requireApproval,
+      supersedePause,
+    ]
+  );
+
+  const advance = useCallback(() => {
+    for (let head = requestsRef.current[0]; head; head = requestsRef.current[0]) {
+      for (const event of head.backlog.splice(0)) {
+        if (handleStreamEvent(event, head)) head.errored = true;
+      }
+      if (requestsRef.current[0] !== head) continue;
+      if (!head.ended) return;
+
+      const finished = pendingAssistantMessage(stateRef.current);
+      release(head);
+      if (finished && !head.errored) onFinish?.(finished);
+    }
+  }, [handleStreamEvent, onFinish, release]);
+
+  const deliver = useCallback(
+    (request: ChatRequest, event: StreamEvent) => {
+      if (requestsRef.current[0] === request) {
+        if (handleStreamEvent(event, request)) request.errored = true;
+      } else if (event.type === 'error' && isRefusal(request)) {
+        release(request);
+        report(request, new Error(event.message));
+      } else {
+        request.backlog.push(event);
+      }
+    },
+    [handleStreamEvent, release, report]
   );
 
   const processStream = useCallback(
-    async (response: Response, controller: AbortController) => {
+    async (response: Response, request: ChatRequest) => {
       if (!response.body) {
         throw new Error('Response body is null');
       }
 
       const reader = response.body.getReader();
-      const toolCalls = new Map<string, { name: string; args: string }>();
-      let errored = false;
 
       try {
         for await (const event of parseSSEStream(reader)) {
-          if (activeRequestRef.current !== controller) return;
-          if (handleStreamEvent(event, toolCalls)) errored = true;
+          const threadId = announcedThread(event);
+          if (threadId) request.announce(threadId);
+          if (request.detached) continue;
+          if (!isOpen(request)) return;
+          deliver(request, event);
         }
       } finally {
         reader.releaseLock();
       }
 
-      if (activeRequestRef.current !== controller) return;
-      activeRequestRef.current = null;
-
-      const finished = pendingAssistantMessage(stateRef.current);
-      apply({ type: 'FINISH_ASSISTANT_MESSAGE' });
-      apply({ type: 'STOP_LOADING' });
-
-      if (finished && !errored) {
-        onFinish?.(finished);
-      }
+      if (!isOpen(request)) return;
+      request.ended = true;
+      if (requestsRef.current[0] === request) advance();
     },
-    [apply, handleStreamEvent, onFinish]
+    [advance, deliver, isOpen]
   );
 
   const processResult = useCallback(
-    async (response: Response, controller: AbortController) => {
+    async (response: Response, request: ChatRequest) => {
       const result = (await response.json()) as AgentResponse;
-      if (activeRequestRef.current !== controller) return;
-      activeRequestRef.current = null;
+      if (!isOpen(request)) return;
 
       const message: ChatMessage = {
         id: generateClientId(),
@@ -235,93 +462,124 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
         createdAt: new Date(),
       };
       apply({ type: 'APPEND_MESSAGE', payload: message });
-      if (result.status === 'paused') {
-        requireApproval(result.pendingApprovals ?? [], result.threadId);
-      } else if (result.threadId && result.threadId !== stateRef.current.threadId) {
-        apply({ type: 'SET_THREAD_ID', payload: result.threadId });
+      const approvals = result.pendingApprovals ?? [];
+      if (result.status !== 'paused') {
+        supersedePause(request);
+        followThread(result.threadId);
+      } else if (result.interrupts?.length) {
+        requireAnswers(request, result.interrupts, result.threadId);
+        if (approvals.length > 0) requireApproval(request, approvals, result.threadId);
+      } else {
+        requireApproval(request, approvals, result.threadId);
       }
-      apply({ type: 'STOP_LOADING' });
+      const wasCurrent = release(request);
       onFinish?.(message);
+      if (wasCurrent) advance();
     },
-    [apply, onFinish, requireApproval]
+    [
+      advance,
+      apply,
+      followThread,
+      isOpen,
+      onFinish,
+      release,
+      requireAnswers,
+      requireApproval,
+      supersedePause,
+    ]
   );
 
+  /**
+   * Sends one request. One that names no thread while an earlier one has not learned its thread
+   * yet waits for it under a `multitaskStrategy`, so the messages sent in a row share the thread
+   * the server picks for the first instead of starting one thread each
+   */
   const request = useCallback(
-    async (
-      url: string,
-      body: unknown,
-      handle: ResponseHandler,
-      onFailure?: (error: Error) => void
-    ) => {
-      const controller = new AbortController();
-      activeRequestRef.current = controller;
+    async ({ url, threadId, body, handle, onFailure, supersedes = [] }: RequestPlan) => {
+      const chatRequest = createChatRequest(onFailure, supersedes);
+      const previous =
+        threadId === undefined && multitaskStrategy !== undefined ? pendingThreadRef.current : null;
+      if (threadId === undefined) pendingThreadRef.current = chatRequest.thread;
+      else chatRequest.announce(threadId);
+      liveRef.current.add(chatRequest);
+      requestsRef.current = [...requestsRef.current, chatRequest];
 
       apply({ type: 'START_LOADING' });
 
-      const doFetch = async () => {
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...headers,
-          },
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        });
-
-        if (!response.ok) {
-          throw await toHttpError(response);
-        }
-
-        return response;
-      };
-
+      const { controller } = chatRequest;
+      let sent = false;
       try {
+        const thread = threadId ?? (previous ? await previous : undefined);
+        if (!isOpen(chatRequest)) return;
+        if (thread !== undefined) chatRequest.announce(thread);
+        sent = true;
+
+        const doFetch = async () => {
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...headers,
+            },
+            body: JSON.stringify(body(thread)),
+            signal: controller.signal,
+          });
+
+          if (!response.ok) {
+            throw await toHttpError(response);
+          }
+
+          return response;
+        };
+
         const response = await withRetry(doFetch, retry, controller.signal);
-        await handle(response, controller);
+        await handle(response, chatRequest);
       } catch (err) {
-        if (activeRequestRef.current !== controller) return;
-        activeRequestRef.current = null;
-
-        apply({ type: 'FINISH_ASSISTANT_MESSAGE' });
-
-        if (isAbortError(err)) {
-          apply({ type: 'STOP_LOADING' });
-          return;
+        if (!isOpen(chatRequest)) return;
+        const wasCurrent = release(chatRequest);
+        if (!isAbortError(err)) {
+          report(chatRequest, err instanceof Error ? err : new Error('Unknown error'));
         }
-
-        const error = err instanceof Error ? err : new Error('Unknown error');
-        onFailure?.(error);
-        apply({ type: 'SET_ERROR', payload: error });
-        onError?.(error);
+        if (wasCurrent) advance();
+      } finally {
+        liveRef.current.delete(chatRequest);
+        if (sent || !previous) chatRequest.announce(undefined);
+        else void previous.then(chatRequest.announce);
+        for (const predecessor of chatRequest.supersedes) {
+          if (liveRef.current.has(predecessor)) predecessor.controller.abort();
+        }
       }
     },
-    [apply, headers, onError, retry]
+    [advance, apply, headers, isOpen, multitaskStrategy, release, report, retry]
   );
 
   const sendWithMessages = useCallback(
     async (
       messages: ChatMessage[],
       threadId: string | undefined,
-      metadata?: Record<string, unknown>
+      metadata?: Record<string, unknown>,
+      supersedes?: ChatRequest[]
     ) => {
-      apply({ type: 'SET_PENDING_APPROVALS', payload: [] });
-      await request(
-        api,
-        {
+      clearPause();
+      await request({
+        url: api,
+        threadId,
+        body: (thread) => ({
           messages: messages.map((m) => ({
             id: m.id,
             role: m.role,
             content: m.content,
             metadata: m.metadata,
           })),
-          threadId,
+          threadId: thread,
           metadata,
-        },
-        processStream
-      );
+          ...(multitaskStrategy !== undefined && { multitaskStrategy }),
+        }),
+        handle: processStream,
+        supersedes,
+      });
     },
-    [api, apply, processStream, request]
+    [api, clearPause, multitaskStrategy, processStream, request]
   );
 
   const send = useCallback(
@@ -329,7 +587,9 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
       const messageContent = inputOverride ?? stateRef.current.input;
       if (!messageContent.trim()) return;
 
-      interrupt();
+      const takeover = takeoverOf(multitaskStrategy);
+      if (takeover === 'abort') interrupt();
+      const supersedes = takeover === 'hand-over' ? handOver() : [];
 
       const userMessage: ChatMessage = {
         id: generateClientId(),
@@ -343,9 +603,9 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
       apply({ type: 'SET_INPUT', payload: '' });
 
       const current = stateRef.current;
-      await sendWithMessages(current.messages, current.threadId, metadata);
+      await sendWithMessages(current.messages, current.threadId, metadata, supersedes);
     },
-    [apply, interrupt, sendWithMessages]
+    [apply, handOver, interrupt, multitaskStrategy, sendWithMessages]
   );
 
   const stop = useCallback(() => {
@@ -395,21 +655,32 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
 
       interrupt();
 
-      await request(
-        resumeApi,
-        { threadId, ...decisions },
-        async (response, controller) => {
-          apply({ type: 'SET_PENDING_APPROVALS', payload: [] });
-          await (isEventStream(response) ? processStream : processResult)(response, controller);
-        },
-        (error) => {
-          if (error instanceof HttpError && error.status === 409) {
-            apply({ type: 'SET_PENDING_APPROVALS', payload: [] });
+      await request({
+        url: resumeApi,
+        threadId,
+        body: () => ({ threadId, ...decisions }),
+        handle: async (response, chatRequest) => {
+          const waiting = {
+            approvals: stateRef.current.pendingApprovals,
+            interrupts: stateRef.current.pendingInterrupts,
+            by: pausedByRef.current,
+          };
+          clearPause();
+          await (isEventStream(response) ? processStream : processResult)(response, chatRequest);
+          const refused =
+            chatRequest.errorCode !== undefined && REFUSED_RESUME_CODES.has(chatRequest.errorCode);
+          if (refused && pausedByRef.current === null) {
+            pausedByRef.current = waiting.by;
+            apply({ type: 'SET_PENDING_APPROVALS', payload: waiting.approvals });
+            apply({ type: 'SET_PENDING_INTERRUPTS', payload: waiting.interrupts });
           }
-        }
-      );
+        },
+        onFailure: (error) => {
+          if (error instanceof HttpError && error.status === 409) clearPause();
+        },
+      });
     },
-    [apply, fail, interrupt, processResult, processStream, request, resumeApi]
+    [apply, clearPause, fail, interrupt, processResult, processStream, request, resumeApi]
   );
 
   const approve = useCallback(() => resume({ defaultDecision: { approved: true } }), [resume]);
@@ -431,10 +702,11 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
 
   const setThreadId = useCallback(
     (id: string | undefined) => {
+      pendingThreadRef.current = null;
       apply({ type: 'SET_THREAD_ID', payload: id });
-      if (id === undefined) apply({ type: 'SET_PENDING_APPROVALS', payload: [] });
+      if (id === undefined) clearPause();
     },
-    [apply]
+    [apply, clearPause]
   );
 
   const appendMessage = useCallback(
@@ -473,6 +745,7 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     clearMessages,
     setMessages,
     pendingApprovals: state.pendingApprovals,
+    pendingInterrupts: state.pendingInterrupts,
     resume,
     approve,
     deny,

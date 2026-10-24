@@ -6,6 +6,7 @@ import {
   AgentStreamSession,
   parseResumeRequest,
   parseRunRequest,
+  runRequestRunOptions,
   toAgentRunResponse,
 } from '@cogitator-ai/server-shared';
 import { FastifyStreamWriter } from '../streaming/index.js';
@@ -104,6 +105,7 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
           input: request.body.input,
           context: request.body.context,
           threadId: request.body.threadId,
+          ...runRequestRunOptions(request.body),
           userId: request.cogitatorAuth?.userId,
           signal: abortController.signal,
           ...deps,
@@ -138,6 +140,7 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
           userId: request.cogitatorAuth?.userId,
           decisions: request.body.decisions,
           defaultDecision: request.body.defaultDecision,
+          responses: request.body.responses,
           signal: abortController.signal,
           ...deps,
         });
@@ -173,6 +176,7 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
             input: request.body.input,
             context: request.body.context,
             threadId: session.threadId,
+            ...runRequestRunOptions(request.body),
             userId: request.cogitatorAuth?.userId,
             signal,
             stream: true,
@@ -194,7 +198,7 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
         return sendError(reply, 404, `Agent '${name}' not found`, 'NOT_FOUND');
       }
 
-      const { threadId, decisions, defaultDecision } = request.body;
+      const { threadId, decisions, defaultDecision, responses } = request.body;
       if (await refuseThread(request, reply, threadId)) return reply;
       const deps = await requestDeps(request);
 
@@ -203,6 +207,7 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
           userId: request.cogitatorAuth?.userId,
           decisions,
           defaultDecision,
+          responses,
           signal,
           stream: true,
           ...session.callbacks,

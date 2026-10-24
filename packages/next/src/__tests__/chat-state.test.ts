@@ -16,6 +16,7 @@ describe('createInitialState', () => {
       currentReasoning: '',
       currentToolCalls: [],
       pendingApprovals: [],
+      pendingInterrupts: [],
     });
   });
 
@@ -53,12 +54,12 @@ describe('chatReducer', () => {
     expect(state.isLoading).toBe(false);
   });
 
-  it('SET_ERROR', () => {
+  it('SET_ERROR leaves loading to the requests still open', () => {
     const loading = { ...initial, isLoading: true };
     const err = new Error('fail');
     const state = chatReducer(loading, { type: 'SET_ERROR', payload: err });
     expect(state.error).toBe(err);
-    expect(state.isLoading).toBe(false);
+    expect(state.isLoading).toBe(true);
   });
 
   it('ADD_USER_MESSAGE', () => {
@@ -187,6 +188,23 @@ describe('chatReducer', () => {
     const cleared = chatReducer(paused, { type: 'SET_PENDING_APPROVALS', payload: [] });
     expect(cleared.pendingApprovals).toEqual([]);
     expect(chatReducer(cleared, { type: 'SET_PENDING_APPROVALS', payload: [] })).toBe(cleared);
+  });
+
+  it('SET_PENDING_INTERRUPTS sets and clears the questions', () => {
+    const question = {
+      id: 'int_1',
+      kind: 'input' as const,
+      reason: 'clarify',
+      message: 'Which order?',
+      responseSchema: { type: 'string' },
+    };
+    const paused = chatReducer(initial, { type: 'SET_PENDING_INTERRUPTS', payload: [question] });
+    expect(paused.pendingInterrupts).toEqual([question]);
+    expect(paused.pendingApprovals).toEqual([]);
+
+    const cleared = chatReducer(paused, { type: 'SET_PENDING_INTERRUPTS', payload: [] });
+    expect(cleared.pendingInterrupts).toEqual([]);
+    expect(chatReducer(cleared, { type: 'SET_PENDING_INTERRUPTS', payload: [] })).toBe(cleared);
   });
 
   it('returns same state on unknown action', () => {

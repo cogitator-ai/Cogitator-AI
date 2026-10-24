@@ -2,6 +2,7 @@
   "title": "Core",
   "pages": [
     "cogitator",
+    "run-control",
     "agents",
     "skills",
     "todos",

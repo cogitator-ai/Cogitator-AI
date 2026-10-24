@@ -5,34 +5,7 @@ import { api } from '../api';
 import { href } from '../router';
 import { useStudio } from '../store';
 import { Empty, ErrorText, messageOf } from './common';
-
-const EVENT_LABEL: Record<string, string> = {
-  model_change: 'Model change',
-  compaction: 'Compaction',
-  approval: 'Paused for approval',
-  interrupt: 'Interrupted',
-  label: 'Label',
-  custom: 'Event',
-};
-
-function record(value: unknown): Record<string, unknown> {
-  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
-}
-
-/** What an event entry says, in a line. */
-function eventText(entry: TreeEntry): string {
-  const event = record(entry.event);
-  if (entry.type === 'model_change' && typeof event.to === 'string') {
-    return typeof event.from === 'string' ? `${event.from} → ${event.to}` : event.to;
-  }
-  if (entry.type === 'approval' && Array.isArray(event.pending)) {
-    return event.pending
-      .map((item) => record(item).toolName)
-      .filter((name): name is string => typeof name === 'string')
-      .join(', ');
-  }
-  return entry.text;
-}
+import { eventLabel, eventText } from '../tree-events';
 
 interface Shape {
   children: Map<string | null, TreeEntry[]>;
@@ -77,7 +50,7 @@ function Entry({
   /** Whether the entry starts a branch. */
   opens: boolean;
 }) {
-  const event = EVENT_LABEL[entry.type];
+  const event = eventLabel(entry);
   const forked = useStudio((state) =>
     opens && entry.runId ? state.runs[entry.runId]?.kind === 'fork' : false
   );

@@ -152,11 +152,50 @@ export interface MCPPromptConfig {
   ) => Promise<MCPPromptResult> | MCPPromptResult;
 }
 
-/** A field of an elicitation form (MCP `requestedSchema` primitives) */
+/** An option of an elicitation choice with the label the form shows for it */
+export interface MCPElicitOption {
+  const: string;
+  title: string;
+}
+
+/**
+ * A field of an elicitation form: the primitives MCP `requestedSchema` allows (protocol
+ * 2025-11-25), a string with its length and format, a single choice (`enum`, or `oneOf` with
+ * labels), a number in a range, a boolean, or a multiple choice (`type: 'array'`)
+ */
 export type MCPElicitField =
-  | { type: 'string'; title?: string; description?: string; enum?: string[] }
-  | { type: 'number' | 'integer'; title?: string; description?: string }
-  | { type: 'boolean'; title?: string; description?: string; default?: boolean };
+  | {
+      type: 'string';
+      title?: string;
+      description?: string;
+      enum?: string[];
+      oneOf?: MCPElicitOption[];
+      minLength?: number;
+      maxLength?: number;
+      format?: 'email' | 'uri' | 'date' | 'date-time';
+      default?: string;
+    }
+  | {
+      type: 'number' | 'integer';
+      title?: string;
+      description?: string;
+      minimum?: number;
+      maximum?: number;
+      default?: number;
+    }
+  | { type: 'boolean'; title?: string; description?: string; default?: boolean }
+  | (MCPElicitMultiSelect & { items: { type: 'string'; enum: string[] } })
+  | (MCPElicitMultiSelect & { items: { anyOf: MCPElicitOption[] } });
+
+/** What a multiple choice field of an elicitation form has besides its options */
+export interface MCPElicitMultiSelect {
+  type: 'array';
+  title?: string;
+  description?: string;
+  minItems?: number;
+  maxItems?: number;
+  default?: string[];
+}
 
 export interface MCPElicitRequest {
   message: string;
@@ -229,6 +268,14 @@ export interface MCPServerConfig {
    * that started it.
    */
   sessions?: boolean;
+
+  /**
+   * How long a request to the client's user through elicitation (an approval, a question of an
+   * agent's tool, `context.elicit()`) waits for the answer, in ms, instead of the MCP SDK's
+   * 60 s request timeout. One nobody answers in time counts as dismissed (`cancel`). `0` waits
+   * as long as the tool call lasts. Default: 600000 (10 minutes)
+   */
+  elicitationTimeoutMs?: number;
 
   /** Enable logging */
   logging?: boolean;

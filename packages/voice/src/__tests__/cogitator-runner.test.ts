@@ -72,6 +72,7 @@ describe('createCogitatorRunner streaming and tools', () => {
       threadId: 'voice:abc',
       signal: expect.any(AbortSignal),
       stream: true,
+      saveInterruptedReply: false,
       onToken: expect.any(Function),
       onModelTurn: expect.any(Function),
       onMemoryEntry: expect.any(Function),
@@ -222,5 +223,103 @@ describe('createCogitatorRunner streaming and tools', () => {
 describe('VERSION', () => {
   it('matches package.json', () => {
     expect(VERSION).toBe(packageJson.version);
+  });
+});
+
+describe('createCogitatorRunner and questions of tools', () => {
+  const agent = { instructions: 'Be brief.' };
+  const question = {
+    id: 'q1#0',
+    kind: 'input' as const,
+    reason: 'pick_region',
+    message: 'Which region?',
+    toolCallId: 'q1',
+  };
+  const paused = { output: '', status: 'paused', interrupts: [question] };
+
+  it('says the question and answers it with the next turn', async () => {
+    const cogitator = {
+      run: vi.fn().mockResolvedValue(paused),
+      resume: vi.fn().mockResolvedValue({ output: 'Deployed to eu.' }),
+    };
+    const runner = createCogitatorRunner(cogitator, agent);
+
+    await expect(runner.run('Deploy', { sessionId: 's' })).resolves.toEqual({
+      content: 'Which region?',
+    });
+    await expect(runner.run('eu', { sessionId: 's' })).resolves.toEqual({
+      content: 'Deployed to eu.',
+    });
+    expect(cogitator.resume).toHaveBeenCalledWith(agent, 'voice:s', {
+      threadId: 'voice:s',
+      responses: { 'q1#0': 'eu' },
+    });
+    expect(cogitator.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks again when the run refuses the answer', async () => {
+    const cogitator = {
+      run: vi.fn().mockResolvedValue(paused),
+      resume: vi
+        .fn()
+        .mockRejectedValueOnce(
+          Object.assign(new Error('bad'), { code: 'INTERRUPT_ANSWER_INVALID' })
+        )
+        .mockResolvedValueOnce({ output: 'Done.' }),
+    };
+    const runner = createCogitatorRunner(cogitator, agent);
+    await runner.run('Deploy', { sessionId: 's' });
+    await expect(runner.run('mars', { sessionId: 's' })).resolves.toEqual({
+      content: 'That does not answer my question: the answer does not fit. Which region?',
+    });
+    await expect(runner.run('eu', { sessionId: 's' })).resolves.toEqual({ content: 'Done.' });
+  });
+
+  it('streams the question as the end of a turn that paused on it', async () => {
+    const cogitator = {
+      run: vi.fn(async (_agent: unknown, options: CogitatorRunnerRunOptions) => {
+        options.onToken?.('Let me check.');
+        options.onModelTurn?.({
+          content: 'Let me check.',
+          toolCalls: [{ id: 'q1', name: 'deploy', arguments: {} }],
+          model: 'mock/m',
+        });
+        return paused;
+      }),
+    };
+    const runner = createCogitatorRunner(cogitator, agent);
+    const deltas: string[] = [];
+    for await (const delta of runner.stream!('Deploy', { sessionId: 's' })) deltas.push(delta);
+    expect(deltas).toEqual(['Let me check.', '\n', 'Which region?']);
+  });
+
+  it('reads the answer by the question schema and runs a new turn once it expired', async () => {
+    const counted = {
+      ...question,
+      id: 'n1#0',
+      message: 'How many?',
+      responseSchema: { type: 'number' },
+    };
+    const cogitator = {
+      run: vi
+        .fn()
+        .mockResolvedValueOnce({ ...paused, interrupts: [counted] })
+        .mockResolvedValueOnce({ output: 'Fresh turn.' }),
+      resume: vi
+        .fn()
+        .mockResolvedValueOnce({ ...paused, interrupts: [counted] })
+        .mockRejectedValueOnce(Object.assign(new Error('late'), { code: 'INTERRUPT_EXPIRED' })),
+    };
+    const runner = createCogitatorRunner(cogitator, agent);
+    await expect(runner.run('Order', { sessionId: 'n' })).resolves.toEqual({
+      content: 'How many? (a number)',
+    });
+    await expect(runner.run('lots', { sessionId: 'n' })).resolves.toEqual({
+      content: 'That does not answer my question: the answer should be a number. How many?',
+    });
+    await runner.run('4', { sessionId: 'n' });
+    expect(cogitator.resume.mock.calls[0]?.[2]).toMatchObject({ responses: { 'n1#0': 4 } });
+    await expect(runner.run('5', { sessionId: 'n' })).resolves.toEqual({ content: 'Fresh turn.' });
+    expect(cogitator.run).toHaveBeenCalledTimes(2);
   });
 });

@@ -1,4 +1,10 @@
-import type { Agent, ToolApprovalDecision, ToolApprovalRequest } from '@cogitator-ai/types';
+import type {
+  Agent,
+  RunCheckpoint,
+  RunInterrupt,
+  ToolApprovalDecision,
+  ToolApprovalRequest,
+} from '@cogitator-ai/types';
 
 /** The A2A protocol version this package speaks, as Agent Cards declare it. */
 export const A2A_PROTOCOL_VERSION = '0.3.0';
@@ -310,11 +316,19 @@ export interface AgentRunResult {
   structured?: unknown;
   requiresInput?: boolean;
   /**
-   * `paused` when tool calls wait for approval: the task goes to `input-required` with the calls
-   * in a tool approval request data part, and the decisions resume the run
+   * `paused` when tool calls wait for approval or tools asked questions: the task goes to
+   * `input-required` with the calls in a tool approval request data part and the questions in an
+   * interrupt request data part, and the decisions and answers resume the run
    */
   status?: 'completed' | 'paused';
   pendingApprovals?: readonly ToolApprovalRequest[];
+  /** What a paused run waits on: approvals (`kind: 'approval'`) and questions of its tools */
+  interrupts?: readonly RunInterrupt[];
+  /**
+   * The checkpoint of a paused run. The task keeps it and resumes exactly this run from it, so a
+   * newer run on the same thread never takes the answers meant for this one
+   */
+  checkpoint?: RunCheckpoint;
   runId: string;
   agentId: string;
   threadId: string;
@@ -344,15 +358,18 @@ export interface CogitatorLike {
     }
   ): Promise<AgentRunResult>;
   /**
-   * Continue the run a thread paused for tool approvals, with the client's decisions. Without
-   * it a task waiting for approvals fails when the client answers
+   * Continue a run paused for tool approvals or questions, with the client's decisions and
+   * answers: from the paused run's `checkpoint` when the run returned one, else from the thread
+   * it paused in. Without it a task waiting on either fails when the client answers
    */
   resume?(
     agent: unknown,
-    threadId: string,
+    target: RunCheckpoint | string,
     options: {
       decisions?: Record<string, ToolApprovalDecision>;
       defaultDecision?: ToolApprovalDecision;
+      /** Answers to the questions of the run's tools, by interrupt id */
+      responses?: Record<string, unknown>;
       signal?: AbortSignal;
       stream?: boolean;
       onToken?: (token: string) => void;
@@ -360,6 +377,17 @@ export interface CogitatorLike {
       userId?: string;
     }
   ): Promise<AgentRunResult>;
+  /**
+   * The run paused in a thread, if any. With it a task checks that the run it waits on still
+   * waits before resuming it, and ends the task when a newer run on the thread moved on
+   */
+  pausedRun?(threadId: string): Promise<{ runId: string } | undefined>;
+  /**
+   * Ends the run paused in a thread without going on, its waiting calls answered as declined
+   * with `reason`. With it a task whose question expired lifts the pause right away, instead of
+   * leaving it to the next run of the context
+   */
+  cancelPause?(threadId: string, options: { userId?: string; reason?: string }): Promise<boolean>;
 }
 
 /** Who an authenticated A2A request comes from. */

@@ -87,7 +87,7 @@ const suite = new EvalSuite({
 
 `suite.run(options?: EvalRunOptions)` takes `{ maxCases?: number, signal?: AbortSignal }`: with `maxCases` only the first N cases of the dataset run, and the results, aggregates, assertions and `stats.total` cover just those cases. Aborting `signal` cancels the attempts in flight, starts no further case, and `run()` rejects with the signal's reason.
 
-A case whose every attempt failed is not scored: its empty output costs no judge calls and counts as no 0, the aggregates cover the cases that answered (`aggregated.<metric>.count` says how many), and `maxErrorRate(rate)` fails a run where too many cases errored. An agent target's case result carries `truncated`, `iterationLimitReached` and `paused` when the run ended that way.
+A case whose every attempt failed is not scored: its empty output costs no judge calls and counts as no 0, the aggregates cover the cases that answered (`aggregated.<metric>.count` says how many), and `maxErrorRate(rate)` fails a run where too many cases errored. An agent target's case result carries `truncated`, `iterationLimitReached` and `paused` when the run ended that way (`paused` for a run waiting on tool approvals or on a question one of its tools asked with `context.interrupt()`).
 
 A failure never drops a case. A metric that throws or returns a score that is not a finite number (such as NaN) scores 0 for that case with the reason in `score.error`, and an `onProgress` callback that throws is reported as a process warning.
 

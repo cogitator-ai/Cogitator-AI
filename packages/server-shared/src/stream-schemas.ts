@@ -99,6 +99,32 @@ export const ApprovalRequiredEventSchema = z
   })
   .describe('The run paused: these tool calls wait for a decision. Resume the thread to go on');
 
+export const PendingInterruptSchema = z
+  .object({
+    id: z.string().describe('Key of the answer in the `responses` of the resume'),
+    kind: z.enum(['approval', 'input']),
+    reason: z.string(),
+    message: z.string(),
+    responseSchema: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe('JSON Schema the answer must match'),
+    expiresAt: z.string().optional().describe('ISO time after which an answer is refused'),
+    toolCallId: z.string().optional(),
+    toolName: z.string().optional(),
+  })
+  .describe('A question a paused run waits on');
+
+export const InterruptRequiredEventSchema = z
+  .object({
+    type: z.literal('interrupt-required'),
+    threadId: z.string(),
+    interrupts: z.array(PendingInterruptSchema),
+  })
+  .describe(
+    'The run paused for questions its tools asked. Resume the thread with the answers in `responses`'
+  );
+
 export const ErrorEventSchema = z
   .object({ type: z.literal('error'), message: z.string(), code: z.string().optional() })
   .describe('The stream failed. `code` is the error code of the JSON routes, when known');
@@ -117,6 +143,10 @@ export const FinishEventSchema = z
       .array(PendingApprovalSchema)
       .optional()
       .describe('The tool calls a paused run waits on'),
+    interrupts: z
+      .array(PendingInterruptSchema)
+      .optional()
+      .describe("The questions a paused run's tools asked"),
     structured: z
       .unknown()
       .optional()
@@ -182,6 +212,7 @@ export const StreamEventSchema = z
     ToolCallEndEventSchema,
     ToolResultEventSchema,
     ApprovalRequiredEventSchema,
+    InterruptRequiredEventSchema,
     ErrorEventSchema,
     FinishEventSchema,
     WorkflowEventSchema,
@@ -207,6 +238,7 @@ const EVENT_COMPONENTS = [
   [ToolCallEndEventSchema, 'StreamToolCallEndEvent'],
   [ToolResultEventSchema, 'StreamToolResultEvent'],
   [ApprovalRequiredEventSchema, 'StreamApprovalRequiredEvent'],
+  [InterruptRequiredEventSchema, 'StreamInterruptRequiredEvent'],
   [ErrorEventSchema, 'StreamErrorEvent'],
   [FinishEventSchema, 'StreamFinishEvent'],
   [WorkflowEventSchema, 'StreamWorkflowEvent'],
@@ -235,12 +267,13 @@ function unwrapRefs(value: unknown): unknown {
 /**
  * The stream protocol as OpenAPI 3.0 components, built from the Zod schemas: `StreamEvent`
  * (a `oneOf` with a discriminator on `type`), a `Stream<Name>Event` per event, `RunUsage` and
- * `PendingApproval`. Refer to an event as `#/components/schemas/StreamEvent`.
+ * `PendingApproval` and `PendingInterrupt`. Refer to an event as `#/components/schemas/StreamEvent`.
  */
 export function streamEventComponents(): Record<string, OpenAPISchemaObject> {
   const registry = z.registry<{ id: string }>();
   registry.add(RunUsageSchema, { id: 'RunUsage' });
   registry.add(PendingApprovalSchema, { id: 'PendingApproval' });
+  registry.add(PendingInterruptSchema, { id: 'PendingInterrupt' });
   for (const [schema, id] of EVENT_COMPONENTS) registry.add(schema, { id });
   registry.add(StreamEventSchema, { id: 'StreamEvent' });
 

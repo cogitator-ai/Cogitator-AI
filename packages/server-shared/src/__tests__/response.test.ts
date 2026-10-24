@@ -9,6 +9,7 @@ import {
   toWorkflowFailedData,
   withResumedCheckpoint,
   withSwarm,
+  StreamEventSchema,
   type StreamEvent,
 } from '../index';
 
@@ -216,5 +217,48 @@ describe('withResumedCheckpoint', () => {
     expect(withResumedCheckpoint({ checkpointId: 'cp_2' }, 'cp_1')).toEqual({
       checkpointId: 'cp_2',
     });
+  });
+});
+
+describe('paused runs that wait on questions of their tools', () => {
+  const asked = (threadId: string) => ({
+    ...conformancePausedResult(threadId),
+    reasoning: undefined,
+    pendingApprovals: [],
+    interrupts: [
+      {
+        id: 'call_3#0',
+        kind: 'input' as const,
+        reason: 'pick_region',
+        message: 'Where to?',
+        responseSchema: { type: 'object' },
+        toolCallId: 'call_3',
+        toolName: 'deploy',
+      },
+    ],
+  });
+
+  it('carry the questions in the outcome, and approval pauses do not', () => {
+    expect(toAgentRunResponse(asked('t')).interrupts).toEqual([
+      {
+        id: 'call_3#0',
+        kind: 'input',
+        reason: 'pick_region',
+        message: 'Where to?',
+        responseSchema: { type: 'object' },
+        toolCallId: 'call_3',
+        toolName: 'deploy',
+      },
+    ]);
+    expect(toAgentRunResponse(conformancePausedResult('t'))).not.toHaveProperty('interrupts');
+  });
+
+  it('stream interrupt-required instead of approval-required', () => {
+    const events: StreamEvent[] = [];
+    const session = new AgentStreamSession((event) => events.push(event), { threadId: 't' });
+    session.complete(asked('t'));
+    expect(events.map((event) => event.type)).toEqual(['interrupt-required', 'finish']);
+    expect(events[0]).toMatchObject({ threadId: 't', interrupts: [{ id: 'call_3#0' }] });
+    expect(StreamEventSchema.parse(events[0])).toEqual(events[0]);
   });
 });

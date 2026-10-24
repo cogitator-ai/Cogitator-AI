@@ -3,7 +3,7 @@ import type { ValidationIssue } from '@tetsujs/core';
 import type { z } from 'zod';
 import type { anonymousHook, CallerHook } from './auth.js';
 import { describeError, unwrapWorkflowFailure } from './errors.js';
-import { toAgentRunResponse } from '@cogitator-ai/server-shared';
+import { runRequestRunOptions, toAgentRunResponse } from '@cogitator-ai/server-shared';
 import {
   checkThreadAccess,
   executeSwarm,
@@ -14,7 +14,7 @@ import {
   resumeAgent,
   runAgent,
   runDepsOf,
-  toResumeDecisions,
+  toResumeOptions,
   toSwarmRunResponse,
   toWorkflowRunResponse,
 } from './operations.js';
@@ -129,7 +129,7 @@ export function cogitatorSocket(
     docs: {
       summary: 'Run agents, workflows and swarms over a WebSocket',
       description:
-        'Send `{ type: "run", id, payload: { type, name, input } }`, `{ type: "resume", id, payload: { name, threadId, decisions } }` to continue an agent run paused for approvals, `{ type: "stop", id }` or `{ type: "ping" }`. Runs with different ids go on side by side.',
+        'Send `{ type: "run", id, payload: { type, name, input } }`, `{ type: "resume", id, payload: { name, threadId, decisions, responses } }` to continue an agent run paused for approvals or questions, `{ type: "stop", id }` or `{ type: "ping" }`. Runs with different ids go on side by side.',
     },
     until: () => resolveSignal(deps.until),
     message: (socket, message) => {
@@ -261,7 +261,7 @@ async function resume(
     deps,
     agent,
     payload.threadId,
-    { ...toResumeDecisions(payload), ...agentCallbacks(signal, emit) },
+    { ...toResumeOptions(payload), ...agentCallbacks(signal, emit) },
     auth,
     runDeps
   );
@@ -286,6 +286,7 @@ async function execute(
           input: payload.input,
           context: payload.context,
           threadId: payload.threadId,
+          ...runRequestRunOptions(payload),
           ...agentCallbacks(signal, emit),
         },
         auth,

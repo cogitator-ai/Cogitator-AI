@@ -349,3 +349,22 @@ describe('loadConfig with an env of its own', () => {
     ).toBe('openai/gpt-5');
   });
 });
+
+describe('multitaskStrategy', () => {
+  const path = 'test-multitask-config.yaml';
+
+  afterEach(() => {
+    if (existsSync(path)) unlinkSync(path);
+  });
+
+  it('keeps the strategy of a YAML file and of defineConfig', () => {
+    writeFileSync(path, 'multitaskStrategy: rollback\n');
+    expect(loadConfig({ configPath: path, skipEnv: true }).multitaskStrategy).toBe('rollback');
+    expect(defineConfig({ multitaskStrategy: 'enqueue' }).multitaskStrategy).toBe('enqueue');
+  });
+
+  it('refuses a strategy it does not know', () => {
+    writeFileSync(path, 'multitaskStrategy: later\n');
+    expect(() => loadConfig({ configPath: path, skipEnv: true })).toThrow(/multitaskStrategy/);
+  });
+});

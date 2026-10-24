@@ -501,6 +501,9 @@ export function toAgentWireRunResult(result: RunResult): AgentWireRunResult {
     ...(result.pendingApprovals !== undefined && {
       pendingApprovals: result.pendingApprovals.map((approval) => ({ ...approval })),
     }),
+    ...(result.interrupts !== undefined && {
+      interrupts: result.interrupts.map((entry) => ({ ...entry })),
+    }),
     ...(result.checkpoint !== undefined && { checkpoint: result.checkpoint }),
     ...(result.modelUsed !== undefined && { modelUsed: result.modelUsed }),
     ...(result.handoffs !== undefined && { handoffs: [...result.handoffs] }),
@@ -555,6 +558,7 @@ export function fromAgentWireRunResult(
     }),
     ...(wire.status !== undefined && { status: wire.status }),
     ...(wire.pendingApprovals !== undefined && { pendingApprovals: wire.pendingApprovals }),
+    ...(wire.interrupts !== undefined && { interrupts: wire.interrupts }),
     ...(wire.checkpoint !== undefined && { checkpoint: wire.checkpoint }),
     ...(wire.handoffs !== undefined && { handoffs: wire.handoffs }),
     ...(wire.finalAgent !== undefined && { finalAgent: wire.finalAgent }),

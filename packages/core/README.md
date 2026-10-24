@@ -68,6 +68,7 @@ console.log(result.output);
 - **Streaming Responses** - Real-time token and reasoning streaming
 - **Structured Output** - `responseFormat` with a Zod schema, validated and repaired once on mismatch
 - **Handoffs & Approvals** - Pass a conversation to another agent; pause runs for human approval and resume them later
+- **Steering & Interrupts** - `cog.start()` handles to `steer`, `followUp`, `inject` and `abort` a run going on, double-texting strategies per thread, tools that pause a run to ask a person (`context.interrupt()`), cancellation that keeps what was shown and done
 - **Prompt Versions & A/B Tests** - Versioned instructions per agent with `cog.prompts`
 - **Memory Integration** - In-memory, Redis, PostgreSQL, SQLite, MongoDB and Qdrant adapters
 - **Agent Memory Tools** - `search_memory`, `open_turns` and `list_entities` with a citation lock, and memory files under `/memories` through the `memory` tool, Anthropic's own `memory_20250818` on Claude 4 and later through the Anthropic backend, a tool with the same commands everywhere else
@@ -579,6 +580,26 @@ To run a single tool call outside a run with the same checks (schema, approval, 
 
 `onMemoryEntry(entry)` hears each entry a run saves to its thread (the input, each model turn, tool results, session events such as an `interrupt`), also for a run that is aborted or fails, before its promise rejects. An assistant entry with `metadata.interrupted: true`, as a voice turn the user talked over leaves it, reaches the model with `[interrupted by the user]` after its text (`historyMessage()` from `@cogitator-ai/types`), so the model does not take the part that was said as a finished reply.
 
+### Steering, Interrupts and Cancellation
+
+`cog.start()` runs an agent like `run()` and hands back what steers it while it goes on:
+
+```typescript
+const handle = cog.start(agent, { input: 'Plan the release', threadId });
+handle.steer('Skip the changelog'); // after the current tool calls, before the next model call
+handle.followUp('Then draft the announcement'); // once the agent would stop
+handle.inject('The release moved to Friday'); // context for the next model call, never wakes the agent
+const result = await handle.result; // or handle.abort(), which returns what was not delivered
+```
+
+`queue: { steering, followUp }` takes queued messages `'one-at-a-time'` (default) or `'all'` at once. Each delivered message is saved to the thread as a user message with `metadata.queued`, and a run that pauses returns the rest in `result.undelivered`. Queued messages pass the same `beforeRun` input checks as the input (PII `block`, prompt injection, input guardrails): a refused one is dropped and listed in `handle.refused` (`onRefusedMessage`), the run goes on.
+
+`multitaskStrategy` (per run, or for every run in the config) says what a run does when its thread has a run going on: `enqueue`, `reject` (`THREAD_BUSY`), `interrupt` (the running one fails with `RUN_INTERRUPTED`) or `rollback` (interrupt, then branch from where the interrupted run started). Unset, runs of one thread go on side by side as before.
+
+A tool pauses the run to ask a person with `context.interrupt({ reason, message, responseSchema, expiresAt })`. The run returns `status: 'paused'` with the question in `result.interrupts`, and `cog.resume(agent, threadId, { responses: { [interrupt.id]: answer } })` checks the answer against the schema (or fails with `INTERRUPT_ANSWER_INVALID`, `INTERRUPT_EXPIRED` after `expiresAt`) and runs the tool again, where `interrupt()` now returns the answer. Pending approvals are listed there too, as `kind: 'approval'`. `parseAnswer(text, schema)` and `answerFormat(schema)` from `@cogitator-ai/types` read a typed or spoken answer by the question's schema, `cog.pausedRun(threadId)` lists what a thread waits on and `cog.cancelPause(threadId, { userId, reason })` ends the pause with declined results.
+
+An aborted run keeps the text it streamed as an assistant message with `metadata.interrupted: true` (unless `saveInterruptedReply: false`), answers the tool calls it never started with `ABORTED_BEFORE_DISPATCH`, and never writes the late result of a tool that ignored the signal. History read from memory answers tool calls a crash left without a result with `OUTCOME_UNKNOWN` ("outcome unknown, verify before retrying"), without rewriting the log. See [Steering, Interrupts and Cancellation](https://cogitator.app/docs/core/run-control).
+
 ### PII Masking
 
 `security.pii` replaces emails, phones, card numbers (Luhn-checked), IBANs, SSNs, IP addresses, API keys and your own patterns with placeholders before every LLM request, so the provider never sees them:
@@ -979,6 +1000,7 @@ const result = await cog.run(agent, {
   brief: `Current date and time: ${new Date().toISOString()}`, // notes for this turn, sent with the input, not saved
   asOf: new Date('2026-03-09T18:00:00Z'), // the moment memory reads the turn at, now by default
   parallelToolCalls: false, // default: tool calls of one turn run one after another
+  multitaskStrategy: 'enqueue', // wait while another run of this thread goes on
   toolChoice: 'required', // force a tool call until the model makes one, then 'auto'
 
   onApproval: (request) => ({ approved: request.toolName !== 'delete_account' }),
@@ -997,7 +1019,7 @@ const result = await cog.run(agent, {
 
 `toolChoice` sets which tools the model may or must call. `'none'` keeps it from calling any on every turn. `'required'` or a named function (`{ type: 'function', function: { name: 'weather' } }`) forces a call on each turn until the model makes one, then the run goes back to `'auto'`, so the model can answer from the results instead of calling tools until `maxIterations`. A named function the agent does not have fails the run with `VALIDATION_ERROR`.
 
-`audio` inputs are transcribed with OpenAI `gpt-transcribe` (`llm.providers.openai.apiKey` or `OPENAI_API_KEY`) and prepended to `input` before guardrails and prompt-injection checks run. History loaded from memory is repaired before it is sent: tool results without their assistant call and tool calls without results are dropped, so a truncated window never produces an invalid provider request.
+`audio` inputs are transcribed with OpenAI `gpt-transcribe` (`llm.providers.openai.apiKey` or `OPENAI_API_KEY`) and prepended to `input` before guardrails and prompt-injection checks run. History loaded from memory is repaired before it is sent: a tool call a stopped run left without a result gets one that says its outcome is unknown, and tool results without their assistant call are dropped, so a truncated window never produces an invalid provider request.
 
 ### Run Result
 
@@ -1027,6 +1049,8 @@ interface RunResult {
   finalAgent?: string;
   status?: 'completed' | 'paused';
   pendingApprovals?: ToolApprovalRequest[];
+  interrupts?: RunInterrupt[]; // what a paused run waits on: approvals and questions of tools
+  undelivered?: QueuedRunMessage[]; // messages queued on a cog.start() handle it did not take
   checkpoint?: RunCheckpoint; // pass to cog.resume()
   toolCalls: ToolCall[];
   messages: Message[];

@@ -3,9 +3,13 @@ import { z } from 'zod';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import type {
   Agent,
   AgentConfig,
+  ResumeOptions,
+  RunCheckpoint,
+  RunInterrupt,
   RunOptions,
   RunResult,
   Tool,
@@ -78,6 +82,90 @@ function approvingHost() {
   const resume = vi.fn(async () => result({ output: 'refunded after resume' }));
   const host: AgentHost = { run, resume };
   return { host, run, resume, decisions };
+}
+
+const confirmQuestion: RunInterrupt = {
+  id: 'q1#0',
+  kind: 'input',
+  reason: 'confirm_plan',
+  message: 'Go ahead with the move?',
+  responseSchema: {
+    type: 'object',
+    properties: { ok: { type: 'boolean', title: 'OK' } },
+    required: ['ok'],
+  },
+  toolCallId: 'q1',
+  toolName: 'confirm_plan',
+};
+
+const checkpoint = { version: 1, runId: 'run_1', threadId: 't1' } as RunCheckpoint;
+
+/** A host whose runs pause on `questions`, one per run, and complete with the answers. */
+function askingHost(...questions: RunInterrupt[]) {
+  const waiting = [...questions];
+  const pausedOn = () =>
+    result({ status: 'paused', pendingApprovals: [], interrupts: [waiting[0]], checkpoint });
+  const run = vi.fn(async () => pausedOn());
+  const resume = vi.fn(
+    async (_agent: Agent, _target: RunCheckpoint | string, options?: ResumeOptions) => {
+      waiting.shift();
+      if (waiting.length > 0) return pausedOn();
+      return result({ output: `answered ${JSON.stringify(options?.responses)}` });
+    }
+  );
+  const host: AgentHost = { run, resume };
+  return { host, run, resume };
+}
+
+/** A host whose run pauses on `question` and whose resumes refuse the answers `refusals` times. */
+function refusingHost(
+  question: RunInterrupt,
+  refusals: number,
+  code = ErrorCode.INTERRUPT_ANSWER_INVALID
+) {
+  let left = refusals;
+  const run = vi.fn(async () =>
+    result({ status: 'paused', pendingApprovals: [], interrupts: [question], checkpoint })
+  );
+  const resume = vi.fn(
+    async (_agent: Agent, _target: RunCheckpoint | string, options?: ResumeOptions) => {
+      if (left > 0) {
+        left--;
+        throw new CogitatorError({
+          message: `The answer to interrupt "${question.id}" does not match its schema: too short`,
+          code,
+          details: { interruptId: question.id },
+        });
+      }
+      return result({ output: `answered ${JSON.stringify(options?.responses)}` });
+    }
+  );
+  const host: AgentHost = { run, resume };
+  return { host, run, resume };
+}
+
+async function elicitingClient(
+  url: string,
+  answers: Array<Record<string, string | number | boolean | string[]> | 'decline'>
+) {
+  const client = new Client(
+    { name: 'desktop', version: '1.0.0' },
+    { capabilities: { elicitation: {} } }
+  );
+  const asked: Array<{ message: string; requestedSchema: unknown }> = [];
+  client.setRequestHandler(ElicitRequestSchema, async (request) => {
+    asked.push({
+      message: request.params.message,
+      requestedSchema: 'requestedSchema' in request.params ? request.params.requestedSchema : null,
+    });
+    const next = answers.shift();
+    return next === undefined || next === 'decline'
+      ? { action: 'decline' }
+      : { action: 'accept', content: next };
+  });
+  await client.connect(new StreamableHTTPClientTransport(new URL(url)));
+  cleanups.push(() => client.close());
+  return { client, asked };
 }
 
 let server: MCPServer | undefined;
@@ -245,5 +333,230 @@ describe('serveAgents', () => {
       expect.objectContaining({ defaultDecision: { approved: false, reason: 'too much' } })
     );
     expect(done).toMatchObject({ status: 'completed', output: 'refunded after resume' });
+  });
+
+  it('asks the questions of its tools through elicitation and resumes with the answers', async () => {
+    const pick: RunInterrupt = {
+      id: 'q2#0',
+      kind: 'input',
+      reason: 'pick_day',
+      message: 'Which day?',
+      responseSchema: { type: 'string', enum: ['mon', 'tue'] },
+    };
+    const { host, resume } = askingHost(confirmQuestion, pick);
+    const url = await serveHttp(host, [fakeAgent('planner')]);
+    const { client, asked } = await elicitingClient(url, [{ ok: true }, { answer: 'tue' }]);
+
+    const reply = await client.callTool({ name: 'planner', arguments: { task: 'plan the move' } });
+
+    expect(asked).toEqual([
+      {
+        message: 'Go ahead with the move?',
+        requestedSchema: {
+          type: 'object',
+          properties: { ok: { type: 'boolean', title: 'OK' } },
+          required: ['ok'],
+        },
+      },
+      {
+        message: 'Which day?',
+        requestedSchema: {
+          type: 'object',
+          properties: { answer: { type: 'string', enum: ['mon', 'tue'] } },
+          required: ['answer'],
+        },
+      },
+    ]);
+    expect(resume.mock.calls.map((call) => [call[1], call[2]?.responses])).toEqual([
+      [checkpoint, { 'q1#0': { ok: true } }],
+      [checkpoint, { 'q2#0': 'tue' }],
+    ]);
+    expect(reply.isError).toBeFalsy();
+    expect(JSON.stringify(reply.content)).toContain('answered');
+  });
+
+  it('fails with the question when the client has no elicitation, never resuming', async () => {
+    const { host, resume } = askingHost(confirmQuestion);
+    const url = await serveHttp(host, [fakeAgent('planner')]);
+    const client = await connectClient(url);
+
+    await expect(client.callTool('planner', { task: 'plan the move' })).rejects.toThrow(
+      'paused to ask confirm_plan ("Go ahead with the move?"), but this MCP client cannot answer elicitation requests'
+    );
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it('fails with the question when the user declines to answer it', async () => {
+    const { host, resume } = askingHost(confirmQuestion);
+    const url = await serveHttp(host, [fakeAgent('planner')]);
+    const { client } = await elicitingClient(url, ['decline']);
+
+    const reply = await client.callTool({ name: 'planner', arguments: { task: 'plan the move' } });
+
+    expect(reply.isError).toBe(true);
+    expect(JSON.stringify(reply.content)).toContain('the user declined to answer');
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it('fails with the question when its schema is no flat form', async () => {
+    const nested: RunInterrupt = {
+      ...confirmQuestion,
+      responseSchema: {
+        type: 'object',
+        properties: { stops: { type: 'array', items: { type: 'string' } } },
+      },
+    };
+    const { host } = askingHost(nested);
+    const url = await serveHttp(host, [fakeAgent('planner')]);
+    const { client, asked } = await elicitingClient(url, [{ stops: 'a' }]);
+
+    const reply = await client.callTool({ name: 'planner', arguments: { task: 'plan the move' } });
+
+    expect(reply.isError).toBe(true);
+    expect(JSON.stringify(reply.content)).toContain('not a flat form');
+    expect(asked).toEqual([]);
+  });
+
+  it('carries the constraints of a question schema into the elicitation form', async () => {
+    const booking: RunInterrupt = {
+      ...confirmQuestion,
+      id: 'q3#0',
+      message: 'Book it?',
+      responseSchema: {
+        type: 'object',
+        properties: {
+          email: { type: 'string', format: 'email', minLength: 3, maxLength: 80, title: 'Email' },
+          host: { type: 'string', format: 'hostname', pattern: '^[a-z.]+$' },
+          seats: { type: 'integer', minimum: 1, maximum: 6, default: 2, description: 'Seats' },
+          size: {
+            type: 'string',
+            oneOf: [
+              { const: 's', title: 'Small' },
+              { const: 'l', title: 'Large' },
+            ],
+          },
+          day: { anyOf: [{ const: 'mon' }, { const: 'tue' }] },
+          extras: {
+            type: 'array',
+            items: { type: 'string', enum: ['wifi', 'meal'] },
+            minItems: 1,
+            maxItems: 2,
+          },
+        },
+        required: ['email', 'seats'],
+      },
+    };
+    const { host } = askingHost(booking);
+    const url = await serveHttp(host, [fakeAgent('planner')]);
+    const { client, asked } = await elicitingClient(url, [
+      { email: 'a@b.co', seats: 2, extras: ['wifi'] },
+    ]);
+
+    const reply = await client.callTool({ name: 'planner', arguments: { task: 'book' } });
+
+    expect(reply.isError).toBeFalsy();
+    expect(asked[0].requestedSchema).toEqual({
+      type: 'object',
+      properties: {
+        email: { type: 'string', title: 'Email', minLength: 3, maxLength: 80, format: 'email' },
+        host: { type: 'string' },
+        seats: { type: 'integer', description: 'Seats', minimum: 1, maximum: 6, default: 2 },
+        size: {
+          type: 'string',
+          oneOf: [
+            { const: 's', title: 'Small' },
+            { const: 'l', title: 'Large' },
+          ],
+        },
+        day: { type: 'string', enum: ['mon', 'tue'] },
+        extras: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 2,
+          items: { type: 'string', enum: ['wifi', 'meal'] },
+        },
+      },
+      required: ['email', 'seats'],
+    });
+  });
+
+  it('asks again with why when the run refuses an answer, then resumes with the new one', async () => {
+    const { host, resume } = refusingHost(confirmQuestion, 1);
+    const url = await serveHttp(host, [fakeAgent('planner')]);
+    const { client, asked } = await elicitingClient(url, [{ ok: false }, { ok: true }]);
+
+    const reply = await client.callTool({ name: 'planner', arguments: { task: 'plan the move' } });
+
+    expect(reply.isError).toBeFalsy();
+    expect(asked.map((entry) => entry.message)).toEqual([
+      'Go ahead with the move?',
+      'That answer was refused: The answer to interrupt "q1#0" does not match its schema: too short\n\nGo ahead with the move?',
+    ]);
+    expect(resume.mock.calls.map((call) => call[2]?.responses)).toEqual([
+      { 'q1#0': { ok: false } },
+      { 'q1#0': { ok: true } },
+    ]);
+  });
+
+  it('fails naming the question once its answers were refused three times', async () => {
+    const { host, resume } = refusingHost(confirmQuestion, 10);
+    const url = await serveHttp(host, [fakeAgent('planner')]);
+    const { client, asked } = await elicitingClient(url, [
+      { ok: false },
+      { ok: false },
+      { ok: false },
+      { ok: true },
+    ]);
+
+    const reply = await client.callTool({ name: 'planner', arguments: { task: 'plan the move' } });
+
+    expect(reply.isError).toBe(true);
+    expect(JSON.stringify(reply.content)).toContain(
+      'asked confirm_plan (\\"Go ahead with the move?\\") 3 times and refused every answer'
+    );
+    expect(asked).toHaveLength(3);
+    expect(resume).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not ask again for a resume error other than a refused answer', async () => {
+    const { host, resume } = refusingHost(confirmQuestion, 1, ErrorCode.VALIDATION_ERROR);
+    const url = await serveHttp(host, [fakeAgent('planner')]);
+    const { client, asked } = await elicitingClient(url, [{ ok: true }, { ok: true }]);
+
+    const reply = await client.callTool({ name: 'planner', arguments: { task: 'plan the move' } });
+
+    expect(reply.isError).toBe(true);
+    expect(asked).toHaveLength(1);
+    expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts an elicitation nobody answers within elicitationTimeoutMs as dismissed', async () => {
+    const { host, resume } = askingHost(confirmQuestion);
+    const url = await serveHttp(host, [fakeAgent('planner')], { elicitationTimeoutMs: 1 });
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const client = new Client(
+      { name: 'desktop', version: '1.0.0' },
+      { capabilities: { elicitation: {} } }
+    );
+    client.setRequestHandler(ElicitRequestSchema, async () => {
+      await held;
+      return { action: 'decline' };
+    });
+    await client.connect(new StreamableHTTPClientTransport(new URL(url)));
+    cleanups.push(async () => {
+      release();
+      await client.close();
+    });
+
+    const reply = await client.callTool({ name: 'planner', arguments: { task: 'plan the move' } });
+
+    expect(reply.isError).toBe(true);
+    expect(JSON.stringify(reply.content)).toContain(
+      'the user dismissed the question without answering'
+    );
+    expect(resume).not.toHaveBeenCalled();
   });
 });

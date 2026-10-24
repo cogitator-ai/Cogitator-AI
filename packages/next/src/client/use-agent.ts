@@ -5,6 +5,7 @@ import type {
   AgentInput,
   AgentResponse,
   PendingApproval,
+  PendingInterrupt,
   ResumeDecisions,
   UseAgentOptions,
   UseAgentReturn,
@@ -13,6 +14,7 @@ import { withRetry } from './retry.js';
 import { toHttpError } from './http-error.js';
 
 const NO_APPROVALS: PendingApproval[] = [];
+const NO_INTERRUPTS: PendingInterrupt[] = [];
 
 export function useCogitatorAgent(options: UseAgentOptions): UseAgentReturn {
   const { api, resumeApi, headers, onError, onSuccess, retry } = options;
@@ -114,6 +116,7 @@ export function useCogitatorAgent(options: UseAgentOptions): UseAgentReturn {
     result,
     reasoning: result?.reasoning,
     pendingApprovals: result?.pendingApprovals ?? NO_APPROVALS,
+    pendingInterrupts: result?.interrupts ?? NO_INTERRUPTS,
     resume,
     isLoading,
     error,

@@ -31,6 +31,19 @@ describe('HonoStreamWriter', () => {
     expect(parsed).toEqual({ type: 'start', messageId: 'msg-1' });
   });
 
+  it('interruptRequired() writes an interrupt-required event', async () => {
+    const { stream, events } = mockStream();
+    const writer = new HonoStreamWriter(stream);
+    await writer.interruptRequired('thread-1', [
+      { id: 'int_1', kind: 'input', reason: 'pick_order', message: 'Which order?' },
+    ]);
+    expect(parseEvent(events, 0)).toEqual({
+      type: 'interrupt-required',
+      threadId: 'thread-1',
+      interrupts: [{ id: 'int_1', kind: 'input', reason: 'pick_order', message: 'Which order?' }],
+    });
+  });
+
   it('textDelta() skips empty strings', async () => {
     const { stream, events } = mockStream();
     const writer = new HonoStreamWriter(stream);

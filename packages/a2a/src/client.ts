@@ -24,6 +24,7 @@ import {
   toolApprovalResponsePart,
   type ToolApprovalResponse,
 } from './approvals.js';
+import { interruptResponsePart, readInterruptRequest, type TaskQuestion } from './questions.js';
 import { artifactText, messageText, textPart, toMessage } from './protocol.js';
 import { trimTrailingSlashes } from './url.js';
 
@@ -46,6 +47,11 @@ export interface A2AToolResult {
    * answer with `answerApprovals` (or a `toolApprovalResponsePart` in a message that continues `taskId`)
    */
   pendingApprovals?: ToolApprovalRequest[];
+  /**
+   * The questions the remote agent's tools asked, when the task is `input-required` for them:
+   * answer with `answerQuestions` (or an `interruptResponsePart` in a message that continues `taskId`)
+   */
+  pendingQuestions?: TaskQuestion[];
 }
 
 export interface A2ARequestOptions {
@@ -243,6 +249,29 @@ export class A2AClient {
     );
   }
 
+  /**
+   * Answer the questions a task waits on in `input-required` (see `readInterruptRequest`), by
+   * question id: the remote run goes on with these answers.
+   *
+   * @example
+   * ```ts
+   * const questions = readInterruptRequest(task);
+   * if (questions) await client.answerQuestions(task.id, { [questions[0].id]: { ok: true } });
+   * ```
+   */
+  async answerQuestions(
+    taskId: string,
+    responses: Record<string, unknown>,
+    config?: MessageSendConfiguration,
+    options?: A2ARequestOptions
+  ): Promise<SendMessageResult> {
+    return this.sendMessage(
+      { role: 'user', parts: [interruptResponsePart(responses)], taskId },
+      config,
+      options
+    );
+  }
+
   /** The caller's tasks on a Cogitator server (the `tasks/list` extension method). */
   async listTasks(filter?: Omit<TaskFilter, 'visibleTo'>): Promise<A2ATask[]> {
     const result = (await this.rpc('tasks/list', filter ?? {})) as { tasks: A2ATask[] };
@@ -286,17 +315,21 @@ export class A2AClient {
 
           if (state === 'input-required' || state === 'auth-required') {
             const pendingApprovals = readToolApprovalRequest(task);
+            const pendingQuestions = readInterruptRequest(task);
             return {
               output,
               success: false,
-              error: pendingApprovals
+              error: pendingApprovals?.length
                 ? `Remote agent waits for approval of ${pendingApprovals.map((p) => p.toolName).join(', ')} before it continues this task`
-                : state === 'auth-required'
-                  ? 'Remote agent requires authentication to continue this task'
-                  : 'Remote agent requires more input to continue this task',
+                : pendingQuestions
+                  ? `Remote agent waits for answers to ${pendingQuestions.map((q) => `${q.reason} ("${q.message}")`).join(', ')} before it continues this task`
+                  : state === 'auth-required'
+                    ? 'Remote agent requires authentication to continue this task'
+                    : 'Remote agent requires more input to continue this task',
               taskId: task.id,
               state,
-              ...(pendingApprovals && { pendingApprovals }),
+              ...(pendingApprovals?.length && { pendingApprovals }),
+              ...(pendingQuestions && { pendingQuestions }),
             };
           }
 

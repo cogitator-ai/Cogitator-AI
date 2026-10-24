@@ -235,6 +235,10 @@ await fetch('/api/agents/support/resume', {
 
 The body is `{ threadId, decisions?, defaultDecision? }`, where a decision is `{ approved: boolean, reason?: string }`; malformed bodies get `400 INVALID_INPUT`. The response has the same shape as `/run` and may pause again for calls left without a decision. The run resumes as the authenticated `userId`: a thread with no paused run answers `409 RUN_NOT_PAUSED`, and another user's paused run `403 THREAD_ACCESS_DENIED`. Over WebSocket, send `{ type: 'resume', id, payload: { name, threadId, decisions?, defaultDecision? } }`; a paused run's `complete` event carries `status` and `pendingApprovals`.
 
+A tool can also ask the user a question with `context.interrupt()`, which pauses the run the same way. The answer then carries `interrupts` (`{ id, kind, reason, message, responseSchema?, expiresAt?, toolCallId?, toolName? }`), the stream sends `{ type: 'interrupt-required', threadId, interrupts }` instead of `approval-required`, and the client resumes with the answers by interrupt id: `{ threadId, responses: { [id]: answer } }`, over HTTP and WebSocket alike (`payload: { name, threadId, responses }`). An answer that does not match its `responseSchema` is refused with `400 INTERRUPT_ANSWER_INVALID`, and one sent after `expiresAt` with `410 INTERRUPT_EXPIRED` (`/resume/stream` sends both as an `error` event with that `code`).
+
+A run or stream body may also name a `multitaskStrategy` for a thread that already has a run going on in this Cogitator: `enqueue` waits for that run, `reject` refuses the new run with `THREAD_BUSY`, `interrupt` stops the running one (it fails with `RUN_INTERRUPTED`) and `rollback` stops it and branches from where it started. `POST /agents/:name/run` answers both codes with `409`. A stream has already answered `200` and sent `start` when its run meets the other runs of the thread, so it gets them as an `error` event instead (`{ type: 'error', message, code: 'THREAD_BUSY' }`), and a WebSocket `run` as an `error` frame. Without one the Cogitator's `multitaskStrategy` applies, and any other value is refused with `400 INVALID_INPUT`. The WebSocket `run` payload takes it too. Swarm routes have no thread queue and ignore `multitaskStrategy`.
+
 `POST /agents/:name/resume/stream` takes the same body and streams the rest of the run like `/stream`. `start` and `finish` name the resumed thread, and a body, agent or thread refused before the stream opens is answered as JSON, just like `/resume`. A thread with no paused run ends the open stream with an `error` event, `code: 'RUN_NOT_PAUSED'`, and disconnecting aborts the resume.
 
 ## SSE Streaming
@@ -268,24 +272,25 @@ while (true) {
 
 ### Stream Events
 
-| Event Type          | Description                                 |
-| ------------------- | ------------------------------------------- |
-| `start`             | Stream started, includes message ID         |
-| `text-start`        | Text generation started                     |
-| `text-delta`        | Text chunk received                         |
-| `text-end`          | Text generation finished                    |
-| `reasoning-start`   | Reasoning summary started                   |
-| `reasoning-delta`   | Reasoning summary chunk received            |
-| `reasoning-end`     | Reasoning summary finished                  |
-| `tool-call-start`   | Tool call started (`id` = model call id)    |
-| `tool-call-delta`   | Tool call arguments (JSON text)             |
-| `tool-call-end`     | Tool call finished                          |
-| `tool-result`       | Tool result (`toolCallId` = call id)        |
-| `approval-required` | Run paused: `{ threadId, approvals }`       |
-| `workflow`          | Workflow event (node started/completed)     |
-| `swarm`             | Swarm event (agent started/completed)       |
-| `error`             | Error occurred                              |
-| `finish`            | Stream finished, with the `usage` of `/run` |
+| Event Type           | Description                                          |
+| -------------------- | ---------------------------------------------------- |
+| `start`              | Stream started, includes message ID                  |
+| `text-start`         | Text generation started                              |
+| `text-delta`         | Text chunk received                                  |
+| `text-end`           | Text generation finished                             |
+| `reasoning-start`    | Reasoning summary started                            |
+| `reasoning-delta`    | Reasoning summary chunk received                     |
+| `reasoning-end`      | Reasoning summary finished                           |
+| `tool-call-start`    | Tool call started (`id` = model call id)             |
+| `tool-call-delta`    | Tool call arguments (JSON text)                      |
+| `tool-call-end`      | Tool call finished                                   |
+| `tool-result`        | Tool result (`toolCallId` = call id)                 |
+| `approval-required`  | Run paused: `{ threadId, approvals }`                |
+| `interrupt-required` | Run paused for questions: `{ threadId, interrupts }` |
+| `workflow`           | Workflow event (node started/completed)              |
+| `swarm`              | Swarm event (agent started/completed)                |
+| `error`              | Error occurred                                       |
+| `finish`             | Stream finished, with the `usage` of `/run`          |
 
 While an SSE stream is open it writes a `: keep-alive` comment every `sseHeartbeatMs` (5 s by default, `0` turns it off), which SSE clients skip, so a proxy or load balancer does not close a stream that waits on a slow tool or model (nginx closes a connection silent for 60 s).
 

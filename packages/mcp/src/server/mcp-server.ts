@@ -12,7 +12,11 @@ import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mc
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { Cogitator, withParsedArguments } from '@cogitator-ai/core';
 import type { Tool, ToolInvoker } from '@cogitator-ai/types';
-import { ElicitResultSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  ElicitResultSchema,
+  ErrorCode as McpErrorCode,
+  McpError,
+} from '@modelcontextprotocol/sdk/types.js';
 import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
 import type {
@@ -84,6 +88,15 @@ function errorMessageOf(error: unknown): string {
 }
 
 const PERMISSIVE_INPUT_SCHEMA = z.looseObject({});
+
+/** How long an elicitation waits for the user by default: 10 minutes. */
+const DEFAULT_ELICITATION_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** The longest delay a Node timer keeps, a longer one fires at once. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/** The JSON-RPC error code of a request the MCP SDK gave up waiting on. */
+const REQUEST_TIMEOUT_CODE: number = McpErrorCode.RequestTimeout;
 
 /**
  * MCP Server for exposing Cogitator tools
@@ -575,27 +588,41 @@ export class MCPServer {
 
   /**
    * Ask the client's user through MCP elicitation, tied to the tool call so it
-   * works on stateless HTTP too. `undefined` when the client cannot answer.
+   * works on stateless HTTP too, for as long as `elicitationTimeoutMs` allows (an
+   * answer that does not come in time counts as dismissed). `undefined` when the
+   * client cannot answer.
    */
   private async elicit(
     extra: ToolHandlerExtra,
     request: MCPElicitRequest
   ): Promise<MCPElicitResult | undefined> {
+    const timeout = this.elicitationTimeout();
     try {
       const result = await extra.sendRequest(
         {
           method: 'elicitation/create',
           params: { mode: 'form', message: request.message, requestedSchema: request.schema },
         },
-        ElicitResultSchema
+        ElicitResultSchema,
+        { timeout, signal: extra.signal }
       );
       return result.action === 'accept'
         ? { action: 'accept', content: result.content ?? {} }
         : { action: result.action };
     } catch (error) {
+      if (error instanceof McpError && error.code === REQUEST_TIMEOUT_CODE) {
+        this.log('info', `Nobody answered the elicitation within ${timeout} ms`);
+        return { action: 'cancel' };
+      }
       this.log('info', `Elicitation unavailable: ${errorMessageOf(error)}`);
       return undefined;
     }
+  }
+
+  /** The ms an elicitation waits: `elicitationTimeoutMs`, `0` as the longest timer Node keeps. */
+  private elicitationTimeout(): number {
+    const configured = this.config.elicitationTimeoutMs ?? DEFAULT_ELICITATION_TIMEOUT_MS;
+    return configured > 0 ? Math.min(configured, MAX_TIMER_DELAY_MS) : MAX_TIMER_DELAY_MS;
   }
 
   /**

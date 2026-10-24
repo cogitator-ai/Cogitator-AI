@@ -13,7 +13,11 @@ import type {
   HookRegistry,
   StreamConfig,
   ImageInput,
+  MemoryEntry,
   Message,
+  MultitaskStrategy,
+  QueueMode,
+  RunInterrupt,
   RunOptions,
   RunResult,
   Session,
@@ -21,9 +25,9 @@ import type {
   ToolApprovalDecision,
   ToolApprovalRequest,
 } from '@cogitator-ai/types';
-import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
+import { CogitatorError, ErrorCode, answerFormat, parseAnswer } from '@cogitator-ai/types';
 import type { Agent, Cogitator } from '@cogitator-ai/core';
-import { parseModel } from '@cogitator-ai/core';
+import { parseModel, pendingQuestions } from '@cogitator-ai/core';
 import { SessionManager, CompactionService } from '@cogitator-ai/memory';
 import type { SummarizeFn } from '@cogitator-ai/memory';
 import { StreamBuffer } from './stream-buffer';
@@ -32,7 +36,7 @@ import type { MediaProcessor } from './media/media-processor';
 import { StatusReactionTracker } from './status-reactions';
 import { InboundDebouncer } from './inbound-debounce';
 import { formatEnvelope } from './envelope';
-import { MessageQueue } from './message-queue';
+import { MessageQueue, type MessageProcessing } from './message-queue';
 import {
   CONVERSATIONS_KEY,
   defaultThreadKey,
@@ -45,7 +49,9 @@ import {
   DEFAULT_APPROVE_WORDS,
   DEFAULT_DENY_WORDS,
   DEFAULT_NOT_ALLOWED_MESSAGE,
+  DEFAULT_CANCEL_WORDS,
   DEFAULT_EXPIRED_MESSAGE,
+  DEFAULT_MAX_ANSWER_ATTEMPTS,
   DEFAULT_STOPPING_MESSAGE,
   APPROVE_ACTION,
   DENY_ACTION,
@@ -105,6 +111,12 @@ type GatewaySessionManager = ISessionManager & {
 interface PausedThread {
   userId: string;
   approvals: readonly ToolApprovalRequest[];
+  /** Questions the run's tools asked (`context.interrupt()`), answered by the user's next message */
+  questions?: readonly RunInterrupt[];
+  /** Answers given to the first question that did not fit it */
+  failedAnswers?: number;
+  /** The entry the paused run's input went after, where a rollback of its resume branches from */
+  branchFrom?: string | null;
 }
 
 /** Markdown as the channel takes it: as written when it renders Markdown itself. */
@@ -126,6 +138,27 @@ async function settleMicrotasks(): Promise<void> {
 }
 
 /** The key of a message whose answer the gateway tracks: its channel, chat and id. */
+/**
+ * The run strategy each queue mode stands for, passed with every run, so the runtime's own
+ * `multitaskStrategy` never contradicts the queue. `parallel` has none: the runtime's applies
+ */
+const QUEUE_STRATEGIES: Record<QueueMode, MultitaskStrategy | undefined> = {
+  parallel: undefined,
+  sequential: 'enqueue',
+  enqueue: 'enqueue',
+  collect: 'enqueue',
+  reject: 'reject',
+  interrupt: 'interrupt',
+  rollback: 'rollback',
+};
+
+function isThreadBusy(error: unknown): boolean {
+  return CogitatorError.isCogitatorError(error) && error.code === ErrorCode.THREAD_BUSY;
+}
+
+/** How a message the gateway took ended, see `route` */
+type MessageOutcome = 'answered' | 'unanswered' | 'refused';
+
 function answerKey(msg: ChannelMessage): string {
   return `${msg.channelType}\u0000${msg.channelId}\u0000${msg.id}`;
 }
@@ -206,7 +239,10 @@ function toError(error: unknown): Error {
 function isResumeRejection(error: unknown): boolean {
   return (
     CogitatorError.isCogitatorError(error) &&
-    (error.code === ErrorCode.RUN_NOT_PAUSED || error.code === ErrorCode.THREAD_ACCESS_DENIED)
+    (error.code === ErrorCode.RUN_NOT_PAUSED ||
+      error.code === ErrorCode.THREAD_ACCESS_DENIED ||
+      error.code === ErrorCode.INTERRUPT_ANSWER_INVALID ||
+      error.code === ErrorCode.INTERRUPT_EXPIRED)
   );
 }
 
@@ -228,8 +264,24 @@ export class Gateway {
   private readonly pausedThreads = new Map<string, PausedThread>();
   /** The stop of every run in progress */
   private readonly runs = new Set<AbortController>();
+  /**
+   * Messages whose run the runtime refused with `THREAD_BUSY` (a run of the thread going on
+   * outside the gateway, `multitaskStrategy: 'reject'`), by `answerKey`, until `route` reads it
+   */
+  private readonly busyKeys = new Set<string>();
   /** The stop of each run, by the signal the run was given */
   private readonly stops = new WeakMap<AbortSignal, AbortController>();
+  /**
+   * In `rollback` mode, where each run goes in its thread: the queue's signal of its processing,
+   * whose start a later run may roll back to, and the entry to branch from, by the run's signal
+   */
+  private readonly runPlaces = new WeakMap<
+    AbortSignal,
+    { origin?: AbortSignal; branchFrom?: string | null }
+  >();
+  /** In `rollback` mode, the entry each run's input went after, by the queue's signal of it */
+  private readonly runStarts = new WeakMap<AbortSignal, string | null>();
+  private readonly queueMode: QueueMode;
   /** The stop of each run streaming into a draft with a stop button, by channel, chat and draft */
   private readonly stoppableDrafts = new Map<string, AbortController>();
   /** Approval prompts with buttons, by channel, chat and message: whose paused run each answers */
@@ -238,7 +290,7 @@ export class Gateway {
   private readonly threads = new Map<string, Omit<GatewaySessionInfo, 'threadId' | 'active'>>();
   private readonly inFlight = new Map<string, number>();
   /** Messages taken and not answered yet, for {@link idle} */
-  private readonly pending = new Set<Promise<boolean>>();
+  private readonly pending = new Set<Promise<MessageOutcome>>();
   /** The stop in progress, which a second {@link stop} call returns */
   private stopping: Promise<void> | null = null;
   /** Calls of `channel.redeliver` in progress */
@@ -248,7 +300,7 @@ export class Gateway {
    * it settles. Those still here once `stop()` gave up on the runs are handed back.
    */
   private readonly unanswered = new Map<
-    Promise<boolean>,
+    Promise<MessageOutcome>,
     { channel: Channel; handled: ChannelMessage; messages: ChannelMessage[] }
   >();
   /**
@@ -278,10 +330,13 @@ export class Gateway {
       config.sessionManager ?? (config.memory ? new SessionManager(config.memory) : null);
 
     const queueMode = config.queueMode ?? 'sequential';
+    this.queueMode = queueMode;
     this.messageQueue =
       queueMode === 'parallel'
         ? null
-        : new MessageQueue(queueMode, (msg, signal) => this.processMessage(msg, signal));
+        : new MessageQueue(queueMode, (msg, signal, processing) =>
+            this.processMessage(msg, signal, processing)
+          );
 
     this.debouncer = config.debounce?.enabled
       ? new InboundDebouncer(config.debounce, async (merged, originals) => {
@@ -653,8 +708,13 @@ export class Gateway {
     const answered = this.dispatch(msg);
     if (channel?.redeliver && !untilAnswered) this.watchUnanswered(channel, msg, [msg], answered);
     if (untilAnswered || !this.messageQueue) {
-      const done = await answered;
-      if (!done && untilAnswered) {
+      const outcome = await answered;
+      if (outcome === 'refused' && untilAnswered) {
+        throw new Error(
+          'The message was refused: its thread was busy with another run (THREAD_BUSY)'
+        );
+      }
+      if (outcome !== 'answered' && untilAnswered) {
         throw new Error('The message was not answered: its run failed or was aborted');
       }
       return;
@@ -681,20 +741,20 @@ export class Gateway {
     channel: Channel,
     handled: ChannelMessage,
     messages: ChannelMessage[],
-    answered: Promise<boolean>
+    answered: Promise<MessageOutcome>
   ): void {
     const entry = { channel, handled, messages };
     this.unanswered.set(answered, entry);
-    void answered.then((done) => {
+    void answered.then((outcome) => {
       if (this.unanswered.get(answered) !== entry) return;
       this.unanswered.delete(answered);
-      if (done || this.running) return;
+      if (outcome !== 'unanswered' || this.running) return;
       for (const msg of messages) void this.redeliver(channel, msg);
     });
   }
 
   /** Puts a message through the queue of its thread, resolving once it is done with */
-  private dispatch(msg: ChannelMessage): Promise<boolean> {
+  private dispatch(msg: ChannelMessage): Promise<MessageOutcome> {
     const answered = this.route(msg);
     this.pending.add(answered);
     const forget = () => {
@@ -704,11 +764,30 @@ export class Gateway {
     return answered;
   }
 
-  /** Resolves `true` once the message is handled, `false` when it failed or was dropped */
-  private async route(incoming: ChannelMessage): Promise<boolean> {
+  /**
+   * How the message ended: `answered`, `unanswered` when its run failed or it was dropped, or
+   * `refused` when `queueMode: 'reject'` turned it away while its thread answered another (the
+   * `message:rejected` hook hears of it, and a channel never gets it back to deliver again)
+   */
+  private async route(incoming: ChannelMessage): Promise<MessageOutcome> {
     const msg = await this.locateScheduled(incoming);
-    if (this.messageQueue) return this.messageQueue.push(msg, this.getThreadId(msg));
-    return this.processMessage(msg);
+    const queue = this.messageQueue;
+    const threadId = this.getThreadId(msg);
+    if (queue?.refuses(threadId)) {
+      this.emitRejected(msg, threadId);
+      return 'refused';
+    }
+    const done = queue ? await queue.push(msg, threadId) : await this.processMessage(msg);
+    const busy = this.busyKeys.delete(answerKey(msg));
+    if (done) return 'answered';
+    return busy ? 'refused' : 'unanswered';
+  }
+
+  /** Tells the `message:rejected` hook that `msg` was refused, its thread busy */
+  private emitRejected(msg: ChannelMessage, threadId: string): void {
+    void Promise.resolve(
+      this.hooks?.emit('message:rejected', { msg, threadId, reason: 'busy' })
+    ).catch((error: unknown) => this.config.onError?.(toError(error), msg));
   }
 
   /**
@@ -772,7 +851,11 @@ export class Gateway {
    * Handles one message, `false` when its run failed or was aborted. A message for a channel
    * the gateway does not run counts as handled: it never can be.
    */
-  private async processMessage(msg: ChannelMessage, signal?: AbortSignal): Promise<boolean> {
+  private async processMessage(
+    msg: ChannelMessage,
+    signal?: AbortSignal,
+    processing: MessageProcessing = {}
+  ): Promise<boolean> {
     const channel = this.channels.find((ch) => ch.type === msg.channelType);
     if (!channel) return true;
 
@@ -783,6 +866,15 @@ export class Gateway {
     const runSignal = signal ? AbortSignal.any([signal, stop.signal]) : stop.signal;
     this.stops.set(runSignal, stop);
     this.runs.add(stop);
+    if (this.queueMode === 'rollback') {
+      const branchFrom = processing.rollbackOf
+        ? this.runStarts.get(processing.rollbackOf)
+        : undefined;
+      this.runPlaces.set(runSignal, {
+        ...(signal && { origin: signal }),
+        ...(branchFrom !== undefined && { branchFrom }),
+      });
+    }
 
     const key = answerKey(msg);
     try {
@@ -790,6 +882,11 @@ export class Gateway {
       if (this.answeredKeys.has(key)) return true;
       return signal?.aborted !== true && stop.signal.reason !== GATEWAY_STOPPED;
     } catch (error) {
+      if (isThreadBusy(error) && !this.answeredKeys.has(key)) {
+        if (this.queueMode !== 'collect') this.busyKeys.add(key);
+        this.emitRejected(msg, threadId);
+        return false;
+      }
       if (!runSignal.aborted) this.config.onError?.(toError(error), msg);
       return this.answeredKeys.has(key);
     } finally {
@@ -860,7 +957,15 @@ export class Gateway {
       });
     }
 
-    const decision = this.readApprovalReply(msg, threadId, known !== undefined);
+    if (
+      known === undefined &&
+      !this.pausedThreads.has(threadId) &&
+      typeof this.config.cogitator.pausedRun === 'function'
+    ) {
+      await this.recoverQuestion(threadId);
+    }
+    const question = this.waitingQuestion(msg, threadId);
+    const decision = question ? null : this.readApprovalReply(msg, threadId, known !== undefined);
 
     if (!decision && this.config.memory && this.config.session?.compaction) {
       try {
@@ -888,9 +993,10 @@ export class Gateway {
       await typing().catch(() => {});
       tracker?.setPhase('thinking');
 
-      const resumed =
-        decision !== null &&
-        (await this.resumeWithReply(agent, msg, channel, threadId, decision, tracker, signal));
+      const resumed = question
+        ? await this.resumeWithAnswer(agent, msg, channel, threadId, question, tracker, signal)
+        : decision !== null &&
+          (await this.resumeWithReply(agent, msg, channel, threadId, decision, tracker, signal));
       if (!resumed) {
         await this.runMessage(agent, msg, channel, threadId, tracker, signal);
       }
@@ -920,6 +1026,129 @@ export class Gateway {
     return parseApprovalReply(msg.text, this.approvalWords);
   }
 
+  /**
+   * The question a paused run of this thread waits on that `msg` answers: the first one, when
+   * the user it was asked asks back in the thread with a plain message
+   */
+  private waitingQuestion(msg: ChannelMessage, threadId: string): RunInterrupt | undefined {
+    if (isScheduled(msg) || msg.attachments?.length) return undefined;
+    const paused = this.pausedThreads.get(threadId);
+    return paused?.userId === msg.userId ? paused.questions?.[0] : undefined;
+  }
+
+  /**
+   * Picks up a question a paused run of `threadId` waits on from the runtime's checkpoint store,
+   * for a thread the gateway has not seen since it started: the question then outlives a restart,
+   * as an approval does
+   */
+  private async recoverQuestion(threadId: string): Promise<void> {
+    let paused: Awaited<ReturnType<Cogitator['pausedRun']>>;
+    try {
+      paused = await this.config.cogitator.pausedRun(threadId);
+    } catch {
+      return;
+    }
+    const questions = paused?.interrupts.filter((entry) => entry.kind !== 'approval') ?? [];
+    const userId = paused?.userId;
+    if (userId === undefined || questions.length === 0) return;
+    this.pausedThreads.set(threadId, { userId, approvals: [], questions });
+  }
+
+  /**
+   * Answers `question` with `msg`: a cancel word cancels it, a text that does not fit it is told
+   * to the user with what an answer looks like (after `maxAnswerAttempts` the question is
+   * cancelled), and a fitting one resumes the run. An answer the run refuses counts as one that
+   * does not fit, an expired one ends the pause, and a thread with no paused run any more runs
+   * the message as a new turn (false)
+   */
+  private async resumeWithAnswer(
+    agent: Agent,
+    msg: ChannelMessage,
+    channel: Channel,
+    threadId: string,
+    question: RunInterrupt,
+    tracker: StatusReactionTracker | undefined,
+    signal: AbortSignal | undefined
+  ): Promise<boolean> {
+    const paused = this.pausedThreads.get(threadId);
+    const say = (text: string) =>
+      this.sendReply(channel, msg, threadId, adaptFor(channel, msg, text), msg.id);
+    const cancelWords = this.config.approvals?.cancelWords ?? DEFAULT_CANCEL_WORDS;
+    if (cancelWords.some((word) => word.toLowerCase() === msg.text.trim().toLowerCase())) {
+      await this.cancelQuestion(msg, threadId, 'the user cancelled');
+      await say(`Cancelled: "${question.message}".`);
+      return true;
+    }
+    const refused = async (problem: string): Promise<true> => {
+      const attempts = (paused?.failedAnswers ?? 0) + 1;
+      const limit = this.config.approvals?.maxAnswerAttempts ?? DEFAULT_MAX_ANSWER_ATTEMPTS;
+      if (attempts >= limit) {
+        await this.cancelQuestion(msg, threadId, 'no answer fitted the question');
+        await say(`No answer fitted "${question.message}", so it was cancelled.`);
+        return true;
+      }
+      if (paused) paused.failedAnswers = attempts;
+      await say(
+        `That does not answer "${question.message}": ${problem}. Reply "${cancelWords[0] ?? 'cancel'}" to skip it.`
+      );
+      return true;
+    };
+    const parsed = parseAnswer(msg.text, question.responseSchema);
+    if (!parsed.ok) return refused(parsed.problem);
+
+    const origin = signal ? this.runPlaces.get(signal)?.origin : undefined;
+    if (origin && paused?.branchFrom !== undefined) this.runStarts.set(origin, paused.branchFrom);
+    const options = {
+      ...this.buildRunOptions(msg, tracker, signal),
+      responses: { [question.id]: parsed.value },
+    };
+    try {
+      await this.deliver(agent, msg, channel, threadId, signal, async (extra) => {
+        const result = await this.config.cogitator.resume(agent, threadId, {
+          ...options,
+          ...extra,
+        });
+        if (this.pausedThreads.get(threadId) === paused) this.pausedThreads.delete(threadId);
+        return result;
+      });
+      return true;
+    } catch (error) {
+      if (!CogitatorError.isCogitatorError(error)) throw error;
+      if (error.code === ErrorCode.RUN_NOT_PAUSED) {
+        this.pausedThreads.delete(threadId);
+        return false;
+      }
+      if (error.code === ErrorCode.INTERRUPT_ANSWER_INVALID) {
+        const format = answerFormat(question.responseSchema);
+        return refused(format ? `the answer should be ${format}` : 'the answer does not fit');
+      }
+      if (error.code === ErrorCode.INTERRUPT_EXPIRED) {
+        await this.cancelQuestion(msg, threadId, 'the question expired');
+        await say(`The question "${question.message}" expired. Send your message again to go on.`);
+        return true;
+      }
+      throw error;
+    }
+  }
+
+  /** Ends the paused run of `threadId` without an answer: its waiting calls get a declined result */
+  private async cancelQuestion(
+    msg: ChannelMessage,
+    threadId: string,
+    reason: string
+  ): Promise<void> {
+    this.pausedThreads.delete(threadId);
+    try {
+      await this.config.cogitator.cancelPause(threadId, {
+        userId: msg.userId,
+        threadAccess: 'shared',
+        reason,
+      });
+    } catch (error) {
+      this.config.onError?.(toError(error), msg);
+    }
+  }
+
   private async runMessage(
     agent: Agent,
     originalMsg: ChannelMessage,
@@ -944,11 +1173,31 @@ export class Gateway {
       threadId,
       threadAccess: 'shared',
       ...(images ? { images } : {}),
+      ...this.rollbackOptions(signal),
     };
 
     await this.deliver(agent, msg, channel, threadId, signal, (extra) =>
       this.config.cogitator.run(agent, { ...options, ...extra })
     );
+  }
+
+  /**
+   * What a run in `rollback` mode adds to its options: the branch from where the run it stopped
+   * started, and a note of where its own input goes, for the run that may stop it in turn
+   */
+  private rollbackOptions(signal: AbortSignal | undefined): Partial<RunOptions> {
+    const place = signal ? this.runPlaces.get(signal) : undefined;
+    if (!place) return {};
+    const origin = place.origin;
+    return {
+      ...(place.branchFrom !== undefined && { branch: { fromEntryId: place.branchFrom } }),
+      ...(origin && {
+        onMemoryEntry: (entry: MemoryEntry) => {
+          if (this.runStarts.has(origin) || entry.message.role !== 'user') return;
+          this.runStarts.set(origin, entry.parentId ?? null);
+        },
+      }),
+    };
   }
 
   private async resumeWithReply(
@@ -960,7 +1209,10 @@ export class Gateway {
     tracker: StatusReactionTracker | undefined,
     signal: AbortSignal | undefined
   ): Promise<boolean> {
-    const approvals = this.pausedThreads.get(threadId)?.approvals;
+    const paused = this.pausedThreads.get(threadId);
+    const approvals = paused?.approvals;
+    const origin = signal ? this.runPlaces.get(signal)?.origin : undefined;
+    if (origin && paused?.branchFrom !== undefined) this.runStarts.set(origin, paused.branchFrom);
     const options = { ...this.buildRunOptions(msg, tracker, signal), defaultDecision: decision };
 
     try {
@@ -1023,9 +1275,28 @@ export class Gateway {
     replyTo: string | undefined
   ): Promise<void> {
     const approvals = result.status === 'paused' ? (result.pendingApprovals ?? []) : [];
+    const questions = pendingQuestions(result);
+    if (approvals.length === 0 && questions.length > 0) {
+      this.pausedThreads.set(threadId, {
+        userId: msg.userId,
+        approvals: [],
+        questions,
+        ...(result.memory && { branchFrom: result.memory.branchPoint }),
+      });
+      const [first] = questions;
+      const format = first && answerFormat(first.responseSchema);
+      const prompt =
+        first && adaptFor(channel, msg, format ? `${first.message} (${format})` : first.message);
+      if (prompt) await this.sendReply(channel, msg, threadId, prompt, replyTo);
+      return;
+    }
     if (approvals.length === 0) return;
 
-    this.pausedThreads.set(threadId, { userId: msg.userId, approvals });
+    this.pausedThreads.set(threadId, {
+      userId: msg.userId,
+      approvals,
+      ...(result.memory && { branchFrom: result.memory.branchPoint }),
+    });
     const event: ApprovalRequestedEvent = { msg, threadId, userId: msg.userId, approvals };
     await this.hooks?.emit('approval:requested', event);
 
@@ -1109,8 +1380,10 @@ export class Gateway {
     signal: AbortSignal | undefined
   ) {
     const brief = this.config.brief?.(msg);
+    const multitaskStrategy = QUEUE_STRATEGIES[this.queueMode];
     return {
       useMemory: !!this.config.memory,
+      ...(multitaskStrategy && { multitaskStrategy }),
       ...(brief && { brief }),
       userId: msg.userId,
       channelType: msg.channelType,

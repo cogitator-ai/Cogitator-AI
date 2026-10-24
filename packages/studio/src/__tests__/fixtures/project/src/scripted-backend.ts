@@ -41,6 +41,8 @@ function decide(request: ChatRequest): {
     return { content: '', toolCalls: [call('lookup_weather', { city: 'Lisbon' })] };
   if (input.includes('publish'))
     return { content: '', toolCalls: [call('publish', { title: 'Hello' })] };
+  if (input.includes('confirm'))
+    return { content: '', toolCalls: [call('confirm_plan', { plan: 'the move' })] };
   if (input.includes('research'))
     return { content: '', toolCalls: [call('researcher', { task: 'find facts' })] };
   const turns = request.messages.filter((message) => message.role === 'user').length;
