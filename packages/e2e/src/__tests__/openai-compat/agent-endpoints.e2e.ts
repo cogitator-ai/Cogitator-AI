@@ -41,6 +41,10 @@ describeOllama('Chat Completions and Responses over a registered agent', () => {
           name: 'helper',
           instructions: 'You are a helpful assistant. Keep answers very brief.',
         }),
+        narrator: createTestAgent({
+          name: 'narrator',
+          instructions: 'You are a storyteller. Answer every request in full, never shorten it.',
+        }),
       },
       defaultModel: `ollama/${getTestModel()}`,
     });
@@ -130,8 +134,8 @@ describeOllama('Chat Completions and Responses over a registered agent', () => {
 
   it('reports a cut-off answer as incomplete, not completed', async () => {
     const response = await client.responses.create({
-      model: 'helper',
-      input: 'Write a long story about a lighthouse keeper.',
+      model: 'narrator',
+      input: 'Count from 1 to 300, every number in words, separated by commas.',
       max_output_tokens: 16,
     });
     expect(response.status).toBe('incomplete');
