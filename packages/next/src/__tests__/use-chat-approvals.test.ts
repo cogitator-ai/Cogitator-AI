@@ -338,7 +338,7 @@ describe('useCogitatorChat interrupts', () => {
           {
             type: 'error',
             message: 'The answer does not match its schema',
-            code: 'VALIDATION_ERROR',
+            code: 'INTERRUPT_ANSWER_INVALID',
           },
           '[DONE]',
         ]),

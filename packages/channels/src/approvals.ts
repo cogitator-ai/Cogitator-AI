@@ -35,7 +35,18 @@ export interface GatewayApprovalsConfig {
   expiredMessage?: string;
   /** Shown on a press while the gateway stops: the request stays paused and the buttons stay */
   stoppingMessage?: string;
+  /**
+   * Replies that cancel a question a tool asked instead of answering it (default `cancel`,
+   * `/cancel`, `отмена`): the tool gets a declined result and the run's next turn goes on from it
+   */
+  cancelWords?: readonly string[];
+  /** Answers a question gets before the gateway gives up on it and cancels it (default 3) */
+  maxAnswerAttempts?: number;
 }
+
+export const DEFAULT_CANCEL_WORDS: readonly string[] = ['cancel', '/cancel', 'отмена'];
+
+export const DEFAULT_MAX_ANSWER_ATTEMPTS = 3;
 
 export const DEFAULT_EXPIRED_MESSAGE =
   'This request is no longer waiting. Reply "approve" or "deny" if it is still paused.';

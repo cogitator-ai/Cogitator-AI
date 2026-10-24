@@ -197,8 +197,8 @@ export interface AnsweredInterrupts {
  * run waits on, come before its `expiresAt` and match its schema: the Zod schema the tool asked
  * with when this process still has it (`zodSchemaOf`), else its JSON `responseSchema`
  *
- * @throws CogitatorError `VALIDATION_ERROR` for an unknown, already answered or malformed answer,
- * `INTERRUPT_EXPIRED` for an answer that came too late
+ * @throws CogitatorError `VALIDATION_ERROR` for an answer to an unknown or answered interrupt,
+ * `INTERRUPT_ANSWER_INVALID` for one its schema refuses, `INTERRUPT_EXPIRED` for one too late
  */
 export function answerInterrupts(
   interrupts: readonly RunInterrupt[],
@@ -247,7 +247,7 @@ export function answerInterrupts(
     if (problem !== undefined) {
       throw new CogitatorError({
         message: `The answer to interrupt "${id}" does not match its schema: ${problem}`,
-        code: ErrorCode.VALIDATION_ERROR,
+        code: ErrorCode.INTERRUPT_ANSWER_INVALID,
         details: { interruptId: id },
       });
     }

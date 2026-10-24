@@ -66,6 +66,8 @@ interface GatewayConfig {
     approveWords?: readonly string[]; // default: approve, yes, да, одобряю
     denyWords?: readonly string[]; // default: deny, no, нет, отклоняю
     notAllowedMessage?: string;
+    cancelWords?: string[]; // cancel a question of a tool, default ['cancel', '/cancel', 'отмена']
+    maxAnswerAttempts?: number; // answers that do not fit before a question is cancelled, default 3
   };
   brief?: (msg: ChannelMessage) => string | undefined; // notes for the run of each message
   drainTimeout?: number; // ms stop() waits for queued answers, default 30000
@@ -350,6 +352,10 @@ hooks.on('approval:resolved', ({ threadId, decision, superseded }) => {
 On channels with buttons (Telegram, Microsoft Teams), the prompt also carries **Approve** and **Deny** buttons. A press answers like the reply words, through the same middleware and checks, and the buttons then show the decision. `approvals: { buttons: false }` turns them off, and `buttonLabels` renames them. A press counts only from the user the prompt asked, while their run is still paused; anyone else gets `notAllowedMessage`, and a press after the request was answered, dropped or the Gateway restarted gets `expiredMessage` (a reply word still works then). A press in a group chat or channel carries its `groupId`, so the group policy checks it like a message there, and a press while the Gateway stops gets `stoppingMessage` and leaves the request waiting with its buttons.
 
 `parseApprovalReply(text, words)` and `formatApprovalPrompt(approvals, words)` are exported for custom channels and UIs, together with `DEFAULT_APPROVE_WORDS`, `DEFAULT_DENY_WORDS` and `DEFAULT_NOT_ALLOWED_MESSAGE`.
+
+### Questions of Tools
+
+A tool that asks with `context.interrupt()` pauses the run as well. The Gateway sends the question with what an answer looks like (`Go ahead? (yes or no)`), and the next plain message of the user the run belongs to answers it, read by the question's schema (`parseAnswer()`: yes or no, numbers, enum members, unions, the one field of an object, JSON, lists). A text that does not fit, or an answer the run refuses, is told in plain words and the question keeps waiting. `cancel` (`cancelWords`) cancels the question, and so do `maxAnswerAttempts` answers that do not fit: the tool gets a declined result. An expired question ends the pause, and a question still waiting when the Gateway restarts is picked up from the runtime on the first message of its thread. See [Interrupts](/docs/core/run-control#interrupts).
 
 With `cogitator up`, set `approveWords`, `denyWords` and `notAllowedMessage` in the `approvals` block of `cogitator.yml`; a custom `format` goes in `RuntimeBuilder`'s `approvals` option, which is merged over the YAML block (see [Wizard Setup](/docs/channels/wizard#config-reference)).
 

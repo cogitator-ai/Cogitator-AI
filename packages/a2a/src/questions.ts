@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { RunInterrupt } from '@cogitator-ai/types';
+import { answerFormat, parseAnswer, type RunInterrupt } from '@cogitator-ai/types';
 import type { A2AMessage, A2ATask, DataPart } from './types.js';
 import { TOOL_APPROVAL_REQUEST_KIND, TOOL_APPROVAL_RESPONSE_KIND } from './approvals.js';
 
@@ -127,25 +127,51 @@ export function taskPendingQuestions(task: A2ATask): TaskQuestion[] | undefined 
 }
 
 /**
+ * What a message that continues a task gives the questions it waits on: the answers by question
+ * id, or why it answers none, in words for the person who wrote it.
+ */
+export type MessageAnswers = { responses: Record<string, unknown> } | { problem: string };
+
+/**
  * The answers a message that continues a task gives to the questions it waits on: those of an
  * interrupt response data part, or for a single question, the message itself (its first data
- * part that is not a Cogitator approval or interrupt part, else its text). Undefined when the
- * message answers nothing, e.g. plain text while several questions wait.
+ * part that is not a Cogitator approval or interrupt part, else its text read with
+ * `parseAnswer()` by the question's schema). A `problem` when an interrupt response names a
+ * question the task does not wait on, or the text does not answer the question. Undefined when
+ * the message answers nothing, e.g. plain text while several questions wait.
  */
 export function answersFromMessage(
   message: A2AMessage,
   questions: readonly TaskQuestion[]
-): Record<string, unknown> | undefined {
+): MessageAnswers | undefined {
   const explicit = readInterruptResponse(message);
-  if (explicit) return explicit;
+  if (explicit) {
+    const unknown = Object.keys(explicit).filter(
+      (id) => !questions.some((question) => question.id === id)
+    );
+    return unknown.length > 0
+      ? { problem: `The answers name no question this task waits on: ${unknown.join(', ')}.` }
+      : { responses: explicit };
+  }
   if (questions.length !== 1) return undefined;
+  const [question] = questions;
   const data = message.parts.find(
     (part): part is DataPart => part.kind === 'data' && !COGITATOR_PART_KINDS.has(part.data.kind)
   );
-  if (data) return { [questions[0].id]: data.data };
+  if (data) return { responses: { [question.id]: data.data } };
   const text = message.parts
     .flatMap((part) => (part.kind === 'text' ? [part.text] : []))
     .join('\n')
     .trim();
-  return text ? { [questions[0].id]: text } : undefined;
+  if (!text) return undefined;
+  const parsed = parseAnswer(text, question.responseSchema);
+  return parsed.ok
+    ? { responses: { [question.id]: parsed.value } }
+    : { problem: `That does not answer the question: ${parsed.problem}.` };
+}
+
+/** A question as a person reads it: its message and, unless it takes free text, the answer form. */
+export function questionPrompt(question: TaskQuestion): string {
+  const format = answerFormat(question.responseSchema);
+  return format ? `${question.message} (${format})` : question.message;
 }

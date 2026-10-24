@@ -2,10 +2,12 @@
  * Serve Cogitator agents as MCP tools, for Claude Desktop, Cursor or any MCP client.
  */
 
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import type {
   Agent,
   ResumeOptions,
   RunCheckpoint,
+  RunInterrupt,
   RunOptions,
   RunResult,
   Tool,
@@ -19,7 +21,10 @@ import { z } from 'zod';
 import type { MCPServerConfig, MCPToolContext } from '../types';
 import { MCPServer } from './mcp-server';
 import { elicitApproval } from './approval';
-import { elicitAnswers } from './questions';
+import { elicitAnswers, refusedQuestion } from './questions';
+
+/** How often a question is asked when the run refuses its answers, before the call fails. */
+const MAX_ANSWER_ATTEMPTS = 3;
 
 /**
  * What serving agents needs from a Cogitator: running them and resuming paused runs. A host that
@@ -178,14 +183,59 @@ async function settle(
   let result = initial;
   let questions = pendingQuestions(result);
   while (questions.length > 0) {
-    const responses = await elicitAnswers(context.elicit, questions, agent.name);
-    result = await host.resume(agent, result.checkpoint ?? result.threadId, {
-      responses,
-      ...runContext(context),
-    });
+    result = await resumeWithAnswers(host, agent, result, questions, context);
     questions = pendingQuestions(result);
   }
   return answer(result, resumeName);
+}
+
+/**
+ * Resumes `paused` with the answers of the person at the client to `questions`. An answer the
+ * run refuses as not matching its question's schema (`INTERRUPT_ANSWER_INVALID`) is asked again,
+ * the next form saying why, up to `MAX_ANSWER_ATTEMPTS` times per question, the other answers
+ * are kept.
+ *
+ * @throws CogitatorError `INTERRUPT_ANSWER_INVALID` naming the question once its answers were
+ * refused `MAX_ANSWER_ATTEMPTS` times. The run stays paused
+ */
+async function resumeWithAnswers(
+  host: AgentHost,
+  agent: Agent,
+  paused: RunResult,
+  questions: readonly RunInterrupt[],
+  context: MCPToolContext
+): Promise<RunResult> {
+  const responses: Record<string, unknown> = {};
+  const problems = new Map<string, string>();
+  const asked = new Map<string, number>();
+  let asking = questions;
+  for (;;) {
+    for (const question of asking) asked.set(question.id, (asked.get(question.id) ?? 0) + 1);
+    Object.assign(responses, await elicitAnswers(context.elicit, asking, agent.name, problems));
+    try {
+      return await host.resume(agent, paused.checkpoint ?? paused.threadId, {
+        responses: { ...responses },
+        ...runContext(context),
+      });
+    } catch (error) {
+      const refused = refusedQuestion(error, questions);
+      if (!refused || context.signal?.aborted) throw error;
+      const { question, problem } = refused;
+      if ((asked.get(question.id) ?? 0) >= MAX_ANSWER_ATTEMPTS) {
+        throw new CogitatorError({
+          message:
+            `Agent "${agent.name}" asked ${question.reason} ("${question.message}") ` +
+            `${MAX_ANSWER_ATTEMPTS} times and refused every answer, the last one because: ${problem}. ` +
+            'The run stays paused: answer it with cogitator.resume() and responses.',
+          code: ErrorCode.INTERRUPT_ANSWER_INVALID,
+          details: { interrupt: { ...question } },
+        });
+      }
+      problems.set(question.id, `That answer was refused: ${problem}`);
+      delete responses[question.id];
+      asking = [question];
+    }
+  }
 }
 
 function answer(result: RunResult, resumeName: string): AgentToolAnswer {

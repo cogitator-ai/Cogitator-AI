@@ -89,7 +89,7 @@ describe('Gateway and questions of tools', () => {
     const resume = vi
       .fn()
       .mockRejectedValueOnce(
-        new CogitatorError({ message: 'not a region', code: ErrorCode.VALIDATION_ERROR })
+        new CogitatorError({ message: 'not a region', code: ErrorCode.INTERRUPT_ANSWER_INVALID })
       )
       .mockResolvedValueOnce({ output: 'Deployed to us.' });
     const gateway = new Gateway({
@@ -128,6 +128,114 @@ describe('Gateway and questions of tools', () => {
     await gateway.idle();
     expect(resume).not.toHaveBeenCalled();
     expect(run).toHaveBeenCalledTimes(2);
+    await gateway.stop();
+  });
+
+  const yesNo: RunInterrupt = {
+    ...question,
+    id: 'b1#0',
+    message: 'Go ahead?',
+    responseSchema: { type: 'boolean' },
+  };
+  const pausedOn = (asked: RunInterrupt) => ({ ...pausedOnQuestion, interrupts: [asked] });
+
+  it('tells what an answer looks like and reads yes as true', async () => {
+    const channel = createChannel();
+    const run = vi.fn(async () => pausedOn(yesNo));
+    const resume = vi.fn(async (_agent: unknown, _thread: string, _opts: RunOptions) => ({
+      output: 'Done.',
+    }));
+    const gateway = new Gateway({
+      agent,
+      channels: [channel],
+      cogitator: { run, resume } as never,
+    });
+    await gateway.start();
+    await channel.trigger(message('Deploy', 'm1'));
+    await gateway.idle();
+    expect(channel.sendText.mock.calls.map((call) => call[1])).toContain('Go ahead? (yes or no)');
+    await channel.trigger(message('Yes', 'm2'));
+    await gateway.idle();
+    expect(resume.mock.calls[0]?.[2]).toMatchObject({ responses: { 'b1#0': true } });
+    await gateway.stop();
+  });
+
+  it('cancels the question with a cancel word, and after too many answers that do not fit', async () => {
+    for (const replies of [['cancel'], ['maybe', 'perhaps', 'dunno']]) {
+      const channel = createChannel();
+      const run = vi.fn(async () => pausedOn(yesNo));
+      const resume = vi.fn();
+      const cancelPause = vi.fn(async () => true);
+      const gateway = new Gateway({
+        agent,
+        channels: [channel],
+        cogitator: { run, resume, cancelPause } as never,
+      });
+      await gateway.start();
+      await channel.trigger(message('Deploy', 'm1'));
+      await gateway.idle();
+      for (const [index, reply] of replies.entries()) {
+        await channel.trigger(message(reply, `r${index}`));
+        await gateway.idle();
+      }
+      const said = channel.sendText.mock.calls.map((call) => String(call[1]));
+      expect(resume).not.toHaveBeenCalled();
+      expect(cancelPause).toHaveBeenCalledTimes(1);
+      expect(said.at(-1)).toMatch(replies.length === 1 ? /^Cancelled/ : /was cancelled/);
+      expect(said.some((text) => text.includes('#0'))).toBe(false);
+      if (replies.length > 1)
+        expect(said).toContain(
+          'That does not answer "Go ahead?": the answer should be yes or no. Reply "cancel" to skip it.'
+        );
+      await gateway.stop();
+    }
+  });
+
+  it('ends the pause when the question expired', async () => {
+    const channel = createChannel();
+    const run = vi.fn(async () => pausedOnQuestion);
+    const resume = vi.fn(async () => {
+      throw new CogitatorError({ message: 'expired', code: ErrorCode.INTERRUPT_EXPIRED });
+    });
+    const cancelPause = vi.fn(async () => true);
+    const gateway = new Gateway({
+      agent,
+      channels: [channel],
+      cogitator: { run, resume, cancelPause } as never,
+    });
+    await gateway.start();
+    await channel.trigger(message('Deploy', 'm1'));
+    await gateway.idle();
+    await channel.trigger(message('eu', 'm2'));
+    await gateway.idle();
+    expect(cancelPause).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ reason: 'the question expired' })
+    );
+    expect(String(channel.sendText.mock.calls.at(-1)?.[1])).toContain('expired');
+    await channel.trigger(message('Deploy again', 'm3'));
+    await gateway.idle();
+    expect(run).toHaveBeenCalledTimes(2);
+    await gateway.stop();
+  });
+
+  it('picks the question up from the runtime after a restart', async () => {
+    const channel = createChannel();
+    const run = vi.fn();
+    const resume = vi.fn(async (_agent: unknown, _thread: string, _opts: RunOptions) => ({
+      output: 'Deployed to eu.',
+    }));
+    const pausedRun = vi.fn(async () => ({ runId: 'r1', userId: 'u1', interrupts: [question] }));
+    const gateway = new Gateway({
+      agent,
+      channels: [channel],
+      cogitator: { run, resume, pausedRun } as never,
+    });
+    await gateway.start();
+    await channel.trigger(message('eu', 'm1'));
+    await gateway.idle();
+    expect(run).not.toHaveBeenCalled();
+    expect(resume.mock.calls[0]?.[2]).toMatchObject({ responses: { 'q1#0': 'eu' } });
     await gateway.stop();
   });
 });

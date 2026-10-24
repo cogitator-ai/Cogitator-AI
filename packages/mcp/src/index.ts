@@ -44,6 +44,8 @@ export type {
   MCPElicitRequest,
   MCPElicitResult,
   MCPElicitField,
+  MCPElicitOption,
+  MCPElicitMultiSelect,
   MCPTransportType,
   MCPResource,
   MCPResourceContent,

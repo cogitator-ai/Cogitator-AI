@@ -148,7 +148,7 @@ describe('interrupts from tools', () => {
 
     await expect(
       cog.resume(planner, paused.checkpoint!, { responses: { 'c1#0': { ok: 'yes' } } })
-    ).rejects.toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+    ).rejects.toMatchObject({ code: ErrorCode.INTERRUPT_ANSWER_INVALID });
     expect(confirmImpl).toHaveBeenCalledTimes(1);
     await cog.close();
   });
@@ -500,7 +500,7 @@ describe('answers checked by the Zod schema the tool asked with', () => {
     const paused = await cog.run(agent, { input: 'Go' });
     await expect(
       cog.resume(agent, roundTrip(paused.checkpoint), { responses: { 'p1#0': { n: '5', s: 'a' } } })
-    ).rejects.toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+    ).rejects.toMatchObject({ code: ErrorCode.INTERRUPT_ANSWER_INVALID });
     await cog.resume(agent, roundTrip(paused.checkpoint), {
       responses: { 'p1#0': { n: '5', s: 'ab' } },
     });
@@ -565,5 +565,32 @@ describe('answers checked by the Zod schema the tool asked with', () => {
     await again.cog.run(agent, { input: 'Go', threadId: 'closing' });
     await again.cog.close();
     expect(left.size).toBe(0);
+  });
+
+  describe('cancelPause and pausedRun', () => {
+    it('lists what a thread waits on, and cancelling answers the calls as declined', async () => {
+      const { cog, requests } = setup([callTools([confirmCall]), echoTools()]);
+      await cog.run(planner, { input: 'Migrate', threadId: 'cancel-me', userId: 'ann' });
+
+      const waiting = await cog.pausedRun('cancel-me');
+      expect(waiting?.userId).toBe('ann');
+      expect(waiting?.interrupts.map((entry) => entry.id)).toEqual(['c1#0']);
+      await expect(cog.cancelPause('cancel-me', { userId: 'bob' })).rejects.toMatchObject({
+        code: ErrorCode.THREAD_ACCESS_DENIED,
+      });
+
+      expect(await cog.cancelPause('cancel-me', { userId: 'ann', reason: 'not now' })).toBe(true);
+      expect(await cog.pausedRun('cancel-me')).toBeUndefined();
+      expect(await cog.cancelPause('cancel-me', { userId: 'ann' })).toBe(false);
+
+      await cog.run(planner, { input: 'Anything else?', threadId: 'cancel-me', userId: 'ann' });
+      const tools = requests.at(-1)!.messages.filter((message) => message.role === 'tool');
+      expect(tools.map((message) => message.content)).toEqual([
+        JSON.stringify({
+          error: 'The user declined to answer "Go ahead with the migration?": not now',
+        }),
+      ]);
+      await cog.close();
+    });
   });
 });

@@ -25,7 +25,7 @@ import { InMemoryTaskStore } from './task-store.js';
 import { isStreamFinalState, isTerminalState } from './types.js';
 import { A2AError } from './errors.js';
 import * as errors from './errors.js';
-import { TASK_CREATED_AT_KEY, TASK_OWNER_KEY, taskCreatedAt } from './ownership.js';
+import { TASK_CREATED_AT_KEY, TASK_OWNER_KEY, taskCreatedAt, taskOwner } from './ownership.js';
 import {
   TASK_PENDING_APPROVALS_KEY,
   readToolApprovalResponse,
@@ -36,10 +36,12 @@ import {
   TASK_PENDING_QUESTIONS_KEY,
   answersFromMessage,
   interruptRequestPart,
+  questionPrompt,
   taskPendingQuestions,
   toTaskQuestion,
   type TaskQuestion,
 } from './questions.js';
+import { TASK_PAUSED_RUN_KEY, taskPausedRun, type TaskPausedRun } from './paused-run.js';
 import { agentMessage, newArtifactId, textPart } from './protocol.js';
 
 export interface TaskManagerConfig {
@@ -64,6 +66,8 @@ export type TaskEvent = TaskStatusUpdateEvent | TaskArtifactUpdateEvent;
 interface PendingInput {
   approvals: readonly ToolApprovalRequest[];
   questions: readonly TaskQuestion[];
+  /** The run that waits, resumed by its id and checkpoint */
+  pausedRun?: TaskPausedRun;
 }
 
 /** What resumes a task's paused run: the decisions and answers of the message continuing it. */
@@ -75,6 +79,11 @@ interface ResumeInput {
 
 /** States a task takes a new message in: those where it waits on the client. */
 const CONTINUABLE_STATES: readonly TaskState[] = ['input-required', 'auth-required'];
+
+/** Status text of a task whose paused run a newer run in its context ended. */
+const MOVED_ON_TEXT =
+  'This task no longer waits: a newer message in its context started a new run, which ended ' +
+  'the run this task waited on without the answers it asked for. Send a new message to go on.';
 
 /**
  * Streams the reply of a run as chunks of one artifact. The last token is held back, so the
@@ -196,6 +205,9 @@ export class TaskManager extends EventEmitter {
       abortController.signal.throwIfAborted();
 
       const resumeWith = this.resumeInput(task, message);
+      if (resumeWith && 'problem' in resumeWith) {
+        return await this.askAgain(task.id, resumeWith.problem);
+      }
       let result: AgentRunResult;
       if (resumeWith) {
         if (!cogitator.resume) {
@@ -205,8 +217,12 @@ export class TaskManager extends EventEmitter {
             )
           );
         }
+        const paused = taskPausedRun(task);
+        if (paused && !(await isStillPaused(cogitator, task, paused))) {
+          return await this.endWaiting(task.id, 'canceled', MOVED_ON_TEXT);
+        }
         try {
-          result = await cogitator.resume(agent, task.contextId, {
+          result = await cogitator.resume(agent, paused?.checkpoint ?? task.contextId, {
             ...resumeWith,
             signal: abortController.signal,
             stream: !!onToken,
@@ -215,12 +231,16 @@ export class TaskManager extends EventEmitter {
             ...(options.userId !== undefined && { userId: options.userId }),
           });
         } catch (error) {
-          if (resumeWith.responses && isRefusedAnswer(error) && !abortController.signal.aborted) {
-            return await this.askAgain(task.id, error.message);
+          if (!abortController.signal.aborted && resumeWith.responses) {
+            if (isRefusedAnswer(error)) return await this.askAgain(task.id, error.message);
+            if (isExpiredAnswer(error)) {
+              return await this.expireQuestion(task, cogitator, paused, error, options.userId);
+            }
           }
           throw error;
         }
       } else {
+        await this.endSupersededTasks(task, options.userId);
         const priorHistory = await this.priorHistory(task, message);
         result = await cogitator.run(agent, {
           input: this.buildInput(priorHistory, message),
@@ -477,14 +497,102 @@ export class TaskManager extends EventEmitter {
   /**
    * The decisions and answers a message gives to the run its task paused: a tool approval
    * response for waiting calls, answers to waiting questions (an interrupt response, or for one
-   * question the message itself). Undefined when it gives none, so a new run answers it.
+   * question the message itself). A `problem` when the message tries to answer a question and
+   * does not, so the task asks again. Undefined when it gives none, so a new run answers it.
    */
-  private resumeInput(task: A2ATask, message: A2AMessage): ResumeInput | undefined {
+  private resumeInput(
+    task: A2ATask,
+    message: A2AMessage
+  ): ResumeInput | { problem: string } | undefined {
     const decisions = taskPendingApprovals(task) ? readToolApprovalResponse(message) : undefined;
     const questions = taskPendingQuestions(task);
-    const responses = questions ? answersFromMessage(message, questions) : undefined;
-    if (!decisions && !responses) return undefined;
-    return { ...decisions, ...(responses && { responses }) };
+    const answers = questions ? answersFromMessage(message, questions) : undefined;
+    if (answers && 'problem' in answers) return answers;
+    if (!decisions && !answers) return undefined;
+    return { ...decisions, ...(answers && { responses: answers.responses }) };
+  }
+
+  /**
+   * A new run in a context ends the paused runs other tasks of the context wait on: the runtime
+   * answers their waiting calls with "The user moved on". Those tasks stop waiting too, `canceled`
+   * with a status message that says why, instead of staying `input-required` on a run that is gone.
+   * Only tasks of the same user, the ones whose pause the runtime ends.
+   */
+  private async endSupersededTasks(task: A2ATask, userId: string | undefined): Promise<void> {
+    const superseded = (await this.store.list({ contextId: task.contextId })).filter(
+      (other) =>
+        other.id !== task.id &&
+        CONTINUABLE_STATES.includes(other.status.state) &&
+        !this.activeTasks.has(other.id) &&
+        !this.continuing.has(other.id) &&
+        taskOwner(other) === userId &&
+        (taskPausedRun(other) !== undefined ||
+          taskPendingApprovals(other) !== undefined ||
+          taskPendingQuestions(other) !== undefined)
+    );
+    for (const other of superseded) {
+      await this.endWaiting(other.id, 'canceled', MOVED_ON_TEXT);
+    }
+  }
+
+  /**
+   * The answer came after the question's `expiresAt`: the run refuses it, so the task ends
+   * `failed` with a status message naming the question, and the pause is lifted (the waiting calls
+   * answered as declined because the question expired) when the Cogitator can and the run still
+   * waits. Without `cancelPause` the next run of the context lifts it.
+   */
+  private async expireQuestion(
+    task: A2ATask,
+    cogitator: CogitatorLike,
+    paused: TaskPausedRun | undefined,
+    error: CogitatorError,
+    userId: string | undefined
+  ): Promise<A2ATask> {
+    const interruptId = error.details?.interruptId;
+    const question = taskPendingQuestions(task)?.find((entry) => entry.id === interruptId);
+    if (cogitator.cancelPause && paused && (await isStillPaused(cogitator, task, paused))) {
+      try {
+        await cogitator.cancelPause(task.contextId, {
+          ...(userId !== undefined && { userId }),
+          reason: 'the question expired',
+        });
+      } catch (cancelError) {
+        console.warn(
+          `[a2a] Could not lift the paused run of task ${task.id} after its question expired:`,
+          cancelError
+        );
+      }
+    }
+    const asked = question ? `The question "${question.message}"` : 'The question';
+    const at = question?.expiresAt ? ` at ${question.expiresAt}` : '';
+    return this.endWaiting(
+      task.id,
+      'failed',
+      `${asked} expired${at}, so the answer came too late. Send a new message to go on.`
+    );
+  }
+
+  /**
+   * Ends a task that waited on a paused run: the terminal `state` with `text` as its status
+   * message, and the records of what it waited on dropped.
+   */
+  private async endWaiting(
+    taskId: string,
+    state: 'canceled' | 'failed',
+    text: string
+  ): Promise<A2ATask> {
+    const existing = await this.store.get(taskId);
+    if (!existing) throw new A2AError(errors.taskNotFound(taskId));
+    const message = agentMessage(existing, [textPart(text)]);
+    await this.store.update(taskId, {
+      status: { state, message, timestamp: new Date().toISOString() },
+      history: [...(existing.history ?? []), message],
+      ...this.withPending(existing, undefined),
+    });
+    const updated = await this.store.get(taskId);
+    if (!updated) throw new A2AError(errors.taskNotFound(taskId));
+    this.emitStatusUpdate(updated);
+    return updated;
   }
 
   /**
@@ -507,6 +615,10 @@ export class TaskManager extends EventEmitter {
       questions: (result.interrupts ?? [])
         .filter((entry) => entry.kind !== 'approval')
         .map(toTaskQuestion),
+      pausedRun: {
+        runId: result.checkpoint?.runId ?? result.runId,
+        ...(result.checkpoint && { checkpoint: result.checkpoint }),
+      },
     };
     const parts = pendingParts(pending);
     const reply = agentMessage(existing, [
@@ -530,9 +642,10 @@ export class TaskManager extends EventEmitter {
   }
 
   /**
-   * The resumed run refused the answers the client gave (one that does not match its question's
-   * schema, or names no waiting question): the task waits in `input-required` again on what it
-   * waited on before, with why.
+   * The answers the client gave do not answer: a text its question's schema cannot read, an
+   * answer the resumed run refused as not matching the schema, or one naming no waiting question.
+   * The task waits in `input-required` again on what it waited on before (the same paused run),
+   * with why.
    */
   private async askAgain(taskId: string, problem: string): Promise<A2ATask> {
     const existing = await this.store.get(taskId);
@@ -540,6 +653,7 @@ export class TaskManager extends EventEmitter {
     const pending: PendingInput = {
       approvals: taskPendingApprovals(existing) ?? [],
       questions: taskPendingQuestions(existing) ?? [],
+      pausedRun: taskPausedRun(existing),
     };
     const message = agentMessage(existing, [
       textPart(`${problem}\n${waitingText(pending)}`),
@@ -574,8 +688,9 @@ export class TaskManager extends EventEmitter {
   }
 
   /**
-   * The metadata update that records the calls and questions a task waits on, or drops the
-   * records once the task stopped waiting; nothing when there is nothing to change.
+   * The metadata update that records the calls and questions a task waits on and the run that
+   * waits, or drops the records once the task stopped waiting, nothing when there is nothing to
+   * change.
    */
   private withPending(
     task: A2ATask,
@@ -595,6 +710,13 @@ export class TaskManager extends EventEmitter {
         delete metadata[key];
         changed = true;
       }
+    }
+    if (pending?.pausedRun) {
+      metadata[TASK_PAUSED_RUN_KEY] = { ...pending.pausedRun };
+      changed = true;
+    } else if (TASK_PAUSED_RUN_KEY in metadata) {
+      delete metadata[TASK_PAUSED_RUN_KEY];
+      changed = true;
     }
     return changed ? { metadata } : {};
   }
@@ -654,9 +776,29 @@ export class TaskManager extends EventEmitter {
   }
 }
 
-/** Whether a resume refused the client's answers, which it may give again. */
+/** Whether a resume refused an answer as not matching its question's schema, so it may come again. */
 function isRefusedAnswer(error: unknown): error is CogitatorError {
-  return CogitatorError.isCogitatorError(error) && error.code === ErrorCode.VALIDATION_ERROR;
+  return (
+    CogitatorError.isCogitatorError(error) && error.code === ErrorCode.INTERRUPT_ANSWER_INVALID
+  );
+}
+
+/** Whether a resume refused an answer that came after its question's `expiresAt`. */
+function isExpiredAnswer(error: unknown): error is CogitatorError {
+  return CogitatorError.isCogitatorError(error) && error.code === ErrorCode.INTERRUPT_EXPIRED;
+}
+
+/**
+ * Whether the run a task waits on still waits in the thread of its context: false once a newer
+ * run there moved on. Taken as true when the Cogitator cannot tell (no `pausedRun`).
+ */
+async function isStillPaused(
+  cogitator: CogitatorLike,
+  task: A2ATask,
+  paused: TaskPausedRun
+): Promise<boolean> {
+  if (!cogitator.pausedRun) return true;
+  return (await cogitator.pausedRun(task.contextId))?.runId === paused.runId;
 }
 
 /** The data parts that tell the client what a paused run waits on. */
@@ -670,7 +812,7 @@ function pendingParts({ approvals, questions }: PendingInput): DataPart[] {
 
 /** The status text of a paused run: the calls it waits to have approved, the questions it asks. */
 function waitingText({ approvals, questions }: PendingInput): string {
-  const lines = questions.map((question) => question.message);
+  const lines = questions.map(questionPrompt);
   if (approvals.length > 0 || lines.length === 0) {
     const calls = approvals.map((approval) => approval.toolName).join(', ') || 'tool calls';
     lines.unshift(`Waiting for approval of ${calls}`);

@@ -2947,13 +2947,25 @@ export class Cogitator implements ToolInvoker {
     });
     if (!paused) return;
     if (options.threadAccess !== 'shared' && paused.userId !== options.userId) return;
+    await this.closePause(paused, options, threadId, agent.id, 'moved on');
+  }
+
+  /**
+   * Answers the waiting calls of `paused` so the thread's history stays whole and drops the
+   * pause: the user `moved on` with a new message, or `cancelled` the pause
+   */
+  private async closePause(
+    paused: RunCheckpoint,
+    options: RunOptions,
+    threadId: string,
+    agentId: string,
+    how: 'moved on' | 'cancelled',
+    reason?: string
+  ): Promise<void> {
     const pausedMemory = new RunMemory(
       () => this.state.memoryAdapter,
       threadId,
-      () => ({
-        ...options,
-        branch: undefined,
-      })
+      () => ({ ...options, branch: undefined })
     );
     pausedMemory.open(paused.branch);
     const asked = (paused.interrupts ?? []).filter(
@@ -2961,22 +2973,77 @@ export class Cogitator implements ToolInvoker {
     );
     this.interruptSchemas.forgetRun(paused.runId);
     const completed = new Set(paused.turn.completed ?? []);
+    const because = reason ? `: ${reason}` : '';
     for (const toolCall of paused.turn.toolCalls) {
       if (completed.has(toolCall.id)) continue;
       const question = asked.find((entry) => entry.toolCallId === toolCall.id);
-      const result: ToolResult = {
-        callId: toolCall.id,
-        name: toolCall.name,
-        result: null,
-        error: question
-          ? `The user moved on without answering: ${question.message}`
-          : asked.length > 0
-            ? NOT_STARTED_MOVED_ON
-            : 'The user moved on without approving this tool call',
-      };
-      await pausedMemory.save(agent.id, createToolMessage(toolCall, result), undefined, [result]);
+      const error =
+        how === 'moved on'
+          ? question
+            ? `The user moved on without answering: ${question.message}`
+            : asked.length > 0
+              ? NOT_STARTED_MOVED_ON
+              : 'The user moved on without approving this tool call'
+          : question
+            ? `The user declined to answer "${question.message}"${because}`
+            : asked.length > 0
+              ? `Not started: the user cancelled while an earlier tool call of this step waited for an answer${because}`
+              : `The user declined this tool call${because}`;
+      const result: ToolResult = { callId: toolCall.id, name: toolCall.name, result: null, error };
+      await pausedMemory.save(agentId, createToolMessage(toolCall, result), undefined, [result]);
     }
-    await store.delete(threadId);
+    await this.runCheckpointStore().delete(threadId);
+  }
+
+  /**
+   * The run paused in thread `threadId`, when one waits there: its id, the user it belongs to and
+   * what it waits on (approvals and questions of its tools), from the checkpoint store, so it is
+   * found after a restart too
+   */
+  async pausedRun(
+    threadId: string
+  ): Promise<{ runId: string; userId?: string; interrupts: RunInterrupt[] } | undefined> {
+    await this.getMemory();
+    const paused = await this.runCheckpointStore().load(threadId);
+    if (!paused) return undefined;
+    return {
+      runId: paused.runId,
+      ...(paused.userId !== undefined && { userId: paused.userId }),
+      interrupts: checkpointInterrupts(paused).filter((entry) => !isAnswered(entry)),
+    };
+  }
+
+  /**
+   * Ends the run paused in thread `threadId` without going on: its waiting calls get a declined
+   * result (a question "The user declined to answer", an approval "The user declined this tool
+   * call", with `reason`), so the next run of the thread reads a whole history, and the pause is
+   * dropped. False when no run waits there
+   *
+   * @throws CogitatorError `THREAD_ACCESS_DENIED` when `userId` is not the user the run belongs
+   * to, unless `threadAccess` is `'shared'`
+   */
+  async cancelPause(
+    threadId: string,
+    options: { userId?: string; threadAccess?: 'owner' | 'shared'; reason?: string } = {}
+  ): Promise<boolean> {
+    await this.getMemory();
+    const paused = await this.runCheckpointStore().load(threadId);
+    if (!paused) return false;
+    if (options.threadAccess !== 'shared' && paused.userId !== options.userId) {
+      throw new CogitatorError({
+        message: `The paused run in thread ${threadId} belongs to another user`,
+        code: ErrorCode.THREAD_ACCESS_DENIED,
+      });
+    }
+    await this.closePause(
+      paused,
+      { input: '', threadId, ...(paused.userId !== undefined && { userId: paused.userId }) },
+      threadId,
+      paused.agentId,
+      'cancelled',
+      options.reason
+    );
+    return true;
   }
 
   /**

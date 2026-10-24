@@ -140,7 +140,7 @@ On resume the tool runs again from its start, and this time `interrupt()` return
 
 The shape maps one to one to AG-UI interrupts, ACP elicitation and MCP input requests.
 
-`resume()` checks each answer before the run goes on: an answer to an interrupt the run does not wait on, one already answered, or one that does not match its `responseSchema` fails with `VALIDATION_ERROR`, an answer after `expiresAt` with `INTERRUPT_EXPIRED` (HTTP 410). Interrupts left out keep the run paused. A new message on the thread instead of an answer answers the waiting call with "The user moved on without answering", as it declines a waiting approval.
+`resume()` checks each answer before the run goes on: an answer to an interrupt the run does not wait on, or one already answered fails with `VALIDATION_ERROR`, one that does not match its `responseSchema` with `INTERRUPT_ANSWER_INVALID` (HTTP 400, `details.interruptId`, the run still waits), an answer after `expiresAt` with `INTERRUPT_EXPIRED` (HTTP 410). Interrupts left out keep the run paused. A new message on the thread instead of an answer answers the waiting call with "The user moved on without answering", as it declines a waiting approval.
 
 `context.interrupt` is there for tools in a run. It is absent in `invokeTool()` and in sandboxed tools.
 
@@ -151,6 +151,12 @@ A pending approval is an interrupt of `kind: 'approval'`, its id the tool call i
 ### In the Session Log
 
 A pause on questions writes an `interrupt` entry `{ status: 'paused', interrupts: [{ id, kind, reason, message }] }`, and a resume that answers them one with `{ status: 'resumed', interrupts: [{ id, kind, reason, response }] }`. A pause for approvals writes the `approval` entry it always wrote.
+
+### Answers Typed or Spoken
+
+`parseAnswer(text, schema)` from `@cogitator-ai/types` reads what a person typed or said by the question's JSON Schema: yes or no for a boolean (in English or Russian), a number, a member of an `enum` whatever its case, the first member of a union the text fits, the text as the one field of an object, JSON, a comma-separated list. It gives `{ ok, value }`, or a `problem` to show the person. `answerFormat(schema)` says what an answer looks like (`yes or no`, `a number from 1 to 5`, `one of: eu, us`), for the prompt. The Gateway and the voice runner use both.
+
+`cog.pausedRun(threadId)` lists what a thread waits on (after a restart too), and `cog.cancelPause(threadId, { userId, reason })` ends the pause without an answer: each waiting call gets a declined result ("The user declined to answer ..."), so the next run reads a whole history.
 
 ### Across Cogitator
 

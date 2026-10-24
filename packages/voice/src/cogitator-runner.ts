@@ -1,3 +1,4 @@
+import { answerFormat, parseAnswer } from '@cogitator-ai/types';
 import type {
   KeptModelTurn,
   MemoryAdapter,
@@ -120,7 +121,8 @@ class WaitingQuestions {
       return undefined;
     }
     this.byThread.set(threadId, question);
-    return question.message;
+    const format = answerFormat(question.responseSchema);
+    return format ? `${question.message} (${format})` : question.message;
   }
 
   drop(threadId: string): void {
@@ -136,7 +138,8 @@ function errorCode(error: unknown): string | undefined {
 
 /**
  * Answers `question` with what the caller said, or runs the turn as a new one when the run no
- * longer waits on it. An answer the run refuses is said back and the question keeps waiting
+ * longer waits on it or the question expired. What the caller said is read by the question's
+ * schema (`parseAnswer`), and an answer that does not fit is said back with the question
  */
 async function answerOrRun<TAgent>(
   cogitator: CogitatorLike<TAgent>,
@@ -150,20 +153,24 @@ async function answerOrRun<TAgent>(
     return cogitator.run(agent, options);
   }
   const { input, ...rest } = options;
+  const askAgain = (problem: string) => ({
+    output: '',
+    status: 'paused',
+    interrupts: [question],
+    said: `That does not answer my question: ${problem}. ${question.message}`,
+  });
+  const parsed = parseAnswer(input, question.responseSchema);
+  if (!parsed.ok) return askAgain(parsed.problem);
   try {
     return await cogitator.resume(agent, threadId, {
       ...rest,
-      responses: { [question.id]: input },
+      responses: { [question.id]: parsed.value },
     });
   } catch (error) {
     const code = errorCode(error);
-    if (code === 'VALIDATION_ERROR') {
-      return {
-        output: '',
-        status: 'paused',
-        interrupts: [question],
-        said: `That does not answer my question. ${question.message}`,
-      };
+    if (code === 'INTERRUPT_ANSWER_INVALID') {
+      const format = answerFormat(question.responseSchema);
+      return askAgain(format ? `the answer should be ${format}` : 'the answer does not fit');
     }
     if (code !== 'RUN_NOT_PAUSED' && code !== 'INTERRUPT_EXPIRED') throw error;
     questions.drop(threadId);

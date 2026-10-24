@@ -160,7 +160,7 @@ describe('Core: interrupts and history repair through the package API', () => {
       cogitator.resume(agent, roundTrip(paused.checkpoint), {
         responses: { 'd1#0': { region: 'mars' } },
       })
-    ).rejects.toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+    ).rejects.toMatchObject({ code: ErrorCode.INTERRUPT_ANSWER_INVALID });
 
     const done = await cogitator.resume(agent, 'e2e-ask', {
       responses: { 'd1#0': { region: 'eu' } },

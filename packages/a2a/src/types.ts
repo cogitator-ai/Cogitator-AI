@@ -1,5 +1,6 @@
 import type {
   Agent,
+  RunCheckpoint,
   RunInterrupt,
   ToolApprovalDecision,
   ToolApprovalRequest,
@@ -323,6 +324,11 @@ export interface AgentRunResult {
   pendingApprovals?: readonly ToolApprovalRequest[];
   /** What a paused run waits on: approvals (`kind: 'approval'`) and questions of its tools */
   interrupts?: readonly RunInterrupt[];
+  /**
+   * The checkpoint of a paused run. The task keeps it and resumes exactly this run from it, so a
+   * newer run on the same thread never takes the answers meant for this one
+   */
+  checkpoint?: RunCheckpoint;
   runId: string;
   agentId: string;
   threadId: string;
@@ -352,12 +358,13 @@ export interface CogitatorLike {
     }
   ): Promise<AgentRunResult>;
   /**
-   * Continue the run a thread paused for tool approvals or questions, with the client's decisions
-   * and answers. Without it a task waiting on either fails when the client answers
+   * Continue a run paused for tool approvals or questions, with the client's decisions and
+   * answers: from the paused run's `checkpoint` when the run returned one, else from the thread
+   * it paused in. Without it a task waiting on either fails when the client answers
    */
   resume?(
     agent: unknown,
-    threadId: string,
+    target: RunCheckpoint | string,
     options: {
       decisions?: Record<string, ToolApprovalDecision>;
       defaultDecision?: ToolApprovalDecision;
@@ -370,6 +377,17 @@ export interface CogitatorLike {
       userId?: string;
     }
   ): Promise<AgentRunResult>;
+  /**
+   * The run paused in a thread, if any. With it a task checks that the run it waits on still
+   * waits before resuming it, and ends the task when a newer run on the thread moved on
+   */
+  pausedRun?(threadId: string): Promise<{ runId: string } | undefined>;
+  /**
+   * Ends the run paused in a thread without going on, its waiting calls answered as declined
+   * with `reason`. With it a task whose question expired lifts the pause right away, instead of
+   * leaving it to the next run of the context
+   */
+  cancelPause?(threadId: string, options: { userId?: string; reason?: string }): Promise<boolean>;
 }
 
 /** Who an authenticated A2A request comes from. */

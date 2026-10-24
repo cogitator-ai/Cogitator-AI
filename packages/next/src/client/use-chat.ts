@@ -77,7 +77,7 @@ interface ChatRequest {
 }
 
 /** Codes of a resume the server refused before it ran: the paused run still waits */
-const REFUSED_RESUME_CODES = new Set(['VALIDATION_ERROR', 'INTERRUPT_EXPIRED']);
+const REFUSED_RESUME_CODES = new Set(['INTERRUPT_ANSWER_INVALID', 'INTERRUPT_EXPIRED']);
 
 type ResponseHandler = (response: Response, request: ChatRequest) => Promise<void>;
 

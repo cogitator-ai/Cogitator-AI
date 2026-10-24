@@ -270,7 +270,7 @@ if (waiting) {
 }
 ```
 
-`toolApprovalResponsePart({ decisions?, defaultDecision? })` builds the part for a hand-written message. Calls left without a decision keep the task waiting. A text reply instead of decisions moves on: the waiting calls are declined and the agent answers the new message. The server resumes through `cogitator.resume()` by the task's `contextId`, so the paused run has to be where the server Cogitator keeps paused runs (its memory, or `runCheckpoints` shared by every server instance). `asTool()` reports such a remote task with `success: false`, the `taskId` and the calls in `pendingApprovals`.
+`toolApprovalResponsePart({ decisions?, defaultDecision? })` builds the part for a hand-written message. Calls left without a decision keep the task waiting. A text reply instead of decisions moves on: the waiting calls are declined and the agent answers the new message. The task keeps the paused run's id and checkpoint, and the server resumes exactly that run through `cogitator.resume()` from the checkpoint (by the task's `contextId` when the Cogitator returns none). Before it resumes, it checks with `cogitator.pausedRun(contextId)` that the run still waits, so the paused run has to be where the server Cogitator keeps paused runs (its memory, or `runCheckpoints` shared by every server instance). `asTool()` reports such a remote task with `success: false`, the `taskId` and the calls in `pendingApprovals`.
 
 ## Tool Questions
 
@@ -285,7 +285,11 @@ if (questions) {
 }
 ```
 
-`interruptResponsePart(responses)` builds the part for a hand-written message. A task waiting on a single question also takes the continuing message itself as the answer: its first data part, else its text. An answer that does not match the question's `responseSchema` keeps the task in `input-required` with why, so the client can answer again, and one after `expiresAt` fails the task. A run that waits for approvals and questions at once carries both parts, and one message can answer both. `asTool()` reports such a remote task with `success: false`, the `taskId` and the questions in `pendingQuestions`.
+`interruptResponsePart(responses)` builds the part for a hand-written message. A task waiting on a single question also takes the continuing message itself as the answer: its first data part, else its text, read by the question's `responseSchema` with `parseAnswer()` from `@cogitator-ai/types` (`yes` for a boolean, `3` for a number, a member of an enum, a comma-separated list). The status message names the answer form after each question, such as `Go ahead? (yes or no)`. A text that does not answer, an answer the run refuses as not matching the schema (`INTERRUPT_ANSWER_INVALID`) and an interrupt response naming no waiting question keep the task in `input-required` with why, so the client can answer again. Other resume errors fail the task.
+
+An answer after the question's `expiresAt` ends the task `failed`, its status message saying which question expired, and lifts the pause with `cogitator.cancelPause()` (the waiting calls answered as declined because the question expired), so the context goes on with its next message. A run that waits for approvals and questions at once carries both parts, and one message can answer both.
+
+A new task in the same context starts a run on the context's thread, and the runtime answers the calls an earlier task's paused run waits on with "The user moved on". That earlier task then ends `canceled`, its status message saying a newer message moved on, instead of waiting in `input-required` on a run that is gone: answer a task's questions before sending the context something new. A message that continues the task itself without answering (plain text while several questions wait) moves on the same way, as a new turn of the task. `asTool()` reports such a remote task with `success: false`, the `taskId` and the questions in `pendingQuestions`.
 
 ## Listing Tasks
 

@@ -25,7 +25,7 @@ import type {
   ToolApprovalDecision,
   ToolApprovalRequest,
 } from '@cogitator-ai/types';
-import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
+import { CogitatorError, ErrorCode, answerFormat, parseAnswer } from '@cogitator-ai/types';
 import type { Agent, Cogitator } from '@cogitator-ai/core';
 import { parseModel, pendingQuestions } from '@cogitator-ai/core';
 import { SessionManager, CompactionService } from '@cogitator-ai/memory';
@@ -49,7 +49,9 @@ import {
   DEFAULT_APPROVE_WORDS,
   DEFAULT_DENY_WORDS,
   DEFAULT_NOT_ALLOWED_MESSAGE,
+  DEFAULT_CANCEL_WORDS,
   DEFAULT_EXPIRED_MESSAGE,
+  DEFAULT_MAX_ANSWER_ATTEMPTS,
   DEFAULT_STOPPING_MESSAGE,
   APPROVE_ACTION,
   DENY_ACTION,
@@ -111,6 +113,8 @@ interface PausedThread {
   approvals: readonly ToolApprovalRequest[];
   /** Questions the run's tools asked (`context.interrupt()`), answered by the user's next message */
   questions?: readonly RunInterrupt[];
+  /** Answers given to the first question that did not fit it */
+  failedAnswers?: number;
   /** The entry the paused run's input went after, where a rollback of its resume branches from */
   branchFrom?: string | null;
 }
@@ -147,20 +151,6 @@ const QUEUE_STRATEGIES: Record<QueueMode, MultitaskStrategy | undefined> = {
   interrupt: 'interrupt',
   rollback: 'rollback',
 };
-
-/**
- * A chat message as the answer to `question`: parsed as JSON when its schema asks for anything
- * but a string and the text reads as JSON, else the text itself
- */
-function answerOf(question: RunInterrupt, text: string): unknown {
-  const type = question.responseSchema?.type;
-  if (type === undefined || type === 'string') return text;
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return text;
-  }
-}
 
 function isThreadBusy(error: unknown): boolean {
   return CogitatorError.isCogitatorError(error) && error.code === ErrorCode.THREAD_BUSY;
@@ -249,7 +239,10 @@ function toError(error: unknown): Error {
 function isResumeRejection(error: unknown): boolean {
   return (
     CogitatorError.isCogitatorError(error) &&
-    (error.code === ErrorCode.RUN_NOT_PAUSED || error.code === ErrorCode.THREAD_ACCESS_DENIED)
+    (error.code === ErrorCode.RUN_NOT_PAUSED ||
+      error.code === ErrorCode.THREAD_ACCESS_DENIED ||
+      error.code === ErrorCode.INTERRUPT_ANSWER_INVALID ||
+      error.code === ErrorCode.INTERRUPT_EXPIRED)
   );
 }
 
@@ -964,6 +957,13 @@ export class Gateway {
       });
     }
 
+    if (
+      known === undefined &&
+      !this.pausedThreads.has(threadId) &&
+      typeof this.config.cogitator.pausedRun === 'function'
+    ) {
+      await this.recoverQuestion(threadId);
+    }
     const question = this.waitingQuestion(msg, threadId);
     const decision = question ? null : this.readApprovalReply(msg, threadId, known !== undefined);
 
@@ -1037,9 +1037,29 @@ export class Gateway {
   }
 
   /**
-   * Resumes the paused run with `msg` as the answer to `question`. An answer the run refuses
-   * (`VALIDATION_ERROR`) is told to the user and the question keeps waiting, an expired one ends
-   * the pause, and a thread with no paused run any more runs the message as a new turn (false)
+   * Picks up a question a paused run of `threadId` waits on from the runtime's checkpoint store,
+   * for a thread the gateway has not seen since it started: the question then outlives a restart,
+   * as an approval does
+   */
+  private async recoverQuestion(threadId: string): Promise<void> {
+    let paused: Awaited<ReturnType<Cogitator['pausedRun']>>;
+    try {
+      paused = await this.config.cogitator.pausedRun(threadId);
+    } catch {
+      return;
+    }
+    const questions = paused?.interrupts.filter((entry) => entry.kind !== 'approval') ?? [];
+    const userId = paused?.userId;
+    if (userId === undefined || questions.length === 0) return;
+    this.pausedThreads.set(threadId, { userId, approvals: [], questions });
+  }
+
+  /**
+   * Answers `question` with `msg`: a cancel word cancels it, a text that does not fit it is told
+   * to the user with what an answer looks like (after `maxAnswerAttempts` the question is
+   * cancelled), and a fitting one resumes the run. An answer the run refuses counts as one that
+   * does not fit, an expired one ends the pause, and a thread with no paused run any more runs
+   * the message as a new turn (false)
    */
   private async resumeWithAnswer(
     agent: Agent,
@@ -1051,11 +1071,36 @@ export class Gateway {
     signal: AbortSignal | undefined
   ): Promise<boolean> {
     const paused = this.pausedThreads.get(threadId);
+    const say = (text: string) =>
+      this.sendReply(channel, msg, threadId, adaptFor(channel, msg, text), msg.id);
+    const cancelWords = this.config.approvals?.cancelWords ?? DEFAULT_CANCEL_WORDS;
+    if (cancelWords.some((word) => word.toLowerCase() === msg.text.trim().toLowerCase())) {
+      await this.cancelQuestion(msg, threadId, 'the user cancelled');
+      await say(`Cancelled: "${question.message}".`);
+      return true;
+    }
+    const refused = async (problem: string): Promise<true> => {
+      const attempts = (paused?.failedAnswers ?? 0) + 1;
+      const limit = this.config.approvals?.maxAnswerAttempts ?? DEFAULT_MAX_ANSWER_ATTEMPTS;
+      if (attempts >= limit) {
+        await this.cancelQuestion(msg, threadId, 'no answer fitted the question');
+        await say(`No answer fitted "${question.message}", so it was cancelled.`);
+        return true;
+      }
+      if (paused) paused.failedAnswers = attempts;
+      await say(
+        `That does not answer "${question.message}": ${problem}. Reply "${cancelWords[0] ?? 'cancel'}" to skip it.`
+      );
+      return true;
+    };
+    const parsed = parseAnswer(msg.text, question.responseSchema);
+    if (!parsed.ok) return refused(parsed.problem);
+
     const origin = signal ? this.runPlaces.get(signal)?.origin : undefined;
     if (origin && paused?.branchFrom !== undefined) this.runStarts.set(origin, paused.branchFrom);
     const options = {
       ...this.buildRunOptions(msg, tracker, signal),
-      responses: { [question.id]: answerOf(question, msg.text) },
+      responses: { [question.id]: parsed.value },
     };
     try {
       await this.deliver(agent, msg, channel, threadId, signal, async (extra) => {
@@ -1073,16 +1118,34 @@ export class Gateway {
         this.pausedThreads.delete(threadId);
         return false;
       }
-      if (error.code === ErrorCode.VALIDATION_ERROR || error.code === ErrorCode.INTERRUPT_EXPIRED) {
-        if (error.code === ErrorCode.INTERRUPT_EXPIRED) this.pausedThreads.delete(threadId);
-        const text =
-          error.code === ErrorCode.INTERRUPT_EXPIRED
-            ? `The question "${question.message}" expired, send your message again to go on.`
-            : `That does not answer "${question.message}": ${error.message}`;
-        await this.sendReply(channel, msg, threadId, adaptFor(channel, msg, text), msg.id);
+      if (error.code === ErrorCode.INTERRUPT_ANSWER_INVALID) {
+        const format = answerFormat(question.responseSchema);
+        return refused(format ? `the answer should be ${format}` : 'the answer does not fit');
+      }
+      if (error.code === ErrorCode.INTERRUPT_EXPIRED) {
+        await this.cancelQuestion(msg, threadId, 'the question expired');
+        await say(`The question "${question.message}" expired. Send your message again to go on.`);
         return true;
       }
       throw error;
+    }
+  }
+
+  /** Ends the paused run of `threadId` without an answer: its waiting calls get a declined result */
+  private async cancelQuestion(
+    msg: ChannelMessage,
+    threadId: string,
+    reason: string
+  ): Promise<void> {
+    this.pausedThreads.delete(threadId);
+    try {
+      await this.config.cogitator.cancelPause(threadId, {
+        userId: msg.userId,
+        threadAccess: 'shared',
+        reason,
+      });
+    } catch (error) {
+      this.config.onError?.(toError(error), msg);
     }
   }
 
@@ -1221,7 +1284,9 @@ export class Gateway {
         ...(result.memory && { branchFrom: result.memory.branchPoint }),
       });
       const [first] = questions;
-      const prompt = first && adaptFor(channel, msg, first.message);
+      const format = first && answerFormat(first.responseSchema);
+      const prompt =
+        first && adaptFor(channel, msg, format ? `${first.message} (${format})` : first.message);
       if (prompt) await this.sendReply(channel, msg, threadId, prompt, replyTo);
       return;
     }
