@@ -244,6 +244,47 @@ describe('what a project deploys as', () => {
       expect(result.deployConfig.ollama?.models).toEqual(['qwen3:4b']);
     });
 
+    it('does not ask for a local Ollama URL found in .env and .env.example as a secret', () => {
+      write('.env', 'OLLAMA_BASE_URL=http://localhost:11434\n');
+      write('.env.example', 'OLLAMA_BASE_URL=http://localhost:11434\n');
+      const result = analyze('docker', { OLLAMA_BASE_URL: 'http://localhost:11434' });
+      expect(check(result, 'Secrets')).toBeUndefined();
+      expect(result.deployConfig.env?.OLLAMA_BASE_URL).toBe(SERVICE);
+    });
+
+    describe('with llm.defaultProvider: ollama and models only in code', () => {
+      const providerOnly = 'llm:\n  defaultProvider: ollama\n';
+
+      it('reaches the Ollama of the host, since there is nothing to pull', () => {
+        write('cogitator.yml', providerOnly);
+        const result = analyze('docker');
+
+        expect(result.deployConfig.services?.ollama).toBeUndefined();
+        expect(result.deployConfig.hostGateway).toBe(true);
+        expect(result.deployConfig.env?.COGITATOR_OLLAMA_BASE_URL).toBe(
+          'http://host.docker.internal:11434'
+        );
+        expect(result.warnings.some((w) => w.includes('agents name in code'))).toBe(true);
+      });
+
+      it('runs the container for the models deploy.ollama.models lists', () => {
+        write('cogitator.yml', `${providerOnly}deploy:\n  ollama:\n    models: [qwen3:8b]\n`);
+        const result = analyze('docker');
+
+        expect(result.deployConfig.services?.ollama).toBe(true);
+        expect(result.deployConfig.ollama?.models).toEqual(['qwen3:8b']);
+        expect(result.deployConfig.env?.COGITATOR_OLLAMA_BASE_URL).toBe(SERVICE);
+      });
+
+      it('warns that services.ollama pulls nothing for the chat without a model list', () => {
+        write('cogitator.yml', `${providerOnly}deploy:\n  services:\n    ollama: true\n`);
+        const result = analyze('docker');
+
+        expect(result.deployConfig.hostGateway).toBeUndefined();
+        expect(result.warnings.some((w) => w.includes('pulls none for the chat'))).toBe(true);
+      });
+    });
+
     it('warns when services.ollama runs a container nothing uses', () => {
       write(
         'cogitator.yml',
@@ -298,6 +339,54 @@ describe('what a project deploys as', () => {
         expect(
           result.warnings.some((w) => w.includes('follows OLLAMA_BASE_URL, which the Ollama URL'))
         ).toBe(true);
+      });
+
+      it('keeps Ollama Cloud chat models on the cloud while embeddings use the container', () => {
+        write(
+          'cogitator.yml',
+          `llm:\n  defaultModel: ollama/qwen3.5:cloud\n  providers:\n    ollama:\n      baseUrl: https://ollama.com\n      apiKey: \${OLLAMA_API_KEY}\n${embeddingYml('${OLLAMA_BASE_URL:-http://localhost:11434}')}`
+        );
+        const result = analyze('docker', { OLLAMA_API_KEY: 'key' });
+
+        expect(result.deployConfig.env).toEqual({ OLLAMA_BASE_URL: SERVICE });
+        expect(result.deployConfig.ollama?.models).toEqual(['nomic-embed-text']);
+        expect(result.deployConfig.secrets).toContain('OLLAMA_API_KEY');
+      });
+
+      it('reads an API key without a URL as Ollama Cloud, like the config schema', () => {
+        write(
+          'cogitator.yml',
+          `llm:\n  defaultModel: ollama/qwen3.5:cloud\n${embeddingYml('${OLLAMA_BASE_URL:-http://localhost:11434}')}`
+        );
+        const result = analyze('docker', { OLLAMA_API_KEY: 'key' });
+
+        expect(result.deployConfig.env ?? {}).not.toHaveProperty('COGITATOR_OLLAMA_BASE_URL');
+        expect(result.deployConfig.env ?? {}).not.toHaveProperty('OLLAMA_BASE_URL');
+        expect(
+          result.warnings.some((w) => w.includes('follows OLLAMA_BASE_URL, which the Ollama URL'))
+        ).toBe(true);
+      });
+
+      it('forwards the variable a remote chat baseUrl follows', () => {
+        write(
+          'cogitator.yml',
+          'llm:\n  defaultModel: ollama/qwen3:32b\n  providers:\n    ollama:\n      baseUrl: ${GPU_OLLAMA}\n'
+        );
+        const result = analyze('docker', { GPU_OLLAMA: 'http://gpu-box:11434' });
+
+        expect(result.deployConfig.secrets).toContain('GPU_OLLAMA');
+        expect(result.deployConfig.services?.ollama).toBeUndefined();
+        expect(result.warnings.some((w) => w.includes('Ollama'))).toBe(false);
+      });
+
+      it('does not check the names of models an Ollama elsewhere runs', () => {
+        write(
+          'cogitator.yml',
+          'llm:\n  defaultModel: ollama/--odd\n  providers:\n    ollama:\n      baseUrl: http://gpu-box:11434\n'
+        );
+        expect(check(analyze('docker'), 'Ollama models')).toBeUndefined();
+        write('cogitator.yml', 'llm:\n  defaultModel: ollama/--odd\n');
+        expect(check(analyze('fly'), 'Ollama models')).toBeUndefined();
       });
 
       it('keeps remote embeddings when only the chat model runs locally', () => {
@@ -385,6 +474,29 @@ describe('what a project deploys as', () => {
         expect(result.deployConfig.hostGateway).toBe(true);
         expect(result.deployConfig.env?.OLLAMA_BASE_URL).toBe('http://host.docker.internal:11434');
         expect(result.warnings.some((w) => w.includes('ollama pull nomic-embed-text'))).toBe(true);
+      });
+
+      it('keeps redis and postgres detection next to the opt-out', () => {
+        write(
+          'cogitator.yml',
+          `${ollamaYml}memory:\n  adapter: postgres\n  postgres:\n    connectionString: postgres://localhost/db\ndeploy:\n  services:\n    ollama: false\n`
+        );
+        expect(analyze('docker').deployConfig.services).toEqual({
+          redis: false,
+          postgres: true,
+          ollama: false,
+        });
+      });
+
+      it('gives each role the port of its own local Ollama on the host', () => {
+        write(
+          'cogitator.yml',
+          'llm:\n  defaultModel: ollama/qwen3:8b\n  providers:\n    ollama:\n      baseUrl: http://localhost:11434\nmemory:\n  embedding:\n    provider: ollama\n    baseUrl: ${OLLAMA_EMBEDDING_URL:-http://localhost:11500}\ndeploy:\n  services:\n    ollama: false\n'
+        );
+        expect(analyze('docker').deployConfig.env).toMatchObject({
+          COGITATOR_OLLAMA_BASE_URL: 'http://host.docker.internal:11434',
+          OLLAMA_EMBEDDING_URL: 'http://host.docker.internal:11500',
+        });
       });
 
       it('keeps the port of a local Ollama on another port', () => {
