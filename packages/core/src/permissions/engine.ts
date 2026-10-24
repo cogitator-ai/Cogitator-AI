@@ -51,6 +51,7 @@ import {
   type ParsedCommandLine,
   type ShellCommand,
 } from './shell';
+import { own } from '../utils/own';
 
 const BEHAVIORS: readonly PermissionBehavior[] = ['deny', 'ask', 'allow'];
 
@@ -526,7 +527,7 @@ async function restrictiveMatch(
   }
   if (subject.kind === 'agent') return agentMatches(subject, specifier);
   const parameter = parameterSpecifier(specifier, tool, subject.schemaKeys);
-  if (parameter) return parameterMatches(subject.values[parameter.name], parameter.value);
+  if (parameter) return parameterMatches(own(subject.values, parameter.name), parameter.value);
   if (rule.target.kind === 'names' && rule.target.pathRulesNeverMatch) return false;
   if (subject.kind === 'command') {
     const call = subject.command();
@@ -1038,8 +1039,10 @@ export function suggestRule(
 let readProbe: Tool | undefined;
 
 /**
- * Whether no `Read(...)` deny rule of `rules` covers `path` (relative to the workspace root or
- * absolute), for tools that read or list many files
+ * Whether no `Read(...)` deny or ask rule of `rules` covers `path` (relative to the workspace
+ * root or absolute), for tools that read or list many files: they leave out what a rule refuses,
+ * and what one asks for too, since a search reads it without anyone asked. A bare `Read` ask
+ * makes the search itself ask, so it withholds nothing here
  */
 export async function readAllowed(
   path: string,
@@ -1060,19 +1063,15 @@ export async function readAllowed(
   };
   const { base, cwd, projectRoot } = placesOf(context);
   const subject = new CallSubject(readProbe, { path }, base, cwd, await ignoresCase(context, base));
-  for (const rule of rules.rules('deny')) {
-    if (rule.target.kind !== 'family' || rule.target.family !== 'read') continue;
-    if (rule.parsed.specifier === undefined) return false;
-    if (
-      anyPathMatches(
-        rule,
-        rule.parsed.specifier,
-        [await resolveCallPath(path, base)],
-        subject,
-        projectRoot
-      )
-    ) {
-      return false;
+  const resolved = [await resolveCallPath(path, base)];
+  for (const behavior of ['deny', 'ask'] as const) {
+    for (const rule of rules.rules(behavior)) {
+      if (rule.target.kind !== 'family' || rule.target.family !== 'read') continue;
+      if (rule.parsed.specifier === undefined) {
+        if (behavior === 'deny') return false;
+        continue;
+      }
+      if (anyPathMatches(rule, rule.parsed.specifier, resolved, subject, projectRoot)) return false;
     }
   }
   return true;

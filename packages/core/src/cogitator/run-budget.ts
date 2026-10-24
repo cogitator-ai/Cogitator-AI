@@ -14,6 +14,7 @@ import type {
   SpendTotals,
 } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
+import { dictionary, own } from '../utils/own';
 
 /** The key of a thread's metadata that keeps what its session spent */
 export const SESSION_BUDGET_KEY = 'budget';
@@ -58,7 +59,13 @@ const SessionSpendSchema = TotalsSchema.extend({
 /** What a thread's metadata keeps of its session's spending, read leniently: nothing for junk */
 export function readSessionSpend(value: unknown): SessionSpend {
   const parsed = SessionSpendSchema.safeParse(value);
-  return parsed.success ? parsed.data : emptySpend();
+  if (!parsed.success) return emptySpend();
+  const { agents, raised, ...totals } = parsed.data;
+  return {
+    ...totals,
+    ...(agents && { agents: dictionary(Object.entries(agents)) }),
+    ...(raised && { raised: dictionary(Object.entries(raised)) }),
+  };
 }
 
 function emptyTotals(): SpendTotals {
@@ -75,20 +82,27 @@ function copySpend(spend: BudgetSpend): BudgetSpend {
     tokens: spend.tokens,
     toolCalls: spend.toolCalls,
     ...(spend.agents && {
-      agents: Object.fromEntries(
-        Object.entries(spend.agents).map(([id, totals]) => [id, { ...totals }])
-      ),
+      agents: dictionary(Object.entries(spend.agents).map(([id, totals]) => [id, { ...totals }])),
     }),
   };
 }
 
 function add(target: BudgetSpend, agentId: string, delta: Partial<SpendTotals>): void {
-  const agents = (target.agents ??= {});
-  const own = (agents[agentId] ??= emptyTotals());
+  const agents = (target.agents ??= dictionary());
+  let totals = own(agents, agentId);
+  if (!totals) {
+    totals = emptyTotals();
+    Object.defineProperty(agents, agentId, {
+      value: totals,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
   for (const key of ['costUsd', 'tokens', 'toolCalls'] as const) {
     const value = delta[key] ?? 0;
     target[key] += value;
-    own[key] += value;
+    totals[key] += value;
   }
 }
 
@@ -99,14 +113,18 @@ function minus(a: BudgetSpend, b: BudgetSpend): BudgetSpend {
     tokens: a.tokens - b.tokens,
     toolCalls: a.toolCalls - b.toolCalls,
   };
-  for (const [id, totals] of Object.entries(a.agents ?? {})) {
-    const before = b.agents?.[id] ?? emptyTotals();
-    (result.agents ??= {})[id] = {
-      costUsd: totals.costUsd - before.costUsd,
-      tokens: totals.tokens - before.tokens,
-      toolCalls: totals.toolCalls - before.toolCalls,
-    };
-  }
+  const agents = Object.entries(a.agents ?? {}).map(([id, totals]): [string, SpendTotals] => {
+    const before = own(b.agents, id) ?? emptyTotals();
+    return [
+      id,
+      {
+        costUsd: totals.costUsd - before.costUsd,
+        tokens: totals.tokens - before.tokens,
+        toolCalls: totals.toolCalls - before.toolCalls,
+      },
+    ];
+  });
+  if (agents.length > 0) result.agents = dictionary(agents);
   return result;
 }
 
@@ -121,15 +139,14 @@ export function freshestSpend(a: SessionSpend, b: SessionSpend): SessionSpend {
     toolCalls: Math.max(x?.toolCalls ?? 0, y?.toolCalls ?? 0),
   });
   const ids = new Set([...Object.keys(a.agents ?? {}), ...Object.keys(b.agents ?? {})]);
-  const raised = { ...a.raised, ...b.raised };
-  for (const [key, value] of Object.entries(a.raised ?? {}))
-    raised[key] = Math.max(value, raised[key]);
+  const raised = dictionary([...Object.entries(a.raised ?? {}), ...Object.entries(b.raised ?? {})]);
+  for (const [key, value] of Object.entries(a.raised ?? {})) {
+    raised[key] = Math.max(value, own(raised, key) ?? value);
+  }
   return {
     ...totals(a, b),
     ...(ids.size > 0 && {
-      agents: Object.fromEntries(
-        [...ids].map((id) => [id, totals(a.agents?.[id], b.agents?.[id])])
-      ),
+      agents: dictionary([...ids].map((id) => [id, totals(own(a.agents, id), own(b.agents, id))])),
     }),
     ...(Object.keys(raised).length > 0 && { raised }),
   };
@@ -151,7 +168,10 @@ export function addToSession(
   result.costUsd += unattributed.costUsd;
   result.tokens += unattributed.tokens;
   result.toolCalls += unattributed.toolCalls;
-  const allRaised = { ...session.raised, ...raised };
+  const allRaised = dictionary([
+    ...Object.entries(session.raised ?? {}),
+    ...Object.entries(raised),
+  ]);
   if (Object.keys(allRaised).length > 0) result.raised = allRaised;
   return result;
 }
@@ -256,7 +276,7 @@ export class RunBudget {
   private recorded: BudgetSpend;
   private readonly lifted: Set<string>;
   private readonly runRaised: Record<string, number>;
-  private readonly sessionRaised: Record<string, number> = {};
+  private readonly sessionRaised: Record<string, number> = dictionary();
   private readonly warned = new Set<string>();
 
   constructor(
@@ -267,7 +287,7 @@ export class RunBudget {
     this.spent = state ? copySpend(state.spent) : emptySpend();
     this.recorded = state ? copySpend(state.recorded) : emptySpend();
     this.lifted = new Set(state?.lifted ?? []);
-    this.runRaised = { ...state?.raised };
+    this.runRaised = dictionary(Object.entries(state?.raised ?? {}));
   }
 
   /** Whether any budget applies to the run */
@@ -311,7 +331,10 @@ export class RunBudget {
 
   /** What the run spent that the session's record does not hold yet, with the limits it raised */
   pendingRecord(): { spend: BudgetSpend; raised: Record<string, number> } {
-    return { spend: minus(this.spent, this.recorded), raised: { ...this.sessionRaised } };
+    return {
+      spend: minus(this.spent, this.recorded),
+      raised: dictionary(Object.entries(this.sessionRaised)),
+    };
   }
 
   /** The session's record now holds everything the run spent */
@@ -327,9 +350,9 @@ export class RunBudget {
   ): number | undefined {
     return (
       explicit ??
-      this.sessionRaised[key] ??
-      this.session.raised?.[key] ??
-      this.runRaised[key] ??
+      own(this.sessionRaised, key) ??
+      own(this.session.raised, key) ??
+      own(this.runRaised, key) ??
       configured
     );
   }
@@ -341,7 +364,7 @@ export class RunBudget {
     metrics: readonly BudgetMetric[]
   ): LimitState[] {
     const totals = this.sessionTotals();
-    const agentTotals = totals.agents?.[agentId] ?? emptyTotals();
+    const agentTotals = own(totals.agents, agentId) ?? emptyTotals();
     const agentLimits = this.options.agentLimits(agentId) ?? this.options.config.agent;
     const session = this.options.config.session;
     const states: LimitState[] = [];
@@ -456,7 +479,7 @@ export class RunBudget {
       recorded: copySpend(this.recorded),
       ...(this.lifted.size > 0 && { lifted: [...this.lifted] }),
       ...((Object.keys(this.runRaised).length > 0 || Object.keys(pending.raised).length > 0) && {
-        raised: { ...this.runRaised, ...pending.raised },
+        raised: dictionary([...Object.entries(this.runRaised), ...Object.entries(pending.raised)]),
       }),
     };
   }

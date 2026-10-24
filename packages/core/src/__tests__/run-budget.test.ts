@@ -93,7 +93,7 @@ describe('session budgets', () => {
       costUsd: 1.3,
       tokens: 30,
       toolCalls: 2,
-      agents: { [agent.id]: { costUsd: 1.3 } },
+      agents: { [agent.name]: { costUsd: 1.3 } },
     });
     await cog.close();
   });
@@ -177,7 +177,7 @@ describe('session budgets', () => {
     expect(paused.interrupts?.[0].details).toMatchObject({
       scope: 'agent',
       metric: 'tokens',
-      agentId: agent.id,
+      agentId: agent.name,
       used: 20,
       limit: 15,
     });
@@ -690,6 +690,51 @@ describe('eighth review round budgets', () => {
     const result = await cog.run(agent, { input: 'I live in Porto', threadId: 'b-upkeep' });
     expect(result.usage.cost).toBeCloseTo(0.5);
     expect(result.sessionSpend?.costUsd).toBeCloseTo(0.5);
+    await cog.close();
+  });
+});
+
+describe('ninth review round budgets', () => {
+  it('keeps the spending of an agent across new instances of it', async () => {
+    const backend = new MockLLMBackend().setResponses([
+      { content: 'a', usage: spend(0, 10) },
+      { content: 'b', usage: spend(0, 10) },
+      { content: 'c', usage: spend(0, 10) },
+    ]);
+    const cog = new Cogitator({
+      memory: { adapter: 'memory' },
+      llm: { backends: { mock: backend } },
+    });
+    const make = () =>
+      new Agent({ name: 'thrifty', model: 'mock/m', instructions: 'x', budget: { maxTokens: 15 } });
+    await cog.run(make(), { input: '1', threadId: 'b-instances' });
+    await cog.run(make(), { input: '2', threadId: 'b-instances' });
+    const third = await cog.run(make(), { input: '3', threadId: 'b-instances' });
+    expect(third.status).toBe('paused');
+    expect(third.interrupts?.[0].details).toMatchObject({ scope: 'agent', agentId: 'thrifty' });
+    expect(backend.getCallCount()).toBe(2);
+    await cog.close();
+  });
+
+  it('keeps budgets of an agent named __proto__ apart from Object.prototype', async () => {
+    const backend = new MockLLMBackend().setResponse(answer(0.1));
+    const cog = new Cogitator({
+      memory: { adapter: 'memory' },
+      llm: { backends: { mock: backend } },
+      budget: { session: { maxCostUsd: 5 } },
+    });
+    const agent = new Agent({
+      name: '__proto__',
+      model: 'mock/m',
+      instructions: 'x',
+      budget: { maxCostUsd: 1 },
+    });
+    const result = await cog.run(agent, { input: 'go', threadId: 'b-proto' });
+    expect(result.status).toBe('completed');
+    expect(Object.hasOwn(result.sessionSpend?.agents ?? {}, '__proto__')).toBe(true);
+    expect(({} as Record<string, unknown>).costUsd).toBeUndefined();
+    const again = await cog.run(agent, { input: 'again', threadId: 'b-proto' });
+    expect(again.sessionSpend?.costUsd).toBeCloseTo(0.2);
     await cog.close();
   });
 });

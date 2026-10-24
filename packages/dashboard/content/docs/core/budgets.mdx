@@ -26,7 +26,7 @@ const researcher = new Agent({
 });
 ```
 
-A session is a thread: a new `threadId` starts with nothing spent, so tie the thread ids your clients may use to your users if a budget must hold per user. An agent with a `budget` of its own is held to it within the thread, and what an agent run through [`agentAsTool()`](/docs/tools/agent-as-tool) spends counts toward the caller's session and agent too. A paused run keeps its own budgets (`RunOptions.budget`) in its checkpoint for the resume.
+A session is a thread: a new `threadId` starts with nothing spent, so tie the thread ids your clients may use to your users if a budget must hold per user. An agent with a `budget` of its own is held to it within the thread, its spending kept under its `id`, else its `name` (so a new instance of the same agent, on a resume or in another process, counts on), which makes unique agent names a must for agent budgets, and what an agent run through [`agentAsTool()`](/docs/tools/agent-as-tool) spends counts toward the caller's session and agent too. A paused run keeps its own budgets (`RunOptions.budget`) in its checkpoint for the resume.
 
 Cost is the run's `usage.cost`: what the provider reported, else the tokens priced from the model registry or `llm.pricing` (see [Cogitator](/docs/core/cogitator)). Tokens are input plus output tokens. Tool calls are the calls that ran. `RunOptions.budget` sets budgets for one run over the runtime's, field by field, and `RunOptions.onBudgetWarning` hears the warnings of one run.
 

@@ -72,6 +72,15 @@ export interface WorkspaceToolsOptions {
   grepTimeout?: number;
 }
 
+/** Entries a search or a listing left out because the permission rules refuse or ask for them */
+interface Withheld {
+  count: number;
+  reason: string;
+}
+
+const WITHHELD_REASON =
+  'The permission rules refuse these entries or ask before they are read, so a search leaves them out. Read one with read_file to ask for it.';
+
 /**
  * Tools that work in a workspace: `read_file` (with line ranges), `write_file`, `edit_file`
  * (exact replacement of a unique string), `list_files`, `glob`, `grep` and `run_command`. Each
@@ -109,14 +118,15 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
     ws: Workspace,
     entries: readonly T[],
     context: ToolContext
-  ): Promise<T[]> => {
+  ): Promise<{ kept: T[]; withheld?: Withheld }> => {
     const permissions = context.permissions;
-    if (!permissions) return [...entries];
+    if (!permissions) return { kept: [...entries] };
     const kept: T[] = [];
     for (const entry of entries) {
       if (await permissions.canRead(resolve(ws.root, entry.path))) kept.push(entry);
     }
-    return kept;
+    const count = entries.length - kept.length;
+    return { kept, ...(count > 0 && { withheld: { count, reason: WITHHELD_REASON } }) };
   };
   const lockFile = async (path: string, context: ToolContext): Promise<string[]> => {
     const ws = resolveWorkspace(context);
@@ -306,7 +316,7 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
     ...approval('list_files'),
     execute: async ({ path = '.', recursive = false, includeHidden = false }, context) => {
       const ws = resolveWorkspace(context);
-      const entries = await readable(
+      const { kept: entries, withheld } = await readable(
         ws,
         await call(() =>
           ws.list(path, { recursive, includeHidden, skipDirs, limit: MAX_LIST_ENTRIES + 1 })
@@ -319,6 +329,7 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
           .slice(0, MAX_LIST_ENTRIES)
           .map(({ path: entryPath, type, size }) => ({ path: entryPath, type, size })),
         truncated: entries.length > MAX_LIST_ENTRIES,
+        ...(withheld && { withheld }),
       };
     },
   });
@@ -346,14 +357,14 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
           skipDirs,
         })
       );
-      const files = (await readable(ws, entries, context))
-        .filter((entry) => entry.type === 'file')
-        .map((entry) => entry.path);
+      const { kept, withheld } = await readable(ws, entries, context);
+      const files = kept.filter((entry) => entry.type === 'file').map((entry) => entry.path);
       return {
         pattern,
         files: files.slice(0, MAX_GLOB_RESULTS),
         count: files.length,
         truncated: files.length > MAX_GLOB_RESULTS,
+        ...(withheld && { withheld }),
       };
     },
   });
@@ -423,7 +434,8 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
           : await call(() =>
               ws.list(path, { recursive: true, includeHidden, skipDirs, limit: listLimit })
             );
-      const candidates = (await readable(ws, listed, context)).filter(
+      const { kept: readableFiles, withheld } = await readable(ws, listed, context);
+      const candidates = readableFiles.filter(
         (entry) =>
           entry.type === 'file' &&
           (!matchesGlob || matchesGlob(relativeTo(target.path, entry.path)))
@@ -487,6 +499,7 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
         filesSkipped: skipped,
         truncated,
         ...(incomplete && { incomplete: true }),
+        ...(withheld && { withheld }),
       };
     },
   });

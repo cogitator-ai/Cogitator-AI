@@ -1174,3 +1174,52 @@ describe('eighth review round', () => {
     await cog.close();
   });
 });
+
+describe('ninth review round', () => {
+  it('leaves files an ask rule covers out of searches and says how many', async () => {
+    writeFileSync(join(root, 'secret.txt'), 'TOKEN=hunter2');
+    writeFileSync(join(root, 'notes.txt'), 'TOKEN=public');
+    const { cog } = setup(
+      [
+        turn(
+          call('g1', 'grep', { pattern: 'TOKEN', path: '.' }),
+          call('l1', 'glob', { pattern: '*.txt' })
+        ),
+      ],
+      { permissions: { ask: ['Read(./secret.txt)'] } }
+    );
+    const result = await cog.run(coder(), { input: 'find', threadId: 't-ask-search' });
+    const [grepped, globbed] = toolTexts(result.messages);
+    expect(grepped).not.toContain('hunter2');
+    expect(grepped).toContain('public');
+    expect(JSON.parse(grepped)).toMatchObject({ withheld: { count: 1 } });
+    expect(globbed).not.toContain('secret.txt');
+    expect(globbed).toContain('read_file');
+    await cog.close();
+  });
+});
+
+describe('ninth review round approvals', () => {
+  it('runs a call a person approved with the resume in dontAsk mode, never in plan mode', async () => {
+    for (const [mode, runs] of [
+      ['dontAsk', true],
+      ['plan', false],
+    ] as const) {
+      writeFileSync(join(root, 'src', 'app.ts'), 'old');
+      const { cog } = setup(
+        [turn(call('c1', 'write_file', { path: 'src/app.ts', content: 'new' }))],
+        {
+          permissions: { mode: 'default' },
+        }
+      );
+      const paused = await cog.run(coder(), { input: 'mail', threadId: `t-human-${mode}` });
+      expect(paused.status).toBe('paused');
+      await cog.resume(coder(), `t-human-${mode}`, {
+        decisions: { c1: { approved: true } },
+        permissions: { mode },
+      });
+      expect(readFileSync(join(root, 'src', 'app.ts'), 'utf8')).toBe(runs ? 'new' : 'old');
+      await cog.close();
+    }
+  });
+});

@@ -5,6 +5,7 @@
 
 import type { PermissionBehavior, Tool } from '@cogitator-ai/types';
 import { wildcardMatch } from './wildcard';
+import { own } from '../utils/own';
 
 /** A rule read from its text */
 export interface ParsedRule {
@@ -118,7 +119,7 @@ export function ruleTarget(
   behavior: PermissionBehavior
 ): RuleTarget | { error: string } {
   const name = rule.tool;
-  const known = CLAUDE_NAMES[name];
+  const known = own(CLAUDE_NAMES, name);
   if (known) return known;
   if (name.startsWith('mcp__')) {
     const rest = name.slice('mcp__'.length);

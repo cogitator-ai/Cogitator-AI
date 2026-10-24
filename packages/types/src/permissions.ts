@@ -228,9 +228,9 @@ export interface ToolPermissionsView {
   /** The `session` rules of the run, for passing on to a run the tool starts */
   readonly rules: Required<PermissionRules>;
   /**
-   * Whether no `Read(...)` deny rule covers `path` (relative to the workspace root, or absolute),
-   * for tools that read or list many files: `grep`, `glob` and `list_files` leave out what it
-   * refuses
+   * Whether no `Read(...)` deny or ask rule covers `path` (relative to the workspace root, or
+   * absolute), for tools that read or list many files: `grep`, `glob` and `list_files` leave out
+   * what a rule refuses or asks for, and say how many files they left out
    */
   canRead(path: string): Promise<boolean>;
 }

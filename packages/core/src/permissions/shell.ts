@@ -8,6 +8,7 @@
 import { basename, posix } from 'node:path';
 import { copyOperands, subtreesOf, touchesSubtrees } from './subtree';
 import { wildcardMatch } from './wildcard';
+import { own as ownValue } from '../utils/own';
 
 /** A redirection of a command */
 export interface ShellRedirect {
@@ -172,8 +173,9 @@ function ansiC(line: string, from: number): { value: string; end: number } {
       continue;
     }
     const next = line[i + 1] ?? '';
-    if (next in ANSI_ESCAPES) {
-      value += ANSI_ESCAPES[next];
+    const escaped = ownValue(ANSI_ESCAPES, next);
+    if (escaped !== undefined) {
+      value += escaped;
       i++;
       continue;
     }
@@ -636,7 +638,7 @@ function withoutGitOptions(argv: readonly string[]): string[] | undefined {
   while (i < argv.length && argv[i].startsWith('-')) {
     const option = argv[i];
     const name = option.includes('=') ? option.slice(0, option.indexOf('=')) : option;
-    const takesValue = GIT_GLOBAL_OPTIONS[name];
+    const takesValue = ownValue(GIT_GLOBAL_OPTIONS, name);
     if (takesValue === undefined) {
       if (/^-c./.test(option) || /^-C./.test(option)) {
         i++;
@@ -822,7 +824,7 @@ function looseUnwrap(argv: readonly string[]): { variants: string[][]; lines: st
       break;
     }
     if (!LOOSE_WRAPPERS.has(program)) break;
-    const valued = WRAPPER_VALUE_OPTIONS[program] ?? [];
+    const valued = ownValue(WRAPPER_VALUE_OPTIONS, program) ?? [];
     let i = 1;
     while (i < rest.length) {
       const word = rest[i];
@@ -896,7 +898,7 @@ export function runsInlineCode(argv: readonly string[]): boolean {
   const program = basename(argv[0] ?? '');
   if (program === 'awk' || program === 'gawk' || program === 'mawk' || program === 'nawk')
     return true;
-  const flags = INTERPRETERS[program] ?? INTERPRETERS[withoutVersion(program)];
+  const flags = ownValue(INTERPRETERS, program) ?? ownValue(INTERPRETERS, withoutVersion(program));
   if (!flags) return false;
   const operands = argv.slice(1).filter((word) => !word.startsWith('-'));
   if (operands.length === 0 || operands[0] === '-') return true;
@@ -1048,7 +1050,7 @@ export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
       }
     }
     const runner = basename(argv[0] ?? '');
-    if (SHELLS.has(runner) || INTERPRETERS[runner] !== undefined) {
+    if (SHELLS.has(runner) || ownValue(INTERPRETERS, runner) !== undefined) {
       for (const redirect of redirects) {
         if (redirect.op === '<<<') loose.lines.push(redirect.target);
       }
@@ -1369,7 +1371,7 @@ const EDIT_COMMAND_OPTIONS: Record<
  */
 export function editCommandPaths(command: ShellCommand): string[] | undefined {
   const program = command.argv[0] ?? '';
-  const spec = EDIT_COMMAND_OPTIONS[program];
+  const spec = ownValue(EDIT_COMMAND_OPTIONS, program);
   if (!spec) return undefined;
   const paths: string[] = [];
   const args = command.argv.slice(1);
@@ -1382,7 +1384,7 @@ export function editCommandPaths(command: ShellCommand): string[] | undefined {
     }
     if (options && word.startsWith('--')) {
       const name = word.includes('=') ? word.slice(0, word.indexOf('=')) : word;
-      const valued = spec.valued[name];
+      const valued = ownValue(spec.valued, name);
       if (valued) {
         const value = word.includes('=') ? word.slice(word.indexOf('=') + 1) : args[++i];
         if (value === undefined) return undefined;
@@ -1395,7 +1397,7 @@ export function editCommandPaths(command: ShellCommand): string[] | undefined {
     if (options && word.startsWith('-') && word.length > 1) {
       for (let at = 1; at < word.length; at++) {
         const flag = `-${word[at]}`;
-        const valued = spec.valued[flag];
+        const valued = ownValue(spec.valued, flag);
         if (valued) {
           const value = at + 1 < word.length ? word.slice(at + 1) : args[++i];
           if (value === undefined) return undefined;

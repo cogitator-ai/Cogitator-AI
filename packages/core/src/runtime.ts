@@ -347,6 +347,15 @@ function withoutRaise(
   return rest;
 }
 
+/**
+ * The key an agent's spending and `budget` go by: its `config.id`, else its name, so a new
+ * instance of the same agent (a resume, another process) keeps counting against its budget.
+ * Agents with budgets of their own need unique names, or ids
+ */
+function budgetKey(agent: Agent): string {
+  return agent.config.id ?? agent.name;
+}
+
 /** The agents `agent` can hand the conversation over to */
 function handoffAgentsOf(agent: Agent): Agent[] {
   return (agent.config.handoffs ?? []).map((entry) => ('agent' in entry ? entry.agent : entry));
@@ -1938,8 +1947,8 @@ export class Cogitator implements ToolInvoker {
       const interruptLimits = this.config.limits?.onExceeded === 'interrupt';
       const maxTokensPerRun = this.config.limits?.maxTokensPerRun;
       const agentBudgets = new Map<string, BudgetLimits | undefined>([
-        [agent.id, agent.config.budget],
-        [active.id, active.config.budget],
+        [budgetKey(agent), agent.config.budget],
+        [budgetKey(active), active.config.budget],
       ]);
       const costRouter = this.state.costRouter;
       const runBudget = new RunBudget(
@@ -1963,7 +1972,7 @@ export class Cogitator implements ToolInvoker {
       );
       budget = runBudget;
       const budgetAncestors = currentToolRuns().filter((id) => id !== runId);
-      this.runBudgets.set(runId, { budget: runBudget, agentId: () => active.id });
+      this.runBudgets.set(runId, { budget: runBudget, agentId: () => budgetKey(active) });
       this.classifierCharges.set(abortController.signal, (usage, model) => {
         const spentBefore = costMeter.total(costModel);
         costMeter.add(usage, model);
@@ -1974,7 +1983,7 @@ export class Cogitator implements ToolInvoker {
         cachedInputTokens += usage.cachedInputTokens ?? 0;
         cacheWriteTokens += usage.cacheWriteTokens ?? 0;
         reasoningTokens += usage.reasoningTokens ?? 0;
-        runBudget.noteModel(active.id, cost, tokens);
+        runBudget.noteModel(budgetKey(active), cost, tokens);
         for (const ancestor of budgetAncestors) {
           const parent = this.runBudgets.get(ancestor);
           parent?.budget.noteModel(parent.agentId(), cost, tokens);
@@ -2065,7 +2074,7 @@ export class Cogitator implements ToolInvoker {
           )
         );
         active = target;
-        agentBudgets.set(target.id, target.config.budget);
+        agentBudgets.set(budgetKey(target), target.config.budget);
         await permissions.switchAgent(
           { options: target.config.permissions, origin: `agent:${target.name}` },
           permissionRootOf(target)
@@ -2428,7 +2437,8 @@ export class Cogitator implements ToolInvoker {
                 (entry.kind === 'input' || entry.kind === 'plan')
             )
         ).length;
-        const toolBudget = runnable > 0 ? runBudget.beforeTools(active.id, runnable) : undefined;
+        const toolBudget =
+          runnable > 0 ? runBudget.beforeTools(budgetKey(active), runnable) : undefined;
         const callerBudget = budgetAncestors
           .map((ancestor) => {
             const parent = this.runBudgets.get(ancestor);
@@ -2537,9 +2547,10 @@ export class Cogitator implements ToolInvoker {
          * Decides a call again right before it runs: the mode may have changed since the turn
          * decided it (`setPermissionMode()`), and an earlier call of the turn may have moved what
          * its paths point to (a symlink). Why it may not run, or undefined when it still may. A
-         * call a person approved stops only at a deny, one the rules allowed also when it would
-         * now ask. A call the `auto` classifier allowed is not judged again while the run stays
-         * in `auto` mode
+         * call a person approved stops only at a deny or a mode that refuses it (`plan`), as an
+         * approval answers an ask (`dontAsk` decides it as `default` would), one the rules allowed
+         * also when it would now ask. A call the `auto` classifier allowed is not judged again
+         * while the run stays in `auto` mode
          */
         const recheck = async (
           toolCall: ToolCall,
@@ -2558,11 +2569,10 @@ export class Cogitator implements ToolInvoker {
           const judged = classified.has(toolCall.id) && permissions.mode === 'auto';
           const call = permissionCall(tool, runCall, needs);
           const { classifierInput: _judgedBefore, ...unjudged } = call;
-          const verdict = await permissions.decide(
-            tool,
-            runCall.arguments,
-            judged ? unjudged : call
-          );
+          const verdict = await permissions.decide(tool, runCall.arguments, {
+            ...(judged || human ? unjudged : call),
+            ...(human && permissions.mode === 'dontAsk' && { mode: 'default' as const }),
+          });
           if (verdict.decision === 'deny') return verdict.reason;
           if (verdict.decision === 'ask' && !human && !judged) {
             return `the call no longer passes the permissions when it runs (${verdict.reason}): the mode, or what it touches, changed since the turn decided it`;
@@ -2636,14 +2646,14 @@ export class Cogitator implements ToolInvoker {
               return parent ? [parent] : [];
             });
             const spent =
-              runBudget.beforeTools(active.id, 1) ??
+              runBudget.beforeTools(budgetKey(active), 1) ??
               parents
                 .map((parent) => parent.budget.beforeTools(parent.agentId(), 1))
                 .find((usage) => usage !== undefined);
             if (spent) {
               return `The tool call budget is spent (${spent.scope} ${spent.used} of ${spent.limit}), the call did not run`;
             }
-            runBudget.noteToolCalls(active.id, 1);
+            runBudget.noteToolCalls(budgetKey(active), 1);
             for (const parent of parents) parent.budget.noteToolCalls(parent.agentId(), 1);
             return undefined;
           };
@@ -3023,7 +3033,7 @@ export class Cogitator implements ToolInvoker {
         }
         const spentWithDelegates = runBudget.runTotals();
         const reachedBudget = runBudget.beforeModel(
-          active.id,
+          budgetKey(active),
           Math.max(costMeter.total(costModel), spentWithDelegates.costUsd),
           Math.max(totalInputTokens + totalOutputTokens, spentWithDelegates.tokens)
         );
@@ -3155,7 +3165,7 @@ export class Cogitator implements ToolInvoker {
           cacheWriteTokens += answer.usage.cacheWriteTokens ?? 0;
           reasoningTokens += answer.usage.reasoningTokens ?? 0;
           runBudget.noteModel(
-            active.id,
+            budgetKey(active),
             callCost,
             answer.usage.inputTokens + answer.usage.outputTokens
           );
@@ -3168,7 +3178,7 @@ export class Cogitator implements ToolInvoker {
             );
           }
           runBudget.warn(
-            active.id,
+            budgetKey(active),
             costMeter.total(costModel),
             totalInputTokens + totalOutputTokens
           );
@@ -3471,7 +3481,11 @@ export class Cogitator implements ToolInvoker {
           continue;
         }
         pausedTurn = await handleToolTurn(response.toolCalls);
-        runBudget.warn(active.id, costMeter.total(costModel), totalInputTokens + totalOutputTokens);
+        runBudget.warn(
+          budgetKey(active),
+          costMeter.total(costModel),
+          totalInputTokens + totalOutputTokens
+        );
         if (pausedTurn) break;
         if (reachedLimit()) break;
       }
@@ -3770,7 +3784,7 @@ export class Cogitator implements ToolInvoker {
       let spentAfterRun: SessionSpend | undefined;
       if (afterRun) {
         const tokens = afterRun.inputTokens + afterRun.outputTokens;
-        runBudget.noteModel(active.id, afterRun.cost, tokens);
+        runBudget.noteModel(budgetKey(active), afterRun.cost, tokens);
         for (const ancestor of budgetAncestors) {
           const parent = this.runBudgets.get(ancestor);
           parent?.budget.noteModel(parent.agentId(), afterRun.cost, tokens);

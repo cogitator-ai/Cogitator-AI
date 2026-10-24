@@ -1245,3 +1245,25 @@ describe('eighth review round', () => {
     expect(parseCommandLine('ls && pwd').certain).toBe(true);
   });
 });
+
+describe('ninth review round', () => {
+  it.each([
+    ['grep -r TOKEN .', 'ask'],
+    ['rg TOKEN', 'ask'],
+    ['find . -name x', 'ask'],
+    ['grep TOKEN notes.txt', 'allow'],
+  ])('a shell read over a subtree an ask rule covers inside: %j %s', async (command, expected) => {
+    const decision = await resolvePermission(
+      ws('run_command'),
+      { command },
+      {
+        mode: 'default',
+        rules: rules({ ask: ['Read(./src/lib/secret.ts)'], allow: ['Bash'] }),
+        needsApproval: true,
+        workspace,
+        projectRoot: root,
+      }
+    );
+    expect(decision.decision).toBe(expected);
+  });
+});
