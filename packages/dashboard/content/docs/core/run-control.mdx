@@ -1,0 +1,159 @@
+---
+title: Steering, Interrupts and Cancellation
+description: Steer a run while it goes on with steer, followUp and inject, choose what a new message does to a busy thread, pause a run on a question a tool asks, and cancel a run without losing what it showed or did.
+---
+
+## Overview
+
+A run started with `cog.run()` goes from its input to its answer on its own. Long agent runs need more: a user adds a correction while tools are running, sends a second message before the first is answered, a tool needs an answer from a person halfway through, or the user stops the run. Cogitator handles each of these in the run loop, and writes every step to the thread's session log, so a later run restores the conversation without anything new.
+
+- [Run handles](#run-handles): `cog.start()` returns a handle to `steer`, `followUp`, `inject` and `abort` a run going on
+- [Double-texting](#double-texting): `multitaskStrategy` says what a new run does to a thread that is busy
+- [Interrupts](#interrupts): a tool asks with `context.interrupt()`, the run pauses, `resume()` answers
+- [Cancellation](#cancellation): what an aborted run leaves in the thread, and how history is repaired after a crash
+
+Everything here is off until you use it: `run()` behaves as it always did.
+
+## Run Handles
+
+`cog.start(agent, options)` takes the options of `run()` and returns a `RunHandle` at once. Its `result` is what `run()` would return.
+
+```typescript
+const handle = cog.start(agent, { input: 'Plan the release', threadId: 'release-12' });
+
+handle.steer('Skip the changelog, it is done');
+handle.followUp('Then draft the announcement');
+handle.inject('The release date moved to Friday');
+
+const result = await handle.result;
+```
+
+| Method              | When the run takes the message                                                                                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `steer(message)`    | At the next step boundary: after the tool calls of the current step (they always finish, none is skipped), before the next model call. It also wakes an agent that was about to stop |
+| `followUp(message)` | Only once the agent would stop: the run goes on with the message instead of returning                                                                                                |
+| `inject(message)`   | With the next model call, as context. It never wakes the agent: one left when the run ends is saved to the thread, so the next run there reads it                                    |
+| `abort(reason?)`    | Stops the run as an abort of its `signal` does, and returns the messages it did not deliver                                                                                          |
+
+Each method returns `false` once the run no longer takes messages (it finished, paused or was aborted). `handle.queued` lists what waits.
+
+A delivered message becomes a user message of the run and is saved to the thread as a `message` entry with `metadata.queued` set to `'steer'`, `'followUp'` or `'inject'`. A later run reads it in its history like any other message.
+
+### Drain Modes
+
+`queue.steering` and `queue.followUp` say how many messages the run takes at once: `'one-at-a-time'` (the default) takes one per step, so each gets a model call, `'all'` takes every message waiting.
+
+```typescript
+const handle = cog.start(agent, {
+  input: 'Summarize the incident',
+  queue: { steering: 'all', followUp: 'one-at-a-time' },
+});
+```
+
+A follow-up starts a new turn, so it gets the agent's `maxIterations` again instead of sharing what the run used up.
+
+### What Is Not Delivered
+
+A run that pauses for an approval or an interrupt, or that stops at `maxIterations` with `onIterationLimit: 'stop'`, returns the messages it did not take in `result.undelivered`. They never reached the thread, send them again when you resume or start the next run. `abort()` returns them the same way, and a failed run leaves them in `handle.queued`. An injected message the run had no model call left for is saved to the thread instead, unless the run saves no history (`saveHistory: false`, no memory), then it is in `undelivered` too.
+
+## Double-Texting
+
+A user who sends a second message while the first is answered starts a second run on the same thread. `multitaskStrategy` says what that run does, with the names of LangGraph's `multitask_strategy`:
+
+| Strategy    | What the new run does                                                                                                                      |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `enqueue`   | Waits until the runs before it on the thread are done, then runs                                                                           |
+| `reject`    | Fails at once with `THREAD_BUSY` (HTTP 409)                                                                                                |
+| `interrupt` | Stops the runs going on (each fails with `RUN_INTERRUPTED`), waits until they are done, then runs                                          |
+| `rollback`  | Does what `interrupt` does, then runs on a branch from where the interrupted run started: the thread goes on as if that run never happened |
+
+```typescript
+const cog = new Cogitator({ multitaskStrategy: 'enqueue' });
+
+await cog.run(agent, { input: 'Actually, use Postgres', threadId, multitaskStrategy: 'rollback' });
+```
+
+`CogitatorConfig.multitaskStrategy` applies to every run that sets none. Without either, runs of one thread go on side by side, as they always did. The runtime tracks the runs going on per thread id, in the process: a run counts once it names its `threadId`, and stops counting when it settles.
+
+- An interrupted run is aborted, so it leaves the thread as [Cancellation](#cancellation) describes: its streamed text as an interrupted message, the tool calls it never started answered.
+- `rollback` uses the branches of the session log (see [Runs on Branches](/docs/core/cogitator#runs-on-branches)). The interrupted run's entries are not deleted, they stay on a branch of their own, and the thread's active branch goes on from before them. A rollback run that names its own `branch` keeps it, and a resumed run treats `rollback` as `interrupt`.
+- A run started from a tool of the run going on (it belongs to the same trace) is never held back, it would wait for itself.
+- A run on a branch that leaves the active leaf where it is (`branch.activate: false`) does not count as the thread's run.
+- A run that waits (`enqueue`, or after an interrupt) holds no slot of `limits.maxConcurrentRuns`, and stops waiting when its `signal` aborts.
+
+The [server adapters](/docs/server-adapters) take `multitaskStrategy` in the body of a run or stream request, and the [Gateway](/docs/channels/gateway#queue-modes) takes the same strategies as its `queueMode`.
+
+## Interrupts
+
+A tool that needs an answer from a person calls `context.interrupt()`. The run pauses the way it pauses for an [approval](/docs/tools/approvals): it returns with `status: 'paused'`, the question in `interrupts` and a JSON `checkpoint`.
+
+```typescript
+import { z } from 'zod';
+import { tool } from '@cogitator-ai/core';
+
+const deploy = tool({
+  name: 'deploy',
+  description: 'Deploys a service',
+  parameters: z.object({ service: z.string() }),
+  execute: async ({ service }, context) => {
+    const { region } = await context.interrupt!({
+      reason: 'pick_region',
+      message: `Where should ${service} go?`,
+      responseSchema: z.object({ region: z.enum(['eu', 'us']) }),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    return deployTo(service, region);
+  },
+});
+
+const paused = await cog.run(agent, { input: 'Deploy the api', threadId });
+// paused.interrupts: [{ id: 'call_1#0', kind: 'input', reason: 'pick_region', message, responseSchema, expiresAt, toolCallId, toolName }]
+
+const result = await cog.resume(agent, threadId, {
+  responses: { [paused.interrupts![0].id]: { region: 'eu' } },
+});
+```
+
+On resume the tool runs again from its start, and this time `interrupt()` returns the answer, parsed by the Zod schema. Keep what the tool does before it asks safe to do twice. A tool may ask several times: the run pauses at each question nobody answered yet, and earlier answers come back in order. Other tool calls of the same step that finished keep their results and do not run again.
+
+| Field            | Meaning                                                                                   |
+| ---------------- | ----------------------------------------------------------------------------------------- |
+| `id`             | Key of the answer in `responses`: `<toolCallId>#<n>` for the n-th question of a tool call |
+| `kind`           | `'input'` for a question of a tool, `'approval'` for a tool call waiting for approval     |
+| `reason`         | A short machine-readable reason, `tool_approval` for an approval                          |
+| `message`        | What to tell the person who answers                                                       |
+| `responseSchema` | JSON Schema of the answer (a Zod schema is converted)                                     |
+| `expiresAt`      | ISO time after which an answer is refused                                                 |
+| `response`       | The answer, once given, kept in the checkpoint                                            |
+
+The shape maps one to one to AG-UI interrupts, ACP elicitation and MCP input requests.
+
+`resume()` checks each answer before the run goes on: an answer to an interrupt the run does not wait on, one already answered, or one that does not match its `responseSchema` fails with `VALIDATION_ERROR`, an answer after `expiresAt` with `INTERRUPT_EXPIRED` (HTTP 410). Interrupts left out keep the run paused. A new message on the thread instead of an answer answers the waiting call with "The user moved on without answering", as it declines a waiting approval.
+
+`context.interrupt` is there for tools in a run. It is absent in `invokeTool()` and in sandboxed tools.
+
+### Approvals Are Interrupts
+
+A pending approval is an interrupt of `kind: 'approval'`, its id the tool call id, its answer a decision `{ approved, reason? }`. `result.interrupts` lists approvals next to questions, so a UI handles both one way, and `responses: { [toolCallId]: { approved: true } }` decides an approval as `decisions` does. `pendingApprovals`, `decisions` and `defaultDecision` keep working as before. The checkpoint stays `version: 1`, with the interrupts in `checkpoint.interrupts` next to `turn`, and a checkpoint saved before interrupts existed resumes as it did.
+
+### In the Session Log
+
+A pause on questions writes an `interrupt` entry `{ status: 'paused', interrupts: [{ id, kind, reason, message }] }`, and a resume that answers them one with `{ status: 'resumed', interrupts: [{ id, kind, reason, response }] }`. A pause for approvals writes the `approval` entry it always wrote.
+
+### Over HTTP
+
+The JSON answer of a paused run and the `finish` event of its stream carry `interrupts` when tools asked questions, and the stream sends `interrupt-required` with them instead of `approval-required`. Resume with `responses` in the body of `POST /agents/:name/resume` (see [Server Adapters](/docs/server-adapters)).
+
+## Cancellation
+
+A run is cancelled by its `signal`, its `timeout`, `handle.abort()` or a newer run that interrupts it. The run then fails with the abort's reason and leaves the thread whole:
+
+- **Text already streamed** to `onToken` is saved as an assistant message with `metadata.interrupted: true`, the format a voice turn the user talked over leaves. A later run reads it with `[interrupted by the user]` after it (`historyMessage()`), so the model does not take the part that was shown for a finished answer.
+- **Tool calls not started yet** get the result `Aborted before dispatch: the run stopped before this tool call started` (`ABORTED_BEFORE_DISPATCH`).
+- **Tool calls that finished** before the abort keep their results.
+- **A tool still running** gets no result in the log: its outcome is unknown. A tool that ignores the signal keeps running as before, but its late result is never written.
+- An `interrupt` entry with the reason closes the run, as before.
+
+### History Repair
+
+A crash leaves tool calls without results in the log. When a run reads the thread's history from memory, every tool call without a result gets one, `The run stopped before this tool call returned: outcome unknown, verify before retrying` (`OUTCOME_UNKNOWN`), so the model knows the call may have run instead of losing it. The log itself is not rewritten. `repairUnansweredToolCalls(messages)` from `@cogitator-ai/core` does the same for messages you hold.

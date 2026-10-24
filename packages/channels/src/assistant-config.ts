@@ -264,7 +264,9 @@ const AssistantMemorySchema = z.object({
 /** How the gateway names and orders conversation threads */
 const AssistantSessionSchema = z.object({
   /** `sequential` (default) answers a thread's messages one at a time, `parallel` all at once */
-  queueMode: z.enum(['parallel', 'sequential', 'interrupt', 'collect']).optional(),
+  queueMode: z
+    .enum(['parallel', 'sequential', 'collect', 'enqueue', 'reject', 'interrupt', 'rollback'])
+    .optional(),
   /**
    * `conversation` (default): a thread per user per chat, topic or post thread. `legacy`: a thread
    * per user per channel, as before, to keep the threads stored by earlier versions

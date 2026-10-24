@@ -28,7 +28,7 @@ export type { HeartbeatConfig } from './heartbeat';
 export { StatusReactionTracker } from './status-reactions';
 export { InboundDebouncer } from './inbound-debounce';
 export { MessageQueue } from './message-queue';
-export type { MessageProcessor } from './message-queue';
+export type { MessageProcessing, MessageProcessor, RejectedMessageListener } from './message-queue';
 export {
   defaultThreadKey,
   legacyThreadKey,
@@ -149,6 +149,7 @@ export type {
   DebounceConfig,
   EnvelopeConfig,
   QueueMode,
+  MessageRejectedEvent,
   FeedChannel,
   FeedImage,
   FeedLimits,

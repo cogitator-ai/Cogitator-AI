@@ -1,5 +1,10 @@
 import type { OpenAPIContext, SwaggerConfig, OpenAPISpec } from './openapi-types.js';
-import { MAX_RUN_TIMEOUT_MS, NON_BLANK_PATTERN, RUN_INPUT_SCHEMA } from './validation.js';
+import {
+  MAX_RUN_TIMEOUT_MS,
+  MULTITASK_STRATEGIES,
+  NON_BLANK_PATTERN,
+  RUN_INPUT_SCHEMA,
+} from './validation.js';
 import type { RunLimits } from './contract.js';
 import { MAX_THREAD_PAGE_LIMIT } from './thread-page.js';
 import { streamEventComponents } from './stream-schemas.js';
@@ -609,6 +614,13 @@ export function generateSwaggerHTML(spec: OpenAPISpec): string {
 </html>`;
 }
 
+const MULTITASK_STRATEGY_SCHEMA = {
+  type: 'string',
+  enum: [...MULTITASK_STRATEGIES],
+  description:
+    'What the run does when its thread has a run going on: wait (`enqueue`), fail with 409 THREAD_BUSY (`reject`), stop that run (`interrupt`), or stop it and branch from where it started (`rollback`)',
+};
+
 const RUN_OUTCOME_PROPERTIES = {
   status: {
     type: 'string',
@@ -619,6 +631,12 @@ const RUN_OUTCOME_PROPERTIES = {
     type: 'array',
     items: { $ref: '#/components/schemas/PendingApproval' },
     description: 'The tool calls a paused run waits on',
+  },
+  interrupts: {
+    type: 'array',
+    items: { $ref: '#/components/schemas/PendingInterrupt' },
+    description:
+      "The questions a paused run's tools asked: answer them by id in `responses` when resuming",
   },
   structured: { description: "The answer parsed against the agent's responseFormat" },
   structuredError: {
@@ -687,6 +705,7 @@ function generateSchemas(limits: RunLimits | undefined): Record<string, unknown>
         input: { ...RUN_INPUT_SCHEMA },
         context: CONTEXT_SCHEMA,
         threadId: THREAD_ID_SCHEMA,
+        multitaskStrategy: MULTITASK_STRATEGY_SCHEMA,
       },
     },
     ToolApprovalDecision: {
@@ -704,6 +723,12 @@ function generateSchemas(limits: RunLimits | undefined): Record<string, unknown>
           additionalProperties: { $ref: '#/components/schemas/ToolApprovalDecision' },
         },
         defaultDecision: { $ref: '#/components/schemas/ToolApprovalDecision' },
+        responses: {
+          type: 'object',
+          additionalProperties: true,
+          description:
+            "Answers to the run's interrupts by interrupt id, each checked against its responseSchema",
+        },
       },
     },
     AgentToolCall: {

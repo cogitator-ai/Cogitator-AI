@@ -18,14 +18,16 @@ function decisionsOf(input: ResumeInput): ResumeDecisions {
   return {
     ...(input.decisions !== undefined && { decisions: input.decisions }),
     ...(input.defaultDecision !== undefined && { defaultDecision: input.defaultDecision }),
+    ...(input.responses !== undefined && { responses: input.responses }),
   };
 }
 
 /**
- * A route handler that continues a run paused for tool approvals, by thread id.
+ * A route handler that continues a run paused for tool approvals or questions, by thread id.
  *
  * Approved calls run, declined ones answer the model with the reason, and calls
- * without a decision pause the run again. Only the user the run belongs to may
+ * without a decision pause the run again. `responses` answers the questions the
+ * run's tools asked, by interrupt id. Only the user the run belongs to may
  * resume it: return `{ userId }` from `beforeRun`, as for the other handlers.
  * Answers like `createAgentHandler`, or streams like `createChatHandler` with
  * `stream: true`. A thread without a paused run answers `409 RUN_NOT_PAUSED`,

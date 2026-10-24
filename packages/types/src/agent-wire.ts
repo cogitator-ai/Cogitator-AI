@@ -7,6 +7,7 @@
 import type { LLMBackendProvider, ReasoningConfig } from './llm';
 import type { ToolSchema } from './tool';
 import type { HandoffEvent, RunBlockReason, RunCheckpoint, ToolApprovalRequest } from './runtime';
+import type { RunInterrupt } from './run-control';
 
 /**
  * An agent's response format on the wire: a Zod schema travels as JSON Schema, and the
@@ -143,6 +144,8 @@ export interface AgentWireRunResult {
   status?: 'completed' | 'paused';
   /** The tool calls a paused run waits on, see `RunResult.pendingApprovals` */
   pendingApprovals?: ToolApprovalRequest[];
+  /** What a paused run waits on, approvals and questions of its tools, see `RunResult.interrupts` */
+  interrupts?: RunInterrupt[];
   /**
    * What a paused run continues from with `cogitator.resume()`, see `RunResult.checkpoint`. It
    * holds the conversation, so it belongs on your servers, not with end users

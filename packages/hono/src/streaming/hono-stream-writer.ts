@@ -12,6 +12,7 @@ import {
   createToolCallEndEvent,
   createToolResultEvent,
   createApprovalRequiredEvent,
+  createInterruptRequiredEvent,
   createErrorEvent,
   createFinishEvent,
   createWorkflowEvent,
@@ -20,6 +21,7 @@ import {
   resolveSseHeartbeatMs,
   startHeartbeat,
   type PendingApproval,
+  type PendingInterrupt,
   type StreamEvent,
   type Usage,
 } from '@cogitator-ai/server-shared';
@@ -130,6 +132,13 @@ export class HonoStreamWriter {
 
   async approvalRequired(threadId: string, approvals: readonly PendingApproval[]): Promise<void> {
     await this.write(createApprovalRequiredEvent(threadId, approvals));
+  }
+
+  async interruptRequired(
+    threadId: string,
+    interrupts: readonly PendingInterrupt[]
+  ): Promise<void> {
+    await this.write(createInterruptRequiredEvent(threadId, interrupts));
   }
 
   async workflowEvent(event: string, data: unknown): Promise<void> {

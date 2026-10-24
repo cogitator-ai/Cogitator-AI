@@ -544,6 +544,58 @@ describe('websocket', () => {
     expect(resume).not.toHaveBeenCalled();
   });
 
+  test('passes the multitask strategy of a run and the answers of a resume', async () => {
+    const { cogitator, run, resume } = fakeCogitator(() =>
+      Promise.resolve(
+        runResult({
+          status: 'paused',
+          pendingApprovals: [],
+          interrupts: [{ id: 'int-1', kind: 'input', reason: 'pick', message: 'Which?' }],
+        })
+      )
+    );
+    const request = serveSockets({ cogitator, agents: { chat: chatAgent() } });
+    const connection = await connect(request.url);
+
+    connection.send({
+      type: 'run',
+      id: 'r-1',
+      payload: { type: 'agent', name: 'chat', input: 'Refund', multitaskStrategy: 'interrupt' },
+    });
+    const [complete] = await connection.until('complete');
+    connection.send({
+      type: 'resume',
+      id: 'r-2',
+      payload: { name: 'chat', threadId: 't-1', responses: { 'int-1': 'A-1' } },
+    });
+    await connection.until('complete');
+
+    expect(lastRunOptions(run).multitaskStrategy).toBe('interrupt');
+    expect(lastResumeCall(resume).options.responses).toEqual({ 'int-1': 'A-1' });
+    expect(complete?.payload).toEqual({
+      type: 'complete',
+      result: expect.objectContaining({
+        status: 'paused',
+        interrupts: [{ id: 'int-1', kind: 'input', reason: 'pick', message: 'Which?' }],
+      }),
+    });
+  });
+
+  test('refuses a run frame with an unknown multitask strategy', async () => {
+    const { cogitator, run } = fakeCogitator();
+    const request = serveSockets({ cogitator, agents: { chat: chatAgent() } });
+    const connection = await connect(request.url);
+
+    connection.send({
+      type: 'run',
+      id: 'r-1',
+      payload: { type: 'agent', name: 'chat', input: 'hi', multitaskStrategy: 'queue' },
+    });
+
+    expect(await connection.next()).toMatchObject({ type: 'error', code: 'INVALID_MESSAGE' });
+    expect(run).not.toHaveBeenCalled();
+  });
+
   test('is not served unless enabled', async () => {
     const { cogitator } = fakeCogitator();
     const request = serve(createApp({ routes: cogitatorController({ cogitator }) }));

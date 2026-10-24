@@ -3,6 +3,7 @@ import type { Cogitator, Agent } from '@cogitator-ai/core';
 import {
   MAX_RUN_TIMEOUT_MS,
   MAX_THREAD_PAGE_LIMIT,
+  MULTITASK_STRATEGIES,
   NON_BLANK_PATTERN,
   RUN_INPUT_SCHEMA,
 } from '@cogitator-ai/server-shared';
@@ -12,6 +13,7 @@ import type {
   AuthorizeThread,
   ContextPolicy,
   PendingApproval,
+  PendingInterrupt,
   ReadinessCheckStatus,
   ReadinessResponse,
   RunLimits,
@@ -35,6 +37,7 @@ import type {
   SwarmEvent,
   SwarmMessage,
   ToolApprovalDecision,
+  MultitaskStrategy,
 } from '@cogitator-ai/types';
 
 export type {
@@ -53,6 +56,7 @@ export type {
   SwarmMessage,
   ToolApprovalDecision,
   PendingApproval,
+  PendingInterrupt,
   AgentRunResponse,
   ReadinessResponse,
   ReadinessCheckStatus,
@@ -211,12 +215,16 @@ export interface AgentRunRequest {
   input: string;
   context?: Record<string, unknown>;
   threadId?: string;
+  /** What the run does when its thread has a run going on. Default: the Cogitator's `multitaskStrategy` */
+  multitaskStrategy?: MultitaskStrategy;
 }
 
 export interface AgentResumeRequest {
   threadId: string;
   decisions?: Record<string, ToolApprovalDecision>;
   defaultDecision?: ToolApprovalDecision;
+  /** Answers to the paused run's interrupts, by interrupt id */
+  responses?: Record<string, unknown>;
 }
 
 export interface ThreadResponse {
@@ -375,6 +383,13 @@ export interface OpenAPISpec {
 
 const NON_BLANK_STRING = { type: 'string', minLength: 1, pattern: NON_BLANK_PATTERN } as const;
 
+const MULTITASK_STRATEGY_SCHEMA = {
+  type: 'string',
+  enum: MULTITASK_STRATEGIES,
+  description:
+    "What the run does when its thread has a run going on: wait (`enqueue`), fail with 409 THREAD_BUSY (`reject`), stop that run (`interrupt`), or stop it and branch from where it started (`rollback`). Default: the server's `multitaskStrategy`",
+} as const;
+
 const CONTEXT_SCHEMA = {
   type: 'object',
   additionalProperties: true,
@@ -388,6 +403,7 @@ export const AgentRunRequestSchema = {
     input: RUN_INPUT_SCHEMA,
     context: CONTEXT_SCHEMA,
     threadId: NON_BLANK_STRING,
+    multitaskStrategy: MULTITASK_STRATEGY_SCHEMA,
   },
   required: ['input'],
 } as const;
@@ -408,6 +424,11 @@ export const AgentResumeRequestSchema = {
     threadId: NON_BLANK_STRING,
     decisions: { type: 'object', additionalProperties: ToolApprovalDecisionSchema },
     defaultDecision: ToolApprovalDecisionSchema,
+    responses: {
+      type: 'object',
+      additionalProperties: true,
+      description: "Answers to the paused run's interrupts, by interrupt id",
+    },
   },
   required: ['threadId'],
 } as const;
@@ -460,6 +481,23 @@ export const AgentRunResponseSchema = {
           sideEffects: { type: 'array', items: { type: 'string' } },
         },
         required: ['toolCallId', 'toolName', 'arguments', 'description'],
+      },
+    },
+    interrupts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          kind: { type: 'string', enum: ['approval', 'input'] },
+          reason: { type: 'string' },
+          message: { type: 'string' },
+          responseSchema: { type: 'object', additionalProperties: true },
+          expiresAt: { type: 'string' },
+          toolCallId: { type: 'string' },
+          toolName: { type: 'string' },
+        },
+        required: ['id', 'kind', 'reason', 'message'],
       },
     },
   },

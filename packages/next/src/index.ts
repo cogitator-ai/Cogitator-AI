@@ -13,6 +13,8 @@ export type {
   ResumeInput,
   ResumeHandlerOptions,
   PendingApproval,
+  PendingInterrupt,
+  MultitaskStrategy,
   ToolApprovalDecision,
   ToolCall,
   ToolResult,

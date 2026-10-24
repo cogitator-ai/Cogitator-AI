@@ -1,4 +1,4 @@
-import type { ChatMessage, PendingApproval, ToolCall } from '../types.js';
+import type { ChatMessage, PendingApproval, PendingInterrupt, ToolCall } from '../types.js';
 
 export interface ChatState {
   messages: ChatMessage[];
@@ -11,6 +11,7 @@ export interface ChatState {
   currentReasoning: string;
   currentToolCalls: ToolCall[];
   pendingApprovals: PendingApproval[];
+  pendingInterrupts: PendingInterrupt[];
 }
 
 export type ChatAction =
@@ -27,6 +28,7 @@ export type ChatAction =
   | { type: 'ADD_TOOL_CALL'; payload: ToolCall }
   | { type: 'FINISH_ASSISTANT_MESSAGE' }
   | { type: 'SET_PENDING_APPROVALS'; payload: PendingApproval[] }
+  | { type: 'SET_PENDING_INTERRUPTS'; payload: PendingInterrupt[] }
   | { type: 'SET_MESSAGES'; payload: ChatMessage[] }
   | { type: 'CLEAR_MESSAGES' };
 
@@ -97,6 +99,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       if (action.payload.length === 0 && state.pendingApprovals.length === 0) return state;
       return { ...state, pendingApprovals: action.payload };
 
+    case 'SET_PENDING_INTERRUPTS':
+      if (action.payload.length === 0 && state.pendingInterrupts.length === 0) return state;
+      return { ...state, pendingInterrupts: action.payload };
+
     case 'SET_MESSAGES':
       return { ...state, messages: action.payload };
 
@@ -120,5 +126,6 @@ export function createInitialState(initialMessages?: ChatMessage[], threadId?: s
     currentReasoning: '',
     currentToolCalls: [],
     pendingApprovals: [],
+    pendingInterrupts: [],
   };
 }

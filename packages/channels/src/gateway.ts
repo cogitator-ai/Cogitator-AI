@@ -13,7 +13,9 @@ import type {
   HookRegistry,
   StreamConfig,
   ImageInput,
+  MemoryEntry,
   Message,
+  QueueMode,
   RunOptions,
   RunResult,
   Session,
@@ -32,7 +34,7 @@ import type { MediaProcessor } from './media/media-processor';
 import { StatusReactionTracker } from './status-reactions';
 import { InboundDebouncer } from './inbound-debounce';
 import { formatEnvelope } from './envelope';
-import { MessageQueue } from './message-queue';
+import { MessageQueue, type MessageProcessing } from './message-queue';
 import {
   CONVERSATIONS_KEY,
   defaultThreadKey,
@@ -230,6 +232,17 @@ export class Gateway {
   private readonly runs = new Set<AbortController>();
   /** The stop of each run, by the signal the run was given */
   private readonly stops = new WeakMap<AbortSignal, AbortController>();
+  /**
+   * In `rollback` mode, where each run goes in its thread: the queue's signal of its processing,
+   * whose start a later run may roll back to, and the entry to branch from, by the run's signal
+   */
+  private readonly runPlaces = new WeakMap<
+    AbortSignal,
+    { origin?: AbortSignal; branchFrom?: string | null }
+  >();
+  /** In `rollback` mode, the entry each run's input went after, by the queue's signal of it */
+  private readonly runStarts = new WeakMap<AbortSignal, string | null>();
+  private readonly queueMode: QueueMode;
   /** The stop of each run streaming into a draft with a stop button, by channel, chat and draft */
   private readonly stoppableDrafts = new Map<string, AbortController>();
   /** Approval prompts with buttons, by channel, chat and message: whose paused run each answers */
@@ -278,10 +291,19 @@ export class Gateway {
       config.sessionManager ?? (config.memory ? new SessionManager(config.memory) : null);
 
     const queueMode = config.queueMode ?? 'sequential';
+    this.queueMode = queueMode;
     this.messageQueue =
       queueMode === 'parallel'
         ? null
-        : new MessageQueue(queueMode, (msg, signal) => this.processMessage(msg, signal));
+        : new MessageQueue(
+            queueMode,
+            (msg, signal, processing) => this.processMessage(msg, signal, processing),
+            (msg, threadId) => {
+              void Promise.resolve(
+                this.hooks?.emit('message:rejected', { msg, threadId, reason: 'busy' })
+              ).catch((error: unknown) => this.config.onError?.(toError(error), msg));
+            }
+          );
 
     this.debouncer = config.debounce?.enabled
       ? new InboundDebouncer(config.debounce, async (merged, originals) => {
@@ -772,7 +794,11 @@ export class Gateway {
    * Handles one message, `false` when its run failed or was aborted. A message for a channel
    * the gateway does not run counts as handled: it never can be.
    */
-  private async processMessage(msg: ChannelMessage, signal?: AbortSignal): Promise<boolean> {
+  private async processMessage(
+    msg: ChannelMessage,
+    signal?: AbortSignal,
+    processing: MessageProcessing = {}
+  ): Promise<boolean> {
     const channel = this.channels.find((ch) => ch.type === msg.channelType);
     if (!channel) return true;
 
@@ -783,6 +809,15 @@ export class Gateway {
     const runSignal = signal ? AbortSignal.any([signal, stop.signal]) : stop.signal;
     this.stops.set(runSignal, stop);
     this.runs.add(stop);
+    if (this.queueMode === 'rollback') {
+      const branchFrom = processing.rollbackOf
+        ? this.runStarts.get(processing.rollbackOf)
+        : undefined;
+      this.runPlaces.set(runSignal, {
+        ...(signal && { origin: signal }),
+        ...(branchFrom !== undefined && { branchFrom }),
+      });
+    }
 
     const key = answerKey(msg);
     try {
@@ -944,11 +979,31 @@ export class Gateway {
       threadId,
       threadAccess: 'shared',
       ...(images ? { images } : {}),
+      ...this.rollbackOptions(signal),
     };
 
     await this.deliver(agent, msg, channel, threadId, signal, (extra) =>
       this.config.cogitator.run(agent, { ...options, ...extra })
     );
+  }
+
+  /**
+   * What a run in `rollback` mode adds to its options: the branch from where the run it stopped
+   * started, and a note of where its own input goes, for the run that may stop it in turn
+   */
+  private rollbackOptions(signal: AbortSignal | undefined): Partial<RunOptions> {
+    const place = signal ? this.runPlaces.get(signal) : undefined;
+    if (!place) return {};
+    const origin = place.origin;
+    return {
+      ...(place.branchFrom !== undefined && { branch: { fromEntryId: place.branchFrom } }),
+      ...(origin && {
+        onMemoryEntry: (entry: MemoryEntry) => {
+          if (this.runStarts.has(origin) || entry.message.role !== 'user') return;
+          this.runStarts.set(origin, entry.parentId ?? null);
+        },
+      }),
+    };
   }
 
   private async resumeWithReply(

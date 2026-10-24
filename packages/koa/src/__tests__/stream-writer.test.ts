@@ -122,6 +122,20 @@ describe('KoaStreamWriter', () => {
     });
   });
 
+  it('interruptRequired() writes interrupt-required event', () => {
+    const { ctx, chunks } = mockCtx();
+    const writer = new KoaStreamWriter(ctx);
+    writer.interruptRequired('thread-1', [
+      { id: 'int_1', kind: 'input', reason: 'pick_order', message: 'Which order?' },
+    ]);
+    expect(chunks).toHaveLength(1);
+    expect(parseSSE(chunks[0])).toEqual({
+      type: 'interrupt-required',
+      threadId: 'thread-1',
+      interrupts: [{ id: 'int_1', kind: 'input', reason: 'pick_order', message: 'Which order?' }],
+    });
+  });
+
   it('error() writes error event', () => {
     const { ctx, chunks } = mockCtx();
     const writer = new KoaStreamWriter(ctx);

@@ -1,4 +1,4 @@
-import type { ToolApprovalDecision } from '@cogitator-ai/types';
+import type { MultitaskStrategy, RunOptions, ToolApprovalDecision } from '@cogitator-ai/types';
 
 /** The outcome of parsing a request body: the typed value, or why it was refused */
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; message: string };
@@ -35,6 +35,34 @@ export interface RunRequestBody {
   input: string;
   context?: Record<string, unknown>;
   threadId?: string;
+  /**
+   * What the run does when its thread has a run going on, as LangGraph's `multitask_strategy`:
+   * `enqueue`, `reject` (`409 THREAD_BUSY`), `interrupt` or `rollback`. The server's
+   * `multitaskStrategy` (in the Cogitator config) applies when the request names none
+   */
+  multitaskStrategy?: MultitaskStrategy;
+}
+
+/** The strategies a run request may name, see `RunRequestBody.multitaskStrategy` */
+export const MULTITASK_STRATEGIES: readonly MultitaskStrategy[] = [
+  'enqueue',
+  'reject',
+  'interrupt',
+  'rollback',
+];
+
+function isMultitaskStrategy(value: unknown): value is MultitaskStrategy {
+  return MULTITASK_STRATEGIES.some((strategy) => strategy === value);
+}
+
+/**
+ * The run options a run request sets beyond its input, context and thread: its
+ * `multitaskStrategy` when it names one. Spread it into the options of `cogitator.run()`
+ */
+export function runRequestRunOptions(
+  body: Pick<RunRequestBody, 'multitaskStrategy'>
+): Pick<RunOptions, 'multitaskStrategy'> {
+  return body.multitaskStrategy === undefined ? {} : { multitaskStrategy: body.multitaskStrategy };
 }
 
 /**
@@ -92,6 +120,9 @@ export function parseRunRequest(
   if (body.threadId !== undefined && !isNonBlankString(body.threadId)) {
     return fail('Field "threadId" must be a non-empty string');
   }
+  if (body.multitaskStrategy !== undefined && !isMultitaskStrategy(body.multitaskStrategy)) {
+    return fail(`Field "multitaskStrategy" must be one of ${MULTITASK_STRATEGIES.join(', ')}`);
+  }
 
   return {
     ok: true,
@@ -99,6 +130,7 @@ export function parseRunRequest(
       input: body.input,
       ...(body.context !== undefined && { context: body.context }),
       ...(body.threadId !== undefined && { threadId: body.threadId }),
+      ...(body.multitaskStrategy !== undefined && { multitaskStrategy: body.multitaskStrategy }),
     },
   };
 }
@@ -139,6 +171,11 @@ export interface ResumeRequestBody {
   decisions?: Record<string, ToolApprovalDecision>;
   /** The decision for every paused call that `decisions` leaves out */
   defaultDecision?: ToolApprovalDecision;
+  /**
+   * Answers to the run's interrupts, by interrupt id: checked against each interrupt's
+   * `responseSchema` by the run, see `ResumeOptions.responses`
+   */
+  responses?: Record<string, unknown>;
 }
 
 const DECISION_SHAPE = '{ approved: boolean, reason?: string }';
@@ -178,6 +215,11 @@ export function parseResumeRequest(body: unknown): ParseResult<ResumeRequestBody
     const decision = parseDecision(body.defaultDecision);
     if (!decision) return fail(`Field "defaultDecision" must be ${DECISION_SHAPE}`);
     request.defaultDecision = decision;
+  }
+
+  if (body.responses !== undefined) {
+    if (!isJsonObject(body.responses)) return fail('Field "responses" must be an object');
+    request.responses = { ...body.responses };
   }
 
   return { ok: true, value: request };

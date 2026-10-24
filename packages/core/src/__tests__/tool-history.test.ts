@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import type { Message, ToolCall } from '@cogitator-ai/types';
-import { sanitizeToolHistory } from '../utils/tool-history';
+import {
+  OUTCOME_UNKNOWN,
+  repairUnansweredToolCalls,
+  sanitizeToolHistory,
+} from '../utils/tool-history';
 
 function assistantWithCalls(content: string, calls: ToolCall[]): Message {
   return { role: 'assistant', content, toolCalls: calls } as Message & { toolCalls: ToolCall[] };
@@ -97,5 +101,45 @@ describe('sanitizeToolHistory', () => {
     ]);
 
     expect(result).toEqual([assistantWithCalls('', [call('a')]), toolResult('a', '"first"')]);
+  });
+});
+
+describe('repairUnansweredToolCalls', () => {
+  const call = (id: string): ToolCall => ({ id, name: 'lookup', arguments: {} });
+  const unknown = (id: string): Message => ({
+    role: 'tool',
+    content: JSON.stringify({ error: OUTCOME_UNKNOWN }),
+    toolCallId: id,
+    name: 'lookup',
+  });
+
+  it('answers the calls a stopped run left without a result, in call order', () => {
+    const answered: Message = { role: 'tool', content: '"ok"', toolCallId: 'b', name: 'lookup' };
+    const assistant = { role: 'assistant', content: '', toolCalls: [call('a'), call('b')] };
+    const repaired = repairUnansweredToolCalls([
+      { role: 'user', content: 'Look it up' },
+      assistant as Message,
+      answered,
+      { role: 'user', content: 'And?' },
+    ]);
+    expect(repaired).toEqual([
+      { role: 'user', content: 'Look it up' },
+      assistant,
+      unknown('a'),
+      answered,
+      { role: 'user', content: 'And?' },
+    ]);
+  });
+
+  it('leaves a whole history as it is, and keeps system messages after the exchange', () => {
+    const assistant = { role: 'assistant', content: '', toolCalls: [call('a')] } as Message;
+    const system: Message = { role: 'system', content: 'Summary' };
+    const history: Message[] = [
+      assistant,
+      system,
+      { role: 'tool', content: '1', toolCallId: 'a', name: 'lookup' },
+    ];
+    expect(repairUnansweredToolCalls(history)).toEqual([history[0], history[2], system]);
+    expect(repairUnansweredToolCalls([assistant])).toEqual([assistant, unknown('a')]);
   });
 });

@@ -5,6 +5,7 @@
 import type { ZodType } from 'zod';
 import type { SandboxConfig } from './sandbox';
 import type { Workspace } from './workspace';
+import type { InterruptRequest } from './run-control';
 
 export type ToolCategory =
   | 'math'
@@ -162,6 +163,15 @@ export interface BaseToolContext<TDeps = unknown> {
    * that read, write or run commands in it, see `workspaceTools()`
    */
   workspace?: Workspace;
+  /**
+   * Pauses the run to ask a person, the way an approval does: the run returns with
+   * `status: 'paused'` and the question in `interrupts`, and goes on once `cogitator.resume()`
+   * answers it (`responses`). The tool then runs again from its start, and this call returns the
+   * answer, parsed by a Zod `responseSchema`. So keep what the tool does before asking safe to
+   * do twice. A tool may ask several times, each answer comes back in order. Present in a run,
+   * not in `invokeTool()` or a sandboxed tool
+   */
+  interrupt?: <T = unknown>(request: InterruptRequest<T>) => Promise<T>;
 }
 
 /**

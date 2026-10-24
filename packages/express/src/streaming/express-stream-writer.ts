@@ -18,11 +18,13 @@ import {
   createToolCallEndEvent,
   createToolResultEvent,
   createApprovalRequiredEvent,
+  createInterruptRequiredEvent,
   createErrorEvent,
   createFinishEvent,
   createWorkflowEvent,
   createSwarmEvent,
   type PendingApproval,
+  type PendingInterrupt,
   type StreamEvent,
   type Usage,
 } from './protocol.js';
@@ -124,6 +126,10 @@ export class ExpressStreamWriter {
 
   approvalRequired(threadId: string, approvals: readonly PendingApproval[]): void {
     this.write(createApprovalRequiredEvent(threadId, approvals));
+  }
+
+  interruptRequired(threadId: string, interrupts: readonly PendingInterrupt[]): void {
+    this.write(createInterruptRequiredEvent(threadId, interrupts));
   }
 
   workflowEvent(event: string, data: unknown): void {

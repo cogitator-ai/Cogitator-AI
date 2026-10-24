@@ -11,6 +11,7 @@ export {
   createToolCallEndEvent,
   createToolResultEvent,
   createApprovalRequiredEvent,
+  createInterruptRequiredEvent,
   createErrorEvent,
   createFinishEvent,
   createWorkflowEvent,
@@ -32,7 +33,9 @@ export type {
   ToolCallEndEvent,
   ToolResultEvent,
   ApprovalRequiredEvent,
+  InterruptRequiredEvent,
   PendingApproval,
+  PendingInterrupt,
   ErrorEvent,
   FinishEvent,
   FinishDetails,
@@ -54,12 +57,14 @@ export {
   ToolCallEndEventSchema,
   ToolResultEventSchema,
   ApprovalRequiredEventSchema,
+  InterruptRequiredEventSchema,
   ErrorEventSchema,
   FinishEventSchema,
   WorkflowEventSchema,
   SwarmEventSchema,
   RunUsageSchema,
   PendingApprovalSchema,
+  PendingInterruptSchema,
   streamEventComponents,
 } from './stream-schemas.js';
 export type { OpenAPISchemaObject } from './stream-schemas.js';
@@ -76,6 +81,7 @@ export {
 export {
   DEFAULT_THREAD_MESSAGE_ROLES,
   MAX_RUN_TIMEOUT_MS,
+  MULTITASK_STRATEGIES,
   NON_BLANK_PATTERN,
   RUN_INPUT_SCHEMA,
   isJsonObject,
@@ -86,6 +92,7 @@ export {
   parseSwarmRunRequest,
   parseWorkflowResumeRequest,
   parseWorkflowRunRequest,
+  runRequestRunOptions,
 } from './validation.js';
 
 export type {
@@ -124,6 +131,7 @@ export {
   toAgentRunResponse,
   toAgentToolCall,
   toPendingApprovals,
+  toPendingInterrupts,
   toWorkflowCompletedData,
   toWorkflowFailedData,
   withResumedCheckpoint,

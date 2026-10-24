@@ -48,6 +48,10 @@ import type {
   RunMiddleware,
   TodoItem,
   ToolSchema,
+  QueuedRunMessage,
+  RunHandle,
+  RunInterrupt,
+  StartOptions,
 } from '@cogitator-ai/types';
 import { memoryAgentId, type Agent } from './agent';
 import { ToolRegistry } from './registry';
@@ -142,7 +146,17 @@ async function playbookNote(
   );
 }
 import { TruncateStrategy } from './context/strategies/index';
-import { sanitizeToolHistory } from './utils/tool-history';
+import { ABORTED_BEFORE_DISPATCH, sanitizeToolHistory } from './utils/tool-history';
+import { RunQueue } from './cogitator/run-queue';
+import { ThreadRuns, type ThreadSeat } from './cogitator/thread-runs';
+import {
+  answerInterrupts,
+  approvalInterrupt,
+  checkpointInterrupts,
+  isAnswered,
+  isToolInterrupt,
+  toolInterrupter,
+} from './cogitator/interrupts';
 import { MEMORY_AGENTS, noteThreadRun } from './cogitator/message-builder';
 import { normalizeTurn } from './llm/turn';
 import { withPiiDecisions, withPiiMasking } from './security/pii';
@@ -379,6 +393,8 @@ export class Cogitator implements ToolInvoker {
   private processCheckpoints?: InMemoryRunCheckpointStore;
   private promptRegistry?: PromptRegistry;
   private threadCheckpoints?: { memory: MemoryAdapter; store: ThreadRunCheckpointStore };
+  /** The runs going on in each thread, for `multitaskStrategy` */
+  private readonly threadRuns = new ThreadRuns();
   /** Global tool registry shared across all runs */
   public readonly tools: ToolRegistry = new ToolRegistry();
 
@@ -476,7 +492,54 @@ export class Cogitator implements ToolInvoker {
     agent: Agent<TDeps>,
     options: RunOptions<TDeps> & RunDeps<TDeps>
   ): Promise<RunResult> {
-    return this.execute(agent, options);
+    return this.launch(agent, options);
+  }
+
+  /**
+   * Starts a run and hands back what steers it while it goes on: `steer()` adds a message after
+   * the current step's tool calls (they always finish), `followUp()` one the agent takes when it
+   * would stop, `inject()` context for the next model call that does not wake the agent, and
+   * `abort()` stops the run and returns the messages it did not deliver. `queue.steering` and
+   * `queue.followUp` take queued messages one per step (default) or all at once (`'all'`).
+   * Delivered messages are saved to the thread as user messages with `metadata.queued`. The
+   * handle's `result` is what `run()` returns.
+   *
+   * @example
+   * ```ts
+   * const handle = cog.start(agent, { input: 'Plan the release', threadId });
+   * handle.steer('Skip the changelog, it is done');
+   * handle.followUp('Then draft the announcement');
+   * const result = await handle.result;
+   * ```
+   */
+  start<TDeps = unknown>(
+    agent: Agent<TDeps>,
+    options: StartOptions<TDeps> & RunDeps<TDeps>
+  ): RunHandle {
+    const { queue: queueOptions, ...runOptions } = options;
+    const queue = new RunQueue(queueOptions);
+    const stop = new AbortController();
+    const signal = runOptions.signal
+      ? AbortSignal.any([runOptions.signal, stop.signal])
+      : stop.signal;
+    const result = this.launch(agent, { ...runOptions, signal }, undefined, queue).finally(() => {
+      queue.close();
+    });
+    result.catch(() => undefined);
+    return {
+      result,
+      steer: (message) => queue.push('steer', message),
+      followUp: (message) => queue.push('followUp', message),
+      inject: (message) => queue.push('inject', message),
+      get queued() {
+        return queue.pending;
+      },
+      abort: (reason) => {
+        const left = queue.close();
+        if (!stop.signal.aborted) stop.abort(toAbortError(reason, 'Run aborted'));
+        return left;
+      },
+    };
   }
 
   /**
@@ -507,15 +570,16 @@ export class Cogitator implements ToolInvoker {
         code: ErrorCode.VALIDATION_ERROR,
       });
     }
-    const { decisions = {}, defaultDecision, userId, ...rest } = options;
+    const { decisions = {}, defaultDecision, responses, userId, ...rest } = options;
     const threadId = typeof target === 'string' ? target : target.threadId;
-    return this.execute(
+    return this.launch(
       agent,
       { ...rest, input: '', threadId, ...(userId !== undefined && { userId }) },
       {
         ...(typeof target === 'string' ? {} : { checkpoint: target }),
         decisions,
         ...(defaultDecision && { defaultDecision }),
+        ...(responses && { responses }),
         checkUser: typeof target === 'string' || userId !== undefined,
       }
     );
@@ -1024,15 +1088,50 @@ export class Cogitator implements ToolInvoker {
     };
   }
 
+  /**
+   * Runs `agent` once its thread lets it (`multitaskStrategy`): a run on an explicit thread takes
+   * a seat there for as long as it goes on, so later runs of the thread see it. A rollback run
+   * goes on a branch from where the run it interrupted started.
+   */
+  private async launch(
+    agent: Agent,
+    options: RunOptions,
+    resumeFrom?: ResumeFrom,
+    queue?: RunQueue
+  ): Promise<RunResult> {
+    const threadId = options.threadId;
+    const aside =
+      options.branch?.activate === false || resumeFrom?.checkpoint?.branch?.activate === false;
+    if (threadId === undefined || aside) return this.execute(agent, options, resumeFrom, { queue });
+    const trace = normalizeTraceParent(options.trace) ?? currentTraceContext();
+    const admission = await this.threadRuns.admit(
+      threadId,
+      options.multitaskStrategy ?? this.config.multitaskStrategy,
+      options.signal,
+      trace?.traceId
+    );
+    if (!admission) return this.execute(agent, options, resumeFrom, { queue });
+    try {
+      const { seat, rollbackTo } = admission;
+      const signal = options.signal ? AbortSignal.any([options.signal, seat.signal]) : seat.signal;
+      const branch =
+        !resumeFrom && rollbackTo !== undefined && options.branch === undefined
+          ? { branch: { fromEntryId: rollbackTo } }
+          : {};
+      return await this.execute(agent, { ...options, ...branch, signal }, resumeFrom, {
+        queue,
+        seat,
+      });
+    } finally {
+      admission.release();
+    }
+  }
+
   private async execute(
     agent: Agent,
     options: RunOptions,
-    resumeFrom?: {
-      checkpoint?: RunCheckpoint;
-      decisions: Record<string, ToolApprovalDecision>;
-      defaultDecision?: ToolApprovalDecision;
-      checkUser: boolean;
-    }
+    resumeFrom?: ResumeFrom,
+    control: RunControl = {}
   ): Promise<RunResult> {
     let checkpoint = resumeFrom?.checkpoint;
     let prompt: RunPrompt | undefined;
@@ -1047,6 +1146,12 @@ export class Cogitator implements ToolInvoker {
     const parentTrace = explicitTrace ?? currentTraceContext();
     let traceId = parentTrace?.traceId ?? newTraceId();
     let parentSpanId = parentTrace?.parentSpanId;
+    const { queue, seat } = control;
+    if (seat) {
+      seat.traceId = traceId;
+      seat.branchPoint = () => runMemory.summary()?.branchPoint;
+    }
+    const shown = { text: '', agentId: agent.id };
     const conversationId = options.threadId;
     const captureContent = this.capturesContent();
     const publicSpans = () =>
@@ -1097,6 +1202,9 @@ export class Cogitator implements ToolInvoker {
     options = this.withObservers(options, agent, () => runId);
 
     try {
+      let resumedInterrupts: RunInterrupt[] = [];
+      let answeredDecisions: Record<string, ToolApprovalDecision> = {};
+      let answeredNow: RunInterrupt[] = [];
       releaseRunSlot = await this.acquireRunSlot(abortController.signal);
       throwIfAborted(abortController.signal);
       if (!checkpoint) {
@@ -1126,6 +1234,14 @@ export class Cogitator implements ToolInvoker {
         if (!explicitTrace && checkpoint.trace) {
           traceId = checkpoint.trace.traceId;
           parentSpanId = checkpoint.trace.rootSpanId;
+          if (seat) seat.traceId = traceId;
+        }
+        resumedInterrupts = checkpointInterrupts(checkpoint);
+        if (resumeFrom.responses) {
+          const answered = answerInterrupts(resumedInterrupts, resumeFrom.responses, Date.now());
+          resumedInterrupts = answered.interrupts;
+          answeredDecisions = answered.decisions;
+          answeredNow = answered.answered;
         }
       }
 
@@ -1348,6 +1464,7 @@ export class Cogitator implements ToolInvoker {
       let reasoning = options.reasoning ?? active.config.reasoning;
       const promptCache = this.config.llm?.promptCache ?? {};
       const maxIterations = agent.config?.maxIterations ?? 10;
+      let iterationCap = checkpoint?.iterationLimit ?? maxIterations;
       const answerAtLimit = (agent.config?.onIterationLimit ?? 'answer') === 'answer';
       const limit = { reached: false, closingTurn: false };
       let lastToolCallSig = checkpoint?.lastToolCallSignature ?? '';
@@ -1443,11 +1560,20 @@ export class Cogitator implements ToolInvoker {
         lastToolCallSig = '';
       };
 
+      const deliver = async (queued: readonly QueuedRunMessage[]) => {
+        for (const item of queued) {
+          const message: Message = { role: 'user', content: item.content };
+          messages.push(message);
+          await runMemory.save(active.id, message, undefined, undefined, { queued: item.kind });
+        }
+      };
+
       const handleToolTurn = async (
         toolCalls: ToolCall[],
         resumed?: {
           decisions: Record<string, ToolApprovalDecision>;
           fallback?: ToolApprovalDecision;
+          interrupts?: readonly RunInterrupt[];
         }
       ): Promise<PausedTurn | undefined> => {
         if (!resumed) {
@@ -1510,11 +1636,17 @@ export class Cogitator implements ToolInvoker {
           else decisions.set(toolCall.id, decision);
         }
         if (pending.length > 0) {
-          return { toolCalls, decisions: Object.fromEntries(decisions), pending };
+          return {
+            toolCalls,
+            decisions: Object.fromEntries(decisions),
+            pending,
+            interrupts: pending.map(approvalInterrupt),
+          };
         }
+        const askedBefore = (resumed?.interrupts ?? []).filter((entry) => entry.kind === 'input');
         if (resumed && !runMemory.aside) await this.runCheckpointStore().delete(threadId);
 
-        const executeToolCall = async (toolCall: ToolCall) => {
+        const executeToolCall = async (toolCall: ToolCall): Promise<ToolOutcome> => {
           const toolSpanStart = Date.now();
           const toolSpanId = newSpanId();
           const decision = decisions.get(toolCall.id);
@@ -1533,51 +1665,100 @@ export class Cogitator implements ToolInvoker {
               toolSpanEnd: Date.now(),
             };
           }
-          const result = await waitForAbortable(
-            withTraceContext({ traceId, parentSpanId: toolSpanId }, () =>
-              runToolCall({
-                registry,
-                toolCall,
-                runId,
-                agentId: active.id,
-                sandboxManager: this.state.sandboxManager,
-                initializeSandbox: () => initializeSandbox(this.config, this.state),
-                signal: abortController.signal,
-                extraContext: {
-                  threadId,
-                  userId: options.userId,
-                  channelType: options.channelType,
-                  channelId: options.channelId,
-                  topicId: options.topicId,
-                  conversationId: options.conversationId,
-                  ...(options.deps !== undefined && { deps: options.deps }),
-                  ...(workspaceOf(active) && { workspace: workspaceOf(active) }),
-                },
-                approved: decision?.approved === true,
-                allowNativeFallback: this.config.sandbox?.allowNativeFallback !== false,
-                middleware: pipeline,
-                context: middlewareContext(),
-              })
-            ),
-            abortController.signal
-          );
+          let result: ToolResult;
+          try {
+            result = await waitForAbortable(
+              withTraceContext({ traceId, parentSpanId: toolSpanId }, () =>
+                runToolCall({
+                  registry,
+                  toolCall,
+                  runId,
+                  agentId: active.id,
+                  sandboxManager: this.state.sandboxManager,
+                  initializeSandbox: () => initializeSandbox(this.config, this.state),
+                  signal: abortController.signal,
+                  extraContext: {
+                    threadId,
+                    userId: options.userId,
+                    channelType: options.channelType,
+                    channelId: options.channelId,
+                    topicId: options.topicId,
+                    conversationId: options.conversationId,
+                    ...(options.deps !== undefined && { deps: options.deps }),
+                    ...(workspaceOf(active) && { workspace: workspaceOf(active) }),
+                    interrupt: toolInterrupter(toolCall, askedBefore),
+                  },
+                  approved: decision?.approved === true,
+                  allowNativeFallback: this.config.sandbox?.allowNativeFallback !== false,
+                  middleware: pipeline,
+                  context: middlewareContext(),
+                })
+              ),
+              abortController.signal
+            );
+          } catch (error) {
+            if (!isToolInterrupt(error) || abortController.signal.aborted) throw error;
+            return {
+              toolCall,
+              interrupt: error.interrupt,
+              toolSpanId,
+              toolSpanStart,
+              toolSpanEnd: Date.now(),
+            };
+          }
           const toolSpanEnd = Date.now();
           return { toolCall, result, toolSpanId, toolSpanStart, toolSpanEnd };
         };
 
-        const toolResults = options.parallelToolCalls
-          ? await Promise.all(toolCalls.map(executeToolCall))
-          : await (async () => {
-              const results: Awaited<ReturnType<typeof executeToolCall>>[] = [];
-              for (const toolCall of toolCalls) {
-                results.push(await executeToolCall(toolCall));
-              }
-              return results;
-            })();
+        const maxLengthOf = (toolCall: ToolCall): number =>
+          registry.get(toolCall.name)?.maxResultLength ??
+          this.config.limits?.maxToolResultLength ??
+          DEFAULT_TOOL_RESULT_MAX_LENGTH;
+        const dispatched = new Set<string>();
+        const finished = new Map<string, ToolResult>();
+        const dispatch = async (toolCall: ToolCall): Promise<ToolOutcome> => {
+          throwIfAborted(abortController.signal);
+          dispatched.add(toolCall.id);
+          const outcome = await executeToolCall(toolCall);
+          if (outcome.result && !abortController.signal.aborted) {
+            finished.set(toolCall.id, outcome.result);
+          }
+          return outcome;
+        };
+        const recordAbortedTurn = async () => {
+          for (const toolCall of toolCalls) {
+            const done = finished.get(toolCall.id);
+            if (!done && dispatched.has(toolCall.id)) continue;
+            const result: ToolResult = done ?? {
+              callId: toolCall.id,
+              name: toolCall.name,
+              result: null,
+              error: ABORTED_BEFORE_DISPATCH,
+            };
+            const toolMessage = createToolMessage(toolCall, result, maxLengthOf(toolCall));
+            messages.push(toolMessage);
+            await runMemory.save(active.id, toolMessage, undefined, [result]);
+          }
+        };
+
+        let outcomes: ToolOutcome[] = [];
+        try {
+          if (options.parallelToolCalls) outcomes = await Promise.all(toolCalls.map(dispatch));
+          else for (const toolCall of toolCalls) outcomes.push(await dispatch(toolCall));
+        } catch (error) {
+          if (abortController.signal.aborted) await recordAbortedTurn();
+          throw error;
+        }
 
         const reflectionMessages: Message[] = [];
+        const asked: ToolOutcome[] = [];
 
-        for (const { toolCall, result, toolSpanId, toolSpanStart, toolSpanEnd } of toolResults) {
+        for (const outcome of outcomes) {
+          const { toolCall, result, toolSpanId, toolSpanStart, toolSpanEnd } = outcome;
+          if (!result) {
+            asked.push(outcome);
+            continue;
+          }
           const toolSpan = createSpan(
             `tool.${toolCall.name}`,
             traceId,
@@ -1600,12 +1781,7 @@ export class Cogitator implements ToolInvoker {
               ...(captureContent && {
                 [GEN_AI.toolCallArguments]: safeJson(toolCall.arguments),
                 ...(!result.error && {
-                  [GEN_AI.toolCallResult]: toolResultContent(
-                    result.result,
-                    registry.get(toolCall.name)?.maxResultLength ??
-                      this.config.limits?.maxToolResultLength ??
-                      DEFAULT_TOOL_RESULT_MAX_LENGTH
-                  ),
+                  [GEN_AI.toolCallResult]: toolResultContent(result.result, maxLengthOf(toolCall)),
                 }),
               }),
             },
@@ -1622,9 +1798,7 @@ export class Cogitator implements ToolInvoker {
           const toolMessage = await createToolMessageWithOffload(
             toolCall,
             result,
-            registry.get(toolCall.name)?.maxResultLength ??
-              this.config.limits?.maxToolResultLength ??
-              DEFAULT_TOOL_RESULT_MAX_LENGTH,
+            maxLengthOf(toolCall),
             offloadTo
               ? {
                   workspace: offloadTo,
@@ -1677,6 +1851,23 @@ export class Cogitator implements ToolInvoker {
           }
         }
         messages.push(...reflectionMessages);
+        if (asked.length > 0) {
+          const waiting = new Set(asked.map((outcome) => outcome.toolCall.id));
+          return {
+            toolCalls: asked.map((outcome) => outcome.toolCall),
+            decisions: Object.fromEntries([...decisions].filter(([id]) => waiting.has(id))),
+            pending: [],
+            interrupts: [
+              ...askedBefore.filter(
+                (entry) =>
+                  entry.toolCallId !== undefined &&
+                  waiting.has(entry.toolCallId) &&
+                  isAnswered(entry)
+              ),
+              ...asked.flatMap((outcome) => (outcome.interrupt ? [outcome.interrupt] : [])),
+            ],
+          };
+        }
         const handoff = toolCalls.find((call) => handoffTargets.has(call.name));
         const target = handoff && handoffTargets.get(handoff.name);
         if (handoff && target) await switchTo(target, handoff.arguments.reason);
@@ -1684,7 +1875,7 @@ export class Cogitator implements ToolInvoker {
       };
 
       const reachedLimit = (): boolean => {
-        if (iterations < maxIterations) return false;
+        if (iterations < iterationCap) return false;
         limit.reached = true;
         if (!answerAtLimit) return true;
         limit.closingTurn = true;
@@ -1693,9 +1884,32 @@ export class Cogitator implements ToolInvoker {
       };
 
       if (checkpoint && resumeFrom) {
+        if (answeredNow.length > 0) {
+          await runMemory.event(
+            active.id,
+            {
+              type: 'interrupt',
+              event: {
+                status: 'resumed',
+                interrupts: answeredNow.map((entry) => ({
+                  id: entry.id,
+                  kind: entry.kind,
+                  reason: entry.reason,
+                  response: entry.response,
+                })),
+              },
+            },
+            `Resumed with the answers to ${answeredNow.map((entry) => entry.reason).join(', ')}`
+          );
+        }
         pausedTurn = await handleToolTurn(checkpoint.turn.toolCalls, {
-          decisions: { ...checkpoint.turn.decisions, ...resumeFrom.decisions },
+          decisions: {
+            ...checkpoint.turn.decisions,
+            ...answeredDecisions,
+            ...resumeFrom.decisions,
+          },
           fallback: resumeFrom.defaultDecision,
+          interrupts: resumedInterrupts,
         });
         if (!pausedTurn) reachedLimit();
       }
@@ -1706,8 +1920,10 @@ export class Cogitator implements ToolInvoker {
       let structuredRepaired = false;
       let emptyAnswerRetries = 0;
 
-      while (!pausedTurn && (iterations < maxIterations || limit.closingTurn)) {
+      while (!pausedTurn && (iterations < iterationCap || limit.closingTurn)) {
         throwIfAborted(abortController.signal);
+        const steering = queue?.takeForTurn() ?? [];
+        if (steering.length > 0) await deliver(steering);
         this.assertTokenBudget(totalInputTokens + totalOutputTokens);
         this.assertCostBudget(costMeter.total(costModel));
 
@@ -1839,11 +2055,14 @@ export class Cogitator implements ToolInvoker {
         let streamed = false;
         let streamedText = false;
         let reachedModel = false;
+        shown.text = '';
+        shown.agentId = active.id;
         const turnStream = holdsStream
           ? () => undefined
           : (token: string) => {
               streamed = true;
               streamedText = true;
+              shown.text += token;
               onToken(token);
             };
         const onReasoning = options.onReasoning;
@@ -1979,7 +2198,7 @@ export class Cogitator implements ToolInvoker {
         if (
           isEmptyAnswer(response) &&
           emptyAnswerRetries < MAX_EMPTY_ANSWER_RETRIES &&
-          iterations < maxIterations
+          iterations < iterationCap
         ) {
           emptyAnswerRetries++;
           getLogger().warn('Model returned an empty answer, asking again', {
@@ -2010,7 +2229,7 @@ export class Cogitator implements ToolInvoker {
           !streaming &&
           !structuredRepaired &&
           !blockReasonOf(response.finishReason) &&
-          iterations < maxIterations
+          iterations < iterationCap
             ? structuredOutputProblem(active.config.responseFormat, outputContent)
             : undefined;
 
@@ -2034,12 +2253,25 @@ export class Cogitator implements ToolInvoker {
           assistantMessage,
           requestsTools ? response.toolCalls : undefined
         );
+        shown.text = '';
 
-        if (!requestsTools || !response.toolCalls) break;
+        if (!requestsTools || !response.toolCalls) {
+          const next = queue?.takeAtStop() ?? [];
+          if (next.length === 0) break;
+          await deliver(next);
+          iterationCap = iterations + maxIterations;
+          limit.reached = false;
+          limit.closingTurn = false;
+          emptyAnswerRetries = 0;
+          structuredRepaired = false;
+          continue;
+        }
         pausedTurn = await handleToolTurn(response.toolCalls);
         if (pausedTurn) break;
         if (reachedLimit()) break;
       }
+
+      const leftover = queue?.close() ?? [];
 
       if (pausedTurn) {
         const pausedCheckpoint: RunCheckpoint = {
@@ -2057,7 +2289,9 @@ export class Cogitator implements ToolInvoker {
           ...(active !== agent && { activeAgent: active.name }),
           ...(handoffs.length > 0 && { handoffs }),
           turn: { toolCalls: pausedTurn.toolCalls, decisions: pausedTurn.decisions },
+          interrupts: pausedTurn.interrupts,
           iterations,
+          ...(iterationCap !== maxIterations && { iterationLimit: iterationCap }),
           lastToolCallSignature: lastToolCallSig,
           usage: {
             inputTokens: totalInputTokens,
@@ -2071,19 +2305,41 @@ export class Cogitator implements ToolInvoker {
           startedAt: checkpoint?.startedAt ?? startTime,
           trace: { traceId, rootSpanId },
         };
-        await runMemory.event(
-          active.id,
-          {
-            type: 'approval',
-            event: {
-              pending: pausedTurn.pending.map((request) => ({
-                toolCallId: request.toolCallId,
-                toolName: request.toolName,
-              })),
+        const waitingOn = pausedTurn.interrupts.filter((entry) => !isAnswered(entry));
+        if (pausedTurn.pending.length > 0) {
+          await runMemory.event(
+            active.id,
+            {
+              type: 'approval',
+              event: {
+                pending: pausedTurn.pending.map((request) => ({
+                  toolCallId: request.toolCallId,
+                  toolName: request.toolName,
+                })),
+              },
             },
-          },
-          `Paused for approval of ${pausedTurn.pending.map((request) => request.toolName).join(', ')}`
-        );
+            `Paused for approval of ${pausedTurn.pending.map((request) => request.toolName).join(', ')}`
+          );
+        } else {
+          await runMemory.event(
+            active.id,
+            {
+              type: 'interrupt',
+              event: {
+                status: 'paused',
+                interrupts: waitingOn.map((entry) => ({
+                  id: entry.id,
+                  kind: entry.kind,
+                  reason: entry.reason,
+                  message: entry.message,
+                  ...(entry.toolCallId !== undefined && { toolCallId: entry.toolCallId }),
+                  ...(entry.expiresAt !== undefined && { expiresAt: entry.expiresAt }),
+                })),
+              },
+            },
+            `Paused for ${waitingOn.map((entry) => entry.reason).join(', ')}`
+          );
+        }
         const placement = runMemory.placement;
         if (placement) pausedCheckpoint.branch = placement;
         if (!runMemory.aside) await this.runCheckpointStore().save(pausedCheckpoint);
@@ -2115,13 +2371,16 @@ export class Cogitator implements ToolInvoker {
             rootSpanId
           )
         );
+        const lastAssistant = messages.filter((message) => message.role === 'assistant').pop();
         const paused: RunResult = {
-          output: getTextContent(messages[messages.length - 1]?.content ?? ''),
+          output: getTextContent(lastAssistant?.content ?? ''),
           runId,
           agentId: agent.id,
           threadId,
           status: 'paused',
           pendingApprovals: pausedTurn.pending,
+          interrupts: waitingOn,
+          ...(leftover.length > 0 && { undelivered: leftover }),
           ...(runMemory.summary() && { memory: runMemory.summary() }),
           ...(handoffs.length > 0 && { handoffs, finalAgent: active.name }),
           ...(harness.todos && { todos: harness.todos }),
@@ -2143,6 +2402,18 @@ export class Cogitator implements ToolInvoker {
         return paused;
       }
 
+      const kept = runMemory.enabled && runMemory.isOpen;
+      for (const item of leftover) {
+        if (item.kind !== 'inject' || !kept) continue;
+        await runMemory.save(
+          active.id,
+          { role: 'user', content: item.content },
+          undefined,
+          undefined,
+          { queued: item.kind }
+        );
+      }
+      const undelivered = leftover.filter((item) => item.kind !== 'inject' || !kept);
       const endTime = Date.now();
       const lastAssistantMessage = messages.filter((m) => m.role === 'assistant').pop();
       const finalOutput = lastAssistantMessage ? getTextContent(lastAssistantMessage.content) : '';
@@ -2245,6 +2516,7 @@ export class Cogitator implements ToolInvoker {
           : undefined,
         ...(runMemory.summary() && { memory: runMemory.summary() }),
         ...(harness.todos && { todos: harness.todos }),
+        ...(undelivered.length > 0 && { undelivered }),
       };
 
       if (prompt) await this.recordPrompt(prompt, result, Date.now() - startTime);
@@ -2279,9 +2551,19 @@ export class Cogitator implements ToolInvoker {
 
       return finished;
     } catch (error) {
+      queue?.close();
       if (prompt) await this.recordPrompt(prompt, undefined, Date.now() - startTime);
       if (abortController.signal.aborted) {
         const reason = error instanceof Error ? error.message : String(error);
+        if (shown.text) {
+          await runMemory.save(
+            shown.agentId,
+            { role: 'assistant', content: shown.text },
+            undefined,
+            undefined,
+            { interrupted: true }
+          );
+        }
         await runMemory.event(
           agent.id,
           { type: 'interrupt', event: { reason } },
@@ -2516,12 +2798,18 @@ export class Cogitator implements ToolInvoker {
       })
     );
     pausedMemory.open(paused.branch);
+    const asked = (paused.interrupts ?? []).filter(
+      (entry) => entry.kind === 'input' && !isAnswered(entry)
+    );
     for (const toolCall of paused.turn.toolCalls) {
+      const question = asked.find((entry) => entry.toolCallId === toolCall.id);
       const result: ToolResult = {
         callId: toolCall.id,
         name: toolCall.name,
         result: null,
-        error: 'The user moved on without approving this tool call',
+        error: question
+          ? `The user moved on without answering: ${question.message}`
+          : 'The user moved on without approving this tool call',
       };
       await pausedMemory.save(agent.id, createToolMessage(toolCall, result), undefined, [result]);
     }
@@ -3648,7 +3936,34 @@ interface PausedTurn {
   toolCalls: ToolCall[];
   decisions: Record<string, ToolApprovalDecision>;
   pending: ToolApprovalRequest[];
+  /** What the turn waits on: its approvals, or the questions its tools asked and their answers */
+  interrupts: RunInterrupt[];
 }
+
+/** What a resumed run goes on with */
+interface ResumeFrom {
+  checkpoint?: RunCheckpoint;
+  decisions: Record<string, ToolApprovalDecision>;
+  defaultDecision?: ToolApprovalDecision;
+  responses?: Record<string, unknown>;
+  checkUser: boolean;
+}
+
+/** How a run is steered from outside: its queued messages and its seat on its thread */
+interface RunControl {
+  queue?: RunQueue;
+  seat?: ThreadSeat;
+}
+
+/** A tool call of a turn, done (`result`) or waiting for an answer it asked for (`interrupt`) */
+type ToolOutcome = {
+  toolCall: ToolCall;
+  toolSpanId: string;
+  toolSpanStart: number;
+  toolSpanEnd: number;
+} & (
+  { result: ToolResult; interrupt?: undefined } | { result?: undefined; interrupt: RunInterrupt }
+);
 
 function isArgumentRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

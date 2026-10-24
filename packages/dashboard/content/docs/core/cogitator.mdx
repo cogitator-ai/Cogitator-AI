@@ -139,6 +139,7 @@ const result = await cog.run(agent, {
 | `timeout`                                               | `number`                                                  | Override the agent timeout (ms)                                                                                                                                |
 | `reasoning`                                             | `ReasoningConfig`                                         | Override the agent's `reasoning` for this run                                                                                                                  |
 | `parallelToolCalls`                                     | `boolean`                                                 | Execute tool calls in parallel (default: sequential)                                                                                                           |
+| `multitaskStrategy`                                     | `'enqueue' \| 'reject' \| 'interrupt' \| 'rollback'`      | What the run does when its thread has a run going on ([Double-Texting](/docs/core/run-control#double-texting)), side by side when unset                        |
 | `middleware`                                            | `RunMiddleware[]`                                         | Hooks around this run's model and tool calls, after the Cogitator's and the agent's ([Run Middleware](/docs/core/middleware))                                  |
 | `toolChoice`                                            | `ToolChoice`                                              | `'none'` on every turn, or force `'required'` or a named function until the model makes a call, then `'auto'`                                                  |
 | `useMemory`                                             | `boolean`                                                 | Enable/disable memory for this run (default: on when an adapter is configured)                                                                                 |
@@ -190,6 +191,8 @@ interface RunResult {
   finalAgent?: string; // the agent that answered after handoffs
   status?: 'completed' | 'paused';
   pendingApprovals?: ToolApprovalRequest[]; // when paused
+  interrupts?: RunInterrupt[]; // when paused: approvals and questions of tools
+  undelivered?: QueuedRunMessage[]; // messages queued on a run handle it did not take
   checkpoint?: RunCheckpoint; // when paused, for cog.resume()
   toolCalls: ToolCall[];
   messages: Message[];
@@ -217,7 +220,7 @@ if (paused.status === 'paused') {
 }
 ```
 
-See [Approvals](/docs/tools/approvals) for decisions, stores and servers.
+See [Approvals](/docs/tools/approvals) for decisions, stores and servers. A tool can pause a run the same way to ask a person a question (`context.interrupt()`), and `cog.start()` returns a handle to steer or abort a run going on, see [Steering, Interrupts and Cancellation](/docs/core/run-control).
 
 ## Runs on Branches
 
@@ -240,7 +243,7 @@ The second branch sees the first question and answer, not the request for a chea
 
 - `result.memory` says where every run that saved something wrote: `threadId`, `branchPoint` (the entry its first entry went after, `null` at the root) and `leafId` (its last entry). It is absent when the run saved nothing, such as with `saveHistory: false`.
 - A run on a branch needs a memory adapter with `getPath` (every built-in one has it), and `fromEntryId` must be an entry of the thread. Otherwise the run fails with `VALIDATION_ERROR` before it calls the model.
-- The run records events of the session as entries next to its messages: `model_change` when a turn falls back to another of `fallbackModels` (`{ from, to, reason }`), `approval` when it pauses for approvals (`{ pending: [{ toolCallId, toolName }] }`) and `interrupt` when its `signal` aborts it or its timeout cuts it short (`{ reason }`, the error message). Reads return them only when asked with `types`, and they are never sent to a model.
+- The run records events of the session as entries next to its messages: `model_change` when a turn falls back to another of `fallbackModels` (`{ from, to, reason }`), `approval` when it pauses for approvals (`{ pending: [{ toolCallId, toolName }] }`) and `interrupt` when its `signal` aborts it or its timeout cuts it short (`{ reason }`, the error message), or when it pauses on questions of its tools and resumes with their answers (`{ status: 'paused' | 'resumed', interrupts }`, see [Interrupts](/docs/core/run-control#interrupts)). Reads return them only when asked with `types`, and they are never sent to a model.
 - A paused run keeps its place in the checkpoint (`RunCheckpoint.branch`), so `resume()` goes on along the same branch and reports the same `branchPoint`. A run with `activate: false` does not take the thread's place for a paused run, so it never replaces or abandons the pause of the conversation itself: resume it with its checkpoint (`resume(agent, result.checkpoint, …)`), not with the thread id.
 
 [Time travel](/docs/advanced/time-travel#replays-on-branches) runs live replays and forks this way, and the [Studio](/docs/getting-started/studio) shows every branch of a thread in its Tree panel.

@@ -30,7 +30,7 @@ import { ensureThreadAccess, threadMetadata } from './threads';
 import { memoryAgentId } from '../agent';
 import type { ReflectionEngine } from '../reflection/index';
 import type { AgentContext } from '@cogitator-ai/types';
-import { sanitizeToolHistory } from '../utils/tool-history';
+import { repairUnansweredToolCalls, sanitizeToolHistory } from '../utils/tool-history';
 import { transcribeAudio } from '../tools/audio-transcribe';
 
 /**
@@ -255,7 +255,10 @@ export async function buildInitialMessages(
     onContext?.(ctx);
     const recalled = ctx.memoryContext ? ctx.messages.slice(0, -1) : ctx.messages;
     return [
-      ...withInstructions(cacheEndOnLast(sanitizeToolHistory(recalled)), agent.instructions),
+      ...withInstructions(
+        cacheEndOnLast(sanitizeToolHistory(repairUnansweredToolCalls(recalled))),
+        agent.instructions
+      ),
       turn,
     ];
   }
@@ -284,7 +287,7 @@ export async function buildInitialMessages(
     const messages: Message[] = [{ role: 'system', content: agent.instructions }];
     if (entries.success) {
       const history = memoryAdapter.getPath ? compactedHistory(entries.data) : entries.data;
-      messages.push(...sanitizeToolHistory(history.map(historyMessage)));
+      messages.push(...sanitizeToolHistory(repairUnansweredToolCalls(history.map(historyMessage))));
     } else {
       reportMemoryError(
         new Error(
@@ -460,7 +463,8 @@ export interface EntryEvent {
 
 /**
  * Saves a message, or a session event, to the thread, making the thread first when it is
- * missing. A failure goes to `onError` and the run goes on. Returns the stored entry.
+ * missing, with `metadata` on the entry (a user message also carries its `userId`). A failure
+ * goes to `onError` and the run goes on. Returns the stored entry.
  */
 export async function saveEntry(
   threadId: string,
@@ -472,7 +476,8 @@ export async function saveEntry(
   onError?: (error: Error, operation: 'save' | 'load') => void,
   userId?: string,
   placement?: EntryPlacement,
-  event?: EntryEvent
+  event?: EntryEvent,
+  metadata?: Record<string, unknown>
 ): Promise<MemoryEntry | undefined> {
   if (!memoryAdapter) return undefined;
 
@@ -486,7 +491,12 @@ export async function saveEntry(
         toolCalls,
         toolResults,
         tokenCount: event ? 0 : countMessageTokens(message),
-        ...(userId !== undefined && message.role === 'user' && { metadata: { userId } }),
+        ...((metadata || (userId !== undefined && message.role === 'user')) && {
+          metadata: {
+            ...metadata,
+            ...(userId !== undefined && message.role === 'user' && { userId }),
+          },
+        }),
         ...(event && { type: event.type, event: event.event }),
         ...(placement?.parentId !== undefined && { parentId: placement.parentId }),
         ...(placement?.activate !== undefined && { activate: placement.activate }),

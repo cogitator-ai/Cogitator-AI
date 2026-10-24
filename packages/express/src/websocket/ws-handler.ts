@@ -16,10 +16,12 @@ import {
   type AuthorizeThread,
   parseResumeRequest,
   parseRunRequest,
+  runRequestRunOptions,
   toAgentRunResponse,
   toAgentToolCall,
   type ContextPolicy,
   type ResumeRequestBody,
+  type RunRequestBody,
 } from '@cogitator-ai/server-shared';
 import { generateId } from '../streaming/helpers.js';
 import { resolveError } from '../routes/utils.js';
@@ -48,12 +50,9 @@ interface ClientState {
   abortController?: AbortController;
 }
 
-interface RunPayload {
+interface RunPayload extends RunRequestBody {
   type: 'agent' | 'workflow' | 'swarm';
   name: string;
-  input: string;
-  context?: Record<string, unknown>;
-  threadId?: string;
 }
 
 interface ResumePayload extends ResumeRequestBody {
@@ -411,6 +410,7 @@ async function handleRun(
       input: payload.input,
       context: payload.context,
       threadId: payload.threadId,
+      ...runRequestRunOptions(payload),
     })
   );
 }
@@ -435,6 +435,7 @@ async function handleResume(
       ...options,
       decisions: payload.decisions,
       defaultDecision: payload.defaultDecision,
+      responses: payload.responses,
     })
   );
 }

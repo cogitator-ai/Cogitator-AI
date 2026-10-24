@@ -28,6 +28,7 @@ import type { Workspace } from './workspace';
 import type { TodoItem } from './todos';
 import type { LoggingConfig } from './logging';
 import type { ABTestStore, ABTestVariant, InstructionVersionStore } from './prompt-optimization';
+import type { MultitaskStrategy, QueuedRunMessage, RunInterrupt } from './run-control';
 
 /**
  * Where a run's spans go in a distributed trace: the trace they join and the span that is the
@@ -135,6 +136,12 @@ export interface CogitatorConfig {
    * pauses last as long as the memory does), or to process memory without one.
    */
   runCheckpoints?: RunCheckpointStore;
+  /**
+   * What a run on a thread does while another run of this runtime goes on there (see
+   * `MultitaskStrategy`), for runs that set no `multitaskStrategy` of their own. Unset, runs of
+   * one thread go on side by side, as they always did
+   */
+  multitaskStrategy?: MultitaskStrategy;
   /**
    * Watch every run of this runtime, whoever starts it: a script, a server
    * adapter, a workflow node or a swarm. Exporters such as `OTLPExporter` and
@@ -374,6 +381,15 @@ export interface RunOptions<TDeps = unknown> {
   parallelToolCalls?: boolean;
 
   /**
+   * What the run does when another run of this runtime goes on in its thread (`threadId`), see
+   * `MultitaskStrategy`. Overrides `CogitatorConfig.multitaskStrategy`. Unset, both go on side by
+   * side, as they always did. A run started from a tool of the run going on (the same trace) is
+   * never held back, it would wait for itself. A run on a branch that leaves the active leaf
+   * where it is (`branch.activate: false`) does not count as the thread's run
+   */
+  multitaskStrategy?: MultitaskStrategy;
+
+  /**
    * Hooks around this run's model and tool calls, after the Cogitator's and the agent's
    * middleware (see `RunMiddleware`). Pass them again to `resume()`.
    */
@@ -578,6 +594,16 @@ export interface RunCheckpoint {
     toolCalls: ToolCall[];
     decisions: Record<string, ToolApprovalDecision>;
   };
+  /**
+   * What the run waits on, approvals among them (`kind: 'approval'`), and the answers given so
+   * far to the questions its tools asked. Missing in checkpoints saved before it existed
+   */
+  interrupts?: RunInterrupt[];
+  /**
+   * The iteration the run stops at, when a follow-up message moved it past `maxIterations`.
+   * Missing when it is the agent's `maxIterations`
+   */
+  iterationLimit?: number;
   iterations: number;
   lastToolCallSignature: string;
   usage: {
@@ -642,6 +668,13 @@ export interface ResumeOptions<TDeps = unknown> extends Omit<
   decisions?: Record<string, ToolApprovalDecision>;
   /** Decision for every paused call `decisions` leaves out, e.g. one "approve all" answer */
   defaultDecision?: ToolApprovalDecision;
+  /**
+   * Answers to the run's interrupts, by interrupt id (`RunResult.interrupts`). Each is checked
+   * against the interrupt's `responseSchema`, an answer after its `expiresAt` fails the resume
+   * with `INTERRUPT_EXPIRED`. An approval's answer is a decision (`{ approved, reason? }`), the
+   * same as in `decisions`. Interrupts left out keep the run paused
+   */
+  responses?: Record<string, unknown>;
 }
 
 /** Why the model's last answer in a run was withheld; see `RunResult.blocked`. */
@@ -708,6 +741,16 @@ export interface RunResult {
    */
   readonly iterationLimitReached?: boolean;
   readonly pendingApprovals?: readonly ToolApprovalRequest[];
+  /**
+   * What a paused run waits on: approvals (`kind: 'approval'`, the calls of `pendingApprovals`)
+   * and questions its tools asked (`kind: 'input'`). Answer them in `ResumeOptions.responses`
+   */
+  readonly interrupts?: readonly RunInterrupt[];
+  /**
+   * Messages queued on the run's handle (`cogitator.start()`) that it did not deliver, because it
+   * paused or ran out of iterations first. They never reached the thread
+   */
+  readonly undelivered?: readonly QueuedRunMessage[];
   /** Pass to `cogitator.resume()` with the decisions to continue a paused run */
   readonly checkpoint?: RunCheckpoint;
   readonly toolCalls: readonly ToolCall[];

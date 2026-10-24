@@ -4,6 +4,7 @@ import {
   createApprovalRequiredEvent,
   createErrorEvent,
   createFinishEvent,
+  createInterruptRequiredEvent,
   createReasoningDeltaEvent,
   createReasoningEndEvent,
   createReasoningStartEvent,
@@ -17,7 +18,7 @@ import {
   createToolResultEvent,
   type StreamEvent,
 } from './protocol.js';
-import { toAgentRunOutcome, toPendingApprovals } from './response.js';
+import { toAgentRunOutcome, toPendingApprovals, toPendingInterrupts } from './response.js';
 
 /** The run callbacks through which a streamed agent run reaches its client */
 export type AgentStreamCallbacks = Required<
@@ -60,8 +61,8 @@ export function createThreadId(): string {
  * `start` announces the message and the thread. Text and reasoning arrive as parts: a part
  * opens with its first delta and closes before anything else is sent, so a client never sees
  * two parts open at once, and a tool call never lands inside a text part. `complete` sends
- * what the run did not stream (an answer the model gave in one piece), the approvals a paused
- * run waits on, and `finish` with the usage, the thread and how the run ended. `fail` closes
+ * what the run did not stream (an answer the model gave in one piece), the approvals or the
+ * questions (`interrupt-required`) a paused run waits on, and `finish` with the usage, the thread and how the run ended. `fail` closes
  * the open part and sends `error`.
  *
  * Pass the thread to the run (`threadId: session.threadId`) and spread `callbacks` into its
@@ -113,11 +114,14 @@ export class AgentStreamSession {
     if (!this.streamedText && result.output) this.delta('text', result.output);
     this.endPart();
     if (result.status === 'paused') {
+      const interrupts = toPendingInterrupts(result.interrupts ?? []);
       this.emit(
-        createApprovalRequiredEvent(
-          result.threadId,
-          toPendingApprovals(result.pendingApprovals ?? [])
-        )
+        interrupts.length > 0
+          ? createInterruptRequiredEvent(result.threadId, interrupts)
+          : createApprovalRequiredEvent(
+              result.threadId,
+              toPendingApprovals(result.pendingApprovals ?? [])
+            )
       );
     }
     this.emit(

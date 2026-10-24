@@ -271,7 +271,17 @@ export type OwnerConfig = Record<string, string>;
 
 export type StatusPhase = 'queued' | 'thinking' | 'tool' | 'done' | 'error';
 
-export type QueueMode = 'parallel' | 'sequential' | 'interrupt' | 'collect';
+/**
+ * How messages of one thread wait for each other in a gateway. The double-texting strategies of
+ * a run (`MultitaskStrategy`) work the same here: `enqueue` (the same as `sequential`) answers
+ * one message after the other, `reject` refuses a message while its thread answers another
+ * (the `message:rejected` hook tells you), `interrupt` stops the answer going on and drops the
+ * messages waiting, `rollback` does what `interrupt` does and answers the new message on a branch
+ * from where the stopped answer started, as if it never happened. `parallel` answers every
+ * message at once, `collect` answers the messages that came in while the thread was busy together
+ */
+export type QueueMode =
+  'parallel' | 'sequential' | 'collect' | 'enqueue' | 'reject' | 'interrupt' | 'rollback';
 
 export interface StatusReactionConfig {
   enabled?: boolean;
@@ -401,6 +411,14 @@ export interface HookPayloads {
   'approval:requested': ApprovalRequestedEvent;
   'approval:resolved': ApprovalResolvedEvent;
   'action:received': ActionReceivedEvent;
+  'message:rejected': MessageRejectedEvent;
+}
+
+/** Payload of `message:rejected`: `queueMode: 'reject'` refused a message while its thread was busy */
+export interface MessageRejectedEvent {
+  msg: ChannelMessage;
+  threadId: string;
+  reason: 'busy';
 }
 
 export type HookName = keyof HookPayloads;
@@ -447,9 +465,9 @@ export interface GatewayConfig {
   debounce?: DebounceConfig;
   envelope?: EnvelopeConfig;
   /**
-   * How messages of one thread wait for each other. Defaults to `'sequential'`: a thread answers
-   * its messages one at a time in the order they came, while different threads run side by side.
-   * `'parallel'` runs every message at once.
+   * How messages of one thread wait for each other, see {@link QueueMode}. Defaults to
+   * `'sequential'`: a thread answers its messages one at a time in the order they came, while
+   * different threads run side by side. `'parallel'` runs every message at once.
    */
   queueMode?: QueueMode;
   hooks?: HookRegistry;

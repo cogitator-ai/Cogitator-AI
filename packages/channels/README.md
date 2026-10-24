@@ -532,7 +532,7 @@ Control how the messages of one thread wait for each other. Different threads al
 ```typescript
 const gateway = new Gateway({
   // ...
-  queueMode: 'sequential', // the default, or 'parallel' | 'interrupt' | 'collect'
+  queueMode: 'sequential', // the default, or 'parallel' | 'collect' | 'enqueue' | 'reject' | 'interrupt' | 'rollback'
 });
 ```
 
@@ -540,6 +540,9 @@ const gateway = new Gateway({
 - **parallel** - every message runs at once, also in the same thread (the default up to 0.15)
 - **interrupt** - abort the current run (its signal is passed to `cogitator.run`), start the new message
 - **collect** - buffer during processing, merge per chat and topic on idle
+- **enqueue** - the same as `sequential`, by the name of the runtime's double-texting strategy (`multitaskStrategy`)
+- **reject** - refuse a message while its thread answers another: nothing runs for it, the `message:rejected` hook hears of it, and it is not delivered again
+- **rollback** - do what `interrupt` does, then answer the new message on a branch of the thread from where the stopped answer started, as if it never happened (needs memory)
 
 With a queue, a channel's message handler returns once the message is queued, so a channel that reads its updates one by one (Telegram long polling, the Bluesky and Threads polls) goes on to other chats, button presses and stop buttons while a thread is busy. `injectMessage` still resolves once the message is answered, and `idle()` waits for every queued message. Since the channel has confirmed a queued message to its platform already, `stop()` drains the queues before it stops the channels: it waits up to `drainTimeout` (default 30000 ms) for the queued messages and the runs in progress, then aborts the runs still going and drops what still waits. Messages that come in while it stops are dropped and reported to `onError`, a second `stop()` returns the same promise, and `injectMessage` rejects when its message was not answered (failed run, aborted or dropped by `stop()`).
 
@@ -728,7 +731,7 @@ The gateway of a `RuntimeBuilder` uses the defaults: a thread per user per conve
 ```yaml
 session:
   threadKey: legacy # or conversation (default)
-  queueMode: parallel # sequential (default), interrupt, collect
+  queueMode: parallel # sequential (default), enqueue, reject, interrupt, rollback, collect
 ```
 
 For a parsed YAML file, validate it first with `new RuntimeBuilder(AssistantConfigSchema.parse(yamlObject), process.env)` (the schema is exported, along with the `AssistantConfigInput` / `AssistantConfigOutput` types).

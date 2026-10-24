@@ -420,6 +420,12 @@ export {
 } from './middleware/memory-extraction';
 
 export { InMemoryRunCheckpointStore, ThreadRunCheckpointStore } from './cogitator/run-checkpoints';
+export {
+  ABORTED_BEFORE_DISPATCH,
+  OUTCOME_UNKNOWN,
+  repairUnansweredToolCalls,
+} from './utils/tool-history';
+export { APPROVAL_RESPONSE_SCHEMA, isToolInterrupt } from './cogitator/interrupts';
 export { PromptRegistry, promptKey } from './cogitator/prompts';
 export {
   PiiMasker,

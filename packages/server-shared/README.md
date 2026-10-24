@@ -85,6 +85,7 @@ Standardized Server-Sent Events protocol for agent runs, workflow runs, swarm ru
 - `createToolCallEndEvent(id)`: Closes a tool call invocation.
 - `createToolResultEvent(id, toolCallId, result)`: Emits the result of an executed tool call linked by `toolCallId`.
 - `createApprovalRequiredEvent(threadId, approvals)`: Emits an `approval-required` event when tool calls require human-in-the-loop review, pausing the run.
+- `createInterruptRequiredEvent(threadId, interrupts)`: Emits an `interrupt-required` event when the run paused on questions its tools asked (`context.interrupt()`), answered by id in the `responses` of the resume.
 - `createErrorEvent(message, code?)`: Builds an `error` stream event (`{ type: 'error', message, code }`).
 - `createFinishEvent(messageId, usage?, details?)`: Emits the terminal `finish` event containing sanitized token counts and run completion details (`AgentRunOutcome`).
 - `createWorkflowEvent(event, data)`: Emits workflow execution events (`node_started`, `node_completed`, `node_error`, `node_progress`, `workflow_completed`, `workflow_failed`).
@@ -106,6 +107,8 @@ Standardized Server-Sent Events protocol for agent runs, workflow runs, swarm ru
 - `ToolResultEvent`: Structure of the `tool-result` event.
 - `ApprovalRequiredEvent`: Structure of the `approval-required` event.
 - `PendingApproval`: Client-facing tool approval request (`toolCallId`, `toolName`, `arguments`, `description`, optional `sideEffects`).
+- `InterruptRequiredEvent`: Structure of the `interrupt-required` event.
+- `PendingInterrupt`: A question a paused run waits on (`id`, `kind`, `reason`, `message`, optional `responseSchema`, `expiresAt`, `toolCallId`, `toolName`).
 - `ErrorEvent`: Structure of the `error` event.
 - `FinishEvent`: Structure of the `finish` event extending partial `AgentRunOutcome`.
 - `FinishDetails`: Optional outcome details and thread passed when building a `FinishEvent`.
@@ -163,9 +166,10 @@ Uniform validation logic across all adapters to reject malformed payloads with H
 
 #### Functions & Constants
 
-- `parseRunRequest(body, options?)`: Validates `POST /agents/:name/run` and `/stream` request bodies. Rejects blank strings (`""`, `"   "`), verifies `context` against `acceptContext` policy, and validates `threadId`.
+- `parseRunRequest(body, options?)`: Validates `POST /agents/:name/run` and `/stream` request bodies. Rejects blank strings (`""`, `"   "`), verifies `context` against `acceptContext` policy, and validates `threadId` and `multitaskStrategy` (one of `MULTITASK_STRATEGIES`).
+- `runRequestRunOptions(body)`: The run options a parsed run request adds, its `multitaskStrategy` when it names one.
 - `parseSwarmRunRequest(body, options?)`: Extends `parseRunRequest` with positive finite `timeout` validation up to `MAX_RUN_TIMEOUT_MS`.
-- `parseResumeRequest(body)`: Validates `POST /agents/:name/resume` payloads (`threadId`, `decisions` map, and `defaultDecision`).
+- `parseResumeRequest(body)`: Validates `POST /agents/:name/resume` payloads (`threadId`, `decisions` map, `defaultDecision`, and the `responses` to the run's interrupts).
 - `parseAddMessageRequest(body, options?)`: Validates `POST /threads/:id/messages` payloads (`role`, non-blank `content`, optional `metadata`).
 - `parseWorkflowRunRequest(body, options?)`: Validates `POST /workflows/:name/run` payloads (`input` object, integer `maxConcurrency`, integer `maxIterations`, boolean `checkpoint`). `checkpoint: true` is accepted only with `{ checkpoints: true }`, for a server that keeps a checkpoint store, and refused otherwise.
 - `parseWorkflowResumeRequest(body)`: Validates `POST /workflows/:name/resume` payloads (non-blank `checkpointId`, the same `maxConcurrency` and `maxIterations` options).
@@ -222,6 +226,7 @@ Sanitizes runtime results into safe client-facing JSON responses without leaking
 - `toAgentRunOutcome(result)`: Extracts status outcomes (`completed` vs `paused`), `pendingApprovals`, structured outputs, and run termination flags (`truncated`, `blocked`, `iterationLimitReached`).
 - `toAgentToolCall(call)`: Sanitizes tool calls into `{ id, name, arguments }`, stripping provider internal state.
 - `toPendingApprovals(requests)`: Sanitizes pending tool approval requests for human review.
+- `toPendingInterrupts(interrupts)`: The questions of a paused run as clients see them, none while it waits for approvals only.
 - `toRunUsage(usage)`: Filters runtime usage down to client-facing token counts (`RunUsage`), omitting server-side cost and duration.
 - `toWorkflowCompletedData(result)`: The data of the `workflow_completed` stream event, `{ workflowId, duration, checkpointId? }` (`WorkflowCompletedData`).
 - `toWorkflowFailedData(result)`: The data of the `workflow_failed` event a workflow stream sends right before its `error` event, `{ checkpointId? }` (`WorkflowFailedData`).

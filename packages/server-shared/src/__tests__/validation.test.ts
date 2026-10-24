@@ -3,7 +3,9 @@ import {
   MAX_RUN_TIMEOUT_MS,
   NON_BLANK_PATTERN,
   isNonBlankString,
+  parseResumeRequest,
   parseRunRequest,
+  runRequestRunOptions,
   parseSwarmRunRequest,
   toRunUsage,
 } from '../index';
@@ -123,5 +125,31 @@ describe('toRunUsage', () => {
       'outputTokens',
       'totalTokens',
     ]);
+  });
+});
+
+describe('double-texting and interrupt answers in requests', () => {
+  it('reads a multitask strategy and refuses an unknown one', () => {
+    const parsed = parseRunRequest({ input: 'hi', multitaskStrategy: 'rollback' });
+    expect(parsed).toEqual({ ok: true, value: { input: 'hi', multitaskStrategy: 'rollback' } });
+    expect(parsed.ok && runRequestRunOptions(parsed.value)).toEqual({
+      multitaskStrategy: 'rollback',
+    });
+    expect(runRequestRunOptions({})).toEqual({});
+    expect(parseRunRequest({ input: 'hi', multitaskStrategy: 'later' })).toEqual({
+      ok: false,
+      message: 'Field "multitaskStrategy" must be one of enqueue, reject, interrupt, rollback',
+    });
+  });
+
+  it('reads the answers of a resume and refuses answers that are not an object', () => {
+    expect(parseResumeRequest({ threadId: 't', responses: { 'c1#0': { ok: true } } })).toEqual({
+      ok: true,
+      value: { threadId: 't', responses: { 'c1#0': { ok: true } } },
+    });
+    expect(parseResumeRequest({ threadId: 't', responses: ['yes'] })).toEqual({
+      ok: false,
+      message: 'Field "responses" must be an object',
+    });
   });
 });

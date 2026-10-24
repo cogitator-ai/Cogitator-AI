@@ -396,3 +396,127 @@ describe('approvals with the real runtime', () => {
     expect(refundImpl).toHaveBeenCalledTimes(1);
   });
 });
+
+const question = {
+  id: 'int-1',
+  kind: 'input' as const,
+  reason: 'pick_order',
+  message: 'Which order should be refunded?',
+  responseSchema: { type: 'string' },
+  toolCallId: 'call-2',
+  toolName: 'refund',
+};
+
+function askingResult() {
+  return runResult({
+    status: 'paused',
+    pendingApprovals: [],
+    interrupts: [{ ...question, response: 'kept on the server' }],
+  });
+}
+
+describe('multitask strategies and interrupt answers', () => {
+  test('passes the multitask strategy of a run and a stream into the run options', async () => {
+    const { cogitator, run } = fakeCogitator();
+    const request = serveCogitator({ cogitator, agents: { chat: chatAgent() } });
+
+    await request('/cogitator/agents/chat/run', json({ input: 'hi', multitaskStrategy: 'reject' }));
+    await readStream(
+      await request(
+        '/cogitator/agents/chat/stream',
+        json({ input: 'hi', multitaskStrategy: 'rollback' })
+      )
+    );
+    await request('/cogitator/agents/chat/run', json({ input: 'hi' }));
+
+    expect(run.mock.calls.map(([, options]) => options.multitaskStrategy)).toEqual([
+      'reject',
+      'rollback',
+      undefined,
+    ]);
+    expect(run.mock.calls[2]?.[1]).not.toHaveProperty('multitaskStrategy');
+  });
+
+  test('refuses an unknown multitask strategy before running', async () => {
+    const { cogitator, run } = fakeCogitator();
+    const request = serveCogitator({ cogitator, agents: { chat: chatAgent() } });
+
+    const res = await request(
+      '/cogitator/agents/chat/run',
+      json({ input: 'hi', multitaskStrategy: 'queue' })
+    );
+
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string; issues: Array<{ path: string[] }> };
+    expect(body.error).toBe('VALIDATION_FAILED');
+    expect(body.issues.map((issue) => issue.path.join('.'))).toEqual(['body.multitaskStrategy']);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test('answers a run on a busy thread with 409 THREAD_BUSY', async () => {
+    const { cogitator } = fakeCogitator(async () => {
+      throw new CogitatorError({ message: 'Thread is busy', code: ErrorCode.THREAD_BUSY });
+    });
+    const request = serveCogitator({ cogitator, agents: { chat: chatAgent() } });
+
+    const res = await request(
+      '/cogitator/agents/chat/run',
+      json({ input: 'hi', threadId: 't-1', multitaskStrategy: 'reject' })
+    );
+
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe('THREAD_BUSY');
+  });
+
+  test('hands the answers of a resume and a resume stream to cogitator.resume()', async () => {
+    const { cogitator, resume } = fakeCogitator();
+    const request = serveCogitator({ cogitator, agents: { chat: chatAgent() } });
+    const responses = { 'int-1': 'A-1' };
+
+    await request('/cogitator/agents/chat/resume', json({ threadId: 't-1', responses }));
+    await readStream(
+      await request('/cogitator/agents/chat/resume/stream', json({ threadId: 't-1', responses }))
+    );
+    await request('/cogitator/agents/chat/resume', json({ threadId: 't-1' }));
+
+    expect(resume.mock.calls.map(([, , options]) => options.responses)).toEqual([
+      responses,
+      responses,
+      undefined,
+    ]);
+    expect(resume.mock.calls[2]?.[2]).not.toHaveProperty('responses');
+  });
+
+  test('answers a run paused for questions with its interrupts', async () => {
+    const { cogitator } = fakeCogitator(() => Promise.resolve(askingResult()));
+    const request = serveCogitator({ cogitator, agents: { chat: chatAgent() } });
+
+    const res = await request('/cogitator/agents/chat/run', json({ input: 'Refund' }));
+
+    const text = await res.text();
+    expect(text).not.toContain('kept on the server');
+    expect(JSON.parse(text)).toMatchObject({ status: 'paused', interrupts: [question] });
+  });
+
+  test('streams interrupt-required instead of approval-required when the run asks', async () => {
+    const { cogitator } = fakeCogitator(() => Promise.resolve(askingResult()));
+    const request = serveCogitator({ cogitator, agents: { chat: chatAgent() } });
+
+    const { events, done } = await readStream(
+      await request('/cogitator/agents/chat/stream', json({ input: 'Refund' }))
+    );
+
+    expect(done).toBe(true);
+    expect(events.map((event) => event.type)).not.toContain('approval-required');
+    expect(events.at(-2)).toEqual({
+      type: 'interrupt-required',
+      threadId: 'thread-1',
+      interrupts: [question],
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: 'finish',
+      status: 'paused',
+      interrupts: [question],
+    });
+  });
+});

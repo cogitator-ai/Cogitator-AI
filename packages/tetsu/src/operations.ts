@@ -134,10 +134,10 @@ function toDecision(decision: { approved: boolean; reason?: string }): ToolAppro
     : { approved: false, reason: decision.reason };
 }
 
-/** The decisions of a resume request, as `cogitator.resume()` takes them. */
-export function toResumeDecisions(
-  body: Pick<z.output<typeof ResumeBody>, 'decisions' | 'defaultDecision'>
-): Pick<ResumeOptions, 'decisions' | 'defaultDecision'> {
+/** The decisions and interrupt answers of a resume request, as `cogitator.resume()` takes them. */
+export function toResumeOptions(
+  body: Pick<z.output<typeof ResumeBody>, 'decisions' | 'defaultDecision' | 'responses'>
+): Pick<ResumeOptions, 'decisions' | 'defaultDecision' | 'responses'> {
   return {
     ...(body.decisions && {
       decisions: Object.fromEntries(
@@ -145,6 +145,7 @@ export function toResumeDecisions(
       ),
     }),
     ...(body.defaultDecision && { defaultDecision: toDecision(body.defaultDecision) }),
+    ...(body.responses && { responses: body.responses }),
   };
 }
 

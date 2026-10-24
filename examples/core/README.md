@@ -38,6 +38,7 @@ cp .env.example .env  # add GOOGLE_API_KEY at minimum
 | 21  | `21-run-middleware.ts`    | Middleware around model and tool calls, tripwire guards               |
 | 22  | `22-workspace.ts`         | A workspace for files and commands, long tool results saved there     |
 | 23  | `23-skills-and-todos.ts`  | `SKILL.md` skills (sample in `skills/`), `write_todos`, `tool_search` |
+| 24  | `24-run-control.ts`       | `cog.start()` steering, a tool that asks a person, double-texting     |
 
 ## Running
 

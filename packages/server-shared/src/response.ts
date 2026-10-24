@@ -1,11 +1,12 @@
 import type {
   RunBlockReason,
+  RunInterrupt,
   RunResult,
   ToolApprovalRequest,
   ToolCall,
   WorkflowResult,
 } from '@cogitator-ai/types';
-import type { PendingApproval } from './protocol.js';
+import type { PendingApproval, PendingInterrupt } from './protocol.js';
 import { toRunUsage, type RunUsage } from './usage.js';
 
 /** A tool call of a run as clients see it: without the provider state that rides along */
@@ -25,6 +26,11 @@ export interface AgentRunOutcome {
   status: 'completed' | 'paused';
   /** The tool calls a paused run waits on */
   pendingApprovals?: PendingApproval[];
+  /**
+   * The questions a paused run's tools asked, when it waits on any: answer them by id in
+   * `responses` when resuming. A run paused for approvals only has `pendingApprovals`
+   */
+  interrupts?: PendingInterrupt[];
   /** The answer parsed against the agent's `responseFormat` */
   structured?: unknown;
   /** Why the answer does not match the agent's `responseFormat`; `structured` is then absent */
@@ -70,12 +76,32 @@ export function toPendingApprovals(requests: readonly ToolApprovalRequest[]): Pe
   }));
 }
 
+/**
+ * The interrupts of a paused run as clients see them, without answers: none while it waits for
+ * approvals only, which `pendingApprovals` carries
+ */
+export function toPendingInterrupts(interrupts: readonly RunInterrupt[]): PendingInterrupt[] {
+  if (!interrupts.some((entry) => entry.kind !== 'approval')) return [];
+  return interrupts.map((entry) => ({
+    id: entry.id,
+    kind: entry.kind,
+    reason: entry.reason,
+    message: entry.message,
+    ...(entry.responseSchema !== undefined && { responseSchema: entry.responseSchema }),
+    ...(entry.expiresAt !== undefined && { expiresAt: entry.expiresAt }),
+    ...(entry.toolCallId !== undefined && { toolCallId: entry.toolCallId }),
+    ...(entry.toolName !== undefined && { toolName: entry.toolName }),
+  }));
+}
+
 /** How `result` ended: its status and the flags that apply to it */
 export function toAgentRunOutcome(result: RunResult): AgentRunOutcome {
   const paused = result.status === 'paused';
+  const interrupts = paused ? toPendingInterrupts(result.interrupts ?? []) : [];
   return {
     status: paused ? 'paused' : 'completed',
     ...(paused && { pendingApprovals: toPendingApprovals(result.pendingApprovals ?? []) }),
+    ...(interrupts.length > 0 && { interrupts }),
     ...(result.structured !== undefined && { structured: result.structured }),
     ...(result.structuredError !== undefined && { structuredError: result.structuredError }),
     ...(result.truncated === true && { truncated: true as const }),

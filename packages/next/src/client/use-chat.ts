@@ -7,6 +7,7 @@ import type {
   UseChatReturn,
   ChatMessage,
   PendingApproval,
+  PendingInterrupt,
   ResumeDecisions,
   ToolCall,
   ToolResultEvent,
@@ -69,7 +70,9 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     onToolResult,
     onReasoning,
     onApprovalRequired,
+    onInterruptRequired,
     resumeApi,
+    multitaskStrategy,
     retry,
   } = options;
 
@@ -102,16 +105,37 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     apply({ type: 'STOP_LOADING' });
   }, [apply]);
 
-  const requireApproval = useCallback(
-    (approvals: PendingApproval[], threadId: string) => {
+  const followThread = useCallback(
+    (threadId: string) => {
       if (threadId && threadId !== stateRef.current.threadId) {
         apply({ type: 'SET_THREAD_ID', payload: threadId });
       }
+    },
+    [apply]
+  );
+
+  const requireApproval = useCallback(
+    (approvals: PendingApproval[], threadId: string) => {
+      followThread(threadId);
       apply({ type: 'SET_PENDING_APPROVALS', payload: approvals });
       onApprovalRequired?.(approvals);
     },
-    [apply, onApprovalRequired]
+    [apply, followThread, onApprovalRequired]
   );
+
+  const requireAnswers = useCallback(
+    (interrupts: PendingInterrupt[], threadId: string) => {
+      followThread(threadId);
+      apply({ type: 'SET_PENDING_INTERRUPTS', payload: interrupts });
+      onInterruptRequired?.(interrupts);
+    },
+    [apply, followThread, onInterruptRequired]
+  );
+
+  const clearPause = useCallback(() => {
+    apply({ type: 'SET_PENDING_APPROVALS', payload: [] });
+    apply({ type: 'SET_PENDING_INTERRUPTS', payload: [] });
+  }, [apply]);
 
   const handleStreamEvent = useCallback(
     (event: StreamEvent, toolCalls: Map<string, { name: string; args: string }>): boolean => {
@@ -167,9 +191,14 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
           requireApproval(event.approvals, event.threadId);
           return false;
 
+        case 'interrupt-required':
+          requireAnswers(event.interrupts, event.threadId);
+          return false;
+
         case 'finish':
-          if (event.threadId && event.threadId !== stateRef.current.threadId) {
-            apply({ type: 'SET_THREAD_ID', payload: event.threadId });
+          if (event.threadId) followThread(event.threadId);
+          if (event.interrupts?.length && event.pendingApprovals?.length) {
+            requireApproval(event.pendingApprovals, event.threadId ?? '');
           }
           return false;
 
@@ -184,7 +213,16 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
           return false;
       }
     },
-    [apply, onError, onReasoning, onToolCall, onToolResult, requireApproval]
+    [
+      apply,
+      followThread,
+      onError,
+      onReasoning,
+      onToolCall,
+      onToolResult,
+      requireAnswers,
+      requireApproval,
+    ]
   );
 
   const processStream = useCallback(
@@ -235,15 +273,19 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
         createdAt: new Date(),
       };
       apply({ type: 'APPEND_MESSAGE', payload: message });
-      if (result.status === 'paused') {
-        requireApproval(result.pendingApprovals ?? [], result.threadId);
-      } else if (result.threadId && result.threadId !== stateRef.current.threadId) {
-        apply({ type: 'SET_THREAD_ID', payload: result.threadId });
+      const approvals = result.pendingApprovals ?? [];
+      if (result.status !== 'paused') {
+        followThread(result.threadId);
+      } else if (result.interrupts?.length) {
+        requireAnswers(result.interrupts, result.threadId);
+        if (approvals.length > 0) requireApproval(approvals, result.threadId);
+      } else {
+        requireApproval(approvals, result.threadId);
       }
       apply({ type: 'STOP_LOADING' });
       onFinish?.(message);
     },
-    [apply, onFinish, requireApproval]
+    [apply, followThread, onFinish, requireAnswers, requireApproval]
   );
 
   const request = useCallback(
@@ -305,7 +347,7 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
       threadId: string | undefined,
       metadata?: Record<string, unknown>
     ) => {
-      apply({ type: 'SET_PENDING_APPROVALS', payload: [] });
+      clearPause();
       await request(
         api,
         {
@@ -317,11 +359,12 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
           })),
           threadId,
           metadata,
+          ...(multitaskStrategy !== undefined && { multitaskStrategy }),
         },
         processStream
       );
     },
-    [api, apply, processStream, request]
+    [api, clearPause, multitaskStrategy, processStream, request]
   );
 
   const send = useCallback(
@@ -399,17 +442,15 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
         resumeApi,
         { threadId, ...decisions },
         async (response, controller) => {
-          apply({ type: 'SET_PENDING_APPROVALS', payload: [] });
+          clearPause();
           await (isEventStream(response) ? processStream : processResult)(response, controller);
         },
         (error) => {
-          if (error instanceof HttpError && error.status === 409) {
-            apply({ type: 'SET_PENDING_APPROVALS', payload: [] });
-          }
+          if (error instanceof HttpError && error.status === 409) clearPause();
         }
       );
     },
-    [apply, fail, interrupt, processResult, processStream, request, resumeApi]
+    [clearPause, fail, interrupt, processResult, processStream, request, resumeApi]
   );
 
   const approve = useCallback(() => resume({ defaultDecision: { approved: true } }), [resume]);
@@ -432,9 +473,9 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
   const setThreadId = useCallback(
     (id: string | undefined) => {
       apply({ type: 'SET_THREAD_ID', payload: id });
-      if (id === undefined) apply({ type: 'SET_PENDING_APPROVALS', payload: [] });
+      if (id === undefined) clearPause();
     },
-    [apply]
+    [apply, clearPause]
   );
 
   const appendMessage = useCallback(
@@ -473,6 +514,7 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     clearMessages,
     setMessages,
     pendingApprovals: state.pendingApprovals,
+    pendingInterrupts: state.pendingInterrupts,
     resume,
     approve,
     deny,

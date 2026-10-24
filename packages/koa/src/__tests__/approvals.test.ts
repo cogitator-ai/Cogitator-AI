@@ -442,3 +442,185 @@ describe('approvals over WebSocket', () => {
     expect(resume).not.toHaveBeenCalled();
   });
 });
+
+const question = {
+  id: 'int_1',
+  kind: 'input',
+  reason: 'pick_order',
+  message: 'Which order should be refunded?',
+  responseSchema: { type: 'string' },
+  toolCallId: 'call_2',
+  toolName: 'refund',
+};
+
+const asking = () =>
+  result({
+    status: 'paused',
+    pendingApprovals: [],
+    interrupts: [{ ...question, response: 'kept on the server' }],
+  });
+
+describe('multitask strategies and interrupt answers', () => {
+  let server: Server | undefined;
+  const clients: WebSocket[] = [];
+
+  afterEach(async () => {
+    for (const ws of clients.splice(0)) ws.terminate();
+    await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+    server = undefined;
+  });
+
+  async function connect(runtime: Record<string, unknown>) {
+    const ctx: RouteContext = {
+      runtime: runtime as unknown as RouteContext['runtime'],
+      agents: { bot: agent },
+      workflows: {},
+      swarms: {},
+    };
+    server = createServer();
+    await setupWebSocket(server, ctx, {});
+    await new Promise<void>((resolve) => server!.listen(0, resolve));
+    const { port } = server.address() as AddressInfo;
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    clients.push(ws);
+    const messages: Array<Record<string, unknown>> = [];
+    ws.on('message', (data) => messages.push(JSON.parse(data.toString())));
+    await new Promise<void>((resolve) => ws.once('open', () => resolve()));
+    return { messages, send: (message: unknown) => ws.send(JSON.stringify(message)) };
+  }
+
+  it('passes the multitask strategy of HTTP runs and streams into the run options', async () => {
+    const run = vi.fn().mockResolvedValue(result());
+    const app = buildApp({ run });
+
+    await postJson(app, '/agents/bot/run', { input: 'hi', multitaskStrategy: 'reject' });
+    await postJson(app, '/agents/bot/stream', { input: 'hi', multitaskStrategy: 'rollback' });
+    await postJson(app, '/agents/bot/run', { input: 'hi' });
+
+    expect(run.mock.calls.map(([, options]) => options.multitaskStrategy)).toEqual([
+      'reject',
+      'rollback',
+      undefined,
+    ]);
+    expect(run.mock.calls[2][1]).not.toHaveProperty('multitaskStrategy');
+  });
+
+  it.each(['/agents/bot/run', '/agents/bot/stream'])(
+    'answers %s with 400 INVALID_INPUT for an unknown multitask strategy',
+    async (path) => {
+      const run = vi.fn();
+      const app = buildApp({ run });
+
+      const res = await postJson(app, path, { input: 'hi', multitaskStrategy: 'queue' });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ error: { code: 'INVALID_INPUT' } });
+      expect(run).not.toHaveBeenCalled();
+    }
+  );
+
+  it('answers a run on a busy thread with 409 THREAD_BUSY', async () => {
+    const app = buildApp({
+      run: vi
+        .fn()
+        .mockRejectedValue(
+          new CogitatorError({ message: 'Thread is busy', code: ErrorCode.THREAD_BUSY })
+        ),
+    });
+
+    const res = await postJson(app, '/agents/bot/run', {
+      input: 'hi',
+      threadId: 'thread-1',
+      multitaskStrategy: 'reject',
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ error: { code: 'THREAD_BUSY' } });
+  });
+
+  it('hands the answers of HTTP resumes and resume streams to cogitator.resume()', async () => {
+    const resume = vi.fn().mockResolvedValue(result());
+    const app = buildApp({ resume });
+    const responses = { int_1: 'order 42' };
+
+    await postJson(app, '/agents/bot/resume', { threadId: 'thread-1', responses });
+    await postJson(app, '/agents/bot/resume/stream', { threadId: 'thread-1', responses });
+
+    expect(resume.mock.calls.map(([, , options]) => options.responses)).toEqual([
+      responses,
+      responses,
+    ]);
+  });
+
+  it('answers a resume whose answers are not an object with 400', async () => {
+    const resume = vi.fn();
+    const app = buildApp({ resume });
+
+    const res = await postJson(app, '/agents/bot/resume', {
+      threadId: 'thread-1',
+      responses: 'yes',
+    });
+
+    expect(res.status).toBe(400);
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it('streams interrupt-required instead of approval-required when the run asks', async () => {
+    const app = buildApp({ run: vi.fn().mockResolvedValue(asking()) });
+
+    const res = await postJson(app, '/agents/bot/stream', { input: 'refund' });
+    const events = parseSSE(res.text);
+
+    expect(events.map((e) => e.type).slice(-2)).toEqual(['interrupt-required', 'finish']);
+    expect(events.at(-2)).toEqual({
+      type: 'interrupt-required',
+      threadId: 'thread-1',
+      interrupts: [question],
+    });
+    expect(events.at(-1)).toMatchObject({ status: 'paused', interrupts: [question] });
+    expect(res.text).not.toContain('kept on the server');
+  });
+
+  it('passes the multitask strategy and answers of WebSocket runs and resumes', async () => {
+    const run = vi.fn().mockResolvedValue(asking());
+    const resume = vi.fn().mockResolvedValue(result());
+    const client = await connect({ run, resume });
+
+    client.send({
+      type: 'run',
+      id: 'r1',
+      payload: { type: 'agent', name: 'bot', input: 'go', multitaskStrategy: 'interrupt' },
+    });
+    await vi.waitFor(() => expect(client.messages).toHaveLength(1));
+    client.send({
+      type: 'resume',
+      id: 'r2',
+      payload: { name: 'bot', threadId: 'thread-1', responses: { int_1: 'order 42' } },
+    });
+    await vi.waitFor(() => expect(client.messages).toHaveLength(2));
+
+    expect(run.mock.calls[0][1].multitaskStrategy).toBe('interrupt');
+    expect(resume.mock.calls[0][2].responses).toEqual({ int_1: 'order 42' });
+    expect(client.messages[0].payload).toMatchObject({
+      type: 'complete',
+      result: { status: 'paused', interrupts: [question] },
+    });
+  });
+
+  it('refuses a WebSocket run with an unknown multitask strategy', async () => {
+    const run = vi.fn();
+    const client = await connect({ run });
+
+    client.send({
+      type: 'run',
+      id: 'r1',
+      payload: { type: 'agent', name: 'bot', input: 'go', multitaskStrategy: 'queue' },
+    });
+
+    await vi.waitFor(() => expect(client.messages).toHaveLength(1));
+    expect(client.messages[0]).toMatchObject({ type: 'error', id: 'r1' });
+    expect(String(client.messages[0].error)).toContain('multitaskStrategy');
+    expect(run).not.toHaveBeenCalled();
+  });
+});

@@ -44,6 +44,12 @@ export enum ErrorCode {
   RUN_NOT_PAUSED = 'RUN_NOT_PAUSED',
   RUN_PAUSED = 'RUN_PAUSED',
   RUN_TIMEOUT = 'RUN_TIMEOUT',
+  /** A newer run on the thread stopped this one (`multitaskStrategy: 'interrupt'` or `'rollback'`) */
+  RUN_INTERRUPTED = 'RUN_INTERRUPTED',
+  /** The thread has a run going on and the new one asked to be refused (`multitaskStrategy: 'reject'`) */
+  THREAD_BUSY = 'THREAD_BUSY',
+  /** An answer came after its interrupt's `expiresAt` */
+  INTERRUPT_EXPIRED = 'INTERRUPT_EXPIRED',
   BUDGET_EXCEEDED = 'BUDGET_EXCEEDED',
 
   WORKFLOW_NOT_FOUND = 'WORKFLOW_NOT_FOUND',
@@ -102,6 +108,9 @@ export const ERROR_STATUS_CODES: Record<ErrorCode, number> = {
   [ErrorCode.RUN_NOT_PAUSED]: 409,
   [ErrorCode.RUN_PAUSED]: 409,
   [ErrorCode.RUN_TIMEOUT]: 504,
+  [ErrorCode.RUN_INTERRUPTED]: 409,
+  [ErrorCode.THREAD_BUSY]: 409,
+  [ErrorCode.INTERRUPT_EXPIRED]: 410,
   [ErrorCode.BUDGET_EXCEEDED]: 429,
 
   [ErrorCode.WORKFLOW_NOT_FOUND]: 404,

@@ -104,14 +104,15 @@ export class RunMemory {
     return this.queue.then(() => undefined);
   }
 
-  /** Saves a message of the run */
+  /** Saves a message of the run, with `metadata` on its entry */
   save(
     agentId: string,
     message: Message,
     toolCalls?: ToolCall[],
-    toolResults?: ToolResult[]
+    toolResults?: ToolResult[],
+    metadata?: Record<string, unknown>
   ): Promise<void> {
-    return this.write(agentId, message, toolCalls, toolResults);
+    return this.write(agentId, message, toolCalls, toolResults, undefined, metadata);
   }
 
   /** Records an event of the session, with a note of it as its message */
@@ -134,7 +135,8 @@ export class RunMemory {
     message: Message,
     toolCalls?: ToolCall[],
     toolResults?: ToolResult[],
-    event?: EntryEvent
+    event?: EntryEvent,
+    metadata?: Record<string, unknown>
   ): Promise<void> {
     if (!this.opened || !this.enabled) return Promise.resolve();
     const options = this.options();
@@ -149,7 +151,8 @@ export class RunMemory {
         options.onMemoryError,
         options.userId,
         this.place,
-        event
+        event,
+        metadata
       );
       if (!entry) return;
       if (this.branchPoint === undefined) this.branchPoint = entry.parentId ?? null;

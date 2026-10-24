@@ -1,4 +1,5 @@
 import type {
+  BaseToolContext,
   Message,
   MessageContent,
   RunMiddlewareContext,
@@ -20,6 +21,7 @@ import { createLinkedAbortController } from '../utils/abort';
 import { guardrailsMiddleware } from '../middleware/builtins';
 import { MiddlewarePipeline, type ToolArgumentsParser } from '../middleware/pipeline';
 import { isTripwire } from '../middleware/tripwire';
+import { isToolInterrupt } from './interrupts';
 import {
   DEFAULT_TOOL_RESULT_MAX_LENGTH,
   toolPartsToMessageContent,
@@ -36,6 +38,7 @@ type ExtraToolContext = Record<string, unknown> & {
   topicId?: string;
   conversationId?: string;
   workspace?: Workspace;
+  interrupt?: BaseToolContext['interrupt'];
 };
 
 /** One tool call of a run, or of `invokeTool()`, and what it runs with. */
@@ -243,7 +246,7 @@ async function executeNatively(
       result,
     };
   } catch (error) {
-    if (isTripwire(error)) throw error;
+    if (isTripwire(error) || isToolInterrupt(error)) throw error;
     return {
       callId: toolCall.id,
       name: toolCall.name,

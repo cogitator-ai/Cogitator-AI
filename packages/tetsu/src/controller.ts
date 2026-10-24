@@ -55,7 +55,7 @@ import {
   runAgent,
   runDepsOf,
   serializeSwarmUsage,
-  toResumeDecisions,
+  toResumeOptions,
   toSwarmRunResponse,
   toWorkflowRunResponse,
 } from './operations.js';
@@ -125,6 +125,10 @@ const ResumeForbidden = failureEnvelope(
 const ResumeConflict = failureEnvelope(
   409,
   'The thread has no paused run (`RUN_NOT_PAUSED`), or the agent is already running'
+);
+const InterruptExpired = failureEnvelope(
+  410,
+  'An interrupt the resume answers expired before the answer came (`INTERRUPT_EXPIRED`)'
 );
 const ThreadUnreadable = errorsEnvelope(
   ['MEMORY_READ_FAILED'],
@@ -323,6 +327,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
           403: ResumeForbidden,
           404: RunNotFound,
           409: ResumeConflict,
+          410: InterruptExpired,
         },
       },
       hooks: {
@@ -331,9 +336,9 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         onError: [errors],
       },
       docs: {
-        summary: 'Resume a run paused for tool approvals and wait for its answer',
+        summary: 'Resume a run paused for tool approvals or questions and wait for its answer',
         description:
-          'Approved calls run, declined ones answer the model with the reason, and calls without a decision pause the run again.',
+          'Approved calls run, declined ones answer the model with the reason, and calls without a decision pause the run again. The answers in `responses` go to the questions the tools asked, by interrupt id.',
         tags: ['agents'],
       },
       handler: async (ctx) => {
@@ -347,7 +352,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
             deps,
             agent,
             threadId,
-            { ...toResumeDecisions(ctx.body), signal },
+            { ...toResumeOptions(ctx.body), signal },
             ctx.cogitatorAuth,
             runDeps
           );
@@ -369,7 +374,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       },
       hooks: { beforeParse: [caller, admitted, jsonBody], onError: [errors] },
       docs: {
-        summary: 'Resume a run paused for tool approvals and stream the rest of it',
+        summary: 'Resume a run paused for tool approvals or questions and stream the rest of it',
         description: AGENT_STREAM_DESCRIPTION,
         tags: ['agents'],
       },
@@ -377,7 +382,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         const agent = findAgent(deps, ctx.params.name);
         const auth = ctx.cogitatorAuth;
         const { threadId } = ctx.body;
-        const decisions = toResumeDecisions(ctx.body);
+        const resumeOptions = toResumeOptions(ctx.body);
         await checkThreadAccess(deps, auth, threadId);
         const runDeps = await runDepsOf(deps, ctx);
         return sse(
@@ -385,7 +390,14 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
           (signal) =>
             agentEvents(
               (callbacks) =>
-                resumeAgent(deps, agent, threadId, { ...decisions, ...callbacks }, auth, runDeps),
+                resumeAgent(
+                  deps,
+                  agent,
+                  threadId,
+                  { ...resumeOptions, ...callbacks },
+                  auth,
+                  runDeps
+                ),
               signal,
               threadId
             ),
@@ -778,7 +790,8 @@ function* failure(error: unknown): Generator<ServerSentEvent, void, undefined> {
 /**
  * The events of a streamed agent run or resume, as every adapter sends them: the thread in
  * `start` and `finish`, text and reasoning parts closed before a tool call, the answer the
- * model gave in one piece, `approval-required` when it pauses, and `[DONE]` after `finish`.
+ * model gave in one piece, `approval-required` when it pauses for approvals or
+ * `interrupt-required` when it pauses for questions its tools asked, and `[DONE]` after `finish`.
  */
 async function* agentEvents(
   start: StreamedRun,

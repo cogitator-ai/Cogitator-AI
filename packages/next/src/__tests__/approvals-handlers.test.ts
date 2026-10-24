@@ -349,6 +349,166 @@ describe('createResumeHandler', () => {
   });
 });
 
+const orderQuestion = {
+  id: 'int_1',
+  kind: 'input',
+  reason: 'pick_order',
+  message: 'Which order should be refunded?',
+  responseSchema: { type: 'string' },
+  toolCallId: 'call_2',
+  toolName: 'refund',
+  response: 'not for clients',
+};
+
+function askingResult() {
+  return runResult({
+    output: 'Which order?',
+    status: 'paused',
+    pendingApprovals: [],
+    interrupts: [orderQuestion],
+  });
+}
+
+const { response: _answer, ...pendingQuestion } = orderQuestion;
+
+describe('multitask strategies and interrupt answers', () => {
+  it('passes the multitask strategy of an agent request into the run options', async () => {
+    const { cogitator, run } = fakeCogitator();
+    const handler = createAgentHandler(cogitator, fakeAgent);
+
+    await handler(post('/api/agent', { input: 'hi', multitaskStrategy: 'reject' }));
+    await handler(post('/api/agent', { input: 'hi' }));
+
+    expect(run.mock.calls[0][1].multitaskStrategy).toBe('reject');
+    expect(run.mock.calls[1][1]).not.toHaveProperty('multitaskStrategy');
+  });
+
+  it('refuses an unknown multitask strategy with 400 before running', async () => {
+    const { cogitator, run } = fakeCogitator();
+    const res = await createAgentHandler(
+      cogitator,
+      fakeAgent
+    )(post('/api/agent', { input: 'hi', multitaskStrategy: 'queue' }));
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: { code: 'INVALID_INPUT' } });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('answers a busy thread with 409 THREAD_BUSY', async () => {
+    const { cogitator } = fakeCogitator(() => {
+      throw new CogitatorError({ message: 'Thread is busy', code: ErrorCode.THREAD_BUSY });
+    });
+    const res = await createAgentHandler(
+      cogitator,
+      fakeAgent
+    )(post('/api/agent', { input: 'hi', threadId: 'thread_1', multitaskStrategy: 'reject' }));
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: { code: 'THREAD_BUSY' } });
+  });
+
+  it('passes the multitask strategy of a chat request and refuses an unknown one', async () => {
+    const { cogitator, run } = fakeCogitator();
+    const handler = createChatHandler(cogitator, fakeAgent);
+    const messages = [{ role: 'user', content: 'hi' }];
+
+    await (await handler(post('/api/chat', { messages, multitaskStrategy: 'interrupt' }))).text();
+    const refused = await handler(post('/api/chat', { messages, multitaskStrategy: 42 }));
+
+    expect(run.mock.calls[0][1].multitaskStrategy).toBe('interrupt');
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ error: { code: 'INVALID_INPUT' } });
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it('hands the answers of a resume to cogitator.resume()', async () => {
+    const { cogitator, resume } = fakeCogitator();
+    const handler = createResumeHandler(cogitator, fakeAgent);
+
+    await handler(post('/api/resume', { threadId: 'thread_1', responses: { int_1: 'A-1' } }));
+    await handler(post('/api/resume', { threadId: 'thread_1' }));
+
+    expect(resume.mock.calls[0][2].responses).toEqual({ int_1: 'A-1' });
+    expect(resume.mock.calls[1][2]).not.toHaveProperty('responses');
+  });
+
+  it('hands the answers of a streamed resume to cogitator.resume()', async () => {
+    const { cogitator, resume } = fakeCogitator();
+    const res = await createResumeHandler(cogitator, fakeAgent, { stream: true })(
+      post('/api/resume', { threadId: 'thread_1', responses: { int_1: 'A-1' } })
+    );
+    await res.text();
+
+    expect(resume.mock.calls[0][2]).toMatchObject({ stream: true, responses: { int_1: 'A-1' } });
+  });
+
+  it('refuses answers that are not an object with 400', async () => {
+    const { cogitator, resume } = fakeCogitator();
+    const res = await createResumeHandler(
+      cogitator,
+      fakeAgent
+    )(post('/api/resume', { threadId: 'thread_1', responses: ['A-1'] }));
+
+    expect(res.status).toBe(400);
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it('answers a run paused for questions with its interrupts', async () => {
+    const { cogitator } = fakeCogitator(() => askingResult());
+    const res = await createAgentHandler(
+      cogitator,
+      fakeAgent
+    )(post('/api/agent', { input: 'Refund my order' }));
+
+    expect(await res.json()).toMatchObject({
+      status: 'paused',
+      pendingApprovals: [],
+      interrupts: [pendingQuestion],
+    });
+  });
+
+  it('streams interrupt-required instead of approval-required when the run asks questions', async () => {
+    const { cogitator } = fakeCogitator(() => askingResult());
+    const res = await createChatHandler(
+      cogitator,
+      fakeAgent
+    )(post('/api/chat', { messages: [{ role: 'user', content: 'Refund my order' }] }));
+
+    const events = parseEvents(await res.text());
+    expect(events.map((event) => event.type)).not.toContain('approval-required');
+    expect(events.find((event) => event.type === 'interrupt-required')).toEqual({
+      type: 'interrupt-required',
+      threadId: 'thread_1',
+      interrupts: [pendingQuestion],
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: 'finish',
+      status: 'paused',
+      interrupts: [pendingQuestion],
+    });
+  });
+
+  it('writes the interrupt-required event with StreamWriter.interruptRequired', async () => {
+    const { readable, writable } = new TransformStream<Uint8Array>();
+    const writer = new StreamWriter(writable.getWriter());
+    const text = new Response(readable).text();
+
+    await writer.interruptRequired('thread_1', [
+      { id: 'int_1', kind: 'input', reason: 'pick_order', message: 'Which order?' },
+    ]);
+    await writer.close();
+
+    expect(parseEvents(await text)).toEqual([
+      {
+        type: 'interrupt-required',
+        threadId: 'thread_1',
+        interrupts: [{ id: 'int_1', kind: 'input', reason: 'pick_order', message: 'Which order?' }],
+      },
+    ]);
+  });
+});
+
 describe('approvals with the real runtime', () => {
   const refundImpl = vi.fn(async ({ order }: { order: string }) => ({ refunded: order }));
   const refund = tool({

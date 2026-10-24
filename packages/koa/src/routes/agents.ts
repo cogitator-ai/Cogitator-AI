@@ -123,7 +123,7 @@ export function createAgentRoutes(): Router<CogitatorState> {
       invalidInput(ctx, parsed.message);
       return;
     }
-    const { threadId, decisions, defaultDecision } = parsed.value;
+    const { threadId, decisions, defaultDecision, responses } = parsed.value;
     const refusal = await refuseThread(ctx, threadId);
     if (refusal) {
       sendError(ctx, refusal);
@@ -140,6 +140,7 @@ export function createAgentRoutes(): Router<CogitatorState> {
         ...deps,
         decisions,
         defaultDecision,
+        responses,
         signal: abortController.signal,
       });
 
@@ -202,7 +203,7 @@ export function createAgentRoutes(): Router<CogitatorState> {
       invalidInput(ctx, parsed.message);
       return;
     }
-    const { threadId, decisions, defaultDecision } = parsed.value;
+    const { threadId, decisions, defaultDecision, responses } = parsed.value;
     const refusal = await refuseThread(ctx, threadId);
     if (refusal) {
       sendError(ctx, refusal);
@@ -216,6 +217,7 @@ export function createAgentRoutes(): Router<CogitatorState> {
         ...deps,
         decisions,
         defaultDecision,
+        responses,
         stream: true,
         signal,
         ...session.callbacks,

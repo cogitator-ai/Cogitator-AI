@@ -280,6 +280,103 @@ describe('OpenAPI document of approvals', () => {
   });
 });
 
+describe('OpenAPI document of multitask strategies and interrupts', () => {
+  const asked = runResult({
+    status: 'paused',
+    pendingApprovals: [],
+    interrupts: [
+      {
+        id: 'int-1',
+        kind: 'input',
+        reason: 'pick_order',
+        message: 'Which order?',
+        responseSchema: { type: 'string' },
+        expiresAt: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+  });
+  const { cogitator } = fakeCogitator(
+    async (_agent, options) => {
+      if (options.threadId === 'busy') {
+        throw new CogitatorError({ message: 'Thread is busy', code: ErrorCode.THREAD_BUSY });
+      }
+      return asked;
+    },
+    undefined,
+    async (_agent, threadId) => {
+      if (threadId === 'expired') {
+        throw new CogitatorError({
+          message: 'The interrupt expired',
+          code: ErrorCode.INTERRUPT_EXPIRED,
+        });
+      }
+      return asked;
+    }
+  );
+  const app = createApp({
+    routes: group('/api', {
+      children: [cogitatorController({ cogitator, agents: { chat: chatAgent() } })],
+    }),
+  });
+  const { document, warnings } = openapi(app, { info });
+  const request = serve(app);
+
+  test('documents the multitask strategy of runs and the answers of resumes', () => {
+    expect(warnings).toEqual([]);
+    const body = (path: string) => {
+      const content = document.paths?.[path]?.post?.requestBody;
+      return content && 'content' in content
+        ? content.content?.['application/json']?.schema
+        : undefined;
+    };
+    expect(JSON.stringify(body('/api/agents/{name}/run'))).toContain('multitaskStrategy');
+    expect(JSON.stringify(body('/api/agents/{name}/stream'))).toContain('rollback');
+    expect(JSON.stringify(body('/api/agents/{name}/resume'))).toContain('responses');
+    expect(JSON.stringify(body('/api/swarms/{name}/run'))).not.toContain('multitaskStrategy');
+  });
+
+  test('answers questions, a busy thread and an expired interrupt as the document says', async () => {
+    const cases: Array<[string, string, RequestInit, number]> = [
+      [
+        'POST /api/agents/chat/run',
+        '/api/agents/chat/run',
+        json({ input: 'Refund', multitaskStrategy: 'enqueue' }),
+        200,
+      ],
+      [
+        'POST /api/agents/chat/run',
+        '/api/agents/chat/run',
+        json({ input: 'Refund', threadId: 'busy', multitaskStrategy: 'reject' }),
+        409,
+      ],
+      [
+        'POST /api/agents/chat/run',
+        '/api/agents/chat/run',
+        json({ input: 'Refund', multitaskStrategy: 'queue' }),
+        422,
+      ],
+      [
+        'POST /api/agents/chat/resume',
+        '/api/agents/chat/resume',
+        json({ threadId: 't-1', responses: { 'int-1': 'A-1' } }),
+        200,
+      ],
+      [
+        'POST /api/agents/chat/resume',
+        '/api/agents/chat/resume',
+        json({ threadId: 'expired', responses: { 'int-1': 'A-1' } }),
+        410,
+      ],
+    ];
+
+    for (const [operation, path, init, status] of cases) {
+      const res = await request(path, init);
+      expect(res.status).toBe(status);
+      await assertDescribed(document, operation, res);
+    }
+  });
+});
+
 describe('OpenAPI document of the server contract', () => {
   const { cogitator } = fakeCogitator(undefined, pagedMemory(3));
   const app = createApp({

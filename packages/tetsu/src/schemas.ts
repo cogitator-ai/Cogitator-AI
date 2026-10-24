@@ -4,6 +4,7 @@ import {
   DEFAULT_THREAD_MESSAGE_ROLES,
   MAX_RUN_TIMEOUT_MS,
   MAX_THREAD_PAGE_LIMIT,
+  MULTITASK_STRATEGIES,
   NON_BLANK_PATTERN,
   isJsonObject,
   parseAddMessageRequest,
@@ -63,12 +64,19 @@ const RunContext = JsonObject.describe(
   'Values the run adds to the system prompt as data. Refused unless the server accepts the keys (`acceptContext`)'
 );
 
+const MultitaskStrategy = z
+  .enum(MULTITASK_STRATEGIES)
+  .describe(
+    "What the run does when its thread has a run going on: wait (`enqueue`), fail with 409 THREAD_BUSY (`reject`), stop that run (`interrupt`), or stop it and branch from where it started (`rollback`). Default: the server's `multitaskStrategy`"
+  );
+
 export const RunBody = z.object({
   input: RunInput,
   context: RunContext.optional(),
   threadId: ThreadId.optional().describe(
     'Conversation thread kept in memory. Without one the run opens a new thread, named in the answer and in the `start` event of a stream'
   ),
+  multitaskStrategy: MultitaskStrategy.optional(),
 });
 
 const ApprovalDecisionSchema = z.object({
@@ -85,12 +93,15 @@ export const ResumeBody = z.object({
   defaultDecision: ApprovalDecisionSchema.optional().describe(
     'Decision for every paused call that `decisions` leaves out'
   ),
+  responses: JsonObject.optional().describe(
+    "Answers to the paused run's interrupts by interrupt id, each checked against its `responseSchema`"
+  ),
 });
 
 const SwarmTimeout = z.number().positive().max(MAX_RUN_TIMEOUT_MS);
 const SWARM_TIMEOUT = 'Run timeout in milliseconds, at most the longest delay a timer can hold';
 
-export const SwarmRunBody = RunBody.extend({
+export const SwarmRunBody = RunBody.omit({ multitaskStrategy: true }).extend({
   timeout: SwarmTimeout.optional().describe(SWARM_TIMEOUT),
 });
 
@@ -189,6 +200,17 @@ export const PendingApprovalSchema = z.object({
   sideEffects: z.array(z.string()).optional(),
 });
 
+export const PendingInterruptSchema = z.object({
+  id: z.string().describe('Key of the answer in the `responses` of the resume'),
+  kind: z.enum(['approval', 'input']),
+  reason: z.string(),
+  message: z.string(),
+  responseSchema: JsonObject.optional().describe('JSON Schema the answer must match'),
+  expiresAt: z.string().optional().describe('ISO time after which the answer is refused'),
+  toolCallId: z.string().optional(),
+  toolName: z.string().optional(),
+});
+
 export const UsageSchema = z.object({
   inputTokens: z.number(),
   outputTokens: z.number(),
@@ -245,6 +267,12 @@ export const AgentRunResponse = z
       .array(PendingApprovalSchema)
       .optional()
       .describe('The tool calls a paused run waits on'),
+    interrupts: z
+      .array(PendingInterruptSchema)
+      .optional()
+      .describe(
+        "The questions a paused run's tools asked: answer them by id in `responses` when resuming"
+      ),
     structured: z
       .unknown()
       .optional()
@@ -355,6 +383,7 @@ const RunPayload = z.object({
   input: RunInput,
   context: RunContext.optional(),
   threadId: ThreadId.optional(),
+  multitaskStrategy: MultitaskStrategy.optional(),
 });
 
 export const SocketMessage = z.discriminatedUnion('type', [

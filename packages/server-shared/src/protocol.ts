@@ -32,6 +32,7 @@ export type StreamEvent =
   | ToolCallEndEvent
   | ToolResultEvent
   | ApprovalRequiredEvent
+  | InterruptRequiredEvent
   | ErrorEvent
   | FinishEvent
   | WorkflowEvent
@@ -119,6 +120,31 @@ export interface ApprovalRequiredEvent {
   type: 'approval-required';
   threadId: string;
   approvals: PendingApproval[];
+}
+
+/**
+ * A question a paused run waits on, the shape of core's `RunInterrupt` without the answer:
+ * `approval` for a tool call to approve, `input` for an answer a tool asked for
+ */
+export interface PendingInterrupt {
+  id: string;
+  kind: 'approval' | 'input';
+  reason: string;
+  message: string;
+  responseSchema?: Record<string, unknown>;
+  expiresAt?: string;
+  toolCallId?: string;
+  toolName?: string;
+}
+
+/**
+ * The run paused for questions its tools asked: answer them by id in `responses` when resuming
+ * the thread. A pause for approvals only sends `approval-required`
+ */
+export interface InterruptRequiredEvent {
+  type: 'interrupt-required';
+  threadId: string;
+  interrupts: PendingInterrupt[];
 }
 
 export interface ErrorEvent {
@@ -209,6 +235,13 @@ export function createApprovalRequiredEvent(
   approvals: readonly PendingApproval[]
 ): ApprovalRequiredEvent {
   return { type: 'approval-required', threadId, approvals: [...approvals] };
+}
+
+export function createInterruptRequiredEvent(
+  threadId: string,
+  interrupts: readonly PendingInterrupt[]
+): InterruptRequiredEvent {
+  return { type: 'interrupt-required', threadId, interrupts: [...interrupts] };
 }
 
 export function createErrorEvent(message: string, code?: string): ErrorEvent {

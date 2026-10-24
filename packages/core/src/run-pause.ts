@@ -2,6 +2,7 @@ import {
   CogitatorError,
   ErrorCode,
   type RunCheckpoint,
+  type RunInterrupt,
   type ToolApprovalRequest,
 } from '@cogitator-ai/types';
 
@@ -32,7 +33,27 @@ export interface PausedRunInfo {
   readonly threadId: string;
   readonly runId?: string;
   readonly pendingApprovals?: readonly ToolApprovalRequest[];
+  /** What the run waits on, questions of its tools among them */
+  readonly interrupts?: readonly RunInterrupt[];
   readonly checkpoint?: RunCheckpoint;
+}
+
+/** What a paused run waits for, for the message of {@link AgentRunPausedError} */
+function describeWait(run: PausedRunInfo): string {
+  const approvals = run.pendingApprovals ?? [];
+  const questions = (run.interrupts ?? []).filter((entry) => entry.kind !== 'approval');
+  if (approvals.length === 0 && questions.length > 0) {
+    return `answers to ${questions.map((entry) => entry.reason).join(', ')}`;
+  }
+  return `approval of ${describeCalls(approvals)}`;
+}
+
+/** What the caller does to go on, for the message of {@link AgentRunPausedError} */
+function nextStep(run: PausedRunInfo): string {
+  const asks = (run.pendingApprovals ?? []).length === 0 && (run.interrupts ?? []).length > 0;
+  return asks
+    ? 'Answer them in the responses of cogitator.resume() to continue the run.'
+    : 'Decide the calls and continue the run with cogitator.resume(), or let the agent decide them with onApproval.';
 }
 
 function describeCalls(approvals: readonly ToolApprovalRequest[]): string {
@@ -61,9 +82,8 @@ export class AgentRunPausedError extends CogitatorError {
     const pendingApprovals = [...(run.pendingApprovals ?? [])];
     super({
       message:
-        `Agent "${agentName}" paused${where ? ` in ${where}` : ''} to wait for approval of ` +
-        `${describeCalls(pendingApprovals)} (thread ${run.threadId}). Decide the calls and ` +
-        'continue the run with cogitator.resume(), or let the agent decide them with onApproval.',
+        `Agent "${agentName}" paused${where ? ` in ${where}` : ''} to wait for ${describeWait(run)} ` +
+        `(thread ${run.threadId}). ${nextStep(run)}`,
       code: ErrorCode.RUN_PAUSED,
       details: {
         agent: agentName,

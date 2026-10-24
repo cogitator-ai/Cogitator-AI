@@ -59,7 +59,8 @@ interface GatewayConfig {
   reactions?: StatusReactionConfig;
   debounce?: DebounceConfig;
   envelope?: EnvelopeConfig;
-  queueMode?: 'parallel' | 'sequential' | 'interrupt' | 'collect'; // default: 'sequential'
+  queueMode?:
+    'parallel' | 'sequential' | 'collect' | 'enqueue' | 'reject' | 'interrupt' | 'rollback'; // default: 'sequential'
   approvals?: {
     format?: (approvals: readonly ToolApprovalRequest[], words: ApprovalReplyWords) => string;
     approveWords?: readonly string[]; // default: approve, yes, да, одобряю
@@ -112,7 +113,7 @@ const gateway = new Gateway({
 User sends message
   → Channel converts to ChannelMessage
   → Debouncer (if enabled): buffer rapid messages, merge into one
-  → MessageQueue (unless queueMode is 'parallel'): sequential (default)/interrupt/collect per thread
+  → MessageQueue (unless queueMode is 'parallel'): sequential (default)/enqueue/reject/interrupt/rollback/collect per thread
   → Middleware pipeline (dm-policy → owner-commands → rate-limit → ...)
   → message:received hook
   → Agent resolved (factory called per message), session lookup/create (emits session:created)
@@ -165,7 +166,7 @@ With `RuntimeBuilder` (`cogitator up`), set it in `cogitator.yml`:
 ```yaml
 session:
   threadKey: legacy # or conversation (default)
-  queueMode: parallel # sequential (default), interrupt, collect
+  queueMode: parallel # sequential (default), enqueue, reject, interrupt, rollback, collect
 ```
 
 ## Status Reactions
@@ -247,12 +248,15 @@ const gateway = new Gateway({
 });
 ```
 
-| Mode         | Behavior                                                                                                                             |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `sequential` | Default. FIFO per thread, the next message waits until the one before it is answered.                                                |
-| `parallel`   | All messages processed immediately, also in the same thread (the default up to 0.15).                                                |
-| `interrupt`  | Abort current processing (the run's `AbortSignal` fires), start new message immediately. Aborted runs are not reported to `onError`. |
-| `collect`    | Buffer messages during processing, merge them per chat and topic when idle.                                                          |
+| Mode         | Behavior                                                                                                                                                                                                       |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sequential` | Default. FIFO per thread, the next message waits until the one before it is answered.                                                                                                                          |
+| `parallel`   | All messages processed immediately, also in the same thread (the default up to 0.15).                                                                                                                          |
+| `interrupt`  | Abort current processing (the run's `AbortSignal` fires), start new message immediately. Aborted runs are not reported to `onError`.                                                                           |
+| `collect`    | Buffer messages during processing, merge them per chat and topic when idle.                                                                                                                                    |
+| `enqueue`    | The same as `sequential`, by the name of the run's [double-texting strategy](/docs/core/run-control#double-texting).                                                                                           |
+| `reject`     | Refuse a message while its thread answers another: nothing runs for it, the `message:rejected` hook hears of it (`{ msg, threadId, reason: 'busy' }`), and it counts as handled, so it is not delivered again. |
+| `rollback`   | Do what `interrupt` does, then answer the new message on a branch from where the stopped answer started, as if it never happened. Needs memory, without it the same as `interrupt`.                            |
 
 For personal assistants, `sequential` or `collect` usually give the best UX. Queues are keyed by the same thread id as sessions.
 
