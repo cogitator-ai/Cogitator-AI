@@ -443,4 +443,29 @@ describe('cogitator.start()', () => {
     expect(entries.some((entry) => entry.metadata?.queued !== undefined)).toBe(false);
     await cog.close();
   });
+
+  it('does not go on for an injected message alone when the checks refuse the steering one', async () => {
+    const scripted = scriptedBackend([answer('only'), answer('extra')]);
+    const cog = new Cogitator({
+      llm: { backends: { mock: scripted.backend } },
+      memory: { adapter: 'memory' },
+      security: { pii: { mode: 'block' } },
+    });
+    let handle: ReturnType<Cogitator['start']> | undefined;
+    handle = cog.start(plain, {
+      input: 'Hi',
+      threadId: 'inject-alone',
+      onModelTurn: () => {
+        handle?.steer('Mail ann@example.com');
+        handle?.inject('The user is in Berlin');
+      },
+    });
+    const result = await handle.result;
+    expect(scripted.requests).toHaveLength(1);
+    expect(result.output).toBe('only');
+    expect(handle.refused.map((refused) => refused.kind)).toEqual(['steer']);
+    const entries = await threadEntries(cog, 'inject-alone');
+    expect(entries.at(-1)?.message.content).toBe('The user is in Berlin');
+    await cog.close();
+  });
 });

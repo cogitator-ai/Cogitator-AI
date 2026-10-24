@@ -1,17 +1,17 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { CogitatorError, ErrorCode, type MultitaskStrategy } from '@cogitator-ai/types';
 
-/** The run whose tool call the code runs inside, see {@link insideToolOf} */
-const toolOfRun = new AsyncLocalStorage<string>();
+/** The runs whose tool calls the code runs inside, outermost first, see {@link insideToolOf} */
+const toolOfRun = new AsyncLocalStorage<readonly string[]>();
 
 /** Runs `work` as a tool call of run `runId`: runs it starts count as started inside that run */
 export function insideToolOf<T>(runId: string, work: () => T): T {
-  return toolOfRun.run(runId, work);
+  return toolOfRun.run([...(toolOfRun.getStore() ?? []), runId], work);
 }
 
-/** The run whose tool call the code runs inside, if any */
-export function currentToolRun(): string | undefined {
-  return toolOfRun.getStore();
+/** The runs whose tool calls the code runs inside, outermost first, none outside a tool */
+export function currentToolRuns(): readonly string[] {
+  return toolOfRun.getStore() ?? [];
 }
 
 /** A run's place on its thread, from its admission until it is done */
@@ -32,10 +32,11 @@ export interface RunOnThread {
   /** Waiting ends when it aborts, and a run whose signal aborted already changes nothing */
   readonly signal: AbortSignal | undefined;
   /**
-   * The run whose tool call starts this one ({@link currentToolRun}): a run started from a tool
-   * of one of the thread's runs is not held back, it would wait for its own parent
+   * The runs whose tool calls start this one, its ancestors ({@link currentToolRuns}): a run
+   * started from a tool of one of the thread's runs, or of a run that one started, is not held
+   * back, it would wait for its own ancestor
    */
-  readonly parentRunId: string | undefined;
+  readonly ancestorRunIds: readonly string[];
   readonly userId: string | undefined;
   /** The run may use a thread of other users (`threadAccess: 'shared'`) */
   readonly shared: boolean;
@@ -74,10 +75,10 @@ export class ThreadRuns {
    * run of another user goes on in the thread, unless it may use shared threads
    */
   async admit(threadId: string, run: RunOnThread): Promise<ThreadAdmission | undefined> {
-    const { strategy, signal, parentRunId, userId } = run;
+    const { strategy, signal, ancestorRunIds, userId } = run;
     if (signal?.aborted) throw abortReason(signal);
     const seats = this.threads.get(threadId) ?? [];
-    if (parentRunId !== undefined && seats.some((seat) => seat.runId === parentRunId)) {
+    if (seats.some((seat) => seat.runId !== undefined && ancestorRunIds.includes(seat.runId))) {
       return undefined;
     }
     if (strategy !== undefined && !run.shared && seats.some((seat) => seat.userId !== userId)) {

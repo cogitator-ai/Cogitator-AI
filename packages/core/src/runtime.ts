@@ -149,7 +149,12 @@ import { TruncateStrategy } from './context/strategies/index';
 import { ABORTED_BEFORE_DISPATCH, sanitizeToolHistory } from './utils/tool-history';
 import { RunQueue } from './cogitator/run-queue';
 import { assertThreadAccess } from './cogitator/threads';
-import { ThreadRuns, currentToolRun, insideToolOf, type ThreadSeat } from './cogitator/thread-runs';
+import {
+  ThreadRuns,
+  currentToolRuns,
+  insideToolOf,
+  type ThreadSeat,
+} from './cogitator/thread-runs';
 import {
   InterruptSchemas,
   isExpired,
@@ -1128,7 +1133,7 @@ export class Cogitator implements ToolInvoker {
     const admission = await this.threadRuns.admit(threadId, {
       strategy,
       signal: options.signal,
-      parentRunId: currentToolRun(),
+      ancestorRunIds: currentToolRuns(),
       userId: resumeFrom?.checkpoint?.userId ?? options.userId,
       shared: options.threadAccess === 'shared',
     });
@@ -1639,17 +1644,20 @@ export class Cogitator implements ToolInvoker {
           return false;
         }
       };
+      /** Delivers what passes the checks, and counts the steering and follow-up messages of it */
       const deliver = async (queued: readonly QueuedRunMessage[]): Promise<number> => {
-        let delivered = 0;
+        let wakes = 0;
         for (const item of queued) {
           if (!(await passesChecks(item)) || !queue?.settle(item)) continue;
           const message: Message = { role: 'user', content: item.content };
           messages.push(message);
-          delivered++;
-          lastToolCallSig = '';
+          if (item.kind !== 'inject') {
+            wakes++;
+            lastToolCallSig = '';
+          }
           await runMemory.save(active.id, message, undefined, undefined, { queued: item.kind });
         }
-        return delivered;
+        return wakes;
       };
 
       const handleToolTurn = async (

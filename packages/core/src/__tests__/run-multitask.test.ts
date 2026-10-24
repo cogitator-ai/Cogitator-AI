@@ -288,4 +288,42 @@ describe('runs of one thread at once', () => {
     await running;
     await cog.close();
   });
+
+  it('never holds back a run started three levels down from the run going on', async () => {
+    const { backend } = byInput({
+      'level one': (request) =>
+        request.messages.some((message) => message.role === 'tool')
+          ? answer('one done')
+          : callTools([{ id: 'n1', name: 'nested', arguments: {} }]),
+      'level two': (request) =>
+        request.messages.some((message) => message.role === 'tool')
+          ? answer('two done')
+          : callTools([{ id: 'n2', name: 'deeper', arguments: {} }]),
+    });
+    const cog = cogitator(backend, { multitaskStrategy: 'enqueue' });
+    const third = new Agent({ name: 'third', model: 'mock/m', instructions: 'x' });
+    const deeper = tool({
+      name: 'deeper',
+      description: 'Runs the third level',
+      parameters: z.object({}),
+      execute: async () => (await cog.run(third, { input: 'level three', threadId: 't' })).output,
+    });
+    const second = new Agent({
+      name: 'second',
+      model: 'mock/m',
+      instructions: 'x',
+      tools: [deeper],
+    });
+    const nested = tool({
+      name: 'nested',
+      description: 'Runs the second level',
+      parameters: z.object({}),
+      execute: async () => (await cog.run(second, { input: 'level two', threadId: 't' })).output,
+    });
+    const first = new Agent({ name: 'first', model: 'mock/m', instructions: 'x', tools: [nested] });
+
+    const result = await cog.run(first, { input: 'level one', threadId: 't' });
+    expect(result.output).toBe('one done');
+    await cog.close();
+  });
 });
