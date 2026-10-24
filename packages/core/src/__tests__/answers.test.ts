@@ -37,6 +37,18 @@ describe('parseAnswer', () => {
     expect(parseAnswer('{"region":"eu"}', object)).toEqual({ ok: true, value: { region: 'eu' } });
   });
 
+  it('takes a const only when the text names it', () => {
+    const literals = { anyOf: [{ const: 'eu' }, { const: 'us' }] };
+    expect(parseAnswer('us', literals)).toEqual({ ok: true, value: 'us' });
+    expect(parseAnswer('EU', literals)).toEqual({ ok: true, value: 'eu' });
+    expect(parseAnswer('asia', literals).ok).toBe(false);
+    expect(parseAnswer('no', { const: 'DELETE' }).ok).toBe(false);
+    expect(parseAnswer('delete', { const: 'DELETE' })).toEqual({ ok: true, value: 'DELETE' });
+    expect(parseAnswer('yes', { const: true })).toEqual({ ok: true, value: true });
+    expect(parseAnswer('no', { const: true }).ok).toBe(false);
+    expect(parseAnswer('2', { const: 3 }).ok).toBe(false);
+  });
+
   it('reads lists and keeps free text as it is', () => {
     expect(parseAnswer('a, b', { type: 'array', items: { type: 'string' } })).toEqual({
       ok: true,

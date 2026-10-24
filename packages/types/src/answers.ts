@@ -81,12 +81,12 @@ function candidatesOf(text: string, schema: Schema): unknown[] {
     const match = choices.find((choice) => String(choice).toLowerCase() === text.toLowerCase());
     return match === undefined ? [text] : [match];
   }
-  if ('const' in schema) return [schema.const];
+  if ('const' in schema) return constMatches(text, schema.const) ? [schema.const] : [];
   const members = membersOf(schema);
   if (members) return members.flatMap((member) => candidatesOf(text, member));
   switch (typeOf(schema)) {
     case 'boolean': {
-      const word = text.toLowerCase().replace(/[.!]+$/, '');
+      const word = wordOf(text);
       if (YES.has(word)) return [true];
       if (NO.has(word)) return [false];
       return [];
@@ -123,6 +123,20 @@ function candidatesOf(text: string, schema: Schema): unknown[] {
       return json === undefined ? [text] : [json, text];
     }
   }
+}
+
+function wordOf(text: string): string {
+  let end = text.length;
+  while (end > 0 && (text[end - 1] === '.' || text[end - 1] === '!')) end--;
+  return text.slice(0, end).toLowerCase();
+}
+
+function constMatches(text: string, value: unknown): boolean {
+  const word = wordOf(text);
+  if (typeof value === 'boolean') return value ? YES.has(word) : NO.has(word);
+  if (typeof value === 'number') return text !== '' && Number(text.replace(',', '.')) === value;
+  if (value === null) return ['null', 'none', ''].includes(word);
+  return String(value).toLowerCase() === text.toLowerCase();
 }
 
 function validatorOf(schema: Schema): ZodType | undefined {
