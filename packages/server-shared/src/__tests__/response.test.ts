@@ -10,6 +10,8 @@ import {
   withResumedCheckpoint,
   withSwarm,
   StreamEventSchema,
+  PendingInterruptSchema,
+  toPendingInterrupts,
   type StreamEvent,
 } from '../index';
 
@@ -52,6 +54,22 @@ describe('toAgentRunResponse', () => {
     });
     expect(response).not.toHaveProperty('checkpoint');
     expect(response).not.toHaveProperty('truncated');
+  });
+
+  it('says why an approval asks and which rule an "always allow" saves, without the rule file', () => {
+    const response = toAgentRunResponse(conformancePausedResult('thread-1'));
+    expect(response.pendingApprovals?.[0]).toEqual({
+      toolCallId: 'call_2',
+      toolName: 'refund',
+      arguments: { amount: 10 },
+      description: 'Refund an order',
+      sideEffects: ['payments'],
+      reason: 'The ask rule refund(*) of the project settings asks before the call',
+      rule: 'refund(*)',
+      suggestedRule: 'refund(amount:10)',
+      mode: 'default',
+    });
+    expect(JSON.stringify(response)).not.toContain('/srv/app');
   });
 
   it('reports a blocked answer and a structured error', () => {
@@ -394,5 +412,64 @@ describe('paused runs that wait on questions of their tools', () => {
     expect(events.map((event) => event.type)).toEqual(['interrupt-required', 'finish']);
     expect(events[0]).toMatchObject({ threadId: 't', interrupts: [{ id: 'call_3#0' }] });
     expect(StreamEventSchema.parse(events[0])).toEqual(events[0]);
+  });
+
+  it('carry the plan of a plan, the usage of a budget and the rule texts of an approval', () => {
+    const interrupts = toPendingInterrupts([
+      {
+        id: 'call_4#0',
+        kind: 'plan',
+        reason: 'plan_approval',
+        message: 'Approve the plan so the agent can carry it out',
+        responseSchema: { type: 'object' },
+        toolCallId: 'call_4',
+        toolName: 'exit_plan_mode',
+        details: { plan: '1. Read\n2. Edit' },
+      },
+      {
+        id: 'budget:session.cost',
+        kind: 'budget',
+        reason: 'budget_exceeded',
+        message: 'The session reached its budget',
+        details: { scope: 'session', metric: 'cost', used: 1.2, limit: 1 },
+      },
+      {
+        id: 'call_5',
+        kind: 'approval',
+        reason: 'tool_approval',
+        message: 'Approve the call of refund',
+        toolCallId: 'call_5',
+        details: { reason: 'asks', rule: 'refund(*)', suggestedRule: 'refund(amount:5)', extra: 1 },
+      },
+      {
+        id: 'call_6',
+        kind: 'approval',
+        reason: 'tool_approval',
+        message: 'Approve the call of refund',
+        details: { origin: '/srv/app/.claude/settings.json' },
+      },
+    ]);
+    expect(interrupts.map((entry) => entry.details)).toEqual([
+      { plan: '1. Read\n2. Edit' },
+      { scope: 'session', metric: 'cost', used: 1.2, limit: 1 },
+      { reason: 'asks', rule: 'refund(*)', suggestedRule: 'refund(amount:5)' },
+      undefined,
+    ]);
+    expect(interrupts[3]).not.toHaveProperty('details');
+    for (const entry of interrupts) expect(PendingInterruptSchema.parse(entry)).toEqual(entry);
+  });
+
+  it('carry nothing while only approvals wait, whatever their details', () => {
+    expect(
+      toPendingInterrupts([
+        {
+          id: 'call_5',
+          kind: 'approval',
+          reason: 'tool_approval',
+          message: 'Approve the call of refund',
+          details: { reason: 'asks' },
+        },
+      ])
+    ).toEqual([]);
   });
 });

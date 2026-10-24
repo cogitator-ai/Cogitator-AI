@@ -216,6 +216,12 @@ export interface UseChatReturn {
   resume: (decisions: ResumeDecisions) => Promise<void>;
   /** Approves every pending tool call and continues the run */
   approve: () => Promise<void>;
+  /**
+   * Approves every pending tool call and saves the `suggestedRule` of each, so calls like them
+   * run without asking from now on (`remember: true`), then continues the run. For a rule or a
+   * layer of your own, send `remember` with `resume`
+   */
+  approveAlways: () => Promise<void>;
   /** Declines every pending tool call, telling the model `reason`, and continues the run */
   deny: (reason?: string) => Promise<void>;
 }

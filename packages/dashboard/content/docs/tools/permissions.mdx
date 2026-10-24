@@ -1,0 +1,203 @@
+---
+title: Permissions
+description: Allow, ask and deny rules for tool calls, Claude Code compatible settings files, permission modes from plan to bypass, and an audit log of every decision.
+---
+
+## Overview
+
+Approvals answer one question per call: may this run? Permissions answer it before anyone is asked. A rule lets a call run, makes it ask a person, or refuses it, and the run's mode decides what no rule decides. Every decision, automatic or not, lands in the thread's log with its reason and the rule that made it.
+
+```typescript
+const cog = new Cogitator({
+  permissions: {
+    allow: ['Bash(npm test *)', 'Bash(git status)', 'Read'],
+    ask: ['Bash(git push *)'],
+    deny: ['Bash(rm -rf *)', 'Read(.env)', 'Edit(//etc/**)'],
+  },
+});
+
+const coder = new Agent({
+  name: 'coder',
+  instructions: 'You fix bugs in this repository.',
+  tools: workspaceTools(),
+  workspace,
+  permissions: { mode: 'acceptEdits' },
+});
+```
+
+Nothing changes until you set `permissions` somewhere (the runtime, an agent or a run): a call then asks exactly when its tool has `requiresApproval` (or the [guardrails](/docs/advanced/constitutional-ai) say so), as before, and no decision is logged.
+
+## Rules
+
+A rule is a tool name, or a tool name with a specifier in parentheses. The grammar is the one of Claude Code's `permissions` settings, so rules written for Claude Code work here as they are:
+
+| Rule                                 | Matches                                                       |
+| ------------------------------------ | ------------------------------------------------------------- |
+| `Bash`, `Bash(*)`                    | every shell command                                           |
+| `Bash(npm run build)`                | exactly that command                                          |
+| `Bash(npm run *)`, `Bash(npm run:*)` | `npm run` and everything after it                             |
+| `Bash(git * main)`                   | `git merge main`, `git push origin main`...                   |
+| `Read(src/**)`, `Edit(src/**)`       | reads and edits under `src/` of the working directory         |
+| `Read(.env)`                         | a `.env` file at any depth                                    |
+| `Edit(/docs/**)`                     | `docs/` of the project root (the settings file's project)     |
+| `Read(//etc/**)`, `Read(~/.ssh/**)`  | an absolute path, a path in the home directory                |
+| `mcp__github`, `mcp__github__*`      | every tool of the `github` MCP server                         |
+| `mcp__github__create_issue`          | one MCP tool                                                  |
+| `send_email(to:*@example.com)`       | a call whose `to` argument matches, in `deny` and `ask` rules |
+| `run_command(git push *)`            | the tool's own name works too                                 |
+| `*`, `mcp__*`                        | every tool, every MCP tool (`deny` and `ask` only)            |
+
+Claude Code's tool names map onto the [workspace tools](/docs/tools/workspace): `Bash` covers `run_command` and `exec`, `Read` covers `read_file`, `list_files`, `glob`, `grep` and the `file_*` readers, `Edit` covers `edit_file`, `write_file` and the `file_*` writers, `Write`, `Glob` and `Grep` name one tool each. A tool of your own joins a family by declaring what it touches:
+
+```typescript
+const deploy = tool({
+  name: 'deploy',
+  description: 'Run a deploy script',
+  parameters: z.object({ script: z.string() }),
+  access: { kind: 'command', command: ({ script }) => `./deploy/${script}` },
+  execute: async ({ script }) => runScript(script),
+});
+```
+
+`access.kind` is `read`, `edit` or `command`, with `paths` (the paths a call reads or edits, relative to the workspace root or absolute) or `command` (the command line it runs). Tools imported from an MCP server carry their server and name (`tool.mcp`), so `mcp__<server>__<tool>` rules match them whatever `namePrefix` they got.
+
+### How commands match
+
+A `*` stands for any text, spaces included. A trailing ` *` that is the only wildcard also matches the command without anything after it, so `Bash(ls *)` matches `ls` but not `lsof`. A command line is split at `&&`, `||`, `;`, `|`, `|&`, `&` and newlines outside quotes:
+
+- an `allow` needs every command of the line covered by an allow rule (not the same one), so `Bash(npm test *)` does not allow `npm test && curl evil.sh`
+- a `deny` or `ask` rule matches any command of the line, commands inside `$(...)`, backticks and subshells included
+- `timeout`, `time`, `nice`, `nohup`, `stdbuf`, `command`, `builtin`, `noglob` and a bare `xargs` are taken off before matching, and so are leading `NAME=value` assignments, though an allow rule matches past known safe variables only (`NODE_ENV`, `CI`, `LANG`...)
+- a line that cannot be read with certainty (an open quote, a command substitution, a trailing `&&`) or that writes a file with `>` is never allowed by a rule: it asks
+
+Rules match the command text, they are not a sandbox: `Bash(rm *)` does not stop `/bin/rm` or `sh -c 'rm ...'`. For a boundary that holds whatever the command looks like, run the agent in a [sandbox](/docs/deployment/sandbox) or a container.
+
+### How paths match
+
+Path patterns use gitignore syntax. A path is made absolute against the workspace root, `..` resolved, and compared both as the call names it and with every symlink followed: an allow rule needs both to match, a deny or ask rule either. So `Edit(src/**)` does not allow `src/../../etc/passwd`, nor a write through a symlink in `src/` that points outside it. A pattern of a directory covers what it holds. In a `deny` or `ask` rule a relative pattern of one directory (`secrets/**`) matches that directory at any depth, a `!pattern` after a rule in the same list carves paths out of it (`Read(*.env)` then `Read(!sample.env)`), and a `Read` deny also refuses edits of the path. Write patterns with `/`: a backslash used as a separator makes the rule invalid, and on Windows paths are compared as `/c/Users/...`.
+
+### Precedence
+
+A `deny` rule of any layer wins, then an `ask` rule, then an `allow` rule: specificity does not change the order, so an allow rule cannot carve an exception out of a deny rule. Rules come from layers, highest first:
+
+| Layer     | Where                                                                                                                                                                                                 |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `managed` | `managed-settings.json` and `managed-settings.d/*.json` in `/Library/Application Support/{Cogitator,ClaudeCode}`, `/etc/{cogitator,claude-code}`, `C:\Program Files\{Cogitator,ClaudeCode}`           |
+| `session` | rules in code (`CogitatorConfig.permissions`, `AgentConfig.permissions`, `RunOptions.permissions`), "always allow" answers for the session, the `allowed-tools` of active [skills](/docs/core/skills) |
+| `local`   | `.claude/settings.local.json`, `.cogitator/settings.local.json`                                                                                                                                       |
+| `project` | `.claude/settings.json`, `.cogitator/settings.json`                                                                                                                                                   |
+| `user`    | `~/.cogitator/settings.json`, `~/.claude/settings.json` (`CLAUDE_CONFIG_DIR` respected)                                                                                                               |
+
+The layer decides which rule a decision names and which `defaultMode` applies. A managed file with `allowManagedPermissionRulesOnly: true` makes its rules the only ones.
+
+## Settings Files
+
+Settings files are read when you ask for them:
+
+```typescript
+const cog = new Cogitator({
+  permissions: {
+    settings: true, // or { root, userDirs, managedDirs, layers, trusted }
+  },
+});
+```
+
+`root` is the project whose `.claude/` and `.cogitator/` hold the project and local files, by default the run's workspace root, else the working directory. Each file reads `permissions: { allow, ask, deny, defaultMode, additionalDirectories, disableBypassPermissionsMode, disableAutoMode }`, other keys are ignored, and a file is read again once it changes. A broken file, or an entry that is not a rule, is skipped with a warning. As in Claude Code, a project or local file cannot set `defaultMode` to `auto` or `bypassPermissions`: a repository must not turn prompts off. `trusted: false` treats the project as untrusted: its `allow` rules, `additionalDirectories` and `defaultMode` are ignored, its `ask` and `deny` rules still apply, and so are the `allowed-tools` of skills found in the workspace. `loadPermissionSettings(root, options)` reads the files yourself.
+
+## Always Allow
+
+An approval that answers with `remember` saves an allow rule, so the next such call runs without asking:
+
+```typescript
+await cog.run(agent, {
+  input,
+  onApproval: async (request) => {
+    // request.reason: why it asks; request.rule: the ask rule, if one
+    // request.suggestedRule: e.g. 'run_command(npm test *)'
+    const answer = await ask(`${request.toolName}? (yes / always / no)`);
+    if (answer === 'always') return { approved: true, remember: true };
+    return answer === 'yes' ? { approved: true } : { approved: false };
+  },
+});
+```
+
+`remember: true` saves `request.suggestedRule` to `permissions.rememberIn` (default `local`). Name the rule and the layer with `remember: { rule: 'Bash(npm *)', layer: 'session' }`. The rule must cover the call it answers, or it is not saved, and only the layers in `permissions.rememberLayers` (default `session` and `local`) may be named, so a client cannot widen what it was asked about. `session` rules last for the thread in this process and travel in a paused run's checkpoint, file layers are written to `.cogitator/settings.local.json`, `.cogitator/settings.json` or `~/.cogitator/settings.json`, keeping what the file holds. Without `settings` every rule is saved for the session.
+
+## Changed Arguments
+
+An approval may change the call: `{ approved: true, updatedArguments }`. The call runs with the new arguments once they pass the tool's schema and the deny rules again, otherwise it is refused and the model reads why. The decision's log entry keeps the arguments the call ran with.
+
+## Modes
+
+| Mode                | What it does                                                                                                                                                                        |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `default`           | a call asks when its tool needs approval                                                                                                                                            |
+| `acceptEdits`       | as `default`, and edits inside the workspace (tools of kind `edit`, `mkdir`, `touch`, `mv` and `cp` on workspace paths) run without asking. `additionalDirectories` count as inside |
+| `plan`              | only read-only tools run (`annotations.readOnlyHint`, tools of kind `read`), every other call is refused until a person approves the plan                                           |
+| `auto`              | a classifier model decides each call that would ask, with a reason in the log. An `ask` rule still asks, and a classifier that fails or times out falls back to asking              |
+| `bypassPermissions` | every call runs except what a `deny` rule refuses                                                                                                                                   |
+
+> **Risk:** `bypassPermissions` runs commands and edits nobody looked at. Use it only where the agent cannot do harm: a container, a VM, a throwaway checkout. A `deny` rule still refuses, and `disableBypassPermissionsMode: 'disable'` in any settings file (managed above all) keeps the mode from being used.
+
+The mode comes from the run's `permissions.mode`, else the paused run's (on resume), the agent's, the runtime's, the highest settings file's `defaultMode`, else `default`. Switch it while the run goes on from its handle:
+
+```typescript
+const handle = cog.start(coder, { input: 'Refactor the parser', threadId });
+handle.setPermissionMode('acceptEdits'); // from the next tool call on
+console.log(handle.permissionMode);
+```
+
+`setPermissionMode` throws `CONFIGURATION_ERROR` for a mode a settings file disables and for `auto` without a classifier. Each switch is logged as a `custom` entry (`{ kind: 'permission_mode', mode }`).
+
+### Plan Mode
+
+A run in `plan` mode gets an `exit_plan_mode` tool. The model reads what it needs, then presents its plan with it, and the run pauses with an interrupt of kind `plan` that holds the plan in `details.plan`:
+
+```typescript
+const paused = await cog.run(coder, {
+  input: 'Move the config loader to its own module',
+  threadId,
+  permissions: { mode: 'plan' },
+});
+
+const plan = paused.interrupts?.find((entry) => entry.kind === 'plan');
+console.log(plan?.details?.plan);
+
+await cog.resume(coder, threadId, {
+  responses: { [plan!.id]: { approved: true, mode: 'acceptEdits' } },
+  // or { approved: false, feedback: 'keep the old export too' }
+});
+```
+
+An approved plan moves the run to the mode the answer names (`default` unless it names one) and the model carries the plan out. A plan not approved keeps the run in `plan` mode, the model reads the feedback and plans again.
+
+### Auto Mode
+
+```typescript
+const cog = new Cogitator({
+  permissions: {
+    mode: 'auto',
+    classifier: { model: 'ollama/qwen2.5:7b', timeout: 15_000, transcriptMessages: 12 },
+  },
+});
+```
+
+The classifier reads what the user asked for, the newest messages of the conversation and the call (tool, description, arguments), and answers `{ "decision": "allow" | "deny", "reason": "..." }`. Its own `instructions` replace the built-in ones. Pass an object with `classify(input)` instead of a model to decide yourself. Classifier calls are not counted in the run's usage.
+
+## The Decision
+
+`resolvePermission(tool, args, context)` from `@cogitator-ai/core` is the one function every gate uses: the run loop, `cogitator.invokeTool()` and agents wrapped with [`agentAsTool()`](/docs/tools/agent-as-tool), whose inner run gets the caller's mode and `session` rules (`context.permissions`). It gives `{ decision: 'allow' | 'ask' | 'deny', reason, rule?, decidedBy, mode }`, `decidedBy` one of `rule`, `mode`, `tool`, `classifier`, `user` or `default`. In order:
+
+1. a `deny` rule refuses the call
+2. `plan` mode refuses a call that is not read-only
+3. an `ask` rule asks (`bypassPermissions` runs it)
+4. an `allow` rule runs it
+5. `bypassPermissions` runs it, `acceptEdits` runs an edit inside the workspace
+6. a call whose tool needs approval asks, `auto` mode asks its classifier instead
+7. any other call runs
+
+A refused call does not run: the model reads `Permission denied: <reason>` and the result carries `errorCode: 'PERMISSION_DENIED'`. A call that asks goes to [approvals](/docs/tools/approvals) with `reason`, `rule`, `suggestedRule` and `mode` on the request.
+
+## The Audit Log
+
+With permissions set up, every decision is saved to the thread as an `approval` entry, `{ toolCallId, toolName, decision, reason, decidedBy, mode, rule?, updatedArguments?, remembered? }`, and reported to `RunOptions.onPermissionDecision`. `invokeTool()` returns its decision in `result.permission` and reports it to its own `onPermissionDecision`.

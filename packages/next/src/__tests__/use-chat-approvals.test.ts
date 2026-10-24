@@ -12,6 +12,10 @@ const refundApproval: PendingApproval = {
   toolName: 'refund',
   arguments: { order: 'A-1' },
   description: 'Refund an order',
+  reason: 'The ask rule refund(*) asks before the call',
+  rule: 'refund(*)',
+  suggestedRule: 'refund(order:A-1)',
+  mode: 'default',
 };
 
 interface Call {
@@ -143,6 +147,46 @@ describe('useCogitatorChat approvals', () => {
     expect(calls[1]?.body).toEqual({
       threadId: 'thread_srv',
       defaultDecision: { approved: false, reason: 'Over the limit' },
+    });
+  });
+
+  it('approves every pending call for good with approveAlways', async () => {
+    const calls = installFetch([pausedStream, () => resumedStream('Refunded A-1')]);
+    const hook = setup();
+    await pause(hook);
+
+    await hook.result.current.approveAlways();
+
+    expect(calls[1]?.body).toEqual({
+      threadId: 'thread_srv',
+      defaultDecision: { approved: true, remember: true },
+    });
+  });
+
+  it('sends changed arguments and an "always allow" rule of its own with resume', async () => {
+    const calls = installFetch([pausedStream, () => resumedStream('Refunded A-2')]);
+    const hook = setup();
+    await pause(hook);
+
+    await hook.result.current.resume({
+      decisions: {
+        call_1: {
+          approved: true,
+          updatedArguments: { order: 'A-2' },
+          remember: { rule: 'refund(*)', layer: 'session' },
+        },
+      },
+    });
+
+    expect(calls[1]?.body).toEqual({
+      threadId: 'thread_srv',
+      decisions: {
+        call_1: {
+          approved: true,
+          updatedArguments: { order: 'A-2' },
+          remember: { rule: 'refund(*)', layer: 'session' },
+        },
+      },
     });
   });
 

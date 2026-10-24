@@ -3,6 +3,7 @@
   "pages": [
     "cogitator",
     "run-control",
+    "budgets",
     "agents",
     "skills",
     "todos",

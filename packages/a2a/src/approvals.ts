@@ -18,8 +18,20 @@ export interface ToolApprovalResponse {
   defaultDecision?: ToolApprovalDecision;
 }
 
+const REMEMBER_LAYERS = ['session', 'local', 'project', 'user'] as const;
+const PERMISSION_LAYERS = ['managed', ...REMEMBER_LAYERS] as const;
+
 const decisionSchema = z.union([
-  z.object({ approved: z.literal(true) }),
+  z.object({
+    approved: z.literal(true),
+    updatedArguments: z.record(z.string(), z.unknown()).optional(),
+    remember: z
+      .union([
+        z.boolean(),
+        z.object({ rule: z.string().optional(), layer: z.enum(REMEMBER_LAYERS).optional() }),
+      ])
+      .optional(),
+  }),
   z.object({ approved: z.literal(false), reason: z.string().optional() }),
 ]);
 
@@ -35,6 +47,17 @@ const approvalSchema = z.object({
   arguments: z.record(z.string(), z.unknown()),
   description: z.string(),
   sideEffects: z.array(z.string()).optional(),
+  reason: z.string().optional(),
+  rule: z
+    .object({
+      rule: z.string(),
+      behavior: z.enum(['allow', 'ask', 'deny']),
+      layer: z.enum(PERMISSION_LAYERS),
+      origin: z.string().optional(),
+    })
+    .optional(),
+  suggestedRule: z.string().optional(),
+  mode: z.enum(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions']).optional(),
 });
 
 const requestSchema = z.object({
@@ -42,13 +65,20 @@ const requestSchema = z.object({
   approvals: z.array(approvalSchema),
 });
 
-/** The data part an agent's message carries when its run waits for tool approvals. */
+/**
+ * The data part an agent's message carries when its run waits for tool approvals: each call with
+ * why it asks (`reason`), the rule that made it ask (without the file it came from) and the rule
+ * an "always allow" answer (`remember: true`) saves (`suggestedRule`)
+ */
 export function toolApprovalRequestPart(approvals: readonly ToolApprovalRequest[]): DataPart {
   return {
     kind: 'data',
     data: {
       kind: TOOL_APPROVAL_REQUEST_KIND,
-      approvals: approvals.map((approval) => ({ ...approval })),
+      approvals: approvals.map(({ rule, ...approval }) => ({
+        ...approval,
+        ...(rule && { rule: { rule: rule.rule, behavior: rule.behavior, layer: rule.layer } }),
+      })),
     },
   };
 }

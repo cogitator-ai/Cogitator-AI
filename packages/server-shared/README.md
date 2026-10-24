@@ -109,9 +109,9 @@ Standardized Server-Sent Events protocol for agent runs, workflow runs, swarm ru
 - `ToolUpdateEvent`: Structure of the `tool-update` event: what a running tool reported, or with `arguments` the arguments a streamed call runs with when they differ from the streamed ones.
 - `ToolResultEvent`: Structure of the `tool-result` event, with optional `details` and `presentation` (`ToolPresentation`: `label`, `icon?`, `detail?`), or `dropped` and `reason` for a call that never ran.
 - `ApprovalRequiredEvent`: Structure of the `approval-required` event.
-- `PendingApproval`: Client-facing tool approval request (`toolCallId`, `toolName`, `arguments`, `description`, optional `sideEffects`).
+- `PendingApproval`: Client-facing tool approval request (`toolCallId`, `toolName`, `arguments`, `description`, optional `sideEffects`, and once the run has permissions set up `reason` (why the call asks), `rule` (the text of the `ask` rule that made it ask, never the file it came from), `suggestedRule` (the rule an "always allow" answer saves) and the run's permission `mode`).
 - `InterruptRequiredEvent`: Structure of the `interrupt-required` event.
-- `PendingInterrupt`: A question a paused run waits on (`id`, `kind`, `reason`, `message`, optional `responseSchema`, `expiresAt`, `toolCallId`, `toolName`).
+- `PendingInterrupt`: A question a paused run waits on (`id`, `kind`, `reason`, `message`, optional `responseSchema`, `expiresAt`, `toolCallId`, `toolName`, `details`). `kind` is `approval`, `input` (a tool asked), `plan` (a plan to approve before the run leaves plan mode, the plan in `details.plan`) or `budget` (a budget the run reached, its `scope`, `metric`, `used` and `limit` in `details`). The answer goes by `id` in `responses` and must match `responseSchema`.
 - `ErrorEvent`: Structure of the `error` event.
 - `FinishEvent`: Structure of the `finish` event extending partial `AgentRunOutcome`.
 - `FinishDetails`: Optional outcome details and thread passed when building a `FinishEvent`.
@@ -172,7 +172,7 @@ Uniform validation logic across all adapters to reject malformed payloads with H
 - `parseRunRequest(body, options?)`: Validates `POST /agents/:name/run` and `/stream` request bodies. Rejects blank strings (`""`, `"   "`), verifies `context` against `acceptContext` policy, and validates `threadId` and `multitaskStrategy` (one of `MULTITASK_STRATEGIES`).
 - `runRequestRunOptions(body)`: The run options a parsed run request adds, its `multitaskStrategy` when it names one.
 - `parseSwarmRunRequest(body, options?)`: Extends `parseRunRequest` with positive finite `timeout` validation up to `MAX_RUN_TIMEOUT_MS`.
-- `parseResumeRequest(body)`: Validates `POST /agents/:name/resume` payloads (`threadId`, `decisions` map, `defaultDecision`, and the `responses` to the run's interrupts).
+- `parseResumeRequest(body)`: Validates `POST /agents/:name/resume` payloads (`threadId`, `decisions` map, `defaultDecision`, and the `responses` to the run's interrupts). A decision is `{ approved: boolean, reason?: string, updatedArguments?: object, remember?: boolean | { rule?: string, layer?: 'session' | 'local' | 'project' | 'user' } }`: an approval may change the arguments of the call (the run checks them against the tool's schema and the rules again) and save an "always allow" rule (`remember: true` saves the `suggestedRule`), a refusal keeps its `reason`.
 - `parseAddMessageRequest(body, options?)`: Validates `POST /threads/:id/messages` payloads (`role`, non-blank `content`, optional `metadata`).
 - `parseWorkflowRunRequest(body, options?)`: Validates `POST /workflows/:name/run` payloads (`input` object, integer `maxConcurrency`, integer `maxIterations`, boolean `checkpoint`). `checkpoint: true` is accepted only with `{ checkpoints: true }`, for a server that keeps a checkpoint store, and refused otherwise.
 - `parseWorkflowResumeRequest(body)`: Validates `POST /workflows/:name/resume` payloads (non-blank `checkpointId`, the same `maxConcurrency` and `maxIterations` options).

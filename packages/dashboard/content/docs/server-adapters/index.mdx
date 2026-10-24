@@ -48,7 +48,7 @@ Fastify serves its spec at `/docs/json` instead of `/openapi.json`, and Tetsu's 
 Request bodies:
 
 - Agent run and stream: `{ input, context?, threadId? }`. `input` must contain more than whitespace (`""` and `"   "` are refused before the model is called), and so must `threadId`. Without a `threadId` the run opens a new thread and names it in the answer (and in the `start` event of a stream).
-- Resume: `{ threadId, decisions?, defaultDecision? }`, where a decision is `{ approved: boolean, reason?: string }` keyed by tool call id.
+- Resume: `{ threadId, decisions?, defaultDecision? }`, where a decision is `{ approved: boolean, reason?: string, updatedArguments?: object, remember?: boolean | { rule?: string, layer?: string } }` (see [Permissions](/docs/tools/permissions#always-allow)) keyed by tool call id.
 - Workflow: `{ input?, options? }` with `options` limited to `maxConcurrency`, `maxIterations` and `checkpoint`. `checkpoint: true` is accepted only by a server with `workflowCheckpoints` and refused otherwise, since a checkpoint would be lost with the request.
 - Workflow resume: `{ checkpointId, options? }`, `checkpointId` non-blank and `options` limited to `maxConcurrency` and `maxIterations`.
 - Swarm: `{ input, context?, threadId?, timeout? }`, `timeout` in milliseconds and at most `2147483647`.

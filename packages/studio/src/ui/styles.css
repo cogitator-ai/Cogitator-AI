@@ -1952,6 +1952,31 @@ a.tree-entry:hover {
   min-height: 32px;
 }
 
+.approval-why {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.approval-always {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.approval-rule {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.approval-rule code {
+  color: var(--text-2);
+}
+
 .reasoning {
   border-left: 2px solid var(--border-strong);
   padding: 2px 0 2px 12px;

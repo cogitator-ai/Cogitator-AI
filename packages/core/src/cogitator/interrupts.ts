@@ -14,7 +14,24 @@ import { getLogger } from '../logger';
 /** JSON Schema of an approval's answer, a `ToolApprovalDecision` */
 export const APPROVAL_RESPONSE_SCHEMA: Record<string, unknown> = {
   type: 'object',
-  properties: { approved: { type: 'boolean' }, reason: { type: 'string' } },
+  properties: {
+    approved: { type: 'boolean' },
+    reason: { type: 'string' },
+    updatedArguments: { type: 'object', additionalProperties: true },
+    remember: {
+      anyOf: [
+        { type: 'boolean' },
+        {
+          type: 'object',
+          properties: {
+            rule: { type: 'string' },
+            layer: { type: 'string', enum: ['session', 'local', 'project', 'user'] },
+          },
+          additionalProperties: false,
+        },
+      ],
+    },
+  },
   required: ['approved'],
   additionalProperties: false,
 };
@@ -29,6 +46,13 @@ export function approvalInterrupt(request: ToolApprovalRequest): RunInterrupt {
     responseSchema: APPROVAL_RESPONSE_SCHEMA,
     toolCallId: request.toolCallId,
     toolName: request.toolName,
+    ...((request.reason !== undefined || request.rule || request.suggestedRule !== undefined) && {
+      details: {
+        ...(request.reason !== undefined && { reason: request.reason }),
+        ...(request.rule && { rule: request.rule.rule }),
+        ...(request.suggestedRule !== undefined && { suggestedRule: request.suggestedRule }),
+      },
+    }),
   };
 }
 
@@ -113,11 +137,12 @@ export function toolInterrupter(
     if (kept) throw new ToolInterruptSignal(kept);
     throw new ToolInterruptSignal({
       id,
-      kind: 'input',
+      kind: request.kind === 'plan' ? 'plan' : 'input',
       reason: nonBlank(request.reason, 'reason'),
       message: nonBlank(request.message, 'message'),
       ...(schema !== undefined && { responseSchema: jsonSchemaOf(schema) }),
       ...(request.expiresAt !== undefined && { expiresAt: isoTime(request.expiresAt) }),
+      ...(request.details !== undefined && { details: structuredClone(request.details) }),
       toolCallId: toolCall.id,
       toolName: toolCall.name,
     });
@@ -261,11 +286,31 @@ export function answerInterrupts(
   return result;
 }
 
-function toDecision(response: unknown): ToolApprovalDecision {
-  const { approved, reason } = z
-    .object({ approved: z.boolean(), reason: z.string().optional() })
-    .parse(response);
-  if (approved) return { approved: true };
+const DecisionSchema = z.object({
+  approved: z.boolean(),
+  reason: z.string().optional(),
+  updatedArguments: z.record(z.string(), z.unknown()).optional(),
+  remember: z
+    .union([
+      z.boolean(),
+      z.object({
+        rule: z.string().optional(),
+        layer: z.enum(['session', 'local', 'project', 'user']).optional(),
+      }),
+    ])
+    .optional(),
+});
+
+/** An approval's answer as a decision, the fields an approval takes kept */
+export function toDecision(response: unknown): ToolApprovalDecision {
+  const { approved, reason, updatedArguments, remember } = DecisionSchema.parse(response);
+  if (approved) {
+    return {
+      approved: true,
+      ...(updatedArguments !== undefined && { updatedArguments }),
+      ...(remember !== undefined && remember !== false && { remember }),
+    };
+  }
   return reason === undefined ? { approved: false } : { approved: false, reason };
 }
 

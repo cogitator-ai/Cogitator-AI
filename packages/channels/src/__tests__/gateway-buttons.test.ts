@@ -9,7 +9,7 @@ import type {
 import { Gateway } from '../gateway';
 import type { GatewayFullConfig } from '../gateway';
 import { createHookRegistry } from '../hooks';
-import { APPROVE_ACTION, DENY_ACTION } from '../approvals';
+import { ALWAYS_ACTION, APPROVE_ACTION, DENY_ACTION } from '../approvals';
 
 const pending: ToolApprovalRequest = {
   toolCallId: 'call_1',
@@ -132,6 +132,55 @@ describe('Gateway buttons', () => {
     const prompt = vi.mocked(channel.sendText).mock.calls.at(-1)!;
     expect(prompt[1]).toContain('publish');
     expect(prompt[2]?.buttons).toEqual([
+      [
+        { text: 'Approve', data: APPROVE_ACTION, style: 'success' },
+        { text: 'Deny', data: DENY_ACTION, style: 'danger' },
+      ],
+    ]);
+  });
+
+  it('adds an Always allow button when the call suggests a rule, and saves it on a press', async () => {
+    cogitator.run.mockResolvedValueOnce({
+      ...paused(),
+      pendingApprovals: [{ ...pending, suggestedRule: 'publish(edition:noon)' }],
+    });
+    await startGateway();
+    await channel.trigger(message('Publish the noon edition'));
+    await gateway.idle();
+
+    const prompt = vi.mocked(channel.sendText).mock.calls.at(-1)!;
+    expect(prompt[1]).toContain('`publish(edition:noon)`');
+    expect(prompt[2]?.buttons).toEqual([
+      [
+        { text: 'Approve', data: APPROVE_ACTION, style: 'success' },
+        { text: 'Always allow', data: ALWAYS_ACTION },
+        { text: 'Deny', data: DENY_ACTION, style: 'danger' },
+      ],
+    ]);
+
+    await channel.press({ data: ALWAYS_ACTION });
+    await gateway.idle();
+
+    expect(channel.editButtons).toHaveBeenCalledWith('42', 'prompt_1', [
+      [{ text: 'Always allowed', disabled: true, style: 'success' }],
+    ]);
+    expect(cogitator.resume).toHaveBeenCalledWith(
+      agent,
+      'telegram:42:42',
+      expect.objectContaining({ defaultDecision: { approved: true, remember: true } })
+    );
+  });
+
+  it('leaves the Always allow button out without always words', async () => {
+    cogitator.run.mockResolvedValueOnce({
+      ...paused(),
+      pendingApprovals: [{ ...pending, suggestedRule: 'publish(*)' }],
+    });
+    await startGateway({ approvals: { alwaysWords: [] } });
+    await channel.trigger(message('Publish the noon edition'));
+    await gateway.idle();
+
+    expect(vi.mocked(channel.sendText).mock.calls.at(-1)![2]?.buttons).toEqual([
       [
         { text: 'Approve', data: APPROVE_ACTION, style: 'success' },
         { text: 'Deny', data: DENY_ACTION, style: 'danger' },

@@ -85,6 +85,12 @@ interface CogitatorConfig {
   // Hooks around the model and tool calls of every run, also wrapping invokeTool()
   middleware?: RunMiddleware[];
 
+  // Allow, ask and deny rules (Claude Code grammar), the mode, settings files, the auto mode classifier
+  permissions?: PermissionsConfig;
+
+  // What a session (a thread) and each agent in it may spend; a reached limit pauses the run
+  budget?: SessionBudgetConfig;
+
   limits?: {
     maxConcurrentRuns?: number;
     defaultTimeout?: number; // ms; default 120000
@@ -338,6 +344,14 @@ interface RunOptions<TDeps = unknown> {
     request: ToolApprovalRequest
   ) => ToolApprovalDecision | 'pause' | Promise<ToolApprovalDecision | 'pause'>;
 
+  // The run's permission mode and rules, over the agent's and the runtime's
+  permissions?: { mode?: PermissionMode; allow?: string[]; ask?: string[]; deny?: string[] };
+  // Every permission decision, also saved to the thread as an 'approval' entry
+  onPermissionDecision?: (event: PermissionDecisionEvent) => void;
+  // Session budgets over the runtime's, and their warnings
+  budget?: SessionBudgetConfig;
+  onBudgetWarning?: (warning: BudgetWarning) => void;
+
   // Callbacks
   onToken?: (token: string) => void;
   onReasoning?: (delta: string) => void;
@@ -416,6 +430,26 @@ if (paused.status === 'paused') {
 ```
 
 See [Tool Approvals](https://cogitator.app/docs/tools/approvals).
+
+#### Permissions and budgets
+
+Rules decide calls before anyone is asked, and the mode decides what no rule does. A session budget pauses the run with an interrupt of kind `budget`:
+
+```typescript
+const cog = new Cogitator({
+  permissions: { allow: ['Bash(npm test *)'], deny: ['Read(.env)'], settings: true },
+  budget: { session: { maxCostUsd: 1 } },
+});
+
+const handle = cog.start(agent, {
+  input: 'Fix the parser',
+  threadId,
+  permissions: { mode: 'plan' },
+});
+handle.setPermissionMode('acceptEdits');
+```
+
+See [Permissions](https://cogitator.app/docs/tools/permissions) and [Session Budgets](https://cogitator.app/docs/core/budgets).
 
 ---
 

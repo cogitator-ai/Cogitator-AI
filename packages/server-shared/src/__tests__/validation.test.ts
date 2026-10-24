@@ -9,6 +9,7 @@ import {
   parseSwarmRunRequest,
   toRunUsage,
 } from '../index';
+import { parseDecision } from '../validation';
 
 describe('parseRunRequest', () => {
   it.each([
@@ -151,6 +152,71 @@ describe('double-texting and interrupt answers in requests', () => {
       ok: false,
       message: 'Field "responses" must be an object',
     });
+  });
+});
+
+describe('approval decisions in a resume', () => {
+  const shape =
+    '{ approved: boolean, reason?: string, updatedArguments?: object, remember?: boolean | { rule?: string, layer?: session | local | project | user } }';
+
+  it('reads changed arguments and an "always allow" of an approval', () => {
+    expect(
+      parseResumeRequest({
+        threadId: 't',
+        decisions: {
+          c1: { approved: true, updatedArguments: { path: 'a.txt' }, remember: true },
+          c2: { approved: true, remember: { rule: 'run_command(npm test *)', layer: 'local' } },
+          c3: { approved: true, remember: {} },
+        },
+        defaultDecision: { approved: true, remember: false },
+      })
+    ).toEqual({
+      ok: true,
+      value: {
+        threadId: 't',
+        decisions: {
+          c1: { approved: true, updatedArguments: { path: 'a.txt' }, remember: true },
+          c2: { approved: true, remember: { rule: 'run_command(npm test *)', layer: 'local' } },
+          c3: { approved: true, remember: {} },
+        },
+        defaultDecision: { approved: true, remember: false },
+      },
+    });
+  });
+
+  it('keeps only the reason of a refusal, and of an approval neither the reason nor unknown fields', () => {
+    expect(parseDecision({ approved: false, reason: 'no', remember: true })).toEqual({
+      approved: false,
+      reason: 'no',
+    });
+    expect(
+      parseDecision({ approved: false, updatedArguments: { path: 'a.txt' }, extra: 1 })
+    ).toEqual({ approved: false });
+    expect(
+      parseDecision({ approved: true, reason: 'ok', remember: { layer: 'user', origin: '/x' } })
+    ).toEqual({ approved: true, remember: { layer: 'user' } });
+  });
+
+  it('refuses arguments that are not an object and an "always allow" of the wrong shape', () => {
+    for (const decision of [
+      { approved: true, updatedArguments: ['a.txt'] },
+      { approved: true, updatedArguments: null },
+      { approved: true, updatedArguments: 'a.txt' },
+      { approved: true, remember: 'yes' },
+      { approved: true, remember: { rule: 42 } },
+      { approved: true, remember: { layer: 'managed' } },
+      { approved: false, remember: [] },
+    ]) {
+      expect(parseDecision(decision)).toBeUndefined();
+      expect(parseResumeRequest({ threadId: 't', decisions: { c1: decision } })).toEqual({
+        ok: false,
+        message: `Each entry of "decisions" must be ${shape}`,
+      });
+      expect(parseResumeRequest({ threadId: 't', defaultDecision: decision })).toEqual({
+        ok: false,
+        message: `Field "defaultDecision" must be ${shape}`,
+      });
+    }
   });
 });
 

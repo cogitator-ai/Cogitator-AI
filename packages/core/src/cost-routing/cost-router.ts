@@ -92,6 +92,13 @@ export class CostAwareRouter {
     return this.budgetEnforcer.checkBudget(estimatedCost);
   }
 
+  /** The cost budgets that are set and what was spent against each, see `BudgetEnforcer.spentAgainstLimits` */
+  spentAgainstLimits(
+    runCost: number
+  ): Array<{ scope: 'run' | 'hour' | 'day'; used: number; limit: number }> {
+    return this.budgetEnforcer?.spentAgainstLimits(runCost) ?? [];
+  }
+
   /**
    * Whether a run that has really spent `runCost` so far may make another model call, against
    * the per-run, hourly and daily limits. The runtime asks before every call.

@@ -6,6 +6,7 @@ import type { ZodType } from 'zod';
 import type { SandboxConfig } from './sandbox';
 import type { Workspace } from './workspace';
 import type { InterruptRequest } from './run-control';
+import type { ToolPermissionsView } from './permissions';
 
 export type ToolCategory =
   | 'math'
@@ -44,6 +45,15 @@ export interface ToolConfig<TParams = unknown, TResult = unknown, TDeps = unknow
   execute: (params: TParams, context: ToolContext<TDeps>) => Promise<TResult>;
   sideEffects?: SideEffectType[];
   requiresApproval?: boolean | ((params: TParams) => boolean);
+  /**
+   * What a call reads, edits or runs, for permission rules and modes: `Read(src/**)` and
+   * `Edit(src/**)` rules match the paths of `read` and `edit` tools, `Bash(git push *)` rules the
+   * command of `command` tools, `acceptEdits` mode lets edits inside the workspace run and `plan`
+   * mode refuses edits. A tool without it is matched by name only
+   */
+  access?: ToolAccess<TParams>;
+  /** The MCP server tool this tool calls, so `mcp__<server>__<tool>` rules match it */
+  mcp?: ToolMcpOrigin;
   timeout?: number;
   sandbox?: SandboxConfig;
   /**
@@ -119,6 +129,10 @@ export interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
   execute(params: TParams, context: BaseToolContext<TDeps>): Promise<TResult>;
   sideEffects?: SideEffectType[];
   requiresApproval?: boolean | ApprovalCheck;
+  /** What a call reads, edits or runs, see `ToolConfig.access` */
+  access?: ToolAccess<TParams>;
+  /** The MCP server tool this tool calls, see `ToolConfig.mcp` */
+  mcp?: ToolMcpOrigin;
   timeout?: number;
   sandbox?: SandboxConfig;
   /**
@@ -182,6 +196,24 @@ export interface ToolAnnotations {
 }
 
 export type ApprovalCheck = (params: Record<string, unknown>) => boolean;
+
+/**
+ * What a tool's calls touch, for permission rules: `read` tools read the paths `paths` gives,
+ * `edit` tools change them, `command` tools run the shell command `command` gives. The functions
+ * get the arguments as the tool's schema read them, and paths as the call names them, relative to
+ * the workspace root or absolute
+ */
+export interface ToolAccess<TParams = unknown> {
+  kind: 'read' | 'edit' | 'command';
+  paths?(params: TParams): readonly string[];
+  command?(params: TParams): string | undefined;
+}
+
+/** An MCP server's tool, by the server's name and the tool's name there */
+export interface ToolMcpOrigin {
+  server: string;
+  tool: string;
+}
 
 /**
  * What the model reads of a tool's result `TResult`: the `content` of a `toolOutput()` result,
@@ -311,6 +343,11 @@ export interface BaseToolContext<TDeps = unknown> {
    * `invokeTool()`
    */
   update?: (progress: ToolProgress) => void;
+  /**
+   * The run's permission mode and `session` rules, when the run has permissions set up, so a tool
+   * that starts a run of its own (an agent as a tool) holds it to the same rules
+   */
+  permissions?: ToolPermissionsView;
 }
 
 /**

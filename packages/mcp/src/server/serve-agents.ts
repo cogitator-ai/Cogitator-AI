@@ -63,12 +63,19 @@ const resumeSchema = z.object({
   threadId: z.string().min(1).describe('The threadId of the paused answer'),
   approved: z.boolean().describe("The user's decision on the calls the agent waits for"),
   reason: z.string().optional().describe('Why the user declined, when they did'),
+  remember: z
+    .boolean()
+    .optional()
+    .describe(
+      'The user approved for good: calls like these run without asking from now on (each saves its suggestedRule)'
+    ),
 });
 
 /**
  * MCP tools for `agents`: one per agent that takes a task (and optionally the
  * thread to continue) and answers with the agent's reply, plus a
- * `<agent>_resume` tool for agents whose tools need approval. Approvals are
+ * `<agent>_resume` tool for agents whose tools need approval or that set `permissions` (whose
+ * `ask` rules and modes may pause them). Approvals are
  * asked from the person at the client through MCP elicitation; a client that
  * cannot answer gets a paused answer to resume once the user decided. Questions
  * the agent's tools ask (`context.interrupt()`) are asked through elicitation
@@ -82,9 +89,11 @@ export function agentTools(
   return agents.flatMap((agent) => {
     const name = toolNames[agent.name] ?? toToolName(agent.name);
     const resumeName = `${name}_resume`;
-    const needsApprovals = agent.tools.some(
-      (t) => t.requiresApproval === true || typeof t.requiresApproval === 'function'
-    );
+    const needsApprovals =
+      agent.config.permissions !== undefined ||
+      agent.tools.some(
+        (t) => t.requiresApproval === true || typeof t.requiresApproval === 'function'
+      );
 
     const ask = defineTool({
       name,
@@ -111,12 +120,14 @@ export function agentTools(
       name: resumeName,
       description: `Continue a ${agent.name} answer that waits for the user's approval, with the user's decision.`,
       parameters: resumeSchema,
-      execute: async ({ threadId, approved, reason }, context) =>
+      execute: async ({ threadId, approved, reason, remember }, context) =>
         settle(
           host,
           agent,
           await host.resume(agent, threadId, {
-            defaultDecision: approved ? { approved: true } : { approved: false, reason },
+            defaultDecision: approved
+              ? { approved: true, ...(remember === true && { remember: true }) }
+              : { approved: false, reason },
             ...runContext(context),
           }),
           context,
@@ -243,7 +254,10 @@ function answer(result: RunResult, resumeName: string): AgentToolAnswer {
     return {
       status: 'paused',
       threadId: result.threadId,
-      pendingApprovals: [...(result.pendingApprovals ?? [])],
+      pendingApprovals: (result.pendingApprovals ?? []).map(({ rule, ...request }) => ({
+        ...request,
+        ...(rule && { rule: { rule: rule.rule, behavior: rule.behavior, layer: rule.layer } }),
+      })),
       next: `Ask the user whether to allow these calls, then call ${resumeName} with this threadId and their decision.`,
     };
   }

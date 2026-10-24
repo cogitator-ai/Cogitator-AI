@@ -69,6 +69,7 @@ console.log(result.output);
 - **Streaming Responses** - Real-time token and reasoning streaming
 - **Structured Output** - `responseFormat` with a Zod schema, validated and repaired once on mismatch
 - **Handoffs & Approvals** - Pass a conversation to another agent; pause runs for human approval and resume them later
+- **Permissions & Budgets** - Claude Code compatible allow, ask and deny rules, modes from plan to bypass, an audit log, and session budgets that pause instead of failing
 - **Steering & Interrupts** - `cog.start()` handles to `steer`, `followUp`, `inject` and `abort` a run going on, double-texting strategies per thread, tools that pause a run to ask a person (`context.interrupt()`), cancellation that keeps what was shown and done
 - **Prompt Versions & A/B Tests** - Versioned instructions per agent with `cog.prompts`
 - **Memory Integration** - In-memory, Redis, PostgreSQL, SQLite, MongoDB and Qdrant adapters
@@ -598,6 +599,35 @@ const result = await handle.result; // or handle.abort(), which returns what was
 `multitaskStrategy` (per run, or for every run in the config) says what a run does when its thread has a run going on: `enqueue`, `reject` (`THREAD_BUSY`), `interrupt` (the running one fails with `RUN_INTERRUPTED`) or `rollback` (interrupt, then branch from where the interrupted run started). Unset, runs of one thread go on side by side as before.
 
 A tool pauses the run to ask a person with `context.interrupt({ reason, message, responseSchema, expiresAt })`. The run returns `status: 'paused'` with the question in `result.interrupts`, and `cog.resume(agent, threadId, { responses: { [interrupt.id]: answer } })` checks the answer against the schema (or fails with `INTERRUPT_ANSWER_INVALID`, `INTERRUPT_EXPIRED` after `expiresAt`) and runs the tool again, where `interrupt()` now returns the answer. Pending approvals are listed there too, as `kind: 'approval'`. `parseAnswer(text, schema)` and `answerFormat(schema)` from `@cogitator-ai/types` read a typed or spoken answer by the question's schema, `cog.pausedRun(threadId)` lists what a thread waits on and `cog.cancelPause(threadId, { userId, reason })` ends the pause with declined results.
+
+### Permissions
+
+Rules decide tool calls before anyone is asked, in the grammar of Claude Code's `permissions` settings: `allow`, `ask` and `deny` lists of `Tool` or `Tool(specifier)` rules. Claude Code's names map onto the workspace tools (`Bash` to `run_command`, `Read` to `read_file`, `Edit` to `edit_file`, `Write`, `Glob`, `Grep`) and a tool's own name works too. A deny of any layer wins, then ask, then allow:
+
+```typescript
+const cog = new Cogitator({
+  permissions: {
+    allow: ['Bash(npm test *)', 'Read'],
+    ask: ['Bash(git push *)'],
+    deny: ['Bash(rm -rf *)', 'Read(.env)'],
+    settings: true, // also read .claude/settings.json, .cogitator/settings*.json, ~/.claude, managed files
+  },
+});
+
+const coder = new Agent({
+  name: 'coder',
+  instructions,
+  tools: workspaceTools(),
+  workspace,
+  permissions: { mode: 'acceptEdits' },
+});
+```
+
+Command rules split command lines at `&&`, `|`, `;` and friends (an allow needs every command covered, a deny or ask matches any, nested ones included), path rules use gitignore patterns checked with `..` resolved and symlinks followed. A tool joins a family by declaring `access: { kind: 'read' | 'edit' | 'command', paths?, command? }`, MCP tools carry `mcp: { server, tool }` for `mcp__server__tool` rules. Modes: `default`, `acceptEdits` (edits inside the workspace run), `plan` (read-only until the model's `exit_plan_mode` plan is approved through an interrupt of kind `plan`), `auto` (a classifier model, `permissions.classifier`, decides what would ask) and `bypassPermissions` (everything but deny rules, only for isolated environments). `cog.start()` handles switch the mode with `setPermissionMode()`. An approval answers with `updatedArguments` (checked against the schema and the rules again) or `remember` ("always allow", saved to the session or a settings file). `resolvePermission(tool, args, context)` is the one decision behind the run loop, `invokeTool()` and `agentAsTool()`, and every decision is logged as an `approval` entry and reported to `onPermissionDecision`. While a skill is active, its `allowed-tools` are allow rules of the run. Nothing changes without `permissions`. See [Permissions](https://cogitator.app/docs/tools/permissions).
+
+### Session Budgets
+
+`budget: { session: { maxCostUsd, maxTokens, maxToolCalls }, agent: {...}, warnAt, onWarning }` (and `AgentConfig.budget`) limit what a thread spends across its runs and what each agent spends in it. A run that reaches a limit pauses with an interrupt of kind `budget` before its next model call or tool turn: resume with `{ action: 'continue', limit }` to raise it, `{ action: 'continue' }` to go on past it, or `{ action: 'stop' }` to end the run (`result.budgetStop`). The spending is kept in the thread's metadata (`result.sessionSpend`). `limits.onExceeded: 'interrupt'` makes `maxTokensPerRun` and the cost routing budgets pause the same way instead of failing. See [Session Budgets](https://cogitator.app/docs/core/budgets).
 
 An aborted run keeps the text it streamed as an assistant message with `metadata.interrupted: true` (unless `saveInterruptedReply: false`), answers the tool calls it never started with `ABORTED_BEFORE_DISPATCH`, and never writes the late result of a tool that ignored the signal. History read from memory answers tool calls a crash left without a result with `OUTCOME_UNKNOWN` ("outcome unknown, verify before retrying"), without rewriting the log. See [Steering, Interrupts and Cancellation](https://cogitator.app/docs/core/run-control).
 

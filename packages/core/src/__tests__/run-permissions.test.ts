@@ -1,0 +1,500 @@
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import { MockLLMBackend, type MockChatResponse } from '@cogitator-ai/test-utils';
+import type {
+  CogitatorConfig,
+  MemoryEntry,
+  Message,
+  PermissionDecisionEvent,
+  ToolApprovalRequest,
+  ToolCall,
+} from '@cogitator-ai/types';
+import { Cogitator } from '../cogitator';
+import { Agent } from '../agent';
+import { tool } from '../tool';
+import { agentAsTool } from '../agent-tool';
+import { workspaceTools } from '../tools/workspace-tools';
+import { LocalWorkspace } from '../workspace/local-workspace';
+import { SkillRegistry } from '../skills/skill-registry';
+import { EXIT_PLAN_MODE } from '../cogitator/run-permissions';
+
+let base: string;
+let root: string;
+let workspace: LocalWorkspace;
+
+beforeEach(async () => {
+  base = realpathSync(mkdtempSync(join(tmpdir(), 'run-permissions-')));
+  root = join(base, 'project');
+  mkdirSync(join(root, 'src'), { recursive: true });
+  writeFileSync(join(root, 'src', 'app.ts'), 'old');
+  workspace = new LocalWorkspace({ root });
+  await workspace.start();
+});
+
+afterEach(async () => {
+  await workspace.dispose();
+  rmSync(base, { recursive: true, force: true });
+});
+
+const call = (id: string, name: string, args: Record<string, unknown>): ToolCall => ({
+  id,
+  name,
+  arguments: args,
+});
+
+const turn = (...calls: ToolCall[]): MockChatResponse => ({
+  content: '',
+  toolCalls: calls,
+  finishReason: 'tool_calls',
+});
+
+function setup(responses: MockChatResponse[], config: CogitatorConfig = {}) {
+  const backend = new MockLLMBackend().setResponses([...responses, { content: 'done' }]);
+  const cog = new Cogitator({
+    memory: { adapter: 'memory' },
+    ...config,
+    llm: { ...config.llm, backends: { mock: backend, ...config.llm?.backends }, retry: false },
+  });
+  return { cog, backend };
+}
+
+const sent = vi.fn(async ({ to }: { to: string; body: string }) => `sent to ${to}`);
+const sendEmail = tool({
+  name: 'send_email',
+  description: 'Send an email',
+  parameters: z.object({ to: z.string().email(), body: z.string() }),
+  requiresApproval: true,
+  execute: sent,
+});
+
+const coder = (extra: Partial<ConstructorParameters<typeof Agent>[0]> = {}) =>
+  new Agent({
+    name: 'coder',
+    model: 'mock/m',
+    instructions: 'You code.',
+    tools: [...workspaceTools(), sendEmail],
+    workspace,
+    ...extra,
+  });
+
+function toolTexts(messages: readonly Message[]): string[] {
+  return messages.filter((m) => m.role === 'tool').map((m) => String(m.content));
+}
+
+async function approvalEvents(cog: Cogitator, threadId: string): Promise<MemoryEntry[]> {
+  const memory = await cog.getMemory();
+  const entries = await memory!.getEntries({ threadId, types: 'all' });
+  if (!entries.success) throw new Error(entries.error);
+  return entries.data.filter((entry) => entry.type === 'approval');
+}
+
+beforeEach(() => {
+  sent.mockClear();
+});
+
+describe('permission rules in a run', () => {
+  it('changes nothing without permissions: approvals pause and decisions are not logged', async () => {
+    const { cog } = setup([turn(call('c1', 'send_email', { to: 'a@b.co', body: 'hi' }))]);
+    const result = await cog.run(coder(), { input: 'mail', threadId: 't-plain' });
+    expect(result.status).toBe('paused');
+    expect(result.pendingApprovals?.[0]).toEqual({
+      toolCallId: 'c1',
+      toolName: 'send_email',
+      arguments: { to: 'a@b.co', body: 'hi' },
+      description: 'Send an email',
+    });
+    expect(result.checkpoint?.permissions).toBeUndefined();
+    const events = await approvalEvents(cog, 't-plain');
+    expect(events.map((entry) => entry.event)).toEqual([
+      { pending: [{ toolCallId: 'c1', toolName: 'send_email' }] },
+    ]);
+    await cog.close();
+  });
+
+  it('refuses a call a deny rule names, tells the model why and logs the decision', async () => {
+    const heard: PermissionDecisionEvent[] = [];
+    const { cog } = setup([turn(call('c1', 'run_command', { command: 'git push origin main' }))], {
+      permissions: { deny: ['Bash(git push *)'] },
+    });
+    const result = await cog.run(coder(), {
+      input: 'push',
+      threadId: 't-deny',
+      onPermissionDecision: (event) => heard.push(event),
+    });
+    expect(result.status).toBe('completed');
+    expect(toolTexts(result.messages)[0]).toContain(
+      'Permission denied: Denied by the rule Bash(git push *)'
+    );
+    expect(heard).toEqual([
+      expect.objectContaining({
+        toolCallId: 'c1',
+        decision: 'deny',
+        decidedBy: 'rule',
+        rule: { rule: 'Bash(git push *)', behavior: 'deny', layer: 'session', origin: 'runtime' },
+      }),
+    ]);
+    const events = await approvalEvents(cog, 't-deny');
+    expect(events[0].event).toMatchObject({ toolName: 'run_command', decision: 'deny' });
+    await cog.close();
+  });
+
+  it('runs a call an allow rule covers without asking, and asks with the reason otherwise', async () => {
+    const onApproval = vi.fn(() => 'pause' as const);
+    const { cog } = setup([
+      turn(
+        call('c1', 'send_email', { to: 'boss@example.com', body: 'hi' }),
+        call('c2', 'run_command', { command: 'npm test --watch' })
+      ),
+    ]);
+    const agent = coder({ permissions: { allow: ['send_email'] } });
+    const result = await cog.run(agent, { input: 'go', threadId: 't-ask', onApproval });
+    expect(result.status).toBe('paused');
+    expect(onApproval).toHaveBeenCalledTimes(1);
+    expect(result.checkpoint?.turn.decisions).toEqual({ c1: { approved: true } });
+    const request = onApproval.mock.calls[0] as unknown as [ToolApprovalRequest];
+    expect(request[0]).toMatchObject({
+      toolName: 'run_command',
+      reason: 'run_command needs approval for this call',
+      suggestedRule: 'run_command(npm test *)',
+      mode: 'default',
+    });
+    expect(result.interrupts?.[0].details).toMatchObject({
+      suggestedRule: 'run_command(npm test *)',
+    });
+    await cog.resume(agent, 't-ask', { decisions: { c2: { approved: false } } });
+    expect(sent).toHaveBeenCalledTimes(1);
+    await cog.close();
+  });
+
+  it('keeps an "always allow" rule for the session, so the next run does not ask', async () => {
+    const onApproval = vi.fn(async () => ({ approved: true as const, remember: true }));
+    const { cog } = setup(
+      [
+        turn(call('c1', 'send_email', { to: 'a@b.co', body: '1' })),
+        { content: 'sent' },
+        turn(call('c2', 'send_email', { to: 'a@b.co', body: '2' })),
+      ],
+      { permissions: {} }
+    );
+    const first = await cog.run(coder(), { input: 'one', threadId: 't-always', onApproval });
+    expect(first.status).toBe('completed');
+    const second = await cog.run(coder(), { input: 'two', threadId: 't-always', onApproval });
+    expect(second.status).toBe('completed');
+    expect(onApproval).toHaveBeenCalledTimes(1);
+    expect(sent).toHaveBeenCalledTimes(2);
+    const events = (await approvalEvents(cog, 't-always')).map((entry) => entry.event);
+    expect(events[0]).toMatchObject({
+      decision: 'allow',
+      decidedBy: 'user',
+      remembered: { rule: 'send_email', layer: 'session' },
+    });
+    expect(events[1]).toMatchObject({
+      decidedBy: 'rule',
+      rule: { rule: 'send_email', origin: 'remembered' },
+    });
+    await cog.close();
+  });
+
+  it('saves an "always allow" rule to the local settings file when the runtime reads settings', async () => {
+    const { cog } = setup([turn(call('c1', 'run_command', { command: 'echo hi' }))], {
+      permissions: { settings: { root, userDirs: [join(base, 'home')], managedDirs: [] } },
+    });
+    await cog.run(coder(), {
+      input: 'echo',
+      threadId: 't-local',
+      onApproval: async () => ({ approved: true, remember: { rule: 'Bash(echo *)' } }),
+    });
+    const saved = JSON.parse(readFileSync(join(root, '.cogitator', 'settings.local.json'), 'utf8'));
+    expect(saved).toEqual({ permissions: { allow: ['Bash(echo *)'] } });
+    await cog.close();
+  });
+
+  it('does not save a rule that does not cover the call it answers', async () => {
+    const { cog } = setup([turn(call('c1', 'run_command', { command: 'echo hi' }))], {
+      permissions: {},
+    });
+    const result = await cog.run(coder(), {
+      input: 'echo',
+      threadId: 't-wide',
+      onApproval: async () => ({ approved: true, remember: { rule: 'Bash(rm *)' } }),
+    });
+    expect(result.status).toBe('completed');
+    const events = (await approvalEvents(cog, 't-wide')).map((entry) => entry.event);
+    expect(events[0]).not.toHaveProperty('remembered');
+    await cog.close();
+  });
+
+  it('checks changed arguments against the schema and the rules again', async () => {
+    const { cog } = setup(
+      [
+        turn(
+          call('c1', 'send_email', { to: 'a@b.co', body: 'draft' }),
+          call('c2', 'send_email', { to: 'a@b.co', body: 'x' }),
+          call('c3', 'send_email', { to: 'a@b.co', body: 'y' })
+        ),
+      ],
+      { permissions: { deny: ['send_email(to:*@evil.com)'] } }
+    );
+    const updates: Record<string, Record<string, unknown>> = {
+      c1: { to: 'a@b.co', body: 'final' },
+      c2: { to: 'not an email', body: 'x' },
+      c3: { to: 'me@evil.com', body: 'y' },
+    };
+    const result = await cog.run(coder(), {
+      input: 'mail',
+      threadId: 't-updated',
+      onApproval: async (request) => ({
+        approved: true,
+        updatedArguments: updates[request.toolCallId],
+      }),
+    });
+    expect(sent).toHaveBeenCalledTimes(1);
+    expect(sent.mock.calls[0][0]).toEqual({ to: 'a@b.co', body: 'final' });
+    const texts = toolTexts(result.messages);
+    expect(texts[1]).toContain("do not match the tool's schema");
+    expect(texts[2]).toContain('Permission denied');
+    await cog.close();
+  });
+
+  it('resumes with changed arguments given in the decisions', async () => {
+    const { cog } = setup([turn(call('c1', 'send_email', { to: 'a@b.co', body: 'draft' }))], {
+      permissions: {},
+    });
+    const paused = await cog.run(coder(), { input: 'mail', threadId: 't-resume-updated' });
+    expect(paused.status).toBe('paused');
+    const done = await cog.resume(coder(), 't-resume-updated', {
+      decisions: { c1: { approved: true, updatedArguments: { to: 'c@d.co', body: 'final' } } },
+    });
+    expect(done.status).toBe('completed');
+    expect(sent.mock.calls[0][0]).toEqual({ to: 'c@d.co', body: 'final' });
+    await cog.close();
+  });
+});
+
+describe('permission modes', () => {
+  it('plan mode refuses edits, pauses on the plan and carries it out once approved', async () => {
+    const { cog, backend } = setup([
+      turn(
+        call('c1', 'read_file', { path: 'src/app.ts' }),
+        call('c2', 'write_file', { path: 'src/app.ts', content: 'new' })
+      ),
+      turn(call('c3', EXIT_PLAN_MODE, { plan: '1. Rewrite src/app.ts' })),
+      turn(call('c4', 'write_file', { path: 'src/app.ts', content: 'new' })),
+    ]);
+    const agent = coder({ permissions: { mode: 'plan' } });
+    const paused = await cog.run(agent, { input: 'rewrite', threadId: 't-plan' });
+
+    expect(paused.status).toBe('paused');
+    expect(readFileSync(join(root, 'src', 'app.ts'), 'utf8')).toBe('old');
+    expect(toolTexts(paused.messages)[1]).toContain('plan mode');
+    expect(paused.interrupts).toEqual([
+      expect.objectContaining({
+        id: 'c3#0',
+        kind: 'plan',
+        reason: 'plan_approval',
+        details: { plan: '1. Rewrite src/app.ts' },
+      }),
+    ]);
+    expect(paused.checkpoint?.permissions?.mode).toBe('plan');
+    const firstTools = backend.getCalls()[0].tools?.map((t) => t.name);
+    expect(firstTools).toContain(EXIT_PLAN_MODE);
+
+    const done = await cog.resume(agent, JSON.parse(JSON.stringify(paused.checkpoint)), {
+      responses: { 'c3#0': { approved: true, mode: 'acceptEdits' } },
+    });
+    expect(done.status).toBe('completed');
+    expect(readFileSync(join(root, 'src', 'app.ts'), 'utf8')).toBe('new');
+    expect(toolTexts(done.messages).at(-1)).toContain('"bytes":3');
+    const lastTools = backend.getLastCall()?.tools?.map((t) => t.name);
+    expect(lastTools).not.toContain(EXIT_PLAN_MODE);
+    await cog.close();
+  });
+
+  it('keeps the run in plan mode when the plan is not approved', async () => {
+    const { cog } = setup([turn(call('c1', EXIT_PLAN_MODE, { plan: 'Delete everything' }))]);
+    const agent = coder({ permissions: { mode: 'plan' } });
+    const paused = await cog.run(agent, { input: 'go', threadId: 't-plan-no' });
+    const done = await cog.resume(agent, paused.checkpoint!, {
+      responses: { 'c1#0': { approved: false, feedback: 'keep the tests' } },
+    });
+    expect(toolTexts(done.messages)[0]).toContain('keep the tests');
+    expect(done.status).toBe('completed');
+    await cog.close();
+  });
+
+  it('auto mode lets the classifier decide what would ask, and asks when it fails', async () => {
+    const classify = vi
+      .fn()
+      .mockResolvedValueOnce({ decision: 'allow', reason: 'the user asked for this email' })
+      .mockResolvedValueOnce({ decision: 'deny', reason: 'nobody asked to mail a stranger' })
+      .mockRejectedValueOnce(new Error('classifier down'));
+    const onApproval = vi.fn(() => 'pause' as const);
+    const { cog } = setup(
+      [
+        turn(
+          call('c1', 'send_email', { to: 'a@b.co', body: '1' }),
+          call('c2', 'send_email', { to: 'x@y.co', body: '2' }),
+          call('c3', 'send_email', { to: 'z@y.co', body: '3' })
+        ),
+      ],
+      { permissions: { mode: 'auto', classifier: { classify } } }
+    );
+    const result = await cog.run(coder(), { input: 'mail a@b.co', threadId: 't-auto', onApproval });
+    expect(classify).toHaveBeenCalledTimes(3);
+    expect(classify.mock.calls[0][0]).toMatchObject({
+      toolName: 'send_email',
+      request: 'mail a@b.co',
+    });
+    expect(onApproval).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe('paused');
+    expect(sent).toHaveBeenCalledTimes(0);
+    const events = (await approvalEvents(cog, 't-auto')).map((entry) => entry.event);
+    expect(events.slice(0, 2)).toEqual([
+      expect.objectContaining({
+        decision: 'allow',
+        decidedBy: 'classifier',
+        reason: 'the user asked for this email',
+      }),
+      expect.objectContaining({ decision: 'deny', decidedBy: 'classifier' }),
+    ]);
+    await cog.close();
+  });
+
+  it('auto mode asks a classifier model and reads its JSON', async () => {
+    const judge = new MockLLMBackend().setResponse({
+      content: 'Sure: {"decision": "allow", "reason": "matches the request"}',
+    });
+    const { cog } = setup([turn(call('c1', 'send_email', { to: 'a@b.co', body: '1' }))], {
+      llm: { backends: { judge } },
+      permissions: { mode: 'auto', classifier: { model: 'judge/small' } },
+    });
+    const result = await cog.run(coder(), { input: 'mail', threadId: 't-judge' });
+    expect(result.status).toBe('completed');
+    expect(sent).toHaveBeenCalledTimes(1);
+    expect(String(judge.getLastCall()?.messages[1].content)).toContain('<action>');
+    await cog.close();
+  });
+
+  it('refuses auto mode without a classifier and bypass mode a settings file disables', async () => {
+    const managed = join(base, 'managed');
+    mkdirSync(managed, { recursive: true });
+    writeFileSync(
+      join(managed, 'managed-settings.json'),
+      JSON.stringify({ permissions: { disableBypassPermissionsMode: 'disable' } })
+    );
+    const { cog } = setup([turn(call('c1', 'send_email', { to: 'a@b.co', body: '1' }))], {
+      permissions: {
+        mode: 'bypassPermissions',
+        settings: { root, userDirs: [], managedDirs: [managed] },
+      },
+    });
+    const handle = cog.start(coder(), { input: 'mail', threadId: 't-bypass' });
+    const result = await handle.result;
+    expect(result.status).toBe('paused');
+    expect(handle.permissionMode).toBe('default');
+    expect(() => handle.setPermissionMode('auto')).toThrow(/classifier/);
+    await cog.close();
+  });
+
+  it('switches mode from the run handle while the run goes on', async () => {
+    const { cog } = setup([turn(call('c1', 'send_email', { to: 'a@b.co', body: '1' }))], {
+      permissions: {},
+    });
+    const handle = cog.start(coder(), { input: 'mail', threadId: 't-switch' });
+    handle.setPermissionMode('bypassPermissions');
+    const result = await handle.result;
+    expect(result.status).toBe('completed');
+    expect(handle.permissionMode).toBe('bypassPermissions');
+    expect(sent).toHaveBeenCalledTimes(1);
+    await cog.close();
+  });
+});
+
+describe('permissions outside the run loop', () => {
+  it('invokeTool applies the rules and reports the decision', async () => {
+    const cog = new Cogitator({ permissions: { deny: ['send_email(to:*@evil.com)'] } });
+    const denied = await cog.invokeTool(sendEmail, { to: 'me@evil.com', body: '' });
+    expect(denied).toMatchObject({
+      errorCode: 'PERMISSION_DENIED',
+      permission: { decision: 'deny' },
+    });
+    const asked = await cog.invokeTool(sendEmail, { to: 'a@b.co', body: '' });
+    expect(asked.pendingApproval).toMatchObject({
+      reason: 'send_email needs approval for this call',
+      suggestedRule: 'send_email',
+    });
+    const allowed = await cog.invokeTool(
+      sendEmail,
+      { to: 'a@b.co', body: '' },
+      { permissions: { allow: ['send_email'] } }
+    );
+    expect(allowed.result).toBe('sent to a@b.co');
+    await cog.close();
+  });
+
+  it('a delegated agent runs under the caller mode and rules', async () => {
+    const inner = new MockLLMBackend().setResponses([
+      turn(call('i1', 'write_file', { path: 'src/app.ts', content: 'delegated' })),
+      { content: 'tried' },
+    ]);
+    const outer = new MockLLMBackend().setResponses([
+      turn(call('o1', 'helper', { task: 'edit the app' })),
+      { content: 'done' },
+    ]);
+    const cog = new Cogitator({ llm: { backends: { inner, outer }, retry: false } });
+    const helper = new Agent({
+      name: 'helper-agent',
+      model: 'inner/m',
+      instructions: 'You edit.',
+      tools: workspaceTools(),
+      workspace,
+    });
+    const lead = new Agent({
+      name: 'lead',
+      model: 'outer/m',
+      instructions: 'You delegate.',
+      tools: [agentAsTool(cog, helper, { name: 'helper', description: 'Edits files' })],
+      workspace,
+    });
+    await cog.run(lead, { input: 'go', permissions: { deny: ['Edit(src/**)'] } });
+    expect(readFileSync(join(root, 'src', 'app.ts'), 'utf8')).toBe('old');
+    expect(toolTexts(inner.getLastCall()?.messages ?? [])[0]).toContain('Permission denied');
+    await cog.close();
+  });
+
+  it('allows the tools of an active skill while it is active', async () => {
+    const skills = join(base, 'skills', 'release');
+    mkdirSync(skills, { recursive: true });
+    writeFileSync(
+      join(skills, 'SKILL.md'),
+      '---\nname: release\ndescription: Ship a release\nallowed-tools: Bash(echo *) Read\n---\nRun echo.\n'
+    );
+    const onApproval = vi.fn(() => 'pause' as const);
+    const { cog } = setup(
+      [
+        turn(call('c1', 'run_command', { command: 'echo before' })),
+        turn(call('c2', 'use_skill', { skill: 'release' })),
+        turn(call('c3', 'run_command', { command: 'echo after' })),
+      ],
+      { permissions: {} }
+    );
+    const agent = coder({ skills: [new SkillRegistry({ dirs: [join(base, 'skills')] })] });
+    const first = await cog.run(agent, { input: 'ship', threadId: 't-skill', onApproval });
+    expect(first.status).toBe('paused');
+    const resumed = await cog.resume(agent, 't-skill', {
+      decisions: { c1: { approved: false } },
+      onApproval,
+    });
+    expect(resumed.status).toBe('completed');
+    expect(onApproval).toHaveBeenCalledTimes(1);
+    const events = (await approvalEvents(cog, 't-skill')).map((entry) => entry.event);
+    expect(events.at(-1)).toMatchObject({
+      toolName: 'run_command',
+      rule: { origin: 'skill:release' },
+    });
+    await cog.close();
+  });
+});

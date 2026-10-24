@@ -1,0 +1,69 @@
+---
+title: Session Budgets
+description: Limits of money, tokens and tool calls for a session and for each agent in it, with a warning before the limit and a pause instead of a failure when it is reached.
+---
+
+## Overview
+
+A session (a thread, across all its runs) can have a budget: how much money, how many tokens and how many tool calls its runs may spend together, and how much each agent of it may spend. A run that reaches a limit does not fail. It pauses with an interrupt of kind `budget`, and a person raises the limit, lets the run go on past it, or stops it with what it has.
+
+```typescript
+const cog = new Cogitator({
+  memory: { adapter: 'postgres', postgres: { connectionString } },
+  budget: {
+    session: { maxCostUsd: 2, maxTokens: 400_000, maxToolCalls: 200 },
+    agent: { maxCostUsd: 1 },
+    warnAt: 0.8,
+    onWarning: (warning) =>
+      notify(`${warning.scope} ${warning.metric} at ${warning.used}/${warning.limit}`),
+  },
+});
+
+const researcher = new Agent({
+  name: 'researcher',
+  instructions: 'You research.',
+  budget: { maxToolCalls: 40 }, // over budget.agent for this agent
+});
+```
+
+Cost is the run's `usage.cost`: what the provider reported, else the tokens priced from the model registry or `llm.pricing` (see [Cogitator](/docs/core/cogitator)). Tokens are input plus output tokens. Tool calls are the calls that ran. `RunOptions.budget` sets budgets for one run over the runtime's, field by field, and `RunOptions.onBudgetWarning` hears the warnings of one run.
+
+## Where the Spending Is Kept
+
+What a session spent lives in the thread's metadata (`budget`, see `SESSION_BUDGET_KEY`): in all, by agent, and the limits answers raised. Without memory, or for a run with `useMemory: false`, it is kept in the process. Each run adds what it spent when it pauses, ends or fails, and `RunResult.sessionSpend` holds the total after it. Runs of one thread that go on at the same time see each other's spending only once it is added, so give a session one run at a time (`multitaskStrategy: 'enqueue'`) when the limit must hold to the cent.
+
+## When a Limit Is Reached
+
+Before each model call the run checks money and tokens, before each tool turn the tool calls the turn would add. The first limit reached pauses the run:
+
+```typescript
+const result = await cog.run(researcher, { input, threadId });
+
+if (result.status === 'paused') {
+  const budget = result.interrupts?.find((entry) => entry.kind === 'budget');
+  // budget.details: { scope: 'session', metric: 'cost', used: 2.04, limit: 2 }
+  await cog.resume(researcher, threadId, {
+    responses: { [budget!.id]: { action: 'continue', limit: 5 } },
+  });
+}
+```
+
+| Answer                             | What happens                                                                                                             |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `{ action: 'continue', limit: 5 }` | the limit is 5 from now on: for the session (kept in the thread) for a `session` or `agent` limit, for the run otherwise |
+| `{ action: 'continue' }`           | the run goes on past this limit, the next run of the session stops at it again                                           |
+| `{ action: 'stop' }`               | the run ends with `status: 'completed'`, `budgetStop` names the limit, calls of a paused tool turn get "not run" results |
+
+An answer that does not match the interrupt's `responseSchema` fails the resume with `INTERRUPT_ANSWER_INVALID`. A resume without an answer pauses again at the same limit.
+
+`warnAt` (default 0.8) is the share of a limit at which `onWarning` hears of it, once per run per limit.
+
+## Run Limits
+
+`limits.maxTokensPerRun` and the [cost routing](/docs/advanced/cost-routing) budgets (`maxCostPerRun`, `maxCostPerHour`, `maxCostPerDay`) fail a run as before (`RUN_TOKEN_LIMIT_EXCEEDED`, `BUDGET_EXCEEDED`). With `limits.onExceeded: 'interrupt'` they pause it the same way instead, with scopes `run`, `hour` and `day`: a raised limit or a `continue` holds for the rest of that run.
+
+```typescript
+const cog = new Cogitator({
+  limits: { maxTokensPerRun: 200_000, onExceeded: 'interrupt' },
+});
+```

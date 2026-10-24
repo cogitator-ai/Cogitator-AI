@@ -129,25 +129,28 @@ On resume the tool runs again from its start, and this time `interrupt()` return
 - The checkpoint keeps how the run ran its tools, `toolExecution: { parallelToolCalls?, maxParallelToolCalls?, timeouts? }`, and `resume()` runs the rest the same way unless its options set them. A kept `timeouts.totalMs` gives the resumed run that deadline anew, unless the resume passes `timeouts.totalMs` or `timeout`. The checkpoint stays `version: 1`, and one saved without `toolExecution` resumes with what the resume passes.
 - The answer is checked with the Zod schema the tool asked with while the process that asked keeps it, refinements included, and with the stored JSON Schema (the schema's input side) otherwise. A tool that gets an answer its Zod schema refuses after all, in another process, asks the same question again.
 
-| Field            | Meaning                                                                                   |
-| ---------------- | ----------------------------------------------------------------------------------------- |
-| `id`             | Key of the answer in `responses`: `<toolCallId>#<n>` for the n-th question of a tool call |
-| `kind`           | `'input'` for a question of a tool, `'approval'` for a tool call waiting for approval     |
-| `reason`         | A short machine-readable reason, `tool_approval` for an approval                          |
-| `message`        | What to tell the person who answers                                                       |
-| `responseSchema` | JSON Schema of the answer (a Zod schema is converted)                                     |
-| `expiresAt`      | ISO time after which an answer is refused                                                 |
-| `response`       | The answer, once given, kept in the checkpoint                                            |
+| Field            | Meaning                                                                                                                                                                                                                               |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`             | Key of the answer in `responses`: `<toolCallId>#<n>` for the n-th question of a tool call                                                                                                                                             |
+| `kind`           | `'input'` for a question of a tool, `'approval'` for a tool call waiting for approval, `'plan'` for a plan to approve ([plan mode](/docs/tools/permissions#plan-mode)), `'budget'` for a [budget](/docs/core/budgets) the run reached |
+| `reason`         | A short machine-readable reason, `tool_approval` for an approval                                                                                                                                                                      |
+| `message`        | What to tell the person who answers                                                                                                                                                                                                   |
+| `responseSchema` | JSON Schema of the answer (a Zod schema is converted)                                                                                                                                                                                 |
+| `expiresAt`      | ISO time after which an answer is refused                                                                                                                                                                                             |
+| `details`        | More to show: the plan of a `plan`, the usage of a `budget`, what a tool passed                                                                                                                                                       |
+| `response`       | The answer, once given, kept in the checkpoint                                                                                                                                                                                        |
 
 The shape maps one to one to AG-UI interrupts, ACP elicitation and MCP input requests.
 
 `resume()` checks each answer before the run goes on: an answer to an interrupt the run does not wait on, or one already answered fails with `VALIDATION_ERROR`, one that does not match its `responseSchema` with `INTERRUPT_ANSWER_INVALID` (HTTP 400, `details.interruptId`, the run still waits), an answer after `expiresAt` with `INTERRUPT_EXPIRED` (HTTP 410). Interrupts left out keep the run paused. A new message on the thread instead of an answer answers the waiting call with "The user moved on without answering", as it declines a waiting approval.
 
+A tool may ask with `kind: 'plan'` and `details` (`context.interrupt({ kind: 'plan', reason, message, details: { plan } })`) so clients show the question as a plan to approve.
+
 `context.interrupt` is there for tools in a run. It is absent in `invokeTool()` and in sandboxed tools.
 
 ### Approvals Are Interrupts
 
-A pending approval is an interrupt of `kind: 'approval'`, its id the tool call id, its answer a decision `{ approved, reason? }`. `result.interrupts` lists approvals next to questions, so a UI handles both one way, and `responses: { [toolCallId]: { approved: true } }` decides an approval as `decisions` does. `pendingApprovals`, `decisions` and `defaultDecision` keep working as before. The checkpoint stays `version: 1`, with the interrupts in `checkpoint.interrupts` next to `turn`, and a checkpoint saved before interrupts existed resumes as it did.
+A pending approval is an interrupt of `kind: 'approval'`, its id the tool call id, its answer a decision `{ approved, reason?, updatedArguments?, remember? }`, its `details` the `reason`, `rule` and `suggestedRule` of the request. `result.interrupts` lists approvals next to questions, so a UI handles both one way, and `responses: { [toolCallId]: { approved: true } }` decides an approval as `decisions` does. `pendingApprovals`, `decisions` and `defaultDecision` keep working as before. The checkpoint stays `version: 1`, with the interrupts in `checkpoint.interrupts` next to `turn`, and a checkpoint saved before interrupts existed resumes as it did.
 
 ### In the Session Log
 

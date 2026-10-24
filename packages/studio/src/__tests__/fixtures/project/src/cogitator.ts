@@ -58,7 +58,16 @@ const assistant = new Agent({
   ],
 });
 
-export const agents = { assistant, researcher };
+const publisher = new Agent({
+  name: 'publisher',
+  description: 'Publishes under permission rules',
+  model: 'scripted/test-model',
+  instructions: 'Publish what the user asks for.',
+  tools: [publish],
+  permissions: { mode: 'default' },
+});
+
+export const agents = { assistant, researcher, publisher };
 
 type ReportState = { topic: string; draft?: string; review?: string };
 

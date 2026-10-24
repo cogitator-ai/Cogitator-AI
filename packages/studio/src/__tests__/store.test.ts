@@ -182,6 +182,45 @@ describe('StudioStore', () => {
     expect(new StudioStore(dir, () => null).getRun('r')?.todos).toEqual(expected);
   });
 
+  it('keeps why an approval asked once it is answered, and that it was allowed for good', () => {
+    const { store: s } = store();
+    s.apply(started('r', 'r', 0));
+    s.apply({
+      type: 'run.approval',
+      runId: 'r',
+      approvalId: 'r:c',
+      callId: 'c',
+      toolName: 'run_command',
+      arguments: { command: 'npm test' },
+      description: '',
+      askReason: 'The ask rule Bash(npm *) asks before the call',
+      rule: 'Bash(npm *)',
+      suggestedRule: 'run_command(npm test *)',
+    });
+    expect(s.getRun('r')?.toolCalls[0].approval).toEqual({
+      id: 'r:c',
+      status: 'waiting',
+      askReason: 'The ask rule Bash(npm *) asks before the call',
+      rule: 'Bash(npm *)',
+      suggestedRule: 'run_command(npm test *)',
+    });
+    s.apply({
+      type: 'run.approval.decided',
+      runId: 'r',
+      approvalId: 'r:c',
+      approved: true,
+      remembered: true,
+    });
+    expect(s.getRun('r')?.toolCalls[0].approval).toEqual({
+      id: 'r:c',
+      status: 'approved',
+      askReason: 'The ask rule Bash(npm *) asks before the call',
+      rule: 'Bash(npm *)',
+      suggestedRule: 'run_command(npm test *)',
+      remembered: true,
+    });
+  });
+
   it('fails the runs of a host that went away and their pending approvals', () => {
     const { store: s } = store();
     s.apply(started('r', 'r', 0));

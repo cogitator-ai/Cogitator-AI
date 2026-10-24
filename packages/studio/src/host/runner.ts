@@ -216,7 +216,9 @@ export class StudioHost {
       case 'stop':
         return Promise.resolve(this.stop(request.runId));
       case 'approve':
-        return Promise.resolve(this.decide(request.approvalId, request.approved, request.reason));
+        return Promise.resolve(
+          this.decide(request.approvalId, request.approved, request.reason, request.remember)
+        );
       case 'fork':
         return this.fork(request.run, request.fork);
       case 'workflow.run':
@@ -501,21 +503,35 @@ export class StudioHost {
         toolName: request.toolName,
         arguments: plain(request.arguments),
         description: request.description,
+        ...(request.reason !== undefined && { askReason: request.reason }),
+        ...(request.rule && { rule: request.rule.rule }),
+        ...(request.suggestedRule !== undefined && { suggestedRule: request.suggestedRule }),
       });
     });
   }
 
-  private decide(approvalId: string, approved: boolean, reason?: string): { decided: boolean } {
+  private decide(
+    approvalId: string,
+    approved: boolean,
+    reason?: string,
+    remember?: boolean
+  ): { decided: boolean } {
     const pending = this.approvals.get(approvalId);
     if (!pending) return { decided: false };
     this.approvals.delete(approvalId);
-    pending.resolve(approved ? { approved: true } : { approved: false, ...(reason && { reason }) });
+    const remembered = approved && remember === true;
+    pending.resolve(
+      approved
+        ? { approved: true, ...(remembered && { remember: true }) }
+        : { approved: false, ...(reason && { reason }) }
+    );
     this.emit({
       type: 'run.approval.decided',
       runId: pending.runId,
       approvalId,
       approved,
-      ...(reason && { reason }),
+      ...(!approved && reason && { reason }),
+      ...(remembered && { remembered: true }),
     });
     return { decided: true };
   }

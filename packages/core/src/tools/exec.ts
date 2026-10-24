@@ -41,6 +41,7 @@ export const exec = tool({
     },
     timeout: 30_000,
   },
+  access: { kind: 'command', command: ({ command }) => command },
   execute: async ({ command, cwd, timeout = 30000, env = {} }, context) => {
     try {
       if (context.signal.aborted) {

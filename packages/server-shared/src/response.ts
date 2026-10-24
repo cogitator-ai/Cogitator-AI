@@ -73,7 +73,25 @@ export function toPendingApprovals(requests: readonly ToolApprovalRequest[]): Pe
     arguments: request.arguments,
     description: request.description,
     ...(request.sideEffects !== undefined && { sideEffects: [...request.sideEffects] }),
+    ...(request.reason !== undefined && { reason: request.reason }),
+    ...(request.rule !== undefined && { rule: request.rule.rule }),
+    ...(request.suggestedRule !== undefined && { suggestedRule: request.suggestedRule }),
+    ...(request.mode !== undefined && { mode: request.mode }),
   }));
+}
+
+const APPROVAL_DETAILS = ['reason', 'rule', 'suggestedRule'] as const;
+
+/** What a client sees of an interrupt's details: for an approval, only its reason and rule texts */
+function detailsOf(entry: RunInterrupt): Record<string, unknown> | undefined {
+  if (entry.details === undefined) return undefined;
+  if (entry.kind !== 'approval') return { ...entry.details };
+  const details: Record<string, unknown> = {};
+  for (const key of APPROVAL_DETAILS) {
+    const value = entry.details[key];
+    if (typeof value === 'string') details[key] = value;
+  }
+  return Object.keys(details).length > 0 ? details : undefined;
 }
 
 /**
@@ -82,16 +100,20 @@ export function toPendingApprovals(requests: readonly ToolApprovalRequest[]): Pe
  */
 export function toPendingInterrupts(interrupts: readonly RunInterrupt[]): PendingInterrupt[] {
   if (!interrupts.some((entry) => entry.kind !== 'approval')) return [];
-  return interrupts.map((entry) => ({
-    id: entry.id,
-    kind: entry.kind,
-    reason: entry.reason,
-    message: entry.message,
-    ...(entry.responseSchema !== undefined && { responseSchema: entry.responseSchema }),
-    ...(entry.expiresAt !== undefined && { expiresAt: entry.expiresAt }),
-    ...(entry.toolCallId !== undefined && { toolCallId: entry.toolCallId }),
-    ...(entry.toolName !== undefined && { toolName: entry.toolName }),
-  }));
+  return interrupts.map((entry) => {
+    const details = detailsOf(entry);
+    return {
+      id: entry.id,
+      kind: entry.kind,
+      reason: entry.reason,
+      message: entry.message,
+      ...(entry.responseSchema !== undefined && { responseSchema: entry.responseSchema }),
+      ...(entry.expiresAt !== undefined && { expiresAt: entry.expiresAt }),
+      ...(entry.toolCallId !== undefined && { toolCallId: entry.toolCallId }),
+      ...(entry.toolName !== undefined && { toolName: entry.toolName }),
+      ...(details !== undefined && { details }),
+    };
+  });
 }
 
 /** How `result` ended: its status and the flags that apply to it */

@@ -29,6 +29,22 @@ export const PendingApprovalSchema = z
     arguments: z.record(z.string(), z.unknown()),
     description: z.string(),
     sideEffects: z.array(z.string()).optional(),
+    reason: z
+      .string()
+      .optional()
+      .describe("Why the call asks: the rule, the mode or the tool's own approval setting"),
+    rule: z
+      .string()
+      .optional()
+      .describe('The `ask` rule that made the call ask, as written, such as `Bash(git push *)`'),
+    suggestedRule: z
+      .string()
+      .optional()
+      .describe('The rule an "always allow" answer (`remember: true`) saves'),
+    mode: z
+      .enum(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'])
+      .optional()
+      .describe('The permission mode of the run'),
   })
   .describe('A tool call waiting for an approval decision');
 
@@ -140,7 +156,11 @@ export const ApprovalRequiredEventSchema = z
 export const PendingInterruptSchema = z
   .object({
     id: z.string().describe('Key of the answer in the `responses` of the resume'),
-    kind: z.enum(['approval', 'input']),
+    kind: z
+      .enum(['approval', 'input', 'plan', 'budget'])
+      .describe(
+        '`approval` for a tool call, `input` for an answer a tool asked for, `plan` for a plan to approve, `budget` for a budget the run reached'
+      ),
     reason: z.string(),
     message: z.string(),
     responseSchema: z
@@ -150,6 +170,12 @@ export const PendingInterruptSchema = z
     expiresAt: z.string().optional().describe('ISO time after which an answer is refused'),
     toolCallId: z.string().optional(),
     toolName: z.string().optional(),
+    details: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe(
+        'More to show the person who answers: the `plan` of a plan, the usage of a budget (`scope`, `metric`, `used`, `limit`), the `reason`, `rule` and `suggestedRule` of an approval'
+      ),
   })
   .describe('A question a paused run waits on');
 

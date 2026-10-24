@@ -56,10 +56,10 @@ export const api = {
       method: 'POST',
       body: {},
     }),
-  approve: (approvalId: string, approved: boolean, reason?: string) =>
+  approve: (approvalId: string, approved: boolean, reason?: string, remember?: boolean) =>
     request<{ decided: boolean }>(`/api/approvals/${encodeURIComponent(approvalId)}`, {
       method: 'POST',
-      body: { approved, ...(reason && { reason }) },
+      body: { approved, ...(reason && { reason }), ...(remember && { remember: true }) },
     }),
   fork: (runId: string, fork: ForkRequest) =>
     request<{ runId: string }>(`/api/runs/${encodeURIComponent(runId)}/fork`, {

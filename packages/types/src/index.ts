@@ -14,6 +14,7 @@ export * from './llm';
 export * from './providers';
 export * from './runtime';
 export * from './run-control';
+export * from './permissions';
 export * from './answers';
 export * from './middleware';
 export * from './memory';

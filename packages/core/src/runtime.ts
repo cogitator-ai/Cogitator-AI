@@ -1,3 +1,4 @@
+import { resolve as resolvePath } from 'node:path';
 import { nanoid } from 'nanoid';
 import type {
   BuiltContext,
@@ -55,6 +56,14 @@ import type {
   RunHandle,
   RunInterrupt,
   StartOptions,
+  PermissionClassifier,
+  PermissionDecision,
+  PermissionDecisionEvent,
+  PermissionsConfig,
+  SessionBudgetConfig,
+  SessionSpend,
+  BudgetLimits,
+  BudgetUsage,
 } from '@cogitator-ai/types';
 import { memoryAgentId, type Agent } from './agent';
 import { ToolRegistry } from './registry';
@@ -274,6 +283,79 @@ import {
 } from './cogitator/response-format';
 import { CostEstimator } from './cost-routing/cost-estimator';
 import { readEnv } from './utils/env';
+import {
+  EXIT_PLAN_MODE,
+  PermissionModeControl,
+  PermissionService,
+  RunPermissions,
+  type PermissionCall,
+} from './cogitator/run-permissions';
+import { exitPlanModeTool } from './cogitator/plan-mode';
+import {
+  DEFAULT_CLASSIFIER_TRANSCRIPT,
+  isPermissionClassifier,
+  modelClassifier,
+} from './permissions/classifier';
+import {
+  addToSession,
+  budgetInterrupt,
+  readBudgetResponse,
+  readSessionSpend,
+  RunBudget,
+  SESSION_BUDGET_KEY,
+  usageOf,
+} from './cogitator/run-budget';
+
+/** What a call of a turn gets when the run stops at a budget before it runs */
+const STOPPED_AT_BUDGET = 'Not run: the run stopped at its budget';
+
+/** The runtime's budgets with the run's over them, field by field */
+function mergeBudgets(
+  base: SessionBudgetConfig | undefined,
+  own: SessionBudgetConfig | undefined
+): SessionBudgetConfig {
+  const session = { ...base?.session, ...own?.session };
+  const agentLimits = { ...base?.agent, ...own?.agent };
+  const warnAt = own?.warnAt ?? base?.warnAt;
+  const onWarning = own?.onWarning ?? base?.onWarning;
+  return {
+    ...(Object.keys(session).length > 0 && { session }),
+    ...(Object.keys(agentLimits).length > 0 && { agent: agentLimits }),
+    ...(warnAt !== undefined && { warnAt }),
+    ...(onWarning && { onWarning }),
+  };
+}
+
+/** How many newest messages the `auto` classifier reads */
+function classifierTranscriptLength(config: PermissionsConfig | undefined): number {
+  const classifier = config?.classifier;
+  if (!classifier || isPermissionClassifier(classifier)) return DEFAULT_CLASSIFIER_TRANSCRIPT;
+  return classifier.transcriptMessages ?? DEFAULT_CLASSIFIER_TRANSCRIPT;
+}
+
+const TRANSCRIPT_MESSAGE_CHARS = 1000;
+
+/** The newest `count` messages but the system prompt, as `role: text` lines for the classifier */
+function transcriptOf(messages: readonly Message[], count: number): string[] {
+  return messages
+    .filter((message) => message.role !== 'system')
+    .slice(-count)
+    .map((message) => {
+      const text = getTextContent(message.content);
+      const cut =
+        text.length > TRANSCRIPT_MESSAGE_CHARS
+          ? `${text.slice(0, TRANSCRIPT_MESSAGE_CHARS)}...`
+          : text;
+      return `${message.role}: ${cut}`;
+    });
+}
+
+/** A decision as a checkpoint keeps it: its rule saved already, so a resume does not save it again */
+function withoutRemember(decision: ToolApprovalDecision): ToolApprovalDecision {
+  if (!decision.approved || decision.remember === undefined) return decision;
+  const { remember: _saved, ...rest } = decision;
+  return rest;
+}
 
 /** What a call of a step paused on an earlier call's question gets when the user moves on */
 const NOT_STARTED_MOVED_ON =
@@ -417,6 +499,11 @@ export class Cogitator implements ToolInvoker {
   private readonly threadRuns = new ThreadRuns();
   /** The Zod schemas of the questions tools of this process's runs wait on */
   private readonly interruptSchemas = new InterruptSchemas();
+  /** Permission rules, settings files and session rules of this runtime's runs */
+  private permissionService?: PermissionService;
+  private classifier?: PermissionClassifier;
+  /** What each session spent, for threads without memory to keep it in */
+  private readonly sessionSpends = new Map<string, SessionSpend>();
   /** Global tool registry shared across all runs */
   public readonly tools: ToolRegistry = new ToolRegistry();
 
@@ -552,9 +639,12 @@ export class Cogitator implements ToolInvoker {
     const signal = runOptions.signal
       ? AbortSignal.any([runOptions.signal, stop.signal])
       : stop.signal;
-    const result = this.launch(agent, { ...runOptions, signal }, undefined, queue).finally(() => {
-      queue.close();
-    });
+    const modes = new PermissionModeControl();
+    const result = this.launch(agent, { ...runOptions, signal }, undefined, queue, modes).finally(
+      () => {
+        queue.close();
+      }
+    );
     result.catch(() => undefined);
     return {
       result,
@@ -572,6 +662,10 @@ export class Cogitator implements ToolInvoker {
         if (!stop.signal.aborted) stop.abort(toAbortError(reason, 'Run aborted'));
         return left;
       },
+      get permissionMode() {
+        return modes.mode;
+      },
+      setPermissionMode: (mode) => modes.set(mode),
     };
   }
 
@@ -660,11 +754,55 @@ export class Cogitator implements ToolInvoker {
     });
     if (signal?.aborted) return aborted();
 
-    let approvedByUser = false;
-    if (
-      needsApproval(tool, toolCall.arguments) ||
-      constitutionalAI?.toolNeedsApproval(tool, toolCall.arguments)
-    ) {
+    const workspace = options.workspace ?? agent?.config.workspace;
+    const permissionService = this.permissionsOf();
+    const permissions = await RunPermissions.create({
+      service: permissionService,
+      threadId: options.threadId ?? `invoke_${toolCall.id}`,
+      scopes: [
+        { options: this.config.permissions, origin: 'runtime' },
+        { options: options.permissions, origin: 'call' },
+      ],
+      root: resolvePath(
+        permissionService.settingsOptions?.root ?? workspace?.root ?? process.cwd()
+      ),
+      record: async (event) => {
+        notify('onPermissionDecision', () => options.onPermissionDecision?.(event));
+      },
+    });
+    const baseTool: Tool = tool;
+    const permissionCall: PermissionCall = {
+      toolCallId: toolCall.id,
+      needsApproval:
+        needsApproval(baseTool, toolCall.arguments) ||
+        constitutionalAI?.toolNeedsApproval(baseTool, toolCall.arguments) === true,
+      ...(workspace && { workspace }),
+    };
+    const verdict = await permissions.decide(baseTool, toolCall.arguments, permissionCall);
+    const withPermission = (result: ToolInvocationResult): ToolInvocationResult =>
+      permissions.active ? { ...result, permission: verdict } : result;
+    const event = (decision: PermissionDecision): PermissionDecisionEvent => ({
+      ...decision,
+      toolCallId: toolCall.id,
+      toolName: tool.name,
+    });
+    if (signal?.aborted) return aborted();
+    if (verdict.decision === 'deny') {
+      await permissions.record(event(verdict));
+      return withPermission({
+        callId: toolCall.id,
+        name: tool.name,
+        result: null,
+        error: `Permission denied: ${verdict.reason}`,
+        errorCode: 'PERMISSION_DENIED',
+      });
+    }
+
+    let approvedByUser = verdict.decision === 'allow' && verdict.decidedBy !== 'default';
+    let callToRun = toolCall;
+    if (verdict.decision === 'allow') await permissions.record(event(verdict));
+    if (verdict.decision === 'ask') {
+      const suggestedRule = permissions.suggest(baseTool, toolCall.arguments, workspace);
       const request: ToolApprovalRequest = {
         toolCallId: toolCall.id,
         toolName: tool.name,
@@ -674,6 +812,12 @@ export class Cogitator implements ToolInvoker {
         ...((options.agentId !== undefined || agent) && { agentId }),
         ...(options.threadId !== undefined && { threadId: options.threadId }),
         ...(options.userId !== undefined && { userId: options.userId }),
+        ...(permissions.active && {
+          reason: verdict.reason,
+          ...(verdict.rule && { rule: verdict.rule }),
+          ...(suggestedRule !== undefined && { suggestedRule }),
+          mode: verdict.mode,
+        }),
       };
       const deciding = this.decideApproval(request, options.onApproval);
       let decision: Awaited<typeof deciding>;
@@ -685,31 +829,73 @@ export class Cogitator implements ToolInvoker {
       }
       if (signal?.aborted) return aborted();
       if (decision === 'pause') {
-        return {
+        return withPermission({
           callId: toolCall.id,
           name: tool.name,
           result: null,
           error: `Tool "${tool.name}" needs approval, and nobody approved this call`,
           pendingApproval: request,
-        };
+        });
       }
       if (!decision.approved) {
-        return {
+        await permissions.record({
+          ...event(verdict),
+          decision: 'deny',
+          decidedBy: 'user',
+          reason: `Declined by the user${decision.reason ? `: ${decision.reason}` : ''}`,
+        });
+        return withPermission({
           callId: toolCall.id,
           name: tool.name,
           result: null,
           error: `The user declined this tool call${decision.reason ? `: ${decision.reason}` : ''}`,
-        };
+        });
       }
+      let answered: PermissionDecisionEvent = {
+        ...event(verdict),
+        decision: 'allow',
+        decidedBy: 'user',
+        reason: 'Approved by the user',
+      };
+      if (decision.updatedArguments) {
+        const checked = await this.checkUpdatedArguments(
+          baseTool,
+          decision.updatedArguments,
+          permissions,
+          { ...permissionCall, needsApproval: false }
+        );
+        if ('error' in checked) {
+          await permissions.record({ ...answered, decision: 'deny', reason: checked.error });
+          return withPermission({
+            callId: toolCall.id,
+            name: tool.name,
+            result: null,
+            error: `Permission denied: ${checked.error}`,
+            errorCode: 'PERMISSION_DENIED',
+          });
+        }
+        callToRun = { ...toolCall, arguments: checked.args };
+        answered = { ...answered, updatedArguments: checked.args };
+      }
+      if (decision.remember) {
+        const remembered = await permissions.remember(
+          baseTool,
+          callToRun.arguments,
+          decision.remember,
+          workspace
+        );
+        if (remembered) answered = { ...answered, remembered };
+      }
+      await permissions.record(answered);
       approvedByUser = true;
     }
 
     const registry = new ToolRegistry();
     registry.register(tool);
     const runId = options.runId ?? `run_${nanoid(12)}`;
-    return runToolCall({
+    const result = await runToolCall({
       registry,
-      toolCall,
+      toolCall: callToRun,
       runId,
       agentId,
       sandboxManager: this.state.sandboxManager,
@@ -727,6 +913,7 @@ export class Cogitator implements ToolInvoker {
         ...((options.workspace ?? agent?.config.workspace) && {
           workspace: options.workspace ?? agent?.config.workspace,
         }),
+        ...(permissions.view() && { permissions: permissions.view() }),
       },
       approved: approvedByUser,
       allowNativeFallback: this.config.sandbox?.allowNativeFallback !== false,
@@ -758,6 +945,7 @@ export class Cogitator implements ToolInvoker {
         }),
       },
     });
+    return withPermission(result);
   }
 
   /**
@@ -1134,12 +1322,15 @@ export class Cogitator implements ToolInvoker {
     agent: Agent,
     options: RunOptions,
     resumeFrom?: ResumeFrom,
-    queue?: RunQueue
+    queue?: RunQueue,
+    modes?: PermissionModeControl
   ): Promise<RunResult> {
     const threadId = options.threadId;
     const aside =
       options.branch?.activate === false || resumeFrom?.checkpoint?.branch?.activate === false;
-    if (threadId === undefined || aside) return this.execute(agent, options, resumeFrom, { queue });
+    if (threadId === undefined || aside) {
+      return this.execute(agent, options, resumeFrom, { queue, modes });
+    }
     const strategy = options.multitaskStrategy ?? this.config.multitaskStrategy;
     if (strategy !== undefined) await this.checkThreadUse(threadId, options, resumeFrom);
     const admission = await this.threadRuns.admit(threadId, {
@@ -1149,7 +1340,7 @@ export class Cogitator implements ToolInvoker {
       userId: resumeFrom?.checkpoint?.userId ?? options.userId,
       shared: options.threadAccess === 'shared',
     });
-    if (!admission) return this.execute(agent, options, resumeFrom, { queue });
+    if (!admission) return this.execute(agent, options, resumeFrom, { queue, modes });
     try {
       const { seat, rollbackTo } = admission;
       const signal = options.signal ? AbortSignal.any([options.signal, seat.signal]) : seat.signal;
@@ -1160,6 +1351,7 @@ export class Cogitator implements ToolInvoker {
       return await this.execute(agent, { ...options, ...branch, signal }, resumeFrom, {
         queue,
         seat,
+        modes,
       });
     } finally {
       admission.release();
@@ -1277,6 +1469,7 @@ export class Cogitator implements ToolInvoker {
 
     const rootSpanId = newSpanId();
     let releaseRunSlot: (() => void) | undefined;
+    let budget: RunBudget | undefined;
     options = this.withObservers(options, agent, () => runId);
 
     try {
@@ -1422,6 +1615,39 @@ export class Cogitator implements ToolInvoker {
       });
       middlewareState.set(PINNED_TOOL_OUTPUTS, harness.pinnedOutputs);
       await harness.prepare(active);
+      const permissionService = this.permissionsOf();
+      const permissions = await RunPermissions.create({
+        service: permissionService,
+        threadId,
+        scopes: [
+          { options: this.config.permissions, origin: 'runtime' },
+          { options: agent.config.permissions, origin: `agent:${agent.name}` },
+          { options: options.permissions, origin: 'run' },
+        ],
+        ...(checkpoint?.permissions && { checkpoint: checkpoint.permissions }),
+        root: resolvePath(
+          permissionService.settingsOptions?.root ?? workspaceOf(active)?.root ?? process.cwd()
+        ),
+        record: async (event) => {
+          notify('onPermissionDecision', () => options.onPermissionDecision?.(event));
+          await runMemory.event(
+            active.id,
+            { type: 'approval', event: { ...event } },
+            `${event.decision} ${event.toolName}: ${event.reason}`
+          );
+        },
+      });
+      control.modes?.attach(permissions);
+      permissions.onModeChange((mode) => {
+        runMemory
+          .event(
+            active.id,
+            { type: 'custom', event: { kind: 'permission_mode', mode } },
+            `The run switched to ${mode} mode`
+          )
+          .catch(() => undefined);
+      });
+      const planTool = permissions.active ? exitPlanModeTool(permissions) : undefined;
       const buildRegistry = (owner: Agent) => {
         const ownerRegistry = new ToolRegistry();
         const handoff = handoffTools(owner);
@@ -1431,6 +1657,7 @@ export class Cogitator implements ToolInvoker {
         ownerRegistry.registerMany(owner.tools);
         ownerRegistry.registerMany(handoff.tools);
         harness.addTools(owner, ownerRegistry);
+        if (planTool && !ownerRegistry.has(planTool.name)) ownerRegistry.register(planTool);
         return { registry: ownerRegistry, targets: handoff.targets };
       };
       let { registry, targets: handoffTargets } = buildRegistry(active);
@@ -1562,6 +1789,38 @@ export class Cogitator implements ToolInvoker {
         ...(cachedInputTokens > 0 && { cachedInputTokens }),
         ...(cacheWriteTokens > 0 && { cacheWriteTokens }),
       });
+      const budgetConfig = mergeBudgets(this.config.budget, options.budget);
+      const interruptLimits = this.config.limits?.onExceeded === 'interrupt';
+      const maxTokensPerRun = this.config.limits?.maxTokensPerRun;
+      const agentBudgets = new Map<string, BudgetLimits | undefined>([
+        [agent.id, agent.config.budget],
+        [active.id, active.config.budget],
+      ]);
+      const costRouter = this.state.costRouter;
+      const runBudget = new RunBudget(
+        {
+          runId,
+          threadId,
+          config: budgetConfig,
+          agentLimits: (id) => agentBudgets.get(id),
+          ...(interruptLimits && maxTokensPerRun !== undefined && { maxTokensPerRun }),
+          ...(interruptLimits &&
+            costRouter && { costLimits: (cost: number) => costRouter.spentAgainstLimits(cost) }),
+          ...(options.onBudgetWarning && { onWarning: options.onBudgetWarning }),
+        },
+        budgetConfig.session || budgetConfig.agent
+          ? await this.loadSessionSpend(threadId, options)
+          : readSessionSpend(undefined),
+        checkpoint?.budget
+      );
+      budget = runBudget;
+      let budgetStop: BudgetUsage | undefined;
+      for (const entry of answeredNow) {
+        if (entry.kind !== 'budget') continue;
+        const usage = usageOf(entry);
+        const response = readBudgetResponse(entry.response);
+        if (usage && response && runBudget.answer(usage, response) === 'stop') budgetStop = usage;
+      }
       const reasoningParts: string[] = [...(checkpoint?.reasoning ?? [])];
       let reasoning = options.reasoning ?? active.config.reasoning;
       const promptCache = this.config.llm?.promptCache ?? {};
@@ -1630,6 +1889,7 @@ export class Cogitator implements ToolInvoker {
           )
         );
         active = target;
+        agentBudgets.set(target.id, target.config.budget);
         if (this.state.memoryAdapter && options.useMemory !== false) {
           memoryNotes.push(
             noteThreadRun(
@@ -1697,6 +1957,37 @@ export class Cogitator implements ToolInvoker {
         return wakes;
       };
 
+      const permissionCall = (
+        tool: Tool,
+        toolCall: ToolCall,
+        needsApproval: boolean
+      ): PermissionCall => ({
+        toolCallId: toolCall.id,
+        needsApproval,
+        ...(workspaceOf(active) && { workspace: workspaceOf(active) }),
+        skillRules: harness.activeSkillRules(
+          active,
+          messages,
+          permissionService.settingsOptions?.trusted !== false
+        ),
+        classifierInput: () => ({
+          toolName: tool.name,
+          description: tool.description,
+          arguments: toolCall.arguments,
+          request: input,
+          transcript: transcriptOf(messages, classifierTranscriptLength(this.config.permissions)),
+          signal: abortController.signal,
+        }),
+      });
+      const decisionEvent = (
+        toolCall: ToolCall,
+        decision: PermissionDecision
+      ): PermissionDecisionEvent => ({
+        ...decision,
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+      });
+
       const handleToolTurn = async (
         toolCalls: ToolCall[],
         resumed?: {
@@ -1704,6 +1995,9 @@ export class Cogitator implements ToolInvoker {
           fallback?: ToolApprovalDecision;
           interrupts?: readonly RunInterrupt[];
           completed?: readonly string[];
+          denied?: Record<string, string>;
+          /** Decisions a person gave with the resume, not before the pause */
+          fresh?: readonly string[];
         }
       ): Promise<PausedTurn | undefined> => {
         const done = new Set(resumed?.completed ?? []);
@@ -1740,7 +2034,27 @@ export class Cogitator implements ToolInvoker {
           }
         }
 
+        const toolBudget = runBudget.beforeTools(active.id, open.length);
+        if (toolBudget) {
+          return {
+            toolCalls,
+            decisions: { ...resumed?.decisions },
+            ...(resumed?.denied && { denied: { ...resumed.denied } }),
+            pending: [],
+            interrupts: [
+              ...(resumed?.interrupts ?? []).filter(
+                (entry) => entry.kind !== 'budget' && entry.kind !== 'approval' && isAnswered(entry)
+              ),
+              budgetInterrupt(toolBudget),
+            ],
+            completed: [...done],
+          };
+        }
+
         const decisions = new Map(Object.entries(resumed?.decisions ?? {}));
+        const denied = new Map(Object.entries(resumed?.denied ?? {}));
+        const fresh = new Set(resumed?.fresh ?? []);
+        const runArguments = new Map<string, ToolCall>();
         const pending: ToolApprovalRequest[] = [];
         for (const toolCall of open) {
           const tool = registry.get(toolCall.name);
@@ -1748,35 +2062,109 @@ export class Cogitator implements ToolInvoker {
             !tool ||
             toolCall.argumentsError !== undefined ||
             decisions.has(toolCall.id) ||
-            !(
-              needsApproval(tool, toolCall.arguments) ||
-              this.state.constitutionalAI?.toolNeedsApproval(tool, toolCall.arguments)
-            )
+            denied.has(toolCall.id)
           ) {
             continue;
           }
+          const needs =
+            needsApproval(tool, toolCall.arguments) ||
+            this.state.constitutionalAI?.toolNeedsApproval(tool, toolCall.arguments) === true;
+          const verdict = await permissions.decide(
+            tool,
+            toolCall.arguments,
+            permissionCall(tool, toolCall, needs)
+          );
+          if (verdict.decision !== 'ask') {
+            if (verdict.decision === 'deny') denied.set(toolCall.id, verdict.reason);
+            else if (verdict.decidedBy !== 'default')
+              decisions.set(toolCall.id, { approved: true });
+            await permissions.record(decisionEvent(toolCall, verdict));
+            continue;
+          }
+          const suggestedRule = permissions.suggest(tool, toolCall.arguments, workspaceOf(active));
           const request: ToolApprovalRequest = {
             toolCallId: toolCall.id,
             toolName: toolCall.name,
             arguments: toolCall.arguments,
             description: tool.description,
             ...(tool.sideEffects && { sideEffects: [...tool.sideEffects] }),
+            ...(permissions.active && {
+              reason: verdict.reason,
+              ...(verdict.rule && { rule: verdict.rule }),
+              ...(suggestedRule !== undefined && { suggestedRule }),
+              mode: verdict.mode,
+            }),
           };
           const decision =
             resumed?.fallback ?? (await this.decideApproval(request, options.onApproval));
-          if (decision === 'pause') pending.push(request);
-          else decisions.set(toolCall.id, decision);
+          if (decision === 'pause') {
+            pending.push(request);
+          } else {
+            decisions.set(toolCall.id, decision);
+            fresh.add(toolCall.id);
+          }
         }
+
+        for (const toolCall of open) {
+          const decision = decisions.get(toolCall.id);
+          const tool = registry.get(toolCall.name);
+          if (!decision || !tool) continue;
+          const answered = fresh.has(toolCall.id);
+          let event: PermissionDecisionEvent | undefined = answered
+            ? {
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                decision: decision.approved ? 'allow' : 'deny',
+                decidedBy: 'user',
+                mode: permissions.mode,
+                reason: decision.approved
+                  ? 'Approved by the user'
+                  : `Declined by the user${decision.reason ? `: ${decision.reason}` : ''}`,
+              }
+            : undefined;
+          if (decision.approved && decision.updatedArguments) {
+            const checked = await this.checkUpdatedArguments(
+              tool,
+              decision.updatedArguments,
+              permissions,
+              permissionCall(tool, { ...toolCall, arguments: decision.updatedArguments }, false)
+            );
+            if ('error' in checked) {
+              decisions.delete(toolCall.id);
+              denied.set(toolCall.id, checked.error);
+              if (event) event = { ...event, decision: 'deny', reason: checked.error };
+            } else {
+              runArguments.set(toolCall.id, { ...toolCall, arguments: checked.args });
+              if (event) event = { ...event, updatedArguments: checked.args };
+            }
+          }
+          if (answered && decision.approved && decision.remember && !denied.has(toolCall.id)) {
+            const remembered = await permissions.remember(
+              tool,
+              (runArguments.get(toolCall.id) ?? toolCall).arguments,
+              decision.remember,
+              workspaceOf(active)
+            );
+            if (remembered && event) event = { ...event, remembered };
+          }
+          if (event) await permissions.record(event);
+        }
+
         if (pending.length > 0) {
           return {
             toolCalls,
-            decisions: Object.fromEntries(decisions),
+            decisions: Object.fromEntries(
+              [...decisions].map(([id, decision]) => [id, withoutRemember(decision)])
+            ),
+            ...(denied.size > 0 && { denied: Object.fromEntries(denied) }),
             pending,
             interrupts: pending.map(approvalInterrupt),
             completed: [...done],
           };
         }
-        const askedBefore = (resumed?.interrupts ?? []).filter((entry) => entry.kind === 'input');
+        const askedBefore = (resumed?.interrupts ?? []).filter(
+          (entry) => entry.kind === 'input' || entry.kind === 'plan'
+        );
         const stillAsking = new Map(
           askedBefore
             .filter((entry) => !isAnswered(entry) && entry.toolCallId !== undefined)
@@ -1789,6 +2177,22 @@ export class Cogitator implements ToolInvoker {
           const toolSpanStart = Date.now();
           const toolSpanId = newSpanId();
           const decision = decisions.get(toolCall.id);
+          const refusal = denied.get(toolCall.id);
+          if (refusal !== undefined) {
+            return {
+              toolCall,
+              result: {
+                callId: toolCall.id,
+                name: toolCall.name,
+                result: null,
+                error: `Permission denied: ${refusal}`,
+                errorCode: 'PERMISSION_DENIED',
+              },
+              toolSpanId,
+              toolSpanStart,
+              toolSpanEnd: Date.now(),
+            };
+          }
           if (decision?.approved === false) {
             const declined: ToolResult = {
               callId: toolCall.id,
@@ -1835,7 +2239,7 @@ export class Cogitator implements ToolInvoker {
                 insideToolOf(runId, () =>
                   runToolCall({
                     registry,
-                    toolCall,
+                    toolCall: runArguments.get(toolCall.id) ?? toolCall,
                     runId,
                     agentId: active.id,
                     sandboxManager: this.state.sandboxManager,
@@ -1853,6 +2257,7 @@ export class Cogitator implements ToolInvoker {
                       interrupt: toolInterrupter(toolCall, askedBefore, (id, schema) =>
                         this.interruptSchemas.remember(runId, id, schema)
                       ),
+                      ...(permissions.view() && { permissions: permissions.view() }),
                     },
                     approved: decision?.approved === true,
                     allowNativeFallback: this.config.sandbox?.allowNativeFallback !== false,
@@ -1883,6 +2288,7 @@ export class Cogitator implements ToolInvoker {
               toolSpanEnd: Date.now(),
             };
           }
+          runBudget.noteToolCalls(active.id, 1);
           const toolSpanEnd = Date.now();
           return { toolCall, result, toolSpanId, toolSpanStart, toolSpanEnd };
         };
@@ -1926,6 +2332,7 @@ export class Cogitator implements ToolInvoker {
             !tool ||
             toolCall.argumentsError !== undefined ||
             decisions.get(toolCall.id)?.approved === false ||
+            denied.has(toolCall.id) ||
             stillAsking.has(toolCall.id)
           ) {
             return false;
@@ -2052,9 +2459,15 @@ export class Cogitator implements ToolInvoker {
           const left = new Set(
             open.filter((call) => !finished.has(call.id)).map((call) => call.id)
           );
+          const deniedLeft = [...denied].filter(([id]) => left.has(id));
           return {
             toolCalls,
-            decisions: Object.fromEntries([...decisions].filter(([id]) => left.has(id))),
+            decisions: Object.fromEntries(
+              [...decisions]
+                .filter(([id]) => left.has(id))
+                .map(([id, decision]) => [id, withoutRemember(decision)])
+            ),
+            ...(deniedLeft.length > 0 && { denied: Object.fromEntries(deniedLeft) }),
             pending: [],
             interrupts: [
               ...new Map(
@@ -2076,6 +2489,26 @@ export class Cogitator implements ToolInvoker {
         const target = handoff && handoffTargets.get(handoff.name);
         if (handoff && target) await switchTo(target, handoff.arguments.reason);
         return undefined;
+      };
+
+      const closeTurnAtBudget = async (
+        toolCalls: readonly ToolCall[],
+        completed: readonly string[]
+      ): Promise<void> => {
+        const ran = new Set(completed);
+        for (const toolCall of toolCalls) {
+          if (ran.has(toolCall.id)) continue;
+          const result: ToolResult = {
+            callId: toolCall.id,
+            name: toolCall.name,
+            result: null,
+            error: STOPPED_AT_BUDGET,
+          };
+          options.onToolResult?.(result);
+          const toolMessage = createToolMessage(toolCall, result);
+          messages.push(toolMessage);
+          await runMemory.save(active.id, toolMessage, undefined, [result]);
+        }
       };
 
       const reachedLimit = (): boolean => {
@@ -2106,17 +2539,23 @@ export class Cogitator implements ToolInvoker {
             `Resumed with the answers to ${answeredNow.map((entry) => entry.reason).join(', ')}`
           );
         }
-        pausedTurn = await handleToolTurn(checkpoint.turn.toolCalls, {
-          decisions: {
-            ...checkpoint.turn.decisions,
-            ...answeredDecisions,
-            ...resumeFrom.decisions,
-          },
-          fallback: resumeFrom.defaultDecision,
-          interrupts: resumedInterrupts,
-          ...(checkpoint.turn.completed && { completed: checkpoint.turn.completed }),
-        });
-        if (!pausedTurn) reachedLimit();
+        if (budgetStop) {
+          await closeTurnAtBudget(checkpoint.turn.toolCalls, checkpoint.turn.completed ?? []);
+        } else {
+          pausedTurn = await handleToolTurn(checkpoint.turn.toolCalls, {
+            decisions: {
+              ...checkpoint.turn.decisions,
+              ...answeredDecisions,
+              ...resumeFrom.decisions,
+            },
+            fallback: resumeFrom.defaultDecision,
+            interrupts: resumedInterrupts,
+            ...(checkpoint.turn.completed && { completed: checkpoint.turn.completed }),
+            ...(checkpoint.turn.denied && { denied: checkpoint.turn.denied }),
+            fresh: [...Object.keys(answeredDecisions), ...Object.keys(resumeFrom.decisions)],
+          });
+          if (!pausedTurn) reachedLimit();
+        }
       }
 
       let lastFinishReason: ChatResponse['finishReason'] | undefined;
@@ -2126,13 +2565,30 @@ export class Cogitator implements ToolInvoker {
       let emptyAnswerRetries = 0;
 
       let deliveredAtStop = false;
-      while (!pausedTurn && (iterations < iterationCap || limit.closingTurn)) {
+      while (!pausedTurn && !budgetStop && (iterations < iterationCap || limit.closingTurn)) {
         throwIfAborted(abortController.signal);
         const steering = queue?.takeForTurn(deliveredAtStop) ?? [];
         deliveredAtStop = false;
         if (steering.length > 0) await deliver(steering);
-        this.assertTokenBudget(totalInputTokens + totalOutputTokens);
-        this.assertCostBudget(costMeter.total(costModel));
+        if (!interruptLimits) {
+          this.assertTokenBudget(totalInputTokens + totalOutputTokens);
+          this.assertCostBudget(costMeter.total(costModel));
+        }
+        const reachedBudget = runBudget.beforeModel(
+          active.id,
+          costMeter.total(costModel),
+          totalInputTokens + totalOutputTokens
+        );
+        if (reachedBudget) {
+          pausedTurn = {
+            toolCalls: [],
+            decisions: {},
+            pending: [],
+            interrupts: [budgetInterrupt(reachedBudget)],
+            completed: [],
+          };
+          break;
+        }
 
         iterations++;
         const changed = await waitForAbortable(
@@ -2238,6 +2694,16 @@ export class Cogitator implements ToolInvoker {
           cachedInputTokens += answer.usage.cachedInputTokens ?? 0;
           cacheWriteTokens += answer.usage.cacheWriteTokens ?? 0;
           reasoningTokens += answer.usage.reasoningTokens ?? 0;
+          runBudget.noteModel(
+            active.id,
+            callCost,
+            answer.usage.inputTokens + answer.usage.outputTokens
+          );
+          runBudget.warn(
+            active.id,
+            costMeter.total(costModel),
+            totalInputTokens + totalOutputTokens
+          );
           if (answer.usage.cost === undefined) this.pricer.noteUnpriced(priced);
           this.state.costRouter?.recordCost({
             runId,
@@ -2252,11 +2718,18 @@ export class Cogitator implements ToolInvoker {
         const turnToolChoice = limit.closingTurn
           ? 'none'
           : toolChoiceForTurn(requestedToolChoice, allToolCalls.length > 0, registry);
-        const turnTools = harness.schemas(
-          registry,
-          messages,
-          typeof turnToolChoice === 'object' ? turnToolChoice.function.name : undefined
-        );
+        const turnTools = harness
+          .schemas(
+            registry,
+            messages,
+            typeof turnToolChoice === 'object' ? turnToolChoice.function.name : undefined
+          )
+          .filter(
+            (schema) =>
+              schema.name !== EXIT_PLAN_MODE ||
+              registry.get(EXIT_PLAN_MODE) !== planTool ||
+              permissions.mode === 'plan'
+          );
 
         const streamsToolInput = Boolean(options.stream) && listensToToolInput(options, registry);
         const streaming = streamsText || streamsToolInput;
@@ -2528,6 +3001,7 @@ export class Cogitator implements ToolInvoker {
           continue;
         }
         pausedTurn = await handleToolTurn(response.toolCalls);
+        runBudget.warn(active.id, costMeter.total(costModel), totalInputTokens + totalOutputTokens);
         if (pausedTurn) break;
         if (reachedLimit()) break;
       }
@@ -2535,6 +3009,8 @@ export class Cogitator implements ToolInvoker {
       queue?.close();
 
       if (pausedTurn) {
+        const pausedSpend = await this.keepSessionSpend(threadId, options, runBudget);
+        const permissionState = permissions.state();
         const pausedCheckpoint: RunCheckpoint = {
           version: 1,
           runId,
@@ -2553,6 +3029,8 @@ export class Cogitator implements ToolInvoker {
             toolCalls: pausedTurn.toolCalls,
             decisions: pausedTurn.decisions,
             ...(pausedTurn.completed.length > 0 && { completed: pausedTurn.completed }),
+            ...(pausedTurn.denied &&
+              Object.keys(pausedTurn.denied).length > 0 && { denied: pausedTurn.denied }),
           },
           interrupts: pausedTurn.interrupts,
           iterations,
@@ -2578,6 +3056,8 @@ export class Cogitator implements ToolInvoker {
               ...(Object.keys(ownTimeouts).length > 0 && { timeouts: { ...ownTimeouts } }),
             },
           }),
+          ...(permissionState && { permissions: permissionState }),
+          ...(runBudget.configured && { budget: runBudget.state() }),
         };
         const waitingOn = pausedTurn.interrupts.filter((entry) => !isAnswered(entry));
         if (pausedTurn.pending.length > 0) {
@@ -2658,6 +3138,7 @@ export class Cogitator implements ToolInvoker {
           ...(runMemory.summary() && { memory: runMemory.summary() }),
           ...(handoffs.length > 0 && { handoffs, finalAgent: active.name }),
           ...(harness.todos && { todos: harness.todos }),
+          ...(pausedSpend && { sessionSpend: pausedSpend }),
           checkpoint: pausedCheckpoint,
           usage: {
             inputTokens: totalInputTokens,
@@ -2753,6 +3234,7 @@ export class Cogitator implements ToolInvoker {
 
       const runCost = costMeter.total(costModel);
       const blocked = blockReasonOf(lastFinishReason);
+      const sessionSpend = await this.keepSessionSpend(threadId, options, runBudget);
 
       const result: RunResult = {
         output: finalOutput,
@@ -2792,6 +3274,8 @@ export class Cogitator implements ToolInvoker {
         ...(runMemory.summary() && { memory: runMemory.summary() }),
         ...(harness.todos && { todos: harness.todos }),
         ...(queue && queue.pending.length > 0 && { undelivered: queue.pending }),
+        ...(budgetStop && { budgetStop }),
+        ...(sessionSpend && { sessionSpend }),
       };
 
       if (prompt) await this.recordPrompt(prompt, result, Date.now() - startTime);
@@ -2827,6 +3311,7 @@ export class Cogitator implements ToolInvoker {
       return finished;
     } catch (error) {
       queue?.close();
+      if (budget) await this.keepSessionSpend(threadId, options, budget).catch(() => undefined);
       if (prompt) await this.recordPrompt(prompt, undefined, Date.now() - startTime);
       if (abortController.signal.aborted) {
         const reason = error instanceof Error ? error.message : String(error);
@@ -3162,6 +3647,95 @@ export class Cogitator implements ToolInvoker {
       options.reason
     );
     return true;
+  }
+
+  /** The permissions of this runtime's runs, made on first use */
+  private permissionsOf(): PermissionService {
+    this.permissionService ??= new PermissionService(this.config.permissions, (config) => {
+      if (!config) return undefined;
+      if (isPermissionClassifier(config)) return config;
+      this.classifier ??= modelClassifier(async (messages, signal) => {
+        const { backend, model } = this.route(config.model);
+        const response = await backend.chat({ model, messages, temperature: 0, signal });
+        return response.content;
+      }, config);
+      return this.classifier;
+    });
+    return this.permissionService;
+  }
+
+  /**
+   * The arguments an approval changed a call to, once they pass the tool's schema and the
+   * permission rules again (asking counts as allowed: a person approved them)
+   */
+  private async checkUpdatedArguments(
+    tool: Tool,
+    updated: Record<string, unknown>,
+    permissions: RunPermissions,
+    call: PermissionCall
+  ): Promise<{ args: Record<string, unknown> } | { error: string }> {
+    if (typeof tool.parameters.safeParse === 'function') {
+      const parsed = tool.parameters.safeParse(updated);
+      if (!parsed.success) {
+        return {
+          error: `the arguments the approval changed the call to do not match the tool's schema: ${parsed.error.message}`,
+        };
+      }
+    }
+    const verdict = await permissions.decide(tool, updated, call);
+    if (verdict.decision === 'deny') {
+      return { error: `the arguments the approval changed the call to: ${verdict.reason}` };
+    }
+    return { args: updated };
+  }
+
+  /** What the session of thread `threadId` spent, from its metadata or this process */
+  private async loadSessionSpend(threadId: string, options: RunOptions): Promise<SessionSpend> {
+    const memory = this.state.memoryAdapter;
+    if (memory && options.useMemory !== false) {
+      try {
+        const thread = await memory.getThread(threadId);
+        const kept = thread.success ? thread.data?.metadata[SESSION_BUDGET_KEY] : undefined;
+        if (kept !== undefined) return readSessionSpend(kept);
+      } catch (error) {
+        getLogger().warn('Could not read what the session spent', {
+          threadId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return readSessionSpend(this.sessionSpends.get(threadId));
+  }
+
+  /**
+   * Adds what the run spent since it last did to what its session spent, in the thread's metadata
+   * (or this process, for a thread memory does not keep), and gives back the new total. Nothing
+   * for a run without session or agent budgets
+   */
+  private async keepSessionSpend(
+    threadId: string,
+    options: RunOptions,
+    budget: RunBudget
+  ): Promise<SessionSpend | undefined> {
+    if (!budget.keepsSession) return undefined;
+    const { spend, raised } = budget.pendingRecord();
+    const total = addToSession(await this.loadSessionSpend(threadId, options), spend, raised);
+    const memory = this.state.memoryAdapter;
+    let kept = false;
+    if (memory && options.useMemory !== false) {
+      try {
+        const updated = await memory.updateThread(threadId, { [SESSION_BUDGET_KEY]: total });
+        kept = updated.success;
+      } catch (error) {
+        getLogger().warn('Could not keep what the session spent', {
+          threadId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    if (!kept) this.sessionSpends.set(threadId, total);
+    budget.markRecorded(total);
+    return total;
   }
 
   /**
@@ -4370,6 +4944,8 @@ function isOllamaCloud(baseUrl: string): boolean {
 interface PausedTurn {
   toolCalls: ToolCall[];
   decisions: Record<string, ToolApprovalDecision>;
+  /** Calls the permissions refused, with why */
+  denied?: Record<string, string>;
   pending: ToolApprovalRequest[];
   /** What the turn waits on: its approvals, or the questions its tools asked and their answers */
   interrupts: RunInterrupt[];
@@ -4390,6 +4966,8 @@ interface ResumeFrom {
 interface RunControl {
   queue?: RunQueue;
   seat?: ThreadSeat;
+  /** The permission mode the run's handle sets */
+  modes?: PermissionModeControl;
 }
 
 /** A tool call of a turn, done (`result`) or waiting for an answer it asked for (`interrupt`) */

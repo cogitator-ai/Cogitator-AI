@@ -233,6 +233,30 @@ export class RunHarness {
     });
   }
 
+  /**
+   * The `allowed-tools` of the skills of `owner` whose instructions `messages` hold, the skills
+   * active in the conversation, by skill name. `workspaceTrusted: false` leaves out the skills found
+   * in the workspace, which an untrusted project supplies
+   */
+  activeSkillRules(
+    owner: Agent,
+    messages: readonly Message[],
+    workspaceTrusted = true
+  ): Array<{ name: string; rules: readonly string[] }> {
+    const catalog = this.catalogs.get(owner);
+    if (!catalog) return [];
+    const active = activeSkillsIn(messages);
+    if (active.size === 0) return [];
+    return catalog.skills
+      .filter(
+        (skill) =>
+          skill.allowedTools !== undefined &&
+          active.has(skillKey(skill)) &&
+          (workspaceTrusted || skill.source !== 'workspace')
+      )
+      .map((skill) => ({ name: skill.name, rules: skill.allowedTools ?? [] }));
+  }
+
   /** The run's todo list, once it has one */
   get todos(): TodoItem[] | undefined {
     return this.todoList;

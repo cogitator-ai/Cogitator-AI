@@ -13,6 +13,7 @@ import type { A2AMessage, A2ATask, Part } from '../types';
 import {
   readToolApprovalRequest,
   readToolApprovalResponse,
+  toolApprovalRequestPart,
   toolApprovalResponsePart,
 } from '../approvals';
 import { expectResponse } from './helpers';
@@ -124,6 +125,39 @@ describe('A2A tasks whose run pauses for tool approvals', () => {
     expect(answer).toEqual({ kind: 'text', text: expect.stringContaining('"refunded":"A-1"') });
   });
 
+  it('say why a call asks and save the rule an "always allow" answer remembers', async () => {
+    await cogitator.close();
+    cogitator = new Cogitator({
+      llm: { backends: { mock: refundingBackend() } },
+      permissions: { rememberIn: 'session' },
+    });
+    server = new A2AServer({ agents: { clerk }, cogitator });
+    const paused = await send(ask([{ kind: 'text', text: 'Refund A-1' }]));
+
+    const [approval] = readToolApprovalRequest(paused) ?? [];
+    expect(approval?.reason).toEqual(expect.any(String));
+    expect(approval?.suggestedRule).toEqual(expect.stringContaining('refund'));
+    expect(messageText(paused.status.message)).toBe(
+      `Waiting for approval of refund\nrefund: ${approval?.reason}`
+    );
+
+    const done = await send(
+      ask(
+        [
+          toolApprovalResponsePart({
+            decisions: {
+              c1: { approved: true, updatedArguments: { order: 'A-2' }, remember: true },
+            },
+          }),
+        ],
+        paused.id
+      ),
+      2
+    );
+    expect(done.status.state).toBe('completed');
+    expect(refundImpl).toHaveBeenCalledWith({ order: 'A-2' }, expect.anything());
+  });
+
   it('decline with the reason the client gives', async () => {
     const paused = await send(ask([{ kind: 'text', text: 'Refund A-1' }]));
 
@@ -201,6 +235,60 @@ describe('tool approval data parts', () => {
       )
     ).toBeUndefined();
     expect(readToolApprovalResponse(ask([{ kind: 'text', text: 'approve' }]))).toBeUndefined();
+  });
+
+  it('carry changed arguments and an "always allow" answer, and refuse one of the wrong shape', () => {
+    const decisions = {
+      c1: { approved: true as const, updatedArguments: { order: 'A-2' }, remember: true },
+      c2: { approved: true as const, remember: { rule: 'refund(*)', layer: 'session' as const } },
+    };
+    expect(readToolApprovalResponse(ask([toolApprovalResponsePart({ decisions })]))).toEqual({
+      decisions,
+    });
+    expect(
+      readToolApprovalResponse(
+        ask([
+          {
+            kind: 'data',
+            data: {
+              kind: 'tool-approval-response',
+              defaultDecision: { approved: true, remember: { layer: 'managed' } },
+            },
+          },
+        ])
+      )
+    ).toBeUndefined();
+  });
+
+  it('send the rule a call asks by without the file it came from', () => {
+    const part = toolApprovalRequestPart([
+      {
+        toolCallId: 'c1',
+        toolName: 'refund',
+        arguments: { order: 'A-1' },
+        description: 'Refund an order',
+        reason: 'The ask rule refund(*) asks',
+        rule: {
+          rule: 'refund(*)',
+          behavior: 'ask',
+          layer: 'project',
+          origin: '/srv/app/.claude/settings.json',
+        },
+        suggestedRule: 'refund(order:A-1)',
+        mode: 'default',
+      },
+    ]);
+    expect(JSON.stringify(part)).not.toContain('/srv/app');
+    expect(part.data).toMatchObject({
+      approvals: [
+        {
+          reason: 'The ask rule refund(*) asks',
+          rule: { rule: 'refund(*)', behavior: 'ask', layer: 'project' },
+          suggestedRule: 'refund(order:A-1)',
+          mode: 'default',
+        },
+      ],
+    });
   });
 });
 

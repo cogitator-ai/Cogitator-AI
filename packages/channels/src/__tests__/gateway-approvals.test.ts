@@ -5,6 +5,7 @@ import { Gateway } from '../gateway';
 import type { GatewayFullConfig } from '../gateway';
 import { createHookRegistry } from '../hooks';
 import {
+  DEFAULT_ALWAYS_WORDS,
   DEFAULT_APPROVE_WORDS,
   DEFAULT_DENY_WORDS,
   formatApprovalPrompt,
@@ -109,6 +110,14 @@ describe('parseApprovalReply', () => {
     expect(parseApprovalReply('давай', words)).toBeNull();
   });
 
+  it('approves for good on an always word alone, once always words are given', () => {
+    const withAlways = { ...words, alwaysWords: DEFAULT_ALWAYS_WORDS };
+    expect(parseApprovalReply('always', withAlways)).toEqual({ approved: true, remember: true });
+    expect(parseApprovalReply('Всегда!', withAlways)).toEqual({ approved: true, remember: true });
+    expect(parseApprovalReply('always ask me first', withAlways)).toBeNull();
+    expect(parseApprovalReply('always', words)).toBeNull();
+  });
+
   it('matches custom multi-word phrases', () => {
     const custom = { approveWords: ['go ahead'], denyWords: ['stop'] };
     expect(parseApprovalReply('Go ahead', custom)).toEqual({ approved: true });
@@ -133,6 +142,23 @@ describe('formatApprovalPrompt', () => {
     expect(prompt).toContain('…');
     expect(prompt).toContain('"approve" or "yes"');
     expect(prompt).toContain('"deny" or "no"');
+    expect(prompt).not.toContain('from now on');
+  });
+
+  it('says why a call asks and offers "always" with the rule it saves', () => {
+    const asking: ToolApprovalRequest = {
+      ...pending,
+      reason: 'The ask rule create_tool(*) of the project settings asks before the call',
+      suggestedRule: 'create_tool(name:weather)',
+    };
+    const prompt = formatApprovalPrompt([asking], { ...words, alwaysWords: DEFAULT_ALWAYS_WORDS });
+
+    expect(prompt).toContain(
+      'Why it asks: The ask rule create_tool(*) of the project settings asks before the call'
+    );
+    expect(prompt).toContain('Always allowing saves the rule `create_tool(name:weather)`');
+    expect(prompt).toContain('"always" or "всегда" to allow it from now on');
+    expect(formatApprovalPrompt([asking], words)).not.toContain('from now on');
   });
 });
 
@@ -220,6 +246,44 @@ describe('Gateway approvals', () => {
         approvals: [pending],
         superseded: false,
       })
+    );
+  });
+
+  it('resumes with an "always" reply that saves the suggested rule', async () => {
+    cogitator.run.mockResolvedValueOnce(
+      pausedResult('', [{ ...pending, suggestedRule: 'create_tool(name:weather)' }])
+    );
+    await startGateway();
+
+    await channel.trigger(message('Make me a weather tool'));
+    await gateway.idle();
+    expect(sentTexts(channel).at(-1)).toContain('"always" or "всегда"');
+    await channel.trigger(message('always'));
+    await gateway.idle();
+
+    expect(cogitator.resume).toHaveBeenCalledWith(
+      agent,
+      'test:ch_1:user_1',
+      expect.objectContaining({ defaultDecision: { approved: true, remember: true } })
+    );
+  });
+
+  it('reads the configured always words', async () => {
+    cogitator.run.mockResolvedValueOnce(
+      pausedResult('', [{ ...pending, suggestedRule: 'create_tool(*)' }])
+    );
+    await startGateway({ approvals: { alwaysWords: ['forever'] } });
+
+    await channel.trigger(message('Make me a weather tool'));
+    await gateway.idle();
+    expect(sentTexts(channel).at(-1)).toContain('"forever" to allow it from now on');
+    await channel.trigger(message('forever'));
+    await gateway.idle();
+
+    expect(cogitator.resume).toHaveBeenCalledWith(
+      agent,
+      'test:ch_1:user_1',
+      expect.objectContaining({ defaultDecision: { approved: true, remember: true } })
     );
   });
 
@@ -385,6 +449,7 @@ describe('Gateway approvals', () => {
     expect(format).toHaveBeenCalledWith([pending], {
       approveWords: ['ок'],
       denyWords: ['стоп'],
+      alwaysWords: DEFAULT_ALWAYS_WORDS,
     });
 
     await channel.trigger(message('стоп хватит'));

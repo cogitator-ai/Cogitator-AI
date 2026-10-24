@@ -1,4 +1,4 @@
-import type { ToolPresentation } from '@cogitator-ai/types';
+import type { PermissionMode, ToolPresentation } from '@cogitator-ai/types';
 import { toRunUsage } from './usage.js';
 import type { AgentRunOutcome } from './response.js';
 
@@ -147,6 +147,14 @@ export interface PendingApproval {
   arguments: Record<string, unknown>;
   description: string;
   sideEffects?: string[];
+  /** Why the call asks: the rule, the mode or the tool's own approval setting */
+  reason?: string;
+  /** The `ask` rule that made the call ask, as written, such as `Bash(git push *)` */
+  rule?: string;
+  /** The rule an "always allow" answer (`remember: true`) saves, such as `Bash(npm test *)` */
+  suggestedRule?: string;
+  /** The permission mode of the run */
+  mode?: PermissionMode;
 }
 
 /** The run paused: these tool calls wait for a decision before it can go on */
@@ -158,17 +166,24 @@ export interface ApprovalRequiredEvent {
 
 /**
  * A question a paused run waits on, the shape of core's `RunInterrupt` without the answer:
- * `approval` for a tool call to approve, `input` for an answer a tool asked for
+ * `approval` for a tool call to approve, `input` for an answer a tool asked for, `plan` for a plan
+ * to approve before the run leaves plan mode, `budget` for a budget the run reached
  */
 export interface PendingInterrupt {
   id: string;
-  kind: 'approval' | 'input';
+  kind: 'approval' | 'input' | 'plan' | 'budget';
   reason: string;
   message: string;
   responseSchema?: Record<string, unknown>;
   expiresAt?: string;
   toolCallId?: string;
   toolName?: string;
+  /**
+   * More to show the person who answers: the `plan` of a plan, the usage of a budget (`scope`,
+   * `metric`, `used`, `limit`, `agentId`), the `reason`, `rule` and `suggestedRule` of an approval,
+   * or what a tool passed with its question
+   */
+  details?: Record<string, unknown>;
 }
 
 /**
