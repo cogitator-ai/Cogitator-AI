@@ -43,17 +43,17 @@
     "node": ">=22.12.0"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.131.0",
+    "@anthropic-ai/sdk": "^0.137.0",
     "@cogitator-ai/memory": "workspace:*",
     "@cogitator-ai/models": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
-    "nanoid": "^6.0.1",
-    "openai": "^7.25.0",
+    "nanoid": "^6.0.2",
+    "openai": "^7.39.0",
     "yaml": "^2.9.1",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@aws-sdk/client-bedrock-runtime": "^3.1145.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.1154.0",
     "@cogitator-ai/sandbox": "workspace:*",
     "@cogitator-ai/test-utils": "workspace:*",
     "@types/better-sqlite3": "^9.6.0",

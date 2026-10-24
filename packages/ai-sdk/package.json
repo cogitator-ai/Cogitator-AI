@@ -31,8 +31,8 @@
     "node": ">=22.12.0"
   },
   "dependencies": {
-    "@ai-sdk/provider": "^4.0.21",
-    "zod": "^4.6.5"
+    "@ai-sdk/provider": "^4.0.31",
+    "zod": "^4.6.7"
   },
   "peerDependencies": {
     "@cogitator-ai/core": "workspace:>=0.65.0",
@@ -42,7 +42,7 @@
   "devDependencies": {
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
-    "ai": "^7.0.127",
+    "ai": "^7.0.148",
     "ai-v4": "npm:ai@^4.3.19",
     "ai-v5": "npm:ai@^5.0.271",
     "ai-v6": "npm:ai@^6.0.300",
