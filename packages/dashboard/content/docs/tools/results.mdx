@@ -118,13 +118,13 @@ await cog.run(agent, {
 });
 ```
 
-`onToolUpdate` gets each update with the call's `callId` and tool `name`, and `cog.invokeTool(tool, args, { onUpdate })` takes the same callback. Updates are for people watching: nothing of them reaches the model or memory, the tool's result does. An update after the tool returned (from a timer it left behind, say) is dropped, and a callback that throws is logged without failing the call. A tool that runs in a [sandbox](/docs/core/tools#sandboxed-execution) reports no updates.
+`onToolUpdate` gets each update with the call's `callId` and tool `name`, and `cog.invokeTool(tool, args, { onUpdate })` takes the same callback. Updates are for people watching: nothing of them reaches the model or memory, the tool's result does. An update after the tool returned (from a timer it left behind, say), or after its run was aborted, is dropped, and a callback that throws is logged without failing the call. A tool that runs in a [sandbox](/docs/core/tools#sandboxed-execution) reports no updates.
 
 ## Over the Wire
 
 The [streaming protocol](/docs/server-adapters#streaming-protocol) of every server adapter carries both:
 
-- `tool-update` (`toolCallId`, `content?`, `details?`, `presentation?`) for each `context.update()`, between the call's `tool-call-end` and its `tool-result`
+- `tool-update` (`toolCallId`, `content?`, `details?`, `presentation?`) for each `context.update()`, between the call's `tool-call-end` and its `tool-result`. A `tool-update` with `arguments` instead says the call runs with other arguments than it streamed (an `afterModel` middleware changed them): they replace the streamed ones
 - `tool-result` carries `details` and `presentation` next to `result`
 
 `createToolUpdateEvent`, `ToolUpdateEventSchema` and `ToolPresentationSchema` come from `@cogitator-ai/server-shared`. [Cogitator Studio](/docs/getting-started/studio) shows the label and detail of each call, the latest progress while it runs, and its details in a block of their own.

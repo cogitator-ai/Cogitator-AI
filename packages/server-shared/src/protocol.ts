@@ -133,6 +133,11 @@ export interface ToolUpdateEvent {
   content?: unknown;
   details?: unknown;
   presentation?: ToolPresentation;
+  /**
+   * The arguments the call runs with, when they differ from the ones its deltas streamed, such
+   * as after an `afterModel` middleware changed them: they replace the streamed ones
+   */
+  arguments?: Record<string, unknown>;
 }
 
 /** A tool call waiting for approval; the shape of core's `ToolApprovalRequest` */
@@ -278,7 +283,7 @@ export function createToolResultEvent(
 
 export function createToolUpdateEvent(
   toolCallId: string,
-  update: Pick<ToolUpdateEvent, 'content' | 'details' | 'presentation'>
+  update: Pick<ToolUpdateEvent, 'content' | 'details' | 'presentation' | 'arguments'>
 ): ToolUpdateEvent {
   return {
     type: 'tool-update',
@@ -286,6 +291,7 @@ export function createToolUpdateEvent(
     ...(update.content !== undefined && { content: update.content }),
     ...(update.details !== undefined && { details: update.details }),
     ...(update.presentation && { presentation: update.presentation }),
+    ...(update.arguments && { arguments: update.arguments }),
   };
 }
 

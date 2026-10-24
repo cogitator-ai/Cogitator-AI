@@ -27,6 +27,7 @@ export type ChatAction =
   | { type: 'APPEND_REASONING'; payload: string }
   | { type: 'ADD_TOOL_CALL'; payload: ToolCall }
   | { type: 'REMOVE_TOOL_CALL'; payload: string }
+  | { type: 'UPDATE_TOOL_CALL'; payload: ToolCall }
   | { type: 'FINISH_ASSISTANT_MESSAGE' }
   | { type: 'SET_PENDING_APPROVALS'; payload: PendingApproval[] }
   | { type: 'SET_PENDING_INTERRUPTS'; payload: PendingInterrupt[] }
@@ -73,6 +74,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
     case 'ADD_TOOL_CALL':
       return { ...state, currentToolCalls: [...state.currentToolCalls, action.payload] };
+
+    case 'UPDATE_TOOL_CALL':
+      return {
+        ...state,
+        currentToolCalls: state.currentToolCalls.map((call) =>
+          call.id === action.payload.id ? action.payload : call
+        ),
+      };
 
     case 'REMOVE_TOOL_CALL':
       return {

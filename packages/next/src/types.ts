@@ -166,6 +166,10 @@ export interface UseChatOptions {
   headers?: Record<string, string>;
   onError?: (error: Error) => void;
   onFinish?: (message: ChatMessage) => void;
+  /**
+   * A tool call the stream announced. It is reported again with its new arguments when the
+   * server corrects them (a `tool-update` with `arguments`)
+   */
   onToolCall?: (toolCall: ToolCall) => void;
   onToolResult?: (result: ToolResultEvent) => void;
   /**

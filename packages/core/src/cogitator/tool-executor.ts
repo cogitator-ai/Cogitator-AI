@@ -20,7 +20,15 @@ import type { SandboxManager } from './initializers';
 type SandboxRunOutput = NonNullable<Awaited<ReturnType<SandboxManager['execute']>>['data']>;
 import type { ConstitutionalAI } from '../constitutional/index';
 import { createLinkedAbortController, toAbortError } from '../utils/abort';
-import { heldLockKeys, holdingLockKeys, toolLocks, type StepGate } from './tool-locks';
+import {
+  currentLockOwner,
+  heldLockKeys,
+  holdingLockKeys,
+  LockCycleError,
+  toolLocks,
+  type LockOwner,
+  type StepGate,
+} from './tool-locks';
 import { guardrailsMiddleware } from '../middleware/builtins';
 import { MiddlewarePipeline, type ToolArgumentsParser } from '../middleware/pipeline';
 import { isTripwire } from '../middleware/tripwire';
@@ -135,24 +143,26 @@ export function needsApproval(tool: Tool, args: Record<string, unknown>): boolea
  * say no.
  */
 export function isConcurrencySafe(tool: Tool, args: Record<string, unknown>): boolean {
+  return safeWith(tool, parsedArguments(tool, args));
+}
+
+/** {@link isConcurrencySafe} for arguments the tool's schema already read */
+function safeWith(tool: Tool, parsed: Record<string, unknown>): boolean {
   const declared = tool.isConcurrencySafe ?? tool.annotations?.readOnlyHint === true;
   if (typeof declared !== 'function') return declared;
   try {
-    return declared(parsedArguments(tool, args));
+    return declared(parsed);
   } catch {
     return false;
   }
 }
 
-/** How a client shows a call of `tool` with `args`, from the tool's `presentation` */
-export function presentationOf(
-  tool: Tool,
-  args: Record<string, unknown>
-): ToolPresentation | undefined {
+/** How a client shows a call of `tool` with the arguments its schema read, from its `presentation` */
+function presentationOf(tool: Tool, parsed: Record<string, unknown>): ToolPresentation | undefined {
   const declared = tool.presentation;
   if (typeof declared !== 'function') return declared;
   try {
-    return declared(parsedArguments(tool, args));
+    return declared(parsed);
   } catch (error) {
     getLogger().debug('Tool presentation failed', {
       tool: tool.name,
@@ -209,12 +219,14 @@ const parseCallArguments: ToolArgumentsParser = (call, changed) => {
 async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Promise<ToolResult> {
   const { tool, toolCall, args } = call;
   const { runId, agentId, signal, extraContext, step } = execution;
-  const failed = (error: string): ToolResult => ({
+  const failed = (error: string, errorCode?: string): ToolResult => ({
     callId: toolCall.id,
     name: toolCall.name,
     result: null,
     error,
+    ...(errorCode && { errorCode }),
   });
+  const owner: LockOwner = { parent: currentLockOwner() };
   const record = isRecord(args) ? args : toolCall.arguments;
 
   let keys: readonly string[] = [];
@@ -241,16 +253,17 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
   try {
     if (step) {
       releases.push(
-        await (!step.alone && isConcurrencySafe(tool, record)
+        await (!step.alone && safeWith(tool, record)
           ? step.gate.share(signal)
           : step.gate.exclusive(signal))
       );
     }
     const held = heldLockKeys();
     const fresh = keys.filter((key) => !held.has(key));
-    if (fresh.length > 0) releases.push(await toolLocks.acquire(fresh, signal));
+    if (fresh.length > 0) releases.push(await toolLocks.acquire(fresh, signal, owner));
   } catch (error) {
     releaseAll();
+    if (error instanceof LockCycleError) return failed(error.message, error.code);
     return failed(toAbortError(error, `Tool "${tool.name}" aborted`).message);
   }
 
@@ -263,7 +276,7 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
     },
   };
   try {
-    const result = await holdingLockKeys(keys, () =>
+    const result = await holdingLockKeys(owner, keys, () =>
       tool.sandbox?.type === 'docker' || tool.sandbox?.type === 'wasm'
         ? executeInSandbox(
             tool,
@@ -391,7 +404,7 @@ async function executeNatively(
     signal: abort?.signal ?? signal ?? new AbortController().signal,
     toolCallId: toolCall.id,
     update: (progress) => {
-      if (!running || !onUpdate) return;
+      if (!running || !onUpdate || signal?.aborted) return;
       try {
         onUpdate(progress);
       } catch (error) {

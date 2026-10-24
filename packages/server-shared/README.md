@@ -106,7 +106,7 @@ Standardized Server-Sent Events protocol for agent runs, workflow runs, swarm ru
 - `ToolCallStartEvent`: Structure of the `tool-call-start` event.
 - `ToolCallDeltaEvent`: Structure of the `tool-call-delta` event.
 - `ToolCallEndEvent`: Structure of the `tool-call-end` event, with optional `dropped`.
-- `ToolUpdateEvent`: Structure of the `tool-update` event.
+- `ToolUpdateEvent`: Structure of the `tool-update` event: what a running tool reported, or with `arguments` the arguments a streamed call runs with when they differ from the streamed ones.
 - `ToolResultEvent`: Structure of the `tool-result` event, with optional `details` and `presentation` (`ToolPresentation`: `label`, `icon?`, `detail?`), or `dropped` and `reason` for a call that never ran.
 - `ApprovalRequiredEvent`: Structure of the `approval-required` event.
 - `PendingApproval`: Client-facing tool approval request (`toolCallId`, `toolName`, `arguments`, `description`, optional `sideEffects`).

@@ -393,6 +393,35 @@ describe('useCogitatorChat', () => {
     );
   });
 
+  it('takes the arguments a server corrects for a call it already showed', async () => {
+    installFetch((call) => {
+      call.stream.push({ type: 'start', messageId: 'a1' });
+      call.stream.push({ type: 'tool-call-start', id: 'w', toolName: 'write' });
+      call.stream.push({ type: 'tool-call-delta', id: 'w', argsTextDelta: '{"path":"a"}' });
+      call.stream.push({ type: 'tool-call-end', id: 'w' });
+      call.stream.push({ type: 'tool-update', toolCallId: 'w', arguments: { path: 'safe/a' } });
+      call.stream.push({ type: 'tool-result', id: 'r', toolCallId: 'w', result: 'ok' });
+      call.stream.push({ type: 'finish', messageId: 'a1' });
+      call.stream.close();
+      return undefined;
+    });
+    const onToolCall = vi.fn();
+    const onFinish = vi.fn();
+    const hook = setup({ onToolCall, onFinish });
+
+    await hook.result.current.send('write');
+
+    expect(onToolCall.mock.calls.map(([call]) => call.arguments)).toEqual([
+      { path: 'a' },
+      { path: 'safe/a' },
+    ]);
+    expect(onFinish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCalls: [{ id: 'w', name: 'write', arguments: { path: 'safe/a' } }],
+      })
+    );
+  });
+
   it('aborts the in-flight request on unmount', async () => {
     const { calls } = installFetch();
     const hook = setup();

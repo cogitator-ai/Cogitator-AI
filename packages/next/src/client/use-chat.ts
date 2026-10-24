@@ -344,6 +344,18 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
           return false;
         }
 
+        case 'tool-update': {
+          if (!event.arguments) return false;
+          const known = stateRef.current.currentToolCalls.find(
+            (call) => call.id === event.toolCallId
+          );
+          if (!known) return false;
+          const corrected: ToolCall = { ...known, arguments: event.arguments };
+          apply({ type: 'UPDATE_TOOL_CALL', payload: corrected });
+          onToolCall?.(corrected);
+          return false;
+        }
+
         case 'tool-result': {
           if (event.dropped) {
             apply({ type: 'REMOVE_TOOL_CALL', payload: event.toolCallId });

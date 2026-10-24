@@ -120,8 +120,14 @@ export const ToolUpdateEventSchema = z
     content: z.unknown().optional(),
     details: z.unknown().optional(),
     presentation: ToolPresentationSchema.optional(),
+    arguments: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe('The arguments the call runs with, replacing the streamed ones'),
   })
-  .describe('What the running tool call `toolCallId` has so far');
+  .describe(
+    'What the running tool call `toolCallId` has so far, or the arguments it runs with when they differ from the streamed ones'
+  );
 
 export const ApprovalRequiredEventSchema = z
   .object({

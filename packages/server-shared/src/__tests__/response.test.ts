@@ -200,6 +200,27 @@ describe('AgentStreamSession', () => {
     for (const event of events) StreamEventSchema.parse(event);
   });
 
+  it('corrects the arguments of a streamed call that runs with other ones', () => {
+    const { events, session: s } = session('t');
+    s.callbacks.onToolInputStart({ toolCallId: 'w', toolName: 'write' });
+    s.callbacks.onToolInputDelta({ toolCallId: 'w', toolName: 'write', delta: '{"path":"a"}' });
+    s.callbacks.onToolInputAvailable({ toolCallId: 'w', toolName: 'write', input: { path: 'a' } });
+    s.callbacks.onToolCall({ id: 'w', name: 'write', arguments: { path: 'safe/a' } });
+    s.callbacks.onToolInputStart({ toolCallId: 'same', toolName: 'write' });
+    s.callbacks.onToolInputDelta({
+      toolCallId: 'same',
+      toolName: 'write',
+      delta: '{"b":1,"a":2}',
+    });
+    s.callbacks.onToolInputAvailable({ toolCallId: 'same', toolName: 'write', input: {} });
+    s.callbacks.onToolCall({ id: 'same', name: 'write', arguments: { a: 2, b: 1 } });
+
+    expect(events.filter((event) => event.type === 'tool-update')).toEqual([
+      { type: 'tool-update', toolCallId: 'w', arguments: { path: 'safe/a' } },
+    ]);
+    for (const event of events) StreamEventSchema.parse(event);
+  });
+
   it('announces again a dropped call a middleware gave another tool under the same id', () => {
     const { events, session: s } = session('t');
     s.callbacks.onToolInputStart({ toolCallId: 'x', toolName: 'read' });

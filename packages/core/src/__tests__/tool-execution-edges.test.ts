@@ -128,6 +128,119 @@ describe('locks held by a call', () => {
   });
 });
 
+describe('lock keys that wait on each other', () => {
+  it('fail the call that closes the cycle with TOOL_LOCK_CYCLE instead of waiting forever', async () => {
+    const cog = new Cogitator();
+    const both = deferred();
+    let holding = 0;
+    const inner = (key: string) =>
+      tool({
+        name: `inner_${key}`,
+        description: 'Writes a key',
+        parameters: z.object({}),
+        lockKeys: () => [key],
+        execute: async () => `inner ${key}`,
+      });
+    const outer = (own: string, other: string) =>
+      tool({
+        name: `outer_${own}`,
+        description: 'Holds a key and asks for the other',
+        parameters: z.object({}),
+        lockKeys: () => [own],
+        execute: async () => {
+          holding++;
+          if (holding === 2) both.resolve();
+          await both.promise;
+          return cog.invokeTool(inner(other), {});
+        },
+      });
+    const [first, second] = await Promise.all([
+      cog.invokeTool(outer('A', 'B'), {}),
+      cog.invokeTool(outer('B', 'A'), {}),
+    ]);
+    const inners = [first.result, second.result] as Array<{ errorCode?: string; result: unknown }>;
+    expect(inners.filter((result) => result.errorCode === ErrorCode.TOOL_LOCK_CYCLE)).toHaveLength(
+      1
+    );
+    expect(inners.map((result) => result.result).filter(Boolean)).toHaveLength(1);
+    await cog.close();
+  });
+});
+
+describe('arguments a schema transforms', () => {
+  it('are read once, so the safety check, the lock keys and the tool see the same values', async () => {
+    let reads = 0;
+    const seen: Record<string, number> = {};
+    const stamped = tool({
+      name: 'stamped',
+      description: 'Stamped',
+      parameters: z.object({ id: z.string() }).transform((value) => ({ ...value, read: ++reads })),
+      isConcurrencySafe: ({ read }) => {
+        seen.safety = read;
+        return true;
+      },
+      lockKeys: ({ read }) => {
+        seen.keys = read;
+        return [`stamp:${read}`];
+      },
+      execute: async ({ read }) => {
+        seen.execute = read;
+        return read;
+      },
+    });
+    const { cog } = setup([
+      callTools([
+        { id: 'a', name: 'stamped', arguments: { id: 'a' } },
+        { id: 'b', name: 'other', arguments: {} },
+      ]),
+      answer('Done.'),
+    ]);
+    const other = tool({
+      name: 'other',
+      description: 'Other',
+      parameters: z.object({}),
+      isConcurrencySafe: true,
+      execute: async () => 'other',
+    });
+    await cog.run(agentWith([stamped, other]), { input: 'Go', parallelToolCalls: true });
+    expect(seen.keys).toBe(seen.execute);
+    expect(seen.safety).toBe(seen.execute);
+    await cog.close();
+  });
+});
+
+describe('a tool that reports after its run stopped', () => {
+  it('reaches onToolUpdate no more', async () => {
+    let report: (() => void) | undefined;
+    const started = deferred();
+    const deaf = tool({
+      name: 'deaf',
+      description: 'Ignores its signal',
+      parameters: z.object({}),
+      execute: async (_params, context) => {
+        report = () => context.update?.({ content: 'still here' });
+        started.resolve();
+        return new Promise<never>(() => undefined);
+      },
+    });
+    const { cog } = setup([callTools([{ id: 'd', name: 'deaf', arguments: {} }])]);
+    const updates: unknown[] = [];
+    const controller = new AbortController();
+    const run = cog.run(agentWith([deaf]), {
+      input: 'Go',
+      signal: controller.signal,
+      onToolUpdate: (update) => updates.push(update.content),
+    });
+    await started.promise;
+    report?.();
+    controller.abort(new Error('stop'));
+    await expect(run).rejects.toThrow('stop');
+    report?.();
+    expect(updates).toEqual(['still here']);
+    await cog.close();
+  });
+});
+
 describe('StepGate', () => {
   it('lets shares run together and a call that must be alone wait for them, and the ones after it wait', async () => {
     const gate = new StepGate();

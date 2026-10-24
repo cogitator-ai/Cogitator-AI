@@ -31,6 +31,8 @@ export enum ErrorCode {
   TOOL_INVALID_ARGS = 'TOOL_INVALID_ARGS',
   TOOL_EXECUTION_FAILED = 'TOOL_EXECUTION_FAILED',
   TOOL_TIMEOUT = 'TOOL_TIMEOUT',
+  /** A tool call would wait for lock keys held by calls that wait for its own */
+  TOOL_LOCK_CYCLE = 'TOOL_LOCK_CYCLE',
 
   MEMORY_UNAVAILABLE = 'MEMORY_UNAVAILABLE',
   MEMORY_WRITE_FAILED = 'MEMORY_WRITE_FAILED',
@@ -101,6 +103,7 @@ export const ERROR_STATUS_CODES: Record<ErrorCode, number> = {
   [ErrorCode.TOOL_INVALID_ARGS]: 400,
   [ErrorCode.TOOL_EXECUTION_FAILED]: 500,
   [ErrorCode.TOOL_TIMEOUT]: 504,
+  [ErrorCode.TOOL_LOCK_CYCLE]: 409,
 
   [ErrorCode.MEMORY_UNAVAILABLE]: 503,
   [ErrorCode.MEMORY_WRITE_FAILED]: 500,

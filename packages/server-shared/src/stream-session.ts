@@ -96,6 +96,8 @@ export class AgentStreamSession {
   readonly callbacks: AgentStreamCallbacks;
 
   private open: { kind: PartKind; id: string } | undefined;
+  /** The argument text each streamed call sent, by id */
+  private readonly streamedArguments = new Map<string, string>();
   /** Tool calls announced, by id: written, ended, running (or about to), dropped or settled */
   private readonly toolCalls = new Map<
     string,
@@ -128,6 +130,10 @@ export class AgentStreamSession {
       },
       onToolInputDelta: ({ toolCallId, delta }) => {
         if (this.toolCalls.get(toolCallId) !== 'open' || !delta) return;
+        this.streamedArguments.set(
+          toolCallId,
+          `${this.streamedArguments.get(toolCallId) ?? ''}${delta}`
+        );
         this.emit(createToolCallDeltaEvent(toolCallId, delta));
       },
       onToolInputAvailable: ({ toolCallId }) => this.endToolCall(toolCallId),
@@ -141,7 +147,11 @@ export class AgentStreamSession {
           this.emit(createToolCallEndEvent(call.id));
         } else {
           this.endToolCall(call.id);
+          if (!streamedAs(this.streamedArguments.get(call.id), call.arguments)) {
+            this.emit(createToolUpdateEvent(call.id, { arguments: call.arguments }));
+          }
         }
+        this.streamedArguments.delete(call.id);
         if (state !== 'settled') this.toolCalls.set(call.id, 'running');
       },
       onToolUpdate: (update) => {
@@ -233,4 +243,25 @@ export class AgentStreamSession {
     this.open = undefined;
     this.emit(PART_EVENTS[open.kind].end(open.id));
   }
+}
+
+/** Whether the argument text a call streamed reads as `args`, keys in any order */
+function streamedAs(text: string | undefined, args: Record<string, unknown>): boolean {
+  let streamed: unknown;
+  try {
+    streamed = text === undefined || text.trim() === '' ? {} : JSON.parse(text);
+  } catch {
+    return false;
+  }
+  return canonicalJson(streamed) === canonicalJson(args);
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, inner: unknown) =>
+    inner && typeof inner === 'object' && !Array.isArray(inner)
+      ? Object.fromEntries(
+          Object.entries(inner as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))
+        )
+      : inner
+  );
 }

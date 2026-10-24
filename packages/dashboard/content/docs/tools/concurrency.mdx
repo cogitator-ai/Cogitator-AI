@@ -89,6 +89,8 @@ A tool that is safe and has lock keys gets the best of both: writes of different
 - a call whose run aborts while it waits gives up its place and fails with the abort reason
 - keys are let go only once the tool's own promise settles. A call that hit its timeout or was aborted reports that to the run at once, while the file stays locked until the tool really stopped, so a late write never meets the next one
 - keys are re-entrant along the call lineage: a call run inside a call that holds a key, such as the tool calls of an [agent as tool](/docs/tools/agent-as-tool) or a `cog.invokeTool()` started from the tool, takes that key again without waiting. A run of another process, or one started outside the tool call, still waits
+- two calls that each hold a key and, through a tool they run, wait for the other's never wait forever: the call that would close the circle fails at once with `errorCode: 'TOOL_LOCK_CYCLE'` (`LockCycleError`), the model reads why, and the other goes on once it is let go
+- the safety check, the lock keys and the tool itself get the arguments as the tool's schema read them once, so a transform in the schema runs once per call
 - time a call waits for its keys, or for its turn in the step, does not count toward `timeouts.toolMs` or the tool's `timeout` (see [Stage Timeouts](/docs/tools/timeouts)), the run's `totalMs` still runs
 
 `fileLockKey(path)` is `file:` and the real path of the file, every symlink followed, also for a file not written yet. Two calls that write one file through different paths or a link still go one after another. The `write_file` and `edit_file` of `workspaceTools()` resolve a relative path against the workspace root, and an absolute path inside the root gets the same key as the relative one.
