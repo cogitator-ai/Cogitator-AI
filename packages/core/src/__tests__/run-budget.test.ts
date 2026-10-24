@@ -738,3 +738,48 @@ describe('ninth review round budgets', () => {
     await cog.close();
   });
 });
+
+describe('tenth review round budgets', () => {
+  it('holds runs of one thread at the same time to one session allowance', async () => {
+    let calls = 0;
+    const slowLookups = vi.fn(async ({ id }: { id: string }) => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return `found ${id}`;
+    });
+    const slow = tool({
+      name: 'lookup',
+      description: 'Look something up',
+      parameters: z.object({ id: z.string() }),
+      execute: slowLookups,
+    });
+    const backend = {
+      provider: 'openai' as const,
+      chat: vi.fn(async (): Promise<ChatResponse> => {
+        calls++;
+        return {
+          id: `r${calls}`,
+          content: '',
+          toolCalls: [{ id: `c${calls}`, name: 'lookup', arguments: { id: String(calls) } }],
+          finishReason: 'tool_calls',
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        };
+      }),
+      chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {
+        yield { id: 's', delta: {}, finishReason: 'stop' };
+      }),
+    };
+    const cog = new Cogitator({
+      memory: { adapter: 'memory' },
+      llm: { backends: { mock: backend } },
+      budget: { session: { maxToolCalls: 2 } },
+    });
+    const agent = new Agent({ name: 'a', model: 'mock/m', instructions: 'x', tools: [slow] });
+    const results = await Promise.all([
+      cog.run(agent, { input: 'one', threadId: 'b-siblings' }),
+      cog.run(agent, { input: 'two', threadId: 'b-siblings' }),
+    ]);
+    expect(slowLookups.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(results.every((result) => result.status === 'paused')).toBe(true);
+    await cog.close();
+  });
+});

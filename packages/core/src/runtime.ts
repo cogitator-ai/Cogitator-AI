@@ -306,6 +306,7 @@ import {
   readSessionSpend,
   freshestSpend,
   RunBudget,
+  SessionLedger,
   SESSION_BUDGET_KEY,
   usageOf,
 } from './cogitator/run-budget';
@@ -590,6 +591,8 @@ export class Cogitator implements ToolInvoker {
   >();
   /** What each session spent, for threads without memory to keep it in */
   private readonly sessionSpends = new Map<string, SessionSpend>();
+  /** The live spending of each session with runs going on in this process, by thread */
+  private readonly sessionLedgers = new Map<string, SessionLedger>();
   /** The write of each thread's spending going on, so concurrent runs add up instead of overwriting */
   private readonly spendWrites = new Map<string, Promise<void>>();
   /** The budgets of the runs going on, so a run started from a tool charges its caller's too */
@@ -896,6 +899,7 @@ export class Cogitator implements ToolInvoker {
     }
 
     let approvedByUser = verdict.decision === 'allow' && verdict.decidedBy !== 'default';
+    let personApproved = false;
     let callToRun = toolCall;
     if (verdict.decision === 'allow') await permissions.record(event(verdict));
     if (verdict.decision === 'ask') {
@@ -984,6 +988,7 @@ export class Cogitator implements ToolInvoker {
       }
       await permissions.record(answered);
       approvedByUser = true;
+      personApproved = true;
     }
 
     const registry = new ToolRegistry();
@@ -1045,13 +1050,39 @@ export class Cogitator implements ToolInvoker {
               return signal ? waitForAbortable(deciding, signal) : deciding;
             },
           });
-          if (!('pause' in outcome)) return outcome;
+          if (!('pause' in outcome)) {
+            if (outcome.allowed && outcome.byPerson) personApproved = true;
+            return outcome;
+          }
           changedRequest = outcome.pause;
           return {
             allowed: false,
             reason: `the arguments a middleware changed the call to need approval, and nobody approved them`,
           };
         },
+        recheck: (finalTool: Tool, finalArgs: Record<string, unknown>) =>
+          this.finalCheck({
+            tool: finalTool,
+            args: finalArgs,
+            permissions,
+            call: {
+              ...permissionCall,
+              needsApproval:
+                !personApproved &&
+                (needsApproval(finalTool, finalArgs) ||
+                  constitutionalAI?.toolNeedsApproval(finalTool, finalArgs) === true),
+              classifierInput: () => ({
+                toolName: tool.name,
+                description: tool.description,
+                arguments: finalArgs,
+                request: 'A direct call of the tool by the application, outside an agent run',
+                transcript: [],
+                ...(signal && { signal }),
+              }),
+            },
+            human: personApproved,
+            judged: verdict.decidedBy === 'classifier',
+          }),
       }),
       ...(options.onUpdate && {
         onUpdate: (progress: ToolProgress) =>
@@ -1966,7 +1997,7 @@ export class Cogitator implements ToolInvoker {
           ...(ownBudget && { ownLimits: withoutWarning(ownBudget) }),
         },
         budgetConfig.session || budgetConfig.agent || anyAgentBudget
-          ? await this.loadSessionSpend(threadId, options)
+          ? await this.sessionLedgerOf(threadId, options)
           : readSessionSpend(undefined),
         checkpoint?.budget
       );
@@ -2566,18 +2597,14 @@ export class Cogitator implements ToolInvoker {
             !human &&
             (needsApproval(tool, runCall.arguments) ||
               this.state.constitutionalAI?.toolNeedsApproval(tool, runCall.arguments) === true);
-          const judged = classified.has(toolCall.id) && permissions.mode === 'auto';
-          const call = permissionCall(tool, runCall, needs);
-          const { classifierInput: _judgedBefore, ...unjudged } = call;
-          const verdict = await permissions.decide(tool, runCall.arguments, {
-            ...(judged || human ? unjudged : call),
-            ...(human && permissions.mode === 'dontAsk' && { mode: 'default' as const }),
+          return this.finalCheck({
+            tool,
+            args,
+            permissions,
+            call: permissionCall(tool, runCall, needs),
+            human,
+            judged: classified.has(toolCall.id),
           });
-          if (verdict.decision === 'deny') return verdict.reason;
-          if (verdict.decision === 'ask' && !human && !judged) {
-            return `the call no longer passes the permissions when it runs (${verdict.reason}): the mode, or what it touches, changed since the turn decided it`;
-          }
-          return undefined;
         };
 
         const executeToolCall = async (toolCall: ToolCall): Promise<ToolOutcome> => {
@@ -3875,6 +3902,9 @@ export class Cogitator implements ToolInvoker {
       if (!pausedOut && !checkpointKept) this.interruptSchemas.forgetRun(runId);
       if (this.runMemories.get(runId) === runMemory) this.runMemories.delete(runId);
       if (this.runBudgets.get(runId)?.budget === budget) this.runBudgets.delete(runId);
+      if (budget?.leave() && this.sessionLedgers.get(threadId)?.idle) {
+        this.sessionLedgers.delete(threadId);
+      }
       this.classifierCharges.delete(abortController.signal);
       this.afterRunSpend.delete(runId);
       releaseRunSlot?.();
@@ -4207,6 +4237,22 @@ export class Cogitator implements ToolInvoker {
     return { args: updated };
   }
 
+  /**
+   * The ledger the runs of thread `threadId` going on in this process share, its record read
+   * again from storage for the run that starts
+   */
+  private async sessionLedgerOf(threadId: string, options: RunOptions): Promise<SessionLedger> {
+    const stored = await this.loadSessionSpend(threadId, options);
+    const ledger = this.sessionLedgers.get(threadId);
+    if (ledger) {
+      ledger.refresh(stored);
+      return ledger;
+    }
+    const fresh = new SessionLedger(stored);
+    this.sessionLedgers.set(threadId, fresh);
+    return fresh;
+  }
+
   /** What the session of thread `threadId` spent, from its metadata or this process */
   private async loadSessionSpend(threadId: string, options: RunOptions): Promise<SessionSpend> {
     const memory = this.state.memoryAdapter;
@@ -4280,6 +4326,36 @@ export class Cogitator implements ToolInvoker {
     else this.sessionSpends.set(threadId, total);
     budget.markRecorded(total);
     return total;
+  }
+
+  /**
+   * Decides a call once more right before its tool starts, after the middleware and once it holds
+   * its locks: the run loop's check and `invokeTool()`'s. Why it may not run, or undefined. A call
+   * a person approved (`human`) stops only at a deny or a mode that refuses it (`plan`), an
+   * approval answering an ask (`dontAsk` decides it as `default`), one the rules allowed also when
+   * it would now ask. A call the `auto` classifier allowed (`judged`) is not judged again while
+   * the run stays in `auto` mode
+   */
+  private async finalCheck(check: {
+    tool: Tool;
+    args: Record<string, unknown>;
+    permissions: RunPermissions;
+    call: PermissionCall;
+    human: boolean;
+    judged: boolean;
+  }): Promise<string | undefined> {
+    const { permissions, human } = check;
+    const judged = check.judged && permissions.mode === 'auto';
+    const { classifierInput: _judgedBefore, ...unjudged } = check.call;
+    const verdict = await permissions.decide(check.tool, check.args, {
+      ...(judged || human ? unjudged : check.call),
+      ...(human && permissions.mode === 'dontAsk' && { mode: 'default' as const }),
+    });
+    if (verdict.decision === 'deny') return verdict.reason;
+    if (verdict.decision === 'ask' && !human && !judged) {
+      return `the call no longer passes the permissions when it runs (${verdict.reason}): the mode, or what it touches, changed since it was decided`;
+    }
+    return undefined;
   }
 
   /**

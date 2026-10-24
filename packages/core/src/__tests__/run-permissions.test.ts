@@ -1223,3 +1223,77 @@ describe('ninth review round approvals', () => {
     }
   });
 });
+
+describe('tenth review round', () => {
+  it('a delegated run reads inherited path rules from where the caller wrote them', async () => {
+    mkdirSync(join(root, 'private'), { recursive: true });
+    mkdirSync(join(base, 'private'), { recursive: true });
+    writeFileSync(join(root, 'private', 'secret.txt'), 'secret');
+    writeFileSync(join(base, 'private', 'ok.txt'), 'ok');
+    const peeked: string[] = [];
+    const peek = tool({
+      name: 'peek',
+      description: 'Reads a file',
+      parameters: z.object({ path: z.string() }),
+      access: { kind: 'read', paths: ({ path }) => [join(base, path)] },
+      execute: async ({ path }) => {
+        peeked.push(path);
+        return 'seen';
+      },
+    });
+    const { cog } = setup([
+      turn(call('d1', 'helper', { task: 'look' })),
+      turn(
+        call('p1', 'peek', { path: 'project/private/secret.txt' }),
+        call('p2', 'peek', { path: 'private/ok.txt' })
+      ),
+      { content: 'looked' },
+    ]);
+    const outer = new LocalWorkspace({ root: base });
+    await outer.start();
+    const helper = new Agent({
+      name: 'helper',
+      model: 'mock/m',
+      instructions: 'x',
+      tools: [peek],
+      workspace: outer,
+    });
+    const lead = coder({
+      tools: [agentAsTool(cog, helper, { name: 'helper', description: 'Helps' })],
+    });
+    await cog.run(lead, {
+      input: 'go',
+      permissions: { deny: ['Read(/private/**)'], allow: ['Read'] },
+    });
+    expect(peeked).toEqual(['private/ok.txt']);
+    await cog.close();
+    await outer.dispose();
+  });
+});
+
+describe('tenth review round invokeTool', () => {
+  it('decides an invoked call again right before it runs', async () => {
+    mkdirSync(join(root, 'vault'), { recursive: true });
+    mkdirSync(join(root, 'pub'), { recursive: true });
+    writeFileSync(join(root, 'vault', 'x.txt'), 'secret');
+    writeFileSync(join(root, 'pub', 'x.txt'), 'public');
+    const swap = {
+      name: 'swap-link',
+      wrapToolCall: async (call: unknown, next: (call: never) => Promise<unknown>) => {
+        rmSync(join(root, 'pub'), { recursive: true, force: true });
+        symlinkSync(join(root, 'vault'), join(root, 'pub'));
+        return next(call as never);
+      },
+    };
+    const cog = new Cogitator({
+      permissions: { deny: ['Read(./vault/**)'], allow: ['Read'] },
+      middleware: [swap as never],
+    });
+    const readFile = workspaceTools().find((entry) => entry.name === 'read_file');
+    if (!readFile) throw new Error('no read_file');
+    const result = await cog.invokeTool(readFile, { path: 'pub/x.txt' }, { workspace });
+    expect(result.errorCode).toBe('PERMISSION_DENIED');
+    expect(JSON.stringify(result.result ?? '')).not.toContain('secret');
+    await cog.close();
+  });
+});

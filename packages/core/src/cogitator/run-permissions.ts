@@ -8,6 +8,7 @@ import {
   type PermissionDecisionEvent,
   type PermissionLayerSettings,
   type PermissionMode,
+  type InheritedPermissionRules,
   type PermissionOptions,
   type PermissionRememberLayer,
   type PermissionRules,
@@ -42,7 +43,22 @@ export const EXIT_PLAN_MODE = 'exit_plan_mode';
 const DEFAULT_REMEMBER_LAYERS: readonly PermissionRememberLayer[] = ['session', 'local'];
 
 /** Rules in code, as one `session` layer each */
-function codeLayer(rules: PermissionRules | undefined, origin: string): PermissionLayerSettings[] {
+function codeLayer(
+  rules: PermissionOptions | undefined,
+  origin: string
+): PermissionLayerSettings[] {
+  const inherited = rules?.inherited ?? [];
+  return [
+    ...ownLayer(rules, origin),
+    ...inherited.flatMap((entry) => ownLayer(entry, `${origin}, inherited`)),
+  ];
+}
+
+/** The layer of one list of rules given in code, with where its path patterns start from */
+function ownLayer(
+  rules: (PermissionRules & { root?: string; cwd?: string }) | undefined,
+  origin: string
+): PermissionLayerSettings[] {
   if (
     !rules ||
     (rules.allow?.length ?? 0) + (rules.ask?.length ?? 0) + (rules.deny?.length ?? 0) === 0
@@ -56,6 +72,8 @@ function codeLayer(rules: PermissionRules | undefined, origin: string): Permissi
       ...(rules.allow && { allow: [...rules.allow] }),
       ...(rules.ask && { ask: [...rules.ask] }),
       ...(rules.deny && { deny: [...rules.deny] }),
+      ...(rules.root !== undefined && { anchor: rules.root }),
+      ...(rules.cwd !== undefined && { cwd: rules.cwd }),
     },
   ];
 }
@@ -181,11 +199,13 @@ function runScope(
   const allow = run?.allow ?? rules?.allow;
   const ask = run?.ask ?? rules?.ask;
   const deny = run?.deny ?? rules?.deny;
+  const inherited = run?.inherited ?? rules?.inherited;
   return {
     ...(run?.mode !== undefined && { mode: run.mode }),
     ...(allow && { allow: [...allow] }),
     ...(ask && { ask: [...ask] }),
     ...(deny && { deny: [...deny] }),
+    ...(inherited && { inherited: inherited.map((entry) => ({ ...entry })) }),
   };
 }
 
@@ -347,15 +367,36 @@ export class RunPermissions {
     if (!this.active) return undefined;
     const merged = { allow: [] as string[], ask: [] as string[], deny: [] as string[] };
     for (const scope of this.scopes()) {
-      merged.allow.push(...(scope.options?.allow ?? []));
-      merged.ask.push(...(scope.options?.ask ?? []));
-      merged.deny.push(...(scope.options?.deny ?? []));
+      for (const rules of [scope.options, ...(scope.options?.inherited ?? [])]) {
+        merged.allow.push(...(rules?.allow ?? []));
+        merged.ask.push(...(rules?.ask ?? []));
+        merged.deny.push(...(rules?.deny ?? []));
+      }
     }
     merged.allow.push(...this.remembered);
     const context = this.context(workspace);
+    const here = {
+      root: this.root,
+      cwd: workspace ? resolve(workspace.root, workspace.cwd) : this.root,
+    };
+    const inherited: InheritedPermissionRules[] = [];
+    const pass = (rules: PermissionRules | undefined) => {
+      const lists = {
+        ...(rules?.allow?.length && { allow: [...rules.allow] }),
+        ...(rules?.ask?.length && { ask: [...rules.ask] }),
+        ...(rules?.deny?.length && { deny: [...rules.deny] }),
+      };
+      if (Object.keys(lists).length > 0) inherited.push({ ...lists, ...here });
+    };
+    for (const scope of this.scopes()) {
+      pass(scope.options);
+      inherited.push(...(scope.options?.inherited ?? []).map((entry) => ({ ...entry })));
+    }
+    pass({ allow: this.remembered });
     return {
       mode: this.currentMode,
       rules: merged,
+      inherited,
       canRead: (path) => readAllowed(path, this.rules(), context),
     };
   }
@@ -484,6 +525,7 @@ export class RunPermissions {
       ...(own.allow && { allow: [...own.allow] }),
       ...(own.ask && { ask: [...own.ask] }),
       ...(own.deny && { deny: [...own.deny] }),
+      ...(own.inherited && { inherited: own.inherited.map((entry) => ({ ...entry })) }),
     };
     return {
       mode: this.currentMode,

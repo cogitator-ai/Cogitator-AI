@@ -45,6 +45,7 @@ import type {
   PermissionRememberLayer,
   PermissionRuleRef,
   PermissionRules,
+  InheritedPermissionRules,
   PermissionsConfig,
   BudgetSpend,
   SessionBudgetConfig,
@@ -827,8 +828,11 @@ export interface RunCheckpoint {
     mode: PermissionMode;
     /** Rules a person allowed for the session ("always allow" to the `session` layer) */
     remembered?: PermissionRules;
-    /** The run's own rules (`RunOptions.permissions`), kept unless the resume passes its own */
-    rules?: PermissionRules;
+    /**
+     * The run's own rules (`RunOptions.permissions`), kept unless the resume passes its own, with
+     * where their path patterns start from
+     */
+    rules?: PermissionRules & { inherited?: InheritedPermissionRules[] };
   };
   /**
    * What the run counted against its budgets before it paused: the tool calls it ran, the limits

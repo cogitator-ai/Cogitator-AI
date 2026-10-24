@@ -62,6 +62,8 @@ interface CompiledRule {
   target: RuleTarget;
   /** Where its `/path` patterns start from */
   anchor?: string;
+  /** Where its relative path patterns start from, instead of the call's working directory */
+  cwd?: string;
   /** The rules of the same list, for `!` patterns, and its place there */
   list: CompiledRule[];
   index: number;
@@ -113,6 +115,7 @@ export class PermissionRuleSet {
             parsed,
             target,
             ...(layer.anchor !== undefined && { anchor: layer.anchor }),
+            ...(layer.cwd !== undefined && { cwd: layer.cwd }),
             list,
             index: list.length,
           });
@@ -401,7 +404,7 @@ function shapeKeys(schema: unknown): string[] {
 }
 
 function anchorsOf(rule: CompiledRule, subject: CallSubject, projectRoot: string) {
-  return { cwd: subject.cwd, source: rule.anchor ?? projectRoot };
+  return { cwd: rule.cwd ?? subject.cwd, source: rule.anchor ?? projectRoot };
 }
 
 /** Whether a path pattern rule matches one of `paths`, as named or with symlinks followed */

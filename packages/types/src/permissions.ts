@@ -97,6 +97,11 @@ export interface PermissionLayerSettings extends PermissionSettingsFile {
    * files, the settings directory for user and managed ones
    */
   anchor?: string;
+  /**
+   * The directory a rule's relative path pattern (`secrets/**`, `./src/x`) starts from, instead of
+   * the working directory of the call: for rules a run passed on to the delegated run it started
+   */
+  cwd?: string;
 }
 
 /** A rule a decision applied */
@@ -202,6 +207,19 @@ export interface PermissionSettingsOptions {
 /** Permissions of a run or an agent: its mode and its own rules, in the `session` layer */
 export interface PermissionOptions extends PermissionRules {
   mode?: PermissionMode;
+  /**
+   * Rules a run passes on to a run it starts (`agentAsTool()`), each list with where its path
+   * patterns start from, so they name the same paths in a run with another workspace
+   */
+  inherited?: readonly InheritedPermissionRules[];
+}
+
+/** Rules of another run, with the directories their path patterns start from there */
+export interface InheritedPermissionRules extends PermissionRules {
+  /** Where `/path` patterns start from: the project root of the run they come from */
+  root: string;
+  /** Where relative path patterns start from: the working directory of that run */
+  cwd: string;
 }
 
 /** Permissions of a runtime */
@@ -225,8 +243,13 @@ export interface PermissionsConfig extends PermissionOptions {
 /** What a run is allowed to do, as its tools see it in `context.permissions` */
 export interface ToolPermissionsView {
   readonly mode: PermissionMode;
-  /** The `session` rules of the run, for passing on to a run the tool starts */
+  /** The `session` rules of the run, merged */
   readonly rules: Required<PermissionRules>;
+  /**
+   * The `session` rules of the run with where their path patterns start from, for passing on to
+   * a run the tool starts (`RunOptions.permissions.inherited`)
+   */
+  readonly inherited: readonly InheritedPermissionRules[];
   /**
    * Whether no `Read(...)` deny or ask rule covers `path` (relative to the workspace root, or
    * absolute), for tools that read or list many files: `grep`, `glob` and `list_files` leave out

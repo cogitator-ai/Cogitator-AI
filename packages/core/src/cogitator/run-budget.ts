@@ -267,6 +267,53 @@ interface LimitState {
 }
 
 /**
+ * The live spending of one session in this process: what its record held when last read or
+ * written, and every run of it going on, whose spending not yet recorded counts too. Runs of one
+ * thread at the same time share it, so each sees what the others spend before every model call
+ * and tool call
+ */
+export class SessionLedger {
+  private readonly runs = new Set<RunBudget>();
+
+  constructor(private recorded: SessionSpend) {}
+
+  /** What the session's record holds, the fresher of what this ledger knew and `stored` */
+  refresh(stored: SessionSpend): void {
+    this.recorded = freshestSpend(this.recorded, stored);
+  }
+
+  join(run: RunBudget): void {
+    this.runs.add(run);
+  }
+
+  /** Takes a run that ended out, true when no run of the session goes on any more */
+  leave(run: RunBudget): boolean {
+    this.runs.delete(run);
+    return this.idle;
+  }
+
+  /** Whether no run of the session goes on */
+  get idle(): boolean {
+    return this.runs.size === 0;
+  }
+
+  /** The session's record, with the limits it raised */
+  get record(): SessionSpend {
+    return this.recorded;
+  }
+
+  /** What the session spent: its record and what every run of it spent that is not recorded */
+  totals(): SessionSpend {
+    let total = this.recorded;
+    for (const run of this.runs) {
+      const pending = run.pendingRecord();
+      total = addToSession(total, pending.spend, pending.raised);
+    }
+    return total;
+  }
+}
+
+/**
  * What a run counts against its budgets: the session's spending before it, what it spends itself
  * by agent, and the limits answers lifted or raised. It tells the run which limit it reached
  * before a model call or a tool turn, and warns once per run per limit past `warnAt`
@@ -279,15 +326,28 @@ export class RunBudget {
   private readonly sessionRaised: Record<string, number> = dictionary();
   private readonly warned = new Set<string>();
 
+  private readonly ledger: SessionLedger;
+
+  /**
+   * `session` is the session's spending as its record holds it, or the ledger the runs of the
+   * session in this process share
+   */
   constructor(
     private readonly options: RunBudgetOptions,
-    private session: SessionSpend,
+    session: SessionSpend | SessionLedger,
     state?: RunCheckpoint['budget']
   ) {
     this.spent = state ? copySpend(state.spent) : emptySpend();
     this.recorded = state ? copySpend(state.recorded) : emptySpend();
     this.lifted = new Set(state?.lifted ?? []);
     this.runRaised = dictionary(Object.entries(state?.raised ?? {}));
+    this.ledger = session instanceof SessionLedger ? session : new SessionLedger(session);
+    this.ledger.join(this);
+  }
+
+  /** Takes the run out of its session's ledger once it ended: true when it was the last one */
+  leave(): boolean {
+    return this.ledger.leave(this);
   }
 
   /** Whether any budget applies to the run */
@@ -324,9 +384,12 @@ export class RunBudget {
     add(this.spent, agentId, { toolCalls: count });
   }
 
-  /** What the session spent, this run's spending not yet recorded included */
+  /**
+   * What the session spent, the spending not yet recorded of this run and of the other runs of
+   * the session going on in this process included
+   */
   sessionTotals(): SessionSpend {
-    return addToSession(this.session, minus(this.spent, this.recorded), this.sessionRaised);
+    return this.ledger.totals();
   }
 
   /** What the run spent that the session's record does not hold yet, with the limits it raised */
@@ -339,7 +402,7 @@ export class RunBudget {
 
   /** The session's record now holds everything the run spent */
   markRecorded(session: SessionSpend): void {
-    this.session = session;
+    this.ledger.refresh(session);
     this.recorded = copySpend(this.spent);
   }
 
@@ -351,7 +414,7 @@ export class RunBudget {
     return (
       explicit ??
       own(this.sessionRaised, key) ??
-      own(this.session.raised, key) ??
+      own(this.ledger.record.raised, key) ??
       own(this.runRaised, key) ??
       configured
     );

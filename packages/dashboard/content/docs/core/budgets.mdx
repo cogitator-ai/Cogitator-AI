@@ -32,7 +32,7 @@ Cost is the run's `usage.cost`: what the provider reported, else the tokens pric
 
 ## Where the Spending Is Kept
 
-What a session spent lives in the thread's metadata (`budget`, see `SESSION_BUDGET_KEY`): in all, by agent, and the limits answers raised. Without memory, or for a run with `useMemory: false`, it is kept in the process. Each run adds what it spent when it pauses, ends or fails, and `RunResult.sessionSpend` holds the total after it. Runs of one thread that go on at the same time see each other's spending only once it is added, so give a session one run at a time (`multitaskStrategy: 'enqueue'`) when the limit must hold to the cent.
+What a session spent lives in the thread's metadata (`budget`, see `SESSION_BUDGET_KEY`): in all, by agent, and the limits answers raised. Without memory, or for a run with `useMemory: false`, it is kept in the process. Each run adds what it spent when it pauses, ends or fails, and `RunResult.sessionSpend` holds the total after it. Runs of one thread that go on at the same time in one process share one live count of the session, read again from storage when a run starts, so each sees what the others spend before every model call and tool call. Runs of one thread in different processes see each other's spending only once it is added, so give a session one run at a time (`multitaskStrategy: 'enqueue'`) there when the limit must hold to the cent.
 
 ## When a Limit Is Reached
 

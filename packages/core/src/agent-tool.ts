@@ -89,7 +89,10 @@ export function agentAsTool<TDeps = unknown>(
           ...(context.deps !== undefined && { deps: context.deps }),
           ...(!delegate.config.workspace && context.workspace && { workspace: context.workspace }),
           ...(context.permissions && {
-            permissions: { mode: context.permissions.mode, ...context.permissions.rules },
+            permissions: {
+              mode: context.permissions.mode,
+              inherited: context.permissions.inherited,
+            },
           }),
           onApproval: async (request) => {
             const decision = onApproval ? await onApproval(request) : 'pause';

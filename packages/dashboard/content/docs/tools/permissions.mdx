@@ -206,7 +206,7 @@ The classifier reads what the user asked for, the newest messages of the convers
 
 ## The Decision
 
-`resolvePermission(tool, args, context)` from `@cogitator-ai/core` is the one function every gate uses: the run loop, `cogitator.invokeTool()` and agents wrapped with [`agentAsTool()`](/docs/tools/agent-as-tool), whose inner run gets the caller's mode and `session` rules (`context.permissions`). It gives `{ decision: 'allow' | 'ask' | 'deny', reason, rule?, decidedBy, mode }`, `decidedBy` one of `rule`, `mode`, `tool`, `classifier`, `user` or `default`. In order:
+`resolvePermission(tool, args, context)` from `@cogitator-ai/core` is the one function every gate uses: the run loop, `cogitator.invokeTool()` and agents wrapped with [`agentAsTool()`](/docs/tools/agent-as-tool), whose inner run gets the caller's mode and `session` rules (`context.permissions.inherited`), each list with the project root and working directory its path patterns start from in the caller, so `Read(/private/**)` names the same directory in a delegate with another workspace (`RunOptions.permissions.inherited` passes such lists yourself). `invokeTool()` decides a call again right before its tool starts, as the run loop does. It gives `{ decision: 'allow' | 'ask' | 'deny', reason, rule?, decidedBy, mode }`, `decidedBy` one of `rule`, `mode`, `tool`, `classifier`, `user` or `default`. In order:
 
 1. a `deny` rule refuses the call
 2. `plan` mode refuses a call that is not read-only
