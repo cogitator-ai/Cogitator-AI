@@ -16,13 +16,26 @@ import {
   createToolCallEndEvent,
   createToolCallStartEvent,
   createToolResultEvent,
+  createToolUpdateEvent,
+  createToolDroppedEvent,
   type StreamEvent,
 } from './protocol.js';
 import { toAgentRunOutcome, toPendingApprovals, toPendingInterrupts } from './response.js';
 
 /** The run callbacks through which a streamed agent run reaches its client */
 export type AgentStreamCallbacks = Required<
-  Pick<RunOptions, 'onToken' | 'onReasoning' | 'onToolCall' | 'onToolResult'>
+  Pick<
+    RunOptions,
+    | 'onToken'
+    | 'onReasoning'
+    | 'onToolCall'
+    | 'onToolResult'
+    | 'onToolUpdate'
+    | 'onToolInputStart'
+    | 'onToolInputDelta'
+    | 'onToolInputAvailable'
+    | 'onToolInputAbandoned'
+  >
 >;
 
 export interface AgentStreamSessionOptions {
@@ -65,6 +78,15 @@ export function createThreadId(): string {
  * questions (`interrupt-required`) a paused run waits on, and `finish` with the usage, the thread and how the run ended. `fail` closes
  * the open part and sends `error`.
  *
+ * A tool call goes out as `tool-call-start`, `tool-call-delta` and `tool-call-end`. In a streamed
+ * run they follow the model as it writes the call, the deltas carrying its JSON arguments piece by
+ * piece and the end coming as soon as the call is complete, so calls do not interleave, else
+ * they all go out once the call is about to run, the arguments in one delta. A call that will
+ * never run (the model never finished it, or the run did not keep it) gets a `tool-result` with
+ * `dropped`, after a `tool-call-end` with `dropped` when its end had not gone out yet, also when
+ * the stream ends. `tool-update` carries what a running tool reported, `tool-result` what it
+ * returned.
+ *
  * Pass the thread to the run (`threadId: session.threadId`) and spread `callbacks` into its
  * options together with `stream: true`.
  */
@@ -74,6 +96,13 @@ export class AgentStreamSession {
   readonly callbacks: AgentStreamCallbacks;
 
   private open: { kind: PartKind; id: string } | undefined;
+  /** The argument text each streamed call sent, by id */
+  private readonly streamedArguments = new Map<string, string>();
+  /** Tool calls announced, by id: written, ended, running (or about to), dropped or settled */
+  private readonly toolCalls = new Map<
+    string,
+    'open' | 'ended' | 'running' | 'dropped' | 'settled'
+  >();
   private streamedText = false;
   private streamedReasoning = false;
 
@@ -93,14 +122,50 @@ export class AgentStreamSession {
         this.streamedReasoning = true;
         this.delta('reasoning', delta);
       },
-      onToolCall: (call) => {
+      onToolInputStart: ({ toolCallId, toolName }) => {
+        if (this.toolCalls.has(toolCallId)) return;
         this.endPart();
-        this.emit(createToolCallStartEvent(call.id, call.name));
-        this.emit(createToolCallDeltaEvent(call.id, JSON.stringify(call.arguments)));
-        this.emit(createToolCallEndEvent(call.id));
+        this.toolCalls.set(toolCallId, 'open');
+        this.emit(createToolCallStartEvent(toolCallId, toolName));
+      },
+      onToolInputDelta: ({ toolCallId, delta }) => {
+        if (this.toolCalls.get(toolCallId) !== 'open' || !delta) return;
+        this.streamedArguments.set(
+          toolCallId,
+          `${this.streamedArguments.get(toolCallId) ?? ''}${delta}`
+        );
+        this.emit(createToolCallDeltaEvent(toolCallId, delta));
+      },
+      onToolInputAvailable: ({ toolCallId }) => this.endToolCall(toolCallId),
+      onToolInputAbandoned: ({ toolCallId, reason }) => this.dropToolCall(toolCallId, reason),
+      onToolCall: (call) => {
+        const state = this.toolCalls.get(call.id);
+        if (state === undefined || state === 'dropped') {
+          this.endPart();
+          this.emit(createToolCallStartEvent(call.id, call.name));
+          this.emit(createToolCallDeltaEvent(call.id, JSON.stringify(call.arguments)));
+          this.emit(createToolCallEndEvent(call.id));
+        } else {
+          this.endToolCall(call.id);
+          if (!streamedAs(this.streamedArguments.get(call.id), call.arguments)) {
+            this.emit(createToolUpdateEvent(call.id, { arguments: call.arguments }));
+          }
+        }
+        this.streamedArguments.delete(call.id);
+        if (state !== 'settled') this.toolCalls.set(call.id, 'running');
+      },
+      onToolUpdate: (update) => {
+        this.endPart();
+        this.emit(createToolUpdateEvent(update.callId, update));
       },
       onToolResult: (toolResult) => {
-        this.emit(createToolResultEvent(generateId('res'), toolResult.callId, toolResult.result));
+        this.toolCalls.set(toolResult.callId, 'settled');
+        this.emit(
+          createToolResultEvent(generateId('res'), toolResult.callId, toolResult.result, {
+            details: toolResult.details,
+            presentation: toolResult.presentation,
+          })
+        );
       },
     };
   }
@@ -113,6 +178,7 @@ export class AgentStreamSession {
     if (!this.streamedReasoning && result.reasoning) this.delta('reasoning', result.reasoning);
     if (!this.streamedText && result.output) this.delta('text', result.output);
     this.endPart();
+    this.endToolCalls();
     if (result.status === 'paused') {
       const interrupts = toPendingInterrupts(result.interrupts ?? []);
       this.emit(
@@ -134,7 +200,31 @@ export class AgentStreamSession {
 
   fail(message: string, code?: string): void {
     this.endPart();
+    this.endToolCalls();
     this.emit(createErrorEvent(message, code));
+  }
+
+  private endToolCall(id: string): void {
+    if (this.toolCalls.get(id) !== 'open') return;
+    this.toolCalls.set(id, 'ended');
+    this.emit(createToolCallEndEvent(id));
+  }
+
+  /** Closes a call that will never run: its end with `dropped` if it was still open, its result */
+  private dropToolCall(id: string, reason: 'incomplete' | 'discarded'): void {
+    const state = this.toolCalls.get(id);
+    if (state !== 'open' && state !== 'ended') return;
+    if (state === 'open') this.emit(createToolCallEndEvent(id, true));
+    this.toolCalls.set(id, 'dropped');
+    this.emit(createToolDroppedEvent(generateId('res'), id, reason));
+  }
+
+  /** Drops the calls the stream announced that never came to run */
+  private endToolCalls(): void {
+    for (const [id, state] of this.toolCalls) {
+      if (state === 'open') this.dropToolCall(id, 'incomplete');
+      else if (state === 'ended') this.dropToolCall(id, 'discarded');
+    }
   }
 
   private delta(kind: PartKind, delta: string): void {
@@ -153,4 +243,25 @@ export class AgentStreamSession {
     this.open = undefined;
     this.emit(PART_EVENTS[open.kind].end(open.id));
   }
+}
+
+/** Whether the argument text a call streamed reads as `args`, keys in any order */
+function streamedAs(text: string | undefined, args: Record<string, unknown>): boolean {
+  let streamed: unknown;
+  try {
+    streamed = text === undefined || text.trim() === '' ? {} : JSON.parse(text);
+  } catch {
+    return false;
+  }
+  return canonicalJson(streamed) === canonicalJson(args);
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, inner: unknown) =>
+    inner && typeof inner === 'object' && !Array.isArray(inner)
+      ? Object.fromEntries(
+          Object.entries(inner as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))
+        )
+      : inner
+  );
 }

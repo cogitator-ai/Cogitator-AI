@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
-import type { ToolImagePart } from '@cogitator-ai/types';
+import { toolOutputContent, type ToolImagePart } from '@cogitator-ai/types';
 import type { RealtimeSessionConfig } from '../types.js';
 import {
   assertRealtimeTools,
@@ -446,11 +446,13 @@ export class OpenAIRealtimeAdapter extends EventEmitter<OpenAIRealtimeEvents> {
     if (!tool) return failed(`Unknown tool: ${call.name}`);
 
     try {
-      const result = await tool.execute(args, {
-        callId: call.callId,
-        signal,
-        ...(this.config.sessionId !== undefined && { sessionId: this.config.sessionId }),
-      });
+      const result = toolOutputContent(
+        await tool.execute(args, {
+          callId: call.callId,
+          signal,
+          ...(this.config.sessionId !== undefined && { sessionId: this.config.sessionId }),
+        })
+      );
       const parts = realtimeToolParts(result, tool);
       return parts
         ? { callId: call.callId, name: call.name, output: parts.text, images: parts.images }

@@ -183,6 +183,14 @@ export class AnthropicBackend extends BaseLLMBackend {
           if (block.type === 'tool_use') {
             currentToolUse = { id: block.id, name: block.name, inputJson: '', thinking };
             thinking = [];
+            if (block.name !== JSON_RESPONSE_TOOL) {
+              yield {
+                id,
+                delta: {
+                  toolInput: [{ type: 'start', toolCallId: block.id, toolName: block.name }],
+                },
+              };
+            }
           } else if (block.type === 'thinking') {
             currentThinking = { thinking: block.thinking, signature: block.signature };
           } else if (block.type === 'redacted_thinking') {
@@ -194,6 +202,16 @@ export class AnthropicBackend extends BaseLLMBackend {
             yield { id, delta: { content: delta.text } };
           } else if (delta.type === 'input_json_delta' && currentToolUse) {
             currentToolUse.inputJson += delta.partial_json;
+            if (delta.partial_json && currentToolUse.name !== JSON_RESPONSE_TOOL) {
+              yield {
+                id,
+                delta: {
+                  toolInput: [
+                    { type: 'delta', toolCallId: currentToolUse.id, delta: delta.partial_json },
+                  ],
+                },
+              };
+            }
           } else if (delta.type === 'thinking_delta' && currentThinking) {
             currentThinking.thinking += delta.thinking;
             if (delta.thinking) yield { id, delta: { reasoning: delta.thinking } };
@@ -206,6 +224,12 @@ export class AnthropicBackend extends BaseLLMBackend {
             currentThinking = null;
           } else if (currentToolUse) {
             toolUses.push(currentToolUse);
+            if (currentToolUse.name !== JSON_RESPONSE_TOOL) {
+              yield {
+                id,
+                delta: { toolInput: [{ type: 'end', toolCallId: currentToolUse.id }] },
+              };
+            }
             currentToolUse = null;
           }
         } else if (event.type === 'message_delta') {

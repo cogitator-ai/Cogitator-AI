@@ -30,11 +30,11 @@ export interface ToolConfig<TParams = unknown, TResult = unknown, TDeps = unknow
   tags?: string[];
   parameters: ZodType<TParams>;
   /**
-   * Schema of the tool's result. Nothing checks it in a run, it describes the result: an MCP
-   * server advertises it and returns the result as `structuredContent`, tools imported from an
-   * MCP server get the server's output schema here
+   * Schema of the tool's result, the `content` of a `toolOutput()` result. Nothing checks it in a
+   * run, it describes what the model reads: an MCP server advertises it and returns that as
+   * `structuredContent`, tools imported from an MCP server get the server's output schema here
    */
-  outputSchema?: ZodType<TResult>;
+  outputSchema?: ZodType<ToolOutputContent<TResult>>;
   /** How the tool behaves, as MCP tool annotations describe it */
   annotations?: ToolAnnotations;
   /**
@@ -65,6 +65,39 @@ export interface ToolConfig<TParams = unknown, TResult = unknown, TDeps = unknow
    * cost no context until used. A call to a deferred tool that was not loaded yet still runs
    */
   deferred?: boolean;
+  /**
+   * Whether a call of the tool may run at the same time as other such calls of its step, when the
+   * run schedules them (`RunOptions.parallelToolCalls: true`): `true`, or a check of the call's
+   * arguments. A call that is not safe waits for every call before it and runs alone, the calls
+   * after it wait for it. Default: `annotations.readOnlyHint`, so a tool that declares neither runs
+   * alone. A check that throws counts as not safe
+   */
+  isConcurrencySafe?: boolean | ((params: TParams) => boolean);
+  /**
+   * Keys of what a call changes, such as `await fileLockKey(path)` for a file it writes: calls
+   * whose keys meet never run at the same time, in this run or any other of the process, and go
+   * one after another in the order they asked. A call run inside a call that holds a key, such as
+   * a tool of an agent the tool runs, takes that key again without waiting. The keys are let go
+   * once the tool's own promise settles, also after it timed out
+   */
+  lockKeys?: (
+    params: TParams,
+    context: ToolContext<TDeps>
+  ) => readonly string[] | Promise<readonly string[]>;
+  /**
+   * How clients show a call of the tool, saved with its result so a client draws the row without
+   * the tool's code: a value, or one made from the call's arguments. A result made with
+   * `toolOutput({ presentation })` wins over it
+   */
+  presentation?: ToolPresentation | ((params: TParams) => ToolPresentation);
+  /** The model began to write a call of this tool, in a run with `stream: true` */
+  onInputStart?: (event: ToolInputStart) => void;
+  /** The next piece of the JSON arguments of a call the model writes, in a run with `stream: true` */
+  onInputDelta?: (event: ToolInputDelta) => void;
+  /** The model finished a call of this tool and its arguments are read, in a run with `stream: true` */
+  onInputAvailable?: (event: ToolInputAvailable) => void;
+  /** A call of this tool the model began to write will not run, in a run with `stream: true` */
+  onInputAbandoned?: (event: ToolInputAbandoned) => void;
 }
 
 export interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
@@ -76,11 +109,11 @@ export interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
   tags?: string[];
   parameters: ZodType<TParams>;
   /**
-   * Schema of the tool's result. Nothing checks it in a run, it describes the result: an MCP
-   * server advertises it and returns the result as `structuredContent`, tools imported from an
-   * MCP server get the server's output schema here
+   * Schema of the tool's result, the `content` of a `toolOutput()` result. Nothing checks it in a
+   * run, it describes what the model reads: an MCP server advertises it and returns that as
+   * `structuredContent`, tools imported from an MCP server get the server's output schema here
    */
-  outputSchema?: ZodType<TResult>;
+  outputSchema?: ZodType<ToolOutputContent<TResult>>;
   /** How the tool behaves, as MCP tool annotations describe it */
   annotations?: ToolAnnotations;
   execute(params: TParams, context: BaseToolContext<TDeps>): Promise<TResult>;
@@ -107,6 +140,19 @@ export interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
    * cost no context until used. A call to a deferred tool that was not loaded yet still runs
    */
   deferred?: boolean;
+  /** Whether a call may run beside other safe calls of its step, see `ToolConfig.isConcurrencySafe` */
+  isConcurrencySafe?: boolean | ToolCallCheck<TParams>;
+  /** Keys of what a call changes, see `ToolConfig.lockKeys` */
+  lockKeys?(
+    params: TParams,
+    context: BaseToolContext<TDeps>
+  ): readonly string[] | Promise<readonly string[]>;
+  /** How clients show a call of the tool, see `ToolConfig.presentation` */
+  presentation?: ToolPresentation | ToolPresenter<TParams>;
+  onInputStart?(event: ToolInputStart): void;
+  onInputDelta?(event: ToolInputDelta): void;
+  onInputAvailable?(event: ToolInputAvailable): void;
+  onInputAbandoned?(event: ToolInputAbandoned): void;
   toJSON(): ToolSchema;
 }
 
@@ -136,6 +182,92 @@ export interface ToolAnnotations {
 }
 
 export type ApprovalCheck = (params: Record<string, unknown>) => boolean;
+
+/**
+ * What the model reads of a tool's result `TResult`: the `content` of a `toolOutput()` result,
+ * any other result as it is. A tool's `outputSchema` describes this
+ */
+export type ToolOutputContent<TResult> =
+  TResult extends ToolOutputResult<infer TContent, unknown> ? TContent : TResult;
+
+/** A check of a call's arguments, as the tool's schema read them */
+export type ToolCallCheck<TParams = unknown> = {
+  check(params: TParams): boolean;
+}['check'];
+
+/** The presentation of a call, from its arguments as the tool's schema read them */
+export type ToolPresenter<TParams = unknown> = {
+  present(params: TParams): ToolPresentation;
+}['present'];
+
+/**
+ * How a client shows a tool call in a list of steps, without the tool's code: a label, an icon
+ * and one line about the call. A run saves it with the call's result (`metadata.presentation` of
+ * the `tool_result` entry) and reports it in `onToolResult` and `onToolUpdate`.
+ */
+export interface ToolPresentation {
+  /** What the call does, for people, such as `Edit file` */
+  label: string;
+  /** Name of an icon the client knows, such as `file-pen` (Lucide names by convention) */
+  icon?: string;
+  /** One line about this call, such as the path it edits */
+  detail?: string;
+}
+
+/**
+ * A tool result whose parts go to different readers, built with `toolOutput()` from
+ * `@cogitator-ai/core`: the model reads `content`, the application and its UI get `details` and
+ * `presentation` too. A run saves `details` and `presentation` in the metadata of the call's
+ * `tool_result` entry, never in what the model reads.
+ */
+export interface ToolOutputResult<TContent = unknown, TDetails = unknown> {
+  type: 'tool-output';
+  /** What the model reads: any JSON value, or a `toolContent()` result */
+  content: TContent;
+  /** Data for the application only, such as a diff or a row count: never sent to the model */
+  details?: TDetails;
+  /** How to show this call, instead of the tool's `presentation` */
+  presentation?: ToolPresentation;
+}
+
+/** What a running tool has so far, reported with `context.update()` */
+export interface ToolProgress {
+  /** The result so far, in the shape of `content` */
+  content?: unknown;
+  details?: unknown;
+  presentation?: ToolPresentation;
+}
+
+/** The model began to write a tool call */
+export interface ToolInputStart {
+  toolCallId: string;
+  toolName: string;
+}
+
+/** The next piece of the JSON arguments of a tool call the model writes */
+export interface ToolInputDelta {
+  toolCallId: string;
+  toolName: string;
+  /** The text that follows what came before, not valid JSON on its own */
+  delta: string;
+}
+
+/** The model finished a tool call and its arguments are read */
+export interface ToolInputAvailable {
+  toolCallId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+}
+
+/**
+ * A tool call the model began to write that will not run: `incomplete` when its arguments never
+ * came complete, `discarded` when they did and the turn did not keep the call
+ */
+export interface ToolInputAbandoned {
+  toolCallId: string;
+  toolName: string;
+  reason: 'incomplete' | 'discarded';
+}
 
 /** What a tool call runs with, whether or not the tool reads the run's `deps`. */
 export interface BaseToolContext<TDeps = unknown> {
@@ -172,6 +304,13 @@ export interface BaseToolContext<TDeps = unknown> {
    * not in `invokeTool()` or a sandboxed tool
    */
   interrupt?: <T = unknown>(request: InterruptRequest<T>) => Promise<T>;
+  /**
+   * Reports what the tool has so far while it runs, such as lines of a command's output or the
+   * rows found: the run hands it to `onToolUpdate` and a server streams it as `tool-update`.
+   * Nothing of it reaches the model or memory, the tool's result does. Present in a run and in
+   * `invokeTool()`
+   */
+  update?: (progress: ToolProgress) => void;
 }
 
 /**

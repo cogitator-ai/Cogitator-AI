@@ -35,23 +35,27 @@ function tool<TParams, TResult>(config: ToolConfig<TParams, TResult>): Tool<TPar
 
 ### ToolConfig
 
-| Field              | Type                                    | Description                                                                                                                          |
-| ------------------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `name`             | `string`                                | Unique tool name (used in LLM function calling), see [Tool Names](#tool-names)                                                       |
-| `description`      | `string`                                | What the tool does (sent to the LLM)                                                                                                 |
-| `parameters`       | `ZodType`                               | Zod schema defining accepted parameters                                                                                              |
-| `execute`          | `(params, context) => Promise<TResult>` | Implementation function                                                                                                              |
-| `category`         | `ToolCategory`                          | `'math'`, `'text'`, `'file'`, `'network'`, `'system'`, `'utility'`, `'web'`, `'database'`, `'communication'` or `'development'`      |
-| `tags`             | `string[]`                              | Optional tags for filtering                                                                                                          |
-| `sideEffects`      | `SideEffectType[]`                      | `'filesystem'`, `'network'`, `'database'`, `'process'`, `'external'`, shown to approvers                                             |
-| `requiresApproval` | `boolean \| (params) => boolean`        | Require human approval before execution ([Approvals](/docs/tools/approvals))                                                         |
-| `timeout`          | `number`                                | Per-call timeout in milliseconds                                                                                                     |
-| `sandbox`          | `SandboxConfig`                         | Run in an isolated environment (see below)                                                                                           |
-| `maxResultLength`  | `number`                                | Most characters of a result the model reads, over `limits.maxToolResultLength` ([Result Size](#result-size))                         |
-| `title`            | `string`                                | Name for people, such as an MCP client shows (the model sees `name`)                                                                 |
-| `outputSchema`     | `ZodType`                               | Schema of the result. Not checked in a run: an [MCP server](/docs/integrations/mcp) advertises it and sends `structuredContent`      |
-| `annotations`      | `ToolAnnotations`                       | MCP hints: `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`                                                      |
-| `providerTypes`    | `ProviderToolTypes`                     | The tool's type in a provider's own catalog, sent to that provider instead of its schema, such as `{ anthropic: 'memory_20250818' }` |
+| Field                                                                  | Type                                               | Description                                                                                                                                            |
+| ---------------------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`                                                                 | `string`                                           | Unique tool name (used in LLM function calling), see [Tool Names](#tool-names)                                                                         |
+| `description`                                                          | `string`                                           | What the tool does (sent to the LLM)                                                                                                                   |
+| `parameters`                                                           | `ZodType`                                          | Zod schema defining accepted parameters                                                                                                                |
+| `execute`                                                              | `(params, context) => Promise<TResult>`            | Implementation function                                                                                                                                |
+| `category`                                                             | `ToolCategory`                                     | `'math'`, `'text'`, `'file'`, `'network'`, `'system'`, `'utility'`, `'web'`, `'database'`, `'communication'` or `'development'`                        |
+| `tags`                                                                 | `string[]`                                         | Optional tags for filtering                                                                                                                            |
+| `sideEffects`                                                          | `SideEffectType[]`                                 | `'filesystem'`, `'network'`, `'database'`, `'process'`, `'external'`, shown to approvers                                                               |
+| `requiresApproval`                                                     | `boolean \| (params) => boolean`                   | Require human approval before execution ([Approvals](/docs/tools/approvals))                                                                           |
+| `timeout`                                                              | `number`                                           | Per-call timeout in milliseconds, over the run's `timeouts.toolMs` ([Stage Timeouts](/docs/tools/timeouts))                                            |
+| `sandbox`                                                              | `SandboxConfig`                                    | Run in an isolated environment (see below)                                                                                                             |
+| `maxResultLength`                                                      | `number`                                           | Most characters of a result the model reads, over `limits.maxToolResultLength` ([Result Size](#result-size))                                           |
+| `title`                                                                | `string`                                           | Name for people, such as an MCP client shows (the model sees `name`)                                                                                   |
+| `outputSchema`                                                         | `ZodType`                                          | Schema of the result. Not checked in a run: an [MCP server](/docs/integrations/mcp) advertises it and sends `structuredContent`                        |
+| `annotations`                                                          | `ToolAnnotations`                                  | MCP hints: `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`                                                                        |
+| `providerTypes`                                                        | `ProviderToolTypes`                                | The tool's type in a provider's own catalog, sent to that provider instead of its schema, such as `{ anthropic: 'memory_20250818' }`                   |
+| `isConcurrencySafe`                                                    | `boolean \| (params) => boolean`                   | May run beside other safe calls of its step with `parallelToolCalls` (default: `annotations.readOnlyHint`), see [Concurrency](/docs/tools/concurrency) |
+| `lockKeys`                                                             | `(params, context) => string[]`                    | Keys of what a call changes, calls whose keys meet never run at the same time, see [Lock Keys](/docs/tools/concurrency#lock-keys)                      |
+| `presentation`                                                         | `ToolPresentation \| (params) => ToolPresentation` | How clients show a call: `label`, `icon`, `detail`, see [Results and Progress](/docs/tools/results#presentation)                                       |
+| `onInputStart`, `onInputDelta`, `onInputAvailable`, `onInputAbandoned` | `(event) => void`                                  | The model writes a call of the tool, in a streamed run, see [Streaming Tool Input](/docs/tools/streaming-input)                                        |
 
 ### Tool Names
 
@@ -85,18 +89,19 @@ normalizeToolNames(['a.b', 'a_b']); // ['a_b_<hash>', 'a_b']
 
 `execute` receives the validated parameters and a `ToolContext`:
 
-| Field                                                   | Description                                                                  |
-| ------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `agentId`, `runId`                                      | The agent and run that called the tool                                       |
-| `signal`                                                | Aborted when the run is cancelled, times out, or the tool's `timeout` passes |
-| `threadId`                                              | The conversation                                                             |
-| `userId`                                                | The user the run acts for (`RunOptions.userId`)                              |
-| `channelType`, `channelId`, `topicId`, `conversationId` | Where the message came from, for channel gateways                            |
-| `deps`                                                  | The run's `deps` (`RunOptions.deps`), never shown to the model               |
+| Field                                                   | Description                                                                                                  |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `agentId`, `runId`                                      | The agent and run that called the tool                                                                       |
+| `signal`                                                | Aborted when the run is cancelled, times out, or the tool's `timeout` passes                                 |
+| `threadId`                                              | The conversation                                                                                             |
+| `userId`                                                | The user the run acts for (`RunOptions.userId`)                                                              |
+| `channelType`, `channelId`, `topicId`, `conversationId` | Where the message came from, for channel gateways                                                            |
+| `deps`                                                  | The run's `deps` (`RunOptions.deps`), never shown to the model                                               |
+| `update`                                                | Reports what the tool has so far while it runs ([Progress](/docs/tools/results#progress-with-contextupdate)) |
 
 Annotate the context as `ToolContext<YourDeps>` to read `deps` typed, see [Dependencies for Tools](/docs/core/agents#dependencies-for-tools).
 
-When `timeout` is set, the runtime aborts `context.signal` once the limit is reached and reports `Tool "<name>" timed out after <ms>ms` to the model as the tool error. Long-running tools should pass `context.signal` to `fetch` and other cancellable APIs so the work actually stops.
+When `timeout` is set (or the run's `timeouts.toolMs` for a tool without one), the runtime aborts `context.signal` once the limit is reached and reports `Tool "<name>" timed out after <ms>ms` to the model as the tool error, with `errorCode: 'TOOL_TIMEOUT'` on the `ToolResult`. Long-running tools should pass `context.signal` to `fetch` and other cancellable APIs so the work actually stops.
 
 ## Parameter Schemas
 
@@ -126,7 +131,7 @@ Arguments the model sends are parsed with the schema before `execute` runs, so d
 
 ## Tool Results
 
-The `execute` function can return any serializable value. Cogitator converts the result to JSON and feeds it back to the LLM as a tool response:
+The `execute` function can return any serializable value. Cogitator converts the result to JSON and feeds it back to the LLM as a tool response (return [`toolOutput()`](/docs/tools/results) to give your application data the model never reads):
 
 ```typescript
 const calculator = tool({
@@ -356,7 +361,7 @@ Recursive schemas work too. A `z.lazy()` schema (a tree, a nested comment thread
 
 Tools that run untrusted commands can declare a sandbox. A sandboxed tool does not run its `execute` function: the runtime executes the call in the sandbox instead (install `@cogitator-ai/sandbox`):
 
-- `type: 'docker'` runs the `command` argument with `sh -c` in a container of `image`, with optional `cwd` and `env` arguments, and returns `{ stdout, stderr, exitCode, timedOut, duration, command }`.
+- `type: 'docker'` runs the `command` argument with `sh -c` in a container of `image`, with optional `cwd` and `env` arguments, and returns `{ stdout, stderr, exitCode, timedOut, duration, command }`. A command that runs out of time fails the call with `errorCode: 'TOOL_TIMEOUT'` instead.
 - `type: 'wasm'` passes the arguments as JSON on stdin to `wasmModule` and returns its stdout, parsed as JSON when possible. A run that traps or panics, times out, or writes more than the sandbox keeps comes back to the model as a tool error, never as an empty result.
 
 ```typescript

@@ -453,17 +453,21 @@ describe('Cogitator', () => {
         await cog.close();
       });
 
-      it('executes parallel tool calls when parallelToolCalls=true', async () => {
+      it('executes concurrency-safe tool calls together when parallelToolCalls=true', async () => {
         const cog = new Cogitator();
-        const startTimes: number[] = [];
+        let running = 0;
+        let mostAtOnce = 0;
 
         const slowTool = tool({
           name: 'slow_tool',
           description: 'Slow tool',
           parameters: z.object({ id: z.number() }),
+          isConcurrencySafe: true,
           execute: async ({ id }) => {
-            startTimes.push(Date.now());
-            await new Promise((r) => setTimeout(r, 50));
+            running++;
+            mostAtOnce = Math.max(mostAtOnce, running);
+            await new Promise((r) => setTimeout(r, 0));
+            running--;
             return { result: `done_${id}` };
           },
         });
@@ -491,8 +495,7 @@ describe('Cogitator', () => {
 
         await cog.run(agent, { input: 'Run parallel', parallelToolCalls: true });
 
-        const timeDiff = Math.abs(startTimes[1] - startTimes[0]);
-        expect(timeDiff).toBeLessThan(30);
+        expect(mostAtOnce).toBe(2);
 
         await cog.close();
       });

@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { tool } from '../tool';
 import { isProviderSafeToolName, normalizeToolName } from '../tool-name';
 import { toolResultLengthError } from '../tool-content';
-import type { Tool } from '@cogitator-ai/types';
+import { toolOutputContent, type Tool } from '@cogitator-ai/types';
 
 async function importFresh(filePath: string): Promise<unknown> {
   const url = pathToFileURL(filePath).href + `?t=${Date.now()}`;
@@ -149,7 +149,7 @@ export default {
         const t = (mod as { default: { execute: (p: unknown) => Promise<unknown> } }).default;
 
         const startTime = Date.now();
-        const result = await t.execute(params);
+        const result = toolOutputContent(await t.execute(params));
         const duration = Date.now() - startTime;
 
         return { success: true, result, durationMs: duration };

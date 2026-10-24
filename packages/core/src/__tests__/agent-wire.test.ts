@@ -169,6 +169,7 @@ describe('agent wire format', () => {
       maxIterations: 7,
       onIterationLimit: 'stop',
       timeout: 600000,
+      timeouts: { stepMs: 30000, chunkMs: 5000, toolMs: 60000 },
       todos: true,
       middleware: [{ name: 'audit', afterModel: () => undefined }],
       workspace: new LocalWorkspace({ root: join(tmpdir(), 'wire-workspace'), create: false }),

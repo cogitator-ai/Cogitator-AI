@@ -4,7 +4,7 @@
 
 import type { ChatRequest, ChatResponse } from './llm';
 import type { Message, ToolCall, ToolResult } from './message';
-import type { Tool } from './tool';
+import type { Tool, ToolInputAvailable, ToolInputDelta, ToolInputStart } from './tool';
 import type { RunResult } from './runtime';
 import type { Workspace } from './workspace';
 
@@ -76,6 +76,12 @@ export interface ModelTurnUpdate {
 export interface ModelStreamSink {
   onToken(token: string): void;
   onReasoning?(delta: string): void;
+  /** The model began to write a tool call */
+  onToolInputStart?(event: ToolInputStart): void;
+  /** The next piece of the JSON arguments of a tool call */
+  onToolInputDelta?(event: ToolInputDelta): void;
+  /** A tool call is complete, with its arguments read */
+  onToolInputAvailable?(event: ToolInputAvailable): void;
 }
 
 /**

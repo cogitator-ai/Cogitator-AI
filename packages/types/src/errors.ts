@@ -31,6 +31,8 @@ export enum ErrorCode {
   TOOL_INVALID_ARGS = 'TOOL_INVALID_ARGS',
   TOOL_EXECUTION_FAILED = 'TOOL_EXECUTION_FAILED',
   TOOL_TIMEOUT = 'TOOL_TIMEOUT',
+  /** A tool call would wait for lock keys held by calls that wait for its own */
+  TOOL_LOCK_CYCLE = 'TOOL_LOCK_CYCLE',
 
   MEMORY_UNAVAILABLE = 'MEMORY_UNAVAILABLE',
   MEMORY_WRITE_FAILED = 'MEMORY_WRITE_FAILED',
@@ -44,6 +46,10 @@ export enum ErrorCode {
   RUN_NOT_PAUSED = 'RUN_NOT_PAUSED',
   RUN_PAUSED = 'RUN_PAUSED',
   RUN_TIMEOUT = 'RUN_TIMEOUT',
+  /** A model call outlasted `timeouts.stepMs` */
+  RUN_STEP_TIMEOUT = 'RUN_STEP_TIMEOUT',
+  /** A streamed model call sent no chunk for `timeouts.chunkMs` */
+  RUN_CHUNK_TIMEOUT = 'RUN_CHUNK_TIMEOUT',
   /** A newer run on the thread stopped this one (`multitaskStrategy: 'interrupt'` or `'rollback'`) */
   RUN_INTERRUPTED = 'RUN_INTERRUPTED',
   /** The thread has a run going on and the new one asked to be refused (`multitaskStrategy: 'reject'`) */
@@ -97,6 +103,7 @@ export const ERROR_STATUS_CODES: Record<ErrorCode, number> = {
   [ErrorCode.TOOL_INVALID_ARGS]: 400,
   [ErrorCode.TOOL_EXECUTION_FAILED]: 500,
   [ErrorCode.TOOL_TIMEOUT]: 504,
+  [ErrorCode.TOOL_LOCK_CYCLE]: 409,
 
   [ErrorCode.MEMORY_UNAVAILABLE]: 503,
   [ErrorCode.MEMORY_WRITE_FAILED]: 500,
@@ -110,6 +117,8 @@ export const ERROR_STATUS_CODES: Record<ErrorCode, number> = {
   [ErrorCode.RUN_NOT_PAUSED]: 409,
   [ErrorCode.RUN_PAUSED]: 409,
   [ErrorCode.RUN_TIMEOUT]: 504,
+  [ErrorCode.RUN_STEP_TIMEOUT]: 504,
+  [ErrorCode.RUN_CHUNK_TIMEOUT]: 504,
   [ErrorCode.RUN_INTERRUPTED]: 409,
   [ErrorCode.THREAD_BUSY]: 409,
   [ErrorCode.INTERRUPT_EXPIRED]: 410,

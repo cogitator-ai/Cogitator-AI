@@ -104,9 +104,48 @@ export function tool<TParams, TResult, TDeps = unknown>(
     maxResultLength: config.maxResultLength,
     ...(config.providerTypes && { providerTypes: config.providerTypes }),
     ...(config.deferred && { deferred: true }),
+    ...(config.isConcurrencySafe !== undefined && { isConcurrencySafe: config.isConcurrencySafe }),
+    ...(config.lockKeys && {
+      lockKeys: config.lockKeys as (
+        params: TParams,
+        context: BaseToolContext<TDeps>
+      ) => readonly string[] | Promise<readonly string[]>,
+    }),
+    ...(config.presentation !== undefined && { presentation: config.presentation }),
+    ...(config.onInputStart && { onInputStart: config.onInputStart }),
+    ...(config.onInputDelta && { onInputDelta: config.onInputDelta }),
+    ...(config.onInputAvailable && { onInputAvailable: config.onInputAvailable }),
+    ...(config.onInputAbandoned && { onInputAbandoned: config.onInputAbandoned }),
     toJSON(): ToolSchema {
       return toolToSchema(this);
     },
+  };
+}
+
+/**
+ * The fields of `tool` that decide how its calls are scheduled and shown, to keep on a tool that
+ * wraps it: concurrency, lock keys, presentation and input hooks.
+ */
+export function executionFieldsOf<TParams, TResult, TDeps>(
+  tool: Tool<TParams, TResult, TDeps>
+): Pick<
+  Tool<TParams, TResult, TDeps>,
+  | 'isConcurrencySafe'
+  | 'lockKeys'
+  | 'presentation'
+  | 'onInputStart'
+  | 'onInputDelta'
+  | 'onInputAvailable'
+  | 'onInputAbandoned'
+> {
+  return {
+    ...(tool.isConcurrencySafe !== undefined && { isConcurrencySafe: tool.isConcurrencySafe }),
+    ...(tool.lockKeys && { lockKeys: (params, context) => tool.lockKeys!(params, context) }),
+    ...(tool.presentation !== undefined && { presentation: tool.presentation }),
+    ...(tool.onInputStart && { onInputStart: (event) => tool.onInputStart!(event) }),
+    ...(tool.onInputDelta && { onInputDelta: (event) => tool.onInputDelta!(event) }),
+    ...(tool.onInputAvailable && { onInputAvailable: (event) => tool.onInputAvailable!(event) }),
+    ...(tool.onInputAbandoned && { onInputAbandoned: (event) => tool.onInputAbandoned!(event) }),
   };
 }
 
@@ -136,6 +175,7 @@ export function withParsedArguments<TParams, TResult>(
     ...(tool.maxResultLength !== undefined && { maxResultLength: tool.maxResultLength }),
     ...(tool.providerTypes && { providerTypes: tool.providerTypes }),
     ...(tool.deferred && { deferred: true }),
+    ...executionFieldsOf(tool),
     toJSON: () => tool.toJSON(),
   };
 }

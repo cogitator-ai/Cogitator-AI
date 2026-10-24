@@ -169,6 +169,7 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     onFinish,
     onToolCall,
     onToolResult,
+    onToolCallDropped,
     onReasoning,
     onApprovalRequired,
     onInterruptRequired,
@@ -332,6 +333,7 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
           const tc = toolCalls.get(event.id);
           if (!tc) return false;
           toolCalls.delete(event.id);
+          if (event.dropped) return false;
           const toolCall: ToolCall = {
             id: event.id,
             name: tc.name,
@@ -342,11 +344,30 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
           return false;
         }
 
+        case 'tool-update': {
+          if (!event.arguments) return false;
+          const known = stateRef.current.currentToolCalls.find(
+            (call) => call.id === event.toolCallId
+          );
+          if (!known) return false;
+          const corrected: ToolCall = { ...known, arguments: event.arguments };
+          apply({ type: 'UPDATE_TOOL_CALL', payload: corrected });
+          onToolCall?.(corrected);
+          return false;
+        }
+
         case 'tool-result': {
+          if (event.dropped) {
+            apply({ type: 'REMOVE_TOOL_CALL', payload: event.toolCallId });
+            onToolCallDropped?.(event.toolCallId);
+            return false;
+          }
           const toolResult: ToolResultEvent = {
             id: event.id,
             toolCallId: event.toolCallId,
             result: event.result,
+            ...(event.details !== undefined && { details: event.details }),
+            ...(event.presentation && { presentation: event.presentation }),
           };
           onToolResult?.(toolResult);
           return false;
@@ -386,6 +407,7 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
       onError,
       onReasoning,
       onToolCall,
+      onToolCallDropped,
       onToolResult,
       requireAnswers,
       requireApproval,

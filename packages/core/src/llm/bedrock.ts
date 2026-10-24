@@ -29,6 +29,7 @@ import {
   type LLMErrorContext,
 } from './errors';
 import { finishRunsTools, normalizeTurn, toolCallArguments } from './turn';
+import { ToolInputStream } from './tool-input';
 import {
   createWarnOnce,
   forcedToolChoiceInstruction,
@@ -318,6 +319,7 @@ export class BedrockBackend extends BaseLLMBackend {
     const state: StreamState = {
       toolUses: [],
       toolCallInputs: new Map(),
+      toolInputs: new ToolInputStream(),
       reasoning: new Map(),
       thinking: [],
     };
@@ -345,11 +347,13 @@ export class BedrockBackend extends BaseLLMBackend {
     const { toolUses, toolCallInputs } = state;
     if (event.contentBlockStart?.start?.toolUse) {
       const idx = event.contentBlockStart.contentBlockIndex ?? 0;
-      toolCallInputs.set(idx, {
-        id: event.contentBlockStart.start.toolUse.toolUseId ?? '',
-        name: event.contentBlockStart.start.toolUse.name ?? '',
-        input: '',
+      const use = event.contentBlockStart.start.toolUse;
+      toolCallInputs.set(idx, { id: use.toolUseId ?? '', name: use.name ?? '', input: '' });
+      const toolInput = state.toolInputs.piece(idx, {
+        ...(use.toolUseId && { id: use.toolUseId }),
+        ...(use.name && { name: use.name }),
       });
+      if (toolInput.length > 0) yield { id, delta: { toolInput } };
     }
 
     if (event.contentBlockDelta) {
@@ -367,6 +371,8 @@ export class BedrockBackend extends BaseLLMBackend {
         const existing = toolCallInputs.get(idx);
         if (existing) {
           existing.input += delta.toolUse.input;
+          const toolInput = state.toolInputs.piece(idx, { arguments: delta.toolUse.input });
+          if (toolInput.length > 0) yield { id, delta: { toolInput } };
         }
       }
 
@@ -399,6 +405,8 @@ export class BedrockBackend extends BaseLLMBackend {
         toolUses.push({ ...toolCall, thinking: state.thinking });
         toolCallInputs.delete(idx);
         state.thinking = [];
+        const toolInput = state.toolInputs.end(idx);
+        if (toolInput.length > 0) yield { id, delta: { toolInput } };
       }
     }
 
@@ -831,6 +839,8 @@ interface StreamState {
   /** Finished `toolUse` blocks, kept as raw JSON until the turn's stop reason is known */
   toolUses: Array<{ id: string; name: string; input: string; thinking: Record<string, unknown>[] }>;
   toolCallInputs: Map<number, { id: string; name: string; input: string }>;
+  /** What the client hears of the calls while the model writes them */
+  toolInputs: ToolInputStream;
   reasoning: Map<number, ReasoningContentBlock>;
   thinking: Record<string, unknown>[];
 }

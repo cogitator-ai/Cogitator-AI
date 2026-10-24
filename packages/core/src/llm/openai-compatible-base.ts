@@ -10,8 +10,10 @@ import type {
   LLMResponseFormat,
   MessageContent,
   ContentPart,
+  ToolInputStreamPart,
 } from '@cogitator-ai/types';
 import { BaseLLMBackend } from './base';
+import { ToolInputStream } from './tool-input';
 import {
   LLMError,
   abortReason,
@@ -234,8 +236,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
       throw abortReason(request.signal) ?? this.wrapAPIError(e, ctx);
     }
 
-    const toolCallsAccum = new Map<number, { id?: string; name?: string }>();
-    const toolCallArgsAccum = new Map<number, string>();
+    const toolInputs = new ToolInputStream();
     let refused = false;
 
     for await (const chunk of this.guardStream(stream, request.signal, (error) =>
@@ -258,29 +259,26 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
       const refusalDelta = refusalOf(delta);
       if (refusalDelta) refused = true;
 
-      if (delta.tool_calls) {
-        for (const tc of delta.tool_calls) {
-          const existing = toolCallsAccum.get(tc.index) ?? {};
-          toolCallsAccum.set(tc.index, {
-            id: tc.id ?? existing.id,
-            name: tc.function?.name ?? existing.name,
-          });
-
-          if (tc.function?.arguments) {
-            const existingArgs = toolCallArgsAccum.get(tc.index) ?? '';
-            toolCallArgsAccum.set(tc.index, existingArgs + tc.function.arguments);
-          }
-        }
+      const toolInput: ToolInputStreamPart[] = [];
+      for (const tc of delta.tool_calls ?? []) {
+        toolInput.push(
+          ...toolInputs.endOthers(tc.index),
+          ...toolInputs.piece(tc.index, {
+            ...(tc.id && { id: tc.id }),
+            ...(tc.function?.name && { name: tc.function.name }),
+            ...(tc.function?.arguments && { arguments: tc.function.arguments }),
+          })
+        );
       }
 
       const content = (delta.content ?? '') + (refusalDelta ?? '');
-      const end = choice.finish_reason
-        ? this.streamEnd(
-            refused ? 'refusal' : this.mapFinishReason(choice.finish_reason),
-            toolCallsAccum,
-            toolCallArgsAccum
-          )
+      const reason = choice.finish_reason
+        ? refused
+          ? 'refusal'
+          : this.mapFinishReason(choice.finish_reason)
         : undefined;
+      if (reason && finishRunsTools(reason)) toolInput.push(...toolInputs.endAll());
+      const end = reason ? this.streamEnd(reason, toolInputs) : undefined;
 
       yield {
         id: chunk.id,
@@ -288,6 +286,7 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
           content: content || undefined,
           ...(reasoningDelta && { reasoning: reasoningDelta }),
           toolCalls: end?.toolCalls,
+          ...(toolInput.length > 0 && { toolInput }),
         },
         finishReason: end?.finishReason,
         ...(usage ? { usage } : {}),
@@ -299,16 +298,12 @@ export abstract class OpenAICompatibleBackend extends BaseLLMBackend {
    * The end of a streamed turn: the calls assembled from the deltas, their arguments parsed only
    * when the turn may run tools, so a call cut off at the token limit is dropped, not misread.
    */
-  private streamEnd(
-    reason: ChatResponse['finishReason'],
-    calls: Map<number, { id?: string; name?: string }>,
-    args: Map<number, string>
-  ): TurnEnd {
+  private streamEnd(reason: ChatResponse['finishReason'], calls: ToolInputStream): TurnEnd {
     const toolCalls = finishRunsTools(reason)
-      ? Array.from(calls.entries()).map(([index, partial]) => ({
-          id: partial.id ?? '',
-          name: partial.name ?? '',
-          ...toolCallArguments(args.get(index) ?? ''),
+      ? calls.entries().map((call) => ({
+          id: call.id,
+          name: call.name,
+          ...toolCallArguments(call.arguments),
         }))
       : [];
     return normalizeTurn({ finishReason: reason, toolCalls });

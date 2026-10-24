@@ -79,8 +79,23 @@ export const ToolCallDeltaEventSchema = z
   .describe('The next text of the JSON arguments of the tool call `id`');
 
 export const ToolCallEndEventSchema = z
-  .object({ type: z.literal('tool-call-end'), id: z.string() })
-  .describe('The arguments of the tool call are complete');
+  .object({
+    type: z.literal('tool-call-end'),
+    id: z.string(),
+    dropped: z
+      .literal(true)
+      .optional()
+      .describe('The model stopped before the arguments were complete, the call never runs'),
+  })
+  .describe('The model finished writing the tool call `id`');
+
+export const ToolPresentationSchema = z
+  .object({
+    label: z.string(),
+    icon: z.string().optional().describe('Name of an icon, Lucide names by convention'),
+    detail: z.string().optional().describe('One line about the call, such as a path'),
+  })
+  .describe('How a client shows a tool call, without the code of the tool');
 
 export const ToolResultEventSchema = z
   .object({
@@ -88,8 +103,31 @@ export const ToolResultEventSchema = z
     id: z.string(),
     toolCallId: z.string(),
     result: z.unknown().optional(),
+    details: z.unknown().optional().describe('Data for the application, never sent to the model'),
+    presentation: ToolPresentationSchema.optional(),
+    dropped: z.literal(true).optional().describe('The call never ran and has no result: remove it'),
+    reason: z
+      .enum(['incomplete', 'discarded'])
+      .optional()
+      .describe('Why a dropped call never ran: never finished, or not kept by the run'),
   })
-  .describe('What the tool call `toolCallId` returned');
+  .describe('What the tool call `toolCallId` returned, or that it never ran');
+
+export const ToolUpdateEventSchema = z
+  .object({
+    type: z.literal('tool-update'),
+    toolCallId: z.string(),
+    content: z.unknown().optional(),
+    details: z.unknown().optional(),
+    presentation: ToolPresentationSchema.optional(),
+    arguments: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe('The arguments the call runs with, replacing the streamed ones'),
+  })
+  .describe(
+    'What the running tool call `toolCallId` has so far, or the arguments it runs with when they differ from the streamed ones'
+  );
 
 export const ApprovalRequiredEventSchema = z
   .object({
@@ -211,6 +249,7 @@ export const StreamEventSchema = z
     ToolCallDeltaEventSchema,
     ToolCallEndEventSchema,
     ToolResultEventSchema,
+    ToolUpdateEventSchema,
     ApprovalRequiredEventSchema,
     InterruptRequiredEventSchema,
     ErrorEventSchema,
@@ -237,6 +276,7 @@ const EVENT_COMPONENTS = [
   [ToolCallDeltaEventSchema, 'StreamToolCallDeltaEvent'],
   [ToolCallEndEventSchema, 'StreamToolCallEndEvent'],
   [ToolResultEventSchema, 'StreamToolResultEvent'],
+  [ToolUpdateEventSchema, 'StreamToolUpdateEvent'],
   [ApprovalRequiredEventSchema, 'StreamApprovalRequiredEvent'],
   [InterruptRequiredEventSchema, 'StreamInterruptRequiredEvent'],
   [ErrorEventSchema, 'StreamErrorEvent'],
@@ -274,6 +314,7 @@ export function streamEventComponents(): Record<string, OpenAPISchemaObject> {
   registry.add(RunUsageSchema, { id: 'RunUsage' });
   registry.add(PendingApprovalSchema, { id: 'PendingApproval' });
   registry.add(PendingInterruptSchema, { id: 'PendingInterrupt' });
+  registry.add(ToolPresentationSchema, { id: 'ToolPresentation' });
   for (const [schema, id] of EVENT_COMPONENTS) registry.add(schema, { id });
   registry.add(StreamEventSchema, { id: 'StreamEvent' });
 

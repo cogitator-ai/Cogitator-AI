@@ -3,7 +3,13 @@
  * not depend on `@cogitator-ai/core`, such as voice sessions, read results the same way a run does.
  */
 
-import type { ToolContentPart, ToolContentResult, ToolResourcePart } from './tool';
+import type {
+  ToolContentPart,
+  ToolContentResult,
+  ToolOutputContent,
+  ToolOutputResult,
+  ToolResourcePart,
+} from './tool';
 
 /** How many characters of a tool's result the model reads unless configured otherwise. */
 export const DEFAULT_TOOL_RESULT_MAX_LENGTH = 100_000;
@@ -14,6 +20,19 @@ export function isToolContentResult(value: unknown): value is ToolContentResult 
     return false;
   }
   return value.content.every(isToolContentPart);
+}
+
+/** Whether a tool result is a {@link ToolOutputResult}, as `toolOutput()` builds it. */
+export function isToolOutputResult(value: unknown): value is ToolOutputResult {
+  return isRecord(value) && value.type === 'tool-output' && 'content' in value;
+}
+
+/**
+ * What the model reads of a tool's result: the `content` of a `toolOutput()` result, any other
+ * result as it is.
+ */
+export function toolOutputContent<T>(value: T): ToolOutputContent<T> {
+  return (isToolOutputResult(value) ? value.content : value) as ToolOutputContent<T>;
 }
 
 function isToolContentPart(value: unknown): value is ToolContentPart {

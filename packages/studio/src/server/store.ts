@@ -611,6 +611,18 @@ export class StudioStore {
         if (!run || !call) return { runs: [] };
         call.result = event.result;
         if (event.error) call.error = event.error;
+        if (event.details !== undefined) call.details = event.details;
+        if (event.presentation) call.presentation = event.presentation;
+        delete call.progress;
+        return { runs: [run] };
+      }
+      case 'run.tool.update': {
+        const run = this.runs.get(event.runId);
+        const call = run?.toolCalls.find((candidate) => candidate.id === event.callId);
+        if (!run || !call || call.result !== undefined) return { runs: [] };
+        if (event.content !== undefined) call.progress = event.content;
+        if (event.details !== undefined) call.details = event.details;
+        if (event.presentation) call.presentation = event.presentation;
         return { runs: [run] };
       }
       case 'run.approval': {

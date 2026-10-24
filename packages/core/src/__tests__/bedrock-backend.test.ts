@@ -501,12 +501,21 @@ describe('BedrockBackend', () => {
       mockSend.mockResolvedValueOnce({ stream: fakeStream() });
 
       const toolCalls: unknown[] = [];
+      const toolInput: unknown[] = [];
       for await (const chunk of backend.chatStream({
         model: 'anthropic.claude-3-sonnet-20240229-v1:0',
         messages: [{ role: 'user', content: 'Search for cats' }],
       })) {
         if (chunk.delta.toolCalls) toolCalls.push(...chunk.delta.toolCalls);
+        toolInput.push(...(chunk.delta.toolInput ?? []));
       }
+
+      expect(toolInput).toEqual([
+        { type: 'start', toolCallId: 'tc-1', toolName: 'search' },
+        { type: 'delta', toolCallId: 'tc-1', delta: '{"query":' },
+        { type: 'delta', toolCallId: 'tc-1', delta: '"cats"}' },
+        { type: 'end', toolCallId: 'tc-1' },
+      ]);
 
       expect(toolCalls).toHaveLength(1);
       expect(toolCalls[0]).toMatchObject({

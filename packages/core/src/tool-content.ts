@@ -1,6 +1,8 @@
 import {
   DEFAULT_TOOL_RESULT_MAX_LENGTH,
   isToolContentResult,
+  isToolOutputResult,
+  toolOutputContent,
   toolPartsToText,
   toolResultCut,
   toolResultParts,
@@ -10,11 +12,15 @@ import {
   type MessageContent,
   type ToolContentPart,
   type ToolContentResult,
+  type ToolOutputResult,
+  type ToolPresentation,
 } from '@cogitator-ai/types';
 
 export {
   DEFAULT_TOOL_RESULT_MAX_LENGTH,
   isToolContentResult,
+  isToolOutputResult,
+  toolOutputContent,
   toolPartsToText,
   toolResultParts,
   truncateToolResultText,
@@ -53,6 +59,36 @@ const DATA_URL_PREFIX = /^data:[^,]*;base64,/i;
  */
 export function toolContent(...parts: ToolContentPart[]): ToolContentResult {
   return { type: 'tool-content', content: parts.map(withoutDataUrlPrefix) };
+}
+
+/**
+ * A tool result whose parts go to different readers: the model reads `content` (any JSON value,
+ * or a `toolContent()` result), the application gets `details` and `presentation` too, in
+ * `onToolResult` and in the metadata of the call's `tool_result` entry in memory.
+ *
+ * @example
+ * ```ts
+ * execute: async ({ path, oldString, newString }) => {
+ *   const diff = await applyEdit(path, oldString, newString);
+ *   return toolOutput({
+ *     content: { path, replacements: 1 },
+ *     details: { diff },
+ *     presentation: { label: 'Edit file', icon: 'file-pen', detail: path },
+ *   });
+ * }
+ * ```
+ */
+export function toolOutput<TContent, TDetails = undefined>(output: {
+  content: TContent;
+  details?: TDetails;
+  presentation?: ToolPresentation;
+}): ToolOutputResult<TContent, TDetails> {
+  return {
+    type: 'tool-output',
+    content: output.content,
+    ...(output.details !== undefined && { details: output.details }),
+    ...(output.presentation && { presentation: output.presentation }),
+  };
 }
 
 function withoutDataUrlPrefix(part: ToolContentPart): ToolContentPart {

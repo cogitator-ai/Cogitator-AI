@@ -5,12 +5,14 @@ import type {
   RunObserver,
   RunOptions,
   RunResult,
+  RunTimeouts,
   RunUsage,
   RunBlockReason,
   Message,
   ToolCall,
   ToolChoice,
   ToolResult,
+  ToolProgress,
   Workspace,
   LLMBackend,
   ChatResponse,
@@ -45,6 +47,7 @@ import type {
   ChatRequest,
   RunMiddlewareContext,
   ModelCallRequest,
+  ModelStreamSink,
   RunMiddleware,
   TodoItem,
   ToolSchema,
@@ -216,6 +219,7 @@ import {
   addContextToMessages,
 } from './cogitator/message-builder';
 import { RunMemory } from './cogitator/run-memory';
+import { toAbortError } from './utils/abort';
 import { RunHarness, todosRecall } from './cogitator/harness';
 import { parseKeptTodos, TODOS_METADATA_KEY, type KeptTodos } from './tools/write-todos';
 import { createSpan, getTextContent } from './cogitator/span-factory';
@@ -223,8 +227,12 @@ import {
   runToolCall,
   createToolMessage,
   createToolMessageWithOffload,
+  isConcurrencySafe,
   needsApproval,
 } from './cogitator/tool-executor';
+import { DEFAULT_MAX_PARALLEL_TOOL_CALLS, scheduleToolCalls } from './cogitator/tool-scheduler';
+import { ToolInputLedger } from './cogitator/tool-input-ledger';
+import { StepGate } from './cogitator/tool-locks';
 import { DEFAULT_TOOL_RESULT_MAX_LENGTH, toolResultLengthError } from './tool-content';
 import { streamChatRequest, type StreamTiming } from './cogitator/streaming';
 import {
@@ -722,6 +730,10 @@ export class Cogitator implements ToolInvoker {
       },
       approved: approvedByUser,
       allowNativeFallback: this.config.sandbox?.allowNativeFallback !== false,
+      ...(options.onUpdate && {
+        onUpdate: (progress: ToolProgress) =>
+          options.onUpdate?.({ ...progress, callId: toolCall.id, name: tool.name }),
+      }),
       middleware: new MiddlewarePipeline([
         ...(this.config.middleware ?? []),
         ...(agent?.config.middleware ?? []),
@@ -1215,8 +1227,14 @@ export class Cogitator implements ToolInvoker {
     const startTime = Date.now();
     const spans: Span[] = [];
 
+    let ownTimeouts: RunTimeouts = { ...options.timeouts };
+    let timeouts: RunTimeouts = { ...agent.config?.timeouts, ...ownTimeouts };
+    let parallelToolCalls = options.parallelToolCalls;
+    let maxParallelToolCalls = options.maxParallelToolCalls;
     const timeout =
+      options.timeouts?.totalMs ??
       options.timeout ??
+      agent.config?.timeouts?.totalMs ??
       agent.config?.timeout ??
       this.config.limits?.defaultTimeout ??
       DEFAULT_RUN_TIMEOUT;
@@ -1240,18 +1258,22 @@ export class Cogitator implements ToolInvoker {
       }
     }
 
-    if (timeout && timeout > 0 && timeout <= MAX_TIMER_DELAY_MS) {
+    const armTimeout = (ms: number) => {
+      clearTimeout(timeoutId);
+      timeoutId = undefined;
+      if (!(ms > 0 && ms <= MAX_TIMER_DELAY_MS)) return;
       timeoutId = setTimeout(() => {
         const usage = usageSoFar();
         abortController.abort(
           new CogitatorError({
-            message: `Run timed out after ${timeout}ms`,
+            message: `Run timed out after ${ms}ms`,
             code: ErrorCode.RUN_TIMEOUT,
-            details: { timeout, ...(usage && { usage }) },
+            details: { timeout: ms, ...(usage && { usage }) },
           })
         );
-      }, timeout);
-    }
+      }, ms);
+    };
+    if (timeout) armTimeout(timeout);
 
     const rootSpanId = newSpanId();
     let releaseRunSlot: (() => void) | undefined;
@@ -1283,6 +1305,21 @@ export class Cogitator implements ToolInvoker {
             message: `The paused run in thread ${threadId} belongs to another user`,
             code: ErrorCode.THREAD_ACCESS_DENIED,
           });
+        }
+        const kept = checkpoint.toolExecution;
+        if (kept) {
+          parallelToolCalls ??= kept.parallelToolCalls;
+          maxParallelToolCalls ??= kept.maxParallelToolCalls;
+          ownTimeouts = { ...kept.timeouts, ...options.timeouts };
+          timeouts = { ...agent.config?.timeouts, ...ownTimeouts };
+          const keptTotal = kept.timeouts?.totalMs;
+          if (
+            keptTotal !== undefined &&
+            options.timeouts?.totalMs === undefined &&
+            options.timeout === undefined
+          ) {
+            armTimeout(keptTotal);
+          }
         }
         runId = checkpoint.runId;
         if (seat) seat.runId = runId;
@@ -1821,6 +1858,16 @@ export class Cogitator implements ToolInvoker {
                     allowNativeFallback: this.config.sandbox?.allowNativeFallback !== false,
                     middleware: pipeline,
                     context: middlewareContext(),
+                    ...(timeouts.toolMs !== undefined && { defaultTimeout: timeouts.toolMs }),
+                    ...(stepGate && { step: { gate: stepGate, alone: runsAlone(toolCall) } }),
+                    ...(options.onToolUpdate && {
+                      onUpdate: (progress: ToolProgress) =>
+                        options.onToolUpdate?.({
+                          ...progress,
+                          callId: toolCall.id,
+                          name: toolCall.name,
+                        }),
+                    }),
                   })
                 )
               ),
@@ -1867,21 +1914,33 @@ export class Cogitator implements ToolInvoker {
             };
             const toolMessage = createToolMessage(toolCall, result, maxLengthOf(toolCall));
             messages.push(toolMessage);
-            await runMemory.save(active.id, toolMessage, undefined, [result]);
+            await runMemory.save(active.id, toolMessage, undefined, ...savedToolResult(result));
           }
         };
 
-        let outcomes: ToolOutcome[] = [];
-        try {
-          if (options.parallelToolCalls) {
-            outcomes = await Promise.all(open.map(dispatch));
-          } else {
-            for (const toolCall of open) {
-              const outcome = await dispatch(toolCall);
-              outcomes.push(outcome);
-              if (outcome.interrupt) break;
-            }
+        const stepGate = parallelToolCalls ? new StepGate() : undefined;
+        const runsAlone = (toolCall: ToolCall): boolean => {
+          if (!parallelToolCalls) return true;
+          const tool = registry.get(toolCall.name);
+          if (
+            !tool ||
+            toolCall.argumentsError !== undefined ||
+            decisions.get(toolCall.id)?.approved === false ||
+            stillAsking.has(toolCall.id)
+          ) {
+            return false;
           }
+          return !isConcurrencySafe(tool, toolCall.arguments);
+        };
+        let outcomes: ToolOutcome[];
+        try {
+          outcomes = await scheduleToolCalls({
+            count: open.length,
+            safe: (index) => !runsAlone(open[index]),
+            maxParallel: maxParallelToolCalls ?? DEFAULT_MAX_PARALLEL_TOOL_CALLS,
+            run: (index) => dispatch(open[index]),
+            stops: (outcome) => outcome.interrupt !== undefined,
+          });
         } catch (error) {
           if (abortController.signal.aborted) await recordAbortedTurn();
           throw error;
@@ -1914,7 +1973,7 @@ export class Cogitator implements ToolInvoker {
               [GEN_AI.toolType]: 'function',
               [GEN_AI.agentName]: active.name,
               ...(conversationId && { [GEN_AI.conversationId]: conversationId }),
-              ...(result.error && { [GEN_AI.errorType]: TOOL_ERROR_TYPE }),
+              ...(result.error && { [GEN_AI.errorType]: result.errorCode ?? TOOL_ERROR_TYPE }),
               ...(captureContent && {
                 [GEN_AI.toolCallArguments]: safeJson(toolCall.arguments),
                 ...(!result.error && {
@@ -1946,7 +2005,7 @@ export class Cogitator implements ToolInvoker {
           );
           messages.push(toolMessage);
 
-          await runMemory.save(active.id, toolMessage, undefined, [result]);
+          await runMemory.save(active.id, toolMessage, undefined, ...savedToolResult(result));
 
           const action: ReflectionAction = {
             type: 'tool_call',
@@ -2061,7 +2120,7 @@ export class Cogitator implements ToolInvoker {
       }
 
       let lastFinishReason: ChatResponse['finishReason'] | undefined;
-      const streaming = Boolean(options.stream && (options.onToken ?? options.onReasoning));
+      const streamsText = Boolean(options.stream && (options.onToken ?? options.onReasoning));
       const onToken = options.onToken ?? (() => undefined);
       let structuredRepaired = false;
       let emptyAnswerRetries = 0;
@@ -2199,6 +2258,8 @@ export class Cogitator implements ToolInvoker {
           typeof turnToolChoice === 'object' ? turnToolChoice.function.name : undefined
         );
 
+        const streamsToolInput = Boolean(options.stream) && listensToToolInput(options, registry);
+        const streaming = streamsText || streamsToolInput;
         const holdsStream = streaming && pipeline.holdsStream;
         let streamed = false;
         let streamedText = false;
@@ -2214,121 +2275,168 @@ export class Cogitator implements ToolInvoker {
               onToken(token);
             };
         const onReasoning = options.onReasoning;
-        const turnPipeline = pipeline;
-        const turn = await waitForAbortable(
-          this.fallbackChain().run<ChatResponse>(
-            candidates,
-            async (candidate) => {
-              reachedModel = false;
-              const turnMessages =
-                candidate === candidates[0]
-                  ? messages
-                  : await this.fitToModel(messages, candidate.name, active, turnTools);
-              const request: ChatRequest = {
-                model: candidate.model,
-                messages: turnMessages,
-                tools: turnTools,
-                ...(turnToolChoice && { toolChoice: turnToolChoice }),
-                temperature: active.config.temperature,
-                topP: active.config.topP,
-                maxTokens: active.config.maxTokens,
-                stop: active.config.stopSequences,
-                responseFormat,
-                reasoning,
-                cache: promptCache,
-                cachePrefix: harness.systemPrompt(active),
-                signal: abortController.signal,
+        const turnRegistry = registry;
+        const inputLedger = new ToolInputLedger((event) => {
+          notify('onToolInputAbandoned', () => options.onToolInputAbandoned?.(event));
+          notify('onInputAbandoned', () =>
+            turnRegistry.get(event.toolName)?.onInputAbandoned?.(event)
+          );
+        });
+        const toolInputSink: Pick<
+          ModelStreamSink,
+          'onToolInputStart' | 'onToolInputDelta' | 'onToolInputAvailable'
+        > =
+          holdsStream || !streamsToolInput
+            ? {}
+            : {
+                onToolInputStart: (event) => {
+                  streamed = true;
+                  inputLedger.started(event);
+                  notify('onToolInputStart', () => options.onToolInputStart?.(event));
+                  notify('onInputStart', () =>
+                    turnRegistry.get(event.toolName)?.onInputStart?.(event)
+                  );
+                },
+                onToolInputDelta: (event) => {
+                  notify('onToolInputDelta', () => options.onToolInputDelta?.(event));
+                  notify('onInputDelta', () =>
+                    turnRegistry.get(event.toolName)?.onInputDelta?.(event)
+                  );
+                },
+                onToolInputAvailable: (event) => {
+                  inputLedger.available(event);
+                  notify('onToolInputAvailable', () => options.onToolInputAvailable?.(event));
+                  notify('onInputAvailable', () =>
+                    turnRegistry.get(event.toolName)?.onInputAvailable?.(event)
+                  );
+                },
               };
-              const call: ModelCallRequest = {
-                request,
-                model: candidate.name,
-                ...(streaming && {
-                  stream: {
-                    onToken: turnStream,
-                    ...(onReasoning && {
-                      onReasoning: (delta: string) => {
-                        streamed = true;
-                        onReasoning(delta);
+        const abandonInputs = (error: unknown): never => {
+          inputLedger.abandonAll();
+          throw error;
+        };
+        const turnPipeline = pipeline;
+        const stage = turnStage(abortController.signal, timeouts);
+        const turn = await stage
+          .run(() =>
+            waitForAbortable(
+              this.fallbackChain().run<ChatResponse>(
+                candidates,
+                async (candidate) => {
+                  reachedModel = false;
+                  const turnMessages =
+                    candidate === candidates[0]
+                      ? messages
+                      : await this.fitToModel(messages, candidate.name, active, turnTools);
+                  const request: ChatRequest = {
+                    model: candidate.model,
+                    messages: turnMessages,
+                    tools: turnTools,
+                    ...(turnToolChoice && { toolChoice: turnToolChoice }),
+                    temperature: active.config.temperature,
+                    topP: active.config.topP,
+                    maxTokens: active.config.maxTokens,
+                    stop: active.config.stopSequences,
+                    responseFormat,
+                    reasoning,
+                    cache: promptCache,
+                    cachePrefix: harness.systemPrompt(active),
+                    signal: stage.signal,
+                  };
+                  const call: ModelCallRequest = {
+                    request,
+                    model: candidate.name,
+                    ...(streaming && {
+                      stream: {
+                        onToken: turnStream,
+                        ...(onReasoning && {
+                          onReasoning: (delta: string) => {
+                            streamed = true;
+                            onReasoning(delta);
+                          },
+                        }),
+                        ...toolInputSink,
                       },
                     }),
+                  };
+                  const answer = normalizeTurn(
+                    await turnPipeline.callModel(
+                      call,
+                      async (sent) => {
+                        const startedAt = Date.now();
+                        const timing: StreamTiming | undefined = sent.stream ? {} : undefined;
+                        let sentAnswer: ChatResponse;
+                        try {
+                          sentAnswer = normalizeTurn(
+                            sent.stream
+                              ? await streamChatRequest(
+                                  candidate.backend,
+                                  sent.request,
+                                  sent.stream,
+                                  timing,
+                                  { chunkTimeout: timeouts.chunkMs }
+                                )
+                              : await candidate.backend.chat(sent.request)
+                          );
+                        } catch (error) {
+                          recordFailedCall(error, candidate, sent.request, startedAt, timing);
+                          throw error;
+                        }
+                        reachedModel = true;
+                        recordCall(sentAnswer, candidate, sent.request, startedAt, timing);
+                        return sentAnswer;
+                      },
+                      middlewareContext()
+                    )
+                  );
+                  if (answer.finishReason !== 'error') return answer;
+                  throw llmInvalidResponse(
+                    { provider: candidate.backend.provider, model: candidate.model },
+                    `The model ended its turn with an error${answer.finishMessage ? `: ${answer.finishMessage}` : ''}`
+                  );
+                },
+                {
+                  signal: stage.signal,
+                  canSwitch: () => !streamed,
+                  onFallback: (event) => {
+                    const reason = failureReason(event.error);
+                    getLogger().warn('Model failed, falling back to the next model', {
+                      from: event.from,
+                      to: event.to,
+                      reason,
+                    });
+                    spans.push(
+                      createSpan(
+                        'llm.fallback',
+                        traceId,
+                        rootSpanId,
+                        Date.now(),
+                        Date.now(),
+                        {
+                          'llm.fallback.from': event.from,
+                          'llm.fallback.to': event.to,
+                          'llm.fallback.reason': reason,
+                        },
+                        'error',
+                        'internal',
+                        options.onSpan
+                      )
+                    );
+                    options.onModelFallback?.(event);
+                    runMemory
+                      .event(
+                        active.id,
+                        { type: 'model_change', event: { from: event.from, to: event.to, reason } },
+                        `The turn moved from ${event.from} to ${event.to}`
+                      )
+                      .catch(() => undefined);
                   },
-                }),
-              };
-              const answer = normalizeTurn(
-                await turnPipeline.callModel(
-                  call,
-                  async (sent) => {
-                    const startedAt = Date.now();
-                    const timing: StreamTiming | undefined = sent.stream ? {} : undefined;
-                    let sentAnswer: ChatResponse;
-                    try {
-                      sentAnswer = normalizeTurn(
-                        sent.stream
-                          ? await streamChatRequest(
-                              candidate.backend,
-                              sent.request,
-                              sent.stream,
-                              timing
-                            )
-                          : await candidate.backend.chat(sent.request)
-                      );
-                    } catch (error) {
-                      recordFailedCall(error, candidate, sent.request, startedAt, timing);
-                      throw error;
-                    }
-                    reachedModel = true;
-                    recordCall(sentAnswer, candidate, sent.request, startedAt, timing);
-                    return sentAnswer;
-                  },
-                  middlewareContext()
-                )
-              );
-              if (answer.finishReason !== 'error') return answer;
-              throw llmInvalidResponse(
-                { provider: candidate.backend.provider, model: candidate.model },
-                `The model ended its turn with an error${answer.finishMessage ? `: ${answer.finishMessage}` : ''}`
-              );
-            },
-            {
-              signal: abortController.signal,
-              canSwitch: () => !streamed,
-              onFallback: (event) => {
-                const reason = failureReason(event.error);
-                getLogger().warn('Model failed, falling back to the next model', {
-                  from: event.from,
-                  to: event.to,
-                  reason,
-                });
-                spans.push(
-                  createSpan(
-                    'llm.fallback',
-                    traceId,
-                    rootSpanId,
-                    Date.now(),
-                    Date.now(),
-                    {
-                      'llm.fallback.from': event.from,
-                      'llm.fallback.to': event.to,
-                      'llm.fallback.reason': reason,
-                    },
-                    'error',
-                    'internal',
-                    options.onSpan
-                  )
-                );
-                options.onModelFallback?.(event);
-                runMemory
-                  .event(
-                    active.id,
-                    { type: 'model_change', event: { from: event.from, to: event.to, reason } },
-                    `The turn moved from ${event.from} to ${event.to}`
-                  )
-                  .catch(() => undefined);
-              },
-            }
-          ),
-          abortController.signal
-        );
+                }
+              ),
+              stage.signal
+            )
+          )
+          .catch(abandonInputs);
         const answeredBy = turn.candidate;
         fellBackTo = answeredBy === candidates[0] ? undefined : answeredBy.name;
         let response = turn.result;
@@ -2341,7 +2449,8 @@ export class Cogitator implements ToolInvoker {
             middlewareContext()
           ),
           abortController.signal
-        );
+        ).catch(abandonInputs);
+        inputLedger.settle(limit.closingTurn ? [] : (response.toolCalls ?? []));
 
         if (
           isEmptyAnswer(response) &&
@@ -2374,7 +2483,7 @@ export class Cogitator implements ToolInvoker {
         const finalAnswer = !requestsTools;
         const structuredProblem =
           finalAnswer &&
-          !streaming &&
+          !streamsText &&
           !structuredRepaired &&
           !blockReasonOf(response.finishReason) &&
           iterations < iterationCap
@@ -2460,6 +2569,15 @@ export class Cogitator implements ToolInvoker {
           reasoning: reasoningParts,
           startedAt: checkpoint?.startedAt ?? startTime,
           trace: { traceId, rootSpanId },
+          ...((parallelToolCalls !== undefined ||
+            maxParallelToolCalls !== undefined ||
+            Object.keys(ownTimeouts).length > 0) && {
+            toolExecution: {
+              ...(parallelToolCalls !== undefined && { parallelToolCalls }),
+              ...(maxParallelToolCalls !== undefined && { maxParallelToolCalls }),
+              ...(Object.keys(ownTimeouts).length > 0 && { timeouts: { ...ownTimeouts } }),
+            },
+          }),
         };
         const waitingOn = pausedTurn.interrupts.filter((entry) => !isAnswered(entry));
         if (pausedTurn.pending.length > 0) {
@@ -4075,16 +4193,6 @@ export class Cogitator implements ToolInvoker {
   }
 }
 
-function toAbortError(reason: unknown, fallbackMessage: string): Error {
-  if (reason instanceof Error) {
-    return reason;
-  }
-  if (reason === undefined || reason === null) {
-    return new Error(fallbackMessage);
-  }
-  return new Error(String(reason));
-}
-
 function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) {
     throw toAbortError(signal.reason, 'Run aborted');
@@ -4100,6 +4208,102 @@ function sentModelName(candidate: ModelCandidate, model: string): string {
   return candidate.name.endsWith(suffix)
     ? `${candidate.name.slice(0, -suffix.length)}/${model}`
     : model;
+}
+
+/** Whether a streamed run reports tool input: a run callback for it, or a tool with input hooks */
+function listensToToolInput(options: RunOptions, registry: ToolRegistry): boolean {
+  if (
+    options.onToolInputStart ??
+    options.onToolInputDelta ??
+    options.onToolInputAvailable ??
+    options.onToolInputAbandoned
+  ) {
+    return true;
+  }
+  return registry
+    .getAll()
+    .some(
+      (tool) =>
+        tool.onInputStart ?? tool.onInputDelta ?? tool.onInputAvailable ?? tool.onInputAbandoned
+    );
+}
+
+/** Calls a callback of the run, logging what it throws instead of failing the run */
+function notify(callback: string, call: () => void): void {
+  try {
+    call();
+  } catch (error) {
+    getLogger().warn(`${callback} failed`, {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
+ * How a tool result is saved with its message: the result the model read in `toolResults`, its
+ * `details` and `presentation` in the entry's metadata, never in what a model reads back.
+ */
+function savedToolResult(
+  result: ToolResult
+): [toolResults: ToolResult[], metadata?: Record<string, unknown>] {
+  const { details, presentation, ...read } = result;
+  if (details === undefined && presentation === undefined) return [[result]];
+  return [
+    [read],
+    {
+      ...(details !== undefined && { details }),
+      ...(presentation !== undefined && { presentation }),
+    },
+  ];
+}
+
+/** The signal a model turn runs with, and how the turn is held to `timeouts.stepMs` */
+interface TurnStage {
+  signal: AbortSignal;
+  /** Runs the turn: one that fails aborts the signal, so a stream it left open is closed */
+  run<T>(turn: () => Promise<T>): Promise<T>;
+}
+
+/**
+ * The stage of one model turn: the run's own signal when neither `stepMs` nor `chunkMs` is set,
+ * else one that follows it and is aborted with `RUN_STEP_TIMEOUT` once the turn, retries and
+ * fallback models included, outlasts `stepMs`.
+ */
+function turnStage(run: AbortSignal, timeouts: RunTimeouts): TurnStage {
+  const { stepMs, chunkMs } = timeouts;
+  if (!stepMs && !chunkMs) return { signal: run, run: (turn) => turn() };
+  const controller = new AbortController();
+  const follow = () => controller.abort(run.reason);
+  if (run.aborted) follow();
+  else run.addEventListener('abort', follow, { once: true });
+  const timer =
+    stepMs && stepMs > 0 && stepMs <= MAX_TIMER_DELAY_MS
+      ? setTimeout(
+          () =>
+            controller.abort(
+              new CogitatorError({
+                message: `A model call took longer than ${stepMs}ms`,
+                code: ErrorCode.RUN_STEP_TIMEOUT,
+                details: { stepMs },
+              })
+            ),
+          stepMs
+        )
+      : undefined;
+  return {
+    signal: controller.signal,
+    async run(turn) {
+      try {
+        return await turn();
+      } catch (error) {
+        if (!controller.signal.aborted) controller.abort(error);
+        throw error;
+      } finally {
+        clearTimeout(timer);
+        run.removeEventListener('abort', follow);
+      }
+    },
+  };
 }
 
 function waitForAbortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

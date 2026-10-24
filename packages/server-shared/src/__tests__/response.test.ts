@@ -140,6 +140,140 @@ describe('AgentStreamSession', () => {
       'error',
     ]);
   });
+  it('streams the arguments of a call as the model writes them, and sends them once only', () => {
+    const { events, session: s } = session('t');
+    s.callbacks.onToken('Let me write.');
+    s.callbacks.onToolInputStart({ toolCallId: 'w1', toolName: 'write' });
+    s.callbacks.onToolInputDelta({ toolCallId: 'w1', toolName: 'write', delta: '{"path":' });
+    s.callbacks.onToolInputDelta({ toolCallId: 'w1', toolName: 'write', delta: '"a"}' });
+    s.callbacks.onToolInputAvailable({ toolCallId: 'w1', toolName: 'write', input: { path: 'a' } });
+    s.callbacks.onToolCall({ id: 'w1', name: 'write', arguments: { path: 'a' } });
+    s.callbacks.onToolUpdate({ callId: 'w1', name: 'write', content: 'half' });
+    s.callbacks.onToolResult({
+      callId: 'w1',
+      name: 'write',
+      result: { ok: true },
+      details: { bytes: 3 },
+      presentation: { label: 'Write file', detail: 'a' },
+    });
+
+    const tools = events.filter((event) => event.type.startsWith('tool'));
+    expect(tools).toEqual([
+      { type: 'tool-call-start', id: 'w1', toolName: 'write' },
+      { type: 'tool-call-delta', id: 'w1', argsTextDelta: '{"path":' },
+      { type: 'tool-call-delta', id: 'w1', argsTextDelta: '"a"}' },
+      { type: 'tool-call-end', id: 'w1' },
+      { type: 'tool-update', toolCallId: 'w1', content: 'half' },
+      {
+        type: 'tool-result',
+        id: expect.any(String),
+        toolCallId: 'w1',
+        result: { ok: true },
+        details: { bytes: 3 },
+        presentation: { label: 'Write file', detail: 'a' },
+      },
+    ]);
+    expect(events.indexOf(tools[0]!)).toBeGreaterThan(
+      events.findIndex((event) => event.type === 'text-end')
+    );
+    for (const event of events) expect(StreamEventSchema.parse(event)).toEqual(event);
+  });
+
+  it('drops a call the model began and never finished before the stream ends', () => {
+    const { events, session: s } = session('t');
+    s.callbacks.onToolInputStart({ toolCallId: 'cut', toolName: 'write' });
+    s.callbacks.onToolInputDelta({ toolCallId: 'cut', toolName: 'write', delta: '{"pa' });
+    s.fail('cut off');
+    expect(events).toEqual([
+      { type: 'tool-call-start', id: 'cut', toolName: 'write' },
+      { type: 'tool-call-delta', id: 'cut', argsTextDelta: '{"pa' },
+      { type: 'tool-call-end', id: 'cut', dropped: true },
+      {
+        type: 'tool-result',
+        id: expect.any(String),
+        toolCallId: 'cut',
+        dropped: true,
+        reason: 'incomplete',
+      },
+      { type: 'error', message: 'cut off' },
+    ]);
+    for (const event of events) StreamEventSchema.parse(event);
+  });
+
+  it('corrects the arguments of a streamed call that runs with other ones', () => {
+    const { events, session: s } = session('t');
+    s.callbacks.onToolInputStart({ toolCallId: 'w', toolName: 'write' });
+    s.callbacks.onToolInputDelta({ toolCallId: 'w', toolName: 'write', delta: '{"path":"a"}' });
+    s.callbacks.onToolInputAvailable({ toolCallId: 'w', toolName: 'write', input: { path: 'a' } });
+    s.callbacks.onToolCall({ id: 'w', name: 'write', arguments: { path: 'safe/a' } });
+    s.callbacks.onToolInputStart({ toolCallId: 'same', toolName: 'write' });
+    s.callbacks.onToolInputDelta({
+      toolCallId: 'same',
+      toolName: 'write',
+      delta: '{"b":1,"a":2}',
+    });
+    s.callbacks.onToolInputAvailable({ toolCallId: 'same', toolName: 'write', input: {} });
+    s.callbacks.onToolCall({ id: 'same', name: 'write', arguments: { a: 2, b: 1 } });
+
+    expect(events.filter((event) => event.type === 'tool-update')).toEqual([
+      { type: 'tool-update', toolCallId: 'w', arguments: { path: 'safe/a' } },
+    ]);
+    for (const event of events) StreamEventSchema.parse(event);
+  });
+
+  it('announces again a dropped call a middleware gave another tool under the same id', () => {
+    const { events, session: s } = session('t');
+    s.callbacks.onToolInputStart({ toolCallId: 'x', toolName: 'read' });
+    s.callbacks.onToolInputAvailable({ toolCallId: 'x', toolName: 'read', input: {} });
+    s.callbacks.onToolInputAbandoned({ toolCallId: 'x', toolName: 'read', reason: 'discarded' });
+    s.callbacks.onToolCall({ id: 'x', name: 'write', arguments: { path: 'a' } });
+    s.callbacks.onToolResult({ callId: 'x', name: 'write', result: 'ok' });
+
+    expect(events.filter((event) => event.type.startsWith('tool'))).toEqual([
+      { type: 'tool-call-start', id: 'x', toolName: 'read' },
+      { type: 'tool-call-end', id: 'x' },
+      expect.objectContaining({ type: 'tool-result', toolCallId: 'x', dropped: true }),
+      { type: 'tool-call-start', id: 'x', toolName: 'write' },
+      { type: 'tool-call-delta', id: 'x', argsTextDelta: '{"path":"a"}' },
+      { type: 'tool-call-end', id: 'x' },
+      expect.objectContaining({ type: 'tool-result', toolCallId: 'x', result: 'ok' }),
+    ]);
+  });
+
+  it('drops a finished call the run did not keep, and keeps the calls that run or wait', () => {
+    const { events, session: s } = session('t');
+    s.callbacks.onToolInputStart({ toolCallId: 'a', toolName: 'write' });
+    s.callbacks.onToolInputAvailable({ toolCallId: 'a', toolName: 'write', input: {} });
+    s.callbacks.onToolInputStart({ toolCallId: 'b', toolName: 'write' });
+    s.callbacks.onToolInputAvailable({ toolCallId: 'b', toolName: 'write', input: {} });
+    s.callbacks.onToolInputStart({ toolCallId: 'c', toolName: 'write' });
+    s.callbacks.onToolInputAvailable({ toolCallId: 'c', toolName: 'write', input: {} });
+    s.callbacks.onToolInputAbandoned({ toolCallId: 'a', toolName: 'write', reason: 'discarded' });
+    s.callbacks.onToolCall({ id: 'b', name: 'write', arguments: {} });
+    s.complete(conformancePausedResult('t'));
+
+    const tools = events.filter((event) => event.type.startsWith('tool'));
+    expect(
+      tools.map((event) => [
+        event.type,
+        'id' in event ? event.id : '',
+        'toolCallId' in event ? event.toolCallId : '',
+      ])
+    ).toEqual([
+      ['tool-call-start', 'a', ''],
+      ['tool-call-end', 'a', ''],
+      ['tool-call-start', 'b', ''],
+      ['tool-call-end', 'b', ''],
+      ['tool-call-start', 'c', ''],
+      ['tool-call-end', 'c', ''],
+      ['tool-result', expect.any(String), 'a'],
+      ['tool-result', expect.any(String), 'c'],
+    ]);
+    expect(tools.filter((event) => event.type === 'tool-result')).toEqual([
+      expect.objectContaining({ toolCallId: 'a', dropped: true, reason: 'discarded' }),
+      expect.objectContaining({ toolCallId: 'c', dropped: true, reason: 'discarded' }),
+    ]);
+  });
 });
 
 describe('withSwarm', () => {

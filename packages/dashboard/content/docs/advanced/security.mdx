@@ -262,7 +262,7 @@ const runShell = tool({
 });
 ```
 
-- **Docker** — the tool's `command` argument runs with `sh -c` in the container (with its `cwd` and `env` arguments, when given), and the tool returns `{ stdout, stderr, exitCode, timedOut, duration, command }`. Containers drop all capabilities, cannot gain privileges and have no network unless `network.mode` says otherwise.
+- **Docker** — the tool's `command` argument runs with `sh -c` in the container (with its `cwd` and `env` arguments, when given), and the tool returns `{ stdout, stderr, exitCode, timedOut, duration, command }`, or fails with `errorCode: 'TOOL_TIMEOUT'` when the command ran out of time. Containers drop all capabilities, cannot gain privileges and have no network unless `network.mode` says otherwise.
 - **WASM** — the arguments go to the module (`wasmModule`, export `wasmFunction`) as JSON on stdin; its JSON output is the result. Without `wasi: true` the module has no filesystem or environment access.
 
 Settings shared by all sandboxed tools go into the Cogitator's `sandbox` option:

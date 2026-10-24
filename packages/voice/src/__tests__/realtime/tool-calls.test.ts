@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { z } from 'zod';
-import { Cogitator, tool } from '@cogitator-ai/core';
+import { Cogitator, tool, toolOutput } from '@cogitator-ai/core';
 import type { ToolInvoker } from '@cogitator-ai/types';
 import type { RealtimeTool, RealtimeToolContext } from '../../types.js';
 
@@ -114,6 +114,42 @@ async function connectGemini(tools: RealtimeTool[]) {
   mockWs.send.mockClear();
   return adapter;
 }
+
+describe('realtime tool results split for people', () => {
+  const editing: RealtimeTool = {
+    name: 'edit',
+    description: 'Edits',
+    parameters: { type: 'object', properties: {} },
+    execute: async () =>
+      toolOutput({
+        content: { replacements: 1 },
+        details: { diff: 'secret diff' },
+        presentation: { label: 'Edit file' },
+      }),
+  };
+
+  it('give the OpenAI model only the content of a toolOutput result', async () => {
+    await connectOpenAI([editing]);
+    mockWs.emit('message', openAICalls([['edit', 'call_1', {}]]));
+    await vi.waitFor(() => expect(functionOutputs()).toHaveLength(1));
+    expect(functionOutputs()).toEqual([{ callId: 'call_1', output: { replacements: 1 } }]);
+  });
+
+  it('give the Gemini model only the content of a toolOutput result', async () => {
+    await connectGemini([editing]);
+    mockWs.emit(
+      'message',
+      JSON.stringify({ toolCall: { functionCalls: [{ id: 'g1', name: 'edit', args: {} }] } })
+    );
+    await vi.waitFor(() => expect(mockWs.send).toHaveBeenCalledTimes(1));
+    expect(JSON.stringify(sent())).not.toContain('secret diff');
+    expect(sent()[0]).toEqual({
+      toolResponse: {
+        functionResponses: [{ id: 'g1', name: 'edit', response: { result: { replacements: 1 } } }],
+      },
+    });
+  });
+});
 
 describe('realtime tool call context', () => {
   it('hands OpenAI tools the call id, a live signal and the session id', async () => {

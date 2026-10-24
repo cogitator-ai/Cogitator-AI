@@ -5,6 +5,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { toolCallMessage } from './helpers/messages';
 import { z } from 'zod';
+import type { ToolCall } from '@cogitator-ai/types';
 import { GoogleBackend } from '../llm/google';
 import { toLLMResponseFormat } from '../cogitator/response-format';
 
@@ -551,14 +552,16 @@ describe('GoogleBackend', () => {
         },
       });
 
-      const toolCalls: unknown[] = [];
+      const toolCalls: ToolCall[] = [];
+      const toolInput: unknown[] = [];
       for await (const chunk of backend.chatStream({
         model: 'gemini-2.5-flash',
         messages: [{ role: 'user', content: 'Weather?' }],
       })) {
         if (chunk.delta.toolCalls) {
-          toolCalls.push(...chunk.delta.toolCalls);
+          toolCalls.push(...(chunk.delta.toolCalls as ToolCall[]));
         }
+        toolInput.push(...(chunk.delta.toolInput ?? []));
       }
 
       expect(toolCalls).toHaveLength(1);
@@ -566,6 +569,11 @@ describe('GoogleBackend', () => {
         name: 'get_weather',
         arguments: { city: 'Tokyo' },
       });
+      expect(toolInput).toEqual([
+        { type: 'start', toolCallId: toolCalls[0].id, toolName: 'get_weather' },
+        { type: 'delta', toolCallId: toolCalls[0].id, delta: '{"city":"Tokyo"}' },
+        { type: 'end', toolCallId: toolCalls[0].id },
+      ]);
     });
 
     it('should use correct streaming endpoint', async () => {

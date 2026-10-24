@@ -140,6 +140,7 @@ interface BaseToolContext<TDeps = unknown> {
   channelType?: string;
   channelId?: string;
   deps?: TDeps; // RunOptions.deps, never sent to the model
+  update?: (progress: ToolProgress) => void; // what the tool has so far, never sent to the model
 }
 
 // ToolContext<AppDeps> has deps present and typed
@@ -150,17 +151,23 @@ type ToolContext<TDeps = unknown> = unknown extends TDeps
 
 ### Tool Interfaces
 
-| Type                           | Description                                                                                                                   |
-| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| `ToolConfig<TParams, TResult>` | Tool definition with execute function                                                                                         |
-| `Tool<TParams, TResult>`       | Full tool with toJSON() method                                                                                                |
-| `ToolContext`                  | Execution context with agentId, runId, signal, threadId, userId, channel and the run's `deps`                                 |
-| `SideEffectType`               | `'filesystem' \| 'network' \| 'database' \| 'process' \| 'external'`                                                          |
-| `ApprovalCheck`                | `(params) => boolean` form of `requiresApproval`                                                                              |
-| `ToolSchema`                   | JSON Schema representation for LLM                                                                                            |
-| `ToolCategory`                 | `'math' \| 'text' \| 'file' \| 'network' \| 'system' \| 'utility' \| 'web' \| 'database' \| 'communication' \| 'development'` |
-| `ToolContentResult`            | A result made of parts, built with `toolContent()` of `@cogitator-ai/core`                                                    |
-| `ToolContentPart`              | `ToolTextPart \| ToolImagePart \| ToolFilePart \| ToolJsonPart \| ToolResourcePart`                                           |
+| Type                                                                           | Description                                                                                                                    |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `ToolConfig<TParams, TResult>`                                                 | Tool definition with execute function                                                                                          |
+| `Tool<TParams, TResult>`                                                       | Full tool with toJSON() method                                                                                                 |
+| `ToolContext`                                                                  | Execution context with agentId, runId, signal, threadId, userId, channel and the run's `deps`                                  |
+| `SideEffectType`                                                               | `'filesystem' \| 'network' \| 'database' \| 'process' \| 'external'`                                                           |
+| `ApprovalCheck`                                                                | `(params) => boolean` form of `requiresApproval`                                                                               |
+| `ToolSchema`                                                                   | JSON Schema representation for LLM                                                                                             |
+| `ToolCategory`                                                                 | `'math' \| 'text' \| 'file' \| 'network' \| 'system' \| 'utility' \| 'web' \| 'database' \| 'communication' \| 'development'`  |
+| `ToolContentResult`                                                            | A result made of parts, built with `toolContent()` of `@cogitator-ai/core`                                                     |
+| `ToolContentPart`                                                              | `ToolTextPart \| ToolImagePart \| ToolFilePart \| ToolJsonPart \| ToolResourcePart`                                            |
+| `ToolOutputResult`                                                             | A result split by reader, built with `toolOutput()`: `content` for the model, `details` and `presentation` for the application |
+| `ToolPresentation`                                                             | How a client shows a call: `label`, `icon?`, `detail?`                                                                         |
+| `ToolProgress`, `ToolUpdate`                                                   | What `context.update()` reports, and what `onToolUpdate` gets (with `callId` and `name`)                                       |
+| `ToolInputStart`, `ToolInputDelta`, `ToolInputAvailable`, `ToolInputAbandoned` | A tool call as the model writes it, or one that will not run, in a streamed run                                                |
+| `ToolInputStreamPart`                                                          | A `start`, `delta` or `end` part of `ChatStreamChunk.delta.toolInput`, for backends that stream tool input                     |
+| `RunTimeouts`                                                                  | `totalMs`, `stepMs`, `chunkMs`, `toolMs` of `RunOptions.timeouts` and `AgentConfig.timeouts`                                   |
 
 ### Tool Options
 
@@ -187,6 +194,9 @@ const advancedTool: ToolConfig<{ path: string; content: string }, void> = {
   timeout: 10000,
   sandbox: { type: 'docker', image: 'node:20' },
   maxResultLength: 20_000, // characters of the result the model reads
+  isConcurrencySafe: false, // or (params) => boolean, default: annotations.readOnlyHint
+  lockKeys: ({ path }) => [`file:${path}`], // calls whose keys meet never run at the same time
+  presentation: ({ path }) => ({ label: 'Write file', icon: 'file-plus', detail: path }),
 };
 ```
 
@@ -199,6 +209,8 @@ A few dependency-free helpers read tool results the way a run does, so packages 
 | Function                            | Description                                                                                    |
 | ----------------------------------- | ---------------------------------------------------------------------------------------------- |
 | `isToolContentResult(value)`        | Whether a result is a `ToolContentResult`                                                      |
+| `isToolOutputResult(value)`         | Whether a result is a `ToolOutputResult`                                                       |
+| `toolOutputContent(value)`          | What the model reads of a result: the `content` of a `toolOutput()` result, else the result    |
 | `toolResultParts(value)`            | The parts of a result with media (a `toolContent()` result or an object with a base64 `image`) |
 | `toolPartsToText(parts)`            | The text of the parts, images, files and binary resources described, JSON as JSON text         |
 | `truncateToolResultText(text, max)` | `text` cut to `max` characters, start and end kept, with a note of how much was left out       |
@@ -407,13 +419,16 @@ const runOptions: RunOptions = {
   userId: 'user_123', // owns the thread; reaches tools as context.userId
   threadAccess: 'owner', // or 'shared'
   timeout: 30000,
+  timeouts: { stepMs: 20_000, chunkMs: 10_000, toolMs: 5_000 }, // RunTimeouts, each off unless set
   stream: true,
   reasoning: { effort: 'low' },
 
   // Callbacks
   onToken: (token) => process.stdout.write(token),
   onToolCall: (call) => console.log('Tool called:', call.name),
-  onToolResult: (result) => console.log('Tool result:', result.result),
+  onToolResult: (result) => console.log('Tool result:', result.result, result.details),
+  onToolUpdate: (update) => console.log('Progress:', update.callId, update.content),
+  onToolInputDelta: ({ toolCallId, delta }) => console.log(toolCallId, delta), // needs stream: true
   onRunStart: ({ runId }) => console.log('Started:', runId),
   onRunComplete: (result) => console.log('Done:', result.output),
   onRunError: (error) => console.error('Error:', error),
@@ -426,7 +441,8 @@ const runOptions: RunOptions = {
   useMemory: true,
   loadHistory: true,
   saveHistory: true,
-  parallelToolCalls: false,
+  parallelToolCalls: true, // concurrency-safe calls of a step run together (default: false)
+  maxParallelToolCalls: 4, // default: 10
 };
 ```
 
@@ -533,21 +549,21 @@ console.log(ERROR_STATUS_CODES[ErrorCode.LLM_RATE_LIMITED]); // 429
 
 ### Error Codes
 
-| Domain   | Codes                                                                                                                                                     |
-| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| LLM      | `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`, `LLM_QUOTA_EXCEEDED`, `LLM_TIMEOUT`, `LLM_INVALID_RESPONSE`, `LLM_CONTEXT_LENGTH_EXCEEDED`, `LLM_CONTENT_FILTERED` |
-| Sandbox  | `SANDBOX_UNAVAILABLE`, `SANDBOX_TIMEOUT`, `SANDBOX_OOM`, `SANDBOX_EXECUTION_FAILED`, `SANDBOX_INVALID_MODULE`                                             |
-| Tool     | `TOOL_NOT_FOUND`, `TOOL_INVALID_ARGS`, `TOOL_EXECUTION_FAILED`, `TOOL_TIMEOUT`                                                                            |
-| Memory   | `MEMORY_UNAVAILABLE`, `MEMORY_WRITE_FAILED`, `MEMORY_READ_FAILED`, `THREAD_ACCESS_DENIED`                                                                 |
-| Agent    | `AGENT_NOT_FOUND`, `AGENT_ALREADY_RUNNING`, `AGENT_MAX_ITERATIONS`, `RUN_TOKEN_LIMIT_EXCEEDED`, `RUN_NOT_PAUSED`, `RUN_TIMEOUT`, `BUDGET_EXCEEDED`        |
-| Workflow | `WORKFLOW_NOT_FOUND`, `WORKFLOW_STEP_FAILED`, `WORKFLOW_CYCLE_DETECTED`                                                                                   |
-| Swarm    | `SWARM_NO_WORKERS`, `SWARM_CONSENSUS_FAILED`                                                                                                              |
-| Security | `PROMPT_INJECTION_DETECTED`, `PII_DETECTED`, `GUARDRAIL_TRIPPED`                                                                                          |
-| General  | `VALIDATION_ERROR`, `CONFIGURATION_ERROR`, `INTERNAL_ERROR`, `NOT_IMPLEMENTED`, `CIRCUIT_OPEN`                                                            |
+| Domain   | Codes                                                                                                                                                                                       |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| LLM      | `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`, `LLM_QUOTA_EXCEEDED`, `LLM_TIMEOUT`, `LLM_INVALID_RESPONSE`, `LLM_CONTEXT_LENGTH_EXCEEDED`, `LLM_CONTENT_FILTERED`                                   |
+| Sandbox  | `SANDBOX_UNAVAILABLE`, `SANDBOX_TIMEOUT`, `SANDBOX_OOM`, `SANDBOX_EXECUTION_FAILED`, `SANDBOX_INVALID_MODULE`                                                                               |
+| Tool     | `TOOL_NOT_FOUND`, `TOOL_INVALID_ARGS`, `TOOL_EXECUTION_FAILED`, `TOOL_TIMEOUT`, `TOOL_LOCK_CYCLE`                                                                                           |
+| Memory   | `MEMORY_UNAVAILABLE`, `MEMORY_WRITE_FAILED`, `MEMORY_READ_FAILED`, `THREAD_ACCESS_DENIED`                                                                                                   |
+| Agent    | `AGENT_NOT_FOUND`, `AGENT_ALREADY_RUNNING`, `AGENT_MAX_ITERATIONS`, `RUN_TOKEN_LIMIT_EXCEEDED`, `RUN_NOT_PAUSED`, `RUN_TIMEOUT`, `RUN_STEP_TIMEOUT`, `RUN_CHUNK_TIMEOUT`, `BUDGET_EXCEEDED` |
+| Workflow | `WORKFLOW_NOT_FOUND`, `WORKFLOW_STEP_FAILED`, `WORKFLOW_CYCLE_DETECTED`                                                                                                                     |
+| Swarm    | `SWARM_NO_WORKERS`, `SWARM_CONSENSUS_FAILED`                                                                                                                                                |
+| Security | `PROMPT_INJECTION_DETECTED`, `PII_DETECTED`, `GUARDRAIL_TRIPPED`                                                                                                                            |
+| General  | `VALIDATION_ERROR`, `CONFIGURATION_ERROR`, `INTERNAL_ERROR`, `NOT_IMPLEMENTED`, `CIRCUIT_OPEN`                                                                                              |
 
 `LLMErrorKind` says why a model provider call failed, finer than the code: `rate_limit`, `quota`, `authentication`, `permission`, `not_found`, `invalid_request`, `context_overflow`, `content_filter`, `overloaded`, `server_error`, `timeout`, `network` or `invalid_response`. An `LLMError` of `@cogitator-ai/core` carries it as `kind` and `details.kind`. `LLM_QUOTA_EXCEEDED` (HTTP 402) is an account out of credits or over a quota that waiting a moment will not lift, and is never retried.
 
-The runtime throws `RUN_TIMEOUT` (HTTP 504) for a run that hits its timeout (`Run timed out after <n>ms`), `BUDGET_EXCEEDED` (429) for a run over its cost-routing budget, and `LLM_CONTENT_FILTERED` (400) when guardrails block the input or output (`Input blocked: …` / `Output blocked: …`).
+The runtime throws `RUN_TIMEOUT` (HTTP 504) for a run that hits its timeout (`Run timed out after <n>ms`), `RUN_STEP_TIMEOUT` and `RUN_CHUNK_TIMEOUT` (504) for a model call over `timeouts.stepMs` or a stream silent for `timeouts.chunkMs`, `BUDGET_EXCEEDED` (429) for a run over its cost-routing budget, and `LLM_CONTENT_FILTERED` (400) when guardrails block the input or output (`Input blocked: …` / `Output blocked: …`).
 
 ---
 

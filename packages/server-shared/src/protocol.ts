@@ -1,3 +1,4 @@
+import type { ToolPresentation } from '@cogitator-ai/types';
 import { toRunUsage } from './usage.js';
 import type { AgentRunOutcome } from './response.js';
 
@@ -31,6 +32,7 @@ export type StreamEvent =
   | ToolCallDeltaEvent
   | ToolCallEndEvent
   | ToolResultEvent
+  | ToolUpdateEvent
   | ApprovalRequiredEvent
   | InterruptRequiredEvent
   | ErrorEvent
@@ -93,9 +95,14 @@ export interface ToolCallDeltaEvent {
   argsTextDelta: string;
 }
 
+/**
+ * The model finished writing the tool call `id`. `dropped` when it stopped before the arguments
+ * were complete: the call never runs, and a `tool-result` with `dropped` follows
+ */
 export interface ToolCallEndEvent {
   type: 'tool-call-end';
   id: string;
+  dropped?: true;
 }
 
 export interface ToolResultEvent {
@@ -104,6 +111,33 @@ export interface ToolResultEvent {
   toolCallId: string;
   /** What the tool returned, absent when it returned nothing */
   result?: unknown;
+  /** Data the tool gave the application only, never sent to the model */
+  details?: unknown;
+  /** How to show the call: a label, an icon and one line about it */
+  presentation?: ToolPresentation;
+  /**
+   * The call never ran and has no result: the model never finished it (`incomplete`), or the run
+   * did not keep it (`discarded`, such as a turn cut at the token limit). A client removes it
+   */
+  dropped?: true;
+  reason?: 'incomplete' | 'discarded';
+}
+
+/**
+ * What a running tool has so far (`context.update()` in the tool), sent between its
+ * `tool-call-end` and its `tool-result`, as often as the tool reports it
+ */
+export interface ToolUpdateEvent {
+  type: 'tool-update';
+  toolCallId: string;
+  content?: unknown;
+  details?: unknown;
+  presentation?: ToolPresentation;
+  /**
+   * The arguments the call runs with, when they differ from the ones its deltas streamed, such
+   * as after an `afterModel` middleware changed them: they replace the streamed ones
+   */
+  arguments?: Record<string, unknown>;
 }
 
 /** A tool call waiting for approval; the shape of core's `ToolApprovalRequest` */
@@ -218,16 +252,47 @@ export function createToolCallDeltaEvent(id: string, argsTextDelta: string): Too
   return { type: 'tool-call-delta', id, argsTextDelta };
 }
 
-export function createToolCallEndEvent(id: string): ToolCallEndEvent {
-  return { type: 'tool-call-end', id };
+export function createToolCallEndEvent(id: string, dropped = false): ToolCallEndEvent {
+  return { type: 'tool-call-end', id, ...(dropped && { dropped: true as const }) };
+}
+
+/** The `tool-result` of a call that will never run, see `ToolResultEvent.dropped` */
+export function createToolDroppedEvent(
+  id: string,
+  toolCallId: string,
+  reason: 'incomplete' | 'discarded'
+): ToolResultEvent {
+  return { type: 'tool-result', id, toolCallId, dropped: true, reason };
 }
 
 export function createToolResultEvent(
   id: string,
   toolCallId: string,
-  result: unknown
+  result: unknown,
+  extras: Pick<ToolResultEvent, 'details' | 'presentation'> = {}
 ): ToolResultEvent {
-  return { type: 'tool-result', id, toolCallId, result };
+  return {
+    type: 'tool-result',
+    id,
+    toolCallId,
+    result,
+    ...(extras.details !== undefined && { details: extras.details }),
+    ...(extras.presentation && { presentation: extras.presentation }),
+  };
+}
+
+export function createToolUpdateEvent(
+  toolCallId: string,
+  update: Pick<ToolUpdateEvent, 'content' | 'details' | 'presentation' | 'arguments'>
+): ToolUpdateEvent {
+  return {
+    type: 'tool-update',
+    toolCallId,
+    ...(update.content !== undefined && { content: update.content }),
+    ...(update.details !== undefined && { details: update.details }),
+    ...(update.presentation && { presentation: update.presentation }),
+    ...(update.arguments && { arguments: update.arguments }),
+  };
 }
 
 export function createApprovalRequiredEvent(

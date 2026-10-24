@@ -412,6 +412,17 @@ export class StudioHost {
             callId: result.callId,
             result: plain(result.result),
             ...(result.error && { error: result.error }),
+            ...(result.details !== undefined && { details: plain(result.details) }),
+            ...(result.presentation && { presentation: { ...result.presentation } }),
+          }),
+        onToolUpdate: (update) =>
+          this.emit({
+            type: 'run.tool.update',
+            runId: current,
+            callId: update.callId,
+            ...(update.content !== undefined && { content: plain(update.content) }),
+            ...(update.details !== undefined && { details: plain(update.details) }),
+            ...(update.presentation && { presentation: { ...update.presentation } }),
           }),
         onRunStart: (event) => (current = event.runId),
         onApproval: (request) => this.ask(current, request),

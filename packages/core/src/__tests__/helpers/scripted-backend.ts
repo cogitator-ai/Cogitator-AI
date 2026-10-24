@@ -10,6 +10,7 @@ import type {
 export type ScriptedTurn =
   | ChatResponse
   | { stream: string[]; thenWait: true }
+  | { chunks: ChatStreamChunk[] }
   | ((request: ChatRequest) => ChatResponse | Promise<ChatResponse>);
 
 const USAGE = { inputTokens: 10, outputTokens: 5, totalTokens: 15 };
@@ -54,7 +55,8 @@ function untilAborted(signal: AbortSignal | undefined): Promise<never> {
 
 /**
  * A backend that answers its model calls in turn from `turns`, the last one again once they run
- * out. A `stream` turn streams its pieces and then waits until the call is aborted. Every
+ * out. A `stream` turn streams its pieces and then waits until the call is aborted, a `chunks`
+ * turn streams its chunks as they are. Every
  * request is kept, with a copy of its messages
  */
 export function scriptedBackend(turns: ScriptedTurn[]): {
@@ -72,6 +74,7 @@ export function scriptedBackend(turns: ScriptedTurn[]): {
   const respond = async (turn: ScriptedTurn, request: ChatRequest): Promise<ChatResponse> => {
     if (typeof turn === 'function') return turn(request);
     if ('stream' in turn) return untilAborted(request.signal);
+    if ('chunks' in turn) throw new Error('A chunks turn only streams');
     return turn;
   };
   const backend: LLMBackend = {
@@ -82,6 +85,10 @@ export function scriptedBackend(turns: ScriptedTurn[]): {
       if (typeof turn !== 'function' && 'stream' in turn) {
         for (const piece of turn.stream) yield { id: 's', delta: { content: piece } };
         await untilAborted(request.signal);
+        return;
+      }
+      if (typeof turn !== 'function' && 'chunks' in turn) {
+        yield* turn.chunks;
         return;
       }
       const response = await respond(turn, request);

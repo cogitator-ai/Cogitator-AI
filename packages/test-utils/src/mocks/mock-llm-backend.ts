@@ -6,6 +6,7 @@ import type {
   ChatResponse,
   ChatStreamChunk,
   ToolCall,
+  ToolInputStreamPart,
 } from '@cogitator-ai/types';
 
 export interface MockChatResponse extends Partial<ChatResponse> {
@@ -19,6 +20,8 @@ export interface MockChatResponse extends Partial<ChatResponse> {
 export interface MockStreamChunk {
   content?: string;
   toolCalls?: Partial<ToolCall>[];
+  /** Pieces of tool calls as the model writes them, see `ChatStreamChunk.delta.toolInput` */
+  toolInput?: ToolInputStreamPart[];
   finishReason?: ChatStreamChunk['finishReason'];
   delay?: number;
 }
@@ -165,6 +168,7 @@ export class MockLLMBackend implements LLMBackend {
         delta: {
           content: chunk.content,
           toolCalls: chunk.toolCalls,
+          ...(chunk.toolInput && { toolInput: chunk.toolInput }),
         },
         finishReason: isLast ? (chunk.finishReason ?? 'stop') : undefined,
         usage: isLast

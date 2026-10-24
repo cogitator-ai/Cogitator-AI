@@ -2,6 +2,7 @@ import {
   toToolParameters,
   assertToolName,
   toolPartsToText,
+  toolOutputContent,
   toolResultParts,
   toolToSchema,
   withParsedArguments,
@@ -394,16 +395,18 @@ type ModelOutputPart =
   | { type: 'file'; data: { type: 'data'; data: string }; mediaType: string };
 
 /**
- * What the model sees of a tool's output (`toModelOutput`): a result with media (`toolContent()`,
+ * What the model sees of a tool's output (`toModelOutput`): the `content` of a `toolOutput()`
+ * result, never its `details` or `presentation`. A result with media (`toolContent()`,
  * a screenshot object) as a `content` output with its images, files only described, anything
  * else as text or JSON, as the AI SDK sends it by default. ai@5 passes the output, ai@6 and ai@7
  * an object holding it, and ai@7 takes images as `file` parts.
  */
 function toModelOutput(arg: unknown) {
-  const output =
+  const output = toolOutputContent(
     isRecord(arg) && 'output' in arg && 'toolCallId' in arg
       ? (arg as { output: unknown }).output
-      : arg;
+      : arg
+  );
   const parts = toolResultParts(output);
   if (!parts) {
     return typeof output === 'string'
@@ -421,7 +424,8 @@ function toModelOutput(arg: unknown) {
 }
 
 /** ai@4's `experimental_toToolResultContent`: the same as `toModelOutput` in ai@4's form. */
-function toToolResultContent(output: unknown) {
+function toToolResultContent(result: unknown) {
+  const output = toolOutputContent(result);
   const parts = toolResultParts(output);
   if (!parts) {
     return [

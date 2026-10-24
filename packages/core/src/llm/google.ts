@@ -246,7 +246,22 @@ export class GoogleBackend extends BaseLLMBackend {
               delta: { content: part.text },
             } as ChatStreamChunk;
           } else if ('functionCall' in part) {
-            accumulatedToolCalls.push(toToolCall(part));
+            const toolCall = toToolCall(part);
+            accumulatedToolCalls.push(toolCall);
+            yield {
+              id,
+              delta: {
+                toolInput: [
+                  { type: 'start', toolCallId: toolCall.id, toolName: toolCall.name },
+                  {
+                    type: 'delta',
+                    toolCallId: toolCall.id,
+                    delta: JSON.stringify(toolCall.arguments),
+                  },
+                  { type: 'end', toolCallId: toolCall.id },
+                ],
+              },
+            } as ChatStreamChunk;
           }
         }
 

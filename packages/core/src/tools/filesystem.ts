@@ -6,6 +6,7 @@ import { readFile, writeFile, readdir, stat, unlink, rm, mkdir } from 'node:fs/p
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { tool } from '../tool';
+import { fileLockKey } from './path-guard';
 
 const fileReadParams = z.object({
   path: z.string().describe('Path to the file to read'),
@@ -19,6 +20,7 @@ export const fileRead = tool({
   name: 'file_read',
   description: 'Read the contents of a file. Use base64 encoding for binary files.',
   parameters: fileReadParams,
+  isConcurrencySafe: true,
   execute: async ({ path, encoding = 'utf-8' }) => {
     try {
       if (encoding === 'base64') {
@@ -56,6 +58,7 @@ export const fileWrite = tool({
     'Write content to a file. Creates parent directories if needed. Use base64 encoding for binary data.',
   parameters: fileWriteParams,
   sideEffects: ['filesystem'],
+  lockKeys: async ({ path }) => [await fileLockKey(path)],
   execute: async ({ path, content, encoding = 'utf-8', createDirs = true }) => {
     try {
       if (createDirs) {
@@ -128,6 +131,7 @@ export const fileList = tool({
   name: 'file_list',
   description: 'List contents of a directory. Returns files and subdirectories with their sizes.',
   parameters: fileListParams,
+  isConcurrencySafe: true,
   execute: async ({ path, recursive = false, includeHidden = false }) => {
     try {
       const entries = await listDir(path, recursive, includeHidden);
@@ -158,6 +162,7 @@ export const fileExists = tool({
   name: 'file_exists',
   description: 'Check if a file or directory exists. Returns type (file/directory) if it exists.',
   parameters: fileExistsParams,
+  isConcurrencySafe: true,
   execute: async ({ path }) => {
     try {
       const stats = await stat(path);
@@ -191,6 +196,7 @@ export const fileDelete = tool({
     'Delete a file or directory. For directories, use recursive=true to delete non-empty directories.',
   parameters: fileDeleteParams,
   sideEffects: ['filesystem'],
+  lockKeys: async ({ path }) => [await fileLockKey(path)],
   execute: async ({ path, recursive = false }) => {
     try {
       const stats = await stat(path);

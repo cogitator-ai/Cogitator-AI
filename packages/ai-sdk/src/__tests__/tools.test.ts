@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
-import { tool } from '@cogitator-ai/core';
+import { tool, toolOutput } from '@cogitator-ai/core';
 import type { ToolContext } from '@cogitator-ai/types';
 import { jsonSchema as jsonSchemaV7, tool as aiToolV7 } from 'ai';
 import { jsonSchema as jsonSchemaV4 } from 'ai-v4';
@@ -199,6 +199,32 @@ describe('toAISDKTool', () => {
     expect(inputSchema['~standard'].validate({ input: 'x' })).toEqual({
       value: { input: 'x', count: 1 },
     });
+  });
+
+  it('hands the application a toolOutput result whole and the model only its content', async () => {
+    const aiTool = toAISDKTool(
+      tool({
+        name: 'edit',
+        description: 'Edits',
+        parameters: z.object({}),
+        execute: async () =>
+          toolOutput({ content: { replacements: 1 }, details: { diff: 'secret diff' } }),
+      })
+    );
+    const output = await aiTool.execute({}, { toolCallId: 'tc1', messages: [] });
+    expect(output).toMatchObject({ details: { diff: 'secret diff' } });
+
+    const hooks = aiTool as unknown as {
+      toModelOutput: (arg: unknown) => unknown;
+      experimental_toToolResultContent: (output: unknown) => unknown;
+    };
+    expect(hooks.toModelOutput({ toolCallId: 'tc1', input: {}, output })).toEqual({
+      type: 'json',
+      value: { replacements: 1 },
+    });
+    expect(hooks.experimental_toToolResultContent(output)).toEqual([
+      { type: 'text', text: '{"replacements":1}' },
+    ]);
   });
 
   it('maps AI SDK execute options to a Cogitator tool context', async () => {

@@ -153,6 +153,10 @@ export interface ToolResultEvent {
   id: string;
   toolCallId: string;
   result: unknown;
+  /** Data the tool gave the application only, never sent to the model */
+  details?: unknown;
+  /** How to show the call: a label, an icon and one line about it */
+  presentation?: { label: string; icon?: string; detail?: string };
 }
 
 export interface UseChatOptions {
@@ -162,8 +166,17 @@ export interface UseChatOptions {
   headers?: Record<string, string>;
   onError?: (error: Error) => void;
   onFinish?: (message: ChatMessage) => void;
+  /**
+   * A tool call the stream announced. It is reported again with its new arguments when the
+   * server corrects them (a `tool-update` with `arguments`)
+   */
   onToolCall?: (toolCall: ToolCall) => void;
   onToolResult?: (result: ToolResultEvent) => void;
+  /**
+   * A call the stream announced that never runs: the model never finished it, or the run did not
+   * keep it. It is gone from the message's `toolCalls`, `onToolCall` may have reported it before
+   */
+  onToolCallDropped?: (toolCallId: string) => void;
   /** Pieces of the assistant's reasoning summary as they stream in */
   onReasoning?: (delta: string) => void;
   /** The run paused: these tool calls wait for `resume`, `approve` or `deny` */

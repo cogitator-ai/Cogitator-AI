@@ -312,7 +312,8 @@ const {
   onError: (error) => console.error(error),
   onFinish: (message) => console.log('Done:', message),
   onToolCall: (toolCall) => console.log('Tool called:', toolCall.name),
-  onToolResult: (result) => console.log('Tool result:', result),
+  onToolResult: (result) => console.log('Tool result:', result.result, result.presentation),
+  onToolCallDropped: (toolCallId) => console.log('Never ran:', toolCallId), // removed from the message
   onReasoning: (delta) => console.log('Thinking:', delta),
   onApprovalRequired: (approvals) => console.log('Waiting for approval:', approvals),
   onInterruptRequired: (interrupts) => console.log('Waiting for answers:', interrupts),

@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
+import { toolOutputContent } from '@cogitator-ai/types';
 import type { RawAudioFormat, RealtimeSessionConfig } from '../types.js';
 import { AudioTranscoder } from '../transcoder.js';
 import {
@@ -445,11 +446,13 @@ export class GeminiRealtimeAdapter extends EventEmitter<GeminiRealtimeEvents> {
     }
 
     try {
-      const output = await tool.execute(args, {
-        callId: id,
-        signal,
-        ...(this.config.sessionId !== undefined && { sessionId: this.config.sessionId }),
-      });
+      const output = toolOutputContent(
+        await tool.execute(args, {
+          callId: id,
+          signal,
+          ...(this.config.sessionId !== undefined && { sessionId: this.config.sessionId }),
+        })
+      );
       const parts = realtimeToolParts(output, tool);
       if (!parts)
         return { id, name: call.name, response: { result: realtimeToolValue(output, tool) } };

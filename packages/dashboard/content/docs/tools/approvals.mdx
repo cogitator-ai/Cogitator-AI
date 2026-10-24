@@ -78,7 +78,7 @@ Agents wrapped with [`agentAsTool()`](/docs/tools/agent-as-tool) cannot pause: u
 | no memory                 | process memory                                                                      |
 | `runCheckpoints: myStore` | your `RunCheckpointStore` (`save`, `load(threadId)`, `delete(threadId)`)            |
 
-The checkpoint holds the whole conversation, so it stays on the server. You can also keep it yourself — `result.checkpoint` is plain JSON — and pass it back: `cog.resume(agent, checkpoint, { decisions })`.
+The checkpoint holds the whole conversation, so it stays on the server. You can also keep it yourself, `result.checkpoint` is plain JSON, and pass it back: `cog.resume(agent, checkpoint, { decisions })`. It also keeps the run's `parallelToolCalls`, `maxParallelToolCalls` and `timeouts` (`checkpoint.toolExecution`), which the resume reuses unless its own options set them.
 
 ## Servers and Chats
 
