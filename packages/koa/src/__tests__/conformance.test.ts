@@ -15,6 +15,7 @@ import {
 } from '@cogitator-ai/server-shared';
 import { cogitatorApp } from '../app.js';
 import type { CogitatorAppOptions, CogitatorState } from '../types.js';
+import { serve } from './local-server';
 
 type Options = CogitatorAppOptions;
 
@@ -47,7 +48,7 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
   app.use(router.allowedMethods());
 
   const path = CONFORMANCE_ROUTES[testCase.route];
-  const client = request(app.callback());
+  const client = request(await serve(app));
   const method = conformanceMethod(testCase);
   const sent =
     method === 'GET'

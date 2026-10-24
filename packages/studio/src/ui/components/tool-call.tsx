@@ -30,12 +30,17 @@ export function ToolCallCard({ call }: { call: ToolCallRecord }) {
   const running =
     call.result === undefined && !call.error && !waiting && approval?.status !== 'rejected';
 
-  const decide = async (approved: boolean) => {
+  const decide = async (approved: boolean, remember = false) => {
     if (!approval) return;
     setBusy(true);
     setError(undefined);
     try {
-      await api.approve(approval.id, approved, approved ? undefined : reason.trim() || undefined);
+      await api.approve(
+        approval.id,
+        approved,
+        approved ? undefined : reason.trim() || undefined,
+        approved && remember
+      );
     } catch (failure) {
       setError(messageOf(failure));
     } finally {
@@ -73,8 +78,16 @@ export function ToolCallCard({ call }: { call: ToolCallRecord }) {
         {running && <span className="spinner" aria-label="running" />}
         {waiting && <StatusBadge status="waiting" />}
         {approval && approval.status !== 'waiting' && (
-          <span className="status" data-status={approval.status} title={approval.reason}>
-            {approval.status === 'approved' ? 'Approved' : 'Rejected'}
+          <span
+            className="status"
+            data-status={approval.status}
+            title={approval.remembered ? approval.remembered.rule : approval.reason}
+          >
+            {approval.status === 'rejected'
+              ? 'Rejected'
+              : approval.remembered
+                ? 'Always allowed'
+                : 'Approved'}
           </span>
         )}
         {call.error && (
@@ -93,6 +106,12 @@ export function ToolCallCard({ call }: { call: ToolCallRecord }) {
           )}
           {call.details !== undefined && <JsonBlock label="Details" value={call.details} />}
           {approval?.reason && <div className="notice">Rejected because: {approval.reason}</div>}
+          {approval?.remembered && (
+            <div className="notice">
+              Allowed from now on by <code>{approval.remembered.rule}</code>, saved to the{' '}
+              {approval.remembered.layer} rules
+            </div>
+          )}
           {call.error && <ErrorText>{call.error}</ErrorText>}
         </div>
       )}
@@ -102,6 +121,16 @@ export function ToolCallCard({ call }: { call: ToolCallRecord }) {
             <ShieldAlert size={15} />
             {call.name} needs your approval before it runs
           </div>
+          {(approval.askReason || approval.rule) && (
+            <div className="approval-why" data-testid="approval-why">
+              {approval.askReason}
+              {approval.rule && (
+                <span className="approval-rule">
+                  Rule <code>{approval.rule}</code>
+                </span>
+              )}
+            </div>
+          )}
           {!open && <JsonBlock label="Arguments" value={call.arguments} />}
           <div className="approval-row">
             <input
@@ -130,6 +159,22 @@ export function ToolCallCard({ call }: { call: ToolCallRecord }) {
               Approve
             </button>
           </div>
+          {approval.suggestedRule && (
+            <div className="approval-always">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={busy}
+                onClick={() => void decide(true, true)}
+                data-testid="approve-always"
+              >
+                Always allow
+              </button>
+              <span className="approval-rule">
+                saves <code>{approval.suggestedRule}</code>, calls like this one run without asking
+              </span>
+            </div>
+          )}
           {error && <ErrorText>{error}</ErrorText>}
         </div>
       )}

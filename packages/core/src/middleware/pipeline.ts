@@ -245,7 +245,7 @@ function copyValue(value: unknown, copies: Map<object, unknown>): unknown {
  * with `toJSON` (a `URL`, a `Buffer`) is read through it, another instance of a class by its own
  * fields, so a change it keeps in private fields is not seen.
  */
-function canonicalArguments(value: unknown): string {
+export function canonicalArguments(value: unknown): string {
   const ancestors = new Set<object>();
   const seen = new Map<object, string>();
   const walk = (item: unknown): string => {

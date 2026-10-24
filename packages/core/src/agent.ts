@@ -1,4 +1,5 @@
 import type {
+  PermissionOptions,
   Agent as IAgent,
   AgentConfig,
   Tool,
@@ -211,6 +212,8 @@ export class Agent<TDeps = unknown> implements IAgent<TDeps> {
         timeout: this.config.timeout,
         ...(this.config.timeouts && { timeouts: { ...this.config.timeouts } }),
         ...(this.config.todos !== undefined && { todos: this.config.todos }),
+        ...(this.config.permissions && { permissions: copyPermissions(this.config.permissions) }),
+        ...(this.config.budget && { budget: { ...this.config.budget } }),
       },
       metadata: {
         serializedAt: new Date().toISOString(),
@@ -283,6 +286,10 @@ export class Agent<TDeps = unknown> implements IAgent<TDeps> {
       timeout: snapshot.config.timeout,
       ...(snapshot.config.timeouts && { timeouts: { ...snapshot.config.timeouts } }),
       ...(snapshot.config.todos !== undefined && { todos: snapshot.config.todos }),
+      ...(snapshot.config.permissions && {
+        permissions: copyPermissions(snapshot.config.permissions),
+      }),
+      ...(snapshot.config.budget && { budget: { ...snapshot.config.budget } }),
       ...overrides,
     });
   }
@@ -366,4 +373,14 @@ export function memoryAgentId(agent: {
   readonly name: string;
 }): string {
   return agent.config.id ?? agent.name;
+}
+
+/** A copy of permission options, their rule lists copied too */
+function copyPermissions(options: PermissionOptions): PermissionOptions {
+  return {
+    ...(options.mode !== undefined && { mode: options.mode }),
+    ...(options.allow && { allow: [...options.allow] }),
+    ...(options.ask && { ask: [...options.ask] }),
+    ...(options.deny && { deny: [...options.deny] }),
+  };
 }

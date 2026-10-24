@@ -10,6 +10,7 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => {
       resources: true,
       prompts: true,
     });
+    getServerVersion = vi.fn().mockReturnValue({ name: 'mock-server', version: '1.0.0' });
     listTools = vi.fn().mockResolvedValue({
       tools: [
         {
@@ -166,6 +167,7 @@ describe('MCPClient', () => {
       expect(tools).toHaveLength(1);
       expect(tools[0].name).toBe('test_tool');
       expect(tools[0].parameters).toBeDefined();
+      expect(tools[0].mcp).toEqual({ server: 'mock-server', tool: 'test_tool' });
 
       await client.close();
     });

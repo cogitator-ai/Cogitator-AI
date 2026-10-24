@@ -444,6 +444,12 @@ export class MCPClient {
     }, 'listToolDefinitions');
   }
 
+  /** The name the server reported when it connected (`serverInfo.name`), if it reported one */
+  get serverName(): string | undefined {
+    const name = this.client.getServerVersion()?.name;
+    return name && name.trim() !== '' ? name : undefined;
+  }
+
   /**
    * Get MCP tools as Cogitator Tool instances
    *

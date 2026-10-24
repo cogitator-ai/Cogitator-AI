@@ -49,8 +49,10 @@ export interface SkillManifest {
   /** Additional properties, a map of strings */
   readonly metadata?: Readonly<Record<string, string>>;
   /**
-   * `allowed-tools` of the frontmatter, split on whitespace: tools the skill declares as
-   * pre-approved. Experimental in the format, kept here and not enforced
+   * `allowed-tools` of the frontmatter, split on spaces and commas outside parentheses: tools
+   * the skill declares as pre-approved, as permission rules (`Read`, `Bash(git status *)`). While
+   * the skill is active in a run with permissions set up, they are `session` allow rules of the
+   * run, see `PermissionsConfig`
    */
   readonly allowedTools?: readonly string[];
   /**

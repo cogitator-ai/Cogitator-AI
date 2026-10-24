@@ -1,15 +1,19 @@
 import type {
   ApprovalRequestedEvent,
   ApprovalResolvedEvent,
+  RunInterrupt,
   ToolApprovalDecision,
   ToolApprovalRequest,
 } from '@cogitator-ai/types';
+import { answerFormat } from '@cogitator-ai/types';
 
 export type { ApprovalRequestedEvent, ApprovalResolvedEvent };
 
 export interface ApprovalReplyWords {
   approveWords: readonly string[];
   denyWords: readonly string[];
+  /** Replies that approve every waiting call and save its `suggestedRule` (`remember: true`) */
+  alwaysWords?: readonly string[];
 }
 
 export interface GatewayApprovalsConfig {
@@ -22,15 +26,29 @@ export interface GatewayApprovalsConfig {
   approveWords?: readonly string[];
   /** Replies that decline every waiting call; text after the word becomes the reason */
   denyWords?: readonly string[];
+  /**
+   * Replies that approve every waiting call and save the rule each one suggests, so calls like
+   * them run without asking from now on (`remember: true`). The prompt offers them when a call
+   * has a `suggestedRule` (default `always`, `всегда`)
+   */
+  alwaysWords?: readonly string[];
   /** Sent when someone other than the user who started the run answers it */
   notAllowedMessage?: string;
   /**
    * Put Approve and Deny buttons under the prompt on channels that have buttons (default
-   * true). A press answers like the reply words do, and the buttons then show the decision.
+   * true), and an Always allow button when a call has a `suggestedRule`. A press answers like
+   * the reply words do, and the buttons then show the decision.
    */
   buttons?: boolean;
   /** Labels of the buttons and of the decision they show once pressed */
-  buttonLabels?: { approve?: string; deny?: string; approved?: string; denied?: string };
+  buttonLabels?: {
+    approve?: string;
+    deny?: string;
+    always?: string;
+    approved?: string;
+    denied?: string;
+    alwaysAllowed?: string;
+  };
   /** Shown on a press of buttons whose request was answered, dropped or is from before a restart */
   expiredMessage?: string;
   /** Shown on a press while the gateway stops: the request stays paused and the buttons stay */
@@ -57,9 +75,11 @@ export const DEFAULT_STOPPING_MESSAGE =
 /** The `data` of the approval buttons the gateway puts under its prompt. */
 export const APPROVE_ACTION = 'cogitator:approve';
 export const DENY_ACTION = 'cogitator:deny';
+export const ALWAYS_ACTION = 'cogitator:always';
 
 export const DEFAULT_APPROVE_WORDS: readonly string[] = ['approve', 'yes', 'да', 'одобряю'];
 export const DEFAULT_DENY_WORDS: readonly string[] = ['deny', 'no', 'нет', 'отклоняю'];
+export const DEFAULT_ALWAYS_WORDS: readonly string[] = ['always', 'всегда'];
 export const DEFAULT_NOT_ALLOWED_MESSAGE =
   'Only the person who made this request can approve or deny it.';
 
@@ -86,7 +106,8 @@ function matchLeadingWord(text: string, words: readonly string[]): string | null
 
 /**
  * Reads a chat reply as an answer to waiting tool calls: an approve word on its
- * own approves them, a deny word declines them with any text after it as the reason.
+ * own approves them, an always word on its own approves them with `remember: true`,
+ * a deny word declines them with any text after it as the reason.
  * Anything else is an ordinary message and yields `null`.
  */
 export function parseApprovalReply(
@@ -98,6 +119,9 @@ export function parseApprovalReply(
 
   const afterApprove = matchLeadingWord(trimmed, words.approveWords);
   if (afterApprove === '') return { approved: true };
+
+  const afterAlways = matchLeadingWord(trimmed, words.alwaysWords ?? []);
+  if (afterAlways === '') return { approved: true, remember: true };
 
   const reason = matchLeadingWord(trimmed, words.denyWords);
   if (reason === null) return null;
@@ -122,11 +146,23 @@ function quoteWords(words: readonly string[]): string {
     .join(' or ');
 }
 
+/** Whether a prompt for `approvals` offers the "always" answer: a call suggests a rule */
+export function offersAlways(
+  approvals: readonly ToolApprovalRequest[],
+  words: ApprovalReplyWords
+): boolean {
+  return (
+    (words.alwaysWords?.length ?? 0) > 0 &&
+    approvals.some((approval) => approval.suggestedRule !== undefined)
+  );
+}
+
 export function formatApprovalPrompt(
   approvals: readonly ToolApprovalRequest[],
   words: ApprovalReplyWords
 ): string {
   const single = approvals.length === 1;
+  const always = offersAlways(approvals, words);
   const lines = [
     single
       ? 'I need your approval before running this action:'
@@ -137,13 +173,32 @@ export function formatApprovalPrompt(
   approvals.forEach((approval, index) => {
     const title = `**${approval.toolName}**${approval.description ? ` — ${approval.description}` : ''}`;
     lines.push(single ? title : `${index + 1}. ${title}`);
+    if (approval.reason) lines.push(`Why it asks: ${approval.reason}`);
     lines.push('```json', compactArguments(approval.arguments), '```');
+    if (always && approval.suggestedRule !== undefined) {
+      lines.push(`Always allowing saves the rule \`${approval.suggestedRule}\``);
+    }
   });
 
+  const allow = `${quoteWords(words.approveWords)} to allow ${single ? 'it' : 'them'}`;
+  const allowAlways = always
+    ? `, ${quoteWords(words.alwaysWords ?? [])} to allow ${single ? 'it' : 'them'} from now on`
+    : '';
   lines.push(
     '',
-    `Reply ${quoteWords(words.approveWords)} to allow ${single ? 'it' : 'them'}, ` +
+    `Reply ${allow}${allowAlways}, ` +
       `or ${quoteWords(words.denyWords)} to refuse (you can add a reason after it).`
   );
   return lines.join('\n');
+}
+
+/**
+ * The message asking a question a paused run waits on: its message with what an answer looks
+ * like, and for a plan the plan itself, so the person reads what they approve
+ */
+export function formatQuestionPrompt(question: RunInterrupt): string {
+  const format = answerFormat(question.responseSchema);
+  const asked = format ? `${question.message} (${format})` : question.message;
+  const plan = question.kind === 'plan' ? question.details?.plan : undefined;
+  return typeof plan === 'string' && plan.trim() !== '' ? `${plan.trim()}\n\n${asked}` : asked;
 }

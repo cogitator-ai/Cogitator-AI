@@ -3,6 +3,7 @@
  */
 
 import { exec as execCallback } from 'node:child_process';
+import { resolve as resolvePath } from 'node:path';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import { tool } from '../tool';
@@ -40,6 +41,12 @@ export const exec = tool({
       mode: 'none',
     },
     timeout: 30_000,
+  },
+  access: {
+    kind: 'command',
+    command: ({ command }) => command,
+    cwd: ({ cwd }) => resolvePath(cwd ?? '.'),
+    env: ({ env }) => env,
   },
   execute: async ({ command, cwd, timeout = 30000, env = {} }, context) => {
     try {

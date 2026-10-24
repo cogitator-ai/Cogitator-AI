@@ -49,6 +49,9 @@ export const AGENT_CONFIG_WIRE_FIELDS = {
   todos: 'carried',
   middleware: 'not carried: it is code, the receiving side runs its own (config middleware)',
   workspace: 'not carried: it is a live directory or container, the receiving side passes its own',
+  permissions:
+    'not carried: the receiving side decides what its tools may do, a sender must not widen it',
+  budget: 'not carried: the receiving side decides what a session may spend',
 } as const satisfies Record<keyof AgentConfig, string>;
 
 /** Something wrong with an agent on the wire, or with what the receiving side can run. */

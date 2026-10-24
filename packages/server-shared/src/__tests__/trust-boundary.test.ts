@@ -98,18 +98,21 @@ describe('parseAddMessageRequest', () => {
 });
 
 describe('parseResumeRequest', () => {
+  const decision =
+    '{ approved: boolean, reason?: string, updatedArguments?: object, remember?: boolean | { rule?: string, layer?: session | local | project | user } }';
+
   it.each([
     ['no thread', {}, 'Missing required field: threadId'],
     ['a blank thread', { threadId: ' ' }, 'Field "threadId" must be a non-empty string'],
     [
       'a broken decision',
       { threadId: 't', decisions: { c1: { approved: 'yes' } } },
-      'Each entry of "decisions" must be { approved: boolean, reason?: string }',
+      `Each entry of "decisions" must be ${decision}`,
     ],
     [
       'a broken default decision',
       { threadId: 't', defaultDecision: { approved: false, reason: 1 } },
-      'Field "defaultDecision" must be { approved: boolean, reason?: string }',
+      `Field "defaultDecision" must be ${decision}`,
     ],
   ])('refuses %s', (_name, body, message) => {
     expect(parseResumeRequest(body)).toEqual({ ok: false, message });

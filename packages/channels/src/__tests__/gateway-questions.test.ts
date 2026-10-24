@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Channel, ChannelMessage, RunInterrupt, RunOptions } from '@cogitator-ai/types';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
+import { BUDGET_RESPONSE_SCHEMA, budgetMessage } from '@cogitator-ai/core';
+import { z } from 'zod';
 import { Gateway } from '../gateway';
 
 function createChannel() {
@@ -237,5 +239,85 @@ describe('Gateway and questions of tools', () => {
     expect(run).not.toHaveBeenCalled();
     expect(resume.mock.calls[0]?.[2]).toMatchObject({ responses: { 'q1#0': 'eu' } });
     await gateway.stop();
+  });
+
+  const planQuestion: RunInterrupt = {
+    id: 'p1#0',
+    kind: 'plan',
+    reason: 'plan_approval',
+    message: 'Approve the plan so the agent can carry it out',
+    responseSchema: (({ $schema: _schema, ...schema }) => schema)(
+      z.toJSONSchema(
+        z.object({
+          approved: z.boolean(),
+          mode: z.enum(['default', 'acceptEdits', 'dontAsk']).optional(),
+          feedback: z.string().optional(),
+        }),
+        { io: 'input' }
+      )
+    ),
+    toolCallId: 'p1',
+    toolName: 'exit_plan_mode',
+    details: { plan: '1. Read the config\n2. Fix the port' },
+  };
+
+  const usage = { scope: 'session', metric: 'cost', used: 1.2, limit: 1 } as const;
+  const budgetQuestion: RunInterrupt = {
+    id: 'budget:session.cost',
+    kind: 'budget',
+    reason: 'budget_exceeded',
+    message: budgetMessage(usage),
+    responseSchema: BUDGET_RESPONSE_SCHEMA,
+    details: { ...usage },
+  };
+
+  it.each([
+    [planQuestion, 'yes', { approved: true }],
+    [planQuestion, 'нет', { approved: false }],
+    [budgetQuestion, 'stop', { action: 'stop' }],
+    [budgetQuestion, 'Continue', { action: 'continue' }],
+    [budgetQuestion, '{"action":"continue","limit":5}', { action: 'continue', limit: 5 }],
+  ])('answers a %s question with "%s"', async (asked, reply, answer) => {
+    const channel = createChannel();
+    const run = vi.fn(async () => ({ ...pausedOnQuestion, interrupts: [asked] }));
+    const resume = vi.fn(async (_agent: unknown, _thread: string, _opts: RunOptions) => ({
+      output: 'Done.',
+    }));
+    const gateway = new Gateway({
+      agent,
+      channels: [channel],
+      cogitator: { run, resume } as never,
+    });
+    await gateway.start();
+    await channel.trigger(message('Fix the port', 'm1'));
+    await gateway.idle();
+    await channel.trigger(message(reply, 'm2'));
+    await gateway.idle();
+    expect(resume.mock.calls[0]?.[2]).toMatchObject({ responses: { [asked.id]: answer } });
+    await gateway.stop();
+  });
+
+  it('shows the plan it asks to approve, and the usage of a budget it reached', async () => {
+    for (const asked of [planQuestion, budgetQuestion]) {
+      const channel = createChannel();
+      const run = vi.fn(async () => ({ ...pausedOnQuestion, interrupts: [asked] }));
+      const gateway = new Gateway({
+        agent,
+        channels: [channel],
+        cogitator: { run, resume: vi.fn() } as never,
+      });
+      await gateway.start();
+      await channel.trigger(message('Fix the port', 'm1'));
+      await gateway.idle();
+      const prompt = String(channel.sendText.mock.calls.at(-1)?.[1]);
+      if (asked.kind === 'plan') {
+        expect(prompt).toContain('1. Read the config\n2. Fix the port');
+        expect(prompt).toContain('Approve the plan so the agent can carry it out (yes or no)');
+      } else {
+        expect(prompt).toContain('$1.2000 of $1.0000');
+        expect(prompt).toContain('(one of: continue, stop)');
+      }
+      await gateway.stop();
+    }
   });
 });

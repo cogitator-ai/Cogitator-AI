@@ -8,6 +8,7 @@ import { CogitatorError, ErrorCode, type ResumeOptions } from '@cogitator-ai/typ
 import { cogitatorApp } from '../app.js';
 import { setupWebSocket } from '../websocket/handler.js';
 import type { CogitatorAppOptions, CogitatorState, RouteContext } from '../types.js';
+import { serve } from './local-server';
 
 const agent = { config: { instructions: 'x', tools: [] } } as never;
 
@@ -52,8 +53,8 @@ function buildApp(
   return app;
 }
 
-function postJson(app: Koa<CogitatorState>, path: string, body: unknown) {
-  return request(app.callback())
+async function postJson(app: Koa<CogitatorState>, path: string, body: unknown) {
+  return request(await serve(app))
     .post(path)
     .set('Content-Type', 'application/json')
     .send(typeof body === 'string' ? body : JSON.stringify(body));
@@ -378,7 +379,7 @@ describe('approvals over WebSocket', () => {
     };
     server = createServer();
     await setupWebSocket(server, ctx, userId ? { auth: () => ({ userId }) } : {});
-    await new Promise<void>((resolve) => server!.listen(0, resolve));
+    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
@@ -479,7 +480,7 @@ describe('multitask strategies and interrupt answers', () => {
     };
     server = createServer();
     await setupWebSocket(server, ctx, {});
-    await new Promise<void>((resolve) => server!.listen(0, resolve));
+    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);

@@ -14,6 +14,7 @@ import type {
   RunResult,
   Tool,
   ToolApprovalDecision,
+  ToolApprovalRequest,
 } from '@cogitator-ai/types';
 import { agentTools, serveAgents, type AgentHost } from '../server/serve-agents';
 import type { MCPServer } from '../server/mcp-server';
@@ -70,13 +71,25 @@ const pending = {
   description: 'Refund money',
 };
 
+const ruled: ToolApprovalRequest = {
+  ...pending,
+  reason: 'The ask rule refund(*) of the project settings asks before the call',
+  rule: {
+    rule: 'refund(*)',
+    behavior: 'ask',
+    layer: 'project',
+    origin: '/srv/app/.claude/settings.json',
+  },
+  suggestedRule: 'refund(amount:500)',
+};
+
 /** A host whose runs ask for one approval and complete or pause on the decision. */
-function approvingHost() {
+function approvingHost(request: ToolApprovalRequest = pending) {
   const decisions: Array<ToolApprovalDecision | 'pause'> = [];
   const run = vi.fn(async (_agent: Agent, options: RunOptions) => {
-    const decision = (await options.onApproval?.(pending)) ?? 'pause';
+    const decision = (await options.onApproval?.(request)) ?? 'pause';
     decisions.push(decision);
-    if (decision === 'pause') return result({ status: 'paused', pendingApprovals: [pending] });
+    if (decision === 'pause') return result({ status: 'paused', pendingApprovals: [request] });
     return result({ output: decision.approved ? 'refunded' : 'not refunded' });
   });
   const resume = vi.fn(async () => result({ output: 'refunded after resume' }));
@@ -198,7 +211,7 @@ async function connectClient(url: string, headers?: Record<string, string>) {
 }
 
 describe('serveAgents', () => {
-  it('serves each agent as a tool and a resume tool for agents that need approvals', async () => {
+  it('serves each agent as a tool and a resume tool', async () => {
     const host: AgentHost = { run: vi.fn(), resume: vi.fn() };
     const url = await serveHttp(host, [
       fakeAgent('Research Assistant', { description: 'Researches topics' }),
@@ -210,6 +223,7 @@ describe('serveAgents', () => {
 
     expect(tools.map((t) => t.name).sort()).toEqual([
       'Research_Assistant',
+      'Research_Assistant_resume',
       'support',
       'support_resume',
     ]);
@@ -221,7 +235,7 @@ describe('serveAgents', () => {
     );
   });
 
-  it('adds a resume tool only for agents with a tool that can ask for approval', () => {
+  it('adds a resume tool for every agent, since rules of the host can make any call ask', () => {
     const host: AgentHost = { run: vi.fn(), resume: vi.fn() };
     const withApproval = (requiresApproval: Tool['requiresApproval']): Tool => ({
       ...refundTool,
@@ -237,7 +251,9 @@ describe('serveAgents', () => {
 
     expect(names).toEqual([
       'never',
+      'never_resume',
       'unset',
+      'unset_resume',
       'always',
       'always_resume',
       'sometimes',
@@ -312,6 +328,130 @@ describe('serveAgents', () => {
     expect(decisions).toEqual([{ approved: true }]);
     expect(asked[0]).toContain('refund');
     expect(JSON.stringify(reply.content)).toContain('refunded');
+  });
+
+  it('says why a call asks and offers to allow calls like it for good, once the host allows it', async () => {
+    const { host, decisions } = approvingHost(ruled);
+    const url = await serveHttp(host, [fakeAgent('support', { tools: [refundTool] })], {
+      allowRemember: true,
+    });
+    const { client, asked } = await elicitingClient(url, [{ approve: true, always: true }]);
+
+    await client.callTool({ name: 'support', arguments: { task: 'refund 500' } });
+
+    expect(decisions).toEqual([{ approved: true, remember: true }]);
+    expect(asked[0]?.message).toContain(
+      'It asks because: The ask rule refund(*) of the project settings asks before the call.'
+    );
+    expect(asked[0]?.requestedSchema).toMatchObject({
+      properties: {
+        always: {
+          type: 'boolean',
+          title: 'Always allow calls like this (saves the rule refund(amount:500))',
+        },
+      },
+    });
+  });
+
+  it('approves once when the user leaves "always" unticked, and offers it only with a rule', async () => {
+    const once = approvingHost(ruled);
+    const url = await serveHttp(once.host, [fakeAgent('support', { tools: [refundTool] })], {
+      allowRemember: true,
+    });
+    const { client } = await elicitingClient(url, [{ approve: true }]);
+    await client.callTool({ name: 'support', arguments: { task: 'refund 500' } });
+    expect(once.decisions).toEqual([{ approved: true }]);
+    await server?.stop();
+
+    const plain = approvingHost();
+    const plainUrl = await serveHttp(plain.host, [fakeAgent('support', { tools: [refundTool] })], {
+      allowRemember: true,
+    });
+    const { client: other, asked } = await elicitingClient(plainUrl, [
+      { approve: true, always: true },
+    ]);
+    await other.callTool({ name: 'support', arguments: { task: 'refund 500' } });
+    expect(plain.decisions).toEqual([{ approved: true }]);
+    expect(JSON.stringify(asked[0]?.requestedSchema)).not.toContain('always');
+  });
+
+  it('never lets the client allow calls for good unless the host allows it', async () => {
+    const elicited = approvingHost(ruled);
+    const url = await serveHttp(elicited.host, [fakeAgent('support', { tools: [refundTool] })]);
+    const { client, asked } = await elicitingClient(url, [{ approve: true, always: true }]);
+    await client.callTool({ name: 'support', arguments: { task: 'refund 500' } });
+    expect(elicited.decisions).toEqual([{ approved: true }]);
+    expect(JSON.stringify(asked[0]?.requestedSchema)).not.toContain('always');
+    await server?.stop();
+
+    const paused = approvingHost(ruled);
+    const pausedUrl = await serveHttp(paused.host, [fakeAgent('support', { tools: [refundTool] })]);
+    const other = await connectClient(pausedUrl);
+    const resumeTool = (await other.listToolDefinitions()).find(
+      (tool) => tool.name === 'support_resume'
+    );
+    expect(Object.keys(resumeTool?.inputSchema.properties ?? {})).not.toContain('remember');
+    await other.callTool('support', { task: 'refund 500' });
+    await other.callTool('support_resume', { threadId: 't1', approved: true, remember: true });
+    expect(paused.resume).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'support' }),
+      't1',
+      expect.objectContaining({ defaultDecision: { approved: true } })
+    );
+  });
+
+  it('pauses with the rule a call asks by, without its file, and resumes allowing it for good', async () => {
+    const { host, resume } = approvingHost(ruled);
+    const url = await serveHttp(host, [fakeAgent('support', { tools: [refundTool] })], {
+      allowRemember: true,
+    });
+    const client = await connectClient(url);
+
+    const paused = await client.callTool('support', { task: 'refund 500' });
+    await client.callTool('support_resume', { threadId: 't1', approved: true, remember: true });
+
+    expect(JSON.stringify(paused)).not.toContain('/srv/app');
+    expect(paused).toMatchObject({
+      pendingApprovals: [
+        {
+          reason: ruled.reason,
+          rule: { rule: 'refund(*)', behavior: 'ask', layer: 'project' },
+          suggestedRule: 'refund(amount:500)',
+        },
+      ],
+    });
+    expect(resume).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'support' }),
+      't1',
+      expect.objectContaining({ defaultDecision: { approved: true, remember: true } })
+    );
+  });
+
+  it('shows the plan it asks to approve', async () => {
+    const plan: RunInterrupt = {
+      id: 'p1#0',
+      kind: 'plan',
+      reason: 'plan_approval',
+      message: 'Approve the plan so the agent can carry it out',
+      responseSchema: {
+        type: 'object',
+        properties: { approved: { type: 'boolean' }, feedback: { type: 'string' } },
+        required: ['approved'],
+      },
+      toolCallId: 'p1',
+      toolName: 'exit_plan_mode',
+      details: { plan: '1. Read\n2. Edit' },
+    };
+    const { host, resume } = askingHost(plan);
+    const url = await serveHttp(host, [fakeAgent('planner')]);
+    const { client, asked } = await elicitingClient(url, [{ approved: true }]);
+
+    await client.callTool({ name: 'planner', arguments: { task: 'fix it' } });
+
+    expect(asked[0]?.message).toBe(
+      '1. Read\n2. Edit\n\nApprove the plan so the agent can carry it out'
+    );
+    expect(resume.mock.calls[0]?.[2]).toMatchObject({ responses: { 'p1#0': { approved: true } } });
   });
 
   it('pauses for clients without elicitation and resumes with their decision', async () => {

@@ -17,7 +17,14 @@ import { A2AClient } from '../client';
 import type { A2AMessage, A2ATask, AgentRunResult, CogitatorLike, Part } from '../types';
 import { TaskManager } from '../task-manager';
 import { readToolApprovalRequest, toolApprovalResponsePart } from '../approvals';
-import { interruptResponsePart, readInterruptRequest, readInterruptResponse } from '../questions';
+import {
+  answersFromMessage,
+  interruptResponsePart,
+  questionPrompt,
+  readInterruptRequest,
+  readInterruptResponse,
+  toTaskQuestion,
+} from '../questions';
 import { expectResponse } from './helpers';
 import { messageText, toMessage } from '../protocol';
 
@@ -127,6 +134,7 @@ describe('A2A tasks whose run pauses on a question of a tool', () => {
     expect(readInterruptRequest(task)).toEqual([
       {
         id: 'q1#0',
+        kind: 'input',
         reason: 'confirm_plan',
         message: 'Go ahead with the move?',
         responseSchema: expect.objectContaining({ required: ['ok'] }),
@@ -471,5 +479,49 @@ describe('TaskManager and the paused run a task waits on', () => {
     expect(failed.status.state).toBe('failed');
     expect(messageText(failed.status.message)).toContain('The question "Go ahead?" expired');
     expect(cancelPause).toHaveBeenCalledWith('ctx', { reason: 'the question expired' });
+  });
+});
+
+describe('plan and budget questions', () => {
+  it('carry their kind and details, and show the plan before the question', () => {
+    const plan = toTaskQuestion({
+      id: 'p1#0',
+      kind: 'plan',
+      reason: 'plan_approval',
+      message: 'Approve the plan so the agent can carry it out',
+      responseSchema: {
+        type: 'object',
+        properties: { approved: { type: 'boolean' }, feedback: { type: 'string' } },
+        required: ['approved'],
+      },
+      toolCallId: 'p1',
+      toolName: 'exit_plan_mode',
+      details: { plan: '1. Read\n2. Edit' },
+    });
+    expect(plan).toMatchObject({ kind: 'plan', details: { plan: '1. Read\n2. Edit' } });
+    expect(questionPrompt(plan)).toBe(
+      '1. Read\n2. Edit\n\nApprove the plan so the agent can carry it out (yes or no)'
+    );
+
+    const budget = toTaskQuestion({
+      id: 'budget:session.cost',
+      kind: 'budget',
+      reason: 'budget_exceeded',
+      message: 'The session reached its budget',
+      responseSchema: {
+        type: 'object',
+        properties: { action: { type: 'string', enum: ['continue', 'stop'] } },
+        required: ['action'],
+      },
+      details: { scope: 'session', metric: 'cost', used: 1.2, limit: 1 },
+    });
+    expect(budget.details).toEqual({ scope: 'session', metric: 'cost', used: 1.2, limit: 1 });
+    expect(questionPrompt(budget)).toBe('The session reached its budget (one of: continue, stop)');
+    expect(
+      answersFromMessage(
+        { kind: 'message', messageId: 'm', role: 'user', parts: [{ kind: 'text', text: 'stop' }] },
+        [budget]
+      )
+    ).toEqual({ responses: { 'budget:session.cost': { action: 'stop' } } });
   });
 });

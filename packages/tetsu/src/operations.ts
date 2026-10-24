@@ -127,11 +127,21 @@ export function listSwarms(deps: CogitatorDeps): SwarmListResponseBody {
   };
 }
 
-function toDecision(decision: { approved: boolean; reason?: string }): ToolApprovalDecision {
-  if (decision.approved) return { approved: true };
-  return decision.reason === undefined
-    ? { approved: false }
-    : { approved: false, reason: decision.reason };
+type ResumeDecision = NonNullable<z.output<typeof ResumeBody>['defaultDecision']>;
+
+function toDecision(decision: ResumeDecision): ToolApprovalDecision {
+  if (!decision.approved) {
+    return decision.reason === undefined
+      ? { approved: false }
+      : { approved: false, reason: decision.reason };
+  }
+  return {
+    approved: true,
+    ...(decision.updatedArguments !== undefined && {
+      updatedArguments: decision.updatedArguments,
+    }),
+    ...(decision.remember !== undefined && { remember: decision.remember }),
+  };
 }
 
 /** The decisions and interrupt answers of a resume request, as `cogitator.resume()` takes them. */

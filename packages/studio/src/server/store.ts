@@ -633,8 +633,22 @@ export class StudioStore {
           call = { id: event.callId, name: event.toolName, arguments: event.arguments };
           run.toolCalls.push(call);
         }
-        call.approval = { id: event.approvalId, status: 'waiting' };
+        call.approval = {
+          id: event.approvalId,
+          status: 'waiting',
+          ...(event.askReason !== undefined && { askReason: event.askReason }),
+          ...(event.rule !== undefined && { rule: event.rule }),
+          ...(event.suggestedRule !== undefined && { suggestedRule: event.suggestedRule }),
+        };
         run.status = 'waiting';
+        this.persist(run);
+        return { runs: [run] };
+      }
+      case 'run.approval.remembered': {
+        const run = this.runs.get(event.runId);
+        const call = run?.toolCalls.find((candidate) => candidate.id === event.callId);
+        if (!run || !call?.approval) return { runs: [] };
+        call.approval = { ...call.approval, remembered: { rule: event.rule, layer: event.layer } };
         this.persist(run);
         return { runs: [run] };
       }
@@ -645,6 +659,7 @@ export class StudioStore {
         );
         if (!run || !call?.approval) return { runs: [] };
         call.approval = {
+          ...call.approval,
           id: event.approvalId,
           status: event.approved ? 'approved' : 'rejected',
           ...(event.reason && { reason: event.reason }),

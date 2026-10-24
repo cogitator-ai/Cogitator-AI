@@ -234,16 +234,22 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
     route: 'agentResumeStream',
     body: run({
       threadId: CONFORMANCE_NAMES.thread,
-      decisions: { call_2: { approved: false, reason: 'too much' } },
-      defaultDecision: { approved: true },
+      decisions: {
+        call_2: { approved: false, reason: 'too much' },
+        call_3: { approved: true, updatedArguments: { amount: 5 }, remember: true },
+      },
+      defaultDecision: { approved: true, remember: { rule: 'refund(*)', layer: 'session' } },
     }),
     expect: {
       status: 200,
       streamThread: CONFORMANCE_NAMES.thread,
       runOptions: {
         stream: true,
-        decisions: { call_2: { approved: false, reason: 'too much' } },
-        defaultDecision: { approved: true },
+        decisions: {
+          call_2: { approved: false, reason: 'too much' },
+          call_3: { approved: true, updatedArguments: { amount: 5 }, remember: true },
+        },
+        defaultDecision: { approved: true, remember: { rule: 'refund(*)', layer: 'session' } },
       },
     },
   },
@@ -590,6 +596,15 @@ export function conformancePausedResult(threadId: string): RunResult {
         arguments: { amount: 10 },
         description: 'Refund an order',
         sideEffects: ['payments'],
+        reason: 'The ask rule refund(*) of the project settings asks before the call',
+        rule: {
+          rule: 'refund(*)',
+          behavior: 'ask',
+          layer: 'project',
+          origin: '/srv/app/.claude/settings.json',
+        },
+        suggestedRule: 'refund(amount:10)',
+        mode: 'default',
       },
     ],
     checkpoint: {

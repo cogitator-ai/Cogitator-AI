@@ -368,3 +368,112 @@ describe('multitaskStrategy', () => {
     expect(() => loadConfig({ configPath: path, skipEnv: true })).toThrow(/multitaskStrategy/);
   });
 });
+
+describe('permissions, budgets and limits.onExceeded', () => {
+  const path = 'test-permissions-config.yaml';
+
+  afterEach(() => {
+    if (existsSync(path)) unlinkSync(path);
+  });
+
+  const yaml = `
+limits:
+  maxTokensPerRun: 20000
+  onExceeded: interrupt
+permissions:
+  mode: acceptEdits
+  allow:
+    - Bash(npm test *)
+    - Read(src/**)
+  ask:
+    - Bash(git push *)
+  deny:
+    - Read(./.env)
+  settings:
+    root: \${PROJECT_ROOT:-/srv/app}
+    userDirs: [/home/ci/.claude]
+    layers: [project, local]
+    trusted: false
+  classifier:
+    model: anthropic/claude-haiku-4-5
+    timeout: 10000
+    transcriptMessages: 8
+  rememberIn: session
+  rememberLayers: [session, local]
+budget:
+  session:
+    maxCostUsd: 2.5
+    maxTokens: 400000
+  agent:
+    maxToolCalls: 50
+  warnAt: 0.75
+  allowRaise: false
+`;
+
+  it('keeps them through a YAML file and the environment', () => {
+    writeFileSync(path, yaml);
+    const config = loadConfig({
+      configPath: path,
+      env: { PROJECT_ROOT: '/work/repo', COGITATOR_LLM_DEFAULT_MODEL: 'ollama/qwen3:8b' },
+    });
+
+    expect(config.limits).toEqual({ maxTokensPerRun: 20000, onExceeded: 'interrupt' });
+    expect(config.permissions).toEqual({
+      mode: 'acceptEdits',
+      allow: ['Bash(npm test *)', 'Read(src/**)'],
+      ask: ['Bash(git push *)'],
+      deny: ['Read(./.env)'],
+      settings: {
+        root: '/work/repo',
+        userDirs: ['/home/ci/.claude'],
+        layers: ['project', 'local'],
+        trusted: false,
+      },
+      classifier: { model: 'anthropic/claude-haiku-4-5', timeout: 10000, transcriptMessages: 8 },
+      rememberIn: 'session',
+      rememberLayers: ['session', 'local'],
+    });
+    expect(config.budget).toEqual({
+      session: { maxCostUsd: 2.5, maxTokens: 400000 },
+      agent: { maxToolCalls: 50 },
+      warnAt: 0.75,
+      allowRaise: false,
+    });
+    expect(config.llm?.defaultModel).toBe('ollama/qwen3:8b');
+  });
+
+  it('keeps them through defineConfig and overrides, settings as true or a mode of its own', () => {
+    expect(
+      defineConfig({
+        permissions: { mode: 'dontAsk', settings: true, deny: ['Bash(rm *)'] },
+        budget: { session: { maxCostUsd: 1 } },
+        limits: { onExceeded: 'throw' },
+      })
+    ).toMatchObject({
+      permissions: { mode: 'dontAsk', settings: true, deny: ['Bash(rm *)'] },
+      budget: { session: { maxCostUsd: 1 } },
+      limits: { onExceeded: 'throw' },
+    });
+
+    writeFileSync(path, 'permissions:\n  mode: plan\n  allow: [Read]\n');
+    const config = loadConfig({
+      configPath: path,
+      skipEnv: true,
+      overrides: { permissions: { mode: 'bypassPermissions' } },
+    });
+    expect(config.permissions).toEqual({ mode: 'bypassPermissions', allow: ['Read'] });
+  });
+
+  it.each([
+    ['an unknown mode', 'permissions:\n  mode: yolo\n', /permissions\.mode/],
+    ['a rule that is not text', 'permissions:\n  allow: [42]\n', /permissions\.allow/],
+    ['a layer it cannot save to', 'permissions:\n  rememberIn: managed\n', /rememberIn/],
+    ['a classifier without a model', 'permissions:\n  classifier:\n    timeout: 5\n', /model/],
+    ['a negative budget', 'budget:\n  session:\n    maxCostUsd: -1\n', /maxCostUsd/],
+    ['a warning share over 1', 'budget:\n  warnAt: 2\n', /warnAt/],
+    ['an unknown onExceeded', 'limits:\n  onExceeded: ignore\n', /onExceeded/],
+  ])('refuses %s', (_name, content, problem) => {
+    writeFileSync(path, content);
+    expect(() => loadConfig({ configPath: path, skipEnv: true })).toThrow(problem);
+  });
+});

@@ -815,7 +815,10 @@ function waitingText({ approvals, questions }: PendingInput): string {
   const lines = questions.map(questionPrompt);
   if (approvals.length > 0 || lines.length === 0) {
     const calls = approvals.map((approval) => approval.toolName).join(', ') || 'tool calls';
-    lines.unshift(`Waiting for approval of ${calls}`);
+    const reasons = approvals
+      .filter((approval) => approval.reason)
+      .map((approval) => `${approval.toolName}: ${approval.reason}`);
+    lines.unshift(`Waiting for approval of ${calls}`, ...reasons);
   }
   return lines.join('\n');
 }

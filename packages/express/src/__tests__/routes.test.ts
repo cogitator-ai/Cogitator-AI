@@ -59,11 +59,11 @@ describe('Route handlers', () => {
     await srv.init();
 
     await new Promise<void>((resolve) => {
-      server = app.listen(0, () => resolve());
+      server = app.listen(0, '127.0.0.1', () => resolve());
     });
 
     const addr = server.address() as { port: number };
-    baseUrl = `http://localhost:${addr.port}`;
+    baseUrl = `http://127.0.0.1:${addr.port}`;
   });
 
   afterAll(async () => {

@@ -98,6 +98,10 @@ function project(key: keyof AgentConfig, config: AgentConfig): unknown {
       return AGENT_CONFIG_WIRE_FIELDS.middleware;
     case 'workspace':
       return AGENT_CONFIG_WIRE_FIELDS.workspace;
+    case 'permissions':
+      return AGENT_CONFIG_WIRE_FIELDS.permissions;
+    case 'budget':
+      return AGENT_CONFIG_WIRE_FIELDS.budget;
     case 'responseFormat': {
       const format = config.responseFormat;
       return format?.type === 'json_schema'
@@ -173,6 +177,8 @@ describe('agent wire format', () => {
       todos: true,
       middleware: [{ name: 'audit', afterModel: () => undefined }],
       workspace: new LocalWorkspace({ root: join(tmpdir(), 'wire-workspace'), create: false }),
+      permissions: { mode: 'bypassPermissions', allow: ['Bash'] },
+      budget: { maxCostUsd: 1000 },
     };
     const original = new Agent(full);
 
@@ -186,6 +192,8 @@ describe('agent wire format', () => {
     }
     expect(received.id).toBe('agent_chief');
     expect(received.instructions).toContain('Cite every source.');
+    expect(received.config.permissions).toBeUndefined();
+    expect(received.config.budget).toBeUndefined();
   });
 
   it('carries the agents a handoff reaches, cycles included', () => {

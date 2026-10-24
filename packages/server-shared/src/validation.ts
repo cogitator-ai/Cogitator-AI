@@ -1,4 +1,10 @@
-import type { MultitaskStrategy, RunOptions, ToolApprovalDecision } from '@cogitator-ai/types';
+import type {
+  MultitaskStrategy,
+  PermissionRememberLayer,
+  RunOptions,
+  ToolApprovalDecision,
+  ToolApprovalRemember,
+} from '@cogitator-ai/types';
 
 /** The outcome of parsing a request body: the typed value, or why it was refused */
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; message: string };
@@ -186,15 +192,49 @@ export interface ResumeRequestBody {
   responses?: Record<string, unknown>;
 }
 
-const DECISION_SHAPE = '{ approved: boolean, reason?: string }';
+const REMEMBER_LAYERS: readonly PermissionRememberLayer[] = ['session', 'local', 'project', 'user'];
 
-function parseDecision(value: unknown): ToolApprovalDecision | undefined {
+const DECISION_SHAPE = `{ approved: boolean, reason?: string, updatedArguments?: object, remember?: boolean | { rule?: string, layer?: ${REMEMBER_LAYERS.join(' | ')} } }`;
+
+function isRememberLayer(value: unknown): value is PermissionRememberLayer {
+  return REMEMBER_LAYERS.some((layer) => layer === value);
+}
+
+function parseRemember(value: unknown): boolean | ToolApprovalRemember | undefined {
+  if (typeof value === 'boolean') return value;
+  if (!isJsonObject(value)) return undefined;
+  if (value.rule !== undefined && typeof value.rule !== 'string') return undefined;
+  if (value.layer !== undefined && !isRememberLayer(value.layer)) return undefined;
+  return {
+    ...(value.rule !== undefined && { rule: value.rule }),
+    ...(value.layer !== undefined && { layer: value.layer }),
+  };
+}
+
+/**
+ * Reads one approval decision. `updatedArguments` and `remember` only apply to an approval and
+ * `reason` only to a refusal, each is still checked whichever the decision is
+ */
+export function parseDecision(value: unknown): ToolApprovalDecision | undefined {
   if (!isJsonObject(value) || typeof value.approved !== 'boolean') return undefined;
   if (value.reason !== undefined && typeof value.reason !== 'string') return undefined;
-  if (value.approved) return { approved: true };
-  return value.reason === undefined
-    ? { approved: false }
-    : { approved: false, reason: value.reason };
+  if (value.updatedArguments !== undefined && !isJsonObject(value.updatedArguments)) {
+    return undefined;
+  }
+  const remember = value.remember === undefined ? undefined : parseRemember(value.remember);
+  if (value.remember !== undefined && remember === undefined) return undefined;
+  if (!value.approved) {
+    return value.reason === undefined
+      ? { approved: false }
+      : { approved: false, reason: value.reason };
+  }
+  return {
+    approved: true,
+    ...(value.updatedArguments !== undefined && {
+      updatedArguments: { ...value.updatedArguments },
+    }),
+    ...(remember !== undefined && { remember }),
+  };
 }
 
 /** Validates the body of a resume: the thread of the paused run and the decisions for it */

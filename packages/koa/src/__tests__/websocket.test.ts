@@ -110,7 +110,7 @@ async function createTestServer(
 ): Promise<{ port: number; wss: Awaited<ReturnType<typeof setupWebSocket>> }> {
   server = createServer();
   const wss = await setupWebSocket(server, ctx, config);
-  await new Promise<void>((resolve) => server.listen(0, resolve));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const addr = server.address();
   const port = typeof addr === 'object' && addr ? addr.port : 0;
   return { port, wss };
@@ -1068,7 +1068,7 @@ describe('setupWebSocket hardening', () => {
     await expect(
       setupWebSocket(server, mockRouteContext({ limits: { swarmTimeout: -1 } }))
     ).rejects.toThrow(/limits\.swarmTimeout/);
-    await new Promise<void>((resolve) => server.listen(0, resolve));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   });
 
   it('refuses the upgrade of a connection without a user under anonymous deny', async () => {

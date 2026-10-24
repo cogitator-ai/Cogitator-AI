@@ -442,6 +442,15 @@ export {
   repairUnansweredToolCalls,
 } from './utils/tool-history';
 export { APPROVAL_RESPONSE_SCHEMA, isToolInterrupt } from './cogitator/interrupts';
+export * from './permissions/index';
+export { EXIT_PLAN_MODE } from './cogitator/run-permissions';
+export {
+  BUDGET_RESPONSE_SCHEMA,
+  BUDGET_STOP_SCHEMA,
+  SESSION_BUDGET_KEY,
+  budgetMessage,
+  readSessionSpend,
+} from './cogitator/run-budget';
 export { PromptRegistry, promptKey } from './cogitator/prompts';
 export {
   PiiMasker,

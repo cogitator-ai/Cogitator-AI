@@ -3,6 +3,7 @@ import Koa from 'koa';
 import request from 'supertest';
 import { cogitatorApp } from '../app.js';
 import type { CogitatorAppOptions, CogitatorState } from '../types.js';
+import { serve } from './local-server';
 
 const swarms = vi.hoisted(() => ({
   instances: [] as Array<{ close: () => Promise<void> }>,
@@ -64,7 +65,9 @@ describe('blank input', () => {
     async (path) => {
       const { app, run } = buildApp();
       for (const input of ['', '   ', '\n\t ']) {
-        const res = await request(app.callback()).post(path).send({ input });
+        const res = await request(await serve(app))
+          .post(path)
+          .send({ input });
         expect(res.status).toBe(400);
         expect(res.body).toEqual({
           error: { message: 'Field "input" must not be blank', code: 'INVALID_INPUT' },
@@ -101,7 +104,9 @@ describe('run usage', () => {
           runResult({ reasoningTokens: 5, cachedInputTokens: 4, cacheWriteTokens: 2 })
         )
     );
-    const res = await request(app.callback()).post('/agents/bot/run').send({ input: 'hi' });
+    const res = await request(await serve(app))
+      .post('/agents/bot/run')
+      .send({ input: 'hi' });
     expect(res.body.usage).toEqual({
       inputTokens: 1,
       outputTokens: 2,
@@ -114,7 +119,9 @@ describe('run usage', () => {
 
   it('ends a stream with a finish event carrying the same counts, without the cost', async () => {
     const { app } = buildApp(vi.fn().mockResolvedValue(runResult({ ...detailedUsage, cost: 0.5 })));
-    const { text } = await request(app.callback()).post('/agents/bot/stream').send({ input: 'hi' });
+    const { text } = await request(await serve(app))
+      .post('/agents/bot/stream')
+      .send({ input: 'hi' });
     expect(finishEvent(text)).toEqual({
       type: 'finish',
       messageId: expect.any(String),
@@ -153,14 +160,18 @@ describe('SSE heartbeat', () => {
       return runResult();
     });
     const { app } = buildApp(run, { sseHeartbeatMs: 20 });
-    const res = await request(app.callback()).post('/agents/bot/stream').send({ input: 'hi' });
+    const res = await request(await serve(app))
+      .post('/agents/bot/stream')
+      .send({ input: 'hi' });
     expect(res.text.match(/^: keep-alive$/gm)?.length).toBeGreaterThanOrEqual(3);
     expect(res.text.trimEnd().endsWith('data: [DONE]')).toBe(true);
   });
 
   it('writes none when turned off', async () => {
     const { app } = buildApp(slowRun(60), { sseHeartbeatMs: 0 });
-    const res = await request(app.callback()).post('/agents/bot/stream').send({ input: 'hi' });
+    const res = await request(await serve(app))
+      .post('/agents/bot/stream')
+      .send({ input: 'hi' });
     expect(res.text).not.toContain(': keep-alive');
   });
 
@@ -179,7 +190,9 @@ describe('swarm resources', () => {
     'closes the swarm a request built once %s is done',
     async (path) => {
       const { app } = buildApp();
-      await request(app.callback()).post(path).send({ input: 'go' });
+      await request(await serve(app))
+        .post(path)
+        .send({ input: 'go' });
       expect(swarms.instances).toHaveLength(1);
       expect(swarms.instances[0].close).toHaveBeenCalledOnce();
     }
@@ -189,7 +202,7 @@ describe('swarm resources', () => {
     'ignores a multitask strategy in the body of %s, since a swarm has no thread queue',
     async (path) => {
       const { app } = buildApp();
-      const res = await request(app.callback())
+      const res = await request(await serve(app))
         .post(path)
         .send({ input: 'go', multitaskStrategy: 'queue' });
       expect(res.status).toBe(200);
@@ -201,7 +214,9 @@ describe('swarm resources', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     swarms.fail = true;
     const { app } = buildApp();
-    const res = await request(app.callback()).post('/swarms/team/run').send({ input: 'go' });
+    const res = await request(await serve(app))
+      .post('/swarms/team/run')
+      .send({ input: 'go' });
     expect(res.status).toBe(500);
     expect(swarms.instances[0].close).toHaveBeenCalledOnce();
   });

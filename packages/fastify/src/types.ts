@@ -413,6 +413,19 @@ const ToolApprovalDecisionSchema = {
   properties: {
     approved: { type: 'boolean' },
     reason: { type: 'string' },
+    updatedArguments: { type: 'object', additionalProperties: true },
+    remember: {
+      anyOf: [
+        { type: 'boolean' },
+        {
+          type: 'object',
+          properties: {
+            rule: { type: 'string' },
+            layer: { type: 'string', enum: ['session', 'local', 'project', 'user'] },
+          },
+        },
+      ],
+    },
   },
   required: ['approved'],
   additionalProperties: false,
@@ -479,6 +492,13 @@ export const AgentRunResponseSchema = {
           arguments: { type: 'object', additionalProperties: true },
           description: { type: 'string' },
           sideEffects: { type: 'array', items: { type: 'string' } },
+          reason: { type: 'string' },
+          rule: { type: 'string' },
+          suggestedRule: { type: 'string' },
+          mode: {
+            type: 'string',
+            enum: ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'],
+          },
         },
         required: ['toolCallId', 'toolName', 'arguments', 'description'],
       },
@@ -489,13 +509,14 @@ export const AgentRunResponseSchema = {
         type: 'object',
         properties: {
           id: { type: 'string' },
-          kind: { type: 'string', enum: ['approval', 'input'] },
+          kind: { type: 'string', enum: ['approval', 'input', 'plan', 'budget'] },
           reason: { type: 'string' },
           message: { type: 'string' },
           responseSchema: { type: 'object', additionalProperties: true },
           expiresAt: { type: 'string' },
           toolCallId: { type: 'string' },
           toolName: { type: 'string' },
+          details: { type: 'object', additionalProperties: true },
         },
         required: ['id', 'kind', 'reason', 'message'],
       },

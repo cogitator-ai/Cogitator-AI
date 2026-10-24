@@ -137,6 +137,15 @@ describe('MCPServer <-> MCPClient over HTTP', () => {
     expect(server.getPort()).toBeGreaterThan(0);
   });
 
+  it('names the tools after the server it reported, for mcp__<server>__<tool> rules', async () => {
+    expect(client.serverName).toBe('roundtrip');
+    const tools = await client.getTools({ namePrefix: 'rt_' });
+    expect(tools.find((tool) => tool.name === 'rt_add')?.mcp).toEqual({
+      server: 'roundtrip',
+      tool: 'add',
+    });
+  });
+
   it('advertises the full input schema of each tool', async () => {
     const tools = await client.listToolDefinitions();
     const add = tools.find((t) => t.name === 'add');

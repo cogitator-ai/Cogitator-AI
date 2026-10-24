@@ -79,7 +79,7 @@ async function start(
   await server.init();
   httpServer = createServer(app);
   wss = await server.attachWebSocket(httpServer);
-  await new Promise<void>((resolve) => httpServer!.listen(0, resolve));
+  await new Promise<void>((resolve) => httpServer!.listen(0, '127.0.0.1', resolve));
   const { port } = httpServer.address() as AddressInfo;
   return {
     run,

@@ -82,6 +82,26 @@ export const RunBody = z.object({
 const ApprovalDecisionSchema = z.object({
   approved: z.boolean(),
   reason: z.string().optional().describe('Why the call was declined, shown to the model'),
+  updatedArguments: JsonObject.optional().describe(
+    "The arguments an approved call runs with instead, checked against the tool's schema and the rules again"
+  ),
+  remember: z
+    .union([
+      z.boolean(),
+      z.object({
+        rule: z.string().optional().describe('The rule to save, which must cover the call'),
+        layer: z
+          .enum(['session', 'local', 'project', 'user'])
+          .optional()
+          .describe(
+            'Where to save it, a layer the server allows (`session` and `local` by default)'
+          ),
+      }),
+    ])
+    .optional()
+    .describe(
+      'Approve calls like this one from now on: `true` saves the `suggestedRule` of the approval'
+    ),
 });
 
 export const ResumeBody = z.object({
@@ -198,17 +218,40 @@ export const PendingApprovalSchema = z.object({
   arguments: JsonObject,
   description: z.string(),
   sideEffects: z.array(z.string()).optional(),
+  reason: z
+    .string()
+    .optional()
+    .describe("Why the call asks: the rule, the mode or the tool's own approval setting"),
+  rule: z
+    .string()
+    .optional()
+    .describe('The `ask` rule that made the call ask, as written, such as `Bash(git push *)`'),
+  suggestedRule: z
+    .string()
+    .optional()
+    .describe('The rule an "always allow" answer (`remember: true`) saves'),
+  mode: z
+    .enum(['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'])
+    .optional()
+    .describe('The permission mode of the run'),
 });
 
 export const PendingInterruptSchema = z.object({
   id: z.string().describe('Key of the answer in the `responses` of the resume'),
-  kind: z.enum(['approval', 'input']),
+  kind: z
+    .enum(['approval', 'input', 'plan', 'budget'])
+    .describe(
+      '`approval` for a tool call, `input` for an answer a tool asked for, `plan` for a plan to approve, `budget` for a budget the run reached'
+    ),
   reason: z.string(),
   message: z.string(),
   responseSchema: JsonObject.optional().describe('JSON Schema the answer must match'),
   expiresAt: z.string().optional().describe('ISO time after which the answer is refused'),
   toolCallId: z.string().optional(),
   toolName: z.string().optional(),
+  details: JsonObject.optional().describe(
+    'More to show the person who answers: the `plan` of a plan, the usage of a budget (`scope`, `metric`, `used`, `limit`), the `reason`, `rule` and `suggestedRule` of an approval'
+  ),
 });
 
 export const UsageSchema = z.object({
