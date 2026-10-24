@@ -590,7 +590,9 @@ export class ProjectAnalyzer {
       );
     }
 
-    const deployLlm = fullConfig ? this.yamlInput(configPath, env)?.llm : undefined;
+    const deployLlm = fullConfig
+      ? this.yamlInput(configPath, { ...env, ...configured.env })?.llm
+      : undefined;
     const model = deployLlm?.defaultModel ?? fullConfig?.llm?.defaultModel ?? '';
     const defaultProvider = deployLlm?.defaultProvider ?? fullConfig?.llm?.defaultProvider;
     const rawProviders = this.literalProviders(configPath);
@@ -824,10 +826,15 @@ export class ProjectAnalyzer {
       (!chatRemote || urls.chat === baseline.chat) &&
       (!embeddingRemote || urls.embedding === baseline.embedding);
 
+    const protectedNames = new Set([
+      ...this.otherProviderVariables(configPath),
+      ...(chatRemote ? chatUrl.variables : []),
+      ...(embeddingRemote ? embedding.variables : []),
+    ]);
     const skipped = (name: string) =>
-      name in appEnv || explicit.has(name) || forwarded.includes(name);
+      protectedNames.has(name) || name in appEnv || explicit.has(name) || forwarded.includes(name);
     const kept: string[] = [];
-    if (!chatRemote) {
+    if (chatLocal) {
       for (const name of OLLAMA_URL_NAMES) {
         if (skipped(name)) continue;
         appEnv[name] = chatTarget;
@@ -839,6 +846,7 @@ export class ProjectAnalyzer {
     }
     if (embeddingLocal) {
       for (const name of embedding.variables) {
+        if (protectedNames.has(name)) kept.push(name);
         if (skipped(name)) continue;
         const value = this.rewriteFor(embeddingTarget).find((candidate) => {
           appEnv[name] = candidate;
@@ -862,7 +870,7 @@ export class ProjectAnalyzer {
       const shared = kept.filter((name) => embedding.variables.includes(name));
       warnings.push(
         shared.length > 0
-          ? `memory.embedding.baseUrl follows ${shared.join(', ')}, which the Ollama URL of the chat models reads too, so the deployment cannot point it at ${embeddingTarget} without moving them: ` +
+          ? `memory.embedding.baseUrl follows ${shared.join(', ')}, which the URL of the chat models or of another provider reads too, so the deployment cannot point it at ${embeddingTarget} without moving them: ` +
               'give the embeddings a variable of their own, such as ${OLLAMA_EMBEDDING_URL:-http://localhost:11434}'
           : `memory.embedding.baseUrl ${embedding.baseUrl === undefined ? 'is unset' : embedding.variables.length > 0 ? `"${embedding.baseUrl}" builds its URL from ${embedding.variables.join(', ')} in a way the deployment cannot point at ${embeddingTarget}` : `"${embedding.baseUrl}" follows no variable`}, so the deployed app looks for its Ollama embeddings at ${reached.embedding}: ` +
               `write it as \${OLLAMA_EMBEDDING_URL:-http://localhost:11434}, the deployment points the variable it follows at ${embeddingTarget}`
@@ -878,7 +886,7 @@ export class ProjectAnalyzer {
       const pulled = configuredModels ?? local;
       if (!chatLocal && !embeddingLocal && pulled.length === 0) {
         warnings.push(
-          `services.ollama runs an Ollama container, but no model of the config runs on it and deploy.ollama.models lists none: ${chatRemote ? 'the chat models keep their own Ollama' : `the app reaches it at ${COMPOSE_OLLAMA_URL}`}`
+          `services.ollama runs an Ollama container, but no model of the config runs on it and deploy.ollama.models lists none: ${chatRemote ? 'the chat models keep their own Ollama' : `code of your own reaches it at ${COMPOSE_OLLAMA_URL}`}`
         );
       } else if (chatLocal && chatModels.length === 0 && configuredModels === undefined) {
         warnings.push(
@@ -921,6 +929,31 @@ export class ProjectAnalyzer {
   private rewriteFor(target: string): string[] {
     const url = new URL(target);
     return unique([target, url.hostname, url.host]);
+  }
+
+  /**
+   * Variables the settings of the other providers (`llm.providers.*` but Ollama)
+   * reference, such as `${OLLAMA_BASE_URL:-https://gpu.example.com}/v1` for an
+   * OpenAI-compatible server: the deployment never rewrites them, whatever an
+   * Ollama role would need, since the URL they build is not an Ollama one.
+   */
+  private otherProviderVariables(configPath: string | undefined): string[] {
+    const providers = this.rawConfig(configPath, ['llm', 'providers']);
+    if (!isRecord(providers)) return [];
+    const names: string[] = [];
+    const collect = (node: unknown): void => {
+      if (typeof node === 'string') {
+        for (const match of node.matchAll(ENV_REFERENCE)) names.push(match[1]);
+      } else if (Array.isArray(node)) {
+        node.forEach(collect);
+      } else if (isRecord(node)) {
+        Object.values(node).forEach(collect);
+      }
+    };
+    for (const [provider, settings] of Object.entries(providers)) {
+      if (provider !== 'ollama') collect(settings);
+    }
+    return unique(names);
   }
 
   /** Whether `value` is an Ollama URL beyond this machine. */
@@ -1011,16 +1044,22 @@ export class ProjectAnalyzer {
     };
   }
 
-  /** The string at `path` of the config file before `${VAR}` substitution, and the variables it references. */
-  private configValue(configPath: string | undefined, path: readonly string[]): ConfigValue {
-    if (!configPath || !existsSync(configPath)) return { variables: [] };
+  /** The node at `path` of the config file as written, before `${VAR}` substitution. */
+  private rawConfig(configPath: string | undefined, path: readonly string[]): unknown {
+    if (!configPath || !existsSync(configPath)) return undefined;
     let node: unknown;
     try {
       node = parseYaml(readFileSync(configPath, 'utf-8'));
     } catch {
-      return { variables: [] };
+      return undefined;
     }
     for (const key of path) node = isRecord(node) ? node[key] : undefined;
+    return node;
+  }
+
+  /** The string at `path` of the config file before `${VAR}` substitution, and the variables it references. */
+  private configValue(configPath: string | undefined, path: readonly string[]): ConfigValue {
+    const node = this.rawConfig(configPath, path);
     if (typeof node !== 'string') return { variables: [] };
     return {
       raw: node,

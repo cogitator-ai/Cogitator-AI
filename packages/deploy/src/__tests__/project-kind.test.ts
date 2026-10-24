@@ -240,6 +240,14 @@ describe('what a project deploys as', () => {
       expect(analyze('docker').deployConfig.ollama?.models).toEqual(['qwen3.5:9b']);
     });
 
+    it('pulls the model deploy.env selects for the app', () => {
+      write(
+        'cogitator.yml',
+        'llm:\n  defaultModel: ${CHAT_MODEL:-ollama/qwen3:8b}\ndeploy:\n  env:\n    CHAT_MODEL: ollama/llama3.2\n'
+      );
+      expect(analyze('docker').deployConfig.ollama?.models).toEqual(['llama3.2']);
+    });
+
     it('decides the chat role from deploy.env, which the deployment sets', () => {
       write(
         'cogitator.yml',
@@ -359,7 +367,9 @@ describe('what a project deploys as', () => {
         expect(result.deployConfig.env ?? {}).not.toHaveProperty('OLLAMA_BASE_URL');
         expect(result.deployConfig.env ?? {}).not.toHaveProperty('COGITATOR_OLLAMA_BASE_URL');
         expect(
-          result.warnings.some((w) => w.includes('follows OLLAMA_BASE_URL, which the Ollama URL'))
+          result.warnings.some((w) =>
+            w.includes('follows OLLAMA_BASE_URL, which the URL of the chat models')
+          )
         ).toBe(true);
       });
 
@@ -385,7 +395,9 @@ describe('what a project deploys as', () => {
         expect(result.deployConfig.env ?? {}).not.toHaveProperty('COGITATOR_OLLAMA_BASE_URL');
         expect(result.deployConfig.env ?? {}).not.toHaveProperty('OLLAMA_BASE_URL');
         expect(
-          result.warnings.some((w) => w.includes('follows OLLAMA_BASE_URL, which the Ollama URL'))
+          result.warnings.some((w) =>
+            w.includes('follows OLLAMA_BASE_URL, which the URL of the chat models')
+          )
         ).toBe(true);
       });
 
@@ -445,6 +457,28 @@ describe('what a project deploys as', () => {
         expect(result.deployConfig.secrets).toContain('GPU_HOST');
         expect(result.deployConfig.env ?? {}).not.toHaveProperty('GPU_HOST');
         expect(result.deployConfig.services?.ollama).toBeUndefined();
+      });
+
+      it('never rewrites a variable an OpenAI-compatible chat server reads', () => {
+        write(
+          'cogitator.yml',
+          `llm:\n  defaultModel: openai/qwen3-32b\n  providers:\n    openai:\n      apiKey: \${OPENAI_API_KEY}\n      baseUrl: \${OLLAMA_BASE_URL:-https://gpu.example.com}/v1\n${embeddingYml('${OLLAMA_EMBEDDING_URL:-http://localhost:11434}')}`
+        );
+        const result = analyze('docker', { OPENAI_API_KEY: 'sk' });
+
+        expect(result.deployConfig.env).toEqual({ OLLAMA_EMBEDDING_URL: SERVICE });
+        expect(result.deployConfig.ollama?.models).toEqual(['nomic-embed-text']);
+      });
+
+      it('warns instead when the embeddings share their variable with another provider', () => {
+        write(
+          'cogitator.yml',
+          `llm:\n  defaultModel: openai/qwen3-32b\n  providers:\n    openai:\n      apiKey: \${OPENAI_API_KEY}\n      baseUrl: \${OLLAMA_BASE_URL:-https://gpu.example.com}/v1\n${embeddingYml('${OLLAMA_BASE_URL:-http://localhost:11434}')}`
+        );
+        const result = analyze('docker', { OPENAI_API_KEY: 'sk' });
+
+        expect(result.deployConfig.env ?? {}).not.toHaveProperty('OLLAMA_BASE_URL');
+        expect(result.warnings.some((w) => w.includes('follows OLLAMA_BASE_URL'))).toBe(true);
       });
 
       it('keeps remote embeddings when only the chat model runs locally', () => {
