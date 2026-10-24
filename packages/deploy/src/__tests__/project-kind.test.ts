@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { DeployTarget } from '@cogitator-ai/types';
+import { loadConfig } from '@cogitator-ai/config';
 import { ProjectAnalyzer, type AnalyzerResult } from '../analyzer';
 import { generateProjectArtifacts } from '../providers/artifacts';
 
@@ -238,6 +239,57 @@ describe('what a project deploys as', () => {
         `${ollamaYml}reflection:\n  enabled: false\n  reflectionModel: ollama/qwen3:1.7b\nguardrails:\n  enabled: false\n  model: ollama/llama-guard3:1b\nsecurity:\n  promptInjection:\n    classifier: local\n    llmModel: ollama/qwen3:0.6b\ncontext:\n  enabled: false\n  summaryModel: ollama/qwen3:4b\n`
       );
       expect(analyze('docker').deployConfig.ollama?.models).toEqual(['qwen3.5:9b']);
+    });
+
+    describe('in the environment the app container gets', () => {
+      function containerModel(result: AnalyzerResult, env: NodeJS.ProcessEnv): string | undefined {
+        const container = {
+          ...Object.fromEntries(
+            (result.deployConfig.secrets ?? []).map((name) => [name, env[name]])
+          ),
+          ...result.deployConfig.env,
+        };
+        const model = loadConfig({ configPath: join(dir, 'cogitator.yml'), env: container }).llm
+          ?.defaultModel;
+        return model?.replace(/^ollama\//, '');
+      }
+
+      it('forwards COGITATOR_LLM_DEFAULT_MODEL and pulls the model the app then asks for', () => {
+        const env = { COGITATOR_LLM_DEFAULT_MODEL: 'ollama/llama3.2' };
+        const result = analyze('docker', env);
+
+        expect(result.deployConfig.secrets).toContain('COGITATOR_LLM_DEFAULT_MODEL');
+        expect(result.deployConfig.ollama?.models).toEqual(['llama3.2']);
+        expect(containerModel(result, env)).toBe('llama3.2');
+      });
+
+      it('forwards a variable the config file references', () => {
+        write('cogitator.yml', 'llm:\n  defaultModel: ${CHAT_MODEL:-ollama/qwen3:8b}\n');
+        const env = { CHAT_MODEL: 'ollama/llama3.2' };
+        const result = analyze('docker', env);
+
+        expect(result.deployConfig.secrets).toContain('CHAT_MODEL');
+        expect(result.deployConfig.ollama?.models).toEqual(['llama3.2']);
+        expect(containerModel(result, env)).toBe('llama3.2');
+      });
+
+      it('resolves without a variable deploy.secrets leaves out, like the container', () => {
+        write('cogitator.yml', `${ollamaYml}deploy:\n  secrets: []\n`);
+        const env = { COGITATOR_LLM_DEFAULT_MODEL: 'ollama/llama3.2' };
+        const result = analyze('docker', env);
+
+        expect(result.deployConfig.ollama?.models).toEqual(['qwen3.5:9b']);
+        expect(containerModel(result, env)).toBe('qwen3.5:9b');
+      });
+
+      it('forwards no deploy setting and no Ollama URL of this machine', () => {
+        const result = analyze('docker', {
+          COGITATOR_DEPLOY_TARGET: 'docker',
+          OLLAMA_HOST: '0.0.0.0',
+        });
+        expect(result.deployConfig.secrets).not.toContain('COGITATOR_DEPLOY_TARGET');
+        expect(result.deployConfig.secrets).not.toContain('OLLAMA_HOST');
+      });
     });
 
     it('pulls the model COGITATOR_LLM_DEFAULT_MODEL selects, like loadConfig', () => {

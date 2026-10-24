@@ -585,11 +585,6 @@ export class ProjectAnalyzer {
       );
     }
 
-    const deployLlm = fullConfig
-      ? this.effectiveConfig(configPath, { ...env, ...configured.env })?.llm
-      : undefined;
-    const model = deployLlm?.defaultModel ?? fullConfig?.llm?.defaultModel ?? '';
-    const defaultProvider = deployLlm?.defaultProvider ?? fullConfig?.llm?.defaultProvider;
     const rawProviders = this.literalProviders(configPath);
 
     const detectedServices: DeployServicesConfig = {
@@ -599,9 +594,22 @@ export class ProjectAnalyzer {
       ),
     };
 
+    const configReads = fullConfig
+      ? this.configReads(configPath, env, configured, target, detectedServices)
+      : [];
+    const deployLlm = fullConfig
+      ? this.effectiveConfig(
+          configPath,
+          this.appEnvironment(env, configured.secrets ?? configReads, configured)
+        )?.llm
+      : undefined;
+    const model = deployLlm?.defaultModel ?? fullConfig?.llm?.defaultModel ?? '';
+    const defaultProvider = deployLlm?.defaultProvider ?? fullConfig?.llm?.defaultProvider;
+
     const appSecrets =
       configured.secrets ??
       unique([
+        ...configReads,
         ...(model || defaultProvider
           ? this.detectSecrets(model, defaultProvider, env, rawProviders)
           : []),
@@ -758,7 +766,11 @@ export class ProjectAnalyzer {
   private ollamaWiring(input: OllamaWiringInput): OllamaWiring {
     const { model, defaultProvider, target, env, configPath, configured, appSecrets, warnings } =
       input;
-    const deployEnv: NodeJS.ProcessEnv = { ...env, ...configured.env };
+    const deployEnv = this.appEnvironment(
+      env,
+      unique([...appSecrets, ...OLLAMA_URL_NAMES.filter((name) => this.isRemoteValue(env[name]))]),
+      configured
+    );
     const effective = this.effectiveConfig(configPath, deployEnv);
     const chatModels = this.ollamaChatModels(effective, model, defaultProvider);
     const chatUsed = chatModels.length > 0 || (model === '' && defaultProvider === 'ollama');
@@ -806,8 +818,11 @@ export class ProjectAnalyzer {
     if (!service && !chatLocal && !embeddingLocal) return { secrets: forwarded, invalidModels: [] };
 
     const hostUrl = (url: string) => `http://${DOCKER_HOST_GATEWAY}:${portOf(url)}`;
-    const chatTarget = service ? COMPOSE_OLLAMA_URL : hostUrl(host.chat);
-    const embeddingTarget = service ? COMPOSE_OLLAMA_URL : hostUrl(host.embedding);
+    const onThisMachine = service
+      ? host
+      : this.ollamaUrls(configPath, { ...env, ...configured.env });
+    const chatTarget = service ? COMPOSE_OLLAMA_URL : hostUrl(onThisMachine.chat);
+    const embeddingTarget = service ? COMPOSE_OLLAMA_URL : hostUrl(onThisMachine.embedding);
     const explicit = new Set([...Object.keys(configured.env ?? {}), ...(configured.secrets ?? [])]);
     const passed = unique([...appSecrets, ...forwarded]);
     const appEnv: Record<string, string> = {};
@@ -955,6 +970,58 @@ export class ProjectAnalyzer {
   private isRemoteValue(value: string | undefined): boolean {
     const url = resolveOllamaHost(value);
     return url !== undefined && !isLoopbackUrl(url);
+  }
+
+  /**
+   * The variables the config reads that are set in `env`: the `${VAR}` references of
+   * the file and the `COGITATOR_*` and shared variables over it, as `loadConfig`
+   * reads them, so the app gets what decided the analysis. Left out are the ones
+   * `deploy.env` sets, the deploy settings (`COGITATOR_DEPLOY_*`), Ollama URLs of
+   * this machine (the Ollama wiring points them where the app reaches Ollama) and
+   * the URLs of the services the Compose stack runs.
+   */
+  private configReads(
+    configPath: string | undefined,
+    env: NodeJS.ProcessEnv,
+    configured: Partial<DeployConfig>,
+    target: DeployTarget,
+    services: DeployServicesConfig
+  ): string[] {
+    const read = new Set<string>();
+    const recording = new Proxy(env, {
+      get(source, key, receiver): unknown {
+        if (typeof key === 'string') read.add(key);
+        return Reflect.get(source, key, receiver);
+      },
+    });
+    this.effectiveConfig(configPath, recording);
+    const provided = new Set(
+      target === 'docker'
+        ? [...(services.redis ? ['REDIS_URL'] : []), ...(services.postgres ? ['DATABASE_URL'] : [])]
+        : []
+    );
+    return [...read].filter(
+      (name) =>
+        isSet(env, name) &&
+        !(name in (configured.env ?? {})) &&
+        !name.startsWith('COGITATOR_DEPLOY_') &&
+        !provided.has(name) &&
+        !(OLLAMA_URL_NAMES.includes(name) && !this.isRemoteValue(env[name]))
+    );
+  }
+
+  /** The environment the app container gets: `names` with their values from `env`, under `deploy.env`. */
+  private appEnvironment(
+    env: NodeJS.ProcessEnv,
+    names: readonly string[],
+    configured: Partial<DeployConfig>
+  ): NodeJS.ProcessEnv {
+    return {
+      ...Object.fromEntries(
+        names.filter((name) => isSet(env, name)).map((name) => [name, env[name]])
+      ),
+      ...configured.env,
+    };
   }
 
   /**

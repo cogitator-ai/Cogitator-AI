@@ -120,6 +120,7 @@ Unless `deploy.secrets` lists them, the secrets are detected:
 - what the model's provider cannot run without, routed like the runtime routes it (`meta-llama/Llama-3.3-70B-Instruct-Turbo` with `defaultProvider: together` needs `TOGETHER_API_KEY`). Azure needs the key and the endpoint, Bedrock a region and credentials. A value written in `llm.providers` counts as provided. When an alias is set instead of the main name (`GEMINI_API_KEY` for `GOOGLE_API_KEY`), the alias is passed. Optional provider settings that are set (`OPENAI_BASE_URL`, `AWS_SESSION_TOKEN`) are passed too. `PROVIDER_ENV` of `@cogitator-ai/config` is the table behind this
 - the names the code passes to `requireEnv('NAME')` under `src/`
 - the variables of `.env.example` that are set
+- the variables the config reads that are set, as `loadConfig` reads them: the `${VAR}` references of the file and the `COGITATOR_*` overrides such as `COGITATOR_LLM_DEFAULT_MODEL`, so the app resolves its config the way the analysis did (the models it pulls among them). Left out are `COGITATOR_DEPLOY_*`, Ollama URLs of this machine and the URLs of the services the Compose stack runs
 
 When nothing is detected but the project's `.env` defines variables, preflight fails rather than deploying an app without them. List what it needs in `deploy.secrets` (an empty list deploys without any).
 
