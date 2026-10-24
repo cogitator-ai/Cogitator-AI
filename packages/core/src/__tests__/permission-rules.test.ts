@@ -1196,3 +1196,52 @@ describe('seventh review round', () => {
     expect(await decide(fileList, { path: src }, 'Read(./src/app.ts)')).toBe('allow');
   });
 });
+
+describe('eighth review round', () => {
+  const run = (
+    command: string,
+    settings: Omit<PermissionLayerSettings, 'layer'>,
+    mode: PermissionMode = 'default'
+  ) =>
+    resolvePermission(
+      ws('run_command'),
+      { command },
+      { mode, rules: rules(settings), needsApproval: true, workspace, projectRoot: root }
+    ).then((decision) => decision.decision);
+
+  it.each([
+    ['printf -v PATH ./bin; ls', 'deny'],
+    ['printf "%s" x', 'allow'],
+    ['date', 'allow'],
+    ['date +%Y-%m-%d', 'allow'],
+    ['date -u +%s', 'allow'],
+    ['date --iso-8601=seconds', 'allow'],
+    ['date 102410102026', 'deny'],
+    ['date -s 2026-01-01', 'deny'],
+    ['date -d tomorrow', 'deny'],
+    ['date +%Y +%m', 'deny'],
+    ['export PATH=./bin; ls', 'deny'],
+    ['ls; set -e', 'deny'],
+  ])('plan mode reads %j as %s', async (command, expected) => {
+    expect(await run(command, {}, 'plan')).toBe(expected);
+  });
+
+  it.each([
+    'printf -v PATH ./bin; ls',
+    'export PATH=./bin; ls',
+    'PATH=./bin; ls',
+    'alias ls=rm; ls',
+    'ls && umask 000',
+    'builtin cd src && ls',
+    'read x; ls',
+  ])('a line that changes the shell state is not understood: %j', async (command) => {
+    expect(parseCommandLine(command).certain).toBe(false);
+    const each = ['ls', 'printf', 'export', 'alias', 'umask', 'read', 'cd', 'builtin'];
+    expect(await run(command, { allow: each.map((name) => `Bash(${name} *)`) })).toBe('ask');
+  });
+
+  it('keeps a lone builtin and plain lines understood', () => {
+    expect(parseCommandLine('cd src').certain).toBe(true);
+    expect(parseCommandLine('ls && pwd').certain).toBe(true);
+  });
+});

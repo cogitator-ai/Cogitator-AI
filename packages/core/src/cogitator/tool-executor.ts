@@ -87,8 +87,16 @@ export interface ToolCallExecution {
    * permissions decide such arguments instead of the tool's own approval setting
    */
   permit?: (tool: Tool, args: Record<string, unknown>) => Promise<ChangedCallPermit>;
-  /** Hears the tool start, once nothing stops the call any more: the call counts from then on */
-  onDispatch?: () => void;
+  /**
+   * Decides the call again once its locks are held, with the arguments it runs with: why it may
+   * not run, or undefined when it may. The tool starts right after, nothing awaited in between
+   */
+  recheck?: (tool: Tool, args: Record<string, unknown>) => Promise<string | undefined>;
+  /**
+   * Called right before the tool starts, nothing awaited after it: why the call may not start
+   * (an allowance spent meanwhile), or undefined once it counts as made
+   */
+  dispatch?: () => string | undefined;
 }
 
 /**
@@ -317,12 +325,21 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
     },
   };
   try {
+    const stale = execution.recheck ? await execution.recheck(tool, toolCall.arguments) : undefined;
+    if (stale !== undefined) {
+      releaseAll();
+      return failed(`Permission denied: ${stale}`, 'PERMISSION_DENIED');
+    }
     const aborted = abortedNow();
     if (aborted) {
       releaseAll();
       return aborted;
     }
-    execution.onDispatch?.();
+    const spent = execution.dispatch?.();
+    if (spent !== undefined) {
+      releaseAll();
+      return failed(spent, 'BUDGET_EXCEEDED');
+    }
     const result = await insideLockOwner(owner, () =>
       tool.sandbox?.type === 'docker' || tool.sandbox?.type === 'wasm'
         ? executeInSandbox(

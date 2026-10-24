@@ -4,6 +4,9 @@ import { MockLLMBackend, type MockChatResponse } from '@cogitator-ai/test-utils'
 import {
   ErrorCode,
   type BudgetWarning,
+  type ChatRequest,
+  type ChatResponse,
+  type ChatStreamChunk,
   type CogitatorConfig,
   type ToolCall,
 } from '@cogitator-ai/types';
@@ -607,6 +610,86 @@ describe('seventh review round budgets', () => {
     expect(second.status).toBe('paused');
     expect(second.interrupts?.[0].id).toBe('budget:session.toolCalls');
     expect(lookups).toHaveBeenCalledTimes(1);
+    await cog.close();
+  });
+});
+
+describe('eighth review round budgets', () => {
+  it('checks the allowance a delegate spent before each call of the parent', async () => {
+    lookups.mockClear();
+    const inner = new MockLLMBackend().setResponses([
+      { content: '', toolCalls: [call('i1')], usage: spend(0) },
+      answer(0),
+    ]);
+    const outer = new MockLLMBackend().setResponses([
+      {
+        content: '',
+        toolCalls: [{ id: 'd1', name: 'helper', arguments: { task: 'x' } }, call('l1')],
+        usage: spend(0),
+      },
+      answer(0),
+    ]);
+    const cog = new Cogitator({
+      memory: { adapter: 'memory' },
+      llm: { backends: { inner, outer } },
+    });
+    const helper = new Agent({
+      name: 'helper-agent',
+      model: 'inner/m',
+      instructions: 'x',
+      tools: [lookup],
+    });
+    const lead = new Agent({
+      name: 'lead',
+      model: 'outer/m',
+      instructions: 'x',
+      tools: [agentAsTool(cog, helper, { name: 'helper', description: 'Helps' }), lookup],
+    });
+    const result = await cog.run(lead, {
+      input: 'go',
+      threadId: 'b-dispatch',
+      budget: { session: { maxToolCalls: 2 } },
+    });
+    expect(lookups).toHaveBeenCalledTimes(1);
+    const texts = result.messages
+      .filter((message) => message.role === 'tool')
+      .map((message) => String(message.content));
+    expect(texts.join('\n')).toContain('budget is spent');
+    await cog.close();
+  });
+
+  it('charges what the memory upkeep after a run spent to the session budget', async () => {
+    const backend = {
+      provider: 'openai' as const,
+      chat: vi.fn(async (request: ChatRequest): Promise<ChatResponse> => {
+        const extraction = String(request.messages[0]?.content ?? '').startsWith(
+          'You keep the long-term memory'
+        );
+        return {
+          id: 'r',
+          content: extraction ? '[]' : 'noted',
+          finishReason: 'stop',
+          usage: {
+            inputTokens: 10,
+            outputTokens: 0,
+            totalTokens: 10,
+            cost: extraction ? 0.4 : 0.1,
+          },
+        };
+      }),
+      chatStream: vi.fn(async function* (): AsyncGenerator<ChatStreamChunk> {
+        yield { id: 's', delta: {}, finishReason: 'stop' };
+      }),
+    };
+    const cog = new Cogitator({
+      llm: { backends: { mock: backend } },
+      memory: { adapter: 'memory', extraction: {} },
+      budget: { session: { maxCostUsd: 10 } },
+    });
+    const agent = new Agent({ name: 'a', model: 'mock/m', instructions: 'x' });
+    const result = await cog.run(agent, { input: 'I live in Porto', threadId: 'b-upkeep' });
+    expect(result.usage.cost).toBeCloseTo(0.5);
+    expect(result.sessionSpend?.costUsd).toBeCloseTo(0.5);
     await cog.close();
   });
 });

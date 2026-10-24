@@ -1109,3 +1109,68 @@ describe('seventh review round', () => {
     await cog.close();
   });
 });
+
+describe('eighth review round', () => {
+  it('decides a call again once it holds its locks, right before it runs', async () => {
+    const writes = vi.fn(async () => 'written');
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let holding = (): void => undefined;
+    const holds = new Promise<void>((resolve) => {
+      holding = resolve;
+    });
+    const holder = tool({
+      name: 'holder',
+      description: 'Holds the lock until released',
+      parameters: z.object({}),
+      lockKeys: async () => ['shared-lock'],
+      execute: async () => {
+        holding();
+        await held;
+        return 'held';
+      },
+    });
+    const writer = tool({
+      name: 'writer',
+      description: 'Writes',
+      parameters: z.object({}),
+      lockKeys: async () => ['shared-lock'],
+      execute: writes,
+    });
+    const first = setup([turn(call('h1', 'holder', {}))]);
+    const holderRun = first.cog.run(coder({ tools: [holder] }), { input: 'hold' });
+    await holds;
+    const second = setup([turn(call('w1', 'writer', {}))], {
+      permissions: { mode: 'bypassPermissions' },
+    });
+    const handle = second.cog.start(coder({ tools: [writer] }), {
+      input: 'go',
+      threadId: 't-lock-recheck',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    handle.setPermissionMode('plan');
+    release();
+    const result = await handle.result;
+    await holderRun;
+    expect(writes).not.toHaveBeenCalled();
+    expect(toolTexts(result.messages).join('\n')).toContain('Permission denied');
+    await first.cog.close();
+    await second.cog.close();
+  });
+
+  it('does not force a tool a bare deny took out of the list', async () => {
+    const { cog, backend } = setup([{ content: 'ok' }], {
+      permissions: { deny: ['send_email'] },
+    });
+    await cog.run(coder(), {
+      input: 'mail',
+      toolChoice: { type: 'function', function: { name: 'send_email' } },
+    });
+    const sent = backend.getCalls()[0];
+    expect(sent.tools?.map((entry) => entry.name)).not.toContain('send_email');
+    expect(sent.toolChoice).toBeUndefined();
+    await cog.close();
+  });
+});

@@ -36,7 +36,7 @@ What a session spent lives in the thread's metadata (`budget`, see `SESSION_BUDG
 
 ## When a Limit Is Reached
 
-Before each model call the run checks money and tokens, before each tool turn the tool calls the turn would add. A call counts once its tool starts, so a call refused or paused for an approval first does not use up the allowance. The first limit reached pauses the run:
+Before each model call the run checks money and tokens, before each tool turn the tool calls the turn would add. A call counts once its tool starts, so a call refused or paused for an approval first does not use up the allowance, and right before it starts the allowance is checked again, with what delegates of the run spent meanwhile: a call past it answers the model that the budget is spent. What the memory upkeep after a run (extraction, compaction) spends on the model counts in the run's usage and budgets and in the session's spending. The first limit reached pauses the run:
 
 ```typescript
 const result = await cog.run(researcher, { input, threadId });

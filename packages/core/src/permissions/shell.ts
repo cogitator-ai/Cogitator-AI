@@ -1097,7 +1097,63 @@ export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
       );
     }
   }
+  if (commands.length > 1 && candidates.some(changesShellState)) {
+    return {
+      commands: commands.map((entry) => ({ ...entry, understood: false })),
+      candidates: candidates.map((entry) => ({ ...entry, understood: false })),
+      certain: false,
+    };
+  }
   return { commands, candidates, certain: certain && commands.every((entry) => entry.understood) };
+}
+
+/** Builtins that change the shell the rest of a line runs in */
+const STATE_BUILTINS = new Set([
+  'cd',
+  'pushd',
+  'popd',
+  'chdir',
+  'read',
+  'export',
+  'declare',
+  'typeset',
+  'local',
+  'readonly',
+  'set',
+  'shopt',
+  'alias',
+  'unalias',
+  'unset',
+  'hash',
+  'ulimit',
+  'umask',
+  'trap',
+  'enable',
+  'exec',
+  'eval',
+  'source',
+  '.',
+  'let',
+  'getopts',
+  'mapfile',
+  'readarray',
+  'bind',
+  'complete',
+  'compopt',
+  'fc',
+  'history',
+  'shift',
+]);
+
+/**
+ * Whether a command changes the shell state the rest of its line runs with: a builtin such as
+ * `export`, `set` or `cd`, `printf -v`, or a bare assignment (`PATH=./bin`)
+ */
+function changesShellState(command: ShellCommand): boolean {
+  if (command.argv.length === 0) return command.assigned.length > 0;
+  const program = basename(command.argv[0]);
+  if (STATE_BUILTINS.has(program)) return true;
+  return program === 'printf' && command.argv.slice(1).some((word) => word.startsWith('-v'));
 }
 
 const SAFE_VARIABLES = new Set([
@@ -1384,18 +1440,10 @@ const READ_ONLY: Record<string, ReadOnlySpec> = {
   wc: { flags: 'lwcmL', long: ['--lines', '--words', '--chars', '--bytes'] },
   pwd: { flags: 'LP', maxOperands: 0 },
   echo: { anything: true },
-  cd: { flags: 'LPe', maxOperands: 1 },
-  printf: { anything: true },
+  printf: {},
   true: { anything: true },
   false: { anything: true },
   whoami: { maxOperands: 0 },
-  date: {
-    flags: 'uR',
-    valued: ['-d', '-r'],
-    long: ['--utc', '--rfc-3339'],
-    longValued: ['--date', '--rfc-3339', '--iso-8601'],
-    maxOperands: 1,
-  },
   uname: { flags: 'asnrvmpio', maxOperands: 0 },
   grep: {
     flags: 'rRinvwlLcoqsEFGPhHxzZabIUT',
@@ -1701,6 +1749,43 @@ export function isReadOnlyCommand(
           ].includes(word)
       );
   }
+  if (program === 'date') return dateOnlyShows(command.argv.slice(1));
   const spec = Object.hasOwn(READ_ONLY, program) ? READ_ONLY[program] : undefined;
   return spec !== undefined && argsAllowed(command.argv.slice(1), spec);
+}
+
+const DATE_FORMATS = ['date', 'hours', 'minutes', 'seconds', 'ns'];
+
+/**
+ * Whether a `date` only shows the time: bare, with one `+FORMAT`, the UTC and output format
+ * options, or `-r` naming a file. Never a form that sets the clock (`-s`, a date operand) or
+ * that platforms read differently (`-d`)
+ */
+function dateOnlyShows(args: readonly string[]): boolean {
+  let format = false;
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i];
+    if (word.startsWith('+')) {
+      if (format) return false;
+      format = true;
+      continue;
+    }
+    if (
+      ['-u', '--utc', '--universal', '-R', '--rfc-email', '--rfc-2822', '--iso-8601'].includes(word)
+    ) {
+      continue;
+    }
+    if (word === '-I' || (word.startsWith('-I') && DATE_FORMATS.includes(word.slice(2)))) continue;
+    if (word.startsWith('--iso-8601=') && DATE_FORMATS.includes(word.slice(11))) continue;
+    if (word.startsWith('--rfc-3339=') && ['date', 'seconds', 'ns'].includes(word.slice(11))) {
+      continue;
+    }
+    if ((word === '-r' || word === '--reference') && args[i + 1] !== undefined) {
+      i++;
+      continue;
+    }
+    if (word.startsWith('--reference=')) continue;
+    return false;
+  }
+  return true;
 }
