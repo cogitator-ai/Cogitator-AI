@@ -11,7 +11,7 @@ import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
 import { tool } from '../tool';
 import { agentAsTool } from '../agent-tool';
-import { SESSION_BUDGET_KEY } from '../cogitator/run-budget';
+import { SESSION_BUDGET_KEY, freshestSpend } from '../cogitator/run-budget';
 
 const lookups = vi.fn(async ({ id }: { id: string }) => `found ${id}`);
 const lookup = tool({
@@ -469,5 +469,46 @@ describe('third review round budgets', () => {
     const done = await cog.resume(agent, 'b-host-wins', { budget: { session: { maxCostUsd: 5 } } });
     expect(done.status).toBe('completed');
     await cog.close();
+  });
+});
+
+describe('fourth review round budgets', () => {
+  it('keeps the spending of a session whose budget sits on an agent down a handoff chain', async () => {
+    const backend = new MockLLMBackend().setResponse(answer(0.1));
+    const cog = new Cogitator({
+      memory: { adapter: 'memory' },
+      llm: { backends: { mock: backend } },
+    });
+    const c = new Agent({
+      name: 'c',
+      model: 'mock/m',
+      instructions: 'x',
+      budget: { maxCostUsd: 5 },
+    });
+    const b = new Agent({ name: 'b', model: 'mock/m', instructions: 'x', handoffs: [c] });
+    const a = new Agent({ name: 'a', model: 'mock/m', instructions: 'x', handoffs: [b] });
+    const result = await cog.run(a, { input: 'go', threadId: 'b-chain' });
+    expect(result.sessionSpend?.costUsd).toBeCloseTo(0.1);
+    await cog.close();
+  });
+
+  it('keeps the fresher of two records of a session counter by counter', () => {
+    expect(
+      freshestSpend(
+        {
+          costUsd: 1,
+          tokens: 10,
+          toolCalls: 3,
+          agents: { a: { costUsd: 1, tokens: 10, toolCalls: 3 } },
+        },
+        { costUsd: 2, tokens: 5, toolCalls: 3, raised: { 'session.cost': 4 } }
+      )
+    ).toEqual({
+      costUsd: 2,
+      tokens: 10,
+      toolCalls: 3,
+      agents: { a: { costUsd: 1, tokens: 10, toolCalls: 3 } },
+      raised: { 'session.cost': 4 },
+    });
   });
 });

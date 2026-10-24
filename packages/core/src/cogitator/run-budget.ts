@@ -110,6 +110,31 @@ function minus(a: BudgetSpend, b: BudgetSpend): BudgetSpend {
   return result;
 }
 
+/**
+ * The fresher of two records of one session's spending, counter by counter: spending only grows,
+ * so the larger value is the newer one. For a record kept in the process when memory refused it
+ */
+export function freshestSpend(a: SessionSpend, b: SessionSpend): SessionSpend {
+  const totals = (x: SpendTotals | undefined, y: SpendTotals | undefined): SpendTotals => ({
+    costUsd: Math.max(x?.costUsd ?? 0, y?.costUsd ?? 0),
+    tokens: Math.max(x?.tokens ?? 0, y?.tokens ?? 0),
+    toolCalls: Math.max(x?.toolCalls ?? 0, y?.toolCalls ?? 0),
+  });
+  const ids = new Set([...Object.keys(a.agents ?? {}), ...Object.keys(b.agents ?? {})]);
+  const raised = { ...a.raised, ...b.raised };
+  for (const [key, value] of Object.entries(a.raised ?? {}))
+    raised[key] = Math.max(value, raised[key]);
+  return {
+    ...totals(a, b),
+    ...(ids.size > 0 && {
+      agents: Object.fromEntries(
+        [...ids].map((id) => [id, totals(a.agents?.[id], b.agents?.[id])])
+      ),
+    }),
+    ...(Object.keys(raised).length > 0 && { raised }),
+  };
+}
+
 /** `spend` added to what a session spent, with the limits it raised */
 export function addToSession(
   session: SessionSpend,

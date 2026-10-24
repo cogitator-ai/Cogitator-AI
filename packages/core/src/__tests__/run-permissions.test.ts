@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -788,6 +796,37 @@ describe('third review round in the run loop', () => {
       permissions: { mode: 'plan' },
     });
     expect(readFileSync(join(root, 'src', 'app.ts'), 'utf8')).toBe('old');
+    await cog.close();
+  });
+});
+
+describe('fourth review round in the run loop', () => {
+  it('decides a call again right before it runs, after an earlier call moved its paths', async () => {
+    mkdirSync(join(root, 'private'), { recursive: true });
+    writeFileSync(join(root, 'private', 'secret.txt'), 'SECRET');
+    const linker = tool({
+      name: 'publish_folder',
+      description: 'Publishes a folder',
+      parameters: z.object({}),
+      execute: async () => {
+        symlinkSync(join(root, 'private'), join(root, 'public'));
+        return 'published';
+      },
+    });
+    const { cog } = setup(
+      [
+        turn(
+          call('c1', 'publish_folder', {}),
+          call('c2', 'read_file', { path: 'public/secret.txt' })
+        ),
+      ],
+      { permissions: { deny: ['Read(./private/**)'] } }
+    );
+    const result = await cog.run(coder({ tools: [...workspaceTools(), linker] }), { input: 'go' });
+    const texts = toolTexts(result.messages);
+    expect(texts[0]).toContain('published');
+    expect(texts[1]).toContain('Permission denied');
+    expect(texts[1]).not.toContain('SECRET');
     await cog.close();
   });
 });

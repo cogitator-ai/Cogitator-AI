@@ -292,6 +292,7 @@ import {
   type PermissionCall,
 } from './cogitator/run-permissions';
 import { exitPlanModeTool } from './cogitator/plan-mode';
+import { accessKindOf } from './permissions/rules';
 import {
   DEFAULT_CLASSIFIER_TRANSCRIPT,
   isPermissionClassifier,
@@ -302,6 +303,7 @@ import {
   budgetInterrupt,
   readBudgetResponse,
   readSessionSpend,
+  freshestSpend,
   RunBudget,
   SESSION_BUDGET_KEY,
   usageOf,
@@ -347,6 +349,19 @@ function withoutRaise(
 /** The agents `agent` can hand the conversation over to */
 function handoffAgentsOf(agent: Agent): Agent[] {
   return (agent.config.handoffs ?? []).map((entry) => ('agent' in entry ? entry.agent : entry));
+}
+
+/** `starts` and every agent a chain of handoffs from them reaches, each once */
+function reachableAgents(starts: readonly Agent[]): Agent[] {
+  const seen = new Set<Agent>();
+  const queue = [...starts];
+  while (queue.length > 0) {
+    const next = queue.shift();
+    if (!next || seen.has(next)) continue;
+    seen.add(next);
+    queue.push(...handoffAgentsOf(next));
+  }
+  return [...seen];
 }
 
 /** How many newest messages the `auto` classifier reads */
@@ -1841,12 +1856,9 @@ export class Cogitator implements ToolInvoker {
       });
       const ownBudget = options.budget ?? withoutRaise(checkpoint?.budget?.limits);
       const budgetConfig = mergeBudgets(this.config.budget, ownBudget);
-      const anyAgentBudget = [
-        agent,
-        active,
-        ...handoffAgentsOf(agent),
-        ...handoffAgentsOf(active),
-      ].some((owner) => owner.config.budget !== undefined);
+      const anyAgentBudget = reachableAgents([agent, active]).some(
+        (owner) => owner.config.budget !== undefined
+      );
       const interruptLimits = this.config.limits?.onExceeded === 'interrupt';
       const maxTokensPerRun = this.config.limits?.maxTokensPerRun;
       const agentBudgets = new Map<string, BudgetLimits | undefined>([
@@ -2306,6 +2318,36 @@ export class Cogitator implements ToolInvoker {
         if (resumed) checkpointKept = false;
         if (resumed && !runMemory.aside) await this.runCheckpointStore().delete(threadId);
 
+        /**
+         * Decides a call that touches paths or runs a command again right before it runs: an
+         * earlier call of the turn may have moved what its paths point to (a symlink, a `cd`).
+         * Why it may not run, or undefined when it still may. A call a person approved stops only
+         * at a deny, one the rules allowed also when it would now ask
+         */
+        const recheck = async (toolCall: ToolCall): Promise<string | undefined> => {
+          const tool = registry.get(toolCall.name);
+          if (!permissions.active || !tool) return undefined;
+          const kind = accessKindOf(tool);
+          if (kind !== 'read' && kind !== 'edit' && kind !== 'command') return undefined;
+          const runCall = runArguments.get(toolCall.id) ?? toolCall;
+          const human =
+            decisions.get(toolCall.id)?.approved === true && !automatic.has(toolCall.id);
+          const needs =
+            !human &&
+            (needsApproval(tool, runCall.arguments) ||
+              this.state.constitutionalAI?.toolNeedsApproval(tool, runCall.arguments) === true);
+          const verdict = await permissions.decide(
+            tool,
+            runCall.arguments,
+            permissionCall(tool, runCall, needs)
+          );
+          if (verdict.decision === 'deny') return verdict.reason;
+          if (verdict.decision === 'ask' && !human) {
+            return `the call no longer passes the rules when it runs (${verdict.reason}), an earlier call of the turn changed what it touches`;
+          }
+          return undefined;
+        };
+
         const executeToolCall = async (toolCall: ToolCall): Promise<ToolOutcome> => {
           const toolSpanStart = Date.now();
           const toolSpanId = newSpanId();
@@ -2363,6 +2405,22 @@ export class Cogitator implements ToolInvoker {
               toolSpanId,
               toolSpanStart,
               toolSpanEnd: toolSpanStart,
+            };
+          }
+          const stale = await recheck(toolCall);
+          if (stale !== undefined) {
+            return {
+              toolCall,
+              result: {
+                callId: toolCall.id,
+                name: toolCall.name,
+                result: null,
+                error: `Permission denied: ${stale}`,
+                errorCode: 'PERMISSION_DENIED',
+              },
+              toolSpanId,
+              toolSpanStart,
+              toolSpanEnd: Date.now(),
             };
           }
           if (!askedBefore.some((entry) => entry.toolCallId === toolCall.id)) {
@@ -3890,7 +3948,11 @@ export class Cogitator implements ToolInvoker {
       try {
         const thread = await memory.getThread(threadId);
         const kept = thread.success ? thread.data?.metadata[SESSION_BUDGET_KEY] : undefined;
-        if (kept !== undefined) return readSessionSpend(kept);
+        if (kept !== undefined) {
+          const local = this.sessionSpends.get(threadId);
+          const stored = readSessionSpend(kept);
+          return local ? freshestSpend(stored, readSessionSpend(local)) : stored;
+        }
       } catch (error) {
         getLogger().warn('Could not read what the session spent', {
           threadId,
@@ -3948,7 +4010,8 @@ export class Cogitator implements ToolInvoker {
         });
       }
     }
-    if (!kept) this.sessionSpends.set(threadId, total);
+    if (kept) this.sessionSpends.delete(threadId);
+    else this.sessionSpends.set(threadId, total);
     budget.markRecorded(total);
     return total;
   }

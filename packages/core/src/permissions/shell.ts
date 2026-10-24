@@ -1236,10 +1236,12 @@ export function filesOf(command: ShellCommand): {
   reads: string[];
   readsInto: string[];
   writes: string[];
+  writesInto: string[];
 } {
   const reads: string[] = [];
   const readsInto: string[] = [];
   const writes: string[] = [];
+  const writesInto: string[] = [];
   for (const redirect of command.redirects) {
     if (redirect.reads) reads.push(redirect.target);
     if (redirect.writes) writes.push(redirect.target);
@@ -1274,21 +1276,39 @@ export function filesOf(command: ShellCommand): {
         (word.startsWith('-t') && word.length > 2 && !word.startsWith('--')) ||
         word.startsWith('--target-directory=')
     );
-    if (target !== -1 || attached) {
-      const dir = attached
-        ? attached.startsWith('--')
-          ? attached.slice(attached.indexOf('=') + 1)
-          : attached.slice(2)
-        : command.argv[target + 1];
-      if (dir) writes.push(dir);
-    } else if (operands.length > 0) {
-      writes.push(operands[operands.length - 1]);
+    const dir =
+      target !== -1 || attached
+        ? attached
+          ? attached.startsWith('--')
+            ? attached.slice(attached.indexOf('=') + 1)
+            : attached.slice(2)
+          : command.argv[target + 1]
+        : operands[operands.length - 1];
+    const sources =
+      target !== -1 || attached
+        ? operands.filter((operand) => operand !== dir)
+        : operands.slice(0, -1);
+    if (dir) {
+      writes.push(dir);
+      for (const source of sources) writes.push(posix.join(dir, posix.basename(source)));
+      const whole =
+        program === 'mv' ||
+        program === 'rsync' ||
+        command.argv.some(
+          (word) =>
+            word === '--recursive' ||
+            word === '--archive' ||
+            (word.startsWith('-') && !word.startsWith('--') && /[rRa]/.test(word))
+        );
+      if (whole) {
+        writesInto.push(dir, ...sources.map((source) => posix.join(dir, posix.basename(source))));
+      }
     }
-    if (program === 'mv') writes.push(...operands.slice(0, -1));
+    if (program === 'mv') writes.push(...sources);
   } else if (EDITORS.has(program)) {
     writes.push(...(program === 'chmod' || program === 'chown' ? operands.slice(1) : operands));
   }
-  return { reads, readsInto, writes };
+  return { reads, readsInto, writes, writesInto };
 }
 
 /** The options of the commands `acceptEdits` runs, and which of them take a path or a value */
@@ -1678,6 +1698,7 @@ function argsAllowed(args: readonly string[], spec: ReadOnlySpec): boolean {
  */
 export function isReadOnlyCommand(command: ShellCommand): boolean {
   if (!command.understood || command.redirects.some((redirect) => redirect.writes)) return false;
+  if (!assignsOnlySafeVariables(command)) return false;
   const program = command.argv[0] ?? '';
   if (program === 'git') {
     const sub = command.argv[1] ?? '';

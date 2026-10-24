@@ -1,6 +1,6 @@
 import { realpath } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
-import type { Tool, ToolContext } from '@cogitator-ai/types';
+import type { Tool, ToolAccess, ToolContext } from '@cogitator-ai/types';
 import { executionFieldsOf, tool } from '../tool';
 
 /**
@@ -57,6 +57,34 @@ function approvalOf(
   const own = original.requiresApproval;
   if (typeof own === 'function') return (params) => isRecord(params) && own(params);
   return own;
+}
+
+/**
+ * The access of a wrapped tool for the arguments the wrapper takes: the original's, given the
+ * arguments as the wrapper passes them on, its paths relative to `base`
+ */
+function rebased(
+  access: ToolAccess,
+  withPath: (params: unknown) => unknown,
+  base: string | undefined
+): ToolAccess {
+  const absolute = (path: string) => (base && !isAbsolute(path) ? resolve(base, path) : path);
+  return {
+    kind: access.kind,
+    ...(access.paths && {
+      paths: (params: unknown) => (access.paths?.(withPath(params)) ?? []).map(absolute),
+    }),
+    ...(access.command && { command: (params: unknown) => access.command?.(withPath(params)) }),
+    ...(access.cwd && {
+      cwd: (params: unknown) => {
+        const cwd = access.cwd?.(withPath(params));
+        return cwd === undefined ? base : absolute(cwd);
+      },
+    }),
+    ...(access.env && { env: (params: unknown) => access.env?.(withPath(params)) }),
+    ...(access.url && { url: (params: unknown) => access.url?.(withPath(params)) }),
+    ...(access.agent !== undefined && { agent: access.agent }),
+  };
 }
 
 export interface RestrictFileToolsOptions {
@@ -130,6 +158,7 @@ export function restrictFileTools(
       ...(ownLockKeys && {
         lockKeys: (params: unknown, context: ToolContext) => ownLockKeys(withPath(params), context),
       }),
+      ...(fields.access && { access: rebased(fields.access, withPath, base) }),
     };
   });
 }

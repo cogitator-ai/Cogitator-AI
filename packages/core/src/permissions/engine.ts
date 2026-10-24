@@ -221,11 +221,7 @@ interface CommandCall {
 class CallSubject {
   private pathsPromise?: Promise<ResolvedPath[]>;
   private commandCall?: CommandCall | null;
-  private shellFiles?: Promise<{
-    reads: ResolvedPath[];
-    readsInto: ResolvedPath[];
-    writes: ResolvedPath[];
-  }>;
+  private shellFiles?: Promise<ShellFiles>;
   readonly parsed: unknown;
   /** The arguments as the tool gets them: read by its schema, defaults and transforms applied */
   readonly values: Record<string, unknown>;
@@ -296,32 +292,55 @@ class CallSubject {
   }
 
   /** The files the command line reads and changes, best effort, for path rules */
-  files(): Promise<{ reads: ResolvedPath[]; readsInto: ResolvedPath[]; writes: ResolvedPath[] }> {
+  files(): Promise<ShellFiles> {
     this.shellFiles ??= (async () => {
+      const files: ShellFiles = {
+        reads: [],
+        readsInto: [],
+        writes: [],
+        writesInto: [],
+        overflow: false,
+      };
       const call = this.command();
-      if (!call) return { reads: [], readsInto: [], writes: [] };
-      const reads: ResolvedPath[] = [];
-      const readsInto: ResolvedPath[] = [];
-      const writes: ResolvedPath[] = [];
+      if (!call) return files;
       const seen = new Set<string>();
-      const resolveOnce = async (path: string, into: ResolvedPath[], from: string) => {
-        const key = `${into === reads ? 'r' : into === writes ? 'w' : 'd'}\u0000${from}\u0000${path}`;
-        if (seen.has(key) || seen.size > MAX_SHELL_PATHS) return;
+      const resolveOnce = async (
+        path: string,
+        list: keyof Omit<ShellFiles, 'overflow'>,
+        from: string
+      ) => {
+        const key = `${list}\u0000${from}\u0000${path}`;
+        if (seen.has(key)) return;
+        if (seen.size >= MAX_SHELL_PATHS) {
+          files.overflow = true;
+          return;
+        }
         seen.add(key);
-        into.push(await resolveCallPath(path, from));
+        files[list].push(await resolveCallPath(path, from));
       };
       for (const candidate of call.line.candidates) {
         const from = dirOf(call, candidate);
         if (from === undefined) continue;
-        const files = filesOf(candidate);
-        for (const path of files.reads) await resolveOnce(path, reads, from);
-        for (const path of files.readsInto) await resolveOnce(path, readsInto, from);
-        for (const path of files.writes) await resolveOnce(path, writes, from);
+        const named = filesOf(candidate);
+        for (const path of named.reads) await resolveOnce(path, 'reads', from);
+        for (const path of named.readsInto) await resolveOnce(path, 'readsInto', from);
+        for (const path of named.writes) await resolveOnce(path, 'writes', from);
+        for (const path of named.writesInto) await resolveOnce(path, 'writesInto', from);
       }
-      return { reads, readsInto, writes };
+      return files;
     })();
     return this.shellFiles;
   }
+}
+
+/** The files a command line names, resolved, see {@link filesOf} */
+interface ShellFiles {
+  reads: ResolvedPath[];
+  readsInto: ResolvedPath[];
+  writes: ResolvedPath[];
+  writesInto: ResolvedPath[];
+  /** More paths than {@link MAX_SHELL_PATHS}: the rest were not checked */
+  overflow: boolean;
 }
 
 /** Most distinct paths of a command line resolved for path rules */
@@ -463,9 +482,8 @@ async function restrictiveMatch(
     const editing = rule.target.kind === 'family' && rule.target.family === 'edit';
     const paths = editing ? files.writes : [...files.reads, ...files.writes];
     if (anyPathMatches(rule, specifier, paths, subject, projectRoot)) return true;
-    if (!editing && reachesInto(rule, specifier, files.readsInto, subject, projectRoot)) {
-      return true;
-    }
+    const into = editing ? files.writesInto : [...files.readsInto, ...files.writesInto];
+    if (reachesInto(rule, specifier, into, subject, projectRoot)) return true;
   }
   const crossRead =
     rule.ref.behavior === 'deny' &&
@@ -801,6 +819,13 @@ async function decide(
     if (await restrictiveMatch(rule, subject, projectRoot)) {
       return decision('deny', 'rule', ruleReason(rule.ref, 'Denied'), rule.ref);
     }
+  }
+  if (guarded && (await subject.files()).overflow) {
+    return decision(
+      mode === 'bypassPermissions' ? 'deny' : 'ask',
+      'mode',
+      'The command line names more files than the rules can check'
+    );
   }
   const readOnlyCommand = subject.kind === 'command' && readOnlyCommandCall(subject);
   if (mode === 'plan' && !isReadOnly(tool, context.planTools) && !readOnlyCommand) {

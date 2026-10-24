@@ -7,6 +7,8 @@ import type { PermissionLayerSettings, PermissionMode, Tool } from '@cogitator-a
 import { tool } from '../tool';
 import { workspaceTools } from '../tools/workspace-tools';
 import { exec } from '../tools/exec';
+import { fileRead } from '../tools/filesystem';
+import { restrictFileTools } from '../tools/path-guard';
 import { LocalWorkspace } from '../workspace/local-workspace';
 import {
   PermissionRuleSet,
@@ -934,5 +936,53 @@ describe('third review round', () => {
     ['cd src && ls', 'allow'],
   ])('plan mode reads %j as %s', async (command, expected) => {
     expect(await run(command, {}, 'plan')).toBe(expected);
+  });
+});
+
+describe('fourth review round', () => {
+  const run = (
+    command: string,
+    settings: Omit<PermissionLayerSettings, 'layer'>,
+    mode: PermissionMode = 'default'
+  ) =>
+    resolvePermission(
+      ws('run_command'),
+      { command },
+      { mode, rules: rules(settings), needsApproval: true, workspace, projectRoot: root }
+    ).then((decision) => decision.decision);
+
+  it('holds inline assignments to the safe list in every mode', async () => {
+    expect(await run('PATH=/tmp/x ls', {}, 'plan')).toBe('deny');
+    expect(await run('LD_PRELOAD=/tmp/x.so ls', { allow: ['Bash(ls *)'] })).toBe('ask');
+    expect(await run('NODE_ENV=ci ls', {}, 'plan')).toBe('allow');
+  });
+
+  it('checks where cp and mv put each source', async () => {
+    const protect = { deny: ['Edit(./protected/keep.txt)'], allow: ['Bash'] };
+    expect(await run('cp source/keep.txt protected/', protect)).toBe('deny');
+    expect(await run('cp -t protected source/keep.txt', protect)).toBe('deny');
+    expect(await run('mv x/keep.txt protected', protect)).toBe('deny');
+    expect(await run('cp -r source protected', protect)).toBe('deny');
+    expect(await run('cp source/other.txt protected/', protect)).toBe('allow');
+  });
+
+  it('asks when a command line names more files than the rules check', async () => {
+    const many = `cat ${Array.from({ length: 2500 }, (_, i) => `f${i}`).join(' ')}`;
+    expect(await run(many, { deny: ['Read(./secret.txt)'], allow: ['Bash(cat *)'] })).toBe('ask');
+    expect(await run(many, { deny: ['Read(./secret.txt)'] }, 'bypassPermissions')).toBe('deny');
+  });
+
+  it('checks a restricted file tool where the wrapper reads', async () => {
+    const [reader] = restrictFileTools([fileRead], [root], { base: join(root, 'src') });
+    const decision = await resolvePermission(
+      reader,
+      { path: 'app.ts' },
+      {
+        mode: 'default',
+        rules: rules({ deny: [`Read(/${join(root, 'src', 'app.ts')})`] }),
+        needsApproval: false,
+      }
+    );
+    expect(decision.decision).toBe('deny');
   });
 });
