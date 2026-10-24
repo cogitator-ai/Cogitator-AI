@@ -249,6 +249,12 @@ describe('generateFlyToml', () => {
     expect(generateFlyToml({})).toContain('path = "/cogitator/health"');
   });
 
+  it('names the app after deploy.app, else the image', () => {
+    expect(generateFlyToml({ image: 'bot', app: 'acme-bot' })).toMatch(/^app = "acme-bot"$/m);
+    expect(generateFlyToml({ image: 'bot' })).toMatch(/^app = "bot"$/m);
+    expect(generateFlyToml({})).toMatch(/^app = "cogitator-app"$/m);
+  });
+
   it('parses memory sizes', () => {
     expect(parseMemoryMb('1gb')).toBe(1024);
     expect(parseMemoryMb('2G')).toBe(2048);

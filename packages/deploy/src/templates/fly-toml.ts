@@ -10,6 +10,11 @@ export function parseMemoryMb(memory: string): number {
   return 256;
 }
 
+/** The Fly app of a deployment: `app`, else `image`, else `cogitator-app`. */
+export function flyAppName(config: DeployConfig): string {
+  return config.app ?? config.image ?? 'cogitator-app';
+}
+
 function tomlString(value: string): string {
   return JSON.stringify(value);
 }
@@ -49,7 +54,7 @@ export function generateFlyToml(config: DeployConfig): string {
   const http = servesHttp(config);
   const port = config.port ?? 3000;
   const region = config.region ?? 'iad';
-  const app = config.image ?? 'cogitator-app';
+  const app = flyAppName(config);
   const memoryMb = parseMemoryMb(config.resources?.memory ?? '256mb');
   const instances = Math.max(config.instances ?? 1, 0);
   const path = http ? healthPath(config) : undefined;

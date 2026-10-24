@@ -1,11 +1,13 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
+import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { findConfigFile, loadConfig, loadEnvConfig } from '@cogitator-ai/config';
-import { Deployer, type DeployPlan } from '@cogitator-ai/deploy';
+import { Deployer, flyAppName, type DeployCommand, type DeployPlan } from '@cogitator-ai/deploy';
 import { log } from '../utils/logger.js';
+import { parseTailOption } from './logs.js';
 import {
   CommandError,
   UsageError,
@@ -24,6 +26,9 @@ export interface DeployFlags {
   dryRun?: boolean;
   region?: string;
   json?: boolean;
+  follow?: boolean;
+  tail?: string;
+  timestamps?: boolean;
 }
 
 function isDeployTarget(value: string, available: readonly string[]): value is DeployTarget {
@@ -109,11 +114,15 @@ export function describePlan(plan: DeployPlan, target: DeployTarget, configPath?
       ...(config.region && { region: config.region }),
       ...(config.registry && { registry: config.registry }),
       ...(config.image && { image: config.image }),
+      ...(target === 'fly' && { app: flyAppName(config) }),
+      ...(target === 'fly' && config.org && { org: config.org }),
       ...(config.instances && { instances: config.instances }),
     },
     services: {
       redis: Boolean(config.services?.redis),
       postgres: Boolean(config.services?.postgres),
+      ollama: Boolean(config.services?.ollama),
+      ...(config.services?.ollama && { ollamaModels: config.ollama?.models ?? [] }),
       provisioned: target === 'docker',
     },
     volumes: (config.volumes ?? []).map((volume) => volume.path),
@@ -147,7 +156,9 @@ function printPlan(summary: PlanSummary): void {
   if (config.port) console.log(`    Port:     ${chalk.cyan(String(config.port))}`);
   if (config.region) console.log(`    Region:   ${chalk.cyan(config.region)}`);
   if (config.registry) console.log(`    Registry: ${chalk.cyan(config.registry)}`);
-  if (config.image) console.log(`    App:      ${chalk.cyan(config.image)}`);
+  if (config.image) console.log(`    Image:    ${chalk.cyan(config.image)}`);
+  if (config.app) console.log(`    App:      ${chalk.cyan(config.app)}`);
+  if (config.org) console.log(`    Org:      ${chalk.cyan(config.org)}`);
   if (config.instances) console.log(`    Instances: ${chalk.cyan(String(config.instances))}`);
   console.log();
 
@@ -158,13 +169,18 @@ function printPlan(summary: PlanSummary): void {
   }
 
   const { services } = summary;
-  if (services.redis || services.postgres) {
+  if (services.redis || services.postgres || services.ollama) {
     const icon = services.provisioned ? chalk.green('●') : chalk.yellow('○');
     const note = (variable: string) =>
       services.provisioned ? '' : chalk.dim(` (not provisioned on ${target}, set ${variable})`);
     console.log(chalk.dim('  Services:'));
     if (services.redis) console.log(`    ${icon} Redis${note('REDIS_URL')}`);
     if (services.postgres) console.log(`    ${icon} PostgreSQL${note('DATABASE_URL')}`);
+    if (services.ollama) {
+      const models = services.ollamaModels ?? [];
+      const pulls = models.length > 0 ? chalk.dim(` (pulls ${models.join(', ')})`) : '';
+      console.log(`    ${icon} Ollama${services.provisioned ? pulls : note('OLLAMA_HOST')}`);
+    }
     console.log();
   }
 
@@ -289,6 +305,7 @@ async function runDeploy(flags: DeployFlags): Promise<void> {
   console.log();
   log.dim('Commands:');
   console.log(`  cogitator deploy status   check deployment status`);
+  console.log(`  cogitator deploy logs     show the logs of the deployment`);
   console.log(`  cogitator deploy destroy  tear down deployment`);
   console.log();
 }
@@ -352,9 +369,56 @@ async function runDeployDestroy(flags: DeployFlags): Promise<void> {
   }
 }
 
+/** Runs `command` with the terminal attached and resolves with its exit code. */
+function runAttached(command: DeployCommand): Promise<number> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(command.command, command.args, {
+      cwd: command.cwd,
+      env: command.env,
+      stdio: 'inherit',
+    });
+    child.on('error', (error) =>
+      reject(new CommandError(`Failed to run ${command.command}: ${error.message}`))
+    );
+    child.on('exit', (code, signal) => resolvePromise(code ?? (signal ? EXIT.failed : EXIT.ok)));
+  });
+}
+
+/**
+ * `cogitator deploy logs [service]`: the logs of the deployment, from
+ * `docker compose logs` on the docker target and `flyctl logs` on Fly. The
+ * command runs with the terminal attached and its exit code becomes the CLI's.
+ */
+export async function runDeployLogs(
+  service: string | undefined,
+  flags: DeployFlags
+): Promise<void> {
+  const projectDir = resolve(process.cwd());
+  const deployer = new Deployer();
+  const inputs = loadDeployInputs(projectDir, flags);
+  const target = resolveTarget(inputs.target, deployer.availableTargets());
+
+  let command: DeployCommand;
+  try {
+    command = deployer.logsCommand(target, { ...inputs.overrides, target }, projectDir, {
+      configPath: inputs.configPath,
+      follow: flags.follow === true,
+      ...(flags.tail !== undefined && { tail: flags.tail }),
+      ...(service !== undefined && { service }),
+      timestamps: flags.timestamps === true,
+    });
+  } catch (error) {
+    throw new CommandError(errorMessage(error));
+  }
+
+  const code = await runAttached(command);
+  if (code !== EXIT.ok) process.exitCode = code;
+}
+
 export const deployCommand = new Command('deploy')
   .description('Deploy your Cogitator project')
-  .argument('[action]', 'Action to perform: status, destroy')
+  .argument('[action]', 'Action to perform: status, logs, destroy')
+  .argument('[service]', 'Service whose logs to show (app, ollama, redis, postgres), docker only')
   .option('-t, --target <target>', 'Deploy target (docker, fly)')
   .option('-c, --config <path>', 'Config file path')
   .option('--registry <url>', 'Container registry URL')
@@ -362,6 +426,13 @@ export const deployCommand = new Command('deploy')
   .option('--dry-run', 'Show deploy plan without executing')
   .option('--region <region>', 'Deploy region')
   .option('--json', 'print the plan, the result or the status as JSON')
+  .option('-f, --follow', 'logs: keep streaming new lines')
+  .option(
+    '-n, --tail <lines>',
+    'logs: lines to show (or "all"), docker only, 100 by default',
+    parseTailOption
+  )
+  .option('--timestamps', 'logs: show timestamps, docker only (Fly logs always have them)')
   .addHelpText(
     'after',
     examplesHelp([
@@ -369,13 +440,23 @@ export const deployCommand = new Command('deploy')
       ['cogitator deploy --dry-run --json', 'the same plan for scripts and CI'],
       ['cogitator deploy --target fly', 'build and deploy to Fly.io'],
       ['cogitator deploy status', 'is the deployment running?'],
+      ['cogitator deploy logs -f', 'stream the logs of the deployment'],
+      ['cogitator deploy logs ollama -n 50', 'the last 50 lines of one compose service'],
       ['cogitator deploy destroy', 'tear the deployment down'],
     ])
   )
-  .action(async (action: string | undefined, flags: DeployFlags) => {
+  .action(async (action: string | undefined, service: string | undefined, flags: DeployFlags) => {
+    if (service !== undefined && action !== 'logs') {
+      throw new UsageError(`Unexpected argument: "${service}"`, [
+        'Only "cogitator deploy logs" takes a service name',
+      ]);
+    }
     switch (action) {
       case 'status':
         await runDeployStatus(flags);
+        break;
+      case 'logs':
+        await runDeployLogs(service, flags);
         break;
       case 'destroy':
         await runDeployDestroy(flags);
@@ -384,6 +465,8 @@ export const deployCommand = new Command('deploy')
         await runDeploy(flags);
         break;
       default:
-        throw new UsageError(`Unknown action: "${action}"`, ['Available actions: status, destroy']);
+        throw new UsageError(`Unknown action: "${action}"`, [
+          'Available actions: status, logs, destroy',
+        ]);
     }
   });

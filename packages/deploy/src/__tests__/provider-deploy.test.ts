@@ -111,6 +111,35 @@ describe('FlyProvider.deploy', () => {
     expect(result.url).toBeUndefined();
   });
 
+  it('creates the app from deploy.app in deploy.org', async () => {
+    runMock.mockImplementation((_command, args) =>
+      args[0] === 'status' ? { success: false, output: '', error: 'not found' } : ok()
+    );
+
+    const result = await new FlyProvider().deploy(
+      { kind: 'worker', image: 'bot', app: 'acme-bot', org: 'acme' },
+      artifacts,
+      dir
+    );
+
+    expect(result.success).toBe(true);
+    const calls = flyCalls();
+    expect(calls).toContainEqual(['apps', 'create', 'acme-bot', '--org', 'acme']);
+    expect(calls.find((args) => args[0] === 'deploy')).toEqual(
+      expect.arrayContaining(['--app', 'acme-bot'])
+    );
+  });
+
+  it('creates the app in the default organization without deploy.org', async () => {
+    runMock.mockImplementation((_command, args) =>
+      args[0] === 'status' ? { success: false, output: '', error: 'not found' } : ok()
+    );
+
+    await new FlyProvider().deploy({ kind: 'worker', image: 'bot' }, artifacts, dir);
+
+    expect(flyCalls()).toContainEqual(['apps', 'create', 'bot']);
+  });
+
   it('reuses an existing volume', async () => {
     runMock.mockImplementation((_command, args) =>
       args[0] === 'volumes' && args[1] === 'list'

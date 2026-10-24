@@ -19,6 +19,7 @@ cogitator deploy --dry-run            # analyze + preflight, change nothing
 cogitator deploy                      # Docker: build image, start the compose stack
 cogitator deploy --target fly         # Fly.io
 cogitator deploy status
+cogitator deploy logs -f              # docker compose logs / flyctl logs
 cogitator deploy destroy
 ```
 
@@ -45,17 +46,18 @@ if (!result.success) throw new Error(result.error);
 console.log(result.url); // https://my-app.fly.dev
 ```
 
-| Method                                          | Description                                                                              |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `plan(options)`                                 | Analyze + preflight. Returns `config`, `preflight`, `warnings`, `analysis`, `provider`   |
-| `deploy(options)`                               | `plan`, generate artifacts, deploy. Returns `DeployResult` (`url`, `endpoints`, `error`) |
-| `status(target, config, projectDir, options?)`  | `DeployStatus` (`running`, `url`, `instances`, `uptime`)                                 |
-| `destroy(target, config, projectDir, options?)` | Tears down the deployment, throws when it fails                                          |
-| `availableTargets()`                            | Names of registered providers (`['docker', 'fly']` by default)                           |
-| `registerProvider(provider)`                    | Add a custom `DeployProvider`                                                            |
-| `getProvider(target)`                           | The registered provider, throws for an unknown target                                    |
+| Method                                              | Description                                                                              |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `plan(options)`                                     | Analyze + preflight. Returns `config`, `preflight`, `warnings`, `analysis`, `provider`   |
+| `deploy(options)`                                   | `plan`, generate artifacts, deploy. Returns `DeployResult` (`url`, `endpoints`, `error`) |
+| `status(target, config, projectDir, options?)`      | `DeployStatus` (`running`, `url`, `instances`, `uptime`)                                 |
+| `destroy(target, config, projectDir, options?)`     | Tears down the deployment, throws when it fails                                          |
+| `logsCommand(target, config, projectDir, options?)` | The command that shows the logs (`follow`, `tail`, `service`, `timestamps`), as argv     |
+| `availableTargets()`                                | Names of registered providers (`['docker', 'fly']` by default)                           |
+| `registerProvider(provider)`                        | Add a custom `DeployProvider`                                                            |
+| `getProvider(target)`                               | The registered provider, throws for an unknown target                                    |
 
-`DeployOptions`: `projectDir`, `target`, `dryRun` (plan and generate, then return `{ success: true, url: '(dry run)' }` without writing artifacts or deploying), `noPush` (drop the registry), `configOverrides` (a partial `DeployConfig`), `configPath` (the config file to read, by default the first of `cogitator.yml`, `cogitator.yaml`, `.cogitator.yml`, `.cogitator.yaml` in `projectDir`, the same lookup as `loadConfig`) and `env` (where secrets come from, by default the project's `.env` under the process environment). `status` and `destroy` take `{ configPath }` too. `deploy()` does not throw on failed preflight checks: it returns `{ success: false, error }` listing each failed check and its fix.
+`DeployOptions`: `projectDir`, `target`, `dryRun` (plan and generate, then return `{ success: true, url: '(dry run)' }` without writing artifacts or deploying), `noPush` (drop the registry), `configOverrides` (a partial `DeployConfig`), `configPath` (the config file to read, by default the first of `cogitator.yml`, `cogitator.yaml`, `.cogitator.yml`, `.cogitator.yaml` in `projectDir`, the same lookup as `loadConfig`) and `env` (where secrets come from, by default the project's `.env` under the process environment). `status`, `destroy` and `logsCommand` take `{ configPath }` too. `deploy()` does not throw on failed preflight checks: it returns `{ success: false, error }` listing each failed check and its fix.
 
 `ProjectAnalyzer` (`analyze(projectDir, overrides?, { configPath, env }?)`, `detectBuild(projectDir)`), `ArtifactGenerator`, `DockerProvider` and `FlyProvider` are exported for building your own pipeline.
 
@@ -69,13 +71,16 @@ deploy:
   kind: worker # server | worker (default: detected, see below)
   server: express # express | fastify | hono | koa | tetsu | next (default: detected)
   port: 3000 # default: 3000 for a server, none for a worker
-  image: my-agent # Docker image / Fly app name (default: package.json name)
+  image: my-agent # Docker image (default: package.json name)
+  app: my-agent-prod # Fly.io app name (default: image)
+  org: acme # Fly.io organization a new app is created in (default: your default org)
   region: iad # Fly.io, default: iad
   instances: 2 # Fly.io only, docker runs one container
   registry: ghcr.io/myorg
-  services: # default: detected from the memory adapter
+  services: # default: detected from the memory adapter and the Ollama models
     redis: true
     postgres: true
+    ollama: true # docker: an Ollama container next to the app
   env:
     LOG_LEVEL: info
   secrets: # default: detected, see below
@@ -90,7 +95,11 @@ deploy:
   volumes: # default: the directory of a SQLite memory database
     - path: data # relative to the app directory, or absolute
       size: 1 # GB, Fly.io volume size
-  hostGateway: true # docker: reach the host as host.docker.internal (set for a local Ollama)
+  hostGateway: true # docker: reach the host as host.docker.internal (set with services.ollama off)
+  ollama: # docker, with services.ollama
+    models: [qwen3:8b, nomic-embed-text] # default: the local Ollama models of the config
+    gpu: true # reserve the host's NVIDIA GPUs (needs the NVIDIA Container Toolkit)
+    image: ollama/ollama:0.40.0 # default shown
 ```
 
 ### Server or worker
@@ -122,14 +131,20 @@ A SQLite memory (`memory.adapter: sqlite`) keeps its database directory on a vol
 
 ### Local Ollama
 
-A local Ollama model on the docker target reaches the Ollama of the host: the Compose file maps `host.docker.internal` to the host and points `COGITATOR_OLLAMA_BASE_URL`, `OLLAMA_BASE_URL`, `OLLAMA_URL` and `OLLAMA_HOST` at it, keeping the port of your local URL. On Linux, Ollama must listen beyond localhost (`OLLAMA_HOST=0.0.0.0 ollama serve`). An Ollama URL that already points to another machine is passed through as it is. Other targets warn, since they have no Ollama.
+When the project's models run on a local Ollama, the docker target runs one next to the app (`services.ollama`, on by default then). Local means an Ollama model that is not Ollama Cloud with no Ollama URL pointing beyond this machine, among `llm.defaultModel`, `context.summaryModel` and the models of the memory stages, or `memory.embedding` with `provider: ollama` (its model, `nomic-embed-text` by default).
+
+The Compose file gets an `ollama` service on the `ollama/ollama` image with the models in the `ollama-data` volume and a health check, and a one-shot `ollama-pull` service that pulls the models on the first start: each model is an argument of the job, and one the volume has already is skipped, so later starts need no network. The app waits for both, and `COGITATOR_OLLAMA_BASE_URL`, `OLLAMA_BASE_URL`, `OLLAMA_URL` and `OLLAMA_HOST` point it at `http://ollama:11434`, unless `env` or `secrets` set one of them. The first deploy takes as long as the download, `cogitator deploy logs ollama-pull` shows it. `ollama.models` replaces the detected list, `ollama.gpu: true` reserves the NVIDIA GPUs of the host, `ollama.image` runs another release or `ollama/ollama:rocm`.
+
+The embedding service reads its URL from `memory.embedding.baseUrl` only, so a URL written there as `http://localhost:11434` would miss the container: write it as `${OLLAMA_BASE_URL:-http://localhost:11434}` (the analyzer warns otherwise).
+
+With `services.ollama: false` the app reaches the Ollama of the host instead: the Compose file maps `host.docker.internal` to the host and points the same variables at it, keeping the port of your local URL. On Linux, Ollama must listen beyond localhost (`OLLAMA_HOST=0.0.0.0 ollama serve`). An Ollama URL that already points to another machine is passed through as it is. Other targets warn, since they have no Ollama.
 
 ## Auto-Detection
 
 | What             | Source                                                | Example                                                                                                                                                                                             |
 | ---------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Kind and server  | `package.json` dependencies                           | `@cogitator-ai/express` → Express server, `@cogitator-ai/channels` → worker                                                                                                                         |
-| Image / app name | `package.json` `name`                                 | `@acme/My Agent` → `my-agent` (fallback `cogitator-app`)                                                                                                                                            |
+| Image / app name | `package.json` `name`                                 | `@acme/My Agent` → `my-agent` (fallback `cogitator-app`), `deploy.app` names the Fly app                                                                                                            |
 | Package manager  | Lockfile, `packageManager`, `pnpm-workspace.yaml`     | `pnpm-lock.yaml` → `pnpm install --frozen-lockfile`, Yarn 1 → `yarn install --frozen-lockfile`, Yarn Berry → `yarn install --immutable`, `bun.lock` → `bun install`, `package-lock.json` → `npm ci` |
 | Install files    | Files next to `package.json`                          | `pnpm-workspace.yaml`, `.npmrc`, `patches/`, `.yarnrc.yml`, `.yarn/`, `bunfig.toml` are copied before the install step                                                                              |
 | Runtime          | Start command, Bun lockfile, `@cogitator-ai/tetsu`    | `bun ...` start → `oven/bun:1-alpine` image, otherwise `node:24-alpine` (with Bun added for a Bun-managed Node app)                                                                                 |
@@ -150,13 +165,13 @@ The image is a production build in three stages. `base` is `node:24-alpine`, or 
 
 Artifacts are written to `.cogitator/`: `Dockerfile`, `.dockerignore`, `Dockerfile.dockerignore` and `docker-compose.prod.yml`. A root `.dockerignore` is created when the project has none, so `.env` and `node_modules` never enter the image.
 
-`deploy` builds and tags the image (`<registry>/<image>:latest`), pushes it when a registry is configured, then runs `docker compose up -d` for the app plus the Redis/PostgreSQL services it needs (health-gated, data in named volumes). Each key appears once in the app's Compose `environment`: a `REDIS_URL` / `DATABASE_URL` in `env` replaces the bundled service URL, and one listed in `secrets` is read from your environment with the bundled URL as fallback. The app container must then keep running for a few seconds (`new DockerProvider({ startupCheckMs })`, 8 seconds by default): one that exits or restarts fails the deploy with its last log lines, so a missing secret is reported instead of a restart loop. The result's `url` is `http://localhost:<port>` for a server, a worker without a port has none. `status` reports whether the `app` service is running, `destroy` runs `docker compose down` and keeps volumes.
+`deploy` builds and tags the image (`<registry>/<image>:latest`), pushes it when a registry is configured, then runs `docker compose up -d` for the app plus the Redis, PostgreSQL and Ollama services it needs (health-gated, data in named volumes). Each key appears once in the app's Compose `environment`: a `REDIS_URL` / `DATABASE_URL` in `env` replaces the bundled service URL, and one listed in `secrets` is read from your environment with the bundled URL as fallback. The app container must then keep running for a few seconds (`new DockerProvider({ startupCheckMs })`, 8 seconds by default): one that exits or restarts fails the deploy with its last log lines, so a missing secret is reported instead of a restart loop. The result's `url` is `http://localhost:<port>` for a server, a worker without a port has none. `status` reports whether the `app` service is running, `logsCommand` builds `docker compose logs` (`--follow`, `--tail`, 100 lines by default, `--timestamps`, one service), `destroy` runs `docker compose down` and keeps volumes, the pulled models among them.
 
 Preflight checks: Docker installed, daemon running, Compose v2 available, registry credentials (read from the Docker config, credential helpers and stores), secrets.
 
 ### Fly.io
 
-Generates `.cogitator/fly.toml` (your own `fly.toml` is never overwritten) with `[env]`, VM size from `resources`, a `[mounts]` volume when there is one, and for a server an HTTP service with checks from `health` and `min_machines_running` from `instances` (machines auto-stop and auto-start). A worker gets no checks and is never auto-stopped. `deploy` creates the app and its volume when needed, stages secrets, runs `fly deploy --config .cogitator/fly.toml --dockerfile .cogitator/Dockerfile`, and scales to `instances`. For a server the result lists `https://<app>.fly.dev`, its health URL and the A2A agent card (`/.well-known/agent.json`). Fly runs no Redis or Postgres next to the app: with those services, `REDIS_URL` / `DATABASE_URL` become required secrets (create them with `fly redis create`, `fly postgres create` or any hosted service). `status` reads `fly status`, `destroy` runs `fly apps destroy`. Preflight checks: `flyctl` installed, `fly auth whoami`, secrets. Works with either `flyctl` or `fly` on `PATH`.
+Generates `.cogitator/fly.toml` (your own `fly.toml` is never overwritten) with `[env]`, VM size from `resources`, a `[mounts]` volume when there is one, and for a server an HTTP service with checks from `health` and `min_machines_running` from `instances` (machines auto-stop and auto-start). A worker gets no checks and is never auto-stopped. The app is `deploy.app`, else the image name. `deploy` creates the app when needed (`fly apps create --org <org>` with `deploy.org`, your default organization without it) and its volume, stages secrets, runs `fly deploy --config .cogitator/fly.toml --dockerfile .cogitator/Dockerfile`, and scales to `instances`. For a server the result lists `https://<app>.fly.dev`, its health URL and the A2A agent card (`/.well-known/agent.json`). Fly runs no Redis or Postgres next to the app: with those services, `REDIS_URL` / `DATABASE_URL` become required secrets (create them with `fly redis create`, `fly postgres create` or any hosted service). `status` reads `fly status`, `logsCommand` builds `fly logs --app <app>` (`--no-tail` unless following), `destroy` runs `fly apps destroy`. Preflight checks: the app name follows the Fly rules (lowercase letters, digits and dashes, starting and ending with a letter or digit, 63 characters at most) and `deploy.org` is a slug, `flyctl` installed, `fly auth whoami`, secrets. Works with either `flyctl` or `fly` on `PATH`.
 
 ## Custom Providers
 
@@ -165,6 +180,8 @@ import {
   ArtifactGenerator,
   Deployer,
   ProjectAnalyzer,
+  type DeployCommand,
+  type DeployLogsOptions,
   type DeployProvider,
 } from '@cogitator-ai/deploy';
 import type {
@@ -197,6 +214,12 @@ class KubernetesProvider implements DeployProvider {
     return { running: true };
   }
   async destroy(config: DeployConfig, projectDir: string): Promise<void> {}
+  logsCommand(config: DeployConfig, projectDir: string, options: DeployLogsOptions): DeployCommand {
+    return {
+      command: 'kubectl',
+      args: ['logs', 'deploy/agents', ...(options.follow ? ['-f'] : [])],
+    };
+  }
 }
 
 const deployer = new Deployer();
@@ -204,7 +227,7 @@ deployer.registerProvider(new KubernetesProvider());
 await deployer.deploy({ projectDir: process.cwd(), target: 'kubernetes' });
 ```
 
-`Deployer.deploy()` runs preflight, calls your provider's `generate(config, projectDir)` and hands the result to its `deploy()` (with `dryRun` it stops after `generate()`). Writing the files to disk is up to the provider. The example reuses the built-in Dockerfile: `ProjectAnalyzer.detectBuild(projectDir)` reports the TypeScript setup, package manager, lockfile, build script and start command that `ArtifactGenerator` needs.
+`Deployer.deploy()` runs preflight, calls your provider's `generate(config, projectDir)` and hands the result to its `deploy()` (with `dryRun` it stops after `generate()`). Writing the files to disk is up to the provider. `logsCommand` is optional: `Deployer.logsCommand(target, config, projectDir, options)` returns the command for the caller to run with the terminal attached, the way `cogitator deploy logs` does. The example reuses the built-in Dockerfile: `ProjectAnalyzer.detectBuild(projectDir)` reports the TypeScript setup, package manager, lockfile, build script and start command that `ArtifactGenerator` needs.
 
 All external commands are executed without a shell, so paths with spaces and user-supplied values are passed verbatim.
 

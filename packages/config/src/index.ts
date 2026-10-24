@@ -67,6 +67,7 @@ export {
   DeployServerSchema,
   DeployKindSchema,
   DeployVolumeSchema,
+  DeployOllamaSchema,
   DeployConfigSchema,
   PromptsConfigSchema,
   type CogitatorConfigInput,

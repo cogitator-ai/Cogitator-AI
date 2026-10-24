@@ -67,7 +67,7 @@ export const deployFeature: FeatureModule = {
         ${runScript(pm, 'deploy')}       # build and ${spec.deploy === 'fly' ? 'deploy to Fly.io' : 'run with Docker'}
         \`\`\`
 
-        Secrets listed under \`deploy.secrets\` in \`cogitator.yml\` must be set in the environment you deploy from.
+        Secrets listed under \`deploy.secrets\` in \`cogitator.yml\` must be set in the environment you deploy from.${spec.provider === 'ollama' && spec.deploy === 'docker' ? ' The deployment runs Ollama in a container next to the app and pulls the models of `cogitator.yml` on its first start, `cogitator deploy logs ollama-pull` shows the download.' : ''}
       `
     );
     project.section(

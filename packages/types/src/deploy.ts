@@ -24,6 +24,25 @@ export interface DeployVolume {
 export interface DeployServicesConfig {
   redis?: boolean;
   postgres?: boolean;
+  /**
+   * An Ollama container next to the app, Docker target only. On by default when the
+   * project's chat or embedding models run on a local Ollama, `false` reaches the
+   * Ollama of the Docker host instead.
+   */
+  ollama?: boolean;
+}
+
+/** The Ollama container of the Docker target (`services.ollama`). */
+export interface DeployOllamaConfig {
+  /**
+   * Models pulled on the first start, before the app starts. The local Ollama models of
+   * the config (chat, memory stages, embeddings) when unset.
+   */
+  models?: string[];
+  /** Reserve the host's NVIDIA GPUs for the container, which needs the NVIDIA Container Toolkit */
+  gpu?: boolean;
+  /** Ollama image, a pinned `ollama/ollama` release by default */
+  image?: string;
 }
 
 export interface DeployHealthConfig {
@@ -45,6 +64,10 @@ export interface DeployConfig {
   port?: number;
   registry?: string;
   image?: string;
+  /** Fly app name, `image` when unset. See `isFlyAppName` for the rules it follows. */
+  app?: string;
+  /** Fly organization slug `fly apps create` puts a new app in, the account's default when unset */
+  org?: string;
   region?: string;
   instances?: number;
   services?: DeployServicesConfig;
@@ -59,6 +82,25 @@ export interface DeployConfig {
    * such as a local Ollama. Docker target only.
    */
   hostGateway?: boolean;
+  /** The Ollama container of the Docker target */
+  ollama?: DeployOllamaConfig;
+}
+
+const FLY_APP_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const FLY_ORG_SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+/**
+ * Whether `name` is a valid Fly.io app name: lowercase letters, digits and dashes,
+ * starting and ending with a letter or digit, 63 characters at most, since the app
+ * is served at `<name>.fly.dev`.
+ */
+export function isFlyAppName(name: string): boolean {
+  return FLY_APP_NAME.test(name);
+}
+
+/** Whether `slug` looks like a Fly.io organization slug: lowercase letters, digits and dashes, starting with a letter or digit. */
+export function isFlyOrgSlug(slug: string): boolean {
+  return FLY_ORG_SLUG.test(slug);
 }
 
 export interface PreflightCheck {

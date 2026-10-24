@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isFlyAppName, isFlyOrgSlug } from '@cogitator-ai/types';
 
 export const OLLAMA_LOCAL_URL = 'http://localhost:11434';
 export const OLLAMA_CLOUD_URL = 'https://ollama.com';
@@ -704,6 +705,20 @@ export const DeployVolumeSchema = z.object({
   size: z.number().int().positive().optional(),
 });
 
+const OLLAMA_MODEL_NAME = /^[A-Za-z0-9][\w.:/@+-]*$/;
+
+export const DeployOllamaSchema = z.object({
+  models: z
+    .array(
+      z.string().regex(OLLAMA_MODEL_NAME, {
+        message: 'Expected an Ollama model name, such as llama3.2 or qwen3:8b',
+      })
+    )
+    .optional(),
+  gpu: z.boolean().optional(),
+  image: z.string().min(1).optional(),
+});
+
 export const DeployConfigSchema = z.object({
   target: DeployTargetSchema.optional(),
   kind: DeployKindSchema.optional(),
@@ -711,12 +726,26 @@ export const DeployConfigSchema = z.object({
   port: z.number().int().min(1).max(65535).optional(),
   registry: z.string().optional(),
   image: z.string().optional(),
+  app: z
+    .string()
+    .refine(isFlyAppName, {
+      message:
+        'Fly app names use lowercase letters, digits and dashes, start and end with a letter or digit, 63 characters at most',
+    })
+    .optional(),
+  org: z
+    .string()
+    .refine(isFlyOrgSlug, {
+      message: 'Fly organization slugs use lowercase letters, digits and dashes',
+    })
+    .optional(),
   region: z.string().optional(),
   instances: z.number().int().positive().optional(),
   services: z
     .object({
       redis: z.boolean().optional(),
       postgres: z.boolean().optional(),
+      ollama: z.boolean().optional(),
     })
     .optional(),
   env: z.record(z.string(), z.string()).optional(),
@@ -736,6 +765,7 @@ export const DeployConfigSchema = z.object({
     .optional(),
   volumes: z.array(DeployVolumeSchema).optional(),
   hostGateway: z.boolean().optional(),
+  ollama: DeployOllamaSchema.optional(),
 });
 
 export const PromptsConfigSchema = z.object({

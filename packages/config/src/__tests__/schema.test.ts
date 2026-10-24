@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { CogitatorConfigSchema, LLMProviderSchema } from '../schema';
+import { CogitatorConfigSchema, DeployConfigSchema, LLMProviderSchema } from '../schema';
 
 describe('LLMProviderSchema', () => {
   it('accepts valid providers', () => {
@@ -522,5 +522,35 @@ describe('ContextBuilderConfigSchema partitions', () => {
       ContextBuilderConfigSchema.parse({ partitions: { recall: { share: 1.5 } } })
     ).toThrow();
     expect(() => ContextBuilderConfigSchema.parse({ partitions: { other: {} } })).toThrow();
+  });
+});
+
+describe('DeployConfigSchema', () => {
+  it('keeps the Fly app, organization and the Ollama service settings', () => {
+    const deploy = {
+      target: 'docker',
+      app: 'acme-api',
+      org: 'acme',
+      services: { redis: true, ollama: true },
+      ollama: {
+        models: ['qwen3:8b', 'hf.co/acme/model:Q4_K_M'],
+        gpu: true,
+        image: 'ollama/ollama:rocm',
+      },
+    };
+    expect(DeployConfigSchema.parse(deploy)).toEqual(deploy);
+  });
+
+  it('refuses app names Fly would refuse', () => {
+    for (const app of ['Acme', 'acme_api', '-acme', 'acme-', 'a'.repeat(64), '']) {
+      expect(DeployConfigSchema.safeParse({ app }).success, app).toBe(false);
+    }
+    expect(DeployConfigSchema.safeParse({ app: 'a'.repeat(63) }).success).toBe(true);
+  });
+
+  it('refuses an organization or a model name that would read as a flag', () => {
+    expect(DeployConfigSchema.safeParse({ org: '--help' }).success).toBe(false);
+    expect(DeployConfigSchema.safeParse({ ollama: { models: ['-v'] } }).success).toBe(false);
+    expect(DeployConfigSchema.safeParse({ ollama: { models: ['llama 3'] } }).success).toBe(false);
   });
 });

@@ -1,3 +1,4 @@
+import { isFlyAppName, isFlyOrgSlug } from '@cogitator-ai/types';
 import type {
   DeployConfig,
   DeployResult,
@@ -6,11 +7,12 @@ import type {
   PreflightResult,
   GeneratedArtifacts,
 } from '@cogitator-ai/types';
-import type { DeployProvider } from './base.js';
+import type { DeployCommand, DeployLogsOptions, DeployProvider } from './base.js';
 import { run, isCommandAvailable, type ExecResult, type RunOptions } from '../utils/exec.js';
 import { resolveDeployEnv } from '../utils/env.js';
 import { generateProjectArtifacts, secretChecks, writeArtifacts } from './artifacts.js';
 import { healthPath, servesHttp } from '../templates/health.js';
+import { flyAppName } from '../templates/fly-toml.js';
 import { volumeName } from '../volumes.js';
 import { join } from 'node:path';
 
@@ -56,11 +58,34 @@ export class FlyProvider implements DeployProvider {
   }
 
   private appName(config: DeployConfig): string {
-    return config.image ?? 'cogitator-app';
+    return flyAppName(config);
+  }
+
+  /** Failed checks of the app name and organization, which flyctl would refuse or read as flags. */
+  private nameChecks(config: DeployConfig): PreflightCheck[] {
+    const checks: PreflightCheck[] = [];
+    const app = this.appName(config);
+    if (!isFlyAppName(app)) {
+      checks.push({
+        name: 'Fly app name',
+        passed: false,
+        message: `"${app}" is not a valid Fly app name${config.app ? '' : ' (taken from deploy.image)'}`,
+        fix: 'Set deploy.app to lowercase letters, digits and dashes, starting and ending with a letter or digit, 63 characters at most',
+      });
+    }
+    if (config.org !== undefined && !isFlyOrgSlug(config.org)) {
+      checks.push({
+        name: 'Fly organization',
+        passed: false,
+        message: `"${config.org}" is not a Fly organization slug`,
+        fix: 'Set deploy.org to the slug fly orgs list shows, such as personal',
+      });
+    }
+    return checks;
   }
 
   async preflight(config: DeployConfig, projectDir: string): Promise<PreflightResult> {
-    const checks: PreflightCheck[] = [];
+    const checks: PreflightCheck[] = [...this.nameChecks(config)];
 
     const binary = resolveFlyBinary();
     checks.push({
@@ -112,7 +137,10 @@ export class FlyProvider implements DeployProvider {
 
     const appExists = this.fly(['status', '--app', app, '--json'], { cwd: projectDir }).success;
     if (!appExists) {
-      const createResult = this.fly(['apps', 'create', app], { cwd: projectDir });
+      const createResult = this.fly(
+        ['apps', 'create', app, ...(config.org ? ['--org', config.org] : [])],
+        { cwd: projectDir }
+      );
       if (!createResult.success) {
         return {
           success: false,
@@ -243,6 +271,28 @@ export class FlyProvider implements DeployProvider {
       running: deployed,
       url: hostname ? `https://${hostname}` : undefined,
       instances: machines.length > 0 ? started : undefined,
+    };
+  }
+
+  logsCommand(
+    config: DeployConfig,
+    projectDir: string,
+    options: DeployLogsOptions = {}
+  ): DeployCommand {
+    if (options.service) {
+      throw new Error('A Fly deployment runs one app, so its logs take no service name');
+    }
+    if (options.tail) {
+      throw new Error('flyctl logs takes no line count: drop --tail, or --follow to stream');
+    }
+    const binary = resolveFlyBinary();
+    if (!binary) throw new Error('flyctl is not installed');
+    const app = this.appName(config);
+    if (!isFlyAppName(app)) throw new Error(`"${app}" is not a valid Fly app name`);
+    return {
+      command: binary,
+      args: ['logs', '--app', app, ...(options.follow ? [] : ['--no-tail'])],
+      cwd: projectDir,
     };
   }
 

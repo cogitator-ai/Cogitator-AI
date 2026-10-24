@@ -10,6 +10,7 @@ export type {
   DeployTargetName,
 } from './deployer.js';
 export { volumeName, volumeMountPath } from './volumes.js';
+export { flyAppName } from './templates/fly-toml.js';
 export { DockerProvider } from './providers/docker.js';
 export { FlyProvider } from './providers/fly.js';
-export type { DeployProvider } from './providers/base.js';
+export type { DeployCommand, DeployLogsOptions, DeployProvider } from './providers/base.js';

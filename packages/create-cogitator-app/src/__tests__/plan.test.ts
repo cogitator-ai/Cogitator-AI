@@ -504,6 +504,15 @@ describe('deploy', () => {
     expect(file(plan, 'cogitator.yml')).toContain('target: fly');
   });
 
+  it('tells an Ollama project on Docker that the deployment runs and fills its own Ollama', () => {
+    const plan = planProject(specFor('hono', 'ollama', { deploy: 'docker' }));
+    expect(file(plan, 'README.md')).toContain('runs Ollama in a container next to the app');
+    expect(plan.warnings.some((w) => w.includes('host.docker.internal'))).toBe(false);
+    expect(
+      file(planProject(specFor('hono', 'openai', { deploy: 'docker' })), 'README.md')
+    ).not.toContain('runs Ollama in a container');
+  });
+
   it('runs a Tetsu image on Bun', () => {
     const dockerfile = file(
       planProject(specFor('tetsu', 'openai', { deploy: 'docker' })),

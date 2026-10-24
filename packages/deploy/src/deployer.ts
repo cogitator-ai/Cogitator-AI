@@ -5,7 +5,7 @@ import type {
   DeployTarget,
   PreflightResult,
 } from '@cogitator-ai/types';
-import type { DeployProvider } from './providers/base.js';
+import type { DeployCommand, DeployLogsOptions, DeployProvider } from './providers/base.js';
 import { DockerProvider } from './providers/docker.js';
 import { FlyProvider } from './providers/fly.js';
 import { ProjectAnalyzer, type AnalyzeOptions, type AnalyzerResult } from './analyzer.js';
@@ -140,6 +140,25 @@ export class Deployer {
     const provider = this.getProvider(target);
     const resolved = this.resolveConfig(projectDir, target, config, options).config;
     return provider.status(resolved, projectDir);
+  }
+
+  /**
+   * The command that shows the logs of the deployment on `target`, for the
+   * caller to run: `docker compose logs` for Docker, `flyctl logs` for Fly.
+   */
+  logsCommand(
+    target: DeployTargetName,
+    config: DeployConfig,
+    projectDir: string,
+    options: DeployLogsOptions & DeployLookupOptions = {}
+  ): DeployCommand {
+    const provider = this.getProvider(target);
+    if (!provider.logsCommand) {
+      throw new Error(`The ${provider.name} target has no logs command`);
+    }
+    const { configPath, ...logs } = options;
+    const resolved = this.resolveConfig(projectDir, target, config, { configPath }).config;
+    return provider.logsCommand(resolved, projectDir, logs);
   }
 
   async destroy(

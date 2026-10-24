@@ -28,6 +28,7 @@ import { isAbsolute, join, posix } from 'node:path';
 import { resolveDeployEnv, sanitizeName } from './utils/env.js';
 import type { PlugAndPlay } from './templates/dockerfile.js';
 import { healthPath } from './templates/health.js';
+import { COMPOSE_OLLAMA_URL } from './templates/docker-compose.js';
 import { APP_DIR } from './volumes.js';
 
 const SERVER_PACKAGES: Record<string, DeployServer> = {
@@ -50,6 +51,8 @@ const WORKER_PACKAGES = ['@cogitator-ai/channels', '@cogitator-ai/worker'];
 const BUN_PACKAGES = ['@cogitator-ai/tetsu'];
 
 const DOCKER_HOST_GATEWAY = 'host.docker.internal';
+/** The model the Ollama embedding service of `@cogitator-ai/memory` uses without `memory.embedding.model`. */
+const OLLAMA_EMBEDDING_MODEL = 'nomic-embed-text';
 const LOOPBACK_HOSTS = new Set(['localhost', '0.0.0.0', '[::1]', '[::]', '::1']);
 const SOURCE_EXTENSIONS = /\.(?:[cm]?[jt]s|tsx|jsx)$/;
 const SKIPPED_DIRS = new Set(['node_modules', 'dist', 'build', '.git', '.next', '.cogitator']);
@@ -102,6 +105,26 @@ export interface AnalyzerResult extends ProjectBuild {
   /** Project checks every target's preflight includes */
   checks: PreflightCheck[];
   deployConfig: DeployConfig;
+}
+
+/** How a deployment reaches the Ollama its models run on. */
+interface OllamaWiring {
+  /** Variables forwarded from the deploy environment, an Ollama beyond this machine */
+  secrets: string[];
+  /** Variables set for the app, the Ollama of the Docker host */
+  env?: Record<string, string>;
+  /** Models an `ollama` service next to the app pulls, set when the app gets one */
+  service?: string[];
+}
+
+interface OllamaWiringInput {
+  model: string;
+  defaultProvider: string | undefined;
+  target: DeployTarget;
+  env: NodeJS.ProcessEnv;
+  configPath: string | undefined;
+  configured: Partial<DeployConfig>;
+  warnings: string[];
 }
 
 export interface AnalyzeOptions {
@@ -539,7 +562,7 @@ export class ProjectAnalyzer {
     const defaultProvider = fullConfig?.llm?.defaultProvider;
     const rawProviders = this.literalProviders(configPath);
 
-    const services =
+    const detectedServices =
       configured.services ??
       (fullConfig ? this.detectServices(fullConfig) : { redis: false, postgres: false });
 
@@ -554,7 +577,18 @@ export class ProjectAnalyzer {
         ...envFileKeys(join(projectDir, '.env.example')).filter((key) => isSet(env, key)),
       ]);
 
-    const ollama = this.ollamaWiring(model, defaultProvider, target, env, configPath, warnings);
+    const ollama = this.ollamaWiring({
+      model,
+      defaultProvider,
+      target,
+      env,
+      configPath,
+      configured,
+      warnings,
+    });
+    const services: DeployServicesConfig = ollama.service
+      ? { ...detectedServices, ollama: true }
+      : detectedServices;
     const infraSecrets = [
       ...ollama.secrets,
       ...(target === 'fly' ? this.flyServiceSecrets(services, warnings) : []),
@@ -612,6 +646,7 @@ export class ProjectAnalyzer {
       secrets,
       port,
       ...(volumes && volumes.length > 0 ? { volumes } : {}),
+      ...(ollama.service ? { ollama: { ...configured.ollama, models: ollama.service } } : {}),
       ...(ollama.env ? { env: { ...ollama.env, ...configured.env }, hostGateway: true } : {}),
     };
     if (deployConfig.env === undefined) delete deployConfig.env;
@@ -661,50 +696,132 @@ export class ProjectAnalyzer {
   }
 
   /**
-   * How a local Ollama is reached from the deployment. A URL that already
-   * points beyond this machine is forwarded. Otherwise the docker target
-   * reaches the host through `host.docker.internal`, and other targets warn.
+   * How the deployment reaches the Ollama its models run on. A URL that already
+   * points beyond this machine is forwarded. Otherwise the docker target runs an
+   * `ollama` service next to the app that pulls the models on its first start
+   * (`services.ollama`), or, with `services.ollama: false`, reaches the Ollama of
+   * the Docker host through `host.docker.internal`. Other targets warn.
    */
-  private ollamaWiring(
-    model: string,
-    defaultProvider: string | undefined,
-    target: DeployTarget,
-    env: NodeJS.ProcessEnv,
-    configPath: string | undefined,
-    warnings: string[]
-  ): { secrets: string[]; env?: Record<string, string> } {
-    if (this.providerOf(model, defaultProvider) !== 'ollama' || this.isOllamaCloud(model)) {
-      return { secrets: [] };
-    }
+  private ollamaWiring(input: OllamaWiringInput): OllamaWiring {
+    const { model, defaultProvider, target, env, configPath, configured, warnings } = input;
+    const yaml = this.yamlInput(configPath, env);
+    const models = this.localOllamaModels(yaml, model, defaultProvider);
+    const embedding = this.localOllamaEmbedding(yaml);
+
     const setting = PROVIDER_ENV.ollama.find((s) => s.field === 'baseUrl');
     const overrideNames = setting?.env ?? [];
     const fallbackNames = setting?.fallbackEnv ?? [];
+    const urlNames = [...overrideNames, ...fallbackNames];
     const firstUrl = (names: readonly string[]) =>
       names.map((name) => resolveOllamaHost(env[name])).find((url) => url !== undefined);
+    const url =
+      firstUrl(overrideNames) ??
+      resolveOllamaHost(yaml?.llm?.providers?.ollama?.baseUrl) ??
+      firstUrl(fallbackNames);
+    const remote = models.length > 0 && url !== undefined && !isLoopbackUrl(url);
+    const secrets = remote
+      ? urlNames.filter((name) => {
+          const value = resolveOllamaHost(env[name]);
+          return value !== undefined && !isLoopbackUrl(value);
+        })
+      : [];
+    const localModels = remote ? [] : models;
+    const pulled = unique([...localModels, ...(embedding ? [embedding] : [])]);
 
-    const configured = this.yamlInput(configPath, env)?.llm?.providers?.ollama?.baseUrl;
-    const url = firstUrl(overrideNames) ?? resolveOllamaHost(configured) ?? firstUrl(fallbackNames);
-
-    if (url && !isLoopbackUrl(url)) {
-      const forwarded = [...overrideNames, ...fallbackNames].filter((name) => {
-        const value = resolveOllamaHost(env[name]);
-        return value !== undefined && !isLoopbackUrl(value);
-      });
-      return { secrets: forwarded };
+    if (target !== 'docker') {
+      if (configured.services?.ollama) {
+        warnings.push(
+          `services.ollama runs an Ollama container with the docker target only, ${target} runs none next to the app`
+        );
+      }
+      const chatModel = model ? resolveModelRoute(model, { defaultProvider }).model : undefined;
+      const others = pulled.filter((name) => name !== chatModel);
+      if (others.length > 0) {
+        warnings.push(
+          `${others.join(', ')} run on the Ollama of this machine, and ${target} runs none: point llm.providers.ollama.baseUrl or memory.embedding.baseUrl at an Ollama the deployment reaches`
+        );
+      }
+      return { secrets };
     }
 
-    if (target !== 'docker') return { secrets: [] };
+    const urlEnv = (value: string) => Object.fromEntries(urlNames.map((name) => [name, value]));
+
+    if (configured.services?.ollama ?? pulled.length > 0) {
+      const service = configured.ollama?.models ?? pulled;
+      const containerEnv = secrets.length > 0 ? env : { ...env, ...urlEnv(COMPOSE_OLLAMA_URL) };
+      this.warnOnLocalEmbeddingUrl(configPath, containerEnv, warnings);
+      return { secrets, service };
+    }
+
+    if (localModels.length === 0) return { secrets };
 
     const hostUrl = `http://${DOCKER_HOST_GATEWAY}:${url ? portOf(url) : OLLAMA_DEFAULT_PORT}`;
     warnings.push(
-      `Model "${model}" runs on the Ollama of this machine: the container reaches it at ${hostUrl}. ` +
+      `${localModels.join(', ')} run on the Ollama of this machine (services.ollama is off): the container reaches it at ${hostUrl}. ` +
         'On Linux, Ollama must listen beyond localhost (OLLAMA_HOST=0.0.0.0 ollama serve), ' +
-        `and the model must be pulled (ollama pull ${model.replace(/^ollama\//, '')}).`
+        `and the models must be pulled (ollama pull ${localModels.join(' ')}).`
     );
-    return {
-      secrets: [],
-      env: Object.fromEntries([...overrideNames, ...fallbackNames].map((name) => [name, hostUrl])),
-    };
+    this.warnOnLocalEmbeddingUrl(configPath, { ...env, ...urlEnv(hostUrl) }, warnings);
+    return { secrets: [], env: urlEnv(hostUrl) };
+  }
+
+  /**
+   * The models of the config that run on an Ollama that is not Ollama Cloud, as
+   * `ollama pull` names them: the default model, the summary model of context
+   * compression and the models of the memory stages.
+   */
+  private localOllamaModels(
+    yaml: CogitatorConfigInput | undefined,
+    model: string,
+    defaultProvider: string | undefined
+  ): string[] {
+    const memory = yaml?.memory;
+    const candidates = [
+      model,
+      yaml?.context?.summaryModel,
+      memory?.compaction?.summaryModel,
+      memory?.extraction?.model,
+      memory?.brief?.model,
+      memory?.observations?.model,
+      memory?.consolidation?.model,
+    ];
+    return unique(
+      candidates
+        .filter((name): name is string => typeof name === 'string' && name.trim() !== '')
+        .filter((name) => this.providerOf(name, defaultProvider) === 'ollama')
+        .filter((name) => !this.isOllamaCloud(name))
+        .map((name) => resolveModelRoute(name, { defaultProvider }).model)
+    );
+  }
+
+  /** The embedding model of `memory.embedding` when it runs on an Ollama of this machine. */
+  private localOllamaEmbedding(yaml: CogitatorConfigInput | undefined): string | undefined {
+    const embedding = yaml?.memory?.embedding;
+    if (embedding?.provider !== 'ollama') return undefined;
+    const url = resolveOllamaHost(embedding.baseUrl);
+    if (url !== undefined && !isLoopbackUrl(url)) return undefined;
+    return embedding.model ?? OLLAMA_EMBEDDING_MODEL;
+  }
+
+  /**
+   * Warns when `memory.embedding.baseUrl` still points at the container's own
+   * localhost under `containerEnv`, the environment the deployed app gets: the
+   * embedding service reads its URL from the config, never from the variables
+   * the app's Ollama URL comes from.
+   */
+  private warnOnLocalEmbeddingUrl(
+    configPath: string | undefined,
+    containerEnv: NodeJS.ProcessEnv,
+    warnings: string[]
+  ): void {
+    const embedding = this.yamlInput(configPath, containerEnv)?.memory?.embedding;
+    if (embedding?.provider !== 'ollama') return;
+    const url = resolveOllamaHost(embedding.baseUrl);
+    if (url !== undefined && !isLoopbackUrl(url)) return;
+    warnings.push(
+      `memory.embedding.baseUrl is ${embedding.baseUrl ? `"${embedding.baseUrl}"` : 'unset'}, so the deployed app looks for its Ollama embeddings on the container's own localhost: ` +
+        'set it to ${OLLAMA_BASE_URL:-http://localhost:11434} to follow the Ollama URL of the deployment'
+    );
   }
 
   private flyServiceSecrets(services: DeployServicesConfig, warnings: string[]): string[] {

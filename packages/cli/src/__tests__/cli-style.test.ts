@@ -69,7 +69,7 @@ describe('exit codes', () => {
     expect(unknownCommand.code).toBe(2);
     expect(unknownCommand.stderr).toContain('Did you mean deploy?');
     expect(unknownAction.code).toBe(2);
-    expect(unknownAction.stderr).toContain('Available actions: status, destroy');
+    expect(unknownAction.stderr).toContain('Available actions: status, logs, destroy');
   }, 60_000);
 });
 
