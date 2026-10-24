@@ -1,11 +1,25 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { CogitatorError, ErrorCode, type MultitaskStrategy } from '@cogitator-ai/types';
+
+/** The run whose tool call the code runs inside, see {@link insideToolOf} */
+const toolOfRun = new AsyncLocalStorage<string>();
+
+/** Runs `work` as a tool call of run `runId`: runs it starts count as started inside that run */
+export function insideToolOf<T>(runId: string, work: () => T): T {
+  return toolOfRun.run(runId, work);
+}
+
+/** The run whose tool call the code runs inside, if any */
+export function currentToolRun(): string | undefined {
+  return toolOfRun.getStore();
+}
 
 /** A run's place on its thread, from its admission until it is done */
 export interface ThreadSeat {
   /** Aborts when a newer run on the thread interrupts this one */
   readonly signal: AbortSignal;
-  /** The trace the run belongs to, once it started: runs started inside it are not held back */
-  traceId?: string;
+  /** The run's id, once it started: runs started from its tool calls are not held back */
+  runId?: string;
   /** The user the run acts for */
   readonly userId?: string;
   /** The entry the run's first entry went after, once it wrote one (null at the thread's root) */
@@ -17,8 +31,11 @@ export interface RunOnThread {
   readonly strategy: MultitaskStrategy | undefined;
   /** Waiting ends when it aborts, and a run whose signal aborted already changes nothing */
   readonly signal: AbortSignal | undefined;
-  /** The trace the run joins: a run inside one of the thread's runs is not held back */
-  readonly traceId: string | undefined;
+  /**
+   * The run whose tool call starts this one ({@link currentToolRun}): a run started from a tool
+   * of one of the thread's runs is not held back, it would wait for its own parent
+   */
+  readonly parentRunId: string | undefined;
   readonly userId: string | undefined;
   /** The run may use a thread of other users (`threadAccess: 'shared'`) */
   readonly shared: boolean;
@@ -51,16 +68,18 @@ export class ThreadRuns {
   /**
    * Seats a run on `threadId`, once `strategy` lets it: `enqueue` waits for the runs before it,
    * `reject` fails while there are any, `interrupt` and `rollback` abort them and wait until they
-   * are done. Undefined for a run inside one of the thread's runs (`traceId`), which goes on
+   * are done. Undefined for a run a tool of one of the thread's runs starts, which goes on
    * unseated. Waiting ends with the run's own `signal`. Before anything changes, a run whose
    * signal aborted fails, and a run with a strategy fails with `THREAD_ACCESS_DENIED` while a
    * run of another user goes on in the thread, unless it may use shared threads
    */
   async admit(threadId: string, run: RunOnThread): Promise<ThreadAdmission | undefined> {
-    const { strategy, signal, traceId, userId } = run;
+    const { strategy, signal, parentRunId, userId } = run;
     if (signal?.aborted) throw abortReason(signal);
     const seats = this.threads.get(threadId) ?? [];
-    if (traceId !== undefined && seats.some((seat) => seat.traceId === traceId)) return undefined;
+    if (parentRunId !== undefined && seats.some((seat) => seat.runId === parentRunId)) {
+      return undefined;
+    }
     if (strategy !== undefined && !run.shared && seats.some((seat) => seat.userId !== userId)) {
       throw new CogitatorError({
         message: `Thread ${threadId} belongs to another user`,

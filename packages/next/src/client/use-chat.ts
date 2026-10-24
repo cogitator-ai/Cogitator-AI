@@ -72,7 +72,12 @@ interface ChatRequest {
   detached: boolean;
   errored: boolean;
   ended: boolean;
+  /** The code of the `error` event the stream sent, when it sent one */
+  errorCode?: string;
 }
+
+/** Codes of a resume the server refused before it ran: the paused run still waits */
+const REFUSED_RESUME_CODES = new Set(['VALIDATION_ERROR', 'INTERRUPT_EXPIRED']);
 
 type ResponseHandler = (response: Response, request: ChatRequest) => Promise<void>;
 
@@ -364,6 +369,7 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
           return false;
 
         case 'error': {
+          if (event.code !== undefined) request.errorCode = event.code;
           const error = new Error(event.message);
           apply({ type: 'SET_ERROR', payload: error });
           onError?.(error);
@@ -654,15 +660,27 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
         threadId,
         body: () => ({ threadId, ...decisions }),
         handle: async (response, chatRequest) => {
+          const waiting = {
+            approvals: stateRef.current.pendingApprovals,
+            interrupts: stateRef.current.pendingInterrupts,
+            by: pausedByRef.current,
+          };
           clearPause();
           await (isEventStream(response) ? processStream : processResult)(response, chatRequest);
+          const refused =
+            chatRequest.errorCode !== undefined && REFUSED_RESUME_CODES.has(chatRequest.errorCode);
+          if (refused && pausedByRef.current === null) {
+            pausedByRef.current = waiting.by;
+            apply({ type: 'SET_PENDING_APPROVALS', payload: waiting.approvals });
+            apply({ type: 'SET_PENDING_INTERRUPTS', payload: waiting.interrupts });
+          }
         },
         onFailure: (error) => {
           if (error instanceof HttpError && error.status === 409) clearPause();
         },
       });
     },
-    [clearPause, fail, interrupt, processResult, processStream, request, resumeApi]
+    [apply, clearPause, fail, interrupt, processResult, processStream, request, resumeApi]
   );
 
   const approve = useCallback(() => resume({ defaultDecision: { approved: true } }), [resume]);

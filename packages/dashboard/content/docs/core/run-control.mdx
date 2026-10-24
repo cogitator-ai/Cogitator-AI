@@ -41,7 +41,7 @@ A delivered message becomes a user message of the run and is saved to the thread
 
 ### Drain Modes
 
-`queue.steering` and `queue.followUp` say how many messages the run takes at once: `'one-at-a-time'` (the default) takes one per step, so each gets a model call, `'all'` takes every message waiting.
+`queue.steering` and `queue.followUp` say how many messages the run takes at once: `'one-at-a-time'` (the default) takes one per model call, so three steering messages get three model calls, `'all'` takes every message waiting. A message the run is still checking ([Input Checks](#input-checks)) counts as not delivered: `abort()` returns it and `handle.queued` lists it.
 
 ```typescript
 const handle = cog.start(agent, {
@@ -82,7 +82,7 @@ await cog.run(agent, { input: 'Actually, use Postgres', threadId, multitaskStrat
 - An interrupted run is aborted, so it leaves the thread as [Cancellation](#cancellation) describes: its streamed text as an interrupted message, the tool calls it never started answered.
 - A run with a strategy may only touch runs of its own user: while a run of another user goes on in the thread it fails with `THREAD_ACCESS_DENIED` before it waits, interrupts or rolls back anything, unless it uses shared threads (`threadAccess: 'shared'`). A run whose `signal` aborted already changes nothing.
 - `rollback` uses the branches of the session log (see [Runs on Branches](/docs/core/cogitator#runs-on-branches)). The interrupted run's entries are not deleted, they stay on a branch of their own, and the thread's active branch goes on from before them. A rollback run that names its own `branch` keeps it, and a resumed run treats `rollback` as `interrupt`.
-- A run started from a tool of the run going on (it belongs to the same trace) is never held back, it would wait for itself.
+- A run started from a tool call of the run going on is never held back, it would wait for itself. Other runs of the same trace, such as the nodes of one workflow, follow the strategy like any run.
 - A run on a branch that leaves the active leaf where it is (`branch.activate: false`) does not count as the thread's run.
 - A run that waits (`enqueue`, or after an interrupt) holds no slot of `limits.maxConcurrentRuns`, and stops waiting when its `signal` aborts.
 

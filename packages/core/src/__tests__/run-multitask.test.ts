@@ -272,4 +272,20 @@ describe('runs of one thread at once', () => {
     expect((await running).output).toBe('first done');
     await cog.close();
   });
+
+  it('holds back sibling runs of one trace, such as runs of one workflow', async () => {
+    const events: string[] = [];
+    const first = heldReply(events, 'first');
+    const { backend } = byInput({ 'first question': first.reply });
+    const cog = cogitator(backend);
+    const trace = { traceId: '0af7651916cd43dd8448eb211c80319c', parentSpanId: 'b7ad6b7169203331' };
+    const running = cog.run(agent, { input: 'first question', threadId: 't', trace });
+    await first.began.promise;
+    await expect(
+      cog.run(agent, { input: 'sibling', threadId: 't', trace, multitaskStrategy: 'reject' })
+    ).rejects.toMatchObject({ code: ErrorCode.THREAD_BUSY });
+    first.release.resolve();
+    await running;
+    await cog.close();
+  });
 });

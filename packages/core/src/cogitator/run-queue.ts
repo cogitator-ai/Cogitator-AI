@@ -17,6 +17,8 @@ import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
  */
 export class RunQueue {
   private readonly items: QueuedRunMessage[] = [];
+  /** Messages the run took and is checking, not delivered yet */
+  private readonly inFlight: QueuedRunMessage[] = [];
   private readonly refusals: RefusedRunMessage[] = [];
   private closed = false;
   private readonly steering: QueueDrainMode;
@@ -44,9 +46,9 @@ export class RunQueue {
     return true;
   }
 
-  /** The messages waiting, in the order they came */
+  /** The messages not delivered yet, those the run is checking first, in the order they came */
   get pending(): readonly QueuedRunMessage[] {
-    return [...this.items];
+    return [...this.inFlight, ...this.items];
   }
 
   /** The messages the run's input checks refused, in the order it refused them */
@@ -60,6 +62,7 @@ export class RunQueue {
    */
   refuse(message: QueuedRunMessage, error: Error): void {
     this.claim(message);
+    this.settle(message);
     const refused: RefusedRunMessage = { kind: message.kind, content: message.content, error };
     this.refusals.push(refused);
     this.onRefused?.(refused);
@@ -70,9 +73,16 @@ export class RunQueue {
     return !this.closed;
   }
 
-  /** What the next model call takes: every injected message and steering ones by their mode */
-  takeForTurn(): QueuedRunMessage[] {
-    return this.take((message) => message.kind === 'inject', 'steer', this.steering);
+  /**
+   * What the next model call takes: every injected message and steering ones by their mode, or
+   * only the injected ones with `injectsOnly`, for a call that got a steering message already
+   */
+  takeForTurn(injectsOnly = false): QueuedRunMessage[] {
+    return this.take(
+      (message) => message.kind === 'inject',
+      'steer',
+      injectsOnly ? 'none' : this.steering
+    );
   }
 
   /**
@@ -88,7 +98,7 @@ export class RunQueue {
   /** Stops taking messages and returns the ones left, in the order they came */
   close(): QueuedRunMessage[] {
     this.closed = true;
-    return [...this.items];
+    return this.pending.slice();
   }
 
   /**
@@ -97,7 +107,18 @@ export class RunQueue {
    */
   cancel(): QueuedRunMessage[] {
     this.closed = true;
-    return this.items.splice(0);
+    return [...this.inFlight.splice(0), ...this.items.splice(0)];
+  }
+
+  /**
+   * The run delivers `message` it took: false when it may not, as {@link cancel} handed it back
+   * while the run checked it
+   */
+  settle(message: QueuedRunMessage): boolean {
+    const index = this.inFlight.indexOf(message);
+    if (index === -1) return false;
+    this.inFlight.splice(index, 1);
+    return true;
   }
 
   /**
@@ -114,7 +135,7 @@ export class RunQueue {
   private take(
     always: (message: QueuedRunMessage) => boolean,
     kind: RunQueueKind,
-    mode: QueueDrainMode
+    mode: QueueDrainMode | 'none'
   ): QueuedRunMessage[] {
     if (this.closed) return [];
     const taken: QueuedRunMessage[] = [];
@@ -122,7 +143,8 @@ export class RunQueue {
     for (let index = 0; index < this.items.length;) {
       const message = this.items[index];
       const takesIt =
-        always(message) || (message.kind === kind && (mode === 'all' || ofKind === 0));
+        always(message) ||
+        (message.kind === kind && (mode === 'all' || (mode === 'one-at-a-time' && ofKind === 0)));
       if (!takesIt) {
         index++;
         continue;
@@ -131,6 +153,7 @@ export class RunQueue {
       taken.push(message);
       this.items.splice(index, 1);
     }
+    this.inFlight.push(...taken);
     return taken;
   }
 }

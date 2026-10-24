@@ -329,6 +329,34 @@ describe('useCogitatorChat interrupts', () => {
     expect(hook.result.current.pendingInterrupts).toEqual([]);
   });
 
+  it('keeps the questions when the server refuses the answer of a streamed resume', async () => {
+    installFetch([
+      askingStream,
+      () =>
+        sse([
+          { type: 'start', messageId: 'a2', threadId: 'thread_srv' },
+          {
+            type: 'error',
+            message: 'The answer does not match its schema',
+            code: 'VALIDATION_ERROR',
+          },
+          '[DONE]',
+        ]),
+      () => resumedStream('Refunded A-1'),
+    ]);
+    const hook = setup();
+    await pause(hook);
+
+    await hook.result.current.resume({ responses: { int_1: 42 } });
+    await hook.flush();
+    expect(hook.result.current.pendingInterrupts).toEqual([orderQuestion]);
+    expect(hook.result.current.error?.message).toBe('The answer does not match its schema');
+
+    await hook.result.current.resume({ responses: { int_1: 'A-1' } });
+    await hook.flush();
+    expect(hook.result.current.pendingInterrupts).toEqual([]);
+  });
+
   it('keeps the approvals a run that also asks questions waits on', async () => {
     installFetch([
       () =>

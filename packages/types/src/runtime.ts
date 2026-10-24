@@ -389,7 +389,7 @@ export interface RunOptions<TDeps = unknown> {
   /**
    * What the run does when another run of this runtime goes on in its thread (`threadId`), see
    * `MultitaskStrategy`. Overrides `CogitatorConfig.multitaskStrategy`. Unset, both go on side by
-   * side, as they always did. A run started from a tool of the run going on (the same trace) is
+   * side, as they always did. A run started from a tool call of the run going on is
    * never held back, it would wait for itself. A run on a branch that leaves the active leaf
    * where it is (`branch.activate: false`) does not count as the thread's run
    */

@@ -399,4 +399,48 @@ describe('cogitator.start()', () => {
     expect(handle.queued).toEqual([]);
     await cog.close();
   });
+
+  it('gives each steering message its own model call in one-at-a-time mode', async () => {
+    const { cog, requests } = setup([answer('one'), answer('two'), answer('three')]);
+    const handle = cog.start(plain, { input: 'Start' });
+    handle.steer('First');
+    handle.steer('Second');
+    handle.steer('Third');
+    await handle.result;
+    expect(requests).toHaveLength(3);
+    expect(requests.map((request) => userTexts(request).at(-1))).toEqual([
+      'First',
+      'Second',
+      'Third',
+    ]);
+    await cog.close();
+  });
+
+  it('hands back a message abort catches while its input check runs', async () => {
+    const checking = deferred();
+    const never = new Promise<void>(() => undefined);
+    const { cog } = setup([answer('one'), answer('two')], true);
+    const handle = cog.start(plain, {
+      input: 'Start',
+      threadId: 'slow-check',
+      middleware: [
+        {
+          name: 'slow-check',
+          async beforeRun({ input }) {
+            if (input !== 'Later') return;
+            checking.resolve();
+            await never;
+          },
+        },
+      ],
+    });
+    handle.followUp('Later');
+    await checking.promise;
+    expect(handle.queued).toEqual([{ kind: 'followUp', content: 'Later' }]);
+    expect(handle.abort(new Error('stop'))).toEqual([{ kind: 'followUp', content: 'Later' }]);
+    await expect(handle.result).rejects.toThrow('stop');
+    const entries = await threadEntries(cog, 'slow-check');
+    expect(entries.some((entry) => entry.metadata?.queued !== undefined)).toBe(false);
+    await cog.close();
+  });
 });
