@@ -668,3 +668,18 @@ describe('file content the loader does not trust', () => {
     expect(text.match(/<\/project-instructions>/g)).toHaveLength(1);
   });
 });
+
+describe('imports of files whose text repeats', () => {
+  it('follows the imports of each file from its own directory', async () => {
+    write({
+      'a/AGENTS.md': '@./rules.md',
+      'a/rules.md': 'Rules of a.',
+      'a/b/AGENTS.md': '@./rules.md',
+      'a/b/rules.md': 'Rules of b.',
+    });
+    const { text, files } = await loader({}, 'a/b').load();
+    expect(text).toContain('Rules of a.');
+    expect(text).toContain('Rules of b.');
+    expect(files.map((file) => file.path)).toEqual(['a/AGENTS.md', 'a/rules.md', 'a/b/rules.md']);
+  });
+});

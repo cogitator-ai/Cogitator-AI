@@ -547,6 +547,16 @@ function resultOfMessage(call: ToolCall, message: Message): ToolResult {
   return { callId: call.id, name: call.name, result: text };
 }
 
+/** What a call of a step gets when a middleware stopped the run before the call started */
+function notStartedAtStop(toolCall: ToolCall): ToolResult {
+  return {
+    callId: toolCall.id,
+    name: toolCall.name,
+    result: null,
+    error: 'Not started: the run was stopped',
+  };
+}
+
 const STOPPED_TURN_ID = 'cogitator:stopped';
 
 /**
@@ -2640,7 +2650,10 @@ export class Cogitator implements ToolInvoker {
           /** Calls of `changed` asked for as they started */
           admitted?: readonly string[];
           /** What the calls that ran before the pause returned */
-          results?: Record<string, { result: unknown; error?: string }>;
+          results?: Record<
+            string,
+            { result: unknown; error?: string; arguments?: Record<string, unknown> }
+          >;
         }
       ): Promise<PausedTurn | undefined> => {
         const done = new Set(resumed?.completed ?? []);
@@ -3247,6 +3260,15 @@ export class Cogitator implements ToolInvoker {
         const executeToolCall = async (toolCall: ToolCall): Promise<ToolOutcome> => {
           const toolSpanStart = Date.now();
           const toolSpanId = newSpanId();
+          if (stopRequest) {
+            return {
+              toolCall,
+              result: notStartedAtStop(toolCall),
+              toolSpanId,
+              toolSpanStart,
+              toolSpanEnd: toolSpanStart,
+            };
+          }
           if (decidesAtStart) {
             const waiting = await admit(toolCall);
             if (waiting) {
@@ -3471,11 +3493,13 @@ export class Cogitator implements ToolInvoker {
         const asked: ToolOutcome[] = [];
 
         for (const outcome of outcomes) {
-          const { toolCall, result, toolSpanId, toolSpanStart, toolSpanEnd } = outcome;
+          const { toolCall, toolSpanId, toolSpanStart, toolSpanEnd } = outcome;
+          const result = outcome.result ?? (stopRequest ? notStartedAtStop(toolCall) : undefined);
           if (!result) {
             asked.push(outcome);
             continue;
           }
+          if (!outcome.result) finished.set(toolCall.id, result);
           const toolSpan = createSpan(
             `tool.${toolCall.name}`,
             traceId,
@@ -3568,9 +3592,11 @@ export class Cogitator implements ToolInvoker {
           }
         }
         messages.push(...reflectionMessages);
-        const ran = outcomes.flatMap((outcome) =>
-          outcome.result ? [{ toolCall: outcome.toolCall, result: outcome.result }] : []
-        );
+        const ran = outcomes.flatMap((outcome) => {
+          const result = finished.get(outcome.toolCall.id) ?? outcome.result;
+          if (!result) return [];
+          return [{ toolCall: runArguments.get(outcome.toolCall.id) ?? outcome.toolCall, result }];
+        });
         const reached = ran.flatMap(({ toolCall, result }) => {
           const tool = registry.get(toolCall.name);
           if (!tool || result.error !== undefined) return [];
@@ -3638,12 +3664,16 @@ export class Cogitator implements ToolInvoker {
                   {
                     result: result.result,
                     ...(result.error !== undefined && { error: result.error }),
+                    ...(runArguments.has(id) && {
+                      arguments: runArguments.get(id)?.arguments,
+                    }),
                   },
                 ])
               ),
             },
           };
         }
+        if (stopRequest) return undefined;
         const batch = [
           ...toolCalls.flatMap((call) => {
             if (!done.has(call.id)) return [];
@@ -3655,7 +3685,8 @@ export class Cogitator implements ToolInvoker {
                 result: kept.result,
                 ...(kept.error !== undefined && { error: kept.error }),
               };
-              return [{ toolCall: call, result }];
+              const effective = kept.arguments ? { ...call, arguments: kept.arguments } : call;
+              return [{ toolCall: effective, result }];
             }
             const message = messages.find(
               (entry) => entry.role === 'tool' && entry.toolCallId === call.id
@@ -3764,9 +3795,9 @@ export class Cogitator implements ToolInvoker {
 
       let deliveredAtStop = false;
       /** How many times in a row `beforeStop` kept the run going */
-      let stopContinuations = 0;
+      let stopContinuations = checkpoint?.stopHooks?.continuations ?? 0;
       /** Whether `beforeStop` kept the run going since its last user message */
-      let stopContinued = false;
+      let stopContinued = checkpoint?.stopHooks?.continued ?? false;
       while (!pausedTurn && !budgetStop && (iterations < iterationCap || limit.closingTurn)) {
         throwIfAborted(abortController.signal);
         if (stopRequest) break;
@@ -4341,6 +4372,9 @@ export class Cogitator implements ToolInvoker {
             instructions: harness.instructions.map((file) => ({ ...file })),
           }),
           ...(pendingContext.length > 0 && { context: [...pendingContext] }),
+          ...((stopContinued || stopContinuations > 0) && {
+            stopHooks: { continuations: stopContinuations, continued: stopContinued },
+          }),
         };
         const waitingOn = pausedTurn.interrupts.filter((entry) => !isAnswered(entry));
         if (pausedTurn.pending.length > 0) {
@@ -6549,7 +6583,10 @@ interface PausedTurn {
   /** Calls of `changed` asked for as they started, after the `beforeToolCall` middleware */
   admitted?: string[];
   /** What the calls that ran before the pause returned, by call id */
-  results?: Record<string, { result: unknown; error?: string }>;
+  results?: Record<
+    string,
+    { result: unknown; error?: string; arguments?: Record<string, unknown> }
+  >;
   pending: ToolApprovalRequest[];
   /** What the turn waits on: its approvals, or the questions its tools asked and their answers */
   interrupts: RunInterrupt[];

@@ -794,7 +794,10 @@ export interface RunCheckpoint {
      * What the calls of the turn that ran before the pause returned, by call id, so the step's
      * `afterToolBatch` middleware (`PostToolBatch` hooks) see them as they were after the resume
      */
-    results?: Record<string, { result: unknown; error?: string }>;
+    results?: Record<
+      string,
+      { result: unknown; error?: string; arguments?: Record<string, unknown> }
+    >;
   };
   /**
    * What the run waits on, approvals among them (`kind: 'approval'`), and the answers given so
@@ -884,6 +887,11 @@ export interface RunCheckpoint {
    * (`RunMiddlewareContext.addContext`), so the resumed run sends it
    */
   context?: string[];
+  /**
+   * Where the `beforeStop` middleware (the `Stop` hooks) left the run: how often in a row they
+   * kept it going and whether they did since the last user message (`stop_hook_active`)
+   */
+  stopHooks?: { continuations: number; continued: boolean };
 }
 
 /** Where a run's entries went in the thread's tree of memory */

@@ -332,7 +332,10 @@ export class ProjectInstructionsLoader {
     await this.admitText(file, text, text, admission, pass);
   }
 
-  /** Takes in a file read: renders `body` unless its content was brought already, then follows its imports */
+  /**
+   * Takes in a file read: renders `body` unless its content was brought already, then follows its
+   * imports, from this file's directory also when its text repeats another file's
+   */
   private async admitText(
     file: Pick<LocatedFile, 'key' | 'path'>,
     text: string,
@@ -341,11 +344,12 @@ export class ProjectInstructionsLoader {
     pass: Pass
   ): Promise<void> {
     this.state.handled.add(file.key);
-    if (this.state.contents.has(text)) return;
-    this.state.contents.add(text);
     const content = cleanContent(body);
-    if (!pass.shown?.(file.path, renderBlock(file.path, content))) {
-      this.render(file.path, content, admission, pass);
+    if (!this.state.contents.has(text)) {
+      this.state.contents.add(text);
+      if (!pass.shown?.(file.path, renderBlock(file.path, content))) {
+        this.render(file.path, content, admission, pass);
+      }
     }
 
     const chain = [...admission.chain, file.key];

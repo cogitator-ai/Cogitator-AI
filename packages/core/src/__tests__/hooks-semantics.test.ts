@@ -744,3 +744,76 @@ describe('third review round', () => {
     await cog.close();
   }, 30_000);
 });
+
+describe('fourth review round', () => {
+  it('starts no further call of the step once a PostToolUse hook stops the run', async () => {
+    const { hook } = script(
+      'post-stop',
+      print({ continue: false, stopReason: 'halt after the first' })
+    );
+    const { cog } = setup(
+      [
+        turn(
+          call('c1', 'note', { text: 'a' }),
+          call('c2', 'note', { text: 'b' }),
+          call('c3', 'send_email', { to: 'a@b.co', body: 'x' })
+        ),
+      ],
+      { hooks: { hooks: { PostToolUse: [{ matcher: 'note', hooks: [hook] }] } } }
+    );
+    const result = await cog.run(agent(), { input: 'go' });
+    expect(result.status).toBe('completed');
+    expect(result.stopped?.reason).toBe('halt after the first');
+    expect(noted).toHaveBeenCalledTimes(1);
+    expect(sent).not.toHaveBeenCalled();
+    const texts = toolTexts(result.messages);
+    expect(texts).toHaveLength(3);
+    expect(texts[1]).toContain('Not started: the run was stopped');
+    await cog.close();
+  });
+
+  it('keeps stop_hook_active across a pause and resume', async () => {
+    const { hook, log } = script(
+      'stop-resume',
+      `if (!input.stop_hook_active) process.stdout.write(JSON.stringify({ decision: 'block', reason: 'mail the report' }));`
+    );
+    const { cog } = setup(
+      [
+        { content: 'first' },
+        turn(call('c1', 'send_email', { to: 'a@b.co', body: 'report' })),
+        { content: 'second' },
+      ],
+      { hooks: { hooks: { Stop: [{ hooks: [hook] }] } } }
+    );
+    const paused = await cog.run(agent(), { input: 'go', threadId: 't-stop' });
+    expect(paused.status).toBe('paused');
+    const resumed = await cog.resume(agent(), paused.checkpoint!, {
+      decisions: { c1: { approved: true } },
+    });
+    expect(resumed.output).toBe('second');
+    expect(seen(log).map((entry) => entry.input.stop_hook_active)).toEqual([false, true]);
+    await cog.close();
+  });
+
+  it('gives PostToolBatch the arguments the call ran with', async () => {
+    const pre = script(
+      'pre-change',
+      print({
+        hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: { text: 'changed' } },
+      })
+    );
+    const batch = script('batch-args');
+    const { cog } = setup([turn(call('c1', 'note', { text: 'original' }))], {
+      hooks: {
+        hooks: {
+          PreToolUse: [{ hooks: [pre.hook] }],
+          PostToolBatch: [{ hooks: [batch.hook] }],
+        },
+      },
+    });
+    await cog.run(agent(), { input: 'go' });
+    const calls = seen(batch.log)[0]?.input.tool_calls as Array<{ tool_input: unknown }>;
+    expect(calls[0]?.tool_input).toEqual({ text: 'changed' });
+    await cog.close();
+  });
+});
