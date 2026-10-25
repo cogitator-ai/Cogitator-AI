@@ -1,6 +1,7 @@
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, relative, resolve, sep } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   PERMISSION_MODES,
   type CommandDefinition,
@@ -182,23 +183,24 @@ function suggestion(field: string): string {
   return meant ? ` (did you mean ${meant}?)` : '';
 }
 
+/** The names subagents may have, as Claude Code writes them: `code-reviewer`, `reviewer-v2` */
+const SUBAGENT_NAME = /^[a-z0-9][a-z0-9-]*$/;
+
 /** Why `name` cannot name a subagent, undefined when it can */
 export function subagentNameProblem(name: string): string | undefined {
   if (name === '') return 'is empty';
-  if (name.startsWith('-')) return 'starts with "-"';
   if (name.includes(':')) return 'holds ":", which plugin names use';
   if (name.length > MAX_SUBAGENT_NAME_LENGTH) {
     return `is longer than ${MAX_SUBAGENT_NAME_LENGTH} characters`;
   }
-  if (
-    [...name].some(
-      (char) => char.charCodeAt(0) < 0x20 || char === '\u007f' || char === '<' || char === '>'
-    )
-  ) {
-    return 'holds a control character, "<" or ">"';
+  if (!SUBAGENT_NAME.test(name)) {
+    return 'may only hold lowercase letters, digits and hyphens, starting with a letter or digit';
   }
   return undefined;
 }
+
+/** Fields of the skill format a command file may set that Cogitator does not act on */
+const UNAPPLIED_COMMAND_FIELDS = new Set(['hooks', 'shell', 'background']);
 
 /**
  * A command of a Markdown file in Claude Code's format: its frontmatter (optional) and the
@@ -231,13 +233,22 @@ export function parseCommandFile(
   for (const field of Object.keys(fields)) {
     if (field === 'name' || field === 'paths') {
       report('warning', `${field} does not apply to a command file, it is ignored`);
+    } else if (field === 'context' || field === 'agent') {
+      report(
+        'warning',
+        `${field} is not supported: Cogitator runs the command in the conversation, not in a forked subagent`
+      );
+    } else if (UNAPPLIED_COMMAND_FIELDS.has(field)) {
+      report('warning', `${field} is not applied by Cogitator, it is ignored`);
     }
   }
   const description = stringOf(fields.description, 'description', report) ?? firstLineOf(template);
   const argumentHint = stringOf(fields['argument-hint'], 'argument-hint', report);
   const args = nameListOf(fields.arguments, 'arguments', report, true);
   const allowedTools = toolListOf(fields['allowed-tools'], 'allowed-tools', report);
+  const disallowedTools = toolListOf(fields['disallowed-tools'], 'disallowed-tools', report);
   const model = stringOf(fields.model, 'model', report);
+  const effort = oneOf(fields.effort, EFFORTS, 'effort', report);
   return {
     definition: {
       name,
@@ -245,7 +256,9 @@ export function parseCommandFile(
       ...(argumentHint !== undefined && { argumentHint }),
       ...(args !== undefined && { arguments: args }),
       ...(allowedTools !== undefined && { allowedTools }),
+      ...(disallowedTools !== undefined && { disallowedTools }),
       ...(model !== undefined && { model }),
+      ...(effort !== undefined && { effort }),
       template,
       source: origin.source,
       path: origin.path,
@@ -416,41 +429,71 @@ export interface FoundDefinitionFile {
   name: string;
   source: DefinitionSource;
   text: string;
+  /** The folder of definitions it was found in */
+  dir: string;
 }
 
 /**
  * The places definitions of `kind` are read for a project at `root`, highest precedence first:
- * the managed directories, the host's `dirs`, the project's folders once it is trusted, and the
- * user's folders. Whether the project is trusted is in `trusted`
+ * the managed directories, the host's `dirs`, the project's folders, and the user's folders. The
+ * project's folders are those of every directory from `start` (the run's working directory,
+ * `root` by default) up to `root`, the closest first as in Claude Code, and on above `root` up to
+ * the repository's top folder through directories that are trusted themselves. A directory counts
+ * only once it is trusted (`trusted` with `root`, or `trustedRoots`): an untrusted `root` gives no
+ * project folders at all, whether it is trusted is in `trusted`
  */
 export function definitionDirs(
   kind: 'agents' | 'commands',
   options: DefinitionFileOptions,
-  root: string
+  root: string,
+  start: string = root
 ): { dirs: DefinitionDir[]; trusted: boolean } {
   const managed = (options.managedDirs ?? defaultManagedDirs()).flatMap((base) =>
     DEFINITION_DIRS.map((folder) => ({ dir: join(base, folder, kind), source: 'managed' as const }))
   );
   const extra = (options.dirs ?? []).map((dir) => ({ dir: resolve(dir), source: 'code' as const }));
-  const trusted = trustsProject(
-    {
-      ...(options.root !== undefined && { root: options.root }),
-      ...(options.trusted !== undefined && { trusted: options.trusted }),
-      ...(options.trustedRoots !== undefined && { trustedRoots: options.trustedRoots }),
-    },
-    root
-  );
+  const trust = {
+    ...(options.root !== undefined && { root: options.root }),
+    ...(options.trusted !== undefined && { trusted: options.trusted }),
+    ...(options.trustedRoots !== undefined && { trustedRoots: options.trustedRoots }),
+  };
+  const trusted = trustsProject(trust, root);
   const project = trusted
-    ? DEFINITION_DIRS.map((folder) => ({
-        dir: join(root, folder, kind),
-        source: 'project' as const,
-      }))
+    ? projectDirsOf(root, start, (dir) => trustsProject(trust, dir)).flatMap((dir) =>
+        DEFINITION_DIRS.map((folder) => ({
+          dir: join(dir, folder, kind),
+          source: 'project' as const,
+        }))
+      )
     : [];
   const user = (options.userDirs ?? defaultDefinitionUserDirs()).map((dir) => ({
     dir: join(dir, kind),
     source: 'user' as const,
   }));
   return { dirs: [...managed, ...extra, ...project, ...user], trusted };
+}
+
+/**
+ * The project directories whose definitions count, closest first: `start` and every directory
+ * above it up to `root` (just `root` when `start` is not inside it), then the directories above
+ * `root` up to the repository's top folder (the closest with a `.git`) as long as each is trusted
+ */
+function projectDirsOf(root: string, start: string, trusted: (dir: string) => boolean): string[] {
+  const top = resolve(root);
+  const from = resolve(start);
+  const under = relative(top, from);
+  const dirs: string[] = [];
+  if (under !== '' && !under.startsWith('..') && !isAbsolute(under)) {
+    for (let dir = from; dir !== top; dir = dirname(dir)) dirs.push(dir);
+  }
+  dirs.push(top);
+  if (existsSync(join(top, '.git'))) return dirs;
+  for (let dir = dirname(top); dir !== dirname(dir); dir = dirname(dir)) {
+    if (dir === homedir() || !trusted(dir)) break;
+    dirs.push(dir);
+    if (existsSync(join(dir, '.git'))) break;
+  }
+  return dirs;
 }
 
 /** The user's folders of definitions: `~/.agents`, `~/.cogitator` and Claude Code's */
@@ -460,7 +503,7 @@ export function defaultDefinitionUserDirs(): string[] {
 
 /**
  * The options definition files are read with: `true` takes the places of `permissions.settings`
- * and its trust (its `trusted: true` trusts its root), as the hooks do
+ * (its root, user and managed directories) and its trust (its `trusted: true` trusts its root), as the hooks do
  */
 export function definitionFileOptions(
   own: boolean | DefinitionFileOptions | undefined,
@@ -472,6 +515,7 @@ export function definitionFileOptions(
   const base: DefinitionFileOptions = {
     ...(shared?.root !== undefined && { root: shared.root }),
     ...(shared?.managedDirs !== undefined && { managedDirs: shared.managedDirs }),
+    ...(shared?.userDirs !== undefined && { userDirs: shared.userDirs }),
   };
   if (own === true) {
     return { ...base, ...(inherited.length > 0 && { trustedRoots: inherited }) };
@@ -511,7 +555,7 @@ export async function scanDefinitionDirs(
         }
         const text = await readFile(path, 'utf8');
         const name = relative(dir, path).split(sep).join('/').replace(/\.md$/i, '');
-        found.push({ path, name, source, text });
+        found.push({ path, name, source, text, dir });
       } catch (error) {
         diagnostics.push({
           level: 'error',

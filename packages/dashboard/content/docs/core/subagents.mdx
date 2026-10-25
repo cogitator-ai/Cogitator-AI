@@ -53,56 +53,56 @@ Nothing changes until you set `subagents`: unset, runs get no delegation tools. 
 | `description`       | A short description of the task                             |
 | `prompt`            | The task, with everything the subagent needs                |
 | `subagent_type`     | Which subagent runs it, one of those listed in the tool     |
-| `model`             | A model for this task instead of the subagent's             |
+| `model`             | `inherit` or a key of `llm.modelAliases` for this task      |
 | `run_in_background` | Start it and go on, its result arrives later                |
 | `name`              | A name to reach it by with `send_message` and `task_output` |
 
-The tool answers with `{ agentId, status, output, success, error?, note? }`. With `subagents.tools: 'each'` every subagent is also (or with `'both'` additionally) a tool of its own, named after it, that takes a `task`.
+The tool answers with `{ agentId, status, output, success, error?, note? }`. The call's `model` may only be `inherit`, a key of `llm.modelAliases` or a Claude Code alias, never an arbitrary model, and when a session or agent cost budget (`budget.session.maxCostUsd`, `budget.agent.maxCostUsd`) is set, a subagent whose model differs from the delegating agent's and has no known price is refused, since its calls would count as nothing against the budget. Calls of the tool are safe to run together, so with `parallelToolCalls` the delegations of one step run side by side. With `subagents.tools: 'each'` every subagent is also (or with `'both'` additionally) a tool of its own, named after it, that takes a `task`.
 
 ## Where Subagents Come From
 
-| Source       | Path                                                                               | Read                             |
-| ------------ | ---------------------------------------------------------------------------------- | -------------------------------- |
-| Managed      | `.agents/agents`, `.cogitator/agents`, `.claude/agents` of the managed directories | Always                           |
-| Code         | `subagents.agents`                                                                 | Always                           |
-| Host folders | `files.dirs`                                                                       | Always                           |
-| Project      | `.agents/agents`, `.cogitator/agents`, `.claude/agents` under the project root     | Only once the project is trusted |
-| User         | `agents/` of `~/.agents`, `~/.cogitator` and `~/.claude` (or `CLAUDE_CONFIG_DIR`)  | Always                           |
+| Source       | Path                                                                                  | Read                             |
+| ------------ | ------------------------------------------------------------------------------------- | -------------------------------- |
+| Managed      | `.agents/agents`, `.cogitator/agents`, `.claude/agents` of the managed directories    | Always                           |
+| Code         | `subagents.agents`                                                                    | Always                           |
+| Host folders | `files.dirs`                                                                          | Always                           |
+| Project      | `.agents/agents`, `.cogitator/agents`, `.claude/agents` from the working directory up | Only once the project is trusted |
+| User         | `agents/` of `~/.agents`, `~/.cogitator` and `~/.claude` (or `CLAUDE_CONFIG_DIR`)     | Always                           |
 
-The first definition of a name wins, in the order of the table. Folders are read recursively and again for every run, so an edited file counts from the next delegation on. The project root is `files.root`, else the root of `permissions.settings`, else the run's workspace root. A project counts as trusted with `trusted: true` (for `root` only) or when it is one of `trustedRoots`. `files: true` takes the places of `permissions.settings`, and its `trusted: true` trusts that root here too, as it does for [hooks](/docs/core/hooks). A repository you did not vet never adds subagents, which run tools, hooks and MCP servers.
+The first definition of a name wins, in the order of the table. Folders are read recursively and again for every run, so an edited file counts from the next delegation on. The project root is `files.root`, else the root of `permissions.settings`, else the run's workspace root. As in Claude Code the project folders of every directory from the workspace's current directory up to the project root count, the closest first, and above the root up to the repository's top folder through directories that are trusted themselves. A project counts as trusted with `trusted: true` (for `root` only) or when it is one of `trustedRoots`. `files: true` takes the places of `permissions.settings` (its root, user and managed directories), and its `trusted: true` trusts that root here too, as it does for [hooks](/docs/core/hooks). A repository you did not vet never adds subagents, which run tools, hooks and MCP servers.
 
-A file without frontmatter or without a `name` is documentation kept next to the agents and skipped quietly. Frontmatter that is not valid YAML, a `name` that starts with `-`, holds `:` or is longer than 256 characters, and a missing `description` skip the file with an error. A field of the wrong type or an unknown field is left out with a warning, with the field it likely meant (`maxturns`, did you mean `maxTurns`). Each problem is logged once and handed to `subagents.onDiagnostic`. `cog.listSubagents({ root })` returns what a run would see.
+A file without frontmatter or without a `name` is documentation kept next to the agents and skipped quietly. Frontmatter that is not valid YAML, a `name` that is not lowercase letters, digits and hyphens (`code-reviewer`, `reviewer-v2`) or is longer than 256 characters, and a missing `description` skip the file with an error. A field of the wrong type or an unknown field is left out with a warning, with the field it likely meant (`maxturns`, did you mean `maxTurns`). Each problem is logged once and handed to `subagents.onDiagnostic`. `cog.listSubagents({ root })` returns what a run would see.
 
 ## Frontmatter
 
-| Field             | What it does                                                                                                  |
-| ----------------- | ------------------------------------------------------------------------------------------------------------- |
-| `name`            | The `subagent_type` and the `agent_type` hooks see (required)                                                 |
-| `description`     | When to delegate to it, shown in the `agent` tool (required)                                                  |
-| `tools`           | The tools it may use, in the grammar of [permission rules](/docs/tools/permissions), inherited when unset     |
-| `disallowedTools` | Tools taken away first. `Bash(git push *)` takes the whole tool, as in Claude Code                            |
-| `model`           | `inherit` (default), an alias of `llm.modelAliases` (`sonnet`, `opus`, `haiku`, `fable`), or `provider/model` |
-| `permissionMode`  | Its mode, which can only narrow the delegating run's mode                                                     |
-| `maxTurns`        | Its `maxIterations`                                                                                           |
-| `skills`          | Skills of the delegating agent whose full instructions go into its prompt                                     |
-| `mcpServers`      | Names of MCP servers the run has tools of, or inline servers connected through `subagents.mcp`                |
-| `hooks`           | [Hooks](/docs/core/hooks) that run only while it runs, `Stop` ones as `SubagentStop`                          |
-| `memory`          | `user`, `project` or `local`: a notes folder it keeps across sessions                                         |
-| `background`      | Always run it in the background                                                                               |
-| `isolation`       | `worktree`: run it in a git worktree of its own                                                               |
-| `color`, `effort` | Its display color, and the reasoning effort of its model calls                                                |
+| Field             | What it does                                                                                                                                        |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`            | The `subagent_type` and the `agent_type` hooks see (required)                                                                                       |
+| `description`     | When to delegate to it, shown in the `agent` tool (required)                                                                                        |
+| `tools`           | The tools it may use, in the grammar of [permission rules](/docs/tools/permissions), inherited when unset                                           |
+| `disallowedTools` | Tools taken away first. `Bash(git push *)` takes the whole tool, as in Claude Code                                                                  |
+| `model`           | `inherit` (default), an alias of `llm.modelAliases` (`sonnet`, `opus`, `haiku`, `fable`), a Claude model id (run on Anthropic), or `provider/model` |
+| `permissionMode`  | Its mode, by Claude Code's rules and never wider than the delegating run's                                                                          |
+| `maxTurns`        | Its `maxIterations`                                                                                                                                 |
+| `skills`          | Skills of the delegating agent whose full instructions go into its prompt                                                                           |
+| `mcpServers`      | Names of MCP servers the run has tools of, or inline servers connected through `subagents.mcp`                                                      |
+| `hooks`           | [Hooks](/docs/core/hooks) that run only while it runs, `Stop` ones as `SubagentStop`                                                                |
+| `memory`          | `user`, `project` or `local`: a notes folder it keeps across sessions                                                                               |
+| `background`      | Always run it in the background                                                                                                                     |
+| `isolation`       | `worktree`: run it in a git worktree of its own                                                                                                     |
+| `color`, `effort` | Its display color, and the reasoning effort of its model calls                                                                                      |
 
-The Markdown body is its system prompt. `tools` and `disallowedTools` take Claude Code's names (`Read`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`, `Agent`), a tool's own name, and `mcp__server__*`. `Agent` keeps the `agent` tool and its companions, so a subagent without it cannot delegate further. A `tools` list that names none of the tools available fails the delegation with an error the model reads, as Claude Code refuses an agent with zero tools.
+The Markdown body is its system prompt. `tools` and `disallowedTools` take Claude Code's names (`Read`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`, `Agent`), a tool's own name, and `mcp__server__*`. `Agent` keeps the `agent` tool and its companions, so a subagent without it cannot delegate further. The lists of every subagent above hold too: a subagent delegated by a subagent gets only the tools each layer above it kept, the runtime's tools (`cog.tools`) among them, plus its own `agent_memory` and the tools of its own `mcpServers`, which no list takes away. A `tools` list that names none of the tools available fails the delegation with an error the model reads, as Claude Code refuses an agent with zero tools.
 
 ## Permissions
 
-A subagent runs under the delegating run's permission mode and `session` rules, with their path patterns resolved as in the delegating run, and every rule of the settings files applies to its calls too. Its own `permissionMode` only narrows that mode: `plan` or `dontAsk` under `default` apply, `acceptEdits` or `bypassPermissions` under `default`, and anything but `plan` under `plan`, are ignored. A subagent never gets permissions the run that delegates lacks. An `Agent(reviewer)` deny rule refuses delegating to `reviewer`, and `AgentConfig.subagents` (`false`, or a list of names) limits which subagents an agent may use.
+A subagent runs under the delegating run's permission mode and `session` rules, with their path patterns resolved as in the delegating run, and every rule of the settings files applies to its calls too. Its own `permissionMode` follows Claude Code: under `bypassPermissions`, `acceptEdits` and `auto` the subagent runs in the delegating run's mode whatever it sets, under `plan` it stays in `plan`, and under `default` and `dontAsk` its own mode applies, except `acceptEdits`, `auto` and `bypassPermissions`, which would let it do more than the run that delegates and are ignored. A subagent never gets permissions the run that delegates lacks. An `Agent(reviewer)` deny rule refuses delegating to `reviewer`, and `AgentConfig.subagents` (`false`, or a list of names) limits which subagents an agent may use, for the subagents below it too.
 
 Every tool call of a subagent is charged to the [session budget](/docs/core/budgets) of the run that delegated, background subagents included, so a budget holds across delegation.
 
 ## Approvals That Bubble Up
 
-By default (`approvalMode: 'decline'`) a subagent's call that needs approval is declined: nobody can approve it from inside a delegated run, and the subagent is told why. With `approvalMode: 'bubble'` the subagent's approvals go to the delegating run's `onApproval` first, and when the subagent pauses (an approval nobody decided, or a question one of its tools asked with `context.interrupt()`), the run that delegated pauses too:
+By default (`approvalMode: 'decline'`) a subagent's call that needs approval is declined: nobody can approve it from inside a delegated run, and the subagent is told why. With `approvalMode: 'bubble'` the subagent's approvals go to the delegating run's `onApproval` first, with the qualified `toolCallId` and the subagent's name in `subagent` (`releaser`, `releaser/operator` a layer down), and when the subagent pauses (an approval nobody decided, or a question one of its tools asked with `context.interrupt()`), the run that delegated pauses too:
 
 ```typescript
 const cog = new Cogitator({ subagents: { files: true, approvalMode: 'bubble' } });
@@ -128,23 +128,25 @@ The subagent's checkpoint is kept inside the delegating run's, in `checkpoint.tu
 | `task_output`  | Reads its status and result, waiting for it unless `block: false`                                     |
 | `task_stop`    | Stops it                                                                                              |
 
-A run that would stop waits for the background subagents it started and reads their results as a `<task-notification>` message, marked as an automated notice whose instructions carry no authority from the user. A run that pauses or fails stops the ones it started. `subagents.maxBackground` (20) caps how many run at once, a delegation past it fails with an error the model reads. Foreground subagents are reachable by their `agentId` too, so `send_message` continues them in the background.
+A run that would stop waits for the background subagents it started and reads their results as a `<task-notification>` message, marked as an automated notice whose instructions carry no authority from the user. A run that pauses or fails stops the ones it started. `subagents.maxBackground` (20) caps how many run at once, a delegation past it fails with an error the model reads. Foreground subagents are reachable by their `agentId` too, so `send_message` continues them in the background. A subagent that goes on is set up again as it was first: in its own mode, in the same worktree, with its MCP servers connected again. Approvals of a background subagent go to the delegating run's `onApproval` and are declined when it has none or it answers `'pause'`. When an agent has a tool named `send_message` (`task_output`, `task_stop`) of its own, such as a team member, the subagent tool is named `subagent_send_message` and the `agent` tool says so.
 
 ## Worktrees and Memory
 
-`isolation: worktree` runs the subagent in a git worktree of the repository the run's workspace is in, under `.cogitator/worktrees/` (ignored by git), on a branch `cogitator/<name>-<hash>`, made from the current commit. When the subagent changed nothing the worktree and its branch are removed. Otherwise they are kept, and the result's `note` says where. A subagent that paused with a bubbled approval goes on in the same worktree. A workspace that is not local, or not in a git repository, runs the subagent without isolation and logs a warning.
+`isolation: worktree` runs the subagent in a git worktree of the repository the run's workspace is in, under `.cogitator/worktrees/` (ignored by git), on a branch `cogitator/<name>-<hash>`, made from the current commit. When the subagent changed nothing (no change, no commit, no ignored file it made) the worktree and its branch are removed. Otherwise they are kept, and the result's `note` says where. A subagent that paused with a bubbled approval goes on in the same worktree. A workspace that is not local, or not in a git repository, runs the subagent without isolation and logs a warning.
 
-`memory` gives the subagent a notes folder where Claude Code keeps it, so both share it: `~/.claude/agent-memory/<name>/` for `user`, `.claude/agent-memory/<name>/` of the project for `project`, `.claude/agent-memory-local/<name>/` for `local`. The first 200 lines (at most 25 KB) of its `MEMORY.md` go into its prompt, and an `agent_memory` tool lists, reads, writes and appends notes inside the folder only.
+`memory` gives the subagent a notes folder where Claude Code keeps it, so both share it: `~/.claude/agent-memory/<name>/` for `user`, `.claude/agent-memory/<name>/` of the project for `project`, `.claude/agent-memory-local/<name>/` for `local`, always a folder of its own under those. The first 200 lines (at most 25 KB) of its `MEMORY.md` go into its prompt, and an `agent_memory` tool lists, reads, writes and appends notes inside the folder only.
 
 ## Context and Hooks
 
-A subagent reads its prompt, the preloaded skills, its memory and the task. `subagents.messages: 'conversation'` shows it the delegating run's user messages and answers first, and a function picks messages of your own, tool calls without a result and system messages always left out. `onDelegationStart` and `onDelegationComplete` hear every delegation with its status (`completed`, `paused`, `failed`, `stopped`), output and usage. The `SubagentStart` and `SubagentStop` hooks of the runtime fire for every subagent run, matched by its name, and the frontmatter `hooks` of a subagent run only inside it. `maxDepth` (3) caps how many layers of subagents run below a run nobody delegated: past it a subagent gets no `agent` tool.
+A subagent reads its prompt, the preloaded skills, its memory and the task. `subagents.messages: 'conversation'` shows it the delegating run's user messages and answers first, and a function picks messages of your own, tool calls without a result and system messages always left out. `onDelegationStart` and `onDelegationComplete` hear every delegation with its status (`completed`, `paused`, `failed`, `stopped`), output and usage. The `SubagentStart` and `SubagentStop` hooks of the runtime fire for every subagent run, matched by its name, and the frontmatter `hooks` of a subagent run only inside it, as hooks of the layer its file comes from: the managed `disableAllHooks` and `allowManagedHooksOnly` turn them off, and the HTTP allowlists of the settings files and of `hooks` hold for them (without `hooks.settings` only the managed files are read for this). `maxDepth` (3) caps how many layers of subagents run below a run nobody delegated: past it a subagent gets no `agent` tool.
 
 ## Differences from Claude Code
 
-- The tool is named `agent` and takes Claude Code's `Agent` input. Hooks and rules that name `Agent`, `Task`, `SendMessage`, `TaskOutput` and `TaskStop` match it.
+- The tool is named `agent` and takes Claude Code's `Agent` input. Hooks and rules that name `Agent`, `Task`, `SendMessage`, `TaskOutput` and `TaskStop` match it and its companions, never other tools of those names.
 - Model aliases resolve through `llm.modelAliases`, an alias without an entry runs on the delegating agent's model with a warning.
-- `permissionMode` only narrows the delegating run's mode, where Claude Code lets a subagent under `default` use `acceptEdits`.
+- `acceptEdits`, `auto` and `bypassPermissions` of a subagent under a `default` or `dontAsk` run are ignored, where Claude Code applies `acceptEdits` and `auto`.
+- The call's `model` takes only `inherit` and aliases, and an unpriced model is refused under a cost budget.
 - Background subagents keep the tools their definition gives them, approvals they hit are declined unless the run's `onApproval` decides them, and a run that pauses or fails stops them.
+- Subagent names are lowercase letters, digits and hyphens only.
 - Inline MCP servers need `subagents.mcp` to connect them. `initialPrompt`, `autoCompactWindow`, `omitClaudeMd` and `experimental` are read but not applied, plugin folders are not read yet.
 - A worktree is made from the current commit, not from the default branch.

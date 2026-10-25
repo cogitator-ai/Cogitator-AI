@@ -271,8 +271,12 @@ export interface CommandDefinition {
   arguments?: readonly string[];
   /** Permission rules allowed without asking for the run the command starts */
   allowedTools?: readonly string[];
+  /** Tools taken away from the run the command starts, as a subagent's `disallowedTools` */
+  disallowedTools?: readonly string[];
   /** The model of the run it starts, as a subagent's `model` names one */
   model?: string;
+  /** The reasoning effort of the run it starts */
+  effort?: ReasoningEffort;
   /** The message template: the Markdown body */
   template: string;
   source: DefinitionSource;
@@ -303,7 +307,9 @@ export interface ExpandedCommand {
   /** The message the run got instead of the input */
   input: string;
   allowedTools?: readonly string[];
+  disallowedTools?: readonly string[];
   model?: string;
+  effort?: ReasoningEffort;
   source: DefinitionSource;
   path?: string;
 }

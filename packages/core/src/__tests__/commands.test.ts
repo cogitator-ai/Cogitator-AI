@@ -190,4 +190,53 @@ describe('commands in a run', () => {
     expect(plain.status).toBe('paused');
     await cog.close();
   });
+
+  it('takes disallowed-tools away, sets the effort and runs on the model alone, without the agent provider', async () => {
+    const format = tool({
+      name: 'format',
+      description: 'Formats files',
+      parameters: z.object({}),
+      execute: async () => 'formatted',
+    });
+    const lint = tool({
+      name: 'lint',
+      description: 'Lints files',
+      parameters: z.object({}),
+      execute: async () => 'linted',
+    });
+    const main = new MockLLMBackend().setResponses([{ content: 'main' }]);
+    const other = new MockLLMBackend().setResponses([{ content: 'other' }]);
+    const cog = new Cogitator({
+      commands: {
+        commands: {
+          check: {
+            template: 'Check it',
+            disallowedTools: ['format'],
+            effort: 'high',
+            model: 'other/m',
+          },
+        },
+      },
+      llm: { backends: { main, other }, retry: false },
+    });
+    const agent = new Agent({
+      name: 'coder',
+      provider: 'main',
+      model: 'main/m',
+      instructions: 'You code.',
+      tools: [format, lint],
+    });
+    const result = await cog.run(agent, { input: '/check' });
+    expect(result.output).toBe('other');
+    expect(other.getLastCall()?.tools?.map((schema) => schema.name)).toEqual(['lint']);
+    expect(other.getLastCall()?.reasoning?.effort).toBe('high');
+    await cog.run(agent, { input: 'plain' });
+    expect(
+      main
+        .getLastCall()
+        ?.tools?.map((schema) => schema.name)
+        .sort()
+    ).toEqual(['format', 'lint']);
+    await cog.close();
+  });
 });

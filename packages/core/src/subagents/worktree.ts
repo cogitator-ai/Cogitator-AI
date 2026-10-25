@@ -18,7 +18,7 @@ export interface SubagentWorktree {
   workspace: Workspace;
   /**
    * Disposes the workspace and removes the worktree and its branch when the subagent left no
-   * change (nothing uncommitted, no commit of its own). Returns whether they were kept
+   * change (nothing uncommitted or ignored, no commit of its own). Returns whether they were kept
    */
   close(): Promise<{ kept: boolean }>;
   /** Disposes the workspace and keeps the worktree, for a delegate that paused and goes on later */
@@ -49,10 +49,13 @@ function git(args: readonly string[], cwd: string, signal?: AbortSignal): Promis
   });
 }
 
-/** Whether the worktree at `path` holds anything uncommitted or commits since `base`, true when git cannot tell */
+/**
+ * Whether the worktree at `path` holds anything uncommitted (ignored files included, such as
+ * build output) or commits since `base`, true when git cannot tell
+ */
 async function hasChanges(path: string, base: string): Promise<boolean> {
   try {
-    const status = await git(['status', '--porcelain'], path);
+    const status = await git(['status', '--porcelain', '--ignored'], path);
     const commits = await git(['rev-list', '--count', `${base}..HEAD`], path);
     return status !== '' || commits !== '0';
   } catch {

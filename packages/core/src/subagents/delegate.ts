@@ -86,14 +86,26 @@ export function nestInterrupts(
 /** The approvals a delegate waits on, as the run that delegated with tool call `callId` shows them */
 export function nestApprovals(
   callId: string,
-  agentId: string,
+  agent: string,
   pending: readonly ToolApprovalRequest[]
 ): ToolApprovalRequest[] {
-  return pending.map((request) => ({
+  return pending.map((request) => qualifyApproval(callId, agent, request));
+}
+
+/**
+ * An approval of delegate `agent` as the run that delegated with tool call `callId` sees it: its
+ * tool call id under `<callId>/`, the delegate named in `subagent` (`agent/child` a layer down)
+ */
+export function qualifyApproval(
+  callId: string,
+  agent: string,
+  request: ToolApprovalRequest
+): ToolApprovalRequest {
+  return {
     ...request,
     toolCallId: nestedId(callId, request.toolCallId),
-    agentId: request.agentId ?? agentId,
-  }));
+    subagent: request.subagent !== undefined ? `${agent}/${request.subagent}` : agent,
+  };
 }
 
 /**
@@ -264,8 +276,14 @@ export function delegateRunOptions(
     : run.mode !== undefined
       ? { mode: run.mode }
       : undefined;
+  const parentDecider = context.delegation?.onApproval;
+  const callId = context.toolCallId;
   const onApproval: RunOptions['onApproval'] = bubbles
-    ? context.delegation?.onApproval
+    ? parentDecider &&
+      ((request) =>
+        parentDecider(
+          callId === undefined ? request : qualifyApproval(callId, delegate.name, request)
+        ))
     : async (request) => {
         const decision = run.onApproval ? await run.onApproval(request) : 'pause';
         return decision === 'pause' ? DELEGATED_DECLINE : decision;

@@ -630,6 +630,12 @@ export interface ToolApprovalRequest {
   suggestedRule?: string;
   /** The permission mode of the run */
   mode?: PermissionMode;
+  /**
+   * The subagent the call is made in, when the approval of a delegated run bubbles up
+   * (`approvalMode: 'bubble'`): its name, `parent/child` for one more layer down. Its
+   * `toolCallId` is then the call's id under the delegating call's (`<toolCallId>/<id>`)
+   */
+  subagent?: string;
 }
 
 /**

@@ -30,6 +30,8 @@ export interface CommandCatalog {
 export interface DefinitionPlace {
   options?: DefinitionFileOptions;
   root: string;
+  /** The working directory of the run, inside `root`: project folders are read from it up */
+  start?: string;
 }
 
 /** Logs each diagnostic once and hands it to `onDiagnostic` */
@@ -106,6 +108,8 @@ export function codeCommands(config: CommandsConfig): CommandDefinition[] {
  */
 export class SubagentFinder {
   private readonly code: SubagentDefinition[];
+  /** The folder of definitions each file was found in, by its path */
+  private readonly folders = new Map<string, string>();
   private readonly log: DiagnosticLog;
 
   constructor(config: SubagentsConfig) {
@@ -117,7 +121,12 @@ export class SubagentFinder {
     const diagnostics: DefinitionDiagnostic[] = [];
     const found: SubagentDefinition[] = [];
     if (place.options) {
-      const { dirs } = definitionDirs('agents', place.options, resolve(place.root));
+      const { dirs } = definitionDirs(
+        'agents',
+        place.options,
+        resolve(place.root),
+        place.start ?? place.root
+      );
       const managed = dirs.filter((dir) => dir.source === 'managed');
       const rest = dirs.filter((dir) => dir.source !== 'managed');
       found.push(...(await this.read(managed, diagnostics, signal)));
@@ -131,7 +140,11 @@ export class SubagentFinder {
       const kept = byName.get(definition.name);
       if (!kept) {
         byName.set(definition.name, definition);
-      } else if (kept.source === definition.source && definition.path !== undefined) {
+      } else if (
+        definition.path !== undefined &&
+        kept.path !== undefined &&
+        this.folders.get(kept.path) === this.folders.get(definition.path)
+      ) {
         diagnostics.push({
           level: 'warning',
           message: `Another ${definition.source} subagent is named "${definition.name}" (${kept.path ?? 'code'}), this one is ignored`,
@@ -157,6 +170,7 @@ export class SubagentFinder {
     const definitions: SubagentDefinition[] = [];
     for (const file of files) {
       const parsed = parseSubagentFile(file.text, { path: file.path, source: file.source });
+      this.folders.set(file.path, file.dir);
       diagnostics.push(...parsed.diagnostics);
       if (parsed.definition) definitions.push(parsed.definition);
     }
@@ -183,7 +197,12 @@ export class CommandFinder {
     const diagnostics: DefinitionDiagnostic[] = [];
     const found: CommandDefinition[] = [];
     if (place.options) {
-      const { dirs } = definitionDirs('commands', place.options, resolve(place.root));
+      const { dirs } = definitionDirs(
+        'commands',
+        place.options,
+        resolve(place.root),
+        place.start ?? place.root
+      );
       const managed = dirs.filter((dir) => dir.source === 'managed');
       const rest = dirs.filter((dir) => dir.source !== 'managed');
       found.push(...(await this.read(managed, diagnostics, signal)));

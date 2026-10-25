@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type {
   BackgroundSubagentStatus,
   DefinitionFileOptions,
+  HooksConfig,
   Message,
   PermissionMode,
   RunHandle,
@@ -27,15 +28,17 @@ import { mergeSkillCatalogs, skillLoadersOf } from '../skills/skill-registry';
 import { sanitizeToolHistory } from '../utils/tool-history';
 import { SubagentFinder } from './catalog';
 import {
+  delegateHistory,
   delegateRunOptions,
   isDelegatePause,
   pausedDelegateError,
   runDelegate,
   type DelegateRun,
 } from './delegate';
-import { markDispatcher } from './marker';
+import { markCompanion, markDispatcher, setToolFilter, toolFilterOf } from './marker';
+import { CLAUDE_MODEL_ALIASES, resolveDefinitionModel } from './models';
 import { agentMemoryDir, agentMemorySection, agentMemoryTool } from './memory';
-import { toolPolicy, type ToolPolicy } from './tool-policy';
+import { toolPolicy } from './tool-policy';
 import { openWorktree, type SubagentWorktree } from './worktree';
 
 /** The tool runs delegate to a subagent with, as Claude Code's `Agent` tool */
@@ -59,20 +62,12 @@ const MAX_TASKS_PER_THREAD = 50;
 /** Threads whose subagents are remembered */
 const MAX_THREADS = 500;
 
-/** Modes from the one that lets a run do most to the one that lets it do least */
-const MODE_RANK: Record<PermissionMode, number> = {
-  bypassPermissions: 0,
-  auto: 1,
-  acceptEdits: 1,
-  default: 2,
-  dontAsk: 3,
-  plan: 4,
-};
-
 /**
- * The mode a subagent runs in: its own when that lets it do less than `parent` (the delegating
- * run's mode, `default` for a run without permissions), else undefined to keep the parent's. A
- * subagent never gets a mode that lets it do more than the run that delegates
+ * The mode a subagent runs in, by Claude Code's rules, never letting it do more than the run that
+ * delegates: under `bypassPermissions`, `acceptEdits` and `auto` it runs in the delegating run's
+ * mode whatever it sets, under `plan` it stays in `plan`, under `default` and `dontAsk` (and in a
+ * run without permissions) it runs in its own, unless that is `acceptEdits`, `auto` or
+ * `bypassPermissions`, which would let it do more. Undefined keeps the delegating run's mode
  */
 export function narrowMode(
   parent: PermissionMode | undefined,
@@ -80,7 +75,9 @@ export function narrowMode(
 ): PermissionMode | undefined {
   if (own === undefined) return undefined;
   const base = parent ?? 'default';
-  return MODE_RANK[own] > MODE_RANK[base] ? own : undefined;
+  if (base !== 'default' && base !== 'dontAsk') return undefined;
+  if (own === 'acceptEdits' || own === 'auto' || own === 'bypassPermissions') return undefined;
+  return own === base ? undefined : own;
 }
 
 /** What the runtime gives the subagents of a run */
@@ -103,15 +100,30 @@ export interface SubagentServiceOptions {
   /** Where the Markdown files are read, resolved with the trust of `permissions.settings` */
   files?: DefinitionFileOptions;
   modelAliases?: Readonly<Record<string, string>>;
-  /** What the hooks of a subagent's frontmatter run with */
-  hooks: () => HooksMiddlewareDeps;
+  /**
+   * What the hooks of a subagent's frontmatter run with: the runtime's deps and HTTP allowlists,
+   * and the settings files that decide whether they may run at all
+   */
+  hooks: () => { deps: HooksMiddlewareDeps; config: Omit<HooksConfig, 'hooks' | 'settings'> };
+  /**
+   * Why a subagent may not run on `model` (the full model string, undefined for the runtime's
+   * default), such as a cost budget its unknown price would slip past. Undefined when it may
+   */
+  modelProblem?: (model: string | undefined) => string | undefined;
 }
 
-interface BackgroundTask {
+/** A delegation the service keeps, to read its result and continue it */
+interface SubagentTask {
   id: string;
   name?: string;
-  agent: Agent;
   definition: SubagentDefinition;
+  /** The run it was delegated from, whose agent and catalog a continuation builds it from again */
+  scope: SubagentScope;
+  /** The model the call asked for */
+  model?: string;
+  /** Which worktree it works in, the same one when it goes on */
+  worktreeKey: string;
+  agent: Agent;
   threadId: string;
   /** The run that started it last, which waits for it before it stops */
   startedBy: string;
@@ -126,8 +138,6 @@ interface BackgroundTask {
   background: boolean;
   /** Set once something asked it to stop */
   stopping?: boolean;
-  /** Undoes what starting it set up (a worktree, MCP servers), once it is done */
-  cleanup?: () => Promise<string | undefined>;
   note?: string;
 }
 
@@ -136,8 +146,18 @@ interface PreparedDelegate {
   agent: Agent;
   mode?: PermissionMode;
   workspace?: Workspace;
-  /** Undoes the setup when the delegate is done, saying what it kept (a worktree with changes) */
+  /**
+   * Undoes the setup when the delegate is done or paused (`paused`: the worktree stays), saying
+   * what it kept. Runs once, later calls do nothing
+   */
   finish(paused: boolean): Promise<string | undefined>;
+}
+
+/** The names the delegation tools of a run get, others when the agent has tools of those names */
+interface CompanionNames {
+  send: string;
+  output: string;
+  stop: string;
 }
 
 const DispatchArgs = z.object({
@@ -230,8 +250,7 @@ export function taskNotification(status: BackgroundSubagentStatus): string {
  */
 export class SubagentService {
   private readonly finder: SubagentFinder;
-  private readonly policies = new WeakMap<Agent, ToolPolicy>();
-  private readonly threads = new Map<string, Map<string, BackgroundTask>>();
+  private readonly threads = new Map<string, Map<string, SubagentTask>>();
   private readonly warned = new Set<string>();
   private running = 0;
   readonly middleware: RunMiddleware;
@@ -245,7 +264,7 @@ export class SubagentService {
       name: 'cogitator:subagents',
       beforeStop: async (_event, context) => {
         const mine = this.tasksStartedBy(context.threadId ?? '', context.runId);
-        const ready = (): BackgroundTask[] =>
+        const ready = (): SubagentTask[] =>
           mine.filter((task) => task.status !== 'running' && !task.delivered && task.background);
         if (ready().length === 0) {
           const going = mine.filter((task) => task.status === 'running' && task.done);
@@ -275,12 +294,17 @@ export class SubagentService {
     return resolve(this.options.files?.root ?? workspace?.root ?? process.cwd());
   }
 
-  /** The subagents a run in `workspace` may delegate to */
+  /**
+   * The subagents a run in `workspace` may delegate to: the project's folders are read from the
+   * workspace's current directory up to the project root
+   */
   catalog(workspace: Workspace | undefined, signal?: AbortSignal): Promise<SubagentCatalog> {
+    const root = this.rootOf(workspace);
     return this.finder.catalog(
       {
         ...(this.options.files && { options: this.options.files }),
-        root: this.rootOf(workspace),
+        root,
+        ...(workspace && { start: resolve(workspace.root, workspace.cwd) }),
       },
       signal
     );
@@ -297,23 +321,14 @@ export class SubagentService {
     );
   }
 
-  /** The tool lists of the subagent `agent` runs as, when it has any */
-  policyOf(agent: Agent): ToolPolicy | undefined {
-    return this.policies.get(agent);
-  }
-
-  /** Gives `to`, a copy of `from` a run made, the tool lists of `from` */
-  adoptPolicy(from: Agent, to: Agent): void {
-    const policy = this.policies.get(from);
-    if (policy) this.policies.set(to, policy);
-  }
-
   /**
    * The tools the run of `scope` delegates with: the `agent` tool (and with `tools: 'each'`, a
-   * tool per subagent) and `send_message`, `task_output` and `task_stop`. None when the agent may
-   * delegate to no subagent of the catalog, or the run is at the depth limit
+   * tool per subagent) and `send_message`, `task_output` and `task_stop`, named
+   * `subagent_<name>` instead when the agent has a tool of that name already (a team member's own
+   * `send_message`). None when the agent may delegate to no subagent of the catalog, or the run is
+   * at the depth limit
    */
-  tools(scope: SubagentScope): Tool[] {
+  tools(scope: SubagentScope, taken: (name: string) => boolean = () => false): Tool[] {
     const choice = scope.owner.config.subagents;
     if (choice === false) return [];
     const maxDepth = this.options.config.maxDepth ?? DEFAULT_MAX_SUBAGENT_DEPTH;
@@ -322,13 +337,23 @@ export class SubagentService {
       (definition) => !Array.isArray(choice) || choice.includes(definition.name)
     );
     if (agents.length === 0) return [];
+    const free = (name: string) => (taken(name) ? `subagent_${name}` : name);
+    const names: CompanionNames = {
+      send: free(SEND_MESSAGE),
+      output: free(TASK_OUTPUT),
+      stop: free(TASK_STOP),
+    };
     const mode = this.options.config.tools ?? 'agent';
     const tools: Tool[] = [];
-    if (mode === 'agent' || mode === 'both') tools.push(this.dispatcher(scope, agents));
+    if (mode === 'agent' || mode === 'both') tools.push(this.dispatcher(scope, agents, names));
     if (mode === 'each' || mode === 'both') {
       for (const definition of agents) tools.push(this.agentTool(scope, definition));
     }
-    tools.push(this.sendMessageTool(scope), this.taskOutputTool(scope), this.taskStopTool(scope));
+    tools.push(
+      this.sendMessageTool(scope, names.send),
+      this.taskOutputTool(scope, names.output),
+      this.taskStopTool(scope, names.stop)
+    );
     return tools;
   }
 
@@ -339,14 +364,20 @@ export class SubagentService {
     getLogger().warn(message, details);
   }
 
-  private dispatcher(scope: SubagentScope, agents: readonly SubagentDefinition[]): Tool {
+  private dispatcher(
+    scope: SubagentScope,
+    agents: readonly SubagentDefinition[],
+    names: CompanionNames
+  ): Tool {
     const listing = agents.map((agent) => `- ${agent.name}: ${agent.description}`).join('\n');
+    const models = ['inherit', ...Object.keys(this.options.modelAliases ?? {})];
     return markDispatcher(
       tool<DispatchParams, DispatchResult>({
         name: AGENT_TOOL,
-        description: `Launch a specialized agent to handle a task on its own, with its own context. It starts fresh: give it everything it needs in the prompt. Its result comes back to you, not to the user. Set run_in_background to go on while it works: its result arrives as a notice before you finish, or read it with ${TASK_OUTPUT}. Continue an agent that finished with ${SEND_MESSAGE}.\n\nAvailable agent types (subagent_type):\n${listing}`,
+        description: `Launch a specialized agent to handle a task on its own, with its own context. It starts fresh: give it everything it needs in the prompt. Its result comes back to you, not to the user. Set run_in_background to go on while it works: its result arrives as a notice before you finish, or read it with ${names.output}. Continue an agent that finished with ${names.send}. A model, when you pass one, is one of: ${models.join(', ')}.\n\nAvailable agent types (subagent_type):\n${listing}`,
         parameters: DispatchArgs,
         sideEffects: ['external'],
+        isConcurrencySafe: true,
         access: { kind: 'agent', agent: (params) => params.subagent_type },
         execute: (params, context) =>
           this.delegate(scope, params.subagent_type, params.prompt, context, {
@@ -354,7 +385,6 @@ export class SubagentService {
             background: params.run_in_background === true,
             ...(params.name !== undefined &&
               params.name.trim() !== '' && { name: params.name.trim() }),
-            description: params.description,
           }),
       })
     );
@@ -368,10 +398,40 @@ export class SubagentService {
         task: z.string().min(1).describe('The task to delegate to the agent'),
       }),
       sideEffects: ['external'],
+      isConcurrencySafe: true,
       access: { kind: 'agent', agent: definition.name },
       execute: (params, context) =>
         this.delegate(scope, definition.name, params.task, context, { background: false }),
     });
+  }
+
+  /** A slot for one more background subagent, taken at once: undefined when every slot is taken */
+  private reserve(): (() => void) | undefined {
+    if (this.running >= (this.options.config.maxBackground ?? DEFAULT_MAX_BACKGROUND)) {
+      return undefined;
+    }
+    this.running++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.running--;
+    };
+  }
+
+  /** Why the call may not ask for `model`, undefined when it may */
+  private callModelProblem(model: string | undefined): string | undefined {
+    if (model === undefined || model === 'inherit') return undefined;
+    if (this.options.modelAliases && Object.hasOwn(this.options.modelAliases, model)) {
+      return undefined;
+    }
+    if ((CLAUDE_MODEL_ALIASES as readonly string[]).includes(model)) return undefined;
+    const allowed = ['inherit', ...Object.keys(this.options.modelAliases ?? {})];
+    return `The model "${model}" cannot be asked for: pass one of ${allowed.join(', ')}, or leave it out`;
+  }
+
+  private failure(error: string): DispatchResult {
+    return { agentId: '', status: 'failed', output: '', success: false, error };
   }
 
   private async delegate(
@@ -379,7 +439,7 @@ export class SubagentService {
     type: string,
     task: string,
     context: ToolContext,
-    how: { model?: string; background: boolean; name?: string; description?: string }
+    how: { model?: string; background: boolean; name?: string }
   ): Promise<DispatchResult> {
     const definition = scope.catalog.get(type);
     const choice = scope.owner.config.subagents;
@@ -387,73 +447,51 @@ export class SubagentService {
       const known = scope.catalog.agents
         .filter((agent) => !Array.isArray(choice) || choice.includes(agent.name))
         .map((agent) => agent.name);
-      return {
-        agentId: '',
-        status: 'failed',
-        output: '',
-        success: false,
-        error: `There is no subagent "${type}". Available: ${known.join(', ') || 'none'}`,
-      };
+      return this.failure(
+        `There is no subagent "${type}". Available: ${known.join(', ') || 'none'}`
+      );
     }
+    const modelProblem = this.callModelProblem(how.model);
+    if (modelProblem) return this.failure(modelProblem);
     const background = how.background || definition.background === true;
-    if (
-      background &&
-      this.running >= (this.options.config.maxBackground ?? DEFAULT_MAX_BACKGROUND)
-    ) {
-      return {
-        agentId: '',
-        status: 'failed',
-        output: '',
-        success: false,
-        error:
-          'Concurrent subagent limit reached: do not retry now, wait for a running agent to finish or do the task yourself',
-      };
-    }
-    let prepared: PreparedDelegate;
-    try {
-      prepared = await this.prepare(definition, scope, context, how.model, background);
-    } catch (error) {
-      return {
-        agentId: '',
-        status: 'failed',
-        output: '',
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-      };
+    const release = background ? this.reserve() : undefined;
+    if (background && !release) {
+      return this.failure(
+        'Concurrent subagent limit reached: do not retry now, wait for a running agent to finish or do the task yourself'
+      );
     }
     const id = `agent_${nanoid(12)}`;
-    const entry: BackgroundTask = {
+    const worktreeKey = `${context.runId}\n${context.toolCallId ?? id}`;
+    let prepared: PreparedDelegate;
+    try {
+      prepared = await this.prepare(definition, scope, context, how.model, background, worktreeKey);
+    } catch (error) {
+      release?.();
+      return this.failure(error instanceof Error ? error.message : String(error));
+    }
+    const entry: SubagentTask = {
       id,
       ...(how.name !== undefined && { name: how.name }),
-      agent: prepared.agent,
       definition,
+      scope,
+      ...(how.model !== undefined && { model: how.model }),
+      worktreeKey,
+      agent: prepared.agent,
       threadId: `subagent_${id}`,
       startedBy: scope.runId,
       status: 'running',
       delivered: !background,
       background,
     };
-    const run: DelegateRun = {
-      agent: prepared.agent,
-      task,
-      approvalMode: this.options.config.approvalMode ?? 'decline',
-      threadId: entry.threadId,
-      taskId: id,
-      background,
-      ...(this.options.config.messages !== undefined && { messages: this.options.config.messages }),
-      ...(prepared.mode !== undefined && { mode: prepared.mode }),
-      ...(prepared.workspace && { workspace: prepared.workspace }),
-      ...this.hooks(),
-    };
-    if (background) {
+    const run = this.runOf(entry, prepared, task, context, background);
+    if (background && release) {
+      const history = delegateHistory(
+        context.delegation?.conversation() ?? [],
+        this.options.config.messages
+      );
       this.remember(scope.threadId, entry);
-      this.launch(entry, run, context, prepared);
-      return {
-        agentId: id,
-        status: 'running',
-        output: '',
-        success: true,
-      };
+      this.launch(entry, run, context, prepared, release, history);
+      return { agentId: id, status: 'running', output: '', success: true };
     }
     const resumed = context.delegation?.resume !== undefined;
     let paused = false;
@@ -462,6 +500,7 @@ export class SubagentService {
       entry.result = result;
       entry.status = result.status === 'paused' ? 'paused' : 'completed';
       const note = await prepared.finish(false);
+      if (note !== undefined) entry.note = note;
       if (!resumed || entry.status === 'completed') this.remember(scope.threadId, entry);
       return {
         agentId: id,
@@ -481,8 +520,38 @@ export class SubagentService {
       entry.error = error instanceof Error ? error.message : String(error);
       return { agentId: id, status: entry.status, output: '', success: false, error: entry.error };
     } finally {
-      if (paused) await prepared.finish(true);
+      await prepared.finish(paused).catch((error: unknown) => {
+        getLogger().warn('Could not clean up after a subagent', {
+          agent: definition.name,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     }
+  }
+
+  /** How a delegation of `entry` runs, in the foreground or the background */
+  private runOf(
+    entry: SubagentTask,
+    prepared: PreparedDelegate,
+    task: string,
+    context: ToolContext,
+    background: boolean
+  ): DelegateRun {
+    const parentDecider = context.delegation?.onApproval;
+    return {
+      agent: prepared.agent,
+      task,
+      approvalMode: background ? 'decline' : (this.options.config.approvalMode ?? 'decline'),
+      ...(background && parentDecider && { onApproval: parentDecider }),
+      threadId: entry.threadId,
+      taskId: entry.id,
+      background,
+      ...(!background &&
+        this.options.config.messages !== undefined && { messages: this.options.config.messages }),
+      ...(prepared.mode !== undefined && { mode: prepared.mode }),
+      ...(prepared.workspace && { workspace: prepared.workspace }),
+      ...this.hooks(),
+    };
   }
 
   private hooks(): Pick<DelegateRun, 'onDelegationStart' | 'onDelegationComplete'> {
@@ -493,13 +562,17 @@ export class SubagentService {
     };
   }
 
-  /** Starts `entry` in the background with `run`, history `history` when it goes on */
+  /**
+   * Starts `entry` in the background with `run`, in the slot `release` frees again, the
+   * conversation `history` before its task. What `prepared` set up lasts until the run ends
+   */
   private launch(
-    entry: BackgroundTask,
+    entry: SubagentTask,
     run: DelegateRun,
     context: ToolContext,
-    prepared: PreparedDelegate | undefined,
-    history?: Message[]
+    prepared: PreparedDelegate,
+    release: () => void,
+    history: Message[]
   ): void {
     const stop = new AbortController();
     const shared = delegateRunOptions({ ...run, signal: stop.signal }, context, false);
@@ -516,15 +589,25 @@ export class SubagentService {
     entry.status = 'running';
     entry.delivered = false;
     entry.stopping = false;
+    entry.agent = prepared.agent;
     delete entry.error;
+    delete entry.note;
     entry.startedBy = context.runId;
-    this.running++;
-    const handle = this.cogitator.start(entry.agent, {
-      ...shared,
-      input: run.task,
-      threadId: entry.threadId,
-      ...(history && history.length > 0 && { history }),
-    });
+    let handle: RunHandle;
+    try {
+      handle = this.cogitator.start(entry.agent, {
+        ...shared,
+        input: run.task,
+        threadId: entry.threadId,
+        ...(history.length > 0 && { history }),
+      });
+    } catch (error) {
+      release();
+      entry.status = 'failed';
+      entry.error = error instanceof Error ? error.message : String(error);
+      void prepared.finish(false).catch(() => undefined);
+      return;
+    }
     entry.handle = handle;
     entry.done = handle.result
       .then(
@@ -555,27 +638,25 @@ export class SubagentService {
         }
       )
       .finally(async () => {
-        this.running--;
-        if (prepared) {
-          try {
-            const note = await prepared.finish(false);
-            if (note !== undefined) entry.note = note;
-          } catch (error) {
-            getLogger().warn('Could not clean up after a background subagent', {
-              agent: entry.definition.name,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
+        release();
+        try {
+          const note = await prepared.finish(false);
+          if (note !== undefined) entry.note = note;
+        } catch (error) {
+          getLogger().warn('Could not clean up after a background subagent', {
+            agent: entry.definition.name,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
       });
   }
 
-  private stopTask(task: BackgroundTask, reason: string): void {
+  private stopTask(task: SubagentTask, reason: string): void {
     task.stopping = true;
     task.handle?.abort(new Error(reason));
   }
 
-  private remember(threadId: string, entry: BackgroundTask): void {
+  private remember(threadId: string, entry: SubagentTask): void {
     let tasks = this.threads.get(threadId);
     if (!tasks) {
       tasks = new Map();
@@ -594,13 +675,13 @@ export class SubagentService {
     }
   }
 
-  private tasksStartedBy(threadId: string, runId: string): BackgroundTask[] {
+  private tasksStartedBy(threadId: string, runId: string): SubagentTask[] {
     return [...(this.threads.get(threadId)?.values() ?? [])].filter(
       (task) => task.startedBy === runId
     );
   }
 
-  private find(threadId: string, key: string): BackgroundTask | undefined {
+  private find(threadId: string, key: string): SubagentTask | undefined {
     const tasks = this.threads.get(threadId);
     if (!tasks) return undefined;
     const byId = tasks.get(key);
@@ -608,7 +689,7 @@ export class SubagentService {
     return [...tasks.values()].reverse().find((task) => task.name === key);
   }
 
-  private statusOf(task: BackgroundTask): BackgroundSubagentStatus {
+  private statusOf(task: SubagentTask): BackgroundSubagentStatus {
     return {
       taskId: task.id,
       agent: task.definition.name,
@@ -619,7 +700,7 @@ export class SubagentService {
     };
   }
 
-  private report(task: BackgroundTask): Record<string, unknown> {
+  private report(task: SubagentTask): Record<string, unknown> {
     return {
       agentId: task.id,
       agent: task.definition.name,
@@ -630,94 +711,118 @@ export class SubagentService {
     };
   }
 
-  private sendMessageTool(scope: SubagentScope): Tool {
-    return tool({
-      name: SEND_MESSAGE,
-      description:
-        'Sends a message to an agent you started, by its agentId or name: a running agent reads it at its next step, a finished one goes on in the background with its whole conversation and the message',
-      parameters: z.object({
-        to: z.string().min(1).describe('The agentId or name of the agent'),
-        message: z.string().min(1).describe('What to tell it'),
-        summary: z.string().optional().describe('A few words on what the message is about'),
+  private sendMessageTool(scope: SubagentScope, name: string): Tool {
+    return markCompanion(
+      tool({
+        name,
+        description:
+          'Sends a message to an agent you started, by its agentId or name: a running agent reads it at its next step, a finished one goes on in the background with its whole conversation and the message',
+        parameters: z.object({
+          to: z.string().min(1).describe('The agentId or name of the agent'),
+          message: z.string().min(1).describe('What to tell it'),
+          summary: z.string().optional().describe('A few words on what the message is about'),
+        }),
+        sideEffects: ['external'],
+        execute: async ({ to, message }, context) => {
+          const task = this.find(scope.threadId, to);
+          if (!task) {
+            return { delivered: false, error: `No agent "${to}" was started in this conversation` };
+          }
+          if (task.status === 'running' && task.handle?.steer(message)) {
+            return { delivered: true, agentId: task.id, status: 'running' };
+          }
+          if (task.status === 'running' && task.done) await task.done;
+          const release = this.reserve();
+          if (!release) {
+            return {
+              delivered: false,
+              error: 'Concurrent subagent limit reached, try again later',
+            };
+          }
+          let prepared: PreparedDelegate;
+          try {
+            prepared = await this.prepare(
+              task.definition,
+              task.scope,
+              context,
+              task.model,
+              true,
+              task.worktreeKey
+            );
+          } catch (error) {
+            release();
+            return {
+              delivered: false,
+              error: error instanceof Error ? error.message : String(error),
+            };
+          }
+          const history = sanitizeToolHistory(
+            (task.result?.messages ?? []).filter((entry) => entry.role !== 'system')
+          );
+          task.background = true;
+          this.remember(scope.threadId, task);
+          this.launch(
+            task,
+            this.runOf(task, prepared, message, context, true),
+            context,
+            prepared,
+            release,
+            history
+          );
+          return { delivered: true, agentId: task.id, status: 'running', resumed: true };
+        },
       }),
-      sideEffects: ['external'],
-      execute: async ({ to, message }, context) => {
-        const task = this.find(scope.threadId, to);
-        if (!task)
-          return { delivered: false, error: `No agent "${to}" was started in this conversation` };
-        if (task.status === 'running' && task.handle?.steer(message)) {
-          return { delivered: true, agentId: task.id, status: 'running' };
-        }
-        if (task.status === 'running' && task.done) await task.done;
-        if (this.running >= (this.options.config.maxBackground ?? DEFAULT_MAX_BACKGROUND)) {
-          return { delivered: false, error: 'Concurrent subagent limit reached, try again later' };
-        }
-        const history = sanitizeToolHistory(
-          (task.result?.messages ?? []).filter((entry) => entry.role !== 'system')
-        );
-        task.background = true;
-        this.remember(scope.threadId, task);
-        this.launch(
-          task,
-          {
-            agent: task.agent,
-            task: message,
-            approvalMode: 'decline',
-            threadId: task.threadId,
-            taskId: task.id,
-            background: true,
-            ...this.hooks(),
-          },
-          context,
-          undefined,
-          history
-        );
-        return { delivered: true, agentId: task.id, status: 'running', resumed: true };
-      },
-    });
+      'SendMessage'
+    );
   }
 
-  private taskOutputTool(scope: SubagentScope): Tool {
-    return tool({
-      name: TASK_OUTPUT,
-      description:
-        'Reads the status and result of an agent you started, waiting for it to finish unless block is false',
-      parameters: z.object({
-        task_id: z.string().min(1).describe('The agentId or name of the agent'),
-        block: z.boolean().optional().describe('Wait for the agent to finish (default true)'),
+  private taskOutputTool(scope: SubagentScope, name: string): Tool {
+    return markCompanion(
+      tool({
+        name,
+        description:
+          'Reads the status and result of an agent you started, waiting for it to finish unless block is false',
+        parameters: z.object({
+          task_id: z.string().min(1).describe('The agentId or name of the agent'),
+          block: z.boolean().optional().describe('Wait for the agent to finish (default true)'),
+        }),
+        annotations: { readOnlyHint: true },
+        execute: async ({ task_id, block }, context) => {
+          const task = this.find(scope.threadId, task_id);
+          if (!task) return { error: `No agent "${task_id}" was started in this conversation` };
+          if (task.status === 'running' && block !== false && task.done) {
+            await untilAborted(task.done, context.signal);
+          }
+          if (task.status !== 'running') task.delivered = true;
+          return this.report(task);
+        },
       }),
-      annotations: { readOnlyHint: true },
-      execute: async ({ task_id, block }, context) => {
-        const task = this.find(scope.threadId, task_id);
-        if (!task) return { error: `No agent "${task_id}" was started in this conversation` };
-        if (task.status === 'running' && block !== false && task.done) {
-          await untilAborted(task.done, context.signal);
-        }
-        if (task.status !== 'running') task.delivered = true;
-        return this.report(task);
-      },
-    });
+      'TaskOutput'
+    );
   }
 
-  private taskStopTool(scope: SubagentScope): Tool {
-    return tool({
-      name: TASK_STOP,
-      description: 'Stops a background agent you started',
-      parameters: z.object({
-        task_id: z.string().min(1).describe('The agentId or name of the agent'),
+  private taskStopTool(scope: SubagentScope, name: string): Tool {
+    return markCompanion(
+      tool({
+        name,
+        description: 'Stops a background agent you started',
+        parameters: z.object({
+          task_id: z.string().min(1).describe('The agentId or name of the agent'),
+        }),
+        sideEffects: ['external'],
+        execute: async ({ task_id }, context) => {
+          const task = this.find(scope.threadId, task_id);
+          if (!task) return { error: `No agent "${task_id}" was started in this conversation` };
+          if (task.status === 'running') {
+            this.stopTask(task, 'Stopped with task_stop');
+            if (task.done) await untilAborted(task.done, context.signal);
+          }
+          task.delivered = true;
+          return this.report(task);
+        },
       }),
-      sideEffects: ['external'],
-      execute: async ({ task_id }, context) => {
-        const task = this.find(scope.threadId, task_id);
-        if (!task) return { error: `No agent "${task_id}" was started in this conversation` };
-        if (task.status === 'running') {
-          this.stopTask(task, 'Stopped with task_stop');
-          if (task.done) await untilAborted(task.done, context.signal);
-        }
-        task.delivered = true;
-        return this.report(task);
-      },
-    });
+      'TaskStop'
+    );
   }
 
   /** The model a subagent runs on: the call's or the definition's, aliases resolved */
@@ -729,29 +834,28 @@ export class SubagentService {
       ...(parent.config.model !== undefined && { model: parent.config.model }),
       ...(parent.config.provider !== undefined && { provider: parent.config.provider }),
     };
-    if (requested === undefined || requested === 'inherit') return inherit;
-    const alias = this.options.modelAliases?.[requested];
-    if (alias !== undefined) return { model: alias };
-    if (['sonnet', 'opus', 'haiku', 'fable'].includes(requested)) {
-      this.warnOnce(
-        `A subagent asks for model "${requested}", which llm.modelAliases does not name: it runs on the delegating agent's model`,
-        { model: requested }
-      );
-      return inherit;
-    }
-    return { model: requested };
+    const resolved = resolveDefinitionModel(requested, this.options.modelAliases);
+    if (resolved.warning) this.warnOnce(resolved.warning, { model: requested });
+    return resolved.inherit ? inherit : { model: resolved.model };
   }
 
-  /** Builds the agent a delegation runs and sets up what it needs */
+  /**
+   * Builds the agent a delegation runs and sets up what it needs: its worktree (by `worktreeKey`,
+   * so a delegation that goes on works in the same one), its MCP servers and its memory. The tools
+   * it keeps are those of the delegating agent its own lists and every list above it allow, plus
+   * its own MCP and memory tools
+   */
   private async prepare(
     definition: SubagentDefinition,
     scope: SubagentScope,
     context: ToolContext,
     requestedModel: string | undefined,
-    background: boolean
+    background: boolean,
+    worktreeKey: string
   ): Promise<PreparedDelegate> {
     const parent = scope.owner;
     const policy = toolPolicy(definition);
+    const above = toolFilterOf(parent);
     const pool = scope.tools();
     if (policy) {
       for (const entry of policy.invalid) {
@@ -759,14 +863,12 @@ export class SubagentService {
           path: definition.path,
         });
       }
-      if (policy.empty(pool)) {
-        throw new Error(
-          `Subagent "${definition.name}" would get no tools: ${(definition.tools ?? []).join(', ')} name none of the tools available. Fix its tools list`
-        );
-      }
     }
     const finishers: Array<(paused: boolean) => Promise<string | undefined>> = [];
+    let finished = false;
     const finish = async (paused: boolean): Promise<string | undefined> => {
+      if (finished) return undefined;
+      finished = true;
       const notes: string[] = [];
       for (const done of finishers.reverse()) {
         const note = await done(paused);
@@ -778,12 +880,7 @@ export class SubagentService {
       const workspace = context.workspace ?? scope.workspace;
       let isolated: Workspace | undefined;
       if (definition.isolation === 'worktree') {
-        const opened = await openWorktree(
-          workspace,
-          definition.name,
-          `${context.runId}\n${context.toolCallId ?? nanoid()}`,
-          context.signal
-        );
+        const opened = await openWorktree(workspace, definition.name, worktreeKey, context.signal);
         if ('problem' in opened) {
           this.warnOnce(opened.problem, { agent: definition.name });
         } else {
@@ -801,7 +898,7 @@ export class SubagentService {
           });
         }
       }
-      const extraTools: Tool[] = [];
+      const ownTools: Tool[] = [];
       const inline = (definition.mcpServers ?? []).flatMap((server) =>
         typeof server === 'string' ? [] : [server]
       );
@@ -812,12 +909,10 @@ export class SubagentService {
         if (shared.length === 0) {
           this.warnOnce(
             `Subagent "${definition.name}" names MCP server "${name}", which the run has no tools of`,
-            {
-              path: definition.path,
-            }
+            { path: definition.path }
           );
         }
-        extraTools.push(...shared);
+        ownTools.push(...shared);
       }
       if (inline.length > 0) {
         const connect = this.options.config.mcp;
@@ -831,7 +926,7 @@ export class SubagentService {
             agent: definition.name,
             signal: context.signal,
           });
-          extraTools.push(...connection.tools);
+          ownTools.push(...connection.tools);
           finishers.push(async () => {
             await connection.close();
             return undefined;
@@ -849,29 +944,42 @@ export class SubagentService {
       if (definition.memory) {
         const dir = agentMemoryDir(definition.memory, definition.name, this.rootOf(workspace));
         sections.push(await agentMemorySection(dir));
-        extraTools.push(agentMemoryTool(dir));
+        ownTools.push(agentMemoryTool(dir));
       }
-      const own = parent.tools.filter((candidate) => !policy || policy.allows(candidate));
-      const names = new Set(own.map((candidate) => candidate.name));
+      const own = new Set<Tool>(ownTools);
+      const keep = (candidate: Tool): boolean =>
+        own.has(candidate) || ((above?.(candidate) ?? true) && (policy?.allows(candidate) ?? true));
+      if (
+        policy?.empty(pool.filter((candidate) => above?.(candidate) ?? true)) &&
+        ownTools.length === 0
+      ) {
+        throw new Error(
+          `Subagent "${definition.name}" would get no tools: ${(definition.tools ?? []).join(', ')} name none of the tools available. Fix its tools list`
+        );
+      }
+      const inherited = parent.tools.filter(keep);
+      const names = new Set(inherited.map((candidate) => candidate.name));
       const tools = [
-        ...own,
-        ...extraTools.filter((candidate) => {
+        ...inherited,
+        ...ownTools.filter((candidate) => {
           if (names.has(candidate.name)) return false;
           names.add(candidate.name);
           return true;
         }),
       ];
-      const middleware = definition.hooks
-        ? [hooksMiddleware({ hooks: definition.hooks }, this.options.hooks())]
-        : [];
+      const middleware = definition.hooks ? [this.frontmatterHooks(definition)] : [];
+      const routed = this.modelOf(requestedModel ?? definition.model, parent);
+      const problem = this.options.modelProblem?.(routed.model);
+      if (problem) throw new Error(`Subagent "${definition.name}" cannot run: ${problem}`);
       const agent = new Agent({
         name: definition.name,
         description: definition.description,
         instructions: sections.join('\n\n'),
-        ...this.modelOf(requestedModel ?? definition.model, parent),
+        ...routed,
         tools,
         ...(parent.config.skills && { skills: parent.config.skills }),
         ...(parent.config.todos !== undefined && { todos: parent.config.todos }),
+        ...(parent.config.subagents !== undefined && { subagents: parent.config.subagents }),
         ...((definition.maxTurns ?? parent.config.maxIterations) !== undefined && {
           maxIterations: definition.maxTurns ?? parent.config.maxIterations,
         }),
@@ -885,7 +993,7 @@ export class SubagentService {
         ...(isolated && { workspace: isolated }),
         ...(background && { timeout: parent.config.timeout }),
       });
-      if (policy) this.policies.set(agent, policy);
+      if (policy || above || own.size > 0) setToolFilter(agent, keep);
       const mode = narrowMode(context.permissions?.mode, definition.permissionMode);
       return {
         agent,
@@ -897,6 +1005,29 @@ export class SubagentService {
       await finish(false).catch(() => undefined);
       throw error;
     }
+  }
+
+  /**
+   * The middleware of a subagent's frontmatter hooks: only those hooks run, as hooks of the layer
+   * the definition comes from, so managed `disableAllHooks` and `allowManagedHooksOnly` and the
+   * HTTP allowlists of the settings files and of `hooks` hold for them
+   */
+  private frontmatterHooks(definition: SubagentDefinition): RunMiddleware {
+    const { deps, config } = this.options.hooks();
+    const layer =
+      definition.source === 'code'
+        ? ('session' as const)
+        : definition.source === 'managed'
+          ? ('managed' as const)
+          : definition.source;
+    return hooksMiddleware(config, {
+      ...deps,
+      scoped: {
+        hooks: definition.hooks ?? {},
+        layer,
+        source: definition.path ?? `subagents.agents.${definition.name}`,
+      },
+    });
   }
 
   /** The full instructions of the skills a subagent preloads, read from the delegating agent's skills */
@@ -924,9 +1055,7 @@ export class SubagentService {
       if (!catalog?.get(name)) {
         this.warnOnce(
           `Subagent "${definition.name}" preloads skill "${name}", which its agent does not have`,
-          {
-            path: definition.path,
-          }
+          { path: definition.path }
         );
         continue;
       }

@@ -28,12 +28,24 @@ const MAX_NOTE_BYTES = 256 * 1024;
  * for `local`
  */
 export function agentMemoryDir(scope: SubagentMemoryScope, name: string, root: string): string {
-  const folder = name.replace(/[\\/]/g, '-');
-  if (scope === 'user') {
-    const claude = process.env.CLAUDE_CONFIG_DIR?.trim();
-    return join(claude ? resolve(claude) : join(homedir(), '.claude'), 'agent-memory', folder);
+  const claude = process.env.CLAUDE_CONFIG_DIR?.trim();
+  const base =
+    scope === 'user'
+      ? join(claude ? resolve(claude) : join(homedir(), '.claude'), 'agent-memory')
+      : join(resolve(root), '.claude', scope === 'project' ? 'agent-memory' : 'agent-memory-local');
+  const dir = resolve(base, name);
+  const under = relative(base, dir);
+  if (
+    !/^[a-z0-9][a-z0-9-]*$/.test(name) ||
+    under === '' ||
+    under.startsWith('..') ||
+    under.includes(sep)
+  ) {
+    throw new Error(
+      `The memory folder of subagent "${name}" would not be its own folder under ${base}`
+    );
   }
-  return join(root, '.claude', scope === 'project' ? 'agent-memory' : 'agent-memory-local', folder);
+  return dir;
 }
 
 /** The first {@link MEMORY_INDEX_LINES} lines of `path`, at most {@link MEMORY_INDEX_BYTES}, empty when it cannot be read */

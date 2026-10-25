@@ -6,12 +6,10 @@ import {
   targetCovers,
   type RuleTarget,
 } from '../permissions/rules';
+import { companionOf } from './marker';
 
 /** Tools of the run itself that a subagent keeps whatever its lists say */
 const ALWAYS_KEPT = new Set(['exit_plan_mode', 'tool_search']);
-
-/** The tools that go with delegating: they come and go with the `agent` tool */
-const DELEGATION_COMPANIONS = new Set(['send_message', 'task_output', 'task_stop']);
 
 /** Which tools a subagent gets of the ones its run would have, from its `tools` and `disallowedTools` */
 export interface ToolPolicy {
@@ -66,7 +64,7 @@ export function toolPolicy(
   const denied = entriesOf(definition.disallowedTools, invalid);
   const named = (entries: readonly Entry[], tool: Tool): boolean => {
     if (entries.some((entry) => covers(entry, tool))) return true;
-    if (!DELEGATION_COMPANIONS.has(tool.name)) return false;
+    if (companionOf(tool) === undefined) return false;
     const agentTool: Tool = { ...tool, access: { kind: 'agent' } };
     return entries.some((entry) => covers(entry, agentTool));
   };

@@ -70,6 +70,7 @@ import type {
   BudgetLimits,
   BudgetUsage,
   HookSettingsOptions,
+  HooksConfig,
   ProjectInstructionsOptions,
   ToolCallVerdict,
 } from '@cogitator-ai/types';
@@ -242,10 +243,13 @@ import { RunMemory } from './cogitator/run-memory';
 import { toAbortError } from './utils/abort';
 import { RunHarness, todosRecall, touchedPaths } from './cogitator/harness';
 import { SubagentService } from './subagents/service';
+import { copyToolFilter, setToolFilter, toolFilterOf } from './subagents/marker';
+import { resolveDefinitionModel } from './subagents/models';
+import { toolPolicy } from './subagents/tool-policy';
 import { CommandFinder, type CommandCatalog } from './subagents/catalog';
 import { commandInvocation, expandCommand } from './commands/expand';
 import { definitionFileOptions } from './subagents/definitions';
-import type { HookModelAsker } from './hooks/middleware';
+import type { HookModelAsker, HooksMiddlewareDeps } from './hooks/middleware';
 import { answersUnder, isDelegatePause, nestApprovals, nestInterrupts } from './subagents/delegate';
 import { parseKeptTodos, TODOS_METADATA_KEY, type KeptTodos } from './tools/write-todos';
 import { createSpan, getTextContent } from './cogitator/span-factory';
@@ -784,10 +788,8 @@ export class Cogitator implements ToolInvoker {
         config: config.subagents,
         ...(files && { files }),
         ...(config.llm?.modelAliases && { modelAliases: config.llm.modelAliases }),
-        hooks: () => ({
-          ask: this.hookAsker(),
-          ...(config.llm?.defaultModel !== undefined && { defaultModel: config.llm.defaultModel }),
-        }),
+        hooks: () => this.frontmatterHookSetup(),
+        modelProblem: (model) => this.unpricedUnderBudget(model),
       });
     }
     if (config.commands) {
@@ -1453,6 +1455,48 @@ export class Cogitator implements ToolInvoker {
     return [this.hooksLayer];
   }
 
+  /**
+   * What the hooks of a subagent's frontmatter run with: the places `hooks.settings` reads (only
+   * the managed files without it), so the managed `disableAllHooks` and `allowManagedHooksOnly`
+   * hold for them, and the HTTP allowlists, environment and limits of `hooks`
+   */
+  private frontmatterHookSetup(): {
+    deps: HooksMiddlewareDeps;
+    config: Omit<HooksConfig, 'hooks' | 'settings'>;
+  } {
+    const permission = this.config.permissions?.settings;
+    const shared = typeof permission === 'object' ? permission : undefined;
+    const settings: HookSettingsOptions = this.hookSettings() ?? {
+      layers: ['managed'],
+      ...(shared?.managedDirs !== undefined && { managedDirs: shared.managedDirs }),
+    };
+    const { hooks: _hooks, settings: _settings, ...config } = this.config.hooks ?? {};
+    return {
+      deps: {
+        settings,
+        ask: this.hookAsker(),
+        ...(this.config.llm?.defaultModel !== undefined && {
+          defaultModel: this.config.llm.defaultModel,
+        }),
+      },
+      config,
+    };
+  }
+
+  /**
+   * Why a subagent may not run on `model`: a session or agent cost budget is set and no price is
+   * known for the model, so its calls would count as nothing against it
+   */
+  private unpricedUnderBudget(model: string | undefined): string | undefined {
+    const budget = this.config.budget;
+    if (budget?.session?.maxCostUsd === undefined && budget?.agent?.maxCostUsd === undefined) {
+      return undefined;
+    }
+    const full = model ?? this.config.llm?.defaultModel;
+    if (full === undefined || this.pricer.pricing(full)) return undefined;
+    return `no price is known for ${full}, so the cost budget could not count its calls: set its price in llm.pricing`;
+  }
+
   /** Asks a model for `prompt` hooks, charging the run the hook runs in */
   private hookAsker(): HookModelAsker {
     return async ({ model, system, prompt, signal, runSignal }) => {
@@ -1874,7 +1918,9 @@ export class Cogitator implements ToolInvoker {
       arguments: invocation.arguments,
       input,
       ...(definition.allowedTools && { allowedTools: definition.allowedTools }),
+      ...(definition.disallowedTools && { disallowedTools: definition.disallowedTools }),
       ...(definition.model !== undefined && { model: definition.model }),
+      ...(definition.effort !== undefined && { effort: definition.effort }),
       source: definition.source,
       ...(definition.path !== undefined && { path: definition.path }),
     };
@@ -1885,18 +1931,30 @@ export class Cogitator implements ToolInvoker {
         agent.config.permissions !== undefined ||
         options.permissions !== undefined);
     let runAgent = agent;
-    const model = definition.model;
-    if (model !== undefined && model !== 'inherit') {
-      const resolved = this.config.llm?.modelAliases?.[model];
-      if (resolved === undefined && ['sonnet', 'opus', 'haiku', 'fable'].includes(model)) {
-        getLogger().warn(
-          `Command "/${definition.name}" asks for model "${model}", which llm.modelAliases does not name: the agent's model is used`,
-          { command: definition.name }
-        );
-      } else {
-        runAgent = agent.clone({ id: agent.id, model: resolved ?? model });
-        this.subagentService?.adoptPolicy(agent, runAgent);
-      }
+    const resolved = resolveDefinitionModel(definition.model, this.config.llm?.modelAliases);
+    if (resolved.warning) {
+      getLogger().warn(`Command "/${definition.name}": ${resolved.warning}`, {
+        command: definition.name,
+      });
+    }
+    if (!resolved.inherit || definition.effort !== undefined) {
+      runAgent = agent.clone({
+        id: agent.id,
+        ...(!resolved.inherit && { model: resolved.model, provider: undefined }),
+        ...(definition.effort !== undefined && {
+          reasoning: { ...agent.config.reasoning, effort: definition.effort },
+        }),
+      });
+      copyToolFilter(agent, runAgent);
+    }
+    if (definition.disallowedTools && definition.disallowedTools.length > 0) {
+      if (runAgent === agent) runAgent = agent.clone({ id: agent.id });
+      const above = toolFilterOf(agent);
+      const policy = toolPolicy({ disallowedTools: definition.disallowedTools });
+      setToolFilter(
+        runAgent,
+        (candidate) => (above?.(candidate) ?? true) && (policy?.allows(candidate) ?? true)
+      );
     }
     return {
       agent: runAgent,
@@ -2145,7 +2203,7 @@ export class Cogitator implements ToolInvoker {
         if (resolution.instructions !== agent.instructions) {
           const original = agent;
           agent = agent.clone({ id: agent.id, instructions: resolution.instructions });
-          this.subagentService?.adoptPolicy(original, agent);
+          copyToolFilter(original, agent);
         }
       }
 
@@ -2288,22 +2346,25 @@ export class Cogitator implements ToolInvoker {
         ownerRegistry.registerMany(handoff.tools);
         harness.addTools(owner, ownerRegistry);
         if (subagents && subagentCatalog) {
-          const delegation = subagents.tools({
-            owner,
-            runId,
-            threadId,
-            depth: subagentDepth,
-            ...(workspaceOf(owner) && { workspace: workspaceOf(owner) }),
-            catalog: subagentCatalog,
-            tools: () => registry.getAll(),
-          });
+          const delegation = subagents.tools(
+            {
+              owner,
+              runId,
+              threadId,
+              depth: subagentDepth,
+              ...(workspaceOf(owner) && { workspace: workspaceOf(owner) }),
+              catalog: subagentCatalog,
+              tools: () => registry.getAll(),
+            },
+            (name) => ownerRegistry.has(name)
+          );
           for (const delegating of delegation) {
             if (!ownerRegistry.has(delegating.name)) ownerRegistry.register(delegating);
           }
         }
-        const policy = subagents?.policyOf(owner);
-        if (policy) {
-          const kept = ownerRegistry.getAll().filter((candidate) => policy.allows(candidate));
+        const keep = toolFilterOf(owner);
+        if (keep) {
+          const kept = ownerRegistry.getAll().filter((candidate) => keep(candidate));
           ownerRegistry.clear();
           ownerRegistry.registerMany(kept);
         }
@@ -3644,7 +3705,7 @@ export class Cogitator implements ToolInvoker {
                   nested: {
                     checkpoint: error.checkpoint,
                     interrupts,
-                    pending: nestApprovals(toolCall.id, error.checkpoint.agentId, error.pending),
+                    pending: nestApprovals(toolCall.id, error.agent, error.pending),
                   },
                   toolSpanId,
                   toolSpanStart,

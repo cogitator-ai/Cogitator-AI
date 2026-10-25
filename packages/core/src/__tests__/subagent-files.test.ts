@@ -98,7 +98,9 @@ describe('parseSubagentFile', () => {
 
   it.each<[string, string, string]>([
     ['invalid YAML', 'name: a\ndescription: [unclosed', 'not valid YAML'],
-    ['a name starting with -', 'name: -bad\ndescription: d', 'starts with "-"'],
+    ['a name starting with -', 'name: -bad\ndescription: d', 'may only hold lowercase letters'],
+    ['a name that is a path', 'name: ..\ndescription: d', 'may only hold lowercase letters'],
+    ['a name with capitals', 'name: Reviewer\ndescription: d', 'may only hold lowercase letters'],
     ['a name with a colon', 'name: my:agent\ndescription: d', 'holds ":"'],
     [
       'a name longer than 256 characters',
@@ -152,6 +154,19 @@ describe('parseCommandFile', () => {
       source: 'project',
       path: at.path,
     });
+  });
+
+  it('warns about a forked context it does not support', () => {
+    const parsed = parseCommandFile(
+      '---\ncontext: fork\nagent: Explore\neffort: low\n---\nDo it.\n',
+      'fork',
+      at
+    );
+    expect(parsed.definition?.effort).toBe('low');
+    expect(parsed.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
+      expect.stringContaining('context is not supported'),
+      expect.stringContaining('agent is not supported'),
+    ]);
   });
 
   it('takes a file without frontmatter as the template, its first line as the description', () => {
