@@ -443,6 +443,65 @@ describe('workflows', () => {
   });
 });
 
+describe('swarms', () => {
+  it('runs a team with its agents nested and its graph and task list filled in', async () => {
+    const state = await api<{ host: HostStatus }>('/api/state');
+    if (state.host.state !== 'ready') throw new Error('the host is not ready');
+    expect(state.host.registry.swarms).toEqual([
+      expect.objectContaining({
+        key: 'newsroom',
+        strategy: 'team',
+        agents: ['editor', 'scout'],
+        lead: 'editor',
+        members: ['scout'],
+      }),
+    ]);
+
+    const started = await api<{ runId: string }>('/api/swarms/newsroom/run', {
+      method: 'POST',
+      body: { input: 'Report on the sea' },
+    });
+    const tree = await settled(started.runId);
+
+    expect(tree.run).toMatchObject({ kind: 'swarm', target: 'newsroom', status: 'completed' });
+    expect(tree.run.output).toBe('The team found: tides');
+    expect(new Set(tree.descendants.map((child) => child.target))).toEqual(
+      new Set(['editor', 'scout'])
+    );
+    expect(tree.run.usage?.inputTokens).toBeGreaterThan(0);
+    const team = tree.run.team!;
+    expect(team.stopReason).toBe('completed');
+    expect(team.tasks).toEqual([
+      expect.objectContaining({
+        id: 'task-1',
+        status: 'completed',
+        owner: 'scout',
+        result: 'tides',
+        createdBy: 'editor',
+      }),
+    ]);
+    expect(team.assignments).toEqual([
+      expect.objectContaining({ taskId: 'task-1', by: 'editor', to: 'scout' }),
+    ]);
+    expect(team.messages).toEqual([
+      expect.objectContaining({ from: 'scout', to: ['editor'], content: 'On it' }),
+    ]);
+    expect(team.members.map((agent) => [agent.name, agent.role, agent.status])).toEqual([
+      ['editor', 'lead', 'idle'],
+      ['scout', 'member', 'idle'],
+    ]);
+
+    const swarmRuns = await api<{ runs: RunRecord[] }>('/api/runs?kind=swarm');
+    expect(swarmRuns.runs.map((candidate) => candidate.id)).toContain(started.runId);
+  });
+
+  it('refuses a swarm the registry does not have', async () => {
+    await expect(
+      api('/api/swarms/nowhere/run', { method: 'POST', body: { input: 'go' } })
+    ).rejects.toThrow('There is no swarm "nowhere" in the registry');
+  });
+});
+
 describe('history', () => {
   it('is searchable and filtered by agent', async () => {
     const found = await api<{ runs: RunRecord[] }>('/api/runs?q=weather%20again');

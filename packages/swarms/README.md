@@ -1,6 +1,6 @@
 # @cogitator-ai/swarms
 
-Multi-agent swarm coordination for Cogitator. Orchestrate teams of AI agents with seven collaboration strategies, automatic model selection, shared communication primitives, workflow integration and Redis-backed distributed execution.
+Multi-agent swarm coordination for Cogitator. Orchestrate teams of AI agents with eight collaboration strategies, automatic model selection, shared communication primitives, workflow integration and Redis-backed distributed execution.
 
 ## Installation
 
@@ -32,11 +32,11 @@ const result = await swarm.run({ input: 'Build a REST API for user management' }
 console.log(result.output);
 ```
 
-Strategies equip agents with the tools they need: the hierarchical supervisor receives `delegate_task`, `check_progress`, `request_revision` and `list_workers`; consensus voters receive the voting tools; negotiating agents receive the negotiation tools. `agentTools` adds the messaging and blackboard tools to every agent (see [Built-in Swarm Tools](#built-in-swarm-tools)). Tools an agent already defines with the same name are kept.
+Strategies equip agents with the tools they need: the hierarchical supervisor receives `delegate_task`, `check_progress`, `request_revision` and `list_workers`, consensus voters receive the voting tools, negotiating agents receive the negotiation tools, and the lead and the members of a team receive the task list and mailbox tools. `agentTools` adds the messaging and blackboard tools to every agent (see [Built-in Swarm Tools](#built-in-swarm-tools)). Tools an agent already defines with the same name are kept.
 
 ## Features
 
-- **7 Coordination Strategies** — hierarchical, round-robin, consensus, auction, pipeline, debate, negotiation
+- **8 Coordination Strategies** - hierarchical, round-robin, consensus, auction, pipeline, debate, negotiation, team
 - **Automatic Model Selection** — `SwarmAssessor` matches models to agent roles
 - **Agent Communication** — message bus with read tracking, shared blackboard, `message:*` / `blackboard:write` events
 - **Built-in Tools** — messaging, blackboard, delegation, voting and negotiation tools
@@ -225,6 +225,58 @@ swarm.on('negotiation:approval-required', (event) => {
 });
 ```
 
+### Team
+
+Agent teams, in the spirit of Claude Code's agent teams: a lead plans the work as a shared task list, members claim or are assigned tasks and work through them, everyone talks through mailboxes, and the lead writes the final answer from the results. The lead is the swarm's `supervisor` (`.lead()` in the builder), the members are its `workers` (`.members()`).
+
+```typescript
+const swarm = new SwarmBuilder('newsroom')
+  .strategy('team')
+  .lead(new Agent({ name: 'editor', model, instructions: 'Plan the article and assign the work' }))
+  .members([
+    new Agent({ name: 'researcher', model, description: 'Finds facts', instructions: 'Research' }),
+    new Agent({ name: 'writer', model, description: 'Writes clearly', instructions: 'Write' }),
+  ])
+  .team({ maxTurnsPerMember: 6, maxConcurrentMembers: 2 })
+  .build(cogitator);
+
+const result = await swarm.run({ input: 'Write an article about tides' });
+console.log(result.output);
+console.log(result.teamResult?.tasks); // every task with its status, owner and result
+```
+
+How a run goes:
+
+- The lead takes the first turn and creates tasks with `create_task` (`dependsOn` makes a task wait for others, `assignee` gives it to a member) and `assign_task`. If the request needs no team, it answers at once and the run ends there (`stopReason: 'no-tasks'`).
+- A task is `pending`, `in_progress` or `completed`, the statuses of `write_todos`. A pending task with unfinished dependencies cannot be claimed, completing a task unblocks the tasks that wait for it, and a member works on one task at a time.
+- A member takes a turn when it has a task: one assigned to it, or with `selfClaim` the next unassigned one that is not blocked. The task is claimed for it before the turn, in one synchronous step on the blackboard, so two members never get the same task. Unassigned tasks wait while the lead is in a turn, since the lead may still assign them.
+- Each agent has a mailbox. `send_message` writes to a member, to the lead (`"lead"`) or to everyone (`"everyone"`), and a message wakes its recipient. Every message is marked with the agent that sent it and comes with a notice that it is from another agent, not from the user, so a teammate's claim of approval is never taken as the user's.
+- The lead gets a turn when messages reach it, and when nobody can go on with the tasks left (for example a task assigned to a member that used its turns). Once every task is completed, or no agent has a reason or a turn left, the lead writes the final answer from the task results.
+
+| Tool           | Lead | Member | What it does                                                                     |
+| -------------- | ---- | ------ | -------------------------------------------------------------------------------- |
+| `create_task`  | yes  |        | Puts a task on the list, with `dependsOn`, `assignee` and an optional `id`       |
+| `assign_task`  | yes  |        | Gives a pending task to a member                                                 |
+| `list_tasks`   | yes  | yes    | The task list with statuses, owners, blockers and results, and what can be taken |
+| `claim_task`   |      | yes    | Starts the named task, or the next one the member can take                       |
+| `update_task`  | yes  | yes    | Completes a task with its result, releases it (`pending`) or adds a note         |
+| `send_message` | yes  | yes    | Writes to a member, `lead` or `everyone`                                         |
+| `read_inbox`   | yes  | yes    | Reads the unread messages, each marked with its sender                           |
+
+| Option                 | Default                         | Description                                                                            |
+| ---------------------- | ------------------------------- | -------------------------------------------------------------------------------------- |
+| `tasks`                | `[]`                            | Tasks on the list before the lead's first turn (`TeamTaskInput[]`)                     |
+| `selfClaim`            | `true`                          | Idle members take unassigned tasks, without it only assigned tasks are worked on       |
+| `maxConcurrentMembers` | `resources.maxConcurrency` or 4 | Members working at the same time                                                       |
+| `maxLeadTurns`         | `6`                             | Lead turns before the final answer, its first turn included                            |
+| `maxTurnsPerMember`    | `8`                             | Turns of each member, a member out of turns gives its tasks back to the list           |
+| `maxTasks`             | `50`                            | Tasks the list holds                                                                   |
+| `synthesize`           | `true`                          | The lead writes the final answer, without it the output is the tasks and their results |
+
+Every turn spends one of these finite budgets, so a run always ends. `result.teamResult` holds the tasks, the state of each agent (`idle`, `working`, `stopped`, `failed`), the turns taken and the `stopReason`: `completed`, `no-tasks`, `stalled` (nobody could go on) or `turn-limit`. A member whose turn fails fails the run, unless `errorHandling` asks for `partialResults` or `onAgentFailure: 'skip'`: then it is marked failed and its tasks go back to the list. The team strategy runs in-process only, like `hierarchical` and `negotiation`.
+
+The task list lives in the blackboard section `team` and the mailboxes on the message bus. `TeamTaskBoard` and `TeamMailbox` work on them directly, for tests or custom strategies, and the `team:*` events (see [Swarm Events](#swarm-events)) report every change, enough to draw the team live, which [Cogitator Studio](https://cogitator.app/docs/getting-started/studio) does.
+
 ---
 
 ## Running Swarms
@@ -364,6 +416,7 @@ const hierarchicalTools = createStrategyTools('hierarchical', context);
 | `createDelegationTools`  | `delegate_task`, `check_progress`, `request_revision`, `list_workers`                                                                                                     |
 | `createVotingTools`      | `cast_vote`, `get_votes`, `change_vote`, `get_consensus_status`                                                                                                           |
 | `createNegotiationTools` | `make_offer`, `counter_offer`, `accept_offer`, `reject_offer`, `get_negotiation_status`, `get_current_offers`, `propose_coalition`, `join_coalition`, `declare_interests` |
+| `createTeamTools`        | `create_task`, `assign_task`, `list_tasks`, `claim_task`, `update_task`, `send_message`, `read_inbox` (`teamToolsFor(tools, role)` picks the lead's or a member's)        |
 
 Messaging tools created through `createSwarmTools`/`createStrategyTools` enforce the hierarchical communication policy (`createHierarchyMessageAuthorizer`).
 
@@ -438,15 +491,30 @@ unsubscribe();
 
 Subscriptions survive the coordinator rebuild that happens after model assessment.
 
-| Event                                                                                         | Description                                      |
-| --------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| `swarm:start` / `swarm:complete` / `swarm:error`                                              | Run lifecycle                                    |
-| `swarm:paused` / `swarm:resumed` / `swarm:aborted` / `swarm:reset`                            | Control actions                                  |
-| `agent:start` / `agent:complete` / `agent:error`                                              | Agent turns                                      |
-| `message:sent` / `message:received`                                                           | Bus messages sent / delivered to an agent's turn |
-| `blackboard:write`                                                                            | Section written or deleted                       |
-| `assessor:complete`                                                                           | Model assessment finished                        |
-| `consensus:*`, `debate:*`, `auction:*`, `pipeline:*`, `round-robin:assigned`, `negotiation:*` | Strategy progress                                |
+| Event                                                                                                          | Description                                        |
+| -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `swarm:start` / `swarm:complete` / `swarm:error`                                                               | Run lifecycle                                      |
+| `swarm:paused` / `swarm:resumed` / `swarm:aborted` / `swarm:reset`                                             | Control actions                                    |
+| `agent:start` / `agent:complete` / `agent:error`                                                               | Agent turns                                        |
+| `message:sent` / `message:received`                                                                            | Bus messages sent / delivered to an agent's turn   |
+| `blackboard:write`                                                                                             | Section written or deleted                         |
+| `assessor:complete`                                                                                            | Model assessment finished                          |
+| `consensus:*`, `debate:*`, `auction:*`, `pipeline:*`, `round-robin:assigned`, `negotiation:*`                  | Strategy progress                                  |
+| `team:start` / `team:complete`                                                                                 | Team run lifecycle, with the stop reason           |
+| `team:member-started` / `team:member-finished`                                                                 | A turn of the lead or a member, with its reason    |
+| `team:task-created` / `team:task-assigned` / `team:task-claimed` / `team:task-updated` / `team:task-completed` | Task list changes, each with the task as it is now |
+| `team:message-sent`                                                                                            | A message written into mailboxes                   |
+
+The data of each `team:*` event is typed by `TeamEventMap` from `@cogitator-ai/types`:
+
+```typescript
+import type { TeamEventMap } from '@cogitator-ai/types';
+
+swarm.on('team:task-completed', (event) => {
+  const { task, unblocked } = event.data as TeamEventMap['team:task-completed'];
+  console.log(`${task.id} done by ${task.owner}, unblocks ${unblocked.join(', ')}`);
+});
+```
 
 ---
 

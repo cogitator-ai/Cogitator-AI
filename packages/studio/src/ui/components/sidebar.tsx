@@ -177,15 +177,22 @@ export function Sidebar({
           <div className="sb-section">
             <div className="sb-section-title">Swarms</div>
             {registry.swarms.map((swarm) => (
-              <div
+              <NavLink
                 key={swarm.key}
-                className="sb-link sb-static"
-                data-tip={`${swarm.strategy}: ${swarm.agents.join(', ')}`}
+                to={['swarms', swarm.key]}
+                icon={Network}
+                active={is('swarms', swarm.key)}
+                testId={`swarm-${swarm.key}`}
+                meta={
+                  live.has(swarm.key) ? (
+                    <span className="dot" data-state="starting" />
+                  ) : (
+                    <span className="sb-meta">{swarm.strategy}</span>
+                  )
+                }
               >
-                <Network size={15} />
-                <span className="sb-text truncate">{swarm.name}</span>
-                <span className="sb-meta">{swarm.strategy}</span>
-              </div>
+                {swarm.name}
+              </NavLink>
             ))}
           </div>
         )}

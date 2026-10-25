@@ -13,6 +13,7 @@ const KINDS = [
   { value: 'agent', label: 'Chats' },
   { value: 'workflow', label: 'Workflows' },
   { value: 'fork', label: 'Forks' },
+  { value: 'swarm', label: 'Swarms' },
 ] as const;
 
 /** Every run of the project, searchable and filtered by agent, workflow or kind. */
@@ -52,6 +53,7 @@ export function RunsView() {
       ? [
           ...host.registry.agents.map((agent) => agent.key),
           ...host.registry.workflows.map((workflow) => workflow.key),
+          ...host.registry.swarms.map((swarm) => swarm.key),
         ]
       : [];
   const rows = (found ?? []).map((run) => live[run.id] ?? run);

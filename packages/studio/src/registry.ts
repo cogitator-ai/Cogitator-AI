@@ -94,7 +94,20 @@ function describeSwarm(key: string, value: unknown): SwarmInfo | undefined {
   if (Array.isArray(value.stages)) {
     for (const stage of value.stages) if (isRecord(stage)) add(stage.agent);
   }
-  return { key, name: stringOf(value.name) ?? key, strategy: value.strategy, agents: [...names] };
+  const lead = agentShape(value.supervisor);
+  const members = Array.isArray(value.workers)
+    ? value.workers
+        .map((worker) => agentShape(worker))
+        .filter((worker) => worker !== undefined)
+        .map((worker) => String(worker.config.name))
+    : [];
+  return {
+    key,
+    name: stringOf(value.name) ?? key,
+    strategy: value.strategy,
+    agents: [...names],
+    ...(value.strategy === 'team' && lead && { lead: String(lead.config.name), members }),
+  };
 }
 
 function describeGroup<T>(

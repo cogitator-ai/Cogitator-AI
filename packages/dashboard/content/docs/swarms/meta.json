@@ -1,4 +1,12 @@
 {
   "title": "Swarms",
-  "pages": ["index", "strategies", "builder", "communication", "assessment", "distributed"]
+  "pages": [
+    "index",
+    "strategies",
+    "agent-teams",
+    "builder",
+    "communication",
+    "assessment",
+    "distributed"
+  ]
 }

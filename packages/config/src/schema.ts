@@ -167,6 +167,7 @@ export const LLMConfigSchema = z.object({
     ])
     .optional(),
   modelCircuitBreaker: ModelCircuitBreakerConfigSchema.optional(),
+  modelAliases: z.record(z.string(), z.string().min(1)).optional(),
   plugins: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -927,6 +928,72 @@ export const InstructionsConfigSchema = z.object({
   projectFiles: z.union([z.boolean(), ProjectInstructionsOptionsSchema]).optional(),
 });
 
+/** Where Markdown subagents and commands are read, see `DefinitionFileOptions` */
+export const DefinitionFileOptionsSchema = z.object({
+  root: z.string().optional(),
+  userDirs: z.array(z.string()).optional(),
+  managedDirs: z.array(z.string()).optional(),
+  dirs: z.array(z.string()).optional(),
+  trusted: z.boolean().optional(),
+  trustedRoots: z.array(z.string()).optional(),
+});
+
+/** A subagent in code, as an entry of Claude Code's `--agents` JSON, see `SubagentDefinitionInput` */
+export const SubagentDefinitionSchema = z.object({
+  description: z.string().min(1),
+  prompt: z.string().optional(),
+  tools: z.array(z.string()).optional(),
+  disallowedTools: z.array(z.string()).optional(),
+  model: z.string().optional(),
+  permissionMode: PermissionModeSchema.optional(),
+  maxTurns: z.number().int().positive().optional(),
+  skills: z.array(z.string()).optional(),
+  mcpServers: z
+    .array(
+      z.union([
+        z.string(),
+        z.object({ name: z.string(), config: z.record(z.string(), z.unknown()) }),
+      ])
+    )
+    .optional(),
+  hooks: HookSettingsSchema.optional(),
+  memory: z.enum(['user', 'project', 'local']).optional(),
+  background: z.boolean().optional(),
+  isolation: z.literal('worktree').optional(),
+  color: z.enum(['red', 'blue', 'green', 'yellow', 'purple', 'orange', 'pink', 'cyan']).optional(),
+  effort: z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
+});
+
+/**
+ * The subagents of the runtime, see `SubagentsConfig`. The MCP connector, a message filter
+ * function and the delegation callbacks are given in code only
+ */
+export const SubagentsConfigSchema = z.object({
+  files: z.union([z.boolean(), DefinitionFileOptionsSchema]).optional(),
+  agents: z.record(z.string(), SubagentDefinitionSchema).optional(),
+  approvalMode: z.enum(['bubble', 'decline']).optional(),
+  tools: z.enum(['agent', 'each', 'both']).optional(),
+  maxDepth: z.number().int().nonnegative().optional(),
+  maxBackground: z.number().int().positive().optional(),
+  messages: z.enum(['none', 'conversation']).optional(),
+});
+
+/** A command in code, see `CommandDefinitionInput` */
+export const CommandDefinitionSchema = z.object({
+  template: z.string(),
+  description: z.string().optional(),
+  argumentHint: z.string().optional(),
+  arguments: z.array(z.string()).optional(),
+  allowedTools: z.array(z.string()).optional(),
+  model: z.string().optional(),
+});
+
+/** The commands of the runtime, see `CommandsConfig` */
+export const CommandsConfigSchema = z.object({
+  files: z.union([z.boolean(), DefinitionFileOptionsSchema]).optional(),
+  commands: z.record(z.string(), z.union([z.string(), CommandDefinitionSchema])).optional(),
+});
+
 /** What a run does when its thread has a run going on, see `CogitatorConfig.multitaskStrategy` */
 export const MultitaskStrategySchema = z.enum(['enqueue', 'reject', 'interrupt', 'rollback']);
 
@@ -938,6 +1005,8 @@ export const CogitatorConfigSchema = z.object({
   permissions: PermissionsConfigSchema.optional(),
   hooks: HooksConfigSchema.optional(),
   instructions: InstructionsConfigSchema.optional(),
+  subagents: SubagentsConfigSchema.optional(),
+  commands: CommandsConfigSchema.optional(),
   budget: SessionBudgetConfigSchema.optional(),
   memory: MemoryConfigSchema.optional(),
   sandbox: SandboxConfigSchema.optional(),

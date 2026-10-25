@@ -14,6 +14,7 @@ import { api } from '../api';
 import { CopyButton, Empty, ErrorText, messageOf, StatusBadge, Topbar } from '../components/common';
 import { Markdown } from '../components/markdown';
 import { StateView } from '../components/state-view';
+import { TeamPanel } from '../components/team-graph';
 import { ToolCallCard } from '../components/tool-call';
 import { totals, Waterfall } from '../components/waterfall';
 import { WorkflowGraph } from '../components/workflow-graph';
@@ -45,10 +46,14 @@ function Properties({ run, runs }: { run: RunRecord; runs: Record<string, RunRec
       <Prop label="Status">
         <StatusBadge status={run.status} />
       </Prop>
-      <Prop label={run.kind === 'workflow' ? 'Workflow' : 'Agent'}>
+      <Prop label={run.kind === 'workflow' ? 'Workflow' : run.kind === 'swarm' ? 'Swarm' : 'Agent'}>
         <a
           href={
-            run.kind === 'workflow' ? href('workflows', run.target) : href('agents', run.target)
+            run.kind === 'workflow'
+              ? href('workflows', run.target)
+              : run.kind === 'swarm'
+                ? href('swarms', run.target)
+                : href('agents', run.target)
           }
         >
           {run.target}
@@ -410,12 +415,19 @@ export function RunView({ runId }: { runId: string }) {
     .filter((fork): fork is RunRecord => fork !== undefined);
   const forkable =
     run.kind !== 'workflow' &&
+    run.kind !== 'swarm' &&
     run.status === 'completed' &&
     !run.parentRunId &&
     (run.steps?.length ?? 0) > 0;
   const live = run.status === 'running' || run.status === 'waiting';
   const title =
-    run.kind === 'workflow' ? 'Workflow run' : run.kind === 'fork' ? 'Fork' : 'Agent run';
+    run.kind === 'workflow'
+      ? 'Workflow run'
+      : run.kind === 'swarm'
+        ? 'Swarm run'
+        : run.kind === 'fork'
+          ? 'Fork'
+          : 'Agent run';
 
   return (
     <>
@@ -498,6 +510,8 @@ export function RunView({ runId }: { runId: string }) {
               {run.todos && <TodosPanel todos={run.todos} />}
 
               {run.kind === 'workflow' && <WorkflowRunPanel run={run} workflow={workflow} />}
+
+              {run.team && <TeamPanel team={run.team} live={live} />}
 
               <section className="panel">
                 <div className="panel-head">

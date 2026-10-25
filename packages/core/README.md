@@ -70,6 +70,7 @@ console.log(result.output);
 - **Structured Output** - `responseFormat` with a Zod schema, validated and repaired once on mismatch
 - **Handoffs & Approvals** - Pass a conversation to another agent; pause runs for human approval and resume them later
 - **Permissions & Budgets** - Claude Code compatible allow, ask and deny rules, modes from plan to bypass, an audit log, and session budgets that pause instead of failing
+- **Subagents & Commands** - Claude Code compatible `.claude/agents/*.md` subagents behind one `agent` tool, approvals that bubble up through nested checkpoints, background subagents continued by id, git worktree isolation, and `.claude/commands/*.md` templates expanded from `/name args`
 - **Steering & Interrupts** - `cog.start()` handles to `steer`, `followUp`, `inject` and `abort` a run going on, double-texting strategies per thread, tools that pause a run to ask a person (`context.interrupt()`), cancellation that keeps what was shown and done
 - **Prompt Versions & A/B Tests** - Versioned instructions per agent with `cog.prompts`
 - **Memory Integration** - In-memory, Redis, PostgreSQL, SQLite, MongoDB and Qdrant adapters
@@ -664,6 +665,40 @@ A command gets the event's JSON on stdin (never on its command line) and answers
 ### Project Instructions
 
 `instructions: { projectFiles: true }` reads the `AGENTS.md`, `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md` of the run's workspace, from the root down to its `cwd`, into the agent's system prompt, with `@path` imports (relative, at most 4 hops, cycles stopped, inside the workspace unless `allowImportsFrom` allows a directory), the rules of `.claude/rules/` (rules with `paths` frontmatter and the files of deeper directories join the conversation once a tool reads or edits a file they cover) and a size limit (`maxChars`, 32 000) with a notice of what was cut. `result.instructions` lists what was read, and the thread's log gets a `custom` entry. Off by default. See [Project Instructions](https://cogitator.app/docs/core/project-instructions).
+
+### Subagents
+
+`subagents` gives runs agents to delegate to, in the format of Claude Code's subagents: Markdown files with YAML frontmatter in `agents/` folders, and definitions in code shaped like Claude Code's `--agents` JSON. Runs get an `agent` tool that takes `description`, `prompt`, `subagent_type`, `model`, `run_in_background` and `name`, like Claude Code's `Agent` tool:
+
+```markdown
+---
+name: reviewer
+description: Reviews code changes. Use it after edits.
+tools: Read, Grep, Glob
+model: sonnet
+permissionMode: plan
+maxTurns: 8
+---
+
+You are a senior reviewer. Report concrete problems with file and line.
+```
+
+```typescript
+const cog = new Cogitator({
+  llm: { modelAliases: { sonnet: 'anthropic/claude-sonnet-5' } },
+  subagents: {
+    files: { root: '/srv/repo', trusted: true }, // .agents/agents, .cogitator/agents, .claude/agents
+    agents: { researcher: { description: 'Researches a topic', prompt: 'You research.' } },
+    approvalMode: 'bubble',
+  },
+});
+```
+
+The frontmatter fields are Claude Code's: `name` and `description` (required), `tools` and `disallowedTools` (permission rule names, `Agent` lets the subagent delegate further), `model` (`inherit`, an alias of `llm.modelAliases`, or `provider/model`), `permissionMode` (it can only narrow the delegating run's mode, never widen it), `maxTurns` (its `maxIterations`), `skills` (full instructions preloaded), `mcpServers` (names of servers the run has, or inline ones connected through `subagents.mcp`), `hooks` (`Stop` runs as `SubagentStop`), `memory` (`user`, `project` or `local`, a notes folder with an `agent_memory` tool and `MEMORY.md` in the prompt), `background`, `isolation: worktree` (a git worktree under `.cogitator/worktrees/`, removed when the subagent changed nothing), `color` and `effort`. A file without frontmatter or `name` is documentation, a broken one is skipped with a diagnostic (`subagents.onDiagnostic`). Precedence is managed, code, the host's `dirs`, the project (only once trusted, as for hooks), then the user's folders. A subagent gets the delegating run's mode and `session` rules, its tool calls are charged to the session of the run that delegated, an `Agent(name)` deny rule refuses it, `AgentConfig.subagents` limits which ones an agent may use, and `maxDepth` (3) caps nesting. A background subagent runs on its own run handle: `send_message` steers it or continues it once it finished, `task_output` reads its result, `task_stop` stops it, and a run that would stop waits for the ones it started and reads their results as a notice (a paused or failed run stops them). `cog.listSubagents()` lists them. See [Subagents](https://cogitator.app/docs/core/subagents).
+
+### Commands
+
+`commands` expands an input that names a command (`/review src/app.ts`) before the run starts, in the format of Claude Code's custom commands: Markdown files in `commands/` folders (`frontend/component.md` is `/frontend:component`) and templates in code. `$ARGUMENTS` is everything after the name, `$ARGUMENTS[N]` and `$N` the argument at 0-based position `N` (quotes keep words together), `$name` a named argument of `arguments`, `\$` escapes, `${CLAUDE_PROJECT_DIR}` is the project root, and arguments no placeholder takes are added as `ARGUMENTS: ...`. `allowed-tools` become allow rules of that run when permissions are set up, `model` runs it on another model, `description` and `argument-hint` are for a client's menu (`cog.listCommands()`). The project's files count once it is trusted, `result.command` reports what was expanded. See [Commands](https://cogitator.app/docs/core/commands).
 
 ### PII Masking
 
@@ -2619,7 +2654,7 @@ const manager = new Agent({
 });
 ```
 
-Tool calls of the inner agent that need approval are declined unless `onApproval` decides them, since a delegated run cannot pause for a person; an `onApproval` that returns `'pause'` declines too. If the inner run pauses anyway, the tool returns `success: false` with an `error` naming the tools that waited. To hand the conversation over instead of calling a sub-agent, use [handoffs](#handoffs). See [Agent as Tool](https://cogitator.app/docs/tools/agent-as-tool).
+Tool calls of the inner agent that need approval are declined unless `onApproval` decides them (`approvalMode: 'decline'`, the default), and an `onApproval` that returns `'pause'` declines too. If the inner run pauses anyway, the tool returns `success: false` with an `error` naming the tools that waited. With `approvalMode: 'bubble'` the inner agent's approvals go to the calling run's `onApproval`, and when the inner run pauses (an approval nobody decided, a question of one of its tools) the calling run pauses too: the inner checkpoint is kept in `checkpoint.turn.children[toolCallId]`, its interrupts and approvals come back under ids starting with `<toolCallId>/` (`o1/i1`, and `o1/m1/l1` two levels down), and a resume that answers them goes on inside the inner run, permission rules checked again. `messages: 'conversation'` (or a function) shows the inner agent the calling run's conversation before its task, `onDelegationStart` and `onDelegationComplete` hear each delegation. To hand the conversation over instead of calling a sub-agent, use [handoffs](#handoffs). See [Agent as Tool](https://cogitator.app/docs/tools/agent-as-tool).
 
 ---
 

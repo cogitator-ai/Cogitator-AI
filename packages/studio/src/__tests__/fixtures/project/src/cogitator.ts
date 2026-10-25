@@ -85,3 +85,26 @@ const report = new WorkflowBuilder<ReportState>('report')
   .build();
 
 export const workflows = { report };
+
+const editor = new Agent({
+  name: 'editor',
+  model: 'scripted/team-lead',
+  instructions: 'Lead the team.',
+});
+
+const scout = new Agent({
+  name: 'scout',
+  description: 'Finds facts',
+  model: 'scripted/team-member',
+  instructions: 'Find facts.',
+});
+
+export const swarms = {
+  newsroom: {
+    name: 'newsroom',
+    strategy: 'team' as const,
+    supervisor: editor,
+    workers: [scout],
+    team: { maxLeadTurns: 2, maxTurnsPerMember: 2 },
+  },
+};

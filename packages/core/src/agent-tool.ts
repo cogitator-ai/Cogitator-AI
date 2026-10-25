@@ -1,24 +1,39 @@
-import type { RunOptions, Tool, ToolApprovalDecision, ToolContext } from '@cogitator-ai/types';
+import type {
+  DelegationApprovalMode,
+  DelegationHooks,
+  DelegationMessages,
+  RunOptions,
+  Tool,
+  ToolContext,
+} from '@cogitator-ai/types';
 import type { Agent } from './agent';
 import type { Cogitator } from './runtime';
 import { tool } from './tool';
 import { z } from 'zod';
 import { isTripwire } from './middleware/tripwire';
-import { pendingQuestions } from './run-pause';
+import { isDelegatePause, pausedDelegateError, runDelegate } from './subagents/delegate';
 
-export interface AgentAsToolOptions {
+export interface AgentAsToolOptions extends DelegationHooks {
   name: string;
   description: string;
   timeout?: number;
   includeUsage?: boolean;
   includeToolCalls?: boolean;
   /**
-   * Decides the calls of the inner agent that need approval. Without it — or
-   * when it answers `'pause'` — they are declined, since a delegated run
-   * cannot wait for a person; the inner agent is told why and answers
+   * Decides the calls of the inner agent that need approval in `decline` mode. Without it, or
+   * when it answers `'pause'`, they are declined, and the inner agent is told why and answers
    * accordingly.
    */
   onApproval?: RunOptions['onApproval'];
+  /**
+   * What happens to the approvals and questions the inner agent stops at: `decline` (default)
+   * answers them no as above, `bubble` hands its approvals to the calling run's `onApproval` and
+   * pauses the calling run when the inner one pauses, so a resume of the calling run answers
+   * them (their ids start with the tool call's id and `/`) and the inner run goes on
+   */
+  approvalMode?: DelegationApprovalMode;
+  /** Which messages of the calling run the inner agent reads before its task (default `none`) */
+  messages?: DelegationMessages;
 }
 
 export interface AgentToolResult {
@@ -35,11 +50,6 @@ export interface AgentToolResult {
   toolCalls?: Array<{ name: string; arguments: unknown }>;
 }
 
-const DELEGATED_DECLINE: ToolApprovalDecision = {
-  approved: false,
-  reason: 'no one can approve calls of a delegated agent',
-};
-
 const DEFAULT_SCHEMA = z.object({
   task: z.string().describe('The task to delegate to the agent'),
 });
@@ -49,7 +59,8 @@ const DEFAULT_SCHEMA = z.object({
  * user, deps, permission mode and `session` rules (so a caller in `plan` mode delegates no edits,
  * and its deny rules hold for the delegate) and, unless the inner agent has a workspace of its
  * own, the caller's workspace. Its calls go through the same permission decision as the caller's,
- * the settings files of the runtime included.
+ * the settings files of the runtime included. Its approvals are declined unless `onApproval`
+ * decides them, or bubble up to the calling run with `approvalMode: 'bubble'`.
  */
 export function agentAsTool<TDeps = unknown>(
   cogitator: Cogitator,
@@ -79,37 +90,25 @@ export function agentAsTool<TDeps = unknown>(
       context: ToolContext<TDeps>
     ): Promise<AgentToolResult> => {
       try {
-        const effectiveTimeout = timeout ?? agent.config.timeout;
-
-        const result = await cogitator.run(delegate, {
-          input: params.task,
-          timeout: effectiveTimeout,
-          signal: context.signal,
-          ...(context.userId !== undefined && { userId: context.userId }),
-          ...(context.deps !== undefined && { deps: context.deps }),
-          ...(!delegate.config.workspace && context.workspace && { workspace: context.workspace }),
-          ...(context.permissions && {
-            permissions: {
-              mode: context.permissions.mode,
-              inherited: context.permissions.inherited,
-            },
-          }),
-          onApproval: async (request) => {
-            const decision = onApproval ? await onApproval(request) : 'pause';
-            return decision === 'pause' ? DELEGATED_DECLINE : decision;
+        const result = await runDelegate(
+          cogitator,
+          {
+            agent: delegate,
+            task: params.task,
+            approvalMode: options.approvalMode ?? 'decline',
+            ...(onApproval && { onApproval }),
+            ...(options.messages !== undefined && { messages: options.messages }),
+            ...(timeout !== undefined && { timeout }),
+            ...(options.onDelegationStart && { onDelegationStart: options.onDelegationStart }),
+            ...(options.onDelegationComplete && {
+              onDelegationComplete: options.onDelegationComplete,
+            }),
           },
-        });
+          context
+        );
 
         if (result.status === 'paused') {
-          const questions = pendingQuestions(result);
-          return {
-            output: result.output,
-            success: false,
-            error:
-              questions.length > 0
-                ? `The delegated agent paused to ask ${questions.map((question) => `"${question.message}"`).join(', ')}, which a delegated run cannot wait for`
-                : `The delegated agent paused for approval of ${(result.pendingApprovals ?? []).map((p) => p.toolName).join(', ')}, which a delegated run cannot wait for`,
-          };
+          return { output: result.output, success: false, error: pausedDelegateError(result) };
         }
 
         return {
@@ -124,7 +123,7 @@ export function agentAsTool<TDeps = unknown>(
           }),
         };
       } catch (error) {
-        if (isTripwire(error)) throw error;
+        if (isTripwire(error) || isDelegatePause(error)) throw error;
         return {
           output: '',
           success: false,

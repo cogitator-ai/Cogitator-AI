@@ -1,11 +1,11 @@
 ---
 title: Coordination Strategies
-description: All 7 built-in strategies for multi-agent coordination — hierarchical, round-robin, consensus, auction, pipeline, debate and negotiation.
+description: All 8 built-in strategies for multi-agent coordination - hierarchical, round-robin, consensus, auction, pipeline, debate, negotiation and team.
 ---
 
 ## Overview
 
-Every swarm is driven by a **strategy** that controls how agents are coordinated. Strategies decide which agents run, in what order, how their outputs combine, and how decisions are reached. There are seven: `hierarchical`, `round-robin`, `consensus`, `auction`, `pipeline`, `debate` and `negotiation`.
+Every swarm is driven by a **strategy** that controls how agents are coordinated. Strategies decide which agents run, in what order, how their outputs combine, and how decisions are reached. There are eight: `hierarchical`, `round-robin`, `consensus`, `auction`, `pipeline`, `debate`, `negotiation` and `team`.
 
 All strategies extend `BaseStrategy` and implement a single `execute(options)` method that returns a `StrategyResult` (`output`, `structured`, `agentResults` plus strategy-specific fields). You configure them through the `swarm()` builder; `createStrategy(coordinator, config)` and `getDefaultStrategyConfig(strategy)` are exported for custom setups.
 
@@ -355,6 +355,26 @@ negotiationSwarm.on('negotiation:approval-required', (event) => {
 
 **Best for:** Contract negotiations, resource allocation, multi-stakeholder decisions.
 
+## Team
+
+A lead plans the work as a shared task list, members claim or are assigned tasks and work through them, and everyone talks through mailboxes. The lead is the `supervisor`, the members are the `workers`.
+
+```typescript
+const newsroom = swarm('newsroom')
+  .strategy('team')
+  .lead(new Agent({ name: 'editor', model, instructions: 'Plan the work as tasks.' }))
+  .members([
+    new Agent({ name: 'researcher', model, description: 'Finds facts', instructions: 'Research.' }),
+    new Agent({ name: 'writer', model, description: 'Writes', instructions: 'Write.' }),
+  ])
+  .team({ maxTurnsPerMember: 6 })
+  .build(cogitator);
+```
+
+Tasks have dependencies, claiming is atomic, members work concurrently, and every bound is configurable, so a run always ends. See [Agent Teams](/docs/swarms/agent-teams) for the whole picture.
+
+**Best for:** Work that splits into tasks with dependencies, parallel research and review, projects where agents need to talk to each other while they work.
+
 ## Strategy Selection Guide
 
 | Scenario                                | Strategy       |
@@ -366,3 +386,4 @@ negotiationSwarm.on('negotiation:approval-required', (event) => {
 | Step-by-step content or data processing | `pipeline`     |
 | Evaluate pros and cons of a decision    | `debate`       |
 | Agents must reach a binding agreement   | `negotiation`  |
+| A task list worked through by a team    | `team`         |

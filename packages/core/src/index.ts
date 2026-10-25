@@ -95,6 +95,33 @@ export {
 } from './decisions/openrouter';
 export { validateDecision } from './decisions/decide';
 export type { AgentAsToolOptions, AgentToolResult } from './agent-tool';
+export {
+  parseSubagentFile,
+  parseCommandFile,
+  subagentNameProblem,
+  DEFINITION_DIRS,
+  MAX_DEFINITION_FILE_BYTES,
+  MAX_SUBAGENT_NAME_LENGTH,
+  type DefinitionOrigin,
+  type ParsedDefinition,
+} from './subagents/definitions';
+export { SubagentFinder, CommandFinder, type CommandCatalog } from './subagents/catalog';
+export {
+  AGENT_TOOL,
+  SEND_MESSAGE,
+  TASK_OUTPUT,
+  TASK_STOP,
+  DEFAULT_MAX_SUBAGENT_DEPTH,
+  DEFAULT_MAX_BACKGROUND,
+  narrowMode,
+  taskNotification,
+  type DispatchResult,
+} from './subagents/service';
+export { toolPolicy, type ToolPolicy } from './subagents/tool-policy';
+export { DelegatePauseSignal, isDelegatePause, nestedId } from './subagents/delegate';
+export { openWorktree, WORKTREES_DIR, type SubagentWorktree } from './subagents/worktree';
+export { agentMemoryDir, AGENT_MEMORY } from './subagents/memory';
+export { commandInvocation, expandCommand, splitArguments } from './commands/expand';
 export { ToolRegistry, type ToolRegisterOptions } from './registry';
 
 export {

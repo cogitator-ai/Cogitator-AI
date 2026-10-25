@@ -5,9 +5,17 @@
 import type { Agent } from './agent';
 import type { RunResult, Span } from './runtime';
 import type { NegotiationConfig, NegotiationResult } from './negotiation';
+import type { TodoStatus } from './todos';
 
 export type SwarmStrategy =
-  'hierarchical' | 'round-robin' | 'consensus' | 'auction' | 'pipeline' | 'debate' | 'negotiation';
+  | 'hierarchical'
+  | 'round-robin'
+  | 'consensus'
+  | 'auction'
+  | 'pipeline'
+  | 'debate'
+  | 'negotiation'
+  | 'team';
 
 export interface SwarmAgentMetadata {
   /** Agent's areas of expertise */
@@ -142,6 +150,117 @@ export interface DebateConfig {
   synthesisPrompt?: string;
 }
 
+/**
+ * Where a task of a team's task list stands: the statuses of a `write_todos` item. A pending
+ * task waits to be claimed, an in-progress one is worked on by its owner, a completed one is final
+ */
+export type TeamTaskStatus = TodoStatus;
+
+/** A task of the shared task list of a team swarm */
+export interface TeamTask {
+  /** `task-1`, `task-2` and so on, unless the creator named it */
+  id: string;
+  title: string;
+  description?: string;
+  status: TeamTaskStatus;
+  /** The member the task is assigned to, or that claimed it */
+  owner?: string;
+  /** Tasks that must be completed before this one can be claimed */
+  dependsOn: string[];
+  /** The lead, or `system` for a task of `team.tasks` */
+  createdBy: string;
+  /** What the member reported when it completed the task */
+  result?: string;
+  /** The latest progress note of the owner or the lead */
+  note?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** A task to put on the task list, with `create_task` or in `team.tasks` */
+export interface TeamTaskInput {
+  /** Its id on the list, `task-<n>` when left out */
+  id?: string;
+  title: string;
+  description?: string;
+  /** Ids of tasks already on the list that must be completed first */
+  dependsOn?: string[];
+  /** The member to assign it to */
+  assignee?: string;
+}
+
+/** The lead plans and coordinates, members work through the tasks */
+export type TeamRole = 'lead' | 'member';
+
+/**
+ * Where a member of a team stands: `working` during a turn, `idle` between turns, `stopped` once
+ * it used all its turns, `failed` when its turn failed
+ */
+export type TeamMemberStatus = 'idle' | 'working' | 'stopped' | 'failed';
+
+/**
+ * Why an agent of a team takes a turn: the lead's first turn (`start`), a task to work on
+ * (`task`), messages in its inbox (`message`), a team that cannot go on without the lead
+ * (`stalled`), or the lead's final answer (`synthesis`)
+ */
+export type TeamTurnReason = 'start' | 'task' | 'message' | 'stalled' | 'synthesis';
+
+export interface TeamMemberState {
+  name: string;
+  role: TeamRole;
+  status: TeamMemberStatus;
+  /** Turns taken in the run */
+  turns: number;
+  /** The task the member works on */
+  currentTask?: string;
+  error?: string;
+}
+
+/**
+ * How a team run ended: every task completed, the lead answered without creating tasks, nobody
+ * could go on with the tasks left, or the agents used up their turns
+ */
+export type TeamStopReason = 'completed' | 'no-tasks' | 'stalled' | 'turn-limit';
+
+/**
+ * Agent teams: a lead plans the work as a shared task list, members claim or are assigned tasks
+ * and work through them, everyone talks through mailboxes, and the lead writes the final answer.
+ * The lead is the swarm's `supervisor`, the members are its `workers`. Every bound keeps a run
+ * finite: a run ends once no agent has a reason or a turn left to go on
+ */
+export interface TeamConfig {
+  /** Tasks on the list before the lead's first turn */
+  tasks?: TeamTaskInput[];
+  /**
+   * Members take unassigned tasks on their own: an idle member is given the next one that is not
+   * blocked (default: true). Without it only the tasks the lead assigns are worked on
+   */
+  selfClaim?: boolean;
+  /** Members working at the same time (default: `resources.maxConcurrency`, or 4) */
+  maxConcurrentMembers?: number;
+  /** Turns the lead takes besides the final answer (default: 6) */
+  maxLeadTurns?: number;
+  /** Turns each member takes (default: 8) */
+  maxTurnsPerMember?: number;
+  /** Tasks the list holds (default: 50) */
+  maxTasks?: number;
+  /**
+   * The lead writes the final answer from the results of the tasks (default: true). Without it the
+   * output is the list of tasks with their results
+   */
+  synthesize?: boolean;
+}
+
+/** What a team run did: its task list, its agents and why it ended */
+export interface TeamResult {
+  tasks: TeamTask[];
+  members: TeamMemberState[];
+  stopReason: TeamStopReason;
+  /** Turns of the lead, the final answer included */
+  leadTurns: number;
+  memberTurns: number;
+}
+
 export type SwarmMessageType = 'request' | 'response' | 'notification' | 'error';
 
 export interface SwarmMessage {
@@ -235,6 +354,65 @@ export interface Blackboard {
   clear(): void;
 }
 
+/**
+ * The data of each event of a team swarm, by event type. Task events carry the task as it is
+ * after the change, so a client can draw the task list and who works on what from the events alone.
+ * `team:task-claimed` and `team:task-completed` report those changes, `team:task-updated` every
+ * other change of a task
+ */
+export interface TeamEventMap {
+  /** Before anything else of the run, the tasks of `team.tasks` included */
+  'team:start': { lead: string; members: string[] };
+  'team:member-started': {
+    member: string;
+    role: TeamRole;
+    turn: number;
+    reason: TeamTurnReason;
+    taskId?: string;
+  };
+  'team:member-finished': {
+    member: string;
+    role: TeamRole;
+    turn: number;
+    reason: TeamTurnReason;
+    status: TeamMemberStatus;
+    /** The start of what the agent answered */
+    output?: string;
+    error?: string;
+  };
+  'team:task-created': { task: TeamTask; by: string };
+  'team:task-assigned': { task: TeamTask; assignee: string; by: string; previousOwner?: string };
+  'team:task-claimed': { task: TeamTask; member: string };
+  'team:task-updated': {
+    task: TeamTask;
+    by: string;
+    from: TeamTaskStatus;
+    to: TeamTaskStatus;
+  };
+  'team:task-completed': {
+    task: TeamTask;
+    by: string;
+    /** Tasks this one was the last unfinished dependency of */
+    unblocked: string[];
+  };
+  'team:message-sent': {
+    id: string;
+    from: string;
+    /** The agents whose mailbox got the message */
+    to: string[];
+    broadcast: boolean;
+    content: string;
+  };
+  'team:complete': {
+    stopReason: TeamStopReason;
+    tasks: { total: number; completed: number; inProgress: number; pending: number };
+    leadTurns: number;
+    memberTurns: number;
+  };
+}
+
+export type TeamEventType = keyof TeamEventMap;
+
 export type SwarmEventType =
   | 'swarm:start'
   | 'swarm:complete'
@@ -289,7 +467,8 @@ export type SwarmEventType =
   | 'negotiation:deadlock'
   | 'negotiation:escalation'
   | 'negotiation:arbitration'
-  | 'negotiation:terminated';
+  | 'negotiation:terminated'
+  | TeamEventType;
 
 export interface SwarmEvent {
   type: SwarmEventType;
@@ -439,9 +618,9 @@ export interface SwarmConfig {
   name: string;
   strategy: SwarmStrategy;
 
-  /** Supervisor agent for hierarchical strategy */
+  /** Supervisor agent for hierarchical strategy, the lead of a team */
   supervisor?: Agent;
-  /** Worker agents for hierarchical strategy */
+  /** Worker agents for hierarchical strategy, the members of a team */
   workers?: Agent[];
   /** General agents for round-robin, consensus, auction */
   agents?: Agent[];
@@ -461,6 +640,7 @@ export interface SwarmConfig {
   pipeline?: PipelineConfig;
   debate?: DebateConfig;
   negotiation?: NegotiationConfig;
+  team?: TeamConfig;
 
   messaging?: MessageBusConfig;
   blackboard?: BlackboardConfig;
@@ -535,6 +715,8 @@ export interface SwarmResult {
   pipelineOutputs?: Map<string, unknown>;
   /** Negotiation result from negotiation strategy */
   negotiationResult?: NegotiationResult;
+  /** Task list, agents and stop reason of a team run */
+  teamResult?: TeamResult;
 
   usage: SwarmResourceUsage;
 
@@ -575,6 +757,7 @@ export interface StrategyResult {
   debateTranscript?: SwarmMessage[];
   pipelineOutputs?: Map<string, unknown>;
   negotiationResult?: NegotiationResult;
+  teamResult?: TeamResult;
 }
 
 /** Per-turn limits a strategy can apply to a single agent run */

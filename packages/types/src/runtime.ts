@@ -36,6 +36,7 @@ import type { TodoItem } from './todos';
 import type { LoggingConfig } from './logging';
 import type { ABTestStore, ABTestVariant, InstructionVersionStore } from './prompt-optimization';
 import type { MultitaskStrategy, QueuedRunMessage, RunInterrupt } from './run-control';
+import type { CommandsConfig, ExpandedCommand, SubagentsConfig } from './subagents';
 import type {
   BudgetUsage,
   PermissionDecision,
@@ -154,6 +155,12 @@ export interface CogitatorConfig {
      * straight to the next model for `resetTimeout` ms, and then try it again.
      */
     modelCircuitBreaker?: ModelCircuitBreakerConfig;
+    /**
+     * Short names a Markdown subagent or command may give as its `model`, such as Claude Code's
+     * `sonnet`, `opus`, `haiku` and `fable`, each to a model as `provider/model`. A name without
+     * an entry runs on the delegating agent's model, with a warning
+     */
+    modelAliases?: Record<string, string>;
   };
   /**
    * Where paused runs are kept. Defaults to the memory adapter's threads (so
@@ -228,6 +235,20 @@ export interface CogitatorConfig {
    * `AGENTS.md` (`projectFiles`). Unset, an agent's prompt is its own instructions
    */
   instructions?: InstructionsConfig;
+  /**
+   * Agents runs hand tasks to, in the format of Claude Code's subagents: Markdown files of
+   * `agents/` folders and definitions in code. Runs get an `agent` tool to delegate with, and
+   * `send_message`, `task_output` and `task_stop` for delegates that go on in the background.
+   * Unset, runs get none of them
+   */
+  subagents?: SubagentsConfig;
+  /**
+   * Commands a run's input names (`/review src/app.ts`), in the format of Claude Code's custom
+   * commands: Markdown files of `commands/` folders and templates in code. The input is replaced
+   * by the expanded template before the run starts. Unset, an input starting with `/` is sent as
+   * it is
+   */
+  commands?: CommandsConfig;
   /**
    * What a session (a thread across its runs) and each agent in it may spend in money, tokens and
    * tool calls. A run that reaches a limit pauses with an interrupt of kind `budget`
@@ -798,6 +819,13 @@ export interface RunCheckpoint {
       string,
       { result: unknown; error?: string; arguments?: Record<string, unknown> }
     >;
+    /**
+     * Delegated runs that paused with their approvals or questions bubbling up to this run
+     * (`approvalMode: 'bubble'`), by the tool call that started each: a resume answers them through
+     * this run (their interrupt ids start with `<toolCallId>/`) and the call goes on with its
+     * delegate
+     */
+    children?: Record<string, RunCheckpoint>;
   };
   /**
    * What the run waits on, approvals among them (`kind: 'approval'`), and the answers given so
@@ -1042,6 +1070,8 @@ export interface RunResult {
   readonly stopped?: { readonly reason: string; readonly middleware: string };
   /** The project instruction files the run read (`instructions.projectFiles`), in prompt order */
   readonly instructions?: readonly LoadedInstructionFile[];
+  /** The command the input named, when `commands` expanded it */
+  readonly command?: ExpandedCommand;
 }
 
 export interface Span {

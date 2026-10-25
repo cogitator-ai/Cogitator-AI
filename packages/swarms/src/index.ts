@@ -20,9 +20,37 @@ export {
   PipelineStrategy,
   DebateStrategy,
   NegotiationStrategy,
+  TeamStrategy,
   createStrategy,
   getDefaultStrategyConfig,
 } from './strategies/index';
+
+export {
+  TEAM_DEFAULTS,
+  renderBoard,
+  renderResults,
+  type TeamStrategyOptions,
+} from './strategies/team';
+
+export {
+  TeamTaskBoard,
+  TeamBoardError,
+  TEAM_SECTION,
+  DEFAULT_MAX_TASKS,
+  type TeamBoardState,
+  type TeamBoardOptions,
+  type TeamTaskUpdate,
+  type TeamTaskFilter,
+} from './team/board';
+
+export {
+  TeamMailbox,
+  TEAM_CHANNEL,
+  TEAM_MESSAGE_NOTICE,
+  renderTeamMessages,
+  type TeamMessageView,
+  type TeamMailboxOptions,
+} from './team/mailbox';
 
 export {
   TurnManager,
@@ -88,7 +116,11 @@ export {
   createDelegationTools,
   createVotingTools,
   createNegotiationTools,
+  createTeamTools,
+  teamToolsFor,
   type SwarmToolContext,
+  type TeamTools,
+  type TeamToolContext,
   type MessagingTools,
   type BlackboardTools,
   type DelegationTools,
@@ -153,6 +185,18 @@ export type {
   NegotiationApprovalGate,
   ConvergenceMetrics,
   Coalition,
+  TeamConfig,
+  TeamTask,
+  TeamTaskInput,
+  TeamTaskStatus,
+  TeamRole,
+  TeamMemberStatus,
+  TeamMemberState,
+  TeamTurnReason,
+  TeamStopReason,
+  TeamResult,
+  TeamEventMap,
+  TeamEventType,
   StrategyResult,
   IStrategy,
   SwarmCoordinatorInterface,

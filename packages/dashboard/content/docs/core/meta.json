@@ -10,6 +10,8 @@
     "tools",
     "middleware",
     "hooks",
+    "subagents",
+    "commands",
     "project-instructions",
     "llm-backends",
     "model-registry",

@@ -6,6 +6,7 @@
 import { isAbsolute, resolve } from 'node:path';
 import type { Tool } from '@cogitator-ai/types';
 import { accessKindOf, mcpNamePart } from '../permissions/rules';
+import { isDispatcher } from '../subagents/marker';
 
 /** How one tool looks to a Claude Code hook */
 export interface ClaudeTool {
@@ -102,11 +103,32 @@ const BY_NAME: Record<string, ClaudeTool> = {
   exit_plan_mode: renamed('ExitPlanMode', [['plan', 'plan']]),
   use_skill: renamed('Skill', [['skill', 'skill']]),
   write_todos: renamed('TodoWrite', [['todos', 'todos']]),
+  send_message: renamed('SendMessage', [
+    ['to', 'to'],
+    ['message', 'message'],
+    ['summary', 'summary'],
+  ]),
+  task_output: renamed('TaskOutput', [
+    ['task_id', 'task_id'],
+    ['block', 'block'],
+  ]),
+  task_stop: renamed('TaskStop', [['task_id', 'task_id']]),
 };
+
+/** The `agent` tool of subagents, whose input is Claude Code's `Agent` input already */
+const AGENT_DISPATCH = renamed('Agent', [
+  ['description', 'description'],
+  ['prompt', 'prompt'],
+  ['subagent_type', 'subagent_type'],
+  ['model', 'model'],
+  ['run_in_background', 'run_in_background'],
+  ['name', 'name'],
+]);
 
 /** Claude Code's counterpart of `tool`, when it has one: a built-in tool, or an agent used as a tool */
 export function claudeToolOf(tool: Tool): ClaudeTool | undefined {
   if (tool.mcp) return undefined;
+  if (isDispatcher(tool)) return AGENT_DISPATCH;
   if (Object.hasOwn(BY_NAME, tool.name)) return BY_NAME[tool.name];
   if (accessKindOf(tool) === 'agent') return renamed('Agent', [['task', 'prompt']]);
   return undefined;

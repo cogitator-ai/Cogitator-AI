@@ -50,6 +50,9 @@ const CLAUDE_NAMES: Record<string, RuleTarget> = {
   ExitPlanMode: { kind: 'names', names: ['exit_plan_mode'] },
   Skill: { kind: 'names', names: ['use_skill', 'read_skill_file'] },
   TodoWrite: { kind: 'names', names: ['write_todos'] },
+  SendMessage: { kind: 'names', names: ['send_message'] },
+  TaskOutput: { kind: 'names', names: ['task_output'] },
+  TaskStop: { kind: 'names', names: ['task_stop'] },
 };
 
 /** Claude Code tools Cogitator has no counterpart for: a rule naming one matches nothing */
@@ -59,8 +62,6 @@ const UNMAPPED_CLAUDE_NAMES = new Set([
   'KillShell',
   'KillBash',
   'SlashCommand',
-  'TaskStop',
-  'TaskOutput',
   'EndConversation',
   'AskUserQuestion',
   'PowerShell',

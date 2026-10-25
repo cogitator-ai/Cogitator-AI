@@ -94,6 +94,11 @@ export interface AgentConfig<TDeps = unknown> {
   permissions?: PermissionOptions;
   /** What this agent may spend in a thread, over the runtime's `budget.agent` */
   budget?: BudgetLimits;
+  /**
+   * The subagents of the runtime (`CogitatorConfig.subagents`) this agent may delegate to: every
+   * one (default), none (`false`), or the ones named
+   */
+  subagents?: boolean | readonly string[];
 }
 
 /** A model to fall back to: `provider/model`, or a model name with the provider to run it on. */

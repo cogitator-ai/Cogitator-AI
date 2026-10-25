@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Agent, Cogitator } from '@cogitator-ai/core';
-import type { Workflow } from '@cogitator-ai/types';
+import type { SwarmConfig, Workflow } from '@cogitator-ai/types';
 import { REGISTRY_PATH } from '../registry.js';
 
 /**
@@ -35,6 +35,8 @@ export interface LoadedProject {
   cogitator: Cogitator;
   agents: Map<string, Agent>;
   workflows: Map<string, Workflow>;
+  /** Swarm configurations by key, which a swarm run builds a fresh swarm from. */
+  swarms: Map<string, SwarmConfig>;
   module: Record<string, unknown>;
 }
 
@@ -61,6 +63,17 @@ function isWorkflow(value: unknown): value is Workflow {
   );
 }
 
+function isSwarmConfig(value: unknown): value is SwarmConfig {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'name' in value &&
+    typeof value.name === 'string' &&
+    'strategy' in value &&
+    typeof value.strategy === 'string'
+  );
+}
+
 function isCogitator(value: unknown): value is Cogitator {
   return (
     typeof value === 'object' &&
@@ -81,7 +94,7 @@ function entries<T>(group: unknown, guard: (value: unknown) => value is T): Map<
 
 /**
  * Loads `.env` and the registry of the project: the runtime it exports as
- * `cogitator`, and its agents and workflows by key.
+ * `cogitator`, and its agents, workflows and swarms by key.
  */
 export async function loadProject(projectDir: string): Promise<LoadedProject> {
   const envFile = join(projectDir, '.env');
@@ -103,6 +116,7 @@ export async function loadProject(projectDir: string): Promise<LoadedProject> {
     cogitator: module.cogitator,
     agents: entries(module.agents, isAgent),
     workflows: entries(module.workflows, isWorkflow),
+    swarms: entries(module.swarms, isSwarmConfig),
     module,
   };
 }

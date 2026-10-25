@@ -1662,6 +1662,9 @@ importers:
         specifier: workspace:*
         version: link:../types
     devDependencies:
+      '@cogitator-ai/swarms':
+        specifier: workspace:*
+        version: link:../swarms
       '@cogitator-ai/workflows':
         specifier: workspace:*
         version: link:../workflows

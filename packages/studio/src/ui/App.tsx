@@ -11,6 +11,7 @@ import { CompareView } from './views/compare';
 import { OverviewView } from './views/overview';
 import { RunView } from './views/run';
 import { RunsView } from './views/runs';
+import { SwarmView } from './views/swarm';
 import { WorkflowView } from './views/workflow';
 
 function HostBanner() {
@@ -60,6 +61,7 @@ function Page({ route }: { route: string[] }) {
   if (section === 'compare' && id && extra)
     return <CompareView key={`${id}-${extra}`} originalId={id} forkId={extra} />;
   if (section === 'workflows' && id) return <WorkflowView key={id} workflowKey={id} />;
+  if (section === 'swarms' && id) return <SwarmView key={id} swarmKey={id} />;
   return <OverviewView />;
 }
 

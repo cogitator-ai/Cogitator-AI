@@ -7,6 +7,7 @@ import {
   Keyboard,
   LayoutDashboard,
   Moon,
+  Network,
   Plus,
   Search,
   Sun,
@@ -47,7 +48,14 @@ function runCommand(run: RunRecord, group: string): Command {
     group,
     label: excerpt(run.input, 70) || run.id,
     hint: `${run.target} · ${timeAgo(run.startedAt)}`,
-    icon: run.kind === 'workflow' ? Workflow : run.kind === 'fork' ? GitFork : Activity,
+    icon:
+      run.kind === 'workflow'
+        ? Workflow
+        : run.kind === 'fork'
+          ? GitFork
+          : run.kind === 'swarm'
+            ? Network
+            : Activity,
     keywords: `${run.target} ${run.output ?? ''}`,
     run: () => navigate('runs', run.id),
   };
@@ -124,6 +132,15 @@ export function CommandPalette({
         icon: Workflow,
         keywords: `run ${workflow.key}`,
         run: () => navigate('workflows', workflow.key),
+      })),
+      ...(registry?.swarms ?? []).map((swarm): Command => ({
+        id: `swarm-${swarm.key}`,
+        group: 'Swarms',
+        label: swarm.name,
+        hint: `${swarm.strategy}, ${swarm.agents.length} agents`,
+        icon: Network,
+        keywords: `run ${swarm.key} ${swarm.strategy} ${swarm.agents.join(' ')}`,
+        run: () => navigate('swarms', swarm.key),
       })),
       ...(registry?.agents ?? []).map((agent): Command => ({
         id: `new-${agent.key}`,

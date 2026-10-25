@@ -52,6 +52,8 @@ export const AGENT_CONFIG_WIRE_FIELDS = {
   permissions:
     'not carried: the receiving side decides what its tools may do, a sender must not widen it',
   budget: 'not carried: the receiving side decides what a session may spend',
+  subagents:
+    'not carried: the receiving side decides which of its subagents an agent may delegate to',
 } as const satisfies Record<keyof AgentConfig, string>;
 
 /** Something wrong with an agent on the wire, or with what the receiving side can run. */
