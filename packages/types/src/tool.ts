@@ -226,6 +226,7 @@ export interface ToolAccess<TParams = unknown> {
 
 /** An MCP server's tool, by the server's name and the tool's name there */
 export interface ToolMcpOrigin {
+  /** The server's name, `''` for a server that reports none */
   server: string;
   tool: string;
 }

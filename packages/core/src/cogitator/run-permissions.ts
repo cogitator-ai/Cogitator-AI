@@ -2,6 +2,7 @@ import { resolve } from 'node:path';
 import {
   CogitatorError,
   ErrorCode,
+  type BudgetUsage,
   type PermissionClassifier,
   type PermissionClassifierInput,
   type PermissionDecision,
@@ -187,6 +188,19 @@ export interface PermissionCall {
   classifierInput?: () => Omit<PermissionClassifierInput, 'reason'>;
   /** A mode to decide in instead of the run's */
   mode?: PermissionMode;
+  /** The budget the model call of the `auto` classifier would pass, so the call is not made */
+  classifierBudget?: () => BudgetUsage | undefined;
+}
+
+/**
+ * Thrown by {@link RunPermissions.decide} when classifying a call would pass a budget: the call
+ * is not classified, and the run stops at the budget as before a model call
+ */
+export class ClassifierBudgetReached extends Error {
+  constructor(readonly usage: BudgetUsage) {
+    super(`The auto mode classifier would pass a budget (${usage.scope} ${usage.metric})`);
+    this.name = 'ClassifierBudgetReached';
+  }
 }
 
 /** The run's own rules: those of the run's options, else those its checkpoint kept, list by list */
@@ -430,7 +444,8 @@ export class RunPermissions {
     const mode = call.mode ?? this.currentMode;
     const classifier = mode === 'auto' ? this.options.service.classifier() : undefined;
     const input = call.classifierInput;
-    return resolvePermission(tool, args, {
+    let reached: BudgetUsage | undefined;
+    const decision = await resolvePermission(tool, args, {
       mode,
       rules: this.rules(call.skillRules),
       needsApproval: call.needsApproval,
@@ -439,9 +454,15 @@ export class RunPermissions {
       trustRepository: this.options.service.settingsOptions?.trusted === true,
       ...(classifier &&
         input && {
-          classify: (reason: string) => classifier.classify({ ...input(), reason }),
+          classify: (reason: string) => {
+            reached = call.classifierBudget?.();
+            if (reached) throw new ClassifierBudgetReached(reached);
+            return classifier.classify({ ...input(), reason });
+          },
         }),
     });
+    if (reached) throw new ClassifierBudgetReached(reached);
+    return decision;
   }
 
   /** The rule an "always allow" answer to the call saves by default */

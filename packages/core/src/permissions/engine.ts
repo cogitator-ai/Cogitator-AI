@@ -312,7 +312,7 @@ class CallSubject {
     }
     if (text === undefined) return undefined;
     this.commandCall = {
-      line: parseCommandLine(text),
+      line: parseCommandLine(text, env?.HOME !== undefined ? { home: env.HOME } : {}),
       cwd: cwd === undefined ? this.cwd : isAbsolute(cwd) ? resolve(cwd) : resolve(this.base, cwd),
       envSafe: Object.keys(env ?? {}).every(isSafeVariable),
     };
@@ -548,9 +548,12 @@ async function restrictiveMatch(
   return false;
 }
 
-/** A command pattern read as the shell reads words, so `git "push" *` is `git push *` */
+/**
+ * A command pattern read as the shell reads words, so `git "push" *` is `git push *` and
+ * `cat ~/x` names the file in the home directory, as the command it matches is read
+ */
 function commandSpecifier(specifier: string): string {
-  if (!/["'\\]/.test(specifier)) return specifier;
+  if (!/["'\\~]/.test(specifier)) return specifier;
   const trailing = specifier.trimEnd().endsWith(':*') ? ':*' : '';
   const body = trailing ? specifier.trimEnd().slice(0, -2) : specifier;
   const pieces = body.split('*').map((piece) => {

@@ -291,6 +291,7 @@ import {
   PermissionModeControl,
   PermissionService,
   RunPermissions,
+  ClassifierBudgetReached,
   type PermissionCall,
 } from './cogitator/run-permissions';
 import { exitPlanModeTool } from './cogitator/plan-mode';
@@ -849,6 +850,8 @@ export class Cogitator implements ToolInvoker {
 
     const workspace = options.workspace ?? agent?.config.workspace;
     const permissionService = this.permissionsOf();
+    /** The decision recorded last for the call: what `result.permission` reports */
+    let lastDecision: PermissionDecision | undefined;
     const permissions = await RunPermissions.create({
       service: permissionService,
       threadId: options.threadId ?? `invoke_${toolCall.id}`,
@@ -859,6 +862,13 @@ export class Cogitator implements ToolInvoker {
         permissionService.settingsOptions?.root ?? workspace?.root ?? process.cwd()
       ),
       record: async (event) => {
+        lastDecision = {
+          decision: event.decision,
+          reason: event.reason,
+          ...(event.rule && { rule: event.rule }),
+          decidedBy: event.decidedBy,
+          mode: event.mode,
+        };
         notify('onPermissionDecision', () => options.onPermissionDecision?.(event));
       },
     });
@@ -880,7 +890,7 @@ export class Cogitator implements ToolInvoker {
     };
     const verdict = await permissions.decide(baseTool, toolCall.arguments, permissionCall);
     const withPermission = (result: ToolInvocationResult): ToolInvocationResult =>
-      permissions.active ? { ...result, permission: verdict } : result;
+      permissions.active ? { ...result, permission: lastDecision ?? verdict } : result;
     const event = (decision: PermissionDecision): PermissionDecisionEvent => ({
       ...decision,
       toolCallId: toolCall.id,
@@ -1066,6 +1076,7 @@ export class Cogitator implements ToolInvoker {
         recheck: (finalTool: Tool, finalArgs: Record<string, unknown>) =>
           this.finalCheck({
             tool: finalTool,
+            toolCall,
             args: finalArgs,
             permissions,
             call: {
@@ -2007,6 +2018,25 @@ export class Cogitator implements ToolInvoker {
       budget = runBudget;
       const budgetAncestors = currentToolRuns().filter((id) => id !== runId);
       this.runBudgets.set(runId, { budget: runBudget, agentId: () => budgetKey(active) });
+      /** The budget a model call now would pass: the run's own, else one of the runs it serves */
+      const budgetBeforeModel = (): BudgetUsage | undefined => {
+        const spent = runBudget.runTotals();
+        return (
+          runBudget.beforeModel(
+            budgetKey(active),
+            Math.max(costMeter.total(costModel), spent.costUsd),
+            Math.max(totalInputTokens + totalOutputTokens, spent.tokens)
+          ) ??
+          budgetAncestors
+            .map((ancestor) => {
+              const parent = this.runBudgets.get(ancestor);
+              if (!parent) return undefined;
+              const totals = parent.budget.runTotals();
+              return parent.budget.beforeModel(parent.agentId(), totals.costUsd, totals.tokens);
+            })
+            .find((usage) => usage !== undefined)
+        );
+      };
       this.classifierCharges.set(abortController.signal, (usage, model) => {
         const spentBefore = costMeter.total(costModel);
         costMeter.add(usage, model);
@@ -2201,6 +2231,7 @@ export class Cogitator implements ToolInvoker {
           transcript: transcriptOf(messages, classifierTranscriptLength(this.config.permissions)),
           signal: abortController.signal,
         }),
+        classifierBudget: budgetBeforeModel,
       });
       const decisionEvent = (
         toolCall: ToolCall,
@@ -2282,6 +2313,35 @@ export class Cogitator implements ToolInvoker {
           const list = [...requests.values()].filter((request) => kept(request.toolCallId));
           return list.length > 0 ? { changed: list } : {};
         };
+        /** The decision, or the budget that classifying the call would pass */
+        const decideOrStop = async (
+          tool: Tool,
+          args: Record<string, unknown>,
+          call: PermissionCall
+        ): Promise<PermissionDecision | { stop: BudgetUsage }> => {
+          try {
+            return await permissions.decide(tool, args, call);
+          } catch (error) {
+            if (error instanceof ClassifierBudgetReached) return { stop: error.usage };
+            throw error;
+          }
+        };
+        /** The turn paused at the budget a classification would pass, what it decided so far kept */
+        const classifierPause = (usage: BudgetUsage): PausedTurn => {
+          const automaticLeft = [...automatic].filter((id) => decisions.has(id));
+          return {
+            toolCalls,
+            decisions: Object.fromEntries(
+              [...decisions].map(([id, decision]) => [id, withoutRemember(decision)])
+            ),
+            ...(denied.size > 0 && { denied: Object.fromEntries(denied) }),
+            ...(automaticLeft.length > 0 && { automatic: automaticLeft }),
+            ...keptChanged((id) => open.some((call) => call.id === id)),
+            pending: [],
+            interrupts: [budgetInterrupt(usage, budgetConfig.allowRaise === true)],
+            completed: [...done],
+          };
+        };
         if (resumed && permissions.active) {
           for (const toolCall of open) {
             const kept = decisions.get(toolCall.id);
@@ -2293,16 +2353,18 @@ export class Cogitator implements ToolInvoker {
               (needsApproval(tool, toolCall.arguments) ||
                 this.state.constitutionalAI?.toolNeedsApproval(tool, toolCall.arguments) === true);
             const decide = (call: ToolCall) =>
-              permissions.decide(tool, call.arguments, {
+              decideOrStop(tool, call.arguments, {
                 ...permissionCall(tool, call, needs),
                 ...(!byRules && permissions.mode === 'dontAsk' && { mode: 'default' as const }),
               });
             const changedTo = changedAsked.get(toolCall.id)?.arguments;
             const sent = await decide(toolCall);
+            if ('stop' in sent) return classifierPause(sent.stop);
             const verdict =
               changedTo && sent.decision !== 'deny'
                 ? await decide({ ...toolCall, arguments: changedTo })
                 : sent;
+            if ('stop' in verdict) return classifierPause(verdict.stop);
             if (verdict.decision === 'allow' || (verdict.decision === 'ask' && !byRules)) continue;
             decisions.delete(toolCall.id);
             automatic.delete(toolCall.id);
@@ -2339,11 +2401,12 @@ export class Cogitator implements ToolInvoker {
             needsApproval(tool, toolCall.arguments) ||
             this.state.constitutionalAI?.toolNeedsApproval(tool, toolCall.arguments) === true;
           if (!needs && !permissions.active) continue;
-          const verdict = await permissions.decide(
+          const verdict = await decideOrStop(
             tool,
             toolCall.arguments,
             permissionCall(tool, toolCall, needs)
           );
+          if ('stop' in verdict) return classifierPause(verdict.stop);
           if (verdict.decision !== 'ask') {
             if (verdict.decision === 'deny') denied.set(toolCall.id, verdict.reason);
             else if (verdict.decidedBy !== 'default') {
@@ -2541,8 +2604,13 @@ export class Cogitator implements ToolInvoker {
             decision &&
             canonicalArguments(asked.arguments) === canonicalArguments(args)
           ) {
+            const { classifierInput: _answered, ...answeredCall } = permissionCall(
+              tool,
+              changed,
+              false
+            );
             const verdict = await permissions.decide(tool, args, {
-              ...permissionCall(tool, changed, false),
+              ...answeredCall,
               ...(permissions.mode === 'dontAsk' && { mode: 'default' as const }),
             });
             if (verdict.decision === 'deny') {
@@ -2603,6 +2671,7 @@ export class Cogitator implements ToolInvoker {
               this.state.constitutionalAI?.toolNeedsApproval(tool, runCall.arguments) === true);
           return this.finalCheck({
             tool,
+            toolCall,
             args,
             permissions,
             call: permissionCall(tool, runCall, needs),
@@ -4237,7 +4306,8 @@ export class Cogitator implements ToolInvoker {
         };
       }
     }
-    const verdict = await permissions.decide(tool, updated, call);
+    const { classifierInput: _approved, ...approvedCall } = call;
+    const verdict = await permissions.decide(tool, updated, approvedCall);
     if (verdict.decision === 'deny') {
       return { error: `the arguments the approval changed the call to: ${verdict.reason}` };
     }
@@ -4345,6 +4415,7 @@ export class Cogitator implements ToolInvoker {
    */
   private async finalCheck(check: {
     tool: Tool;
+    toolCall: Pick<ToolCall, 'id' | 'name'>;
     args: Record<string, unknown>;
     permissions: RunPermissions;
     call: PermissionCall;
@@ -4354,13 +4425,25 @@ export class Cogitator implements ToolInvoker {
     const { permissions, human } = check;
     const judged = check.judged && permissions.mode === 'auto';
     const { classifierInput: _judgedBefore, ...unjudged } = check.call;
-    const verdict = await permissions.decide(check.tool, check.args, {
-      ...(judged || human ? unjudged : check.call),
-      ...(human && permissions.mode === 'dontAsk' && { mode: 'default' as const }),
-    });
-    if (verdict.decision === 'deny') return verdict.reason;
+    let verdict: PermissionDecision;
+    try {
+      verdict = await permissions.decide(check.tool, check.args, {
+        ...(judged || human ? unjudged : check.call),
+        ...(human && permissions.mode === 'dontAsk' && { mode: 'default' as const }),
+      });
+    } catch (error) {
+      if (!(error instanceof ClassifierBudgetReached)) throw error;
+      return `classifying the call would pass a budget (${error.usage.scope} ${error.usage.metric})`;
+    }
+    const recorded = { toolCallId: check.toolCall.id, toolName: check.toolCall.name };
+    if (verdict.decision === 'deny') {
+      await permissions.record({ ...verdict, ...recorded });
+      return verdict.reason;
+    }
     if (verdict.decision === 'ask' && !human && !judged) {
-      return `the call no longer passes the permissions when it runs (${verdict.reason}): the mode, or what it touches, changed since it was decided`;
+      const reason = `the call no longer passes the permissions when it runs (${verdict.reason}): the mode, or what it touches, changed since it was decided`;
+      await permissions.record({ ...verdict, ...recorded, decision: 'deny', reason });
+      return reason;
     }
     return undefined;
   }
@@ -4384,7 +4467,16 @@ export class Cogitator implements ToolInvoker {
     (ChangedCallPermit & { byPerson?: true; byClassifier?: true }) | { pause: ToolApprovalRequest }
   > {
     const { tool, toolCall, permissions, call } = changed;
-    const verdict = await permissions.decide(tool, toolCall.arguments, call);
+    let verdict: PermissionDecision;
+    try {
+      verdict = await permissions.decide(tool, toolCall.arguments, call);
+    } catch (error) {
+      if (!(error instanceof ClassifierBudgetReached)) throw error;
+      return {
+        allowed: false,
+        reason: `classifying the arguments a middleware changed the call to would pass a budget (${error.usage.scope} ${error.usage.metric})`,
+      };
+    }
     if (verdict.decision !== 'ask') {
       await permissions.record({ ...verdict, toolCallId: toolCall.id, toolName: toolCall.name });
       return verdict.decision === 'allow'

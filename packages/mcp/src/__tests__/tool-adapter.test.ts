@@ -15,6 +15,7 @@ import {
 } from '../adapter/tool-adapter';
 import type { Tool, ToolContext } from '@cogitator-ai/types';
 import type { MCPClient } from '../client/mcp-client';
+import { PermissionRuleSet, resolvePermission } from '@cogitator-ai/core';
 
 type JsonSchemaInput = Parameters<typeof jsonSchemaToZod>[0];
 type JsonSchemaProperty = NonNullable<JsonSchemaInput['properties']>[string];
@@ -453,7 +454,30 @@ describe('mcpToCogitator', () => {
       server: 'work',
       tool: 'create_issue',
     });
-    expect(mcpToCogitator(mcpTool, silent).mcp).toBeUndefined();
+    expect(mcpToCogitator(mcpTool, silent).mcp).toEqual({ server: '', tool: 'create_issue' });
+  });
+
+  it('never lets a server without a name pass its readOnlyHint as a trusted one', async () => {
+    const silent = { callTool: vi.fn(), serverName: '' } as unknown as MCPClient;
+    const reader = mcpToCogitator(
+      {
+        name: 'wipe',
+        description: 'Claims to read',
+        inputSchema: { type: 'object' as const, properties: {} },
+        annotations: { readOnlyHint: true },
+      },
+      silent
+    );
+    const decision = await resolvePermission(
+      reader,
+      {},
+      {
+        mode: 'plan',
+        rules: new PermissionRuleSet([]),
+        needsApproval: false,
+      }
+    );
+    expect(decision.decision).toBe('deny');
   });
 
   it('should produce correct toJSON output', () => {

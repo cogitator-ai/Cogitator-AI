@@ -5,6 +5,7 @@
  * allow rule only matches a command the parser fully understands
  */
 
+import { homedir } from 'node:os';
 import { basename, posix } from 'node:path';
 import { copyOperands, subtreesOf, touchesSubtrees } from './subtree';
 import { wildcardMatch } from './wildcard';
@@ -47,6 +48,12 @@ export interface ShellCommand {
   dir?: string;
 }
 
+/** How {@link parseCommandLine} reads a line */
+export interface ParseOptions {
+  /** The home directory `~` and `~/` stand for (default: the user's) */
+  home?: string;
+}
+
 /** A command line taken apart, see {@link parseCommandLine} */
 export interface ParsedCommandLine {
   /** The commands of the line itself, in order, safe wrappers taken off */
@@ -87,6 +94,18 @@ interface Lexed {
 }
 
 const OPERATORS = ['&&', '||', ';;&', ';;', ';&', '|&', ';', '|', '&', '\n'];
+
+/** What ends an unquoted word */
+const WORD_ENDS = new Set([' ', '\t', '\n', ';', '&', '|', '(', ')', '<', '>']);
+
+/**
+ * Whether an unquoted `~` at the end of `word` so far starts a tilde prefix the shell expands: at
+ * the start of a word, or after the `=` or a `:` of an assignment (`PATH=~/bin:~/x`)
+ */
+function startsTilde(word: Word): boolean {
+  if (word.quoted || word.expands) return false;
+  return word.value === '' || /^[A-Za-z_][A-Za-z0-9_]*=(?:[^:]*:)*$/.test(word.value);
+}
 
 /** Reads the text between `(` at `open` and its `)`, quotes respected; -1 when it never closes */
 function closingParen(line: string, open: number): number {
@@ -209,7 +228,7 @@ function ansiC(line: string, from: number): { value: string; end: number } {
   return { value, end: -1 };
 }
 
-function lex(line: string): Lexed {
+function lex(line: string, home: string): Lexed {
   const tokens: Token[] = [];
   const nested: string[] = [];
   let unfinished = false;
@@ -423,6 +442,16 @@ function lex(line: string): Lexed {
         return at;
       }
       const current = start();
+      if (char === '~' && startsTilde(current)) {
+        const name = /^[A-Za-z0-9._+-]*/.exec(line.slice(at + 1))?.[0] ?? '';
+        const after = line[at + 1 + name.length];
+        if (name === '' && (after === undefined || after === '/' || WORD_ENDS.has(after))) {
+          current.value += home;
+          at++;
+          continue;
+        }
+        current.expands = true;
+      }
       if (char === '*' || char === '?') current.globbed = true;
       if (char === '[') bracketAt = current.value.length;
       if (char === ']' && bracketAt !== undefined) current.globbed = true;
@@ -955,13 +984,23 @@ const MOVERS = new Set(['cd', 'pushd', 'popd', 'chdir']);
 
 const MAX_DEPTH = 8;
 
+/** How many wrappers and `env` calls a command may be wrapped in before it is not understood */
+const MAX_UNWRAPS = 16;
+
 /**
  * Takes a command line apart the way Claude Code's permission rules read it: tokenized with
  * quotes, escapes and line continuations, split at `&&`, `||`, `;`, `|`, `|&`, `&` and newlines,
- * each command as its argument vector. See {@link ParsedCommandLine}
+ * each command as its argument vector. An unquoted `~` or `~/` that starts a word (or follows the
+ * `=` or a `:` of an assignment) is the home directory (`options.home`), `~user`, `~+` and `~-`
+ * are not understood. See {@link ParsedCommandLine}
  */
-export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
-  const { tokens, nested, unfinished } = lex(line);
+export function parseCommandLine(
+  line: string,
+  options: ParseOptions = {},
+  depth = 0
+): ParsedCommandLine {
+  const home = options.home ?? homedir();
+  const { tokens, nested, unfinished } = lex(line, home);
   const commands: ShellCommand[] = [];
   const candidates: ShellCommand[] = [];
   let certain = !unfinished && nested.length === 0;
@@ -991,21 +1030,35 @@ export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
       rest = rest.slice(1);
     }
     if (rest.some((word) => word.expands || word.globbed)) understood = false;
-    let argv = rest.map((word) => word.value);
-    if (argv[0] === 'env') {
+    const takeEnv = (words: string[]): string[] => {
+      if (basename(words[0] ?? '') !== 'env') return words;
       let i = 1;
-      while (argv[i] !== undefined && ASSIGNMENT.test(argv[i])) {
-        assigned.push(argv[i].slice(0, argv[i].indexOf('=')));
+      while (words[i] !== undefined && ASSIGNMENT.test(words[i])) {
+        assigned.push(words[i].slice(0, words[i].indexOf('=')));
         i++;
       }
-      if (argv[i]?.startsWith('-') || argv[i] === undefined) understood = false;
-      argv = argv.slice(i);
-    }
+      if (words[i]?.startsWith('-') || words[i] === undefined) understood = false;
+      return words.slice(i);
+    };
+    const argv = takeEnv(rest.map((word) => word.value));
     let effective = argv;
-    if (understood) {
-      const unwrapped = safeUnwrap(argv);
-      if (!unwrapped || unwrapped.length === 0) understood = false;
-      else effective = unwrapped;
+    for (let round = 0; understood; round++) {
+      if (round === MAX_UNWRAPS) {
+        understood = false;
+        break;
+      }
+      const unwrapped = safeUnwrap(effective);
+      if (!unwrapped || unwrapped.length === 0) {
+        understood = false;
+        break;
+      }
+      if (unwrapped.length !== effective.length && ASSIGNMENT.test(unwrapped[0])) {
+        understood = false;
+        break;
+      }
+      const next = takeEnv(unwrapped);
+      if (next.length === effective.length) break;
+      effective = next;
     }
     const program = effective[0] ?? '';
     if (RUNS_OTHER_CODE.has(basename(program)) || runsInlineCode(effective)) understood = false;
@@ -1058,7 +1111,9 @@ export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
     if (depth < MAX_DEPTH) {
       for (const inner of loose.lines) {
         candidates.push(
-          ...parseCommandLine(inner, depth + 1).candidates.map((entry) => placed(entry, here))
+          ...parseCommandLine(inner, { home }, depth + 1).candidates.map((entry) =>
+            placed(entry, here)
+          )
         );
       }
     }
@@ -1093,7 +1148,7 @@ export function parseCommandLine(line: string, depth = 0): ParsedCommandLine {
     for (const inner of nested) {
       if (inner.trim() === '') continue;
       candidates.push(
-        ...parseCommandLine(inner, depth + 1).candidates.map((entry) =>
+        ...parseCommandLine(inner, { home }, depth + 1).candidates.map((entry) =>
           placed(entry, moved ? undefined : '.')
         )
       );

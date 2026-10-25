@@ -172,7 +172,7 @@ export function targetCovers(target: RuleTarget, tool: Tool): boolean {
     case 'mcp': {
       const origin = tool.mcp;
       const literal = `mcp__${target.server}__`;
-      if (origin && mcpNamePart(origin.server) === target.server) {
+      if (origin && origin.server !== '' && mcpNamePart(origin.server) === target.server) {
         if (target.tool !== undefined) return mcpNamePart(origin.tool) === target.tool;
         if (target.toolGlob) return wildcardMatch(mcpNamePart(origin.tool), target.toolGlob);
         return true;

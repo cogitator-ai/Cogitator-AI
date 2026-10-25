@@ -415,7 +415,7 @@ export function mcpToCogitator(
   const annotations = Object.keys(hints).length > 0 ? hints : undefined;
   const idempotent = hints.readOnlyHint === true || hints.idempotentHint === true;
   const requiresApproval = approvalOf(mcpTool, options?.requiresApproval);
-  const server = options?.server ?? client.serverName;
+  const server = options?.server ?? client.serverName ?? '';
 
   const tool: Tool = {
     name,
@@ -425,7 +425,7 @@ export function mcpToCogitator(
     ...(outputSchema && { outputSchema }),
     ...(annotations && { annotations }),
     ...(requiresApproval && { requiresApproval }),
-    ...(server !== undefined && { mcp: { server, tool: mcpTool.name } }),
+    mcp: { server, tool: mcpTool.name },
 
     execute: async (params: unknown, context: ToolContext): Promise<unknown> => {
       return client.callTool(mcpTool.name, (params ?? {}) as Record<string, unknown>, {
@@ -484,11 +484,11 @@ export async function wrapMCPTools(
 ): Promise<Tool[]> {
   const definitions = await client.listToolDefinitions();
   const names = toolNames(definitions, options?.namePrefix ?? '');
-  const server = options?.server ?? client.serverName;
+  const server = options?.server ?? client.serverName ?? '';
   return definitions.map((def) =>
     mcpToCogitator(def, client, {
       ...options,
-      ...(server !== undefined && { server }),
+      server,
       name: names.get(def.name),
     })
   );

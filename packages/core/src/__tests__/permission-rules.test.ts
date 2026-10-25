@@ -1267,3 +1267,47 @@ describe('ninth review round', () => {
     expect(decision.decision).toBe(expected);
   });
 });
+
+describe('twelfth review round', () => {
+  const run = (command: string, settings: Omit<PermissionLayerSettings, 'layer'>) =>
+    resolvePermission(
+      ws('run_command'),
+      { command },
+      { mode: 'default', rules: rules(settings), needsApproval: true, workspace, projectRoot: root }
+    ).then((decision) => decision.decision);
+
+  it('reads ~ and ~/ as the home directory, and does not understand ~user', async () => {
+    const home = homedir();
+    expect(parseCommandLine('cat ~/.ssh/id_rsa').commands[0].argv[1]).toBe(`${home}/.ssh/id_rsa`);
+    expect(parseCommandLine('ls ~').commands[0].argv[1]).toBe(home);
+    expect(parseCommandLine('PATH=~/bin:~/x ls').commands[0].understood).toBe(true);
+    expect(parseCommandLine("cat '~/x'").commands[0].argv[1]).toBe('~/x');
+    expect(parseCommandLine('cat a~/x').commands[0].argv[1]).toBe('a~/x');
+    expect(parseCommandLine('cat ~root/x').certain).toBe(false);
+    expect(parseCommandLine('cat ~+/x').certain).toBe(false);
+    expect(parseCommandLine('cat ~/x', { home: '/h' }).commands[0].argv[1]).toBe('/h/x');
+    const ssh = { deny: ['Read(~/.ssh/**)'], allow: ['Bash'] };
+    expect(await run('cat ~/.ssh/id_rsa', ssh)).toBe('deny');
+    expect(await run('cat ~root/.ssh/id_rsa', ssh)).toBe('ask');
+    expect(await run('cat ~/.ssh/id_rsa', { deny: ['Bash(cat ~/.ssh/*)'], allow: ['Bash'] })).toBe(
+      'deny'
+    );
+  });
+
+  it.each([
+    'nice env PATH=/tmp/evil git status',
+    'env nice PATH=/tmp/evil git status',
+    'timeout 5 env PATH=/tmp/evil git status',
+    'nice timeout 5 env PATH=/tmp/evil git status',
+    'env PATH=/tmp/evil nice git status',
+    'time env PATH=/tmp/evil git status',
+  ])('finds the assignments of %j whatever the order of its wrappers', async (command) => {
+    const wrappers = ['nice', 'env', 'timeout', 'time', 'git'].map((name) => `Bash(${name} *)`);
+    expect(await run(command, { allow: wrappers })).toBe('ask');
+  });
+
+  it('allows wrappers around safe assignments as before', async () => {
+    expect(await run('nice env CI=1 git status', { allow: ['Bash(git status)'] })).toBe('allow');
+    expect(await run('git status', { allow: ['Bash(git status)'] })).toBe('allow');
+  });
+});
