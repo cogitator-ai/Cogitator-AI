@@ -1,5 +1,13 @@
 # @cogitator-ai/mcp
 
+## 19.7.2
+
+### Patch Changes
+
+- Updated dependencies [[`773cb9e`](https://github.com/cogitator-ai/Cogitator-AI/commit/773cb9e8f9d943f60bc3387ac3fbc0c9ebb4c130)]:
+  - @cogitator-ai/types@0.78.0
+  - @cogitator-ai/core@0.68.0
+
 ## 19.7.1
 
 ### Patch Changes

@@ -35,8 +35,8 @@
     "zod": "^4.6.5"
   },
   "peerDependencies": {
-    "@cogitator-ai/core": "workspace:>=0.67.0",
-    "@cogitator-ai/types": "workspace:>=0.77.0",
+    "@cogitator-ai/core": "workspace:>=0.68.0",
+    "@cogitator-ai/types": "workspace:>=0.78.0",
     "ai": "^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0"
   },
   "devDependencies": {

@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/a2a",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "description": "A2A (Agent-to-Agent) Protocol v0.3 implementation for Cogitator",
   "keywords": [
     "cogitator",
@@ -78,7 +78,7 @@
     "vitest": "^5.0.3"
   },
   "peerDependencies": {
-    "@cogitator-ai/core": "workspace:>=0.67.0",
+    "@cogitator-ai/core": "workspace:>=0.68.0",
     "express": ">=4.18.0",
     "fastify": ">=4.0.0",
     "hono": ">=4.0.0",
