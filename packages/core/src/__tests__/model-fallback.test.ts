@@ -305,17 +305,22 @@ describe('model fallback in a run', () => {
       llm: {
         backends: { primary: primary.backend, backup: backup.backend },
         retry: false,
-        modelCircuitBreaker: { resetTimeout: 30, halfOpenRequests: 1 },
+        modelCircuitBreaker: { resetTimeout: 60_000, halfOpenRequests: 1 },
       },
     });
 
-    await cog.run(writer(), { input: 'One' });
-    const skipped = await cog.run(writer(), { input: 'Two' });
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    const recovered = await cog.run(writer(), { input: 'Three' });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      await cog.run(writer(), { input: 'One' });
+      const skipped = await cog.run(writer(), { input: 'Two' });
+      vi.setSystemTime(Date.now() + 61_000);
+      const recovered = await cog.run(writer(), { input: 'Three' });
+      expect(skipped.modelUsed).toBe('backup/steady');
+      expect(recovered.modelUsed).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
 
-    expect(skipped.modelUsed).toBe('backup/steady');
-    expect(recovered.modelUsed).toBeUndefined();
     expect(primary.chat).toHaveBeenCalledTimes(2);
   });
 
