@@ -131,8 +131,13 @@ export interface ToolBatchEvent {
 /** The agent would stop with its final answer, for `beforeStop` */
 export interface RunStopEvent {
   readonly output: string;
-  /** How many times in a row `beforeStop` hooks kept the run going already */
+  /** How many times in a row `beforeStop` hooks kept the run going, counted since its last tool call */
   readonly continuations: number;
+  /**
+   * Whether a `beforeStop` hook kept the run going since its last user message (its input, or a
+   * message queued on its handle): Claude Code's `stop_hook_active`
+   */
+  readonly continued: boolean;
 }
 
 /** What keeps the run going instead of stopping, from `beforeStop` */

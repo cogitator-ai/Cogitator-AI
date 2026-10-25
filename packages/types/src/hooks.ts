@@ -151,12 +151,15 @@ export type HookSettings = Partial<Record<HookEventName, readonly HookMatcherGro
 /** Where the settings files of hooks are read, see `HooksConfig.settings` */
 export interface HookSettingsOptions extends Omit<PermissionSettingsOptions, 'trusted'> {
   /**
-   * Whether the project is trusted, so the hooks of its files (`.claude/settings.json`,
-   * `.claude/settings.local.json` and the `.cogitator/` ones) run. Default false: hooks run
-   * commands, so a repository's own hooks need the host's explicit trust. `permissions.settings`
-   * with `trusted: true` set trusts the project for hooks too
+   * Trust the project at `root` (the working directory of the process without one), so the hooks
+   * of its own files (`.claude/settings.json`, `.claude/settings.local.json` and the `.cogitator/`
+   * ones) run. Default false: hooks run commands, so a repository's own hooks need the host's
+   * explicit trust, and it holds for that root only, not for the workspace of every run.
+   * `permissions.settings` with `trusted: true` trusts its `root` for hooks too
    */
   trusted?: boolean;
+  /** Absolute project roots whose own hooks run, for a host that serves several projects */
+  trustedRoots?: readonly string[];
 }
 
 /** Calls MCP tools for `mcp_tool` hooks */
@@ -217,6 +220,13 @@ export interface HooksConfig {
   allowedHttpHookUrls?: readonly string[];
   /** Environment variables HTTP hook headers may name, on top of `httpHookAllowedEnvVars` of the files */
   httpHookAllowedEnvVars?: readonly string[];
+  /**
+   * The environment command hooks get: `inherit` (default) the process's own without `OTEL_*`,
+   * as Claude Code passes it, or `{ allow }` only the variables named (`PATH` among them when a
+   * hook calls programs by name). `CLAUDE_PROJECT_DIR` and `COGITATOR_PROJECT_DIR` are set either
+   * way. A server that holds secrets in its environment should allow only what hooks need
+   */
+  env?: 'inherit' | { allow: readonly string[] };
   /** Bytes of a command's stdout and of its stderr, or of an HTTP response, read at most (default 1 MiB) */
   maxOutputBytes?: number;
   /** Hears every handler run, for showing a hook's `systemMessage` to a person */

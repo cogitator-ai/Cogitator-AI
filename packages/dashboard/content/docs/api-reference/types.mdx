@@ -172,6 +172,8 @@ interface RunResult {
   readonly reflections?: readonly Reflection[];
   readonly reflectionSummary?: ReflectionSummary;
   readonly memory?: RunMemoryPlace; // where the run wrote in memory, when it wrote anything
+  readonly stopped?: { readonly reason: string; readonly middleware: string }; // a hook or middleware ended the run
+  readonly instructions?: readonly LoadedInstructionFile[]; // the project instruction files the run read
 }
 
 interface RunMemoryPlace {
@@ -227,7 +229,14 @@ interface RunCheckpointStore {
 interface RunMiddleware<TDeps = unknown> {
   readonly name: string;
   readonly holdsStream?: boolean; // a streamed turn's text waits until the turn is done
-  beforeRun?(event: RunInputEvent, context: RunMiddlewareContext<TDeps>): void | Promise<void>;
+  startRun?(
+    event: RunStartEvent,
+    context: RunMiddlewareContext<TDeps>
+  ): void | RunContextUpdate | Promise<void | RunContextUpdate>;
+  beforeRun?(
+    event: RunInputEvent,
+    context: RunMiddlewareContext<TDeps>
+  ): void | RunContextUpdate | Promise<void | RunContextUpdate>;
   beforeModel?(
     event: ModelTurnEvent,
     context: RunMiddlewareContext<TDeps>
@@ -246,14 +255,46 @@ interface RunMiddleware<TDeps = unknown> {
     next: (call: ToolCallRequest) => Promise<ToolResult>,
     context: RunMiddlewareContext<TDeps>
   ): Promise<ToolResult>;
+  beforeToolCall?(
+    event: ToolCallEvent,
+    context: RunMiddlewareContext<TDeps>
+  ): void | ToolCallVerdict | Promise<void | ToolCallVerdict>;
+  decideApproval?(
+    event: ApprovalRequestEvent,
+    context: RunMiddlewareContext<TDeps>
+  ): void | ToolApprovalDecision | Promise<void | ToolApprovalDecision>;
+  afterToolBatch?(
+    event: ToolBatchEvent,
+    context: RunMiddlewareContext<TDeps>
+  ): void | Promise<void>;
+  beforeStop?(
+    event: RunStopEvent,
+    context: RunMiddlewareContext<TDeps>
+  ): void | RunStopUpdate | Promise<void | RunStopUpdate>;
+  beforeCompaction?(
+    event: CompactionStartEvent,
+    context: RunMiddlewareContext<TDeps>
+  ): void | CompactionDecision | Promise<void | CompactionDecision>;
+  afterCompaction?(
+    event: CompactionEndEvent,
+    context: RunMiddlewareContext<TDeps>
+  ): void | Promise<void>;
+  beforeModelSwitch?(
+    event: ModelSwitchEvent,
+    context: RunMiddlewareContext<TDeps>
+  ): void | ModelSwitchDecision | Promise<void | ModelSwitchDecision>;
+  onNotification?(
+    event: RunNotification,
+    context: RunMiddlewareContext<TDeps>
+  ): void | Promise<void>;
   afterRun?(event: RunEndEvent, context: RunMiddlewareContext<TDeps>): void | Promise<void>;
 }
 
-interface RunEndEvent {
-  readonly result: RunResult;
-  readonly model: string; // the model the run ended on, as provider/model
-  readonly memoryAgentId: string; // the id the agent's memory items are kept under: its configured id, else its name
-}
+type RunEndEvent =
+  | { status: 'completed' | 'paused'; result: RunResult; model: string; memoryAgentId: string }
+  | { status: 'failed'; error: Error; model: string; memoryAgentId: string };
+// model: the model the run ended on, as provider/model
+// memoryAgentId: the id the agent's memory items are kept under: its configured id, else its name
 
 interface ModelCallRequest {
   request: ChatRequest;
@@ -269,9 +310,9 @@ interface ToolCallRequest {
 }
 ```
 
-`afterRun` is called once a run finished and its writes to memory settled, before `run()` returns. It is not called for a run that failed or paused, and an error it throws is logged without failing the run.
+`afterRun` is called once a run ended, before `run()` returns or throws: completed (its writes to memory settled), paused or failed. Check `event.status` before you read `event.result`. An error it throws is logged without changing the run's outcome.
 
-`RunMiddlewareContext` carries `runId`, `threadId`, `agentId`, `agentName`, `userId`, `channelType`, `channelId`, `iteration`, `signal`, `deps` and a `state` map the run's middleware share. See [Run Middleware](/docs/core/middleware).
+`RunMiddlewareContext` carries `runId`, `threadId`, `agentId`, `agentName`, `userId`, `channelType`, `channelId`, `iteration`, `signal`, `deps`, a `state` map the run's middleware share, `parentRunId`, `permissionMode`, and in a run `addContext(text)`, `stop(reason)` and `logEvent(event, note)`. See [Run Middleware](/docs/core/middleware).
 
 ## Tool Types
 

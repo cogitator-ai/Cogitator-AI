@@ -668,6 +668,12 @@ const RUN_OUTCOME_PROPERTIES = {
     enum: ['content_filter', 'refusal'],
     description: 'The provider withheld the answer',
   },
+  stopped: {
+    type: 'object',
+    properties: { reason: { type: 'string' }, middleware: { type: 'string' } },
+    required: ['reason', 'middleware'],
+    description: 'A hook or middleware ended the run before its next model call',
+  },
   iterationLimitReached: {
     type: 'boolean',
     enum: [true],

@@ -79,7 +79,7 @@ Every hook is optional. Each one gets the run's context as its last argument.
 
 ### Tool calls before the permissions
 
-`beforeToolCall({ toolCall, tool, resumed }, context)` runs for each call of a step before the [permissions](/docs/tools/permissions) decide it, and again for a call that waited in a paused run once `resume()` continues it. Return a `ToolCallVerdict`:
+`beforeToolCall({ toolCall, tool, resumed }, context)` runs for each call right before it starts (after the calls before it in the step ran, or as each is dispatched when calls run side by side) and before the [permissions](/docs/tools/permissions) decide it, and again for a call that waited in a paused run once `resume()` continues it. Return a `ToolCallVerdict`:
 
 | `decision` | Effect                                                                                                                              |
 | ---------- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -88,11 +88,11 @@ Every hook is optional. Each one gets the run's context as its last argument.
 | `allow`    | The call runs without asking when only the mode or the tool's own approval setting would ask. An `ask` or `deny` rule still applies |
 | `defer`    | The run pauses with the call waiting for approval, without asking `onApproval`                                                      |
 
-`updatedArguments` replaces the call's arguments: they are checked against the tool's schema and the permissions decide them, not the ones the model sent. With several middleware, `deny` wins over `defer`, over `ask`, over `allow`, and the last `updatedArguments` counts. Decisions a hook makes are logged with `decidedBy: 'hook'`.
+`updatedArguments` replaces the call's arguments: they are checked against the tool's schema and the permissions decide them, not the ones the model sent. `allow` skips only what the mode or the tool's own approval setting asks (in `dontAsk` and `auto` mode too, without the classifier), never a deny or ask rule or an ask that guards a deny rule. With several middleware, `deny` wins over `defer`, over `ask`, over `allow`, and the last `updatedArguments` counts. Decisions a hook makes are logged with `decidedBy: 'hook'`.
 
 `decideApproval({ request, tool }, context)` answers a call that asks, before `onApproval` and the guardrails' `onToolApproval`: return a `ToolApprovalDecision` (`{ approved: true }`, with `updatedArguments` when the permissions are set up, or `{ approved: false, reason }`) and nobody is asked. Return nothing to leave it to them.
 
-`afterToolBatch({ calls }, context)` runs once every call of a step has its result, before the next model call. `beforeStop({ output, continuations }, context)` runs when the agent would stop: `{ continueWith }` keeps it going with that message, saved as a user message. `continuations` counts how often in a row that happened, and the hooks are not asked once the run used every turn it may take.
+`afterToolBatch({ calls }, context)` runs once every call of a step has its result, before the next model call. `beforeStop({ output, continuations }, context)` runs when the agent would stop: `{ continueWith }` keeps it going with that message, saved as a user message. `continuations` counts how often in a row that happened since the agent's last tool call, `continued` whether it happened since the last user message, and the hooks are not asked once the run used every turn it may take.
 
 ### beforeModel
 

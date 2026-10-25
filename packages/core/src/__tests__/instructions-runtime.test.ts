@@ -150,4 +150,36 @@ describe('project instructions in a run', () => {
     expect(resumed.instructions?.map((file) => file.path)).toEqual(['AGENTS.md', 'app/CLAUDE.md']);
     await cog.close();
   });
+
+  it('brings what a call reached before a later call of its step paused the run', async () => {
+    const { cog, backend } = setup(
+      [
+        {
+          content: '',
+          toolCalls: [
+            { id: 'c1', name: 'read_file', arguments: { path: 'app/pkg/a.txt' } },
+            { id: 'c2', name: 'ask_human', arguments: {} },
+          ],
+          finishReason: 'tool_calls',
+        },
+      ],
+      { instructions: { projectFiles: true } }
+    );
+    const gate = { name: 'gate', beforeToolCall: () => undefined };
+    const paused = await cog.run(agent(), { input: 'go', threadId: 't3', middleware: [gate] });
+    expect(paused.status).toBe('paused');
+    expect(paused.checkpoint?.context?.join('\n')).toContain('The pkg folder is generated.');
+    await cog.resume(agent(), paused.checkpoint!, {
+      decisions: { c2: { approved: true } },
+      middleware: [gate],
+    });
+    const next = backend.getCalls()[1]?.messages ?? [];
+    expect(
+      next
+        .filter((message) => message.role === 'system')
+        .map((message) => String(message.content))
+        .join('\n')
+    ).toContain('The pkg folder is generated.');
+    await cog.close();
+  });
 });

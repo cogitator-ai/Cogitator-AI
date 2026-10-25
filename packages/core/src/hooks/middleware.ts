@@ -21,7 +21,8 @@ import type {
 } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
 import { tripwire } from '../middleware/tripwire';
-import { hookNamesOf, parseRule, ruleMatchesCall } from '../permissions';
+import { parseRule, ruleMatchesCall } from '../permissions';
+import { claudeToolOf, ownNamesOf, type ClaudeTool } from './claude-tools';
 import {
   capHookText,
   firstLine,
@@ -130,6 +131,8 @@ interface HandlerResult {
   blocks: boolean;
   /** Why it blocked or failed */
   reason?: string;
+  /** Set when the hook got the call in Claude Code's shape, to read its `updatedInput` back */
+  claude?: ClaudeTool;
 }
 
 /** What the handler of a type returned before its outcome is read */
@@ -179,7 +182,7 @@ export function hooksMiddleware(
       : config.settings === true
         ? {}
         : config.settings);
-  const cache = new HookSettingsCache(settings, config.hooks, (warning) =>
+  const cache = new HookSettingsCache(settings, config, (warning) =>
     getLogger().warn('Hook settings', { warning })
   );
   const maxBytes = config.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
@@ -219,13 +222,36 @@ export function hooksMiddleware(
     return compiled;
   };
 
-  const selected = async (call: HookCall, context: RunMiddlewareContext): Promise<LoadedHook[]> => {
+  /**
+   * The hooks an occurrence of an event selects. A tool event's matcher sees the tool's own names
+   * and Claude Code's name of it: a hook that matches only by Claude Code's name gets the call in
+   * Claude Code's shape (`claude`)
+   */
+  const selected = async (
+    call: HookCall,
+    context: RunMiddlewareContext
+  ): Promise<Array<{ hook: LoadedHook; claude?: ClaudeTool }>> => {
     const { hooks } = await hooksOf(context);
-    const chosen: LoadedHook[] = [];
+    const chosen: Array<{ hook: LoadedHook; claude?: ClaudeTool }> = [];
+    const own = call.tool ? ownNamesOf(call.tool.tool) : undefined;
+    const claudeTool = call.tool ? claudeToolOf(call.tool.tool) : undefined;
+    const claudeNames = claudeTool
+      ? claudeTool.name === 'Agent'
+        ? ['Agent', 'Task']
+        : [claudeTool.name]
+      : [];
     for (const hook of hooks) {
       if (hook.event !== call.event) continue;
-      if (!NO_MATCHER.has(call.event) && call.matchOn && !matcherOf(hook.matcher)(call.matchOn)) {
-        continue;
+      let claude: ClaudeTool | undefined;
+      if (!NO_MATCHER.has(call.event)) {
+        const matches = matcherOf(hook.matcher);
+        if (own) {
+          const byOwn = matches(own);
+          if (!byOwn && !(claudeNames.length > 0 && matches(claudeNames))) continue;
+          if (!byOwn) claude = claudeTool;
+        } else if (call.matchOn && !matches(call.matchOn)) {
+          continue;
+        }
       }
       const condition = hook.handler.if;
       if (condition !== undefined) {
@@ -252,7 +278,7 @@ export function hooksMiddleware(
         }
         if (!matched) continue;
       }
-      chosen.push(hook);
+      chosen.push({ hook, ...(claude && { claude }) });
     }
     return chosen;
   };
@@ -312,7 +338,7 @@ export function hooksMiddleware(
       run_id: context.runId,
       cwd: workspace ? resolve(workspace.root, workspace.cwd) : root,
       hook_event_name: call.event,
-      ...(context.permissionMode !== undefined && { permission_mode: context.permissionMode }),
+      permission_mode: context.permissionMode ?? 'default',
       agent_name: context.agentName,
       ...(context.parentRunId !== undefined && {
         agent_id: context.runId,
@@ -342,7 +368,7 @@ export function hooksMiddleware(
       return {
         hook,
         outcome: answered.outcome,
-        ...(answered.output && !answered.failed && { output: answered.output }),
+        ...(answered.output && { output: answered.output }),
         ...(answered.text !== undefined && !answered.failed && { text: answered.text }),
         ...(answered.answer && { answer: answered.answer }),
         blocks,
@@ -369,6 +395,7 @@ export function hooksMiddleware(
           cwd: directoryOr(root, process.cwd()),
           timeoutMs,
           maxBytes,
+          ...(config.env && { env: config.env }),
         };
         if (handler.async) {
           const state = stateOf(context);
@@ -393,28 +420,19 @@ export function hooksMiddleware(
         return finish(readCommand(await run.done));
       }
       case 'http': {
-        const allowlist = [
-          ...(config.allowedHttpHookUrls ?? []),
-          ...(loaded.allowedHttpHookUrls ?? []),
-        ];
-        const limited =
-          config.allowedHttpHookUrls !== undefined || loaded.allowedHttpHookUrls !== undefined;
-        if (limited && !urlAllowed(handler.url, allowlist)) {
+        const urlLists = loaded.allowedHttpHookUrls ?? [];
+        if (urlLists.some((list) => !urlAllowed(handler.url, list))) {
           warnOnce(context, 'An HTTP hook URL is not in allowedHttpHookUrls, the hook is skipped', {
             url: handler.url,
             source: hook.source,
           });
           return finish({ outcome: 'skipped', reason: 'the URL is not in allowedHttpHookUrls' });
         }
-        const globalEnv =
-          config.httpHookAllowedEnvVars !== undefined || loaded.httpHookAllowedEnvVars !== undefined
-            ? new Set([
-                ...(config.httpHookAllowedEnvVars ?? []),
-                ...(loaded.httpHookAllowedEnvVars ?? []),
-              ])
-            : undefined;
+        const envLists = loaded.httpHookAllowedEnvVars ?? [];
         const allowedEnv = new Set(
-          (handler.allowedEnvVars ?? []).filter((name) => !globalEnv || globalEnv.has(name))
+          (handler.allowedEnvVars ?? []).filter((name) =>
+            envLists.every((list) => list.includes(name))
+          )
         );
         const outcome = await postHook(handler, {
           input: json,
@@ -546,7 +564,18 @@ export function hooksMiddleware(
     if (hooks.length === 0) return [];
     const loaded = await hooksOf(context);
     const input = inputOf(call, context);
-    return Promise.all(hooks.map((hook) => runOne(hook, call, input, context, loaded)));
+    const root = context.workspace?.root ?? process.cwd();
+    return Promise.all(
+      hooks.map(async ({ hook, claude }) => {
+        if (!claude || !call.tool) return runOne(hook, call, input, context, loaded);
+        const shaped = {
+          ...input,
+          tool_name: claude.name,
+          tool_input: claude.input(call.tool.args, root),
+        };
+        return { ...(await runOne(hook, call, shaped, context, loaded)), claude };
+      })
+    );
   };
 
   /** Asks the run to stop for each `"continue": false`, true when one did */
@@ -591,6 +620,7 @@ export function hooksMiddleware(
     },
 
     async beforeRun(event, context) {
+      if (context.parentRunId !== undefined) return undefined;
       const results = await fire(
         { event: 'UserPromptSubmit', input: { prompt: event.input } },
         context
@@ -618,7 +648,6 @@ export function hooksMiddleware(
       const results = await fire(
         {
           event: 'PreToolUse',
-          matchOn: hookNamesOf(tool),
           tool: { tool, args: toolCall.arguments },
           input: {
             tool_name: tool.name,
@@ -666,7 +695,14 @@ export function hooksMiddleware(
           ...(decision && { decision }),
           ...(reason !== undefined && { reason }),
           ...(specific?.updatedInput &&
-            decision !== 'defer' && { updatedArguments: specific.updatedInput }),
+            decision !== 'defer' && {
+              updatedArguments: argumentsOf(
+                result,
+                specific.updatedInput,
+                toolCall.arguments,
+                context
+              ),
+            }),
         });
         if (specific?.additionalContext && decision !== 'defer') {
           extras.push(contextNote('PreToolUse', specific.additionalContext));
@@ -681,7 +717,6 @@ export function hooksMiddleware(
       const results = await fire(
         {
           event: 'PermissionRequest',
-          matchOn: hookNamesOf(tool),
           tool: { tool, args: request.arguments },
           input: {
             tool_name: tool.name,
@@ -719,7 +754,14 @@ export function hooksMiddleware(
         }
         allowed ??= {
           approved: true,
-          ...(decision.updatedInput && { updatedArguments: decision.updatedInput }),
+          ...(decision.updatedInput && {
+            updatedArguments: argumentsOf(
+              result,
+              decision.updatedInput,
+              request.arguments,
+              context
+            ),
+          }),
         };
       }
       return allowed;
@@ -735,7 +777,6 @@ export function hooksMiddleware(
       const results = await fire(
         {
           event: hookEvent,
-          matchOn: hookNamesOf(tool),
           tool: { tool, args: toolCall.arguments },
           input: {
             tool_name: tool.name,
@@ -832,7 +873,7 @@ export function hooksMiddleware(
           event: hookEvent,
           matchOn: [context.agentName],
           input: {
-            stop_hook_active: event.continuations > 0,
+            stop_hook_active: event.continued,
             last_assistant_message: event.output,
             background_tasks: [],
             session_crons: [],
@@ -969,6 +1010,17 @@ export function hooksMiddleware(
 
 const NEVER = new AbortController().signal;
 
+/** The arguments a hook's `updatedInput` gives the call, read back from Claude Code's shape */
+function argumentsOf(
+  result: HandlerResult,
+  input: Record<string, unknown>,
+  original: Record<string, unknown>,
+  context: RunMiddlewareContext
+): Record<string, unknown> {
+  if (!result.claude) return input;
+  return result.claude.args(input, original, context.workspace?.root ?? process.cwd());
+}
+
 /** The signal a handler of `call` stops with */
 function signalOf(call: HookCall, context: RunMiddlewareContext): AbortSignal {
   return call.detached ? NEVER : context.signal;
@@ -1053,6 +1105,14 @@ function readCommand(outcome: CommandOutcome): Answered {
   if (outcome.startError !== undefined) {
     return { outcome: 'error', failed: true, reason: `could not start: ${outcome.startError}` };
   }
+  if (outcome.heldOpen) {
+    return {
+      outcome: 'error',
+      failed: true,
+      reason:
+        'a process the hook left in the background kept its output open, it was killed and the output is not used (redirect its output)',
+    };
+  }
   if (outcome.aborted || outcome.exitCode === null) {
     return { outcome: 'error', failed: true, reason: 'the run was aborted' };
   }
@@ -1080,13 +1140,14 @@ function readCommand(outcome: CommandOutcome): Answered {
   }
   if (read.kind === 'json') {
     return {
-      outcome: 'success',
+      outcome: 'error',
       exitCode,
       output: read.output,
       failed: true,
-      reason: `exit code ${exitCode}`,
+      reason: `exit code ${exitCode}, the JSON it printed decides`,
     };
   }
+
   return {
     outcome: 'error',
     exitCode,

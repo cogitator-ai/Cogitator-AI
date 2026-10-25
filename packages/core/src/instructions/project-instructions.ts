@@ -432,7 +432,12 @@ export class ProjectInstructionsLoader {
   ): Promise<string | undefined> {
     signal?.throwIfAborted();
     try {
-      return normalizeText(await file.read());
+      const text = await file.read();
+      if (text.includes('\0')) {
+        this.warn(`${file.path} is a binary file, so it is skipped`);
+        return undefined;
+      }
+      return normalizeText(text);
     } catch (error) {
       this.warn(`${file.path} could not be read (${messageOf(error)}), so it is skipped`);
       return undefined;
@@ -909,7 +914,15 @@ function cutAt(text: string, limit: number): string {
 }
 
 function renderBlock(path: string, content: string): string {
-  return `<${BLOCK_TAG} path="${escapeAttribute(path)}">\n${content}\n</${BLOCK_TAG}>`;
+  return `<${BLOCK_TAG} path="${escapeAttribute(path)}">\n${neutralized(content)}\n</${BLOCK_TAG}>`;
+}
+
+/**
+ * `content` with the tags of the blocks taken apart, so a file cannot close its own block or open
+ * one that names another file
+ */
+function neutralized(content: string): string {
+  return content.replace(new RegExp(`<(/?)${BLOCK_TAG}`, 'gi'), '&lt;$1' + BLOCK_TAG);
 }
 
 function escapeAttribute(value: string): string {

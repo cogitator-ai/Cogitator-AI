@@ -3,15 +3,16 @@
  * as the permission rules
  */
 
+import { realpathSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import {
   HOOK_EVENTS,
   type HookEventName,
   type HookHandlerConfig,
-  type HookSettings,
   type HookSettingsOptions,
+  type HooksConfig,
   type PermissionLayer,
 } from '@cogitator-ai/types';
 import {
@@ -36,10 +37,13 @@ export interface LoadedHook {
 /** The hooks a project's runs use, with the HTTP allowlists of every layer */
 export interface LoadedHooks {
   hooks: LoadedHook[];
-  /** URL patterns HTTP hooks may post to, undefined while no layer sets any */
-  allowedHttpHookUrls?: string[];
-  /** Environment variables HTTP hook headers may name, undefined while no layer limits them */
-  httpHookAllowedEnvVars?: string[];
+  /**
+   * Lists of URL patterns an HTTP hook's URL must match each of, undefined while no layer sets
+   * any: the managed list, the ceiling, and the other layers' together, which only narrow it
+   */
+  allowedHttpHookUrls?: string[][];
+  /** Lists of environment variables a header may name, each of them, as `allowedHttpHookUrls` */
+  httpHookAllowedEnvVars?: string[][];
   warnings: string[];
   files: Map<string, number>;
   dirs: Map<string, string>;
@@ -119,6 +123,9 @@ const UNSUPPORTED_EVENTS = new Set([
   'ElicitationResult',
 ]);
 
+/** Handler fields of Claude Code that Cogitator does not act on, warned about when set */
+const UNSUPPORTED_FIELDS = ['asyncRewake', 'once'] as const;
+
 /**
  * The handlers of a `hooks` value (a settings file's, or the one in code), each with where it came
  * from. Problems go to `warnings`, the handlers they concern are left out
@@ -165,6 +172,13 @@ export function readHookSettings(
           );
           continue;
         }
+        for (const field of UNSUPPORTED_FIELDS) {
+          if (isRecord(entry) && Object.hasOwn(entry, field)) {
+            warnings.push(
+              `${source}: hooks.${name}[${index}].hooks[${at}] sets ${field}, which Cogitator does not support, it is ignored`
+            );
+          }
+        }
         loaded.push({
           event: name,
           handler: handler.data as HookHandlerConfig,
@@ -207,14 +221,15 @@ interface FileHooks {
  * permission rules are read (managed, local, project, user, the `.claude/` and `.cogitator/` files),
  * with `code` (the hooks given in code) on top. `disableAllHooks` takes the value of the highest
  * layer that sets it, and only a managed one turns managed hooks off. `allowManagedHooksOnly` in
- * a managed file leaves out the user, project and local hooks. An untrusted project's files
- * (`trusted` not true) give no hooks, and nothing else either
+ * a managed file leaves out the user, project and local hooks. The project's own files count
+ * only for a trusted project (see {@link trustsProject}), an untrusted one's give nothing
  */
 export async function loadHookSettings(
   root: string,
   options: HookSettingsOptions | undefined,
-  code: HookSettings | undefined
+  code: CodeHooks | undefined
 ): Promise<LoadedHooks> {
+  const trusted = options !== undefined && trustsProject(options, root);
   const warnings: string[] = [];
   const files = new Map<string, number>();
   const dirs = new Map<string, string>();
@@ -232,10 +247,10 @@ export async function loadHookSettings(
           read.hooks !== undefined ||
           read.disableAllHooks !== undefined ||
           read.allowedHttpHookUrls !== undefined;
-        if (project && options.trusted !== true) {
+        if (project && !trusted) {
           if (mentions) {
             warnings.push(
-              `${file}: the project is not trusted, its hooks are ignored (set hooks.settings.trusted to run them)`
+              `${file}: the project ${root} is not trusted, its hooks are ignored (trust it with hooks.settings.trusted and root, or trustedRoots)`
             );
           }
           continue;
@@ -263,7 +278,7 @@ export async function loadHookSettings(
   }
   const disabledBy = fromFiles.find((file) => file.disableAllHooks !== undefined);
   const managedOnly = fromFiles.some((file) => file.allowManagedHooksOnly === true);
-  const hooks: LoadedHook[] = readHookSettings(code, 'session', 'code', warnings);
+  const hooks: LoadedHook[] = readHookSettings(code?.hooks, 'session', 'code', warnings);
   for (const file of fromFiles) {
     if (disabledBy?.disableAllHooks === true) {
       if (disabledBy.layer === 'managed' || file.layer !== 'managed') continue;
@@ -271,18 +286,64 @@ export async function loadHookSettings(
     if (managedOnly && file.layer !== 'managed') continue;
     hooks.push(...file.hooks);
   }
-  const urls = fromFiles.flatMap((file) => file.allowedHttpHookUrls ?? []);
-  const anyUrls = fromFiles.some((file) => file.allowedHttpHookUrls !== undefined);
-  const envs = fromFiles.flatMap((file) => file.httpHookAllowedEnvVars ?? []);
-  const anyEnvs = fromFiles.some((file) => file.httpHookAllowedEnvVars !== undefined);
+  const urls = layeredLists(fromFiles, code?.allowedHttpHookUrls, 'allowedHttpHookUrls');
+  const envs = layeredLists(fromFiles, code?.httpHookAllowedEnvVars, 'httpHookAllowedEnvVars');
   return {
     hooks: dedupe(hooks),
-    ...(anyUrls && { allowedHttpHookUrls: urls }),
-    ...(anyEnvs && { httpHookAllowedEnvVars: envs }),
+    ...(urls && { allowedHttpHookUrls: urls }),
+    ...(envs && { httpHookAllowedEnvVars: envs }),
     warnings,
     files,
     dirs,
   };
+}
+
+/** The hooks and HTTP allowlists given in code, see `HooksConfig` */
+export type CodeHooks = Pick<
+  HooksConfig,
+  'hooks' | 'allowedHttpHookUrls' | 'httpHookAllowedEnvVars'
+>;
+
+/**
+ * Whether the project at `root` is trusted: it is one of `trustedRoots`, or `trusted` is true and
+ * it is the `root` the options name (the working directory of the process without one). Paths
+ * are compared once symlinks are followed
+ */
+export function trustsProject(options: HookSettingsOptions, root: string): boolean {
+  const real = realOf(root);
+  const roots = [
+    ...(options.trustedRoots ?? []),
+    ...(options.trusted === true ? [options.root ?? process.cwd()] : []),
+  ];
+  return roots.some((trusted) => realOf(trusted) === real);
+}
+
+function realOf(path: string): string {
+  try {
+    return realpathSync(resolve(path));
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * The allowlists an HTTP hook must pass each of: the managed files' list is the ceiling, the
+ * lists of the other layers and the code together narrow it. Without a managed list the others
+ * together are the one list, as Claude Code merges them. Undefined while nobody sets one
+ */
+function layeredLists(
+  files: readonly FileHooks[],
+  code: readonly string[] | undefined,
+  field: 'allowedHttpHookUrls' | 'httpHookAllowedEnvVars'
+): string[][] | undefined {
+  const managed = files.filter((file) => file.layer === 'managed' && file[field] !== undefined);
+  const lower = files.filter((file) => file.layer !== 'managed' && file[field] !== undefined);
+  const lists: string[][] = [];
+  if (managed.length > 0) lists.push(managed.flatMap((file) => file[field] ?? []));
+  if (lower.length > 0 || code !== undefined) {
+    lists.push([...lower.flatMap((file) => file[field] ?? []), ...(code ?? [])]);
+  }
+  return lists.length > 0 ? lists : undefined;
 }
 
 function listField(
@@ -363,7 +424,7 @@ export class HookSettingsCache {
 
   constructor(
     private readonly options: HookSettingsOptions | undefined,
-    private readonly code: HookSettings | undefined,
+    private readonly code: CodeHooks | undefined,
     private readonly warn: (warning: string) => void
   ) {}
 

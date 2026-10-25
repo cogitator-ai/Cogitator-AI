@@ -638,7 +638,7 @@ Commands, HTTP endpoints, model prompts and MCP tools that run at points of a ru
 ```typescript
 const cog = new Cogitator({
   hooks: {
-    settings: { trusted: true }, // also the hooks of .claude/settings*.json, ~/.claude, managed files
+    settings: { root: '/srv/repo', trusted: true }, // also .claude/settings*.json of that root, ~/.claude, managed files
     hooks: {
       PreToolUse: [
         {
@@ -659,7 +659,7 @@ const cog = new Cogitator({
 });
 ```
 
-A command gets the event's JSON on stdin (never on its command line) and answers with its exit code (2 blocks, with stderr as the reason) and JSON on stdout (`permissionDecision`, `updatedInput`, `additionalContext`, `decision`, `continue`, `updatedToolOutput`...), in its own process group killed at its `timeout`, with `CLAUDE_PROJECT_DIR` and `COGITATOR_PROJECT_DIR` set. HTTP hooks post the JSON to their URL only (no redirects, `allowedHttpHookUrls`), prompt hooks ask a model for `{ ok, reason }`, `mcp_tool` hooks call a tool through `hooks.mcp`. `PreToolUse` runs before the permission rules (`allow` skips an approval only the mode or the tool would ask for, an `ask` rule still asks, `defer` pauses the run), `PermissionRequest` answers an approval before `onApproval`. A project's own hooks run only once it is trusted, every handler run is logged as a `custom` entry and reported to `hooks.onHookRun`. The hooks are the run middleware `cogitator:hooks`, outermost. Nothing runs without `hooks`. See [Hooks](https://cogitator.app/docs/core/hooks).
+A command gets the event's JSON on stdin (never on its command line) and answers with its exit code (2 blocks, with stderr as the reason) and JSON on stdout (`permissionDecision`, `updatedInput`, `additionalContext`, `decision`, `continue`, `updatedToolOutput`...), in its own process group killed at its `timeout`, with `CLAUDE_PROJECT_DIR` and `COGITATOR_PROJECT_DIR` set. HTTP hooks post the JSON to their URL only (no redirects, `allowedHttpHookUrls`), prompt hooks ask a model for `{ ok, reason }`, `mcp_tool` hooks call a tool through `hooks.mcp`. `PreToolUse` runs before the permission rules (`allow` skips an approval only the mode or the tool would ask for, an `ask` rule still asks, `defer` pauses the run), `PermissionRequest` answers an approval before `onApproval`. `PreToolUse` runs for each call right before it starts, and a hook that matches Claude Code's tool names (`Bash`, `Read`, `Edit`...) gets Claude Code's input shape. A project's own hooks run only for a trusted root (`trusted` with `root`, or `trustedRoots`), `hooks.env: { allow }` narrows the environment of commands, every handler run is logged as a `custom` entry and reported to `hooks.onHookRun`. The hooks are the run middleware `cogitator:hooks`, outermost. Nothing runs without `hooks`. See [Hooks](https://cogitator.app/docs/core/hooks).
 
 ### Project Instructions
 

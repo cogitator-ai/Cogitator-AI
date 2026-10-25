@@ -375,7 +375,7 @@ setInterval(() => {}, 1000);`
     const runs: HookRunRecord[] = [];
     const { cog } = setup([turn(call('c1', 'note', { text: 'a' }))], {
       hooks: {
-        hooks: { PreToolUse: [{ hooks: [command(hook, { timeout: 1 })] }] },
+        hooks: { PreToolUse: [{ hooks: [command(hook, { timeout: 5 })] }] },
         onHookRun: (run) => runs.push(run),
       },
     });
@@ -741,7 +741,11 @@ describe('subagents, model switches, logs and trust', () => {
       join(root, '.claude', 'settings.json'),
       JSON.stringify({ hooks: { PreToolUse: [{ hooks: [command(hook)] }] } })
     );
-    const places = { userDirs: [join(base, 'user')], managedDirs: [join(base, 'managed')] };
+    const places = {
+      root,
+      userDirs: [join(base, 'user')],
+      managedDirs: [join(base, 'managed')],
+    };
     const untrusted = setup([turn(call('c1', 'note', { text: 'a' }))], {
       hooks: { settings: places },
     });
@@ -763,6 +767,13 @@ describe('subagents, model switches, logs and trust', () => {
     await byPermissions.cog.run(agent(), { input: 'go' });
     expect(seen(hook.log)).toHaveLength(2);
     await byPermissions.cog.close();
+
+    const otherRoot = setup([turn(call('c4', 'note', { text: 'd' }))], {
+      hooks: { settings: { ...places, root: join(base, 'elsewhere'), trusted: true } },
+    });
+    await otherRoot.cog.run(agent(), { input: 'go' });
+    expect(seen(hook.log)).toHaveLength(2);
+    await otherRoot.cog.close();
   });
 
   it('runs user settings hooks and honors disableAllHooks of a higher layer', async () => {
@@ -773,7 +784,7 @@ describe('subagents, model switches, logs and trust', () => {
       join(user, 'settings.json'),
       JSON.stringify({ hooks: { PreToolUse: [{ hooks: [command(hook)] }] } })
     );
-    const places = { userDirs: [user], managedDirs: [join(base, 'managed')], trusted: true };
+    const places = { root, userDirs: [user], managedDirs: [join(base, 'managed')], trusted: true };
     const on = setup([turn(call('c1', 'note', { text: 'a' }))], { hooks: { settings: places } });
     await on.cog.run(agent(), { input: 'go' });
     expect(seen(hook.log)).toHaveLength(1);

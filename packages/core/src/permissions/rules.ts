@@ -52,20 +52,6 @@ const CLAUDE_NAMES: Record<string, RuleTarget> = {
   TodoWrite: { kind: 'names', names: ['write_todos'] },
 };
 
-/**
- * The names a hook matcher matches `tool` by: its own, its MCP name (`mcp__<server>__<tool>`)
- * and the Claude Code names that cover it (`Bash` for `run_command`, `Edit` and `Write` for
- * `write_file`)
- */
-export function hookNamesOf(tool: Tool): string[] {
-  const names = new Set([tool.name, mcpName(tool)]);
-  for (const [name, target] of Object.entries(CLAUDE_NAMES)) {
-    if (target.kind === 'names' && target.names.length === 0) continue;
-    if (targetCovers(target, tool)) names.add(name);
-  }
-  return [...names];
-}
-
 /** Claude Code tools Cogitator has no counterpart for: a rule naming one matches nothing */
 const UNMAPPED_CLAUDE_NAMES = new Set([
   'NotebookRead',

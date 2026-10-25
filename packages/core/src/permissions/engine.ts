@@ -218,6 +218,13 @@ export interface PermissionContext {
    */
   trustRepository?: boolean;
   /**
+   * A hook allowed the call: what only the mode or the tool's own approval setting would ask for
+   * runs without asking, before the `auto` classifier and the `dontAsk` refusal. Deny and ask
+   * rules, plan mode and the asks that guard a deny or ask rule (a command line or a list of files
+   * the rules cannot check) still apply
+   */
+  allowedByHook?: boolean;
+  /**
    * Whether path rules compare names without case and so match `SECRET.TXT` with `secret.txt`.
    * By default the file system of the workspace root is probed once (APFS and NTFS ignore case)
    */
@@ -916,6 +923,9 @@ async function decide(
   const editAsks = subject.kind === 'edit' || hidden;
   if (!context.needsApproval && !editAsks) {
     return decision('allow', 'default', `${tool.name} needs no approval`);
+  }
+  if (context.allowedByHook && !hidden) {
+    return decision('allow', 'hook', 'Allowed by a hook');
   }
   const reason = hidden
     ? 'The command line is not plain enough to tell whether it runs a command or reads a file a deny or ask rule names'

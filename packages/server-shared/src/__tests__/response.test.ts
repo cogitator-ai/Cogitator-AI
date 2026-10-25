@@ -31,6 +31,18 @@ describe('toAgentRunResponse', () => {
     });
   });
 
+  it('says when a hook or middleware stopped the run', () => {
+    const result = {
+      ...conformanceRunResult('thread-1'),
+      stopped: { reason: 'tests are red', middleware: 'cogitator:hooks' },
+    };
+    expect(toAgentRunResponse(result).stopped).toEqual({
+      reason: 'tests are red',
+      middleware: 'cogitator:hooks',
+    });
+    expect(toAgentRunResponse(conformanceRunResult('thread-1'))).not.toHaveProperty('stopped');
+  });
+
   it('never carries the system prompt, the history, trace spans or provider state', () => {
     const text = JSON.stringify(toAgentRunResponse(conformanceRunResult('thread-1')));
     expect(text).not.toContain('SECRET OPERATOR INSTRUCTIONS');

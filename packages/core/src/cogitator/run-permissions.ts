@@ -190,6 +190,12 @@ export interface PermissionCall {
   mode?: PermissionMode;
   /** The budget the model call of the `auto` classifier would pass, so the call is not made */
   classifierBudget?: () => BudgetUsage | undefined;
+  /**
+   * A hook allowed the call (`beforeToolCall` returned `allow`): what only the mode or the tool's
+   * own approval setting would ask for runs without asking, and the `auto` classifier is not asked.
+   * Deny and ask rules, and the asks that guard a deny rule, still apply
+   */
+  allowedByHook?: boolean;
 }
 
 /**
@@ -427,6 +433,14 @@ export class RunPermissions {
     call: PermissionCall
   ): Promise<PermissionDecision> {
     if (!this.active) {
+      if (call.needsApproval && call.allowedByHook) {
+        return {
+          decision: 'allow',
+          reason: 'Allowed by a hook',
+          decidedBy: 'hook',
+          mode: 'default',
+        };
+      }
       return call.needsApproval
         ? {
             decision: 'ask',
@@ -449,6 +463,7 @@ export class RunPermissions {
       mode,
       rules: this.rules(call.skillRules),
       needsApproval: call.needsApproval,
+      ...(call.allowedByHook && { allowedByHook: true }),
       ...this.context(call.workspace),
       planTools: this.planTools,
       trustRepository: this.options.service.settingsOptions?.trusted === true,

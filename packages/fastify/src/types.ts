@@ -481,6 +481,10 @@ export const AgentRunResponseSchema = {
     truncated: { type: 'boolean' },
     blocked: { type: 'string', enum: ['content_filter', 'refusal'] },
     iterationLimitReached: { type: 'boolean' },
+    stopped: {
+      type: 'object',
+      properties: { reason: { type: 'string' }, middleware: { type: 'string' } },
+    },
     traceId: { type: 'string' },
     pendingApprovals: {
       type: 'array',

@@ -336,6 +336,10 @@ export const AgentRunResponse = z
       .literal(true)
       .optional()
       .describe("Tool calls used up the agent's maxIterations before the model answered"),
+    stopped: z
+      .object({ reason: z.string(), middleware: z.string() })
+      .optional()
+      .describe('A hook or middleware ended the run before its next model call'),
     traceId: z.string().describe('Links the answer to the server traces'),
   })
   .describe(

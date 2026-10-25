@@ -231,6 +231,10 @@ export const FinishEventSchema = z
       .literal(true)
       .optional()
       .describe("Tool calls used up the agent's maxIterations before the model answered"),
+    stopped: z
+      .object({ reason: z.string(), middleware: z.string() })
+      .optional()
+      .describe('A hook or middleware ended the run before its next model call'),
   })
   .describe(
     'The last event of a stream, sent before `data: [DONE]`. For an agent run it carries the thread and the outcome fields of AgentRunResponse'

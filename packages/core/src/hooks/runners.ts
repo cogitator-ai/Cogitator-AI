@@ -3,7 +3,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import type { CommandHookHandler, HttpHookHandler } from '@cogitator-ai/types';
+import type { CommandHookHandler, HooksConfig, HttpHookHandler } from '@cogitator-ai/types';
 
 /** How a command hook ended */
 export interface CommandOutcome {
@@ -17,6 +17,11 @@ export interface CommandOutcome {
   startError?: string;
   /** Whether stdout or stderr went past the byte limit and was cut */
   truncated: boolean;
+  /**
+   * Whether a process the hook left in the background held its output open after it exited: the
+   * group was killed and what it printed is not trusted
+   */
+  heldOpen: boolean;
   durationMs: number;
 }
 
@@ -41,13 +46,15 @@ export interface CommandOptions {
   signal?: AbortSignal;
   /** The platform whose shell runs the shell form (default this process's) */
   platform?: NodeJS.Platform;
+  /** Which variables of the process's environment it gets, see `HooksConfig.env` */
+  env?: HooksConfig['env'];
 }
 
 const PLACEHOLDERS = ['CLAUDE_PROJECT_DIR', 'COGITATOR_PROJECT_DIR'] as const;
 
 /**
- * Milliseconds a command's output is still read after it exits: a process it left in the
- * background with its output not redirected would otherwise hold the hook open
+ * Milliseconds a command's output is still read after it exits. A process it left in the
+ * background with its output not redirected would hold the hook open: its group is killed then
  */
 const CLOSE_GRACE_MS = 2000;
 
@@ -58,12 +65,18 @@ function substitute(text: string, projectDir: string): string {
 
 /**
  * The environment of a hook process: the process's own without the `OTEL_*` exporter variables
- * (as Claude Code removes them), and the project root under its two names
+ * (as Claude Code removes them), or only the variables `policy` allows, and the project root
+ * under its two names
  */
-export function hookEnvironment(projectDir: string): NodeJS.ProcessEnv {
+export function hookEnvironment(
+  projectDir: string,
+  policy: HooksConfig['env'] = 'inherit'
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
+  const allowed = policy === 'inherit' ? undefined : new Set(policy.allow);
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined || key.startsWith('OTEL_')) continue;
+    if (allowed && !allowed.has(key)) continue;
     env[key] = value;
   }
   env.CLAUDE_PROJECT_DIR = projectDir;
@@ -112,17 +125,23 @@ export function startCommand(handler: CommandHookHandler, options: CommandOption
   const stderr = new Capped(options.maxBytes);
   let timedOut = false;
   let aborted = false;
-  let killed = false;
+  /**
+   * Kills the hook's process group, also once its leader exited: a process it left in the
+   * background is in the group still. A group that is gone already is no error
+   */
   const kill = () => {
-    if (killed || child?.exitCode !== null || child.signalCode !== null) return;
-    killed = true;
-    try {
-      if (group && child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
-      else child.kill('SIGKILL');
-    } catch {
-      child.kill('SIGKILL');
+    if (!child) return;
+    if (group && child.pid !== undefined) {
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') child.kill('SIGKILL');
+      }
+      return;
     }
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   };
+  let heldOpen = false;
   let closing: ReturnType<typeof setTimeout> | undefined;
   const done = new Promise<CommandOutcome>((resolve) => {
     const finish = (exitCode: number | null, startError?: string) => {
@@ -137,6 +156,7 @@ export function startCommand(handler: CommandHookHandler, options: CommandOption
         aborted,
         ...(startError !== undefined && { startError }),
         truncated: stdout.cut || stderr.cut,
+        heldOpen,
         durationMs: Date.now() - started,
       });
     };
@@ -151,7 +171,7 @@ export function startCommand(handler: CommandHookHandler, options: CommandOption
     try {
       child = spawn(file, args, {
         cwd: options.cwd,
-        env: hookEnvironment(options.projectDir),
+        env: hookEnvironment(options.projectDir, options.env),
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: group,
         windowsHide: true,
@@ -173,6 +193,8 @@ export function startCommand(handler: CommandHookHandler, options: CommandOption
     running.stderr?.on('data', (chunk: Buffer) => stderr.add(chunk));
     running.on('exit', () => {
       closing = setTimeout(() => {
+        heldOpen = true;
+        kill();
         running.stdout?.destroy();
         running.stderr?.destroy();
       }, CLOSE_GRACE_MS);

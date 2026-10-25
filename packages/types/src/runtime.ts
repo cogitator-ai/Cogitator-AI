@@ -785,6 +785,11 @@ export interface RunCheckpoint {
      * decision for such a call decides these arguments, not the ones the model sent
      */
     changed?: ToolApprovalRequest[];
+    /**
+     * Calls of `changed` whose approval the `beforeToolCall` middleware (the `PreToolUse` hooks)
+     * asked for as the call started: the arguments there are the ones a decision approves
+     */
+    admitted?: string[];
   };
   /**
    * What the run waits on, approvals among them (`kind: 'approval'`), and the answers given so
@@ -869,6 +874,11 @@ export interface RunCheckpoint {
   };
   /** The project instruction files the run read before it paused, see `RunResult.instructions` */
   instructions?: LoadedInstructionFile[];
+  /**
+   * What middleware and hooks added for the model's next call before the run paused
+   * (`RunMiddlewareContext.addContext`), so the resumed run sends it
+   */
+  context?: string[];
 }
 
 /** Where a run's entries went in the thread's tree of memory */

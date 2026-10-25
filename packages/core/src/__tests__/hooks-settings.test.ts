@@ -10,7 +10,7 @@ import type {
   ToolCall,
 } from '@cogitator-ai/types';
 import { compileMatcher } from '../hooks/middleware';
-import { loadHookSettings, readHookSettings } from '../hooks/settings';
+import { loadHookSettings, readHookSettings, trustsProject } from '../hooks/settings';
 import { readStdout } from '../hooks/output';
 import { MiddlewarePipeline, middlewareStop } from '../middleware/pipeline';
 import { compactionMiddleware } from '../middleware/builtins';
@@ -63,6 +63,17 @@ describe('readHookSettings', () => {
       expect.stringContaining('Nope is not a hook event'),
       expect.stringContaining('hooks.Stop is not a list'),
     ]);
+    const more: string[] = [];
+    readHookSettings(
+      { Stop: [{ hooks: [{ type: 'command', command: 'x', once: true, asyncRewake: true }] }] },
+      'user',
+      'u.json',
+      more
+    );
+    expect(more).toEqual([
+      expect.stringContaining('sets asyncRewake'),
+      expect.stringContaining('sets once'),
+    ]);
   });
 });
 
@@ -85,10 +96,8 @@ describe('loadHookSettings', () => {
     });
     const loaded = await loadHookSettings(
       project(),
-      { ...places(), trusted: true },
-      {
-        Stop: [{ hooks: [command('code')] }],
-      }
+      { ...places(), root: project(), trusted: true },
+      { hooks: { Stop: [{ hooks: [command('code')] }] } }
     );
     expect(loaded.hooks.map((hook) => [hook.layer, hook.handler])).toEqual([
       ['session', { type: 'command', command: 'code' }],
@@ -103,7 +112,30 @@ describe('loadHookSettings', () => {
     });
     const loaded = await loadHookSettings(project(), places(), undefined);
     expect(loaded.hooks).toEqual([]);
-    expect(loaded.warnings).toEqual([expect.stringContaining('the project is not trusted')]);
+    expect(loaded.warnings).toEqual([expect.stringContaining('is not trusted')]);
+  });
+
+  it('trusts the configured root only, or the trustedRoots', async () => {
+    write(join(project(), '.claude', 'settings.json'), {
+      hooks: { Stop: [{ hooks: [command('project')] }] },
+    });
+    const other = join(base, 'other');
+    expect(trustsProject({ root: project(), trusted: true }, project())).toBe(true);
+    expect(trustsProject({ root: other, trusted: true }, project())).toBe(false);
+    expect(trustsProject({ trustedRoots: [other, project()] }, project())).toBe(true);
+    expect(trustsProject({ trusted: true }, project())).toBe(false);
+    const elsewhere = await loadHookSettings(
+      project(),
+      { ...places(), root: other, trusted: true },
+      undefined
+    );
+    expect(elsewhere.hooks).toEqual([]);
+    const listed = await loadHookSettings(
+      project(),
+      { ...places(), trustedRoots: [project()] },
+      undefined
+    );
+    expect(listed.hooks.map((hook) => hook.handler)).toEqual([command('project')]);
   });
 
   it('keeps managed hooks only under allowManagedHooksOnly, and their own disableAllHooks', async () => {
@@ -123,14 +155,28 @@ describe('loadHookSettings', () => {
     expect(off.hooks).toEqual([]);
   });
 
-  it('collects the HTTP allowlists of every layer', async () => {
+  it('collects the HTTP allowlists, the managed one as a ceiling the others only narrow', async () => {
     write(join(base, 'user', 'settings.json'), {
       allowedHttpHookUrls: ['https://a.example/*'],
       httpHookAllowedEnvVars: ['TOKEN'],
     });
-    const loaded = await loadHookSettings(project(), places(), undefined);
-    expect(loaded.allowedHttpHookUrls).toEqual(['https://a.example/*']);
-    expect(loaded.httpHookAllowedEnvVars).toEqual(['TOKEN']);
+    const loaded = await loadHookSettings(project(), places(), {
+      allowedHttpHookUrls: ['https://b.example/*'],
+    });
+    expect(loaded.allowedHttpHookUrls).toEqual([['https://a.example/*', 'https://b.example/*']]);
+    expect(loaded.httpHookAllowedEnvVars).toEqual([['TOKEN']]);
+
+    write(join(base, 'managed', 'managed-settings.json'), {
+      allowedHttpHookUrls: ['https://a.example/hooks/*'],
+      httpHookAllowedEnvVars: ['TOKEN', 'OTHER'],
+    });
+    const capped = await loadHookSettings(project(), places(), undefined);
+    expect(capped.allowedHttpHookUrls).toEqual([
+      ['https://a.example/hooks/*'],
+      ['https://a.example/*'],
+    ]);
+    expect(capped.httpHookAllowedEnvVars).toEqual([['TOKEN', 'OTHER'], ['TOKEN']]);
+
     const none = await loadHookSettings(
       join(base, 'other'),
       { managedDirs: [], userDirs: [] },
@@ -253,10 +299,9 @@ describe('the pipeline of the new events', () => {
       description: 'T',
     };
     expect(await pipeline.decideApproval({ request, tool }, context())).toEqual({ approved: true });
-    expect(await pipeline.beforeStop({ output: 'x', continuations: 0 }, context())).toEqual([
-      'first',
-      'second',
-    ]);
+    expect(
+      await pipeline.beforeStop({ output: 'x', continuations: 0, continued: false }, context())
+    ).toEqual(['first', 'second']);
   });
 
   it('lets beforeCompaction keep a turn from being compacted', async () => {

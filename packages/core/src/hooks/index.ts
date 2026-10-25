@@ -5,5 +5,13 @@ export {
   type HookModelAsker,
   type HooksMiddlewareDeps,
 } from './middleware';
-export { loadHookSettings, readHookSettings, type LoadedHook, type LoadedHooks } from './settings';
+export {
+  loadHookSettings,
+  readHookSettings,
+  trustsProject,
+  type CodeHooks,
+  type LoadedHook,
+  type LoadedHooks,
+} from './settings';
+export { claudeToolOf, type ClaudeTool } from './claude-tools';
 export { readStdout, type HookOutput } from './output';
