@@ -1,0 +1,75 @@
+---
+title: Project Instructions
+description: The runtime reads a workspace's AGENTS.md and CLAUDE.md files into the agent's system prompt, with @path imports, path-scoped rules and a size limit.
+---
+
+## Overview
+
+A repository set up for coding agents keeps its conventions in `AGENTS.md` (and `CLAUDE.md` for Claude Code). With `instructions.projectFiles` the runtime reads them from the run's [workspace](/docs/tools/workspace) into the agent's system prompt, after the agent's own instructions:
+
+```typescript
+const cog = new Cogitator({
+  instructions: { projectFiles: true },
+});
+
+const coder = new Agent({
+  name: 'coder',
+  instructions: 'You fix bugs.',
+  tools: workspaceTools(),
+  workspace: new LocalWorkspace({ root: '/repo', cwd: 'packages/api' }),
+});
+
+const result = await cog.run(coder, { input: 'Why does the login test fail?' });
+console.log(result.instructions);
+// [{ path: 'AGENTS.md', reason: 'project', chars: 812 }, { path: 'packages/api/AGENTS.md', ... }]
+```
+
+It is off by default, and a run without a workspace reads nothing.
+
+## Which Files
+
+In each directory from the workspace root down to its `cwd`, the files `AGENTS.md`, `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md`, in that order, root first, so the files closer to where the agent works come last and read as more specific. A file whose content another one brought already (a `CLAUDE.md` that is a symlink to `AGENTS.md`, or imports it) is read once. `files` names other ones. Claude Code by default reads `AGENTS.md` only where there is no `CLAUDE.md`, here both are read, as its `claude-md-and-agents-md` setting does.
+
+Block-level HTML comments (`<!-- maintainer notes -->`) outside code blocks are left out, as Claude Code does.
+
+## Imports
+
+A file can bring others with `@path`: `See @docs/testing.md` or `@README`. The path is relative to the importing file, `/abs` absolute, `~/` the home directory. `\ ` escapes a space, and an `@` inside a code span or a fenced block, or in the middle of a word (`user@example.com`), is no import. An imported file goes right after the one that imports it, and imports can import, up to `maxImportDepth` hops (4). Each file is read once, so a cycle stops.
+
+An import must stay inside the workspace: a path elsewhere, or a symlink out of it, is skipped with a warning, unless it lies in one of `allowImportsFrom`, absolute directories you allow.
+
+## Rules and Nested Files
+
+The `.md` files of `.claude/rules/` (in subdirectories too) of those directories are rules. A rule without frontmatter `paths` joins the instructions. A rule with `paths` (a YAML list or a comma-separated string of globs, relative to the directory that holds `.claude`) joins the conversation the first time a tool reads or edits a file it matches:
+
+```markdown
+---
+paths:
+  - 'src/api/**/*.ts'
+---
+
+API handlers validate their input with Zod.
+```
+
+The instruction files of a directory below the `cwd` load the same way, once a tool reads or edits a file there (`nested: false` turns that off). They reach the model as a system message after the step's tool results, saved to the thread, and a run that finds them in its history does not bring them again. A tool takes part through `ToolConfig.access` (`{ kind: 'read' | 'edit', paths }`), as the workspace tools do.
+
+## Size Limit
+
+Everything the files bring in a run shares `maxChars` (32 000 characters). The file at the limit is cut, the ones after it are left out, and the instructions end with a notice naming what was cut and left out, so the model knows it does not have all of them.
+
+## What Is Loaded
+
+`result.instructions` lists every file the run read, in prompt order, with why (`project`, `import`, `rule`, `nested`, `scoped`), what imported it, its characters and whether the limit cut it. The thread's log gets a `custom` entry `{ kind: 'instructions', files }` for each batch, and a paused run keeps the list in its checkpoint for its resume. Problems with a file are logged as warnings, the run goes on without it.
+
+## Options
+
+| Option             | Default                                                          |
+| ------------------ | ---------------------------------------------------------------- |
+| `files`            | `AGENTS.md`, `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md` |
+| `rules`            | `true`                                                           |
+| `nested`           | `true`                                                           |
+| `maxImportDepth`   | `4`                                                              |
+| `allowImportsFrom` | none                                                             |
+| `maxChars`         | `32000`                                                          |
+
+`ProjectInstructionsLoader` reads them yourself: `new ProjectInstructionsLoader(workspace, options).load()` gives the text and the files, `reach(paths)` what tools reaching those paths bring.

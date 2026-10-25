@@ -65,6 +65,9 @@ import type {
   SessionSpend,
   BudgetLimits,
   BudgetUsage,
+  HookSettingsOptions,
+  ProjectInstructionsOptions,
+  ToolCallVerdict,
 } from '@cogitator-ai/types';
 import { memoryAgentId, type Agent } from './agent';
 import { ToolRegistry } from './registry';
@@ -182,13 +185,15 @@ import {
 import { MEMORY_AGENTS, noteThreadRun } from './cogitator/message-builder';
 import { normalizeTurn } from './llm/turn';
 import { withPiiDecisions, withPiiMasking } from './security/pii';
-import { canonicalArguments, MiddlewarePipeline } from './middleware/pipeline';
+import { canonicalArguments, MiddlewarePipeline, middlewareStop } from './middleware/pipeline';
 import {
   compactionMiddleware,
   guardrailsMiddleware,
   piiMiddleware,
   promptInjectionMiddleware,
+  type CompactionNotices,
 } from './middleware/builtins';
+import { hooksMiddleware } from './hooks/middleware';
 import {
   clearedToolOutputsAttributes,
   clearToolOutputsMiddleware,
@@ -231,7 +236,7 @@ import {
 } from './cogitator/message-builder';
 import { RunMemory } from './cogitator/run-memory';
 import { toAbortError } from './utils/abort';
-import { RunHarness, todosRecall } from './cogitator/harness';
+import { RunHarness, todosRecall, touchedPaths } from './cogitator/harness';
 import { parseKeptTodos, TODOS_METADATA_KEY, type KeptTodos } from './tools/write-todos';
 import { createSpan, getTextContent } from './cogitator/span-factory';
 import {
@@ -484,6 +489,101 @@ function offeredToolChoice(
   return choice;
 }
 
+/**
+ * The permission decision for a call with what the `beforeToolCall` middleware said about it: a
+ * deny stays, `ask` and `defer` make an allowed call ask. An `allow` was decided by the
+ * permissions already (`PermissionCall.allowedByHook`)
+ */
+function hookedVerdict(
+  decision: PermissionDecision,
+  hooked: ToolCallVerdict | undefined
+): PermissionDecision {
+  const said = hooked?.decision;
+  if (!said || said === 'deny' || decision.decision === 'deny') return decision;
+  if (said === 'allow') return decision;
+  if (decision.decision === 'ask' && said === 'ask') return decision;
+  return {
+    decision: 'ask',
+    decidedBy: 'hook',
+    mode: decision.mode,
+    reason:
+      hooked.reason ??
+      (said === 'defer' ? 'A hook deferred the call' : 'A hook asks for approval of this call'),
+  };
+}
+
+/** Who answered an approval and how, for its record: a person, or a hook */
+function answeredBy(
+  byHook: boolean,
+  decision: ToolApprovalDecision
+): { decidedBy: 'user' | 'hook'; reason: string } {
+  const who = byHook ? 'a hook' : 'the user';
+  return {
+    decidedBy: byHook ? 'hook' : 'user',
+    reason: decision.approved
+      ? `Approved by ${who}`
+      : `Declined by ${who}${decision.reason ? `: ${decision.reason}` : ''}`,
+  };
+}
+
+/** What the model reads for a call an approval declined */
+function declinedError(byHook: boolean, reason: string | undefined): string {
+  return `${byHook ? 'A hook' : 'The user'} declined this tool call${reason ? `: ${reason}` : ''}`;
+}
+
+/** A tool result as the conversation holds it, for a call that ran before a pause */
+function resultOfMessage(call: ToolCall, message: Message): ToolResult {
+  const text = getTextContent(message.content);
+  if (text.startsWith('{"error"')) {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (typeof parsed === 'object' && parsed !== null && 'error' in parsed) {
+        return { callId: call.id, name: call.name, result: null, error: String(parsed.error) };
+      }
+    } catch {
+      return { callId: call.id, name: call.name, result: text };
+    }
+  }
+  return { callId: call.id, name: call.name, result: text };
+}
+
+/** What a call of a step gets when a middleware stopped the run before the call started */
+function notStartedAtStop(toolCall: ToolCall): ToolResult {
+  return {
+    callId: toolCall.id,
+    name: toolCall.name,
+    result: null,
+    error: 'Not started: the run was stopped',
+  };
+}
+
+const STOPPED_TURN_ID = 'cogitator:stopped';
+
+/**
+ * What a model call answers when a middleware stopped the run before it was sent: nothing, at no
+ * cost, so the run ends without the call
+ */
+function stoppedTurn(): ChatResponse {
+  return {
+    id: STOPPED_TURN_ID,
+    content: '',
+    finishReason: 'stop',
+    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+  };
+}
+
+function isStoppedTurn(response: ChatResponse): boolean {
+  return response.id === STOPPED_TURN_ID;
+}
+
+/** Puts `notes` as system messages right after the system prompt (and the system notes after it) */
+function afterSystemPrompt(messages: Message[], notes: readonly string[]): void {
+  if (notes.length === 0) return;
+  let at = 0;
+  while (at < messages.length && messages[at]?.role === 'system') at++;
+  messages.splice(at, 0, ...notes.map((content): Message => ({ role: 'system', content })));
+}
+
 /** A finished turn with no text and no tool calls: nothing a caller could use as an answer. */
 function isEmptyAnswer(response: ChatResponse): boolean {
   return (
@@ -562,6 +662,14 @@ export class Cogitator implements ToolInvoker {
   private memoryBriefLayer?: RunMiddleware;
   private memoryUpkeepLayer?: MemoryUpkeep;
   private memoryExtractionLayer?: RunMiddleware;
+  private hooksLayer?: RunMiddleware;
+  /** The middleware of each run going on and the context they get, for compaction notices */
+  private readonly runPipelines = new Map<
+    string,
+    () => { pipeline: MiddlewarePipeline; context: RunMiddlewareContext }
+  >();
+  /** Approvals a `decideApproval` middleware or a hook gave, not a person */
+  private readonly hookDecisions = new WeakSet<ToolApprovalDecision>();
   /** What the `afterRun` hooks of a run spent on the model, by run, added to its usage */
   private readonly afterRunSpend = new Map<
     string,
@@ -829,7 +937,7 @@ export class Cogitator implements ToolInvoker {
     args: unknown,
     ...[options = {}]: InvocationArgs<TDeps>
   ): Promise<ToolInvocationResult> {
-    const toolCall: ToolCall = {
+    let toolCall: ToolCall = {
       id: options.toolCallId ?? `call_${nanoid(12)}`,
       name: tool.name,
       arguments: isArgumentRecord(args) ? args : {},
@@ -873,8 +981,76 @@ export class Cogitator implements ToolInvoker {
       },
     });
     const baseTool: Tool = tool;
+    let reported: PermissionDecision | undefined;
+    const withPermission = (result: ToolInvocationResult): ToolInvocationResult => {
+      const permission = lastDecision ?? reported;
+      return permissions.active && permission ? { ...result, permission } : result;
+    };
+    const runId = options.runId ?? `run_${nanoid(12)}`;
+    const middleware = new MiddlewarePipeline([
+      ...this.hooksMiddlewareLayers(),
+      ...(this.config.middleware ?? []),
+      ...(agent?.config.middleware ?? []),
+      ...this.builtinMiddleware(),
+    ]);
+    const middlewareContext: RunMiddlewareContext = {
+      runId,
+      agentId,
+      agentName: agent?.name ?? agentId,
+      iteration: 0,
+      signal: signal ?? new AbortController().signal,
+      state: new Map(),
+      ...(options.threadId !== undefined && { threadId: options.threadId }),
+      ...(options.userId !== undefined && { userId: options.userId }),
+      ...(options.channelType !== undefined && { channelType: options.channelType }),
+      ...(options.channelId !== undefined && { channelId: options.channelId }),
+      ...(options.topicId !== undefined && { topicId: options.topicId }),
+      ...(options.conversationId !== undefined && { conversationId: options.conversationId }),
+      ...(options.deps !== undefined && { deps: options.deps }),
+      ...(workspace && { workspace }),
+      ...(permissions.active && { permissionMode: permissions.mode }),
+    };
+    const hooked = middleware.checksToolCalls
+      ? await middleware.beforeToolCall(
+          { toolCall, tool: baseTool, resumed: false },
+          middlewareContext
+        )
+      : undefined;
+    const refusedByHook = async (reason: string): Promise<ToolInvocationResult> => {
+      await permissions.record({
+        toolCallId: toolCall.id,
+        toolName: tool.name,
+        decision: 'deny',
+        decidedBy: 'hook',
+        mode: permissions.mode,
+        reason,
+      });
+      return withPermission({
+        callId: toolCall.id,
+        name: tool.name,
+        result: null,
+        error: `Permission denied: ${reason}`,
+        errorCode: 'PERMISSION_DENIED',
+      });
+    };
+    if (hooked?.decision === 'deny') {
+      return refusedByHook(hooked.reason ?? 'a hook refused the call');
+    }
+    if (hooked?.updatedArguments) {
+      const parsed =
+        typeof baseTool.parameters.safeParse === 'function'
+          ? baseTool.parameters.safeParse(hooked.updatedArguments)
+          : undefined;
+      if (parsed && !parsed.success) {
+        return refusedByHook(
+          `the arguments a hook changed the call to do not match the tool's schema: ${parsed.error.message}`
+        );
+      }
+      toolCall = { ...toolCall, arguments: hooked.updatedArguments };
+    }
     const permissionCall: PermissionCall = {
       toolCallId: toolCall.id,
+      ...(hooked?.decision === 'allow' && { allowedByHook: true }),
       needsApproval:
         needsApproval(baseTool, toolCall.arguments) ||
         constitutionalAI?.toolNeedsApproval(baseTool, toolCall.arguments) === true,
@@ -888,9 +1064,11 @@ export class Cogitator implements ToolInvoker {
         ...(signal && { signal }),
       }),
     };
-    const verdict = await permissions.decide(baseTool, toolCall.arguments, permissionCall);
-    const withPermission = (result: ToolInvocationResult): ToolInvocationResult =>
-      permissions.active ? { ...result, permission: lastDecision ?? verdict } : result;
+    const verdict = hookedVerdict(
+      await permissions.decide(baseTool, toolCall.arguments, permissionCall),
+      hooked
+    );
+    reported = verdict;
     const event = (decision: PermissionDecision): PermissionDecisionEvent => ({
       ...decision,
       toolCallId: toolCall.id,
@@ -909,7 +1087,7 @@ export class Cogitator implements ToolInvoker {
     }
 
     let approvedByUser = verdict.decision === 'allow' && verdict.decidedBy !== 'default';
-    let personApproved = false;
+    let personApproved = verdict.decision === 'allow' && verdict.decidedBy === 'hook';
     let changedJudged = false;
     let callToRun = toolCall;
     if (verdict.decision === 'allow') await permissions.record(event(verdict));
@@ -931,7 +1109,14 @@ export class Cogitator implements ToolInvoker {
           mode: verdict.mode,
         }),
       };
-      const deciding = this.decideApproval(request, options.onApproval);
+      const deciding =
+        hooked?.decision === 'defer'
+          ? Promise.resolve('pause' as const)
+          : this.decideApproval(request, options.onApproval, {
+              pipeline: middleware,
+              context: middlewareContext,
+              tool: baseTool,
+            });
       let decision: Awaited<typeof deciding>;
       try {
         decision = await (signal ? waitForAbortable(deciding, signal) : deciding);
@@ -949,25 +1134,20 @@ export class Cogitator implements ToolInvoker {
           pendingApproval: request,
         });
       }
+      const answer = answeredBy(this.hookDecisions.has(decision), decision);
       if (!decision.approved) {
-        await permissions.record({
-          ...event(verdict),
-          decision: 'deny',
-          decidedBy: 'user',
-          reason: `Declined by the user${decision.reason ? `: ${decision.reason}` : ''}`,
-        });
+        await permissions.record({ ...event(verdict), decision: 'deny', ...answer });
         return withPermission({
           callId: toolCall.id,
           name: tool.name,
           result: null,
-          error: `The user declined this tool call${decision.reason ? `: ${decision.reason}` : ''}`,
+          error: declinedError(this.hookDecisions.has(decision), decision.reason),
         });
       }
       let answered: PermissionDecisionEvent = {
         ...event(verdict),
         decision: 'allow',
-        decidedBy: 'user',
-        reason: 'Approved by the user',
+        ...answer,
       };
       const updated = this.acceptedUpdate(decision, permissions);
       if (updated) {
@@ -1004,7 +1184,6 @@ export class Cogitator implements ToolInvoker {
 
     const registry = new ToolRegistry();
     registry.register(tool);
-    const runId = options.runId ?? `run_${nanoid(12)}`;
     let changedRequest: ToolApprovalRequest | undefined;
     const result = await runToolCall({
       registry,
@@ -1058,7 +1237,11 @@ export class Cogitator implements ToolInvoker {
               ...(options.userId !== undefined && { userId: options.userId }),
             },
             decide: (request) => {
-              const deciding = this.decideApproval(request, options.onApproval);
+              const deciding = this.decideApproval(request, options.onApproval, {
+                pipeline: middleware,
+                context: middlewareContext,
+                tool: changedTool,
+              });
               return signal ? waitForAbortable(deciding, signal) : deciding;
             },
           });
@@ -1102,29 +1285,8 @@ export class Cogitator implements ToolInvoker {
         onUpdate: (progress: ToolProgress) =>
           options.onUpdate?.({ ...progress, callId: toolCall.id, name: tool.name }),
       }),
-      middleware: new MiddlewarePipeline([
-        ...(this.config.middleware ?? []),
-        ...(agent?.config.middleware ?? []),
-        ...this.builtinMiddleware(),
-      ]),
-      context: {
-        runId,
-        agentId,
-        agentName: agent?.name ?? agentId,
-        iteration: 0,
-        signal: signal ?? new AbortController().signal,
-        state: new Map(),
-        ...(options.threadId !== undefined && { threadId: options.threadId }),
-        ...(options.userId !== undefined && { userId: options.userId }),
-        ...(options.channelType !== undefined && { channelType: options.channelType }),
-        ...(options.channelId !== undefined && { channelId: options.channelId }),
-        ...(options.topicId !== undefined && { topicId: options.topicId }),
-        ...(options.conversationId !== undefined && { conversationId: options.conversationId }),
-        ...(options.deps !== undefined && { deps: options.deps }),
-        ...((options.workspace ?? agent?.config.workspace) && {
-          workspace: options.workspace ?? agent?.config.workspace,
-        }),
-      },
+      middleware,
+      context: middlewareContext,
     });
     return withPermission(
       changedRequest && result.errorCode === 'PERMISSION_DENIED'
@@ -1187,6 +1349,7 @@ export class Cogitator implements ToolInvoker {
           memory: () => this.state.memoryAdapter,
           summarizer: (model, run) => this.summarizerFor(model, run),
           windowOf: (model) => this.servedWindow(model),
+          notices: this.compactionNotices(),
         }
       );
     }
@@ -1204,12 +1367,91 @@ export class Cogitator implements ToolInvoker {
       ...(injectionDetector ? [promptInjectionMiddleware(injectionDetector)] : []),
       ...(constitutionalAI ? [guardrailsMiddleware(constitutionalAI)] : []),
       ...(this.clearingLayer ? [this.clearingLayer] : []),
-      ...(contextManager ? [compactionMiddleware(contextManager)] : []),
+      ...(contextManager ? [compactionMiddleware(contextManager, this.compactionNotices())] : []),
       ...(this.memoryExtractionLayer ? [this.memoryExtractionLayer] : []),
       ...(this.memoryCompactionLayer ? [this.memoryCompactionLayer] : []),
       ...(this.memoryUpkeepLayer ? [this.memoryUpkeepLayer] : []),
       ...(this.memoryBriefLayer ? [this.memoryBriefLayer] : []),
     ];
+  }
+
+  /**
+   * How the runtime's compactions ask the run's middleware first (`beforeCompaction`) and tell them
+   * after (`afterCompaction`): the middleware of the run named by the context's `runId`
+   */
+  private compactionNotices(): CompactionNotices {
+    return {
+      before: async (context, event) => {
+        const run = this.runPipelines.get(context.runId)?.();
+        if (!run) return { skip: false };
+        const decided = await run.pipeline.beforeCompaction(event, run.context);
+        return decided.skip
+          ? { skip: true, ...(decided.reason !== undefined && { reason: decided.reason }) }
+          : { skip: false };
+      },
+      after: async (context, event) => {
+        const run = this.runPipelines.get(context.runId)?.();
+        if (run) await run.pipeline.afterCompaction(event, run.context);
+      },
+    };
+  }
+
+  /**
+   * The middleware the hooks of `hooks` become, outermost in every run: the hooks in code and
+   * those of the settings files, read where the permission settings are read unless `hooks.settings`
+   * names other places, a project's own only once it is trusted. None without `hooks`
+   */
+  private hooksMiddlewareLayers(): RunMiddleware[] {
+    const hooks = this.config.hooks;
+    if (!hooks) return [];
+    const settings = this.hookSettings();
+    this.hooksLayer ??= hooksMiddleware(hooks, {
+      ...(settings && { settings }),
+      ...(this.config.llm?.defaultModel !== undefined && {
+        defaultModel: this.config.llm.defaultModel,
+      }),
+      ask: async ({ model, system, prompt, signal, runSignal }) => {
+        const { backend, model: name } = this.route(model);
+        const response = await backend.chat({
+          model: name,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: prompt },
+          ],
+          temperature: 0,
+          signal,
+        });
+        this.classifierCharges.get(runSignal)?.(response.usage, model);
+        return response.content;
+      },
+    });
+    return [this.hooksLayer];
+  }
+
+  /**
+   * Where the hooks' settings files are read, see `HooksConfig.settings`: `true` takes the places
+   * of `permissions.settings`, and a `permissions.settings.trusted: true` trusts its root (the
+   * process's working directory without one) for hooks too, that root only
+   */
+  private hookSettings(): HookSettingsOptions | undefined {
+    const own = this.config.hooks?.settings;
+    if (own === undefined || own === false) return undefined;
+    const permission = this.config.permissions?.settings;
+    const shared = typeof permission === 'object' ? permission : undefined;
+    const inherited = shared?.trusted === true ? [shared.root ?? process.cwd()] : [];
+    if (own === true) {
+      const { trusted: _trusted, ...places } = shared ?? {};
+      return { ...places, ...(inherited.length > 0 && { trustedRoots: inherited }) };
+    }
+    const roots = [...(own.trustedRoots ?? []), ...(own.trusted === undefined ? inherited : [])];
+    return { ...own, ...(roots.length > 0 && { trustedRoots: roots }) };
+  }
+
+  /** The project instruction files runs read, see `InstructionsConfig.projectFiles` */
+  private projectInstructions(): ProjectInstructionsOptions | undefined {
+    const files = this.config.instructions?.projectFiles;
+    if (files === undefined || files === false) return undefined;
+    return files === true ? {} : files;
   }
 
   /**
@@ -1655,6 +1897,14 @@ export class Cogitator implements ToolInvoker {
     const rootSpanId = newSpanId();
     let releaseRunSlot: (() => void) | undefined;
     let budget: RunBudget | undefined;
+    /** Set once a middleware asked to end the run, see `RunMiddlewareContext.stop` */
+    let stopRequest: { reason: string; middleware: string } | undefined;
+    /** Set once the run returned or threw: what middleware add then reaches no model call */
+    let runEnded = false;
+    /** Tells the run's middleware it failed (`afterRun`), once they exist */
+    let endFailed: ((error: Error) => Promise<void>) | undefined;
+    /** Model calls of hooks before the run's usage is counted (`startRun`, `beforeRun`), charged once it is */
+    const earlyCharges: Array<{ usage: ChatResponse['usage']; model: string }> = [];
     options = this.withObservers(options, agent, () => runId);
 
     try {
@@ -1663,6 +1913,9 @@ export class Cogitator implements ToolInvoker {
       let answeredNow: RunInterrupt[] = [];
       releaseRunSlot = await this.acquireRunSlot(abortController.signal);
       throwIfAborted(abortController.signal);
+      this.classifierCharges.set(abortController.signal, (usage, model) => {
+        earlyCharges.push({ usage, model });
+      });
       if (!checkpoint) {
         options.onRunStart?.({ runId, agentId: agent.id, input: options.input, threadId });
       }
@@ -1750,8 +2003,10 @@ export class Cogitator implements ToolInvoker {
       let iterations = checkpoint?.iterations ?? 0;
 
       const builtins = this.builtinMiddleware();
+      const hookLayers = this.hooksMiddlewareLayers();
       const pipelineFor = (owner: Agent) =>
         new MiddlewarePipeline([
+          ...hookLayers,
           ...(this.config.middleware ?? []),
           ...(owner.config.middleware ?? []),
           ...(options.middleware ?? []),
@@ -1761,7 +2016,23 @@ export class Cogitator implements ToolInvoker {
       const middlewareState = new Map<string, unknown>();
       const workspaceOf = (owner: Agent): Workspace | undefined =>
         options.workspace ?? owner.config.workspace;
+      const parentRunId = currentToolRuns()
+        .filter((id) => id !== runId)
+        .at(-1);
+      /** What middleware added for the next model call, see `RunMiddlewareContext.addContext` */
+      const pendingContext: string[] = [];
+      const stopRun = middlewareStop((reason, middleware) => {
+        stopRequest ??= { reason, middleware };
+      });
+      let permissionsRef: RunPermissions | undefined;
       const middlewareContext = (): RunMiddlewareContext => ({
+        ...(parentRunId !== undefined && { parentRunId }),
+        ...(permissionsRef?.active && { permissionMode: permissionsRef.mode }),
+        addContext: (text: string) => {
+          if (!runEnded && text.trim() !== '') pendingContext.push(text);
+        },
+        stop: stopRun,
+        logEvent: (event, note) => runMemory.event(active.id, { type: 'custom', event }, note),
         runId,
         threadId,
         agentId: active.id,
@@ -1788,11 +2059,14 @@ export class Cogitator implements ToolInvoker {
           });
         }
       };
+      this.runPipelines.set(runId, () => ({ pipeline, context: middlewareContext() }));
+      const instructionOptions = this.projectInstructions();
       const harness = new RunHarness({
         conversation: () => messages,
         registry: () => registry,
         workspaceOf,
         signal: abortController.signal,
+        ...(instructionOptions && { instructions: instructionOptions }),
         onTodos: async (todos) => {
           reportTodos(todos);
           await this.keepTodos(threadId, todos, runMemory);
@@ -1822,6 +2096,7 @@ export class Cogitator implements ToolInvoker {
           );
         },
       });
+      permissionsRef = permissions;
       control.modes?.attach(permissions);
       permissions.onModeChange((mode) => {
         runMemory
@@ -1874,12 +2149,39 @@ export class Cogitator implements ToolInvoker {
       let contextPartitions: BuiltContext['partitions'] | undefined;
       let sentItemIds: string[] = [];
 
+      endFailed = async (error) => {
+        await pipeline.afterRun(
+          {
+            status: 'failed',
+            error,
+            model: this.pricedModel(effectiveModel, routeProvider),
+            memoryAgentId: memoryAgentId(agent),
+          },
+          middlewareContext()
+        );
+      };
       if (checkpoint) {
         input = checkpoint.input;
         effectiveModel = checkpoint.model;
         routeProvider = checkpoint.provider;
         ({ backend, model } = this.turnRoute(effectiveModel, routeProvider));
         messages = [...checkpoint.messages];
+        if (checkpoint.instructions) harness.restoreInstructions(checkpoint.instructions);
+        if (checkpoint.context) pendingContext.push(...checkpoint.context);
+        if (pipeline.startsRuns) {
+          const started = await waitForAbortable(
+            pipeline.startRun(
+              { source: 'resume', resumed: true, input, model: effectiveModel },
+              middlewareContext()
+            ),
+            abortController.signal
+          );
+          const held = new Set(messages.map((message) => getTextContent(message.content)));
+          afterSystemPrompt(
+            messages,
+            started.filter((text) => !held.has(text))
+          );
+        }
       } else {
         input = await buildInputWithAudio(options.input, options.audio, {
           apiKey:
@@ -1916,6 +2218,21 @@ export class Cogitator implements ToolInvoker {
         }
 
         if (!runMemory.aside) await this.abandonPausedRun(agent, runOptions, threadId);
+        if (pipeline.startsRuns) await this.openForStart(threadId, options, runMemory);
+        const started = pipeline.startsRuns
+          ? await waitForAbortable(
+              pipeline.startRun(
+                {
+                  source: await this.sessionSource(threadId, options),
+                  resumed: false,
+                  input,
+                  model: effectiveModel,
+                },
+                middlewareContext()
+              ),
+              abortController.signal
+            )
+          : [];
         const budgetTools = harness.schemas(registry, options.history ?? [], forcedTool);
         messages = await this.prepareMessages(
           agent,
@@ -1944,6 +2261,20 @@ export class Cogitator implements ToolInvoker {
           this.config.memory?.contextBuilder?.maxTokens === undefined
         ) {
           messages = await this.fitToModel(messages, effectiveModel, agent, historyTools);
+        }
+        afterSystemPrompt(messages, started);
+        if (harness.instructions.length > 0) {
+          await runMemory.event(
+            agent.id,
+            {
+              type: 'custom',
+              event: {
+                kind: 'instructions',
+                files: harness.instructions.map((file) => ({ ...file })),
+              },
+            },
+            `Read the project instructions of ${harness.instructions.map((file) => file.path).join(', ')}`
+          );
         }
       }
 
@@ -2037,7 +2368,7 @@ export class Cogitator implements ToolInvoker {
             .find((usage) => usage !== undefined)
         );
       };
-      this.classifierCharges.set(abortController.signal, (usage, model) => {
+      const charge = (usage: ChatResponse['usage'], model: string) => {
         const spentBefore = costMeter.total(costModel);
         costMeter.add(usage, model);
         const cost = costMeter.total(costModel) - spentBefore;
@@ -2062,7 +2393,9 @@ export class Cogitator implements ToolInvoker {
           outputTokens: usage.outputTokens,
           cost,
         });
-      });
+      };
+      this.classifierCharges.set(abortController.signal, charge);
+      for (const early of earlyCharges.splice(0)) charge(early.usage, early.model);
       let budgetStop: BudgetUsage | undefined;
       for (const entry of answeredNow) {
         if (entry.kind !== 'budget') continue;
@@ -2100,6 +2433,27 @@ export class Cogitator implements ToolInvoker {
 
       const memoryNotes: Promise<void>[] = [];
       const switchTo = async (target: Agent, reason: unknown) => {
+        const toModel = this.resolveModel(target);
+        if (toModel !== effectiveModel) {
+          const blocked = await waitForAbortable(
+            pipeline.beforeModelSwitch(
+              { from: effectiveModel, to: toModel, reason: 'handoff', agent: target.name },
+              middlewareContext()
+            ),
+            abortController.signal
+          );
+          if (blocked) {
+            const note: Message = {
+              role: 'system',
+              content: `The handoff to agent "${target.name}" did not happen: ${blocked.block}`,
+            };
+            messages.push(note);
+            await runMemory.save(active.id, note, undefined, undefined, {
+              context: 'beforeModelSwitch',
+            });
+            return;
+          }
+        }
         await harness.prepare(target);
         const kept = harness.forHandoff(target, messages);
         if (kept.length !== messages.length) {
@@ -2175,9 +2529,12 @@ export class Cogitator implements ToolInvoker {
         lastToolCallSig = '';
       };
 
-      const passesChecks = async (item: QueuedRunMessage): Promise<boolean> => {
+      /** The context the input checks add for a queued message, undefined when they refuse it */
+      const passesChecks = async (
+        item: QueuedRunMessage
+      ): Promise<readonly string[] | undefined> => {
         try {
-          await waitForAbortable(
+          return await waitForAbortable(
             pipeline.beforeRun(
               {
                 input: getTextContent(item.content),
@@ -2187,27 +2544,40 @@ export class Cogitator implements ToolInvoker {
             ),
             abortController.signal
           );
-          return true;
         } catch (error) {
           if (abortController.signal.aborted) throw error;
           queue?.refuse(item, error instanceof Error ? error : new Error(String(error)));
-          return false;
+          return undefined;
         }
       };
       /** Delivers what passes the checks, and counts the steering and follow-up messages of it */
       const deliver = async (queued: readonly QueuedRunMessage[]): Promise<number> => {
         let wakes = 0;
         for (const item of queued) {
-          if (!(await passesChecks(item)) || !queue?.settle(item)) continue;
+          const added = await passesChecks(item);
+          if (!added || !queue?.settle(item)) continue;
           const message: Message = { role: 'user', content: item.content };
           messages.push(message);
           if (item.kind !== 'inject') {
             wakes++;
             lastToolCallSig = '';
+            stopContinued = false;
           }
           await runMemory.save(active.id, message, undefined, undefined, { queued: item.kind });
+          for (const text of added) {
+            const note: Message = { role: 'system', content: text };
+            messages.push(note);
+            await runMemory.save(active.id, note, undefined, undefined, { context: 'beforeRun' });
+          }
         }
         return wakes;
+      };
+      /** Saves what middleware added for the next model call, see `RunMiddlewareContext.addContext` */
+      const flushContext = async (): Promise<void> => {
+        if (pendingContext.length === 0) return;
+        const note: Message = { role: 'system', content: pendingContext.splice(0).join('\n\n') };
+        messages.push(note);
+        await runMemory.save(active.id, note, undefined, undefined, { context: 'middleware' });
       };
 
       const permissionCall = (
@@ -2233,6 +2603,27 @@ export class Cogitator implements ToolInvoker {
         }),
         classifierBudget: budgetBeforeModel,
       });
+      /** The approval request of a call the permissions decided to ask for */
+      const approvalRequestOf = (
+        tool: Tool,
+        toolCall: ToolCall,
+        verdict: PermissionDecision
+      ): ToolApprovalRequest => {
+        const suggestedRule = permissions.suggest(tool, toolCall.arguments, workspaceOf(active));
+        return {
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          arguments: toolCall.arguments,
+          description: tool.description,
+          ...(tool.sideEffects && { sideEffects: [...tool.sideEffects] }),
+          ...(permissions.active && {
+            reason: verdict.reason,
+            ...(verdict.rule && { rule: verdict.rule }),
+            ...(suggestedRule !== undefined && { suggestedRule }),
+            mode: verdict.mode,
+          }),
+        };
+      };
       const decisionEvent = (
         toolCall: ToolCall,
         decision: PermissionDecision
@@ -2256,6 +2647,13 @@ export class Cogitator implements ToolInvoker {
           fresh?: readonly string[];
           /** Approvals asked for the arguments a middleware changed calls to */
           changed?: readonly ToolApprovalRequest[];
+          /** Calls of `changed` asked for as they started */
+          admitted?: readonly string[];
+          /** What the calls that ran before the pause returned */
+          results?: Record<
+            string,
+            { result: unknown; error?: string; arguments?: Record<string, unknown> }
+          >;
         }
       ): Promise<PausedTurn | undefined> => {
         const done = new Set(resumed?.completed ?? []);
@@ -2308,10 +2706,13 @@ export class Cogitator implements ToolInvoker {
         const changedRequests = new Map<string, ToolApprovalRequest>();
         /** Calls whose changed arguments a person approved */
         const answeredChanges = new Set<string>();
+        /** Calls whose changed approval was asked for as they started, see `admit` */
+        const admitted = new Set(resumed?.admitted ?? []);
         const keptChanged = (kept: (id: string) => boolean) => {
           const requests = new Map([...changedAsked, ...changedRequests]);
           const list = [...requests.values()].filter((request) => kept(request.toolCallId));
-          return list.length > 0 ? { changed: list } : {};
+          const ids = list.map((request) => request.toolCallId).filter((id) => admitted.has(id));
+          return list.length > 0 ? { changed: list, ...(ids.length > 0 && { admitted: ids }) } : {};
         };
         /** The decision, or the budget that classifying the call would pass */
         const decideOrStop = async (
@@ -2342,7 +2743,68 @@ export class Cogitator implements ToolInvoker {
             completed: [...done],
           };
         };
-        if (resumed && permissions.active) {
+        const refuseByHook = async (toolCall: ToolCall, reason: string) => {
+          denied.set(toolCall.id, reason);
+          decisions.delete(toolCall.id);
+          automatic.delete(toolCall.id);
+          await permissions.record({
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            decision: 'deny',
+            decidedBy: 'hook',
+            mode: permissions.mode,
+            reason,
+          });
+        };
+        /**
+         * Records the answer an approval of a call got: the arguments it changes the call to, once
+         * they pass the schema and the rules again, and the rule it asks to remember
+         */
+        const settle = async (toolCall: ToolCall, tool: Tool, decision: ToolApprovalDecision) => {
+          const answered = fresh.has(toolCall.id);
+          let event: PermissionDecisionEvent | undefined = answered
+            ? {
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                decision: decision.approved ? 'allow' : 'deny',
+                mode: permissions.mode,
+                ...answeredBy(this.hookDecisions.has(decision), decision),
+              }
+            : undefined;
+          const updated = this.acceptedUpdate(decision, permissions);
+          if (updated) {
+            const checked = await this.checkUpdatedArguments(
+              tool,
+              updated,
+              permissions,
+              permissionCall(tool, { ...toolCall, arguments: updated }, false)
+            );
+            if ('error' in checked) {
+              decisions.delete(toolCall.id);
+              denied.set(toolCall.id, checked.error);
+              if (event) event = { ...event, decision: 'deny', reason: checked.error };
+            } else {
+              runArguments.set(toolCall.id, { ...toolCall, arguments: checked.args });
+              if (event) event = { ...event, updatedArguments: checked.args };
+            }
+          }
+          if (answered && decision.approved && decision.remember && !denied.has(toolCall.id)) {
+            const remembered = await permissions.remember(
+              tool,
+              (runArguments.get(toolCall.id) ?? toolCall).arguments,
+              decision.remember,
+              workspaceOf(active)
+            );
+            if (remembered && event) event = { ...event, remembered };
+          }
+          if (event) await permissions.record(event);
+        };
+        /**
+         * With `beforeToolCall` middleware (the `PreToolUse` hooks among them), each call is
+         * decided when it starts, after the calls before it in the step ran, see {@link admit}
+         */
+        const decidesAtStart = pipeline.checksToolCalls;
+        if (!decidesAtStart && resumed && permissions.active) {
           for (const toolCall of open) {
             const kept = decisions.get(toolCall.id);
             const tool = registry.get(toolCall.name);
@@ -2374,7 +2836,7 @@ export class Cogitator implements ToolInvoker {
             }
           }
         }
-        for (const toolCall of open) {
+        for (const toolCall of decidesAtStart ? [] : open) {
           const tool = registry.get(toolCall.name);
           if (
             !tool ||
@@ -2388,7 +2850,11 @@ export class Cogitator implements ToolInvoker {
           if (changedRequest) {
             const decision = resumed?.fallback
               ? forEveryCall(resumed.fallback)
-              : await this.decideApproval(changedRequest, options.onApproval);
+              : await this.decideApproval(changedRequest, options.onApproval, {
+                  pipeline,
+                  context: middlewareContext(),
+                  tool,
+                });
             if (decision === 'pause') {
               pending.push(changedRequest);
             } else {
@@ -2417,23 +2883,14 @@ export class Cogitator implements ToolInvoker {
             await permissions.record(decisionEvent(toolCall, verdict));
             continue;
           }
-          const suggestedRule = permissions.suggest(tool, toolCall.arguments, workspaceOf(active));
-          const request: ToolApprovalRequest = {
-            toolCallId: toolCall.id,
-            toolName: toolCall.name,
-            arguments: toolCall.arguments,
-            description: tool.description,
-            ...(tool.sideEffects && { sideEffects: [...tool.sideEffects] }),
-            ...(permissions.active && {
-              reason: verdict.reason,
-              ...(verdict.rule && { rule: verdict.rule }),
-              ...(suggestedRule !== undefined && { suggestedRule }),
-              mode: verdict.mode,
-            }),
-          };
+          const request = approvalRequestOf(tool, toolCall, verdict);
           const decision = resumed?.fallback
             ? forEveryCall(resumed.fallback)
-            : await this.decideApproval(request, options.onApproval);
+            : await this.decideApproval(request, options.onApproval, {
+                pipeline,
+                context: middlewareContext(),
+                tool,
+              });
           if (decision === 'pause') {
             pending.push(request);
           } else {
@@ -2442,7 +2899,7 @@ export class Cogitator implements ToolInvoker {
           }
         }
 
-        for (const toolCall of open) {
+        for (const toolCall of decidesAtStart ? [] : open) {
           const decision = decisions.get(toolCall.id);
           const tool = registry.get(toolCall.name);
           if (!decision || !tool) continue;
@@ -2460,46 +2917,7 @@ export class Cogitator implements ToolInvoker {
             }
             continue;
           }
-          const answered = fresh.has(toolCall.id);
-          let event: PermissionDecisionEvent | undefined = answered
-            ? {
-                toolCallId: toolCall.id,
-                toolName: toolCall.name,
-                decision: decision.approved ? 'allow' : 'deny',
-                decidedBy: 'user',
-                mode: permissions.mode,
-                reason: decision.approved
-                  ? 'Approved by the user'
-                  : `Declined by the user${decision.reason ? `: ${decision.reason}` : ''}`,
-              }
-            : undefined;
-          const updated = this.acceptedUpdate(decision, permissions);
-          if (updated) {
-            const checked = await this.checkUpdatedArguments(
-              tool,
-              updated,
-              permissions,
-              permissionCall(tool, { ...toolCall, arguments: updated }, false)
-            );
-            if ('error' in checked) {
-              decisions.delete(toolCall.id);
-              denied.set(toolCall.id, checked.error);
-              if (event) event = { ...event, decision: 'deny', reason: checked.error };
-            } else {
-              runArguments.set(toolCall.id, { ...toolCall, arguments: checked.args });
-              if (event) event = { ...event, updatedArguments: checked.args };
-            }
-          }
-          if (answered && decision.approved && decision.remember && !denied.has(toolCall.id)) {
-            const remembered = await permissions.remember(
-              tool,
-              (runArguments.get(toolCall.id) ?? toolCall).arguments,
-              decision.remember,
-              workspaceOf(active)
-            );
-            if (remembered && event) event = { ...event, remembered };
-          }
-          if (event) await permissions.record(event);
+          await settle(toolCall, tool, decision);
         }
 
         const keptAutomatic = () => {
@@ -2522,7 +2940,7 @@ export class Cogitator implements ToolInvoker {
             completed: [...done],
           };
         }
-        const runnable = open.filter(
+        const runnable = (decidesAtStart ? [] : open).filter(
           (toolCall) =>
             registry.get(toolCall.name) !== undefined &&
             toolCall.argumentsError === undefined &&
@@ -2636,7 +3054,12 @@ export class Cogitator implements ToolInvoker {
             permissions,
             call,
             request: {},
-            decide: (request) => this.decideApproval(request, options.onApproval),
+            decide: (request) =>
+              this.decideApproval(request, options.onApproval, {
+                pipeline,
+                context: middlewareContext(),
+                tool,
+              }),
           });
           if (!('pause' in outcome)) {
             if (outcome.allowed && outcome.byPerson) answeredChanges.add(toolCall.id);
@@ -2680,9 +3103,193 @@ export class Cogitator implements ToolInvoker {
           });
         };
 
+        let admitting: Promise<unknown> = Promise.resolve();
+        /**
+         * Decides a call as it starts, when the run has `beforeToolCall` middleware: the middleware
+         * first (a deny refuses, new arguments must pass the schema), then the permissions with
+         * what it said, then an approval when one is needed. An approval nobody gives pauses the
+         * run at this call, with the arguments it was asked for, and an answer on resume holds only
+         * for exactly those. Calls of a step are decided one after another
+         */
+        /**
+         * The tool call budget for a call that will run, as it starts: a pause at the run's own
+         * limit, a refusal at the limit of a run that started this one
+         */
+        const budgetAt = (toolCall: ToolCall): RunInterrupt | undefined => {
+          if (denied.has(toolCall.id) || decisions.get(toolCall.id)?.approved === false) {
+            return undefined;
+          }
+          if (!registry.get(toolCall.name) || toolCall.argumentsError !== undefined)
+            return undefined;
+          const own = runBudget.beforeTools(budgetKey(active), 1);
+          if (own) return budgetInterrupt(own, budgetConfig.allowRaise === true);
+          const caller = budgetAncestors
+            .map((ancestor) => {
+              const parent = this.runBudgets.get(ancestor);
+              return parent?.budget.beforeTools(parent.agentId(), 1);
+            })
+            .find((usage) => usage !== undefined);
+          if (caller) {
+            denied.set(
+              toolCall.id,
+              `the run that started this one would pass its tool call budget (${caller.used} of ${caller.limit})`
+            );
+          }
+          return undefined;
+        };
+        const admit = (toolCall: ToolCall): Promise<RunInterrupt | undefined> => {
+          const next = admitting.then(async () => (await admitNow(toolCall)) ?? budgetAt(toolCall));
+          admitting = next.catch(() => undefined);
+          return next;
+        };
+        const admitNow = async (toolCall: ToolCall): Promise<RunInterrupt | undefined> => {
+          const tool = registry.get(toolCall.name);
+          if (!tool || toolCall.argumentsError !== undefined || denied.has(toolCall.id)) {
+            return undefined;
+          }
+          const hooked = await waitForAbortable(
+            pipeline.beforeToolCall(
+              { toolCall, tool, resumed: resumed !== undefined },
+              middlewareContext()
+            ),
+            abortController.signal
+          );
+          if (hooked?.decision === 'deny') {
+            await refuseByHook(toolCall, hooked.reason ?? 'a hook refused the call');
+            return undefined;
+          }
+          let call = toolCall;
+          if (hooked?.updatedArguments) {
+            const parsed =
+              typeof tool.parameters.safeParse === 'function'
+                ? tool.parameters.safeParse(hooked.updatedArguments)
+                : undefined;
+            if (parsed && !parsed.success) {
+              await refuseByHook(
+                toolCall,
+                `the arguments a hook changed the call to do not match the tool's schema: ${parsed.error.message}`
+              );
+              return undefined;
+            }
+            call = { ...toolCall, arguments: hooked.updatedArguments };
+            runArguments.set(toolCall.id, call);
+          }
+          const asked = changedAsked.get(toolCall.id);
+          const answer = decisions.get(toolCall.id);
+          const sameArguments =
+            asked !== undefined &&
+            canonicalArguments(asked.arguments) === canonicalArguments(call.arguments);
+          if (asked && !admitted.has(toolCall.id) && answer && fresh.has(toolCall.id)) {
+            return undefined;
+          }
+          if (asked) changedAsked.delete(toolCall.id);
+          if (sameArguments && answer && fresh.has(toolCall.id) && hooked?.decision !== 'defer') {
+            const again = await decideOrStop(tool, call.arguments, {
+              ...permissionCall(tool, call, false),
+              ...(permissions.mode === 'dontAsk' && { mode: 'default' as const }),
+            });
+            if ('stop' in again)
+              return budgetInterrupt(again.stop, budgetConfig.allowRaise === true);
+            if (again.decision === 'deny') {
+              decisions.delete(toolCall.id);
+              denied.set(toolCall.id, again.reason);
+              await permissions.record(decisionEvent(toolCall, again));
+              return undefined;
+            }
+            await settle(toolCall, tool, answer);
+            return undefined;
+          }
+          if (
+            answer?.approved === true &&
+            askedBefore.some((entry) => entry.toolCallId === toolCall.id)
+          ) {
+            return undefined;
+          }
+          decisions.delete(toolCall.id);
+          fresh.delete(toolCall.id);
+          automatic.delete(toolCall.id);
+          const needs =
+            needsApproval(tool, call.arguments) ||
+            this.state.constitutionalAI?.toolNeedsApproval(tool, call.arguments) === true;
+          const hookAsks = hooked?.decision === 'ask' || hooked?.decision === 'defer';
+          if (!needs && !permissions.active && !hookAsks) return undefined;
+          const decided = await decideOrStop(tool, call.arguments, {
+            ...permissionCall(tool, call, needs),
+            ...(hooked?.decision === 'allow' && { allowedByHook: true }),
+          });
+          if ('stop' in decided) {
+            return budgetInterrupt(decided.stop, budgetConfig.allowRaise === true);
+          }
+          const verdict = hookedVerdict(decided, hooked);
+          if (verdict.decision !== 'ask') {
+            if (verdict.decision === 'deny') denied.set(toolCall.id, verdict.reason);
+            else if (verdict.decidedBy === 'hook') decisions.set(toolCall.id, { approved: true });
+            else if (verdict.decidedBy !== 'default') {
+              decisions.set(toolCall.id, { approved: true });
+              automatic.add(toolCall.id);
+              if (verdict.decidedBy === 'classifier') classified.add(toolCall.id);
+            }
+            await permissions.record(decisionEvent(toolCall, verdict));
+            return undefined;
+          }
+          const request = approvalRequestOf(tool, call, verdict);
+          if (hooked?.decision === 'defer' && !resumed?.fallback) {
+            const deferred = { ...request, reason: hooked.reason ?? 'A hook deferred the call' };
+            changedRequests.set(toolCall.id, deferred);
+            admitted.add(toolCall.id);
+            return approvalInterrupt(deferred);
+          }
+          const decision = resumed?.fallback
+            ? forEveryCall(resumed.fallback)
+            : await this.decideApproval(request, options.onApproval, {
+                pipeline,
+                context: middlewareContext(),
+                tool,
+              });
+          if (decision === 'pause') {
+            changedRequests.set(toolCall.id, request);
+            admitted.add(toolCall.id);
+            return approvalInterrupt(request);
+          }
+          decisions.set(toolCall.id, decision);
+          fresh.add(toolCall.id);
+          await settle(toolCall, tool, decision);
+          return undefined;
+        };
+
         const executeToolCall = async (toolCall: ToolCall): Promise<ToolOutcome> => {
           const toolSpanStart = Date.now();
           const toolSpanId = newSpanId();
+          if (stopRequest) {
+            return {
+              toolCall,
+              result: notStartedAtStop(toolCall),
+              toolSpanId,
+              toolSpanStart,
+              toolSpanEnd: toolSpanStart,
+            };
+          }
+          if (decidesAtStart) {
+            const waiting = await admit(toolCall);
+            if (waiting) {
+              return {
+                toolCall,
+                interrupt: waiting,
+                toolSpanId,
+                toolSpanStart,
+                toolSpanEnd: toolSpanStart,
+              };
+            }
+            if (stopRequest) {
+              return {
+                toolCall,
+                result: notStartedAtStop(toolCall),
+                toolSpanId,
+                toolSpanStart,
+                toolSpanEnd: toolSpanStart,
+              };
+            }
+          }
           const decision = decisions.get(toolCall.id);
           const refusal = denied.get(toolCall.id);
           if (refusal !== undefined) {
@@ -2705,7 +3312,7 @@ export class Cogitator implements ToolInvoker {
               callId: toolCall.id,
               name: toolCall.name,
               result: null,
-              error: `The user declined this tool call${decision.reason ? `: ${decision.reason}` : ''}`,
+              error: declinedError(this.hookDecisions.has(decision), decision.reason),
             };
             return {
               toolCall,
@@ -2795,6 +3402,7 @@ export class Cogitator implements ToolInvoker {
                         permitChanged(toolCall, tool, args),
                     }),
                     dispatch,
+                    stopped: () => stopRequest !== undefined,
                     ...(this.state.constitutionalAI && {
                       guardrails: this.state.constitutionalAI,
                     }),
@@ -2895,11 +3503,13 @@ export class Cogitator implements ToolInvoker {
         const asked: ToolOutcome[] = [];
 
         for (const outcome of outcomes) {
-          const { toolCall, result, toolSpanId, toolSpanStart, toolSpanEnd } = outcome;
+          const { toolCall, toolSpanId, toolSpanStart, toolSpanEnd } = outcome;
+          const result = outcome.result ?? (stopRequest ? notStartedAtStop(toolCall) : undefined);
           if (!result) {
             asked.push(outcome);
             continue;
           }
+          if (!outcome.result) finished.set(toolCall.id, result);
           const toolSpan = createSpan(
             `tool.${toolCall.name}`,
             traceId,
@@ -2992,8 +3602,32 @@ export class Cogitator implements ToolInvoker {
           }
         }
         messages.push(...reflectionMessages);
+        const ran = outcomes.flatMap((outcome) => {
+          const result = finished.get(outcome.toolCall.id) ?? outcome.result;
+          if (!result) return [];
+          return [{ toolCall: runArguments.get(outcome.toolCall.id) ?? outcome.toolCall, result }];
+        });
+        const reached = ran.flatMap(({ toolCall, result }) => {
+          const tool = registry.get(toolCall.name);
+          if (!tool || result.error !== undefined) return [];
+          return touchedPaths(tool, (runArguments.get(toolCall.id) ?? toolCall).arguments);
+        });
+        if (reached.length > 0) {
+          const brought = await harness.reach(active, reached, messages);
+          if (brought) {
+            pendingContext.push(brought.text);
+            await runMemory.event(
+              active.id,
+              {
+                type: 'custom',
+                event: { kind: 'instructions', files: brought.files.map((file) => ({ ...file })) },
+              },
+              `Read the project instructions of ${brought.files.map((file) => file.path).join(', ')}`
+            );
+          }
+        }
         if (asked.length > 0) {
-          const ran = [...done, ...finished.keys()];
+          const ranIds = [...done, ...finished.keys()];
           const left = new Set(
             open.filter((call) => !finished.has(call.id)).map((call) => call.id)
           );
@@ -3031,8 +3665,51 @@ export class Cogitator implements ToolInvoker {
                 ].map((entry) => [entry.id, entry])
               ).values(),
             ],
-            completed: ran,
+            completed: ranIds,
+            results: {
+              ...resumed?.results,
+              ...Object.fromEntries(
+                [...finished].map(([id, result]) => [
+                  id,
+                  {
+                    result: result.result,
+                    ...(result.error !== undefined && { error: result.error }),
+                    ...(runArguments.has(id) && {
+                      arguments: runArguments.get(id)?.arguments,
+                    }),
+                  },
+                ])
+              ),
+            },
           };
+        }
+        if (stopRequest) return undefined;
+        const batch = [
+          ...toolCalls.flatMap((call) => {
+            if (!done.has(call.id)) return [];
+            const kept = resumed?.results?.[call.id];
+            if (kept) {
+              const result: ToolResult = {
+                callId: call.id,
+                name: call.name,
+                result: kept.result,
+                ...(kept.error !== undefined && { error: kept.error }),
+              };
+              const effective = kept.arguments ? { ...call, arguments: kept.arguments } : call;
+              return [{ toolCall: effective, result }];
+            }
+            const message = messages.find(
+              (entry) => entry.role === 'tool' && entry.toolCallId === call.id
+            );
+            return message ? [{ toolCall: call, result: resultOfMessage(call, message) }] : [];
+          }),
+          ...ran,
+        ];
+        if (batch.length > 0) {
+          await waitForAbortable(
+            pipeline.afterToolBatch({ calls: batch }, middlewareContext()),
+            abortController.signal
+          );
         }
         const handedOver = (call: ToolCall): boolean => {
           const result = finished.get(call.id);
@@ -3112,6 +3789,8 @@ export class Cogitator implements ToolInvoker {
             ...(checkpoint.turn.denied && { denied: checkpoint.turn.denied }),
             ...(checkpoint.turn.automatic && { automatic: checkpoint.turn.automatic }),
             ...(checkpoint.turn.changed && { changed: checkpoint.turn.changed }),
+            ...(checkpoint.turn.admitted && { admitted: checkpoint.turn.admitted }),
+            ...(checkpoint.turn.results && { results: checkpoint.turn.results }),
             fresh: [...Object.keys(answeredDecisions), ...Object.keys(resumeFrom.decisions)],
           });
           if (!pausedTurn) reachedLimit();
@@ -3125,11 +3804,17 @@ export class Cogitator implements ToolInvoker {
       let emptyAnswerRetries = 0;
 
       let deliveredAtStop = false;
+      /** How many times in a row `beforeStop` kept the run going */
+      let stopContinuations = checkpoint?.stopHooks?.continuations ?? 0;
+      /** Whether `beforeStop` kept the run going since its last user message */
+      let stopContinued = checkpoint?.stopHooks?.continued ?? false;
       while (!pausedTurn && !budgetStop && (iterations < iterationCap || limit.closingTurn)) {
         throwIfAborted(abortController.signal);
+        if (stopRequest) break;
         const steering = queue?.takeForTurn(deliveredAtStop) ?? [];
         deliveredAtStop = false;
         if (steering.length > 0) await deliver(steering);
+        if (stopRequest) break;
         if (!interruptLimits) {
           this.assertTokenBudget(totalInputTokens + totalOutputTokens);
           this.assertCostBudget(costMeter.total(costModel));
@@ -3172,6 +3857,8 @@ export class Cogitator implements ToolInvoker {
           messages.length = 0;
           messages.push(...changed);
         }
+        if (stopRequest) break;
+        await flushContext();
 
         agentContext.iterationIndex = iterations - 1;
         agentContext.previousActions = [...allActions];
@@ -3419,6 +4106,7 @@ export class Cogitator implements ToolInvoker {
                     await turnPipeline.callModel(
                       call,
                       async (sent) => {
+                        if (stopRequest) return stoppedTurn();
                         const startedAt = Date.now();
                         const timing: StreamTiming | undefined = sent.stream ? {} : undefined;
                         let sentAnswer: ChatResponse;
@@ -3506,6 +4194,15 @@ export class Cogitator implements ToolInvoker {
           ),
           abortController.signal
         ).catch(abandonInputs);
+        if (stopRequest) {
+          inputLedger.settle([]);
+          if (!isStoppedTurn(response) && response.content.trim() !== '') {
+            const said: Message = { role: 'assistant', content: response.content };
+            messages.push(said);
+            await runMemory.save(active.id, said);
+          }
+          break;
+        }
         inputLedger.settle(limit.closingTurn ? [] : (response.toolCalls ?? []));
 
         if (
@@ -3574,7 +4271,34 @@ export class Cogitator implements ToolInvoker {
             delivered = await deliver(next);
             if (delivered === 0) next = queue?.takeAtStop() ?? [];
           }
-          if (delivered === 0) break;
+          if (delivered === 0) {
+            const goOn =
+              !limit.closingTurn && !stopRequest && iterations < iterationCap
+                ? await waitForAbortable(
+                    pipeline.beforeStop(
+                      {
+                        output: outputContent,
+                        continuations: stopContinuations,
+                        continued: stopContinued,
+                      },
+                      middlewareContext()
+                    ),
+                    abortController.signal
+                  )
+                : [];
+            if (goOn.length === 0 || stopRequest) break;
+            stopContinuations++;
+            stopContinued = true;
+            const message: Message = { role: 'user', content: goOn.join('\n\n') };
+            messages.push(message);
+            await runMemory.save(active.id, message, undefined, undefined, {
+              continued: 'beforeStop',
+            });
+            lastToolCallSig = '';
+            emptyAnswerRetries = 0;
+            structuredRepaired = false;
+            continue;
+          }
           deliveredAtStop = true;
           iterationCap = iterations + maxIterations;
           limit.reached = false;
@@ -3583,6 +4307,7 @@ export class Cogitator implements ToolInvoker {
           structuredRepaired = false;
           continue;
         }
+        stopContinuations = 0;
         pausedTurn = await handleToolTurn(response.toolCalls);
         runBudget.warn(
           budgetKey(active),
@@ -3622,6 +4347,10 @@ export class Cogitator implements ToolInvoker {
               pausedTurn.automatic.length > 0 && { automatic: pausedTurn.automatic }),
             ...(pausedTurn.changed &&
               pausedTurn.changed.length > 0 && { changed: pausedTurn.changed }),
+            ...(pausedTurn.admitted &&
+              pausedTurn.admitted.length > 0 && { admitted: pausedTurn.admitted }),
+            ...(pausedTurn.results &&
+              Object.keys(pausedTurn.results).length > 0 && { results: pausedTurn.results }),
           },
           interrupts: pausedTurn.interrupts,
           iterations,
@@ -3649,6 +4378,13 @@ export class Cogitator implements ToolInvoker {
           }),
           ...(permissionState && { permissions: permissionState }),
           ...(runBudget.configured && { budget: runBudget.state() }),
+          ...(harness.instructions.length > 0 && {
+            instructions: harness.instructions.map((file) => ({ ...file })),
+          }),
+          ...(pendingContext.length > 0 && { context: [...pendingContext] }),
+          ...((stopContinued || stopContinuations > 0) && {
+            stopHooks: { continuations: stopContinuations, continued: stopContinued },
+          }),
         };
         const waitingOn = pausedTurn.interrupts.filter((entry) => !isAnswered(entry));
         if (pausedTurn.pending.length > 0) {
@@ -3730,6 +4466,7 @@ export class Cogitator implements ToolInvoker {
           ...(handoffs.length > 0 && { handoffs, finalAgent: active.name }),
           ...(harness.todos && { todos: harness.todos }),
           ...(pausedSpend && { sessionSpend: pausedSpend }),
+          ...(harness.instructions.length > 0 && { instructions: [...harness.instructions] }),
           checkpoint: pausedCheckpoint,
           usage: {
             inputTokens: totalInputTokens,
@@ -3744,14 +4481,36 @@ export class Cogitator implements ToolInvoker {
           trace: { traceId, spans: publicSpans() },
         };
         if (sentItemIds.length > 0) this.noteRetrieved(sentItemIds, runId);
+        const questions = waitingOn.filter((entry) => entry.kind !== 'approval');
+        if (questions.length > 0) {
+          void pipeline.onNotification(
+            {
+              type: 'agent_needs_input',
+              title: 'The agent is waiting',
+              message: questions.map((entry) => entry.message).join('\n'),
+            },
+            middlewareContext()
+          );
+        }
+        endFailed = undefined;
+        await pipeline.afterRun(
+          {
+            status: 'paused',
+            result: paused,
+            model: fellBackTo ?? this.pricedModel(effectiveModel, routeProvider),
+            memoryAgentId: memoryAgentId(agent),
+          },
+          middlewareContext()
+        );
         options.onRunComplete?.(paused);
         pausedOut = true;
         return paused;
       }
 
+      await flushContext();
       const kept = runMemory.enabled && runMemory.isOpen;
       for (const item of queue?.pending ?? []) {
-        if (item.kind !== 'inject' || !kept || !(await passesChecks(item))) continue;
+        if (item.kind !== 'inject' || !kept || (await passesChecks(item)) === undefined) continue;
         if (!queue?.claim(item)) continue;
         await runMemory.save(
           active.id,
@@ -3867,6 +4626,8 @@ export class Cogitator implements ToolInvoker {
         ...(queue && queue.pending.length > 0 && { undelivered: queue.pending }),
         ...(budgetStop && { budgetStop }),
         ...(sessionSpend && { sessionSpend }),
+        ...(stopRequest && { stopped: stopRequest }),
+        ...(harness.instructions.length > 0 && { instructions: [...harness.instructions] }),
       };
 
       if (prompt) await this.recordPrompt(prompt, result, Date.now() - startTime);
@@ -3874,8 +4635,10 @@ export class Cogitator implements ToolInvoker {
       await runMemory.settled();
       await Promise.all(memoryNotes);
       if (sentItemIds.length > 0) this.noteRetrieved(sentItemIds, runId);
+      endFailed = undefined;
       await pipeline.afterRun(
         {
+          status: 'completed',
           result,
           model: fellBackTo ?? this.pricedModel(effectiveModel, routeProvider),
           memoryAgentId: memoryAgentId(agent),
@@ -3967,14 +4730,23 @@ export class Cogitator implements ToolInvoker {
       );
       spans.unshift(errorSpan);
 
-      options.onRunError?.(
-        error instanceof Error ? error : new Error(String(error)),
-        runId,
-        usageSoFar()
-      );
+      const failed = error instanceof Error ? error : new Error(String(error));
+      await endFailed?.(failed).catch(() => undefined);
+
+      const early = earlyCharges.splice(0);
+      const earlyUsage =
+        early.length > 0
+          ? await this.chargeEarly(early, { agent, threadId, runId, options, startTime }).catch(
+              () => undefined
+            )
+          : undefined;
+
+      options.onRunError?.(failed, runId, usageSoFar() ?? earlyUsage);
 
       throw error;
     } finally {
+      runEnded = true;
+      if (this.runPipelines.has(runId)) this.runPipelines.delete(runId);
       if (!pausedOut && !checkpointKept) this.interruptSchemas.forgetRun(runId);
       if (this.runMemories.get(runId) === runMemory) this.runMemories.delete(runId);
       if (this.runBudgets.get(runId)?.budget === budget) this.runBudgets.delete(runId);
@@ -3992,6 +4764,115 @@ export class Cogitator implements ToolInvoker {
   }
 
   /**
+   * Charges the model calls hooks made before a run's usage was counted (a `UserPromptSubmit`
+   * prompt hook that refused the input), for a run that failed before then: to the cost router
+   * and, when the session has budgets, to what the session spent. The usage they come to
+   */
+  private async chargeEarly(
+    charges: ReadonlyArray<{ usage: ChatResponse['usage']; model: string }>,
+    run: { agent: Agent; threadId: string; runId: string; options: RunOptions; startTime: number }
+  ): Promise<RunUsage> {
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cost = 0;
+    for (const { usage, model } of charges) {
+      const priced = this.pricedModel(model);
+      const spent = usage.cost ?? this.pricer.costOrNull(priced, usage) ?? 0;
+      inputTokens += usage.inputTokens;
+      outputTokens += usage.outputTokens;
+      cost += spent;
+      this.state.costRouter?.recordCost({
+        runId: run.runId,
+        agentId: run.agent.id,
+        threadId: run.threadId,
+        model: priced,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cost: spent,
+      });
+    }
+    const budgets = mergeBudgets(this.config.budget, run.options.budget);
+    const keeps =
+      budgets.session !== undefined ||
+      budgets.agent !== undefined ||
+      run.agent.config.budget !== undefined;
+    const tokens = inputTokens + outputTokens;
+    const memory = this.state.memoryAdapter;
+    if (keeps && tokens + cost > 0) {
+      const spend = {
+        costUsd: cost,
+        tokens,
+        toolCalls: 0,
+        agents: { [budgetKey(run.agent)]: { costUsd: cost, tokens, toolCalls: 0 } },
+      };
+      const before = this.spendWrites.get(run.threadId) ?? Promise.resolve();
+      const writing = before
+        .catch(() => undefined)
+        .then(async () => {
+          const total = addToSession(
+            await this.loadSessionSpend(run.threadId, run.options),
+            spend,
+            {}
+          );
+          const updated =
+            memory && run.options.useMemory !== false
+              ? await memory.updateThread(run.threadId, { [SESSION_BUDGET_KEY]: total })
+              : undefined;
+          if (updated?.success) this.sessionSpends.delete(run.threadId);
+          else this.sessionSpends.set(run.threadId, total);
+          this.sessionLedgers.get(run.threadId)?.refresh(total);
+        });
+      const settled = writing.then(
+        () => undefined,
+        () => undefined
+      );
+      this.spendWrites.set(run.threadId, settled);
+      await settled;
+    }
+    return {
+      inputTokens,
+      outputTokens,
+      totalTokens: tokens,
+      cost,
+      duration: Date.now() - run.startTime,
+    };
+  }
+
+  /**
+   * Checks that the run may use its thread and lets it write there before the `startRun`
+   * middleware (the `SessionStart` hooks) run: they must not run for a thread of another user,
+   * and what they log belongs to the thread
+   */
+  private async openForStart(
+    threadId: string,
+    options: RunOptions,
+    runMemory: RunMemory
+  ): Promise<void> {
+    const memory = this.state.memoryAdapter;
+    if (!memory || options.useMemory === false) return;
+    if (options.threadId !== undefined && options.threadAccess !== 'shared') {
+      await assertThreadAccess(memory, threadId, options.userId);
+    }
+    runMemory.open();
+  }
+
+  /**
+   * How a new run on `threadId` starts, for `startRun`: `resume` when it goes on from a history
+   * (given, or in memory), `startup` otherwise
+   */
+  private async sessionSource(
+    threadId: string,
+    options: RunOptions
+  ): Promise<'startup' | 'resume'> {
+    if (options.history !== undefined) return options.history.length > 0 ? 'resume' : 'startup';
+    if (options.useMemory === false || options.loadHistory === false) return 'startup';
+    const memory = this.state.memoryAdapter;
+    if (!memory) return 'startup';
+    const thread = await memory.getThread(threadId);
+    return thread.success && thread.data?.activeLeafId !== undefined ? 'resume' : 'startup';
+  }
+
+  /**
    * The messages a new run starts with: `systemPrompt` (the agent's instructions with what the
    * run adds to them), the thread's history and the input,
    * once the input passed `checkInput` (the `beforeRun` hooks), with the
@@ -4005,7 +4886,7 @@ export class Cogitator implements ToolInvoker {
     threadId: string,
     runMemory: RunMemory,
     historyBudget: number | undefined,
-    checkInput: (messages: readonly Message[]) => Promise<void>,
+    checkInput: (messages: readonly Message[]) => Promise<readonly string[]>,
     onContext?: (built: BuiltContext) => void
   ): Promise<Message[]> {
     const messages = await buildInitialMessages(
@@ -4020,7 +4901,7 @@ export class Cogitator implements ToolInvoker {
     );
     runMemory.open();
 
-    await checkInput(messages);
+    const added = await checkInput(messages);
 
     if (options.context) {
       addContextToMessages(messages, options.context);
@@ -4030,6 +4911,11 @@ export class Cogitator implements ToolInvoker {
       role: 'user',
       content: buildUserContent(options.input, options.images),
     });
+    for (const text of added) {
+      const note: Message = { role: 'system', content: text };
+      messages.push(note);
+      await runMemory.save(agent.id, note, undefined, undefined, { context: 'beforeRun' });
+    }
 
     return messages;
   }
@@ -4273,15 +5159,16 @@ export class Cogitator implements ToolInvoker {
   }
 
   /**
-   * The arguments an approval changes a call to, when the run may take them: only with permissions
-   * set up, as before an approval could not change a call. Others are dropped with a warning
+   * The arguments an approval changes a call to, when the run may take them: with permissions set
+   * up, or from a `decideApproval` middleware (a `PermissionRequest` hook), which the host set up.
+   * Others are dropped with a warning, as before an approval could not change a call
    */
   private acceptedUpdate(
     decision: ToolApprovalDecision,
     permissions: RunPermissions
   ): Record<string, unknown> | undefined {
     if (!decision.approved || decision.updatedArguments === undefined) return undefined;
-    if (permissions.active) return decision.updatedArguments;
+    if (permissions.active || this.hookDecisions.has(decision)) return decision.updatedArguments;
     this.permissionsOf().warnOnce(
       'An approval changed the arguments of a call, which a runtime without permissions ignores'
     );
@@ -4523,11 +5410,8 @@ export class Cogitator implements ToolInvoker {
       toolCallId: toolCall.id,
       toolName: toolCall.name,
       decision: decision.approved ? 'allow' : 'deny',
-      decidedBy: 'user',
       mode: permissions.mode,
-      reason: decision.approved
-        ? 'Approved by the user'
-        : `Declined by the user${decision.reason ? `: ${decision.reason}` : ''}`,
+      ...answeredBy(this.hookDecisions.has(decision), decision),
     };
     if (!decision.approved) {
       await permissions.record(answered);
@@ -4560,13 +5444,31 @@ export class Cogitator implements ToolInvoker {
   }
 
   /**
-   * The decision for a call that needs approval: the run's `onApproval`, else
-   * `guardrails.onToolApproval`, else a pause.
+   * The decision for a call that needs approval: the `decideApproval` middleware (the
+   * `PermissionRequest` hooks among them), else the run's `onApproval`, else
+   * `guardrails.onToolApproval`, else a pause. The middleware hear of an approval they leave to a
+   * person (`onNotification`)
    */
   private async decideApproval(
     request: ToolApprovalRequest,
-    onApproval: RunOptions['onApproval']
+    onApproval: RunOptions['onApproval'],
+    gate?: { pipeline: MiddlewarePipeline; context: RunMiddlewareContext; tool: Tool }
   ): Promise<ToolApprovalDecision | 'pause'> {
+    if (gate) {
+      const hooked = await gate.pipeline.decideApproval({ request, tool: gate.tool }, gate.context);
+      if (hooked) {
+        this.hookDecisions.add(hooked);
+        return hooked;
+      }
+      void gate.pipeline.onNotification(
+        {
+          type: 'permission_prompt',
+          title: 'Permission needed',
+          message: `The agent needs your permission to use ${request.toolName}`,
+        },
+        gate.context
+      );
+    }
     const decided = await onApproval?.(request);
     if (decided !== undefined) return decided;
     const legacy = this.config.guardrails?.onToolApproval;
@@ -5771,6 +6673,13 @@ interface PausedTurn {
   automatic?: string[];
   /** Approvals asked for the arguments a middleware changed calls to */
   changed?: ToolApprovalRequest[];
+  /** Calls of `changed` asked for as they started, after the `beforeToolCall` middleware */
+  admitted?: string[];
+  /** What the calls that ran before the pause returned, by call id */
+  results?: Record<
+    string,
+    { result: unknown; error?: string; arguments?: Record<string, unknown> }
+  >;
   pending: ToolApprovalRequest[];
   /** What the turn waits on: its approvals, or the questions its tools asked and their answers */
   interrupts: RunInterrupt[];

@@ -41,6 +41,8 @@ export interface AgentRunOutcome {
   blocked?: RunBlockReason;
   /** Tool calls used up the agent's `maxIterations` before the model answered */
   iterationLimitReached?: true;
+  /** A hook or middleware ended the run before its next model call: why, and which middleware */
+  stopped?: { reason: string; middleware: string };
 }
 
 /**
@@ -129,6 +131,7 @@ export function toAgentRunOutcome(result: RunResult): AgentRunOutcome {
     ...(result.truncated === true && { truncated: true as const }),
     ...(result.blocked !== undefined && { blocked: result.blocked }),
     ...(result.iterationLimitReached === true && { iterationLimitReached: true as const }),
+    ...(result.stopped && { stopped: { ...result.stopped } }),
   };
 }
 

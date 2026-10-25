@@ -831,6 +831,102 @@ export const SessionBudgetConfigSchema = z.object({
   allowRaise: z.boolean().optional(),
 });
 
+const HookCommonSchema = {
+  if: z.string().optional(),
+  timeout: z.number().positive().optional(),
+  statusMessage: z.string().optional(),
+  onFailure: z.enum(['continue', 'block']).optional(),
+};
+
+/** One hook handler of a settings file's `hooks`, see `HookHandlerConfig` */
+export const HookHandlerSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('command'),
+    command: z.string().min(1),
+    args: z.array(z.string()).optional(),
+    shell: z.enum(['bash', 'powershell']).optional(),
+    async: z.boolean().optional(),
+    ...HookCommonSchema,
+  }),
+  z.object({
+    type: z.literal('http'),
+    url: z.url(),
+    headers: z.record(z.string(), z.string()).optional(),
+    allowedEnvVars: z.array(z.string()).optional(),
+    ...HookCommonSchema,
+  }),
+  z.object({
+    type: z.literal('prompt'),
+    prompt: z.string().min(1),
+    model: z.string().optional(),
+    continueOnBlock: z.boolean().optional(),
+    ...HookCommonSchema,
+  }),
+  z.object({
+    type: z.literal('mcp_tool'),
+    server: z.string().min(1),
+    tool: z.string().min(1),
+    input: z.record(z.string(), z.unknown()).optional(),
+    ...HookCommonSchema,
+  }),
+]);
+
+/** The hooks by event, as a settings file writes them, see `HookSettings` */
+export const HookSettingsSchema = z.partialRecord(
+  z.enum([
+    'SessionStart',
+    'SessionEnd',
+    'UserPromptSubmit',
+    'PreToolUse',
+    'PermissionRequest',
+    'PostToolUse',
+    'PostToolUseFailure',
+    'PostToolBatch',
+    'SubagentStart',
+    'SubagentStop',
+    'PreCompact',
+    'PostCompact',
+    'PreModelSwitch',
+    'Stop',
+    'Notification',
+  ]),
+  z.array(z.object({ matcher: z.string().optional(), hooks: z.array(HookHandlerSchema) }))
+);
+
+/**
+ * The hooks of the runtime, see `HooksConfig`. The MCP caller and `onHookRun` are given in code
+ * only
+ */
+export const HooksConfigSchema = z.object({
+  hooks: HookSettingsSchema.optional(),
+  settings: z
+    .union([
+      z.boolean(),
+      PermissionSettingsOptionsSchema.extend({ trustedRoots: z.array(z.string()).optional() }),
+    ])
+    .optional(),
+  promptModel: z.string().optional(),
+  allowedHttpHookUrls: z.array(z.string()).optional(),
+  httpHookAllowedEnvVars: z.array(z.string()).optional(),
+  maxOutputBytes: z.number().int().positive().optional(),
+  env: z.union([z.literal('inherit'), z.object({ allow: z.array(z.string()) })]).optional(),
+});
+
+/** Which project instruction files runs read, see `ProjectInstructionsOptions` */
+export const ProjectInstructionsOptionsSchema = z.object({
+  files: z.array(z.string().min(1)).optional(),
+  rules: z.boolean().optional(),
+  nested: z.boolean().optional(),
+  maxImportDepth: z.number().int().nonnegative().optional(),
+  allowImportsFrom: z.array(z.string()).optional(),
+  maxChars: z.number().int().nonnegative().optional(),
+});
+
+/** Instructions the runtime adds to agents' prompts, see `InstructionsConfig` */
+export const InstructionsConfigSchema = z.object({
+  projectFiles: z.union([z.boolean(), ProjectInstructionsOptionsSchema]).optional(),
+});
+
 /** What a run does when its thread has a run going on, see `CogitatorConfig.multitaskStrategy` */
 export const MultitaskStrategySchema = z.enum(['enqueue', 'reject', 'interrupt', 'rollback']);
 
@@ -840,6 +936,8 @@ export const CogitatorConfigSchema = z.object({
   prompts: PromptsConfigSchema.optional(),
   limits: LimitsConfigSchema.optional(),
   permissions: PermissionsConfigSchema.optional(),
+  hooks: HooksConfigSchema.optional(),
+  instructions: InstructionsConfigSchema.optional(),
   budget: SessionBudgetConfigSchema.optional(),
   memory: MemoryConfigSchema.optional(),
   sandbox: SandboxConfigSchema.optional(),

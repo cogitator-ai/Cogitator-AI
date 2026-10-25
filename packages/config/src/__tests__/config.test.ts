@@ -477,3 +477,85 @@ budget:
     expect(() => loadConfig({ configPath: path, skipEnv: true })).toThrow(problem);
   });
 });
+
+describe('hooks and project instructions', () => {
+  const path = 'test-hooks-config.yaml';
+
+  afterEach(() => {
+    if (existsSync(path)) unlinkSync(path);
+  });
+
+  it('keeps them through a YAML file', () => {
+    writeFileSync(
+      path,
+      `
+hooks:
+  settings:
+    root: /srv/app
+    trustedRoots: [/srv/app]
+  promptModel: ollama/qwen3:8b
+  allowedHttpHookUrls: ['https://hooks.example.com/*']
+  env:
+    allow: [PATH, HOME]
+  hooks:
+    PreToolUse:
+      - matcher: Bash
+        hooks:
+          - type: command
+            command: node
+            args: ['$\${CLAUDE_PROJECT_DIR}/.claude/hooks/guard.js']
+            timeout: 30
+          - type: http
+            url: https://hooks.example.com/pre
+    Stop:
+      - hooks:
+          - type: prompt
+            prompt: Are all tasks done? $ARGUMENTS
+instructions:
+  projectFiles:
+    maxChars: 16000
+    allowImportsFrom: [/srv/shared]
+`
+    );
+    const config = loadConfig({ configPath: path, skipEnv: true });
+    expect(config.hooks).toEqual({
+      settings: { root: '/srv/app', trustedRoots: ['/srv/app'] },
+      promptModel: 'ollama/qwen3:8b',
+      allowedHttpHookUrls: ['https://hooks.example.com/*'],
+      env: { allow: ['PATH', 'HOME'] },
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [
+              {
+                type: 'command',
+                command: 'node',
+                args: ['$' + '{CLAUDE_PROJECT_DIR}/.claude/hooks/guard.js'],
+                timeout: 30,
+              },
+              { type: 'http', url: 'https://hooks.example.com/pre' },
+            ],
+          },
+        ],
+        Stop: [{ hooks: [{ type: 'prompt', prompt: 'Are all tasks done? $ARGUMENTS' }] }],
+      },
+    });
+    expect(config.instructions).toEqual({
+      projectFiles: { maxChars: 16000, allowImportsFrom: ['/srv/shared'] },
+    });
+  });
+
+  it.each([
+    [
+      'an unknown handler type',
+      'hooks:\n  hooks:\n    Stop:\n      - hooks:\n          - type: agent\n',
+      /hooks/,
+    ],
+    ['an event it does not know', 'hooks:\n  hooks:\n    Nope: []\n', /hooks/],
+    ['a negative limit', 'instructions:\n  projectFiles:\n    maxChars: -1\n', /maxChars/],
+  ])('refuses %s', (_name, text, error) => {
+    writeFileSync(path, text);
+    expect(() => loadConfig({ configPath: path, skipEnv: true })).toThrow(error);
+  });
+});

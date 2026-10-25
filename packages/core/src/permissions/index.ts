@@ -4,6 +4,7 @@ export {
   rememberableRules,
   resolvePermission,
   ruleAllowsCall,
+  ruleMatchesCall,
   suggestRule,
   type PermissionContext,
 } from './engine';
