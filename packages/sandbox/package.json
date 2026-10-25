@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/sandbox",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "description": "Sandbox execution for Cogitator agents (Docker, WASM, and remote workspaces on E2B, Daytona and Vercel Sandbox)",
   "keywords": [
     "cogitator",
