@@ -9,7 +9,7 @@ import {
 import { companionOf } from './marker';
 
 /** Tools of the run itself that a subagent keeps whatever its lists say */
-const ALWAYS_KEPT = new Set(['exit_plan_mode', 'tool_search']);
+export const ALWAYS_KEPT: ReadonlySet<string> = new Set(['exit_plan_mode', 'tool_search']);
 
 /** Which tools a subagent gets of the ones its run would have, from its `tools` and `disallowedTools` */
 export interface ToolPolicy {

@@ -1485,14 +1485,16 @@ export class Cogitator implements ToolInvoker {
   }
 
   /**
-   * Why a subagent may not run on `model`: a session or agent cost budget is set and no price is
-   * known for the model, so its calls would count as nothing against it
+   * Why a subagent may not run on `model`: a cost limit applies to the run that delegates or a run
+   * above it (the runtime's, the run's or the agent's budget, a cost routing budget) and no price
+   * is known for the model, so its calls would count as nothing against it
    */
   private unpricedUnderBudget(model: string | undefined): string | undefined {
-    const budget = this.config.budget;
-    if (budget?.session?.maxCostUsd === undefined && budget?.agent?.maxCostUsd === undefined) {
-      return undefined;
-    }
+    const limited = currentToolRuns().some((runId) => {
+      const run = this.runBudgets.get(runId);
+      return run?.budget.limitsCost(run.agentId()) === true;
+    });
+    if (!limited) return undefined;
     const full = model ?? this.config.llm?.defaultModel;
     if (full === undefined || this.pricer.pricing(full)) return undefined;
     return `no price is known for ${full}, so the cost budget could not count its calls: set its price in llm.pricing`;
@@ -2394,7 +2396,9 @@ export class Cogitator implements ToolInvoker {
         const swap = workspaceSwapOf(owner);
         if (swap) {
           for (const candidate of ownerRegistry.getAll()) {
-            const rebound = reboundWorkspaceTool(candidate, swap.from, swap.to);
+            const rebound = swap.from
+              .map((from) => reboundWorkspaceTool(candidate, from, swap.to))
+              .find((made) => made !== undefined);
             if (rebound) ownerRegistry.register(rebound, { replace: true });
           }
         }

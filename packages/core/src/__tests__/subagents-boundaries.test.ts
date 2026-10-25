@@ -462,6 +462,81 @@ describe('what a subagent may do', () => {
     await cog.close();
   });
 
+  it('continues a subagent only with what the run that continues it allows', async () => {
+    const editDocument = tool({
+      name: 'edit_document',
+      description: 'Edits the document',
+      parameters: z.object({}),
+      execute: async () => 'edited',
+    });
+    const { cog, llm } = runtime(
+      {
+        outer: [
+          turn(
+            call('o1', 'agent', {
+              description: 'x',
+              prompt: 'draft',
+              subagent_type: 'writer',
+              name: 'w',
+            })
+          ),
+          { content: 'drafted' },
+          turn(call('o2', 'send_message', { to: 'w', message: 'polish it' })),
+          { content: 'waiting' },
+          { content: 'polished' },
+        ],
+        inner: [{ content: 'draft' }, { content: 'polish' }],
+      },
+      {
+        commands: {
+          commands: { review: { template: 'Ask w to polish', disallowedTools: ['edit_document'] } },
+        },
+        subagents: { agents: { writer: { description: 'Writes', model: 'inner/m' } } },
+      }
+    );
+    const agent = lead({ tools: [lookup, editDocument] });
+    await cog.run(agent, { input: 'draft it', threadId: 't-continue' });
+    expect(toolNames(llm.inner?.getCalls()[0])).toContain('edit_document');
+    await cog.run(agent, { input: '/review', threadId: 't-continue' });
+    expect(toolNames(llm.inner?.getCalls()[1])).not.toContain('edit_document');
+    expect(toolNames(llm.inner?.getCalls()[1])).toContain('lookup');
+    await cog.close();
+  });
+
+  it('refuses an unpriced model under the cost budget of the run or the agent', async () => {
+    for (const where of ['run', 'agent'] as const) {
+      const { cog, llm } = runtime(
+        {
+          outer: [
+            turn(
+              call('o1', 'agent', {
+                description: 'x',
+                prompt: 'p',
+                subagent_type: 'helper',
+                model: 'fast',
+              })
+            ),
+            { content: 'done' },
+          ],
+          inner: [{ content: 'helped' }],
+        },
+        {
+          llm: { modelAliases: { fast: 'inner/m' } },
+          subagents: { agents: { helper: { description: 'Helps' } } },
+        }
+      );
+      const agent = lead(where === 'agent' ? { budget: { maxCostUsd: 2 } } : {});
+      const result = await cog.run(agent, {
+        input: 'go',
+        threadId: `t-${where}`,
+        ...(where === 'run' && { budget: { session: { maxCostUsd: 2 } } }),
+      });
+      expect(toolTexts(result.messages)[0]).toContain('no price is known for inner/m');
+      expect(llm.inner?.getCallCount()).toBe(0);
+      await cog.close();
+    }
+  });
+
   it('routes a Claude model id without a provider to Anthropic', () => {
     expect(resolveDefinitionModel('claude-opus-5-5', undefined)).toEqual({
       inherit: false,
@@ -783,6 +858,46 @@ describe('subagents of a repository', () => {
     expect(readFileSync(join(repo, 'README.md'), 'utf8')).toBe('hello\n');
     expect(readFileSync(join(kept, 'BOUND.md'), 'utf8')).toBe('own tool');
     expect(readFileSync(join(kept, 'README.md'), 'utf8')).toBe('global tool\n');
+    await cog.close();
+  });
+
+  it('keeps a subagent below an isolated one in its worktree', async () => {
+    rmSync(join(repo, '.git'), { recursive: true, force: true });
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
+    git('init', '-q');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    writeFileSync(join(repo, 'README.md'), 'hello\n');
+    git('add', 'README.md');
+    git('commit', '-q', '-m', 'init');
+    write(repo, 'isolated', 'Works apart', 'model: mid/m\nisolation: worktree\n');
+    write(repo, 'helper', 'Helps', 'model: leaf/m\n');
+    const workspace = new LocalWorkspace({ root: repo });
+    const { cog } = runtime(
+      {
+        outer: [
+          turn(
+            call('o1', 'agent', { description: 'x', prompt: 'edit', subagent_type: 'isolated' })
+          ),
+          { content: 'done' },
+        ],
+        mid: [
+          turn(call('m1', 'agent', { description: 'x', prompt: 'write', subagent_type: 'helper' })),
+          { content: 'delegated' },
+        ],
+        leaf: [
+          turn(call('l1', 'write_file', { path: 'DEEP.md', content: 'two layers down' })),
+          { content: 'written' },
+        ],
+      },
+      { subagents: { files: { root: repo, trusted: true, userDirs: [], managedDirs: [] } } }
+    );
+    for (const global of workspaceTools(workspace)) cog.tools.register(global);
+    const result = await cog.run(lead({ workspace }), { input: 'go' });
+    const answer = JSON.parse(toolTexts(result.messages)[0] ?? '{}') as { note?: string };
+    const kept = /worktree (\S+) on branch/.exec(answer.note ?? '')?.[1] ?? '';
+    expect(existsSync(join(repo, 'DEEP.md'))).toBe(false);
+    expect(readFileSync(join(kept, 'DEEP.md'), 'utf8')).toBe('two layers down');
     await cog.close();
   });
 

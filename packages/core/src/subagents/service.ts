@@ -41,11 +41,12 @@ import {
   setToolFilter,
   setWorkspaceSwap,
   toolFilterOf,
+  workspaceSwapOf,
 } from './marker';
 import { reboundWorkspaceTool } from '../tools/workspace-tools';
 import { CLAUDE_MODEL_ALIASES, resolveDefinitionModel } from './models';
 import { agentMemoryDir, agentMemorySection, agentMemoryTool } from './memory';
-import { toolPolicy } from './tool-policy';
+import { ALWAYS_KEPT, toolPolicy } from './tool-policy';
 import { openWorktree, type SubagentWorktree } from './worktree';
 
 /** The tool runs delegate to a subagent with, as Claude Code's `Agent` tool */
@@ -228,6 +229,18 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
       }
     );
   });
+}
+
+/** The subagents both lists allow, unset when neither limits them */
+function intersectSubagents(
+  a: boolean | readonly string[] | undefined,
+  b: boolean | readonly string[] | undefined
+): boolean | readonly string[] | undefined {
+  if (a === false || b === false) return false;
+  const listA = Array.isArray(a) ? a : undefined;
+  const listB = Array.isArray(b) ? b : undefined;
+  if (listA && listB) return listA.filter((name) => listB.includes(name));
+  return listA ?? listB ?? (a === true || b === true ? true : undefined);
 }
 
 /** The notice a run reads about a background subagent that ended */
@@ -754,7 +767,8 @@ export class SubagentService {
               context,
               task.model,
               true,
-              task.worktreeKey
+              task.worktreeKey,
+              scope
             );
           } catch (error) {
             release();
@@ -858,11 +872,13 @@ export class SubagentService {
     context: ToolContext,
     requestedModel: string | undefined,
     background: boolean,
-    worktreeKey: string
+    worktreeKey: string,
+    caller?: SubagentScope
   ): Promise<PreparedDelegate> {
     const parent = scope.owner;
     const policy = toolPolicy(definition);
     const above = toolFilterOf(parent);
+    const narrower = caller && caller !== scope ? this.callerLimits(caller, definition) : undefined;
     const pool = scope.tools();
     if (policy) {
       for (const entry of policy.invalid) {
@@ -955,7 +971,10 @@ export class SubagentService {
       }
       const own = new Set<Tool>(ownTools);
       const keep = (candidate: Tool): boolean =>
-        own.has(candidate) || ((above?.(candidate) ?? true) && (policy?.allows(candidate) ?? true));
+        own.has(candidate) ||
+        ((above?.(candidate) ?? true) &&
+          (policy?.allows(candidate) ?? true) &&
+          (narrower?.allows(candidate) ?? true));
       if (
         policy?.empty(pool.filter((candidate) => above?.(candidate) ?? true)) &&
         ownTools.length === 0
@@ -964,10 +983,15 @@ export class SubagentService {
           `Subagent "${definition.name}" would get no tools: ${(definition.tools ?? []).join(', ')} name none of the tools available. Fix its tools list`
         );
       }
+      const swapAbove = workspaceSwapOf(parent);
+      const swapFrom = isolated && workspace ? [...(swapAbove?.from ?? []), workspace] : [];
       const sourceOf = new WeakMap<Tool, Tool>();
       const inherited = parent.tools.filter(keep).map((candidate) => {
-        const rebound =
-          isolated && workspace ? reboundWorkspaceTool(candidate, workspace, isolated) : undefined;
+        const rebound = isolated
+          ? swapFrom
+              .map((from) => reboundWorkspaceTool(candidate, from, isolated))
+              .find((made) => made !== undefined)
+          : undefined;
         if (!rebound) return candidate;
         sourceOf.set(rebound, candidate);
         return rebound;
@@ -993,6 +1017,7 @@ export class SubagentService {
           : routed.model;
       const problem = sameAsParent ? undefined : this.options.modelProblem?.(full);
       if (problem) throw new Error(`Subagent "${definition.name}" cannot run: ${problem}`);
+      const allowedSubagents = intersectSubagents(parent.config.subagents, narrower?.subagents);
       const agent = new Agent({
         name: definition.name,
         description: definition.description,
@@ -1001,7 +1026,7 @@ export class SubagentService {
         tools,
         ...(parent.config.skills && { skills: parent.config.skills }),
         ...(parent.config.todos !== undefined && { todos: parent.config.todos }),
-        ...(parent.config.subagents !== undefined && { subagents: parent.config.subagents }),
+        ...(allowedSubagents !== undefined && { subagents: allowedSubagents }),
         ...((definition.maxTurns ?? parent.config.maxIterations) !== undefined && {
           maxIterations: definition.maxTurns ?? parent.config.maxIterations,
         }),
@@ -1018,7 +1043,8 @@ export class SubagentService {
       if (policy || above || own.size > 0) {
         setToolFilter(agent, (candidate) => keep(sourceOf.get(candidate) ?? candidate));
       }
-      if (isolated && workspace) setWorkspaceSwap(agent, workspace, isolated);
+      if (isolated && swapFrom.length > 0) setWorkspaceSwap(agent, swapFrom, isolated);
+      else if (swapAbove) setWorkspaceSwap(agent, swapAbove.from, swapAbove.to);
       const mode = narrowMode(context.permissions?.mode, definition.permissionMode);
       return {
         agent,
@@ -1030,6 +1056,31 @@ export class SubagentService {
       await finish(false).catch(() => undefined);
       throw error;
     }
+  }
+
+  /**
+   * What the run that continues a subagent (`send_message`) allows on top of what the run that
+   * started it did: only the tools it has and its tool filter keeps (a command's
+   * `disallowed-tools` among them), and the subagents both may use
+   *
+   * @throws Error when the continuing run may not use the subagent at all
+   */
+  private callerLimits(
+    caller: SubagentScope,
+    definition: SubagentDefinition
+  ): { allows(tool: Tool): boolean; subagents?: boolean | readonly string[] } {
+    const choice = caller.owner.config.subagents;
+    if (choice === false || (Array.isArray(choice) && !choice.includes(definition.name))) {
+      throw new Error(`This agent may not use subagent "${definition.name}"`);
+    }
+    const filter = toolFilterOf(caller.owner);
+    const names = new Set(caller.tools().map((candidate) => candidate.name));
+    return {
+      allows: (candidate) =>
+        ALWAYS_KEPT.has(candidate.name) ||
+        ((filter?.(candidate) ?? true) && names.has(candidate.name)),
+      ...(choice !== undefined && { subagents: choice }),
+    };
   }
 
   /**

@@ -7,7 +7,7 @@ const dispatchers = new WeakSet<object>();
 const companions = new WeakMap<object, 'SendMessage' | 'TaskOutput' | 'TaskStop'>();
 
 /** The workspace an agent's runs use instead of another, see {@link setWorkspaceSwap} */
-const swaps = new WeakMap<object, { from: Workspace; to: Workspace }>();
+const swaps = new WeakMap<object, { from: readonly Workspace[]; to: Workspace }>();
 
 /** Which tools an agent's runs keep, see {@link setToolFilter} */
 const filters = new WeakMap<object, (tool: Tool) => boolean>();
@@ -60,14 +60,17 @@ export function copyToolFilter(from: object, to: object): void {
 }
 
 /**
- * Makes the runs of `agent` use the tools bound to workspace `from` (`workspaceTools(from)`) on
- * `to` instead, for a subagent that works in a worktree of `from`
+ * Makes the runs of `agent` use the tools bound to the workspaces of `from`
+ * (`workspaceTools(from)`) on `to` instead, for a subagent that works in a worktree of them, or
+ * below one that does
  */
-export function setWorkspaceSwap(agent: object, from: Workspace, to: Workspace): void {
+export function setWorkspaceSwap(agent: object, from: readonly Workspace[], to: Workspace): void {
   swaps.set(agent, { from, to });
 }
 
 /** The workspace swap of `agent`, see {@link setWorkspaceSwap} */
-export function workspaceSwapOf(agent: object): { from: Workspace; to: Workspace } | undefined {
+export function workspaceSwapOf(
+  agent: object
+): { from: readonly Workspace[]; to: Workspace } | undefined {
   return swaps.get(agent);
 }

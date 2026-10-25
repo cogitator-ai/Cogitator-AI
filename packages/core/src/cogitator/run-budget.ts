@@ -362,6 +362,19 @@ export class RunBudget {
     );
   }
 
+  /** Whether a limit of money applies to what the run spends for `agentId` */
+  limitsCost(agentId: string): boolean {
+    const { config, explicit } = this.options;
+    const agent = this.options.agentLimits(agentId) ?? config.agent;
+    return (
+      config.session?.maxCostUsd !== undefined ||
+      explicit?.session?.maxCostUsd !== undefined ||
+      agent?.maxCostUsd !== undefined ||
+      explicit?.agent?.maxCostUsd !== undefined ||
+      this.options.costLimits !== undefined
+    );
+  }
+
   /** Whether the run has session or agent budgets, so its spending is kept for the thread */
   get keepsSession(): boolean {
     return (
