@@ -1,0 +1,138 @@
+---
+title: Hooks
+description: Commands, HTTP endpoints, model prompts and MCP tools that run at points of every agent run, in the format of Claude Code's settings.json hooks.
+---
+
+## Overview
+
+Hooks run something of yours at points of a run: before a tool call, after it, when the agent would stop, when a session starts. A hook can refuse a call, change its arguments, add context the model reads, keep the agent working or end the run. They use the `hooks` format of Claude Code's `settings.json`, so the hooks a repository already has for Claude Code work here.
+
+```typescript
+const cog = new Cogitator({
+  hooks: {
+    hooks: {
+      PreToolUse: [
+        {
+          matcher: 'Bash',
+          hooks: [
+            {
+              type: 'command',
+              command: 'node',
+              args: ['${CLAUDE_PROJECT_DIR}/.claude/hooks/check-command.js'],
+            },
+          ],
+        },
+      ],
+      PostToolUse: [
+        { matcher: 'Edit|Write', hooks: [{ type: 'command', command: 'npx prettier --write .' }] },
+      ],
+    },
+  },
+});
+```
+
+Nothing runs until you set `hooks`: unset, runs behave as before. Under the hood the hooks are [run middleware](/docs/core/middleware), `cogitator:hooks`, the outermost layer of every run, so the events below are also hooks your own middleware can implement.
+
+## Where Hooks Come From
+
+| Source                                  | Runs                                                                                                                |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `hooks.hooks`                           | Always: the hooks you give in code                                                                                  |
+| `hooks.settings` with the managed files | The organization's `managed-settings.json` and `managed-settings.d/*.json`                                          |
+| `hooks.settings` with the user files    | `~/.cogitator/settings.json`, `~/.claude/settings.json`                                                             |
+| `hooks.settings` with the project files | `.claude/settings.json`, `.claude/settings.local.json` and the `.cogitator/` ones, only once the project is trusted |
+
+`settings: true` reads the files where the [permission rules](/docs/tools/permissions#settings-files) are read (`permissions.settings`, else the defaults), `settings: { root, userDirs, managedDirs, layers, trusted }` names the places. Hooks run commands, so a project's own files count only with `trusted: true` (or `permissions.settings.trusted: true`, which trusts the project for both): a repository you cloned does not get to run its hooks on your machine. Without trust its hooks are skipped with a warning.
+
+As in Claude Code, hooks of every layer add up, the same handler in several files runs once, `disableAllHooks` takes the value of the highest layer that sets it (only a managed file turns managed hooks off), and `allowManagedHooksOnly` in a managed file leaves out the user, project and local hooks. A file is read again once it changes.
+
+## Events
+
+A run is a session: `run()` and `resume()` start one and end it. A run started from another run's tool call (an [agent used as a tool](/docs/tools/agent-as-tool)) is a subagent and fires `SubagentStart` and `SubagentStop` instead of `SessionStart`, `Stop` and `SessionEnd`.
+
+| Event                | When                                                                                                       | Matcher filters | What a hook can do                                                                        |
+| -------------------- | ---------------------------------------------------------------------------------------------------------- | --------------- | ----------------------------------------------------------------------------------------- |
+| `SessionStart`       | A run starts (`startup`) or goes on from a history or a resume (`resume`)                                  | the source      | Add context after the system prompt (`additionalContext`, plain stdout)                   |
+| `UserPromptSubmit`   | A new run's input, and each queued message                                                                 | none            | Block it (exit 2, `decision: "block"`), add context after it                              |
+| `PreToolUse`         | Before the permissions decide a tool call                                                                  | the tool        | `permissionDecision` `allow`, `deny`, `ask`, `defer`, `updatedInput`, `additionalContext` |
+| `PermissionRequest`  | A call asks for approval, before `onApproval`                                                              | the tool        | `decision.behavior` `allow` (with `updatedInput`) or `deny` (with `message`, `interrupt`) |
+| `PostToolUse`        | After a tool call succeeded                                                                                | the tool        | `updatedToolOutput`, `additionalContext`, `decision: "block"` with a reason for the model |
+| `PostToolUseFailure` | After a tool call failed                                                                                   | the tool        | `additionalContext`, stderr of exit 2 for the model                                       |
+| `PostToolBatch`      | Every call of a step resolved, before the next model call                                                  | none            | `additionalContext`, or stop the run (`decision: "block"`, exit 2)                        |
+| `Stop`               | The agent would stop with its final answer                                                                 | none            | Keep it going (`decision: "block"` with a reason, exit 2, `additionalContext`)            |
+| `SubagentStart`      | A delegated run starts                                                                                     | the agent name  | Add context to the subagent                                                               |
+| `SubagentStop`       | A delegated run would stop                                                                                 | the agent name  | As `Stop`                                                                                 |
+| `PreCompact`         | Before a compaction of the turn (`context`) or the thread (`memory.compaction`)                            | `auto`          | Skip it (exit 2, `decision: "block"`)                                                     |
+| `PostCompact`        | After a compaction                                                                                         | `auto`          | Nothing, for logging                                                                      |
+| `PreModelSwitch`     | A handoff would move the run to an agent on another model                                                  | the model       | Block the handoff (exit 2, `decision: "block"`, `permissionDecision` `deny` or `ask`)     |
+| `Notification`       | An approval goes to a person (`permission_prompt`), a paused run waits on a question (`agent_needs_input`) | the type        | Nothing, for alerts                                                                       |
+| `SessionEnd`         | A run ended: completed, paused or failed                                                                   | `other`         | Nothing, for cleanup                                                                      |
+
+A matcher is `*`, empty or absent for every occurrence, names separated by `|` or `,` for exact names, and anything else a regular expression tested anywhere in the value. Tool events match the tool's own name, its MCP name (`mcp__<server>__<tool>`) and the Claude Code names that cover it, so `Bash` matches `run_command`, `Edit|Write` the file tools and `Read` the reading tools. A handler's `if` holds one [permission rule](/docs/tools/permissions#rules) the call must match, `Bash(git *)` or `Edit(src/**)`, and counts only on tool events.
+
+### PreToolUse in the permission flow
+
+`PreToolUse` runs before the rules, for every call. `deny` refuses the call and the model reads the reason, `ask` makes a call ask that the rules would allow, `allow` lets a call run that only the mode or the tool's own `requiresApproval` would ask for (an `ask` or `deny` rule still applies, as in Claude Code), and `defer` pauses the run with the call in `pendingApprovals`. When `resume()` continues it, `PreToolUse` runs again for the call, so a hook that deferred can now answer with `allow` and the `updatedInput` it collected. `updatedInput` replaces the arguments: they must pass the tool's schema, and the rules decide them, not the ones the model sent. With several hooks `deny` wins over `defer`, over `ask`, over `allow`.
+
+`PermissionRequest` answers inside the approval, before `onApproval` and the guardrails' `onToolApproval`: a run that would pause, or ask a person, gets the hook's answer instead. Decisions of both are logged with `decidedBy: 'hook'`.
+
+## Handlers
+
+Every handler takes `timeout` in seconds (600 for `command`, `http` and `mcp_tool`, 30 on `UserPromptSubmit` and `PreModelSwitch` and for `prompt`, 1.5 on `SessionEnd`), and `onFailure: 'block'` to make a failure (cannot start, another exit code, a timeout, output that is not valid) do what exit code 2 does on the event. The handlers an event selects run at once.
+
+### command
+
+The event's JSON goes to stdin, the answer comes back in the exit code and stdout. With `args` the command is started directly with them (exec form), `${CLAUDE_PROJECT_DIR}` and `${COGITATOR_PROJECT_DIR}` replaced by the project root as plain text. Without `args` the line runs in `/bin/sh -c` (PowerShell with `shell: 'powershell'` and on Windows). The process runs in the project root with the runtime's environment (without the `OTEL_*` variables) and `CLAUDE_PROJECT_DIR` and `COGITATOR_PROJECT_DIR` set, in a process group of its own that is killed whole at the timeout or when the run is aborted. The tool call's arguments reach it only on stdin, never on the command line. stdout and stderr are read up to `maxOutputBytes` each (1 MiB). `async: true` runs it in the background: its `additionalContext` reaches the next model call, its decisions have no effect, and it is killed when the run ends.
+
+| Exit code | Effect                                                                                                                     |
+| --------- | -------------------------------------------------------------------------------------------------------------------------- |
+| 0         | Success. JSON on stdout (one object, nothing else) applies, plain text is context on `SessionStart` and `UserPromptSubmit` |
+| 2         | Blocks where the event can block, stderr is the reason (the model reads it on `PreToolUse`, `Stop`, `PostToolUse`)         |
+| other     | A failure that lets the action go on, unless stdout holds valid JSON, which then decides                                   |
+
+### http
+
+The event's JSON is posted to `url`. The request goes only there: redirects are not followed, and with `allowedHttpHookUrls` set (in `hooks`, or a settings file) a URL that matches none of its patterns (`*` for any text) is skipped. `headers` values take `$VAR` and `${VAR}` only from the environment variables of `allowedEnvVars` (narrowed by `httpHookAllowedEnvVars`), others become empty. A 2xx answer with a JSON object body is read like a command's stdout, an empty body is a success with no output, anything else is a failure that lets the action go on.
+
+### prompt
+
+A question to a model: `prompt` with `$ARGUMENTS` replaced by the event's JSON (appended when it has none), sent to `model`, else `hooks.promptModel`, else `llm.defaultModel`. The model answers `{ "ok": true }` or `{ "ok": false, "reason": "..." }`, checked against that schema. `ok: false` denies a `PreToolUse` call and ends the run (`continueOnBlock: true` only denies it), keeps a `Stop` going with the reason (unless the model says `"impossible": true`), blocks `UserPromptSubmit` and stops at `PostToolBatch`. Its cost counts in the run's usage.
+
+### mcp_tool
+
+Calls `tool` on the MCP server `server` through `hooks.mcp` (`{ callTool(server, tool, input, signal) }`), the string values of `input` with `${tool_input.path}` and the like replaced from the event's JSON. The tool's text is read like a command's stdout. Without `hooks.mcp` the hook is skipped with a warning.
+
+## Input and Output
+
+Every input carries `session_id` (the thread), `run_id`, `cwd` (the workspace directory the run works in), `hook_event_name`, `agent_name`, `permission_mode` when the run has permissions set up, and `agent_id` and `agent_type` in a subagent, then the event's own fields as Claude Code names them: `tool_name`, `tool_input`, `tool_use_id`, `tool_response`, `error`, `prompt`, `source`, `last_assistant_message`, `stop_hook_active`, `tool_calls`, `trigger`, `from_model`, `to_model`, `notification_type`, `reason`. `tool_name` is Cogitator's tool name (`run_command`, `read_file`) and `tool_input` its own arguments.
+
+The JSON output fields are Claude Code's: `continue: false` (with `stopReason`) ends the run before its next model call, the run completes with `result.stopped`. `systemMessage` is for a person: it goes to the log and `onHookRun`. `decision`, `reason` and `hookSpecificOutput` decide per event as the table above says. Context a hook adds goes to the model as a system message after the step's tool results, saved to the thread, `SessionStart` context only for its run. Each text is cut at 10 000 characters.
+
+## Logs
+
+Every handler run is saved to the thread as a `custom` entry, `{ kind: 'hook', event, type, target, source, outcome, exitCode, durationMs, decision, reason, systemMessage }`, and reported to `hooks.onHookRun`:
+
+```typescript
+const cog = new Cogitator({
+  hooks: {
+    settings: { trusted: true },
+    onHookRun: (run) => {
+      if (run.systemMessage) notifyUser(run.systemMessage);
+      if (run.outcome === 'error' || run.outcome === 'timeout') console.warn(run);
+    },
+  },
+});
+```
+
+## Differences From Claude Code
+
+- `agent` hooks and the events Cogitator has no point for (`Setup`, `InstructionsLoaded`, `PermissionDenied`, `FileChanged`, `CwdChanged`, `ConfigChange`, `Worktree*`, `Elicitation*`, `PostModelSwitch` and the rest) are skipped with a warning, as are `asyncRewake`, `once` and `updatedPermissions`.
+- There is no transcript file: inputs carry no `transcript_path`, and `last_assistant_message` gives the answer.
+- `tool_name` and `tool_input` are Cogitator's (`run_command` with `{ command }`), the matcher and `if` take Claude Code's names too.
+- `defer` works for any number of calls of a step, each waits in `pendingApprovals`.
+- `PreModelSwitch` fires for handoffs, as a run changes its model only there, and blocking it keeps the run on its agent.
+- Cogitator has no trust dialog: `trusted` decides it, and it is off by default for hooks (Claude Code's `-p` mode trusts every folder).
+
+## Your Own Events
+
+The hooks are middleware, so the same points are open to code. See [Middleware](/docs/core/middleware#tool-calls-before-the-permissions) for `startRun`, `beforeToolCall`, `decideApproval`, `afterToolBatch`, `beforeStop`, `beforeCompaction`, `beforeModelSwitch` and `onNotification`, and `hooksMiddleware(config)` to give one agent its own hooks.

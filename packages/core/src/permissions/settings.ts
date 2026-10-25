@@ -312,7 +312,7 @@ export async function settingsChanged(
 }
 
 /** The `*.json` files of a directory with the times they changed, empty for a missing one */
-async function listingOf(dir: string): Promise<string> {
+export async function listingOf(dir: string): Promise<string> {
   let names: string[];
   try {
     names = (await readdir(dir)).filter((name) => name.endsWith('.json')).sort();

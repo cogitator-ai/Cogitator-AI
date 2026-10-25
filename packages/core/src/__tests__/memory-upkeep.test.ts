@@ -207,6 +207,7 @@ describe('memoryUpkeepMiddleware', () => {
     );
     await new MemoryItems({ adapter }).write([item('Ana likes tea.'), item('Ana enjoys tea.')]);
     const event = {
+      status: 'completed',
       result: {
         runId: 'r',
         agentId: 'helper',
@@ -265,6 +266,7 @@ describe('memoryUpkeepMiddleware', () => {
       }
     );
     const event = {
+      status: 'completed',
       result: {
         runId: 'r',
         agentId: 'helper',
@@ -316,6 +318,7 @@ describe('memoryUpkeepMiddleware', () => {
       }
     );
     const event = {
+      status: 'completed',
       result: {
         runId: 'r',
         agentId: 'helper',

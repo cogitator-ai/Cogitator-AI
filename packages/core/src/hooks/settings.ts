@@ -1,0 +1,388 @@
+/**
+ * Reading the `hooks` of Claude Code compatible settings files: the same files, layers and trust
+ * as the permission rules
+ */
+
+import { readFile, stat } from 'node:fs/promises';
+import { join } from 'node:path';
+import { z } from 'zod';
+import {
+  HOOK_EVENTS,
+  type HookEventName,
+  type HookHandlerConfig,
+  type HookSettings,
+  type HookSettingsOptions,
+  type PermissionLayer,
+} from '@cogitator-ai/types';
+import {
+  defaultManagedDirs,
+  listingOf,
+  permissionSettingsPlaces,
+  settingsChanged,
+} from '../permissions/settings';
+import { own } from '../utils/own';
+
+/** A handler as a run's hooks hold it: what it runs, where it came from, what it matches */
+export interface LoadedHook {
+  event: HookEventName;
+  handler: HookHandlerConfig;
+  /** The settings file it came from, or `code` */
+  source: string;
+  layer: PermissionLayer;
+  /** The `matcher` of its group, as written */
+  matcher?: string;
+}
+
+/** The hooks a project's runs use, with the HTTP allowlists of every layer */
+export interface LoadedHooks {
+  hooks: LoadedHook[];
+  /** URL patterns HTTP hooks may post to, undefined while no layer sets any */
+  allowedHttpHookUrls?: string[];
+  /** Environment variables HTTP hook headers may name, undefined while no layer limits them */
+  httpHookAllowedEnvVars?: string[];
+  warnings: string[];
+  files: Map<string, number>;
+  dirs: Map<string, string>;
+}
+
+const common = {
+  if: z.string().optional(),
+  timeout: z.number().positive().optional(),
+  statusMessage: z.string().optional(),
+  onFailure: z.enum(['continue', 'block']).optional(),
+};
+
+const HandlerSchema = z.discriminatedUnion('type', [
+  z.looseObject({
+    type: z.literal('command'),
+    command: z.string().min(1),
+    args: z.array(z.string()).optional(),
+    shell: z.enum(['bash', 'powershell']).optional(),
+    async: z.boolean().optional(),
+    ...common,
+  }),
+  z.looseObject({
+    type: z.literal('http'),
+    url: z.url(),
+    headers: z.record(z.string(), z.string()).optional(),
+    allowedEnvVars: z.array(z.string()).optional(),
+    ...common,
+  }),
+  z.looseObject({
+    type: z.literal('prompt'),
+    prompt: z.string().min(1),
+    model: z.string().optional(),
+    continueOnBlock: z.boolean().optional(),
+    ...common,
+  }),
+  z.looseObject({
+    type: z.literal('mcp_tool'),
+    server: z.string().min(1),
+    tool: z.string().min(1),
+    input: z.record(z.string(), z.unknown()).optional(),
+    ...common,
+  }),
+]);
+
+const GroupSchema = z.looseObject({
+  matcher: z.string().optional(),
+  hooks: z.array(z.unknown()),
+});
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isHookEvent(name: string): name is HookEventName {
+  return (HOOK_EVENTS as readonly string[]).includes(name);
+}
+
+/** Claude Code events Cogitator has no point for: their hooks are skipped with a warning */
+const UNSUPPORTED_EVENTS = new Set([
+  'Setup',
+  'InstructionsLoaded',
+  'UserPromptExpansion',
+  'MessageDisplay',
+  'PermissionDenied',
+  'TaskCreated',
+  'TaskCompleted',
+  'StopFailure',
+  'TeammateIdle',
+  'ConfigChange',
+  'CwdChanged',
+  'DirectoryAdded',
+  'FileChanged',
+  'WorktreeCreate',
+  'WorktreeRemove',
+  'PostModelSwitch',
+  'Elicitation',
+  'ElicitationResult',
+]);
+
+/**
+ * The handlers of a `hooks` value (a settings file's, or the one in code), each with where it came
+ * from. Problems go to `warnings`, the handlers they concern are left out
+ */
+export function readHookSettings(
+  value: unknown,
+  layer: PermissionLayer,
+  source: string,
+  warnings: string[]
+): LoadedHook[] {
+  if (value === undefined) return [];
+  if (!isRecord(value)) {
+    warnings.push(`${source}: hooks is not an object of events, it is ignored`);
+    return [];
+  }
+  const loaded: LoadedHook[] = [];
+  for (const [name, groups] of Object.entries(value)) {
+    if (!isHookEvent(name)) {
+      warnings.push(
+        UNSUPPORTED_EVENTS.has(name)
+          ? `${source}: Cogitator has no ${name} event, its hooks are ignored`
+          : `${source}: ${name} is not a hook event, its hooks are ignored`
+      );
+      continue;
+    }
+    if (!Array.isArray(groups)) {
+      warnings.push(`${source}: hooks.${name} is not a list of matcher groups, it is ignored`);
+      continue;
+    }
+    for (const [index, raw] of groups.entries()) {
+      const group = GroupSchema.safeParse(raw);
+      if (!group.success) {
+        warnings.push(`${source}: hooks.${name}[${index}] is not a matcher group, it is ignored`);
+        continue;
+      }
+      for (const [at, entry] of group.data.hooks.entries()) {
+        const handler = HandlerSchema.safeParse(entry);
+        if (!handler.success) {
+          const type = isRecord(entry) ? entry.type : undefined;
+          warnings.push(
+            type === 'agent'
+              ? `${source}: hooks.${name}[${index}].hooks[${at}] is an agent hook, which Cogitator does not run, it is ignored`
+              : `${source}: hooks.${name}[${index}].hooks[${at}] is not a valid hook handler (${handler.error.issues[0]?.message ?? 'invalid'}), it is ignored`
+          );
+          continue;
+        }
+        loaded.push({
+          event: name,
+          handler: handler.data as HookHandlerConfig,
+          source,
+          layer,
+          ...(group.data.matcher !== undefined && { matcher: group.data.matcher }),
+        });
+      }
+    }
+  }
+  return loaded;
+}
+
+function stringList(value: unknown, field: string, origin: string, warnings: string[]) {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    warnings.push(`${origin}: ${field} is not a list, it is ignored`);
+    return undefined;
+  }
+  return value.filter((entry): entry is string => {
+    if (typeof entry === 'string') return true;
+    warnings.push(`${origin}: an entry of ${field} is not a string, it is ignored`);
+    return false;
+  });
+}
+
+/** What one settings file says about hooks */
+interface FileHooks {
+  layer: Exclude<PermissionLayer, 'session'>;
+  origin: string;
+  hooks: LoadedHook[];
+  disableAllHooks?: boolean;
+  allowManagedHooksOnly?: boolean;
+  allowedHttpHookUrls?: string[];
+  httpHookAllowedEnvVars?: string[];
+}
+
+/**
+ * Reads the hooks of the settings files for the project at `root`, layer by layer as the
+ * permission rules are read (managed, local, project, user, the `.claude/` and `.cogitator/` files),
+ * with `code` (the hooks given in code) on top. `disableAllHooks` takes the value of the highest
+ * layer that sets it, and only a managed one turns managed hooks off. `allowManagedHooksOnly` in
+ * a managed file leaves out the user, project and local hooks. An untrusted project's files
+ * (`trusted` not true) give no hooks, and nothing else either
+ */
+export async function loadHookSettings(
+  root: string,
+  options: HookSettingsOptions | undefined,
+  code: HookSettings | undefined
+): Promise<LoadedHooks> {
+  const warnings: string[] = [];
+  const files = new Map<string, number>();
+  const dirs = new Map<string, string>();
+  const fromFiles: FileHooks[] = [];
+  if (options) {
+    const places = await permissionSettingsPlaces(root, options);
+    const wanted = new Set(options.layers ?? ['managed', 'user', 'project', 'local']);
+    for (const layer of ['managed', 'local', 'project', 'user'] as const) {
+      if (!wanted.has(layer)) continue;
+      for (const file of places[layer]) {
+        const read = await readSettingsFile(file, files, warnings);
+        if (read === undefined) continue;
+        const project = layer === 'project' || layer === 'local';
+        const mentions =
+          read.hooks !== undefined ||
+          read.disableAllHooks !== undefined ||
+          read.allowedHttpHookUrls !== undefined;
+        if (project && options.trusted !== true) {
+          if (mentions) {
+            warnings.push(
+              `${file}: the project is not trusted, its hooks are ignored (set hooks.settings.trusted to run them)`
+            );
+          }
+          continue;
+        }
+        fromFiles.push({
+          layer,
+          origin: file,
+          hooks: readHookSettings(read.hooks, layer, file, warnings),
+          ...(typeof read.disableAllHooks === 'boolean' && {
+            disableAllHooks: read.disableAllHooks,
+          }),
+          ...(layer === 'managed' &&
+            read.allowManagedHooksOnly === true && { allowManagedHooksOnly: true }),
+          ...listField(read, 'allowedHttpHookUrls', file, warnings),
+          ...listField(read, 'httpHookAllowedEnvVars', file, warnings),
+        });
+      }
+    }
+    if (wanted.has('managed')) {
+      for (const dir of options.managedDirs ?? defaultManagedDirs()) {
+        const dropIns = join(dir, 'managed-settings.d');
+        dirs.set(dropIns, await listingOf(dropIns));
+      }
+    }
+  }
+  const disabledBy = fromFiles.find((file) => file.disableAllHooks !== undefined);
+  const managedOnly = fromFiles.some((file) => file.allowManagedHooksOnly === true);
+  const hooks: LoadedHook[] = readHookSettings(code, 'session', 'code', warnings);
+  for (const file of fromFiles) {
+    if (disabledBy?.disableAllHooks === true) {
+      if (disabledBy.layer === 'managed' || file.layer !== 'managed') continue;
+    }
+    if (managedOnly && file.layer !== 'managed') continue;
+    hooks.push(...file.hooks);
+  }
+  const urls = fromFiles.flatMap((file) => file.allowedHttpHookUrls ?? []);
+  const anyUrls = fromFiles.some((file) => file.allowedHttpHookUrls !== undefined);
+  const envs = fromFiles.flatMap((file) => file.httpHookAllowedEnvVars ?? []);
+  const anyEnvs = fromFiles.some((file) => file.httpHookAllowedEnvVars !== undefined);
+  return {
+    hooks: dedupe(hooks),
+    ...(anyUrls && { allowedHttpHookUrls: urls }),
+    ...(anyEnvs && { httpHookAllowedEnvVars: envs }),
+    warnings,
+    files,
+    dirs,
+  };
+}
+
+function listField(
+  read: Record<string, unknown>,
+  field: 'allowedHttpHookUrls' | 'httpHookAllowedEnvVars',
+  origin: string,
+  warnings: string[]
+): Partial<Record<typeof field, string[]>> {
+  const list = stringList(own(read, field), field, origin, warnings);
+  return list ? { [field]: list } : {};
+}
+
+async function readSettingsFile(
+  file: string,
+  files: Map<string, number>,
+  warnings: string[]
+): Promise<Record<string, unknown> | undefined> {
+  let text: string;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch {
+    files.set(file, 0);
+    return undefined;
+  }
+  files.set(file, await changedAt(file));
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch (error) {
+    warnings.push(
+      `${file}: not valid JSON (${error instanceof Error ? error.message : String(error)}), its hooks are ignored`
+    );
+    return undefined;
+  }
+  if (!isRecord(json)) {
+    warnings.push(`${file}: the file does not hold a JSON object, its hooks are ignored`);
+    return undefined;
+  }
+  return json;
+}
+
+async function changedAt(file: string): Promise<number> {
+  try {
+    return (await stat(file)).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * The hooks with each handler of an event and matcher once: the same handler in several files
+ * runs once, from the highest layer
+ */
+function dedupe(hooks: readonly LoadedHook[]): LoadedHook[] {
+  const seen = new Set<string>();
+  return hooks.filter((hook) => {
+    const key = JSON.stringify([hook.event, hook.matcher ?? '', sortedJson(hook.handler)]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function sortedJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortedJson);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, sortedJson(value[key])])
+  );
+}
+
+/** The hooks of a project, read again once a settings file changed */
+export class HookSettingsCache {
+  private readonly loads = new Map<string, Promise<LoadedHooks>>();
+  private readonly warned = new Set<string>();
+
+  constructor(
+    private readonly options: HookSettingsOptions | undefined,
+    private readonly code: HookSettings | undefined,
+    private readonly warn: (warning: string) => void
+  ) {}
+
+  async load(root: string): Promise<LoadedHooks> {
+    let loading = this.loads.get(root);
+    if (loading) {
+      const loaded = await loading.catch(() => undefined);
+      if (!loaded || (await settingsChanged(loaded.files, loaded.dirs))) loading = undefined;
+    }
+    if (!loading) {
+      loading = loadHookSettings(root, this.options, this.code);
+      this.loads.set(root, loading);
+    }
+    const loaded = await loading;
+    for (const warning of loaded.warnings) {
+      if (this.warned.has(warning)) continue;
+      this.warned.add(warning);
+      this.warn(warning);
+    }
+    return loaded;
+  }
+}

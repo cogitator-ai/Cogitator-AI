@@ -330,7 +330,9 @@ export function memoryUpkeepMiddleware(
 
   return {
     name: 'cogitator:memory-upkeep',
-    async afterRun({ result, model, memoryAgentId }: RunEndEvent, context: RunMiddlewareContext) {
+    async afterRun(event: RunEndEvent, context: RunMiddlewareContext) {
+      if (event.status !== 'completed') return;
+      const { result, model, memoryAgentId } = event;
       const place = result.memory;
       if (!place || context.signal.aborted || stop.signal.aborted) return;
       const memory = deps.memory();

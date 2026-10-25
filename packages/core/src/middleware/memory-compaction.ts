@@ -15,6 +15,7 @@ import type {
 } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
 import { onActivePath } from './memory-extraction';
+import type { CompactionNotices } from './builtins';
 
 /** A compaction stopped before a model call, as the run's branch is no longer the active one */
 class LeftBranchError extends Error {
@@ -38,6 +39,8 @@ export interface MemoryCompactionDeps {
   summarizer: (model: string, run: CompactionRun) => SummarizeFn;
   /** The context window `model` runs with */
   windowOf: (model: string) => number;
+  /** Asks the run's middleware before a compaction (`beforeCompaction`) and tells them after */
+  notices?: CompactionNotices;
 }
 
 /** Turns since the last compaction under which a new one would only churn */
@@ -75,7 +78,9 @@ export function memoryCompactionMiddleware(
   };
   return {
     name: 'cogitator:memory-compaction',
-    async afterRun({ result, model }: RunEndEvent, context) {
+    async afterRun(event: RunEndEvent, context) {
+      if (event.status !== 'completed') return;
+      const { result, model } = event;
       const memory = deps.memory();
       const place = result.memory;
       if (!memory?.getPath || !place?.leafId || context.signal.aborted) return;
@@ -115,6 +120,8 @@ export function memoryCompactionMiddleware(
       try {
         const before = await beforeCompact?.({ threadId: place.threadId, tokens, threshold });
         if (before === false) return;
+        const asked = await deps.notices?.before(context, { trigger: 'auto', scope: 'thread' });
+        if (asked?.skip) return;
         const instructions = [settings.summaryPrompt, before?.instructions]
           .filter((part): part is string => !!part?.trim())
           .join('\n\n');
@@ -173,6 +180,7 @@ export function memoryCompactionMiddleware(
         return;
       }
       failures.delete(place.threadId);
+      await deps.notices?.after(context, { trigger: 'auto', scope: 'thread' });
       try {
         await afterCompact?.(compacted);
       } catch (error) {

@@ -41,6 +41,7 @@ cp .env.example .env  # add GOOGLE_API_KEY at minimum
 | 24  | `24-run-control.ts`       | `cog.start()` steering, a tool that asks a person, double-texting                          |
 | 25  | `25-tool-execution.ts`    | Parallel safe tools and a barrier, `toolOutput()`, progress, streamed tool input, timeouts |
 | 26  | `26-permissions.ts`       | Claude Code rules from `.claude/settings.json`, plan mode, the audit log, a session budget |
+| 27  | `27-hooks.ts`             | Claude Code hooks from `.claude/settings.json`, `AGENTS.md` in the system prompt           |
 
 ## Running
 

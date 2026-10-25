@@ -14,6 +14,7 @@ import type {
   MemoryItemScope,
   MemoryResult,
   RunEndEvent,
+  FinishedRunEnd,
   RunMiddleware,
   RunMiddlewareContext,
 } from '@cogitator-ai/types';
@@ -168,6 +169,7 @@ export function memoryExtractionMiddleware(
   return {
     name: 'cogitator:memory-extraction',
     async afterRun(event: RunEndEvent, context) {
+      if (event.status !== 'completed') return;
       const threadId = event.result.memory?.threadId;
       if (threadId === undefined) return;
       const before = extracting.get(threadId) ?? Promise.resolve();
@@ -182,10 +184,8 @@ export function memoryExtractionMiddleware(
     },
   };
 
-  async function extract(
-    { result, model, memoryAgentId }: RunEndEvent,
-    context: RunMiddlewareContext
-  ): Promise<void> {
+  async function extract(event: FinishedRunEnd, context: RunMiddlewareContext): Promise<void> {
+    const { result, model, memoryAgentId } = event;
     const memory = deps.memory();
     const place = result.memory;
     if (!memory?.getPath || !isMemoryItemAdapter(memory) || !place?.leafId) return;

@@ -70,7 +70,7 @@ Settings files written for Claude Code load here, and most rules mean the same. 
 - Commands are matched on their argument vector, quotes and escapes removed, and an allow rule matches only a command line the parser fully understands. Claude Code matches some command lines this parser refuses, which here ask instead.
 - `Read` and `Edit` rules also check the files that shell commands name (`cat .env`, `cp .env /tmp`, `> src/app.ts`), as Claude Code does for the commands it recognizes. The list of programs differs.
 - Cogitator has no workspace trust dialog: `trusted` (below) decides it.
-- `dontAsk` mode is supported, the auto mode classifier settings (`autoMode.*`) and hooks are not read.
+- `dontAsk` mode is supported, the auto mode classifier settings (`autoMode.*`) are not read. The `hooks` of the same files run with [`hooks.settings`](/docs/core/hooks), a project's own only once it is trusted.
 
 ### How commands match
 
@@ -224,4 +224,4 @@ A paused run keeps its mode, its own rules and the calls the rules refused in it
 
 ## The Audit Log
 
-With permissions set up, every decision is saved to the thread as an `approval` entry, `{ toolCallId, toolName, decision, reason, decidedBy, mode, rule?, updatedArguments?, remembered? }`, and reported to `RunOptions.onPermissionDecision`. `invokeTool()` returns its decision in `result.permission` and reports it to its own `onPermissionDecision`.
+With permissions set up, every decision is saved to the thread as an `approval` entry, `{ toolCallId, toolName, decision, reason, decidedBy, mode, rule?, updatedArguments?, remembered? }`, and reported to `RunOptions.onPermissionDecision`. `decidedBy` is `hook` for what a [`PreToolUse` or `PermissionRequest` hook](/docs/core/hooks) (or a `beforeToolCall` or `decideApproval` middleware) decided. `invokeTool()` returns its decision in `result.permission` and reports it to its own `onPermissionDecision`.

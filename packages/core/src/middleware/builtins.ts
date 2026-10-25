@@ -1,6 +1,8 @@
 import {
   CogitatorError,
   ErrorCode,
+  type CompactionEndEvent,
+  type CompactionStartEvent,
   type RunMiddlewareContext,
   type ModelStreamSink,
   type PiiConfig,
@@ -176,20 +178,38 @@ export function guardrailsMiddleware(
 }
 
 /**
+ * How a compacting middleware asks the run's middleware whether a compaction may run
+ * (`beforeCompaction`) and tells them it ran (`afterCompaction`)
+ */
+export interface CompactionNotices {
+  before(
+    context: RunMiddlewareContext,
+    event: CompactionStartEvent
+  ): Promise<{ skip: boolean; reason?: string }>;
+  after(context: RunMiddlewareContext, event: CompactionEndEvent): Promise<void>;
+}
+
+/**
  * Compresses the run's conversation per `context` before a turn that would pass the context
  * manager's threshold for the run's model. What the agent must not lose is kept: the
  * instructions of the skills it activated (`use_skill`) and its todo list (`write_todos`) come
- * back as system messages when the compression dropped them. The Cogitator adds it from
- * `context`.
+ * back as system messages when the compression dropped them. The run's middleware hear of it
+ * (`beforeCompaction` can keep the conversation as it is). The Cogitator adds it from `context`.
  */
-export function compactionMiddleware(manager: ContextManager): RunMiddleware {
+export function compactionMiddleware(
+  manager: ContextManager,
+  notices?: CompactionNotices
+): RunMiddleware {
   return {
     name: 'cogitator:compaction',
-    async beforeModel({ messages, model }) {
+    async beforeModel({ messages, model }, context) {
       const conversation = [...messages];
       if (!manager.shouldCompress(conversation, model)) return;
+      const asked = await notices?.before(context, { trigger: 'auto', scope: 'turn' });
+      if (asked?.skip) return;
       const reserve = countMessagesTokens(pinnedNotes(conversation));
       const compressed = await manager.compress(conversation, model, reserve);
+      await notices?.after(context, { trigger: 'auto', scope: 'turn' });
       return { messages: keepThroughCompaction(conversation, compressed.messages) };
     },
   };

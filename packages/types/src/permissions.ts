@@ -116,10 +116,11 @@ export interface PermissionRuleRef {
 
 /**
  * What made a decision: a rule, the run's mode, the tool's own approval setting (or the
- * guardrails), the `auto` classifier, a person answering the approval, or nothing at all (a call
- * that needs no approval runs)
+ * guardrails), the `auto` classifier, a person answering the approval, a hook or middleware
+ * (`beforeToolCall`, `decideApproval`), or nothing at all (a call that needs no approval runs)
  */
-export type PermissionDecider = 'rule' | 'mode' | 'tool' | 'classifier' | 'user' | 'default';
+export type PermissionDecider =
+  'rule' | 'mode' | 'tool' | 'classifier' | 'user' | 'hook' | 'default';
 
 /** What `resolvePermission` decided for a call */
 export interface PermissionDecision {

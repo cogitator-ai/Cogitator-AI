@@ -4,10 +4,11 @@ export {
   rememberableRules,
   resolvePermission,
   ruleAllowsCall,
+  ruleMatchesCall,
   suggestRule,
   type PermissionContext,
 } from './engine';
-export { parseRule, mcpNamePart, type ParsedRule } from './rules';
+export { parseRule, mcpNamePart, hookNamesOf, type ParsedRule } from './rules';
 export {
   editCommandPaths,
   filesOf,

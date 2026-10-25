@@ -631,6 +631,40 @@ Command lines are tokenized as a shell reads them and matched on their argument 
 
 An aborted run keeps the text it streamed as an assistant message with `metadata.interrupted: true` (unless `saveInterruptedReply: false`), answers the tool calls it never started with `ABORTED_BEFORE_DISPATCH`, and never writes the late result of a tool that ignored the signal. History read from memory answers tool calls a crash left without a result with `OUTCOME_UNKNOWN` ("outcome unknown, verify before retrying"), without rewriting the log. See [Steering, Interrupts and Cancellation](https://cogitator.app/docs/core/run-control).
 
+### Hooks
+
+Commands, HTTP endpoints, model prompts and MCP tools that run at points of a run, in the format of Claude Code's `settings.json` `hooks`: `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `PostToolUseFailure`, `PostToolBatch`, `SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`, `PreModelSwitch`, `Stop` and `Notification`:
+
+```typescript
+const cog = new Cogitator({
+  hooks: {
+    settings: { trusted: true }, // also the hooks of .claude/settings*.json, ~/.claude, managed files
+    hooks: {
+      PreToolUse: [
+        {
+          matcher: 'Bash',
+          hooks: [
+            {
+              type: 'command',
+              command: 'node',
+              args: ['${CLAUDE_PROJECT_DIR}/.claude/hooks/guard.js'],
+              if: 'Bash(rm *)',
+            },
+          ],
+        },
+      ],
+      Stop: [{ hooks: [{ type: 'prompt', prompt: 'Are all tasks done? $ARGUMENTS' }] }],
+    },
+  },
+});
+```
+
+A command gets the event's JSON on stdin (never on its command line) and answers with its exit code (2 blocks, with stderr as the reason) and JSON on stdout (`permissionDecision`, `updatedInput`, `additionalContext`, `decision`, `continue`, `updatedToolOutput`...), in its own process group killed at its `timeout`, with `CLAUDE_PROJECT_DIR` and `COGITATOR_PROJECT_DIR` set. HTTP hooks post the JSON to their URL only (no redirects, `allowedHttpHookUrls`), prompt hooks ask a model for `{ ok, reason }`, `mcp_tool` hooks call a tool through `hooks.mcp`. `PreToolUse` runs before the permission rules (`allow` skips an approval only the mode or the tool would ask for, an `ask` rule still asks, `defer` pauses the run), `PermissionRequest` answers an approval before `onApproval`. A project's own hooks run only once it is trusted, every handler run is logged as a `custom` entry and reported to `hooks.onHookRun`. The hooks are the run middleware `cogitator:hooks`, outermost. Nothing runs without `hooks`. See [Hooks](https://cogitator.app/docs/core/hooks).
+
+### Project Instructions
+
+`instructions: { projectFiles: true }` reads the `AGENTS.md`, `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md` of the run's workspace, from the root down to its `cwd`, into the agent's system prompt, with `@path` imports (relative, at most 4 hops, cycles stopped, inside the workspace unless `allowImportsFrom` allows a directory), the rules of `.claude/rules/` (rules with `paths` frontmatter and the files of deeper directories join the conversation once a tool reads or edits a file they cover) and a size limit (`maxChars`, 32 000) with a notice of what was cut. `result.instructions` lists what was read, and the thread's log gets a `custom` entry. Off by default. See [Project Instructions](https://cogitator.app/docs/core/project-instructions).
+
 ### PII Masking
 
 `security.pii` replaces emails, phones, card numbers (Luhn-checked), IBANs, SSNs, IP addresses, API keys and your own patterns with placeholders before every LLM request, so the provider never sees them:
@@ -1197,18 +1231,27 @@ const agent = new Agent({ name: 'support', instructions: '...', middleware: [ref
 await cog.run(agent, { input, middleware: [auditFor(userId)] });
 ```
 
-| Hook            | When                                          | What it can do                                                                                |
-| --------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `beforeRun`     | A new run's input, before it is saved or sent | Check it. Not called on `resume()`                                                            |
-| `beforeModel`   | Before each model turn                        | Return `{ messages }` to change the conversation from then on                                 |
-| `wrapModelCall` | Around each call, once per model a turn tries | Change the request or the stream sink, call `next` again, or answer without it                |
-| `afterModel`    | After each answer, before the run uses it     | Return `{ content }` or `{ toolCalls }` to replace them                                       |
-| `wrapToolCall`  | Around each tool call that passed approval    | Change the arguments (checked against the schema again), or answer for the tool               |
-| `afterRun`      | After a run finished and its writes settled   | Work for the next run, such as extraction or compaction. Not called for failed or paused runs |
+| Hook                | When                                                  | What it can do                                                                  |
+| ------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `startRun`          | A run starts, new or resumed                          | Return `{ context }` for after the system prompt, this run only                 |
+| `beforeRun`         | A new run's input, before it is saved or sent         | Check it, return `{ context }` for after it. Not called on `resume()`           |
+| `beforeModel`       | Before each model turn                                | Return `{ messages }` to change the conversation from then on                   |
+| `wrapModelCall`     | Around each call, once per model a turn tries         | Change the request or the stream sink, call `next` again, or answer without it  |
+| `afterModel`        | After each answer, before the run uses it             | Return `{ content }` or `{ toolCalls }` to replace them                         |
+| `beforeToolCall`    | Before the permissions decide a tool call             | `deny`, `ask`, `allow` or `defer` it, or change its arguments                   |
+| `decideApproval`    | A call asks for approval, before `onApproval`         | Approve or decline it as a person would                                         |
+| `wrapToolCall`      | Around each tool call that passed approval            | Change the arguments (checked against the schema again), or answer for the tool |
+| `afterToolBatch`    | Every call of a step resolved                         | Add context (`context.addContext`) or end the run (`context.stop`)              |
+| `beforeStop`        | The agent would stop with a final answer              | Return `{ continueWith }` to keep it going                                      |
+| `beforeCompaction`  | Before a compaction of the turn or the thread         | Return `{ skip: true }`                                                         |
+| `afterCompaction`   | After a compaction ran                                | Log or react                                                                    |
+| `beforeModelSwitch` | A handoff would move the run to another model         | Return `{ block }` to keep the run on its agent                                 |
+| `onNotification`    | The run needs a person                                | Tell someone                                                                    |
+| `afterRun`          | A run ended: `event.status` completed, paused, failed | Work for the next run (extraction, compaction) or cleanup                       |
 
-Every hook gets the run's context: `runId`, `threadId`, the agent, `userId`, the channel, `iteration`, `signal`, `deps` and a `state` map the run's middleware share. The Cogitator's middleware runs first, then the agent's, then the run's, then the built-in ones: PII masking (`security.pii`), prompt injection (`security.promptInjection`), guardrails (`guardrails`), tool output clearing (`context.clearToolOutputs`), compaction (`context`), extraction of memory items after the run (`memory.extraction`), compaction of the thread after the run (`memory.compaction`), memory upkeep in the background after the run (`memory.observations`, `memory.consolidation`) and the brief of what memory holds for a turn (`memory.brief`), closest to the model. `before*` and `afterRun` hooks run in that order, `wrap*` hooks nest with the first outermost, `afterModel` runs in reverse. After a handoff the agent the run went on as brings its own middleware. To see each turn as the run keeps it, after every layer, pass `onModelTurn` in the run options: it gets `{ content, toolCalls, model }` before the turn's tools run.
+Every hook gets the run's context: `runId`, `threadId`, the agent, `userId`, the channel, `iteration`, `signal`, `deps`, a `state` map the run's middleware share, `parentRunId` for a delegated run, `permissionMode`, and `addContext(text)`, `stop(reason)` (the run completes with `result.stopped`) and `logEvent(event, note)` (a `custom` entry of the thread). The [hooks](#hooks) run first, then the Cogitator's middleware, then the agent's, then the run's, then the built-in ones: PII masking (`security.pii`), prompt injection (`security.promptInjection`), guardrails (`guardrails`), tool output clearing (`context.clearToolOutputs`), compaction (`context`), extraction of memory items after the run (`memory.extraction`), compaction of the thread after the run (`memory.compaction`), memory upkeep in the background after the run (`memory.observations`, `memory.consolidation`) and the brief of what memory holds for a turn (`memory.brief`), closest to the model. `before*` and `afterRun` hooks run in that order, `wrap*` hooks nest with the first outermost, `afterModel` runs in reverse. After a handoff the agent the run went on as brings its own middleware. To see each turn as the run keeps it, after every layer, pass `onModelTurn` in the run options: it gets `{ content, toolCalls, model }` before the turn's tools run.
 
-`tripwire(reason, info?)` stops the run as a guard that tripped: it fails with `GUARDRAIL_TRIPPED` (HTTP 400), the middleware, the reason and `info` in `details`, and `isTripwire(error)` tells it apart. Any other error a hook throws fails the run as it is, and a hook still running when the run is cancelled or times out is no longer waited for. Arguments a `wrapToolCall` hook changes are checked against the tool's schema and `requiresApproval` again, and an approval never carries over to them. Every call a `wrapModelCall` hook sends counts toward usage and budgets, an answer it gives without the model counts nothing and still reaches `onToken` in a streamed run. A middleware with `holdsStream: true` makes a streamed run hold each turn's text until the turn is done, so text a hook retries, blocks or replaces never reaches `onToken`. A tripwire raised inside a tool, such as a nested `agentAsTool()` run, stops the outer run too. The Cogitator's `wrapToolCall` hooks also wrap `invokeTool()`, which throws an error they throw (a tripwire among them) while a failing tool still comes back in `error`. `toAgentWire()` does not carry middleware and warns when an agent has some. `piiMiddleware`, `promptInjectionMiddleware`, `guardrailsMiddleware`, `clearToolOutputsMiddleware`, `compactionMiddleware`, `memoryCompactionMiddleware`, `memoryBriefMiddleware` and `memoryUpkeepMiddleware` build the built-in ones, to give a feature to one agent only. `memoryCitations()` is a middleware to add yourself, the citation lock of the memory search tools (see [Memory Integration](#memory-integration)). `afterRun({ result, model }, context)` runs after the run saved what it said and before `run()` returns, and an error it throws fails the run.
+`tripwire(reason, info?)` stops the run as a guard that tripped: it fails with `GUARDRAIL_TRIPPED` (HTTP 400), the middleware, the reason and `info` in `details`, and `isTripwire(error)` tells it apart. Any other error a hook throws fails the run as it is, and a hook still running when the run is cancelled or times out is no longer waited for. Arguments a `wrapToolCall` hook changes are checked against the tool's schema and `requiresApproval` again, and an approval never carries over to them. Every call a `wrapModelCall` hook sends counts toward usage and budgets, an answer it gives without the model counts nothing and still reaches `onToken` in a streamed run. A middleware with `holdsStream: true` makes a streamed run hold each turn's text until the turn is done, so text a hook retries, blocks or replaces never reaches `onToken`. A tripwire raised inside a tool, such as a nested `agentAsTool()` run, stops the outer run too. The Cogitator's `wrapToolCall` hooks also wrap `invokeTool()`, which throws an error they throw (a tripwire among them) while a failing tool still comes back in `error`. `toAgentWire()` does not carry middleware and warns when an agent has some. `piiMiddleware`, `promptInjectionMiddleware`, `guardrailsMiddleware`, `clearToolOutputsMiddleware`, `compactionMiddleware`, `memoryCompactionMiddleware`, `memoryBriefMiddleware` and `memoryUpkeepMiddleware` build the built-in ones, to give a feature to one agent only. `memoryCitations()` is a middleware to add yourself, the citation lock of the memory search tools (see [Memory Integration](#memory-integration)). `afterRun(event, context)` runs once a run ended, before `run()` returns or throws: check `event.status` (`completed` and `paused` carry `result`, `failed` carries `error`). An error it throws is logged, the run keeps its outcome.
 
 ---
 

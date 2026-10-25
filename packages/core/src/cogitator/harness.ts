@@ -1,7 +1,9 @@
 import {
   CogitatorError,
   ErrorCode,
+  type LoadedInstructionFile,
   type Message,
+  type ProjectInstructionsOptions,
   type SkillCatalog,
   type TodoItem,
   type Tool,
@@ -33,6 +35,12 @@ import { renderTodos, todosIn, WRITE_TODOS, writeTodosTool } from '../tools/writ
 import { nanoid } from 'nanoid';
 import { readFileBinding } from '../tools/workspace-tools';
 import { getTextContent } from './span-factory';
+import { accessKindOf } from '../permissions/rules';
+import {
+  instructionPathsIn,
+  ProjectInstructionsLoader,
+  type InstructionsChunk,
+} from '../instructions/project-instructions';
 
 /** How the note about skill instructions compaction left out starts. */
 const DROPPED_SKILLS_HEADER =
@@ -60,6 +68,24 @@ export function todosRecall(todos: readonly TodoItem[]): Message[] {
   return [call, { role: 'tool', content: renderTodos(todos), toolCallId: id, name: WRITE_TODOS }];
 }
 
+/**
+ * The paths a call of a tool that reads or edits files touches: its `access.paths`, else its
+ * `path` or `file_path` argument. None for other tools
+ */
+export function touchedPaths(tool: Tool, args: Record<string, unknown>): string[] {
+  const kind = accessKindOf(tool);
+  if (kind !== 'read' && kind !== 'edit') return [];
+  if (tool.access?.paths) {
+    try {
+      return [...tool.access.paths(args)];
+    } catch {
+      return [];
+    }
+  }
+  const value = args.path ?? args.file_path ?? args.filePath;
+  return typeof value === 'string' ? [value] : [];
+}
+
 /** Whether `message` is part of a {@link todosRecall}. */
 function isTodosRecall(message: Message): boolean {
   if (message.role === 'tool') return message.toolCallId?.startsWith(RECALLED_TODOS_ID) === true;
@@ -83,6 +109,8 @@ export interface RunHarnessOptions {
   onTodos: (todos: TodoItem[]) => Promise<void>;
   /** Aborts when the run is cancelled or times out */
   signal: AbortSignal;
+  /** Which project instruction files of the agents' workspaces to read, unset for none */
+  instructions?: ProjectInstructionsOptions;
 }
 
 /**
@@ -99,6 +127,13 @@ export class RunHarness {
    */
   readonly pinnedOutputs = new Map<string, number>();
   private readonly catalogs = new Map<Agent, SkillCatalog | undefined>();
+  /** The project instructions of each workspace an agent of the run works in */
+  private readonly projects = new Map<
+    Workspace,
+    { loader: ProjectInstructionsLoader; loaded: InstructionsChunk; warned: number }
+  >();
+  /** Every project instruction file the run read, in order */
+  private readonly instructionFiles: LoadedInstructionFile[] = [];
   private readonly found = new Set<string>();
   private todoList: TodoItem[] | undefined;
   private searchTool?: Tool;
@@ -113,6 +148,7 @@ export class RunHarness {
    * @throws CogitatorError `CONFIGURATION_ERROR` when `owner.config.skills` holds an invalid source
    */
   async prepare(owner: Agent): Promise<void> {
+    await this.prepareInstructions(owner);
     if (this.catalogs.has(owner)) return;
     let loaders;
     try {
@@ -149,12 +185,72 @@ export class RunHarness {
     this.catalogs.set(owner, catalog && catalog.skills.length > 0 ? catalog : undefined);
   }
 
-  /** The system prompt of `owner`: its instructions, and the skills it can activate. */
+  /**
+   * Reads the project instructions of `owner`'s workspace, once per workspace in a run. A
+   * problem with a file is logged and the file left out
+   */
+  private async prepareInstructions(owner: Agent): Promise<void> {
+    const options = this.options.instructions;
+    const workspace = this.options.workspaceOf(owner);
+    if (!options || !workspace || this.projects.has(workspace)) return;
+    const loader = new ProjectInstructionsLoader(workspace, options);
+    const loaded = await loader.load(this.options.signal);
+    for (const warning of loader.warnings) {
+      getLogger().warn('Project instructions', { warning, workspace: workspace.id });
+    }
+    this.projects.set(workspace, { loader, loaded, warned: loader.warnings.length });
+    this.instructionFiles.push(...loaded.files);
+  }
+
+  /** The system prompt of `owner`: its instructions, the project's, and the skills it can activate. */
   systemPrompt(owner: Agent): string {
     const catalog = this.catalogs.get(owner);
-    return catalog
-      ? `${owner.instructions}\n\n${availableSkillsSection(catalog.skills)}`
-      : owner.instructions;
+    const workspace = this.options.workspaceOf(owner);
+    const project = workspace ? this.projects.get(workspace)?.loaded.text : undefined;
+    return [
+      owner.instructions,
+      ...(project ? [project] : []),
+      ...(catalog ? [availableSkillsSection(catalog.skills)] : []),
+    ].join('\n\n');
+  }
+
+  /** The project instruction files the run read so far, in prompt order */
+  get instructions(): readonly LoadedInstructionFile[] {
+    return this.instructionFiles;
+  }
+
+  /** Counts files a resumed run read before it paused, as the run's own */
+  restoreInstructions(files: readonly LoadedInstructionFile[]): void {
+    const known = new Set(this.instructionFiles.map((file) => file.path));
+    this.instructionFiles.unshift(...files.filter((file) => !known.has(file.path)));
+  }
+
+  /**
+   * The project instructions tool calls reaching `paths` bring for `owner`: the files of the
+   * directories below the working directory and the rules scoped to those paths that the
+   * conversation does not hold yet. Undefined when they bring nothing
+   */
+  async reach(
+    owner: Agent,
+    paths: readonly string[],
+    messages: readonly Message[]
+  ): Promise<InstructionsChunk | undefined> {
+    const workspace = this.options.workspaceOf(owner);
+    const project = workspace ? this.projects.get(workspace) : undefined;
+    if (!project || paths.length === 0) return undefined;
+    const held = new Set(
+      messages
+        .filter((message) => message.role === 'system')
+        .flatMap((message) => instructionPathsIn(getTextContent(message.content)))
+    );
+    const chunk = await project.loader.reach(paths, (path) => held.has(path), this.options.signal);
+    for (const warning of project.loader.warnings.slice(project.warned)) {
+      getLogger().warn('Project instructions', { warning, workspace: workspace?.id });
+    }
+    project.warned = project.loader.warnings.length;
+    if (chunk.text === '') return undefined;
+    this.instructionFiles.push(...chunk.files);
+    return chunk;
   }
 
   /**

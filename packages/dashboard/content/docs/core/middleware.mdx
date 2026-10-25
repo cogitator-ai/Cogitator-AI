@@ -45,7 +45,7 @@ await cog.run(agent, { input: 'Where is my order?', middleware: [auditFor(userId
 | `new Agent({ middleware })`      | The runs of this agent, and the turns of a run handed over to it  |
 | `cog.run(agent, { middleware })` | One run. Pass it again to `resume()`                              |
 
-The Cogitator's middleware runs first, then the agent's, then the run's, then the built-in middleware closest to the model. `before*` and `afterRun` hooks run in that order, `wrap*` hooks nest with the first one outermost, and `afterModel` runs in reverse, so the middleware nearest the model sees its answer first.
+The [hooks](/docs/core/hooks) of `hooks` run first, then the Cogitator's middleware, then the agent's, then the run's, then the built-in middleware closest to the model. `before*` and `afterRun` hooks run in that order, `wrap*` hooks nest with the first one outermost, and `afterModel` runs in reverse, so the middleware nearest the model sees its answer first.
 
 Middleware is code, so the [agent wire format](/docs/core/agents#sending-an-agent-to-another-process) does not carry it: the side that runs an agent gives its own.
 
@@ -53,18 +53,46 @@ Middleware is code, so the [agent wire format](/docs/core/agents#sending-an-agen
 
 Every hook is optional. Each one gets the run's context as its last argument.
 
-| Hook            | When                                          | What it can do                                                                                 |
-| --------------- | --------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `beforeRun`     | A new run's input, before it is saved or sent | Check it. Also sees each queued message of `cog.start()`. Not called when a paused run resumes |
-| `beforeModel`   | Before each model turn                        | Return `{ messages }` to change the conversation from then on                                  |
-| `wrapModelCall` | Around each call, once per model a turn tries | Change the request or the stream sink, call `next` again, or answer without it                 |
-| `afterModel`    | After each answer, before the run uses it     | Return `{ content }` or `{ toolCalls }` to replace them                                        |
-| `wrapToolCall`  | Around each tool call that passed approval    | Change the arguments, or answer for the tool                                                   |
-| `afterRun`      | After a run finished and its writes settled   | Keep memory in shape for the next run, such as extraction or compaction                        |
+| Hook                | When                                                      | What it can do                                                                                      |
+| ------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `startRun`          | A run starts, new or resumed, before its first model call | Return `{ context }` to add text after the system prompt, for this run only                         |
+| `beforeRun`         | A new run's input, before it is saved or sent             | Check it, return `{ context }` to add text after it. Also sees each queued message of `cog.start()` |
+| `beforeModel`       | Before each model turn                                    | Return `{ messages }` to change the conversation from then on                                       |
+| `wrapModelCall`     | Around each call, once per model a turn tries             | Change the request or the stream sink, call `next` again, or answer without it                      |
+| `afterModel`        | After each answer, before the run uses it                 | Return `{ content }` or `{ toolCalls }` to replace them                                             |
+| `beforeToolCall`    | Before the permissions decide a tool call                 | Deny it, ask for it, allow it, defer it to a person, or change its arguments                        |
+| `decideApproval`    | A call asks for approval, before `onApproval`             | Approve or decline it as a person would                                                             |
+| `wrapToolCall`      | Around each tool call that passed approval                | Change the arguments, or answer for the tool                                                        |
+| `afterToolBatch`    | Every call of a step resolved, before the next model call | Add context (`context.addContext`) or end the run (`context.stop`)                                  |
+| `beforeStop`        | The agent would stop with a final answer                  | Return `{ continueWith }` to keep it going with that message                                        |
+| `beforeCompaction`  | Before a compaction of the turn or the thread             | Return `{ skip: true }` to keep the conversation as it is                                           |
+| `afterCompaction`   | After a compaction ran                                    | Log or react                                                                                        |
+| `beforeModelSwitch` | A handoff would move the run to another model             | Return `{ block }` to keep the run on its agent                                                     |
+| `onNotification`    | The run needs a person (an approval, a question)          | Tell someone, it cannot change what happens                                                         |
+| `afterRun`          | A run ended: completed, paused or failed                  | Keep memory in shape for the next run, clean up after the run                                       |
 
 ### beforeRun
 
-`beforeRun({ input, messages }, context)` sees the input of a new run and the messages its first turn starts from: the system prompt, the history and the input, with what memory recalled for the turn and the brief in a `<memory_context>` block in front of it (the run's `context` and the insights of reflection are added after `beforeRun`). The input is not saved to memory and no model turn starts before it returns, so it is the place for input guards. Audio input is already transcribed into `input` by then.
+`beforeRun({ input, messages }, context)` sees the input of a new run and the messages its first turn starts from: the system prompt, the history and the input, with what memory recalled for the turn and the brief in a `<memory_context>` block in front of it (the run's `context` and the insights of reflection are added after `beforeRun`). The input is not saved to memory and no model turn starts before it returns, so it is the place for input guards. Audio input is already transcribed into `input` by then. Return `{ context }` and the text goes after the input as a system message, saved to the thread with it, so a later run reads it too.
+
+`startRun(event, context)` runs before, once per run: `event.source` is `startup` for a run on a thread without history and `resume` for one with history or a `resume()` (`event.resumed`). Its `{ context }` goes right after the system prompt and is not saved: each run gets its own.
+
+### Tool calls before the permissions
+
+`beforeToolCall({ toolCall, tool, resumed }, context)` runs for each call of a step before the [permissions](/docs/tools/permissions) decide it, and again for a call that waited in a paused run once `resume()` continues it. Return a `ToolCallVerdict`:
+
+| `decision` | Effect                                                                                                                              |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `deny`     | The call is refused, the model reads `reason`                                                                                       |
+| `ask`      | The call asks a person even when the rules allow it                                                                                 |
+| `allow`    | The call runs without asking when only the mode or the tool's own approval setting would ask. An `ask` or `deny` rule still applies |
+| `defer`    | The run pauses with the call waiting for approval, without asking `onApproval`                                                      |
+
+`updatedArguments` replaces the call's arguments: they are checked against the tool's schema and the permissions decide them, not the ones the model sent. With several middleware, `deny` wins over `defer`, over `ask`, over `allow`, and the last `updatedArguments` counts. Decisions a hook makes are logged with `decidedBy: 'hook'`.
+
+`decideApproval({ request, tool }, context)` answers a call that asks, before `onApproval` and the guardrails' `onToolApproval`: return a `ToolApprovalDecision` (`{ approved: true }`, with `updatedArguments` when the permissions are set up, or `{ approved: false, reason }`) and nobody is asked. Return nothing to leave it to them.
+
+`afterToolBatch({ calls }, context)` runs once every call of a step has its result, before the next model call. `beforeStop({ output, continuations }, context)` runs when the agent would stop: `{ continueWith }` keeps it going with that message, saved as a user message. `continuations` counts how often in a row that happened, and the hooks are not asked once the run used every turn it may take.
 
 ### beforeModel
 
@@ -134,13 +162,18 @@ const normalizeIds: RunMiddleware = {
 
 ### afterRun
 
-`afterRun({ result, model, memoryAgentId }, context)` runs once a run finished: after it saved what it said to memory, and before `run()` returns the `result`. `model` is the model the run ended on, as `provider/model`, after any fallback, and `memoryAgentId` the id the agent's long-term memory is kept under (`memoryAgentId(agent)`: its configured `id`, else its `name`). It is the place for work that keeps memory in shape for the next run, which the caller waits for: the built-in extraction of [`memory.extraction`](/docs/memory#extraction-after-a-run) and compaction of [`memory.compaction`](/docs/memory#compaction-after-a-run) work this way. It is not called for a run that failed or paused. The run is done by then, so an error a hook throws is logged as a warning and the next `afterRun` hook still runs, the caller keeps the result. Skip slow work when `context.signal` is aborted, the caller has stopped waiting.
+`afterRun(event, context)` runs once a run ended, before `run()` returns or throws: `event.status` is `completed` (after the run saved what it said to memory), `paused` (with the paused result) or `failed` (with `event.error`, an abort among them). A completed or paused run has its `result`, a failed one has none. `model` is the model the run ended on, as `provider/model`, after any fallback, and `memoryAgentId` the id the agent's long-term memory is kept under (`memoryAgentId(agent)`: its configured `id`, else its `name`). It is the place for work that keeps memory in shape for the next run, which the caller waits for: the built-in extraction of [`memory.extraction`](/docs/memory#extraction-after-a-run) and compaction of [`memory.compaction`](/docs/memory#compaction-after-a-run) work this way, for completed runs only. The run is done by then, so an error a hook throws is logged as a warning and the next `afterRun` hook still runs, the caller keeps the result or the error. Skip slow work when `context.signal` is aborted, the caller has stopped waiting.
 
 ```typescript
 const archive: RunMiddleware = {
   name: 'archive',
-  async afterRun({ result, model }, context) {
-    await runs.insert({ threadId: context.threadId, model, output: result.output });
+  async afterRun(event, context) {
+    if (event.status !== 'completed') return;
+    await runs.insert({
+      threadId: context.threadId,
+      model: event.model,
+      output: event.result.output,
+    });
   },
 };
 ```
@@ -156,6 +189,13 @@ const archive: RunMiddleware = {
 | `signal`                                                          | Aborts when the run is cancelled or times out                               |
 | `deps`                                                            | The run's [tool deps](/docs/core/agents#dependencies-for-tools)             |
 | `state`                                                           | A `Map` the run's middleware share. Not kept in a paused run's checkpoint   |
+| `parentRunId`                                                     | The run whose tool call started this one, for a delegated run               |
+| `permissionMode`                                                  | The run's permission mode, when it has permissions set up                   |
+| `addContext(text)`                                                | Adds a system message for the next model call, saved to the thread          |
+| `stop(reason)`                                                    | Ends the run before its next model call: it completes with `stopped`        |
+| `logEvent(event, note)`                                           | Writes a `custom` entry to the thread's log                                 |
+
+`addContext` and `stop` are unset outside a run (`invokeTool()`), `logEvent` when there is no thread to log to. A run a middleware stopped completes with `result.stopped`: the reason and the name of the middleware that asked.
 
 ## Tripwires
 
@@ -188,6 +228,8 @@ The runtime's own features are middleware too, added from the config closest to 
 | `cogitator:compaction`         | `context`                  | `beforeModel`                                                     |
 | `cogitator:memory-extraction`  | `memory.extraction`        | `afterRun`                                                        |
 | `cogitator:memory-compaction`  | `memory.compaction`        | `afterRun`                                                        |
+
+The [hooks](/docs/core/hooks) of `hooks` become one more, `cogitator:hooks`, the outermost layer of every run, so a hook sees a tool call as the model made it and its result as the model reads it. The compactions of `context` and `memory.compaction` ask `beforeCompaction` first and tell `afterCompaction` after.
 
 Because PII masking is the innermost layer, it also masks whatever your middleware adds to a request, while your middleware sees the real values. The guardrails check the model's answer and a tool's result before your hooks see them: what your `afterModel` or `wrapToolCall` hooks change afterwards is not checked again. `piiMiddleware(config)`, `promptInjectionMiddleware(detector)`, `guardrailsMiddleware(constitutionalAI)`, `clearToolOutputsMiddleware(options)` and `compactionMiddleware(contextManager)` build them, to give a feature to one agent only. `memoryCompactionMiddleware(config, deps)` builds the compaction after a run, given the memory, a summarizer per model and run, and the context window of a model, and `memoryExtractionMiddleware(config, deps)` the extraction of memory items after a run, given the memory and a summarizer per model and run. The extraction's `afterRun` runs before the compaction's, so the items of a thread are taken before it is compacted. The example below gives one agent PII masking:
 

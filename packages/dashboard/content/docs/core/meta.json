@@ -9,6 +9,8 @@
     "todos",
     "tools",
     "middleware",
+    "hooks",
+    "project-instructions",
     "llm-backends",
     "model-registry",
     "structured-outputs",

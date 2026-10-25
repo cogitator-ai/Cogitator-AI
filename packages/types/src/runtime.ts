@@ -51,6 +51,8 @@ import type {
   SessionBudgetConfig,
   SessionSpend,
 } from './permissions';
+import type { HooksConfig } from './hooks';
+import type { InstructionsConfig, LoadedInstructionFile } from './instructions';
 
 /**
  * Where a run's spans go in a distributed trace: the trace they join and the span that is the
@@ -215,6 +217,17 @@ export interface CogitatorConfig {
    * Unset, a call asks only when its tool needs approval, as before
    */
   permissions?: PermissionsConfig;
+  /**
+   * Hooks that run at points of every run of this runtime (`PreToolUse`, `Stop`, ...), in the
+   * format of Claude Code's `settings.json`: in code, from settings files, or both. Unset, no
+   * hook runs
+   */
+  hooks?: HooksConfig;
+  /**
+   * Instructions the runtime adds to every agent's system prompt, such as the project's
+   * `AGENTS.md` (`projectFiles`). Unset, an agent's prompt is its own instructions
+   */
+  instructions?: InstructionsConfig;
   /**
    * What a session (a thread across its runs) and each agent in it may spend in money, tokens and
    * tool calls. A run that reaches a limit pauses with an interrupt of kind `budget`
@@ -854,6 +867,8 @@ export interface RunCheckpoint {
     /** Run limits a `continue` answer raised, by `<scope>.<metric>` */
     raised?: Record<string, number>;
   };
+  /** The project instruction files the run read before it paused, see `RunResult.instructions` */
+  instructions?: LoadedInstructionFile[];
 }
 
 /** Where a run's entries went in the thread's tree of memory */
@@ -997,6 +1012,13 @@ export interface RunResult {
   readonly budgetStop?: BudgetUsage;
   /** What the run's session spent with this run, when it has budgets */
   readonly sessionSpend?: SessionSpend;
+  /**
+   * Set when a middleware or a hook ended the run before its next model call
+   * (`RunMiddlewareContext.stop`, a hook's `"continue": false`): why, and which middleware
+   */
+  readonly stopped?: { readonly reason: string; readonly middleware: string };
+  /** The project instruction files the run read (`instructions.projectFiles`), in prompt order */
+  readonly instructions?: readonly LoadedInstructionFile[];
 }
 
 export interface Span {

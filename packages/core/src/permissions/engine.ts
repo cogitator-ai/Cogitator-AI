@@ -976,6 +976,31 @@ export async function ruleAllowsCall(
   );
 }
 
+/**
+ * Whether `rule` names this call of `tool` the way a `deny` or `ask` rule would: any command of a
+ * command line, any path a call touches. For the `if` of a hook, which runs when it matches.
+ * A rule that cannot be read gives its error
+ */
+export async function ruleMatchesCall(
+  rule: string,
+  tool: Tool,
+  args: Record<string, unknown>,
+  context: Pick<PermissionContext, 'workspace' | 'cwd' | 'projectRoot' | 'ignoreCase'>,
+  anchor?: string
+): Promise<boolean | { error: string }> {
+  const rules = new PermissionRuleSet([
+    { layer: 'session', ask: [rule], ...(anchor !== undefined && { anchor }) },
+  ]);
+  const [compiled] = rules.rules('ask');
+  if (!compiled) return { error: rules.warnings[0] ?? `"${rule}" is not a rule` };
+  const { base, cwd, projectRoot } = placesOf(context);
+  return restrictiveMatch(
+    compiled,
+    new CallSubject(tool, args, base, cwd, await ignoresCase(context, base)),
+    projectRoot
+  );
+}
+
 const PATH_SPECIALS = /[*?[\]!#\\()]/g;
 const COMMAND_SPECIALS = /[*"'\\()]/;
 

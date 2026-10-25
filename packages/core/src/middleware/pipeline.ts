@@ -1,6 +1,9 @@
 import type {
   ChatResponse,
+  CompactionEndEvent,
+  CompactionStartEvent,
   Message,
+  ModelSwitchEvent,
   RunMiddlewareContext,
   ModelCallHandler,
   ModelCallRequest,
@@ -9,8 +12,16 @@ import type {
   RunEndEvent,
   RunInputEvent,
   RunMiddleware,
+  RunNotification,
+  RunStartEvent,
+  RunStopEvent,
+  ApprovalRequestEvent,
+  ToolApprovalDecision,
+  ToolBatchEvent,
+  ToolCallEvent,
   ToolCallHandler,
   ToolCallRequest,
+  ToolCallVerdict,
   ToolResult,
 } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
@@ -39,29 +50,192 @@ export class MiddlewarePipeline<TDeps = unknown> {
     return this.layers.some((layer) => layer.holdsStream === true);
   }
 
-  async beforeRun(event: RunInputEvent, context: RunMiddlewareContext<TDeps>): Promise<void> {
+  /** The context of every `startRun` hook, in order, empty when none adds any. */
+  async startRun(event: RunStartEvent, context: RunMiddlewareContext<TDeps>): Promise<string[]> {
+    const added: string[] = [];
+    for (const layer of this.layers) {
+      if (!layer.startRun) continue;
+      const update = await claimed(layer.name, () =>
+        layer.startRun?.(event, forLayer(context, layer))
+      );
+      if (update?.context) added.push(update.context);
+    }
+    return added;
+  }
+
+  /** Runs every `beforeRun` hook in order: the context they add, empty when none adds any. */
+  async beforeRun(event: RunInputEvent, context: RunMiddlewareContext<TDeps>): Promise<string[]> {
+    const added: string[] = [];
     for (const layer of this.layers) {
       if (!layer.beforeRun) continue;
-      await claimed(layer.name, () => layer.beforeRun?.(event, context));
+      const update = await claimed(layer.name, () =>
+        layer.beforeRun?.(event, forLayer(context, layer))
+      );
+      if (update?.context) added.push(update.context);
     }
+    return added;
   }
 
   /**
-   * Runs every `afterRun` hook, in order, once a run finished. The run is done by then, so a hook
+   * Runs every `afterRun` hook, in order, once a run ended. The run is done by then, so a hook
    * that throws is logged and the next one still runs.
    */
   async afterRun(event: RunEndEvent, context: RunMiddlewareContext<TDeps>): Promise<void> {
     for (const layer of this.layers) {
       if (!layer.afterRun) continue;
       try {
-        await layer.afterRun(event, context);
+        await layer.afterRun(event, forLayer(context, layer));
       } catch (error) {
-        getLogger().warn('An afterRun hook failed after the run finished', {
+        getLogger().warn('An afterRun hook failed after the run ended', {
           middleware: layer.name,
-          runId: event.result.runId,
+          runId: context.runId,
           error: error instanceof Error ? error.message : String(error),
         });
       }
+    }
+  }
+
+  /** Whether any layer hears of a run's start (`startRun`) */
+  get startsRuns(): boolean {
+    return this.layers.some((layer) => layer.startRun);
+  }
+
+  /** Whether any layer looks at tool calls before the permissions decide them */
+  get checksToolCalls(): boolean {
+    return this.layers.some((layer) => layer.beforeToolCall);
+  }
+
+  /**
+   * The verdicts of every `beforeToolCall` hook on a call, merged: `deny` over `defer` over `ask`
+   * over `allow`, with the reason of the verdict that won. A hook sees the arguments the hooks
+   * before it changed the call to, and the last `updatedArguments` counts. Undefined when no hook
+   * said anything
+   */
+  async beforeToolCall(
+    event: ToolCallEvent,
+    context: RunMiddlewareContext<TDeps>
+  ): Promise<ToolCallVerdict | undefined> {
+    let merged: ToolCallVerdict | undefined;
+    let toolCall = event.toolCall;
+    for (const layer of this.layers) {
+      if (!layer.beforeToolCall) continue;
+      const verdict = await claimed(layer.name, () =>
+        layer.beforeToolCall?.({ ...event, toolCall }, forLayer(context, layer))
+      );
+      if (!verdict) continue;
+      const next: ToolCallVerdict = { ...merged };
+      if (verdict.updatedArguments) {
+        next.updatedArguments = verdict.updatedArguments;
+        toolCall = { ...toolCall, arguments: verdict.updatedArguments };
+      }
+      if (
+        verdict.decision &&
+        VERDICT_RANK[verdict.decision] > (merged?.decision ? VERDICT_RANK[merged.decision] : 0)
+      ) {
+        next.decision = verdict.decision;
+        if (verdict.reason !== undefined) next.reason = verdict.reason;
+        else delete next.reason;
+      }
+      merged = next;
+    }
+    return merged;
+  }
+
+  /** The first answer a `decideApproval` hook gives to an approval, in order */
+  async decideApproval(
+    event: ApprovalRequestEvent,
+    context: RunMiddlewareContext<TDeps>
+  ): Promise<ToolApprovalDecision | undefined> {
+    for (const layer of this.layers) {
+      if (!layer.decideApproval) continue;
+      const decision = await claimed(layer.name, () =>
+        layer.decideApproval?.(event, forLayer(context, layer))
+      );
+      if (decision) return decision;
+    }
+    return undefined;
+  }
+
+  /** Runs every `afterToolBatch` hook, in order */
+  async afterToolBatch(event: ToolBatchEvent, context: RunMiddlewareContext<TDeps>): Promise<void> {
+    for (const layer of this.layers) {
+      if (!layer.afterToolBatch) continue;
+      await claimed(layer.name, () => layer.afterToolBatch?.(event, forLayer(context, layer)));
+    }
+  }
+
+  /** The messages `beforeStop` hooks keep the run going with, in order, empty to let it stop */
+  async beforeStop(event: RunStopEvent, context: RunMiddlewareContext<TDeps>): Promise<string[]> {
+    const messages: string[] = [];
+    for (const layer of this.layers) {
+      if (!layer.beforeStop) continue;
+      const update = await claimed(layer.name, () =>
+        layer.beforeStop?.(event, forLayer(context, layer))
+      );
+      if (update?.continueWith) messages.push(update.continueWith);
+    }
+    return messages;
+  }
+
+  /** Whether every `beforeCompaction` hook lets the compaction run: the first skip stops it */
+  async beforeCompaction(
+    event: CompactionStartEvent,
+    context: RunMiddlewareContext<TDeps>
+  ): Promise<{ skip: false } | { skip: true; reason?: string; middleware: string }> {
+    for (const layer of this.layers) {
+      if (!layer.beforeCompaction) continue;
+      const decision = await claimed(layer.name, () =>
+        layer.beforeCompaction?.(event, forLayer(context, layer))
+      );
+      if (decision?.skip) {
+        return {
+          skip: true,
+          middleware: layer.name,
+          ...(decision.reason !== undefined && { reason: decision.reason }),
+        };
+      }
+    }
+    return { skip: false };
+  }
+
+  /** Runs every `afterCompaction` hook, in order, a failure logged */
+  async afterCompaction(
+    event: CompactionEndEvent,
+    context: RunMiddlewareContext<TDeps>
+  ): Promise<void> {
+    for (const layer of this.layers) {
+      if (!layer.afterCompaction) continue;
+      await observed(layer.name, 'afterCompaction', context.runId, () =>
+        layer.afterCompaction?.(event, forLayer(context, layer))
+      );
+    }
+  }
+
+  /** The first block a `beforeModelSwitch` hook gives, with its middleware, or undefined */
+  async beforeModelSwitch(
+    event: ModelSwitchEvent,
+    context: RunMiddlewareContext<TDeps>
+  ): Promise<{ block: string; middleware: string } | undefined> {
+    for (const layer of this.layers) {
+      if (!layer.beforeModelSwitch) continue;
+      const decision = await claimed(layer.name, () =>
+        layer.beforeModelSwitch?.(event, forLayer(context, layer))
+      );
+      if (decision?.block) return { block: decision.block, middleware: layer.name };
+    }
+    return undefined;
+  }
+
+  /** Tells every `onNotification` hook, in order, a failure logged */
+  async onNotification(
+    event: RunNotification,
+    context: RunMiddlewareContext<TDeps>
+  ): Promise<void> {
+    for (const layer of this.layers) {
+      if (!layer.onNotification) continue;
+      await observed(layer.name, 'onNotification', context.runId, () =>
+        layer.onNotification?.(event, forLayer(context, layer))
+      );
     }
   }
 
@@ -74,7 +248,9 @@ export class MiddlewarePipeline<TDeps = unknown> {
     for (const layer of this.layers) {
       if (!layer.beforeModel) continue;
       const turn = messages ? { ...event, messages } : event;
-      const update = await claimed(layer.name, () => layer.beforeModel?.(turn, context));
+      const update = await claimed(layer.name, () =>
+        layer.beforeModel?.(turn, forLayer(context, layer))
+      );
       if (update?.messages) messages = update.messages;
     }
     return messages;
@@ -92,7 +268,8 @@ export class MiddlewarePipeline<TDeps = unknown> {
       const next = through(index + 1);
       const wrap = layer.wrapModelCall;
       if (!wrap) return next;
-      return (current) => claimed(layer.name, () => wrap.call(layer, current, next, context));
+      return (current) =>
+        claimed(layer.name, () => wrap.call(layer, current, next, forLayer(context, layer)));
     };
     return through(0)(call);
   }
@@ -106,7 +283,9 @@ export class MiddlewarePipeline<TDeps = unknown> {
     for (const layer of [...this.layers].reverse()) {
       if (!layer.afterModel) continue;
       const seen = response === event.response ? event : { ...event, response };
-      const update = await claimed(layer.name, () => layer.afterModel?.(seen, context));
+      const update = await claimed(layer.name, () =>
+        layer.afterModel?.(seen, forLayer(context, layer))
+      );
       if (!update) continue;
       response = {
         ...response,
@@ -183,7 +362,7 @@ export class MiddlewarePipeline<TDeps = unknown> {
           if (canonicalArguments(args) === snapshot) return inner(pristine, approved, false);
           return inner(copyArguments(args), false, true);
         };
-        return claimed(layer.name, () => wrap.call(layer, request, next, context));
+        return claimed(layer.name, () => wrap.call(layer, request, next, forLayer(context, layer)));
       };
     };
     return through(0)(copyArguments(call.toolCall.arguments), call.approved, false);
@@ -294,6 +473,60 @@ function describe(item: object, walk: (value: unknown) => string): string {
     .sort()
     .map((key) => `${JSON.stringify(key)}:${walk(record[key])}`);
   return `${kind ?? 'null'}{${fields.join(',')}}`;
+}
+
+const VERDICT_RANK: Record<NonNullable<ToolCallVerdict['decision']>, number> = {
+  allow: 1,
+  ask: 2,
+  defer: 3,
+  deny: 4,
+};
+
+const namedStops = new WeakMap<
+  (reason: string) => void,
+  (reason: string, middleware: string) => void
+>();
+
+/**
+ * A `stop` for a run's middleware context that hears which middleware asked for it: each layer
+ * gets one that names it, a stop called outside the pipeline names `unnamed`
+ */
+export function middlewareStop(
+  stop: (reason: string, middleware: string) => void
+): (reason: string) => void {
+  const unnamed = (reason: string) => stop(reason, 'unnamed');
+  namedStops.set(unnamed, stop);
+  return unnamed;
+}
+
+/** `context` as `layer` gets it: a stop it asks for names it */
+function forLayer<TDeps>(
+  context: RunMiddlewareContext<TDeps>,
+  layer: RunMiddleware<TDeps>
+): RunMiddlewareContext<TDeps> {
+  const named = context.stop && namedStops.get(context.stop);
+  if (!named) return context;
+  const stop = (reason: string) => named(reason, layer.name);
+  namedStops.set(stop, named);
+  return { ...context, stop };
+}
+
+/** Runs a hook whose failure must not change the run, logging it */
+async function observed(
+  name: string,
+  hook: string,
+  runId: string,
+  run: () => void | Promise<void>
+): Promise<void> {
+  try {
+    await run();
+  } catch (error) {
+    getLogger().warn(`A ${hook} hook failed`, {
+      middleware: name,
+      runId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /** What `hook` returns, a tripwire it throws claimed for the middleware `name`. */
