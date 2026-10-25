@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { MockLLMBackend } from '@cogitator-ai/test-utils';
 import type { CogitatorConfig } from '@cogitator-ai/types';
@@ -237,6 +237,60 @@ describe('commands in a run', () => {
         ?.tools?.map((schema) => schema.name)
         .sort()
     ).toEqual(['format', 'lint']);
+    await cog.close();
+  });
+
+  it('keeps the limits of a command when its run resumes', async () => {
+    const formatted = vi.fn(async () => 'formatted');
+    const format = tool({
+      name: 'format',
+      description: 'Formats files',
+      parameters: z.object({}),
+      execute: formatted,
+    });
+    const deploy = tool({
+      name: 'deploy',
+      description: 'Deploys',
+      parameters: z.object({}),
+      requiresApproval: true,
+      execute: async () => 'deployed',
+    });
+    const main = new MockLLMBackend().setResponses([{ content: 'main' }]);
+    const other = new MockLLMBackend().setResponses([
+      {
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'deploy', arguments: {} }],
+        finishReason: 'tool_calls',
+      },
+      {
+        content: '',
+        toolCalls: [{ id: 'c2', name: 'format', arguments: {} }],
+        finishReason: 'tool_calls',
+      },
+      { content: 'finished' },
+    ]);
+    const cog = new Cogitator({
+      memory: { adapter: 'memory' },
+      commands: {
+        commands: { ship: { template: 'Ship it', disallowedTools: ['format'], model: 'other/m' } },
+      },
+      llm: { backends: { main, other }, retry: false },
+    });
+    const agent = new Agent({
+      name: 'coder',
+      model: 'main/m',
+      instructions: 'Code.',
+      tools: [format, deploy],
+    });
+    const paused = await cog.run(agent, { input: '/ship', threadId: 't-ship' });
+    expect(paused.status).toBe('paused');
+    expect(paused.checkpoint?.command?.disallowedTools).toEqual(['format']);
+    const done = await cog.resume(agent, 't-ship', { decisions: { c1: { approved: true } } });
+    expect(done.output).toBe('finished');
+    expect(done.command?.name).toBe('ship');
+    expect(formatted).not.toHaveBeenCalled();
+    expect(other.getLastCall()?.tools?.map((schema) => schema.name)).toEqual(['deploy']);
+    expect(main.getCallCount()).toBe(0);
     await cog.close();
   });
 });

@@ -595,6 +595,8 @@ commands:
     fix:
       template: Fix issue $0
       allowedTools: ['Bash(gh *)']
+      disallowedTools: [Write]
+      effort: high
 `
     );
     const config = loadConfig({ configPath: path, skipEnv: true });
@@ -618,7 +620,12 @@ commands:
       files: true,
       commands: {
         standup: 'Summarize $ARGUMENTS',
-        fix: { template: 'Fix issue $0', allowedTools: ['Bash(gh *)'] },
+        fix: {
+          template: 'Fix issue $0',
+          allowedTools: ['Bash(gh *)'],
+          disallowedTools: ['Write'],
+          effort: 'high',
+        },
       },
     });
   });

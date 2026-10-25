@@ -64,12 +64,15 @@ async function hasChanges(path: string, base: string): Promise<boolean> {
 }
 
 function slug(name: string): string {
-  return (
-    name
-      .replace(/[^A-Za-z0-9._-]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 40) || 'agent'
-  );
+  let out = '';
+  for (const char of name) {
+    const keep = /[A-Za-z0-9._]/.test(char);
+    if (keep) out += char;
+    else if (out !== '' && !out.endsWith('-')) out += '-';
+    if (out.length >= 40) break;
+  }
+  while (out.endsWith('-')) out = out.slice(0, -1);
+  return out || 'agent';
 }
 
 /**
@@ -78,7 +81,8 @@ function slug(name: string): string {
  * `.cogitator/worktrees/` of its top folder (kept out of git status by a `.gitignore` there), on
  * a branch `cogitator/<name>-<hash>`. The same key opens the same worktree again, so a delegate
  * that paused goes on where it left off. The worktree's workspace is at the same place in the
- * repository as `workspace`, with its current directory. A `problem` instead for a workspace
+ * repository as `workspace`, with its current directory and all its settings (file limits,
+ * command environment, `exec.launch` sandbox). A `problem` instead for a workspace
  * that is not on this machine or not in a git repository
  */
 export async function openWorktree(
@@ -121,7 +125,7 @@ export async function openWorktree(
   }
   const inside = relative(top, resolve(workspace.root));
   const root = inside === '' || inside.startsWith('..') ? path : join(path, inside);
-  const isolated = new LocalWorkspace({ root, cwd: workspace.cwd });
+  const isolated = workspace.withRoot(root);
   await isolated.start();
   return {
     path,

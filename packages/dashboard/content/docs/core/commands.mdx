@@ -34,7 +34,7 @@ Nothing changes until you set `commands`: unset, an input starting with `/` is s
 
 ## Where Commands Come From
 
-Commands are read from the same places as [subagents](/docs/core/subagents), `commands/` instead of `agents/`: the managed directories, `commands.commands` in code, the host's `files.dirs`, the project's `.agents/commands`, `.cogitator/commands` and `.claude/commands` once the project is trusted, then the user's folders. The first command of a name wins. A file's name is its path under the folder with `:` between folders: `.claude/commands/frontend/component.md` is `/frontend:component`. `cog.listCommands({ root })` lists them with their `description` and `argumentHint` for a client's `/` menu.
+Commands are read from the same places as [subagents](/docs/core/subagents), the project folders from the workspace's current directory up to the root, `commands/` instead of `agents/`: the managed directories, `commands.commands` in code, the host's `files.dirs`, the project's `.agents/commands`, `.cogitator/commands` and `.claude/commands` once the project is trusted, then the user's folders. The first command of a name wins. A file's name is its path under the folder with `:` between folders: `.claude/commands/frontend/component.md` is `/frontend:component`. `cog.listCommands({ root })` lists them with their `description` and `argumentHint` for a client's `/` menu.
 
 ## Arguments
 
@@ -61,7 +61,7 @@ Arguments split as a shell splits words, so quotes keep words together: `/greet 
 | `model`            | The model of that run, on its own provider: an alias of `llm.modelAliases`, a Claude model id or `provider/model` |
 | `effort`           | The reasoning effort of that run                                                                                  |
 
-`allowed-tools` apply only to the run the command starts, and only when the run has permissions set up (`permissions` on the runtime, the agent or the run). Without them nothing asks but tools that need approval, and turning the permission engine on for one command would make edits ask. A file whose frontmatter is not valid YAML is skipped with a diagnostic (`commands.onDiagnostic`).
+The command's model, effort and tool limits are kept in the checkpoint of a run that pauses (`checkpoint.command`) and hold again when it resumes. `allowed-tools` apply only to the run the command starts, and only when the run has permissions set up (`permissions` on the runtime, the agent or the run). Without them nothing asks but tools that need approval, and turning the permission engine on for one command would make edits ask. A file whose frontmatter is not valid YAML is skipped with a diagnostic (`commands.onDiagnostic`).
 
 ## Differences from Claude Code
 

@@ -38,6 +38,24 @@ export function readFileBinding(tool: Tool): { workspace?: Workspace } | undefin
   return readFileBindings.get(tool);
 }
 
+/** The workspace and options a tool `workspaceTools(workspace)` made is bound to */
+const workspaceBindings = new WeakMap<
+  Tool,
+  { workspace: Workspace; options: WorkspaceToolsOptions }
+>();
+
+/**
+ * The same tool as `tool`, which `workspaceTools(from)` made for a workspace `from`, made for
+ * `to` instead with the same options. Undefined for any other tool, and for a tool that uses the
+ * run's workspace (`workspaceTools()` without one), which follows the run already
+ */
+export function reboundWorkspaceTool(tool: Tool, from: Workspace, to: Workspace): Tool | undefined {
+  const binding = workspaceBindings.get(tool);
+  if (binding?.workspace !== from) return undefined;
+  const name = tool.name as WorkspaceToolName;
+  return binding ? workspaceTools(to, { ...binding.options, tools: [name] })[0] : undefined;
+}
+
 /** Names of the tools `workspaceTools()` returns. */
 export const WORKSPACE_TOOL_NAMES = [
   'read_file',
@@ -552,6 +570,9 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
 
   readFileBindings.set(readFile, workspace ? { workspace } : {});
   const all = [readFile, writeFile, editFile, listFiles, glob, grep, runCommand];
+  if (workspace) {
+    for (const made of all) workspaceBindings.set(made, { workspace, options });
+  }
   const wanted = options.tools ? new Set<string>(options.tools) : undefined;
   return wanted ? all.filter((t) => wanted.has(t.name)) : all;
 }

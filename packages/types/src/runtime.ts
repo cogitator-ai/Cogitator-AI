@@ -926,6 +926,11 @@ export interface RunCheckpoint {
    * kept it going and whether they did since the last user message (`stop_hook_active`)
    */
   stopHooks?: { continuations: number; continued: boolean };
+  /**
+   * The command the run's input named, so a resumed run keeps its model, effort and tool limits
+   * (`disallowed-tools`, `allowed-tools`)
+   */
+  command?: ExpandedCommand;
 }
 
 /** Where a run's entries went in the thread's tree of memory */

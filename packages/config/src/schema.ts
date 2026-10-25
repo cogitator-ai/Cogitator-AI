@@ -985,7 +985,9 @@ export const CommandDefinitionSchema = z.object({
   argumentHint: z.string().optional(),
   arguments: z.array(z.string()).optional(),
   allowedTools: z.array(z.string()).optional(),
+  disallowedTools: z.array(z.string()).optional(),
   model: z.string().optional(),
+  effort: z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
 });
 
 /** The commands of the runtime, see `CommandsConfig` */

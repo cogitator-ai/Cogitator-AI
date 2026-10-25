@@ -11,11 +11,24 @@ export interface CommandInvocation {
  * Undefined for any other input, `/` alone or a path such as `/usr/bin` included
  */
 export function commandInvocation(input: string): CommandInvocation | undefined {
-  const match = /^\/([^\s/]+)(?:\s+([\s\S]*))?$/.exec(input.trimEnd());
-  if (!match) return undefined;
-  const name = match[1];
-  if (name === undefined) return undefined;
-  return { name, arguments: (match[2] ?? '').trim() };
+  const text = input.trimEnd();
+  if (!text.startsWith('/')) return undefined;
+  let end = 1;
+  while (end < text.length && !isSpace(text[end] ?? '') && text[end] !== '/') end++;
+  if (end === 1) return undefined;
+  if (end < text.length && !isSpace(text[end] ?? '')) return undefined;
+  return { name: text.slice(1, end), arguments: text.slice(end).trim() };
+}
+
+function isSpace(char: string): boolean {
+  return (
+    char === ' ' ||
+    char === '\t' ||
+    char === '\n' ||
+    char === '\r' ||
+    char === '\f' ||
+    char === '\v'
+  );
 }
 
 /**
@@ -62,8 +75,6 @@ export function splitArguments(text: string): string[] {
 /** Values of `${NAME}` variables a template may hold, such as `CLAUDE_PROJECT_DIR` */
 export type CommandVariables = Readonly<Record<string, string>>;
 
-const PLACEHOLDER = /(\\*)\$(?:ARGUMENTS\[(\d+)\]|(ARGUMENTS)|(\d+)|([A-Za-z_][A-Za-z0-9_]*))/g;
-
 /**
  * The message `command` makes of `args`, as Claude Code expands it: `$ARGUMENTS` is everything
  * typed after the name, `$ARGUMENTS[N]` and `$N` the argument at 0-based position `N` (split as
@@ -85,38 +96,80 @@ export function expandCommand(
     Object.hasOwn(variables, name) ? (variables[name] ?? all) : all
   );
   let received = false;
-  const expanded = withVariables.replace(
-    PLACEHOLDER,
-    (
-      all: string,
-      slashes: string,
-      indexed?: string,
-      whole?: string,
-      short?: string,
-      named?: string
-    ) => {
-      const token = all.slice(slashes.length);
-      const index = indexed ?? short;
-      const known =
-        whole !== undefined ||
-        index !== undefined ||
-        (named !== undefined && names.includes(named));
-      if (!known) return all;
-      if (slashes.length === 1) return token;
-      let value: string | undefined;
-      if (whole !== undefined) {
-        value = args;
-      } else if (index !== undefined) {
-        value = positional[Number(index)];
-      } else if (named !== undefined) {
-        value = positional[names.indexOf(named)] ?? '';
-        received = true;
-      }
-      if (value === undefined) return all;
-      if (args !== '') received = true;
-      return `${slashes}${value}`;
+  let expanded = '';
+  let slashes = 0;
+  for (let at = 0; at < withVariables.length;) {
+    const char = withVariables[at] ?? '';
+    if (char === '\\') {
+      slashes++;
+      at++;
+      continue;
     }
-  );
+    const pending = '\\'.repeat(slashes);
+    slashes = 0;
+    const token = char === '$' ? placeholderAt(withVariables, at + 1) : undefined;
+    if (!token || (token.kind === 'named' && !names.includes(token.value))) {
+      expanded += pending + char;
+      at++;
+      continue;
+    }
+    const written = withVariables.slice(at, token.end);
+    at = token.end;
+    if (pending.length === 1) {
+      expanded += written;
+      continue;
+    }
+    let value: string | undefined;
+    if (token.kind === 'whole') value = args;
+    else if (token.kind === 'index') value = positional[Number(token.value)];
+    else {
+      value = positional[names.indexOf(token.value)] ?? '';
+      received = true;
+    }
+    if (value === undefined) {
+      expanded += pending + written;
+      continue;
+    }
+    if (args !== '') received = true;
+    expanded += pending + value;
+  }
+  expanded += '\\'.repeat(slashes);
   if (args !== '' && !received) return `${expanded}\n\nARGUMENTS: ${args}`;
   return expanded;
+}
+
+/** A placeholder after a `$` at `from`: its kind, what it names and where it ends */
+function placeholderAt(
+  text: string,
+  from: number
+): { kind: 'whole' | 'index' | 'named'; value: string; end: number } | undefined {
+  const digitsFrom = (start: number): number => {
+    let end = start;
+    while (end < text.length && isDigit(text[end] ?? '')) end++;
+    return end;
+  };
+  if (text.startsWith('ARGUMENTS[', from)) {
+    const open = from + 'ARGUMENTS['.length;
+    const end = digitsFrom(open);
+    if (end > open && text[end] === ']') {
+      return { kind: 'index', value: text.slice(open, end), end: end + 1 };
+    }
+  }
+  const digits = digitsFrom(from);
+  if (digits > from) return { kind: 'index', value: text.slice(from, digits), end: digits };
+  if (!isWordStart(text[from] ?? '')) return undefined;
+  let end = from + 1;
+  while (end < text.length && (isWordStart(text[end] ?? '') || isDigit(text[end] ?? ''))) end++;
+  const word = text.slice(from, end);
+  return word === 'ARGUMENTS'
+    ? { kind: 'whole', value: word, end }
+    : { kind: 'named', value: word, end };
+}
+
+function isDigit(char: string): boolean {
+  return char >= '0' && char <= '9';
+}
+
+function isWordStart(char: string): boolean {
+  return (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || char === '_';
 }

@@ -35,7 +35,14 @@ import {
   runDelegate,
   type DelegateRun,
 } from './delegate';
-import { markCompanion, markDispatcher, setToolFilter, toolFilterOf } from './marker';
+import {
+  markCompanion,
+  markDispatcher,
+  setToolFilter,
+  setWorkspaceSwap,
+  toolFilterOf,
+} from './marker';
+import { reboundWorkspaceTool } from '../tools/workspace-tools';
 import { CLAUDE_MODEL_ALIASES, resolveDefinitionModel } from './models';
 import { agentMemoryDir, agentMemorySection, agentMemoryTool } from './memory';
 import { toolPolicy } from './tool-policy';
@@ -731,7 +738,7 @@ export class SubagentService {
           if (task.status === 'running' && task.handle?.steer(message)) {
             return { delivered: true, agentId: task.id, status: 'running' };
           }
-          if (task.status === 'running' && task.done) await task.done;
+          if (task.done) await task.done.catch(() => undefined);
           const release = this.reserve();
           if (!release) {
             return {
@@ -957,7 +964,14 @@ export class SubagentService {
           `Subagent "${definition.name}" would get no tools: ${(definition.tools ?? []).join(', ')} name none of the tools available. Fix its tools list`
         );
       }
-      const inherited = parent.tools.filter(keep);
+      const sourceOf = new WeakMap<Tool, Tool>();
+      const inherited = parent.tools.filter(keep).map((candidate) => {
+        const rebound =
+          isolated && workspace ? reboundWorkspaceTool(candidate, workspace, isolated) : undefined;
+        if (!rebound) return candidate;
+        sourceOf.set(rebound, candidate);
+        return rebound;
+      });
       const names = new Set(inherited.map((candidate) => candidate.name));
       const tools = [
         ...inherited,
@@ -969,7 +983,15 @@ export class SubagentService {
       ];
       const middleware = definition.hooks ? [this.frontmatterHooks(definition)] : [];
       const routed = this.modelOf(requestedModel ?? definition.model, parent);
-      const problem = this.options.modelProblem?.(routed.model);
+      const sameAsParent =
+        routed.model === parent.config.model && routed.provider === parent.config.provider;
+      const full =
+        routed.model !== undefined &&
+        routed.provider !== undefined &&
+        !routed.model.startsWith(`${routed.provider}/`)
+          ? `${routed.provider}/${routed.model}`
+          : routed.model;
+      const problem = sameAsParent ? undefined : this.options.modelProblem?.(full);
       if (problem) throw new Error(`Subagent "${definition.name}" cannot run: ${problem}`);
       const agent = new Agent({
         name: definition.name,
@@ -993,7 +1015,10 @@ export class SubagentService {
         ...(isolated && { workspace: isolated }),
         ...(background && { timeout: parent.config.timeout }),
       });
-      if (policy || above || own.size > 0) setToolFilter(agent, keep);
+      if (policy || above || own.size > 0) {
+        setToolFilter(agent, (candidate) => keep(sourceOf.get(candidate) ?? candidate));
+      }
+      if (isolated && workspace) setWorkspaceSwap(agent, workspace, isolated);
       const mode = narrowMode(context.permissions?.mode, definition.permissionMode);
       return {
         agent,

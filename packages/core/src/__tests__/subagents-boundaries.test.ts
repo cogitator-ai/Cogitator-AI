@@ -28,6 +28,7 @@ import { workspaceTools } from '../tools/workspace-tools';
 import { LocalWorkspace } from '../workspace/local-workspace';
 import { agentMemoryDir } from '../subagents/memory';
 import { resolveDefinitionModel } from '../subagents/models';
+import { openWorktree } from '../subagents/worktree';
 import { ruleMatchesCall } from '../permissions/engine';
 
 const call = (id: string, name: string, args: Record<string, unknown>): ToolCall => ({
@@ -432,6 +433,35 @@ describe('what a subagent may do', () => {
     await cog.close();
   });
 
+  it('prices the delegating agent model with its own provider under a cost budget', async () => {
+    const { cog, llm } = runtime(
+      {
+        outer: [
+          turn(
+            call('o1', 'agent', {
+              description: 'x',
+              prompt: 'p',
+              subagent_type: 'helper',
+              model: 'same',
+            })
+          ),
+          { content: 'done' },
+        ],
+      },
+      {
+        llm: { modelAliases: { same: 'outer/m' }, pricing: { 'outer/m': { input: 1, output: 1 } } },
+        budget: { session: { maxCostUsd: 5 } },
+        subagents: { agents: { helper: { description: 'Helps' } } },
+      }
+    );
+    const result = await cog.run(lead({ provider: 'outer', model: 'm' }), { input: 'go' });
+    expect(JSON.parse(toolTexts(result.messages)[0] ?? '{}')).toMatchObject({
+      status: 'completed',
+    });
+    expect(llm.outer?.getCallCount()).toBe(3);
+    await cog.close();
+  });
+
   it('routes a Claude model id without a provider to Anthropic', () => {
     expect(resolveDefinitionModel('claude-opus-5-5', undefined)).toEqual({
       inherit: false,
@@ -681,6 +711,97 @@ describe('subagents of a repository', () => {
       'from the first run'
     );
     expect(existsSync(join(repo, 'NOTE.md'))).toBe(false);
+    await cog.close();
+  });
+
+  it('gives a worktree the settings of the workspace it comes from, its sandbox launch included', async () => {
+    rmSync(join(repo, '.git'), { recursive: true, force: true });
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
+    git('init', '-q');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    writeFileSync(join(repo, 'README.md'), 'hello\n');
+    git('add', 'README.md');
+    git('commit', '-q', '-m', 'init');
+    const launch = vi.fn((spec: { file: string; args: string[] }) => ({
+      file: spec.file,
+      args: spec.args,
+    }));
+    const workspace = new LocalWorkspace({ root: repo, exec: { launch, env: { MARK: 'kept' } } });
+    const opened = await openWorktree(workspace, 'sandboxed', 'key');
+    if ('problem' in opened) throw new Error(opened.problem);
+    const result = await opened.workspace.exec('echo $MARK');
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(result.stdout.trim()).toBe('kept');
+    await opened.close();
+  });
+
+  it('writes in the worktree with tools bound to the workspace of the run', async () => {
+    rmSync(join(repo, '.git'), { recursive: true, force: true });
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
+    git('init', '-q');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    writeFileSync(join(repo, 'README.md'), 'hello\n');
+    git('add', 'README.md');
+    git('commit', '-q', '-m', 'init');
+    write(repo, 'isolated', 'Works apart', 'model: inner/m\nisolation: worktree\n');
+    const workspace = new LocalWorkspace({ root: repo });
+    const { cog } = runtime(
+      {
+        outer: [
+          turn(
+            call('o1', 'agent', { description: 'x', prompt: 'edit', subagent_type: 'isolated' })
+          ),
+          { content: 'done' },
+        ],
+        inner: [
+          turn(
+            call('i1', 'write_file', { path: 'BOUND.md', content: 'own tool' }),
+            call('i2', 'edit_file', {
+              path: 'README.md',
+              oldString: 'hello',
+              newString: 'global tool',
+            })
+          ),
+          { content: 'edited' },
+        ],
+      },
+      { subagents: { files: { root: repo, trusted: true, userDirs: [], managedDirs: [] } } }
+    );
+    const bound = workspaceTools(workspace);
+    for (const global of bound.filter((candidate) => candidate.name === 'edit_file')) {
+      cog.tools.register(global);
+    }
+    const result = await cog.run(
+      lead({ workspace, tools: bound.filter((candidate) => candidate.name === 'write_file') }),
+      { input: 'go' }
+    );
+    const answer = JSON.parse(toolTexts(result.messages)[0] ?? '{}') as { note?: string };
+    const kept = /worktree (\S+) on branch/.exec(answer.note ?? '')?.[1] ?? '';
+    expect(existsSync(join(repo, 'BOUND.md'))).toBe(false);
+    expect(readFileSync(join(repo, 'README.md'), 'utf8')).toBe('hello\n');
+    expect(readFileSync(join(kept, 'BOUND.md'), 'utf8')).toBe('own tool');
+    expect(readFileSync(join(kept, 'README.md'), 'utf8')).toBe('global tool\n');
+    await cog.close();
+  });
+
+  it('finds the commands of the working directory up to the root', async () => {
+    mkdirSync(join(repo, 'apps', 'web', '.claude', 'commands'), { recursive: true });
+    writeFileSync(
+      join(repo, 'apps', 'web', '.claude', 'commands', 'deploy.md'),
+      'Deploy the web app'
+    );
+    const backend = new MockLLMBackend().setResponses([{ content: 'ok' }]);
+    const cog = new Cogitator({
+      commands: { files: { root: repo, trusted: true, userDirs: [], managedDirs: [] } },
+      llm: { backends: { mock: backend }, retry: false },
+    });
+    const workspace = new LocalWorkspace({ root: repo, cwd: 'apps/web' });
+    const agent = new Agent({ name: 'coder', model: 'mock/m', instructions: 'Code.', workspace });
+    const result = await cog.run(agent, { input: '/deploy' });
+    expect(result.command?.name).toBe('deploy');
+    expect(backend.getLastCall()?.messages.at(-1)?.content).toBe('Deploy the web app');
     await cog.close();
   });
 

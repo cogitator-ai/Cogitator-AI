@@ -1,10 +1,13 @@
-import type { Tool } from '@cogitator-ai/types';
+import type { Tool, Workspace } from '@cogitator-ai/types';
 
 /** The `agent` tools of subagent runtimes, which take Claude Code's `Agent` input as it is */
 const dispatchers = new WeakSet<object>();
 
 /** The `send_message`, `task_output` and `task_stop` tools of subagent runtimes, by Claude Code's name */
 const companions = new WeakMap<object, 'SendMessage' | 'TaskOutput' | 'TaskStop'>();
+
+/** The workspace an agent's runs use instead of another, see {@link setWorkspaceSwap} */
+const swaps = new WeakMap<object, { from: Workspace; to: Workspace }>();
 
 /** Which tools an agent's runs keep, see {@link setToolFilter} */
 const filters = new WeakMap<object, (tool: Tool) => boolean>();
@@ -52,4 +55,19 @@ export function toolFilterOf(agent: object): ((tool: Tool) => boolean) | undefin
 export function copyToolFilter(from: object, to: object): void {
   const keep = filters.get(from);
   if (keep) filters.set(to, keep);
+  const swap = swaps.get(from);
+  if (swap) swaps.set(to, swap);
+}
+
+/**
+ * Makes the runs of `agent` use the tools bound to workspace `from` (`workspaceTools(from)`) on
+ * `to` instead, for a subagent that works in a worktree of `from`
+ */
+export function setWorkspaceSwap(agent: object, from: Workspace, to: Workspace): void {
+  swaps.set(agent, { from, to });
+}
+
+/** The workspace swap of `agent`, see {@link setWorkspaceSwap} */
+export function workspaceSwapOf(agent: object): { from: Workspace; to: Workspace } | undefined {
+  return swaps.get(agent);
 }

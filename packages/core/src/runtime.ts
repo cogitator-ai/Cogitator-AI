@@ -243,7 +243,8 @@ import { RunMemory } from './cogitator/run-memory';
 import { toAbortError } from './utils/abort';
 import { RunHarness, todosRecall, touchedPaths } from './cogitator/harness';
 import { SubagentService } from './subagents/service';
-import { copyToolFilter, setToolFilter, toolFilterOf } from './subagents/marker';
+import { copyToolFilter, setToolFilter, toolFilterOf, workspaceSwapOf } from './subagents/marker';
+import { reboundWorkspaceTool } from './tools/workspace-tools';
 import { resolveDefinitionModel } from './subagents/models';
 import { toolPolicy } from './subagents/tool-policy';
 import { CommandFinder, type CommandCatalog } from './subagents/catalog';
@@ -1843,6 +1844,17 @@ export class Cogitator implements ToolInvoker {
     if (!resumeFrom) {
       const expanded = await this.expandCommandInput(agent, options);
       if (expanded) ({ agent, options, command } = expanded);
+    } else {
+      let checkpoint = resumeFrom.checkpoint;
+      if (!checkpoint && options.threadId !== undefined) {
+        await this.getMemory();
+        checkpoint = (await this.runCheckpointStore().load(options.threadId)) ?? undefined;
+      }
+      if (checkpoint?.command) {
+        command = checkpoint.command;
+        ({ agent, options } = this.applyCommand(agent, options, command));
+        resumeFrom = { ...resumeFrom, checkpoint };
+      }
     }
     const threadId = options.threadId;
     const aside =
@@ -1902,8 +1914,13 @@ export class Cogitator implements ToolInvoker {
         agent.config.workspace?.root ??
         process.cwd()
     );
+    const workspace = options.workspace ?? agent.config.workspace;
     const catalog = await this.commandFinder.catalog(
-      { ...(this.commandFiles && { options: this.commandFiles }), root },
+      {
+        ...(this.commandFiles && { options: this.commandFiles }),
+        root,
+        ...(workspace && { start: resolvePath(workspace.root, workspace.cwd) }),
+      },
       options.signal
     );
     const definition = catalog.get(invocation.name);
@@ -1924,51 +1941,63 @@ export class Cogitator implements ToolInvoker {
       source: definition.source,
       ...(definition.path !== undefined && { path: definition.path }),
     };
+    const applied = this.applyCommand(agent, { ...options, input }, command);
+    return { ...applied, command };
+  }
+
+  /**
+   * The agent and options of a run `command` started, for its first run and when it resumes: its
+   * model (on its own provider) and effort, its `disallowed-tools` taken from the agent's tools,
+   * and its `allowed-tools` added to the run's allow rules when permissions are set up
+   */
+  private applyCommand(
+    agent: Agent,
+    options: RunOptions,
+    command: ExpandedCommand
+  ): { agent: Agent; options: RunOptions } {
     const permitted =
-      definition.allowedTools !== undefined &&
-      definition.allowedTools.length > 0 &&
+      command.allowedTools !== undefined &&
+      command.allowedTools.length > 0 &&
       (this.config.permissions !== undefined ||
         agent.config.permissions !== undefined ||
         options.permissions !== undefined);
     let runAgent = agent;
-    const resolved = resolveDefinitionModel(definition.model, this.config.llm?.modelAliases);
+    const resolved = resolveDefinitionModel(command.model, this.config.llm?.modelAliases);
     if (resolved.warning) {
-      getLogger().warn(`Command "/${definition.name}": ${resolved.warning}`, {
-        command: definition.name,
+      getLogger().warn(`Command "/${command.name}": ${resolved.warning}`, {
+        command: command.name,
       });
     }
-    if (!resolved.inherit || definition.effort !== undefined) {
+    if (!resolved.inherit || command.effort !== undefined) {
       runAgent = agent.clone({
         id: agent.id,
         ...(!resolved.inherit && { model: resolved.model, provider: undefined }),
-        ...(definition.effort !== undefined && {
-          reasoning: { ...agent.config.reasoning, effort: definition.effort },
+        ...(command.effort !== undefined && {
+          reasoning: { ...agent.config.reasoning, effort: command.effort },
         }),
       });
       copyToolFilter(agent, runAgent);
     }
-    if (definition.disallowedTools && definition.disallowedTools.length > 0) {
+    if (command.disallowedTools && command.disallowedTools.length > 0) {
       if (runAgent === agent) runAgent = agent.clone({ id: agent.id });
       const above = toolFilterOf(agent);
-      const policy = toolPolicy({ disallowedTools: definition.disallowedTools });
+      const policy = toolPolicy({ disallowedTools: command.disallowedTools });
       setToolFilter(
         runAgent,
         (candidate) => (above?.(candidate) ?? true) && (policy?.allows(candidate) ?? true)
       );
     }
+    const allow = options.permissions?.allow ?? [];
+    const missing = (command.allowedTools ?? []).filter((rule) => !allow.includes(rule));
     return {
       agent: runAgent,
       options: {
         ...options,
-        input,
-        ...(permitted && {
-          permissions: {
-            ...options.permissions,
-            allow: [...(options.permissions?.allow ?? []), ...(definition.allowedTools ?? [])],
-          },
-        }),
+        ...(permitted &&
+          missing.length > 0 && {
+            permissions: { ...options.permissions, allow: [...allow, ...missing] },
+          }),
       },
-      command,
     };
   }
 
@@ -2360,6 +2389,13 @@ export class Cogitator implements ToolInvoker {
           );
           for (const delegating of delegation) {
             if (!ownerRegistry.has(delegating.name)) ownerRegistry.register(delegating);
+          }
+        }
+        const swap = workspaceSwapOf(owner);
+        if (swap) {
+          for (const candidate of ownerRegistry.getAll()) {
+            const rebound = reboundWorkspaceTool(candidate, swap.from, swap.to);
+            if (rebound) ownerRegistry.register(rebound, { replace: true });
           }
         }
         const keep = toolFilterOf(owner);
@@ -4708,6 +4744,7 @@ export class Cogitator implements ToolInvoker {
           ...((stopContinued || stopContinuations > 0) && {
             stopHooks: { continuations: stopContinuations, continued: stopContinued },
           }),
+          ...(control.command && { command: control.command }),
         };
         const waitingOn = pausedTurn.interrupts.filter((entry) => !isAnswered(entry));
         if (pausedTurn.pending.length > 0) {
