@@ -644,3 +644,103 @@ describe('second review round', () => {
     await second.cog.close();
   });
 });
+
+describe('third review round', () => {
+  it('checks the thread before SessionStart hooks run, and logs them to the thread', async () => {
+    const { hook, log } = script('session-start');
+    const { cog } = setup([{ content: 'one' }], {
+      hooks: { hooks: { SessionStart: [{ hooks: [hook] }] } },
+    });
+    await cog.run(agent(), { input: 'go', threadId: 't-owned', userId: 'alice' });
+    expect(seen(log)).toHaveLength(1);
+    const memory = await cog.getMemory();
+    const entries = await memory!.getEntries({ threadId: 't-owned', types: 'all' });
+    const logged = (entries.success ? entries.data : []).filter(
+      (entry) => entry.type === 'custom' && entry.event?.event === 'SessionStart'
+    );
+    expect(logged).toHaveLength(1);
+    await expect(
+      cog.run(agent(), { input: 'go', threadId: 't-owned', userId: 'mallory' })
+    ).rejects.toMatchObject({ code: 'THREAD_ACCESS_DENIED' });
+    expect(seen(log)).toHaveLength(1);
+    await cog.close();
+  });
+
+  it('keeps an approval for a call that paused to ask its own question', async () => {
+    const ask = tool({
+      name: 'ask_amount',
+      description: 'Ask',
+      parameters: z.object({}),
+      requiresApproval: true,
+      execute: async (_args, context) => {
+        const amount = await context.interrupt?.({ reason: 'amount', message: 'How much?' });
+        return `amount ${String(amount)}`;
+      },
+    });
+    const backend = new MockLLMBackend().setResponses([
+      turn(call('c1', 'ask_amount', {})),
+      { content: 'done' },
+    ]);
+    const cog = new Cogitator({
+      memory: { adapter: 'memory' },
+      llm: { backends: { mock: backend }, retry: false },
+      hooks: {},
+    });
+    const asker = new Agent({ name: 'asker', model: 'mock/m', instructions: 'Ask.', tools: [ask] });
+    const paused = await cog.run(asker, {
+      input: 'go',
+      threadId: 't-question',
+      onApproval: async () => ({ approved: true }),
+    });
+    expect(paused.interrupts?.[0]).toMatchObject({ kind: 'input' });
+    const question = paused.interrupts?.[0];
+    const resumed = await cog.resume(asker, paused.checkpoint!, {
+      responses: { [question!.id]: 7 },
+    });
+    expect(resumed.status).toBe('completed');
+    expect(toolTexts(resumed.messages).join('\n')).toContain('amount 7');
+    await cog.close();
+  });
+
+  it('stops the run on continue: false from a PermissionRequest hook', async () => {
+    const { hook } = script(
+      'permit-stop',
+      print({
+        continue: false,
+        stopReason: 'emails are frozen',
+        hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } },
+      })
+    );
+    const { cog, backend } = setup([turn(call('c1', 'send_email', { to: 'a@b.co', body: 'x' }))], {
+      hooks: { hooks: { PermissionRequest: [{ hooks: [hook] }] } },
+    });
+    const result = await cog.run(agent(), { input: 'mail' });
+    expect(sent).not.toHaveBeenCalled();
+    expect(result.stopped?.reason).toBe('emails are frozen');
+    expect(backend.getCallCount()).toBe(1);
+    await cog.close();
+  });
+
+  it('times out an MCP hook whose caller ignores the signal, and blocks with onFailure', async () => {
+    const callTool = vi.fn(() => new Promise<{ text: string }>(() => undefined));
+    const runs: HookRunRecord[] = [];
+    const { cog } = setup([turn(call('c1', 'note', { text: 'a' }))], {
+      hooks: {
+        mcp: { callTool },
+        onHookRun: (run) => runs.push(run),
+        hooks: {
+          PreToolUse: [
+            {
+              hooks: [{ type: 'mcp_tool', server: 's', tool: 't', timeout: 1, onFailure: 'block' }],
+            },
+          ],
+        },
+      },
+    });
+    const result = await cog.run(agent(), { input: 'go' });
+    expect(runs[0]?.outcome).toBe('timeout');
+    expect(noted).not.toHaveBeenCalled();
+    expect(toolTexts(result.messages)[0]).toContain('Permission denied');
+    await cog.close();
+  }, 30_000);
+});

@@ -2208,6 +2208,7 @@ export class Cogitator implements ToolInvoker {
         }
 
         if (!runMemory.aside) await this.abandonPausedRun(agent, runOptions, threadId);
+        if (pipeline.startsRuns) await this.openForStart(threadId, options, runMemory);
         const started = pipeline.startsRuns
           ? await waitForAbortable(
               pipeline.startRun(
@@ -3183,6 +3184,12 @@ export class Cogitator implements ToolInvoker {
               return undefined;
             }
             await settle(toolCall, tool, answer);
+            return undefined;
+          }
+          if (
+            answer?.approved === true &&
+            askedBefore.some((entry) => entry.toolCallId === toolCall.id)
+          ) {
             return undefined;
           }
           decisions.delete(toolCall.id);
@@ -4702,6 +4709,24 @@ export class Cogitator implements ToolInvoker {
       }
       removeParentAbortListener?.();
     }
+  }
+
+  /**
+   * Checks that the run may use its thread and lets it write there before the `startRun`
+   * middleware (the `SessionStart` hooks) run: they must not run for a thread of another user,
+   * and what they log belongs to the thread
+   */
+  private async openForStart(
+    threadId: string,
+    options: RunOptions,
+    runMemory: RunMemory
+  ): Promise<void> {
+    const memory = this.state.memoryAdapter;
+    if (!memory || options.useMemory === false) return;
+    if (options.threadId !== undefined && options.threadAccess !== 'shared') {
+      await assertThreadAccess(memory, threadId, options.userId);
+    }
+    runMemory.open();
   }
 
   /**

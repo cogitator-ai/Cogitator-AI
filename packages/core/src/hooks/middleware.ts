@@ -488,13 +488,17 @@ export function hooksMiddleware(
         const timeout = AbortSignal.timeout(timeoutMs);
         let text: string;
         try {
-          text = await deps.ask({
-            model,
-            system: PROMPT_SYSTEM,
-            prompt,
-            signal: AbortSignal.any([timeout, signalOf(call, context)]),
-            runSignal: context.signal,
-          });
+          const asking = AbortSignal.any([timeout, signalOf(call, context)]);
+          text = await untilAborted(
+            deps.ask({
+              model,
+              system: PROMPT_SYSTEM,
+              prompt,
+              signal: asking,
+              runSignal: context.signal,
+            }),
+            asking
+          );
         } catch (error) {
           if (timeout.aborted) {
             return finish({
@@ -528,10 +532,13 @@ export function hooksMiddleware(
         }
         const timeout = AbortSignal.timeout(timeoutMs);
         try {
-          const result = await config.mcp.callTool(
-            handler.server,
-            handler.tool,
-            substituteInput(handler.input ?? {}, input),
+          const result = await untilAborted(
+            config.mcp.callTool(
+              handler.server,
+              handler.tool,
+              substituteInput(handler.input ?? {}, input),
+              AbortSignal.any([timeout, signalOf(call, context)])
+            ),
             AbortSignal.any([timeout, signalOf(call, context)])
           );
           if (result.isError) {
@@ -724,6 +731,13 @@ export function hooksMiddleware(
         },
         context
       );
+      if (stopsFor(results, context)) {
+        const stopping = results.find((result) => result.output?.continue === false);
+        return {
+          approved: false,
+          reason: stopping?.output?.stopReason ?? 'A PermissionRequest hook stopped the run',
+        };
+      }
       let allowed: ToolApprovalDecision | undefined;
       for (const result of results) {
         if (result.answer && !result.answer.ok) {
@@ -955,6 +969,9 @@ export function hooksMiddleware(
         },
         context
       );
+      if (stopsFor(results, context)) {
+        return { block: 'A PreModelSwitch hook stopped the run' };
+      }
       for (const result of results) {
         if (result.outcome === 'timeout') {
           return { block: `A PreModelSwitch hook timed out (${targetOf(result.hook.handler)})` };
@@ -1007,6 +1024,30 @@ export function hooksMiddleware(
 }
 
 const NEVER = new AbortController().signal;
+
+/**
+ * `work`, or a rejection once `signal` aborts first: a caller that ignores the signal cannot hold
+ * a hook past its timeout, and its late answer is dropped
+ */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  const reasonOf = (): Error =>
+    signal.reason instanceof Error ? signal.reason : new Error(String(signal.reason));
+  if (signal.aborted) return Promise.reject(reasonOf());
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(reasonOf());
+    signal.addEventListener('abort', abort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener('abort', abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', abort);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    );
+  });
+}
 
 /** The arguments a hook's `updatedInput` gives the call, read back from Claude Code's shape */
 function argumentsOf(
