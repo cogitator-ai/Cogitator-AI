@@ -54,7 +54,7 @@ Every swarm has three fundamental pieces:
 
 ## Available Strategies
 
-Cogitator ships with 7 built-in coordination strategies:
+Cogitator ships with 8 built-in coordination strategies:
 
 | Strategy       | Use Case                                                           |
 | -------------- | ------------------------------------------------------------------ |
@@ -65,8 +65,9 @@ Cogitator ships with 7 built-in coordination strategies:
 | `pipeline`     | Sequential stages with optional quality gates                      |
 | `debate`       | Agents argue opposing positions, moderator synthesizes             |
 | `negotiation`  | Multi-party negotiation with offers, counteroffers, and agreements |
+| `team`         | A lead and members work through a shared task list with mailboxes  |
 
-Swarms can run in **distributed mode** (`.distributed({ enabled: true, ... })`) with Redis-backed state and worker nodes. Pipeline, round-robin, consensus, debate and auction work there (consensus voters vote with a `VOTE:` line); hierarchical delegation, the voting and negotiation tools and `agentTools` exist only in-process — see [Distributed Swarms](/docs/swarms/distributed).
+Swarms can run in **distributed mode** (`.distributed({ enabled: true, ... })`) with Redis-backed state and worker nodes. Pipeline, round-robin, consensus, debate and auction work there (consensus voters vote with a `VOTE:` line), while hierarchical delegation, the voting, negotiation and team tools and `agentTools` exist only in-process - see [Distributed Swarms](/docs/swarms/distributed).
 
 ## Swarms vs Workflows
 
@@ -181,7 +182,8 @@ The swarm sees the node's step and the workflow state as `workflowContext` in it
 
 ## Next Steps
 
-- [Coordination Strategies](/docs/swarms/strategies) — detailed guide to all 7 strategies
+- [Coordination Strategies](/docs/swarms/strategies) - detailed guide to all 8 strategies
+- [Agent Teams](/docs/swarms/agent-teams) - a lead and members with a shared task list and mailboxes
 - [Swarm Builder](/docs/swarms/builder) — fluent API for configuring swarms
 - [Agent Communication](/docs/swarms/communication) — blackboard, message bus, events
 - [Swarm Assessment](/docs/swarms/assessment) — auto-assign optimal models

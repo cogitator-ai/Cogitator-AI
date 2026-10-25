@@ -1,10 +1,10 @@
-import { Activity, GitFork, Workflow } from 'lucide-react';
+import { Activity, GitFork, Network, Workflow } from 'lucide-react';
 import type { RunRecord } from '../../protocol';
 import { excerpt, formatCost, formatDuration, formatTokens, timeAgo } from '../format';
 import { href } from '../router';
 import { StatusBadge } from './common';
 
-const KIND_ICON = { agent: Activity, workflow: Workflow, fork: GitFork } as const;
+const KIND_ICON = { agent: Activity, workflow: Workflow, fork: GitFork, swarm: Network } as const;
 
 /** Runs as rows: status, what ran, its input, tokens, cost, duration and when. */
 export function RunTable({ runs, focused }: { runs: RunRecord[]; focused?: number }) {

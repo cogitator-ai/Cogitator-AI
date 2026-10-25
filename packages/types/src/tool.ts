@@ -7,6 +7,7 @@ import type { SandboxConfig } from './sandbox';
 import type { Workspace } from './workspace';
 import type { InterruptRequest } from './run-control';
 import type { ToolPermissionsView } from './permissions';
+import type { ToolDelegationContext } from './subagents';
 
 export type ToolCategory =
   | 'math'
@@ -220,9 +221,17 @@ export interface ToolAccess<TParams = unknown> {
   cwd?(params: TParams): string | undefined;
   env?(params: TParams): Readonly<Record<string, string>> | undefined;
   url?(params: TParams): string | undefined;
-  /** The name of the agent an `agent` tool hands its task to */
-  agent?: string;
+  /**
+   * The name of the agent an `agent` tool hands its task to, or how to read it from the call, for
+   * a tool that delegates to the agent its arguments name, so an `Agent(name)` rule matches
+   */
+  agent?: string | ToolAgentOf<TParams>;
 }
+
+/** Reads the name of the agent a call delegates to from its arguments, see `ToolAccess.agent` */
+export type ToolAgentOf<TParams = unknown> = {
+  agentOf(params: TParams): string | undefined;
+}['agentOf'];
 
 /** An MCP server's tool, by the server's name and the tool's name there */
 export interface ToolMcpOrigin {
@@ -364,6 +373,11 @@ export interface BaseToolContext<TDeps = unknown> {
    * that starts a run of its own (an agent as a tool) holds it to the same rules
    */
   permissions?: ToolPermissionsView;
+  /**
+   * What a tool that runs another agent needs from its run: the conversation, the run's approval
+   * decider and, when the run resumes, the delegate the call left paused. Present in a run
+   */
+  delegation?: ToolDelegationContext;
 }
 
 /**

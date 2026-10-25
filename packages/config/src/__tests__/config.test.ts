@@ -559,3 +559,74 @@ instructions:
     expect(() => loadConfig({ configPath: path, skipEnv: true })).toThrow(error);
   });
 });
+
+describe('subagents and commands', () => {
+  const path = 'test-subagents-config.yaml';
+
+  afterEach(() => {
+    if (existsSync(path)) unlinkSync(path);
+  });
+
+  it('keeps them through a YAML file', () => {
+    writeFileSync(
+      path,
+      `
+llm:
+  modelAliases:
+    sonnet: anthropic/claude-sonnet-5
+subagents:
+  files:
+    root: /srv/app
+    trusted: true
+  approvalMode: bubble
+  maxDepth: 2
+  messages: conversation
+  agents:
+    reviewer:
+      description: Reviews code
+      prompt: You review.
+      tools: [Read, Grep]
+      permissionMode: plan
+      maxTurns: 6
+commands:
+  files: true
+  commands:
+    standup: Summarize $ARGUMENTS
+    fix:
+      template: Fix issue $0
+      allowedTools: ['Bash(gh *)']
+      disallowedTools: [Write]
+      effort: high
+`
+    );
+    const config = loadConfig({ configPath: path, skipEnv: true });
+    expect(config.llm?.modelAliases).toEqual({ sonnet: 'anthropic/claude-sonnet-5' });
+    expect(config.subagents).toEqual({
+      files: { root: '/srv/app', trusted: true },
+      approvalMode: 'bubble',
+      maxDepth: 2,
+      messages: 'conversation',
+      agents: {
+        reviewer: {
+          description: 'Reviews code',
+          prompt: 'You review.',
+          tools: ['Read', 'Grep'],
+          permissionMode: 'plan',
+          maxTurns: 6,
+        },
+      },
+    });
+    expect(config.commands).toEqual({
+      files: true,
+      commands: {
+        standup: 'Summarize $ARGUMENTS',
+        fix: {
+          template: 'Fix issue $0',
+          allowedTools: ['Bash(gh *)'],
+          disallowedTools: ['Write'],
+          effort: 'high',
+        },
+      },
+    });
+  });
+});

@@ -44,6 +44,10 @@ export interface SwarmInfo {
   name: string;
   strategy: string;
   agents: string[];
+  /** The lead of a team swarm (its supervisor) */
+  lead?: string;
+  /** The members of a team swarm (its workers) */
+  members?: string[];
 }
 
 export interface RegistryInfo {
@@ -137,11 +141,66 @@ export interface WorkflowNodeRecord {
   error?: string;
 }
 
-/** A run the studio keeps: an agent run, a workflow run, or a fork of an agent run. */
+/** An agent of a team swarm as its graph shows it. */
+export interface TeamMemberRecord {
+  name: string;
+  role: 'lead' | 'member';
+  status: 'idle' | 'working' | 'stopped' | 'failed';
+  turns: number;
+  /** Why it takes the turn it is in, or took its last one. */
+  reason?: string;
+  /** The task it works on. */
+  currentTask?: string;
+  error?: string;
+}
+
+/** A task of the shared task list of a team swarm. */
+export interface TeamTaskRecord {
+  id: string;
+  title: string;
+  description?: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  owner?: string;
+  dependsOn: string[];
+  createdBy: string;
+  result?: string;
+  note?: string;
+}
+
+/** A message between agents of a team, written into the mailboxes of `to`. */
+export interface TeamMessageRecord {
+  id: string;
+  from: string;
+  to: string[];
+  broadcast: boolean;
+  content: string;
+  at: number;
+}
+
+/** The lead (or the team's setup, `system`) gave a task to a member. */
+export interface TeamAssignmentRecord {
+  taskId: string;
+  by: string;
+  to: string;
+  at: number;
+}
+
+/** What a run of a team swarm did, built from its events while it runs. */
+export interface TeamRecord {
+  lead: string;
+  members: TeamMemberRecord[];
+  tasks: TeamTaskRecord[];
+  messages: TeamMessageRecord[];
+  assignments: TeamAssignmentRecord[];
+  /** How the run ended, once it ended. */
+  stopReason?: string;
+}
+
+/** A run the studio keeps: an agent run, a workflow run, a swarm run, or a fork of an agent run. */
 export interface RunRecord {
   id: string;
-  kind: 'agent' | 'workflow' | 'fork';
-  /** Registry key of the agent or workflow. */
+  kind: 'agent' | 'workflow' | 'fork' | 'swarm';
+  /** Registry key of the agent, workflow or swarm. */
   target: string;
   /** The agent's own name, which nested runs are found by. */
   agentName?: string;
@@ -177,6 +236,8 @@ export interface RunRecord {
   nodes?: WorkflowNodeRecord[];
   /** The agent's todo list as `write_todos` last wrote it in the run. */
   todos?: TodoRecord[];
+  /** The agents, task list and messages of a team swarm run. */
+  team?: TeamRecord;
   /** The workflow manager's id of the run, which a rerun starts from. */
   workflowRunId?: string;
   rerunOf?: { runId: string; fromNode: string };
@@ -239,10 +300,10 @@ export interface ThreadTree {
   branching: boolean;
 }
 
-/** An agent or workflow with what its runs did, for the overview. */
+/** An agent, workflow or swarm with what its runs did, for the overview. */
 export interface TargetStats {
   target: string;
-  kind: 'agent' | 'workflow';
+  kind: 'agent' | 'workflow' | 'swarm';
   /** Every run of it, the ones agent tools started included. */
   runs: number;
   failed: number;
@@ -379,7 +440,16 @@ export type HostEvent =
       duration?: number;
       output?: unknown;
       error?: string;
-    };
+    }
+  | { type: 'swarm.event'; runId: string; event: SwarmEventRecord };
+
+/** An event of a swarm run as the swarm emitted it (`team:task-claimed` and the rest). */
+export interface SwarmEventRecord {
+  type: string;
+  agentName?: string;
+  data?: unknown;
+  at: number;
+}
 
 /** A span as the runtime reports it. */
 export interface RawSpan {
@@ -437,6 +507,7 @@ export type HostRequest =
       history: HistoryMessage[];
     }
   | { type: 'workflow.run'; requestId: string; workflow: string; input: unknown }
+  | { type: 'swarm.run'; requestId: string; swarm: string; input: string }
   | { type: 'workflow.rerun'; requestId: string; run: RunRecord; fromNode: string };
 
 /** A message of a thread, replayed into a fresh memory when the host restarts. */

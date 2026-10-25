@@ -66,6 +66,65 @@ export function splitSkillFile(text: string): SkillFileParts | undefined {
   return undefined;
 }
 
+/** The fields of a Markdown file's YAML frontmatter and its body, see {@link readFrontmatter} */
+export interface FrontmatterParts {
+  fields: Record<string, unknown>;
+  body: string;
+  /** What the YAML parser warned about */
+  warnings: string[];
+}
+
+/**
+ * The YAML frontmatter of `text` read as a mapping of fields, with the body after it.
+ * `{ error: 'missing' }` when the text does not start with a frontmatter block, the reason when
+ * the block is not valid YAML or not a mapping
+ */
+export function readFrontmatter(text: string): FrontmatterParts | { error: string } {
+  const parts = splitSkillFile(text);
+  if (!parts) return { error: 'missing' };
+  let parsed: unknown;
+  const warnings: string[] = [];
+  try {
+    const document = parseDocument(parts.frontmatter, { prettyErrors: false });
+    const [problem] = document.errors;
+    if (problem) return { error: `The frontmatter is not valid YAML: ${problem.message}` };
+    for (const warning of document.warnings)
+      warnings.push(`The frontmatter YAML: ${warning.message}`);
+    parsed = document.toJS({ maxAliasCount: 100 });
+  } catch (error) {
+    return {
+      error: `The frontmatter is not valid YAML: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  const fields = frontmatterSchema.safeParse(parsed);
+  if (!fields.success || parsed === null || Array.isArray(parsed)) {
+    return { error: 'The frontmatter is not a YAML mapping of fields' };
+  }
+  return { fields: fields.data, body: parts.body, warnings };
+}
+
+/**
+ * The entries of a tool list: separated by commas or white space outside parentheses, so a rule
+ * such as `Bash(git status:*)` stays one entry
+ */
+export function splitToolList(list: string): string[] {
+  const entries: string[] = [];
+  let current = '';
+  let depth = 0;
+  for (const char of list) {
+    if (char === '(') depth++;
+    else if (char === ')') depth = Math.max(0, depth - 1);
+    if (depth === 0 && (char === ',' || /\s/.test(char))) {
+      entries.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  entries.push(current);
+  return entries.map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+}
+
 /** Where a `SKILL.md` was found, for its manifest and diagnostics. */
 export interface SkillFileOrigin {
   /** Name of the skill folder, which `name` should match */
@@ -96,37 +155,18 @@ export function parseSkillFile(text: string, origin: SkillFileOrigin): ParsedSki
   const report = (level: SkillDiagnostic['level'], message: string) =>
     diagnostics.push({ level, message, path: origin.path });
 
-  const parts = splitSkillFile(text);
-  if (!parts) {
-    report('error', 'No YAML frontmatter: SKILL.md must start with a block between --- lines');
-    return { diagnostics };
-  }
-
-  let parsed: unknown;
-  try {
-    const document = parseDocument(parts.frontmatter, { prettyErrors: false });
-    const [problem] = document.errors;
-    if (problem) {
-      report('error', `The frontmatter is not valid YAML: ${problem.message}`);
-      return { diagnostics };
-    }
-    for (const warning of document.warnings) {
-      report('warning', `The frontmatter YAML: ${warning.message}`);
-    }
-    parsed = document.toJS({ maxAliasCount: 100 });
-  } catch (error) {
+  const read = readFrontmatter(text);
+  if ('error' in read) {
     report(
       'error',
-      `The frontmatter is not valid YAML: ${error instanceof Error ? error.message : String(error)}`
+      read.error === 'missing'
+        ? 'No YAML frontmatter: SKILL.md must start with a block between --- lines'
+        : read.error
     );
     return { diagnostics };
   }
-  const fields = frontmatterSchema.safeParse(parsed);
-  if (!fields.success || parsed === null || Array.isArray(parsed)) {
-    report('error', 'The frontmatter is not a YAML mapping of fields');
-    return { diagnostics };
-  }
-  const data = fields.data;
+  for (const warning of read.warnings) report('warning', warning);
+  const data = read.fields;
 
   const description = descriptionSchema.safeParse(data.description);
   if (!description.success) {
@@ -221,28 +261,6 @@ function metadataOf(value: unknown, report: Report): Record<string, string> | un
   return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
 
-/**
- * The tools of an `allowed-tools` list: separated by spaces or commas outside parentheses, so a
- * rule such as `Bash(git status:*)` stays one entry
- */
-function splitToolList(list: string): string[] {
-  const entries: string[] = [];
-  let current = '';
-  let depth = 0;
-  for (const char of list) {
-    if (char === '(') depth++;
-    else if (char === ')') depth = Math.max(0, depth - 1);
-    if (depth === 0 && (char === ',' || /\s/.test(char))) {
-      entries.push(current);
-      current = '';
-      continue;
-    }
-    current += char;
-  }
-  entries.push(current);
-  return entries;
-}
-
 function allowedToolsOf(value: unknown, report: Report): string[] | undefined {
   if (value === undefined || value === null) return undefined;
   const entries =
@@ -255,6 +273,6 @@ function allowedToolsOf(value: unknown, report: Report): string[] | undefined {
     report('warning', 'allowed-tools is not a space-separated string, it is ignored');
     return undefined;
   }
-  const tools = entries.map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+  const tools = entries.flatMap((entry) => splitToolList(entry));
   return tools.length > 0 ? tools : undefined;
 }

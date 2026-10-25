@@ -10,5 +10,5 @@
     "allowImportingTsExtensions": false,
     "rootDir": "./src"
   },
-  "include": ["src/ui/**/*", "src/protocol.ts"]
+  "include": ["src/ui/**/*", "src/protocol.ts", "src/team.ts"]
 }

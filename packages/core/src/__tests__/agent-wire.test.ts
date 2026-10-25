@@ -102,6 +102,8 @@ function project(key: keyof AgentConfig, config: AgentConfig): unknown {
       return AGENT_CONFIG_WIRE_FIELDS.permissions;
     case 'budget':
       return AGENT_CONFIG_WIRE_FIELDS.budget;
+    case 'subagents':
+      return AGENT_CONFIG_WIRE_FIELDS.subagents;
     case 'responseFormat': {
       const format = config.responseFormat;
       return format?.type === 'json_schema'
@@ -179,6 +181,7 @@ describe('agent wire format', () => {
       workspace: new LocalWorkspace({ root: join(tmpdir(), 'wire-workspace'), create: false }),
       permissions: { mode: 'bypassPermissions', allow: ['Bash'] },
       budget: { maxCostUsd: 1000 },
+      subagents: ['reviewer'],
     };
     const original = new Agent(full);
 
@@ -194,6 +197,7 @@ describe('agent wire format', () => {
     expect(received.instructions).toContain('Cite every source.');
     expect(received.config.permissions).toBeUndefined();
     expect(received.config.budget).toBeUndefined();
+    expect(received.config.subagents).toBeUndefined();
   });
 
   it('carries the agents a handoff reaches, cycles included', () => {

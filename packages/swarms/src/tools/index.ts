@@ -13,6 +13,7 @@ export { createBlackboardTools, type BlackboardTools } from './blackboard';
 export { createDelegationTools, type DelegationTools } from './delegation';
 export { createVotingTools, type VotingTools } from './voting';
 export { createNegotiationTools, type NegotiationTools } from './negotiation';
+export { createTeamTools, teamToolsFor, type TeamTools, type TeamToolContext } from './team';
 
 import type { Tool } from '@cogitator-ai/types';
 import type {
@@ -26,6 +27,7 @@ import { createBlackboardTools } from './blackboard';
 import { createDelegationTools } from './delegation';
 import { createVotingTools } from './voting';
 import { createNegotiationTools } from './negotiation';
+import { createTeamTools, teamToolsFor } from './team';
 
 export interface SwarmToolContext {
   coordinator: SwarmCoordinatorInterface;
@@ -113,7 +115,8 @@ export function createStrategyTools(
     | 'auction'
     | 'pipeline'
     | 'round-robin'
-    | 'negotiation',
+    | 'negotiation'
+    | 'team',
   context: SwarmToolContext
 ): Tool<unknown, unknown>[] {
   const baseTools = [
@@ -150,6 +153,19 @@ export function createStrategyTools(
         context.agentWeight
       );
       return [...baseTools, ...Object.values(negotiationTools)] as Tool<unknown, unknown>[];
+    }
+
+    case 'team': {
+      const role = context.coordinator.getAgent(context.agentName)?.metadata.role;
+      const teamTools = teamToolsFor(
+        createTeamTools(context, context.agentName),
+        role === 'supervisor' ? 'lead' : 'member'
+      );
+      const names = new Set(teamTools.map((t) => t.name));
+      return [...teamTools, ...baseTools.filter((t) => !names.has(t.name))] as Tool<
+        unknown,
+        unknown
+      >[];
     }
 
     case 'auction':

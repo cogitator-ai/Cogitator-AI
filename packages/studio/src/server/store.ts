@@ -22,6 +22,7 @@ import type {
   UsageInfo,
   WorkflowNodeRecord,
 } from '../protocol.js';
+import { applyTeamEvent, emptyTeam } from '../team.js';
 
 /** Prices a model call, `null` when the model's price is unknown. */
 export type Pricer = (
@@ -211,8 +212,8 @@ export class StudioStore {
   }
 
   /**
-   * Whether a workflow started the run, directly or through other runs: the
-   * workflow's usage already sums it.
+   * Whether a workflow or a swarm started the run, directly or through other
+   * runs: their usage already sums it.
    */
   private insideWorkflow(run: RunRecord): boolean {
     const seen = new Set<string>();
@@ -221,7 +222,7 @@ export class StudioStore {
       seen.add(parentId);
       const parent = this.runs.get(parentId);
       if (!parent) return false;
-      if (parent.kind === 'workflow') return true;
+      if (parent.kind === 'workflow' || parent.kind === 'swarm') return true;
       parentId = parent.parentRunId;
     }
     return false;
@@ -269,7 +270,7 @@ export class StudioStore {
         outputTokens += run.usage?.outputTokens ?? 0;
       }
 
-      const kind = run.kind === 'workflow' ? 'workflow' : 'agent';
+      const kind = run.kind === 'workflow' ? 'workflow' : run.kind === 'swarm' ? 'swarm' : 'agent';
       const key = `${kind}:${run.target}`;
       const target = targets.get(key) ?? {
         target: run.target,
@@ -446,6 +447,14 @@ export class StudioStore {
     };
   }
 
+  /** The team of a swarm of the registry, before its run reports anything. */
+  private initialTeam(target: string): RunRecord['team'] {
+    const swarm = this.registry?.swarms.find((candidate) => candidate.key === target);
+    return swarm?.strategy === 'team' && swarm.lead
+      ? emptyTeam(swarm.lead, swarm.members ?? [])
+      : undefined;
+  }
+
   private initialNodes(target: string): WorkflowNodeRecord[] {
     const workflow = this.registry?.workflows.find((candidate) => candidate.key === target);
     return (workflow?.nodes ?? []).map((name) => ({ name, status: 'pending' }));
@@ -555,6 +564,10 @@ export class StudioStore {
           ...(event.rerunOf && { rerunOf: event.rerunOf }),
           ...(event.kind === 'workflow' && { nodes: this.initialNodes(event.target) }),
         };
+        if (event.kind === 'swarm') {
+          const team = this.initialTeam(event.target);
+          if (team) run.team = team;
+        }
         this.runs.set(run.id, run);
         this.roots.set(run.id, event.rootRunId);
         const changed = [run];
@@ -715,7 +728,7 @@ export class StudioStore {
         const spanCost = run.spans.reduce((sum, span) => sum + (span.cost ?? 0), 0);
         const priced = event.usage.cost > 0 || run.spans.some((span) => span.cost !== undefined);
         run.usage =
-          run.kind === 'workflow'
+          run.kind === 'workflow' || run.kind === 'swarm'
             ? this.sumChildren(run)
             : { ...event.usage, cost: event.usage.cost > 0 ? event.usage.cost : spanCost, priced };
         this.persist(run);
@@ -728,7 +741,11 @@ export class StudioStore {
         run.status = event.stopped ? 'stopped' : 'failed';
         run.error = event.error;
         run.endedAt = event.endedAt;
-        if (run.kind === 'workflow') run.usage = this.sumChildren(run);
+        if (run.kind === 'workflow' || run.kind === 'swarm') run.usage = this.sumChildren(run);
+        if (run.team) {
+          for (const agent of run.team.members)
+            if (agent.status === 'working') agent.status = 'idle';
+        }
         this.persist(run);
         const linked = this.roots.get(run.id) === run.id ? this.linkNested(run.id) : [];
         return { runs: [run, ...linked.filter((other) => other.id !== run.id)] };
@@ -747,6 +764,15 @@ export class StudioStore {
         if (event.duration !== undefined) node.duration = event.duration;
         if (event.output !== undefined) node.output = event.output;
         if (event.error) node.error = event.error;
+        this.persist(run);
+        return { runs: [run] };
+      }
+      case 'swarm.event': {
+        const run = this.runs.get(event.runId);
+        if (!run) return { runs: [] };
+        const team = applyTeamEvent(run.team, event.event);
+        if (!team) return { runs: [] };
+        run.team = team;
         this.persist(run);
         return { runs: [run] };
       }

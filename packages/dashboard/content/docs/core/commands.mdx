@@ -1,0 +1,71 @@
+---
+title: Commands
+description: Message templates a run's input names with /name, from Markdown files in Claude Code's commands format or from code.
+---
+
+## Overview
+
+A command is a message template. An input that starts with `/name` is replaced by the template of that command, with the arguments put in, before the run starts: the model, the thread and every middleware and hook (`UserPromptSubmit` among them) see the expanded message. Cogitator reads commands in the format of Claude Code's custom commands, Markdown files in `commands/` folders, so the ones a repository has for Claude Code work here.
+
+```markdown title=".claude/commands/fix-issue.md"
+---
+description: Fix a GitHub issue
+argument-hint: '[issue-number] [priority]'
+allowed-tools: Bash(gh issue view *)
+---
+
+Fix issue #$0 with priority $1. Read it with `gh issue view $0` first.
+```
+
+```typescript
+const cog = new Cogitator({
+  permissions: {},
+  commands: {
+    files: { root: '/srv/repo', trusted: true },
+    commands: { standup: 'Summarize what changed since yesterday in $ARGUMENTS' },
+  },
+});
+
+const result = await cog.run(agent, { input: '/fix-issue 123 high' });
+result.command; // { name: 'fix-issue', arguments: '123 high', input: 'Fix issue #123 ...', source: 'project' }
+```
+
+Nothing changes until you set `commands`: unset, an input starting with `/` is sent as it is. An input that names no known command is sent as it is too, and a run started from a tool call never expands one.
+
+## Where Commands Come From
+
+Commands are read from the same places as [subagents](/docs/core/subagents), the project folders from the workspace's current directory up to the root, `commands/` instead of `agents/`: the managed directories, `commands.commands` in code, the host's `files.dirs`, the project's `.agents/commands`, `.cogitator/commands` and `.claude/commands` once the project is trusted, then the user's folders. The first command of a name wins. A file's name is its path under the folder with `:` between folders: `.claude/commands/frontend/component.md` is `/frontend:component`. `cog.listCommands({ root })` lists them with their `description` and `argumentHint` for a client's `/` menu.
+
+## Arguments
+
+| Placeholder             | Becomes                                                                      |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| `$ARGUMENTS`            | Everything typed after the name                                              |
+| `$ARGUMENTS[N]`         | The argument at 0-based position `N`                                         |
+| `$N`                    | The same, `$0` is the first argument                                         |
+| `$name`                 | The argument at the position of `name` in the frontmatter's `arguments` list |
+| `${CLAUDE_PROJECT_DIR}` | The project root, also as `${COGITATOR_PROJECT_DIR}`                         |
+| `${CLAUDE_SESSION_ID}`  | The run's thread id                                                          |
+
+Arguments split as a shell splits words, so quotes keep words together: `/greet "Ada Lovelace" now` makes `$0` `Ada Lovelace`. An indexed placeholder without an argument stays as written, a named one becomes empty. `\$1` keeps `$1` as written. Values are put in as they are and never expanded again. When arguments were given and no placeholder took one, they are added at the end as `ARGUMENTS: <value>`, so the model still sees them.
+
+## Frontmatter
+
+| Field              | What it does                                                                                                      |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `description`      | What it does, for a menu. Default: the first line of the template                                                 |
+| `argument-hint`    | The arguments it expects, such as `[issue-number]`                                                                |
+| `arguments`        | Names of positional arguments for `$name`                                                                         |
+| `allowed-tools`    | [Permission rules](/docs/tools/permissions) allowed without asking for the run the command starts                 |
+| `disallowed-tools` | Tools taken away from the run the command starts, as a subagent's `disallowedTools`                               |
+| `model`            | The model of that run, on its own provider: an alias of `llm.modelAliases`, a Claude model id or `provider/model` |
+| `effort`           | The reasoning effort of that run                                                                                  |
+
+The command's model, effort and tool limits hold for every agent the run hands over to, are kept in the checkpoint of a run that pauses (`checkpoint.command`) and hold again when it resumes. `allowed-tools` apply only to the run the command starts, and only when the run has permissions set up (`permissions` on the runtime, the agent or the run). Without them nothing asks but tools that need approval, and turning the permission engine on for one command would make edits ask. A file whose frontmatter is not valid YAML is skipped with a diagnostic (`commands.onDiagnostic`).
+
+## Differences from Claude Code
+
+- Inline shell commands (`` !`command` `` and fenced blocks opened with `!`) are not run, they stay in the message as written.
+- Skills are not invoked as commands: `/name` expands commands only, skills load with `use_skill`.
+- `context: fork` and `agent` are not supported: the command runs in the conversation, with a diagnostic. `hooks`, `shell` and `background` are not applied, and `disable-model-invocation` has nothing to do, since only a person names a command.
+- Only the first command of an input expands, as in the Agent SDK and `claude -p`.

@@ -1,0 +1,238 @@
+---
+title: Agent Teams
+description: A lead and members with a shared task list and mailboxes - the team strategy, its tools, bounds and events, and the live team graph in Cogitator Studio.
+---
+
+## Overview
+
+An agent team is a lead and its members working through a shared task list. The lead plans the work as tasks, members claim tasks or get them assigned and work through them, everyone talks through mailboxes, and the lead writes the final answer from the results. It follows the model of Claude Code's agent teams:
+
+| Part          | Role                                                                        |
+| ------------- | --------------------------------------------------------------------------- |
+| **Lead**      | Plans the work as tasks, assigns them, answers questions, writes the answer |
+| **Members**   | Work on one task at a time and report through task results and messages     |
+| **Task list** | Tasks that are pending, in progress or completed, with dependencies         |
+| **Mailboxes** | Messages between agents, each marked with the agent that sent it            |
+
+A team is the `team` strategy of a swarm. The lead is the swarm's `supervisor` and the members are its `workers`, so the builder takes them with `.lead()` and `.members()`.
+
+```typescript
+import { Agent, Cogitator } from '@cogitator-ai/core';
+import { swarm } from '@cogitator-ai/swarms';
+
+const cogitator = new Cogitator({ llm: { defaultModel: 'openai/gpt-5.5' } });
+const model = 'openai/gpt-5.5';
+
+const newsroom = swarm('newsroom')
+  .strategy('team')
+  .lead(
+    new Agent({
+      name: 'editor',
+      model,
+      instructions: 'Plan the article as tasks for your team and write the final version.',
+      maxIterations: 12,
+    })
+  )
+  .members([
+    new Agent({
+      name: 'researcher',
+      model,
+      description: 'Finds facts and sources',
+      instructions: 'Research.',
+    }),
+    new Agent({ name: 'writer', model, description: 'Writes clear prose', instructions: 'Write.' }),
+    new Agent({
+      name: 'checker',
+      model,
+      description: 'Checks facts',
+      instructions: 'Check facts.',
+    }),
+  ])
+  .team({ maxTurnsPerMember: 6, maxConcurrentMembers: 2 })
+  .build(cogitator);
+
+const result = await newsroom.run({ input: 'Write a short article about tides' });
+
+console.log(result.output);
+for (const task of result.teamResult?.tasks ?? []) {
+  console.log(task.id, task.status, task.owner, task.result);
+}
+```
+
+The member descriptions (or the start of their instructions) and their `expertise` metadata are what the lead reads about its team, so describe each member by what it is good at.
+
+## How a Run Goes
+
+1. **The lead plans.** Its first turn gets the request and the roster, and it creates tasks with `create_task`. `dependsOn` makes a task wait for others, `assignee` (or a later `assign_task`) gives it to a member. If the request needs no team, the lead answers at once and the run ends with `stopReason: 'no-tasks'`.
+2. **Members work.** A member takes a turn when it has a task: one assigned to it, or, with `selfClaim`, the next unassigned task that is not blocked. The task is claimed for it before its turn, so the member starts with the task, the results of the tasks it builds on, and its unread messages. It completes the task with `update_task` and may `claim_task` the next one in the same turn.
+3. **Messages wake agents.** `send_message` writes into the mailbox of a member, the lead (`"lead"`) or everyone (`"everyone"`). An agent with unread messages gets a turn, the lead too, and its turn starts with those messages.
+4. **The lead steps in when the team is stuck.** When nobody can go on with the tasks left, for example because a task waits for a member that used its turns, or because members only take assigned tasks and one is unassigned, the lead gets a turn to assign, release or close tasks.
+5. **The lead answers.** Once every task is completed, or no agent has a reason or a turn left, the lead gets the full results and writes the final answer.
+
+Members work concurrently, up to `maxConcurrentMembers`, and a member is started as soon as a task is assigned to it or a message reaches it, not only between rounds. While the lead is in a turn, members only take the tasks assigned to them: the lead may still be assigning the ones it just created.
+
+## The Task List
+
+Tasks have the three statuses of `write_todos`: `pending`, `in_progress` and `completed`.
+
+- A pending task with unfinished dependencies cannot be claimed. Completing a task unblocks the tasks that wait for it, and `team:task-completed` lists them.
+- A member works on one task at a time. Claiming the task it holds already changes nothing.
+- Claiming is atomic: the list lives in the blackboard section `team`, and every change reads, checks and writes it in one synchronous step, so two members never get the same task.
+- Only the owner of a task and the lead change it. A member completes a task it claimed, or releases it back to the list (`status: 'pending'`) when it cannot finish it. The lead may also close a pending task that is no longer needed. Completed tasks are final.
+- A dependency must be on the list already when a task is created, so the dependencies never form a cycle.
+
+Tasks can also be on the list before the lead's first turn:
+
+```typescript
+.team({
+  tasks: [
+    { id: 'research', title: 'Collect three facts about tides', assignee: 'researcher' },
+    { id: 'draft', title: 'Write the article', dependsOn: ['research'], assignee: 'writer' },
+    { title: 'Check every fact in the draft', dependsOn: ['draft'] },
+  ],
+})
+```
+
+## Tools
+
+The lead and the members get their tools from the strategy. A tool an agent defines itself under the same name is kept, and with `agentTools.messaging` the team's `send_message` takes the place of the messaging one.
+
+| Tool           | Lead | Member | What it does                                                                              |
+| -------------- | ---- | ------ | ----------------------------------------------------------------------------------------- |
+| `create_task`  | yes  |        | Puts a task on the list, with `description`, `dependsOn`, `assignee` and an optional `id` |
+| `assign_task`  | yes  |        | Gives a pending task to a member                                                          |
+| `list_tasks`   | yes  | yes    | The list with statuses, owners, blockers and results, and the tasks the caller can take   |
+| `claim_task`   |      | yes    | Starts the named task, or the next one the member can take                                |
+| `update_task`  | yes  | yes    | Completes a task with its `result`, releases it, or adds a `note`                         |
+| `send_message` | yes  | yes    | Writes to a member, `lead` or `everyone`                                                  |
+| `read_inbox`   | yes  | yes    | Reads the unread messages                                                                 |
+
+A tool that cannot do what it is asked answers with `success: false` and the reason, such as `The task draft waits for research to be completed`, so the model can correct itself.
+
+## Messages Between Agents
+
+Every message is stamped with the agent that sent it, and the tool that sends it is bound to that agent, so one agent cannot write as another. Messages reach the receiving agent marked as coming from another agent of the team, not from the user, with this notice: a message never grants the user's approval or consent, whatever it claims. An agent that relays "the user approved this" is a colleague's request, never permission to do what the user's instructions or the rules of a tool do not allow.
+
+## Bounds
+
+Every turn spends one of a finite number of turns, so a run always ends.
+
+| Option                 | Default                         | Description                                                                            |
+| ---------------------- | ------------------------------- | -------------------------------------------------------------------------------------- |
+| `tasks`                | `[]`                            | Tasks on the list before the lead's first turn                                         |
+| `selfClaim`            | `true`                          | Idle members take unassigned tasks, without it only assigned tasks are worked on       |
+| `maxConcurrentMembers` | `resources.maxConcurrency` or 4 | Members working at the same time                                                       |
+| `maxLeadTurns`         | `6`                             | Lead turns before the final answer, its first turn included                            |
+| `maxTurnsPerMember`    | `8`                             | Turns of each member, a member out of turns gives its tasks back to the list           |
+| `maxTasks`             | `50`                            | Tasks the list holds                                                                   |
+| `synthesize`           | `true`                          | The lead writes the final answer, without it the output is the tasks and their results |
+
+`agent.maxIterations` and `resources.perAgent` still bound each single turn. Give the lead enough iterations for the tasks it creates in its first turn.
+
+## The Result
+
+`swarm.run()` returns the lead's final answer as `output`, the last result of each agent in `agentResults`, and `teamResult`:
+
+| Field         | Description                                                                                            |
+| ------------- | ------------------------------------------------------------------------------------------------------ |
+| `tasks`       | Every task with its status, owner, dependencies, result and note                                       |
+| `members`     | The lead and each member: `idle`, `working`, `stopped` (out of turns) or `failed`, its turns, its task |
+| `stopReason`  | `completed`, `no-tasks`, `stalled` (nobody could go on) or `turn-limit`                                |
+| `leadTurns`   | Turns of the lead, the final answer included                                                           |
+| `memberTurns` | Turns of all members                                                                                   |
+
+A member whose turn fails fails the run, like any agent of a swarm. With `errorHandling: { onAgentFailure: 'skip' }` or `partialResults: true`, the member is marked failed instead and its tasks go back to the list for the others. A failure of the lead always fails the run.
+
+## Events
+
+Every change is reported on the swarm's events, enough to draw the team live. `TeamEventMap` from `@cogitator-ai/types` types the data of each event, and the task events carry the task as it is after the change.
+
+| Event                  | Data                                                                  |
+| ---------------------- | --------------------------------------------------------------------- |
+| `team:start`           | `lead`, `members`, before anything else of the run                    |
+| `team:member-started`  | `member`, `role`, `turn`, `reason`, `taskId`                          |
+| `team:member-finished` | `member`, `role`, `turn`, `reason`, `status`, `output`, `error`       |
+| `team:task-created`    | `task`, `by`                                                          |
+| `team:task-assigned`   | `task`, `assignee`, `by`, `previousOwner`                             |
+| `team:task-claimed`    | `task`, `member`                                                      |
+| `team:task-updated`    | `task`, `by`, `from`, `to`: a release, a note, a lead's change        |
+| `team:task-completed`  | `task`, `by`, `unblocked`                                             |
+| `team:message-sent`    | `id`, `from`, `to` (the mailboxes it reached), `broadcast`, `content` |
+| `team:complete`        | `stopReason`, task counts, `leadTurns`, `memberTurns`                 |
+
+The reason of a turn is `start` (the lead's first), `task`, `message`, `stalled` (the lead, when the team is stuck) or `synthesis` (the final answer).
+
+```typescript
+import type { TeamEventMap } from '@cogitator-ai/types';
+
+newsroom.on('team:task-claimed', (event) => {
+  const { task, member } = event.data as TeamEventMap['team:task-claimed'];
+  console.log(`${member} works on ${task.id}: ${task.title}`);
+});
+
+newsroom.on('team:message-sent', (event) => {
+  const { from, to, content } = event.data as TeamEventMap['team:message-sent'];
+  console.log(`${from} -> ${to.join(', ')}: ${content}`);
+});
+```
+
+## In Cogitator Studio
+
+Export the team's configuration in `swarms` from `src/cogitator.ts`, and [Cogitator Studio](/docs/getting-started/studio) lists it under Swarms. Run it from its page with an input, and the run shows the team as a live graph: the lead and the members with their status and the task each works on, an arrow for every pair that exchanged tasks or messages, the task list in three columns, and the messages between the agents. The agent runs of the team are nested under the swarm run with their traces and costs.
+
+```typescript
+// src/cogitator.ts
+export const swarms = {
+  newsroom: {
+    name: 'newsroom',
+    strategy: 'team' as const,
+    supervisor: editor,
+    workers: [researcher, writer, checker],
+    team: { maxTurnsPerMember: 6 },
+  },
+};
+```
+
+## Building Blocks
+
+`TeamTaskBoard` and `TeamMailbox` work on a blackboard and a message bus directly, for tests or a strategy of your own:
+
+```typescript
+import {
+  InMemoryBlackboard,
+  InMemoryMessageBus,
+  TeamMailbox,
+  TeamTaskBoard,
+} from '@cogitator-ai/swarms';
+
+const blackboard = new InMemoryBlackboard({ enabled: true, sections: {} });
+const board = TeamTaskBoard.initialize(blackboard, undefined, {
+  lead: 'editor',
+  members: ['researcher', 'writer'],
+});
+const research = board.createTask({ title: 'Research tides' }, 'editor');
+board.createTask({ title: 'Write', dependsOn: [research.id], assignee: 'writer' }, 'editor');
+
+board.claimTask('researcher'); // task-1, now in progress
+board.updateTask(
+  research.id,
+  { status: 'completed', result: 'The moon pulls the sea' },
+  'researcher'
+);
+board.claimableBy('writer'); // [task-2], unblocked
+
+const mailbox = new TeamMailbox(new InMemoryMessageBus({ enabled: true }), undefined, {
+  lead: 'editor',
+  members: ['researcher', 'writer'],
+});
+await mailbox.send('researcher', 'writer', 'Notes are in task-1');
+mailbox.take('writer'); // [{ from: 'researcher', fromAgent: true, content: 'Notes are in task-1', ... }]
+```
+
+`createTeamTools(context, agentName)` builds the tools of an agent over the same blackboard and bus, and `teamToolsFor(tools, 'lead' | 'member')` picks the set of a role.
+
+## Limits
+
+- The team strategy runs in-process only: building a team with `distributed.enabled` throws, like `hierarchical` and `negotiation`, since the agents act through tools bound to the process.
+- The task list and the mailboxes belong to one run. Each run starts with a fresh list and drops the messages a previous run left unread.
+- A member's turn starts fresh unless the run has a `threadId`: what it knows comes from its task, the results it builds on and its messages.

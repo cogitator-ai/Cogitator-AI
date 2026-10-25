@@ -81,17 +81,23 @@ interface AgentAsToolOptions {
   includeUsage?: boolean;
   includeToolCalls?: boolean;
   onApproval?: RunOptions['onApproval'];
+  approvalMode?: 'bubble' | 'decline';
+  messages?: DelegationMessages;
+  onDelegationStart?: (event: DelegationStartEvent) => void;
+  onDelegationComplete?: (event: DelegationCompleteEvent) => void;
 }
 ```
 
-| Field              | Type      | Required | Description                                         |
-| ------------------ | --------- | -------- | --------------------------------------------------- |
-| `name`             | `string`  | Yes      | Tool name visible to the parent agent               |
-| `description`      | `string`  | Yes      | What this agent-tool does (shown to the LLM)        |
-| `timeout`          | `number`  | No       | Override timeout for the inner agent run (ms)       |
-| `includeUsage`     | `boolean` | No       | Include token usage and cost in the result          |
-| `includeToolCalls` | `boolean` | No       | Include the list of tool calls the inner agent made |
-| `onApproval`       | function  | No       | Decides inner tool calls that need approval         |
+| Field              | Type               | Required | Description                                         |
+| ------------------ | ------------------ | -------- | --------------------------------------------------- |
+| `name`             | `string`           | Yes      | Tool name visible to the parent agent               |
+| `description`      | `string`           | Yes      | What this agent-tool does (shown to the LLM)        |
+| `timeout`          | `number`           | No       | Override timeout for the inner agent run (ms)       |
+| `includeUsage`     | `boolean`          | No       | Include token usage and cost in the result          |
+| `includeToolCalls` | `boolean`          | No       | Include the list of tool calls the inner agent made |
+| `onApproval`       | function           | No       | Decides inner tool calls that need approval         |
+| `approvalMode`     | string             | No       | `decline` (default) or `bubble`                     |
+| `messages`         | string or function | No       | Parent messages the inner agent reads (`none`)      |
 
 ### Approvals Inside Delegated Runs
 
@@ -108,7 +114,26 @@ agentAsTool(cog, billingAgent, {
 });
 ```
 
-Returning `'pause'` from this `onApproval` declines the call like the default. If the inner run pauses anyway, the tool reports `success: false` with an `error` naming the tools that waited for approval, never an empty success. To let a person approve delegated work, use [handoffs](/docs/core/agents#handoffs) instead: a handed-over run can pause and resume.
+Returning `'pause'` from this `onApproval` declines the call like the default. If the inner run pauses anyway, the tool reports `success: false` with an `error` naming the tools that waited for approval, never an empty success.
+
+### Bubbling approvals up
+
+With `approvalMode: 'bubble'` a person approves delegated work through the calling run. The inner agent's approvals go to the calling run's `onApproval` first, and when the inner run pauses (an approval nobody decided, or a question one of its tools asked), the calling run pauses with it:
+
+```typescript
+const releaser = agentAsTool(cog, releaseAgent, {
+  name: 'releaser',
+  description: 'Releases builds',
+  approvalMode: 'bubble',
+});
+
+const paused = await cog.run(lead, { input: 'Ship it', threadId });
+paused.pendingApprovals; // [{ toolCallId: 'call_1/call_7', toolName: 'deploy', ... }]
+
+await cog.resume(lead, threadId, { decisions: { 'call_1/call_7': { approved: true } } });
+```
+
+The inner checkpoint is kept in `checkpoint.turn.children[toolCallId]` and its interrupts come back under ids that start with the tool call's id and `/`, across as many levels as you nest. A resume that answers them goes on inside the inner run, with its calls checked against the permission rules again. `messages: 'conversation'` shows the inner agent the calling run's conversation before its task, and `onDelegationStart` and `onDelegationComplete` hear each delegation. For agents defined as Markdown files, see [Subagents](/docs/core/subagents).
 
 ### Writing Good Descriptions
 

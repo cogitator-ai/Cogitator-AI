@@ -6,6 +6,7 @@
 import type { PermissionBehavior, Tool } from '@cogitator-ai/types';
 import { wildcardMatch } from './wildcard';
 import { own } from '../utils/own';
+import { companionOf } from '../subagents/marker';
 
 /** A rule read from its text */
 export interface ParsedRule {
@@ -26,7 +27,8 @@ export type RuleTarget =
   | { kind: 'names'; names: readonly string[]; pathRulesNeverMatch?: boolean }
   | { kind: 'mcp'; server: string; tool?: string; toolGlob?: string }
   | { kind: 'glob'; glob: string }
-  | { kind: 'name'; name: string };
+  | { kind: 'name'; name: string }
+  | { kind: 'companion'; name: 'SendMessage' | 'TaskOutput' | 'TaskStop' };
 
 /**
  * Claude Code's tool names. `Read`, `Edit`, `Bash`, `WebFetch`, `WebSearch` and `Agent` name every
@@ -50,6 +52,9 @@ const CLAUDE_NAMES: Record<string, RuleTarget> = {
   ExitPlanMode: { kind: 'names', names: ['exit_plan_mode'] },
   Skill: { kind: 'names', names: ['use_skill', 'read_skill_file'] },
   TodoWrite: { kind: 'names', names: ['write_todos'] },
+  SendMessage: { kind: 'companion', name: 'SendMessage' },
+  TaskOutput: { kind: 'companion', name: 'TaskOutput' },
+  TaskStop: { kind: 'companion', name: 'TaskStop' },
 };
 
 /** Claude Code tools Cogitator has no counterpart for: a rule naming one matches nothing */
@@ -59,8 +64,6 @@ const UNMAPPED_CLAUDE_NAMES = new Set([
   'KillShell',
   'KillBash',
   'SlashCommand',
-  'TaskStop',
-  'TaskOutput',
   'EndConversation',
   'AskUserQuestion',
   'PowerShell',
@@ -164,6 +167,8 @@ export function targetCovers(target: RuleTarget, tool: Tool): boolean {
       return tool.mcp === undefined && target.names.includes(tool.name);
     case 'name':
       return tool.name === target.name;
+    case 'companion':
+      return companionOf(tool) === target.name;
     case 'glob':
       return (
         wildcardMatch(tool.name, target.glob) ||

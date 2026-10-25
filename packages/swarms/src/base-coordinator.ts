@@ -35,6 +35,7 @@ import { createNegotiationTools } from './tools/negotiation';
 import { createVotingTools } from './tools/voting';
 import { createMessagingTools, createHierarchyMessageAuthorizer } from './tools/messaging';
 import { createBlackboardTools } from './tools/blackboard';
+import { createTeamTools, teamToolsFor } from './tools/team';
 
 type RetryConfig = NonNullable<NonNullable<SwarmConfig['errorHandling']>['retry']>;
 
@@ -414,12 +415,18 @@ export abstract class BaseSwarmCoordinator<
   /**
    * Tools the swarm adds to an agent: the supervisor of a hierarchical swarm gets the
    * delegation tools, consensus voters the voting tools, negotiating agents the negotiation
-   * tools, and every agent the built-in tools enabled with `agentTools`. Tools the agent
-   * already defines (by name) are left untouched. Engines that cannot ship tool
-   * implementations (e.g. remote workers) override this.
+   * tools, the lead and the members of a team the team tools, and every agent the built-in
+   * tools enabled with `agentTools`. A built-in tool named like a strategy tool gives way to it,
+   * and tools the agent already defines (by name) are left untouched. Engines that cannot ship
+   * tool implementations (e.g. remote workers) override this.
    */
   protected strategyTools(swarmAgent: SwarmAgent): Tool[] {
-    return [...this.roleTools(swarmAgent), ...this.configuredAgentTools(swarmAgent.agent.name)];
+    const roleTools = this.roleTools(swarmAgent);
+    const taken = new Set(roleTools.map((t) => t.name));
+    return [
+      ...roleTools,
+      ...this.configuredAgentTools(swarmAgent.agent.name).filter((t) => !taken.has(t.name)),
+    ];
   }
 
   private roleTools(swarmAgent: SwarmAgent): Tool[] {
@@ -453,6 +460,20 @@ export abstract class BaseSwarmCoordinator<
                 swarmAgent.metadata.weight ?? this.config.negotiation?.weights?.[name] ?? 1
               )
             );
+      case 'team':
+        if (role !== 'supervisor' && role !== 'worker') return [];
+        return teamToolsFor(
+          createTeamTools(
+            {
+              blackboard: this.blackboard,
+              messageBus: this.messageBus,
+              events: this.events,
+              swarmId: this.swarmId,
+            },
+            name
+          ),
+          role === 'supervisor' ? 'lead' : 'member'
+        );
       default:
         return [];
     }
@@ -543,6 +564,7 @@ export abstract class BaseSwarmCoordinator<
       }
 
       case 'skip':
+        if (options.rethrow) throw error;
         return {
           output: '',
           runId: `run_skipped_${nanoid(8)}`,

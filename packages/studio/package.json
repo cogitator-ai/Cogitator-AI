@@ -45,10 +45,14 @@
     "@cogitator-ai/types": "workspace:*"
   },
   "peerDependencies": {
+    "@cogitator-ai/swarms": "workspace:>=0.14.18",
     "@cogitator-ai/workflows": "workspace:>=0.14.18",
     "tsx": ">=4.0.0"
   },
   "peerDependenciesMeta": {
+    "@cogitator-ai/swarms": {
+      "optional": true
+    },
     "@cogitator-ai/workflows": {
       "optional": true
     },
@@ -57,6 +61,7 @@
     }
   },
   "devDependencies": {
+    "@cogitator-ai/swarms": "workspace:*",
     "@cogitator-ai/workflows": "workspace:*",
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",

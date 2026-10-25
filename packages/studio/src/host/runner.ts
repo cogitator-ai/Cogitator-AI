@@ -19,6 +19,7 @@ import type {
   WorkflowState,
 } from '@cogitator-ai/types';
 import type * as WorkflowsModule from '@cogitator-ai/workflows';
+import type * as SwarmsModule from '@cogitator-ai/swarms';
 import type {
   ForkOrigin,
   HistoryMessage,
@@ -154,7 +155,8 @@ function plain(value: unknown): unknown {
 
 /**
  * Runs the project for the studio: chats with its agents, asks the studio
- * to approve tool calls, forks runs from their steps and runs its workflows.
+ * to approve tool calls, forks runs from their steps and runs its workflows
+ * and swarms.
  * Everything that happens is reported through `emit`, from the runtime's own
  * observer, so runs agent tools start show up too.
  */
@@ -226,6 +228,8 @@ export class StudioHost {
         return this.runWorkflow(request.workflow, request.input);
       case 'workflow.rerun':
         return this.rerunWorkflow(request.run, request.fromNode);
+      case 'swarm.run':
+        return this.runSwarm(request.swarm, request.input);
       case 'thread.tree':
         return this.threadTree(request.threadId, request.agent, request.history);
     }
@@ -732,6 +736,87 @@ export class StudioHost {
     return this.startWorkflow(key, input, undefined, (runId) =>
       manager.execute(workflow, state, this.nodeCallbacks(runId))
     );
+  }
+
+  /**
+   * Runs a swarm of the registry, a fresh one built from its configuration each time, under a
+   * studio id the run is known by from its first event. Its agent runs are nested under it, and
+   * its team events are reported as they happen, so a team's graph and task list fill in live.
+   */
+  private async runSwarm(key: string, input: string): Promise<{ runId: string }> {
+    const config = this.project.swarms.get(key);
+    if (!config) throw new Error(`There is no swarm "${key}" in the registry`);
+    const swarms = await importFromProject<typeof SwarmsModule>(
+      this.options.projectDir,
+      '@cogitator-ai/swarms'
+    );
+    const swarm = new swarms.Swarm(this.project.cogitator, config);
+    const runId = `swrun_${randomUUID()}`;
+    const controller = new AbortController();
+    const context: RunContext = {
+      kind: 'swarm',
+      target: key,
+      rootRunId: runId,
+      started: () => undefined,
+    };
+    const startedAt = Date.now();
+    this.emit({
+      type: 'run.started',
+      runId,
+      kind: 'swarm',
+      target: key,
+      input,
+      rootRunId: runId,
+      startedAt,
+    });
+    const unsubscribe = swarm.on('*', (event) => {
+      if (!event.type.startsWith('team:')) return;
+      this.emit({
+        type: 'swarm.event',
+        runId,
+        event: {
+          type: event.type,
+          ...(event.agentName && { agentName: event.agentName }),
+          data: plain(event.data),
+          at: event.timestamp,
+        },
+      });
+    });
+    this.controllers.set(runId, controller);
+    void this.als
+      .run(context, () => swarm.run({ input, signal: controller.signal }))
+      .then((result) => {
+        const output =
+          typeof result.output === 'string'
+            ? result.output
+            : JSON.stringify(plain(result.output), null, 2);
+        this.emit({
+          type: 'run.completed',
+          runId,
+          output,
+          usage: { inputTokens: 0, outputTokens: 0, cost: 0, duration: Date.now() - startedAt },
+          endedAt: Date.now(),
+        });
+      })
+      .catch((error: unknown) =>
+        this.emit({
+          type: 'run.failed',
+          runId,
+          error: controller.signal.aborted ? STOPPED : message(error),
+          endedAt: Date.now(),
+          stopped: controller.signal.aborted,
+        })
+      )
+      .finally(async () => {
+        unsubscribe();
+        this.controllers.delete(runId);
+        await swarm.close().catch((error: unknown) => {
+          console.error(
+            `[studio host] could not close the connections of swarm "${key}": ${message(error)}`
+          );
+        });
+      });
+    return { runId };
   }
 
   private async rerunWorkflow(run: RunRecord, fromNode: string): Promise<{ runId: string }> {

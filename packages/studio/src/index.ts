@@ -5,3 +5,4 @@ export type { Pricer, RunQuery, StoreChange } from './server/store.js';
 export { reloadsProject } from './server/host-manager.js';
 export { describeRegistry, REGISTRY_PATH } from './registry.js';
 export type * from './protocol.js';
+export { applyTeamEvent, emptyTeam, teamEdges, type TeamEdge } from './team.js';

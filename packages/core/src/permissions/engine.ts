@@ -500,7 +500,13 @@ function domainMatches(subject: CallSubject, specifier: string): boolean | undef
 /** Whether an `Agent(name)` specifier names the agent of an agent tool */
 function agentMatches(subject: CallSubject, specifier: string): boolean {
   const name = specifier.trim();
-  return subject.tool.access?.agent === name || subject.tool.name === name;
+  const agent = subject.tool.access?.agent;
+  if (typeof agent !== 'function') return agent === name || subject.tool.name === name;
+  try {
+    return agent(subject.parsed) === name;
+  } catch {
+    return false;
+  }
 }
 
 /** Whether `rule` (a `deny` or `ask` rule) covers the call */

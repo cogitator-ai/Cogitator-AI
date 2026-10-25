@@ -47,6 +47,7 @@ const VALID_STRATEGIES: readonly SwarmConfig['strategy'][] = [
   'pipeline',
   'debate',
   'negotiation',
+  'team',
 ];
 
 /**
@@ -589,6 +590,21 @@ export class Swarm {
         }
         break;
 
+      case 'team':
+        if (!config.supervisor) {
+          throw new Error('Team strategy requires a lead: set it as the supervisor');
+        }
+        if (!config.workers || config.workers.length === 0) {
+          throw new Error('Team strategy requires at least one member: set them as the workers');
+        }
+        if (config.messaging?.enabled === false) {
+          throw new Error('Team strategy needs the message bus: messaging.enabled is false');
+        }
+        if (config.blackboard?.enabled === false) {
+          throw new Error('Team strategy needs the blackboard: blackboard.enabled is false');
+        }
+        break;
+
       case 'negotiation':
         if (!config.negotiation) {
           throw new Error('Negotiation strategy requires negotiation configuration');
@@ -638,6 +654,7 @@ export class Swarm {
 const DISTRIBUTED_UNSUPPORTED: Partial<Record<SwarmConfig['strategy'], string>> = {
   hierarchical: 'the supervisor delegates through the delegate_task tool',
   negotiation: 'negotiators make and answer offers through the negotiation tools',
+  team: 'the lead and the members share their task list and mailboxes through the team tools',
 };
 
 function abortReason(signal: AbortSignal): Error {
@@ -692,6 +709,20 @@ export class SwarmBuilder {
   workers(agents: SwarmConfig['workers']): this {
     this.config.workers = agents;
     return this;
+  }
+
+  /**
+   * The lead of a team swarm, kept as its `supervisor`
+   */
+  lead(agent: SwarmConfig['supervisor']): this {
+    return this.supervisor(agent);
+  }
+
+  /**
+   * The members of a team swarm, kept as its `workers`
+   */
+  members(agents: SwarmConfig['workers']): this {
+    return this.workers(agents);
   }
 
   agents(agents: SwarmConfig['agents']): this {
@@ -754,6 +785,14 @@ export class SwarmBuilder {
 
   negotiation(config: SwarmConfig['negotiation']): this {
     this.config.negotiation = config;
+    return this;
+  }
+
+  /**
+   * Bounds and options of a team swarm
+   */
+  team(config: SwarmConfig['team']): this {
+    this.config.team = config;
     return this;
   }
 

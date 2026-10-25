@@ -39,7 +39,7 @@ import {
   type CommandOutcome,
   type CommandRun,
 } from './runners';
-import { HookSettingsCache, type LoadedHook, type LoadedHooks } from './settings';
+import { HookSettingsCache, type LoadedHook, type LoadedHooks, type ScopedHooks } from './settings';
 
 /** Asks a model for a `prompt` hook: the answer's text */
 export type HookModelAsker = (request: {
@@ -62,6 +62,11 @@ export interface HooksMiddlewareDeps {
   ask?: HookModelAsker;
   /** The model a `prompt` hook asks when neither it nor `HooksConfig.promptModel` names one */
   defaultModel?: string;
+  /**
+   * Runs only these hooks, of one definition such as a subagent's frontmatter, instead of those
+   * of `HooksConfig.hooks` and the settings files, which still decide whether they may run
+   */
+  scoped?: ScopedHooks;
 }
 
 /** How many times in a row `Stop` hooks may keep a run going, as in Claude Code */
@@ -183,8 +188,11 @@ export function hooksMiddleware(
       : config.settings === true
         ? {}
         : config.settings);
-  const cache = new HookSettingsCache(settings, config, (warning) =>
-    getLogger().warn('Hook settings', { warning })
+  const cache = new HookSettingsCache(
+    settings,
+    config,
+    (warning) => getLogger().warn('Hook settings', { warning }),
+    deps.scoped
   );
   const maxBytes = config.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const stateKey = `cogitator:hooks:${++instances}`;

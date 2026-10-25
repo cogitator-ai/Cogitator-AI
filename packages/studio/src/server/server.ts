@@ -361,7 +361,10 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
         return send(res, 200, {
           runs: store.listRuns({
             target: url.searchParams.get('target') ?? undefined,
-            kind: kind === 'agent' || kind === 'workflow' || kind === 'fork' ? kind : undefined,
+            kind:
+              kind === 'agent' || kind === 'workflow' || kind === 'fork' || kind === 'swarm'
+                ? kind
+                : undefined,
             q: url.searchParams.get('q') ?? undefined,
             limit: Number(url.searchParams.get('limit') ?? 200) || 200,
           }),
@@ -493,6 +496,23 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
               type: 'workflow.run',
               workflow: parts[1],
               input: body.input ?? {},
+            })
+          );
+        }
+        if (
+          method === 'POST' &&
+          parts[0] === 'swarms' &&
+          parts.length === 3 &&
+          parts[2] === 'run'
+        ) {
+          const body = await readJson(req);
+          return send(
+            res,
+            202,
+            await manager.request({
+              type: 'swarm.run',
+              swarm: parts[1],
+              input: requireString(body, 'input'),
             })
           );
         }

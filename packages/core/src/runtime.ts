@@ -3,6 +3,10 @@ import { nanoid } from 'nanoid';
 import type {
   BuiltContext,
   CogitatorConfig,
+  DelegatedResume,
+  DefinitionFileOptions,
+  ExpandedCommand,
+  SubagentCatalog,
   RunObserver,
   RunOptions,
   RunResult,
@@ -66,6 +70,7 @@ import type {
   BudgetLimits,
   BudgetUsage,
   HookSettingsOptions,
+  HooksConfig,
   ProjectInstructionsOptions,
   ToolCallVerdict,
 } from '@cogitator-ai/types';
@@ -237,6 +242,16 @@ import {
 import { RunMemory } from './cogitator/run-memory';
 import { toAbortError } from './utils/abort';
 import { RunHarness, todosRecall, touchedPaths } from './cogitator/harness';
+import { SubagentService } from './subagents/service';
+import { copyToolFilter, setToolFilter, toolFilterOf, workspaceSwapOf } from './subagents/marker';
+import { reboundWorkspaceTool } from './tools/workspace-tools';
+import { resolveDefinitionModel } from './subagents/models';
+import { toolPolicy } from './subagents/tool-policy';
+import { CommandFinder, type CommandCatalog } from './subagents/catalog';
+import { commandInvocation, expandCommand } from './commands/expand';
+import { definitionFileOptions } from './subagents/definitions';
+import type { HookModelAsker, HooksMiddlewareDeps } from './hooks/middleware';
+import { answersUnder, isDelegatePause, nestApprovals, nestInterrupts } from './subagents/delegate';
 import { parseKeptTodos, TODOS_METADATA_KEY, type KeptTodos } from './tools/write-todos';
 import { createSpan, getTextContent } from './cogitator/span-factory';
 import {
@@ -663,6 +678,12 @@ export class Cogitator implements ToolInvoker {
   private memoryUpkeepLayer?: MemoryUpkeep;
   private memoryExtractionLayer?: RunMiddleware;
   private hooksLayer?: RunMiddleware;
+  /** The subagents of `subagents`, once the runtime has them */
+  private readonly subagentService?: SubagentService;
+  /** Finds the commands of `commands` */
+  private readonly commandFinder?: CommandFinder;
+  /** Where the command files are read */
+  private readonly commandFiles?: DefinitionFileOptions;
   /** The middleware of each run going on and the context they get, for compaction notices */
   private readonly runPipelines = new Map<
     string,
@@ -762,6 +783,21 @@ export class Cogitator implements ToolInvoker {
     );
     this.observers = [...(config.observers ?? [])];
     if (config.logging) setLogger(createLoggerFromConfig(config.logging));
+    if (config.subagents) {
+      const files = definitionFileOptions(config.subagents.files, config.permissions?.settings);
+      this.subagentService = new SubagentService(this, {
+        config: config.subagents,
+        ...(files && { files }),
+        ...(config.llm?.modelAliases && { modelAliases: config.llm.modelAliases }),
+        hooks: () => this.frontmatterHookSetup(),
+        modelProblem: (model) => this.unpricedUnderBudget(model),
+      });
+    }
+    if (config.commands) {
+      const files = definitionFileOptions(config.commands.files, config.permissions?.settings);
+      this.commandFinder = new CommandFinder(config.commands);
+      this.commandFiles = files;
+    }
   }
 
   /**
@@ -1305,6 +1341,11 @@ export class Cogitator implements ToolInvoker {
    * turn before its first model call (`memory.brief`). Each is there once its feature is set up.
    */
   private builtinMiddleware(): RunMiddleware[] {
+    const subagents = this.subagentService ? [this.subagentService.middleware] : [];
+    return [...subagents, ...this.otherBuiltinMiddleware()];
+  }
+
+  private otherBuiltinMiddleware(): RunMiddleware[] {
     const pii = this.config.security?.pii;
     if (pii) this.piiLayer ??= piiMiddleware(pii);
     const clearing = this.config.context?.clearToolOutputs;
@@ -1410,22 +1451,71 @@ export class Cogitator implements ToolInvoker {
       ...(this.config.llm?.defaultModel !== undefined && {
         defaultModel: this.config.llm.defaultModel,
       }),
-      ask: async ({ model, system, prompt, signal, runSignal }) => {
-        const { backend, model: name } = this.route(model);
-        const response = await backend.chat({
-          model: name,
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: prompt },
-          ],
-          temperature: 0,
-          signal,
-        });
-        this.classifierCharges.get(runSignal)?.(response.usage, model);
-        return response.content;
-      },
+      ask: this.hookAsker(),
     });
     return [this.hooksLayer];
+  }
+
+  /**
+   * What the hooks of a subagent's frontmatter run with: the places `hooks.settings` reads (only
+   * the managed files without it), so the managed `disableAllHooks` and `allowManagedHooksOnly`
+   * hold for them, and the HTTP allowlists, environment and limits of `hooks`
+   */
+  private frontmatterHookSetup(): {
+    deps: HooksMiddlewareDeps;
+    config: Omit<HooksConfig, 'hooks' | 'settings'>;
+  } {
+    const permission = this.config.permissions?.settings;
+    const shared = typeof permission === 'object' ? permission : undefined;
+    const settings: HookSettingsOptions = this.hookSettings() ?? {
+      layers: ['managed'],
+      ...(shared?.managedDirs !== undefined && { managedDirs: shared.managedDirs }),
+    };
+    const { hooks: _hooks, settings: _settings, ...config } = this.config.hooks ?? {};
+    return {
+      deps: {
+        settings,
+        ask: this.hookAsker(),
+        ...(this.config.llm?.defaultModel !== undefined && {
+          defaultModel: this.config.llm.defaultModel,
+        }),
+      },
+      config,
+    };
+  }
+
+  /**
+   * Why a subagent may not run on `model`: a cost limit applies to the run that delegates or a run
+   * above it (the runtime's, the run's or the agent's budget, a cost routing budget) and no price
+   * is known for the model, so its calls would count as nothing against it
+   */
+  private unpricedUnderBudget(model: string | undefined): string | undefined {
+    const limited = currentToolRuns().some((runId) => {
+      const run = this.runBudgets.get(runId);
+      return run?.budget.limitsCost(run.agentId()) === true;
+    });
+    if (!limited) return undefined;
+    const full = model ?? this.config.llm?.defaultModel;
+    if (full === undefined || this.pricer.pricing(full)) return undefined;
+    return `no price is known for ${full}, so the cost budget could not count its calls: set its price in llm.pricing`;
+  }
+
+  /** Asks a model for `prompt` hooks, charging the run the hook runs in */
+  private hookAsker(): HookModelAsker {
+    return async ({ model, system, prompt, signal, runSignal }) => {
+      const { backend, model: name } = this.route(model);
+      const response = await backend.chat({
+        model: name,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0,
+        signal,
+      });
+      this.classifierCharges.get(runSignal)?.(response.usage, model);
+      return response.content;
+    };
   }
 
   /**
@@ -1752,11 +1842,31 @@ export class Cogitator implements ToolInvoker {
     queue?: RunQueue,
     modes?: PermissionModeControl
   ): Promise<RunResult> {
+    let command: ExpandedCommand | undefined;
+    if (!resumeFrom) {
+      const expanded = await this.expandCommandInput(agent, options);
+      if (expanded) ({ agent, options, command } = expanded);
+    } else {
+      let checkpoint = resumeFrom.checkpoint;
+      if (!checkpoint && options.threadId !== undefined) {
+        await this.getMemory();
+        checkpoint = (await this.runCheckpointStore().load(options.threadId)) ?? undefined;
+      }
+      if (checkpoint?.command) {
+        command = checkpoint.command;
+        ({ agent, options } = this.applyCommand(agent, options, command));
+        resumeFrom = { ...resumeFrom, checkpoint };
+      }
+    }
     const threadId = options.threadId;
     const aside =
       options.branch?.activate === false || resumeFrom?.checkpoint?.branch?.activate === false;
     if (threadId === undefined || aside) {
-      return this.execute(agent, options, resumeFrom, { queue, modes });
+      return this.execute(agent, options, resumeFrom, {
+        queue,
+        modes,
+        ...(command && { command }),
+      });
     }
     const strategy = options.multitaskStrategy ?? this.config.multitaskStrategy;
     if (strategy !== undefined) await this.checkThreadUse(threadId, options, resumeFrom);
@@ -1779,10 +1889,148 @@ export class Cogitator implements ToolInvoker {
         queue,
         seat,
         modes,
+        ...(command && { command }),
       });
     } finally {
       admission.release();
     }
+  }
+
+  /**
+   * The run an input naming a command (`/review src/app.ts`) becomes: the input replaced by the
+   * command's expanded template, its `allowed-tools` allowed for the run (when the run has
+   * permissions set up, without them nothing asks but tools that need approval) and its model
+   * used. Undefined without `commands`, for an input that names no known command, and for a run
+   * started from a tool call, which never expands commands
+   */
+  private async expandCommandInput(
+    agent: Agent,
+    options: RunOptions
+  ): Promise<{ agent: Agent; options: RunOptions; command: ExpandedCommand } | undefined> {
+    if (!this.commandFinder || currentToolRuns().length > 0) return undefined;
+    const invocation = commandInvocation(options.input);
+    if (!invocation) return undefined;
+    const root = resolvePath(
+      this.commandFiles?.root ??
+        options.workspace?.root ??
+        agent.config.workspace?.root ??
+        process.cwd()
+    );
+    const workspace = options.workspace ?? agent.config.workspace;
+    const catalog = await this.commandFinder.catalog(
+      {
+        ...(this.commandFiles && { options: this.commandFiles }),
+        root,
+        ...(workspace && { start: resolvePath(workspace.root, workspace.cwd) }),
+      },
+      options.signal
+    );
+    const definition = catalog.get(invocation.name);
+    if (!definition) return undefined;
+    const input = expandCommand(definition, invocation.arguments, {
+      CLAUDE_PROJECT_DIR: root,
+      COGITATOR_PROJECT_DIR: root,
+      ...(options.threadId !== undefined && { CLAUDE_SESSION_ID: options.threadId }),
+    });
+    const command: ExpandedCommand = {
+      name: definition.name,
+      arguments: invocation.arguments,
+      input,
+      ...(definition.allowedTools && { allowedTools: definition.allowedTools }),
+      ...(definition.disallowedTools && { disallowedTools: definition.disallowedTools }),
+      ...(definition.model !== undefined && { model: definition.model }),
+      ...(definition.effort !== undefined && { effort: definition.effort }),
+      source: definition.source,
+      ...(definition.path !== undefined && { path: definition.path }),
+    };
+    const applied = this.applyCommand(agent, { ...options, input }, command);
+    return { ...applied, command };
+  }
+
+  /**
+   * The agent and options of a run `command` started, for its first run and when it resumes: its
+   * model (on its own provider) and effort, its `disallowed-tools` taken from the agent's tools,
+   * and its `allowed-tools` added to the run's allow rules when permissions are set up
+   */
+  private applyCommand(
+    agent: Agent,
+    options: RunOptions,
+    command: ExpandedCommand
+  ): { agent: Agent; options: RunOptions } {
+    const permitted =
+      command.allowedTools !== undefined &&
+      command.allowedTools.length > 0 &&
+      (this.config.permissions !== undefined ||
+        agent.config.permissions !== undefined ||
+        options.permissions !== undefined);
+    let runAgent = agent;
+    const resolved = resolveDefinitionModel(command.model, this.config.llm?.modelAliases);
+    if (resolved.warning) {
+      getLogger().warn(`Command "/${command.name}": ${resolved.warning}`, {
+        command: command.name,
+      });
+    }
+    if (!resolved.inherit || command.effort !== undefined) {
+      runAgent = agent.clone({
+        id: agent.id,
+        ...(!resolved.inherit && { model: resolved.model, provider: undefined }),
+        ...(command.effort !== undefined && {
+          reasoning: { ...agent.config.reasoning, effort: command.effort },
+        }),
+      });
+      copyToolFilter(agent, runAgent);
+    }
+    if (command.disallowedTools && command.disallowedTools.length > 0) {
+      if (runAgent === agent) runAgent = agent.clone({ id: agent.id });
+      const above = toolFilterOf(agent);
+      const policy = toolPolicy({ disallowedTools: command.disallowedTools });
+      setToolFilter(
+        runAgent,
+        (candidate) => (above?.(candidate) ?? true) && (policy?.allows(candidate) ?? true)
+      );
+    }
+    const allow = options.permissions?.allow ?? [];
+    const missing = (command.allowedTools ?? []).filter((rule) => !allow.includes(rule));
+    return {
+      agent: runAgent,
+      options: {
+        ...options,
+        ...(permitted &&
+          missing.length > 0 && {
+            permissions: { ...options.permissions, allow: [...allow, ...missing] },
+          }),
+      },
+    };
+  }
+
+  /**
+   * The commands a run's input may name for a project at `root` (default: the working directory
+   * of the process), with the problems found in their files: for a client's `/` menu. Empty
+   * without `commands`
+   */
+  async listCommands(
+    options: { root?: string; signal?: AbortSignal } = {}
+  ): Promise<CommandCatalog> {
+    if (!this.commandFinder) return { commands: [], diagnostics: [], get: () => undefined };
+    return this.commandFinder.catalog(
+      {
+        ...(this.commandFiles && { options: this.commandFiles }),
+        root: resolvePath(options.root ?? this.commandFiles?.root ?? process.cwd()),
+      },
+      options.signal
+    );
+  }
+
+  /**
+   * The subagents runs may delegate to for a project at `root` (default: the root of
+   * `subagents.files`, else the working directory of the process), with the problems found in
+   * their files. Empty without `subagents`
+   */
+  async listSubagents(
+    options: { root?: string; signal?: AbortSignal } = {}
+  ): Promise<SubagentCatalog> {
+    if (!this.subagentService) return { agents: [], diagnostics: [], get: () => undefined };
+    return this.subagentService.catalogAt(options.root, options.signal);
   }
 
   /**
@@ -1984,7 +2232,9 @@ export class Cogitator implements ToolInvoker {
         const resolution = await this.prompts.resolve(agent, threadId);
         prompt = resolution.prompt;
         if (resolution.instructions !== agent.instructions) {
+          const original = agent;
           agent = agent.clone({ id: agent.id, instructions: resolution.instructions });
+          copyToolFilter(original, agent);
         }
       }
 
@@ -2074,6 +2324,11 @@ export class Cogitator implements ToolInvoker {
       });
       middlewareState.set(PINNED_TOOL_OUTPUTS, harness.pinnedOutputs);
       await harness.prepare(active);
+      const subagents = this.subagentService;
+      const subagentDepth = currentToolRuns().filter((id) => id !== runId).length;
+      let subagentCatalog = subagents
+        ? await subagents.catalog(workspaceOf(active), abortController.signal)
+        : undefined;
       const permissionService = this.permissionsOf();
       const permissionRootOf = (owner: Agent): string =>
         resolvePath(
@@ -2112,6 +2367,8 @@ export class Cogitator implements ToolInvoker {
       permissions.onModeChange((mode) => {
         if (mode === 'plan' && !registry.has(planTool.name)) registry.register(planTool);
       });
+      const runToolFilter = toolFilterOf(agent);
+      const runSwap = workspaceSwapOf(agent);
       const buildRegistry = (owner: Agent) => {
         const ownerRegistry = new ToolRegistry();
         const handoff = handoffTools(owner);
@@ -2121,6 +2378,44 @@ export class Cogitator implements ToolInvoker {
         ownerRegistry.registerMany(owner.tools);
         ownerRegistry.registerMany(handoff.tools);
         harness.addTools(owner, ownerRegistry);
+        if (subagents && subagentCatalog) {
+          const delegation = subagents.tools(
+            {
+              owner,
+              runId,
+              threadId,
+              depth: subagentDepth,
+              ...(workspaceOf(owner) && { workspace: workspaceOf(owner) }),
+              catalog: subagentCatalog,
+              tools: () => registry.getAll(),
+            },
+            (name) => ownerRegistry.has(name)
+          );
+          for (const delegating of delegation) {
+            if (!ownerRegistry.has(delegating.name)) ownerRegistry.register(delegating);
+          }
+        }
+        const swap = workspaceSwapOf(owner) ?? runSwap;
+        if (swap) {
+          for (const candidate of ownerRegistry.getAll()) {
+            const rebound = swap.from
+              .map((from) => reboundWorkspaceTool(candidate, from, swap.to))
+              .find((made) => made !== undefined);
+            if (rebound) ownerRegistry.register(rebound, { replace: true });
+          }
+        }
+        const ownerFilter = toolFilterOf(owner);
+        const filters = [
+          ...(ownerFilter ? [ownerFilter] : []),
+          ...(runToolFilter && runToolFilter !== ownerFilter ? [runToolFilter] : []),
+        ];
+        if (filters.length > 0) {
+          const kept = ownerRegistry
+            .getAll()
+            .filter((candidate) => filters.every((keep) => keep(candidate)));
+          ownerRegistry.clear();
+          ownerRegistry.registerMany(kept);
+        }
         if (permissions.active && !ownerRegistry.has(planTool.name)) {
           ownerRegistry.register(planTool);
         }
@@ -2455,6 +2750,9 @@ export class Cogitator implements ToolInvoker {
           }
         }
         await harness.prepare(target);
+        if (subagents && workspaceOf(target) !== workspaceOf(active)) {
+          subagentCatalog = await subagents.catalog(workspaceOf(target), abortController.signal);
+        }
         const kept = harness.forHandoff(target, messages);
         if (kept.length !== messages.length) {
           messages.length = 0;
@@ -2654,6 +2952,8 @@ export class Cogitator implements ToolInvoker {
             string,
             { result: unknown; error?: string; arguments?: Record<string, unknown> }
           >;
+          /** The paused delegates of calls of the turn, with what the resume answered them */
+          children?: ReadonlyMap<string, DelegatedResume>;
         }
       ): Promise<PausedTurn | undefined> => {
         const done = new Set(resumed?.completed ?? []);
@@ -2982,11 +3282,19 @@ export class Cogitator implements ToolInvoker {
             pending: [],
             interrupts: [
               ...(resumed?.interrupts ?? []).filter(
-                (entry) => entry.kind !== 'budget' && entry.kind !== 'approval' && isAnswered(entry)
+                (entry) =>
+                  (entry.kind !== 'budget' && entry.kind !== 'approval' && isAnswered(entry)) ||
+                  (isNestedInterrupt(entry, resumed?.children) && !isAnswered(entry))
               ),
               budgetInterrupt(toolBudget, budgetConfig.allowRaise === true),
             ],
             completed: [...done],
+            ...(resumed?.children &&
+              resumed.children.size > 0 && {
+                children: Object.fromEntries(
+                  [...resumed.children].map(([id, child]) => [id, child.checkpoint])
+                ),
+              }),
           };
         }
         const askedBefore = (resumed?.interrupts ?? []).filter(
@@ -3348,6 +3656,7 @@ export class Cogitator implements ToolInvoker {
           }
           const dispatch = (): string | undefined => {
             if (askedBefore.some((entry) => entry.toolCallId === toolCall.id)) return undefined;
+            if (resumed?.children?.has(toolCall.id)) return undefined;
             const parents = budgetAncestors.flatMap((ancestor) => {
               const parent = this.runBudgets.get(ancestor);
               return parent ? [parent] : [];
@@ -3392,6 +3701,14 @@ export class Cogitator implements ToolInvoker {
                       ...(permissions.view(workspaceOf(active)) && {
                         permissions: permissions.view(workspaceOf(active)),
                       }),
+                      delegation: {
+                        conversation: () => messages,
+                        ...(options.onApproval && { onApproval: options.onApproval }),
+                        depth: budgetAncestors.length,
+                        ...(resumed?.children?.has(toolCall.id) && {
+                          resume: resumed.children.get(toolCall.id),
+                        }),
+                      },
                     },
                     approved: decision?.approved === true,
                     allowNativeFallback: this.config.sandbox?.allowNativeFallback !== false,
@@ -3426,6 +3743,24 @@ export class Cogitator implements ToolInvoker {
               abortController.signal
             );
           } catch (error) {
+            if (isDelegatePause(error) && !abortController.signal.aborted) {
+              const interrupts = nestInterrupts(toolCall.id, error.agent, error.interrupts);
+              const first = interrupts[0];
+              if (first) {
+                return {
+                  toolCall,
+                  interrupt: first,
+                  nested: {
+                    checkpoint: error.checkpoint,
+                    interrupts,
+                    pending: nestApprovals(toolCall.id, error.agent, error.pending),
+                  },
+                  toolSpanId,
+                  toolSpanStart,
+                  toolSpanEnd: Date.now(),
+                };
+              }
+            }
             if (!isToolInterrupt(error) || abortController.signal.aborted) throw error;
             return {
               toolCall,
@@ -3646,6 +3981,7 @@ export class Cogitator implements ToolInvoker {
             ...(keptLater.length > 0 && { automatic: keptLater }),
             ...keptChanged((id) => left.has(id)),
             pending: asked.flatMap((outcome) => {
+              if (outcome.nested) return outcome.nested.pending;
               const request =
                 outcome.interrupt?.kind === 'approval'
                   ? changedRequests.get(outcome.toolCall.id)
@@ -3661,11 +3997,24 @@ export class Cogitator implements ToolInvoker {
                       left.has(entry.toolCallId) &&
                       isAnswered(entry)
                   ),
-                  ...asked.flatMap((outcome) => (outcome.interrupt ? [outcome.interrupt] : [])),
+                  ...asked.flatMap((outcome) =>
+                    outcome.nested
+                      ? outcome.nested.interrupts
+                      : outcome.interrupt
+                        ? [outcome.interrupt]
+                        : []
+                  ),
                 ].map((entry) => [entry.id, entry])
               ).values(),
             ],
             completed: ranIds,
+            ...(asked.some((outcome) => outcome.nested) && {
+              children: Object.fromEntries(
+                asked.flatMap((outcome) =>
+                  outcome.nested ? [[outcome.toolCall.id, outcome.nested.checkpoint]] : []
+                )
+              ),
+            }),
             results: {
               ...resumed?.results,
               ...Object.fromEntries(
@@ -3777,12 +4126,32 @@ export class Cogitator implements ToolInvoker {
         if (budgetStop) {
           await closeTurnAtBudget(checkpoint.turn.toolCalls, checkpoint.turn.completed ?? []);
         } else {
+          const children = new Map<string, DelegatedResume>(
+            Object.entries(checkpoint.turn.children ?? {}).map(([callId, child]) => [
+              callId,
+              {
+                checkpoint: child,
+                decisions: answersUnder(callId, resumeFrom.decisions),
+                responses: answersUnder(callId, resumeFrom.responses ?? {}),
+                ...(resumeFrom.defaultDecision && { defaultDecision: resumeFrom.defaultDecision }),
+              },
+            ])
+          );
+          const ownDecisions = (all: Record<string, ToolApprovalDecision>) =>
+            Object.fromEntries(
+              Object.entries(all).filter(
+                ([id]) => ![...children.keys()].some((callId) => id.startsWith(`${callId}/`))
+              )
+            );
+          const answeredOwn = ownDecisions(answeredDecisions);
+          const resumedOwn = ownDecisions(resumeFrom.decisions);
           pausedTurn = await handleToolTurn(checkpoint.turn.toolCalls, {
             decisions: {
               ...checkpoint.turn.decisions,
-              ...answeredDecisions,
-              ...resumeFrom.decisions,
+              ...answeredOwn,
+              ...resumedOwn,
             },
+            ...(children.size > 0 && { children }),
             fallback: resumeFrom.defaultDecision,
             interrupts: resumedInterrupts,
             ...(checkpoint.turn.completed && { completed: checkpoint.turn.completed }),
@@ -3791,7 +4160,7 @@ export class Cogitator implements ToolInvoker {
             ...(checkpoint.turn.changed && { changed: checkpoint.turn.changed }),
             ...(checkpoint.turn.admitted && { admitted: checkpoint.turn.admitted }),
             ...(checkpoint.turn.results && { results: checkpoint.turn.results }),
-            fresh: [...Object.keys(answeredDecisions), ...Object.keys(resumeFrom.decisions)],
+            fresh: [...Object.keys(answeredOwn), ...Object.keys(resumedOwn)],
           });
           if (!pausedTurn) reachedLimit();
         }
@@ -4351,6 +4720,8 @@ export class Cogitator implements ToolInvoker {
               pausedTurn.admitted.length > 0 && { admitted: pausedTurn.admitted }),
             ...(pausedTurn.results &&
               Object.keys(pausedTurn.results).length > 0 && { results: pausedTurn.results }),
+            ...(pausedTurn.children &&
+              Object.keys(pausedTurn.children).length > 0 && { children: pausedTurn.children }),
           },
           interrupts: pausedTurn.interrupts,
           iterations,
@@ -4385,6 +4756,7 @@ export class Cogitator implements ToolInvoker {
           ...((stopContinued || stopContinuations > 0) && {
             stopHooks: { continuations: stopContinuations, continued: stopContinued },
           }),
+          ...(control.command && { command: control.command }),
         };
         const waitingOn = pausedTurn.interrupts.filter((entry) => !isAnswered(entry));
         if (pausedTurn.pending.length > 0) {
@@ -4467,6 +4839,7 @@ export class Cogitator implements ToolInvoker {
           ...(harness.todos && { todos: harness.todos }),
           ...(pausedSpend && { sessionSpend: pausedSpend }),
           ...(harness.instructions.length > 0 && { instructions: [...harness.instructions] }),
+          ...(control.command && { command: control.command }),
           checkpoint: pausedCheckpoint,
           usage: {
             inputTokens: totalInputTokens,
@@ -4628,6 +5001,7 @@ export class Cogitator implements ToolInvoker {
         ...(sessionSpend && { sessionSpend }),
         ...(stopRequest && { stopped: stopRequest }),
         ...(harness.instructions.length > 0 && { instructions: [...harness.instructions] }),
+        ...(control.command && { command: control.command }),
       };
 
       if (prompt) await this.recordPrompt(prompt, result, Date.now() - startTime);
@@ -6685,6 +7059,8 @@ interface PausedTurn {
   interrupts: RunInterrupt[];
   /** Calls of the turn that already ran */
   completed: string[];
+  /** Delegates that paused with their interrupts bubbling up, by the tool call that started each */
+  children?: Record<string, RunCheckpoint>;
 }
 
 /** What a resumed run goes on with */
@@ -6698,6 +7074,8 @@ interface ResumeFrom {
 
 /** How a run is steered from outside: its queued messages and its seat on its thread */
 interface RunControl {
+  /** The command its input named, expanded */
+  command?: ExpandedCommand;
   queue?: RunQueue;
   seat?: ThreadSeat;
   /** The permission mode the run's handle sets */
@@ -6711,8 +7089,30 @@ type ToolOutcome = {
   toolSpanStart: number;
   toolSpanEnd: number;
 } & (
-  { result: ToolResult; interrupt?: undefined } | { result?: undefined; interrupt: RunInterrupt }
+  | { result: ToolResult; interrupt?: undefined; nested?: undefined }
+  | {
+      result?: undefined;
+      interrupt: RunInterrupt;
+      /** A delegate of the call that paused, its interrupts and approvals under the call's id */
+      nested?: {
+        checkpoint: RunCheckpoint;
+        interrupts: RunInterrupt[];
+        pending: ToolApprovalRequest[];
+      };
+    }
 );
+
+/** Whether `entry` is an interrupt of a paused delegate of one of `children`'s calls */
+function isNestedInterrupt(
+  entry: RunInterrupt,
+  children: ReadonlyMap<string, unknown> | undefined
+): boolean {
+  if (!children) return false;
+  for (const id of children.keys()) {
+    if (entry.id.startsWith(`${id}/`)) return true;
+  }
+  return false;
+}
 
 function isArgumentRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

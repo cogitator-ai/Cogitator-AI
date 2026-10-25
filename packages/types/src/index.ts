@@ -17,6 +17,7 @@ export * from './run-control';
 export * from './permissions';
 export * from './instructions';
 export * from './hooks';
+export * from './subagents';
 export * from './answers';
 export * from './middleware';
 export * from './memory';

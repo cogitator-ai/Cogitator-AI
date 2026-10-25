@@ -71,6 +71,11 @@ export const api = {
       method: 'POST',
       body: { input },
     }),
+  runSwarm: (key: string, input: string) =>
+    request<{ runId: string }>(`/api/swarms/${encodeURIComponent(key)}/run`, {
+      method: 'POST',
+      body: { input },
+    }),
   rerun: (runId: string, fromNode: string) =>
     request<{ runId: string }>(`/api/runs/${encodeURIComponent(runId)}/rerun`, {
       method: 'POST',

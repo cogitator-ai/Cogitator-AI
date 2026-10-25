@@ -11,6 +11,7 @@ import {
   HOOK_EVENTS,
   type HookEventName,
   type HookHandlerConfig,
+  type HookSettings,
   type HookSettingsOptions,
   type HooksConfig,
   type PermissionLayer,
@@ -227,7 +228,8 @@ interface FileHooks {
 export async function loadHookSettings(
   root: string,
   options: HookSettingsOptions | undefined,
-  code: CodeHooks | undefined
+  code: CodeHooks | undefined,
+  scoped?: ScopedHooks
 ): Promise<LoadedHooks> {
   const trusted = options !== undefined && trustsProject(options, root);
   const warnings: string[] = [];
@@ -278,12 +280,24 @@ export async function loadHookSettings(
   }
   const disabledBy = fromFiles.find((file) => file.disableAllHooks !== undefined);
   const managedOnly = fromFiles.some((file) => file.allowManagedHooksOnly === true);
-  const hooks: LoadedHook[] = readHookSettings(code?.hooks, 'session', 'code', warnings);
-  for (const file of fromFiles) {
+  const allowed = (layer: PermissionLayer): boolean => {
     if (disabledBy?.disableAllHooks === true) {
-      if (disabledBy.layer === 'managed' || file.layer !== 'managed') continue;
+      if (disabledBy.layer === 'managed' || layer !== 'managed') return false;
     }
-    if (managedOnly && file.layer !== 'managed') continue;
+    return !managedOnly || layer === 'managed';
+  };
+  const hooks: LoadedHook[] = scoped
+    ? allowed(scoped.layer)
+      ? readHookSettings(scoped.hooks, scoped.layer, scoped.source, warnings)
+      : []
+    : readHookSettings(code?.hooks, 'session', 'code', warnings);
+  if (scoped && !allowed(scoped.layer) && Object.keys(scoped.hooks).length > 0) {
+    warnings.push(
+      `${scoped.source}: the managed settings turn off hooks (disableAllHooks or allowManagedHooksOnly), its hooks are ignored`
+    );
+  }
+  for (const file of fromFiles) {
+    if (scoped || !allowed(file.layer)) continue;
     hooks.push(...file.hooks);
   }
   const urls = layeredLists(fromFiles, code?.allowedHttpHookUrls, 'allowedHttpHookUrls');
@@ -296,6 +310,18 @@ export async function loadHookSettings(
     files,
     dirs,
   };
+}
+
+/**
+ * Hooks of one definition instead of the settings files' and the code's, such as a subagent's
+ * frontmatter: the settings files still decide whether they run (`disableAllHooks`,
+ * `allowManagedHooksOnly`) and what HTTP hooks may reach, as for hooks of their `layer`
+ */
+export interface ScopedHooks {
+  hooks: HookSettings;
+  layer: PermissionLayer;
+  /** The file they come from */
+  source: string;
 }
 
 /** The hooks and HTTP allowlists given in code, see `HooksConfig` */
@@ -425,7 +451,8 @@ export class HookSettingsCache {
   constructor(
     private readonly options: HookSettingsOptions | undefined,
     private readonly code: CodeHooks | undefined,
-    private readonly warn: (warning: string) => void
+    private readonly warn: (warning: string) => void,
+    private readonly scoped?: ScopedHooks
   ) {}
 
   async load(root: string): Promise<LoadedHooks> {
@@ -435,7 +462,7 @@ export class HookSettingsCache {
       if (!loaded || (await settingsChanged(loaded.files, loaded.dirs))) loading = undefined;
     }
     if (!loading) {
-      loading = loadHookSettings(root, this.options, this.code);
+      loading = loadHookSettings(root, this.options, this.code, this.scoped);
       this.loads.set(root, loading);
     }
     const loaded = await loading;

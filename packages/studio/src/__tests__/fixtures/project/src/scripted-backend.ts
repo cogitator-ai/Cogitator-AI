@@ -37,6 +37,24 @@ function decide(request: ChatRequest): {
     name,
     arguments: args,
   });
+  if (request.model === 'team-lead') {
+    if (input.includes('The team finished')) return { content: 'The team found: tides' };
+    if (!input.includes('You lead a team')) return { content: 'Noted' };
+    return {
+      content: '',
+      toolCalls: [call('create_task', { title: 'Find a fact', assignee: 'scout' })],
+    };
+  }
+  if (request.model === 'team-member') {
+    if (!input.includes('Your task is task-1')) return { content: 'Nothing to do' };
+    return {
+      content: '',
+      toolCalls: [
+        call('send_message', { to: 'lead', message: 'On it' }),
+        call('update_task', { taskId: 'task-1', status: 'completed', result: 'tides' }),
+      ],
+    };
+  }
   if (input.includes('weather'))
     return { content: '', toolCalls: [call('lookup_weather', { city: 'Lisbon' })] };
   if (input.includes('publish'))

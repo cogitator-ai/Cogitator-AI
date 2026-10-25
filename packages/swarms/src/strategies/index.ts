@@ -13,6 +13,7 @@ import type {
   PipelineConfig,
   DebateConfig,
   NegotiationConfig,
+  TeamConfig,
   SwarmCoordinatorInterface,
 } from '@cogitator-ai/types';
 import { DEFAULT_NEGOTIATION_CONFIG } from '@cogitator-ai/types';
@@ -25,6 +26,7 @@ import { AuctionStrategy } from './auction';
 import { PipelineStrategy, resolvePipelineConfig } from './pipeline';
 import { DebateStrategy } from './debate';
 import { NegotiationStrategy } from './negotiation-strategy';
+import { TeamStrategy, TEAM_DEFAULTS } from './team';
 export {
   HierarchicalStrategy,
   RoundRobinStrategy,
@@ -33,6 +35,7 @@ export {
   PipelineStrategy,
   DebateStrategy,
   NegotiationStrategy,
+  TeamStrategy,
 };
 
 /**
@@ -75,6 +78,14 @@ export function createStrategy(
     case 'negotiation':
       return new NegotiationStrategy(coordinator, config.negotiation);
 
+    case 'team':
+      return new TeamStrategy(coordinator, config.team, {
+        maxConcurrency: config.resources?.maxConcurrency,
+        tolerateFailures:
+          config.errorHandling?.onAgentFailure === 'skip' ||
+          config.errorHandling?.partialResults === true,
+      });
+
     default:
       throw new Error(`Unknown swarm strategy: ${strategy}`);
   }
@@ -91,6 +102,7 @@ export function getDefaultStrategyConfig(strategy: SwarmStrategy): {
   pipeline?: PipelineConfig;
   debate?: DebateConfig;
   negotiation?: NegotiationConfig;
+  team?: TeamConfig;
 } {
   switch (strategy) {
     case 'hierarchical':
@@ -148,6 +160,11 @@ export function getDefaultStrategyConfig(strategy: SwarmStrategy): {
     case 'negotiation':
       return {
         negotiation: DEFAULT_NEGOTIATION_CONFIG,
+      };
+
+    case 'team':
+      return {
+        team: { ...TEAM_DEFAULTS },
       };
 
     default:

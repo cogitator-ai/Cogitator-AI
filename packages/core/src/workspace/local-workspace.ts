@@ -224,6 +224,23 @@ export class LocalWorkspace implements Workspace {
     this.state = { disposed: false, groups: new ProcessGroups() };
   }
 
+  /**
+   * A new workspace over `root` with everything else of this one: its file limits, hard-link
+   * rule, cleanup age and command settings (shell, environment, timeouts, `launch` sandbox).
+   * It has an id and a lifecycle of its own, its current directory is `cwd` (default this one's)
+   */
+  withRoot(root: string, cwd: string = this.cwd): LocalWorkspace {
+    return new LocalWorkspace({
+      root,
+      cwd,
+      create: this.create,
+      maxFileBytes: this.maxFileBytes,
+      refuseHardLinks: this.refuseHardLinks,
+      leftoverAge: this.leftoverAge,
+      exec: this.execConfig,
+    });
+  }
+
   /** The root with symlinks resolved once started, the given root before */
   get root(): string {
     return this.state.realRoot ?? this.givenRoot;
