@@ -221,11 +221,33 @@ function metadataOf(value: unknown, report: Report): Record<string, string> | un
   return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
 
+/**
+ * The tools of an `allowed-tools` list: separated by spaces or commas outside parentheses, so a
+ * rule such as `Bash(git status:*)` stays one entry
+ */
+function splitToolList(list: string): string[] {
+  const entries: string[] = [];
+  let current = '';
+  let depth = 0;
+  for (const char of list) {
+    if (char === '(') depth++;
+    else if (char === ')') depth = Math.max(0, depth - 1);
+    if (depth === 0 && (char === ',' || /\s/.test(char))) {
+      entries.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  entries.push(current);
+  return entries;
+}
+
 function allowedToolsOf(value: unknown, report: Report): string[] | undefined {
   if (value === undefined || value === null) return undefined;
   const entries =
     typeof value === 'string'
-      ? value.split(/\s+/)
+      ? splitToolList(value)
       : Array.isArray(value) && value.every((entry) => typeof entry === 'string')
         ? value
         : undefined;

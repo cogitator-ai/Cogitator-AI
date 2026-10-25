@@ -3,7 +3,7 @@
  */
 
 import { readFile, writeFile, readdir, stat, unlink, rm, mkdir } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 import { z } from 'zod';
 import { tool } from '../tool';
 import { fileLockKey } from './path-guard';
@@ -21,6 +21,7 @@ export const fileRead = tool({
   description: 'Read the contents of a file. Use base64 encoding for binary files.',
   parameters: fileReadParams,
   isConcurrencySafe: true,
+  access: { kind: 'read', paths: ({ path }) => [resolvePath(path)] },
   execute: async ({ path, encoding = 'utf-8' }) => {
     try {
       if (encoding === 'base64') {
@@ -59,6 +60,7 @@ export const fileWrite = tool({
   parameters: fileWriteParams,
   sideEffects: ['filesystem'],
   lockKeys: async ({ path }) => [await fileLockKey(path)],
+  access: { kind: 'edit', paths: ({ path }) => [resolvePath(path)] },
   execute: async ({ path, content, encoding = 'utf-8', createDirs = true }) => {
     try {
       if (createDirs) {
@@ -132,6 +134,11 @@ export const fileList = tool({
   description: 'List contents of a directory. Returns files and subdirectories with their sizes.',
   parameters: fileListParams,
   isConcurrencySafe: true,
+  access: {
+    kind: 'read',
+    paths: ({ path }) => [resolvePath(path)],
+    subtree: ({ recursive }) => recursive === true,
+  },
   execute: async ({ path, recursive = false, includeHidden = false }) => {
     try {
       const entries = await listDir(path, recursive, includeHidden);
@@ -163,6 +170,7 @@ export const fileExists = tool({
   description: 'Check if a file or directory exists. Returns type (file/directory) if it exists.',
   parameters: fileExistsParams,
   isConcurrencySafe: true,
+  access: { kind: 'read', paths: ({ path }) => [resolvePath(path)] },
   execute: async ({ path }) => {
     try {
       const stats = await stat(path);
@@ -197,6 +205,11 @@ export const fileDelete = tool({
   parameters: fileDeleteParams,
   sideEffects: ['filesystem'],
   lockKeys: async ({ path }) => [await fileLockKey(path)],
+  access: {
+    kind: 'edit',
+    paths: ({ path }) => [resolvePath(path)],
+    subtree: ({ recursive }) => recursive === true,
+  },
   execute: async ({ path, recursive = false }) => {
     try {
       const stats = await stat(path);

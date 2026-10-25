@@ -121,6 +121,13 @@ function optionalString(body: Record<string, unknown>, field: string): string | 
   return value;
 }
 
+function optionalBoolean(body: Record<string, unknown>, field: string): boolean | undefined {
+  const value = body[field];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'boolean') throw new HttpError(400, `"${field}" must be true or false`);
+  return value;
+}
+
 function sameToken(given: string | undefined, expected: string): boolean {
   if (!given) return false;
   const a = Buffer.from(given);
@@ -421,6 +428,7 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
             approvalId: parts[1],
             approved: body.approved,
             ...(optionalString(body, 'reason') && { reason: optionalString(body, 'reason') }),
+            ...(optionalBoolean(body, 'remember') && { remember: true }),
           })
         );
       }

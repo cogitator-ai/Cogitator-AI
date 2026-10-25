@@ -34,6 +34,8 @@ Nothing of the paused turn has run: if the model asked for several tools at once
 
 `requiresApproval` is `true` (always ask) or a function of the model's arguments as sent — before schema parsing and defaults. A function that throws counts as "needs approval". Each waiting call in `pendingApprovals` is a `ToolApprovalRequest`: `{ toolCallId, toolName, arguments, description, sideEffects? }`, where `description` is the tool's description.
 
+With [permissions](/docs/tools/permissions) set up, rules decide many calls before anyone is asked, and a request that asks also carries `reason` (why it asks), `rule` (the `ask` rule that made it ask, if one), `suggestedRule` (what an "always allow" answer saves) and `mode`.
+
 ## Resuming
 
 The runtime keeps the paused run per thread. Resume it with a decision for each call — declined calls answer the model with the reason, so it can tell the user or try something else:
@@ -47,6 +49,8 @@ const done = await cog.resume(support, threadId, {
   },
 });
 ```
+
+A decision may also change the call, `{ approved: true, updatedArguments }`, which runs once the new arguments pass the schema and the permission rules again, and save an allow rule for next time, `{ approved: true, remember: true }` ("always allow"), see [Permissions](/docs/tools/permissions#always-allow).
 
 `defaultDecision` answers every waiting call at once (`{ approved: true }` for "approve all"). Calls without a decision keep the run paused. Resuming by thread id checks the caller: only the user the run belongs to may resume it (`THREAD_ACCESS_DENIED` otherwise), and a thread with nothing paused answers `RUN_NOT_PAUSED`.
 

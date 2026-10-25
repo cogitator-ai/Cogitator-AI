@@ -173,6 +173,9 @@ describe('StreamWriter.approvalRequired', () => {
   });
 });
 
+const DECISION =
+  '{ approved: boolean, reason?: string, updatedArguments?: object, remember?: boolean | { rule?: string, layer?: session | local | project | user } }';
+
 describe('createResumeHandler', () => {
   it('resumes the thread as the user beforeRun returns, with the decisions', async () => {
     const { cogitator, resume } = fakeCogitator(undefined, () => runResult({ output: 'Refunded' }));
@@ -187,6 +190,8 @@ describe('createResumeHandler', () => {
           call_1: { approved: true, reason: 'ignored' },
           call_2: { approved: false, reason: 'Too much' },
           call_3: { approved: false },
+          call_4: { approved: true, updatedArguments: { amount: 50 }, remember: true },
+          call_5: { approved: true, remember: { rule: 'refund(*)', layer: 'session' } },
         },
         defaultDecision: { approved: false },
       })
@@ -202,6 +207,8 @@ describe('createResumeHandler', () => {
       call_1: { approved: true },
       call_2: { approved: false, reason: 'Too much' },
       call_3: { approved: false },
+      call_4: { approved: true, updatedArguments: { amount: 50 }, remember: true },
+      call_5: { approved: true, remember: { rule: 'refund(*)', layer: 'session' } },
     });
     expect(options.defaultDecision).toEqual({ approved: false });
     expect(beforeRun).toHaveBeenCalledWith(
@@ -232,16 +239,17 @@ describe('createResumeHandler', () => {
     [{ threadId: 't', decisions: [] }, 'Field "decisions" must be an object'],
     [
       { threadId: 't', decisions: { call_1: { approved: 'yes' } } },
-      'Each entry of "decisions" must be { approved: boolean, reason?: string }',
+      `Each entry of "decisions" must be ${DECISION}`,
     ],
     [
       { threadId: 't', decisions: { call_1: { approved: false, reason: 5 } } },
-      'Each entry of "decisions" must be { approved: boolean, reason?: string }',
+      `Each entry of "decisions" must be ${DECISION}`,
     ],
     [
-      { threadId: 't', defaultDecision: true },
-      'Field "defaultDecision" must be { approved: boolean, reason?: string }',
+      { threadId: 't', decisions: { call_1: { approved: true, remember: 'always' } } },
+      `Each entry of "decisions" must be ${DECISION}`,
     ],
+    [{ threadId: 't', defaultDecision: true }, `Field "defaultDecision" must be ${DECISION}`],
   ])('refuses %j with 400 without resuming', async (body, error) => {
     const { cogitator, resume } = fakeCogitator();
     const res = await createResumeHandler(cogitator, fakeAgent)(post('/api/resume', body));

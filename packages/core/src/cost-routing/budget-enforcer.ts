@@ -98,6 +98,35 @@ export class BudgetEnforcer {
     return { allowed: true };
   }
 
+  /**
+   * What has been spent against each limit that is set: the run's own cost against
+   * `maxCostPerRun`, every run's in the last hour and day against the hourly and daily limits.
+   * Nothing is triggered, for a run that pauses at a limit instead of failing
+   */
+  spentAgainstLimits(
+    runCost: number
+  ): Array<{ scope: 'run' | 'hour' | 'day'; used: number; limit: number }> {
+    const limits: Array<{ scope: 'run' | 'hour' | 'day'; used: number; limit: number }> = [];
+    if (this.config.maxCostPerRun) {
+      limits.push({ scope: 'run', used: runCost, limit: this.config.maxCostPerRun });
+    }
+    if (this.config.maxCostPerHour) {
+      limits.push({
+        scope: 'hour',
+        used: this.tracker.getHourlyCost(),
+        limit: this.config.maxCostPerHour,
+      });
+    }
+    if (this.config.maxCostPerDay) {
+      limits.push({
+        scope: 'day',
+        used: this.tracker.getDailyCost(),
+        limit: this.config.maxCostPerDay,
+      });
+    }
+    return limits;
+  }
+
   getBudgetStatus(): {
     hourlyUsed: number;
     hourlyLimit?: number;

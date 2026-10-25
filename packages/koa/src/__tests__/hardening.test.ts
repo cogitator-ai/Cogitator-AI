@@ -8,6 +8,7 @@ import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import { cogitatorApp } from '../app.js';
 import { createAuthMiddleware, createErrorHandler } from '../middleware/index.js';
 import type { CogitatorAppOptions, CogitatorState } from '../types.js';
+import { serve } from './local-server';
 
 const workflowExecute = vi.fn();
 const swarmRun = vi.fn();
@@ -82,8 +83,8 @@ function parseSSE(text: string): Array<Record<string, unknown>> {
     .map((block) => JSON.parse(block.slice(6)) as Record<string, unknown>);
 }
 
-function postJson(app: Koa<CogitatorState>, path: string, body: unknown) {
-  return request(app.callback())
+async function postJson(app: Koa<CogitatorState>, path: string, body: unknown) {
+  return request(await serve(app))
     .post(path)
     .set('Content-Type', 'application/json')
     .send(JSON.stringify(body));
@@ -109,7 +110,7 @@ describe('auth middleware', () => {
       throw new Error('route exploded');
     });
 
-    const res = await request(app.callback()).get('/');
+    const res = await request(await serve(app)).get('/');
     expect(res.status).toBe(500);
     expect(res.body.error.code).toBe(ErrorCode.INTERNAL_ERROR);
   });
@@ -126,7 +127,7 @@ describe('auth middleware', () => {
       ctx.body = 'secret';
     });
 
-    const res = await request(app.callback()).get('/');
+    const res = await request(await serve(app)).get('/');
     expect(res.status).toBe(401);
     expect(res.body.error.code).toBe('UNAUTHORIZED');
   });
@@ -144,7 +145,7 @@ describe('prototype-chain names', () => {
   });
 
   it('GET /swarms/constructor/blackboard returns 404', async () => {
-    const res = await request(buildApp().callback()).get('/swarms/constructor/blackboard');
+    const res = await request(await serve(buildApp())).get('/swarms/constructor/blackboard');
     expect(res.status).toBe(404);
   });
 });
@@ -162,7 +163,7 @@ describe('tools route', () => {
       }),
     };
     const app = buildApp({ agents: { bot: { config: { tools: [tool] } } as never } });
-    const res = await request(app.callback()).get('/tools');
+    const res = await request(await serve(app)).get('/tools');
     expect(res.status).toBe(200);
     expect(res.body.tools[0].parameters).toEqual({
       type: 'object',
@@ -219,7 +220,7 @@ describe('request validation', () => {
   });
 
   it('runs a workflow when the request has no body', async () => {
-    const res = await request(buildApp().callback()).post('/workflows/pipeline/run');
+    const res = await request(await serve(buildApp())).post('/workflows/pipeline/run');
     expect(res.status).toBe(200);
     expect(res.body.nodeResults).toEqual({ start: { output: 'ok', duration: 3 } });
   });
@@ -573,7 +574,7 @@ describe('server contract', () => {
 
   it('shows the limits in the OpenAPI spec', async () => {
     const app = buildApp({ enableSwagger: true, limits: { swarmTimeout: 1000 } });
-    const res = await request(app.callback()).get('/openapi.json');
+    const res = await request(await serve(app)).get('/openapi.json');
     expect(res.text).toContain("Held to 1000 ms, the server's limit");
   });
 
@@ -588,16 +589,18 @@ describe('server contract', () => {
     });
 
     for (const path of ['/health', '/ready', '/openapi.json', '/docs']) {
-      expect((await request(app.callback()).get(path)).status).toBe(200);
+      expect((await request(await serve(app)).get(path)).status).toBe(200);
     }
     const refused = await postJson(app, '/agents/bot/run', { input: 'hi' });
     expect(refused.status).toBe(401);
     expect(refused.body).toEqual({
       error: { message: 'Authentication required', code: 'UNAUTHORIZED' },
     });
-    expect((await request(app.callback()).get('/agents')).status).toBe(401);
+    expect((await request(await serve(app)).get('/agents')).status).toBe(401);
 
-    const allowed = await request(app.callback()).get('/agents').set('x-user', 'alice');
+    const allowed = await request(await serve(app))
+      .get('/agents')
+      .set('x-user', 'alice');
     expect(allowed.status).toBe(200);
   });
 
@@ -609,8 +612,8 @@ describe('server contract', () => {
     );
 
     const answers = [
-      await request(app.callback()).get('/threads/thread-1'),
-      await request(app.callback()).delete('/threads/thread-1'),
+      await request(await serve(app)).get('/threads/thread-1'),
+      await request(await serve(app)).delete('/threads/thread-1'),
       await postJson(app, '/threads/thread-1/messages', { role: 'user', content: 'hi' }),
     ];
 
@@ -632,7 +635,8 @@ describe('server contract', () => {
 
   it('reads a thread page by page, newest first', async () => {
     const app = buildApp({}, { getMemory: async () => threadMemory(5) });
-    const page = (query: string) => request(app.callback()).get(`/threads/thread-1?${query}`);
+    const page = async (query: string) =>
+      request(await serve(app)).get(`/threads/thread-1?${query}`);
 
     const first = (await page('limit=2')).body;
     expect(contents(first)).toEqual(['message 4', 'message 5']);
@@ -649,7 +653,7 @@ describe('server contract', () => {
   it('refuses a thread page query it cannot read', async () => {
     const app = buildApp({}, { getMemory: async () => threadMemory(1) });
     for (const query of ['limit=0', 'limit=abc', 'cursor=bogus']) {
-      const res = await request(app.callback()).get(`/threads/thread-1?${query}`);
+      const res = await request(await serve(app)).get(`/threads/thread-1?${query}`);
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe('INVALID_INPUT');
     }
@@ -712,8 +716,8 @@ describe('server contract', () => {
       { deps: async (ctx) => ({ tenant: ctx.get('x-tenant') }) },
       { run, resume }
     );
-    const send = (path: string, body: unknown) =>
-      request(app.callback())
+    const send = async (path: string, body: unknown) =>
+      request(await serve(app))
         .post(path)
         .set('Content-Type', 'application/json')
         .set('x-tenant', 'acme')
@@ -752,7 +756,7 @@ describe('unmatched paths', () => {
     expect(unknown.status).toBe(404);
     expect(unknown.body).toEqual({ error: { message: 'Not found', code: 'NOT_FOUND' } });
 
-    const wrongMethod = await request(app.callback()).get('/agents/bot/run');
+    const wrongMethod = await request(await serve(app)).get('/agents/bot/run');
     expect(wrongMethod.status).toBe(404);
     expect(wrongMethod.body.error.code).toBe('NOT_FOUND');
   });
@@ -766,13 +770,13 @@ describe('unmatched paths', () => {
     withAllowed.use(router.allowedMethods());
 
     for (const app of [plain, withAllowed]) {
-      const agents = await request(app.callback()).options('/agents');
+      const agents = await request(await serve(app)).options('/agents');
       expect(agents.status).toBe(204);
       expect(agents.headers.allow).toBe('GET, HEAD, OPTIONS');
-      const run = await request(app.callback()).options('/agents/bot/run');
+      const run = await request(await serve(app)).options('/agents/bot/run');
       expect(run.headers.allow).toBe('OPTIONS, POST');
     }
-    const unknown = await request(plain.callback()).options('/nowhere');
+    const unknown = await request(await serve(plain)).options('/nowhere');
     expect(unknown.status).toBe(404);
   });
 
@@ -780,15 +784,17 @@ describe('unmatched paths', () => {
     const app = buildApp({ anonymous: 'deny', auth });
 
     for (const path of ['/nowhere', '/agents/bot/run', '/docs']) {
-      const res = await request(app.callback()).get(path);
+      const res = await request(await serve(app)).get(path);
       expect(res.status).toBe(401);
       expect(res.body).toEqual({
         error: { message: 'Authentication required', code: 'UNAUTHORIZED' },
       });
     }
-    expect((await request(app.callback()).get('/health')).status).toBe(200);
+    expect((await request(await serve(app)).get('/health')).status).toBe(200);
 
-    const known = await request(app.callback()).get('/nowhere').set('x-user', 'alice');
+    const known = await request(await serve(app))
+      .get('/nowhere')
+      .set('x-user', 'alice');
     expect(known.status).toBe(404);
     expect(known.body.error.code).toBe('NOT_FOUND');
   });
@@ -799,7 +805,7 @@ describe('unmatched paths', () => {
         throw new Error('bad token');
       },
     });
-    const res = await request(app.callback()).get('/nowhere');
+    const res = await request(await serve(app)).get('/nowhere');
     expect(res.status).toBe(401);
     expect(res.body.error.code).toBe('UNAUTHORIZED');
   });
@@ -814,12 +820,15 @@ describe('unmatched paths', () => {
       if (ctx.path === '/upload') ctx.body = { type: ctx.get('content-type') };
     });
 
-    const res = await request(app.callback()).post('/upload').type('form').send({ name: 'file' });
+    const res = await request(await serve(app))
+      .post('/upload')
+      .type('form')
+      .send({ name: 'file' });
     expect(res.status).toBe(200);
     expect(res.body.type).toContain('application/x-www-form-urlencoded');
     expect(authFn).not.toHaveBeenCalled();
 
-    expect((await request(app.callback()).get('/nowhere')).status).toBe(401);
+    expect((await request(await serve(app)).get('/nowhere')).status).toBe(401);
   });
 
   it('answers only the paths under the prefix it is mounted at', async () => {
@@ -829,19 +838,23 @@ describe('unmatched paths', () => {
     parent.use('/api/ai', router.routes(), router.allowedMethods());
     app.use(parent.routes());
 
-    const inside = await request(app.callback()).get('/api/ai/nowhere');
+    const inside = await request(await serve(app)).get('/api/ai/nowhere');
     expect(inside.status).toBe(401);
     expect(inside.body.error.code).toBe('UNAUTHORIZED');
 
-    const known = await request(app.callback()).get('/api/ai/nowhere').set('x-user', 'alice');
+    const known = await request(await serve(app))
+      .get('/api/ai/nowhere')
+      .set('x-user', 'alice');
     expect(known.status).toBe(404);
     expect(known.body.error.code).toBe('NOT_FOUND');
 
-    const outside = await request(app.callback()).get('/elsewhere');
+    const outside = await request(await serve(app)).get('/elsewhere');
     expect(outside.status).toBe(404);
     expect(outside.text).toBe('Not Found');
 
-    const agents = await request(app.callback()).get('/api/ai/agents').set('x-user', 'alice');
+    const agents = await request(await serve(app))
+      .get('/api/ai/agents')
+      .set('x-user', 'alice');
     expect(agents.status).toBe(200);
   });
 });

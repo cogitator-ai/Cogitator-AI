@@ -9,6 +9,7 @@ import type { ReasoningConfig } from './llm';
 import type { RunMiddleware } from './middleware';
 import type { Workspace } from './workspace';
 import type { RunTimeouts } from './runtime';
+import type { BudgetLimits, PermissionOptions } from './permissions';
 
 /**
  * An agent's configuration. `TDeps` is the type of the `deps` its runs pass (`RunOptions.deps`):
@@ -86,6 +87,13 @@ export interface AgentConfig<TDeps = unknown> {
    * The agent only uses it: whoever created the workspace starts and disposes it
    */
   workspace?: Workspace;
+  /**
+   * The permission mode and rules of this agent's runs, in the `session` layer: the mode over the
+   * runtime's, the rules joined to it. A run's `permissions` win over both
+   */
+  permissions?: PermissionOptions;
+  /** What this agent may spend in a thread, over the runtime's `budget.agent` */
+  budget?: BudgetLimits;
 }
 
 /** A model to fall back to: `provider/model`, or a model name with the provider to run it on. */
@@ -149,6 +157,8 @@ export interface SerializedAgentConfig {
   timeout?: number;
   timeouts?: RunTimeouts;
   todos?: boolean;
+  permissions?: PermissionOptions;
+  budget?: BudgetLimits;
 }
 
 export interface DeserializeOptions {

@@ -4,6 +4,7 @@ import request from 'supertest';
 import Router from '@koa/router';
 import { cogitatorApp } from '../app.js';
 import type { CogitatorAppOptions, CogitatorState } from '../types.js';
+import { serve } from './local-server';
 
 beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -100,7 +101,7 @@ describe('healthRoutes', () => {
   });
 
   it('GET /health returns ok status', async () => {
-    const res = await request(app.callback()).get('/health');
+    const res = await request(await serve(app)).get('/health');
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
     expect(res.body.uptime).toBeGreaterThanOrEqual(0);
@@ -108,7 +109,7 @@ describe('healthRoutes', () => {
   });
 
   it('GET /ready returns ok', async () => {
-    const res = await request(app.callback()).get('/ready');
+    const res = await request(await serve(app)).get('/ready');
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
   });
@@ -117,7 +118,7 @@ describe('healthRoutes', () => {
 describe('agentRoutes', () => {
   it('GET /agents returns empty list when no agents', async () => {
     const app = buildApp({ agents: {} });
-    const res = await request(app.callback()).get('/agents');
+    const res = await request(await serve(app)).get('/agents');
     expect(res.status).toBe(200);
     expect(res.body.agents).toEqual([]);
   });
@@ -128,7 +129,7 @@ describe('agentRoutes', () => {
         writer: mockAgent('writer', [mockTool('search')]) as never,
       },
     });
-    const res = await request(app.callback()).get('/agents');
+    const res = await request(await serve(app)).get('/agents');
     expect(res.status).toBe(200);
     expect(res.body.agents).toHaveLength(1);
     expect(res.body.agents[0].name).toBe('writer');
@@ -141,7 +142,7 @@ describe('agentRoutes', () => {
     };
     const bare = { config: { instructions: 'another secret', tools: [] } };
     const app = buildApp({ agents: { described: agent as never, bare: bare as never } });
-    const res = await request(app.callback()).get('/agents');
+    const res = await request(await serve(app)).get('/agents');
     expect(res.body.agents[0].description).toBe('Public summary');
     expect(res.body.agents[1].description).toBeUndefined();
     expect(JSON.stringify(res.body)).not.toContain('secret');
@@ -151,13 +152,13 @@ describe('agentRoutes', () => {
     const app = buildApp({
       agents: { bare: mockAgent('bare') as never },
     });
-    const res = await request(app.callback()).get('/agents');
+    const res = await request(await serve(app)).get('/agents');
     expect(res.body.agents[0].tools).toEqual([]);
   });
 
   it('POST /agents/:name/run returns 404 for unknown agent', async () => {
     const app = buildApp();
-    const res = await request(app.callback())
+    const res = await request(await serve(app))
       .post('/agents/ghost/run')
       .send({ input: 'hi' })
       .set('Content-Type', 'application/json');
@@ -170,7 +171,7 @@ describe('agentRoutes', () => {
     const app = buildApp({
       agents: { bot: mockAgent('bot') as never },
     });
-    const res = await request(app.callback())
+    const res = await request(await serve(app))
       .post('/agents/bot/run')
       .send({})
       .set('Content-Type', 'application/json');
@@ -183,7 +184,7 @@ describe('agentRoutes', () => {
     const app = buildApp({
       agents: { bot: mockAgent('bot') as never },
     });
-    const res = await request(app.callback())
+    const res = await request(await serve(app))
       .post('/agents/bot/run')
       .send('not json{{{')
       .set('Content-Type', 'application/json');
@@ -205,7 +206,7 @@ describe('agentRoutes', () => {
       agents: { bot: mockAgent('bot') as never },
     });
 
-    const res = await request(app.callback())
+    const res = await request(await serve(app))
       .post('/agents/bot/run')
       .send({ input: 'hello' })
       .set('Content-Type', 'application/json');
@@ -231,7 +232,7 @@ describe('agentRoutes', () => {
       acceptContext: ['key'],
     });
 
-    await request(app.callback())
+    await request(await serve(app))
       .post('/agents/bot/run')
       .send({ input: 'hi', context: { key: 'val' }, threadId: 'my-thread' })
       .set('Content-Type', 'application/json');
@@ -255,7 +256,7 @@ describe('agentRoutes', () => {
       agents: { bot: mockAgent('bot') as never },
     });
 
-    const res = await request(app.callback())
+    const res = await request(await serve(app))
       .post('/agents/bot/run')
       .send({ input: 'hi' })
       .set('Content-Type', 'application/json');
@@ -273,7 +274,7 @@ describe('agentRoutes', () => {
       agents: { bot: mockAgent('bot') as never },
     });
 
-    const res = await request(app.callback())
+    const res = await request(await serve(app))
       .post('/agents/bot/run')
       .send({ input: 'hi' })
       .set('Content-Type', 'application/json');
@@ -285,7 +286,7 @@ describe('agentRoutes', () => {
 describe('threadRoutes', () => {
   it('GET /threads/:id returns 503 when memory not configured', async () => {
     const app = buildApp();
-    const res = await request(app.callback()).get('/threads/t1');
+    const res = await request(await serve(app)).get('/threads/t1');
     expect(res.status).toBe(503);
     expect(res.body.error.code).toBe('UNAVAILABLE');
     expect(res.body.error.message).toContain('Memory not configured');
@@ -304,7 +305,7 @@ describe('threadRoutes', () => {
       cogitator: runtime as unknown as CogitatorAppOptions['cogitator'],
     });
 
-    const res = await request(app.callback()).get('/threads/t1');
+    const res = await request(await serve(app)).get('/threads/t1');
     expect(res.status).toBe(200);
     expect(res.body.id).toBe('t1');
     expect(res.body.messages).toHaveLength(2);
@@ -321,7 +322,7 @@ describe('threadRoutes', () => {
     });
 
     const before = Date.now();
-    const res = await request(app.callback()).get('/threads/empty');
+    const res = await request(await serve(app)).get('/threads/empty');
     const after = Date.now();
     expect(res.status).toBe(200);
     expect(res.body.createdAt).toBeGreaterThanOrEqual(before);
@@ -340,7 +341,7 @@ describe('threadRoutes', () => {
       cogitator: runtime as unknown as CogitatorAppOptions['cogitator'],
     });
 
-    const res = await request(app.callback()).get('/threads/t1');
+    const res = await request(await serve(app)).get('/threads/t1');
     expect(res.status).toBe(500);
     expect(res.body.error.message).toBe('Internal server error');
   });
@@ -355,14 +356,14 @@ describe('threadRoutes', () => {
       cogitator: runtime as unknown as CogitatorAppOptions['cogitator'],
     });
 
-    const res = await request(app.callback()).get('/threads/t1');
+    const res = await request(await serve(app)).get('/threads/t1');
     expect(res.status).toBe(500);
     expect(res.body.error.message).toBe('Internal server error');
   });
 
   it('POST /threads/:id/messages returns 503 when memory not configured', async () => {
     const app = buildApp();
-    const res = await request(app.callback())
+    const res = await request(await serve(app))
       .post('/threads/t1/messages')
       .send({ role: 'user', content: 'hello' })
       .set('Content-Type', 'application/json');
@@ -377,7 +378,7 @@ describe('threadRoutes', () => {
       cogitator: runtime as unknown as CogitatorAppOptions['cogitator'],
     });
 
-    const res = await request(app.callback())
+    const res = await request(await serve(app))
       .post('/threads/t1/messages')
       .send({ content: 'hello' })
       .set('Content-Type', 'application/json');
@@ -393,7 +394,7 @@ describe('threadRoutes', () => {
       cogitator: runtime as unknown as CogitatorAppOptions['cogitator'],
     });
 
-    const res = await request(app.callback())
+    const res = await request(await serve(app))
       .post('/threads/t1/messages')
       .send({ role: 'user' })
       .set('Content-Type', 'application/json');
@@ -408,7 +409,7 @@ describe('threadRoutes', () => {
       cogitator: runtime as unknown as CogitatorAppOptions['cogitator'],
     });
 
-    const res = await request(app.callback())
+    const res = await request(await serve(app))
       .post('/threads/t1/messages')
       .send({ role: 'user', content: 'hello' })
       .set('Content-Type', 'application/json');
@@ -433,7 +434,7 @@ describe('threadRoutes', () => {
       cogitator: runtime as unknown as CogitatorAppOptions['cogitator'],
     });
 
-    const res = await request(app.callback())
+    const res = await request(await serve(app))
       .post('/threads/t1/messages')
       .send({ role: 'user', content: 'test' })
       .set('Content-Type', 'application/json');
@@ -451,7 +452,7 @@ describe('threadRoutes', () => {
       cogitator: runtime as unknown as CogitatorAppOptions['cogitator'],
     });
 
-    const res = await request(app.callback())
+    const res = await request(await serve(app))
       .post('/threads/t1/messages')
       .send({ role: 'user', content: 'test' })
       .set('Content-Type', 'application/json');
@@ -461,7 +462,7 @@ describe('threadRoutes', () => {
 
   it('DELETE /threads/:id returns 503 when memory not configured', async () => {
     const app = buildApp();
-    const res = await request(app.callback()).delete('/threads/t1');
+    const res = await request(await serve(app)).delete('/threads/t1');
     expect(res.status).toBe(503);
     expect(res.body.error.code).toBe('UNAVAILABLE');
   });
@@ -473,7 +474,7 @@ describe('threadRoutes', () => {
       cogitator: runtime as unknown as CogitatorAppOptions['cogitator'],
     });
 
-    const res = await request(app.callback()).delete('/threads/t1');
+    const res = await request(await serve(app)).delete('/threads/t1');
     expect(res.status).toBe(204);
     expect(memory.clearThread).toHaveBeenCalledWith('t1');
   });
@@ -488,7 +489,7 @@ describe('threadRoutes', () => {
       cogitator: runtime as unknown as CogitatorAppOptions['cogitator'],
     });
 
-    const res = await request(app.callback()).delete('/threads/t1');
+    const res = await request(await serve(app)).delete('/threads/t1');
     expect(res.status).toBe(500);
     expect(res.body.error.message).toBe('Internal server error');
   });
@@ -503,7 +504,7 @@ describe('threadRoutes', () => {
       cogitator: runtime as unknown as CogitatorAppOptions['cogitator'],
     });
 
-    const res = await request(app.callback()).delete('/threads/t1');
+    const res = await request(await serve(app)).delete('/threads/t1');
     expect(res.status).toBe(500);
     expect(res.body.error.message).toBe('Internal server error');
   });
@@ -518,8 +519,8 @@ describe('multi-user isolation', () => {
     });
   }
 
-  function postAs(app: Koa<CogitatorState>, path: string, userId: string, body: unknown) {
-    return request(app.callback())
+  async function postAs(app: Koa<CogitatorState>, path: string, userId: string, body: unknown) {
+    return request(await serve(app))
       .post(path)
       .set('x-user', userId)
       .set('Content-Type', 'application/json')
@@ -556,7 +557,9 @@ describe('multi-user isolation', () => {
     const memory = mockMemory(entries, { t1: { userId: 'alice' } });
     const app = buildUserApp(mockRuntime({ memory }));
 
-    const res = await request(app.callback()).get('/threads/t1').set('x-user', 'alice');
+    const res = await request(await serve(app))
+      .get('/threads/t1')
+      .set('x-user', 'alice');
 
     expect(res.status).toBe(200);
     expect(res.body.messages).toEqual([{ role: 'user', content: 'mine' }]);
@@ -566,7 +569,9 @@ describe('multi-user isolation', () => {
     const memory = mockMemory([], { t1: { userId: 'alice' } });
     const app = buildUserApp(mockRuntime({ memory }));
 
-    const res = await request(app.callback()).get('/threads/t1').set('x-user', 'bob');
+    const res = await request(await serve(app))
+      .get('/threads/t1')
+      .set('x-user', 'bob');
 
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('THREAD_ACCESS_DENIED');
@@ -592,7 +597,9 @@ describe('multi-user isolation', () => {
     const memory = mockMemory([], { t1: { userId: 'alice' } });
     const app = buildUserApp(mockRuntime({ memory }));
 
-    const res = await request(app.callback()).delete('/threads/t1').set('x-user', 'bob');
+    const res = await request(await serve(app))
+      .delete('/threads/t1')
+      .set('x-user', 'bob');
 
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('THREAD_ACCESS_DENIED');
@@ -617,7 +624,9 @@ describe('multi-user isolation', () => {
     const memory = mockMemory([], { legacy: {} });
     const app = buildUserApp(mockRuntime({ memory }));
 
-    const res = await request(app.callback()).get('/threads/legacy').set('x-user', 'alice');
+    const res = await request(await serve(app))
+      .get('/threads/legacy')
+      .set('x-user', 'alice');
 
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('THREAD_ACCESS_DENIED');
@@ -630,7 +639,9 @@ describe('multi-user isolation', () => {
     };
     const app = buildUserApp(mockRuntime({ memory }));
 
-    const res = await request(app.callback()).get('/threads/t1').set('x-user', 'alice');
+    const res = await request(await serve(app))
+      .get('/threads/t1')
+      .set('x-user', 'alice');
 
     expect(res.status).toBe(500);
     expect(res.body.error.code).toBe('MEMORY_READ_FAILED');
@@ -641,7 +652,7 @@ describe('multi-user isolation', () => {
 describe('toolRoutes', () => {
   it('GET /tools returns empty list when no agents', async () => {
     const app = buildApp({ agents: {} });
-    const res = await request(app.callback()).get('/tools');
+    const res = await request(await serve(app)).get('/tools');
     expect(res.status).toBe(200);
     expect(res.body.tools).toEqual([]);
   });
@@ -651,7 +662,7 @@ describe('toolRoutes', () => {
     const app = buildApp({
       agents: { a1: { config: { tools: [tool] } } as never },
     });
-    const res = await request(app.callback()).get('/tools');
+    const res = await request(await serve(app)).get('/tools');
     expect(res.status).toBe(200);
     expect(res.body.tools).toHaveLength(1);
     expect(res.body.tools[0].name).toBe('search');
@@ -672,7 +683,7 @@ describe('toolRoutes', () => {
         a2: { config: { tools: [t2] } } as never,
       },
     });
-    const res = await request(app.callback()).get('/tools');
+    const res = await request(await serve(app)).get('/tools');
     expect(res.status).toBe(200);
     expect(res.body.tools).toHaveLength(1);
   });
@@ -684,7 +695,7 @@ describe('toolRoutes', () => {
         a2: { config: { tools: [mockTool('calc')] } } as never,
       },
     });
-    const res = await request(app.callback()).get('/tools');
+    const res = await request(await serve(app)).get('/tools');
     expect(res.status).toBe(200);
     expect(res.body.tools).toHaveLength(2);
     const names = res.body.tools.map((t: { name: string }) => t.name).sort();
@@ -695,7 +706,7 @@ describe('toolRoutes', () => {
     const app = buildApp({
       agents: { bare: { config: {} } as never },
     });
-    const res = await request(app.callback()).get('/tools');
+    const res = await request(await serve(app)).get('/tools');
     expect(res.status).toBe(200);
     expect(res.body.tools).toEqual([]);
   });
@@ -704,7 +715,7 @@ describe('toolRoutes', () => {
 describe('workflowRoutes', () => {
   it('GET /workflows returns empty list when no workflows', async () => {
     const app = buildApp({ workflows: {} });
-    const res = await request(app.callback()).get('/workflows');
+    const res = await request(await serve(app)).get('/workflows');
     expect(res.status).toBe(200);
     expect(res.body.workflows).toEqual([]);
   });
@@ -715,7 +726,7 @@ describe('workflowRoutes', () => {
     nodes.set('end', {});
     const workflow = { entryPoint: 'start', nodes };
     const app = buildApp({ workflows: { pipeline: workflow as never } });
-    const res = await request(app.callback()).get('/workflows');
+    const res = await request(await serve(app)).get('/workflows');
     expect(res.status).toBe(200);
     expect(res.body.workflows).toHaveLength(1);
     expect(res.body.workflows[0].name).toBe('pipeline');
@@ -727,7 +738,7 @@ describe('workflowRoutes', () => {
 describe('swarmRoutes', () => {
   it('GET /swarms returns empty list when no swarms', async () => {
     const app = buildApp({ swarms: {} });
-    const res = await request(app.callback()).get('/swarms');
+    const res = await request(await serve(app)).get('/swarms');
     expect(res.status).toBe(200);
     expect(res.body.swarms).toEqual([]);
   });
@@ -739,7 +750,7 @@ describe('swarmRoutes', () => {
       workers: [{ name: 'w1' }, { name: 'w2' }],
     };
     const app = buildApp({ swarms: { team: swarmConfig as never } });
-    const res = await request(app.callback()).get('/swarms');
+    const res = await request(await serve(app)).get('/swarms');
     expect(res.status).toBe(200);
     expect(res.body.swarms).toHaveLength(1);
     expect(res.body.swarms[0].name).toBe('team');
@@ -753,7 +764,7 @@ describe('swarmRoutes', () => {
       agents: [{ name: 'a1' }, { name: 'a2' }],
     };
     const app = buildApp({ swarms: { pool: swarmConfig as never } });
-    const res = await request(app.callback()).get('/swarms');
+    const res = await request(await serve(app)).get('/swarms');
     const body = res.body;
     expect(body.swarms[0].agents).toEqual(['a1', 'a2']);
   });
@@ -765,7 +776,7 @@ describe('swarmRoutes', () => {
       moderator: { name: 'mod' },
     };
     const app = buildApp({ swarms: { debate: swarmConfig as never } });
-    const res = await request(app.callback()).get('/swarms');
+    const res = await request(await serve(app)).get('/swarms');
     const body = res.body;
     expect(body.swarms[0].agents).toContain('mod');
     expect(body.swarms[0].agents).toContain('a1');
@@ -773,7 +784,7 @@ describe('swarmRoutes', () => {
 
   it('GET /swarms/:name/blackboard returns 404 for unknown swarm', async () => {
     const app = buildApp();
-    const res = await request(app.callback()).get('/swarms/ghost/blackboard');
+    const res = await request(await serve(app)).get('/swarms/ghost/blackboard');
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('NOT_FOUND');
   });
@@ -781,7 +792,7 @@ describe('swarmRoutes', () => {
   it('GET /swarms/:name/blackboard returns 400 when blackboard not enabled', async () => {
     const swarmConfig = { strategy: 'round-robin', agents: [{ name: 'a1' }] };
     const app = buildApp({ swarms: { pool: swarmConfig as never } });
-    const res = await request(app.callback()).get('/swarms/pool/blackboard');
+    const res = await request(await serve(app)).get('/swarms/pool/blackboard');
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('INVALID_INPUT');
   });
@@ -793,7 +804,7 @@ describe('swarmRoutes', () => {
       blackboard: { enabled: true, sections: { facts: ['fact1'], goals: ['goal1'] } },
     };
     const app = buildApp({ swarms: { bb: swarmConfig as never } });
-    const res = await request(app.callback()).get('/swarms/bb/blackboard');
+    const res = await request(await serve(app)).get('/swarms/bb/blackboard');
     expect(res.status).toBe(200);
     expect(res.body.sections).toEqual({ facts: ['fact1'], goals: ['goal1'] });
   });
@@ -802,7 +813,7 @@ describe('swarmRoutes', () => {
 describe('swaggerRoutes', () => {
   it('GET /openapi.json returns OpenAPI spec', async () => {
     const app = buildApp({ enableSwagger: true });
-    const res = await request(app.callback()).get('/openapi.json');
+    const res = await request(await serve(app)).get('/openapi.json');
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toMatch(/json/);
     expect(res.body.openapi).toMatch(/^3\.0\./);
@@ -812,7 +823,7 @@ describe('swaggerRoutes', () => {
 
   it('GET /docs returns HTML', async () => {
     const app = buildApp({ enableSwagger: true });
-    const res = await request(app.callback()).get('/docs');
+    const res = await request(await serve(app)).get('/docs');
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toMatch(/html/);
     expect(res.text).toContain('swagger');
@@ -820,7 +831,7 @@ describe('swaggerRoutes', () => {
 
   it("describes the refusal of another user's thread", async () => {
     const app = buildApp({ enableSwagger: true });
-    const res = await request(app.callback()).get('/openapi.json');
+    const res = await request(await serve(app)).get('/openapi.json');
     const paths = res.body.paths as Record<string, Record<string, { responses: object }>>;
 
     for (const [path, method] of [
@@ -834,7 +845,7 @@ describe('swaggerRoutes', () => {
 
   it('swagger routes not available when enableSwagger is false', async () => {
     const app = buildApp({ enableSwagger: false });
-    const res = await request(app.callback()).get('/openapi.json');
+    const res = await request(await serve(app)).get('/openapi.json');
     expect(res.status).toBe(404);
   });
 
@@ -845,10 +856,10 @@ describe('swaggerRoutes', () => {
     parent.use('/api/ai', router.routes(), router.allowedMethods());
     app.use(parent.routes());
 
-    const spec = await request(app.callback()).get('/api/ai/openapi.json');
+    const spec = await request(await serve(app)).get('/api/ai/openapi.json');
     expect(spec.body.servers).toEqual([{ url: '/api/ai' }]);
 
-    const root = await request(buildApp({ enableSwagger: true }).callback()).get('/openapi.json');
+    const root = await request(await serve(buildApp({ enableSwagger: true }))).get('/openapi.json');
     expect(root.body.servers).toEqual([{ url: '/' }]);
   });
 
@@ -857,17 +868,17 @@ describe('swaggerRoutes', () => {
       enableSwagger: true,
       swagger: { servers: [{ url: 'https://api.example.com/ai' }] },
     });
-    const res = await request(app.callback()).get('/openapi.json');
+    const res = await request(await serve(app)).get('/openapi.json');
     expect(res.body.servers).toEqual([{ url: 'https://api.example.com/ai' }]);
   });
 
   it('declares bearer auth only when the router checks credentials', async () => {
-    const open = await request(buildApp({ enableSwagger: true }).callback()).get('/openapi.json');
+    const open = await request(await serve(buildApp({ enableSwagger: true }))).get('/openapi.json');
     expect(open.body.security).toBeUndefined();
     expect(open.body.components.securitySchemes).toBeUndefined();
 
     const guarded = buildApp({ enableSwagger: true, auth: () => ({ userId: 'u1' }) });
-    const res = await request(guarded.callback()).get('/openapi.json');
+    const res = await request(await serve(guarded)).get('/openapi.json');
     expect(res.body.components.securitySchemes).toEqual({
       bearerAuth: { type: 'http', scheme: 'bearer' },
     });
@@ -876,8 +887,8 @@ describe('swaggerRoutes', () => {
 
   it('caches the OpenAPI spec across requests', async () => {
     const app = buildApp({ enableSwagger: true });
-    const res1 = await request(app.callback()).get('/openapi.json');
-    const res2 = await request(app.callback()).get('/openapi.json');
+    const res1 = await request(await serve(app)).get('/openapi.json');
+    const res2 = await request(await serve(app)).get('/openapi.json');
     expect(res1.body).toEqual(res2.body);
   });
 });

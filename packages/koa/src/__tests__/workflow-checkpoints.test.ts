@@ -60,7 +60,7 @@ async function start(store?: InMemoryCheckpointStore, failing = 1) {
   app.use(router.routes());
   app.use(router.allowedMethods());
   server = await new Promise<Server>((resolve) => {
-    const listening = app.listen(0, () => resolve(listening));
+    const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
   });
   const { port } = server.address() as AddressInfo;
   const post = (path: string, body: unknown, user?: string) =>

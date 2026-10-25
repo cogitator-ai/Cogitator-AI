@@ -726,7 +726,30 @@ function generateSchemas(limits: RunLimits | undefined): Record<string, unknown>
     ToolApprovalDecision: {
       type: 'object',
       required: ['approved'],
-      properties: { approved: { type: 'boolean' }, reason: { type: 'string' } },
+      properties: {
+        approved: { type: 'boolean' },
+        reason: { type: 'string', description: 'Why the call was refused, for the model' },
+        updatedArguments: {
+          type: 'object',
+          additionalProperties: true,
+          description:
+            "The arguments an approved call runs with instead, checked against the tool's schema and the rules again",
+        },
+        remember: {
+          description:
+            'Approve calls like this one from now on: `true` saves the `suggestedRule` of the approval where the server saves rules (`local` settings by default), an object names the rule (which must cover the call) and the layer (one the server allows, `session` and `local` by default)',
+          oneOf: [
+            { type: 'boolean' },
+            {
+              type: 'object',
+              properties: {
+                rule: { type: 'string' },
+                layer: { type: 'string', enum: ['session', 'local', 'project', 'user'] },
+              },
+            },
+          ],
+        },
+      },
     },
     AgentResumeRequest: {
       type: 'object',

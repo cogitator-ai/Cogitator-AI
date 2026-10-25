@@ -707,6 +707,11 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
 
   const approve = useCallback(() => resume({ defaultDecision: { approved: true } }), [resume]);
 
+  const approveAlways = useCallback(
+    () => resume({ defaultDecision: { approved: true, remember: true } }),
+    [resume]
+  );
+
   const deny = useCallback(
     (reason?: string) =>
       resume({
@@ -770,6 +775,7 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     pendingInterrupts: state.pendingInterrupts,
     resume,
     approve,
+    approveAlways,
     deny,
   };
 }

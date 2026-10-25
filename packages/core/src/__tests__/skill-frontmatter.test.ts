@@ -144,6 +144,20 @@ describe('parseSkillFile', () => {
     expect(parsed.diagnostics[0]?.message).toContain('metadata is not a mapping');
   });
 
+  it('keeps a rule with spaces in its parentheses whole and splits on commas too', () => {
+    const parsed = parseSkillFile(
+      skill(
+        'name: pdf-processing\ndescription: PDFs.\nallowed-tools: "Bash(git status *), Read Edit(./docs/a b.md)"'
+      ),
+      origin
+    );
+    expect(parsed.manifest?.allowedTools).toEqual([
+      'Bash(git status *)',
+      'Read',
+      'Edit(./docs/a b.md)',
+    ]);
+  });
+
   it('takes allowed-tools as a list too, and ignores any other type', () => {
     const listed = parseSkillFile(
       skill('name: pdf-processing\ndescription: PDFs.\nallowed-tools:\n  - Read\n  - Bash'),

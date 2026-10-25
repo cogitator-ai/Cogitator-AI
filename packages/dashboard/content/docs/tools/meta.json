@@ -12,6 +12,7 @@
     "timeouts",
     "tool-search",
     "approvals",
+    "permissions",
     "agent-as-tool",
     "tool-caching"
   ]

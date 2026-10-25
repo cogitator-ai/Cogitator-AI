@@ -175,6 +175,7 @@ export const LimitsConfigSchema = z.object({
   defaultTimeout: z.number().positive().optional(),
   maxTokensPerRun: z.number().int().positive().optional(),
   maxToolResultLength: z.number().int().positive().optional(),
+  onExceeded: z.enum(['throw', 'interrupt']).optional(),
 });
 
 export const MemoryProviderSchema = z.enum([
@@ -770,6 +771,66 @@ export const PromptsConfigSchema = z.object({
   autoDeployWinner: z.boolean().optional(),
 });
 
+/** How a run decides the tool calls no permission rule decides, see `PermissionMode` */
+export const PermissionModeSchema = z.enum([
+  'default',
+  'acceptEdits',
+  'plan',
+  'auto',
+  'bypassPermissions',
+  'dontAsk',
+]);
+
+/** The layers an "always allow" answer can save its rule to */
+export const PermissionRememberLayerSchema = z.enum(['session', 'local', 'project', 'user']);
+
+/** Where the permission settings files are read, see `PermissionSettingsOptions` */
+export const PermissionSettingsOptionsSchema = z.object({
+  root: z.string().optional(),
+  userDirs: z.array(z.string()).optional(),
+  managedDirs: z.array(z.string()).optional(),
+  layers: z.array(z.enum(['managed', 'local', 'project', 'user'])).optional(),
+  trusted: z.boolean().optional(),
+});
+
+/**
+ * The classifier model of `auto` mode, see `PermissionClassifierModelConfig`. A classifier of your
+ * own (a `classify` function) is given in code only
+ */
+export const PermissionClassifierModelSchema = z.object({
+  model: z.string().min(1),
+  instructions: z.string().optional(),
+  timeout: z.number().positive().optional(),
+  transcriptMessages: z.number().int().nonnegative().optional(),
+});
+
+/** Permission rules and modes of the runtime, see `PermissionsConfig` */
+export const PermissionsConfigSchema = z.object({
+  mode: PermissionModeSchema.optional(),
+  allow: z.array(z.string()).optional(),
+  ask: z.array(z.string()).optional(),
+  deny: z.array(z.string()).optional(),
+  settings: z.union([z.boolean(), PermissionSettingsOptionsSchema]).optional(),
+  classifier: PermissionClassifierModelSchema.optional(),
+  rememberIn: PermissionRememberLayerSchema.optional(),
+  rememberLayers: z.array(PermissionRememberLayerSchema).optional(),
+});
+
+/** A limit of money, tokens or tool calls, see `BudgetLimits` */
+export const BudgetLimitsSchema = z.object({
+  maxCostUsd: z.number().positive().optional(),
+  maxTokens: z.number().int().positive().optional(),
+  maxToolCalls: z.number().int().positive().optional(),
+});
+
+/** Budgets of a session and of each agent in it, see `SessionBudgetConfig` */
+export const SessionBudgetConfigSchema = z.object({
+  session: BudgetLimitsSchema.optional(),
+  agent: BudgetLimitsSchema.optional(),
+  warnAt: z.number().min(0).max(1).optional(),
+  allowRaise: z.boolean().optional(),
+});
+
 /** What a run does when its thread has a run going on, see `CogitatorConfig.multitaskStrategy` */
 export const MultitaskStrategySchema = z.enum(['enqueue', 'reject', 'interrupt', 'rollback']);
 
@@ -778,6 +839,8 @@ export const CogitatorConfigSchema = z.object({
   multitaskStrategy: MultitaskStrategySchema.optional(),
   prompts: PromptsConfigSchema.optional(),
   limits: LimitsConfigSchema.optional(),
+  permissions: PermissionsConfigSchema.optional(),
+  budget: SessionBudgetConfigSchema.optional(),
   memory: MemoryConfigSchema.optional(),
   sandbox: SandboxConfigSchema.optional(),
   reflection: ReflectionConfigSchema.optional(),

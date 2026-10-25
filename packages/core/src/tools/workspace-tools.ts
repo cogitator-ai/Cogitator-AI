@@ -4,6 +4,7 @@ import {
   type Tool,
   type ToolContext,
   type Workspace,
+  type WorkspaceEntry,
 } from '@cogitator-ai/types';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
@@ -71,6 +72,15 @@ export interface WorkspaceToolsOptions {
   grepTimeout?: number;
 }
 
+/** Entries a search or a listing left out because the permission rules refuse or ask for them */
+interface Withheld {
+  count: number;
+  reason: string;
+}
+
+const WITHHELD_REASON =
+  'The permission rules refuse these entries or ask before they are read, so a search leaves them out. Read one with read_file to ask for it.';
+
 /**
  * Tools that work in a workspace: `read_file` (with line ranges), `write_file`, `edit_file`
  * (exact replacement of a unique string), `list_files`, `glob`, `grep` and `run_command`. Each
@@ -100,6 +110,24 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
   };
   const approval = (name: WorkspaceToolName) =>
     needsApproval(name) ? { requiresApproval: true } : {};
+  const bound = (path: string): string =>
+    workspace && !isAbsolute(path) ? resolve(workspace.root, path) : path;
+  const boundCwd = (cwd: string | undefined): string | undefined =>
+    workspace ? resolve(workspace.root, cwd ?? workspace.cwd) : cwd;
+  const readable = async <T extends Pick<WorkspaceEntry, 'path'>>(
+    ws: Workspace,
+    entries: readonly T[],
+    context: ToolContext
+  ): Promise<{ kept: T[]; withheld?: Withheld }> => {
+    const permissions = context.permissions;
+    if (!permissions) return { kept: [...entries] };
+    const kept: T[] = [];
+    for (const entry of entries) {
+      if (await permissions.canRead(resolve(ws.root, entry.path))) kept.push(entry);
+    }
+    const count = entries.length - kept.length;
+    return { kept, ...(count > 0 && { withheld: { count, reason: WITHHELD_REASON } }) };
+  };
   const lockFile = async (path: string, context: ToolContext): Promise<string[]> => {
     const ws = resolveWorkspace(context);
     return [await fileLockKey(isAbsolute(path) ? path : resolve(ws.root, path))];
@@ -133,6 +161,8 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
         .describe(`Number of lines to read (default: ${DEFAULT_READ_LINES})`),
     }),
     category: 'file',
+    annotations: { readOnlyHint: true },
+    access: { kind: 'read', paths: ({ path }) => [bound(path)] },
     isConcurrencySafe: true,
     presentation: ({ path }) => ({ label: 'Read file', icon: 'file-text', detail: path }),
     ...approval('read_file'),
@@ -200,6 +230,7 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
       content: z.string().describe('The whole new content of the file'),
     }),
     category: 'file',
+    access: { kind: 'edit', paths: ({ path }) => [bound(path)] },
     sideEffects: ['filesystem'],
     lockKeys: ({ path }, context) => lockFile(path, context),
     presentation: ({ path }) => ({ label: 'Write file', icon: 'file-plus', detail: path }),
@@ -226,6 +257,7 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
         .describe('Replace every occurrence instead of requiring exactly one (default: false)'),
     }),
     category: 'file',
+    access: { kind: 'edit', paths: ({ path }) => [bound(path)] },
     sideEffects: ['filesystem'],
     lockKeys: ({ path }, context) => lockFile(path, context),
     presentation: ({ path }) => ({ label: 'Edit file', icon: 'file-pen', detail: path }),
@@ -277,13 +309,19 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
         .describe('Include entries whose name starts with a dot (default: false)'),
     }),
     category: 'file',
+    annotations: { readOnlyHint: true },
+    access: { kind: 'read', paths: ({ path }) => [bound(path ?? '.')] },
     isConcurrencySafe: true,
     presentation: ({ path }) => ({ label: 'List files', icon: 'folder', detail: path ?? '.' }),
     ...approval('list_files'),
     execute: async ({ path = '.', recursive = false, includeHidden = false }, context) => {
       const ws = resolveWorkspace(context);
-      const entries = await call(() =>
-        ws.list(path, { recursive, includeHidden, skipDirs, limit: MAX_LIST_ENTRIES + 1 })
+      const { kept: entries, withheld } = await readable(
+        ws,
+        await call(() =>
+          ws.list(path, { recursive, includeHidden, skipDirs, limit: MAX_LIST_ENTRIES + 1 })
+        ),
+        context
       );
       return {
         path,
@@ -291,6 +329,7 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
           .slice(0, MAX_LIST_ENTRIES)
           .map(({ path: entryPath, type, size }) => ({ path: entryPath, type, size })),
         truncated: entries.length > MAX_LIST_ENTRIES,
+        ...(withheld && { withheld }),
       };
     },
   });
@@ -303,6 +342,8 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
       path: z.string().optional().describe('Directory to search in (default: the root)'),
     }),
     category: 'file',
+    annotations: { readOnlyHint: true },
+    access: { kind: 'read', paths: ({ path }) => [bound(path ?? '.')] },
     isConcurrencySafe: true,
     presentation: ({ pattern }) => ({ label: 'Find files', icon: 'search', detail: pattern }),
     ...approval('glob'),
@@ -316,12 +357,14 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
           skipDirs,
         })
       );
-      const files = entries.filter((entry) => entry.type === 'file').map((entry) => entry.path);
+      const { kept, withheld } = await readable(ws, entries, context);
+      const files = kept.filter((entry) => entry.type === 'file').map((entry) => entry.path);
       return {
         pattern,
         files: files.slice(0, MAX_GLOB_RESULTS),
         count: files.length,
         truncated: files.length > MAX_GLOB_RESULTS,
+        ...(withheld && { withheld }),
       };
     },
   });
@@ -352,6 +395,8 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
         .describe(`Stop after this many matches (default: ${DEFAULT_GREP_MATCHES})`),
     }),
     category: 'file',
+    annotations: { readOnlyHint: true },
+    access: { kind: 'read', paths: ({ path }) => [bound(path ?? '.')] },
     isConcurrencySafe: true,
     presentation: ({ pattern }) => ({
       label: 'Search files',
@@ -383,13 +428,14 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
       const target = await call(() => ws.stat(path));
       const matchesGlob = fileGlob ? workspaceGlobMatcher(fileGlob) : undefined;
       const listLimit = MAX_GREP_FILES * 4;
-      const listed =
+      const listed: Array<Pick<WorkspaceEntry, 'path' | 'size' | 'type'>> =
         target.type === 'file'
           ? [{ path: target.path, size: target.size, type: target.type }]
           : await call(() =>
               ws.list(path, { recursive: true, includeHidden, skipDirs, limit: listLimit })
             );
-      const candidates = listed.filter(
+      const { kept: readableFiles, withheld } = await readable(ws, listed, context);
+      const candidates = readableFiles.filter(
         (entry) =>
           entry.type === 'file' &&
           (!matchesGlob || matchesGlob(relativeTo(target.path, entry.path)))
@@ -453,6 +499,7 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
         filesSkipped: skipped,
         truncated,
         ...(incomplete && { incomplete: true }),
+        ...(withheld && { withheld }),
       };
     },
   });
@@ -482,6 +529,11 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
     sideEffects: ['process', 'filesystem', 'network'],
     presentation: ({ command }) => ({ label: 'Run command', icon: 'terminal', detail: command }),
     ...approval('run_command'),
+    access: {
+      kind: 'command',
+      command: ({ command }) => command,
+      cwd: ({ cwd }) => boundCwd(cwd),
+    },
     execute: async ({ command, cwd, timeout, background }, context) => {
       const ws = resolveWorkspace(context);
       const result = await call(() =>

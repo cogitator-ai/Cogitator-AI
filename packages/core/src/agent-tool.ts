@@ -46,7 +46,10 @@ const DEFAULT_SCHEMA = z.object({
 
 /**
  * The agent as a tool another agent calls with a task. The inner run gets the caller's signal,
- * user, deps and, unless the inner agent has a workspace of its own, the caller's workspace.
+ * user, deps, permission mode and `session` rules (so a caller in `plan` mode delegates no edits,
+ * and its deny rules hold for the delegate) and, unless the inner agent has a workspace of its
+ * own, the caller's workspace. Its calls go through the same permission decision as the caller's,
+ * the settings files of the runtime included.
  */
 export function agentAsTool<TDeps = unknown>(
   cogitator: Cogitator,
@@ -69,6 +72,7 @@ export function agentAsTool<TDeps = unknown>(
     parameters: DEFAULT_SCHEMA,
     timeout,
     sideEffects: ['external'],
+    access: { kind: 'agent', agent: agent.name },
 
     execute: async (
       params: { task: string },
@@ -84,6 +88,12 @@ export function agentAsTool<TDeps = unknown>(
           ...(context.userId !== undefined && { userId: context.userId }),
           ...(context.deps !== undefined && { deps: context.deps }),
           ...(!delegate.config.workspace && context.workspace && { workspace: context.workspace }),
+          ...(context.permissions && {
+            permissions: {
+              mode: context.permissions.mode,
+              inherited: context.permissions.inherited,
+            },
+          }),
           onApproval: async (request) => {
             const decision = onApproval ? await onApproval(request) : 'pause';
             return decision === 'pause' ? DELEGATED_DECLINE : decision;

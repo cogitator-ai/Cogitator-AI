@@ -187,7 +187,7 @@ export async function featuresB(): Promise<ExplorerFeature[]> {
       pkg: '@cogitator-ai/core',
       title: 'Safety',
       summary:
-        'Personal data is masked before the provider sees it, injection attempts fail the run, guardrails block or rewrite unsafe inputs, outputs and tool calls, and your own middleware guards every model and tool call.',
+        'Personal data is masked before the provider sees it, injection attempts fail the run, guardrails block or rewrite unsafe inputs, outputs and tool calls, Claude Code compatible permission rules and modes decide every tool call with an audit log, and session budgets pause a run before it overspends.',
       href: '/docs/advanced/security',
       code: safety,
     },

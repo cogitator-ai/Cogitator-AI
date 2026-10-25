@@ -36,6 +36,21 @@ import type { TodoItem } from './todos';
 import type { LoggingConfig } from './logging';
 import type { ABTestStore, ABTestVariant, InstructionVersionStore } from './prompt-optimization';
 import type { MultitaskStrategy, QueuedRunMessage, RunInterrupt } from './run-control';
+import type {
+  BudgetUsage,
+  PermissionDecision,
+  PermissionDecisionEvent,
+  PermissionMode,
+  PermissionOptions,
+  PermissionRememberLayer,
+  PermissionRuleRef,
+  PermissionRules,
+  InheritedPermissionRules,
+  PermissionsConfig,
+  BudgetSpend,
+  SessionBudgetConfig,
+  SessionSpend,
+} from './permissions';
 
 /**
  * Where a run's spans go in a distributed trace: the trace they join and the span that is the
@@ -186,7 +201,25 @@ export interface CogitatorConfig {
      * the folders of runs older than this. Default: 7 days, `Infinity` keeps them all
      */
     toolResultRetention?: number;
+    /**
+     * What a run does when it reaches `maxTokensPerRun` or a cost routing budget
+     * (`costRouting.budget`): `throw` (default) fails it with `RUN_TOKEN_LIMIT_EXCEEDED` or
+     * `BUDGET_EXCEEDED`, as before. `interrupt` pauses it with an interrupt of kind `budget`, as a
+     * session budget does: resume to raise the limit, go on past it or stop
+     */
+    onExceeded?: 'throw' | 'interrupt';
   };
+  /**
+   * Permission rules and modes for every run of this runtime: which tool calls run, ask a person
+   * or are refused, and where the rules come from (code, Claude Code compatible settings files).
+   * Unset, a call asks only when its tool needs approval, as before
+   */
+  permissions?: PermissionsConfig;
+  /**
+   * What a session (a thread across its runs) and each agent in it may spend in money, tokens and
+   * tool calls. A run that reaches a limit pauses with an interrupt of kind `budget`
+   */
+  budget?: SessionBudgetConfig;
   memory?: MemoryConfig;
   /** Sandbox configuration for isolated tool execution */
   sandbox?: SandboxManagerConfig;
@@ -327,6 +360,22 @@ export interface RunOptions<TDeps = unknown> {
     | 'pause'
     | undefined
     | Promise<ToolApprovalDecision | 'pause' | undefined>;
+  /**
+   * The run's permission mode and rules (`session` layer), over the agent's and the runtime's:
+   * the mode replaces theirs, the rules join theirs. Pass them again to `resume()` to change them,
+   * a resumed run keeps the mode it paused in otherwise
+   */
+  permissions?: PermissionOptions;
+  /**
+   * Hears every permission decision of the run: the automatic ones (a rule, the mode, the `auto`
+   * classifier) and the answers to approvals. Each is also saved to the thread as an `approval`
+   * entry once the run has permissions set up
+   */
+  onPermissionDecision?: (event: PermissionDecisionEvent) => void;
+  /** Budgets of the run's session over the runtime's `budget`, field by field */
+  budget?: SessionBudgetConfig;
+  /** A budget of the run's session passed its warning share, see `SessionBudgetConfig.warnAt` */
+  onBudgetWarning?: (warning: BudgetUsage & { runId: string; threadId: string }) => void;
   onToolCall?: (call: ToolCall) => void;
   onToolResult?: (result: ToolResult) => void;
   /** What a running tool has so far, each time it reports it with `context.update()` */
@@ -536,9 +585,39 @@ export interface ToolApprovalRequest {
   threadId?: string;
   /** The user a call made with `invokeTool` acts for, as its options name it */
   userId?: string;
+  /** Why the call asks: the rule, the mode or the tool's own approval setting */
+  reason?: string;
+  /** The `ask` rule that made the call ask, when one did */
+  rule?: PermissionRuleRef;
+  /**
+   * A rule an "always allow" answer would save, such as `Bash(npm test *)`, for a client's
+   * "always allow" choice. Present once the run has permissions set up
+   */
+  suggestedRule?: string;
+  /** The permission mode of the run */
+  mode?: PermissionMode;
 }
 
-export type ToolApprovalDecision = { approved: true } | { approved: false; reason?: string };
+/**
+ * The answer to an approval. An approval may change the arguments (`updatedArguments`): the call
+ * runs with them once they pass the tool's schema and the permission rules again. `remember`
+ * saves an allow rule ("always allow"): `true` saves the request's `suggestedRule` to
+ * `permissions.rememberIn`, or name the rule and the layer
+ */
+export type ToolApprovalDecision =
+  | {
+      approved: true;
+      updatedArguments?: Record<string, unknown>;
+      remember?: boolean | ToolApprovalRemember;
+    }
+  | { approved: false; reason?: string };
+
+/** Which allow rule an "always allow" answer saves, and where */
+export interface ToolApprovalRemember {
+  /** The rule, which must match the approved call (default: the request's `suggestedRule`) */
+  rule?: string;
+  layer?: PermissionRememberLayer;
+}
 
 /** The agent a tool call made outside a run belongs to, see `ToolInvocationOptions.agent`. */
 export interface ToolInvocationAgent {
@@ -548,6 +627,7 @@ export interface ToolInvocationAgent {
   readonly config: {
     readonly middleware?: readonly RunMiddleware[];
     readonly workspace?: Workspace;
+    readonly permissions?: PermissionOptions;
   };
 }
 
@@ -594,12 +674,18 @@ export interface ToolInvocationOptions {
    * result carries the request in `pendingApproval`
    */
   onApproval?: RunOptions['onApproval'];
+  /** The permission mode and rules of the call, as a run's `permissions` */
+  permissions?: PermissionOptions;
+  /** Hears the permission decision of the call, see `RunOptions.onPermissionDecision` */
+  onPermissionDecision?: RunOptions['onPermissionDecision'];
 }
 
 /** What a tool call made outside a run returned, see `ToolInvoker`. */
 export interface ToolInvocationResult extends ToolResult {
   /** The call needed approval that nobody gave, so the tool did not run */
   pendingApproval?: ToolApprovalRequest;
+  /** The permission decision of the call, when the runtime has permissions set up */
+  permission?: PermissionDecision;
 }
 
 /**
@@ -674,6 +760,18 @@ export interface RunCheckpoint {
      * over when one of them was a handoff. Missing when no call of the turn ran yet
      */
     completed?: string[];
+    /** Calls of the turn the permissions refused, with why, by tool call id */
+    denied?: Record<string, string>;
+    /**
+     * Calls of the turn the rules, the mode or the classifier allowed rather than a person: a
+     * resume decides them again under its own mode and rules
+     */
+    automatic?: string[];
+    /**
+     * Approvals the turn asked for the arguments a `wrapToolCall` middleware changed calls to: a
+     * decision for such a call decides these arguments, not the ones the model sent
+     */
+    changed?: ToolApprovalRequest[];
   };
   /**
    * What the run waits on, approvals among them (`kind: 'approval'`), and the answers given so
@@ -721,6 +819,40 @@ export interface RunCheckpoint {
     parallelToolCalls?: boolean;
     maxParallelToolCalls?: number;
     timeouts?: RunTimeouts;
+  };
+  /**
+   * The permission mode the run paused in and the rules a person allowed for the session, so the
+   * resumed run goes on the same way. Missing for a run without permissions set up
+   */
+  permissions?: {
+    mode: PermissionMode;
+    /** Rules a person allowed for the session ("always allow" to the `session` layer) */
+    remembered?: PermissionRules;
+    /**
+     * The run's own rules (`RunOptions.permissions`), kept unless the resume passes its own, with
+     * where their path patterns start from
+     */
+    rules?: PermissionRules & { inherited?: InheritedPermissionRules[] };
+  };
+  /**
+   * What the run counted against its budgets before it paused: the tool calls it ran, the limits
+   * an answer lifted or raised for the rest of the run, and how much of the run's spending the
+   * session already holds. Missing for a run without budgets
+   */
+  budget?: {
+    /**
+     * The run's own budgets (`RunOptions.budget`, without `onWarning`), kept unless the resume
+     * passes its own
+     */
+    limits?: Omit<SessionBudgetConfig, 'onWarning'>;
+    /** What the run spent so far, by agent too */
+    spent: BudgetSpend;
+    /** How much of `spent` the session's record already holds */
+    recorded: BudgetSpend;
+    /** Limits a `continue` answer lifted for the rest of the run, by `<scope>.<metric>` */
+    lifted?: string[];
+    /** Run limits a `continue` answer raised, by `<scope>.<metric>` */
+    raised?: Record<string, number>;
   };
 }
 
@@ -858,6 +990,13 @@ export interface RunResult {
    * the list was written in this run or an earlier run of the thread
    */
   readonly todos?: readonly TodoItem[];
+  /**
+   * Set when the run ended because a person answered `{ action: 'stop' }` to a budget it reached:
+   * which limit, and how much of it was spent
+   */
+  readonly budgetStop?: BudgetUsage;
+  /** What the run's session spent with this run, when it has budgets */
+  readonly sessionSpend?: SessionSpend;
 }
 
 export interface Span {

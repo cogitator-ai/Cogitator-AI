@@ -371,4 +371,14 @@ export interface ToolAdapterOptions {
    * approval, `true` asks for every call
    */
   requiresApproval?: boolean | ((tool: MCPToolDefinition) => boolean);
+
+  /**
+   * The server's name in permission rules: each tool gets `mcp: { server, tool }` (`Tool.mcp`), so
+   * `mcp__<server>__<tool>` rules match it under its original MCP name whatever `namePrefix` is.
+   * Default: the name the server reports when it connects (`MCPClient.serverName`). A server
+   * without a name gives `''`: its tools still carry their `mcp` origin, so the permissions never
+   * trust what the server says of them (`readOnlyHint`), but only rules on their Cogitator names
+   * match them
+   */
+  server?: string;
 }

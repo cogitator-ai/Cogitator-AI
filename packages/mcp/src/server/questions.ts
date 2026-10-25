@@ -37,7 +37,12 @@ export async function elicitAnswers(
       );
     }
     const problem = problems.get(question.id);
-    const message = problem ? `${problem}\n\n${question.message}` : question.message;
+    const plan = question.kind === 'plan' ? question.details?.plan : undefined;
+    const asked =
+      typeof plan === 'string' && plan.trim() !== ''
+        ? `${plan.trim()}\n\n${question.message}`
+        : question.message;
+    const message = problem ? `${problem}\n\n${asked}` : asked;
     const reply = elicit ? await elicit({ message, schema: form.schema }) : undefined;
     if (!reply) {
       throw unanswered(question, agentName, 'this MCP client cannot answer elicitation requests');

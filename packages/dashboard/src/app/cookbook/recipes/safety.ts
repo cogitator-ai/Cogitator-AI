@@ -5,7 +5,7 @@ export const safety: Section = {
   title: 'Safety & Cost',
   icon: '🛡️',
   description:
-    'Block prompt injection, filter harmful input and output, guard dangerous tools and keep spending under a budget.',
+    'Block prompt injection, filter harmful input and output, decide tool calls by rules and modes, and keep spending under a budget.',
   recipes: [
     {
       id: 'prompt-injection',
@@ -226,6 +226,82 @@ await cog.close();`,
           href: '/docs/core/middleware',
           label: 'Run Middleware',
         },
+      ],
+    },
+    {
+      id: 'permissions',
+      title: 'Permission Rules, Modes and Session Budgets',
+      difficulty: 'medium',
+      time: '10 min',
+      problem:
+        'A coding agent should run your tests without asking, never read `.env` or push, plan before it edits, and stop when a session has spent enough.',
+      points: [
+        'Allow, ask and deny rules in the grammar of Claude Code, read from `.claude/settings.json` too',
+        'Plan mode keeps the agent read-only until a person approves its plan',
+        'Every decision lands in the thread log, a budget pauses the run instead of failing it',
+      ],
+      file: 'permissions.ts',
+      code: `import { Agent, Cogitator, LocalWorkspace, workspaceTools } from '@cogitator-ai/core';
+
+const workspace = new LocalWorkspace({ root: process.cwd() });
+
+const cog = new Cogitator({
+  memory: { adapter: 'memory' },
+  permissions: {
+    allow: ['Bash(npm test *)', 'Bash(git status)', 'Read'],
+    ask: ['Bash(git push *)'],
+    deny: ['Read(.env)', 'Bash(rm -rf *)'],
+    settings: true,
+  },
+  budget: { session: { maxCostUsd: 1, maxToolCalls: 50 } },
+});
+
+const coder = new Agent({
+  name: 'coder',
+  model: 'ollama/qwen2.5:7b',
+  instructions: 'You fix bugs. In plan mode, present your plan with exit_plan_mode first.',
+  tools: workspaceTools(),
+  workspace,
+});
+
+const threadId = 'bugfix-42';
+const paused = await cog.run(coder, {
+  input: 'The date parser drops the timezone, fix it.',
+  threadId,
+  permissions: { mode: 'plan' },
+  onPermissionDecision: (event) => console.log(event.decision, event.toolName, event.reason),
+});
+
+const plan = paused.interrupts?.find((entry) => entry.kind === 'plan');
+if (plan) {
+  console.log(plan.details?.plan);
+  const done = await cog.resume(coder, threadId, {
+    responses: { [plan.id]: { approved: true, mode: 'acceptEdits' } },
+  });
+  const budget = done.interrupts?.find((entry) => entry.kind === 'budget');
+  if (budget) {
+    await cog.resume(coder, threadId, { responses: { [budget.id]: { action: 'stop' } } });
+  }
+  console.log(done.output, done.sessionSpend);
+}
+
+await workspace.dispose();
+await cog.close();`,
+      install: 'pnpm add @cogitator-ai/core',
+      setup: 'ollama pull qwen2.5:7b',
+      env: [],
+      run: 'npx tsx permissions.ts',
+      repoRun: 'npx tsx examples/core/26-permissions.ts',
+      notes: [
+        {
+          type: 'warning',
+          text: 'Rules match the command text, they are not a sandbox: `Bash(rm *)` does not stop `sh -c "rm ..."`. Keep `bypassPermissions` mode for containers and VMs.',
+        },
+      ],
+      example: 'core/26-permissions.ts',
+      docs: [
+        { href: '/docs/tools/permissions', label: 'Permissions' },
+        { href: '/docs/core/budgets', label: 'Session Budgets' },
       ],
     },
     {

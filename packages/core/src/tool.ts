@@ -102,6 +102,8 @@ export function tool<TParams, TResult, TDeps = unknown>(
     timeout: config.timeout,
     sandbox: config.sandbox,
     maxResultLength: config.maxResultLength,
+    ...(config.access && { access: config.access }),
+    ...(config.mcp && { mcp: { ...config.mcp } }),
     ...(config.providerTypes && { providerTypes: config.providerTypes }),
     ...(config.deferred && { deferred: true }),
     ...(config.isConcurrencySafe !== undefined && { isConcurrencySafe: config.isConcurrencySafe }),
@@ -123,8 +125,8 @@ export function tool<TParams, TResult, TDeps = unknown>(
 }
 
 /**
- * The fields of `tool` that decide how its calls are scheduled and shown, to keep on a tool that
- * wraps it: concurrency, lock keys, presentation and input hooks.
+ * The fields of `tool` that decide how its calls are scheduled, permitted and shown, to keep on a
+ * tool that wraps it: concurrency, lock keys, access, MCP origin, presentation and input hooks.
  */
 export function executionFieldsOf<TParams, TResult, TDeps>(
   tool: Tool<TParams, TResult, TDeps>
@@ -132,6 +134,8 @@ export function executionFieldsOf<TParams, TResult, TDeps>(
   Tool<TParams, TResult, TDeps>,
   | 'isConcurrencySafe'
   | 'lockKeys'
+  | 'access'
+  | 'mcp'
   | 'presentation'
   | 'onInputStart'
   | 'onInputDelta'
@@ -141,6 +145,8 @@ export function executionFieldsOf<TParams, TResult, TDeps>(
   return {
     ...(tool.isConcurrencySafe !== undefined && { isConcurrencySafe: tool.isConcurrencySafe }),
     ...(tool.lockKeys && { lockKeys: (params, context) => tool.lockKeys!(params, context) }),
+    ...(tool.access && { access: tool.access }),
+    ...(tool.mcp && { mcp: { ...tool.mcp } }),
     ...(tool.presentation !== undefined && { presentation: tool.presentation }),
     ...(tool.onInputStart && { onInputStart: (event) => tool.onInputStart!(event) }),
     ...(tool.onInputDelta && { onInputDelta: (event) => tool.onInputDelta!(event) }),

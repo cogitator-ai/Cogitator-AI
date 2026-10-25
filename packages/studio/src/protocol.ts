@@ -100,7 +100,23 @@ export interface ToolCallRecord {
   details?: unknown;
   /** What the running tool reported last with `context.update()`. */
   progress?: unknown;
-  approval?: { id: string; status: 'waiting' | 'approved' | 'rejected'; reason?: string };
+  approval?: ApprovalRecord;
+}
+
+/** The approval a tool call waits for, or how it was answered. */
+export interface ApprovalRecord {
+  id: string;
+  status: 'waiting' | 'approved' | 'rejected';
+  /** Why the call was rejected, as the model reads it. */
+  reason?: string;
+  /** Why the call asks: the rule, the permission mode or the tool's own approval setting. */
+  askReason?: string;
+  /** The `ask` rule that made the call ask, as written. */
+  rule?: string;
+  /** The rule an "always allow" answer saves, so calls like this one run without asking. */
+  suggestedRule?: string;
+  /** The rule the runtime saved for an "always allow" answer, and where, once it saved it. */
+  remembered?: { rule: string; layer: 'session' | 'local' | 'project' | 'user' };
 }
 
 export type RunStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'stopped';
@@ -315,6 +331,9 @@ export type HostEvent =
       toolName: string;
       arguments: unknown;
       description: string;
+      askReason?: string;
+      rule?: string;
+      suggestedRule?: string;
     }
   | {
       type: 'run.approval.decided';
@@ -322,6 +341,13 @@ export type HostEvent =
       approvalId: string;
       approved: boolean;
       reason?: string;
+    }
+  | {
+      type: 'run.approval.remembered';
+      runId: string;
+      callId: string;
+      rule: string;
+      layer: 'session' | 'local' | 'project' | 'user';
     }
   | { type: 'run.span'; runId: string; span: RawSpan }
   | { type: 'run.todos'; runId: string; todos: TodoRecord[] }
@@ -393,7 +419,15 @@ export type HostRequest =
       history: HistoryMessage[];
     }
   | { type: 'stop'; requestId: string; runId: string }
-  | { type: 'approve'; requestId: string; approvalId: string; approved: boolean; reason?: string }
+  | {
+      type: 'approve';
+      requestId: string;
+      approvalId: string;
+      approved: boolean;
+      reason?: string;
+      /** Approve calls like this one from now on: save the approval's `suggestedRule`. */
+      remember?: boolean;
+    }
   | { type: 'fork'; requestId: string; run: RunRecord; fork: ForkRequest }
   | {
       type: 'thread.tree';

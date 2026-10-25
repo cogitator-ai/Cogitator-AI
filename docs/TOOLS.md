@@ -259,6 +259,8 @@ await cog.run(agent, {
 
 Paused runs live in the memory adapter's threads (or process memory without one, or a custom `runCheckpoints` store). See [Approvals](https://cogitator.app/docs/tools/approvals).
 
+Permission rules decide calls before anyone is asked: `permissions: { allow: ['Bash(npm test *)'], ask: ['Bash(git push *)'], deny: ['Read(.env)'] }` on the runtime, an agent or a run, in the grammar of Claude Code's settings, with modes `default`, `acceptEdits`, `plan`, `auto` and `bypassPermissions`. A tool of your own joins the `Read`, `Edit` and `Bash` families with `access: { kind, paths?, subtree?, command? }`. See [Permissions](https://cogitator.app/docs/tools/permissions).
+
 ---
 
 ## Built-in Tools

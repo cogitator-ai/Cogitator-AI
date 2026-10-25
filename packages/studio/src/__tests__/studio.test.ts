@@ -101,6 +101,7 @@ describe('loading the project', () => {
     expect(state.host.registry.agents.map((agent) => agent.key)).toEqual([
       'assistant',
       'researcher',
+      'publisher',
     ]);
     expect(state.host.registry.defaultModel).toBe('scripted/test-model');
     expect(
@@ -251,6 +252,58 @@ describe('approvals', () => {
     const { run: record } = await settled(runId);
     expect(record.toolCalls[0].approval).toMatchObject({ status: 'rejected', reason: 'not today' });
     expect(record.output).toContain('not today');
+  });
+
+  it('say why a call asks and allow calls like it for good', async () => {
+    const { runId, threadId } = await api<{ runId: string; threadId: string }>('/api/chat', {
+      method: 'POST',
+      body: { agent: 'publisher', input: 'please publish' },
+    });
+    const waiting = await settled(runId, ['waiting']);
+    const approval = waiting.run.toolCalls[0].approval!;
+    expect(approval.askReason).toEqual(expect.any(String));
+    expect(approval.suggestedRule).toEqual(expect.stringContaining('publish'));
+
+    await api(`/api/approvals/${encodeURIComponent(approval.id)}`, {
+      method: 'POST',
+      body: { approved: true, remember: true },
+    });
+    const { run: record } = await settled(runId);
+    expect(record.status).toBe('completed');
+    expect(record.toolCalls[0].approval).toMatchObject({
+      status: 'approved',
+      remembered: { rule: approval.suggestedRule, layer: 'session' },
+    });
+
+    const again = await api<{ runId: string }>('/api/chat', {
+      method: 'POST',
+      body: { agent: 'publisher', input: 'publish again', threadId },
+    });
+    const { run: second } = await settled(again.runId, ['completed', 'failed', 'waiting']);
+    expect(second.status).toBe('completed');
+    expect(second.toolCalls[0].approval).toBeUndefined();
+  });
+
+  it('show no saved rule when the runtime saved none for an "always allow"', async () => {
+    const { runId } = await chat('please publish');
+    const waiting = await settled(runId, ['waiting']);
+    const approval = waiting.run.toolCalls.find((call) => call.name === 'publish')!.approval!;
+    expect(approval.suggestedRule).toBeUndefined();
+
+    await api(`/api/approvals/${encodeURIComponent(approval.id)}`, {
+      method: 'POST',
+      body: { approved: true, remember: true },
+    });
+    const { run: record } = await settled(runId);
+    expect(record.status).toBe('completed');
+    expect(record.toolCalls[0].approval?.status).toBe('approved');
+    expect(record.toolCalls[0].approval).not.toHaveProperty('remembered');
+  });
+
+  it('refuse a remember that is not true or false', async () => {
+    await expect(
+      api('/api/approvals/nothing', { method: 'POST', body: { approved: true, remember: 'yes' } })
+    ).rejects.toThrow('400 "remember" must be true or false');
   });
 
   it('end when the run is stopped', async () => {

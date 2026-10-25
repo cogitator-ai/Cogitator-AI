@@ -11,8 +11,11 @@ export {
   DEFAULT_EXPIRED_MESSAGE,
   DEFAULT_MAX_ANSWER_ATTEMPTS,
   DEFAULT_STOPPING_MESSAGE,
+  DEFAULT_ALWAYS_WORDS,
   APPROVE_ACTION,
   DENY_ACTION,
+  ALWAYS_ACTION,
+  formatQuestionPrompt,
 } from './approvals';
 export type {
   GatewayApprovalsConfig,

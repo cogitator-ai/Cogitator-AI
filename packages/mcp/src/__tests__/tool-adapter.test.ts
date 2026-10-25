@@ -15,6 +15,7 @@ import {
 } from '../adapter/tool-adapter';
 import type { Tool, ToolContext } from '@cogitator-ai/types';
 import type { MCPClient } from '../client/mcp-client';
+import { PermissionRuleSet, resolvePermission } from '@cogitator-ai/core';
 
 type JsonSchemaInput = Parameters<typeof jsonSchemaToZod>[0];
 type JsonSchemaProperty = NonNullable<JsonSchemaInput['properties']>[string];
@@ -432,6 +433,51 @@ describe('mcpToCogitator', () => {
     const tool = mcpToCogitator(mcpTool, mockClient, { namePrefix: 'mcp_' });
 
     expect(tool.name).toBe('mcp_tool');
+  });
+
+  it('names the server tool it calls under its MCP name, whatever the prefix', () => {
+    const mcpTool = {
+      name: 'create_issue',
+      description: 'Create an issue',
+      inputSchema: { type: 'object' as const, properties: {} },
+    };
+    const reporting = { callTool: vi.fn(), serverName: 'github' } as unknown as MCPClient;
+    const silent = { callTool: vi.fn(), serverName: undefined } as unknown as MCPClient;
+
+    const fromServer = mcpToCogitator(mcpTool, reporting, { namePrefix: 'github_' });
+    expect(fromServer.name).toBe('github_create_issue');
+    expect(fromServer.mcp).toEqual({ server: 'github', tool: 'create_issue' });
+
+    const named = mcpToCogitator(mcpTool, silent, { namePrefix: 'gh_', server: 'github' });
+    expect(named.mcp).toEqual({ server: 'github', tool: 'create_issue' });
+    expect(mcpToCogitator(mcpTool, reporting, { server: 'work' }).mcp).toEqual({
+      server: 'work',
+      tool: 'create_issue',
+    });
+    expect(mcpToCogitator(mcpTool, silent).mcp).toEqual({ server: '', tool: 'create_issue' });
+  });
+
+  it('never lets a server without a name pass its readOnlyHint as a trusted one', async () => {
+    const silent = { callTool: vi.fn(), serverName: '' } as unknown as MCPClient;
+    const reader = mcpToCogitator(
+      {
+        name: 'wipe',
+        description: 'Claims to read',
+        inputSchema: { type: 'object' as const, properties: {} },
+        annotations: { readOnlyHint: true },
+      },
+      silent
+    );
+    const decision = await resolvePermission(
+      reader,
+      {},
+      {
+        mode: 'plan',
+        rules: new PermissionRuleSet([]),
+        needsApproval: false,
+      }
+    );
+    expect(decision.decision).toBe('deny');
   });
 
   it('should produce correct toJSON output', () => {

@@ -53,9 +53,13 @@ import {
   DEFAULT_EXPIRED_MESSAGE,
   DEFAULT_MAX_ANSWER_ATTEMPTS,
   DEFAULT_STOPPING_MESSAGE,
+  DEFAULT_ALWAYS_WORDS,
   APPROVE_ACTION,
   DENY_ACTION,
+  ALWAYS_ACTION,
   formatApprovalPrompt,
+  formatQuestionPrompt,
+  offersAlways,
   parseApprovalReply,
 } from './approvals';
 import type {
@@ -324,6 +328,7 @@ export class Gateway {
     this.approvalWords = {
       approveWords: config.approvals?.approveWords ?? DEFAULT_APPROVE_WORDS,
       denyWords: config.approvals?.denyWords ?? DEFAULT_DENY_WORDS,
+      alwaysWords: config.approvals?.alwaysWords ?? DEFAULT_ALWAYS_WORDS,
     };
 
     this.sessionManager =
@@ -589,7 +594,11 @@ export class Gateway {
     };
 
     try {
-      if (action.data === APPROVE_ACTION || action.data === DENY_ACTION) {
+      if (
+        action.data === APPROVE_ACTION ||
+        action.data === DENY_ACTION ||
+        action.data === ALWAYS_ACTION
+      ) {
         await this.answerApprovalButton(channel, action, answer);
         return;
       }
@@ -611,7 +620,20 @@ export class Gateway {
       });
       return;
     }
-    const approve = action.data === APPROVE_ACTION;
+    const alwaysWords = this.approvalWords.alwaysWords ?? [];
+    const always = action.data === ALWAYS_ACTION && alwaysWords.length > 0;
+    const decision: ToolApprovalDecision =
+      action.data === DENY_ACTION
+        ? { approved: false }
+        : always
+          ? { approved: true, remember: true }
+          : { approved: true };
+    const words =
+      action.data === DENY_ACTION
+        ? this.approvalWords.denyWords
+        : always
+          ? alwaysWords
+          : this.approvalWords.approveWords;
     const msg: ChannelMessage = {
       id: action.messageId ?? action.id,
       channelType: action.channelType,
@@ -621,7 +643,7 @@ export class Gateway {
       ...(action.groupId ? { groupId: action.groupId } : {}),
       ...(action.topicId ? { topicId: action.topicId } : {}),
       ...(action.conversationId ? { conversationId: action.conversationId } : {}),
-      text: (approve ? this.approvalWords.approveWords : this.approvalWords.denyWords)[0] ?? '',
+      text: words[0] ?? '',
       raw: action.raw,
     };
     const key = action.messageId
@@ -649,7 +671,7 @@ export class Gateway {
     }
 
     await answer();
-    await this.closePrompts(prompt.threadId, approve);
+    await this.closePrompts(prompt.threadId, decision);
     await this.handleIncoming(msg, false);
   }
 
@@ -657,25 +679,24 @@ export class Gateway {
    * Retires the buttons of a thread's approval prompts once it is answered: they show the
    * decision, or go away when the request was dropped.
    */
-  private async closePrompts(threadId: string, approved: boolean | null): Promise<void> {
+  private async closePrompts(
+    threadId: string,
+    decision: ToolApprovalDecision | null
+  ): Promise<void> {
     const labels = this.config.approvals?.buttonLabels;
+    const shown = decision && {
+      text: !decision.approved
+        ? (labels?.denied ?? 'Denied')
+        : decision.remember
+          ? (labels?.alwaysAllowed ?? 'Always allowed')
+          : (labels?.approved ?? 'Approved'),
+      disabled: true,
+      style: decision.approved ? ('success' as const) : ('danger' as const),
+    };
     for (const [key, prompt] of this.approvalPrompts) {
       if (prompt.threadId !== threadId) continue;
       this.approvalPrompts.delete(key);
-      const buttons =
-        approved === null
-          ? null
-          : [
-              [
-                approved
-                  ? {
-                      text: labels?.approved ?? 'Approved',
-                      disabled: true,
-                      style: 'success' as const,
-                    }
-                  : { text: labels?.denied ?? 'Denied', disabled: true, style: 'danger' as const },
-              ],
-            ];
+      const buttons = shown ? [[shown]] : null;
       await prompt.channel
         .editButtons?.(prompt.channelId, prompt.messageId, buttons)
         .catch(() => {});
@@ -1222,7 +1243,7 @@ export class Gateway {
           ...extra,
         });
         this.pausedThreads.delete(threadId);
-        await this.closePrompts(threadId, decision.approved);
+        await this.closePrompts(threadId, decision);
         const event: ApprovalResolvedEvent = {
           msg,
           threadId,
@@ -1284,9 +1305,7 @@ export class Gateway {
         ...(result.memory && { branchFrom: result.memory.branchPoint }),
       });
       const [first] = questions;
-      const format = first && answerFormat(first.responseSchema);
-      const prompt =
-        first && adaptFor(channel, msg, format ? `${first.message} (${format})` : first.message);
+      const prompt = first && adaptFor(channel, msg, formatQuestionPrompt(first));
       if (prompt) await this.sendReply(channel, msg, threadId, prompt, replyTo);
       return;
     }
@@ -1312,6 +1331,9 @@ export class Gateway {
                 data: APPROVE_ACTION,
                 style: 'success' as const,
               },
+              ...(offersAlways(approvals, this.approvalWords)
+                ? [{ text: labels?.always ?? 'Always allow', data: ALWAYS_ACTION }]
+                : []),
               { text: labels?.deny ?? 'Deny', data: DENY_ACTION, style: 'danger' as const },
             ],
           ]

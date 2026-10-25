@@ -6,6 +6,7 @@
 import type { ZodType } from 'zod';
 import type { MessageContent } from './message';
 import type { RunOptions, RunResult } from './runtime';
+import type { PermissionMode } from './permissions';
 
 /**
  * What a run does when its thread already has a run going on, the "double-texting" policy, named
@@ -85,13 +86,25 @@ export interface RunHandle {
    * delivered: they never reach the run or the thread
    */
   abort(reason?: unknown): readonly QueuedRunMessage[];
+  /** The run's permission mode, once the run started (see `PermissionMode`) */
+  readonly permissionMode?: PermissionMode;
+  /**
+   * Switches the run's permission mode from its next tool call on, such as to `acceptEdits` once
+   * a person trusts the edits, or to `plan` to stop them
+   *
+   * @throws CogitatorError `CONFIGURATION_ERROR` for `bypassPermissions` or `auto` when a
+   * settings file disables it, or `auto` without a classifier
+   */
+  setPermissionMode?(mode: PermissionMode): void;
 }
 
 /**
- * What waits on a paused run before it goes on: a tool call to approve (`approval`), or an answer
- * a tool asked for with `context.interrupt()` (`input`)
+ * What waits on a paused run before it goes on: a tool call to approve (`approval`), an answer a
+ * tool asked for with `context.interrupt()` (`input`), a plan to approve before the run leaves
+ * `plan` mode (`plan`, `PlanResponse` answers it), or a budget the run reached (`budget`,
+ * `BudgetResponse` answers it)
  */
-export type InterruptKind = 'approval' | 'input';
+export type InterruptKind = 'approval' | 'input' | 'plan' | 'budget';
 
 /**
  * A question a paused run waits on. It carries the fields AG-UI interrupts, ACP elicitation and
@@ -112,6 +125,11 @@ export interface RunInterrupt {
   /** The tool call that asked, or that waits for approval */
   toolCallId?: string;
   toolName?: string;
+  /**
+   * More to show the person who answers: the `plan` of a plan, the `BudgetUsage` of a budget
+   * (`scope`, `metric`, `used`, `limit`), or what a tool passed with its question
+   */
+  details?: Record<string, unknown>;
   /** The answer, once given: a tool asking again in a resumed run gets it back */
   response?: unknown;
 }
@@ -129,4 +147,11 @@ export interface InterruptRequest<T = unknown> {
   responseSchema?: ZodType<T> | Record<string, unknown>;
   /** When the question lapses: an answer after it is refused with `INTERRUPT_EXPIRED` */
   expiresAt?: Date | string | number;
+  /**
+   * `plan` for a plan to approve before acting on it, so clients show it as one (default `input`).
+   * A run in `plan` mode asks this way from its `exit_plan_mode` tool
+   */
+  kind?: 'input' | 'plan';
+  /** More to show the person who answers, as JSON, such as the plan itself */
+  details?: Record<string, unknown>;
 }

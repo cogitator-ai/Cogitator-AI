@@ -30,7 +30,11 @@ import {
   type StepGate,
 } from './tool-locks';
 import { guardrailsMiddleware } from '../middleware/builtins';
-import { MiddlewarePipeline, type ToolArgumentsParser } from '../middleware/pipeline';
+import {
+  canonicalArguments,
+  MiddlewarePipeline,
+  type ToolArgumentsParser,
+} from '../middleware/pipeline';
 import { isTripwire } from '../middleware/tripwire';
 import { isToolInterrupt } from './interrupts';
 import {
@@ -77,7 +81,35 @@ export interface ToolCallExecution {
    * schedule runs it alone, see `StepGate`
    */
   step?: { gate: StepGate; alone: boolean };
+  /**
+   * Decides the arguments a `wrapToolCall` middleware changed the call to, as the permissions
+   * decided the ones the model sent. It may throw to pause the run for an approval. With it, the
+   * permissions decide such arguments instead of the tool's own approval setting
+   */
+  permit?: (tool: Tool, args: Record<string, unknown>) => Promise<ChangedCallPermit>;
+  /**
+   * The guardrails whose tool call filter (`filterToolCalls`) checks arguments the call ends up
+   * with after its middleware, the ones an approval of changed arguments gave
+   */
+  guardrails?: ConstitutionalAI;
+  /**
+   * Decides the call again once its locks are held, with the arguments it runs with: why it may
+   * not run, or undefined when it may. The tool starts right after, nothing awaited in between
+   */
+  recheck?: (tool: Tool, args: Record<string, unknown>) => Promise<string | undefined>;
+  /**
+   * Called right before the tool starts, nothing awaited after it: why the call may not start
+   * (an allowance spent meanwhile), or undefined once it counts as made
+   */
+  dispatch?: () => string | undefined;
 }
+
+/**
+ * Whether a call a middleware changed the arguments of may run, and the arguments an approval
+ * of the change replaced them with, or why it may not
+ */
+export type ChangedCallPermit =
+  { allowed: true; args?: Record<string, unknown> } | { allowed: false; reason: string };
 
 /**
  * Runs one tool call: the tool looked up and its arguments checked against its schema, then
@@ -118,7 +150,7 @@ export async function runToolCall(execution: ToolCallExecution): Promise<ToolRes
     { toolCall, tool, args: parsed.args, approved: execution.approved },
     (call) => runTool(call, execution),
     execution.context,
-    parseCallArguments
+    execution.permit ? parseToolArguments : parseCallArguments
   );
 }
 
@@ -214,7 +246,8 @@ const parseCallArguments: ToolArgumentsParser = (call, changed) => {
  * `presentation`, any other result gets the tool's own `presentation`.
  */
 async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Promise<ToolResult> {
-  const { tool, toolCall, args } = call;
+  const { tool } = call;
+  let { toolCall, args } = call;
   const { runId, agentId, signal, extraContext, step } = execution;
   const failed = (error: string, errorCode?: string): ToolResult => ({
     callId: toolCall.id,
@@ -223,6 +256,37 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
     error,
     ...(errorCode && { errorCode }),
   });
+  if (
+    execution.permit &&
+    canonicalArguments(execution.toolCall.arguments) !== canonicalArguments(toolCall.arguments)
+  ) {
+    const permit = await execution.permit(tool, toolCall.arguments);
+    if (!permit.allowed) return failed(`Permission denied: ${permit.reason}`, 'PERMISSION_DENIED');
+    if (permit.args) {
+      toolCall = { ...toolCall, arguments: permit.args };
+      const parsed = parseToolArguments(
+        { toolCall, tool, args: permit.args, approved: true },
+        true
+      );
+      if (!parsed.ok) return failed(parsed.error);
+      args = parsed.args;
+      if (execution.guardrails) {
+        const guard = await execution.guardrails.guardTool(
+          tool,
+          args as Record<string, unknown>,
+          {
+            ...extraContext,
+            agentId,
+            runId,
+            signal: signal ?? new AbortController().signal,
+            toolCallId: toolCall.id,
+          },
+          { approvedByUser: true }
+        );
+        if (!guard.approved) return failed(`Tool blocked: ${guard.reason ?? 'Policy violation'}`);
+      }
+    }
+  }
   const owner = new LockOwner(currentLockOwner());
 
   let keys: readonly string[] = [];
@@ -281,10 +345,20 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
     },
   };
   try {
+    const stale = execution.recheck ? await execution.recheck(tool, toolCall.arguments) : undefined;
+    if (stale !== undefined) {
+      releaseAll();
+      return failed(`Permission denied: ${stale}`, 'PERMISSION_DENIED');
+    }
     const aborted = abortedNow();
     if (aborted) {
       releaseAll();
       return aborted;
+    }
+    const spent = execution.dispatch?.();
+    if (spent !== undefined) {
+      releaseAll();
+      return failed(spent, 'BUDGET_EXCEEDED');
     }
     const result = await insideLockOwner(owner, () =>
       tool.sandbox?.type === 'docker' || tool.sandbox?.type === 'wasm'

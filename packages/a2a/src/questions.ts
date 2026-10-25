@@ -15,6 +15,11 @@ export const TASK_PENDING_QUESTIONS_KEY = 'cogitator:pendingQuestions';
 export interface TaskQuestion {
   /** Key of its answer in an interrupt response */
   id: string;
+  /**
+   * `input` for a question a tool asked, `plan` for a plan to approve before the run leaves plan
+   * mode, `budget` for a budget the run reached
+   */
+  kind?: 'input' | 'plan' | 'budget';
   /** Why the run asks, a short machine-readable reason such as `confirm_plan` */
   reason: string;
   /** What to tell the person who answers */
@@ -25,15 +30,19 @@ export interface TaskQuestion {
   expiresAt?: string;
   /** The tool that asked */
   toolName?: string;
+  /** More to show the person who answers: the `plan` of a plan, the usage of a budget */
+  details?: Record<string, unknown>;
 }
 
 const questionSchema = z.object({
   id: z.string(),
+  kind: z.enum(['input', 'plan', 'budget']).optional(),
   reason: z.string(),
   message: z.string(),
   responseSchema: z.record(z.string(), z.unknown()).optional(),
   expiresAt: z.string().optional(),
   toolName: z.string().optional(),
+  details: z.record(z.string(), z.unknown()).optional(),
 });
 
 const requestSchema = z.object({
@@ -57,11 +66,13 @@ const COGITATOR_PART_KINDS: ReadonlySet<unknown> = new Set([
 export function toTaskQuestion(interrupt: RunInterrupt): TaskQuestion {
   return {
     id: interrupt.id,
+    ...(interrupt.kind !== 'approval' && { kind: interrupt.kind }),
     reason: interrupt.reason,
     message: interrupt.message,
     ...(interrupt.responseSchema && { responseSchema: interrupt.responseSchema }),
     ...(interrupt.expiresAt && { expiresAt: interrupt.expiresAt }),
     ...(interrupt.toolName && { toolName: interrupt.toolName }),
+    ...(interrupt.kind !== 'approval' && interrupt.details && { details: interrupt.details }),
   };
 }
 
@@ -170,8 +181,13 @@ export function answersFromMessage(
     : { problem: `That does not answer the question: ${parsed.problem}.` };
 }
 
-/** A question as a person reads it: its message and, unless it takes free text, the answer form. */
+/**
+ * A question as a person reads it: its message and, unless it takes free text, the answer form,
+ * after the plan of a plan
+ */
 export function questionPrompt(question: TaskQuestion): string {
   const format = answerFormat(question.responseSchema);
-  return format ? `${question.message} (${format})` : question.message;
+  const asked = format ? `${question.message} (${format})` : question.message;
+  const plan = question.kind === 'plan' ? question.details?.plan : undefined;
+  return typeof plan === 'string' && plan.trim() !== '' ? `${plan.trim()}\n\n${asked}` : asked;
 }

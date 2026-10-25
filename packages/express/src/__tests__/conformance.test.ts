@@ -60,7 +60,7 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
   });
   await cogitatorServer.init();
   server = await new Promise<Server>((resolve) => {
-    const listening = app.listen(0, () => resolve(listening));
+    const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
   });
   const { port } = server.address() as AddressInfo;
 

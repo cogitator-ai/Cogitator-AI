@@ -143,7 +143,11 @@ function isModuleNotFound(err: unknown, specifier: string): boolean {
 
 /** What the runtime uses of an `MCPClient` of `@cogitator-ai/mcp`, which is loaded on demand */
 interface MCPClientHandle {
-  getTools(options?: { namePrefix?: string; requiresApproval?: boolean }): Promise<Tool[]>;
+  getTools(options?: {
+    namePrefix?: string;
+    requiresApproval?: boolean;
+    server?: string;
+  }): Promise<Tool[]>;
   close(): Promise<void>;
 }
 
@@ -769,6 +773,7 @@ export class RuntimeBuilder {
           resources.mcpClients.push(client);
           const serverTools = await client.getTools({
             namePrefix: `mcp_${name}_`,
+            server: name,
             ...(serverConfig.requiresApproval !== undefined && {
               requiresApproval: serverConfig.requiresApproval,
             }),
