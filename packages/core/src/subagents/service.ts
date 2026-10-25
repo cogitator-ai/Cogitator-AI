@@ -1040,7 +1040,7 @@ export class SubagentService {
         ...(isolated && { workspace: isolated }),
         ...(background && { timeout: parent.config.timeout }),
       });
-      if (policy || above || own.size > 0) {
+      if (policy || above || narrower || own.size > 0) {
         setToolFilter(agent, (candidate) => keep(sourceOf.get(candidate) ?? candidate));
       }
       if (isolated && swapFrom.length > 0) setWorkspaceSwap(agent, swapFrom, isolated);

@@ -1,10 +1,9 @@
-import { mkdir, readdir, readFile, stat, writeFile, appendFile } from 'node:fs/promises';
+import { appendFile, lstat, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import type { SubagentMemoryScope, Tool } from '@cogitator-ai/types';
 import { tool } from '../tool';
-import { isPathAllowed } from '../tools/path-guard';
 
 /** The tool a subagent with `memory` keeps its notes with */
 export const AGENT_MEMORY = 'agent_memory';
@@ -93,15 +92,35 @@ const MemoryArgs = z.object({
 
 /** The tool that reads and writes the notes in `dir`, never outside it */
 export function agentMemoryTool(dir: string): Tool {
-  const inside = async (path: string | undefined): Promise<string> => {
+  const outside = (path: string | undefined) =>
+    new Error(`${path ?? MEMORY_INDEX} is outside the memory folder`);
+  /**
+   * `path` inside `dir`, every step from `dir` down to it a real folder or file, never a symbolic
+   * link: checked before anything is created and again after, so no step can lead out
+   */
+  const inside = async (path: string | undefined, create: boolean): Promise<string> => {
     const target = resolve(dir, path ?? MEMORY_INDEX);
     const under = relative(dir, target);
-    if (under === '' || under.startsWith('..') || under.split(sep).includes('..')) {
-      throw new Error(`${path ?? ''} is outside the memory folder`);
-    }
-    await mkdir(dirname(target), { recursive: true });
-    if (!(await isPathAllowed(target, [dir]))) {
-      throw new Error(`${path ?? ''} is outside the memory folder`);
+    if (under === '' || under.startsWith('..') || isAbsolute(under)) throw outside(path);
+    const steps = [
+      dir,
+      ...under.split(sep).map((_, index, all) => join(dir, ...all.slice(0, index + 1))),
+    ];
+    const check = async () => {
+      for (const step of steps) {
+        let info;
+        try {
+          info = await lstat(step);
+        } catch {
+          return;
+        }
+        if (info.isSymbolicLink()) throw outside(path);
+      }
+    };
+    await check();
+    if (create) {
+      await mkdir(dirname(target), { recursive: true });
+      await check();
     }
     return target;
   };
@@ -111,8 +130,10 @@ export function agentMemoryTool(dir: string): Tool {
     parameters: MemoryArgs,
     sideEffects: ['filesystem'],
     execute: async ({ action, path, content }) => {
-      await mkdir(dir, { recursive: true });
       if (action === 'list') {
+        const info = await lstat(dir).catch(() => undefined);
+        if (!info) return 'The memory folder is empty';
+        if (info.isSymbolicLink()) throw outside(undefined);
         const files: string[] = [];
         const walk = async (folder: string) => {
           for (const entry of await readdir(folder, { withFileTypes: true })) {
@@ -124,7 +145,7 @@ export function agentMemoryTool(dir: string): Tool {
         await walk(dir);
         return files.length > 0 ? files.sort().join('\n') : 'The memory folder is empty';
       }
-      const target = await inside(path);
+      const target = await inside(path, action !== 'read');
       if (action === 'read') {
         try {
           const info = await stat(target);

@@ -61,7 +61,7 @@ Arguments split as a shell splits words, so quotes keep words together: `/greet 
 | `model`            | The model of that run, on its own provider: an alias of `llm.modelAliases`, a Claude model id or `provider/model` |
 | `effort`           | The reasoning effort of that run                                                                                  |
 
-The command's model, effort and tool limits are kept in the checkpoint of a run that pauses (`checkpoint.command`) and hold again when it resumes. `allowed-tools` apply only to the run the command starts, and only when the run has permissions set up (`permissions` on the runtime, the agent or the run). Without them nothing asks but tools that need approval, and turning the permission engine on for one command would make edits ask. A file whose frontmatter is not valid YAML is skipped with a diagnostic (`commands.onDiagnostic`).
+The command's model, effort and tool limits hold for every agent the run hands over to, are kept in the checkpoint of a run that pauses (`checkpoint.command`) and hold again when it resumes. `allowed-tools` apply only to the run the command starts, and only when the run has permissions set up (`permissions` on the runtime, the agent or the run). Without them nothing asks but tools that need approval, and turning the permission engine on for one command would make edits ask. A file whose frontmatter is not valid YAML is skipped with a diagnostic (`commands.onDiagnostic`).
 
 ## Differences from Claude Code
 

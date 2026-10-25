@@ -807,9 +807,14 @@ export class StudioHost {
           stopped: controller.signal.aborted,
         })
       )
-      .finally(() => {
+      .finally(async () => {
         unsubscribe();
         this.controllers.delete(runId);
+        await swarm.close().catch((error: unknown) => {
+          console.error(
+            `[studio host] could not close the connections of swarm "${key}": ${message(error)}`
+          );
+        });
       });
     return { runId };
   }

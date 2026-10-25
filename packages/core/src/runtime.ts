@@ -2367,6 +2367,8 @@ export class Cogitator implements ToolInvoker {
       permissions.onModeChange((mode) => {
         if (mode === 'plan' && !registry.has(planTool.name)) registry.register(planTool);
       });
+      const runToolFilter = toolFilterOf(agent);
+      const runSwap = workspaceSwapOf(agent);
       const buildRegistry = (owner: Agent) => {
         const ownerRegistry = new ToolRegistry();
         const handoff = handoffTools(owner);
@@ -2393,7 +2395,7 @@ export class Cogitator implements ToolInvoker {
             if (!ownerRegistry.has(delegating.name)) ownerRegistry.register(delegating);
           }
         }
-        const swap = workspaceSwapOf(owner);
+        const swap = workspaceSwapOf(owner) ?? runSwap;
         if (swap) {
           for (const candidate of ownerRegistry.getAll()) {
             const rebound = swap.from
@@ -2402,9 +2404,15 @@ export class Cogitator implements ToolInvoker {
             if (rebound) ownerRegistry.register(rebound, { replace: true });
           }
         }
-        const keep = toolFilterOf(owner);
-        if (keep) {
-          const kept = ownerRegistry.getAll().filter((candidate) => keep(candidate));
+        const ownerFilter = toolFilterOf(owner);
+        const filters = [
+          ...(ownerFilter ? [ownerFilter] : []),
+          ...(runToolFilter && runToolFilter !== ownerFilter ? [runToolFilter] : []),
+        ];
+        if (filters.length > 0) {
+          const kept = ownerRegistry
+            .getAll()
+            .filter((candidate) => filters.every((keep) => keep(candidate)));
           ownerRegistry.clear();
           ownerRegistry.registerMany(kept);
         }

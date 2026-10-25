@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+  symlinkSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -26,7 +27,7 @@ import { Agent } from '../agent';
 import { tool } from '../tool';
 import { workspaceTools } from '../tools/workspace-tools';
 import { LocalWorkspace } from '../workspace/local-workspace';
-import { agentMemoryDir } from '../subagents/memory';
+import { agentMemoryDir, agentMemoryTool } from '../subagents/memory';
 import { resolveDefinitionModel } from '../subagents/models';
 import { openWorktree } from '../subagents/worktree';
 import { ruleMatchesCall } from '../permissions/engine';
@@ -501,6 +502,87 @@ describe('what a subagent may do', () => {
     expect(toolNames(llm.inner?.getCalls()[1])).not.toContain('edit_document');
     expect(toolNames(llm.inner?.getCalls()[1])).toContain('lookup');
     await cog.close();
+  });
+
+  it('holds a subagent without tool lists to the run that continues it', async () => {
+    const extra = tool({
+      name: 'extra',
+      description: 'An extra runtime tool',
+      parameters: z.object({}),
+      execute: async () => 'extra',
+    });
+    const { cog, llm } = runtime(
+      {
+        outer: [
+          turn(
+            call('o1', 'agent', {
+              description: 'x',
+              prompt: 'draft',
+              subagent_type: 'writer',
+              name: 'w',
+            })
+          ),
+          { content: 'drafted' },
+          turn(call('o2', 'send_message', { to: 'w', message: 'again' })),
+          { content: 'waiting' },
+          { content: 'done' },
+        ],
+        inner: [{ content: 'draft' }, { content: 'again' }],
+      },
+      {
+        commands: { commands: { limited: { template: 'Continue w', disallowedTools: ['extra'] } } },
+        subagents: { agents: { writer: { description: 'Writes', model: 'inner/m' } } },
+      }
+    );
+    cog.tools.register(extra);
+    await cog.run(lead(), { input: 'draft', threadId: 't-narrow' });
+    expect(toolNames(llm.inner?.getCalls()[0])).toContain('extra');
+    await cog.run(lead(), { input: '/limited', threadId: 't-narrow' });
+    expect(toolNames(llm.inner?.getCalls()[1])).not.toContain('extra');
+    await cog.close();
+  });
+
+  it('keeps the limits of a command after a handoff', async () => {
+    const { cog, llm } = runtime(
+      {
+        outer: [turn(call('o1', 'transfer_to_billing', {})), { content: 'handed over' }],
+        billing: [{ content: 'billed' }],
+      },
+      { commands: { commands: { bill: { template: 'Bill it', disallowedTools: ['lookup'] } } } }
+    );
+    const billing = new Agent({
+      name: 'billing',
+      model: 'billing/m',
+      instructions: 'You bill.',
+      tools: [lookup],
+    });
+    await cog.run(lead({ handoffs: [billing] }), { input: '/bill' });
+    expect(toolNames(llm.outer?.getCalls()[0])).not.toContain('lookup');
+    expect(toolNames(llm.billing?.getCalls()[0])).not.toContain('lookup');
+    await cog.close();
+  });
+
+  it('never follows a symbolic link out of the memory folder', async () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'memory-links-')));
+    const dir = join(base, 'memory', 'scribe');
+    const outside = join(base, 'outside');
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(outside);
+    symlinkSync(outside, join(dir, 'notes'));
+    const memory = agentMemoryTool(dir);
+    const context = { agentId: 'a', runId: 'r', signal: new AbortController().signal };
+    await expect(
+      memory.execute({ action: 'write', path: 'notes/deep/x.md', content: 'leak' }, context)
+    ).rejects.toThrow('outside the memory folder');
+    await expect(memory.execute({ action: 'read', path: 'notes/x.md' }, context)).rejects.toThrow(
+      'outside the memory folder'
+    );
+    expect(existsSync(join(outside, 'deep'))).toBe(false);
+    expect(await memory.execute({ action: 'read', path: 'fresh/x.md' }, context)).toContain(
+      'does not exist yet'
+    );
+    expect(existsSync(join(dir, 'fresh'))).toBe(false);
+    rmSync(base, { recursive: true, force: true });
   });
 
   it('refuses an unpriced model under the cost budget of the run or the agent', async () => {

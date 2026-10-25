@@ -444,6 +444,37 @@ describe('team strategy', () => {
     expect(result.teamResult?.stopReason).toBe('completed');
   });
 
+  it('hands a skipped member failure to the team: the member is failed and its tasks go back', async () => {
+    const run = team(
+      {
+        lead: () => [],
+        alice: () => [{ fail: 'model offline' }],
+        bob: () => [
+          call('update_task', { taskId: 'task-1', status: 'completed', result: 'saved' }),
+        ],
+      },
+      {
+        team: { tasks: [{ title: 'One', assignee: 'alice' }] },
+        errorHandling: { onAgentFailure: 'skip' },
+      }
+    );
+    const result = await run.swarm.run({ input: 'Go' });
+    expect(result.teamResult?.members.find((state) => state.name === 'alice')).toMatchObject({
+      status: 'failed',
+      error: 'model offline',
+    });
+    expect(inputsOf(run.recorded, 'alice')).toHaveLength(1);
+    expect(result.teamResult?.tasks[0]).toMatchObject({ status: 'completed', owner: 'bob' });
+  });
+
+  it('fails the run when the lead fails, also when failures are skipped', async () => {
+    const run = team(
+      { lead: () => [{ fail: 'lead offline' }] },
+      { errorHandling: { onAgentFailure: 'skip' } }
+    );
+    await expect(run.swarm.run({ input: 'Go' })).rejects.toThrow('lead offline');
+  });
+
   it('returns the task results without synthesis when synthesize is off', async () => {
     const { swarm, recorded } = team(
       {

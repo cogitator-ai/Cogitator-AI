@@ -564,6 +564,7 @@ export abstract class BaseSwarmCoordinator<
       }
 
       case 'skip':
+        if (options.rethrow) throw error;
         return {
           output: '',
           runId: `run_skipped_${nanoid(8)}`,

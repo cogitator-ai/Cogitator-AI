@@ -378,7 +378,9 @@ export class TeamStrategy extends BaseStrategy {
     };
 
     try {
-      const result = await this.coordinator.runAgent(turn.agent, input, context);
+      const result = await this.coordinator.runAgent(turn.agent, input, context, {
+        rethrow: true,
+      });
       run.agentResults.set(turn.agent, result);
       if (turn.role === 'lead') run.lastLeadResult = result;
 

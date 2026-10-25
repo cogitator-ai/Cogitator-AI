@@ -766,6 +766,11 @@ export interface SwarmAgentRunOptions {
   maxTokens?: number;
   /** Cancel this turn after the given time (ms) */
   timeout?: number;
+  /**
+   * Throw the turn's error even when `errorHandling.onAgentFailure` is `skip`, for a strategy that
+   * handles a failed turn itself (the team strategy hands the member's tasks back)
+   */
+  rethrow?: boolean;
 }
 
 export interface SwarmCoordinatorInterface {
