@@ -228,4 +228,34 @@ describe('project instructions in a run', () => {
     await other.dispose();
     await cog.close();
   });
+
+  it('keeps the size limit across a pause', async () => {
+    const { cog } = setup(
+      [
+        {
+          content: '',
+          toolCalls: [
+            { id: 'c1', name: 'read_file', arguments: { path: 'app/pkg/a.txt' } },
+            { id: 'c2', name: 'ask_human', arguments: {} },
+          ],
+          finishReason: 'tool_calls',
+        },
+        read('c3', 'app/api/x.ts'),
+      ],
+      { instructions: { projectFiles: { maxChars: 62 } } }
+    );
+    const gate = { name: 'gate', beforeToolCall: () => undefined };
+    const paused = await cog.run(agent(), { input: 'go', threadId: 't4', middleware: [gate] });
+    expect(paused.checkpoint?.instructions?.map((file) => file.path)).toContain(
+      'app/pkg/AGENTS.md'
+    );
+    const resumed = await cog.resume(agent(), paused.checkpoint!, {
+      decisions: { c2: { approved: true } },
+      middleware: [gate],
+    });
+    expect(resumed.instructions?.map((file) => file.path)).not.toContain(
+      'app/.claude/rules/api.md'
+    );
+    await cog.close();
+  });
 });

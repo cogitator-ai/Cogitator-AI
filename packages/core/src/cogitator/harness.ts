@@ -218,10 +218,16 @@ export class RunHarness {
     return this.instructionFiles;
   }
 
-  /** Counts files a resumed run read before it paused, as the run's own */
+  /**
+   * Counts files a resumed run read before it paused, as the run's own: in the list, and against
+   * the size limit, the ones this run did not read again (a nested file, a scoped rule)
+   */
   restoreInstructions(files: readonly LoadedInstructionFile[]): void {
     const known = new Set(this.instructionFiles.map((file) => file.path));
-    this.instructionFiles.unshift(...files.filter((file) => !known.has(file.path)));
+    const earlier = files.filter((file) => !known.has(file.path));
+    this.instructionFiles.unshift(...earlier);
+    const chars = earlier.reduce((sum, file) => sum + file.chars, 0);
+    for (const project of this.projects.values()) project.loader.reserve(chars);
   }
 
   /**

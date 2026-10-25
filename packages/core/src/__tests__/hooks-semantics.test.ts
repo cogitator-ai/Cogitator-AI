@@ -817,3 +817,75 @@ describe('fourth review round', () => {
     await cog.close();
   });
 });
+
+describe('fifth review round', () => {
+  it('stops a parallel call waiting for its turn when an earlier PreToolUse hook stops the run', async () => {
+    const lookedUp = vi.fn(async ({ q }: { q: string }) => `found ${q}`);
+    const lookup = tool({
+      name: 'lookup',
+      description: 'Look up',
+      parameters: z.object({ q: z.string() }),
+      isConcurrencySafe: true,
+      execute: lookedUp,
+    });
+    const { hook } = script(
+      'parallel-stop',
+      `if (input.tool_input.q === 'a') process.stdout.write(JSON.stringify({ continue: false, stopReason: 'stop now' }));`
+    );
+    const { cog } = setup(
+      [turn(call('c1', 'lookup', { q: 'a' }), call('c2', 'lookup', { q: 'b' }))],
+      { hooks: { hooks: { PreToolUse: [{ hooks: [hook] }] } } }
+    );
+    const parallel = new Agent({
+      name: 'p',
+      model: 'mock/m',
+      instructions: 'Look.',
+      tools: [lookup],
+    });
+    const result = await cog.run(parallel, { input: 'go', parallelToolCalls: true });
+    expect(result.stopped?.reason).toBe('stop now');
+    expect(lookedUp).not.toHaveBeenCalled();
+    await cog.close();
+  });
+
+  it('counts a refusing UserPromptSubmit prompt hook in the usage and the session', async () => {
+    const judge = new MockLLMBackend().setResponses([{ content: '{"ok": false, "reason": "no"}' }]);
+    const { cog } = setup([], {
+      llm: { backends: { judge } },
+      budget: { session: { maxTokens: 100_000 } },
+      hooks: {
+        promptModel: 'judge/small',
+        hooks: { UserPromptSubmit: [{ hooks: [{ type: 'prompt', prompt: 'Fine? $ARGUMENTS' }] }] },
+      },
+    });
+    let usage: { totalTokens: number } | undefined;
+    await expect(
+      cog.run(agent(), {
+        input: 'go',
+        threadId: 't-early',
+        onRunError: (_error, _runId, spent) => {
+          usage = spent;
+        },
+      })
+    ).rejects.toMatchObject({ code: 'GUARDRAIL_TRIPPED' });
+    expect(usage?.totalTokens).toBeGreaterThan(0);
+    const memory = await cog.getMemory();
+    const thread = await memory!.getThread('t-early');
+    const spend = thread.success ? (thread.data?.metadata.budget as { tokens: number }) : undefined;
+    expect(spend?.tokens).toBeGreaterThan(0);
+    await cog.close();
+  });
+
+  it('sends context a beforeModel middleware adds with that same model call', async () => {
+    const { cog, backend } = setup([]);
+    const noteFirst: RunMiddleware = {
+      name: 'note-first',
+      beforeModel: (_event, context) => {
+        if (context.iteration === 1) context.addContext?.('fresh note');
+      },
+    };
+    await cog.run(agent(), { input: 'go', middleware: [noteFirst] });
+    expect(systemTexts(backend.getCalls()[0]?.messages)).toContain('fresh note');
+    await cog.close();
+  });
+});

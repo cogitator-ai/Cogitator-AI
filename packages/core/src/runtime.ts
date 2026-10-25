@@ -3280,6 +3280,15 @@ export class Cogitator implements ToolInvoker {
                 toolSpanEnd: toolSpanStart,
               };
             }
+            if (stopRequest) {
+              return {
+                toolCall,
+                result: notStartedAtStop(toolCall),
+                toolSpanId,
+                toolSpanStart,
+                toolSpanEnd: toolSpanStart,
+              };
+            }
           }
           const decision = decisions.get(toolCall.id);
           const refusal = denied.get(toolCall.id);
@@ -3393,6 +3402,7 @@ export class Cogitator implements ToolInvoker {
                         permitChanged(toolCall, tool, args),
                     }),
                     dispatch,
+                    stopped: () => stopRequest !== undefined,
                     ...(this.state.constitutionalAI && {
                       guardrails: this.state.constitutionalAI,
                     }),
@@ -3805,7 +3815,6 @@ export class Cogitator implements ToolInvoker {
         deliveredAtStop = false;
         if (steering.length > 0) await deliver(steering);
         if (stopRequest) break;
-        await flushContext();
         if (!interruptLimits) {
           this.assertTokenBudget(totalInputTokens + totalOutputTokens);
           this.assertCostBudget(costMeter.total(costModel));
@@ -3849,6 +3858,7 @@ export class Cogitator implements ToolInvoker {
           messages.push(...changed);
         }
         if (stopRequest) break;
+        await flushContext();
 
         agentContext.iterationIndex = iterations - 1;
         agentContext.previousActions = [...allActions];
@@ -4723,7 +4733,15 @@ export class Cogitator implements ToolInvoker {
       const failed = error instanceof Error ? error : new Error(String(error));
       await endFailed?.(failed).catch(() => undefined);
 
-      options.onRunError?.(failed, runId, usageSoFar());
+      const early = earlyCharges.splice(0);
+      const earlyUsage =
+        early.length > 0
+          ? await this.chargeEarly(early, { agent, threadId, runId, options, startTime }).catch(
+              () => undefined
+            )
+          : undefined;
+
+      options.onRunError?.(failed, runId, usageSoFar() ?? earlyUsage);
 
       throw error;
     } finally {
@@ -4743,6 +4761,81 @@ export class Cogitator implements ToolInvoker {
       }
       removeParentAbortListener?.();
     }
+  }
+
+  /**
+   * Charges the model calls hooks made before a run's usage was counted (a `UserPromptSubmit`
+   * prompt hook that refused the input), for a run that failed before then: to the cost router
+   * and, when the session has budgets, to what the session spent. The usage they come to
+   */
+  private async chargeEarly(
+    charges: ReadonlyArray<{ usage: ChatResponse['usage']; model: string }>,
+    run: { agent: Agent; threadId: string; runId: string; options: RunOptions; startTime: number }
+  ): Promise<RunUsage> {
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cost = 0;
+    for (const { usage, model } of charges) {
+      const priced = this.pricedModel(model);
+      const spent = usage.cost ?? this.pricer.costOrNull(priced, usage) ?? 0;
+      inputTokens += usage.inputTokens;
+      outputTokens += usage.outputTokens;
+      cost += spent;
+      this.state.costRouter?.recordCost({
+        runId: run.runId,
+        agentId: run.agent.id,
+        threadId: run.threadId,
+        model: priced,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cost: spent,
+      });
+    }
+    const budgets = mergeBudgets(this.config.budget, run.options.budget);
+    const keeps =
+      budgets.session !== undefined ||
+      budgets.agent !== undefined ||
+      run.agent.config.budget !== undefined;
+    const tokens = inputTokens + outputTokens;
+    const memory = this.state.memoryAdapter;
+    if (keeps && tokens + cost > 0) {
+      const spend = {
+        costUsd: cost,
+        tokens,
+        toolCalls: 0,
+        agents: { [budgetKey(run.agent)]: { costUsd: cost, tokens, toolCalls: 0 } },
+      };
+      const before = this.spendWrites.get(run.threadId) ?? Promise.resolve();
+      const writing = before
+        .catch(() => undefined)
+        .then(async () => {
+          const total = addToSession(
+            await this.loadSessionSpend(run.threadId, run.options),
+            spend,
+            {}
+          );
+          const updated =
+            memory && run.options.useMemory !== false
+              ? await memory.updateThread(run.threadId, { [SESSION_BUDGET_KEY]: total })
+              : undefined;
+          if (updated?.success) this.sessionSpends.delete(run.threadId);
+          else this.sessionSpends.set(run.threadId, total);
+          this.sessionLedgers.get(run.threadId)?.refresh(total);
+        });
+      const settled = writing.then(
+        () => undefined,
+        () => undefined
+      );
+      this.spendWrites.set(run.threadId, settled);
+      await settled;
+    }
+    return {
+      inputTokens,
+      outputTokens,
+      totalTokens: tokens,
+      cost,
+      duration: Date.now() - run.startTime,
+    };
   }
 
   /**

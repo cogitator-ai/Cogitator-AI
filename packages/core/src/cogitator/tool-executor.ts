@@ -102,6 +102,11 @@ export interface ToolCallExecution {
    * (an allowance spent meanwhile), or undefined once it counts as made
    */
   dispatch?: () => string | undefined;
+  /**
+   * Whether the run was stopped (`RunMiddlewareContext.stop`) while the call waited: checked right
+   * before the tool starts, nothing awaited after it
+   */
+  stopped?: () => boolean;
 }
 
 /**
@@ -354,6 +359,10 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
     if (aborted) {
       releaseAll();
       return aborted;
+    }
+    if (execution.stopped?.()) {
+      releaseAll();
+      return failed('Not started: the run was stopped');
     }
     const spent = execution.dispatch?.();
     if (spent !== undefined) {

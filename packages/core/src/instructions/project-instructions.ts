@@ -158,6 +158,16 @@ export class ProjectInstructionsLoader {
     this.allowImportsFrom = (options.allowImportsFrom ?? []).map((dir) => resolve(expandHome(dir)));
   }
 
+  /**
+   * Counts `chars` against the size limit, for what an earlier part of the run brought before it
+   * paused: a resumed run does not bring more than the limit across the pause
+   */
+  reserve(chars: number): void {
+    if (!(chars > 0)) return;
+    this.state.used += chars;
+    if (this.state.used >= this.maxChars) this.state.exhausted = true;
+  }
+
   /** Every file loaded so far, in order */
   get files(): readonly LoadedInstructionFile[] {
     return this.state.files;
