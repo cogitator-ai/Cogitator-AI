@@ -116,8 +116,12 @@ function parsesAsJson(line: string): boolean {
 /** The JSON object in a model's answer: the whole text, else the first fenced or braced block */
 export function jsonInAnswer(text: string): unknown {
   const attempts = [text.trim()];
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
-  if (fenced?.[1]) attempts.push(fenced[1].trim());
+  const fence = text.indexOf('```');
+  const closing = fence === -1 ? -1 : text.indexOf('```', fence + 3);
+  if (closing !== -1) {
+    const inside = text.slice(fence + 3, closing);
+    attempts.push((inside.startsWith('json') ? inside.slice(4) : inside).trim());
+  }
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
   if (start !== -1 && end > start) attempts.push(text.slice(start, end + 1));

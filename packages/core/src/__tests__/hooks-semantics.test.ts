@@ -17,6 +17,7 @@ import type {
   CommandHookHandler,
   HookRunRecord,
   Message,
+  RunMiddleware,
   ToolCall,
 } from '@cogitator-ai/types';
 import { Cogitator } from '../cogitator';
@@ -24,6 +25,8 @@ import { Agent } from '../agent';
 import { tool } from '../tool';
 import { agentAsTool } from '../agent-tool';
 import { workspaceTools } from '../tools/workspace-tools';
+import { fileRead } from '../tools/filesystem';
+import { hooksMiddleware } from '../hooks/middleware';
 import { LocalWorkspace } from '../workspace/local-workspace';
 import { answer, callTools, deferred, scriptedBackend } from './helpers/scripted-backend';
 
@@ -485,5 +488,159 @@ describe('UserPromptSubmit, Stop and spending', () => {
       return result.usage.totalTokens;
     };
     expect(await run(true)).toBeGreaterThan(await run(false));
+  });
+});
+
+describe('second review round', () => {
+  it('keeps the runtime hooks and an agent hooks middleware apart', async () => {
+    const allow = script('runtime-allow', decide('allow'));
+    const deny = script(
+      'agent-deny',
+      decide('deny', { permissionDecisionReason: 'agent says no' })
+    );
+    const { cog } = setup([turn(call('c1', 'note', { text: 'a' }))], {
+      hooks: { hooks: { PreToolUse: [{ hooks: [allow.hook] }] } },
+    });
+    const own = new Agent({
+      name: 'coder',
+      model: 'mock/m',
+      instructions: 'You code.',
+      tools: [note],
+      workspace,
+      middleware: [hooksMiddleware({ hooks: { PreToolUse: [{ hooks: [deny.hook] }] } })],
+    });
+    const result = await cog.run(own, { input: 'go' });
+    expect(noted).not.toHaveBeenCalled();
+    expect(toolTexts(result.messages)[0]).toContain('agent says no');
+    expect(seen(allow.log)).toHaveLength(1);
+    expect(seen(deny.log)).toHaveLength(1);
+    await cog.close();
+  });
+
+  it('declines an approval a PermissionRequest prompt hook refuses, over another hook that allows', async () => {
+    const judge = new MockLLMBackend().setResponses([
+      { content: '{"ok": false, "reason": "not to that address"}' },
+    ]);
+    const allow = script(
+      'permit-allow',
+      print({
+        hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } },
+      })
+    );
+    const onApproval = vi.fn(async () => ({ approved: true as const }));
+    const { cog } = setup([turn(call('c1', 'send_email', { to: 'a@b.co', body: 'x' }))], {
+      llm: { backends: { judge } },
+      hooks: {
+        promptModel: 'judge/small',
+        hooks: {
+          PermissionRequest: [
+            { hooks: [allow.hook, { type: 'prompt', prompt: 'May it send? $ARGUMENTS' }] },
+          ],
+        },
+      },
+    });
+    const result = await cog.run(agent(), { input: 'mail', onApproval });
+    expect(sent).not.toHaveBeenCalled();
+    expect(onApproval).not.toHaveBeenCalled();
+    expect(toolTexts(result.messages)[0]).toContain('not to that address');
+    await cog.close();
+  });
+
+  it("resolves the host file tools' paths against the working directory and keeps absolute paths", async () => {
+    const target = join(base, 'host.txt');
+    writeFileSync(target, 'host file');
+    const claude = script('host-read', decide('allow', { updatedInput: { file_path: target } }));
+    const { cog } = setup([turn(call('c1', 'file_read', { path: 'nowhere.txt' }))], {
+      hooks: { hooks: { PreToolUse: [{ matcher: 'Read', hooks: [claude.hook] }] } },
+    });
+    const host = new Agent({
+      name: 'host',
+      model: 'mock/m',
+      instructions: 'Read.',
+      tools: [fileRead],
+    });
+    const result = await cog.run(host, { input: 'go' });
+    expect(seen(claude.log)[0]?.input.tool_input).toEqual({
+      file_path: join(process.cwd(), 'nowhere.txt'),
+    });
+    expect(toolTexts(result.messages)[0]).toContain('host file');
+    await cog.close();
+  });
+
+  it('counts only the calls that start against the tool call budget', async () => {
+    const deny = script('deny-first', `if (input.tool_input.text === 'a') { ${decide('deny')} }`);
+    const { cog } = setup(
+      [turn(call('c1', 'note', { text: 'a' }), call('c2', 'note', { text: 'b' }))],
+      {
+        budget: { session: { maxToolCalls: 1 } },
+        hooks: { hooks: { PreToolUse: [{ hooks: [deny.hook] }] } },
+      }
+    );
+    const result = await cog.run(agent(), { input: 'go', threadId: 't-budget' });
+    expect(result.status).toBe('completed');
+    expect(noted).toHaveBeenCalledWith({ text: 'b' }, expect.anything());
+    await cog.close();
+  });
+
+  it('gives PostToolBatch after a resume the results the step had before the pause', async () => {
+    const structured = tool({
+      name: 'lookup',
+      description: 'Look up',
+      parameters: z.object({}),
+      execute: async () => ({ success: true }),
+    });
+    const batch = script('batch-structured');
+    const { cog } = setup(
+      [turn(call('c1', 'lookup', {}), call('c2', 'send_email', { to: 'a@b.co', body: 'x' }))],
+      {
+        hooks: {
+          hooks: {
+            PreToolUse: [{ hooks: [script('noop2').hook] }],
+            PostToolBatch: [{ hooks: [batch.hook] }],
+          },
+        },
+      }
+    );
+    const both = new Agent({
+      name: 'coder',
+      model: 'mock/m',
+      instructions: 'You code.',
+      tools: [structured, sendEmail],
+      workspace,
+    });
+    const paused = await cog.run(both, { input: 'go', threadId: 't-batch' });
+    await cog.resume(both, paused.checkpoint!, { decisions: { c2: { approved: true } } });
+    const calls = seen(batch.log)[0]?.input.tool_calls as Array<{ tool_response: unknown }>;
+    expect(calls[0]?.tool_response).toEqual({ success: true });
+    await cog.close();
+  });
+
+  it('stops before the model call when a beforeModel middleware or a wrapModelCall asks to', async () => {
+    const { cog, backend } = setup([turn(call('c1', 'note', { text: 'a' }))]);
+    const stopper: RunMiddleware = {
+      name: 'stopper',
+      beforeModel: (_event, context) => {
+        if (context.iteration === 2) context.stop?.('enough');
+      },
+    };
+    const result = await cog.run(agent(), { input: 'go', middleware: [stopper] });
+    expect(backend.getCallCount()).toBe(1);
+    expect(result.stopped).toEqual({ reason: 'enough', middleware: 'stopper' });
+    await cog.close();
+
+    const second = setup([turn(call('c2', 'note', { text: 'b' }))]);
+    const late: RunMiddleware = {
+      name: 'late',
+      wrapModelCall: async (request, next, context) => {
+        context.stop?.('no more calls');
+        return next(request);
+      },
+    };
+    noted.mockClear();
+    const stopped = await second.cog.run(agent(), { input: 'go', middleware: [late] });
+    expect(second.backend.getCallCount()).toBe(0);
+    expect(noted).not.toHaveBeenCalled();
+    expect(stopped.stopped?.reason).toBe('no more calls');
+    await second.cog.close();
   });
 });

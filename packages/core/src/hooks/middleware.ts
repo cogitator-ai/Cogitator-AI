@@ -155,7 +155,8 @@ interface RunHooks {
   warned: Set<string>;
 }
 
-const STATE_KEY = 'cogitator:hooks';
+/** How many hooks middleware this process made, so each keeps its run state apart */
+let instances = 0;
 
 /**
  * The run middleware that runs the hooks of `config`: those in code (`hooks`) and, with
@@ -186,13 +187,14 @@ export function hooksMiddleware(
     getLogger().warn('Hook settings', { warning })
   );
   const maxBytes = config.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+  const stateKey = `cogitator:hooks:${++instances}`;
   const matchers = new Map<string, (values: readonly string[]) => boolean>();
 
   const stateOf = (context: RunMiddlewareContext): RunHooks => {
-    const kept = context.state.get(STATE_KEY);
+    const kept = context.state.get(stateKey);
     if (isRunHooks(kept)) return kept;
     const fresh: RunHooks = { loaded: new Map(), background: new Set(), warned: new Set() };
-    context.state.set(STATE_KEY, fresh);
+    context.state.set(stateKey, fresh);
     return fresh;
   };
   const projectDir = (context: RunMiddlewareContext): string =>
@@ -696,12 +698,7 @@ export function hooksMiddleware(
           ...(reason !== undefined && { reason }),
           ...(specific?.updatedInput &&
             decision !== 'defer' && {
-              updatedArguments: argumentsOf(
-                result,
-                specific.updatedInput,
-                toolCall.arguments,
-                context
-              ),
+              updatedArguments: argumentsOf(result, specific.updatedInput, toolCall.arguments),
             }),
         });
         if (specific?.additionalContext && decision !== 'defer') {
@@ -729,6 +726,12 @@ export function hooksMiddleware(
       );
       let allowed: ToolApprovalDecision | undefined;
       for (const result of results) {
+        if (result.answer && !result.answer.ok) {
+          return {
+            approved: false,
+            reason: result.answer.reason ?? 'A PermissionRequest prompt hook refused the call',
+          };
+        }
         if (result.blocks && result.outcome !== 'blocked') {
           return {
             approved: false,
@@ -755,12 +758,7 @@ export function hooksMiddleware(
         allowed ??= {
           approved: true,
           ...(decision.updatedInput && {
-            updatedArguments: argumentsOf(
-              result,
-              decision.updatedInput,
-              request.arguments,
-              context
-            ),
+            updatedArguments: argumentsOf(result, decision.updatedInput, request.arguments),
           }),
         };
       }
@@ -1014,11 +1012,10 @@ const NEVER = new AbortController().signal;
 function argumentsOf(
   result: HandlerResult,
   input: Record<string, unknown>,
-  original: Record<string, unknown>,
-  context: RunMiddlewareContext
+  original: Record<string, unknown>
 ): Record<string, unknown> {
   if (!result.claude) return input;
-  return result.claude.args(input, original, context.workspace?.root ?? process.cwd());
+  return result.claude.args(input, original);
 }
 
 /** The signal a handler of `call` stops with */

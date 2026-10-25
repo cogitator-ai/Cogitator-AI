@@ -790,6 +790,11 @@ export interface RunCheckpoint {
      * asked for as the call started: the arguments there are the ones a decision approves
      */
     admitted?: string[];
+    /**
+     * What the calls of the turn that ran before the pause returned, by call id, so the step's
+     * `afterToolBatch` middleware (`PostToolBatch` hooks) see them as they were after the resume
+     */
+    results?: Record<string, { result: unknown; error?: string }>;
   };
   /**
    * What the run waits on, approvals among them (`kind: 'approval'`), and the answers given so

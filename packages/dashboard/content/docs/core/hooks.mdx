@@ -106,7 +106,7 @@ Calls `tool` on the MCP server `server` through `hooks.mcp` (`{ callTool(server,
 
 Every input carries `session_id` (the thread), `run_id`, `cwd` (the workspace directory the run works in), `hook_event_name`, `agent_name`, `permission_mode` (`default` for a run without permissions), and `agent_id` and `agent_type` in a subagent, then the event's own fields as Claude Code names them: `tool_name`, `tool_input`, `tool_use_id`, `tool_response`, `error`, `prompt`, `source`, `last_assistant_message`, `stop_hook_active`, `tool_calls`, `trigger`, `from_model`, `to_model`, `notification_type`, `reason`. `tool_name` and `tool_input` are Cogitator's, or Claude Code's for a hook that matched Claude Code's name (see [Events](#events)). `stop_hook_active` is true from the first time a `Stop` hook kept the run going until the next user message, tool calls in between included. `UserPromptSubmit` does not run for a subagent, `SubagentStart` covers it.
 
-The JSON output fields are Claude Code's: `continue: false` (with `stopReason`) ends the run before its next model call, the run completes with `result.stopped`. `systemMessage` is for a person: it goes to the log and `onHookRun`. `decision`, `reason` and `hookSpecificOutput` decide per event as the table above says. Context a hook adds goes to the model as a system message after the step's tool results, saved to the thread, `SessionStart` context only for its run. Each text is cut at 10 000 characters.
+The JSON output fields are Claude Code's: `continue: false` (with `stopReason`) ends the run before its next model call (also one a middleware is about to send, and the tool calls of an answer it came with are not run), the run completes with `result.stopped`. `systemMessage` is for a person: it goes to the log and `onHookRun`. `decision`, `reason` and `hookSpecificOutput` decide per event as the table above says. Context a hook adds goes to the model as a system message after the step's tool results, saved to the thread, `SessionStart` context only for its run. Each text is cut at 10 000 characters.
 
 ## Logs
 
@@ -130,6 +130,7 @@ const cog = new Cogitator({
 - There is no transcript file: inputs carry no `transcript_path`, and `last_assistant_message` gives the answer.
 - Only the built-in tools listed under [Events](#events) have Claude Code's names and shapes. Tools of your own and MCP tools are matched and sent as they are, `tool_response` is always Cogitator's result.
 - `defer` works for any number of calls of a step, each waits in `pendingApprovals`.
+- A `prompt` hook on `PermissionRequest` that answers `ok: false` declines the approval (in Claude Code it has no effect), over any other hook that allows it.
 - `PreModelSwitch` fires for handoffs, as a run changes its model only there, and blocking it keeps the run on its agent.
 - Cogitator has no trust dialog: `trusted` and `trustedRoots` decide it, for the roots they name, and it is off by default for hooks (Claude Code's `-p` mode trusts every folder).
 - In a YAML config (`@cogitator-ai/config`) write `$${CLAUDE_PROJECT_DIR}`: `${...}` there reads the environment.

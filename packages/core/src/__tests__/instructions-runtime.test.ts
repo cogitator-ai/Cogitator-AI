@@ -182,4 +182,50 @@ describe('project instructions in a run', () => {
     ).toContain('The pkg folder is generated.');
     await cog.close();
   });
+
+  it('brings the nested file of another workspace at the same path after a handoff', async () => {
+    const otherRoot = join(base, 'other');
+    mkdirSync(join(otherRoot, 'app', 'pkg'), { recursive: true });
+    writeFileSync(join(otherRoot, 'app', 'pkg', 'AGENTS.md'), 'The other pkg is hand written.');
+    writeFileSync(join(otherRoot, 'app', 'pkg', 'a.txt'), 'b');
+    const other = new LocalWorkspace({ root: otherRoot, cwd: 'app' });
+    await other.start();
+    const expert = new Agent({
+      name: 'expert',
+      model: 'mock/m',
+      instructions: 'Expert.',
+      tools: workspaceTools(),
+      workspace: other,
+    });
+    const { cog, backend } = setup(
+      [
+        read('c1', 'app/pkg/a.txt'),
+        {
+          content: '',
+          toolCalls: [{ id: 'h1', name: 'transfer_to_expert', arguments: {} }],
+          finishReason: 'tool_calls',
+        },
+        read('c2', 'app/pkg/a.txt'),
+      ],
+      { instructions: { projectFiles: true } }
+    );
+    const lead = new Agent({
+      name: 'coder',
+      model: 'mock/m',
+      instructions: 'You code.',
+      tools: workspaceTools(),
+      workspace,
+      handoffs: [expert],
+    });
+    await cog.run(lead, { input: 'go' });
+    const last = backend.getCalls().at(-1)?.messages ?? [];
+    const notes = last
+      .filter((message) => message.role === 'system')
+      .map((message) => String(message.content))
+      .join('\n');
+    expect(notes).toContain('The pkg folder is generated.');
+    expect(notes).toContain('The other pkg is hand written.');
+    await other.dispose();
+    await cog.close();
+  });
 });

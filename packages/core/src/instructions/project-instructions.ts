@@ -30,7 +30,7 @@ const RULES_DIR = '.claude/rules';
 const BLOCK_TAG = 'project-instructions';
 const MAX_OUTSIDE_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_NOTICE_NAMES = 10;
-const TRAILING_PUNCTUATION = /[.,;:!?)\]]+$/;
+const TRAILING_PUNCTUATION = new Set(['.', ',', ';', ':', '!', '?', ')', ']']);
 const IMPORT_TOKEN = /(?<!\S)@((?:\\ |[^\s\0])+)/g;
 const BLOCK_OPENING = new RegExp(`^<${BLOCK_TAG} path="([^"\\n]*)">$`, 'gm');
 
@@ -82,7 +82,7 @@ interface Pass {
   cut: string[];
   leftOut: string[];
   exhaustedAtStart: boolean;
-  shown?: (path: string) => boolean;
+  shown?: (path: string, block: string) => boolean;
   signal?: AbortSignal;
 }
 
@@ -190,12 +190,13 @@ export class ProjectInstructionsLoader {
    * that was not brought yet: the instruction files (and their imports, and the unconditional
    * rules of their `.claude/rules/`, plus registering their scoped rules) of every directory
    * below the cwd on the way to each path (when `nested`), then the scoped rules whose `paths`
-   * match. `shown(path)` tells about files a conversation already holds (from an earlier run),
+   * match. `shown(path, block)` tells about files a conversation already holds (from an earlier
+   * run), given the block the file would render as,
    * which are then marked loaded and not brought again
    */
   reach(
     paths: readonly string[],
-    shown?: (path: string) => boolean,
+    shown?: (path: string, block: string) => boolean,
     signal?: AbortSignal
   ): Promise<InstructionsChunk> {
     return this.exclusive(async () => {
@@ -243,7 +244,7 @@ export class ProjectInstructionsLoader {
   }
 
   private pass(
-    shown: ((path: string) => boolean) | undefined,
+    shown: ((path: string, block: string) => boolean) | undefined,
     signal: AbortSignal | undefined
   ): Pass {
     return {
@@ -343,12 +344,14 @@ export class ProjectInstructionsLoader {
     if (this.state.contents.has(text)) return;
     this.state.contents.add(text);
     const content = cleanContent(body);
-    if (!pass.shown?.(file.path)) this.render(file.path, content, admission, pass);
+    if (!pass.shown?.(file.path, renderBlock(file.path, content))) {
+      this.render(file.path, content, admission, pass);
+    }
 
     const chain = [...admission.chain, file.key];
     for (const spec of importsIn(content)) {
       let target = await this.locateImport(spec, file.path, pass.signal);
-      const trimmed = spec.replace(TRAILING_PUNCTUATION, '');
+      const trimmed = trimEnd(spec, (char) => TRAILING_PUNCTUATION.has(char));
       if (target.kind === 'missing' && trimmed.length > 0 && trimmed !== spec) {
         target = await this.locateImport(trimmed, file.path, pass.signal);
       }
@@ -650,7 +653,7 @@ export class ProjectInstructionsLoader {
         return undefined;
       }
     }
-    const normalized = posix.normalize(path).replace(/\/+$/, '');
+    const normalized = trimEnd(posix.normalize(path), (char) => char === '/');
     if (normalized === '' || normalized === '.') return '.';
     if (escapes(normalized, '/') || normalized.startsWith('/')) return undefined;
     return normalized;
@@ -697,8 +700,15 @@ function cloneState(state: LoaderState): LoaderState {
   };
 }
 
+/** `text` without the characters at its end that `drop` takes, in one pass from the end */
+function trimEnd(text: string, drop: (char: string) => boolean): string {
+  let end = text.length;
+  while (end > 0 && drop(text.charAt(end - 1))) end--;
+  return text.slice(0, end);
+}
+
 function normalizeCwd(cwd: string): string {
-  const normalized = posix.normalize(cwd || '.').replace(/\/+$/, '');
+  const normalized = trimEnd(posix.normalize(cwd || '.'), (char) => char === '/');
   return normalized === '' || normalized === '.' ? '.' : normalized;
 }
 

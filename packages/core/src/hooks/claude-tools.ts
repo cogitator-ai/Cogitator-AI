@@ -3,7 +3,7 @@
  * Claude Code reads `tool_input.file_path` or `tool_input.command` as it expects
  */
 
-import { isAbsolute, relative, resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import type { Tool } from '@cogitator-ai/types';
 import { accessKindOf, mcpNamePart } from '../permissions/rules';
 
@@ -14,17 +14,23 @@ export interface ClaudeTool {
   /** The call's arguments in Claude Code's shape */
   input(args: Record<string, unknown>, root: string): Record<string, unknown>;
   /** Arguments in Claude Code's shape back as the tool takes them, over the arguments it had */
-  args(
-    input: Record<string, unknown>,
-    original: Record<string, unknown>,
-    root: string
-  ): Record<string, unknown>;
+  args(input: Record<string, unknown>, original: Record<string, unknown>): Record<string, unknown>;
 }
 
 type Field = readonly [ours: string, theirs: string];
 
-/** A tool whose fields only change names, `path` becoming an absolute `file_path` when `filePath` is set */
-function renamed(name: string, fields: readonly Field[], filePath = false): ClaudeTool {
+/**
+ * Where a tool's relative `path` starts: the workspace root for the workspace tools, the working
+ * directory of the process for the host file tools (`file_read`, `file_write`)
+ */
+type PathBase = 'workspace' | 'process';
+
+/**
+ * A tool whose fields only change names, its `path` given as an absolute `file_path` resolved
+ * against the base the tool itself uses. A `file_path` coming back is kept as it is: an absolute
+ * path stays absolute, so the tool reaches the file the hook named
+ */
+function renamed(name: string, fields: readonly Field[], filePath?: PathBase): ClaudeTool {
   return {
     name,
     input(args, root) {
@@ -33,22 +39,17 @@ function renamed(name: string, fields: readonly Field[], filePath = false): Clau
         if (args[ours] !== undefined) input[theirs] = args[ours];
       }
       if (filePath && typeof args.path === 'string') {
-        input.file_path = isAbsolute(args.path) ? args.path : resolve(root, args.path);
+        const base = filePath === 'workspace' ? root : process.cwd();
+        input.file_path = isAbsolute(args.path) ? args.path : resolve(base, args.path);
       }
       return input;
     },
-    args(input, original, root) {
+    args(input, original) {
       const args: Record<string, unknown> = { ...original };
       for (const [ours, theirs] of fields) {
         if (Object.hasOwn(input, theirs)) args[ours] = input[theirs];
       }
-      if (filePath && typeof input.file_path === 'string') {
-        const inside = relative(root, input.file_path);
-        args.path =
-          isAbsolute(input.file_path) && !inside.startsWith('..') && !isAbsolute(inside)
-            ? inside || '.'
-            : input.file_path;
-      }
+      if (filePath && typeof input.file_path === 'string') args.path = input.file_path;
       return args;
     },
   };
@@ -69,11 +70,11 @@ const BY_NAME: Record<string, ClaudeTool> = {
       ['offset', 'offset'],
       ['limit', 'limit'],
     ],
-    true
+    'workspace'
   ),
-  file_read: renamed('Read', [], true),
-  write_file: renamed('Write', [['content', 'content']], true),
-  file_write: renamed('Write', [['content', 'content']], true),
+  file_read: renamed('Read', [], 'process'),
+  write_file: renamed('Write', [['content', 'content']], 'workspace'),
+  file_write: renamed('Write', [['content', 'content']], 'process'),
   edit_file: renamed(
     'Edit',
     [
@@ -81,7 +82,7 @@ const BY_NAME: Record<string, ClaudeTool> = {
       ['newString', 'new_string'],
       ['replaceAll', 'replace_all'],
     ],
-    true
+    'workspace'
   ),
   glob: renamed('Glob', [
     ['pattern', 'pattern'],

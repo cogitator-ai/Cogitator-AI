@@ -37,7 +37,6 @@ import { readFileBinding } from '../tools/workspace-tools';
 import { getTextContent } from './span-factory';
 import { accessKindOf } from '../permissions/rules';
 import {
-  instructionPathsIn,
   ProjectInstructionsLoader,
   type InstructionsChunk,
 } from '../instructions/project-instructions';
@@ -228,7 +227,8 @@ export class RunHarness {
   /**
    * The project instructions tool calls reaching `paths` bring for `owner`: the files of the
    * directories below the working directory and the rules scoped to those paths that the
-   * conversation does not hold yet. Undefined when they bring nothing
+   * conversation does not hold yet, the same file with the same content (the file of another
+   * workspace at the same relative path is not taken for it). Undefined when they bring nothing
    */
   async reach(
     owner: Agent,
@@ -238,12 +238,14 @@ export class RunHarness {
     const workspace = this.options.workspaceOf(owner);
     const project = workspace ? this.projects.get(workspace) : undefined;
     if (!project || paths.length === 0) return undefined;
-    const held = new Set(
-      messages
-        .filter((message) => message.role === 'system')
-        .flatMap((message) => instructionPathsIn(getTextContent(message.content)))
+    const held = messages
+      .filter((message) => message.role === 'system')
+      .map((message) => getTextContent(message.content));
+    const chunk = await project.loader.reach(
+      paths,
+      (_path, block) => held.some((text) => text.includes(block)),
+      this.options.signal
     );
-    const chunk = await project.loader.reach(paths, (path) => held.has(path), this.options.signal);
     for (const warning of project.loader.warnings.slice(project.warned)) {
       getLogger().warn('Project instructions', { warning, workspace: workspace?.id });
     }
