@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import type { RunOptions, Tool } from '@cogitator-ai/types';
 import type { SerializedAgent, SerializedWorkflow } from '../types';
 
@@ -35,6 +35,16 @@ const agentConfig = (overrides: Partial<SerializedAgent> = {}): SerializedAgent 
   tools: [],
   ...overrides,
 });
+
+beforeAll(async () => {
+  await Promise.all([
+    import('@cogitator-ai/core'),
+    import('@cogitator-ai/workflows'),
+    import('../processors/agent'),
+    import('../processors/swarm'),
+    import('../processors/workflow'),
+  ]);
+}, 120_000);
 
 describe('processors/shared', () => {
   it('routes a serialized model like the same agent in-process', async () => {
