@@ -2132,6 +2132,7 @@ export class Cogitator implements ToolInvoker {
     control: RunControl = {}
   ): Promise<RunResult> {
     let checkpoint = resumeFrom?.checkpoint;
+    if (resumeFrom?.recovered) resumeFrom.recovered.entered = true;
     let prompt: RunPrompt | undefined;
     if (!checkpoint && options.runId !== undefined) assertRunId(options.runId);
     let runId = checkpoint?.runId ?? options.runId ?? `run_${nanoid(12)}`;
@@ -2348,6 +2349,19 @@ export class Cogitator implements ToolInvoker {
           },
         });
         await keeper.begin();
+        const recovered = resumeFrom?.recovered;
+        if (recovered) {
+          recovered.stopHolding();
+          if ((await store.load(owner))?.savedAt !== recovered.savedAt) {
+            const moved = new CogitatorError({
+              message: `Durable run ${runId} went on in another process while this one waited to recover it`,
+              code: ErrorCode.RUN_LEASED,
+              details: { runId },
+            });
+            await keeper.abandon(moved);
+            throw moved;
+          }
+        }
         const watched = keeper;
         if (queue) queue.watch((pending) => watched.queued(withQueueIds(queue, pending)));
         runMemory.guard(() => watched.held());
@@ -5430,6 +5444,7 @@ export class Cogitator implements ToolInvoker {
     } finally {
       runEnded = true;
       if (reservedRun !== undefined) this.durableRunsGoing.delete(reservedRun);
+      if (resumeFrom?.recovered && !keeper) await resumeFrom.recovered.release();
       if (keeper) {
         await keeper.end(handOver ? 'hand-over' : 'forget').catch((error: unknown) => {
           getLogger().warn('Could not close the checkpoint of a durable run', {
@@ -5946,7 +5961,7 @@ export class Cogitator implements ToolInvoker {
     runId: string,
     options: RecoverRunOptions
   ): Promise<RunHandle & Required<Pick<RunHandle, 'setPermissionMode'>>> {
-    const { record, release } = await this.takeDurableRun(runId);
+    const { record, release, stopHolding } = await this.takeDurableRun(runId);
     try {
       if (agent.id !== record.agentId && agent.name !== record.agentName) {
         throw new CogitatorError({
@@ -5955,7 +5970,15 @@ export class Cogitator implements ToolInvoker {
         });
       }
       const rebuilt = await rebuildDurableRun(record, this.state.memoryAdapter);
-      return this.startWith(
+      const recovered: RecoveredFrom = {
+        repairs: rebuilt.repairs,
+        ...(rebuilt.answered && { answered: rebuilt.answered }),
+        savedAt: record.savedAt,
+        entered: false,
+        stopHolding,
+        release,
+      };
+      const handle = this.startWith(
         agent,
         {
           ...options,
@@ -5967,10 +5990,14 @@ export class Cogitator implements ToolInvoker {
           checkpoint: rebuilt.checkpoint,
           decisions: {},
           checkUser: false,
-          recovered: { repairs: rebuilt.repairs, answered: rebuilt.answered },
+          recovered,
         },
         rebuilt.queued
       );
+      handle.result.catch(() => {
+        if (!recovered.entered) void release();
+      });
+      return handle;
     } catch (error) {
       await release();
       throw error;
@@ -6045,9 +6072,11 @@ export class Cogitator implements ToolInvoker {
   }
 
   /** Takes a kept durable run for this runtime, with how to let it go again */
-  private async takeDurableRun(
-    runId: string
-  ): Promise<{ record: DurableRunRecord; release: () => Promise<void> }> {
+  private async takeDurableRun(runId: string): Promise<{
+    record: DurableRunRecord;
+    release: () => Promise<void>;
+    stopHolding: () => void;
+  }> {
     const leased = (expiresAt?: number) =>
       new CogitatorError({
         message: `Durable run ${runId} is held by a live process`,
@@ -6057,13 +6086,17 @@ export class Cogitator implements ToolInvoker {
     if (this.durableRunsGoing.has(runId)) throw leased();
     this.durableRunsGoing.add(runId);
     let held: DurableRunSummary | undefined;
+    let holding: ReturnType<typeof setInterval> | undefined;
     const store = () => this.durableStore();
+    const stopHolding = () => clearInterval(holding);
     const release = async () => {
+      stopHolding();
       this.durableRunsGoing.delete(runId);
-      if (held)
+      if (held) {
         await store()
           .release(held, this.durableHolder)
           .catch(() => undefined);
+      }
     };
     try {
       await this.getMemory();
@@ -6083,6 +6116,15 @@ export class Cogitator implements ToolInvoker {
       });
       if (!taken) throw leased(lease?.expiresAt);
       held = found;
+      holding = setInterval(
+        () => {
+          void store()
+            .renew(found, this.durableHolder, leaseMs)
+            .catch(() => undefined);
+        },
+        Math.max(1, Math.floor(leaseMs / 3))
+      );
+      holding.unref?.();
       const record = await store().load(found);
       if (!record) {
         throw new CogitatorError({
@@ -6091,7 +6133,7 @@ export class Cogitator implements ToolInvoker {
           details: { runId },
         });
       }
-      return { record, release };
+      return { record, release, stopHolding };
     } catch (error) {
       await release();
       throw error;
@@ -7665,7 +7707,19 @@ interface ResumeFrom {
   responses?: Record<string, unknown>;
   checkUser: boolean;
   /** A durable run recovered after its process stopped, see `Cogitator.recoverRun` */
-  recovered?: Pick<RebuiltRun, 'repairs' | 'answered'>;
+  recovered?: RecoveredFrom;
+}
+
+/** A durable run taken back by `recoverRun()`, handed to the run that goes on with it */
+interface RecoveredFrom extends Pick<RebuiltRun, 'repairs' | 'answered'> {
+  /** When the checkpoint it goes on from was saved: the run stops if the store has another one */
+  savedAt: number;
+  /** Set once the run started: from then on it lets the run go itself */
+  entered: boolean;
+  /** Stops renewing the lease taken at recovery, once the run's own keeper holds it */
+  stopHolding: () => void;
+  /** Lets the run go: its reservation, the renewal and the lease */
+  release: () => Promise<void>;
 }
 
 /** Fails a run whose own `runId` cannot name a run */

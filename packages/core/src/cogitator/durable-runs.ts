@@ -100,6 +100,11 @@ export class DurableRunKeeper {
   private ended = false;
   /** Marks written so far, for their ids */
   private marks = 0;
+  /**
+   * Marks that came before the run's first checkpoint (a message queued while `startRun` hooks
+   * ran): the store holds no record to add them to yet, so they go with that checkpoint
+   */
+  private early: DurableRunMark[] | undefined = [];
 
   constructor(
     private readonly store: DurableRunStore,
@@ -146,11 +151,12 @@ export class DurableRunKeeper {
           },
           ...(base && { base: [...base] }),
           ...(baseFrom !== undefined && { baseFrom }),
-          journal: [],
+          journal: [...(this.early ?? [])],
           savedAt: Date.now(),
         };
         if (!(await this.store.save(record, this.holder))) this.lose();
         this.base = whole;
+        this.early = undefined;
       })
     );
   }
@@ -234,12 +240,26 @@ export class DurableRunKeeper {
     }
   }
 
+  /**
+   * Gives the run up without touching its checkpoint: the store has another one than the run
+   * goes on from, so this process lets the lease go and writes nothing more
+   */
+  async abandon(error: CogitatorError): Promise<void> {
+    this.stopped ??= error;
+    clearInterval(this.renewal);
+    await this.store.release(this.owner, this.holder).catch(() => undefined);
+  }
+
   private async renew(): Promise<void> {
     if (await this.store.renew(this.owner, this.holder, this.options.leaseMs)) return;
     this.lose();
   }
 
   private async appendHeld(marks: DurableRunMark[]): Promise<void> {
+    if (this.early) {
+      this.early.push(...marks);
+      return;
+    }
     if (!(await this.store.append(this.owner, marks, this.holder))) this.lose();
   }
 

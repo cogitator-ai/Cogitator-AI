@@ -229,6 +229,25 @@ function entriesOf(thread: Thread | null): Map<string, ThreadEntry> {
   return entries;
 }
 
+/** Who a thread a store creates belongs to, as the run that takes it names it */
+interface ThreadOwner {
+  agentId?: string;
+  userId?: string;
+}
+
+/**
+ * The agent and user a run's reference names, when the runtime passes its whole owner (it does):
+ * a thread the store has to create for a new run belongs to them, as one the run creates would
+ */
+function ownerOf(ref: DurableRunRef): ThreadOwner {
+  const agentId: unknown = Reflect.get(ref, 'agentId');
+  const userId: unknown = Reflect.get(ref, 'userId');
+  return {
+    ...(typeof agentId === 'string' && { agentId }),
+    ...(typeof userId === 'string' && { userId }),
+  };
+}
+
 /**
  * Durable runs kept in the metadata of their threads (one `durableRuns` map per thread), so they
  * last as long as the memory adapter's threads do (Redis, Postgres, SQLite, MongoDB). A memory
@@ -255,12 +274,16 @@ export class ThreadDurableRunStore implements DurableRunStore {
     options: { replacing?: string } = {}
   ): Promise<boolean> {
     const ttl = positiveMs(ttlMs);
-    return this.change(ref, (entries) => {
-      const entry = entries.get(ref.runId) ?? {};
-      if (!mayTake(this.live(entry.lease), holder, options.replacing)) return false;
-      entries.set(ref.runId, { ...entry, lease: { ...holder, expiresAt: this.now() + ttl } });
-      return true;
-    });
+    return this.change(
+      ref,
+      (entries) => {
+        const entry = entries.get(ref.runId) ?? {};
+        if (!mayTake(this.live(entry.lease), holder, options.replacing)) return false;
+        entries.set(ref.runId, { ...entry, lease: { ...holder, expiresAt: this.now() + ttl } });
+        return true;
+      },
+      ownerOf(ref)
+    );
   }
 
   async renew(ref: DurableRunRef, holder: DurableRunHolder, ttlMs: number): Promise<boolean> {
@@ -380,7 +403,7 @@ export class ThreadDurableRunStore implements DurableRunStore {
   private change(
     ref: DurableRunRef,
     change: (entries: Map<string, ThreadEntry>) => boolean,
-    creating?: DurableRunRecord
+    creating?: ThreadOwner
   ): Promise<boolean> {
     const before = this.writes.get(ref.threadId) ?? Promise.resolve();
     const next = before.then(async () => {

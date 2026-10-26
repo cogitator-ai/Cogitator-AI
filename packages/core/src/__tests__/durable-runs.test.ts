@@ -1502,6 +1502,137 @@ describe('durable runs and what the thread lets go of', () => {
   });
 });
 
+describe('durable runs while they wait and start', () => {
+  it('drops a recovery whose run went on elsewhere while it waited for a slot', async () => {
+    let now = 0;
+    const store = new InMemoryDurableRunStore({ now: () => now });
+    const hang = countedTool('hang', forever);
+    const pay = countedTool('pay');
+    const agent = new Agent({
+      name: 'slotted',
+      model: 'mock/m',
+      instructions: 'Go.',
+      tools: [hang.tool, pay.tool],
+    });
+    const first = processWith([callTools([{ id: 'h', name: 'hang', arguments: {} }])], store, 'a');
+    first.cog.run(agent, { input: 'Go', threadId: 'slot' }).catch(() => undefined);
+    await hang.started;
+    now += 61_000;
+
+    const busy = deferred();
+    const waiting = new Cogitator({
+      llm: {
+        backends: {
+          mock: scriptedBackend([
+            () => {
+              busy.resolve();
+              return forever.then(() => answer('never'));
+            },
+            callTools([{ id: 'p', name: 'pay', arguments: {} }]),
+            answer('paid twice'),
+          ]).backend,
+        },
+      },
+      limits: { maxConcurrentRuns: 1 },
+      durable: { store, owner: 'b' },
+    });
+    const plain = new Agent({ name: 'other', model: 'mock/m', instructions: 'Wait.' });
+    const blocker = new AbortController();
+    waiting
+      .run(plain, { input: 'Hold the slot', signal: blocker.signal, durable: false })
+      .catch(() => undefined);
+    await busy.promise;
+    const [kept] = await store.list();
+    const late = await waiting.recoverRun(agent, kept.runId);
+    late.result.catch(() => undefined);
+
+    now += 61_000;
+    const other = processWith(
+      [callTools([{ id: 'p', name: 'pay', arguments: {} }]), answer('paid once')],
+      store,
+      'c'
+    );
+    const { resumed } = await other.cog.recoverRuns({ agents: [agent] });
+    expect((await resumed[0].handle.result).output).toBe('paid once');
+
+    blocker.abort();
+    await expect(late.result).rejects.toMatchObject({ code: ErrorCode.RUN_LEASED });
+    expect(pay.calls).toHaveBeenCalledTimes(1);
+  });
+
+  it('creates a new thread for the user of a durable run', async () => {
+    const scripted = scriptedBackend([answer('hello alice')]);
+    const cog = new Cogitator({
+      llm: { backends: { mock: scripted.backend } },
+      memory: { adapter: 'memory' },
+      durable: true,
+    });
+    const agent = new Agent({
+      id: 'greeter',
+      name: 'greeter',
+      model: 'mock/m',
+      instructions: 'Greet.',
+    });
+
+    const result = await cog.run(agent, { input: 'Hi', threadId: 'alice-new', userId: 'alice' });
+
+    expect(result.output).toBe('hello alice');
+    const thread = await (await cog.getMemory())!.getThread('alice-new');
+    expect(thread.success && thread.data?.metadata).toMatchObject({
+      agentId: 'greeter',
+      userId: 'alice',
+    });
+    await cog.close();
+  });
+
+  it('keeps a message queued while the run starts, before its first checkpoint', async () => {
+    const store = new InMemoryDurableRunStore();
+    const scripted = scriptedBackend([answer('saw it')]);
+    let steered: (() => void) | undefined;
+    const cog = new Cogitator({
+      llm: { backends: { mock: scripted.backend } },
+      durable: { store, owner: 'a' },
+      middleware: [{ name: 'early', startRun: () => void steered?.() }],
+    });
+    const agent = new Agent({ name: 'early', model: 'mock/m', instructions: 'Answer.' });
+    const handle = cog.start(agent, { input: 'Start', threadId: 'early' });
+    steered = () => handle.steer('Early note');
+
+    const result = await handle.result;
+
+    expect(result.output).toBe('saw it');
+    expect(userTexts(scripted.requests[0])).toContain('Early note');
+  });
+
+  it('lets a recovery go when its run stops before it starts', async () => {
+    const store = new InMemoryDurableRunStore();
+    const hang = countedTool('hang', forever);
+    const agent = new Agent({
+      name: 'gone',
+      model: 'mock/m',
+      instructions: 'Go.',
+      tools: [hang.tool],
+    });
+    const first = processWith([callTools([{ id: 'h', name: 'hang', arguments: {} }])], store, 'a');
+    first.cog.run(agent, { input: 'Go', threadId: 'aborted' }).catch(() => undefined);
+    await hang.started;
+    await first.cog.close();
+
+    const second = processWith([answer('done')], store, 'a');
+    const [kept] = await second.cog.durableRuns();
+    const stopped = new AbortController();
+    stopped.abort(new Error('not now'));
+    const handle = await second.cog.recoverRun(agent, kept.runId, { signal: stopped.signal });
+    await expect(handle.result).rejects.toThrow('not now');
+
+    await vi.waitFor(async () => {
+      expect(await second.cog.durableRuns()).toEqual([expect.objectContaining({ held: false })]);
+    });
+    const again = await second.cog.recoverRun(agent, kept.runId);
+    expect((await again.result).output).toBe('done');
+  });
+});
+
 /** The durable record of the one run kept for `threadId`, read from the store on the memory */
 async function loadRecord(cog: Cogitator, threadId: string): Promise<DurableRunRecord | null> {
   const [run] = await cog.durableRuns({ threadId });
