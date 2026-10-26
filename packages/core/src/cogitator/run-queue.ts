@@ -7,6 +7,7 @@ import type {
   RunQueueOptions,
 } from '@cogitator-ai/types';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
+import { nanoid } from 'nanoid';
 
 /**
  * The messages given to a run going on (`cogitator.start()`), waiting for the run to take them.
@@ -24,6 +25,8 @@ export class RunQueue {
   private readonly steering: QueueDrainMode;
   private readonly followUp: QueueDrainMode;
   private readonly watchers: ((pending: readonly QueuedRunMessage[]) => void)[] = [];
+  /** The id each message got when it was queued, see {@link idOf} */
+  private readonly ids = new WeakMap<QueuedRunMessage, string>();
 
   /** @param onRefused hears of each message the run's input checks refused */
   constructor(
@@ -34,8 +37,11 @@ export class RunQueue {
     this.followUp = drainMode(options.followUp, 'queue.followUp');
   }
 
-  /** Queues a message, false once the queue is closed */
-  push(kind: RunQueueKind, content: MessageContent): boolean {
+  /**
+   * Queues a message, false once the queue is closed. `id` keeps the id it had in a queue before,
+   * for a recovered run
+   */
+  push(kind: RunQueueKind, content: MessageContent, id = nanoid(12)): boolean {
     if (this.closed) return false;
     if (isEmpty(content)) {
       throw new CogitatorError({
@@ -43,7 +49,9 @@ export class RunQueue {
         code: ErrorCode.VALIDATION_ERROR,
       });
     }
-    this.items.push({ kind, content });
+    const message: QueuedRunMessage = { kind, content };
+    this.ids.set(message, id);
+    this.items.push(message);
     this.changed();
     return true;
   }
@@ -61,6 +69,11 @@ export class RunQueue {
     if (this.watchers.length === 0) return;
     const pending = this.pending;
     for (const watcher of this.watchers) watcher(pending);
+  }
+
+  /** The id `message` got when it was queued, which tells two messages of the same text apart */
+  idOf(message: QueuedRunMessage): string | undefined {
+    return this.ids.get(message);
   }
 
   /** The messages not delivered yet, those the run is checking first, in the order they came */

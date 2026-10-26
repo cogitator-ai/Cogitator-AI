@@ -1,4 +1,5 @@
 import type {
+  DurableQueuedMessage,
   DurableRunHolder,
   DurableRunMark,
   DurableRunRecord,
@@ -7,7 +8,6 @@ import type {
   MemoryAdapter,
   MemoryEntry,
   Message,
-  QueuedRunMessage,
   RunCheckpoint,
   ToolCall,
   ToolResult,
@@ -155,6 +155,14 @@ export class DurableRunKeeper {
     );
   }
 
+  /**
+   * Resolves while the run holds its lease, renewing it, and fails once another process took it
+   * over (`RUN_LEASED`): checked before every write of the run to its thread
+   */
+  held(): Promise<void> {
+    return this.queue(() => this.write(() => this.renew()));
+  }
+
   /** Notes that a tool call starts, once the run holds its lease: it may not start otherwise */
   started(toolCallId: string): Promise<void> {
     return this.queue(() =>
@@ -175,17 +183,22 @@ export class DurableRunKeeper {
    * Notes that the run delivered `queued`, with the messages it added to the conversation, so a
    * recovery has them even before the next checkpoint and does not deliver it again
    */
-  delivered(queued: QueuedRunMessage, messages: readonly Message[]): Promise<void> {
+  delivered(
+    queued: DurableQueuedMessage,
+    messages: readonly Message[],
+    iterationLimit?: number
+  ): Promise<void> {
     const mark = this.named({
       kind: 'delivered',
       queued: structuredClone(queued),
       messages: structuredClone([...messages]),
+      ...(iterationLimit !== undefined && { iterationLimit }),
     });
     return this.queue(() => this.write(() => this.appendHeld([mark])));
   }
 
   /** Notes the messages queued on the run's handle that it has not delivered yet */
-  queued(pending: readonly QueuedRunMessage[]): void {
+  queued(pending: readonly DurableQueuedMessage[]): void {
     const mark = this.named({ kind: 'queue', pending: structuredClone([...pending]) });
     this.queue(() => this.write(() => this.appendHeld([mark]))).catch(() => undefined);
   }
@@ -377,8 +390,8 @@ export interface RebuiltRun {
    * dispatch" for one that never started after such a call. The run saves them first
    */
   repairs: { toolCall: ToolCall; result: ToolResult }[];
-  /** Messages queued on the run's handle it had not delivered */
-  queued: QueuedRunMessage[];
+  /** Messages queued on the run's handle it had not delivered, with their ids */
+  queued: DurableQueuedMessage[];
   /**
    * The run gave its final answer before its process stopped, so it asks the model nothing more:
    * `stopping` when what happens at its stop (queued follow-ups, `Stop` hooks) had not settled
@@ -410,7 +423,15 @@ export async function rebuildDurableRun(
   let iterations = checkpoint.iterations;
   let turnCalls = checkpoint.turn.toolCalls;
   let queued = [...(checkpoint.queued ?? [])];
-  const queueKey = (item: QueuedRunMessage) => `${item.kind}:${JSON.stringify(item.content)}`;
+  const queueKey = (item: DurableQueuedMessage) =>
+    item.id ?? `${item.kind}:${JSON.stringify(item.content)}`;
+  let iterationLimit = checkpoint.iterationLimit;
+  let closingTurn = checkpoint.closingTurn;
+  const extend = (limit: unknown) => {
+    if (typeof limit !== 'number') return;
+    iterationLimit = Math.max(iterationLimit ?? 0, limit);
+    closingTurn = undefined;
+  };
   const delivered: Extract<DurableRunMark, { kind: 'delivered' }>[] = [];
   for (const mark of journal) {
     if (mark.kind === 'queue') queued = [...mark.pending];
@@ -418,6 +439,7 @@ export async function rebuildDurableRun(
       const at = queued.findIndex((item) => queueKey(item) === queueKey(mark.queued));
       if (at !== -1) queued.splice(at, 1);
       delivered.push(mark);
+      extend(mark.iterationLimit);
     }
   }
   const adoptedQueued: string[] = [];
@@ -441,7 +463,13 @@ export async function rebuildDurableRun(
     }
     const kind = entry.metadata?.queued;
     if (message.role === 'user' && (kind === 'steer' || kind === 'followUp' || kind === 'inject')) {
-      const key = queueKey({ kind, content: message.content });
+      const id = entry.metadata?.queuedId;
+      const key = queueKey({
+        kind,
+        content: message.content,
+        ...(typeof id === 'string' && { id }),
+      });
+      extend(entry.metadata?.iterationLimit);
       adoptedQueued.push(key);
       const at = queued.findIndex((item) => queueKey(item) === key);
       if (at !== -1) queued.splice(at, 1);
@@ -519,7 +547,14 @@ export async function rebuildDurableRun(
       ? 'stopping'
       : 'stopped';
 
-  const { compact: _compact, queued: _queued, stopping: _stopping, ...rest } = checkpoint;
+  const {
+    compact: _compact,
+    queued: _queued,
+    stopping: _stopping,
+    iterationLimit: _limit,
+    closingTurn: _closing,
+    ...rest
+  } = checkpoint;
   const lastWritten = later.at(-1);
   const branch =
     checkpoint.branch?.parentId !== undefined && lastWritten
@@ -530,6 +565,8 @@ export async function rebuildDurableRun(
       ...rest,
       ...(branch && { branch }),
       status: 'running',
+      ...(iterationLimit !== undefined && { iterationLimit }),
+      ...(closingTurn && { closingTurn }),
       messages,
       toolCalls,
       iterations,

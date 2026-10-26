@@ -1202,6 +1202,188 @@ describe('durable runs at the edges of a step', () => {
   });
 });
 
+describe('durable runs after a takeover and around follow-ups', () => {
+  it('never writes the answer of a model call that came back after its lease was taken', async () => {
+    let now = 0;
+    const store = new InMemoryDurableRunStore({ now: () => now });
+    const memory = { adapter: 'sqlite' as const, sqlite: { path: join(dir, 'memory.db') } };
+    const late = deferred<void>();
+    const asked = deferred();
+    const agent = new Agent({ name: 'late', model: 'mock/m', instructions: 'Answer.' });
+    const old = new Cogitator({
+      llm: {
+        backends: {
+          mock: scriptedBackend([
+            async () => {
+              asked.resolve();
+              await late.promise;
+              return answer('stale answer');
+            },
+          ]).backend,
+        },
+      },
+      memory,
+      durable: { store, owner: 'a' },
+    });
+    const running = old.run(agent, { input: 'Hi', threadId: 'late' });
+    running.catch(() => undefined);
+    await asked.promise;
+
+    now += 61_000;
+    const next = new Cogitator({
+      llm: { backends: { mock: scriptedBackend([answer('fresh answer')]).backend } },
+      memory,
+      durable: { store, owner: 'b' },
+    });
+    const { resumed } = await next.recoverRuns({ agents: [agent] });
+    expect((await resumed[0].handle.result).output).toBe('fresh answer');
+
+    late.resolve();
+    await expect(running).rejects.toMatchObject({ code: ErrorCode.RUN_LEASED });
+    const answers = (await entriesOf(next, 'late'))
+      .filter((entry) => entry.message.role === 'assistant')
+      .map((entry) => entry.message.content);
+    expect(answers).toEqual(['fresh answer']);
+    await old.close();
+    await next.close();
+  });
+
+  it.each([
+    ['without a memory log', false],
+    ['with a memory log', true],
+  ])('keeps the iterations a follow-up gave the run %s', async (_name, logged) => {
+    const store = new InMemoryDurableRunStore();
+    const agent = new Agent({
+      name: 'short',
+      model: 'mock/m',
+      instructions: 'Answer.',
+      maxIterations: 1,
+    });
+    const asked = deferred();
+    const config = (turns: ScriptedTurn[]) => {
+      const scripted = scriptedBackend(turns);
+      return {
+        scripted,
+        cog: new Cogitator({
+          llm: { backends: { mock: scripted.backend } },
+          ...(logged && {
+            memory: { adapter: 'sqlite' as const, sqlite: { path: join(dir, 'm.db') } },
+          }),
+          durable: { store, owner: 'a', takeoverOnRestart: true },
+        }),
+      };
+    };
+    const first = config([
+      answer('first'),
+      () => {
+        asked.resolve();
+        return forever.then(() => answer('never'));
+      },
+    ]);
+    const handle = first.cog.start(agent, { input: 'Start', threadId: 'limits' });
+    handle.followUp('One more thing');
+    handle.result.catch(() => undefined);
+    await asked.promise;
+    await first.cog.close();
+
+    const second = config([answer('second')]);
+    const { resumed } = await second.cog.recoverRuns({ agents: [agent] });
+    expect((await resumed[0].handle.result).output).toBe('second');
+    expect(second.scripted.requests).toHaveLength(1);
+  });
+
+  it('tells two follow-ups with the same text apart', async () => {
+    const store = new InMemoryDurableRunStore();
+    const memory = { adapter: 'sqlite' as const, sqlite: { path: join(dir, 'memory.db') } };
+    const agent = new Agent({ name: 'twins', model: 'mock/m', instructions: 'Answer.' });
+    const asked = deferred();
+    const firstScript = scriptedBackend([
+      answer('first'),
+      () => {
+        asked.resolve();
+        return forever.then(() => answer('never'));
+      },
+    ]);
+    const first = new Cogitator({
+      llm: { backends: { mock: firstScript.backend } },
+      memory,
+      durable: { store, owner: 'a', takeoverOnRestart: true },
+    });
+    const handle = first.start(agent, { input: 'Start', threadId: 'twins' });
+    handle.followUp('Again');
+    handle.followUp('Again');
+    handle.result.catch(() => undefined);
+    await asked.promise;
+    await first.close();
+
+    const nextScript = scriptedBackend([answer('second'), answer('third')]);
+    const next = new Cogitator({
+      llm: { backends: { mock: nextScript.backend } },
+      memory,
+      durable: { store, owner: 'a', takeoverOnRestart: true },
+    });
+    const { resumed } = await next.recoverRuns({ agents: [agent] });
+    expect((await resumed[0].handle.result).output).toBe('third');
+    expect(nextScript.requests).toHaveLength(2);
+    expect(userTexts(nextScript.requests[1]).filter((text) => text === 'Again')).toHaveLength(2);
+    await next.close();
+  });
+
+  it('writes the answers of a discarded run once when a discard is tried again', async () => {
+    const hang = countedTool('hang', forever);
+    const agent = new Agent({
+      name: 'again',
+      model: 'mock/m',
+      instructions: 'Go.',
+      tools: [hang.tool],
+    });
+    const first = processOn([callTools([{ id: 'd', name: 'hang', arguments: {} }])]);
+    first.cog.run(agent, { input: 'Go', threadId: 'discard-twice' }).catch(() => undefined);
+    await hang.started;
+    await first.cog.close();
+
+    let inner: ThreadDurableRunStore | undefined;
+    let deletes = 0;
+    const scripted = scriptedBackend([answer('unused')]);
+    const storeOf = async (): Promise<ThreadDurableRunStore> => {
+      inner ??= new ThreadDurableRunStore((await second.getMemory())!);
+      return inner;
+    };
+    const second: Cogitator = new Cogitator({
+      llm: { backends: { mock: scripted.backend } },
+      memory: { adapter: 'sqlite', sqlite: { path: join(dir, 'memory.db') } },
+      durable: {
+        owner: 'host-a',
+        takeoverOnRestart: true,
+        storeRetries: 0,
+        store: {
+          acquire: async (...args) => (await storeOf()).acquire(...args),
+          renew: async (...args) => (await storeOf()).renew(...args),
+          release: async (...args) => (await storeOf()).release(...args),
+          save: async (...args) => (await storeOf()).save(...args),
+          append: async (...args) => (await storeOf()).append(...args),
+          load: async (...args) => (await storeOf()).load(...args),
+          list: async (...args) => (await storeOf()).list(...args),
+          delete: async (...args) => {
+            if (deletes++ === 0) throw new Error('ECONNRESET');
+            return (await storeOf()).delete(...args);
+          },
+        },
+      },
+    });
+    const [kept] = await second.durableRuns();
+    await expect(second.discardRun(kept.runId)).rejects.toThrow('ECONNRESET');
+    await second.discardRun(kept.runId);
+
+    const results = (await entriesOf(second, 'discard-twice')).flatMap(
+      (entry) => entry.toolResults ?? []
+    );
+    expect(results.map((entry) => entry.callId)).toEqual(['d']);
+    expect(await second.durableRuns()).toEqual([]);
+    await second.close();
+  });
+});
+
 /** The durable record of the one run kept for `threadId`, read from the store on the memory */
 async function loadRecord(cog: Cogitator, threadId: string): Promise<DurableRunRecord | null> {
   const [run] = await cog.durableRuns({ threadId });

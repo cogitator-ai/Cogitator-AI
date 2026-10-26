@@ -8,6 +8,9 @@ import type { ToolResult } from './message';
 import type { QueuedRunMessage, RunHandle, StartOptions } from './run-control';
 import type { RunCheckpoint } from './runtime';
 
+/** A message queued on a durable run's handle, with the id the queue gave it */
+export type DurableQueuedMessage = QueuedRunMessage & { id?: string };
+
 /** Where a durable run is kept: its id and the thread it runs in */
 export interface DurableRunRef {
   readonly runId: string;
@@ -42,13 +45,15 @@ export type DurableRunMark = (
       /** What the call returned, as JSON: `details` and `presentation` kept, values JSON cannot hold dropped */
       result: ToolResult;
     }
-  | { kind: 'queue'; pending: QueuedRunMessage[] }
+  | { kind: 'queue'; pending: DurableQueuedMessage[] }
   | {
       kind: 'delivered';
       /** The queued message the run took */
-      queued: QueuedRunMessage;
+      queued: DurableQueuedMessage;
       /** What it added to the conversation: the message, and the context the input checks added */
       messages: Message[];
+      /** The iteration the run now stops at, when the message woke it at its stop */
+      iterationLimit?: number;
     }
 ) & {
   /**

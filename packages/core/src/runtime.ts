@@ -4,6 +4,7 @@ import { nanoid } from 'nanoid';
 import type {
   BuiltContext,
   CogitatorConfig,
+  DurableQueuedMessage,
   DurableRunHolder,
   DurableRunInfo,
   DurableRunLease,
@@ -918,7 +919,7 @@ export class Cogitator implements ToolInvoker {
     agent: Agent,
     options: StartOptions,
     resumeFrom?: ResumeFrom,
-    queued: readonly QueuedRunMessage[] = []
+    queued: readonly DurableQueuedMessage[] = []
   ): RunHandle & Required<Pick<RunHandle, 'setPermissionMode'>> {
     const { queue: queueOptions, onRefusedMessage, ...runOptions } = options;
     const queue = new RunQueue(queueOptions, (refused) => {
@@ -935,7 +936,7 @@ export class Cogitator implements ToolInvoker {
       ? AbortSignal.any([runOptions.signal, stop.signal])
       : stop.signal;
     const modes = new PermissionModeControl();
-    for (const item of queued) queue.push(item.kind, item.content);
+    for (const item of queued) queue.push(item.kind, item.content, item.id);
     const result = this.launch(agent, { ...runOptions, signal }, resumeFrom, queue, modes).finally(
       () => {
         queue.close();
@@ -2935,9 +2936,14 @@ export class Cogitator implements ToolInvoker {
         }
       };
       /** Delivers what passes the checks, and counts the steering and follow-up messages of it */
-      const deliver = async (queued: readonly QueuedRunMessage[]): Promise<number> => {
+      const deliver = async (
+        queued: readonly QueuedRunMessage[],
+        stopsAt?: number
+      ): Promise<number> => {
         let wakes = 0;
         for (const item of queued) {
+          const queuedId = queue?.idOf(item);
+          const extendsTo = item.kind !== 'inject' ? stopsAt : undefined;
           const added = await passesChecks(item);
           if (!added || !queue?.settle(item)) continue;
           const message: Message = { role: 'user', content: item.content };
@@ -2947,7 +2953,11 @@ export class Cogitator implements ToolInvoker {
             lastToolCallSig = '';
             stopContinued = false;
           }
-          await runMemory.save(active.id, message, undefined, undefined, { queued: item.kind });
+          await runMemory.save(active.id, message, undefined, undefined, {
+            queued: item.kind,
+            ...(keeper && queuedId !== undefined && { queuedId }),
+            ...(keeper && extendsTo !== undefined && { iterationLimit: extendsTo }),
+          });
           const notes: Message[] = [];
           for (const text of added) {
             const note: Message = { role: 'system', content: text };
@@ -2955,7 +2965,11 @@ export class Cogitator implements ToolInvoker {
             notes.push(note);
             await runMemory.save(active.id, note, undefined, undefined, { context: 'beforeRun' });
           }
-          await keeper?.delivered(item, [message, ...notes]);
+          await keeper?.delivered(
+            { ...item, ...(queuedId !== undefined && { id: queuedId }) },
+            [message, ...notes],
+            extendsTo
+          );
         }
         return wakes;
       };
@@ -4237,7 +4251,9 @@ export class Cogitator implements ToolInvoker {
           ...(routeProvider !== undefined && { provider: routeProvider }),
           input,
           messages: restoreClearedOutputs(messages, middlewareState),
-          ...(running && queue && queue.pending.length > 0 && { queued: [...queue.pending] }),
+          ...(running &&
+            queue &&
+            queue.pending.length > 0 && { queued: withQueueIds(queue, queue.pending) }),
           ...(background.length > 0 && { background }),
           toolCalls: [...calls],
           ...(prompt && { prompt }),
@@ -4333,7 +4349,8 @@ export class Cogitator implements ToolInvoker {
         });
         await keeper.begin();
         const watched = keeper;
-        queue?.watch((pending) => watched.queued(pending));
+        if (queue) queue.watch((pending) => watched.queued(withQueueIds(queue, pending)));
+        runMemory.guard(() => watched.held());
         if (!checkpoint) await keepDurable();
       }
 
@@ -4471,7 +4488,7 @@ export class Cogitator implements ToolInvoker {
       const atStop = async (output: string): Promise<'stop' | 'continue'> => {
         let delivered = 0;
         for (let next = queue?.takeAtStop() ?? []; next.length > 0 && delivered === 0;) {
-          delivered = await deliver(next);
+          delivered = await deliver(next, iterations + maxIterations);
           if (delivered === 0) next = queue?.takeAtStop() ?? [];
         }
         if (delivered === 0) {
@@ -5971,6 +5988,7 @@ export class Cogitator implements ToolInvoker {
           ...(record.userId !== undefined && { userId: record.userId }),
         })
       );
+      memory.tag(`${runId}/discard`);
       memory.open(checkpoint.branch);
       const settled = new Set(checkpoint.turn.completed ?? []);
       const answers = [
@@ -7643,6 +7661,17 @@ function assertRunId(runId: string): void {
 
 /** The durable instances of the runtimes of this process, see `DurableRunHolder.instance` */
 const LIVE_INSTANCES = new Set<string>();
+
+/** `messages` of `queue` with the ids it gave them, for a durable run's store */
+function withQueueIds(
+  queue: RunQueue,
+  messages: readonly QueuedRunMessage[]
+): DurableQueuedMessage[] {
+  return messages.map((message) => {
+    const id = queue.idOf(message);
+    return { ...message, ...(id !== undefined && { id }) };
+  });
+}
 
 /** Whether another process took a durable run over, see `ErrorCode.RUN_LEASED` */
 function isLeaseLoss(reason: unknown): boolean {

@@ -53,7 +53,7 @@ import type {
   SessionSpend,
 } from './permissions';
 import type { HooksConfig } from './hooks';
-import type { DurableRunsConfig } from './durable-runs';
+import type { DurableQueuedMessage, DurableRunsConfig } from './durable-runs';
 import type { InstructionsConfig, LoadedInstructionFile } from './instructions';
 
 /**
@@ -832,8 +832,8 @@ export interface RunCheckpoint {
      */
     calls?: ({ at: number; index: number } | { call: ToolCall })[];
   };
-  /** Messages queued on the run's handle it had not delivered yet, see `RunHandle` */
-  queued?: QueuedRunMessage[];
+  /** Messages queued on the run's handle it had not delivered yet, with their ids, see `RunHandle` */
+  queued?: DurableQueuedMessage[];
   /**
    * A durable run answered and its stop processing (follow-ups queued for the stop, `beforeStop`
    * middleware and `Stop` hooks) has not settled yet: a recovery runs it before the run ends

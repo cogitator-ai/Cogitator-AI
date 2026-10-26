@@ -407,10 +407,14 @@ export class ThreadDurableRunStore implements DurableRunStore {
       if (!updated.success) throw new Error(updated.error);
       return true;
     });
-    this.writes.set(
-      ref.threadId,
-      next.catch(() => undefined)
+    const settled = next.then(
+      () => undefined,
+      () => undefined
     );
+    this.writes.set(ref.threadId, settled);
+    void settled.then(() => {
+      if (this.writes.get(ref.threadId) === settled) this.writes.delete(ref.threadId);
+    });
     return next;
   }
 

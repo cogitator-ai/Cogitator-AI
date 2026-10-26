@@ -32,6 +32,8 @@ export class RunMemory {
   private count = 0;
   /** Set once the run may write no more, see {@link seal} */
   private sealed = false;
+  /** Checked before every write, see {@link guard} */
+  private check: (() => Promise<void>) | undefined;
   /** What the run's entries name in their metadata, for a durable run */
   private taggedRun: string | undefined;
 
@@ -138,6 +140,15 @@ export class RunMemory {
     this.sealed = true;
   }
 
+  /**
+   * Runs `check` before every write from now on, which fails the write by throwing: a durable run
+   * confirms it still holds its lease, so a process that lost it never writes after the one that
+   * took it over
+   */
+  guard(check: () => Promise<void>): void {
+    this.check = check;
+  }
+
   /** Resolves once every write asked for so far is done, failed ones included */
   settled(): Promise<void> {
     return this.queue.then(() => undefined);
@@ -181,6 +192,10 @@ export class RunMemory {
     const options = this.options();
     const written = this.queue.then(async () => {
       if (this.sealed) return;
+      if (this.check) {
+        await this.check();
+        if (this.sealed) return;
+      }
       const entry = await saveEntry(
         this.threadId,
         agentId,
