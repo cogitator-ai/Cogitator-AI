@@ -472,6 +472,7 @@ export { APPROVAL_RESPONSE_SCHEMA, isToolInterrupt } from './cogitator/interrupt
 export * from './permissions/index';
 export * from './hooks/index';
 export * from './instructions/index';
+export * from './harness-agent/index';
 export { EXIT_PLAN_MODE } from './cogitator/run-permissions';
 export {
   BUDGET_RESPONSE_SCHEMA,

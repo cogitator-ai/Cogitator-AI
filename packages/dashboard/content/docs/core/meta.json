@@ -5,6 +5,7 @@
     "run-control",
     "budgets",
     "agents",
+    "harness-agent",
     "skills",
     "todos",
     "tools",

@@ -1,6 +1,26 @@
 import { highlightCode } from '../../highlight';
 import type { ExplorerFeature } from './types';
 
+const HARNESS_CODE = `
+const harness = createHarnessAgent({
+  preset: 'coding',
+  workspace: './my-app',
+  permissions: { allow: ['Bash(pnpm test *)'], deny: ['Bash(git push *)'] },
+});
+
+const cog = new Cogitator(
+  harness.mergeConfig({ llm: { defaultModel: 'anthropic/claude-sonnet-5-5' } })
+);
+
+const result = await cog.run(harness.agent, {
+  input: 'The add() test fails, fix it',
+  ...harness.runOptions,
+  onApproval: (request) => askTheUser(request),
+});
+
+console.log(result.output, result.todos);
+`;
+
 const SANDBOX_CODE = `
 const sandbox = new SandboxManager({
   allowNativeFallback: false,
@@ -155,11 +175,15 @@ const result = await deployer.deploy({
 console.log(result.url, result.endpoints?.a2a);
 `;
 
-/** Group B of the feature explorer: isolation, safety, operations, reasoning and shipping. */
+/**
+ * Group B of the feature explorer: the harness agent, isolation, safety, operations, reasoning
+ * and shipping.
+ */
 export async function featuresB(): Promise<ExplorerFeature[]> {
-  const [sandbox, safety, trace, handoff, reasoning, timeTravel, prompts, logic, ship] =
+  const [harness, sandbox, safety, trace, handoff, reasoning, timeTravel, prompts, logic, ship] =
     await Promise.all(
       [
+        HARNESS_CODE,
         SANDBOX_CODE,
         SAFETY_CODE,
         TRACE_CODE,
@@ -173,6 +197,15 @@ export async function featuresB(): Promise<ExplorerFeature[]> {
     );
 
   return [
+    {
+      id: 'harness',
+      pkg: '@cogitator-ai/core',
+      title: 'Harness agent',
+      summary:
+        'One call assembles a coding or assistant agent: file tools and a shell in a workspace, todos, skills, subagents, AGENTS.md, permissions that ask before edits and commands, and compaction for long sessions.',
+      href: '/docs/core/harness-agent',
+      code: harness,
+    },
     {
       id: 'sandbox',
       pkg: '@cogitator-ai/sandbox · @cogitator-ai/wasm-tools',

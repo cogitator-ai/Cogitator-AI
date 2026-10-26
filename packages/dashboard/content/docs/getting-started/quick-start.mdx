@@ -142,8 +142,30 @@ Model strings:
 - `model-name` — runs on `llm.defaultProvider` (Ollama when unset); so does a string whose prefix is not a known provider, such as `meta-llama/llama-3.3-70b`
 - no `model` on the agent — uses `llm.defaultModel`; a run fails with `CONFIGURATION_ERROR` when neither is set
 
+## A Coding Agent in One Call
+
+For an agent that works in a project, start from [`createHarnessAgent()`](/docs/core/harness-agent) instead of wiring tools by hand: it gives the agent a workspace with file tools and a shell, a todo list, skills, subagents, the project's `AGENTS.md` and approvals before edits and commands.
+
+```typescript
+import { Cogitator, createHarnessAgent } from '@cogitator-ai/core';
+
+const harness = createHarnessAgent({ preset: 'coding', workspace: './my-app' });
+const cogitator = new Cogitator(
+  harness.mergeConfig({ llm: { defaultModel: 'ollama/qwen3.5:9b' } })
+);
+
+const result = await cogitator.run(harness.agent, {
+  input: 'Add a test for the add() function',
+  ...harness.runOptions,
+  onApproval: () => ({ approved: true }),
+});
+```
+
+`preset: 'assistant'` is the same without a shell, for a personal assistant with a folder of files.
+
 ## Next Steps
 
 - [Project Structure](/docs/getting-started/project-structure) — how projects and the monorepo are organized
 - [Configuration](/docs/getting-started/configuration) — `cogitator.yml`, environment variables, provider setup
+- [Harness Agent](/docs/core/harness-agent): presets, options and what `createHarnessAgent()` returns
 - [Core Concepts](/docs/core/cogitator) — deep dive into the Cogitator runtime

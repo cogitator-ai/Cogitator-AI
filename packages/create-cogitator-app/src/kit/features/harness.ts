@@ -4,27 +4,6 @@ import { hasFeature } from '../spec.js';
 import { cogitatorVersion, VERSIONS } from '../versions.js';
 import type { FeatureModule } from './types.js';
 
-const WORKSPACE_TS = code`
-  import { LocalWorkspace, workspaceTools as workspaceToolSet } from '@cogitator-ai/core';
-
-  /**
-   * File tools confined to \`root\`: paths are relative to it, nothing outside it
-   * is reachable (symlinks included), and writing or editing waits for approval.
-   */
-  export function createWorkspaceTools(root: string) {
-    const workspace = new LocalWorkspace({ root });
-    return workspaceToolSet(workspace, {
-      tools: ['read_file', 'list_files', 'glob', 'grep', 'write_file', 'edit_file'],
-      requireApproval: (name) => name === 'write_file' || name === 'edit_file',
-    });
-  }
-
-  /** The directory the assistant works in: ./workspace, or WORKSPACE_DIR. */
-  export const WORKSPACE_DIR = process.env.WORKSPACE_DIR ?? 'workspace';
-
-  export const workspaceTools = createWorkspaceTools(WORKSPACE_DIR);
-`;
-
 const FACTS_TS = code`
   import { tool } from '@cogitator-ai/core';
   import { CoreFactsStore } from '@cogitator-ai/memory';
@@ -111,10 +90,10 @@ const HARNESS_TEST_TS = code`
   import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
   import { tmpdir } from 'node:os';
   import { join } from 'node:path';
-  import { Agent } from '@cogitator-ai/core';
+  import type { MockChatResponse } from '@cogitator-ai/test-utils';
   import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+  import { createAssistant } from '../src/agents/assistant.js';
   import { createFacts } from '../src/harness/facts.js';
-  import { createWorkspaceTools } from '../src/harness/workspace.js';
   import { mockCogitator } from './helpers.js';
 
   let dir: string;
@@ -129,54 +108,67 @@ const HARNESS_TEST_TS = code`
 
   const context = { agentId: 'test', runId: 'test', signal: new AbortController().signal };
 
-  function writeCall(path: string) {
-    return {
-      toolCalls: [{ id: 'call-1', name: 'write_file', arguments: { path, content: 'hello' } }],
-      finishReason: 'tool_calls' as const,
-    };
+  function toolCall(name: string, args: Record<string, unknown>): MockChatResponse {
+    return { toolCalls: [{ id: \`call-\${name}\`, name, arguments: args }], finishReason: 'tool_calls' };
   }
 
-  async function runWrite(path: string, approved: boolean) {
+  /** Runs the assistant on the scripted model turns, answering every approval with \`approved\`. */
+  async function run(turns: MockChatResponse[], approved: boolean) {
     const workspace = join(dir, 'workspace');
-    const agent = new Agent({ name: 'writer', instructions: 'Write files.', tools: createWorkspaceTools(workspace) });
-    const { cogitator } = mockCogitator(writeCall(path), { content: 'Done.' });
+    const harness = createAssistant(workspace);
+    const { cogitator } = mockCogitator(...turns, { content: 'Done.' });
+    const asked: string[] = [];
     try {
-      const result = await cogitator.run(agent, {
+      await cogitator.run(harness.agent, {
         input: 'Write hello to notes.md',
-        onApproval: () => (approved ? { approved: true } : { approved: false, reason: 'not now' }),
+        ...harness.runOptions,
+        onApproval: (request) => {
+          asked.push(request.toolName);
+          return approved ? { approved: true } : { approved: false, reason: 'not now' };
+        },
       });
-      return { result, workspace };
+      return { workspace, asked };
     } finally {
       await cogitator.close();
+      await harness.dispose();
     }
   }
 
-  describe('workspace tools', () => {
+  describe('workspace', () => {
     it('writes relative paths into the workspace once approved', async () => {
-      const { workspace } = await runWrite('notes.md', true);
+      const { workspace } = await run([toolCall('write_file', { path: 'notes.md', content: 'hello' })], true);
       expect(readFileSync(join(workspace, 'notes.md'), 'utf8')).toBe('hello');
     });
 
     it('writes nothing when the write is declined', async () => {
-      const { workspace } = await runWrite('notes.md', false);
+      const { workspace } = await run([toolCall('write_file', { path: 'notes.md', content: 'hello' })], false);
       expect(existsSync(join(workspace, 'notes.md'))).toBe(false);
+    });
+
+    it('asks before writing, never before reading', async () => {
+      const { asked } = await run(
+        [toolCall('list_files', {}), toolCall('write_file', { path: 'notes.md', content: 'hello' })],
+        true
+      );
+      expect(asked).toEqual(['write_file']);
     });
 
     it('cannot reach outside the workspace, also through a symlink', async () => {
       const workspace = join(dir, 'workspace');
-      const [readFile] = createWorkspaceTools(workspace);
+      const harness = createAssistant(workspace);
+      const readFile = harness.agent.tools.find((tool) => tool.name === 'read_file');
       mkdirSync(workspace, { recursive: true });
       symlinkSync(dir, join(workspace, 'escape'));
 
       for (const path of ['../secret.txt', '/etc/passwd', 'escape/secret.txt']) {
-        await expect(readFile.execute({ path }, context), path).rejects.toThrow('outside the workspace');
+        await expect(readFile?.execute({ path }, context), path).rejects.toThrow('outside the workspace');
       }
+      await harness.dispose();
     });
 
-    it('asks before writing and editing, never before reading', () => {
-      const tools = createWorkspaceTools(join(dir, 'workspace'));
-      const needApproval = tools.filter((tool) => tool.requiresApproval).map((tool) => tool.name);
-      expect(needApproval.sort()).toEqual(['edit_file', 'write_file']);
+    it('runs no shell commands', () => {
+      const harness = createAssistant(join(dir, 'workspace'));
+      expect(harness.agent.tools.map((tool) => tool.name)).not.toContain('run_command');
     });
   });
 
@@ -197,8 +189,9 @@ const HARNESS_TEST_TS = code`
 `;
 
 /**
- * The assistant harness: a workspace the agent can read and write with your
- * approval, facts it keeps about you, and tasks it schedules for later.
+ * The assistant harness: the assistant becomes a harness agent of core (a workspace it reads and
+ * writes with your approval, todos, skills), with facts it keeps about you and tasks it schedules
+ * for later.
  */
 export const harnessFeature: FeatureModule = {
   id: 'feature:harness',
@@ -209,11 +202,9 @@ export const harnessFeature: FeatureModule = {
       .dependency('@cogitator-ai/channels', cogitatorVersion('@cogitator-ai/channels'))
       .dependency('better-sqlite3', VERSIONS.betterSqlite3)
       .allowBuild('better-sqlite3')
-      .file('src/harness/workspace.ts', WORKSPACE_TS)
       .file('src/harness/facts.ts', FACTS_TS)
       .file('src/harness/scheduler.ts', SCHEDULER_TS)
       .file('tests/harness.test.ts', HARNESS_TEST_TS)
-      .toolSet('workspaceTools', '../harness/workspace.js')
       .toolSet('factTools', '../harness/facts.js')
       .toolSet('schedulerTools', '../harness/scheduler.js')
       .ignore('workspace/', 'data/')
@@ -225,9 +216,6 @@ export const harnessFeature: FeatureModule = {
         secret: false,
       })
       .instruct(
-        'You have a workspace for files: read and search them freely (read_file, list_files, glob, grep), and know that writing or editing them needs the user to approve it.'
-      )
-      .instruct(
         'Remember lasting facts about the user with remember_fact, and schedule reminders and recurring work with schedule_task.'
       );
   },
@@ -236,7 +224,7 @@ export const harnessFeature: FeatureModule = {
     project.section(
       'Assistant harness',
       code`
-        - \`src/harness/workspace.ts\`: file tools confined to \`workspace/\` (\`WORKSPACE_DIR\`), a \`LocalWorkspace\` with \`workspaceTools\` from core. Paths are relative to it, symlinks out of it are refused, and \`write_file\` and \`edit_file\` need approval: the terminal chat asks before they run.
+        - \`src/agents/assistant.ts\`: the assistant is \`createHarnessAgent({ preset: 'assistant' })\` from core: file tools confined to \`workspace/\` (\`WORKSPACE_DIR\`), no shell, \`write_todos\` for longer tasks, the skills of \`workspace/.agents/skills\`, long tool results kept as files in the workspace, and the permission engine: reads run freely, \`write_file\` and \`edit_file\` need approval and the terminal chat asks before they run. Pass options to \`createHarnessAgent\` to change any of it (\`permissions: { mode: 'acceptEdits' }\`, \`shell: true\`, \`skills: { dirs: ['skills'] }\`), \`src/cogitator.ts\` merges its runtime settings (\`assistantHarness.mergeConfig\`).
         - \`src/harness/facts.ts\`: \`remember_fact\` and \`forget_fact\` keep lasting facts in \`data/facts.db\` (\`CoreFactsStore\`), and every run gets them as context.
         - \`src/harness/scheduler.ts\`: \`schedule_task\`, \`list_tasks\` and \`cancel_task\`. Tasks are kept in \`data/timers.json\`, and while \`${runScript(pm, 'dev')}\` runs, a due task is handed to the assistant like a message.
       `

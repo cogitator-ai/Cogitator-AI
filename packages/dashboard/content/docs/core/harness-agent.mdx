@@ -1,0 +1,133 @@
+---
+title: Harness Agent
+description: createHarnessAgent() assembles a coding or assistant agent from the workspace, todos, skills, subagents, commands, project instructions, permissions, compaction and tool search in one call, with presets and every piece overridable.
+---
+
+## Overview
+
+The runtime has every piece a coding agent needs: a [workspace](/docs/tools/workspace) with file tools and a shell, [todo lists](/docs/core/todos), [skills](/docs/core/skills), [subagents](/docs/core/subagents) and [commands](/docs/core/commands), [project instructions](/docs/core/project-instructions), [permissions](/docs/tools/permissions), compaction, long tool results saved as files and `tool_search`. `createHarnessAgent()` puts them together with defaults that work, so you start from a working agent and change what you need.
+
+```typescript
+import { Cogitator, createHarnessAgent } from '@cogitator-ai/core';
+
+const harness = createHarnessAgent({ preset: 'coding', workspace: './my-app' });
+const cog = new Cogitator(
+  harness.mergeConfig({ llm: { defaultModel: 'anthropic/claude-sonnet-5-5' } })
+);
+
+const result = await cog.run(harness.agent, {
+  input: 'The add() test fails, fix it',
+  ...harness.runOptions,
+  onApproval: (request) => askTheUser(request),
+});
+
+console.log(result.output, result.todos);
+await cog.close();
+await harness.dispose();
+```
+
+It is a composition layer and nothing more: the agent is an ordinary `Agent`, the runtime an ordinary `Cogitator`. Everything the harness sets is a value you can read, log and change.
+
+## Presets
+
+`preset` picks the defaults, `coding` when left out:
+
+| Piece                                                                | `coding`                                                                                  | `assistant`            |
+| -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ---------------------- |
+| Workspace (`workspace`)                                              | the working directory of the process                                                      | `./workspace`          |
+| `read_file`, `write_file`, `edit_file`, `list_files`, `glob`, `grep` | yes                                                                                       | yes                    |
+| `run_command` (`shell`)                                              | yes                                                                                       | no                     |
+| `write_todos` (`todos`)                                              | yes                                                                                       | yes                    |
+| `SKILL.md` skills of the workspace (`skills`)                        | yes                                                                                       | yes                    |
+| Subagents (`subagents`)                                              | Markdown files of `agents/` folders and `general-purpose`, approvals bubble up            | no                     |
+| Commands (`commands`)                                                | Markdown files of `commands/` folders                                                     | no                     |
+| `AGENTS.md` and `CLAUDE.md` (`projectInstructions`)                  | yes                                                                                       | no                     |
+| Permission engine (`permissions`)                                    | `default` mode: reads run, edits and commands ask                                         | the same               |
+| Memory files (`memory`)                                              | no                                                                                        | when `memory` is given |
+| Compaction (`compaction`)                                            | old tool outputs cleared past 100 000 tokens, the conversation compressed near the window | the same               |
+| Long tool results (`toolResults`)                                    | past 30 000 characters saved to the workspace, the model gets the start and the path      | the same               |
+| `tool_search` (`toolSearch`)                                         | your tools deferred once the agent has more than 20                                       | the same               |
+| Parallel read-only calls (`parallelToolCalls`)                       | yes                                                                                       | yes                    |
+| `maxIterations`                                                      | 100                                                                                       | 30                     |
+
+Pieces that are off in a preset stay off unless you turn them on: `createHarnessAgent({ preset: 'assistant', shell: true })` is an assistant that runs commands, `subagents: false` a coding agent that does everything itself.
+
+## Options
+
+Every row of the table is an option. `false` turns a piece off, `true` turns it on with the preset's defaults, an object changes it:
+
+```typescript
+const harness = createHarnessAgent({
+  preset: 'coding',
+  name: 'fixer',
+  model: 'openai/gpt-6.1-sol',
+  instructions: 'You fix bugs in this repository. Keep diffs small.',
+  workspace: new DockerWorkspace({
+    host: new LocalWorkspace({ root: './repo' }),
+    image: 'node:24',
+  }),
+  tools: [searchIssues, openPullRequest],
+  skills: { dirs: ['./skills'] },
+  subagents: { agents: { reviewer: { description: 'Reviews a diff', tools: ['Read', 'Grep'] } } },
+  permissions: { mode: 'acceptEdits', deny: ['Bash(git push *)', 'Read(.env)'] },
+  budget: { session: { maxCostUsd: 5 } },
+  toolResults: { maxLength: 20_000 },
+  parallelToolCalls: 4,
+  timeouts: { toolMs: 120_000 },
+  agent: { temperature: 0.2, fallbackModels: ['anthropic/claude-sonnet-5-5'] },
+});
+```
+
+- `workspace` takes a `Workspace` (local, Docker, E2B, Daytona, Vercel Sandbox), a directory for a `LocalWorkspace`, or its options. A workspace you pass stays yours to start and dispose, one the harness made from a path is disposed by `harness.dispose()`. `false` leaves the agent without one, and its tools use the run's (`RunOptions.workspace`).
+- `workspaceTools` passes options to [`workspaceTools()`](/docs/tools/workspace) (`skipDirs`, `execTimeout`, `tools`), or `false` for none. `tools` adds your own: one named like a harness tool (`read_file`) replaces it.
+- `skills` takes a `SkillRegistry` configuration (its `dirs` are searched before the workspace) or a list of skill sources, `defineSkill()` skills among them.
+- `subagents` and `commands` are merged over the preset's configuration, so `subagents: { approvalMode: 'decline' }` keeps the files and `general-purpose`, and a subagent you name `general-purpose` replaces the built-in one.
+- `permissions` takes the mode and the `allow`, `ask` and `deny` rules of the agent, and the runtime's `classifier`, `settings` and "always allow" layers. `false` turns the engine off: then only a tool that needs approval asks (`run_command`).
+- `memory`, `hooks`, `budget` and `compaction` are the runtime's `memory`, `hooks`, `budget` and `context`.
+- `agent` sets any other field of the `Agent`, last, over what the harness built.
+
+### Trust and settings files
+
+A repository you open may hold subagents, commands, hooks and permission rules of its own. They apply only with `trusted: true`: subagents and commands of the project's `.claude/agents` and `.claude/commands` are read, and with `settings: true` the hooks and `allow` rules of its `.claude/settings.json`. The user's and the organization's managed files are read either way once their piece is on. `settings` is off by default, as in the Claude Agent SDK, and a local workspace's root is the project root the files are read from.
+
+```typescript
+createHarnessAgent({ workspace: '.', trusted: true, settings: true });
+```
+
+## The System Prompt
+
+The agent's instructions are your `instructions` (or the preset's), then a short section on what the harness gave it, only for what it has:
+
+- **Workspace**: how to find files (`glob`, `grep`, `list_files`), to read before editing, to check changes with `run_command`, that a long result is saved to a file it can page through, and to batch calls that only read.
+- **Planning**: when to keep a todo list with `write_todos`.
+- **Subagents**: when to hand a task to the `agent` tool, and that a subagent sees nothing of the conversation.
+- **More tools**: to look for a tool with `tool_search` when none fits.
+- **Approvals**: not to repeat a call that was declined or refused.
+
+It names no paths and no dates, so it stays in the provider's prompt cache. The runtime then adds the project's `AGENTS.md` and the skills the agent can activate. `harnessPrompt: false` leaves the section out, `harnessPrompt(features)` builds it for an agent of your own.
+
+## What It Returns
+
+```typescript
+interface HarnessAgent {
+  preset: 'coding' | 'assistant';
+  agent: Agent; // tools, prompt, workspace, todos, skills, permission mode and rules, limits
+  config: HarnessRuntimeConfig; // the Cogitator fields the pieces need
+  runOptions: { parallelToolCalls?: boolean; maxParallelToolCalls?: number };
+  workspace: Workspace | undefined;
+  mergeConfig(base?: CogitatorConfig): CogitatorConfig;
+  dispose(): Promise<void>;
+}
+```
+
+There are three parts because the runtime reads each setting in one place. An agent carries what is its own (tools, prompt, workspace, permissions), and goes as it is to `cog.run()`, a server adapter, Studio, a workflow node or `agentAsTool()`. Subagents, commands, hooks, project instructions, settings files, memory, compaction and the tool result limit are read by the `Cogitator` (`config`): it builds the subagent catalog and the hooks once, not per agent. How a run schedules its tool calls is a run option (`runOptions`), so pass it to each run.
+
+`mergeConfig(base)` merges `config` into a configuration of yours one level deep: `limits`, `permissions`, `memory` and the rest keep the fields of yours the harness does not set. A project generated by `create-cogitator-app` merges it into `cogitator.yml`:
+
+```typescript
+const cog = new Cogitator(assistantHarness.mergeConfig(loadConfig()));
+```
+
+## In a Generated Project
+
+The `assistant` preset of [`create-cogitator-app`](/docs/getting-started/scaffolding) (the `harness` feature) builds its agent with `createHarnessAgent({ preset: 'assistant' })` in `src/agents/assistant.ts`, `createAssistant(workspace)` lets its tests give it a directory of their own, and the terminal chat asks before every write.

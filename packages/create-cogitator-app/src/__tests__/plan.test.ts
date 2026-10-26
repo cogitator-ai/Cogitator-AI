@@ -212,6 +212,32 @@ describe('generated configuration', () => {
     expect(file(plan, 'src/agents/assistant.ts')).not.toContain('model:');
   });
 
+  it('builds the assistant of the harness feature with createHarnessAgent', () => {
+    const plan = planProject(specFor('assistant', 'ollama'));
+    const agent = file(plan, 'src/agents/assistant.ts');
+    expect(agent).toContain("import { createHarnessAgent } from '@cogitator-ai/core';");
+    expect(agent).toContain("preset: 'assistant',");
+    expect(agent).toContain(
+      "export function createAssistant(workspace = process.env.WORKSPACE_DIR ?? 'workspace')"
+    );
+    expect(agent).toContain('export const assistant = assistantHarness.agent;');
+    expect(agent).not.toContain('workspaceTools');
+    expect(file(plan, 'src/cogitator.ts')).toContain(
+      "import { assistant, assistantHarness } from './agents/assistant.js';"
+    );
+    expect(file(plan, 'src/cogitator.ts')).toContain(
+      'return new Cogitator(assistantHarness.mergeConfig({ ...config, ...overrides,'
+    );
+    expect(file(plan, 'src/index.ts')).toContain('...assistantHarness.runOptions,');
+    expect(file(plan, 'src/tools/index.ts')).not.toContain('workspaceTools');
+    expect(plan.files.some((f) => f.path === 'src/harness/workspace.ts')).toBe(false);
+
+    const basic = planProject(specFor('basic', 'ollama'));
+    expect(file(basic, 'src/agents/assistant.ts')).toContain('new Agent({');
+    expect(file(basic, 'src/cogitator.ts')).not.toContain('assistantHarness');
+    expect(file(basic, 'src/index.ts')).not.toContain('assistantHarness');
+  });
+
   it('tells deploy which secrets a server needs and where its health check is', () => {
     const yml = file(planProject(specFor('hono', 'openai')), 'cogitator.yml');
     expect(yml).toContain('kind: server');
