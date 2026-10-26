@@ -62,6 +62,7 @@ export const PROVIDER_ENV: Readonly<Record<LLMProvider, readonly ProviderEnvSett
     },
     { field: 'apiVersion', env: ['COGITATOR_AZURE_API_VERSION'] },
     { field: 'deployment', env: ['COGITATOR_AZURE_DEPLOYMENT', 'AZURE_OPENAI_DEPLOYMENT'] },
+    { field: 'model', env: ['COGITATOR_AZURE_MODEL'] },
   ],
   bedrock: [
     { field: 'region', env: ['COGITATOR_BEDROCK_REGION', 'AWS_REGION'], required: true },
@@ -83,6 +84,7 @@ export const PROVIDER_ENV: Readonly<Record<LLMProvider, readonly ProviderEnvSett
       sdkEnv: ['AWS_SESSION_TOKEN'],
     },
     { field: 'profile', env: ['COGITATOR_BEDROCK_PROFILE'], sdkEnv: ['AWS_PROFILE'], local: true },
+    { field: 'endpoint', env: ['COGITATOR_BEDROCK_ENDPOINT'] },
   ],
   vllm: [{ field: 'baseUrl', env: ['COGITATOR_VLLM_BASE_URL'], required: true }],
   mistral: [

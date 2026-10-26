@@ -535,11 +535,13 @@ Supported provider, limits, and deploy settings can be set via environment varia
 | `COGITATOR_AZURE_ENDPOINT`                | Azure OpenAI endpoint                           |
 | `COGITATOR_AZURE_API_VERSION`             | Azure API version                               |
 | `COGITATOR_AZURE_DEPLOYMENT`              | Azure deployment name                           |
+| `COGITATOR_AZURE_MODEL`                   | Azure model name                                |
 | `COGITATOR_BEDROCK_REGION`                | AWS Bedrock region                              |
 | `COGITATOR_BEDROCK_ACCESS_KEY_ID`         | AWS access key ID                               |
 | `COGITATOR_BEDROCK_SECRET_ACCESS_KEY`     | AWS secret access key                           |
 | `COGITATOR_BEDROCK_SESSION_TOKEN`         | AWS session token                               |
 | `COGITATOR_BEDROCK_PROFILE`               | AWS named profile                               |
+| `COGITATOR_BEDROCK_ENDPOINT`              | Bedrock Runtime endpoint                        |
 | `COGITATOR_MISTRAL_API_KEY`               | Mistral API key                                 |
 | `COGITATOR_GROQ_API_KEY`                  | Groq API key                                    |
 | `COGITATOR_TOGETHER_API_KEY`              | Together API key                                |

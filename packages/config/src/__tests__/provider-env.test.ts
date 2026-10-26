@@ -54,6 +54,17 @@ describe('Bedrock credentials from the environment', () => {
     });
   });
 
+  it('reads a custom Runtime endpoint from COGITATOR_BEDROCK_ENDPOINT', () => {
+    process.env.COGITATOR_BEDROCK_REGION = 'us-east-1';
+    process.env.COGITATOR_BEDROCK_ENDPOINT =
+      'https://vpce-123.bedrock-runtime.us-east-1.vpce.amazonaws.com';
+
+    expect(loadConfig({ skipYaml: true }).llm?.providers?.bedrock).toEqual({
+      region: 'us-east-1',
+      endpoint: 'https://vpce-123.bedrock-runtime.us-east-1.vpce.amazonaws.com',
+    });
+  });
+
   it('accepts a session token and a profile in cogitator.yml', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cfg-bedrock-'));
     const path = join(dir, 'cogitator.yml');
@@ -70,6 +81,30 @@ describe('Bedrock credentials from the environment', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('Azure model from the environment', () => {
+  beforeEach(clearProviderEnv);
+  afterEach(() => {
+    process.env = { ...savedEnv };
+  });
+
+  it('reads the model the deployments serve from COGITATOR_AZURE_MODEL', () => {
+    process.env.COGITATOR_AZURE_API_KEY = 'azure-key';
+    process.env.COGITATOR_AZURE_ENDPOINT = 'https://myresource.openai.azure.com';
+    process.env.COGITATOR_AZURE_MODEL = 'gpt-5';
+
+    expect(loadConfig({ skipYaml: true }).llm?.providers?.azure).toEqual({
+      apiKey: 'azure-key',
+      endpoint: 'https://myresource.openai.azure.com',
+      model: 'gpt-5',
+    });
+  });
+
+  it('configures no Azure provider from COGITATOR_AZURE_MODEL alone', () => {
+    process.env.COGITATOR_AZURE_MODEL = 'gpt-5';
+    expect(loadEnvConfig().llm?.providers?.azure).toBeUndefined();
   });
 });
 
