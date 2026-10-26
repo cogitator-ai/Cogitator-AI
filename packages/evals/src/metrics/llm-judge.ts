@@ -61,10 +61,7 @@ export interface LLMMetricFn extends MetricFn {
   readonly __judgeSetup?: (context: JudgeContext) => Promise<JudgeSetup>;
 }
 
-const FENCED_BLOCK = /```[a-z]*\s*([\s\S]*?)```/gi;
-const JSON_OBJECT = /\{[\s\S]*\}/;
-const LABELLED_SCORE =
-  /\bscore\b["']?\s*(?:is|of|[:=])?\s*["']?(-?\d+(?:\.\d+)?)(?:\s*\/\s*(\d+(?:\.\d+)?))?/gi;
+const SCORE_WORD = /\bscore\b/gi;
 
 const JudgeVerdictSchema = z.object({ score: z.number(), reasoning: z.string() });
 
@@ -101,19 +98,87 @@ function parseJson(text: string): unknown {
 
 /** The texts that may hold the JSON verdict: the whole answer, each fenced block, the outer braces */
 function jsonCandidates(raw: string): string[] {
-  const fenced = [...raw.matchAll(FENCED_BLOCK)].map((match) => match[1]);
-  const braces = JSON_OBJECT.exec(raw)?.[0];
-  return [raw, ...fenced, ...(braces === undefined ? [] : [braces])];
+  const first = raw.indexOf('{');
+  const last = raw.lastIndexOf('}');
+  const braces = first !== -1 && last > first ? [raw.slice(first, last + 1)] : [];
+  return [raw, ...fencedBlocks(raw), ...braces];
+}
+
+function fencedBlocks(raw: string): string[] {
+  const blocks: string[] = [];
+  let fence = raw.indexOf('```');
+  while (fence !== -1) {
+    let start = fence + 3;
+    while (start < raw.length && isLetter(raw[start])) start++;
+    while (start < raw.length && isSpace(raw[start])) start++;
+    const end = raw.indexOf('```', start);
+    if (end === -1) break;
+    blocks.push(raw.slice(start, end));
+    fence = raw.indexOf('```', end + 3);
+  }
+  return blocks;
+}
+
+function isLetter(char: string): boolean {
+  const lower = char.toLowerCase();
+  return lower >= 'a' && lower <= 'z';
+}
+
+function isSpace(char: string): boolean {
+  return char.trim() === '';
+}
+
+function isDigit(char: string | undefined): boolean {
+  return char !== undefined && char >= '0' && char <= '9';
+}
+
+function skipSpaces(text: string, at: number): number {
+  while (at < text.length && isSpace(text[at])) at++;
+  return at;
+}
+
+function numberAt(
+  text: string,
+  at: number,
+  signed: boolean
+): { value: string; end: number } | undefined {
+  let end = at;
+  if (signed && text[end] === '-') end++;
+  if (!isDigit(text[end])) return undefined;
+  while (isDigit(text[end])) end++;
+  if (text[end] === '.' && isDigit(text[end + 1])) {
+    end++;
+    while (isDigit(text[end])) end++;
+  }
+  return { value: text.slice(at, end), end };
+}
+
+function scoreAfter(text: string, at: number): { score: string; outOf?: string } | undefined {
+  if (text[at] === '"' || text[at] === "'") at++;
+  at = skipSpaces(text, at);
+  const word = text.slice(at, at + 2).toLowerCase();
+  if (word === 'is' || word === 'of') at += 2;
+  else if (text[at] === ':' || text[at] === '=') at++;
+  at = skipSpaces(text, at);
+  if (text[at] === '"' || text[at] === "'") at++;
+  const score = numberAt(text, at, true);
+  if (!score) return undefined;
+  const slash = skipSpaces(text, score.end);
+  if (text[slash] !== '/') return { score: score.value };
+  const outOf = numberAt(text, skipSpaces(text, slash + 1), false);
+  return outOf ? { score: score.value, outOf: outOf.value } : { score: score.value };
 }
 
 /** The last `score: X` (or `score is X`, `score: X/N`) the judge wrote */
 function labelledScore(raw: string): JudgeVerdict | undefined {
-  let last: RegExpMatchArray | undefined;
-  for (const match of raw.matchAll(LABELLED_SCORE)) last = match;
+  let last: { score: string; outOf?: string } | undefined;
+  for (const match of raw.matchAll(SCORE_WORD)) {
+    last = scoreAfter(raw, match.index + match[0].length) ?? last;
+  }
   if (!last) return undefined;
-  const score = Number(last[1]);
-  if (last[2] === undefined) return { score };
-  const outOf = Number(last[2]);
+  const score = Number(last.score);
+  if (last.outOf === undefined) return { score };
+  const outOf = Number(last.outOf);
   return outOf > 0 ? { score, outOf } : undefined;
 }
 

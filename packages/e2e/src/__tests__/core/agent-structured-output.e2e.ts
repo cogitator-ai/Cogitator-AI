@@ -6,9 +6,12 @@ import { z } from 'zod';
 const describeE2E = describe.skipIf((await ollamaSkipReason()) !== null);
 
 function extractJSON(text: string): string {
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
-  if (fenced) return fenced[1].trim();
-  return text.trim();
+  const open = text.indexOf('```');
+  if (open === -1) return text.trim();
+  let start = open + 3;
+  if (text.startsWith('json', start)) start += 4;
+  const close = text.indexOf('```', start);
+  return close === -1 ? text.trim() : text.slice(start, close).trim();
 }
 
 describeE2E('Core: Structured Output', () => {
