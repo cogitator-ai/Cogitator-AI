@@ -43,7 +43,7 @@ It is a composition layer and nothing more: the agent is an ordinary `Agent`, th
 | Commands (`commands`)                                                | Markdown files of `commands/` folders                                                     | no                                    |
 | `AGENTS.md` and `CLAUDE.md` (`projectInstructions`)                  | yes                                                                                       | no                                    |
 | Permission engine (`permissions`)                                    | `default` mode: reads run, edits and commands ask                                         | the same                              |
-| Memory files (`memory`)                                              | no                                                                                        | when the runtime has a memory adapter |
+| Memory files (`memoryFiles`)                                         | no                                                                                        | when the runtime has a memory adapter |
 | Compaction (`compaction`)                                            | old tool outputs cleared past 100 000 tokens, the conversation compressed near the window | the same                              |
 | Long tool results (`toolResults`)                                    | past 30 000 characters saved to the workspace, the model gets the start and the path      | the same                              |
 | `tool_search` (`toolSearch`)                                         | your tools deferred once the model would see more than 20 tools                           | the same                              |
@@ -54,7 +54,7 @@ Pieces that are off in a preset stay off unless you turn them on: `createHarness
 
 ## Options
 
-Every row of the table is an option. `false` turns a piece off, `true` turns it on with the preset's defaults, an object changes it:
+Every row of the table is an option. `false` turns a piece off, also in the configuration `mergeConfig()` merges into (`subagents: false` drops a `subagents` section of your `cogitator.yml`, `settings: false` its settings files), `true` turns it on with the preset's defaults, an object changes it:
 
 ```typescript
 const harness = createHarnessAgent({
@@ -84,7 +84,7 @@ const harness = createHarnessAgent({
 - `subagents` and `commands` are merged over the preset's configuration, `agents` by name: `subagents: { approvalMode: 'decline' }` keeps the files and `general-purpose`, and a `general-purpose` of yours (`{ description, model }`) is merged over the built-in one.
 - `toolSearch` counts every tool the model sees against its threshold (20): the harness's file tools, `write_todos`, the four subagent tools, `recall_tool_output` and the two skill tools, then yours. Past it, your tools are named in the agent's `deferredTools`, so their schemas wait for `tool_search` while the tools themselves stay as they are. `keep` names tools that are never deferred, `true` defers yours always, `false` never.
 - `permissions` takes the mode and the `allow`, `ask` and `deny` rules of the agent, and the runtime's `classifier`, `settings` and "always allow" layers. `false` turns the engine off: then only a tool that needs approval asks (`run_command`).
-- `memory`, `hooks`, `budget` and `compaction` are the runtime's `memory`, `hooks`, `budget` and `context`.
+- `memory`, `hooks`, `budget` and `compaction` are the runtime's `memory`, `hooks`, `budget` and `context`, `hooks: false` and `compaction: false` drop the base's too. `memoryFiles` keeps notes in memory files once the runtime has a memory adapter (`assistant` default), `false` drops the base's `memory.files`.
 - `agent` sets any other field of the `Agent`, last, over what the harness built.
 
 ### Trust and settings files

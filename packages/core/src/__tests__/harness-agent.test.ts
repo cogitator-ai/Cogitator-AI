@@ -488,6 +488,51 @@ describe('createHarnessAgent: mergeConfig', () => {
     expect(harness.mergeConfig()).toEqual(harness.config);
   });
 
+  it('keeps a piece you turned off with false off, whatever the base enables', async () => {
+    const base = {
+      llm: { defaultModel: 'mock/m' },
+      subagents: { files: true, agents: { helper: { description: 'Helps' } } },
+      commands: { commands: { hello: 'Say hello' } },
+      permissions: { mode: 'acceptEdits' as const, settings: true },
+      hooks: { settings: true, hooks: { Stop: [] } },
+      context: { clearToolOutputs: true },
+      memory: { adapter: 'memory' as const, files: { scope: 'user' as const } },
+      limits: { maxConcurrentRuns: 3 },
+    };
+    const off = createHarnessAgent({
+      preset: 'assistant',
+      workspace: dir,
+      subagents: false,
+      commands: false,
+      permissions: false,
+      hooks: false,
+      compaction: false,
+      memoryFiles: false,
+    }).mergeConfig(base);
+    for (const piece of ['subagents', 'commands', 'permissions', 'hooks', 'context'] as const) {
+      expect(off[piece], piece).toBeUndefined();
+    }
+    expect(off.memory).toEqual({ adapter: 'memory' });
+    expect(off.llm).toEqual(base.llm);
+    expect(off.limits).toMatchObject({ maxConcurrentRuns: 3 });
+
+    const noSettings = createHarnessAgent({ workspace: dir, settings: false }).mergeConfig(base);
+    expect(noSettings.permissions).toEqual({ mode: 'acceptEdits' });
+    expect(noSettings.hooks).toEqual({ hooks: { Stop: [] } });
+
+    const kept = createHarnessAgent({ preset: 'assistant', workspace: dir }).mergeConfig(base);
+    expect(kept.subagents).toMatchObject({ agents: { helper: { description: 'Helps' } } });
+    expect(kept.commands).toMatchObject({ commands: { hello: 'Say hello' } });
+
+    const cog = new Cogitator(off);
+    try {
+      expect((await cog.listSubagents()).agents).toEqual([]);
+      expect((await cog.listCommands()).commands).toEqual([]);
+    } finally {
+      await cog.close();
+    }
+  });
+
   it('replaces arrays and class instances instead of merging them', () => {
     const adapter = new MockLLMBackend();
     const harness = createHarnessAgent({

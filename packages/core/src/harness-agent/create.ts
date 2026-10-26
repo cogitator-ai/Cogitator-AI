@@ -165,11 +165,15 @@ export interface HarnessAgentOptions<TDeps = unknown> {
   /**
    * Read the permission rules and hooks of Claude Code compatible settings files (the project's at
    * `projectRoot`, the user's and the managed ones). Default false, as the Claude Agent SDK. With
-   * `permissions: false` only the hooks are read
+   * `permissions: false` only the hooks are read. `false` also drops the `settings` of the
+   * configuration `mergeConfig()` merges into
    */
   settings?: boolean;
-  /** Hooks of the runtime, in the format of Claude Code's `settings.json` */
-  hooks?: HooksConfig;
+  /**
+   * Hooks of the runtime, in the format of Claude Code's `settings.json`. `false`: none, also not
+   * the ones of the configuration `mergeConfig()` merges into or of settings files
+   */
+  hooks?: false | HooksConfig;
   /** What a session and each agent in it may spend in money, tokens and tool calls */
   budget?: SessionBudgetConfig;
   /**
@@ -178,6 +182,12 @@ export interface HarnessAgentOptions<TDeps = unknown> {
    * configuration `mergeConfig()` merges into, unless `files` says otherwise
    */
   memory?: MemoryConfig;
+  /**
+   * Keep notes in memory files (`memory.files`) once the runtime has a memory adapter (default:
+   * `assistant` only). `false` also drops the `files` of the configuration `mergeConfig()` merges
+   * into
+   */
+  memoryFiles?: boolean;
   /**
    * Keeping long sessions within the model's window (the runtime's `context`). Default: clear the
    * outputs of old tool calls past 100 000 tokens and compress the conversation near the window.
@@ -556,8 +566,16 @@ function settingsAt(
 interface ConfigLayers {
   defaults: HarnessRuntimeConfig;
   explicit: HarnessRuntimeConfig;
-  /** Keep memory files when the merged configuration has a memory adapter */
+  /**
+   * Sections you turned off with `false`: the base's are dropped too, so a piece you turned off
+   * stays off whatever configuration the harness is merged into
+   */
+  off: ReadonlySet<(typeof MERGED_KEYS)[number]>;
+  /** Drop the `settings` of the base's `permissions` and `hooks` (`settings: false`) */
+  settingsOff: boolean;
+  /** Keep memory files when the merged configuration has a memory adapter, drop them when false */
   memoryFiles: boolean;
+  memoryFilesOff: boolean;
 }
 
 function configLayersOf(
@@ -595,7 +613,8 @@ function configLayersOf(
     if (given?.rememberIn) permissions.rememberIn = given.rememberIn;
     if (given?.rememberLayers) permissions.rememberLayers = given.rememberLayers;
   }
-  const hooks: HooksConfig = { ...(options.settings && { settings: at }), ...options.hooks };
+  const hooks: HooksConfig =
+    options.hooks === false ? {} : { ...(options.settings && { settings: at }), ...options.hooks };
   const toolResults = options.toolResults;
   const limits = {
     ...(toolResults?.maxLength !== undefined && { maxToolResultLength: toolResults.maxLength }),
@@ -617,7 +636,21 @@ function configLayersOf(
     ...(Object.keys(limits).length > 0 && { limits }),
   };
 
-  return { defaults: preset, explicit, memoryFiles: defaults.memoryFiles };
+  const off = new Set<(typeof MERGED_KEYS)[number]>([
+    ...(options.subagents === false ? (['subagents'] as const) : []),
+    ...(options.commands === false ? (['commands'] as const) : []),
+    ...(options.permissions === false ? (['permissions'] as const) : []),
+    ...(options.hooks === false ? (['hooks'] as const) : []),
+    ...(options.compaction === false ? (['context'] as const) : []),
+  ]);
+  return {
+    defaults: preset,
+    explicit,
+    off,
+    settingsOff: options.settings === false,
+    memoryFiles: options.memoryFiles ?? defaults.memoryFiles,
+    memoryFilesOff: options.memoryFiles === false,
+  };
 }
 
 const MERGED_KEYS = [
@@ -633,14 +666,35 @@ const MERGED_KEYS = [
 ] as const satisfies readonly (keyof HarnessRuntimeConfig)[];
 
 /** `base` between the preset's defaults and what you passed, see `HarnessAgent.mergeConfig` */
-function composeConfig(layers: ConfigLayers, base: CogitatorConfig): CogitatorConfig {
+function composeConfig(layers: ConfigLayers, given: CogitatorConfig): CogitatorConfig {
+  const base = baseWithout(layers, given);
   const merged: CogitatorConfig = { ...base };
   for (const key of MERGED_KEYS) mergeSection(merged, key, layers, base);
   const memory = merged.memory;
-  if (layers.memoryFiles && memory?.adapter !== undefined && memory.files === undefined) {
+  if (memory?.files !== undefined && layers.memoryFilesOff) {
+    const { files: _files, ...rest } = memory;
+    merged.memory = rest;
+  } else if (layers.memoryFiles && memory?.adapter !== undefined && memory.files === undefined) {
     merged.memory = { ...memory, files: { scope: 'user' } };
   }
   return merged;
+}
+
+/** `base` without the sections and settings you turned off with `false` */
+function baseWithout(layers: ConfigLayers, base: CogitatorConfig): CogitatorConfig {
+  const kept: CogitatorConfig = { ...base };
+  for (const key of layers.off) delete kept[key];
+  if (layers.settingsOff) {
+    if (kept.permissions?.settings !== undefined) {
+      const { settings: _settings, ...rest } = kept.permissions;
+      kept.permissions = rest;
+    }
+    if (kept.hooks?.settings !== undefined) {
+      const { settings: _settings, ...rest } = kept.hooks;
+      kept.hooks = rest;
+    }
+  }
+  return kept;
 }
 
 function mergeSection<K extends (typeof MERGED_KEYS)[number]>(
