@@ -1735,6 +1735,121 @@ describe('durable runs keep their checkpoint through store errors', () => {
   });
 });
 
+describe('durable runs and what they spent', () => {
+  it('charges the tool calls of a step its process lost before the next checkpoint', async () => {
+    const store = new InMemoryDurableRunStore();
+    const quick = countedTool('quick');
+    const hang = countedTool('hang', forever);
+    const extra = countedTool('extra');
+    const agent = new Agent({
+      name: 'budgeted',
+      model: 'mock/m',
+      instructions: 'Go.',
+      tools: [quick.tool, hang.tool, extra.tool],
+      budget: { maxToolCalls: 2 },
+    });
+    const first = processWith(
+      [
+        callTools([
+          { id: 'q', name: 'quick', arguments: {} },
+          { id: 'h', name: 'hang', arguments: {} },
+        ]),
+      ],
+      store,
+      'a'
+    );
+    first.cog.run(agent, { input: 'Go', threadId: 'budget' }).catch(() => undefined);
+    await hang.started;
+    await first.cog.close();
+
+    const second = processWith(
+      [callTools([{ id: 'x', name: 'extra', arguments: {} }]), answer('stopped at the budget')],
+      store,
+      'a'
+    );
+    const { resumed } = await second.cog.recoverRuns({ agents: [agent] });
+    await resumed[0].handle.result;
+    expect(extra.calls).not.toHaveBeenCalled();
+    expect(quick.calls).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops renewing the lease of a run it discarded', async () => {
+    const parked = new InMemoryDurableRunStore();
+    const hang = countedTool('hang', forever);
+    const agent = new Agent({
+      name: 'renewed',
+      model: 'mock/m',
+      instructions: 'Go.',
+      tools: [hang.tool],
+    });
+    const first = processWith([callTools([{ id: 'h', name: 'hang', arguments: {} }])], parked, 'a');
+    first.cog.run(agent, { input: 'Go', threadId: 'renew' }).catch(() => undefined);
+    await hang.started;
+    await first.cog.close();
+
+    const renew = vi.spyOn(parked, 'renew');
+    const second = processWith([answer('unused')], parked, 'a');
+    const [kept] = await second.cog.durableRuns();
+    vi.useFakeTimers();
+    try {
+      await second.cog.discardRun(kept.runId);
+      const before = renew.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      expect(renew.mock.calls.length).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps telling about a lost background agent across a second stop', async () => {
+    const inner = scriptedBackend([() => forever.then(() => answer('never'))]);
+    const hangs = () => forever.then(() => answer('never'));
+    const outer = scriptedBackend([
+      callTools([
+        {
+          id: 'o1',
+          name: 'agent',
+          arguments: {
+            description: 'x',
+            prompt: 'dig',
+            subagent_type: 'digger',
+            run_in_background: true,
+          },
+        },
+      ]),
+      hangs,
+    ]);
+    const config = (backend: typeof outer) => ({
+      llm: {
+        backends: { outer: backend.backend, inner: inner.backend },
+        retry: false as const,
+      },
+      memory: { adapter: 'sqlite' as const, sqlite: { path: join(dir, 'memory.db') } },
+      durable: { owner: 'host-a', takeoverOnRestart: true },
+      subagents: { agents: { digger: { description: 'digs', model: 'inner/m' } } },
+    });
+    const lead = new Agent({ name: 'lead', model: 'outer/m', instructions: 'Lead.' });
+    const first = new Cogitator(config(outer));
+    first.run(lead, { input: 'Dig', threadId: 'lost-twice' }).catch(() => undefined);
+    await vi.waitFor(() => expect(outer.requests).toHaveLength(2));
+    await first.close();
+
+    const middle = scriptedBackend([hangs]);
+    const second = new Cogitator(config(middle));
+    const recovered = await second.recoverRuns({ agents: [lead] });
+    recovered.resumed[0].handle.result.catch(() => undefined);
+    await vi.waitFor(() => expect(middle.requests).toHaveLength(1));
+    await second.close();
+
+    const last = scriptedBackend([answer('all done'), answer('the digger was lost')]);
+    const third = new Cogitator(config(last));
+    const { resumed } = await third.recoverRuns({ agents: [lead] });
+    expect((await resumed[0].handle.result).output).toBe('the digger was lost');
+    expect(userTexts(last.requests[1]).at(-1)).toContain('outcome unknown');
+    await third.close();
+  });
+});
+
 /** The durable record of the one run kept for `threadId`, read from the store on the memory */
 async function loadRecord(cog: Cogitator, threadId: string): Promise<DurableRunRecord | null> {
   const [run] = await cog.durableRuns({ threadId });

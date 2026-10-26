@@ -74,6 +74,8 @@ The request starts no run and its body is not read. The answer replays the event
 
 On `STREAM_RESUME_GAP` the client should fetch the thread (`GET /threads/:id`) to catch up, the message names the thread. A client that reads slowly holds at most `maxEvents` events, one that falls further behind catches up from the store, and gets the gap only for events the store no longer keeps. A store that lost an event in the middle is caught by its sequence numbers the same way: nothing is skipped silently.
 
+A client on another origin sends `Last-Event-ID` after a CORS preflight, which must allow the header. The Express adapter allows it by default. With the CORS middleware of Fastify, Hono, Koa, Tetsu or Next.js, add it to the allowed headers: `CORS_ALLOWED_HEADERS` from `@cogitator-ai/server-shared` lists every header a client of the API sends. The cancel route also needs `DELETE` among the allowed methods.
+
 ## Cancel
 
 Stopping the client's fetch only disconnects it, the run goes on. To stop the run, send `DELETE` to the cancel route of its stream, the stream id being the part of an event id before the last `:`:

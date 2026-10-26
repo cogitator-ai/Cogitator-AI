@@ -96,6 +96,19 @@ export interface HttpErrorDescription {
   checkpointId?: string;
 }
 
+/**
+ * The request headers a browser client of the Cogitator API sends, which a CORS preflight must
+ * allow: the JSON body, a bearer token, a request id, and `Last-Event-ID` for a client that
+ * reconnects to a resumable stream. The default `allowedHeaders` of the adapters that answer
+ * preflights, and the list to give a CORS middleware of your own
+ */
+export const CORS_ALLOWED_HEADERS: readonly string[] = [
+  'Content-Type',
+  'Authorization',
+  'X-Request-ID',
+  'Last-Event-ID',
+];
+
 /** A caller the anonymous policy turns away */
 export const UNAUTHORIZED: HttpErrorDescription = {
   status: 401,

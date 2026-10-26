@@ -96,6 +96,12 @@ export interface CorsConfig {
   origin: string | string[] | ((origin: string | undefined) => boolean);
   credentials?: boolean;
   methods?: string[];
+  /**
+   * Request headers a preflight allows. Default: `CORS_ALLOWED_HEADERS` of
+   * `@cogitator-ai/server-shared` (`Content-Type`, `Authorization`, `X-Request-ID`,
+   * `Last-Event-ID`). A list of your own replaces it: keep `Last-Event-ID` in it for clients on
+   * another origin that reconnect to resumable streams
+   */
   allowedHeaders?: string[];
   exposedHeaders?: string[];
   maxAge?: number;

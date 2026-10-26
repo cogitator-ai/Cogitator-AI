@@ -293,4 +293,39 @@ describe('resumable streams', () => {
 
     await vi.waitFor(() => expect(signal.aborted).toBe(true));
   });
+
+  it('lets a client on another origin send Last-Event-ID by default', async () => {
+    const app = express();
+    const cogitatorServer = new CogitatorServer({
+      app,
+      cogitator: gatedRuntime().runtime as unknown as Cogitator,
+      agents: { assistant: { name: 'assistant', config: { tools: [] } } } as unknown as Agents,
+      config: {
+        basePath: '/api',
+        enableSwagger: false,
+        cors: { origin: ['https://app.example.com'] },
+        resumableStreams: true,
+      },
+    });
+    await cogitatorServer.init();
+    server = await new Promise<Server>((resolve) => {
+      const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
+    });
+    const { port } = server.address() as AddressInfo;
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/agents/assistant/stream`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://app.example.com',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'content-type, last-event-id',
+      },
+    });
+
+    expect(res.status).toBe(204);
+    const allowed = (res.headers.get('access-control-allow-headers') ?? '')
+      .split(',')
+      .map((name) => name.trim().toLowerCase());
+    expect(allowed).toEqual(expect.arrayContaining(['content-type', 'last-event-id']));
+  });
 });

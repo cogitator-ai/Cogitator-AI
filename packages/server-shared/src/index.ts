@@ -263,6 +263,7 @@ export type {
 } from './readiness.js';
 
 export {
+  CORS_ALLOWED_HEADERS,
   INTERNAL_ERROR,
   UNAUTHORIZED,
   admitCaller,

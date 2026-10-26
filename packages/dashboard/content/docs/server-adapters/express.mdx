@@ -214,6 +214,8 @@ config: {
 }
 ```
 
+Preflights allow the headers of `CORS_ALLOWED_HEADERS` from `@cogitator-ai/server-shared` by default: `Content-Type`, `Authorization`, `X-Request-ID` and `Last-Event-ID`, which a client on another origin sends to reconnect to a [resumable stream](/docs/server-adapters/resumable-streams). An `allowedHeaders` of your own replaces the list, so keep `Last-Event-ID` in it.
+
 `credentials` defaults to `true` for explicit origins and to `false` for `origin: '*'` (plain `Access-Control-Allow-Origin: *`). Setting `credentials: true` together with `'*'` reflects every origin with credentials — only do that deliberately. Disallowed origins get no CORS grants, including on preflight.
 
 ## Streaming

@@ -3831,6 +3831,7 @@ export class Cogitator implements ToolInvoker {
               return `The tool call budget is spent (${spent.scope} ${spent.used} of ${spent.limit}), the call did not run`;
             }
             runBudget.noteToolCalls(budgetKey(active), 1);
+            if (runBudget.configured) keeper?.charged(budgetKey(active), 1);
             for (const parent of parents) parent.budget.noteToolCalls(parent.agentId(), 1);
             return undefined;
           };
@@ -5014,6 +5015,7 @@ export class Cogitator implements ToolInvoker {
           requestsTools ? response.toolCalls : undefined,
           undefined,
           keeper && {
+            ...(runBudget.configured && { runBudget: runBudget.state() }),
             runUsage: {
               inputTokens: totalInputTokens,
               outputTokens: totalOutputTokens,
@@ -6052,7 +6054,7 @@ export class Cogitator implements ToolInvoker {
         );
       }
       await this.durableStore().delete(record, this.durableHolder);
-      this.durableRunsGoing.delete(runId);
+      await release();
     } catch (error) {
       await release();
       throw error;

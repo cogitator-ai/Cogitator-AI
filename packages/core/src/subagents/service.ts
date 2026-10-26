@@ -338,20 +338,30 @@ export class SubagentService {
   }
 
   /**
-   * The background subagents run `runId` started that are still going, for a durable run's
-   * checkpoint
+   * The background subagents run `runId` started that are still going, and those it lost with a
+   * process that it has not been told about yet, for a durable run's checkpoint
    */
   backgroundOf(
     threadId: string,
     runId: string
   ): { taskId: string; agent: string; name?: string }[] {
-    return this.tasksStartedBy(threadId, runId)
-      .filter((task) => task.background && task.status === 'running')
-      .map((task) => ({
-        taskId: task.id,
-        agent: task.definition.name,
+    const lost = [...(this.lost.get(threadId)?.values() ?? [])].filter(
+      (task) => task.startedBy === runId && !task.delivered
+    );
+    return [
+      ...this.tasksStartedBy(threadId, runId)
+        .filter((task) => task.background && task.status === 'running')
+        .map((task) => ({
+          taskId: task.id,
+          agent: task.definition.name,
+          ...(task.name !== undefined && { name: task.name }),
+        })),
+      ...lost.map((task) => ({
+        taskId: task.taskId,
+        agent: task.agent,
         ...(task.name !== undefined && { name: task.name }),
-      }));
+      })),
+    ];
   }
 
   /**

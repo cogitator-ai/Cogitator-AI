@@ -87,6 +87,11 @@ function copySpend(spend: BudgetSpend): BudgetSpend {
   };
 }
 
+/** Adds `delta` to what `target` spent in all and by agent `agentId` */
+export function addSpend(target: BudgetSpend, agentId: string, delta: Partial<SpendTotals>): void {
+  add(target, agentId, delta);
+}
+
 function add(target: BudgetSpend, agentId: string, delta: Partial<SpendTotals>): void {
   const agents = (target.agents ??= dictionary());
   let totals = own(agents, agentId);

@@ -55,6 +55,13 @@ export type DurableRunMark = (
       /** The iteration the run now stops at, when the message woke it at its stop */
       iterationLimit?: number;
     }
+  | {
+      kind: 'charged';
+      /** The agent the budget charged, as the run's budget keys it */
+      agent: string;
+      /** Tool calls charged */
+      toolCalls: number;
+    }
 ) & {
   /**
    * Names the mark, so a mark a store kept twice (a write retried after its reply was lost) is

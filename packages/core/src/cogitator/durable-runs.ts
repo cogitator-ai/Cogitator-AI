@@ -14,6 +14,7 @@ import type {
 } from '@cogitator-ai/types';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
+import { addSpend } from './run-budget';
 import { ABORTED_BEFORE_DISPATCH, OUTCOME_UNKNOWN } from '../utils/tool-history';
 
 /** How long a durable run stays held after its process last renewed it, by default */
@@ -206,6 +207,12 @@ export class DurableRunKeeper {
       ...(iterationLimit !== undefined && { iterationLimit }),
     });
     return this.queue(() => this.write(() => this.appendHeld([mark])));
+  }
+
+  /** Notes tool calls the run's budget charged to `agent`, so a recovery charges them too */
+  charged(agent: string, toolCalls: number): void {
+    const mark = this.named({ kind: 'charged', agent, toolCalls });
+    this.queue(() => this.write(() => this.appendHeld([mark]))).catch(() => undefined);
   }
 
   /** Notes the messages queued on the run's handle that it has not delivered yet */
@@ -463,6 +470,7 @@ export async function rebuildDurableRun(
   const toolCalls = callsAt(record, messages);
   let iterations = checkpoint.iterations;
   let runUsage = checkpoint.usage;
+  let budget = checkpoint.budget && structuredClone(checkpoint.budget);
   let turnCalls = checkpoint.turn.toolCalls;
   let queued = [...(checkpoint.queued ?? [])];
   const queueKey = (item: DurableQueuedMessage) =>
@@ -477,6 +485,9 @@ export async function rebuildDurableRun(
   const delivered: Extract<DurableRunMark, { kind: 'delivered' }>[] = [];
   for (const mark of journal) {
     if (mark.kind === 'queue') queued = [...mark.pending];
+    if (mark.kind === 'charged' && budget) {
+      addSpend(budget.spent, mark.agent, { toolCalls: mark.toolCalls });
+    }
     if (mark.kind === 'delivered') {
       const at = queued.findIndex((item) => queueKey(item) === queueKey(mark.queued));
       if (at !== -1) queued.splice(at, 1);
@@ -501,6 +512,8 @@ export async function rebuildDurableRun(
     if (message.role === 'assistant') {
       const usage = usageOf(entry.metadata?.runUsage);
       if (usage) runUsage = usage;
+      const spent = budgetOf(entry.metadata?.runBudget);
+      if (spent) budget = spent;
       iterations++;
       turnCalls = calls;
       toolCalls.push(...calls);
@@ -615,6 +628,7 @@ export async function rebuildDurableRun(
       toolCalls,
       iterations,
       usage: runUsage,
+      ...(budget && { budget }),
       turn:
         turnCalls === checkpoint.turn.toolCalls
           ? { ...checkpoint.turn, completed: settled }
@@ -642,6 +656,19 @@ function usageOf(value: unknown): RunCheckpoint['usage'] | undefined {
   ] as const;
   if (!counts.every((key) => typeof usage[key] === 'number')) return undefined;
   return value as RunCheckpoint['usage'];
+}
+
+/**
+ * The budget state an answer's entry kept (`metadata.runBudget`), when it is one: what the run
+ * spent of its budgets up to and with that answer
+ */
+function budgetOf(value: unknown): RunCheckpoint['budget'] | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const spent: unknown = Reflect.get(value, 'spent');
+  const recorded: unknown = Reflect.get(value, 'recorded');
+  if (typeof spent !== 'object' || spent === null) return undefined;
+  if (typeof recorded !== 'object' || recorded === null) return undefined;
+  return value as RunCheckpoint['budget'];
 }
 
 function failed(call: ToolCall, error: string): ToolResult {
