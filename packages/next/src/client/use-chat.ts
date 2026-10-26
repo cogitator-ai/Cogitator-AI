@@ -479,7 +479,11 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     [handleStreamEvent, release, report]
   );
 
-  /** Reads one response of a stream, noting the id of each event, and says how it ended */
+  /**
+   * Reads one response of a stream, noting the id of each event, and says how it ended. It
+   * stops at `finish` or `error` and lets the rest of the body go, so a connection that drops
+   * before `[DONE]` cannot turn a whole answer into a cut one
+   */
   const readStream = useCallback(
     async (response: Response, request: ChatRequest, onEvent: () => void): Promise<StreamEnd> => {
       if (!response.body) {
@@ -496,11 +500,14 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
           if (event.type === 'finish' || event.type === 'error') terminal = true;
           const threadId = announcedThread(event);
           if (threadId) request.announce(threadId);
-          if (request.detached) continue;
-          if (!isOpen(request)) return 'closed';
-          deliver(request, event);
+          if (!request.detached) {
+            if (!isOpen(request)) return 'closed';
+            deliver(request, event);
+          }
+          if (terminal) break;
         }
       } finally {
+        if (terminal) await reader.cancel().catch(() => undefined);
         reader.releaseLock();
       }
 

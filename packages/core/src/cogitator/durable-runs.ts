@@ -421,6 +421,7 @@ export async function rebuildDurableRun(
   const { messages, entryIds } = await wholeMessages(record, memory);
   const toolCalls = callsAt(record, messages);
   let iterations = checkpoint.iterations;
+  let runUsage = checkpoint.usage;
   let turnCalls = checkpoint.turn.toolCalls;
   let queued = [...(checkpoint.queued ?? [])];
   const queueKey = (item: DurableQueuedMessage) =>
@@ -457,6 +458,8 @@ export async function rebuildDurableRun(
     entryIds.push(entry.id);
     const calls = callsOf(message);
     if (message.role === 'assistant') {
+      const usage = usageOf(entry.metadata?.runUsage);
+      if (usage) runUsage = usage;
       iterations++;
       turnCalls = calls;
       toolCalls.push(...calls);
@@ -570,6 +573,7 @@ export async function rebuildDurableRun(
       messages,
       toolCalls,
       iterations,
+      usage: runUsage,
       turn:
         turnCalls === checkpoint.turn.toolCalls
           ? { ...checkpoint.turn, completed: settled }
@@ -579,6 +583,24 @@ export async function rebuildDurableRun(
     queued,
     ...(answered && { answered }),
   };
+}
+
+/**
+ * The usage of the run an answer's entry kept (`metadata.runUsage`), when it is one: what the run
+ * spent up to and with that answer
+ */
+function usageOf(value: unknown): RunCheckpoint['usage'] | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const usage = value as Record<string, unknown>;
+  const counts = [
+    'inputTokens',
+    'outputTokens',
+    'cachedInputTokens',
+    'cacheWriteTokens',
+    'reasoningTokens',
+  ] as const;
+  if (!counts.every((key) => typeof usage[key] === 'number')) return undefined;
+  return value as RunCheckpoint['usage'];
 }
 
 function failed(call: ToolCall, error: string): ToolResult {

@@ -133,7 +133,7 @@ import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 controller.abort(new CogitatorError({ message: 'redeploy', code: ErrorCode.RUN_SUSPENDED }));
 ```
 
-Any other end (completed, failed, paused, aborted) forgets the run. A paused run waits in the paused-run store as before, `resume()` makes it durable again.
+Any other end (completed, failed, paused, aborted) forgets the run. Forgetting or redacting entries of a thread (`cog.forget()`, `cog.redactEntries()`) drops the durable runs of that thread too, since their checkpoints may hold the text that is gone: a run going on there loses its lease and stops. A paused run waits in the paused-run store as before, `resume()` makes it durable again.
 
 ## Stores
 

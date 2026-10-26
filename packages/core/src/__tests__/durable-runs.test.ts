@@ -1384,6 +1384,124 @@ describe('durable runs after a takeover and around follow-ups', () => {
   });
 });
 
+describe('durable runs and what the thread lets go of', () => {
+  it.each([
+    ['the thread store', false],
+    ['a store of its own', true],
+  ])('forgets a stopped run whose input was forgotten, in %s', async (_name, own) => {
+    const hang = countedTool('hang', forever);
+    const agent = new Agent({
+      name: 'private',
+      model: 'mock/m',
+      instructions: 'Go.',
+      tools: [hang.tool],
+    });
+    const store = own ? new InMemoryDurableRunStore() : undefined;
+    const memory = { adapter: 'sqlite' as const, sqlite: { path: join(dir, 'memory.db') } };
+    const make = (turns: ScriptedTurn[]) => {
+      const scripted = scriptedBackend(turns);
+      return {
+        scripted,
+        cog: new Cogitator({
+          llm: { backends: { mock: scripted.backend } },
+          memory,
+          durable: { owner: 'host-a', takeoverOnRestart: true, ...(store && { store }) },
+        }),
+      };
+    };
+    const first = make([callTools([{ id: 'h', name: 'hang', arguments: {} }])]);
+    first.cog.run(agent, { input: 'My card is 4242', threadId: 'secret' }).catch(() => undefined);
+    await hang.started;
+    await first.cog.close();
+
+    const second = make([answer('nothing to recall')]);
+    const input = (await entriesOf(second.cog, 'secret')).find(
+      (entry) => entry.message.role === 'user'
+    );
+    expect(await second.cog.durableRuns()).toHaveLength(1);
+    await second.cog.forget({ entryIds: [input!.id] });
+
+    expect(await second.cog.durableRuns()).toEqual([]);
+    expect((await second.cog.recoverRuns({ agents: [agent] })).resumed).toEqual([]);
+    expect(second.scripted.requests).toHaveLength(0);
+    await second.cog.close();
+  });
+
+  it('refuses a run id another run holds before it writes anything', async () => {
+    const store = new InMemoryDurableRunStore();
+    const memory = { adapter: 'sqlite' as const, sqlite: { path: join(dir, 'memory.db') } };
+    const hang = countedTool('hang', forever);
+    const agent = new Agent({
+      name: 'held',
+      model: 'mock/m',
+      instructions: 'Go.',
+      tools: [hang.tool],
+    });
+    const first = new Cogitator({
+      llm: {
+        backends: {
+          mock: scriptedBackend([callTools([{ id: 'h', name: 'hang', arguments: {} }])]).backend,
+        },
+      },
+      memory,
+      durable: { store, owner: 'a' },
+    });
+    first.run(agent, { input: 'First', threadId: 'one', runId: 'job:1' }).catch(() => undefined);
+    await hang.started;
+
+    const second = new Cogitator({
+      llm: { backends: { mock: scriptedBackend([answer('no')]).backend } },
+      memory,
+      durable: { store, owner: 'b' },
+    });
+    await expect(
+      second.run(agent, { input: 'Second', threadId: 'two', runId: 'job:1' })
+    ).rejects.toMatchObject({ code: ErrorCode.RUN_LEASED });
+    expect(await entriesOf(second, 'two')).toEqual([]);
+    await first.close();
+    await second.close();
+  });
+
+  it('brings back the usage of an answer the log has and the last checkpoint does not', async () => {
+    const parked = new InMemoryDurableRunStore();
+    const stuck = deferred();
+    let saves = 0;
+    const store: DurableRunStore = {
+      ...around(parked),
+      save: async (record, holder) => {
+        if (++saves === 2) {
+          stuck.resolve();
+          return forever.then(() => false);
+        }
+        return parked.save(record, holder);
+      },
+    };
+    const agent = new Agent({ name: 'counted', model: 'mock/m', instructions: 'Answer.' });
+    const memory = { adapter: 'sqlite' as const, sqlite: { path: join(dir, 'memory.db') } };
+    const first = new Cogitator({
+      llm: { backends: { mock: scriptedBackend([answer('counted answer')]).backend } },
+      memory,
+      durable: { store, owner: 'a', takeoverOnRestart: true },
+    });
+    first.run(agent, { input: 'Count', threadId: 'usage' }).catch(() => undefined);
+    await stuck.promise;
+    await first.close();
+
+    const scripted = scriptedBackend([answer('never')]);
+    const second = new Cogitator({
+      llm: { backends: { mock: scripted.backend } },
+      memory,
+      durable: { store: parked, owner: 'a', takeoverOnRestart: true },
+    });
+    const { resumed } = await second.recoverRuns({ agents: [agent] });
+    const result = await resumed[0].handle.result;
+    expect(result.output).toBe('counted answer');
+    expect(result.usage.totalTokens).toBe(15);
+    expect(scripted.requests).toHaveLength(0);
+    await second.close();
+  });
+});
+
 /** The durable record of the one run kept for `threadId`, read from the store on the memory */
 async function loadRecord(cog: Cogitator, threadId: string): Promise<DurableRunRecord | null> {
   const [run] = await cog.durableRuns({ threadId });

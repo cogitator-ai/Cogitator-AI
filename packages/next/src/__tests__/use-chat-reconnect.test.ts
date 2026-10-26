@@ -344,4 +344,27 @@ describe('useCogitatorChat reconnect', () => {
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'Failed to fetch' }));
     expect(hook.result.current.isLoading).toBe(false);
   });
+
+  it('takes a stream whose connection drops after finish, before [DONE], as complete', async () => {
+    const calls = installFetch((call) => {
+      firstHalf(call);
+      call.push({ type: 'text-delta', id: 't1', delta: 'lo' }, id(4));
+      call.push({ type: 'text-end', id: 't1' }, id(5));
+      call.push({ type: 'finish', messageId: 'a1', threadId: 'thread_1' }, id(6));
+      setTimeout(() => call.drop(), 0);
+      return undefined;
+    });
+    const onError = vi.fn();
+    const onFinish = vi.fn();
+    const hook = setup({ onError, onFinish });
+
+    await hook.result.current.send('Hi');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await hook.flush();
+
+    expect(calls).toHaveLength(1);
+    expect(onError).not.toHaveBeenCalled();
+    expect(onFinish).toHaveBeenCalledWith(expect.objectContaining({ content: 'Hello' }));
+    expect(hook.result.current.error).toBeNull();
+  });
 });

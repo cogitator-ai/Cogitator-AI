@@ -2311,6 +2311,47 @@ export class Cogitator implements ToolInvoker {
       }
 
       this.runMemories.set(runId, runMemory);
+      if (durable) {
+        if (!resumeFrom?.recovered) {
+          if (this.durableRunsGoing.has(runId)) {
+            throw new CogitatorError({
+              message: `Durable run ${runId} is going on in this runtime already`,
+              code: ErrorCode.RUN_LEASED,
+              details: { runId },
+            });
+          }
+          this.durableRunsGoing.add(runId);
+          reservedRun = runId;
+        }
+        const store = this.durableStore();
+        const owner = {
+          runId,
+          threadId,
+          agentId: agent.id,
+          agentName: agent.name,
+          ...(options.userId !== undefined && { userId: options.userId }),
+        };
+        if (!checkpoint && options.runId !== undefined && (await store.load(owner))) {
+          throw new CogitatorError({
+            message: `A durable run ${runId} is kept already: recover it instead of starting it again`,
+            code: ErrorCode.RUN_LEASED,
+            details: { runId },
+          });
+        }
+        keeper = new DurableRunKeeper(store, owner, this.durableHolder, {
+          leaseMs: durableConfig?.leaseMs ?? DEFAULT_DURABLE_LEASE_MS,
+          retries: durableConfig?.storeRetries ?? DEFAULT_STORE_RETRIES,
+          onStoreError: durableConfig?.onStoreError ?? 'suspend',
+          stop: (error) => {
+            if (error.code === ErrorCode.RUN_LEASED) runMemory.seal();
+            if (!abortController.signal.aborted) abortController.abort(error);
+          },
+        });
+        await keeper.begin();
+        const watched = keeper;
+        if (queue) queue.watch((pending) => watched.queued(withQueueIds(queue, pending)));
+        runMemory.guard(() => watched.held());
+      }
       prompt = checkpoint?.prompt;
       if (!checkpoint && (this.config.prompts || this.promptRegistry)) {
         const resolution = await this.prompts.resolve(agent, threadId);
@@ -4311,48 +4352,7 @@ export class Cogitator implements ToolInvoker {
           runMemory
         );
       };
-      if (durable) {
-        if (!resumeFrom?.recovered) {
-          if (this.durableRunsGoing.has(runId)) {
-            throw new CogitatorError({
-              message: `Durable run ${runId} is going on in this runtime already`,
-              code: ErrorCode.RUN_LEASED,
-              details: { runId },
-            });
-          }
-          this.durableRunsGoing.add(runId);
-          reservedRun = runId;
-        }
-        const store = this.durableStore();
-        const owner = {
-          runId,
-          threadId,
-          agentId: agent.id,
-          agentName: agent.name,
-          ...(options.userId !== undefined && { userId: options.userId }),
-        };
-        if (!checkpoint && options.runId !== undefined && (await store.load(owner))) {
-          throw new CogitatorError({
-            message: `A durable run ${runId} is kept already: recover it instead of starting it again`,
-            code: ErrorCode.RUN_LEASED,
-            details: { runId },
-          });
-        }
-        keeper = new DurableRunKeeper(store, owner, this.durableHolder, {
-          leaseMs: durableConfig?.leaseMs ?? DEFAULT_DURABLE_LEASE_MS,
-          retries: durableConfig?.storeRetries ?? DEFAULT_STORE_RETRIES,
-          onStoreError: durableConfig?.onStoreError ?? 'suspend',
-          stop: (error) => {
-            if (error.code === ErrorCode.RUN_LEASED) runMemory.seal();
-            if (!abortController.signal.aborted) abortController.abort(error);
-          },
-        });
-        await keeper.begin();
-        const watched = keeper;
-        if (queue) queue.watch((pending) => watched.queued(withQueueIds(queue, pending)));
-        runMemory.guard(() => watched.held());
-        if (!checkpoint) await keepDurable();
-      }
+      if (keeper && !checkpoint) await keepDurable();
 
       if (checkpoint && resumeFrom) {
         if (answeredNow.length > 0) {
@@ -4997,7 +4997,18 @@ export class Cogitator implements ToolInvoker {
         await runMemory.save(
           active.id,
           assistantMessage,
-          requestsTools ? response.toolCalls : undefined
+          requestsTools ? response.toolCalls : undefined,
+          undefined,
+          keeper && {
+            runUsage: {
+              inputTokens: totalInputTokens,
+              outputTokens: totalOutputTokens,
+              cachedInputTokens,
+              cacheWriteTokens,
+              reasoningTokens,
+              cost: costMeter.state(),
+            } satisfies RunCheckpoint['usage'],
+          }
         );
         shown.text = '';
 
@@ -7244,10 +7255,17 @@ export class Cogitator implements ToolInvoker {
    * Drops the paused runs of `threadIds`: a checkpoint keeps the messages of the run, which would
    * bring what was forgotten back on resume
    */
+  /**
+   * Drops what runs of `threadIds` kept of their conversation outside the thread, after a forget,
+   * a redaction or a rewind there: the paused run, and every durable run, whose checkpoint may
+   * hold the text that is gone (a durable run going on loses its lease and stops)
+   */
   private async dropPausedRuns(threadIds: readonly string[]): Promise<void> {
     const store = this.runCheckpointStore();
+    const durable = this.durableStore();
     for (const threadId of new Set(threadIds)) {
       if (await store.load(threadId)) await store.delete(threadId);
+      for (const run of await durable.list({ threadId })) await durable.delete(run);
     }
   }
 
