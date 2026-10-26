@@ -835,6 +835,16 @@ export interface RunCheckpoint {
   /** Messages queued on the run's handle it had not delivered yet, see `RunHandle` */
   queued?: QueuedRunMessage[];
   /**
+   * A durable run answered and its stop processing (follow-ups queued for the stop, `beforeStop`
+   * middleware and `Stop` hooks) has not settled yet: a recovery runs it before the run ends
+   */
+  stopping?: true;
+  /**
+   * The run used up `maxIterations` and its next model call is the closing one, without tools,
+   * that answers with what it has (`onIterationLimit: 'answer'`)
+   */
+  closingTurn?: true;
+  /**
    * Background subagents a durable run had going: lost when its process stops, so the recovered
    * run reports them as failed with an unknown outcome (`task_output`, the stop notice)
    */

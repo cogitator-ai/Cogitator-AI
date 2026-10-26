@@ -139,4 +139,25 @@ describe('resumable streams', () => {
     }
     expect((await reconnect(app, id, { 'x-user': 'alice' })).status).toBe(200);
   });
+
+  it('lets the stream go when the client cancels the body while it is silent', async () => {
+    const { runtime, signal } = gatedRuntime();
+    const app = appOf(runtime, { detachedTimeoutMs: 1 });
+    const res = await app.fetch(
+      new Request(URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: 'hi' }),
+      })
+    );
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    while (parseSseFrames(text).length < 4) {
+      text += decoder.decode((await reader.read()).value, { stream: true });
+    }
+    await reader.cancel();
+
+    await vi.waitFor(() => expect(signal()?.aborted).toBe(true));
+  });
 });

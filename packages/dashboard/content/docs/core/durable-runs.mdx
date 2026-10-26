@@ -54,9 +54,9 @@ The checkpoint is a `RunCheckpoint` with `status: 'running'`, the same shape a p
 - **The conversation's start** (system prompt, history, input) is written once, as the record's `base`. Without a memory log the messages a step adds are added to the base, never written twice.
 - **Messages the thread's log already holds** are written as references to their log entries (`checkpoint.compact`), not copied. The [session log](/docs/memory) stays the source of truth.
 - **Tool calls** are kept by their place in those messages, not with their arguments again.
-- **Between steps** only small marks go to the record's journal: a tool call that starts, one that returns, the queue when it changes.
+- **Between steps** only small marks go to the record's journal: a tool call that starts, one that returns, the queue when it changes, a queued message the run delivered with what it added to the conversation.
 
-A checkpoint is written after every model turn, the final answer included, so a run that answered before its process stopped ends on recovery without asking the model again.
+A checkpoint is written after every model turn, the final answer included, so a run that answered before its process stopped ends on recovery without asking the model again. When the stop of that answer had not settled (follow-ups queued for the stop, `beforeStop` middleware and `Stop` hooks), the recovered run settles it first, and a run that reached `maxIterations` asks for its closing answer as it would have.
 
 A step writes what is new since the last one, not the whole conversation.
 
@@ -120,7 +120,7 @@ So a tool with side effects never runs twice behind the model's back: the model 
 
 A process holds each durable run it runs under a lease: it takes the lease when the run starts, renews it at every step and a third of the way through `leaseMs` while a long tool runs, and lets it go when the run ends. A lease belongs to the runtime's `owner` and to the instance of the `Cogitator`, so another live runtime never takes a run one holds, even with the same `owner`. `recoverRuns()` takes only runs whose lease ran out, or whose lease an instance of its own `owner` holds that no longer runs (a process that restarted), and a runtime reserves a run before it takes its lease, so recovering one run twice at once, in one process or two, continues it once.
 
-Every write is fenced: a checkpoint, its journal and its base change only while the writer holds the lease. A process that lost its lease (it froze longer than `leaseMs` and another process took the run over) finds out at its next step and stops the run with `RUN_LEASED` before it starts another tool or writes again, it never overwrites the checkpoint of the process that took over.
+A process that lost its lease writes nothing more: no tool result, no log entry, no `afterRun` hook. Every write is fenced: a checkpoint, its journal and its base change only while the writer holds the lease. A process that lost its lease (it froze longer than `leaseMs` and another process took the run over) finds out at its next step and stops the run with `RUN_LEASED` before it starts another tool or writes again, it never overwrites the checkpoint of the process that took over.
 
 A store that fails is tried again (`storeRetries`, with a growing pause). When it keeps failing, the run is suspended with `RUN_SUSPENDED` and its last good checkpoint stays for a recovery: a storage error never deletes a checkpoint. With `onStoreError: 'continue'` the run goes on without checkpoints instead (a recovery may then repeat what it did since the last one).
 

@@ -158,15 +158,15 @@ export function createChatHandler(
     return streamAgentRun({
       req,
       runContext,
-      threadId: input.threadId,
+      threadId: threadOf(runContext, input),
       streams,
       start: (callbacks, threadId) =>
         cogitator.run(agent, {
           input: userMessage,
-          threadId,
           context: input.metadata,
           ...runRequestRunOptions(input),
           ...runContext,
+          threadId,
           ...callbacks,
         }),
       afterRun: options?.afterRun,

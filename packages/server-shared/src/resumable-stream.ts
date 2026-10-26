@@ -68,7 +68,11 @@ export interface ResumableStreamOptions<Auth = unknown> {
    * requests, such as the expiry of a token.
    */
   owner?: (auth: Auth | undefined) => string | undefined | Promise<string | undefined>;
-  /** Stops every run of a resumable stream when it aborts, such as a server that shuts down */
+  /**
+   * Stops every run of a resumable stream when it aborts, such as a server that shuts down.
+   * Abort it before the HTTP server closes: a close waits for the streams still open, and
+   * stopping their runs is what ends them
+   */
   until?: AbortSignal;
 }
 
@@ -640,10 +644,16 @@ export class ResumableStreams<Auth = unknown> {
     );
     this.producers.set(streamId, producer);
     const subscription = new Subscription(this.maxEvents);
-    const unsubscribe = await this.store.subscribe(streamId, subscription);
-    if (!unsubscribe) throw new Error(`The stream replay store lost stream '${streamId}'`);
-    const stopWatching = await this.store.onCancel(streamId, () => producer.cancel());
-    if (stopWatching) producer.watchCancel(stopWatching);
+    let unsubscribe: (() => Promise<void>) | undefined;
+    try {
+      unsubscribe = await this.store.subscribe(streamId, subscription);
+      if (!unsubscribe) throw new Error(`The stream replay store lost stream '${streamId}'`);
+      const stopWatching = await this.store.onCancel(streamId, () => producer.cancel());
+      if (stopWatching) producer.watchCancel(stopWatching);
+    } catch (error) {
+      await this.abandon(streamId, unsubscribe);
+      throw error;
+    }
     producer.attach(subscription);
     producer.follow(
       new Follower(this.store, streamId, owner.threadId, 0, subscription, unsubscribe, () =>
@@ -745,6 +755,21 @@ export class ResumableStreams<Auth = unknown> {
     this.shutdown.abort(
       new StreamStop('The server stopped the run as it shut down', STREAM_ABORTED)
     );
+  }
+
+  /**
+   * Gives up a stream the store created but that could not be opened: it is finished, so it no
+   * longer holds a `maxStreams` slot, and forgotten, whatever else fails on the way
+   */
+  private async abandon(
+    streamId: string,
+    unsubscribe: (() => Promise<void>) | undefined
+  ): Promise<void> {
+    this.producers.delete(streamId);
+    await unsubscribe?.().catch((error: unknown) => logStoreFailure('end a subscription', error));
+    await this.store
+      .finish(streamId)
+      .catch((error: unknown) => logStoreFailure('finish a stream', error));
   }
 
   /** The stream of the caller, after the owner check and `authorizeThread` */

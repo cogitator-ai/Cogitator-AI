@@ -95,7 +95,7 @@ A stream is bound to the caller who started it, and only that caller may reconne
 
 ## Detached runs
 
-When the last client leaves, the run goes on and its events keep going into the store. If nobody reconnects within `detachedTimeoutMs`, the run is stopped, so a client that never comes back does not run up cost. Every run is also stopped when `until` aborts: pass the signal your server stops on. Fastify stops them by itself when the instance closes, Tetsu also on its controller's `until`, and Next.js also on the `signal` `beforeRun` returns. Such a stream ends with an `error` event `STREAM_ABORTED`, which a late reconnect still gets.
+When the last client leaves, the run goes on and its events keep going into the store. If nobody reconnects within `detachedTimeoutMs`, the run is stopped, so a client that never comes back does not run up cost. Every run is also stopped when `until` aborts: pass the signal your server stops on, and abort it before the HTTP server closes, since a close waits for the streams still open. Fastify stops them by itself as the instance starts closing (`preClose`), Tetsu also on its controller's `until`, and Next.js also on the `signal` `beforeRun` returns. Such a stream ends with an `error` event `STREAM_ABORTED`, which a late reconnect still gets.
 
 The clients of the process that runs a stream get every event straight from it, the last one too, also when the store fails. A store that cannot keep an event stops the run.
 

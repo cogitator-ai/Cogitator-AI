@@ -1010,6 +1010,8 @@ export const DurableRunsConfigSchema = z.union([
     enabled: z.boolean().optional(),
     leaseMs: z.number().positive().optional(),
     owner: z.string().min(1).optional(),
+    onStoreError: z.enum(['suspend', 'continue']).optional(),
+    storeRetries: z.number().int().min(0).max(20).optional(),
   }),
 ]);
 

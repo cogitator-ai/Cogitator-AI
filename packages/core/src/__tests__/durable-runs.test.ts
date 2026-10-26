@@ -305,7 +305,7 @@ describe('durable runs', () => {
     const result = await cog.run(agent, { input: 'Look it up', threadId: 'small' });
 
     expect(result.output).toBe('read');
-    expect(saved).toHaveLength(6);
+    expect(saved).toHaveLength(7);
     expect(saved[0].base?.length).toBeGreaterThan(0);
     expect(saved.slice(1).every((record) => record.base === undefined)).toBe(true);
     const last = saved.at(-1)!;
@@ -360,8 +360,10 @@ describe('durable runs', () => {
     await cog.run(agent, { input: 'Look it up' });
 
     expect(saved[0].baseFrom).toBeUndefined();
-    expect(saved.slice(1).map((record) => record.baseFrom)).toEqual([2, 3, 4]);
-    expect(saved.slice(1).map((record) => record.base?.length)).toEqual([1, 1, 1]);
+    expect(saved.slice(1).map((record) => record.baseFrom)).toEqual([2, 3, 4, undefined]);
+    expect(saved.slice(1).map((record) => record.base?.length)).toEqual([1, 1, 1, undefined]);
+    expect(saved.at(-2)?.checkpoint.stopping).toBe(true);
+    expect(saved.at(-1)?.checkpoint.stopping).toBeUndefined();
     expect(saved.every((record) => record.checkpoint.messages.length === 0)).toBe(true);
   });
 
@@ -929,6 +931,163 @@ describe('durable runs under stress', () => {
     const [kept] = await store.list();
     const record = await store.load(kept);
     await expect(first.cog.resume(agent, record!.checkpoint)).rejects.toThrow(/recoverRun/);
+  });
+});
+
+describe('durable runs at the edges of a step', () => {
+  it('keeps a follow-up it delivered without a memory log when the process stops right after', async () => {
+    const store = new InMemoryDurableRunStore();
+    const agent = new Agent({ name: 'follower', model: 'mock/m', instructions: 'Answer.' });
+    const asked = deferred();
+    const first = processWith(
+      [
+        answer('first answer'),
+        () => {
+          asked.resolve();
+          return forever.then(() => answer('never'));
+        },
+      ],
+      store,
+      'a'
+    );
+    const handle = first.cog.start(agent, { input: 'Start', threadId: 'follow' });
+    handle.followUp('And then the second part');
+    handle.result.catch(() => undefined);
+    await asked.promise;
+    await first.cog.close();
+
+    const second = processWith([answer('second answer')], store, 'a');
+    const { resumed } = await second.cog.recoverRuns({ agents: [agent] });
+    expect((await resumed[0].handle.result).output).toBe('second answer');
+    const texts = userTexts(second.requests[0]);
+    expect(texts.filter((text) => text === 'And then the second part')).toHaveLength(1);
+    expect(second.requests).toHaveLength(1);
+  });
+
+  it('writes nothing more once another process took its run over', async () => {
+    let now = 0;
+    const store = new InMemoryDurableRunStore({ now: () => now });
+    const release = deferred();
+    const slow = countedTool('slow', release.promise);
+    const agent = new Agent({
+      name: 'zombie',
+      model: 'mock/m',
+      instructions: 'Go.',
+      tools: [slow.tool],
+    });
+    const ended: string[] = [];
+    const memory = { adapter: 'sqlite' as const, sqlite: { path: join(dir, 'memory.db') } };
+    const zombieScript = scriptedBackend([
+      callTools([{ id: 'z', name: 'slow', arguments: {} }]),
+      answer('zombie answer'),
+    ]);
+    const zombie = new Cogitator({
+      llm: { backends: { mock: zombieScript.backend } },
+      memory,
+      durable: { store, owner: 'a' },
+      middleware: [{ name: 'end', afterRun: (event) => void ended.push(event.status) }],
+    });
+    const running = zombie.run(agent, { input: 'Go', threadId: 'zombie' });
+    running.catch(() => undefined);
+    await slow.started;
+
+    now += 61_000;
+    const nextScript = scriptedBackend([answer('taken over')]);
+    const next = new Cogitator({
+      llm: { backends: { mock: nextScript.backend } },
+      memory,
+      durable: { store, owner: 'b' },
+    });
+    const { resumed } = await next.recoverRuns({ agents: [agent] });
+    expect((await resumed[0].handle.result).output).toBe('taken over');
+
+    release.resolve();
+    await expect(running).rejects.toMatchObject({ code: ErrorCode.RUN_LEASED });
+    const results = (await entriesOf(next, 'zombie')).flatMap((entry) => entry.toolResults ?? []);
+    expect(results).toEqual([expect.objectContaining({ callId: 'z', error: OUTCOME_UNKNOWN })]);
+    expect(ended).toEqual([]);
+    expect(zombieScript.requests).toHaveLength(1);
+    await zombie.close();
+    await next.close();
+  });
+
+  it('runs the stop hooks again for an answer whose stop had not settled', async () => {
+    const store = new InMemoryDurableRunStore();
+    const agent = new Agent({ name: 'stopper', model: 'mock/m', instructions: 'Answer.' });
+    const reached = deferred();
+    const first = new Cogitator({
+      llm: { backends: { mock: scriptedBackend([answer('draft')]).backend } },
+      durable: { store, owner: 'a' },
+      middleware: [
+        {
+          name: 'stuck-stop',
+          beforeStop: () => {
+            reached.resolve();
+            return forever.then(() => undefined);
+          },
+        },
+      ],
+    });
+    first.run(agent, { input: 'Write', threadId: 'stop' }).catch(() => undefined);
+    await reached.promise;
+    await first.close();
+
+    const stops: string[] = [];
+    const scripted = scriptedBackend([answer('final')]);
+    const second = new Cogitator({
+      llm: { backends: { mock: scripted.backend } },
+      durable: { store, owner: 'a' },
+      middleware: [
+        {
+          name: 'review',
+          beforeStop: (event) => {
+            stops.push(event.output);
+            return stops.length === 1 ? { continueWith: 'Polish it' } : undefined;
+          },
+        },
+      ],
+    });
+    const { resumed } = await second.recoverRuns({ agents: [agent] });
+    expect((await resumed[0].handle.result).output).toBe('final');
+    expect(stops).toEqual(['draft', 'final']);
+    expect(userTexts(scripted.requests[0]).at(-1)).toBe('Polish it');
+  });
+
+  it('asks for the closing answer at the iteration limit after a stop before it', async () => {
+    const store = new InMemoryDurableRunStore();
+    const step = countedTool('step');
+    const agent = new Agent({
+      name: 'limited',
+      model: 'mock/m',
+      instructions: 'Go.',
+      tools: [step.tool],
+      maxIterations: 1,
+      onIterationLimit: 'answer',
+    });
+    const closing = deferred();
+    const first = processWith(
+      [
+        callTools([{ id: 's', name: 'step', arguments: {} }]),
+        () => {
+          closing.resolve();
+          return forever.then(() => answer('never'));
+        },
+      ],
+      store,
+      'a'
+    );
+    first.cog.run(agent, { input: 'Go', threadId: 'limit' }).catch(() => undefined);
+    await closing.promise;
+    await first.cog.close();
+
+    const second = processWith([answer('closing answer')], store, 'a');
+    const { resumed } = await second.cog.recoverRuns({ agents: [agent] });
+    const result = await resumed[0].handle.result;
+    expect(result.output).toBe('closing answer');
+    expect(result.iterationLimitReached).toBe(true);
+    expect(second.requests[0].toolChoice).toBe('none');
+    expect(userTexts(second.requests[0]).at(-1)).toContain('Give your final answer now');
+    expect(step.calls).toHaveBeenCalledTimes(1);
   });
 });
 

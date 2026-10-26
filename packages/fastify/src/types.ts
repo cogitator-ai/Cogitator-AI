@@ -178,9 +178,9 @@ export interface CogitatorPluginOptions {
    * its end, and `DELETE /agents/:name/stream/:streamId` cancels the run. Only the caller who
    * started a stream (every field of what `auth` returned, see `owner`) may reconnect to it or
    * cancel its run, after `authorizeThread` on its thread. A run nobody follows for
-   * `detachedTimeoutMs` (5 minutes) is stopped, and every run when the server closes or `until`
-   * aborts. `true` keeps the events in memory with the default limits. Default: off, a client
-   * that disconnects stops the run.
+   * `detachedTimeoutMs` (5 minutes) is stopped, and every run as the server starts closing
+   * (`preClose`) or `until` aborts. `true` keeps the events in memory with the default limits.
+   * Default: off, a client that disconnects stops the run.
    */
   resumableStreams?: boolean | ResumableStreamOptions<AuthContext>;
 }

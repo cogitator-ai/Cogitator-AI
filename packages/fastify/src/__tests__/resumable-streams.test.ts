@@ -117,6 +117,36 @@ describe('resumable streams', () => {
     expect(signal?.aborted).toBe(true);
   });
 
+  it('stops resumable runs before closing, so a client that still reads does not hold the close', async () => {
+    let signal: AbortSignal | undefined;
+    const held = {
+      run: (_agent: unknown, options: RunOptions) =>
+        new Promise((_, reject) => {
+          signal = options.signal;
+          options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    };
+    const server = await register({
+      cogitator: held as unknown as CogitatorPluginOptions['cogitator'],
+    });
+    const address = await server.listen({ port: 0, host: '127.0.0.1' });
+    const res = await fetch(`${address}/api/agents/assistant/stream`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: 'hi' }),
+    });
+    const body = res.text();
+
+    await server.close();
+    app = undefined;
+
+    expect(signal?.aborted).toBe(true);
+    expect(parseSseFrames(await body).at(-1)?.event).toMatchObject({
+      type: 'error',
+      code: 'STREAM_ABORTED',
+    });
+  });
+
   it('answers 404 NOT_FOUND for a reconnect to an agent it does not have', async () => {
     const server = await register();
     const frames = await stream(server);

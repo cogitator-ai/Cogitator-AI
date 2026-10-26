@@ -31,7 +31,8 @@ export interface DurableRunLease extends DurableRunHolder {
 
 /**
  * What happened in a durable run since its last checkpoint, in order: a tool call that started,
- * one that returned, and the messages queued on its handle that it has not delivered yet
+ * one that returned, the messages queued on its handle that it has not delivered yet, and one it
+ * delivered
  */
 export type DurableRunMark =
   | { kind: 'started'; toolCallId: string }
@@ -41,7 +42,14 @@ export type DurableRunMark =
       /** What the call returned, as JSON: `details` and `presentation` kept, values JSON cannot hold dropped */
       result: ToolResult;
     }
-  | { kind: 'queue'; pending: QueuedRunMessage[] };
+  | { kind: 'queue'; pending: QueuedRunMessage[] }
+  | {
+      kind: 'delivered';
+      /** The queued message the run took */
+      queued: QueuedRunMessage;
+      /** What it added to the conversation: the message, and the context the input checks added */
+      messages: Message[];
+    };
 
 /**
  * A durable run as its store keeps it. `checkpoint` is the run after its last step, with

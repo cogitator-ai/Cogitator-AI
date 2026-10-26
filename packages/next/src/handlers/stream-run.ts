@@ -165,18 +165,24 @@ export async function answerStreamRequest(
   }
 }
 
-/** Writes the frames of a resumable stream to one client, until it ends or the client leaves */
+/**
+ * Writes the frames of a resumable stream to one client, until it ends or the client leaves:
+ * its request aborts, or it cancels the body, which closes the writer, also while the stream is
+ * silent, so the client lets the stream go and the run can count as detached
+ */
 function followStream(
   req: Request,
   stream: StreamFollower,
   heartbeatMs: number | undefined
 ): Response {
   const { readable, writable } = new TransformStream<Uint8Array>();
-  const sw = new StreamWriter(writable.getWriter(), { heartbeatMs });
+  const writer = writable.getWriter();
+  const sw = new StreamWriter(writer, { heartbeatMs });
   const client = new AbortController();
   const leave = () => client.abort();
   if (req.signal.aborted) leave();
   else req.signal.addEventListener('abort', leave, { once: true });
+  void writer.closed.then(leave, leave);
 
   const follow = async () => {
     try {

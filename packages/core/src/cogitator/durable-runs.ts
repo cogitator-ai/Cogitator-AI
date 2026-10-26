@@ -169,6 +169,19 @@ export class DurableRunKeeper {
     return this.queue(() => this.write(() => this.appendHeld([mark])));
   }
 
+  /**
+   * Notes that the run delivered `queued`, with the messages it added to the conversation, so a
+   * recovery has them even before the next checkpoint and does not deliver it again
+   */
+  delivered(queued: QueuedRunMessage, messages: readonly Message[]): Promise<void> {
+    const mark: DurableRunMark = {
+      kind: 'delivered',
+      queued: structuredClone(queued),
+      messages: structuredClone([...messages]),
+    };
+    return this.queue(() => this.write(() => this.appendHeld([mark])));
+  }
+
   /** Notes the messages queued on the run's handle that it has not delivered yet */
   queued(pending: readonly QueuedRunMessage[]): void {
     const mark: DurableRunMark = { kind: 'queue', pending: structuredClone([...pending]) };
@@ -356,8 +369,12 @@ export interface RebuiltRun {
   repairs: { toolCall: ToolCall; result: ToolResult }[];
   /** Messages queued on the run's handle it had not delivered */
   queued: QueuedRunMessage[];
-  /** The run gave its final answer before it stopped: it ends without another model call */
-  answered: boolean;
+  /**
+   * The run gave its final answer before its process stopped, so it asks the model nothing more:
+   * `stopping` when what happens at its stop (queued follow-ups, `Stop` hooks) had not settled
+   * and runs again, `stopped` when it had and the run ends. Undefined when it had not answered
+   */
+  answered?: 'stopping' | 'stopped';
 }
 
 /**
@@ -376,7 +393,17 @@ export async function rebuildDurableRun(
   let iterations = checkpoint.iterations;
   let turnCalls = checkpoint.turn.toolCalls;
   let queued = [...(checkpoint.queued ?? [])];
-  for (const mark of record.journal) if (mark.kind === 'queue') queued = [...mark.pending];
+  const queueKey = (item: QueuedRunMessage) => `${item.kind}:${JSON.stringify(item.content)}`;
+  const delivered: Extract<DurableRunMark, { kind: 'delivered' }>[] = [];
+  for (const mark of record.journal) {
+    if (mark.kind === 'queue') queued = [...mark.pending];
+    if (mark.kind === 'delivered') {
+      const at = queued.findIndex((item) => queueKey(item) === queueKey(mark.queued));
+      if (at !== -1) queued.splice(at, 1);
+      delivered.push(mark);
+    }
+  }
+  const adoptedQueued: string[] = [];
 
   const own = await runEntries(record, memory);
   const tag = checkpoint.compact?.tag;
@@ -396,13 +423,21 @@ export async function rebuildDurableRun(
       toolCalls.push(...calls);
     }
     const kind = entry.metadata?.queued;
-    if (message.role === 'user' && typeof kind === 'string') {
-      const at = queued.findIndex(
-        (item) =>
-          item.kind === kind && JSON.stringify(item.content) === JSON.stringify(message.content)
-      );
+    if (message.role === 'user' && (kind === 'steer' || kind === 'followUp' || kind === 'inject')) {
+      const key = queueKey({ kind, content: message.content });
+      adoptedQueued.push(key);
+      const at = queued.findIndex((item) => queueKey(item) === key);
       if (at !== -1) queued.splice(at, 1);
     }
+  }
+  for (const mark of delivered) {
+    const adopted = adoptedQueued.indexOf(queueKey(mark.queued));
+    if (adopted !== -1) {
+      adoptedQueued.splice(adopted, 1);
+      continue;
+    }
+    messages.push(...mark.messages);
+    entryIds.push(...mark.messages.map(() => undefined));
   }
 
   const answeredIds = new Set(
@@ -457,13 +492,17 @@ export async function rebuildDurableRun(
     )
     .map((call) => call.id);
   const last = messages.at(-1);
-  const answered =
-    turnCalls.length === 0 &&
-    queued.length === 0 &&
-    last?.role === 'assistant' &&
-    callsOf(last).length === 0;
+  const final = turnCalls.length === 0 && last?.role === 'assistant' && callsOf(last).length === 0;
+  const answeredLater = later.some(
+    (entry) => isConversation(entry) && entry.message.role === 'assistant'
+  );
+  const answered: RebuiltRun['answered'] = !final
+    ? undefined
+    : checkpoint.stopping || answeredLater
+      ? 'stopping'
+      : 'stopped';
 
-  const { compact: _compact, queued: _queued, ...rest } = checkpoint;
+  const { compact: _compact, queued: _queued, stopping: _stopping, ...rest } = checkpoint;
   const lastWritten = later.at(-1);
   const branch =
     checkpoint.branch?.parentId !== undefined && lastWritten
@@ -484,7 +523,7 @@ export async function rebuildDurableRun(
     },
     repairs,
     queued,
-    answered,
+    ...(answered && { answered }),
   };
 }
 

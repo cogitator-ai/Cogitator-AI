@@ -48,7 +48,11 @@ export class RunQueue {
     return true;
   }
 
-  /** Calls `watcher` with the messages not delivered yet each time they change */
+  /**
+   * Calls `watcher` with the messages not delivered yet each time messages come, are cancelled,
+   * claimed or refused. A delivered one (`settle`) is left to the run, which records it with what
+   * it added to the conversation
+   */
   watch(watcher: (pending: readonly QueuedRunMessage[]) => void): void {
     this.watchers.push(watcher);
   }
@@ -75,7 +79,7 @@ export class RunQueue {
    */
   refuse(message: QueuedRunMessage, error: Error): void {
     this.claim(message);
-    this.settle(message);
+    if (this.settle(message)) this.changed();
     const refused: RefusedRunMessage = { kind: message.kind, content: message.content, error };
     this.refusals.push(refused);
     this.onRefused?.(refused);
@@ -133,7 +137,6 @@ export class RunQueue {
     const index = this.inFlight.indexOf(message);
     if (index === -1) return false;
     this.inFlight.splice(index, 1);
-    this.changed();
     return true;
   }
 

@@ -132,7 +132,7 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
   };
 
   if (streams) {
-    fastify.addHook('onClose', async () => streams.close());
+    fastify.addHook('preClose', async () => streams.close());
     fastify.delete<{ Params: AgentParams & { streamId: string } }>(
       '/agents/:name/stream/:streamId',
       {

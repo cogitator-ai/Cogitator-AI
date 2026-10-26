@@ -17,8 +17,10 @@ function gatedRuntime() {
   let release!: () => void;
   const released = new Promise<void>((resolve) => (release = resolve));
   let signal: AbortSignal | undefined;
+  let lastRun: RunOptions | undefined;
   const run = async (_agent: unknown, options: RunOptions) => {
     signal = options.signal;
+    lastRun = options;
     options.onToken?.('Hel');
     options.onToken?.('lo');
     await Promise.race([
@@ -32,7 +34,12 @@ function gatedRuntime() {
     options.onToken?.(' again');
     return { ...conformanceRunResult(options.threadId ?? 'thread'), reasoning: undefined };
   };
-  return { cogitator: { run } as unknown as Cogitator, release, signal: () => signal };
+  return {
+    cogitator: { run } as unknown as Cogitator,
+    release,
+    signal: () => signal,
+    run: () => lastRun,
+  };
 }
 
 const userOf = (req: Request | undefined) => req?.headers.get('x-user') ?? undefined;
@@ -195,5 +202,59 @@ describe('resumable chat streams', () => {
         beforeRun: async () => ({ userId: 'alice' }),
       })
     ).toThrow(/owner/);
+  });
+
+  it('binds the stream to the thread beforeRun returned, which reconnects authorize', async () => {
+    const { cogitator, release, run } = gatedRuntime();
+    const asked: string[] = [];
+    const handler = createChatHandler(cogitator, agent, {
+      sseHeartbeatMs: 0,
+      beforeRun: async () => ({ threadId: 'thread-from-hook' }),
+      authorizeThread: (_req, threadId) => {
+        asked.push(threadId);
+        return true;
+      },
+      resumableStreams: { owner: () => undefined },
+    });
+    const res = await handler(
+      new Request('http://localhost/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: 'hi' }],
+          threadId: 'thread-asked',
+        }),
+      })
+    );
+    release();
+    const frames = parseSseFrames(await res.text());
+    await reconnect(handler, frames[0]!.id!);
+
+    expect(frames[0]?.event).toMatchObject({ type: 'start', threadId: 'thread-from-hook' });
+    expect(run()?.threadId).toBe('thread-from-hook');
+    expect(asked).toEqual(['thread-from-hook', 'thread-from-hook']);
+  });
+
+  it('lets the stream go when the client cancels the body, so the run counts as detached', async () => {
+    const { cogitator, signal } = gatedRuntime();
+    const handler = handlerOf(cogitator, {
+      resumableStreams: { owner: userOf, detachedTimeoutMs: 1 },
+    });
+    const res = await handler(
+      new Request('http://localhost/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: BODY,
+      })
+    );
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    while (parseSseFrames(text).length < 4) {
+      text += decoder.decode((await reader.read()).value, { stream: true });
+    }
+    await reader.cancel();
+
+    await vi.waitFor(() => expect(signal()?.aborted).toBe(true));
   });
 });

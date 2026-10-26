@@ -2785,7 +2785,10 @@ export class Cogitator implements ToolInvoker {
       const maxIterations = agent.config?.maxIterations ?? 10;
       let iterationCap = checkpoint?.iterationLimit ?? maxIterations;
       const answerAtLimit = (agent.config?.onIterationLimit ?? 'answer') === 'answer';
-      const limit = { reached: false, closingTurn: false };
+      const limit = {
+        reached: checkpoint?.closingTurn === true,
+        closingTurn: checkpoint?.closingTurn === true,
+      };
       let lastToolCallSig = checkpoint?.lastToolCallSignature ?? '';
       let pausedTurn: PausedTurn | undefined;
       let responseFormat = toLLMResponseFormat(active.config.responseFormat);
@@ -2943,11 +2946,14 @@ export class Cogitator implements ToolInvoker {
             stopContinued = false;
           }
           await runMemory.save(active.id, message, undefined, undefined, { queued: item.kind });
+          const notes: Message[] = [];
           for (const text of added) {
             const note: Message = { role: 'system', content: text };
             messages.push(note);
+            notes.push(note);
             await runMemory.save(active.id, note, undefined, undefined, { context: 'beforeRun' });
           }
+          await keeper?.delivered(item, [message, ...notes]);
         }
         return wakes;
       };
@@ -3919,7 +3925,11 @@ export class Cogitator implements ToolInvoker {
         } catch (error) {
           if (
             abortController.signal.aborted &&
-            !(keeper && isSuspension(abortController.signal.reason))
+            !(
+              keeper &&
+              (isSuspension(abortController.signal.reason) ||
+                isLeaseLoss(abortController.signal.reason))
+            )
           ) {
             await recordAbortedTurn();
           }
@@ -4201,6 +4211,9 @@ export class Cogitator implements ToolInvoker {
       /** Whether `beforeStop` kept the run going since its last user message */
       let stopContinued = checkpoint?.stopHooks?.continued ?? false;
 
+      /** The run answered and has not settled what happens at its stop, see `RunCheckpoint.stopping` */
+      let stopping = false;
+
       /** The run as a checkpoint, at `turn` and waiting on `interrupts` */
       const snapshot = (
         turn: RunCheckpoint['turn'],
@@ -4260,6 +4273,8 @@ export class Cogitator implements ToolInvoker {
             instructions: harness.instructions.map((file) => ({ ...file })),
           }),
           ...(pendingContext.length > 0 && { context: [...pendingContext] }),
+          ...(running && limit.closingTurn && { closingTurn: true as const }),
+          ...(running && stopping && { stopping: true as const }),
           ...((stopContinued || stopContinuations > 0) && {
             stopHooks: { continuations: stopContinuations, continued: stopContinued },
           }),
@@ -4310,6 +4325,7 @@ export class Cogitator implements ToolInvoker {
           retries: durableConfig?.storeRetries ?? DEFAULT_STORE_RETRIES,
           onStoreError: durableConfig?.onStoreError ?? 'suspend',
           stop: (error) => {
+            if (error.code === ErrorCode.RUN_LEASED) runMemory.seal();
             if (!abortController.signal.aborted) abortController.abort(error);
           },
         });
@@ -4368,8 +4384,8 @@ export class Cogitator implements ToolInvoker {
               ...(checkpoint.turn.automatic && { automatic: checkpoint.turn.automatic }),
             });
             if (!pausedTurn) {
-              await keepDurable();
               reachedLimit();
+              await keepDurable();
             }
           }
         } else {
@@ -4433,8 +4449,8 @@ export class Cogitator implements ToolInvoker {
             fresh: [...Object.keys(answeredOwn), ...Object.keys(resumedOwn)],
           });
           if (!pausedTurn) {
-            await keepDurable();
             reachedLimit();
+            await keepDurable();
           }
         }
       }
@@ -4446,7 +4462,64 @@ export class Cogitator implements ToolInvoker {
       let emptyAnswerRetries = 0;
 
       let deliveredAtStop = false;
-      const answeredBeforeStop = resumeFrom?.recovered?.answered === true;
+      /**
+       * What the run does once the model answered: delivers what was queued for the stop, else
+       * asks `beforeStop` (the `Stop` hooks) whether to go on. `stop` once nothing keeps it going
+       */
+      const atStop = async (output: string): Promise<'stop' | 'continue'> => {
+        let delivered = 0;
+        for (let next = queue?.takeAtStop() ?? []; next.length > 0 && delivered === 0;) {
+          delivered = await deliver(next);
+          if (delivered === 0) next = queue?.takeAtStop() ?? [];
+        }
+        if (delivered === 0) {
+          const goOn =
+            !limit.closingTurn && !stopRequest && iterations < iterationCap
+              ? await waitForAbortable(
+                  pipeline.beforeStop(
+                    {
+                      output,
+                      continuations: stopContinuations,
+                      continued: stopContinued,
+                    },
+                    middlewareContext()
+                  ),
+                  abortController.signal
+                )
+              : [];
+          if (goOn.length === 0 || stopRequest) {
+            stopping = false;
+            await keepDurable();
+            return 'stop';
+          }
+          stopping = false;
+          stopContinuations++;
+          stopContinued = true;
+          const message: Message = { role: 'user', content: goOn.join('\n\n') };
+          messages.push(message);
+          await runMemory.save(active.id, message, undefined, undefined, {
+            continued: 'beforeStop',
+          });
+          lastToolCallSig = '';
+          emptyAnswerRetries = 0;
+          structuredRepaired = false;
+          return 'continue';
+        }
+        stopping = false;
+        deliveredAtStop = true;
+        iterationCap = iterations + maxIterations;
+        limit.reached = false;
+        limit.closingTurn = false;
+        emptyAnswerRetries = 0;
+        structuredRepaired = false;
+        return 'continue';
+      };
+      let answeredBeforeStop = resumeFrom?.recovered?.answered === 'stopped';
+      if (resumeFrom?.recovered?.answered === 'stopping') {
+        stopping = true;
+        const last = messages.filter((message) => message.role === 'assistant').pop();
+        answeredBeforeStop = (await atStop(getTextContent(last?.content ?? ''))) === 'stop';
+      }
       while (
         !answeredBeforeStop &&
         !pausedTurn &&
@@ -4910,46 +4983,9 @@ export class Cogitator implements ToolInvoker {
         shown.text = '';
 
         if (!requestsTools || !response.toolCalls) {
+          stopping = true;
           await keepDurable();
-          let delivered = 0;
-          for (let next = queue?.takeAtStop() ?? []; next.length > 0 && delivered === 0;) {
-            delivered = await deliver(next);
-            if (delivered === 0) next = queue?.takeAtStop() ?? [];
-          }
-          if (delivered === 0) {
-            const goOn =
-              !limit.closingTurn && !stopRequest && iterations < iterationCap
-                ? await waitForAbortable(
-                    pipeline.beforeStop(
-                      {
-                        output: outputContent,
-                        continuations: stopContinuations,
-                        continued: stopContinued,
-                      },
-                      middlewareContext()
-                    ),
-                    abortController.signal
-                  )
-                : [];
-            if (goOn.length === 0 || stopRequest) break;
-            stopContinuations++;
-            stopContinued = true;
-            const message: Message = { role: 'user', content: goOn.join('\n\n') };
-            messages.push(message);
-            await runMemory.save(active.id, message, undefined, undefined, {
-              continued: 'beforeStop',
-            });
-            lastToolCallSig = '';
-            emptyAnswerRetries = 0;
-            structuredRepaired = false;
-            continue;
-          }
-          deliveredAtStop = true;
-          iterationCap = iterations + maxIterations;
-          limit.reached = false;
-          limit.closingTurn = false;
-          emptyAnswerRetries = 0;
-          structuredRepaired = false;
+          if ((await atStop(outputContent)) === 'stop') break;
           continue;
         }
         stopContinuations = 0;
@@ -4964,8 +5000,9 @@ export class Cogitator implements ToolInvoker {
           totalInputTokens + totalOutputTokens
         );
         if (pausedTurn) break;
+        const atLimit = reachedLimit();
         await keepDurable();
-        if (reachedLimit()) break;
+        if (atLimit) break;
       }
 
       queue?.close();
@@ -5290,7 +5327,11 @@ export class Cogitator implements ToolInvoker {
       handOver =
         keeper !== undefined &&
         (isSuspension(error) || isSuspension(abortController.signal.reason));
-      if (abortController.signal.aborted) {
+      const taken =
+        keeper !== undefined && (isLeaseLoss(error) || isLeaseLoss(abortController.signal.reason));
+      if (taken) {
+        runMemory.seal();
+      } else if (abortController.signal.aborted) {
         const reason = error instanceof Error ? error.message : String(error);
         if (shown.text && options.saveInterruptedReply !== false && !handOver) {
           await runMemory.save(
@@ -5343,7 +5384,7 @@ export class Cogitator implements ToolInvoker {
       spans.unshift(errorSpan);
 
       const failed = error instanceof Error ? error : new Error(String(error));
-      await endFailed?.(failed).catch(() => undefined);
+      if (!taken) await endFailed?.(failed).catch(() => undefined);
 
       const early = earlyCharges.splice(0);
       const earlyUsage =
@@ -7593,6 +7634,11 @@ function assertRunId(runId: string): void {
 
 /** The durable instances of the runtimes of this process, see `DurableRunHolder.instance` */
 const LIVE_INSTANCES = new Set<string>();
+
+/** Whether another process took a durable run over, see `ErrorCode.RUN_LEASED` */
+function isLeaseLoss(reason: unknown): boolean {
+  return reason instanceof CogitatorError && reason.code === ErrorCode.RUN_LEASED;
+}
 
 /** Whether a run stopped to be handed over to another process, see `ErrorCode.RUN_SUSPENDED` */
 function isSuspension(reason: unknown): boolean {

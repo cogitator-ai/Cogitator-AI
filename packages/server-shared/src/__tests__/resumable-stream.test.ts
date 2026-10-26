@@ -798,4 +798,29 @@ describe('ResumableStreams under pressure', () => {
 
     expect(read.at(-1)?.event).toMatchObject({ type: 'error', code: STREAM_RESUME_GAP });
   });
+
+  it.each(['subscribe', 'onCancel'] as const)(
+    'gives the slot of a stream back when %s fails after the store created it',
+    async (method) => {
+      const memory = new InMemoryStreamReplayStore({ maxStreams: 1 });
+      let failures = 1;
+      const store: StreamReplayStore = Object.assign(Object.create(memory) as StreamReplayStore, {
+        [method]: (...args: Parameters<StreamReplayStore[typeof method]>) => {
+          if (failures-- > 0) return Promise.reject(new Error('redis down'));
+          return (memory[method] as (...inner: typeof args) => unknown)(...args);
+        },
+      });
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const hub = new ResumableStreams({ store });
+
+      await expect(
+        hub.startAgentRun({ execute: controlledRun().execute, describeError })
+      ).rejects.toThrow('redis down');
+      const { run } = await startRun(hub);
+
+      expect(run.signal.aborted).toBe(false);
+      run.finish();
+      errors.mockRestore();
+    }
+  );
 });

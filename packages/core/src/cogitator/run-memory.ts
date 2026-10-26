@@ -30,6 +30,8 @@ export class RunMemory {
   private readonly entries = new WeakMap<Message, string>();
   /** Entries the run wrote */
   private count = 0;
+  /** Set once the run may write no more, see {@link seal} */
+  private sealed = false;
   /** What the run's entries name in their metadata, for a durable run */
   private taggedRun: string | undefined;
 
@@ -128,6 +130,14 @@ export class RunMemory {
     return this.count;
   }
 
+  /**
+   * Stops every write from now on: the run lost its thread to another process (a durable run
+   * another process took over), which writes there instead
+   */
+  seal(): void {
+    this.sealed = true;
+  }
+
   /** Resolves once every write asked for so far is done, failed ones included */
   settled(): Promise<void> {
     return this.queue.then(() => undefined);
@@ -167,9 +177,10 @@ export class RunMemory {
     event?: EntryEvent,
     metadata?: Record<string, unknown>
   ): Promise<void> {
-    if (!this.opened || !this.enabled) return Promise.resolve();
+    if (!this.opened || !this.enabled || this.sealed) return Promise.resolve();
     const options = this.options();
     const written = this.queue.then(async () => {
+      if (this.sealed) return;
       const entry = await saveEntry(
         this.threadId,
         agentId,

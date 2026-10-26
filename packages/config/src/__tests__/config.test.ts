@@ -377,17 +377,30 @@ describe('durable', () => {
   });
 
   it('keeps durable runs of a YAML file and of defineConfig', () => {
-    writeFileSync(path, 'durable:\n  leaseMs: 30000\n  owner: worker-1\n');
+    writeFileSync(
+      path,
+      'durable:\n  leaseMs: 30000\n  owner: worker-1\n  onStoreError: continue\n  storeRetries: 5\n'
+    );
     expect(loadConfig({ configPath: path, skipEnv: true }).durable).toEqual({
       leaseMs: 30000,
       owner: 'worker-1',
+      onStoreError: 'continue',
+      storeRetries: 5,
     });
     expect(defineConfig({ durable: true }).durable).toBe(true);
   });
 
-  it('refuses a lease that is not a positive number', () => {
-    writeFileSync(path, 'durable:\n  leaseMs: -1\n');
-    expect(() => loadConfig({ configPath: path, skipEnv: true })).toThrow(/durable/);
+  it('refuses a lease, a store policy or retries out of bounds', () => {
+    for (const bad of [
+      'leaseMs: -1',
+      'onStoreError: ignore',
+      'storeRetries: -1',
+      'storeRetries: 1.5',
+      'storeRetries: 99',
+    ]) {
+      writeFileSync(path, `durable:\n  ${bad}\n`);
+      expect(() => loadConfig({ configPath: path, skipEnv: true })).toThrow(/durable/);
+    }
   });
 });
 

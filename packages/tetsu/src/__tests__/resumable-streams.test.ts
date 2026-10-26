@@ -150,4 +150,27 @@ describe('resumable streams', () => {
 
     expect(signal.aborted).toBe(true);
   });
+
+  test('lets the stream go when the client cancels the body while it is silent', async () => {
+    const { run, started } = gatedRun();
+    const { cogitator } = fakeCogitator(run);
+    const request = serveCogitator({
+      cogitator,
+      agents: { chat: chatAgent() },
+      sseHeartbeatMs: 0,
+      resumableStreams: { detachedTimeoutMs: 1 },
+    });
+    const res = await request(PATH, json({ input: 'hi' }));
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    while (parseSseFrames(text).length < 4) {
+      text += decoder.decode((await reader.read()).value, { stream: true });
+    }
+    await reader.cancel();
+    const signal = await started;
+
+    for (let i = 0; i < 200 && !signal.aborted; i++) await Bun.sleep(5);
+    expect(signal.aborted).toBe(true);
+  });
 });
