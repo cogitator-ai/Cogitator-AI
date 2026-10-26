@@ -34,7 +34,7 @@ export interface DurableRunLease extends DurableRunHolder {
  * one that returned, the messages queued on its handle that it has not delivered yet, and one it
  * delivered
  */
-export type DurableRunMark =
+export type DurableRunMark = (
   | { kind: 'started'; toolCallId: string }
   | {
       kind: 'finished';
@@ -49,7 +49,14 @@ export type DurableRunMark =
       queued: QueuedRunMessage;
       /** What it added to the conversation: the message, and the context the input checks added */
       messages: Message[];
-    };
+    }
+) & {
+  /**
+   * Names the mark, so a mark a store kept twice (a write retried after its reply was lost) is
+   * read once
+   */
+  id?: string;
+};
 
 /**
  * A durable run as its store keeps it. `checkpoint` is the run after its last step, with
@@ -171,11 +178,18 @@ export interface DurableRunsConfig {
    */
   leaseMs?: number;
   /**
-   * Who this runtime's runs are held by. Default: an id new for every `Cogitator`. Give a process
-   * a stable one (its host name, a pod name) to recover its own runs at once after a restart,
-   * without waiting for their leases to run out
+   * Who this runtime's runs are held by, in leases and listings. Default: the host name, the
+   * process id and a random part, new for every `Cogitator`. A run is only taken from another
+   * holder once its lease ran out, whatever the owner, unless `takeoverOnRestart` is set
    */
   owner?: string;
+  /**
+   * Take back at once, without waiting for its lease, a run whose lease names this `owner` and an
+   * instance no runtime of this process has: a process that restarted. Only safe when `owner` is
+   * unique to one live process at a time, such as a pod name, never a host name several processes
+   * share: two live processes with one owner would then take each other's runs. Default: false
+   */
+  takeoverOnRestart?: boolean;
   /**
    * What a run does when its store keeps failing (after `storeRetries`): `suspend` (default)
    * stops it with `RUN_SUSPENDED`, its last checkpoint kept for a recovery, `continue` lets it

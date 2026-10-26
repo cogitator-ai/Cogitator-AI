@@ -823,4 +823,44 @@ describe('ResumableStreams under pressure', () => {
       errors.mockRestore();
     }
   );
+
+  it('hands out an event id only once a slow store kept the event, so a reconnect with it never misses', async () => {
+    const memory = new InMemoryStreamReplayStore();
+    const pending: Array<() => void> = [];
+    const store: StreamReplayStore = Object.assign(Object.create(memory) as StreamReplayStore, {
+      append: (id: string, entry: StoredStreamEvent) =>
+        new Promise<void>((resolve, reject) => {
+          pending.push(() => memory.append(id, entry).then(resolve, reject));
+        }),
+    });
+    const settle = async () => {
+      while (pending.length > 0) {
+        pending.shift()?.();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    };
+    const hub = new ResumableStreams({ store });
+    const run = controlledRun();
+    const first = opened(await hub.startAgentRun({ execute: run.execute, describeError }));
+    await run.running;
+    const frames = first.frames(new AbortController().signal);
+    let delivered = false;
+    const next = frames.next().then((result) => {
+      delivered = true;
+      return result.value as StreamFrame;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(delivered).toBe(false);
+    await settle();
+    const frame = await next;
+    expect(frame.id).toBe(formatStreamEventId(first.streamId, 1));
+
+    run.callbacks.onToken('a');
+    const attached = await hub.reconnect(frame.id ?? '');
+    expect(attached.ok).toBe(true);
+    run.finish();
+    await settle();
+    await frames.return(undefined);
+  });
 });

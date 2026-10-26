@@ -28,7 +28,7 @@ function processOn(backends?: Record<string, LLMBackend>): Cogitator {
   return new Cogitator({
     llm: { ...(backends && { backends }) },
     memory: { adapter: 'sqlite', sqlite: { path: join(dir, 'memory.db') } },
-    durable: { owner: 'host-a' },
+    durable: { owner: 'host-a', takeoverOnRestart: true },
   });
 }
 
@@ -207,8 +207,21 @@ describeRedis('Core: durable runs in Redis', () => {
     await store.append(ref, [{ kind: 'started', toolCallId: 'c2' }], one);
     expect(await store.append(ref, [{ kind: 'started', toolCallId: 'c3' }], two)).toBe(false);
 
+    const extension = {
+      ...record,
+      base: [{ role: 'user' as const, content: 'Go' }],
+      baseFrom: 1,
+      journal: [],
+    };
+    expect(await store.save(extension, one)).toBe(true);
+    expect(await store.save(extension, one)).toBe(true);
+    expect((await store.load(ref))?.base).toEqual([...record.base!, ...extension.base]);
+    await expect(store.save({ ...extension, baseFrom: 5 }, one)).rejects.toThrow(/base/);
+    expect(await store.save({ ...record, base: undefined, journal: [] }, one)).toBe(true);
+    await store.append(ref, [{ kind: 'started', toolCallId: 'c2' }], one);
+
     const loaded = await store.load(ref);
-    expect(loaded?.base).toEqual(record.base);
+    expect(loaded?.base).toEqual([...record.base!, ...extension.base]);
     expect(loaded?.journal).toEqual([{ kind: 'started', toolCallId: 'c2' }]);
     expect(loaded?.lease).toMatchObject({ owner: 'host', instance: 'one' });
     expect((await store.list()).map((run) => run.runId)).toEqual(['r1']);

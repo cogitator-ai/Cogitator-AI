@@ -1,3 +1,4 @@
+import { hostname } from 'node:os';
 import { resolve as resolvePath } from 'node:path';
 import { nanoid } from 'nanoid';
 import type {
@@ -5,6 +6,7 @@ import type {
   CogitatorConfig,
   DurableRunHolder,
   DurableRunInfo,
+  DurableRunLease,
   DurableRunRecord,
   DurableRunStore,
   DurableRunSummary,
@@ -811,7 +813,7 @@ export class Cogitator implements ToolInvoker {
         code: ErrorCode.CONFIGURATION_ERROR,
       });
     }
-    this.durableOwner = durable?.owner ?? `cogitator_${nanoid(12)}`;
+    this.durableOwner = durable?.owner ?? `${hostname()}:${process.pid}:${nanoid(8)}`;
     this.durableHolder = { owner: this.durableOwner, instance: `instance_${nanoid(16)}` };
     LIVE_INSTANCES.add(this.durableHolder.instance);
     const retries = durable?.storeRetries;
@@ -5839,9 +5841,7 @@ export class Cogitator implements ToolInvoker {
       ...summary,
       held:
         this.durableRunsGoing.has(summary.runId) ||
-        (summary.lease !== undefined &&
-          (summary.lease.owner !== this.durableOwner ||
-            LIVE_INSTANCES.has(summary.lease.instance))),
+        (summary.lease !== undefined && this.restartedFrom(summary.lease) === undefined),
     }));
   }
 
@@ -6003,6 +6003,18 @@ export class Cogitator implements ToolInvoker {
     }
   }
 
+  /**
+   * The instance of a lease this runtime takes over before it runs out: one of its own `owner`
+   * that no runtime of this process has, with `takeoverOnRestart` set. Undefined otherwise, when
+   * only a lease that ran out may be taken
+   */
+  private restartedFrom(lease: DurableRunLease): string | undefined {
+    const config = this.durableConfig();
+    if (config?.takeoverOnRestart !== true || config.owner === undefined) return undefined;
+    if (lease.owner !== this.durableOwner || LIVE_INSTANCES.has(lease.instance)) return undefined;
+    return lease.instance;
+  }
+
   /** Takes a kept durable run for this runtime, with how to let it go again */
   private async takeDurableRun(
     runId: string
@@ -6035,10 +6047,7 @@ export class Cogitator implements ToolInvoker {
         });
       }
       const lease = found.lease;
-      const replacing =
-        lease?.owner === this.durableOwner && !LIVE_INSTANCES.has(lease.instance)
-          ? lease.instance
-          : undefined;
+      const replacing = lease && this.restartedFrom(lease);
       const leaseMs = this.durableConfig()?.leaseMs ?? DEFAULT_DURABLE_LEASE_MS;
       const taken = await store().acquire(found, this.durableHolder, leaseMs, {
         ...(replacing !== undefined && { replacing }),

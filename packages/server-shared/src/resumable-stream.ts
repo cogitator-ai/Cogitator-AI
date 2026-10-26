@@ -197,7 +197,11 @@ export interface ResumableStream extends StreamFollower {
    * run, when `until` or the signal the stream was opened with aborts: pass it to the run
    */
   readonly signal: AbortSignal;
-  /** Gives the event the next id, hands it to the clients of this process and keeps it */
+  /**
+   * Gives the event the next id and keeps it, then hands it to the clients of this process:
+   * an id a client got is in the store by then, so a reconnect with it on any process finds it.
+   * When the store fails, the clients of this process still get the event
+   */
   emit(event: StreamEvent): void;
   /** Ends the stream once every event emitted is kept */
   end(): Promise<void>;
@@ -411,7 +415,7 @@ class Producer implements ResumableStream {
   private attached = 0;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private first: StreamFollower | undefined;
-  /** The subscriptions of this process, handed every event at once, whatever the store does */
+  /** The subscriptions of this process, handed every event once the store took it or failed to */
   private readonly local = new Set<Subscription>();
   private stopWatchingCancel: (() => Promise<void>) | undefined;
 
@@ -444,7 +448,6 @@ class Producer implements ResumableStream {
   emit(event: StreamEvent): void {
     if (this.ended) return;
     const entry = { seq: ++this.seq, event };
-    for (const subscription of this.local) subscription.event(entry);
     this.kept = this.kept
       .then(() => this.store.append(this.streamId, entry))
       .catch((error: unknown) => {
@@ -455,6 +458,9 @@ class Producer implements ResumableStream {
             STREAM_ABORTED
           )
         );
+      })
+      .then(() => {
+        for (const subscription of this.local) subscription.event(entry);
       });
   }
 

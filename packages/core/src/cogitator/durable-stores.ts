@@ -471,15 +471,29 @@ return 1`;
 const LEASE_SCRIPT = `
 return { redis.call('GET', KEYS[1]), redis.call('PTTL', KEYS[1]) }`;
 
+/**
+ * Writes a checkpoint while the caller holds the lease. A base extension says the size of the base
+ * it extends: a retry of an extension already written (its reply was lost) finds the size it left
+ * and the hash of the same messages, and is taken as done
+ */
 const SAVE_SCRIPT = `${HELD}
 if holder(KEYS[4]) ~= ARGV[1] then return 0 end
 redis.call('SET', KEYS[1], ARGV[2])
-if ARGV[8] == 'replace' then redis.call('SET', KEYS[2], ARGV[3]) end
-if ARGV[8] == 'append' then
-  if tonumber(ARGV[9]) ~= tonumber(redis.call('GET', KEYS[7]) or '0') then return -1 end
-  redis.call('APPEND', KEYS[2], ARGV[3])
+local sized = redis.call('GET', KEYS[7]) or '0|'
+local size, last = string.match(sized, '^(%d+)|(.*)$')
+size = tonumber(size or '0')
+local sha = redis.sha1hex(ARGV[3])
+if ARGV[8] == 'replace' then
+  redis.call('SET', KEYS[2], ARGV[3])
+  redis.call('SET', KEYS[7], ARGV[10] .. '|' .. sha)
+elseif ARGV[8] == 'append' then
+  if size == tonumber(ARGV[9]) then
+    redis.call('APPEND', KEYS[2], ARGV[3])
+    redis.call('SET', KEYS[7], ARGV[10] .. '|' .. sha)
+  elseif not (size == tonumber(ARGV[10]) and last == sha) then
+    return -1
+  end
 end
-if ARGV[8] ~= 'keep' then redis.call('SET', KEYS[7], ARGV[10]) end
 if ARGV[4] ~= '' then redis.call('SET', KEYS[3], ARGV[4]) else redis.call('DEL', KEYS[3]) end
 redis.call('ZADD', KEYS[5], ARGV[5], ARGV[6])
 redis.call('ZADD', KEYS[6], ARGV[5], ARGV[6])

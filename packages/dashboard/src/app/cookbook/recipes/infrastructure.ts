@@ -278,7 +278,7 @@ if (!apiKey) throw new Error('Set GOOGLE_API_KEY');
 const cog = new Cogitator({
   llm: { providers: { google: { apiKey } } },
   memory: { adapter: 'sqlite', sqlite: { path: 'agent.db' } },
-  durable: { owner: 'report-host' },
+  durable: { owner: 'report-host', takeoverOnRestart: true },
 });
 
 const exportReport = tool({
@@ -320,7 +320,7 @@ await cog.close();`,
       notes: [
         {
           type: 'info',
-          text: 'A stable `owner` lets the restarted process take its own runs back at once. Several processes need a store with atomic leases: `durable: { store: new RedisDurableRunStore({ client }) }`.',
+          text: 'A stable `owner` with `takeoverOnRestart: true` lets the restarted process take its own runs back at once, only safe when one live process at a time has that owner. Several processes need a store with atomic leases: `durable: { store: new RedisDurableRunStore({ client }) }`.',
         },
       ],
       docs: [

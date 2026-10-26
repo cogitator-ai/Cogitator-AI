@@ -651,7 +651,7 @@ A tool pauses the run to ask a person with `context.interrupt({ reason, message,
 With `durable` set, a run keeps a checkpoint after every model turn and every batch of tool calls, so when its process crashes or is stopped, another process (or the same one restarted) continues it from its last step:
 
 ```typescript
-const cog = new Cogitator({ memory, durable: { owner: process.env.HOSTNAME } });
+const cog = new Cogitator({ memory, durable: true });
 
 // at startup
 const { resumed } = await cog.recoverRuns({ agents: [reporter] });

@@ -36,13 +36,16 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-/** A runtime on the SQLite file of the test, as a process that starts on the same database */
-function processOn(turns: ScriptedTurn[], owner = 'host-a') {
+/**
+ * A runtime on the SQLite file of the test, as a process that starts on the same database: a pod
+ * whose owner is unique to it, so a restart takes its runs back at once
+ */
+function processOn(turns: ScriptedTurn[], owner = 'host-a', takeoverOnRestart = true) {
   const scripted = scriptedBackend(turns);
   const cog = new Cogitator({
     llm: { backends: { mock: scripted.backend } },
     memory: { adapter: 'sqlite', sqlite: { path: join(dir, 'memory.db') } },
-    durable: { owner },
+    durable: { owner, takeoverOnRestart },
   });
   return { cog, ...scripted };
 }
@@ -52,7 +55,7 @@ function processWith(turns: ScriptedTurn[], store: DurableRunStore, owner: strin
   const scripted = scriptedBackend(turns);
   const cog = new Cogitator({
     llm: { backends: { mock: scripted.backend } },
-    durable: { store, owner },
+    durable: { store, owner, takeoverOnRestart: true },
   });
   return { cog, ...scripted };
 }
@@ -213,7 +216,7 @@ describe('durable runs', () => {
     const first = new Cogitator({
       llm: { backends: { mock: scripted.backend } },
       memory: { adapter: 'sqlite', sqlite: { path: join(dir, 'memory.db') } },
-      durable: { store, owner: 'host-a' },
+      durable: { store, owner: 'host-a', takeoverOnRestart: true },
     });
     first.run(agent, { input: 'Plan it', threadId: 'adopt' }).catch(() => undefined);
     await stuck.promise;
@@ -223,7 +226,7 @@ describe('durable runs', () => {
     const second = new Cogitator({
       llm: { backends: { mock: resumedScript.backend } },
       memory: { adapter: 'sqlite', sqlite: { path: join(dir, 'memory.db') } },
-      durable: { store: parked, owner: 'host-a' },
+      durable: { store: parked, owner: 'host-a', takeoverOnRestart: true },
     });
     const { resumed } = await second.recoverRuns({ agents: [agent] });
     const result = await resumed[0].handle.result;
@@ -247,7 +250,7 @@ describe('durable runs', () => {
     const first = new Cogitator({
       llm: { backends: { mock: scripted.backend } },
       memory: { adapter: 'sqlite', sqlite: { path: join(dir, 'memory.db') } },
-      durable: { owner: 'host-a' },
+      durable: { owner: 'host-a', takeoverOnRestart: true },
       middleware: [hold],
     });
     const done = deferred();
@@ -688,6 +691,34 @@ describe('durable runs under stress', () => {
     await second.cog.close();
   });
 
+  it('takes a run of its own owner before its lease runs out only with takeoverOnRestart', async () => {
+    const hang = countedTool('hang', forever);
+    const agent = new Agent({
+      name: 'shared',
+      model: 'mock/m',
+      instructions: 'Go.',
+      tools: [hang.tool],
+    });
+    const first = processOn([callTools([{ id: 'h', name: 'hang', arguments: {} }])], 'web', false);
+    first.cog.run(agent, { input: 'Go', threadId: 'same-owner' }).catch(() => undefined);
+    await hang.started;
+    await first.cog.close();
+
+    const sibling = processOn([answer('stolen')], 'web', false);
+    expect(await sibling.cog.durableRuns()).toEqual([expect.objectContaining({ held: true })]);
+    expect((await sibling.cog.recoverRuns({ agents: [agent] })).resumed).toEqual([]);
+    const [kept] = await sibling.cog.durableRuns();
+    await expect(sibling.cog.recoverRun(agent, kept.runId)).rejects.toMatchObject({
+      code: ErrorCode.RUN_LEASED,
+    });
+    await sibling.cog.close();
+
+    const restarted = processOn([answer('taken back')], 'web', true);
+    const { resumed } = await restarted.cog.recoverRuns({ agents: [agent] });
+    expect((await resumed[0].handle.result).output).toBe('taken back');
+    await restarted.cog.close();
+  });
+
   it('rides out a store that fails once, running each tool once', async () => {
     const step = countedTool('step');
     const agent = new Agent({
@@ -786,7 +817,7 @@ describe('durable runs under stress', () => {
     const scripted = scriptedBackend([answer('Violets are blue')]);
     const first = new Cogitator({
       llm: { backends: { mock: scripted.backend } },
-      durable: { store, owner: 'a' },
+      durable: { store, owner: 'a', takeoverOnRestart: true },
       middleware: [hold],
     });
     const turned = deferred();
@@ -837,6 +868,7 @@ describe('durable runs under stress', () => {
       memory: { adapter: 'sqlite', sqlite: { path: join(dir, 'memory.db') } },
       durable: {
         owner: 'host-a',
+        takeoverOnRestart: true,
         store: {
           acquire: async (...args) => (await memoryOf()).acquire(...args),
           renew: async (...args) => (await memoryOf()).renew(...args),
@@ -894,7 +926,7 @@ describe('durable runs under stress', () => {
         retry: false as const,
       },
       memory: { adapter: 'sqlite' as const, sqlite: { path: join(dir, 'memory.db') } },
-      durable: { owner: 'host-a' },
+      durable: { owner: 'host-a', takeoverOnRestart: true },
       subagents: { agents: { digger: { description: 'digs', model: 'inner/m' } } },
     });
     const lead = new Agent({ name: 'lead', model: 'outer/m', instructions: 'Lead.' });
@@ -964,6 +996,85 @@ describe('durable runs at the edges of a step', () => {
     expect(second.requests).toHaveLength(1);
   });
 
+  it('reads once a mark the store kept twice', async () => {
+    const parked = new InMemoryDurableRunStore();
+    const store: DurableRunStore = {
+      ...around(parked),
+      append: async (ref, marks, holder) => {
+        await parked.append(ref, marks, holder);
+        return parked.append(ref, marks, holder);
+      },
+    };
+    const agent = new Agent({ name: 'doubled', model: 'mock/m', instructions: 'Answer.' });
+    const asked = deferred();
+    const first = processWith(
+      [
+        answer('first answer'),
+        () => {
+          asked.resolve();
+          return forever.then(() => answer('never'));
+        },
+      ],
+      store,
+      'a'
+    );
+    const handle = first.cog.start(agent, { input: 'Start', threadId: 'doubled' });
+    handle.followUp('Only once please');
+    handle.result.catch(() => undefined);
+    await asked.promise;
+    await first.cog.close();
+
+    const second = processWith([answer('done')], parked, 'a');
+    const { resumed } = await second.cog.recoverRuns({ agents: [agent] });
+    await resumed[0].handle.result;
+    expect(
+      userTexts(second.requests[0]).filter((text) => text === 'Only once please')
+    ).toHaveLength(1);
+  });
+
+  it('writes what was queued before it hands its run over', async () => {
+    const parked = new InMemoryDurableRunStore();
+    const slow = deferred();
+    let appends = 0;
+    const store: DurableRunStore = {
+      ...around(parked),
+      append: async (ref, marks, holder) => {
+        if (++appends === 2) await slow.promise;
+        return parked.append(ref, marks, holder);
+      },
+    };
+    const wait = countedTool('wait', forever);
+    const agent = new Agent({
+      name: 'handing',
+      model: 'mock/m',
+      instructions: 'Wait.',
+      tools: [wait.tool],
+    });
+    const first = processWith([callTools([{ id: 'w', name: 'wait', arguments: {} }])], store, 'a');
+    const controller = new AbortController();
+    const handle = first.cog.start(agent, {
+      input: 'Wait',
+      threadId: 'handing',
+      signal: controller.signal,
+    });
+    await wait.started;
+    handle.steer('First note');
+    handle.steer('Second note');
+    controller.abort(new CogitatorError({ message: 'redeploy', code: ErrorCode.RUN_SUSPENDED }));
+    slow.resolve();
+    await expect(handle.result).rejects.toThrow('redeploy');
+
+    const [kept] = await parked.list();
+    const record = await parked.load(kept);
+    const queues = record!.journal.filter((mark) => mark.kind === 'queue');
+    expect(queues.at(-1)).toMatchObject({
+      pending: [
+        { kind: 'steer', content: 'First note' },
+        { kind: 'steer', content: 'Second note' },
+      ],
+    });
+  });
+
   it('writes nothing more once another process took its run over', async () => {
     let now = 0;
     const store = new InMemoryDurableRunStore({ now: () => now });
@@ -984,7 +1095,7 @@ describe('durable runs at the edges of a step', () => {
     const zombie = new Cogitator({
       llm: { backends: { mock: zombieScript.backend } },
       memory,
-      durable: { store, owner: 'a' },
+      durable: { store, owner: 'a', takeoverOnRestart: true },
       middleware: [{ name: 'end', afterRun: (event) => void ended.push(event.status) }],
     });
     const running = zombie.run(agent, { input: 'Go', threadId: 'zombie' });
@@ -1017,7 +1128,7 @@ describe('durable runs at the edges of a step', () => {
     const reached = deferred();
     const first = new Cogitator({
       llm: { backends: { mock: scriptedBackend([answer('draft')]).backend } },
-      durable: { store, owner: 'a' },
+      durable: { store, owner: 'a', takeoverOnRestart: true },
       middleware: [
         {
           name: 'stuck-stop',
@@ -1036,7 +1147,7 @@ describe('durable runs at the edges of a step', () => {
     const scripted = scriptedBackend([answer('final')]);
     const second = new Cogitator({
       llm: { backends: { mock: scripted.backend } },
-      durable: { store, owner: 'a' },
+      durable: { store, owner: 'a', takeoverOnRestart: true },
       middleware: [
         {
           name: 'review',

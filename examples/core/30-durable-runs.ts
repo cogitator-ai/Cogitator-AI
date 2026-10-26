@@ -44,11 +44,14 @@ function reporter(crashing: boolean): Agent {
   });
 }
 
-/** A process of the host `report-host` on the SQLite file both processes share */
+/**
+ * A process of `report-host` on the SQLite file both processes share: one process at a time has
+ * this owner, so the next one takes its runs back at once (`takeoverOnRestart`)
+ */
 function processOn(database: string): Cogitator {
   return createCogitator({
     memory: { adapter: 'sqlite', sqlite: { path: database } },
-    durable: { owner: 'report-host' },
+    durable: { owner: 'report-host', takeoverOnRestart: true },
   });
 }
 

@@ -98,6 +98,8 @@ export class DurableRunKeeper {
   /** The store failed and the run goes on without checkpoints (`onStoreError: 'continue'`) */
   private detached = false;
   private ended = false;
+  /** Marks written so far, for their ids */
+  private marks = 0;
 
   constructor(
     private readonly store: DurableRunStore,
@@ -158,14 +160,14 @@ export class DurableRunKeeper {
     return this.queue(() =>
       this.write(async () => {
         await this.renew();
-        await this.appendHeld([{ kind: 'started', toolCallId }]);
+        await this.appendHeld([this.named({ kind: 'started', toolCallId })]);
       })
     );
   }
 
   /** Notes what a tool call returned */
   finished(toolCallId: string, result: ToolResult): Promise<void> {
-    const mark: DurableRunMark = { kind: 'finished', toolCallId, result: jsonSafeResult(result) };
+    const mark = this.named({ kind: 'finished', toolCallId, result: jsonSafeResult(result) });
     return this.queue(() => this.write(() => this.appendHeld([mark])));
   }
 
@@ -174,17 +176,17 @@ export class DurableRunKeeper {
    * recovery has them even before the next checkpoint and does not deliver it again
    */
   delivered(queued: QueuedRunMessage, messages: readonly Message[]): Promise<void> {
-    const mark: DurableRunMark = {
+    const mark = this.named({
       kind: 'delivered',
       queued: structuredClone(queued),
       messages: structuredClone([...messages]),
-    };
+    });
     return this.queue(() => this.write(() => this.appendHeld([mark])));
   }
 
   /** Notes the messages queued on the run's handle that it has not delivered yet */
   queued(pending: readonly QueuedRunMessage[]): void {
-    const mark: DurableRunMark = { kind: 'queue', pending: structuredClone([...pending]) };
+    const mark = this.named({ kind: 'queue', pending: structuredClone([...pending]) });
     this.queue(() => this.write(() => this.appendHeld([mark]))).catch(() => undefined);
   }
 
@@ -195,9 +197,12 @@ export class DurableRunKeeper {
    * checkpoint stays for a recovery
    */
   async end(how: 'forget' | 'hand-over'): Promise<void> {
-    this.ended = true;
     clearInterval(this.renewal);
-    await this.chain.catch(() => undefined);
+    for (let drained = this.chain; ; drained = this.chain) {
+      await drained.catch(() => undefined);
+      if (drained === this.chain) break;
+    }
+    this.ended = true;
     if (this.stopped?.code === ErrorCode.RUN_LEASED) return;
     const forget = how === 'forget' && !this.stopped;
     try {
@@ -223,6 +228,11 @@ export class DurableRunKeeper {
 
   private async appendHeld(marks: DurableRunMark[]): Promise<void> {
     if (!(await this.store.append(this.owner, marks, this.holder))) this.lose();
+  }
+
+  /** `mark` with an id of its own, so a retried append that the store kept twice is read once */
+  private named(mark: DurableRunMark): DurableRunMark {
+    return { ...mark, id: `${this.holder.instance}:${++this.marks}` };
   }
 
   private lose(): never {
@@ -388,6 +398,13 @@ export async function rebuildDurableRun(
   memory: MemoryAdapter | undefined
 ): Promise<RebuiltRun> {
   const { checkpoint } = record;
+  const seen = new Set<string>();
+  const journal = record.journal.filter((mark) => {
+    if (mark.id === undefined) return true;
+    if (seen.has(mark.id)) return false;
+    seen.add(mark.id);
+    return true;
+  });
   const { messages, entryIds } = await wholeMessages(record, memory);
   const toolCalls = callsAt(record, messages);
   let iterations = checkpoint.iterations;
@@ -395,7 +412,7 @@ export async function rebuildDurableRun(
   let queued = [...(checkpoint.queued ?? [])];
   const queueKey = (item: QueuedRunMessage) => `${item.kind}:${JSON.stringify(item.content)}`;
   const delivered: Extract<DurableRunMark, { kind: 'delivered' }>[] = [];
-  for (const mark of record.journal) {
+  for (const mark of journal) {
     if (mark.kind === 'queue') queued = [...mark.pending];
     if (mark.kind === 'delivered') {
       const at = queued.findIndex((item) => queueKey(item) === queueKey(mark.queued));
@@ -469,7 +486,7 @@ export async function rebuildDurableRun(
 
   const finished = new Map<string, ToolResult>();
   const started = new Set<string>();
-  for (const mark of record.journal) {
+  for (const mark of journal) {
     if (mark.kind === 'started') started.add(mark.toolCallId);
     if (mark.kind === 'finished') finished.set(mark.toolCallId, mark.result);
   }
