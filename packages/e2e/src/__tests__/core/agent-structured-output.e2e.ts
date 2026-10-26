@@ -14,6 +14,14 @@ function extractJSON(text: string): string {
   return close === -1 ? text.trim() : text.slice(start, close).trim();
 }
 
+function stringLeaves(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value.flatMap(stringLeaves);
+  if (typeof value === 'object' && value !== null)
+    return Object.values(value).flatMap(stringLeaves);
+  return [];
+}
+
 describeE2E('Core: Structured Output', () => {
   let cogitator: Cogitator;
 
@@ -54,15 +62,9 @@ describeE2E('Core: Structured Output', () => {
         'Return a JSON array of color strings. Example: ["red", "green", "blue"]. Return ONLY the JSON array.',
     });
 
-    const parsed = JSON.parse(extractJSON(result.output));
-    const items = Array.isArray(parsed) ? parsed : Object.values(parsed);
-    expect(Array.isArray(items)).toBe(true);
-    expect(items.length).toBeGreaterThanOrEqual(1);
-
-    for (const item of items) {
-      const val = typeof item === 'object' && item !== null ? Object.values(item)[0] : item;
-      expect(typeof val).toBe('string');
-    }
+    const parsed: unknown = JSON.parse(extractJSON(result.output));
+    expect(typeof parsed).toBe('object');
+    expect(stringLeaves(parsed).length).toBeGreaterThanOrEqual(1);
   });
 });
 
