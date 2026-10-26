@@ -29,12 +29,14 @@ const cog = new Cogitator({
 
 `durable: true` makes every run durable with the default store, an object sets it up:
 
-| Option    | Default                                    | What it does                                                                                                                                                              |
-| --------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled` | `true`                                     | Whether runs are durable unless their agent or their options say otherwise. `false` keeps the store for runs that ask with `durable: true`                                |
-| `store`   | the memory adapter's threads, else process | Where checkpoints go, see [Stores](#stores)                                                                                                                               |
-| `leaseMs` | `60000`                                    | How long a run stays held after its process last renewed its lease                                                                                                        |
-| `owner`   | a new id per `Cogitator`                   | Who this runtime's runs are held by. A stable one per process (host name, pod name) lets a restarted process recover its own runs at once, without waiting for the leases |
+| Option         | Default                                    | What it does                                                                                                                                                              |
+| -------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`      | `true`                                     | Whether runs are durable unless their agent or their options say otherwise. `false` keeps the store for runs that ask with `durable: true`                                |
+| `store`        | the memory adapter's threads, else process | Where checkpoints go, see [Stores](#stores)                                                                                                                               |
+| `leaseMs`      | `60000`                                    | How long a run stays held after its process last renewed its lease                                                                                                        |
+| `owner`        | a new id per `Cogitator`                   | Who this runtime's runs are held by. A stable one per process (host name, pod name) lets a restarted process recover its own runs at once, without waiting for the leases |
+| `storeRetries` | `3`                                        | How often a failed write to the store is tried again, with a growing pause                                                                                                |
+| `onStoreError` | `'suspend'`                                | What a run does when its store keeps failing: `suspend` stops it with `RUN_SUSPENDED` and keeps its last checkpoint, `continue` goes on without checkpoints               |
 
 An agent's `durable` and a run's own `durable` win over the runtime's setting:
 
@@ -43,15 +45,18 @@ const agent = new Agent({ name: 'reporter', model, instructions, durable: true }
 await cog.run(agent, { input: 'Prepare the Q3 report', threadId: 'q3', durable: false });
 ```
 
-A run started from a tool call of another run (a subagent, `agentAsTool`) is never durable on its own: its caller is, and the call that started it gets "outcome unknown" when the caller is recovered while it ran.
+A run started from a tool call of another run (a subagent, `agentAsTool`) is never durable on its own: its caller is, and the call that started it gets "outcome unknown" when the caller is recovered while it ran. Background subagents (`run_in_background`) live in their process too: the checkpoint names the ones going on, and the recovered run reads that they were lost, as `failed` with an unknown outcome, in `task_output`, `send_message` and its stop notice, so the model knows to check what they did.
 
 ### What a Step Writes
 
 The checkpoint is a `RunCheckpoint` with `status: 'running'`, the same shape a paused run returns: counters, usage and cost, the turn going on, permission mode and rules, budgets, hook state, project instructions, the command the input named, and the messages queued on the run's handle. It is kept small:
 
-- **The conversation's start** (system prompt, history, input) is written once, as the record's `base`.
+- **The conversation's start** (system prompt, history, input) is written once, as the record's `base`. Without a memory log the messages a step adds are added to the base, never written twice.
 - **Messages the thread's log already holds** are written as references to their log entries (`checkpoint.compact`), not copied. The [session log](/docs/memory) stays the source of truth.
+- **Tool calls** are kept by their place in those messages, not with their arguments again.
 - **Between steps** only small marks go to the record's journal: a tool call that starts, one that returns, the queue when it changes.
+
+A checkpoint is written after every model turn, the final answer included, so a run that answered before its process stopped ends on recovery without asking the model again.
 
 A step writes what is new since the last one, not the whole conversation.
 
@@ -113,9 +118,11 @@ So a tool with side effects never runs twice behind the model's back: the model 
 
 ## Leases
 
-A process holds each durable run it runs under a lease: it takes the lease when the run starts, renews it at every step and a third of the way through `leaseMs` while a long tool runs, and lets it go when the run ends. `recoverRuns()` takes only runs whose lease ran out (or is held by its own `owner` with no run going on), and takes the lease before it continues one, so two processes recovering at once never continue a run twice.
+A process holds each durable run it runs under a lease: it takes the lease when the run starts, renews it at every step and a third of the way through `leaseMs` while a long tool runs, and lets it go when the run ends. A lease belongs to the runtime's `owner` and to the instance of the `Cogitator`, so another live runtime never takes a run one holds, even with the same `owner`. `recoverRuns()` takes only runs whose lease ran out, or whose lease an instance of its own `owner` holds that no longer runs (a process that restarted), and a runtime reserves a run before it takes its lease, so recovering one run twice at once, in one process or two, continues it once.
 
-A process that lost its lease (it froze longer than `leaseMs` and another process took the run over) finds out at its next step and stops the run with `RUN_LEASED` before it starts another tool or writes again.
+Every write is fenced: a checkpoint, its journal and its base change only while the writer holds the lease. A process that lost its lease (it froze longer than `leaseMs` and another process took the run over) finds out at its next step and stops the run with `RUN_LEASED` before it starts another tool or writes again, it never overwrites the checkpoint of the process that took over.
+
+A store that fails is tried again (`storeRetries`, with a growing pause). When it keeps failing, the run is suspended with `RUN_SUSPENDED` and its last good checkpoint stays for a recovery: a storage error never deletes a checkpoint. With `onStoreError: 'continue'` the run goes on without checkpoints instead (a recovery may then repeat what it did since the last one).
 
 A process that stops on purpose hands its runs over: abort a run with a `CogitatorError` of code `RUN_SUSPENDED` and it keeps its checkpoint and lets its lease go at once, for another process to recover. The worker pool does this when it shuts down.
 
@@ -129,13 +136,13 @@ Any other end (completed, failed, paused, aborted) forgets the run. A paused run
 
 ## Stores
 
-A store implements `DurableRunStore` (`acquire`, `renew`, `release`, `save`, `append`, `load`, `list`, `delete`).
+A store implements `DurableRunStore` (`acquire`, `renew`, `release`, `save`, `append`, `load`, `list`, `delete`), its writes taking the holder of the lease.
 
-| Store                     | Where                                                        | Several processes                                                           |
-| ------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------- |
-| `InMemoryDurableRunStore` | Process memory, the default without a memory adapter         | No, lost with the process. For tests and several runtimes in one process    |
-| `ThreadDurableRunStore`   | The run's thread metadata, the default with a memory adapter | One process at a time: a memory adapter cannot lock, leases are best effort |
-| `RedisDurableRunStore`    | Redis, with atomic leases (`SET ... PX` in a script)         | Yes, any number                                                             |
+| Store                     | Where                                                                                                           | Several processes                                                           |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `InMemoryDurableRunStore` | Process memory, the default without a memory adapter                                                            | No, lost with the process. For tests and several runtimes in one process    |
+| `ThreadDurableRunStore`   | The run's thread metadata (one `durableRuns` map, emptied when its runs end), the default with a memory adapter | One process at a time: a memory adapter cannot lock, leases are best effort |
+| `RedisDurableRunStore`    | Redis: atomic leases, each checkpoint written in one script, keys that expire after `ttl` (7 days)              | Yes, any number                                                             |
 
 ```typescript
 import { Cogitator, RedisDurableRunStore } from '@cogitator-ai/core';
@@ -148,7 +155,7 @@ const cog = new Cogitator({
 });
 ```
 
-The conversation's log references resolve through the runtime's memory adapter, so a recovering process needs the same memory as the one that ran.
+The conversation's log references resolve through the runtime's memory adapter, so a recovering process needs the same memory as the one that ran. The Redis store keeps its keys under `{cogitator}:durable-runs` by default: a prefix of your own needs a `{hash tag}` in Redis Cluster, since one script writes all keys of a run and its indexes.
 
 ## Workers
 
@@ -160,7 +167,7 @@ import { WorkerPool } from '@cogitator-ai/worker';
 const pool = new WorkerPool({ redis, tools, durable: true });
 ```
 
-The pool's own Cogitator keeps the runs in its Redis. A Cogitator you pass needs a store all workers share, such as `durable: { store: new RedisDurableRunStore({ client }), enabled: false }` (`enabled: false` keeps runs outside the queue as they were).
+When BullMQ hands a job on while the run of its stalled attempt is still held (its lease has not run out yet), the job waits until the lease runs out, without using an attempt. The pool's own Cogitator keeps the runs in its Redis. A Cogitator you pass needs a store all workers share, such as `durable: { store: new RedisDurableRunStore({ client }), enabled: false }` (`enabled: false` keeps runs outside the queue as they were).
 
 ## Streams
 

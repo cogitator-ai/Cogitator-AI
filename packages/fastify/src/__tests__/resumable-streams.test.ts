@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
-import { ConformanceRuntime, parseSseFrames } from '@cogitator-ai/server-shared';
+import {
+  ConformanceRuntime,
+  InMemoryStreamReplayStore,
+  parseSseFrames,
+} from '@cogitator-ai/server-shared';
+import type { RunOptions } from '@cogitator-ai/types';
 import { cogitatorPlugin } from '../plugin.js';
 import type { CogitatorPluginOptions } from '../types.js';
 
@@ -53,6 +58,63 @@ describe('resumable streams', () => {
 
     expect(res.statusCode).toBe(200);
     expect(parseSseFrames(res.body)).toEqual(frames.slice(5));
+  });
+
+  it('reconnects a request with an empty JSON body, as the other adapters do', async () => {
+    const server = await register();
+    const frames = await stream(server);
+
+    const res = await server.inject({
+      method: 'POST',
+      url: '/api/agents/assistant/stream',
+      headers: { 'content-type': 'application/json', 'last-event-id': frames[4]!.id! },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(parseSseFrames(res.body)).toEqual(frames.slice(5));
+  });
+
+  it('answers a store that fails a reconnect with 500, not an unhandled error', async () => {
+    const failing = new InMemoryStreamReplayStore();
+    failing.get = () => Promise.reject(new Error('redis down'));
+    const server = await register({ resumableStreams: { store: failing } });
+
+    const res = await server.inject({
+      method: 'POST',
+      url: '/api/agents/assistant/stream',
+      headers: { 'last-event-id': 'stream_x:1' },
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toMatchObject({ error: { code: 'INTERNAL_ERROR' } });
+  });
+
+  it('stops the runs of resumable streams when the server closes', async () => {
+    let signal: AbortSignal | undefined;
+    const held = {
+      run: (_agent: unknown, options: RunOptions) =>
+        new Promise((_, reject) => {
+          signal = options.signal;
+          options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    };
+    const server = await register({
+      cogitator: held as unknown as CogitatorPluginOptions['cogitator'],
+    });
+    const address = await server.listen({ port: 0, host: '127.0.0.1' });
+    const client = new AbortController();
+    const res = await fetch(`${address}/api/agents/assistant/stream`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: 'hi' }),
+      signal: client.signal,
+    });
+    await res.body!.getReader().read();
+    client.abort();
+
+    await server.close();
+    app = undefined;
+    expect(signal?.aborted).toBe(true);
   });
 
   it('answers 404 NOT_FOUND for a reconnect to an agent it does not have', async () => {

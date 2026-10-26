@@ -37,6 +37,7 @@ import { holdConnection, jsonBody } from './connection.js';
 import {
   clientClosedRequest,
   cogitatorErrors,
+  refusalError,
   describeError,
   WorkflowRunFailedError,
   workflowRouteError,
@@ -73,6 +74,7 @@ import {
   HealthResponse,
   NameParams,
   ReadyResponse,
+  StreamParams,
   ResumeBody,
   RUN_FAILURES,
   requestSchemas,
@@ -86,7 +88,7 @@ import {
   WorkflowListResponse,
   WorkflowRunResponse,
 } from './schemas.js';
-import { reconnectHook, resumableEvents } from './resumable.js';
+import { reconnectHook, resumableEvents, streamCaller } from './resumable.js';
 import { cogitatorSocket } from './socket.js';
 import { DONE_EVENT, eventsOf, resolveSignal, sseEvent } from './streaming.js';
 import type { AgentStreamCallbacks } from './streaming.js';
@@ -212,7 +214,7 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
     ReconnectQuery,
   } = requestSchemas(deps);
   const streamOptions = () => ({ until: resolveSignal(deps.until), heartbeatMs });
-  const streams = ResumableStreams.from(deps.resumableStreams);
+  const streams = ResumableStreams.from<AuthContext>(deps.resumableStreams);
   const reconnect = reconnectHook(deps, streams, streamOptions);
   const StreamAgentNotFound = streams
     ? errorsEnvelope(
@@ -237,8 +239,8 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
     if (!streams) {
       return sse(ctx, (signal) => agentEvents(start, signal, threadId), streamOptions());
     }
-    const stream = await streams.startAgentRun({
-      userId: auth?.userId,
+    const opened = await streams.startAgentRun({
+      auth,
       threadId,
       signal: resolveSignal(deps.until),
       execute: (session, signal) =>
@@ -249,7 +251,8 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         return described;
       },
     });
-    return sse(ctx, (signal) => resumableEvents(stream, signal), streamOptions());
+    if (!opened.ok) throw refusalError(opened.error);
+    return sse(ctx, (signal) => resumableEvents(opened.stream, signal), streamOptions());
   };
 
   const memoryOf = async () => {
@@ -830,7 +833,36 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
   const socket = deps.websocket
     ? cogitatorSocket(deps, caller, admitted, deps.websocket === true ? undefined : deps.websocket)
     : undefined;
-  return { ...routes, ...(socket && { socket }) };
+  const cancelAgentStream =
+    streams &&
+    route({
+      method: 'DELETE',
+      path: '/agents/:name/stream/:streamId',
+      schema: {
+        params: StreamParams,
+        response: { 204: null, 403: ThreadForbidden, 404: StreamAgentNotFound },
+      },
+      hooks: { beforeParse: [caller, admitted], onError: [errors] },
+      docs: {
+        summary: 'Cancel the run of a resumable stream',
+        description:
+          'Stops the run of a stream, on whatever process runs it: the stream ends with an `error` event `STREAM_CANCELLED`. Only the caller who started the stream may cancel its run, after `authorizeThread` on its thread. A stream that already finished is left as it is.',
+        tags: ['agents'],
+      },
+      handler: async (ctx) => {
+        findAgent(deps, ctx.params.name);
+        const cancelled = await streams.cancel(
+          ctx.params.streamId,
+          streamCaller(deps, ctx.cogitatorAuth)
+        );
+        if (!cancelled.ok) throw refusalError(cancelled.error);
+      },
+    });
+  return {
+    ...routes,
+    ...(cancelAgentStream && { cancelAgentStream }),
+    ...(socket && { socket }),
+  };
 });
 
 function* failure(error: unknown): Generator<ServerSentEvent, void, undefined> {

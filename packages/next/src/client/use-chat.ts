@@ -78,6 +78,22 @@ interface ChatRequest {
   lastEventId?: string;
   /** Sends the request again to resume its stream after `lastEventId` */
   resend?: (lastEventId: string) => Promise<Response>;
+  /** Asks the server to cancel the run of the request's stream */
+  cancelRun?: (streamId: string) => void;
+}
+
+/** The stream an event id names: the part before its last `:` */
+function streamIdOf(lastEventId: string): string {
+  return lastEventId.slice(0, lastEventId.lastIndexOf(':'));
+}
+
+/**
+ * Asks the server to stop the run of a request's stream: aborting the fetch alone only
+ * disconnects from a resumable stream, whose run goes on without the client
+ */
+function cancelRunOf(request: ChatRequest): void {
+  if (request.lastEventId === undefined || request.ended) return;
+  request.cancelRun?.(streamIdOf(request.lastEventId));
 }
 
 /** How a read of a stream ended: at `finish` or `error`, cut short, or no longer wanted */
@@ -232,7 +248,10 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
 
   const interrupt = useCallback(() => {
     closeOpen();
-    for (const request of liveRef.current) request.controller.abort();
+    for (const request of liveRef.current) {
+      cancelRunOf(request);
+      request.controller.abort();
+    }
   }, [closeOpen]);
 
   const handOver = useCallback((): ChatRequest[] => {
@@ -509,6 +528,9 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
             const end = await readStream(current, request, () => (progressed = true));
             if (end === 'closed') return;
             if (end === 'ended') break;
+            if (request.lastEventId !== undefined && reconnectAttempts > 0) {
+              failure = { error: new Error('The stream ended before the run finished') };
+            }
           } catch (error) {
             if (isAbortError(error) || request.controller.signal.aborted) throw error;
             failure = { error };
@@ -625,6 +647,12 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
             signal: controller.signal,
           });
         chatRequest.resend = send;
+        chatRequest.cancelRun = (streamId) => {
+          const cancelUrl = `${url}${url.includes('?') ? '&' : '?'}streamId=${encodeURIComponent(streamId)}`;
+          void fetch(cancelUrl, { method: 'DELETE', headers: { ...headers } }).catch(
+            () => undefined
+          );
+        };
 
         const doFetch = async () => {
           const response = await send();

@@ -1,17 +1,17 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import {
   CONFORMANCE_CASES,
   CONFORMANCE_NAMES,
-  CONFORMANCE_ROUTES,
   CONFORMANCE_SWARM,
   ConformanceRuntime,
   checkConformance,
-  conformanceContentType,
-  conformanceMethod,
-  conformanceReconnectRequest,
+  conformanceAuthorizeThread,
+  conformanceCaller,
+  conformanceResumableStreams,
+  runConformanceCase,
+  sendConformanceRequest,
   type ConformanceCase,
-  type ConformanceResponse,
 } from '@cogitator-ai/server-shared';
 import { cogitatorPlugin } from '../plugin.js';
 import type { CogitatorPluginOptions } from '../types.js';
@@ -26,13 +26,33 @@ afterEach(async () => {
 });
 
 function pluginOptions(testCase: ConformanceCase): Partial<Options> {
-  const { forbiddenThreads, deps, ...options } = testCase.server ?? {};
+  const {
+    acceptContext,
+    threadMessageRoles,
+    limits,
+    anonymous,
+    workflowCheckpoints,
+    callers,
+    deps,
+  } = testCase.server ?? {};
+  const authorizeThread = conformanceAuthorizeThread(testCase.server);
+  const resumableStreams = conformanceResumableStreams(testCase.server);
   return {
-    ...options,
-    ...(forbiddenThreads && {
-      authorizeThread: (_auth, threadId) => !forbiddenThreads.includes(threadId),
+    ...(acceptContext !== undefined && { acceptContext }),
+    ...(threadMessageRoles && { threadMessageRoles }),
+    ...(limits && { limits }),
+    ...(anonymous && { anonymous }),
+    ...(workflowCheckpoints && { workflowCheckpoints }),
+    ...(callers && {
+      auth: (request: FastifyRequest) =>
+        conformanceCaller((name) => {
+          const value = request.headers[name];
+          return typeof value === 'string' ? value : undefined;
+        }),
     }),
+    ...(authorizeThread && { authorizeThread }),
     ...(deps && { deps: () => deps }),
+    ...(resumableStreams !== undefined && { resumableStreams }),
   };
 }
 
@@ -51,31 +71,11 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
     sseHeartbeatMs: 0,
     ...pluginOptions(testCase),
   });
+  const address = await app.listen({ port: 0, host: '127.0.0.1' });
 
-  const send = async (
-    path: string,
-    extraHeaders: Record<string, string> = {}
-  ): Promise<ConformanceResponse> => {
-    const res = await app!.inject({
-      method: conformanceMethod(testCase),
-      url: `/api${path}`,
-      headers: {
-        ...(testCase.body !== undefined && { 'content-type': conformanceContentType(testCase) }),
-        ...extraHeaders,
-      },
-      ...(testCase.body !== undefined && { payload: testCase.body }),
-    });
-    const ok = res.statusCode < 400;
-    const code = ok ? undefined : (res.json() as { error: { code: string } }).error.code;
-    const headers = Object.fromEntries(
-      Object.entries(res.headers).map(([name, value]) => [name.toLowerCase(), String(value)])
-    );
-    return { status: res.statusCode, code, body: res.body, headers };
-  };
-
-  const first = await send(CONFORMANCE_ROUTES[testCase.route]);
-  const reconnect = conformanceReconnectRequest(testCase, first);
-  return reconnect ? { ...first, reconnect: await send(reconnect.path, reconnect.headers) } : first;
+  return runConformanceCase(testCase, runtime, (request) =>
+    sendConformanceRequest(request, (path, init) => fetch(`${address}/api${path}`, init))
+  );
 }
 
 describe('server protocol conformance', () => {

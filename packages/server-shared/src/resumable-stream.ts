@@ -3,20 +3,26 @@ import type { HttpErrorDescription } from './contract.js';
 import { createErrorEvent, type StreamEvent } from './protocol.js';
 import { AgentStreamSession, createThreadId } from './stream-session.js';
 import {
+  DEFAULT_STREAM_MAX_EVENTS,
   InMemoryStreamReplayStore,
   positiveLimit,
   type StoredStreamEvent,
   type StreamOwner,
+  type StreamRecord,
   type StreamReplayStore,
   type StreamSubscriber,
 } from './stream-replay-store.js';
 
-/** A reconnect named a stream the server does not keep: unknown, expired or someone else's */
+/** A reconnect or cancel named a stream the server does not keep: unknown, expired or someone else's */
 export const STREAM_NOT_FOUND = 'STREAM_NOT_FOUND';
-/** The events after the id a client reconnected with were evicted: it has to read the thread */
+/** Events after the id a client reconnected with are lost: it has to read the thread */
 export const STREAM_RESUME_GAP = 'STREAM_RESUME_GAP';
-/** The run of a resumable stream was stopped before it finished, with nobody attached */
+/** The run of a resumable stream was stopped before it finished, with nobody attached or by a shutdown */
 export const STREAM_ABORTED = 'STREAM_ABORTED';
+/** The run of a resumable stream was stopped by its caller, through the cancel route */
+export const STREAM_CANCELLED = 'STREAM_CANCELLED';
+/** The store keeps as many streams as it may, all of them still going: no new one fits */
+export const STREAM_LIMIT_REACHED = 'STREAM_LIMIT_REACHED';
 
 /** Default of `detachedTimeoutMs`: how long a run goes on with no client attached, 5 minutes */
 export const DEFAULT_DETACHED_TIMEOUT_MS = 5 * 60_000;
@@ -26,26 +32,44 @@ const MAX_TIMER_MS = 2_147_483_647;
 /**
  * The `resumableStreams` option of every adapter. A client that loses the stream of an agent
  * run reconnects with `Last-Event-ID` and gets what it missed, and the run goes on while it is
- * away.
+ * away. `Auth` is what the adapter's authentication establishes for a caller.
  */
-export interface ResumableStreamOptions {
+export interface ResumableStreamOptions<Auth = unknown> {
   /**
    * Where the events are kept. Default: an {@link InMemoryStreamReplayStore} with the limits
    * below. Several processes behind a load balancer need a shared store with pub/sub, see
    * {@link StreamReplayStore}.
    */
   store?: StreamReplayStore;
-  /** Events kept of each stream by the default store. Default: 1000 */
+  /**
+   * Events kept of each stream by the default store, and events a client that reads slowly may
+   * fall behind before it reads the store again. Default: 1000
+   */
   maxEvents?: number;
   /** How long the default store keeps a finished stream, in ms. Default: 5 minutes */
   retentionMs?: number;
-  /** Streams the default store keeps at once. Default: 1000 */
+  /**
+   * Streams the default store keeps at once. A new stream evicts the one that finished first,
+   * and is refused with `503 STREAM_LIMIT_REACHED` while every stream kept is still going.
+   * Default: 1000
+   */
   maxStreams?: number;
   /**
    * How long a run goes on while no client is attached to its stream, in ms, before it is
    * stopped, so a client that never comes back does not run up cost. Default: 5 minutes
    */
   detachedTimeoutMs?: number;
+  /**
+   * The key a stream is bound to, from what authentication established for the caller who
+   * started it: only a caller with the same key may reconnect to it or cancel its run, and
+   * `undefined` is the anonymous caller. Default: the whole identity, every field of it (user
+   * id, roles, permissions, metadata such as a tenant), so callers without a user id are still
+   * told apart. Return fewer fields when the identity carries values that change between
+   * requests, such as the expiry of a token.
+   */
+  owner?: (auth: Auth | undefined) => string | undefined | Promise<string | undefined>;
+  /** Stops every run of a resumable stream when it aborts, such as a server that shuts down */
+  until?: AbortSignal;
 }
 
 /** One event as a resumable stream sends it: with its id, except for the gap error */
@@ -75,8 +99,13 @@ export function parseStreamEventId(id: string): StreamEventId | undefined {
   if (at === -1) return undefined;
   const streamId = id.slice(0, at);
   const seq = id.slice(at + 1);
-  if (!STREAM_ID_PATTERN.test(streamId) || !SEQ_PATTERN.test(seq)) return undefined;
+  if (!isStreamId(streamId) || !SEQ_PATTERN.test(seq)) return undefined;
   return { streamId, seq: Number(seq) };
+}
+
+/** Whether `id` can be the id of a stream */
+export function isStreamId(id: string): boolean {
+  return STREAM_ID_PATTERN.test(id);
 }
 
 /**
@@ -91,6 +120,27 @@ export function lastEventIdOf(header: unknown, query: unknown): string | undefin
   return named(header) ?? named(query);
 }
 
+/** JSON with the keys of every object in order and nothing JSON cannot hold */
+function stableJson(value: unknown): string | undefined {
+  return JSON.stringify(value, (_key, inner: unknown) =>
+    inner && typeof inner === 'object' && !Array.isArray(inner)
+      ? Object.fromEntries(
+          Object.entries(inner as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))
+        )
+      : inner
+  );
+}
+
+/**
+ * The default key a stream is bound to: every field of the caller's identity, in a stable
+ * order. No identity, or an empty one, is the anonymous caller (`undefined`)
+ */
+export function defaultStreamOwner(auth: unknown): string | undefined {
+  if (auth === undefined || auth === null) return undefined;
+  const key = stableJson(auth);
+  return key === undefined || key === '{}' ? undefined : key;
+}
+
 /** The refusal of an event id that is not `<streamId>:<seq>` */
 export function invalidLastEventId(): HttpErrorDescription {
   return {
@@ -100,12 +150,26 @@ export function invalidLastEventId(): HttpErrorDescription {
   };
 }
 
-/** The refusal of a reconnect to a stream the server does not keep for the caller */
+/** The refusal of a cancel that names no stream id */
+export function invalidStreamId(): HttpErrorDescription {
+  return { status: 400, code: 'INVALID_INPUT', message: 'The stream id is not valid' };
+}
+
+/** The refusal of a reconnect or cancel of a stream the server does not keep for the caller */
 export function streamNotFound(): HttpErrorDescription {
   return {
     status: 404,
     code: STREAM_NOT_FOUND,
-    message: 'No stream has this event id: it is unknown, expired or not yours',
+    message: 'No stream has this id: it is unknown, expired or not yours',
+  };
+}
+
+/** The refusal of a new resumable stream while the store has no room for one */
+export function streamLimitReached(): HttpErrorDescription {
+  return {
+    status: 503,
+    code: STREAM_LIMIT_REACHED,
+    message: 'The server keeps as many streams as it may: try again once a run finished',
   };
 }
 
@@ -125,24 +189,44 @@ export interface StreamFollower {
 /** The writing end of a resumable stream, with its first client attached */
 export interface ResumableStream extends StreamFollower {
   /**
-   * Aborts when no client was attached for `detachedTimeoutMs`, or when the signal the stream
-   * was opened with aborts: pass it to the run
+   * Aborts when no client was attached for `detachedTimeoutMs`, when the caller cancels the
+   * run, when `until` or the signal the stream was opened with aborts: pass it to the run
    */
   readonly signal: AbortSignal;
-  /** Gives the event the next id and keeps it */
+  /** Gives the event the next id, hands it to the clients of this process and keeps it */
   emit(event: StreamEvent): void;
   /** Ends the stream once every event emitted is kept */
   end(): Promise<void>;
+  /** What stopped the run once `signal` aborted, to end the stream with */
+  stopReason(): { message: string; code: string };
 }
 
+/** Who asks to reconnect to a stream or cancel its run */
+export interface StreamCaller<Auth = unknown> {
+  /** What authentication established for the caller */
+  auth?: Auth;
+  /**
+   * The adapter's `authorizeThread` for this caller: the refusal on the stream's thread, none
+   * to let the caller on
+   */
+  authorizeThread?: (
+    threadId: string
+  ) => Promise<HttpErrorDescription | undefined> | HttpErrorDescription | undefined;
+}
+
+/** What opening a stream gave: the stream, or the refusal to answer with */
+export type StreamOpening<T> = { ok: true; stream: T } | { ok: false; error: HttpErrorDescription };
+
 /** A reconnect: the stream to follow, or the refusal to answer with */
-export type StreamReconnection =
-  { ok: true; stream: StreamFollower } | { ok: false; error: HttpErrorDescription };
+export type StreamReconnection = StreamOpening<StreamFollower>;
+
+/** A cancel: done, or the refusal to answer with */
+export type StreamCancellation = { ok: true } | { ok: false; error: HttpErrorDescription };
 
 /** A streamed agent run or resume on a resumable stream */
-export interface ResumableAgentRunOptions {
-  /** The caller, who alone may reconnect to the stream (anonymous callers to anonymous streams) */
-  userId?: string;
+export interface ResumableAgentRunOptions<Auth = unknown> {
+  /** The caller, who alone may reconnect to the stream or cancel its run */
+  auth?: Auth;
   /** The thread the request named; without one the run gets a new thread */
   threadId?: string;
   /** Stops the run when it aborts, such as a server that shuts down */
@@ -156,11 +240,14 @@ export interface ResumableAgentRunOptions {
   describeError(error: unknown): { message: string; code?: string };
 }
 
-/** The run of a stream was stopped because no client was attached */
-class DetachedTooLong extends Error {
-  constructor(timeoutMs: number) {
-    super(`No client was attached to the stream for ${timeoutMs} ms, so the run was stopped`);
-    this.name = 'DetachedTooLong';
+/** Why a resumable stream stopped its run */
+class StreamStop extends Error {
+  constructor(
+    message: string,
+    readonly code: string
+  ) {
+    super(message);
+    this.name = 'StreamStop';
   }
 }
 
@@ -172,15 +259,31 @@ function logStoreFailure(action: string, error: unknown): void {
   console.error(`[cogitator] The stream replay store failed to ${action}:`, error);
 }
 
-/** The events a store hands a subscription, waiting for whoever reads them */
+/** What a subscription hands its reader: an event, or word that the reader fell behind */
+type Pending = StoredStreamEvent | 'behind';
+
+/**
+ * The events handed to one client, waiting for it to read them. It holds at most `capacity`:
+ * a client that falls further behind loses them and reads the store again.
+ */
 class Subscription implements StreamSubscriber {
-  private readonly entries: StoredStreamEvent[] = [];
+  private entries: StoredStreamEvent[] = [];
+  private lastQueued = 0;
+  private behind = false;
   private ended = false;
   private wake: (() => void) | undefined;
 
+  constructor(private readonly capacity: number) {}
+
   event(entry: StoredStreamEvent): void {
-    if (this.ended) return;
-    this.entries.push(entry);
+    if (this.ended || this.behind || entry.seq <= this.lastQueued) return;
+    if (this.entries.length >= this.capacity) {
+      this.entries = [];
+      this.behind = true;
+    } else {
+      this.entries.push(entry);
+      this.lastQueued = entry.seq;
+    }
     this.notify();
   }
 
@@ -189,11 +292,18 @@ class Subscription implements StreamSubscriber {
     this.notify();
   }
 
-  /** The next event, `undefined` once the stream ended or `signal` aborted */
-  async next(signal: AbortSignal): Promise<StoredStreamEvent | undefined> {
+  /** Takes events again once the reader caught up from the store */
+  resume(): void {
+    this.behind = false;
+    this.lastQueued = 0;
+  }
+
+  /** The next event, `'behind'` once the reader fell behind, `undefined` once it all ended */
+  async next(signal: AbortSignal): Promise<Pending | undefined> {
     for (;;) {
       const entry = this.entries.shift();
       if (entry) return entry;
+      if (this.behind) return 'behind';
       if (this.ended || signal.aborted) return undefined;
       await new Promise<void>((resolve) => {
         const abort = () => resolve();
@@ -231,39 +341,37 @@ class Follower implements StreamFollower {
     if (this.read) throw new Error(`The frames of stream '${this.streamId}' were already read`);
     this.read = true;
     try {
-      if (signal.aborted) return;
       let last = this.afterSeq;
-      const replay = await this.store.read(this.streamId, last);
-      if (!replay) return;
-      if (replay.gap) {
-        yield this.gap();
-        return;
-      }
-      let backlog = replay.events;
-      let finished = replay.finished;
+      let batch = await this.store.read(this.streamId, last);
       for (;;) {
-        for (const entry of backlog) {
+        if (signal.aborted || !batch) return;
+        if (batch.gap) {
+          yield this.gap();
+          return;
+        }
+        for (const entry of batch.events) {
           if (signal.aborted) return;
           if (entry.seq <= last) continue;
+          if (entry.seq !== last + 1) {
+            yield this.gap();
+            return;
+          }
           last = entry.seq;
           yield { id: formatStreamEventId(this.streamId, entry.seq), event: entry.event };
           if (isTerminal(entry.event)) return;
         }
-        if (finished) return;
-        const live = await this.subscription.next(signal);
-        if (!live) return;
-        if (live.seq <= last + 1) {
-          backlog = [live];
-          continue;
+        if (batch.finished) return;
+        const pending = await this.subscription.next(signal);
+        if (pending === undefined) return;
+        if (pending === 'behind') {
+          this.subscription.resume();
+          batch = await this.store.read(this.streamId, last);
+        } else if (pending.seq <= last + 1) {
+          batch = { events: [pending], gap: false, finished: false };
+        } else {
+          const missed = await this.store.read(this.streamId, last);
+          batch = missed && { ...missed, events: [...missed.events, pending] };
         }
-        const missed = await this.store.read(this.streamId, last);
-        if (!missed) return;
-        if (missed.gap) {
-          yield this.gap();
-          return;
-        }
-        backlog = [...missed.events, live];
-        finished = missed.finished;
       }
     } finally {
       await this.close();
@@ -299,6 +407,9 @@ class Producer implements ResumableStream {
   private attached = 0;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private first: StreamFollower | undefined;
+  /** The subscriptions of this process, handed every event at once, whatever the store does */
+  private readonly local = new Set<Subscription>();
+  private stopWatchingCancel: (() => Promise<void>) | undefined;
 
   constructor(
     private readonly store: StreamReplayStore,
@@ -306,14 +417,19 @@ class Producer implements ResumableStream {
     readonly threadId: string,
     private readonly detachedTimeoutMs: number,
     private readonly onEnd: () => void,
-    signal: AbortSignal | undefined
+    signals: readonly AbortSignal[]
   ) {
-    this.signal = signal ? AbortSignal.any([this.stopper.signal, signal]) : this.stopper.signal;
+    this.signal = AbortSignal.any([this.stopper.signal, ...signals]);
   }
 
   /** Hands the producer its first client, which it serves with `frames` */
   follow(first: StreamFollower): void {
     this.first = first;
+  }
+
+  /** Lets the producer stop listening for cancels once the stream ends */
+  watchCancel(stop: () => Promise<void>): void {
+    this.stopWatchingCancel = stop;
   }
 
   frames(signal: AbortSignal): AsyncGenerator<StreamFrame, void, undefined> {
@@ -324,11 +440,17 @@ class Producer implements ResumableStream {
   emit(event: StreamEvent): void {
     if (this.ended) return;
     const entry = { seq: ++this.seq, event };
+    for (const subscription of this.local) subscription.event(entry);
     this.kept = this.kept
       .then(() => this.store.append(this.streamId, entry))
       .catch((error: unknown) => {
         logStoreFailure('keep an event', error);
-        this.stop(new Error('The stream replay store failed to keep an event of the run'));
+        this.stop(
+          new StreamStop(
+            'The stream replay store failed to keep an event of the run, so the run was stopped',
+            STREAM_ABORTED
+          )
+        );
       });
   }
 
@@ -337,21 +459,28 @@ class Producer implements ResumableStream {
     return this.ended;
   }
 
-  /** What the run was stopped for, when this stream stopped it */
-  stopReason(): string {
+  stopReason(): { message: string; code: string } {
     const reason: unknown = this.signal.reason;
-    return reason instanceof DetachedTooLong
-      ? reason.message
-      : 'The run was stopped before it finished';
+    return reason instanceof StreamStop
+      ? { message: reason.message, code: reason.code }
+      : { message: 'The run was stopped before it finished', code: STREAM_ABORTED };
   }
 
-  attach(): void {
+  /** Stops the run at its caller's request */
+  cancel(): void {
+    this.stop(new StreamStop('The run was cancelled', STREAM_CANCELLED));
+  }
+
+  /** Counts a client of this process, `subscription` getting every event at once */
+  attach(subscription: Subscription): void {
+    this.local.add(subscription);
     this.attached++;
     if (this.timer !== undefined) clearTimeout(this.timer);
     this.timer = undefined;
   }
 
-  detach(): void {
+  detach(subscription: Subscription): void {
+    this.local.delete(subscription);
     this.attached--;
     if (this.attached === 0 && !this.ended) this.armDetachedTimer();
   }
@@ -364,12 +493,17 @@ class Producer implements ResumableStream {
       await this.store.finish(this.streamId);
     } catch (error) {
       logStoreFailure('finish a stream', error);
-    } finally {
-      this.onEnd();
     }
+    for (const subscription of this.local) subscription.end();
+    try {
+      await this.stopWatchingCancel?.();
+    } catch (error) {
+      logStoreFailure('stop listening for cancels', error);
+    }
+    this.onEnd();
   }
 
-  private stop(reason: Error): void {
+  private stop(reason: StreamStop): void {
     if (!this.stopper.signal.aborted) this.stopper.abort(reason);
   }
 
@@ -400,7 +534,12 @@ class Producer implements ResumableStream {
       return;
     }
     if (this.ended || this.attached > 0) return;
-    this.stop(new DetachedTooLong(this.detachedTimeoutMs));
+    this.stop(
+      new StreamStop(
+        `No client was attached to the stream for ${this.detachedTimeoutMs} ms, so the run was stopped`,
+        STREAM_ABORTED
+      )
+    );
   }
 }
 
@@ -417,35 +556,44 @@ function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
  * the store. The client that started the run is its first follower. When it leaves, the run
  * goes on: a client that reconnects with the id of the last event it got
  * ({@link reconnect}) replays the events after it, then follows the live ones until `finish`
- * or `error`. Several clients may follow a stream at once. A run nobody follows for
- * `detachedTimeoutMs` is stopped.
+ * or `error`. Several clients may follow a stream at once. A stream is bound to the caller who
+ * started it ({@link ResumableStreamOptions.owner}), and only that caller may reconnect to it
+ * or {@link cancel} its run. A run nobody follows for `detachedTimeoutMs` is stopped.
  *
  * Adapters wire the transport only: {@link startAgentRun} for a new run or resume,
- * {@link reconnect} for a request with `Last-Event-ID`, then they write each frame of
- * `frames()` with its id.
+ * {@link reconnect} for a request with `Last-Event-ID`, {@link cancel} for the cancel route,
+ * then they write each frame of `frames()` with its id.
  */
-export class ResumableStreams {
+export class ResumableStreams<Auth = unknown> {
   readonly store: StreamReplayStore;
   readonly detachedTimeoutMs: number;
+  private readonly maxEvents: number;
+  private readonly owner: (
+    auth: Auth | undefined
+  ) => string | undefined | Promise<string | undefined>;
   private readonly producers = new Map<string, Producer>();
+  private readonly shutdown = new AbortController();
 
   /**
    * The resumable streams an adapter option asks for: none for `false` or no option, the
    * defaults for `true`
    */
-  static from(option: boolean | ResumableStreamOptions | undefined): ResumableStreams | undefined {
+  static from<Auth = unknown>(
+    option: boolean | ResumableStreamOptions<Auth> | undefined
+  ): ResumableStreams<Auth> | undefined {
     if (!option) return undefined;
-    return new ResumableStreams(option === true ? {} : option);
+    return new ResumableStreams<Auth>(option === true ? {} : option);
   }
 
-  /** @throws RangeError for a limit that is not a positive whole number, or limits next to a `store` */
-  constructor(options: ResumableStreamOptions = {}) {
+  /** @throws RangeError for a limit that is not a positive whole number, or store limits next to a `store` */
+  constructor(options: ResumableStreamOptions<Auth> = {}) {
     const { store, maxEvents, retentionMs, maxStreams } = options;
-    if (store && (maxEvents ?? retentionMs ?? maxStreams) !== undefined) {
+    if (store && (retentionMs ?? maxStreams) !== undefined) {
       throw new RangeError(
-        'maxEvents, retentionMs and maxStreams set up the in-memory store: give them to your own store instead'
+        'retentionMs and maxStreams set up the in-memory store: give them to your own store instead'
       );
     }
+    this.maxEvents = positiveLimit('maxEvents', maxEvents, DEFAULT_STREAM_MAX_EVENTS);
     this.store = store ?? new InMemoryStreamReplayStore({ maxEvents, retentionMs, maxStreams });
     this.detachedTimeoutMs = positiveLimit(
       'detachedTimeoutMs',
@@ -455,55 +603,73 @@ export class ResumableStreams {
     if (this.detachedTimeoutMs > MAX_TIMER_MS) {
       throw new RangeError(`detachedTimeoutMs must be at most ${MAX_TIMER_MS} ms`);
     }
+    this.owner = options.owner ?? defaultStreamOwner;
+    const { until } = options;
+    if (until?.aborted) this.close();
+    else until?.addEventListener('abort', () => this.close(), { once: true });
+  }
+
+  /** The key a stream of `auth` is bound to */
+  ownerOf(auth: Auth | undefined): Promise<string | undefined> {
+    return Promise.resolve(this.owner(auth));
   }
 
   /**
    * Opens a stream with a new random id, its first client attached: read `frames()` to serve
-   * that client. `signal` stops the run too, besides the detached timeout.
+   * that client. `signal` stops the run too, besides the detached timeout, a cancel and `until`.
+   * `503 STREAM_LIMIT_REACHED` when the store has no room for it.
    */
-  async open(owner: StreamOwner & { signal?: AbortSignal }): Promise<ResumableStream> {
+  async open(
+    owner: StreamOwner & { signal?: AbortSignal }
+  ): Promise<StreamOpening<ResumableStream>> {
     const streamId = `stream_${globalThis.crypto.randomUUID()}`;
-    await this.store.create({
+    const created = await this.store.create({
       id: streamId,
-      ...(owner.userId !== undefined && { userId: owner.userId }),
+      ...(owner.owner !== undefined && { owner: owner.owner }),
       threadId: owner.threadId,
       createdAt: Date.now(),
     });
+    if (!created) return { ok: false, error: streamLimitReached() };
     const producer = new Producer(
       this.store,
       streamId,
       owner.threadId,
       this.detachedTimeoutMs,
       () => this.producers.delete(streamId),
-      owner.signal
+      [this.shutdown.signal, ...(owner.signal ? [owner.signal] : [])]
     );
     this.producers.set(streamId, producer);
-    const subscription = new Subscription();
+    const subscription = new Subscription(this.maxEvents);
     const unsubscribe = await this.store.subscribe(streamId, subscription);
     if (!unsubscribe) throw new Error(`The stream replay store lost stream '${streamId}'`);
-    producer.attach();
+    const stopWatching = await this.store.onCancel(streamId, () => producer.cancel());
+    if (stopWatching) producer.watchCancel(stopWatching);
+    producer.attach(subscription);
     producer.follow(
       new Follower(this.store, streamId, owner.threadId, 0, subscription, unsubscribe, () =>
-        producer.detach()
+        producer.detach(subscription)
       )
     );
-    return producer;
+    return { ok: true, stream: producer };
   }
 
   /**
    * Starts a streamed agent run or resume on a new stream, and returns it for the client that
    * asked. The run belongs to the stream from then on: it ends with `finish`, or `error` when
-   * it fails, also when it was stopped (`STREAM_ABORTED`).
+   * it fails, also when it was stopped (`STREAM_ABORTED`, `STREAM_CANCELLED`).
    *
    * @throws what the store threw when it could not create the stream, before anything was sent
    */
-  async startAgentRun(options: ResumableAgentRunOptions): Promise<StreamFollower> {
-    const stream = await this.open({
-      userId: options.userId,
+  async startAgentRun(
+    options: ResumableAgentRunOptions<Auth>
+  ): Promise<StreamOpening<StreamFollower>> {
+    const opened = await this.open({
+      owner: await this.ownerOf(options.auth),
       threadId: options.threadId ?? createThreadId(),
       signal: options.signal,
     });
-    const producer = this.producers.get(stream.streamId);
+    if (!opened.ok) return opened;
+    const stream = opened.stream;
     const session = new AgentStreamSession((event) => stream.emit(event), {
       threadId: stream.threadId,
     });
@@ -513,7 +679,8 @@ export class ResumableStreams {
         session.complete(await options.execute(session, stream.signal));
       } catch (error) {
         if (stream.signal.aborted) {
-          session.fail(producer?.stopReason() ?? 'The run was stopped', STREAM_ABORTED);
+          const reason = stream.stopReason();
+          session.fail(reason.message, reason.code);
         } else {
           const described = options.describeError(error);
           session.fail(described.message, described.code);
@@ -522,42 +689,74 @@ export class ResumableStreams {
         await stream.end();
       }
     })();
-    return stream;
+    return { ok: true, stream };
   }
 
   /**
    * Attaches a client to the stream of `lastEventId`, after that event: `400 INVALID_INPUT`
    * for an id that is not `<streamId>:<seq>`, `404 STREAM_NOT_FOUND` for a stream the store
-   * does not keep, one another user started (or a user's, for an anonymous caller) or an
-   * event it never sent.
+   * does not keep, one another caller started or an event it never sent, and the refusal of
+   * `authorizeThread` on the stream's thread.
    */
-  async reconnect(lastEventId: string, userId: string | undefined): Promise<StreamReconnection> {
+  async reconnect(
+    lastEventId: string,
+    caller: StreamCaller<Auth> = {}
+  ): Promise<StreamReconnection> {
     const id = parseStreamEventId(lastEventId);
     if (!id) return { ok: false, error: invalidLastEventId() };
-    const subscription = new Subscription();
+    const admitted = await this.admit(id.streamId, caller);
+    if (!admitted.ok) return admitted;
+    if (id.seq > admitted.record.lastSeq) return { ok: false, error: streamNotFound() };
+    const subscription = new Subscription(this.maxEvents);
     const unsubscribe = await this.store.subscribe(id.streamId, subscription);
     if (!unsubscribe) return { ok: false, error: streamNotFound() };
-    const record = await this.store.get(id.streamId).catch(async (error: unknown) => {
-      await unsubscribe();
-      throw error;
-    });
-    if (!record || record.userId !== userId || id.seq > record.lastSeq) {
-      await unsubscribe();
-      return { ok: false, error: streamNotFound() };
-    }
     const producer = this.producers.get(id.streamId);
-    producer?.attach();
+    producer?.attach(subscription);
     return {
       ok: true,
       stream: new Follower(
         this.store,
         id.streamId,
-        record.threadId,
+        admitted.record.threadId,
         id.seq,
         subscription,
         unsubscribe,
-        () => producer?.detach()
+        () => producer?.detach(subscription)
       ),
     };
+  }
+
+  /**
+   * Stops the run of a stream at its caller's request, on whatever process runs it: its stream
+   * ends with an `error` event `STREAM_CANCELLED`. The same refusals as {@link reconnect}, and a
+   * stream that already finished is left as it is.
+   */
+  async cancel(streamId: string, caller: StreamCaller<Auth> = {}): Promise<StreamCancellation> {
+    if (!isStreamId(streamId)) return { ok: false, error: invalidStreamId() };
+    const admitted = await this.admit(streamId, caller);
+    if (!admitted.ok) return admitted;
+    await this.store.cancel(streamId);
+    return { ok: true };
+  }
+
+  /** Stops every run of a resumable stream this process runs, as `until` does */
+  close(): void {
+    if (this.shutdown.signal.aborted) return;
+    this.shutdown.abort(
+      new StreamStop('The server stopped the run as it shut down', STREAM_ABORTED)
+    );
+  }
+
+  /** The stream of the caller, after the owner check and `authorizeThread` */
+  private async admit(
+    streamId: string,
+    caller: StreamCaller<Auth>
+  ): Promise<{ ok: true; record: StreamRecord } | { ok: false; error: HttpErrorDescription }> {
+    const record = await this.store.get(streamId);
+    if (!record || record.owner !== (await this.ownerOf(caller.auth))) {
+      return { ok: false, error: streamNotFound() };
+    }
+    const refusal = await caller.authorizeThread?.(record.threadId);
+    return refusal ? { ok: false, error: refusal } : { ok: true, record };
   }
 }

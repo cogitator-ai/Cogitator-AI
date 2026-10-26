@@ -3,7 +3,6 @@ import type { ChatHandlerOptions, ChatInput, ChatMessage } from '../types.js';
 import {
   isNonBlankString,
   MULTITASK_STRATEGIES,
-  ResumableStreams,
   parseRunRequest,
   runRequestRunOptions,
   type ContextPolicy,
@@ -20,7 +19,7 @@ import {
   jsonError,
   readJsonBody,
 } from './http.js';
-import { reconnectStream, streamAgentRun } from './stream-run.js';
+import { answerStreamRequest, resumableStreamsOf, streamAgentRun } from './stream-run.js';
 
 const CHAT_ROLES: ReadonlySet<string> = new Set(['user', 'assistant', 'system']);
 
@@ -106,9 +105,14 @@ export function createChatHandler(
   agent: Agent,
   options?: ChatHandlerOptions
 ) {
-  const streams = ResumableStreams.from(options?.resumableStreams);
+  const streams = resumableStreamsOf(options?.resumableStreams, Boolean(options?.beforeRun));
 
   return async (req: Request): Promise<Response> => {
+    if (streams) {
+      const answered = await answerStreamRequest(req, streams, options, options?.sseHeartbeatMs);
+      if (answered) return answered;
+    }
+
     if (exceedsDeclaredSize(req)) {
       return jsonError('Payload too large', 413, 'PAYLOAD_TOO_LARGE');
     }
@@ -149,11 +153,6 @@ export function createChatHandler(
       runContext = { ...(await depsOf(req, options)), ...runContext };
     } catch (err) {
       return runErrorResponse(err);
-    }
-
-    if (streams) {
-      const reconnected = await reconnectStream(req, streams, runContext, options?.sseHeartbeatMs);
-      if (reconnected) return reconnected;
     }
 
     return streamAgentRun({

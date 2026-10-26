@@ -45,13 +45,21 @@ const mocks = vi.hoisted(() => {
     }
   }
 
-  return { workerInstances, MockWorker, MockRedis, UnrecoverableError };
+  class DelayedError extends Error {
+    constructor() {
+      super('delayed');
+      this.name = 'DelayedError';
+    }
+  }
+
+  return { workerInstances, MockWorker, MockRedis, UnrecoverableError, DelayedError };
 });
 
 vi.mock('bullmq', () => ({
   Worker: mocks.MockWorker,
   Queue: class {},
   UnrecoverableError: mocks.UnrecoverableError,
+  DelayedError: mocks.DelayedError,
 }));
 vi.mock('ioredis', () => ({ Redis: mocks.MockRedis, Cluster: mocks.MockRedis }));
 
@@ -208,5 +216,51 @@ describe('durable agent jobs', () => {
     const [kept] = await store.list();
     expect(kept).toMatchObject({ runId: durableJobRunId('j3') });
     expect(kept.lease).toBeUndefined();
+  });
+
+  it('wait for a run another worker still holds instead of using up their attempts', async () => {
+    let now = 0;
+    const store = new InMemoryDurableRunStore({ now: () => now });
+    const holding = new Cogitator({
+      llm: { backends: { mock: shippingBackend() } },
+      durable: { store, owner: 'worker-1', enabled: false },
+    });
+    const started = new Promise<void>((resolve) => labelStarted.mockImplementation(resolve));
+    processAgentJob(
+      job('j4'),
+      { cogitator: holding, tools: [pack, label] },
+      { durable: true }
+    ).catch(() => undefined);
+    await started;
+    now = 1_000;
+
+    const pool = new WorkerPool({
+      redis: { host: 'localhost', port: 6379 },
+      cogitator: new Cogitator({
+        llm: { backends: { mock: shippingBackend() } },
+        durable: { store, owner: 'worker-2', enabled: false },
+      }),
+      tools: [pack, label],
+      durable: true,
+    });
+    await pool.start();
+    const moveToDelayed = vi.fn(async () => undefined);
+    const attempt = mocks.workerInstances[0].processor(
+      {
+        id: 'j4',
+        data: job('j4'),
+        attemptsMade: 1,
+        opts: { attempts: 3 },
+        moveToDelayed,
+      } as unknown as Job<JobPayload>,
+      'token-1'
+    );
+
+    await expect(attempt).rejects.toThrow('delayed');
+    expect(moveToDelayed).toHaveBeenCalledWith(expect.any(Number), 'token-1');
+    const [until] = moveToDelayed.mock.calls[0] as unknown as [number];
+    expect(until).toBeGreaterThan(Date.now());
+    expect(packImpl).toHaveBeenCalledTimes(1);
+    await pool.forceStop();
   });
 });

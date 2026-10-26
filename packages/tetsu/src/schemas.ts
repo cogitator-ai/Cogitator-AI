@@ -14,7 +14,6 @@ import {
 } from '@cogitator-ai/server-shared';
 import type {
   ContextPolicy,
-  ResumableStreamOptions,
   RunLimits,
   ThreadMessageRole,
   ThreadPageQuery,
@@ -25,6 +24,7 @@ const JsonObject = z.record(z.string(), z.unknown());
 
 export const NameParams = z.object({ name: z.string().min(1) });
 export const ThreadParams = z.object({ id: z.string().min(1) });
+export const StreamParams = z.object({ name: z.string().min(1), streamId: z.string().min(1) });
 
 const ThreadPageFields = z.object({
   limit: z
@@ -457,8 +457,8 @@ export interface ClientTrust {
   limits?: RunLimits;
   /** A workflow run may ask for checkpoints only where the server keeps them */
   workflowCheckpoints?: CheckpointStore;
-  /** A stream route may name a stream to reconnect to only where the server keeps them */
-  resumableStreams?: boolean | ResumableStreamOptions;
+  /** A stream route may name a stream to reconnect to only where the server keeps them (truthy) */
+  resumableStreams?: unknown;
 }
 
 /** The id of the last event a client got, to reconnect after it: `<streamId>:<seq>` */

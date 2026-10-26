@@ -1,5 +1,6 @@
 import type {
   DurableRunFilter,
+  DurableRunHolder,
   DurableRunLease,
   DurableRunMark,
   DurableRunRecord,
@@ -13,6 +14,9 @@ import type {
 
 /** The part of a durable record a store keeps apart from its base, journal and lease */
 type StoredRecord = Omit<DurableRunRecord, 'base' | 'journal' | 'lease'>;
+
+/** A lease as the in-process stores keep it */
+type HeldLease = Required<DurableRunLease>;
 
 function summaryOf(record: StoredRecord, lease: DurableRunLease | undefined): DurableRunSummary {
   return {
@@ -39,8 +43,15 @@ function matches(summary: DurableRunSummary, filter: DurableRunFilter | undefine
 }
 
 function storedPart(record: DurableRunRecord): StoredRecord {
-  const { base: _base, journal: _journal, lease: _lease, ...stored } = record;
+  const { base: _base, baseFrom: _baseFrom, journal: _journal, lease: _lease, ...stored } = record;
   return stored;
+}
+
+/** The base a save leaves: the one kept, replaced by `record.base` or added to from `baseFrom` */
+function nextBase(kept: readonly Message[], record: DurableRunRecord): Message[] {
+  if (!record.base) return [...kept];
+  if (record.baseFrom === undefined) return [...record.base];
+  return [...kept.slice(0, record.baseFrom), ...record.base];
 }
 
 function positiveMs(ttlMs: number): number {
@@ -50,7 +61,20 @@ function positiveMs(ttlMs: number): number {
   return Math.ceil(ttlMs);
 }
 
-interface MemoryEntryOfRun {
+/** Whether `lease`, live at `now`, lets `holder` take the run */
+function mayTake(
+  lease: HeldLease | undefined,
+  holder: DurableRunHolder,
+  replacing: string | undefined
+): boolean {
+  return !lease || lease.instance === holder.instance || lease.instance === replacing;
+}
+
+function isHeldBy(lease: HeldLease | undefined, holder: DurableRunHolder): boolean {
+  return lease?.instance === holder.instance && lease.owner === holder.owner;
+}
+
+interface KeptRun {
   record: StoredRecord;
   base: Message[];
   journal: DurableRunMark[];
@@ -62,8 +86,8 @@ interface MemoryEntryOfRun {
  * atomic, so runtimes sharing one store never hold a run at once.
  */
 export class InMemoryDurableRunStore implements DurableRunStore {
-  private readonly runs = new Map<string, MemoryEntryOfRun>();
-  private readonly leases = new Map<string, Required<DurableRunLease>>();
+  private readonly runs = new Map<string, KeptRun>();
+  private readonly leases = new Map<string, HeldLease>();
   private readonly now: () => number;
 
   /** @param options.now the clock leases run out by, `Date.now` by default */
@@ -71,39 +95,50 @@ export class InMemoryDurableRunStore implements DurableRunStore {
     this.now = options.now ?? Date.now;
   }
 
-  async acquire(ref: DurableRunRef, owner: string, ttlMs: number): Promise<boolean> {
+  async acquire(
+    ref: DurableRunRef,
+    holder: DurableRunHolder,
+    ttlMs: number,
+    options: { replacing?: string } = {}
+  ): Promise<boolean> {
     const ttl = positiveMs(ttlMs);
-    const held = this.liveLease(ref.runId);
-    if (held && held.owner !== owner) return false;
-    this.leases.set(ref.runId, { owner, expiresAt: this.now() + ttl });
+    if (!mayTake(this.liveLease(ref.runId), holder, options.replacing)) return false;
+    this.leases.set(ref.runId, { ...holder, expiresAt: this.now() + ttl });
     return true;
   }
 
-  async renew(ref: DurableRunRef, owner: string, ttlMs: number): Promise<boolean> {
+  async renew(ref: DurableRunRef, holder: DurableRunHolder, ttlMs: number): Promise<boolean> {
     const ttl = positiveMs(ttlMs);
     const held = this.liveLease(ref.runId);
-    if (held?.owner !== owner) return false;
+    if (!held || !isHeldBy(held, holder)) return false;
     held.expiresAt = this.now() + ttl;
     return true;
   }
 
-  async release(ref: DurableRunRef, owner: string): Promise<void> {
-    if (this.leases.get(ref.runId)?.owner === owner) this.leases.delete(ref.runId);
+  async release(ref: DurableRunRef, holder: DurableRunHolder): Promise<void> {
+    if (isHeldBy(this.leases.get(ref.runId), holder)) this.leases.delete(ref.runId);
   }
 
-  async save(record: DurableRunRecord): Promise<void> {
+  async save(record: DurableRunRecord, holder: DurableRunHolder): Promise<boolean> {
+    if (!isHeldBy(this.liveLease(record.runId), holder)) return false;
     const kept = this.runs.get(record.runId);
     this.runs.set(record.runId, {
       record: structuredClone(storedPart(record)),
-      base: record.base ? structuredClone(record.base) : (kept?.base ?? []),
+      base: structuredClone(nextBase(kept?.base ?? [], record)),
       journal: structuredClone(record.journal),
     });
+    return true;
   }
 
-  async append(ref: DurableRunRef, marks: readonly DurableRunMark[]): Promise<void> {
+  async append(
+    ref: DurableRunRef,
+    marks: readonly DurableRunMark[],
+    holder: DurableRunHolder
+  ): Promise<boolean> {
     const kept = this.runs.get(ref.runId);
-    if (!kept) return;
+    if (!kept || !isHeldBy(this.liveLease(ref.runId), holder)) return false;
     kept.journal.push(...structuredClone([...marks]));
+    return true;
   }
 
   async load(ref: DurableRunRef): Promise<DurableRunRecord | null> {
@@ -127,12 +162,14 @@ export class InMemoryDurableRunStore implements DurableRunStore {
       .filter((summary) => matches(summary, filter));
   }
 
-  async delete(ref: DurableRunRef): Promise<void> {
+  async delete(ref: DurableRunRef, holder?: DurableRunHolder): Promise<boolean> {
+    if (holder && !isHeldBy(this.liveLease(ref.runId), holder)) return false;
     this.runs.delete(ref.runId);
     this.leases.delete(ref.runId);
+    return true;
   }
 
-  private liveLease(runId: string): Required<DurableRunLease> | undefined {
+  private liveLease(runId: string): HeldLease | undefined {
     const lease = this.leases.get(runId);
     if (!lease) return undefined;
     if (lease.expiresAt > this.now()) return lease;
@@ -142,38 +179,67 @@ export class InMemoryDurableRunStore implements DurableRunStore {
 }
 
 const FLAG = 'cogitatorDurableRuns';
-const RECORD = 'durableRun.';
-const BASE = 'durableRunBase.';
-const JOURNAL = 'durableRunJournal.';
-const LEASE = 'durableRunLease.';
+const RUNS = 'durableRuns';
 const THREAD_PAGE = 500;
 
-function isRecord(value: unknown): value is StoredRecord {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as { runId?: unknown }).runId === 'string' &&
-    typeof (value as { checkpoint?: unknown }).checkpoint === 'object'
-  );
+/**
+ * A durable run as a thread's metadata keeps it, under `durableRuns` by run id. A run that took
+ * its lease before its first checkpoint has no `kept` yet
+ */
+interface ThreadEntry {
+  kept?: KeptRun;
+  lease?: HeldLease;
 }
 
-function isLease(value: unknown): value is Required<DurableRunLease> {
+function isLease(value: unknown): value is HeldLease {
   return (
     typeof value === 'object' &&
     value !== null &&
     typeof (value as { owner?: unknown }).owner === 'string' &&
+    typeof (value as { instance?: unknown }).instance === 'string' &&
     typeof (value as { expiresAt?: unknown }).expiresAt === 'number'
   );
 }
 
+function isKept(value: unknown): value is KeptRun {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = (value as { record?: unknown }).record;
+  return (
+    typeof record === 'object' &&
+    record !== null &&
+    typeof (record as { runId?: unknown }).runId === 'string' &&
+    Array.isArray((value as { base?: unknown }).base) &&
+    Array.isArray((value as { journal?: unknown }).journal)
+  );
+}
+
+function entriesOf(thread: Thread | null): Map<string, ThreadEntry> {
+  const entries = new Map<string, ThreadEntry>();
+  const runs = thread?.metadata[RUNS];
+  if (typeof runs !== 'object' || runs === null || Array.isArray(runs)) return entries;
+  for (const [runId, value] of Object.entries(runs as Record<string, unknown>)) {
+    if (typeof value !== 'object' || value === null) continue;
+    const kept: unknown = (value as { kept?: unknown }).kept;
+    const lease: unknown = (value as { lease?: unknown }).lease;
+    entries.set(runId, {
+      ...(isKept(kept) && { kept }),
+      ...(isLease(lease) && { lease }),
+    });
+  }
+  return entries;
+}
+
 /**
- * Durable runs kept in the metadata of their threads, so they last as long as the memory
- * adapter's threads do (Redis, Postgres, SQLite, MongoDB). A memory adapter cannot lock, so its
- * leases are checked and written in two steps: let one process at a time run and recover these
- * runs, or use a store with atomic leases (`RedisDurableRunStore`) for several.
+ * Durable runs kept in the metadata of their threads (one `durableRuns` map per thread), so they
+ * last as long as the memory adapter's threads do (Redis, Postgres, SQLite, MongoDB). A memory
+ * adapter cannot lock, so the writes of one store go one after another per thread and its leases
+ * are checked and written in two steps: let one process at a time run and recover these runs, or
+ * use a store with atomic leases (`RedisDurableRunStore`) for several. A finished run leaves
+ * nothing behind in the thread.
  */
 export class ThreadDurableRunStore implements DurableRunStore {
   private readonly now: () => number;
+  private readonly writes = new Map<string, Promise<unknown>>();
 
   constructor(
     private readonly memory: MemoryAdapter,
@@ -182,59 +248,87 @@ export class ThreadDurableRunStore implements DurableRunStore {
     this.now = options.now ?? Date.now;
   }
 
-  async acquire(ref: DurableRunRef, owner: string, ttlMs: number): Promise<boolean> {
+  async acquire(
+    ref: DurableRunRef,
+    holder: DurableRunHolder,
+    ttlMs: number,
+    options: { replacing?: string } = {}
+  ): Promise<boolean> {
     const ttl = positiveMs(ttlMs);
-    const thread = await this.thread(ref.threadId);
-    const held = thread?.metadata[LEASE + ref.runId];
-    if (isLease(held) && held.owner !== owner && held.expiresAt > this.now()) return false;
-    await this.write(ref, thread, { [LEASE + ref.runId]: { owner, expiresAt: this.now() + ttl } });
-    const after = await this.thread(ref.threadId);
-    const kept = after?.metadata[LEASE + ref.runId];
-    return isLease(kept) && kept.owner === owner;
-  }
-
-  async renew(ref: DurableRunRef, owner: string, ttlMs: number): Promise<boolean> {
-    const ttl = positiveMs(ttlMs);
-    const thread = await this.thread(ref.threadId);
-    const held = thread?.metadata[LEASE + ref.runId];
-    if (!thread || !isLease(held) || held.owner !== owner || held.expiresAt <= this.now()) {
-      return false;
-    }
-    await this.update(ref.threadId, {
-      [LEASE + ref.runId]: { owner, expiresAt: this.now() + ttl },
-    });
-    return true;
-  }
-
-  async release(ref: DurableRunRef, owner: string): Promise<void> {
-    const thread = await this.thread(ref.threadId);
-    const held = thread?.metadata[LEASE + ref.runId];
-    if (!thread || !isLease(held) || held.owner !== owner) return;
-    await this.update(ref.threadId, { [LEASE + ref.runId]: null });
-  }
-
-  async save(record: DurableRunRecord): Promise<void> {
-    const thread = await this.thread(record.threadId);
-    await this.write(record, thread, {
-      [FLAG]: true,
-      [RECORD + record.runId]: storedPart(record),
-      [JOURNAL + record.runId]: record.journal,
-      ...(record.base && { [BASE + record.runId]: record.base }),
+    return this.change(ref, (entries) => {
+      const entry = entries.get(ref.runId) ?? {};
+      if (!mayTake(this.live(entry.lease), holder, options.replacing)) return false;
+      entries.set(ref.runId, { ...entry, lease: { ...holder, expiresAt: this.now() + ttl } });
+      return true;
     });
   }
 
-  async append(ref: DurableRunRef, marks: readonly DurableRunMark[]): Promise<void> {
-    const thread = await this.thread(ref.threadId);
-    if (!thread || !isRecord(thread.metadata[RECORD + ref.runId])) return;
-    const journal = thread.metadata[JOURNAL + ref.runId];
-    await this.update(ref.threadId, {
-      [JOURNAL + ref.runId]: [...(Array.isArray(journal) ? journal : []), ...marks],
+  async renew(ref: DurableRunRef, holder: DurableRunHolder, ttlMs: number): Promise<boolean> {
+    const ttl = positiveMs(ttlMs);
+    return this.change(ref, (entries) => {
+      const entry = entries.get(ref.runId);
+      if (!entry || !isHeldBy(this.live(entry.lease), holder)) return false;
+      entries.set(ref.runId, { ...entry, lease: { ...holder, expiresAt: this.now() + ttl } });
+      return true;
+    });
+  }
+
+  async release(ref: DurableRunRef, holder: DurableRunHolder): Promise<void> {
+    await this.change(ref, (entries) => {
+      const entry = entries.get(ref.runId);
+      if (!entry || !isHeldBy(entry.lease, holder)) return false;
+      if (entry.kept) entries.set(ref.runId, { kept: entry.kept });
+      else entries.delete(ref.runId);
+      return true;
+    });
+  }
+
+  async save(record: DurableRunRecord, holder: DurableRunHolder): Promise<boolean> {
+    return this.change(
+      record,
+      (entries) => {
+        const entry = entries.get(record.runId);
+        if (!entry || !isHeldBy(this.live(entry.lease), holder)) return false;
+        entries.set(record.runId, {
+          ...entry,
+          kept: {
+            record: storedPart(record),
+            base: nextBase(entry.kept?.base ?? [], record),
+            journal: [...record.journal],
+          },
+        });
+        return true;
+      },
+      record
+    );
+  }
+
+  async append(
+    ref: DurableRunRef,
+    marks: readonly DurableRunMark[],
+    holder: DurableRunHolder
+  ): Promise<boolean> {
+    return this.change(ref, (entries) => {
+      const entry = entries.get(ref.runId);
+      if (!entry?.kept || !isHeldBy(this.live(entry.lease), holder)) return false;
+      entries.set(ref.runId, {
+        ...entry,
+        kept: { ...entry.kept, journal: [...entry.kept.journal, ...marks] },
+      });
+      return true;
     });
   }
 
   async load(ref: DurableRunRef): Promise<DurableRunRecord | null> {
-    const thread = await this.thread(ref.threadId);
-    return thread ? this.recordOf(thread, ref.runId) : null;
+    const entry = entriesOf(await this.thread(ref.threadId)).get(ref.runId);
+    if (!entry?.kept) return null;
+    const lease = this.live(entry.lease);
+    return {
+      ...entry.kept.record,
+      base: entry.kept.base,
+      journal: entry.kept.journal,
+      ...(lease && { lease: { ...lease } }),
+    };
   }
 
   async list(filter?: DurableRunFilter): Promise<DurableRunSummary[]> {
@@ -255,56 +349,69 @@ export class ThreadDurableRunStore implements DurableRunStore {
         cursor = page.data.nextCursor;
       } while (cursor !== undefined);
     }
-    const summaries: DurableRunSummary[] = [];
-    for (const thread of threads) {
-      for (const [key, value] of Object.entries(thread.metadata)) {
-        if (!key.startsWith(RECORD) || !isRecord(value)) continue;
-        const summary = summaryOf(value, this.leaseOf(thread, value.runId));
-        if (matches(summary, filter)) summaries.push(summary);
-      }
-    }
-    return summaries;
-  }
-
-  async delete(ref: DurableRunRef): Promise<void> {
-    const thread = await this.thread(ref.threadId);
-    if (!thread) return;
-    await this.update(ref.threadId, {
-      [RECORD + ref.runId]: null,
-      [BASE + ref.runId]: null,
-      [JOURNAL + ref.runId]: null,
-      [LEASE + ref.runId]: null,
-    });
-    if (await this.holdsRuns(ref.threadId)) return;
-    await this.update(ref.threadId, { [FLAG]: false });
-    if (await this.holdsRuns(ref.threadId)) await this.update(ref.threadId, { [FLAG]: true });
-  }
-
-  private recordOf(thread: Thread, runId: string): DurableRunRecord | null {
-    const stored = thread.metadata[RECORD + runId];
-    if (!isRecord(stored)) return null;
-    const base = thread.metadata[BASE + runId];
-    const journal = thread.metadata[JOURNAL + runId];
-    const lease = this.leaseOf(thread, runId);
-    return {
-      ...stored,
-      base: Array.isArray(base) ? (base as Message[]) : [],
-      journal: Array.isArray(journal) ? (journal as DurableRunMark[]) : [],
-      ...(lease && { lease }),
-    };
-  }
-
-  private leaseOf(thread: Thread, runId: string): DurableRunLease | undefined {
-    const lease = thread.metadata[LEASE + runId];
-    return isLease(lease) && lease.expiresAt > this.now() ? { ...lease } : undefined;
-  }
-
-  private async holdsRuns(threadId: string): Promise<boolean> {
-    const thread = await this.thread(threadId);
-    if (!thread) return false;
-    return Object.entries(thread.metadata).some(
-      ([key, value]) => key.startsWith(RECORD) && isRecord(value)
+    return threads.flatMap((thread) =>
+      [...entriesOf(thread).values()].flatMap((entry) => {
+        if (!entry.kept) return [];
+        const summary = summaryOf(entry.kept.record, this.live(entry.lease));
+        return matches(summary, filter) ? [summary] : [];
+      })
     );
+  }
+
+  async delete(ref: DurableRunRef, holder?: DurableRunHolder): Promise<boolean> {
+    return this.change(ref, (entries) => {
+      const entry = entries.get(ref.runId);
+      if (!entry) return !holder;
+      if (holder && !isHeldBy(this.live(entry.lease), holder)) return false;
+      entries.delete(ref.runId);
+      return true;
+    });
+  }
+
+  private live(lease: HeldLease | undefined): HeldLease | undefined {
+    return lease && lease.expiresAt > this.now() ? lease : undefined;
+  }
+
+  /**
+   * Changes the `durableRuns` map of the thread of `ref`, after the writes of this store to that
+   * thread before it. `change` edits the map and says whether to write it. Entries of runs that
+   * never saved a checkpoint and whose lease ran out are dropped on the way
+   */
+  private change(
+    ref: DurableRunRef,
+    change: (entries: Map<string, ThreadEntry>) => boolean,
+    creating?: DurableRunRecord
+  ): Promise<boolean> {
+    const before = this.writes.get(ref.threadId) ?? Promise.resolve();
+    const next = before.then(async () => {
+      const thread = await this.thread(ref.threadId);
+      const entries = entriesOf(thread);
+      if (!change(entries)) return false;
+      for (const [runId, entry] of entries) {
+        if (!entry.kept && !this.live(entry.lease)) entries.delete(runId);
+      }
+      if (!thread) {
+        const agentId = creating?.agentId ?? 'cogitator';
+        const created = await this.memory.createThread(
+          agentId,
+          { agentId, ...(creating?.userId !== undefined && { userId: creating.userId }) },
+          ref.threadId
+        );
+        if (!created.success) throw new Error(created.error);
+      }
+      const empty = entries.size === 0;
+      const updated = await this.memory.updateThread(ref.threadId, {
+        [RUNS]: empty ? null : Object.fromEntries(entries),
+        [FLAG]: [...entries.values()].some((entry) => entry.kept !== undefined),
+      });
+      if (!updated.success) throw new Error(updated.error);
+      return true;
+    });
+    this.writes.set(
+      ref.threadId,
+      next.catch(() => undefined)
+    );
+    return next;
   }
 
   private async thread(threadId: string): Promise<Thread | null> {
@@ -312,131 +419,194 @@ export class ThreadDurableRunStore implements DurableRunStore {
     if (!found.success) throw new Error(found.error);
     return found.data;
   }
-
-  private async write(
-    ref: DurableRunRef & { agentId?: string; userId?: string },
-    thread: Thread | null,
-    metadata: Record<string, unknown>
-  ): Promise<void> {
-    if (!thread) {
-      const agentId = ref.agentId ?? 'cogitator';
-      const created = await this.memory.createThread(
-        agentId,
-        { agentId, ...(ref.userId !== undefined && { userId: ref.userId }) },
-        ref.threadId
-      );
-      if (!created.success) throw new Error(created.error);
-    }
-    await this.update(ref.threadId, metadata);
-  }
-
-  private async update(threadId: string, metadata: Record<string, unknown>): Promise<void> {
-    const updated = await this.memory.updateThread(threadId, metadata);
-    if (!updated.success) throw new Error(updated.error);
-  }
 }
 
 /** The Redis commands `RedisDurableRunStore` uses: `@cogitator-ai/redis` clients and ioredis both have them */
 export interface DurableRunRedisClient {
   get(key: string): Promise<string | null>;
-  set(key: string, value: string): Promise<unknown>;
-  del(...keys: string[]): Promise<number>;
   eval(script: string, numKeys: number, ...args: (string | number)[]): Promise<unknown>;
-  zadd(key: string, score: number, member: string): Promise<unknown>;
   zrange(key: string, start: number, stop: number | string): Promise<string[]>;
   zrem(key: string, ...members: string[]): Promise<unknown>;
 }
 
 export interface RedisDurableRunStoreOptions {
   client: DurableRunRedisClient;
-  /** Prefix of every key (default `cogitator:durable-runs`) */
+  /**
+   * Prefix of every key (default `{cogitator}:durable-runs`). The scripts touch several keys at
+   * once, so in Redis Cluster the prefix needs a `{hash tag}` that puts them in one slot
+   */
   keyPrefix?: string;
+  /**
+   * Seconds a run's keys are kept after its last write, for a run nobody recovers or discards.
+   * Default: 7 days, `0` keeps them until they are deleted
+   */
+  ttl?: number;
 }
 
-const ACQUIRE_SCRIPT = `
-local held = redis.call('GET', KEYS[1])
-if held and held ~= ARGV[1] then return 0 end
-redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+/** Default of `RedisDurableRunStoreOptions.ttl`: 7 days */
+const DEFAULT_REDIS_TTL = 7 * 24 * 60 * 60;
+
+const HELD = `
+local function holder(key)
+  local held = redis.call('GET', key)
+  if not held then return nil end
+  return string.match(held, '^([^|]*)|')
+end`;
+
+const ACQUIRE_SCRIPT = `${HELD}
+local held = holder(KEYS[1])
+if held and held ~= ARGV[1] and held ~= ARGV[4] then return 0 end
+redis.call('SET', KEYS[1], ARGV[1] .. '|' .. ARGV[2], 'PX', ARGV[3])
 return 1`;
 
-const RENEW_SCRIPT = `
-if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+const RENEW_SCRIPT = `${HELD}
+if holder(KEYS[1]) ~= ARGV[1] then return 0 end
 redis.call('PEXPIRE', KEYS[1], ARGV[2])
 return 1`;
 
-const RELEASE_SCRIPT = `
-if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('DEL', KEYS[1]) end
+const RELEASE_SCRIPT = `${HELD}
+if holder(KEYS[1]) == ARGV[1] then redis.call('DEL', KEYS[1]) end
 return 1`;
 
 const LEASE_SCRIPT = `
 return { redis.call('GET', KEYS[1]), redis.call('PTTL', KEYS[1]) }`;
 
-const APPEND_SCRIPT = `
-if redis.call('EXISTS', KEYS[2]) == 0 then return 0 end
-redis.call('APPEND', KEYS[1], ARGV[1])
+const SAVE_SCRIPT = `${HELD}
+if holder(KEYS[4]) ~= ARGV[1] then return 0 end
+redis.call('SET', KEYS[1], ARGV[2])
+if ARGV[8] == 'replace' then redis.call('SET', KEYS[2], ARGV[3]) end
+if ARGV[8] == 'append' then
+  if tonumber(ARGV[9]) ~= tonumber(redis.call('GET', KEYS[7]) or '0') then return -1 end
+  redis.call('APPEND', KEYS[2], ARGV[3])
+end
+if ARGV[8] ~= 'keep' then redis.call('SET', KEYS[7], ARGV[10]) end
+if ARGV[4] ~= '' then redis.call('SET', KEYS[3], ARGV[4]) else redis.call('DEL', KEYS[3]) end
+redis.call('ZADD', KEYS[5], ARGV[5], ARGV[6])
+redis.call('ZADD', KEYS[6], ARGV[5], ARGV[6])
+local ttl = tonumber(ARGV[7])
+if ttl > 0 then
+  for _, i in ipairs({ 1, 2, 3, 7 }) do
+    if redis.call('EXISTS', KEYS[i]) == 1 then redis.call('EXPIRE', KEYS[i], ttl) end
+  end
+  redis.call('EXPIRE', KEYS[6], ttl)
+end
+return 1`;
+
+const APPEND_SCRIPT = `${HELD}
+if holder(KEYS[2]) ~= ARGV[1] then return 0 end
+if redis.call('EXISTS', KEYS[3]) == 0 then return 0 end
+redis.call('APPEND', KEYS[1], ARGV[2])
+local ttl = tonumber(ARGV[3])
+if ttl > 0 then redis.call('EXPIRE', KEYS[1], ttl) end
+return 1`;
+
+const DELETE_SCRIPT = `${HELD}
+if ARGV[1] ~= '' and holder(KEYS[4]) ~= ARGV[1] then return 0 end
+redis.call('DEL', KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[7])
+redis.call('ZREM', KEYS[5], ARGV[2])
+redis.call('ZREM', KEYS[6], ARGV[2])
 return 1`;
 
 /**
- * Durable runs in Redis, with atomic leases (`SET ... PX` in a script, by Redis's own clock), so
- * any number of processes may share it: each run as JSON under its id, its journal as JSON lines,
- * and a sorted set of the run ids to list them.
+ * Durable runs in Redis, with atomic leases (by Redis's own clock) and fenced writes: a
+ * checkpoint, its base, its journal and the indexes change in one script, and only while the
+ * writer holds the lease, so any number of processes may share it. Each run's keys expire `ttl`
+ * after its last write. Runs are listed from a sorted set, and by thread from one per thread.
  */
 export class RedisDurableRunStore implements DurableRunStore {
   private readonly client: DurableRunRedisClient;
   private readonly prefix: string;
+  private readonly ttl: number;
 
   constructor(options: RedisDurableRunStoreOptions) {
+    const ttl = options.ttl ?? DEFAULT_REDIS_TTL;
+    if (!Number.isInteger(ttl) || ttl < 0) {
+      throw new RangeError(`ttl must be 0 or a whole number of seconds, got ${ttl}`);
+    }
     this.client = options.client;
-    this.prefix = options.keyPrefix ?? 'cogitator:durable-runs';
+    this.prefix = options.keyPrefix ?? '{cogitator}:durable-runs';
+    this.ttl = ttl;
   }
 
-  async acquire(ref: DurableRunRef, owner: string, ttlMs: number): Promise<boolean> {
+  async acquire(
+    ref: DurableRunRef,
+    holder: DurableRunHolder,
+    ttlMs: number,
+    options: { replacing?: string } = {}
+  ): Promise<boolean> {
     const taken = await this.client.eval(
       ACQUIRE_SCRIPT,
       1,
       this.key('lease', ref.runId),
-      owner,
-      positiveMs(ttlMs)
+      holder.instance,
+      holder.owner,
+      positiveMs(ttlMs),
+      options.replacing ?? ''
     );
     return Number(taken) === 1;
   }
 
-  async renew(ref: DurableRunRef, owner: string, ttlMs: number): Promise<boolean> {
+  async renew(ref: DurableRunRef, holder: DurableRunHolder, ttlMs: number): Promise<boolean> {
     const renewed = await this.client.eval(
       RENEW_SCRIPT,
       1,
       this.key('lease', ref.runId),
-      owner,
+      holder.instance,
       positiveMs(ttlMs)
     );
     return Number(renewed) === 1;
   }
 
-  async release(ref: DurableRunRef, owner: string): Promise<void> {
-    await this.client.eval(RELEASE_SCRIPT, 1, this.key('lease', ref.runId), owner);
+  async release(ref: DurableRunRef, holder: DurableRunHolder): Promise<void> {
+    await this.client.eval(RELEASE_SCRIPT, 1, this.key('lease', ref.runId), holder.instance);
   }
 
-  async save(record: DurableRunRecord): Promise<void> {
-    await this.client.set(this.key('run', record.runId), JSON.stringify(storedPart(record)));
-    if (record.base)
-      await this.client.set(this.key('base', record.runId), JSON.stringify(record.base));
-    if (record.journal.length > 0) {
-      await this.client.set(this.key('journal', record.runId), journalLines(record.journal));
-    } else {
-      await this.client.del(this.key('journal', record.runId));
-    }
-    await this.client.zadd(this.indexKey(), record.savedAt, record.runId);
-  }
-
-  async append(ref: DurableRunRef, marks: readonly DurableRunMark[]): Promise<void> {
-    if (marks.length === 0) return;
-    await this.client.eval(
-      APPEND_SCRIPT,
-      2,
-      this.key('journal', ref.runId),
-      this.key('run', ref.runId),
-      journalLines(marks)
+  async save(record: DurableRunRecord, holder: DurableRunHolder): Promise<boolean> {
+    const mode = !record.base ? 'keep' : record.baseFrom === undefined ? 'replace' : 'append';
+    const saved = await this.client.eval(
+      SAVE_SCRIPT,
+      7,
+      this.key('run', record.runId),
+      this.key('base', record.runId),
+      this.key('journal', record.runId),
+      this.key('lease', record.runId),
+      this.indexKey(),
+      this.threadKey(record.threadId),
+      this.key('base-size', record.runId),
+      holder.instance,
+      JSON.stringify(storedPart(record)),
+      record.base ? lines(record.base) : '',
+      journalLines(record.journal),
+      record.savedAt,
+      record.runId,
+      this.ttl,
+      mode,
+      record.baseFrom ?? 0,
+      (record.baseFrom ?? 0) + (record.base?.length ?? 0)
     );
+    if (Number(saved) === -1) {
+      throw new Error(`The base of durable run ${record.runId} in Redis is not the one it extends`);
+    }
+    return Number(saved) === 1;
+  }
+
+  async append(
+    ref: DurableRunRef,
+    marks: readonly DurableRunMark[],
+    holder: DurableRunHolder
+  ): Promise<boolean> {
+    if (marks.length === 0) return true;
+    const appended = await this.client.eval(
+      APPEND_SCRIPT,
+      3,
+      this.key('journal', ref.runId),
+      this.key('lease', ref.runId),
+      this.key('run', ref.runId),
+      holder.instance,
+      journalLines(marks),
+      this.ttl
+    );
+    return Number(appended) === 1;
   }
 
   async load(ref: DurableRunRef): Promise<DurableRunRecord | null> {
@@ -448,17 +618,17 @@ export class RedisDurableRunStore implements DurableRunStore {
     const lease = await this.leaseOf(ref.runId);
     return {
       ...stored,
-      base: base ? (JSON.parse(base) as Message[]) : [],
+      base: base ? readLines<Message>(base) : [],
       journal: journal ? readJournal(journal) : [],
       ...(lease && { lease }),
     };
   }
 
   async list(filter?: DurableRunFilter): Promise<DurableRunSummary[]> {
+    const index =
+      filter?.threadId !== undefined ? this.threadKey(filter.threadId) : this.indexKey();
     const ids =
-      filter?.runId !== undefined
-        ? [filter.runId]
-        : await this.client.zrange(this.indexKey(), 0, -1);
+      filter?.runId !== undefined ? [filter.runId] : await this.client.zrange(index, 0, -1);
     const summaries: DurableRunSummary[] = [];
     const missing: string[] = [];
     for (const runId of ids) {
@@ -470,45 +640,72 @@ export class RedisDurableRunStore implements DurableRunStore {
       const summary = summaryOf(JSON.parse(raw) as StoredRecord, await this.leaseOf(runId));
       if (matches(summary, filter)) summaries.push(summary);
     }
-    if (missing.length > 0) await this.client.zrem(this.indexKey(), ...missing);
+    if (missing.length > 0 && filter?.runId === undefined) {
+      await this.client.zrem(index, ...missing);
+    }
     return summaries;
   }
 
-  async delete(ref: DurableRunRef): Promise<void> {
-    await this.client.del(
+  async delete(ref: DurableRunRef, holder?: DurableRunHolder): Promise<boolean> {
+    const deleted = await this.client.eval(
+      DELETE_SCRIPT,
+      7,
       this.key('run', ref.runId),
       this.key('base', ref.runId),
       this.key('journal', ref.runId),
-      this.key('lease', ref.runId)
+      this.key('lease', ref.runId),
+      this.indexKey(),
+      this.threadKey(ref.threadId),
+      this.key('base-size', ref.runId),
+      holder?.instance ?? '',
+      ref.runId
     );
-    await this.client.zrem(this.indexKey(), ref.runId);
+    return Number(deleted) === 1;
   }
 
   private async leaseOf(runId: string): Promise<DurableRunLease | undefined> {
     const reply = await this.client.eval(LEASE_SCRIPT, 1, this.key('lease', runId));
     if (!Array.isArray(reply)) return undefined;
-    const [owner, ttl] = reply as [unknown, unknown];
-    if (typeof owner !== 'string') return undefined;
+    const [held, ttl] = reply as [unknown, unknown];
+    if (typeof held !== 'string') return undefined;
+    const split = held.indexOf('|');
+    if (split === -1) return undefined;
     const left = Number(ttl);
-    return { owner, ...(left > 0 && { expiresAt: Date.now() + left }) };
+    return {
+      instance: held.slice(0, split),
+      owner: held.slice(split + 1),
+      ...(left > 0 && { expiresAt: Date.now() + left }),
+    };
   }
 
-  private key(part: 'run' | 'base' | 'journal' | 'lease', runId: string): string {
+  private key(part: 'run' | 'base' | 'base-size' | 'journal' | 'lease', runId: string): string {
     return `${this.prefix}:${part}:${runId}`;
   }
 
   private indexKey(): string {
     return `${this.prefix}:index`;
   }
+
+  private threadKey(threadId: string): string {
+    return `${this.prefix}:thread:${threadId}`;
+  }
+}
+
+function lines(values: readonly unknown[]): string {
+  return values.map((value) => `${JSON.stringify(value)}\n`).join('');
 }
 
 function journalLines(marks: readonly DurableRunMark[]): string {
-  return marks.map((mark) => `${JSON.stringify(mark)}\n`).join('');
+  return lines(marks);
 }
 
-function readJournal(text: string): DurableRunMark[] {
+function readLines<T>(text: string): T[] {
   return text
     .split('\n')
     .filter((line) => line.trim() !== '')
-    .map((line) => JSON.parse(line) as DurableRunMark);
+    .map((line) => JSON.parse(line) as T);
+}
+
+function readJournal(text: string): DurableRunMark[] {
+  return readLines<DurableRunMark>(text);
 }

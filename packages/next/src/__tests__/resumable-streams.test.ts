@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Agent, Cogitator } from '@cogitator-ai/core';
 import type { RunOptions } from '@cogitator-ai/types';
 import {
@@ -35,12 +35,14 @@ function gatedRuntime() {
   return { cogitator: { run } as unknown as Cogitator, release, signal: () => signal };
 }
 
+const userOf = (req: Request | undefined) => req?.headers.get('x-user') ?? undefined;
+
 function handlerOf(cogitator: Cogitator, options: ChatHandlerOptions = {}) {
   return createChatHandler(cogitator, agent, {
     sseHeartbeatMs: 0,
-    resumableStreams: true,
+    resumableStreams: { owner: userOf },
     beforeRun: async (req) => {
-      const user = req.headers.get('x-user');
+      const user = userOf(req);
       return user ? { userId: user } : undefined;
     },
     ...options,
@@ -85,8 +87,7 @@ async function reconnect(
   const res = await handler(
     new Request('http://localhost/api/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Last-Event-ID': lastEventId, ...headers },
-      body: BODY,
+      headers: { 'Last-Event-ID': lastEventId, ...headers },
     })
   );
   return { status: res.status, body: await res.text() };
@@ -131,7 +132,10 @@ describe('resumable chat streams', () => {
   it('still stops the run when the signal beforeRun returned aborts', async () => {
     const { cogitator, signal } = gatedRuntime();
     const stop = new AbortController();
-    const handler = handlerOf(cogitator, { beforeRun: async () => ({ signal: stop.signal }) });
+    const handler = handlerOf(cogitator, {
+      beforeRun: async () => ({ signal: stop.signal }),
+      resumableStreams: { owner: () => undefined },
+    });
 
     const before = await readThenDrop(handler, 1);
     stop.abort();
@@ -142,5 +146,54 @@ describe('resumable chat streams', () => {
       type: 'error',
       code: 'STREAM_ABORTED',
     });
+  });
+
+  it('runs neither beforeRun nor deps for a reconnect or a cancel', async () => {
+    const { cogitator, release } = gatedRuntime();
+    const beforeRun = vi.fn(async (req: Request) => ({ userId: userOf(req) }));
+    const deps = vi.fn(() => ({ tenant: 'acme' }));
+    const handler = handlerOf(cogitator, { beforeRun, deps });
+    const before = await readThenDrop(handler, 1, { 'x-user': 'alice' });
+    release();
+    await reconnect(handler, before[0]!.id!, { 'x-user': 'alice' });
+    const streamId = before[0]!.id!.split(':')[0];
+    await handler(
+      new Request(`http://localhost/api/chat?streamId=${streamId}`, {
+        method: 'DELETE',
+        headers: { 'x-user': 'alice' },
+      })
+    );
+
+    expect(beforeRun).toHaveBeenCalledTimes(1);
+    expect(deps).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels a run on DELETE with ?streamId=, for its owner only', async () => {
+    const { cogitator, signal } = gatedRuntime();
+    const handler = handlerOf(cogitator);
+    const before = await readThenDrop(handler, 1, { 'x-user': 'alice' });
+    const streamId = before[0]!.id!.split(':')[0];
+    const cancel = (user: string) =>
+      handler(
+        new Request(`http://localhost/api/chat?streamId=${streamId}`, {
+          method: 'DELETE',
+          headers: { 'x-user': user },
+        })
+      );
+
+    expect((await cancel('mallory')).status).toBe(404);
+    expect(signal()?.aborted).toBe(false);
+    expect((await cancel('alice')).status).toBe(204);
+    expect(signal()?.aborted).toBe(true);
+  });
+
+  it('refuses resumableStreams next to beforeRun without an owner', () => {
+    const { cogitator } = gatedRuntime();
+    expect(() =>
+      createChatHandler(cogitator, agent, {
+        resumableStreams: true,
+        beforeRun: async () => ({ userId: 'alice' }),
+      })
+    ).toThrow(/owner/);
   });
 });

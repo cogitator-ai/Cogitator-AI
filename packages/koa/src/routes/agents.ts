@@ -1,14 +1,16 @@
 import Router from '@koa/router';
 import type { ParameterizedContext } from 'koa';
 import type { RunResult } from '@cogitator-ai/types';
-import type { CogitatorState, AgentListResponse } from '../types.js';
+import type { AuthContext, CogitatorState, AgentListResponse } from '../types.js';
 import { KoaStreamWriter, setupSSEHeaders } from '../streaming/index.js';
 import {
   AgentStreamSession,
+  authorizeThreadAccess,
   lastEventIdOf,
   parseResumeRequest,
   parseRunRequest,
   toAgentRunResponse,
+  type StreamCaller,
   type StreamFollower,
 } from '@cogitator-ai/server-shared';
 import { getOwn } from '../utils/lookup.js';
@@ -49,10 +51,20 @@ async function reconnect(ctx: ParameterizedContext<CogitatorState>): Promise<boo
   const streams = ctx.state.cogitator.resumableStreams;
   const lastEventId = streams && lastEventIdOf(ctx.get('last-event-id'), ctx.query.lastEventId);
   if (!streams || lastEventId === undefined) return false;
-  const attached = await streams.reconnect(lastEventId, ctx.state.auth?.userId);
+  const attached = await streams.reconnect(lastEventId, callerOf(ctx));
   if (attached.ok) await followStream(ctx, attached.stream);
   else sendError(ctx, attached.error);
   return true;
+}
+
+/** The caller of a reconnect or cancel, with `authorizeThread` for the stream's thread */
+function callerOf(ctx: ParameterizedContext<CogitatorState>): StreamCaller<AuthContext> {
+  const auth = ctx.state.auth;
+  return {
+    auth,
+    authorizeThread: (threadId) =>
+      authorizeThreadAccess(ctx.state.cogitator.authorizeThread, auth, threadId),
+  };
 }
 
 async function streamAgent(
@@ -63,13 +75,14 @@ async function streamAgent(
 ): Promise<void> {
   const streams = ctx.state.cogitator.resumableStreams;
   if (streams) {
-    const stream = await streams.startAgentRun({
-      userId: ctx.state.auth?.userId,
+    const opened = await streams.startAgentRun({
+      auth: ctx.state.auth,
       threadId,
       execute,
       describeError: (error) => describeError(error, errorLabel),
     });
-    await followStream(ctx, stream);
+    if (opened.ok) await followStream(ctx, opened.stream);
+    else sendError(ctx, opened.error);
     return;
   }
 
@@ -101,6 +114,22 @@ async function streamAgent(
 
 export function createAgentRoutes(): Router<CogitatorState> {
   const router = new Router<CogitatorState>();
+
+  router.delete('/agents/:name/stream/:streamId', async (ctx) => {
+    const { agents, resumableStreams: streams } = ctx.state.cogitator;
+    const { name, streamId } = ctx.params;
+    if (!streams) {
+      notFound(ctx, 'Not found');
+      return;
+    }
+    if (!getOwn(agents, name)) {
+      notFound(ctx, `Agent '${name}' not found`);
+      return;
+    }
+    const cancelled = await streams.cancel(streamId, callerOf(ctx));
+    if (cancelled.ok) ctx.status = 204;
+    else sendError(ctx, cancelled.error);
+  });
 
   router.get('/agents', (ctx) => {
     const { agents } = ctx.state.cogitator;

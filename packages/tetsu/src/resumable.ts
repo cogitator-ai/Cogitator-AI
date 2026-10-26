@@ -2,13 +2,17 @@ import { hook } from '@tetsujs/core';
 import type { Requires } from '@tetsujs/core';
 import { sse } from '@tetsujs/sse';
 import type { ServerSentEvent, SseOptions } from '@tetsujs/sse';
-import { lastEventIdOf, parseStreamEventId } from '@cogitator-ai/server-shared';
-import type { ResumableStreams, StreamFollower } from '@cogitator-ai/server-shared';
+import {
+  authorizeThreadAccess,
+  lastEventIdOf,
+  parseStreamEventId,
+} from '@cogitator-ai/server-shared';
+import type { ResumableStreams, StreamCaller, StreamFollower } from '@cogitator-ai/server-shared';
 import type { CallerFields } from './auth.js';
 import { refusalError } from './errors.js';
 import { findAgent } from './operations.js';
 import { DONE_EVENT } from './streaming.js';
-import type { CogitatorDeps } from './types.js';
+import type { AuthContext, CogitatorDeps } from './types.js';
 
 /** The frames of a resumable stream as server-sent events with their ids, `[DONE]` after `finish` */
 export async function* resumableEvents(
@@ -25,12 +29,24 @@ export async function* resumableEvents(
  * The `beforeParse` hook of the agent stream routes, after the caller hook: answers a request
  * that names the last event it got (`Last-Event-ID`, or `?lastEventId=`) with the rest of its
  * stream, before the body is read, since a reconnect needs none. A stream the server does not
- * keep for the caller answers `404 STREAM_NOT_FOUND`. An id that is not `<streamId>:<seq>` goes
+ * keep for the caller answers `404 STREAM_NOT_FOUND`, a thread `authorizeThread` keeps the
+ * caller from `403 THREAD_FORBIDDEN`. An id that is not `<streamId>:<seq>` goes
  * on to validation, which refuses it. Without resumable streams it does nothing.
  */
+/** The caller of a reconnect or cancel, with `authorizeThread` for the stream's thread */
+export function streamCaller(
+  deps: CogitatorDeps,
+  auth: AuthContext | undefined
+): StreamCaller<AuthContext> {
+  return {
+    auth,
+    authorizeThread: (threadId) => authorizeThreadAccess(deps.authorizeThread, auth, threadId),
+  };
+}
+
 export function reconnectHook(
   deps: CogitatorDeps,
-  streams: ResumableStreams | undefined,
+  streams: ResumableStreams<AuthContext> | undefined,
   options: () => SseOptions
 ) {
   return hook.beforeParse(
@@ -42,7 +58,7 @@ export function reconnectHook(
       );
       if (lastEventId === undefined || !parseStreamEventId(lastEventId)) return undefined;
       findAgent(deps, ctx.params.name ?? '');
-      const attached = await streams.reconnect(lastEventId, ctx.cogitatorAuth?.userId);
+      const attached = await streams.reconnect(lastEventId, streamCaller(deps, ctx.cogitatorAuth));
       if (!attached.ok) throw refusalError(attached.error);
       return sse(ctx, (signal) => resumableEvents(attached.stream, signal), options());
     }

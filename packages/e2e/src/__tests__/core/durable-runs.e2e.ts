@@ -118,6 +118,7 @@ describeOllama('Core: durable runs on Ollama', () => {
         .run(agent, { input: 'Note my refund request and email me', threadId: 'e2e-durable' })
         .catch(() => undefined);
       await emailStarted;
+      await crashed.close();
 
       const recovering = processOn();
       const kept = await recovering.durableRuns();
@@ -158,8 +159,10 @@ describeRedis('Core: durable runs in Redis', () => {
       mode: 'standalone',
       url: process.env.TEST_REDIS_URL ?? 'redis://localhost:6379',
     });
-    const store = new RedisDurableRunStore({ client, keyPrefix: prefix });
+    const store = new RedisDurableRunStore({ client, keyPrefix: `{${prefix}}` });
     const ref = { runId: 'r1', threadId: 't1' };
+    const one = { owner: 'host', instance: 'one' };
+    const two = { owner: 'host', instance: 'two' };
     const record: DurableRunRecord = {
       ...ref,
       agentId: 'a',
@@ -192,26 +195,35 @@ describeRedis('Core: durable runs in Redis', () => {
       savedAt: 2,
     };
 
-    await store.save(record);
-    expect(await store.acquire(ref, 'one', 5_000)).toBe(true);
-    expect(await store.acquire(ref, 'two', 5_000)).toBe(false);
-    expect(await store.renew(ref, 'two', 5_000)).toBe(false);
-    expect(await store.renew(ref, 'one', 5_000)).toBe(true);
-    await store.append(ref, [{ kind: 'started', toolCallId: 'c1' }]);
-    await store.save({ ...record, base: undefined, journal: [] });
-    await store.append(ref, [{ kind: 'started', toolCallId: 'c2' }]);
+    expect(await store.save(record, one)).toBe(false);
+    expect(await store.acquire(ref, one, 5_000)).toBe(true);
+    expect(await store.save(record, one)).toBe(true);
+    expect(await store.acquire(ref, two, 5_000)).toBe(false);
+    expect(await store.save(record, two)).toBe(false);
+    expect(await store.renew(ref, two, 5_000)).toBe(false);
+    expect(await store.renew(ref, one, 5_000)).toBe(true);
+    await store.append(ref, [{ kind: 'started', toolCallId: 'c1' }], one);
+    expect(await store.save({ ...record, base: undefined, journal: [] }, one)).toBe(true);
+    await store.append(ref, [{ kind: 'started', toolCallId: 'c2' }], one);
+    expect(await store.append(ref, [{ kind: 'started', toolCallId: 'c3' }], two)).toBe(false);
 
     const loaded = await store.load(ref);
     expect(loaded?.base).toEqual(record.base);
     expect(loaded?.journal).toEqual([{ kind: 'started', toolCallId: 'c2' }]);
-    expect(loaded?.lease?.owner).toBe('one');
+    expect(loaded?.lease).toMatchObject({ owner: 'host', instance: 'one' });
     expect((await store.list()).map((run) => run.runId)).toEqual(['r1']);
+    expect((await store.list({ threadId: 't1' })).map((run) => run.runId)).toEqual(['r1']);
+    expect(await store.list({ threadId: 't2' })).toEqual([]);
+    expect(
+      await client.eval('return redis.call("TTL", KEYS[1])', 1, `{${prefix}}:run:r1`)
+    ).toBeGreaterThan(0);
 
-    await store.release(ref, 'one');
-    expect(await store.acquire(ref, 'two', 5_000)).toBe(true);
-    await store.delete(ref);
+    expect(await store.acquire(ref, two, 5_000, { replacing: 'one' })).toBe(true);
+    expect(await store.renew(ref, one, 5_000)).toBe(false);
+    expect(await store.delete(ref, one)).toBe(false);
+    expect(await store.delete(ref, two)).toBe(true);
     expect(await store.load(ref)).toBeNull();
-    expect(await store.renew(ref, 'two', 5_000)).toBe(false);
+    expect(await store.renew(ref, two, 5_000)).toBe(false);
     expect(await store.list()).toEqual([]);
   });
 });

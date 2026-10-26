@@ -2,18 +2,25 @@ import type {
   FastifyPluginAsync,
   FastifyReply,
   FastifyRequest,
-  preValidationAsyncHookHandler,
+  preParsingAsyncHookHandler,
 } from 'fastify';
 import type { RunResult } from '@cogitator-ai/types';
-import type { AgentListResponse, AgentResumeRequest, AgentRunRequest } from '../types.js';
+import type {
+  AgentListResponse,
+  AgentResumeRequest,
+  AgentRunRequest,
+  AuthContext,
+} from '../types.js';
 import { AgentResumeRequestSchema, AgentRunRequestSchema } from '../types.js';
 import {
   AgentStreamSession,
+  authorizeThreadAccess,
   lastEventIdOf,
   parseResumeRequest,
   parseRunRequest,
   runRequestRunOptions,
   toAgentRunResponse,
+  type StreamCaller,
   type StreamFollower,
 } from '@cogitator-ai/server-shared';
 import { FastifyStreamWriter } from '../streaming/index.js';
@@ -91,21 +98,66 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
     return reply;
   };
 
+  /** The caller of a reconnect or cancel, with `authorizeThread` for the stream's thread */
+  const callerOf = (request: FastifyRequest): StreamCaller<AuthContext> => {
+    const auth = request.cogitatorAuth;
+    return {
+      auth,
+      authorizeThread: (threadId) =>
+        authorizeThreadAccess(fastify.cogitator.authorizeThread, auth, threadId),
+    };
+  };
+
   /**
-   * The `preValidation` hook of the stream routes where streams are resumable: answers a
-   * request with `Last-Event-ID` or `?lastEventId=` by reconnecting it to its stream, before the
-   * body is validated, since a reconnect needs none
+   * The `preParsing` hook of the stream routes where streams are resumable: answers a request
+   * with `Last-Event-ID` or `?lastEventId=` by reconnecting it to its stream before its body is
+   * parsed or validated, since a reconnect reads none (an empty JSON body included)
    */
-  const reconnect: preValidationAsyncHookHandler = async (request, reply) => {
+  const reconnect: preParsingAsyncHookHandler = async (request, reply) => {
     const query = request.query as Record<string, unknown> | undefined;
     const lastEventId = lastEventIdOf(request.headers['last-event-id'], query?.lastEventId);
     if (!streams || lastEventId === undefined) return;
     const { name } = request.params as AgentParams;
-    if (!findAgent(name)) return sendError(reply, 404, `Agent '${name}' not found`, 'NOT_FOUND');
-    const attached = await streams.reconnect(lastEventId, request.cogitatorAuth?.userId);
-    if (!attached.ok) return sendFailure(reply, attached.error);
-    return followStream(reply, attached.stream);
+    if (!findAgent(name)) {
+      sendError(reply, 404, `Agent '${name}' not found`, 'NOT_FOUND');
+      return;
+    }
+    try {
+      const attached = await streams.reconnect(lastEventId, callerOf(request));
+      if (attached.ok) await followStream(reply, attached.stream);
+      else sendFailure(reply, attached.error);
+    } catch (error) {
+      sendRouteError(request, reply, error, 'agent stream reconnect error');
+    }
   };
+
+  if (streams) {
+    fastify.addHook('onClose', async () => streams.close());
+    fastify.delete<{ Params: AgentParams & { streamId: string } }>(
+      '/agents/:name/stream/:streamId',
+      {
+        schema: {
+          params: {
+            type: 'object',
+            properties: { name: { type: 'string' }, streamId: { type: 'string' } },
+            required: ['name', 'streamId'],
+          },
+        },
+      },
+      async (request, reply) => {
+        const { name, streamId } = request.params;
+        if (!findAgent(name)) {
+          return sendError(reply, 404, `Agent '${name}' not found`, 'NOT_FOUND');
+        }
+        try {
+          const cancelled = await streams.cancel(streamId, callerOf(request));
+          return cancelled.ok ? reply.status(204).send() : sendFailure(reply, cancelled.error);
+        } catch (error) {
+          return sendRouteError(request, reply, error, 'agent stream cancel error');
+        }
+      }
+    );
+  }
 
   const streamRouteSchema = streams ? reconnectSchema : {};
 
@@ -117,18 +169,18 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
     execute: (session: AgentStreamSession, signal: AbortSignal) => Promise<RunResult>
   ) => {
     if (streams) {
-      let stream: StreamFollower;
       try {
-        stream = await streams.startAgentRun({
-          userId: request.cogitatorAuth?.userId,
+        const opened = await streams.startAgentRun({
+          auth: request.cogitatorAuth,
           threadId,
           execute,
           describeError: (error) => resolveError(request, error, errorLabel),
         });
+        if (!opened.ok) return sendFailure(reply, opened.error);
+        return await followStream(reply, opened.stream);
       } catch (error) {
         return sendRouteError(request, reply, error, errorLabel);
       }
-      return followStream(reply, stream);
     }
 
     const writer = new FastifyStreamWriter(reply, {
@@ -241,7 +293,8 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
     '/agents/:name/stream',
     {
       schema: { params: paramsSchema, body: AgentRunRequestSchema, ...streamRouteSchema },
-      preValidation: [reconnect, runBody],
+      preParsing: reconnect,
+      preValidation: runBody,
     },
     async (request, reply) => {
       const { name } = request.params;
@@ -279,7 +332,8 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
     '/agents/:name/resume/stream',
     {
       schema: { params: paramsSchema, body: AgentResumeRequestSchema, ...streamRouteSchema },
-      preValidation: [reconnect, resumeBody],
+      preParsing: reconnect,
+      preValidation: resumeBody,
     },
     async (request, reply) => {
       const { name } = request.params;

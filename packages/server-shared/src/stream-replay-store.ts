@@ -2,8 +2,11 @@ import type { StreamEvent } from './protocol.js';
 
 /** Who a stream belongs to: the caller who started its run, and the run's thread */
 export interface StreamOwner {
-  /** The user who started the run, absent for an anonymous caller */
-  userId?: string;
+  /**
+   * The key of the caller who started the run, which a caller must match to reconnect to the
+   * stream or cancel its run. Absent for an anonymous caller
+   */
+  owner?: string;
   threadId: string;
 }
 
@@ -54,15 +57,19 @@ export interface StreamSubscriber {
  * A store shared by several processes (Redis or a database with pub/sub) lets a client
  * reconnect to any of them: the process that answers the reconnect replays the events with
  * {@link read} and follows the live ones with {@link subscribe}, while the run goes on in the
- * process that started it. {@link subscribe} must then reach subscribers on every process,
- * which takes pub/sub (Redis `PUBLISH`/`SUBSCRIBE` or similar), and `subscribers` of
- * {@link StreamRecord} must count the subscriptions of every process, which the run reads to
- * tell whether any client is still attached. Events must reach a subscriber in the order of
- * their sequence numbers.
+ * process that started it. {@link subscribe} and {@link onCancel} must then reach listeners on
+ * every process, which takes pub/sub (Redis `PUBLISH`/`SUBSCRIBE` or similar), and
+ * `subscribers` of {@link StreamRecord} must count the subscriptions of every process, which
+ * the run reads to tell whether any client is still attached. Events must reach a subscriber
+ * in the order of their sequence numbers. A follower that sees a sequence number skipped reads
+ * the store again, and reports the events it cannot find as lost.
  */
 export interface StreamReplayStore {
-  /** Creates a stream with no events */
-  create(stream: NewStreamRecord): Promise<void>;
+  /**
+   * Creates a stream with no events. `false` when the store keeps as many streams as it may
+   * and none of them finished, so it has no room without cutting off a run that goes on
+   */
+  create(stream: NewStreamRecord): Promise<boolean>;
   /**
    * Appends an event. Its `seq` is one more than the last one appended. A stream the store
    * does not know (any more) or that finished takes nothing.
@@ -82,6 +89,13 @@ export interface StreamReplayStore {
     streamId: string,
     subscriber: StreamSubscriber
   ): Promise<(() => Promise<void>) | undefined>;
+  /** Asks the process that runs the stream's run to stop it, a stream that finished ignores it */
+  cancel(streamId: string): Promise<void>;
+  /**
+   * Calls `listener` once a cancel is asked for the stream, from any process, also when it was
+   * asked before. `undefined` for a stream the store does not know (any more)
+   */
+  onCancel(streamId: string, listener: () => void): Promise<(() => Promise<void>) | undefined>;
 }
 
 /** Default of `maxEvents`: the events kept of each stream */
@@ -100,8 +114,8 @@ export interface InMemoryStreamReplayStoreOptions {
   /** How long a finished stream stays replayable, in ms. Default: 5 minutes */
   retentionMs?: number;
   /**
-   * Streams kept at once. A new stream past it evicts the stream that finished first, or the
-   * oldest one when none finished. Default: 1000.
+   * Streams kept at once. A new stream past it evicts the stream that finished first. When
+   * every stream kept is still going, the new one is refused. Default: 1000.
    */
   maxStreams?: number;
   /** The clock, in ms since the epoch. Default: `Date.now` */
@@ -149,11 +163,14 @@ interface KeptStream {
   /** The newest sequence number evicted, `0` while nothing was */
   evictedThrough: number;
   subscribers: Set<StreamSubscriber>;
+  cancelled: boolean;
+  cancelListeners: Set<() => void>;
 }
 
 /**
  * Keeps resumable streams in the memory of one process, within bounds: `maxEvents` of each
- * stream, `maxStreams` streams, a finished stream for `retentionMs`. It runs no timers:
+ * stream, `maxStreams` streams (a stream whose run goes on is never evicted, a new one is
+ * refused instead), a finished stream for `retentionMs`. It runs no timers:
  * expired streams are dropped as the store is used. Streams do not survive a restart and are
  * not shared between processes, use a store of your own for that (see
  * {@link StreamReplayStore}).
@@ -178,20 +195,26 @@ export class InMemoryStreamReplayStore implements StreamReplayStore {
     this.now = options.now ?? Date.now;
   }
 
-  create(stream: NewStreamRecord): Promise<void> {
+  create(stream: NewStreamRecord): Promise<boolean> {
     this.sweep();
     if (this.streams.has(stream.id)) {
       return Promise.reject(new Error(`Stream '${stream.id}' already exists`));
     }
-    while (this.streams.size >= this.maxStreams) this.evictOne();
+    while (this.streams.size >= this.maxStreams) {
+      const finished = this.finished.keys().next();
+      if (finished.done) return Promise.resolve(false);
+      this.drop(finished.value);
+    }
     this.streams.set(stream.id, {
       record: { ...stream },
       events: new EventRing(this.maxEvents),
       lastSeq: 0,
       evictedThrough: 0,
       subscribers: new Set(),
+      cancelled: false,
+      cancelListeners: new Set(),
     });
-    return Promise.resolve();
+    return Promise.resolve(true);
   }
 
   append(streamId: string, entry: StoredStreamEvent): Promise<void> {
@@ -264,6 +287,30 @@ export class InMemoryStreamReplayStore implements StreamReplayStore {
     });
   }
 
+  cancel(streamId: string): Promise<void> {
+    this.sweep();
+    const stream = this.streams.get(streamId);
+    if (!stream || stream.record.finishedAt !== undefined || stream.cancelled) {
+      return Promise.resolve();
+    }
+    stream.cancelled = true;
+    for (const listener of [...stream.cancelListeners]) listener();
+    return Promise.resolve();
+  }
+
+  onCancel(streamId: string, listener: () => void): Promise<(() => Promise<void>) | undefined> {
+    this.sweep();
+    const stream = this.streams.get(streamId);
+    if (!stream) return Promise.resolve(undefined);
+    const own = () => listener();
+    stream.cancelListeners.add(own);
+    if (stream.cancelled) own();
+    return Promise.resolve(() => {
+      stream.cancelListeners.delete(own);
+      return Promise.resolve();
+    });
+  }
+
   /** Drops the streams that finished longer than `retentionMs` ago */
   private sweep(): void {
     const expiredBefore = this.now() - this.retentionMs;
@@ -273,17 +320,13 @@ export class InMemoryStreamReplayStore implements StreamReplayStore {
     }
   }
 
-  /** Makes room for a stream: drops the one that finished first, else the oldest */
-  private evictOne(): void {
-    const victim = this.finished.keys().next().value ?? this.streams.keys().next().value;
-    if (victim !== undefined) this.drop(victim);
-  }
-
   private drop(streamId: string): void {
     const stream = this.streams.get(streamId);
     this.streams.delete(streamId);
     this.finished.delete(streamId);
-    if (stream) this.endSubscriptions(stream);
+    if (!stream) return;
+    stream.cancelListeners.clear();
+    this.endSubscriptions(stream);
   }
 
   private endSubscriptions(stream: KeptStream): void {

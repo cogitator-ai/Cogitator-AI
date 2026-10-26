@@ -185,6 +185,18 @@ describe('generateOpenAPISpec with resumable streams', () => {
     }
   );
 
+  it('documents the cancel route of a stream', () => {
+    const spec = generateOpenAPISpec(context, { resumableStreams: true });
+    const cancel = spec.paths['/agents/bot/stream/{streamId}']?.delete as {
+      responses: Record<string, { description: string }>;
+    };
+    expect(Object.keys(cancel.responses)).toEqual(['204', '400', '403', '404']);
+    expect(post(true, '/agents/bot/stream').responses[503]?.description).toContain(
+      'STREAM_LIMIT_REACHED'
+    );
+    expect(generateOpenAPISpec(context, {}).paths['/agents/bot/stream/{streamId}']).toBeUndefined();
+  });
+
   it('documents none of it where streams are not resumable', () => {
     const operation = post(false, '/agents/bot/stream');
     expect(operation.parameters).toBeUndefined();

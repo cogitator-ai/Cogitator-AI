@@ -122,13 +122,18 @@ It is the object every Cogitator adapter answers (`toAgentRunResponse()`), never
 `resumableStreams` on `createChatHandler` (and `createResumeHandler` with `stream: true`) keeps the stream of each run, so a run outlives a dropped connection:
 
 ```typescript title="app/api/chat/route.ts"
-export const POST = createChatHandler(cog, agent, {
+const handler = createChatHandler(cog, agent, {
   beforeRun: async (req) => ({ userId: await userIdFrom(req) }),
-  resumableStreams: true,
+  resumableStreams: { owner: (req) => (req ? userIdFrom(req) : undefined) },
 });
+
+export const POST = handler;
+export const DELETE = handler;
 ```
 
-Every event then carries an SSE `id` (`<streamId>:<seq>`), and a client that disconnects no longer stops the run (the `signal` `beforeRun` returns still does). The same request again with `Last-Event-ID` (or `?lastEventId=`) reconnects instead of starting a run: it replays the events after the id, then follows the run to `finish` or `error`. The reconnect carries the body of the request it resumes, since `beforeRun` identifies the caller from it, and only the user `beforeRun` named (anonymous callers for an anonymous run) may reconnect, others get `404 STREAM_NOT_FOUND`. `useCogitatorChat` reconnects by itself, see [Reconnecting](#reconnecting).
+Every event then carries an SSE `id` (`<streamId>:<seq>`), and a client that disconnects no longer stops the run (the `signal` `beforeRun` returns still does). The same request again with `Last-Event-ID` reconnects instead of starting a run: it replays the events after the id, then follows the run to `finish` or `error`. `?lastEventId=` works too, but it puts the id into URLs and logs, so prefer the header. `DELETE` on the route with `?streamId=` cancels the run, which ends its stream with `STREAM_CANCELLED`: export the handler as `DELETE` too.
+
+A reconnect and a cancel read no body and run neither `beforeRun` nor `deps`, so their side effects do not repeat. The stream is bound to `owner(req)`, and only a request with the same owner may reconnect or cancel, after `authorizeThread(req, threadId)` on the stream's thread: others get `404 STREAM_NOT_FOUND` or `403 THREAD_FORBIDDEN`. With `beforeRun` the handler needs an `owner` and throws without one, without `beforeRun` every caller is anonymous. `useCogitatorChat` reconnects by itself and cancels on `stop()`, see [Reconnecting](#reconnecting).
 
 `true` keeps the events in the memory of the handler. A platform that serves the route from several instances, or stops a function once its response ends, needs a shared `store` and a runtime that keeps the run going: see [Resumable Streams](/docs/server-adapters/resumable-streams) for the limits, detached runs and stores.
 
@@ -256,7 +261,7 @@ export function Chat() {
 
 ### Reconnecting
 
-Against a handler with `resumableStreams`, whose events carry ids, the hook keeps the id of the last event it got. When the stream drops in the middle of a run (the network fails, or the body ends before `finish` or `error`), it sends the same request again with `Last-Event-ID`, and the assistant message goes on in place with no event lost or repeated. It waits `delayMs` before the first reconnect and twice as long before each next one, and gives up after `attempts` reconnects in a row that failed or brought no event, with the last error. `STREAM_NOT_FOUND` (the server no longer keeps the stream) and `STREAM_RESUME_GAP` (it lost events after the id) end the request with that error, so reload the thread from your own route to catch up. A stream without ids, and one the user stopped with `stop()`, end as before.
+Against a handler with `resumableStreams`, whose events carry ids, the hook keeps the id of the last event it got. When the stream drops in the middle of a run (the network fails, or the body ends before `finish` or `error`), it sends the same request again with `Last-Event-ID`, and the assistant message goes on in place with no event lost or repeated. It waits `delayMs` before the first reconnect and twice as long before each next one, and gives up after `attempts` reconnects in a row that failed or brought no event, with the last error, or `The stream ended before the run finished` when the stream kept ending early: a cut answer never finishes as if it were whole. `STREAM_NOT_FOUND` (the server no longer keeps the stream) and `STREAM_RESUME_GAP` (it lost events after the id) end the request with that error, so reload the thread from your own route to catch up. `stop()`, `reload()` and a new message that interrupts the current one abort the fetch and also cancel the run on the server (`DELETE` with `?streamId=`), so a stopped answer stops spending tokens and does not land in the thread. A stream without ids ends as before.
 
 ### Return Values
 

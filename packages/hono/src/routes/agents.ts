@@ -4,14 +4,16 @@ import type { RunResult } from '@cogitator-ai/types';
 import { streamSSE } from 'hono/streaming';
 import {
   AgentStreamSession,
+  authorizeThreadAccess,
   lastEventIdOf,
   parseResumeRequest,
   parseRunRequest,
   toAgentRunResponse,
+  type StreamCaller,
   type StreamFollower,
 } from '@cogitator-ai/server-shared';
 import { HonoStreamWriter } from '../streaming/hono-stream-writer.js';
-import type { HonoEnv, AgentListResponse } from '../types.js';
+import type { AuthContext, HonoEnv, AgentListResponse } from '../types.js';
 import { getOwn } from '../utils/lookup.js';
 import { describeError } from '../utils/errors.js';
 import {
@@ -59,8 +61,18 @@ async function reconnect(c: Context<HonoEnv>): Promise<Response | undefined> {
   const lastEventId =
     streams && lastEventIdOf(c.req.header('last-event-id'), c.req.queries('lastEventId'));
   if (!streams || lastEventId === undefined) return undefined;
-  const attached = await streams.reconnect(lastEventId, c.get('cogitatorAuth')?.userId);
+  const attached = await streams.reconnect(lastEventId, callerOf(c));
   return attached.ok ? followStream(c, attached.stream) : sendError(c, attached.error);
+}
+
+/** The caller of a reconnect or cancel, with `authorizeThread` for the stream's thread */
+function callerOf(c: Context<HonoEnv>): StreamCaller<AuthContext> {
+  const auth = c.get('cogitatorAuth');
+  return { auth, authorizeThread: (threadId) => refuseThreadOf(c, auth, threadId) };
+}
+
+function refuseThreadOf(c: Context<HonoEnv>, auth: AuthContext | undefined, threadId: string) {
+  return authorizeThreadAccess(c.get('cogitator').authorizeThread, auth, threadId);
 }
 
 async function streamAgent(
@@ -71,13 +83,13 @@ async function streamAgent(
 ): Promise<Response> {
   const streams = c.get('cogitator').resumableStreams;
   if (streams) {
-    const stream = await streams.startAgentRun({
-      userId: c.get('cogitatorAuth')?.userId,
+    const opened = await streams.startAgentRun({
+      auth: c.get('cogitatorAuth'),
       threadId,
       execute,
       describeError: (error) => describeError(error, errorLabel),
     });
-    return followStream(c, stream);
+    return opened.ok ? followStream(c, opened.stream) : sendError(c, opened.error);
   }
 
   const abortController = createRequestAbortController(c);
@@ -107,6 +119,16 @@ async function streamAgent(
 
 export function createAgentRoutes(): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
+
+  app.delete('/agents/:name/stream/:streamId', async (c) => {
+    const ctx = c.get('cogitator');
+    const name = c.req.param('name');
+    const streams = ctx.resumableStreams;
+    if (!streams) return notFound(c, 'Not found');
+    if (!getOwn(ctx.agents, name)) return notFound(c, `Agent '${name}' not found`);
+    const cancelled = await streams.cancel(c.req.param('streamId'), callerOf(c));
+    return cancelled.ok ? c.body(null, 204) : sendError(c, cancelled.error);
+  });
 
   app.get('/agents', (c) => {
     const ctx = c.get('cogitator');

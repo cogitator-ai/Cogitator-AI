@@ -7,7 +7,12 @@ import {
   resolveSseHeartbeatMs,
 } from '@cogitator-ai/server-shared';
 import type { Server as HttpServer } from 'http';
-import type { CogitatorServerConfig, ResolvedServerConfig, RouteContext } from './types.js';
+import type {
+  AuthContext,
+  CogitatorServerConfig,
+  ResolvedServerConfig,
+  RouteContext,
+} from './types.js';
 import {
   createAnonymousGuard,
   createAuthMiddleware,
@@ -41,7 +46,7 @@ export class CogitatorServer {
   private workflows: NonNullable<CogitatorServerConfig['workflows']>;
   private swarms: NonNullable<CogitatorServerConfig['swarms']>;
   private config: ResolvedServerConfig;
-  private resumableStreams: ResumableStreams | undefined;
+  private resumableStreams: ResumableStreams<AuthContext> | undefined;
   private routeContext: RouteContext | null = null;
   private initialized = false;
 
@@ -67,7 +72,7 @@ export class CogitatorServer {
       limits: checkRunLimits(cfg.limits),
       anonymous: cfg.anonymous ?? 'allow',
     } as ResolvedServerConfig;
-    this.resumableStreams = ResumableStreams.from(cfg.resumableStreams);
+    this.resumableStreams = ResumableStreams.from<AuthContext>(cfg.resumableStreams);
   }
 
   async init(): Promise<void> {

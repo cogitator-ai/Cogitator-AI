@@ -161,11 +161,16 @@ Stateful session manager coordinating stream event ordering, part transitions, a
 
 ### 3a. Resumable Streams
 
-The machinery behind the `resumableStreams` option every adapter takes (express, fastify, hono, koa, tetsu, next). With it on, every event of `/agents/:name/stream` and `/agents/:name/resume/stream` carries an SSE `id`, `<streamId>:<seq>` with `seq` from 1 up, so the id alone names the stream (`streamId` is `stream_<uuid>`, which nobody can guess). A client that disconnects no longer stops the run: it goes on, its events kept in a store. The same route with `Last-Event-ID: <id>` (or `?lastEventId=<id>`) reconnects instead of starting a run: the answer replays the events after that id, then follows the run to `finish` or `error` (and `data: [DONE]` after `finish`). Several clients may follow one stream.
+The machinery behind the `resumableStreams` option every adapter takes (express, fastify, hono, koa, tetsu, next). With it on, every event of `/agents/:name/stream` and `/agents/:name/resume/stream` carries an SSE `id`, `<streamId>:<seq>` with `seq` from 1 up, so the id alone names the stream (`streamId` is `stream_<uuid>`, which nobody can guess). A client that disconnects no longer stops the run: it goes on, its events kept in a store. The same route with `Last-Event-ID: <id>` (or `?lastEventId=<id>`) reconnects instead of starting a run and reads no body: the answer replays the events after that id, then follows the run to `finish` or `error` (and `data: [DONE]` after `finish`). Several clients may follow one stream. `DELETE /agents/:name/stream/:streamId` cancels the run (`204`), on whatever process runs it.
 
-- A reconnect from anyone but the user who started the stream (an anonymous caller only for an anonymous stream), to an unknown or expired stream or with an event id the stream never sent answers `404 STREAM_NOT_FOUND` before any SSE header. An id that is not `<streamId>:<seq>` answers `400 INVALID_INPUT`.
-- When the events after the id were evicted (more than `maxEvents` since), the reconnect gets one `error` event with `STREAM_RESUME_GAP`, without an id, telling the client to fetch the thread (`GET /threads/:id`) to catch up.
-- A run nobody follows for `detachedTimeoutMs` (5 minutes) is stopped, so a client that never comes back does not run up cost. Its stream then ends with an `error` event `STREAM_ABORTED`, which a late reconnect replays.
+- **Owner.** A stream is bound to the caller who started it: by default every field of what the adapter's `auth` returned (user id, roles, permissions, metadata such as a tenant), so callers without a user id are still told apart. `owner(auth)` returns a key of your own, for example the user id alone when the identity carries values that change between requests, such as the expiry of a token. Only a caller with the same key may reconnect or cancel, anyone else gets `404 STREAM_NOT_FOUND` before any SSE header, and so does an unknown or expired stream or an event id the stream never sent. An id that is not `<streamId>:<seq>` gets `400 INVALID_INPUT`.
+- **authorizeThread.** After the owner check, a reconnect and a cancel ask the adapter's `authorizeThread` about the stream's thread, so a caller it turns away now gets `403 THREAD_FORBIDDEN`.
+- **Header first.** `?lastEventId=` is for clients that cannot set headers. It puts the id into URLs and access logs, prefer `Last-Event-ID`.
+- **Gaps.** When events after the id are no longer kept (more than `maxEvents` since, or a store that lost some, found by their sequence numbers), the reconnect gets one `error` event `STREAM_RESUME_GAP`, without an id, telling the client to fetch the thread (`GET /threads/:id`) to catch up.
+- **Slow clients.** At most `maxEvents` wait for a client that reads slowly. One that falls further behind reads the store again, and gets `STREAM_RESUME_GAP` only for events the store no longer keeps.
+- **Stopped runs.** A run nobody follows for `detachedTimeoutMs` (5 minutes) is stopped, so a client that never comes back does not run up cost, and every run is stopped when `until` aborts (a server that shuts down, Fastify closes the plugin's runs by itself). Such a stream ends with an `error` event `STREAM_ABORTED`, a cancelled one with `STREAM_CANCELLED`, which a late reconnect replays.
+- **Room.** A stream whose run goes on is never evicted. When the store keeps `maxStreams` streams that all go on, a new resumable stream is refused with `503 STREAM_LIMIT_REACHED` before anything is sent.
+- **Store failures.** The clients of the process that runs a stream get every event from it directly, the last one too, also when the store fails. A store that cannot keep an event stops the run (`STREAM_ABORTED`).
 
 ```typescript
 import { CogitatorServer } from '@cogitator-ai/express';
@@ -175,22 +180,26 @@ new CogitatorServer({
   cogitator,
   agents,
   config: {
+    auth: verifyToken,
     resumableStreams: {
       maxEvents: 2000,
       retentionMs: 10 * 60_000,
       detachedTimeoutMs: 2 * 60_000,
+      owner: (auth) => auth?.userId,
+      until: shutdownSignal,
     },
   },
 });
 ```
 
-- `ResumableStreams`: The hub an adapter builds from its option (`ResumableStreams.from(option)`, `undefined` when off). `startAgentRun({ userId, threadId, signal?, execute, describeError })` starts a streamed run or resume on a new stream and returns it for the client that asked (`frames(signal)`: the events with their ids, until the stream ends or `signal` aborts). `reconnect(lastEventId, userId)` answers `{ ok: true, stream }` or `{ ok: false, error }` with the refusal. `open(owner)` is the lower level: a stream of your own events (`emit`, `end`, `signal`).
-- `ResumableStreamOptions`: `{ store?, maxEvents?, retentionMs?, maxStreams?, detachedTimeoutMs? }`. The limits set up the default in-memory store, next to a `store` of your own they throw.
-- `StreamReplayStore`: Where the events are kept: `create`, `append`, `read(streamId, afterSeq)` (the events after it, whether some were evicted (`gap`) and whether the stream finished), `finish`, `get` (the owner, `lastSeq` and how many `subscribers` follow it) and `subscribe` (the events appended from now on, then the end). Several processes behind a load balancer need a store they share, with pub/sub (Redis `PUBLISH`/`SUBSCRIBE` or similar), so a reconnect that lands on another process replays from the store and follows the live events the run's process appends, and `subscribers` counts the clients of every process, which the run reads before it stops as detached.
-- `InMemoryStreamReplayStore`: The default store, for one process: `maxEvents` of each stream (1000, a ring that evicts the oldest), a finished stream for `retentionMs` (5 minutes), `maxStreams` streams (1000, a new one evicts the stream that finished first, else the oldest). No timers: expired streams are dropped as the store is used. `now` injects the clock.
-- `STREAM_NOT_FOUND`, `STREAM_RESUME_GAP`, `STREAM_ABORTED`: The error codes of resumable streams.
-- `formatStreamEventId(streamId, seq)`, `parseStreamEventId(id)`, `lastEventIdOf(header, query)`: The event id format, and the id a request reconnects with (the header first, an empty value names none).
-- `invalidLastEventId()`, `streamNotFound()`: The `400` and `404` refusals of a reconnect.
+- `ResumableStreams<Auth>`: The hub an adapter builds from its option (`ResumableStreams.from(option)`, `undefined` when off). `startAgentRun({ auth, threadId, signal?, execute, describeError })` starts a streamed run or resume on a new stream and answers `{ ok: true, stream }` (`frames(signal)`: the events with their ids, until the stream ends or `signal` aborts) or `{ ok: false, error }` (`503 STREAM_LIMIT_REACHED`). `reconnect(lastEventId, caller)` and `cancel(streamId, caller)` take the caller (`{ auth, authorizeThread }`) and answer `{ ok: true, ... }` or the refusal. `close()` stops every run of the process, as `until` does. `open(owner)` is the lower level: a stream of your own events (`emit`, `end`, `signal`, `stopReason`).
+- `ResumableStreamOptions<Auth>`: `{ store?, maxEvents?, retentionMs?, maxStreams?, detachedTimeoutMs?, owner?, until? }`. `retentionMs` and `maxStreams` set up the default in-memory store, next to a `store` of your own they throw. `maxEvents` also bounds what waits for one client.
+- `StreamCaller<Auth>`, `defaultStreamOwner(auth)`: Who asks to reconnect or cancel, and the default owner key.
+- `StreamReplayStore`: Where the events are kept: `create` (`false` when it has no room without evicting a stream that goes on), `append`, `read(streamId, afterSeq)` (the events after it, whether some were evicted (`gap`) and whether the stream finished), `finish`, `get` (the `owner`, `lastSeq` and how many `subscribers` follow it), `subscribe` (the events appended from now on, then the end), `cancel` and `onCancel` (a cancel asked on any process reaches the process that runs the stream). Several processes behind a load balancer need a store they share, with pub/sub (Redis `PUBLISH`/`SUBSCRIBE` or similar), so a reconnect or a cancel that lands on another process reaches the run, and `subscribers` counts the clients of every process, which the run reads before it stops as detached.
+- `InMemoryStreamReplayStore`: The default store, for one process: `maxEvents` of each stream (1000, a ring that evicts the oldest), a finished stream for `retentionMs` (5 minutes), `maxStreams` streams (1000, a new one evicts the stream that finished first, and is refused while all of them go on). No timers: expired streams are dropped as the store is used. `now` injects the clock.
+- `STREAM_NOT_FOUND`, `STREAM_RESUME_GAP`, `STREAM_ABORTED`, `STREAM_CANCELLED`, `STREAM_LIMIT_REACHED`: The error codes of resumable streams.
+- `formatStreamEventId(streamId, seq)`, `parseStreamEventId(id)`, `isStreamId(id)`, `lastEventIdOf(header, query)`: The event id format, and the id a request reconnects with (the header first, an empty value names none).
+- `invalidLastEventId()`, `invalidStreamId()`, `streamNotFound()`, `streamLimitReached()`: The refusals of a reconnect, a cancel and a new stream.
 
 ### 4. ID Generation
 
@@ -301,7 +310,7 @@ Dynamic documentation generators reflecting registered agents, tools, workflows,
 Shared conformance test cases and mock runtime ensuring all adapters behave identically.
 
 - `checkConformance(testCase, response, runtime, check?)`: Compares a response the adapter already returned against the test case and runtime state, returning a list of mismatches (an empty array means the adapter conforms).
-- `ConformanceRuntime`: Mock runtime tracking runs, resumes, streaming callbacks, and memory operations. `new ConformanceRuntime(testCase)` follows the case's `runtime` options: runs that fail with a `CogitatorError` (`fail`) or a plain error (`crash`), and a thread holding `threadEntries` messages.
+- `ConformanceRuntime`: Mock runtime tracking runs, resumes, streaming callbacks, and memory operations. `new ConformanceRuntime(testCase)` follows the case's `runtime` options: runs that fail with a `CogitatorError` (`fail`) or a plain error (`crash`), a thread holding `threadEntries` messages, and streamed runs that `hold` after their parts until `release()` or until their signal aborts.
 - `CONFORMANCE_CASES`: Collection of standardized test cases covering input validation, context policy, thread isolation, error conditions and the streams of runs and resumes. Every event of a stream a case reads must match `StreamEventSchema`, and nothing may follow its `finish` or `error`.
 - `CONFORMANCE_ROUTES`: Standard test route mapping (`/agents/:name/run`, `/threads/:id/messages`, etc.).
 - `CONFORMANCE_NAMES`: Standard test entity names (`assistant`, `team`, `flow`, `thread-1`).
@@ -312,13 +321,15 @@ Shared conformance test cases and mock runtime ensuring all adapters behave iden
 - `conformanceRunResult()`: Generates mock completed `RunResult`.
 - `conformancePausedResult()`: Generates mock paused `RunResult` with pending tool approvals.
 - `parseSseEvents(text)`: Parses raw SSE wire text into structured event objects for test assertions. `parseSseFrames(text)` keeps the `id` of each event.
-- `conformanceReconnectRequest(case, first)`: The second request of a case with a `reconnect`: the route (with `?lastEventId=` when the case sends it there) and the `Last-Event-ID` header to send with the case's method, body and content type, once the adapter answered the first request with `first`. Put the answer in `reconnect` of the `ConformanceResponse`.
-- `ConformanceReconnect`: The reconnect of a case: after which event of the first answer (or a literal id), where the id goes and what the answer must be (`replays` the rest exactly, ends with a `streamError`, or a refusal).
+- `runConformanceCase(case, runtime, send)`: Sends a case and its follow-ups (reconnects, cancels, a second stream) through `send`, in order, dropping the first answer after `disconnectAfter` events when the case says so and releasing a held run once the first follow-up opens. Put what it returns into `checkConformance`.
+- `sendConformanceRequest(request, fetcher, codeOf?)`: The `send` of an adapter whose test can `fetch` (a listening server, `app.request`, a route handler): it reads the status, headers, error code and body, or the first events of a stream it then drops.
+- `ConformanceRequest`, `ConformanceSend`, `ConformanceFollowUp`: One request of a case, how an adapter sends it, and the follow-ups of a case (`reconnect` with the id of an event of the first answer, `cancel`, `start`, with the caller's headers and what each answer must be).
+- `conformanceCaller(header)`, `conformanceAuthorizeThread(server)`, `conformanceResumableStreams(server)`, `ConformanceCaller`: What an adapter's `auth`, `authorizeThread` and `resumableStreams` are for a case: callers told apart by the `x-conformance-user` and `x-conformance-role` headers (`callers`), roles turned away from every thread (`forbiddenRoles`), streams bound to the user id alone (`streamOwner: 'user'`).
 - `ConformanceCase`: Interface defining a test case.
 - `ConformanceCheckOptions`: Custom status code and error code mapping options for `checkConformance` (e.g. for adapters following framework-specific error conventions).
 - `ConformanceResponse`: Standardized response representation for adapter fetchers, with the answer's `headers` (names in lower case) for the cases that check `Retry-After`.
 - `ConformanceRoute`: Union of supported conformance route names.
-- `ConformanceServerOptions`: Adapter server options required by specific conformance test cases: `acceptContext`, `threadMessageRoles`, `limits`, `anonymous`, `forbiddenThreads` (threads the adapter's `authorizeThread` refuses), `deps` (what its `deps` hook returns), `workflowCheckpoints` (the adapter's workflow checkpoint store, an empty one in the cases) and `resumableStreams` (the adapter's option of that name).
+- `ConformanceServerOptions`: Adapter server options required by specific conformance test cases: `acceptContext`, `threadMessageRoles`, `limits`, `anonymous`, `forbiddenThreads` (threads the adapter's `authorizeThread` refuses), `deps` (what its `deps` hook returns), `workflowCheckpoints` (the adapter's workflow checkpoint store, an empty one in the cases), `resumableStreams` (the adapter's option of that name), `callers`, `forbiddenRoles` and `streamOwner` (see `conformanceCaller`).
 
 ### 11. Server Contract
 

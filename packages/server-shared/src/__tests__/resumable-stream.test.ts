@@ -5,6 +5,8 @@ import {
   InMemoryStreamReplayStore,
   ResumableStreams,
   STREAM_ABORTED,
+  STREAM_CANCELLED,
+  STREAM_LIMIT_REACHED,
   STREAM_NOT_FOUND,
   STREAM_RESUME_GAP,
   conformanceRunResult,
@@ -14,6 +16,9 @@ import {
   parseStreamEventId,
   type StreamFollower,
   type StreamFrame,
+  type StoredStreamEvent,
+  type StreamSubscriber,
+  type StreamOpening,
   type StreamReplayStore,
 } from '../index';
 
@@ -94,17 +99,25 @@ async function readThenLeave(follower: StreamFollower, count: number) {
   return frames;
 }
 
-async function startRun(hub: ResumableStreams, userId?: string) {
+interface Auth {
+  userId?: string;
+  tenant?: string;
+}
+
+function opened<T>(opening: StreamOpening<T>): T {
+  if (!opening.ok) throw new Error(`Refused: ${opening.error.code}`);
+  return opening.stream;
+}
+
+async function startRun(hub: ResumableStreams<Auth>, auth?: Auth) {
   const run = controlledRun();
-  const first = await hub.startAgentRun({ userId, execute: run.execute, describeError });
+  const first = opened(await hub.startAgentRun({ auth, execute: run.execute, describeError }));
   await run.running;
   return { run, first };
 }
 
-async function reconnect(hub: ResumableStreams, id: string | undefined, userId?: string) {
-  const attached = await hub.reconnect(id ?? '', userId);
-  if (!attached.ok) throw new Error(`Refused: ${attached.error.code}`);
-  return attached.stream;
+async function reconnect(hub: ResumableStreams<Auth>, id: string | undefined, auth?: Auth) {
+  return opened(await hub.reconnect(id ?? '', { auth }));
 }
 
 const seqOf = (frame: StreamFrame) => parseStreamEventId(frame.id ?? '')?.seq;
@@ -209,17 +222,34 @@ describe('InMemoryStreamReplayStore', () => {
     expect(await store.get('c')).toBeDefined();
   });
 
-  it('drops the oldest stream when none finished, ending its subscriptions', async () => {
+  it('never evicts a stream that goes on, refusing a new one instead', async () => {
     const store = new InMemoryStreamReplayStore({ maxStreams: 2 });
     await filled(store, 'a', 1);
     await filled(store, 'b', 1);
     const end = vi.fn();
     await store.subscribe('a', { event: () => undefined, end });
-    await store.create(record('c'));
 
+    expect(await store.create(record('c'))).toBe(false);
+    expect(await store.get('a')).toBeDefined();
+    expect(end).not.toHaveBeenCalled();
+
+    await store.finish('a');
+    expect(await store.create(record('c'))).toBe(true);
     expect(await store.get('a')).toBeUndefined();
-    expect(end).toHaveBeenCalledTimes(1);
-    expect(await store.get('b')).toBeDefined();
+  });
+
+  it('tells the listeners of a stream about a cancel, also one asked before they listened', async () => {
+    const store = new InMemoryStreamReplayStore();
+    await filled(store, 's', 1);
+    const early = vi.fn();
+    await store.onCancel('s', early);
+    await store.cancel('s');
+    const late = vi.fn();
+    await store.onCancel('s', late);
+
+    expect(early).toHaveBeenCalledTimes(1);
+    expect(late).toHaveBeenCalledTimes(1);
+    expect(await store.onCancel('unknown', vi.fn())).toBeUndefined();
   });
 
   it('counts the subscriptions of a stream and hands them every new event', async () => {
@@ -259,7 +289,8 @@ describe('ResumableStreams', () => {
 
   it('refuses the in-memory limits next to a store of its own, and bad timeouts', () => {
     const store = new InMemoryStreamReplayStore();
-    expect(() => new ResumableStreams({ store, maxEvents: 10 })).toThrow(/your own store/);
+    expect(() => new ResumableStreams({ store, maxStreams: 10 })).toThrow(/your own store/);
+    expect(() => new ResumableStreams({ store, retentionMs: 10 })).toThrow(/your own store/);
     expect(() => new ResumableStreams({ detachedTimeoutMs: 0 })).toThrow(RangeError);
     expect(() => new ResumableStreams({ detachedTimeoutMs: 3e9 })).toThrow(RangeError);
   });
@@ -338,6 +369,8 @@ describe('ResumableStreams', () => {
       finish: (id) => memory.finish(id),
       get: (id) => memory.get(id),
       subscribe: (id, subscriber) => memory.subscribe(id, subscriber),
+      cancel: (id) => memory.cancel(id),
+      onCancel: (id, listener) => memory.onCancel(id, listener),
       read: async (id, afterSeq) => {
         const replay = await memory.read(id, afterSeq);
         duringRead?.();
@@ -403,27 +436,72 @@ describe('ResumableStreams', () => {
     );
   });
 
-  it('lets only the user who started the stream reconnect', async () => {
-    const hub = new ResumableStreams();
-    const { run, first } = await startRun(hub, 'alice');
+  it('lets only the caller who started the stream reconnect', async () => {
+    const hub = new ResumableStreams<Auth>();
+    const { run, first } = await startRun(hub, { userId: 'alice' });
     run.finish();
     const id = formatStreamEventId(first.streamId, 1);
 
-    for (const caller of ['mallory', undefined]) {
-      const refused = await hub.reconnect(id, caller);
+    for (const auth of [{ userId: 'mallory' }, undefined, { userId: 'alice', tenant: 'b' }]) {
+      const refused = await hub.reconnect(id, { auth });
       expect(refused).toMatchObject({ ok: false, error: { status: 404, code: STREAM_NOT_FOUND } });
     }
-    expect((await hub.reconnect(id, 'alice')).ok).toBe(true);
+    expect((await hub.reconnect(id, { auth: { userId: 'alice' } })).ok).toBe(true);
+  });
+
+  it('tells apart callers without a user id by the rest of their identity', async () => {
+    const hub = new ResumableStreams<Auth>();
+    const { run, first } = await startRun(hub, { tenant: 'acme' });
+    run.finish();
+    const id = formatStreamEventId(first.streamId, 1);
+
+    expect((await hub.reconnect(id, { auth: { tenant: 'globex' } })).ok).toBe(false);
+    expect((await hub.reconnect(id, {})).ok).toBe(false);
+    expect((await hub.reconnect(id, { auth: { tenant: 'acme' } })).ok).toBe(true);
+  });
+
+  it('binds a stream to the key owner gives', async () => {
+    const hub = new ResumableStreams<Auth>({ owner: (auth) => auth?.userId });
+    const { run, first } = await startRun(hub, { userId: 'alice', tenant: 'a' });
+    run.finish();
+    const id = formatStreamEventId(first.streamId, 1);
+
+    expect((await hub.reconnect(id, { auth: { userId: 'alice', tenant: 'b' } })).ok).toBe(true);
+    expect((await hub.reconnect(id, { auth: { userId: 'bob', tenant: 'a' } })).ok).toBe(false);
   });
 
   it('lets no user reconnect to an anonymous stream', async () => {
-    const hub = new ResumableStreams();
+    const hub = new ResumableStreams<Auth>();
     const { run, first } = await startRun(hub);
     run.finish();
     const id = formatStreamEventId(first.streamId, 1);
 
-    expect((await hub.reconnect(id, 'alice')).ok).toBe(false);
-    expect((await hub.reconnect(id, undefined)).ok).toBe(true);
+    expect((await hub.reconnect(id, { auth: { userId: 'alice' } })).ok).toBe(false);
+    expect((await hub.reconnect(id, { auth: {} })).ok).toBe(true);
+    expect((await hub.reconnect(id)).ok).toBe(true);
+  });
+
+  it('asks authorizeThread about the stream thread before a reconnect or a cancel', async () => {
+    const hub = new ResumableStreams<Auth>();
+    const { run, first } = await startRun(hub);
+    const id = formatStreamEventId(first.streamId, 1);
+    const asked: string[] = [];
+    const authorizeThread = (threadId: string) => {
+      asked.push(threadId);
+      return { status: 403, code: 'THREAD_FORBIDDEN', message: 'no' };
+    };
+
+    expect(await hub.reconnect(id, { authorizeThread })).toMatchObject({
+      ok: false,
+      error: { status: 403, code: 'THREAD_FORBIDDEN' },
+    });
+    expect(await hub.cancel(first.streamId, { authorizeThread })).toMatchObject({
+      ok: false,
+      error: { status: 403 },
+    });
+    expect(asked).toEqual([first.threadId, first.threadId]);
+    expect(run.signal.aborted).toBe(false);
+    run.finish();
   });
 
   it('refuses ids that name no event of a stream it keeps', async () => {
@@ -432,7 +510,7 @@ describe('ResumableStreams', () => {
     run.finish();
     await readAll(first);
 
-    expect(await hub.reconnect('garbage', undefined)).toMatchObject({
+    expect(await hub.reconnect('garbage')).toMatchObject({
       ok: false,
       error: { status: 400, code: 'INVALID_INPUT' },
     });
@@ -440,7 +518,7 @@ describe('ResumableStreams', () => {
       'stream_00000000-0000-4000-8000-000000000000:1',
       formatStreamEventId(first.streamId, 99),
     ]) {
-      expect(await hub.reconnect(id, undefined)).toMatchObject({
+      expect(await hub.reconnect(id)).toMatchObject({
         ok: false,
         error: { status: 404, code: STREAM_NOT_FOUND },
       });
@@ -528,11 +606,9 @@ describe('ResumableStreams', () => {
     const hub = new ResumableStreams();
     const shutdown = new AbortController();
     const run = controlledRun();
-    const first = await hub.startAgentRun({
-      execute: run.execute,
-      describeError,
-      signal: shutdown.signal,
-    });
+    const first = opened(
+      await hub.startAgentRun({ execute: run.execute, describeError, signal: shutdown.signal })
+    );
     await run.running;
     shutdown.abort();
 
@@ -561,5 +637,165 @@ describe('ResumableStreams', () => {
     run.finish();
     await readAll(first);
     await expect(readAll(first)).rejects.toThrow(/already read/);
+  });
+});
+
+describe('ResumableStreams under pressure', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('cancels the run of the caller, which ends its stream with STREAM_CANCELLED', async () => {
+    const hub = new ResumableStreams<Auth>();
+    const { run, first } = await startRun(hub, { userId: 'alice' });
+    const before = await readThenLeave(first, 1);
+
+    expect(await hub.cancel(first.streamId, { auth: { userId: 'mallory' } })).toMatchObject({
+      ok: false,
+      error: { status: 404, code: STREAM_NOT_FOUND },
+    });
+    expect(run.signal.aborted).toBe(false);
+    expect(await hub.cancel('not a stream id', { auth: { userId: 'alice' } })).toMatchObject({
+      ok: false,
+      error: { status: 400 },
+    });
+    expect(await hub.cancel(first.streamId, { auth: { userId: 'alice' } })).toEqual({ ok: true });
+    expect(run.signal.aborted).toBe(true);
+
+    const rest = await readAll(await reconnect(hub, before[0]?.id, { userId: 'alice' }));
+    expect(rest.at(-1)?.event).toMatchObject({
+      type: 'error',
+      code: STREAM_CANCELLED,
+      message: 'The run was cancelled',
+    });
+  });
+
+  it('cancels a run another process runs, through the store', async () => {
+    const store = new InMemoryStreamReplayStore();
+    const runner = new ResumableStreams({ store });
+    const other = new ResumableStreams({ store });
+    const { run, first } = await startRun(runner);
+
+    expect(await other.cancel(first.streamId)).toEqual({ ok: true });
+    expect(run.signal.aborted).toBe(true);
+  });
+
+  it('refuses a new stream with 503 STREAM_LIMIT_REACHED while every stream kept goes on', async () => {
+    const hub = new ResumableStreams<Auth>({ maxStreams: 1 });
+    const { run, first } = await startRun(hub, { userId: 'alice' });
+
+    const refused = await hub.startAgentRun({ execute: controlledRun().execute, describeError });
+    expect(refused).toMatchObject({
+      ok: false,
+      error: { status: 503, code: STREAM_LIMIT_REACHED },
+    });
+    expect(run.signal.aborted).toBe(false);
+
+    run.finish();
+    await readAll(first);
+    expect((await hub.startAgentRun({ execute: controlledRun().execute, describeError })).ok).toBe(
+      true
+    );
+  });
+
+  it('stops every run when until aborts, or on close()', async () => {
+    const until = new AbortController();
+    const hub = new ResumableStreams({ until: until.signal });
+    const { run, first } = await startRun(hub);
+    until.abort();
+
+    expect(run.signal.aborted).toBe(true);
+    expect((await readAll(first)).at(-1)?.event).toMatchObject({
+      type: 'error',
+      code: STREAM_ABORTED,
+      message: 'The server stopped the run as it shut down',
+    });
+
+    const closing = new ResumableStreams();
+    const other = await startRun(closing);
+    closing.close();
+    expect(other.run.signal.aborted).toBe(true);
+  });
+
+  it('hands the clients of the process every event, the last one too, when the store fails', async () => {
+    const memory = new InMemoryStreamReplayStore();
+    let failing = false;
+    const store: StreamReplayStore = Object.assign(Object.create(memory) as StreamReplayStore, {
+      append: (id: string, entry: StoredStreamEvent) =>
+        failing ? Promise.reject(new Error('redis down')) : memory.append(id, entry),
+      finish: () => Promise.reject(new Error('redis down')),
+    });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const hub = new ResumableStreams({ store });
+    const { run, first } = await startRun(hub);
+    const reading = readAll(first);
+    run.callbacks.onToken('a');
+    failing = true;
+    run.callbacks.onToken('b');
+
+    const frames = await reading;
+    expect(frames.map(seqOf)).toEqual(frames.map((_, at) => at + 1));
+    expect(frames.at(-1)?.event).toMatchObject({ type: 'error', code: STREAM_ABORTED });
+    expect(errors).toHaveBeenCalled();
+    errors.mockRestore();
+  });
+
+  it('reports events a store lost as STREAM_RESUME_GAP instead of skipping them', async () => {
+    const memory = new InMemoryStreamReplayStore();
+    const lost = 3;
+    const store: StreamReplayStore = Object.assign(Object.create(memory) as StreamReplayStore, {
+      subscribe: (id: string, subscriber: StreamSubscriber) =>
+        memory.subscribe(id, {
+          event: (entry) => entry.seq !== lost && subscriber.event(entry),
+          end: () => subscriber.end(),
+        }),
+      read: async (id: string, afterSeq: number) => {
+        const replay = await memory.read(id, afterSeq);
+        return replay && { ...replay, events: replay.events.filter((e) => e.seq !== lost) };
+      },
+    });
+    const runner = new ResumableStreams({ store });
+    const elsewhere = new ResumableStreams({ store });
+    const { run, first } = await startRun(runner);
+    await readThenLeave(first, 1);
+    const follower = opened(await elsewhere.reconnect(formatStreamEventId(first.streamId, 1)));
+    const reading = readAll(follower);
+    run.callbacks.onToken('a');
+    run.callbacks.onToken('b');
+    run.finish();
+
+    const rest = await reading;
+    expect(rest.map(seqOf)).toEqual([2, undefined]);
+    expect(rest.at(-1)?.event).toMatchObject({ type: 'error', code: STREAM_RESUME_GAP });
+  });
+
+  it('holds at most maxEvents for a client that reads slowly, which catches up from the store', async () => {
+    const store = new InMemoryStreamReplayStore({ maxEvents: 100 });
+    const hub = new ResumableStreams({ store, maxEvents: 3 });
+    const { run, first } = await startRun(hub);
+    const frames = first.frames(new AbortController().signal);
+    const read: StreamFrame[] = [];
+    read.push((await frames.next()).value as StreamFrame);
+    for (let at = 0; at < 20; at++) run.callbacks.onToken(String(at));
+    run.finish();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    for await (const frame of frames) read.push(frame);
+
+    expect(read.map(seqOf)).toEqual(read.map((_, at) => at + 1));
+    expect(read.at(-1)?.event.type).toBe('finish');
+  });
+
+  it('ends a client that fell behind past the store with STREAM_RESUME_GAP', async () => {
+    const hub = new ResumableStreams({ maxEvents: 3 });
+    const { run, first } = await startRun(hub);
+    const frames = first.frames(new AbortController().signal);
+    await frames.next();
+    for (let at = 0; at < 20; at++) run.callbacks.onToken(String(at));
+    run.finish();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const read: StreamFrame[] = [];
+    for await (const frame of frames) read.push(frame);
+
+    expect(read.at(-1)?.event).toMatchObject({ type: 'error', code: STREAM_RESUME_GAP });
   });
 });

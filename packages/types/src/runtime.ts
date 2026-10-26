@@ -826,9 +826,19 @@ export interface RunCheckpoint {
     logged: { at: number; entryId: string }[];
     written?: number;
     tag?: string;
+    /**
+     * The run's tool calls (`toolCalls` is then empty): one of an assistant message of the
+     * conversation by its index and place there, or a call kept whole when no message holds it
+     */
+    calls?: ({ at: number; index: number } | { call: ToolCall })[];
   };
   /** Messages queued on the run's handle it had not delivered yet, see `RunHandle` */
   queued?: QueuedRunMessage[];
+  /**
+   * Background subagents a durable run had going: lost when its process stops, so the recovered
+   * run reports them as failed with an unknown outcome (`task_output`, the stop notice)
+   */
+  background?: { taskId: string; agent: string; name?: string }[];
   toolCalls: ToolCall[];
   prompt?: RunPrompt;
   /** The agent the run was in when it paused, after handoffs */

@@ -93,15 +93,19 @@ export interface ChatHandlerOptions extends ServerContractOptions {
   /**
    * Keeps the stream of each run so a client that loses it can resume it. Every event then
    * carries an SSE `id`, and a client that disconnects no longer stops the run: it goes on, and
-   * the same request again with `Last-Event-ID` (or `?lastEventId=`) replays what the client
-   * missed and follows the run to its end, `useCogitatorChat` does it by itself. The reconnect
-   * carries the body of the request it resumes, since `beforeRun` identifies the caller from it,
-   * and only the user it named (anonymous callers for an anonymous run) may reconnect. A run
-   * nobody follows for `detachedTimeoutMs` (5 minutes) is stopped. `true` keeps the events in
-   * the memory of this handler with the default limits: give every instance one shared
-   * `store` where several serve the route. Default: off, a client that disconnects stops the run.
+   * the same request again with `Last-Event-ID` (or `?lastEventId=`, which puts the id in URLs
+   * and logs, so prefer the header) replays what the client missed and follows the run to its
+   * end, `useCogitatorChat` does it by itself. `DELETE` on the route with `?streamId=` cancels
+   * the run (export the handler as `DELETE` too). A reconnect and a cancel read no body and run
+   * neither `beforeRun` nor `deps`: the stream is bound to `owner(req)`, and only a request with
+   * the same owner may reconnect or cancel, after `authorizeThread` on the stream's thread. With
+   * `beforeRun`, `owner` is required (it throws otherwise), without it every caller is
+   * anonymous. A run nobody follows for `detachedTimeoutMs` (5 minutes) is stopped, so is every
+   * run when `until` aborts. `true` keeps the events in the memory of this handler with the
+   * default limits: give every instance one shared `store` where several serve the route.
+   * Default: off, a client that disconnects stops the run.
    */
-  resumableStreams?: boolean | ResumableStreamOptions;
+  resumableStreams?: boolean | ResumableStreamOptions<Request>;
 }
 
 export interface AgentHandlerOptions extends ServerContractOptions {
@@ -150,17 +154,22 @@ export interface ResumeHandlerOptions extends ServerContractOptions {
    */
   sseHeartbeatMs?: number;
   /**
-   * With `stream: true`, keeps the stream of each resumed run so a client that loses it can resume it. Every event then
+   * With `stream: true`, keeps the stream of each resumed run so a client that loses it can
+   * resume it. Every event then
    * carries an SSE `id`, and a client that disconnects no longer stops the run: it goes on, and
-   * the same request again with `Last-Event-ID` (or `?lastEventId=`) replays what the client
-   * missed and follows the run to its end, `useCogitatorChat` does it by itself. The reconnect
-   * carries the body of the request it resumes, since `beforeRun` identifies the caller from it,
-   * and only the user it named (anonymous callers for an anonymous run) may reconnect. A run
-   * nobody follows for `detachedTimeoutMs` (5 minutes) is stopped. `true` keeps the events in
-   * the memory of this handler with the default limits: give every instance one shared
-   * `store` where several serve the route. Default: off, a client that disconnects stops the run.
+   * the same request again with `Last-Event-ID` (or `?lastEventId=`, which puts the id in URLs
+   * and logs, so prefer the header) replays what the client missed and follows the run to its
+   * end, `useCogitatorChat` does it by itself. `DELETE` on the route with `?streamId=` cancels
+   * the run (export the handler as `DELETE` too). A reconnect and a cancel read no body and run
+   * neither `beforeRun` nor `deps`: the stream is bound to `owner(req)`, and only a request with
+   * the same owner may reconnect or cancel, after `authorizeThread` on the stream's thread. With
+   * `beforeRun`, `owner` is required (it throws otherwise), without it every caller is
+   * anonymous. A run nobody follows for `detachedTimeoutMs` (5 minutes) is stopped, so is every
+   * run when `until` aborts. `true` keeps the events in the memory of this handler with the
+   * default limits: give every instance one shared `store` where several serve the route.
+   * Default: off, a client that disconnects stops the run.
    */
-  resumableStreams?: boolean | ResumableStreamOptions;
+  resumableStreams?: boolean | ResumableStreamOptions<Request>;
 }
 
 /**

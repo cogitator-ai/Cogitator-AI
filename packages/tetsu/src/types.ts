@@ -165,11 +165,13 @@ export interface CogitatorDeps {
    * client that loses one can resume it. Every event then carries an SSE `id`, and a client
    * that disconnects no longer stops the run: it goes on, and the same route with
    * `Last-Event-ID` (or `?lastEventId=`) replays what the client missed and follows the run to
-   * its end. A run nobody follows for `detachedTimeoutMs` (5 minutes) is stopped, and so is
-   * every run when `until` fires. `true` keeps the events in memory with the default limits.
+   * its end, and `DELETE /agents/:name/stream/:streamId` cancels the run. Only the caller who
+   * started a stream (every field of what `auth` returned, see `owner`) may reconnect to it or
+   * cancel its run, after `authorizeThread` on its thread. A run nobody follows for
+   * `detachedTimeoutMs` (5 minutes) is stopped, and so is every run when `until` fires. `true` keeps the events in memory with the default limits.
    * Default: off, a client that disconnects stops the run.
    */
-  resumableStreams?: boolean | ResumableStreamOptions;
+  resumableStreams?: boolean | ResumableStreamOptions<AuthContext>;
 }
 
 export type AgentRunRequest = z.input<typeof RunBody>;

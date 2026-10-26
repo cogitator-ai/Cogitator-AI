@@ -185,11 +185,14 @@ export interface CogitatorServerConfig {
      * client that loses one can resume it. Every event then carries an SSE `id`, and a client
      * that disconnects no longer stops the run: it goes on, and the same route with
      * `Last-Event-ID` (or `?lastEventId=`) replays what the client missed and follows the run to
-     * its end. A run nobody follows for `detachedTimeoutMs` (5 minutes) is stopped. `true` keeps
+     * its end, and `DELETE /agents/:name/stream/:streamId` cancels the run. Only the caller who
+     * started a stream (every field of what `auth` returned, see `owner`) may reconnect to it or
+     * cancel its run, after `authorizeThread` on its thread. A run nobody follows for
+     * `detachedTimeoutMs` (5 minutes) is stopped, and every run when `until` aborts. `true` keeps
      * the events in memory with the default limits. Default: off, a client that disconnects
      * stops the run.
      */
-    resumableStreams?: boolean | ResumableStreamOptions;
+    resumableStreams?: boolean | ResumableStreamOptions<AuthContext>;
   };
 }
 
@@ -348,7 +351,7 @@ export interface RouteContext {
   swarms: Record<string, SwarmConfig>;
   config: ResolvedServerConfig;
   /** The streams kept for clients to resume, when `resumableStreams` is on */
-  resumableStreams?: ResumableStreams;
+  resumableStreams?: ResumableStreams<AuthContext>;
 }
 
 export interface WebSocketMessage {

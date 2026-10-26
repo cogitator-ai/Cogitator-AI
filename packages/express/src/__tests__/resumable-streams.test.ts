@@ -201,6 +201,38 @@ describe('resumable streams', () => {
     expect(last).toMatchObject({ type: 'error', code: 'STREAM_ABORTED' });
   });
 
+  it('stops the runs of resumable streams when until aborts, as a server that shuts down', async () => {
+    const { runtime, running } = gatedRuntime();
+    const shutdown = new AbortController();
+    const url = await listen(runtime, { until: shutdown.signal });
+
+    const before = await readThenDrop(url, 1);
+    const signal = await running;
+    shutdown.abort();
+
+    expect(signal.aborted).toBe(true);
+    const rest = await reconnect(url, before[0]!.id!);
+    expect(parseSseFrames(rest.body).at(-1)?.event).toMatchObject({
+      type: 'error',
+      code: 'STREAM_ABORTED',
+    });
+  });
+
+  it('cancels a run on DELETE /agents/:name/stream/:streamId', async () => {
+    const { runtime, running } = gatedRuntime();
+    const url = await listen(runtime, true);
+    const before = await readThenDrop(url, 1, { 'x-user': 'alice' });
+    const signal = await running;
+    const streamId = before[0]!.id!.split(':')[0];
+    const cancel = (headers: Record<string, string>) =>
+      fetch(`${url}/${streamId}`, { method: 'DELETE', headers });
+
+    expect((await cancel({ 'x-user': 'mallory' })).status).toBe(404);
+    expect(signal.aborted).toBe(false);
+    expect((await cancel({ 'x-user': 'alice' })).status).toBe(204);
+    expect(signal.aborted).toBe(true);
+  });
+
   it('refuses a malformed Last-Event-ID with 400 before streaming', async () => {
     const url = await listen(gatedRuntime().runtime, true);
     const refused = await reconnect(url, 'garbage');

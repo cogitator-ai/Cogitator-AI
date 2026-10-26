@@ -9,7 +9,13 @@ import type {
 import type { AnonymousPolicy, RunLimits } from './contract.js';
 import type { StreamEvent } from './protocol.js';
 import { toAgentRunResponse } from './response.js';
-import { parseStreamEventId, type ResumableStreamOptions } from './resumable-stream.js';
+import {
+  formatStreamEventId,
+  parseStreamEventId,
+  type ResumableStreamOptions,
+} from './resumable-stream.js';
+import { InMemoryStreamReplayStore } from './stream-replay-store.js';
+import { isJsonObject } from './validation.js';
 import { StreamEventSchema } from './stream-schemas.js';
 import type { ContextPolicy, ThreadMessageRole } from './validation.js';
 
@@ -74,8 +80,63 @@ export interface ConformanceServerOptions {
   deps?: Readonly<Record<string, unknown>>;
   /** The adapter's workflow checkpoint store */
   workflowCheckpoints?: CheckpointStore;
-  /** The adapter's `resumableStreams` option */
+  /** The adapter's `resumableStreams` option, see {@link conformanceResumableStreams} */
   resumableStreams?: boolean | ResumableStreamOptions;
+  /**
+   * The adapter's auth tells callers apart: {@link conformanceCaller} reads the identity it
+   * establishes from the `x-conformance-user` and `x-conformance-role` headers of a request
+   */
+  callers?: true;
+  /** Roles the adapter's `authorizeThread` turns away from every thread, see {@link conformanceAuthorizeThread} */
+  forbiddenRoles?: readonly string[];
+  /** `user`: resumable streams are bound to the user id alone, not the whole identity */
+  streamOwner?: 'user';
+}
+
+/** What the adapter's auth establishes for a caller of a case with `callers` */
+export interface ConformanceCaller {
+  userId?: string;
+  roles?: string[];
+}
+
+/**
+ * The identity of a request in a case with `callers`: its `x-conformance-user` header as the
+ * user id and its `x-conformance-role` header as its one role. A request without them is
+ * anonymous (`{}`)
+ */
+export function conformanceCaller(
+  header: (name: string) => string | null | undefined
+): ConformanceCaller {
+  const userId = header('x-conformance-user') ?? undefined;
+  const role = header('x-conformance-role') ?? undefined;
+  return { ...(userId && { userId }), ...(role && { roles: [role] }) };
+}
+
+/**
+ * The adapter's `authorizeThread` for a case: it turns away every caller from the
+ * `forbiddenThreads`, and callers with a `forbiddenRoles` role from every thread. `undefined`
+ * when the case forbids nothing
+ */
+export function conformanceAuthorizeThread(
+  server: ConformanceServerOptions | undefined
+): ((auth: ConformanceCaller | undefined, threadId: string) => boolean) | undefined {
+  const threads = server?.forbiddenThreads;
+  const roles = server?.forbiddenRoles;
+  if (!threads && !roles) return undefined;
+  return (auth, threadId) =>
+    !threads?.includes(threadId) && !auth?.roles?.some((role) => roles?.includes(role));
+}
+
+/**
+ * The adapter's `resumableStreams` option for a case, with the owner the case asks for: the
+ * user id alone for `streamOwner: 'user'`, else the adapter's default
+ */
+export function conformanceResumableStreams(
+  server: ConformanceServerOptions | undefined
+): boolean | ResumableStreamOptions<ConformanceCaller> | undefined {
+  const option = server?.resumableStreams;
+  if (!option || server.streamOwner !== 'user') return option;
+  return { ...(option === true ? {} : option), owner: (auth) => auth?.userId };
 }
 
 /**
@@ -97,25 +158,42 @@ export interface ConformanceRuntimeOptions {
   crash?: string;
   /** Messages the conformance thread holds, one a millisecond */
   threadEntries?: number;
+  /**
+   * A streamed run holds after its parts until {@link ConformanceRuntime.release}, or until its
+   * signal aborts, which it fails with. Use with `disconnectAfter`
+   */
+  hold?: true;
 }
 
 /**
- * The second request of a case: a reconnect to the stream the first one opened, sent to the
- * same route with the same body, as a client that resends its request would
+ * A request a case sends once its first request was answered, in order, with the method,
+ * body and content type of the case and the headers of `headers`
  */
-export interface ConformanceReconnect {
+export interface ConformanceFollowUp {
   /**
-   * The event id to reconnect with: the id of this event of the first answer (1 for the
-   * first), or this id as it is
+   * `reconnect` (the default): the case's route with `Last-Event-ID`. `cancel`: `DELETE` on the
+   * cancel route of the stream (`/agents/:name/stream/:streamId`). `start`: the case's request
+   * again, a new stream
    */
-  after: number | string;
-  /** Where the id goes: the `Last-Event-ID` header (the default) or the `lastEventId` query parameter */
+  kind?: 'reconnect' | 'cancel' | 'start';
+  /**
+   * The event of the first answer whose id (or stream id, for a cancel) to send: 1 for the
+   * first, or this id as it is
+   */
+  after?: number | string;
+  /** Where a reconnect sends the id: the `Last-Event-ID` header (the default) or the `lastEventId` query parameter */
   via?: 'header' | 'query';
+  /** The caller's headers, see {@link conformanceCaller} */
+  headers?: Readonly<Record<string, string>>;
   expect: {
     status: number;
     /** The error code of a refusal */
     code?: string;
-    /** The answer replays exactly the events of the first answer after `after`, with their ids */
+    /**
+     * The answer continues the stream of the first answer right after `after`: the same
+     * stream, sequence numbers on from there, the same events the first answer had past
+     * `after`, ending with `finish` and `[DONE]`
+     */
     replays?: true;
     /** The stream ends with an `error` event of this code */
     streamError?: string;
@@ -165,12 +243,24 @@ export interface ConformanceCase {
      * and on. `false`: no event has an id
      */
     streamIds?: boolean;
+    /** Whether the signal of the run was aborted once every request was answered */
+    runAborted?: boolean;
   };
-  /** A reconnect to send once the first request is answered */
-  reconnect?: ConformanceReconnect;
+  /** The caller's headers on the first request, see {@link conformanceCaller} */
+  headers?: Readonly<Record<string, string>>;
+  /**
+   * Read this many events of the first answer, then drop the connection, the way a client
+   * that loses its network does. The checks of a stream that ends then do not apply to it
+   */
+  disconnectAfter?: number;
+  /** Requests to send once the first one is answered, in order */
+  followUps?: readonly ConformanceFollowUp[];
 }
 
 const JSON_TYPE = 'application/json';
+const ALICE = { 'x-conformance-user': 'alice', 'x-conformance-role': 'member' } as const;
+const REVOKED_ALICE = { 'x-conformance-user': 'alice', 'x-conformance-role': 'revoked' } as const;
+const MALLORY = { 'x-conformance-user': 'mallory', 'x-conformance-role': 'member' } as const;
 const run = (body: unknown) => JSON.stringify(body);
 
 export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
@@ -557,7 +647,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
         server: resumable,
         body,
         expect: stream,
-        reconnect: { after: 3, expect: { status: 200, replays: true } },
+        followUps: [{ after: 3, expect: { status: 200, replays: true } }],
       },
       {
         name: `replays the rest of ${label} to a client that reconnects with ?lastEventId=`,
@@ -565,7 +655,17 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
         server: resumable,
         body,
         expect: stream,
-        reconnect: { after: 6, via: 'query', expect: { status: 200, replays: true } },
+        followUps: [{ after: 6, via: 'query', expect: { status: 200, replays: true } }],
+      },
+      {
+        name: `goes on with the run of ${label} its client dropped, and tails it live to a reconnect`,
+        route,
+        server: resumable,
+        runtime: { hold: true },
+        body,
+        disconnectAfter: 4,
+        expect: { status: 200, streamIds: true, runAborted: false },
+        followUps: [{ after: 4, expect: { status: 200, replays: true } }],
       },
       {
         name: `answers a reconnect to ${label} it does not keep with 404 STREAM_NOT_FOUND`,
@@ -573,10 +673,12 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
         server: resumable,
         body,
         expect: stream,
-        reconnect: {
-          after: 'stream_00000000-0000-4000-8000-000000000000:1',
-          expect: { status: 404, code: 'STREAM_NOT_FOUND' },
-        },
+        followUps: [
+          {
+            after: 'stream_00000000-0000-4000-8000-000000000000:1',
+            expect: { status: 404, code: 'STREAM_NOT_FOUND' },
+          },
+        ],
       },
       {
         name: `refuses a reconnect to ${label} with an id that names no event`,
@@ -584,15 +686,90 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
         server: resumable,
         body,
         expect: stream,
-        reconnect: { after: 'not-an-event-id', expect: { status: 400, code: 'INVALID_INPUT' } },
+        followUps: [{ after: 'not-an-event-id', expect: { status: 400, code: 'INVALID_INPUT' } }],
       },
       {
         name: `ends a reconnect to ${label} whose events were evicted with STREAM_RESUME_GAP`,
         route,
-        server: { resumableStreams: { maxEvents: 2 } },
+        server: { resumableStreams: { store: new InMemoryStreamReplayStore({ maxEvents: 2 }) } },
         body,
         expect: stream,
-        reconnect: { after: 1, expect: { status: 200, streamError: 'STREAM_RESUME_GAP' } },
+        followUps: [{ after: 1, expect: { status: 200, streamError: 'STREAM_RESUME_GAP' } }],
+      },
+      {
+        name: `cancels the run of ${label} whose client dropped, on the cancel route`,
+        route,
+        server: resumable,
+        runtime: { hold: true },
+        body,
+        disconnectAfter: 3,
+        expect: { status: 200, streamIds: true, runAborted: true },
+        followUps: [
+          { kind: 'cancel', after: 3, expect: { status: 204 } },
+          { after: 3, expect: { status: 200, streamError: 'STREAM_CANCELLED' } },
+        ],
+      },
+      {
+        name: `lets only the caller who started ${label} reconnect to it or cancel its run`,
+        route,
+        server: { resumableStreams: true, callers: true },
+        runtime: { hold: true },
+        headers: ALICE,
+        body,
+        disconnectAfter: 2,
+        expect: { status: 200, streamIds: true, runAborted: false },
+        followUps: [
+          {
+            kind: 'cancel',
+            after: 2,
+            headers: MALLORY,
+            expect: { status: 404, code: 'STREAM_NOT_FOUND' },
+          },
+          { after: 2, headers: MALLORY, expect: { status: 404, code: 'STREAM_NOT_FOUND' } },
+          { after: 2, expect: { status: 404, code: 'STREAM_NOT_FOUND' } },
+          {
+            after: 2,
+            headers: { 'x-conformance-role': 'member' },
+            expect: { status: 404, code: 'STREAM_NOT_FOUND' },
+          },
+          { after: 2, headers: ALICE, expect: { status: 200, replays: true } },
+        ],
+      },
+      {
+        name: `asks authorizeThread before a reconnect to ${label} or a cancel of its run`,
+        route,
+        server: {
+          resumableStreams: true,
+          callers: true,
+          streamOwner: 'user',
+          forbiddenRoles: ['revoked'],
+        },
+        headers: ALICE,
+        body,
+        expect: stream,
+        followUps: [
+          { after: 2, headers: REVOKED_ALICE, expect: { status: 403, code: 'THREAD_FORBIDDEN' } },
+          {
+            kind: 'cancel',
+            after: 2,
+            headers: REVOKED_ALICE,
+            expect: { status: 403, code: 'THREAD_FORBIDDEN' },
+          },
+          { after: 2, headers: ALICE, expect: { status: 200, replays: true } },
+        ],
+      },
+      {
+        name: `refuses a new resumable stream while ${label} it keeps fills the store, rather than evicting it`,
+        route,
+        server: { resumableStreams: { maxStreams: 1 } },
+        runtime: { hold: true },
+        body,
+        disconnectAfter: 2,
+        expect: { status: 200, streamIds: true, runAborted: false },
+        followUps: [
+          { kind: 'start', expect: { status: 503, code: 'STREAM_LIMIT_REACHED' } },
+          { after: 2, expect: { status: 200, replays: true } },
+        ],
       },
       {
         name: `ends ${label} that failed unexpectedly without telling what it was`,
@@ -739,9 +916,29 @@ export class ConformanceRuntime {
   readonly runs: Array<RunOptions | ResumeOptions> = [];
   readonly results: RunResult[] = [];
   readonly memoryWrites: unknown[] = [];
+  private releaseHeld: () => void = () => undefined;
+  private readonly held = new Promise<void>((resolve) => (this.releaseHeld = resolve));
 
   /** `testCase` sets how the runtime behaves for it (`runtime` of the case) */
   constructor(private readonly testCase?: ConformanceCase) {}
+
+  /** Lets the streamed runs of a case with `hold` finish */
+  release(): void {
+    this.releaseHeld();
+  }
+
+  /** Waits for `release()` in a case with `hold`, failing when `signal` aborts first */
+  private async hold(signal: AbortSignal | undefined): Promise<void> {
+    if (!this.testCase?.runtime?.hold) return;
+    await Promise.race([
+      this.held,
+      new Promise<never>((_, reject) => {
+        const abort = () => reject(new Error('The held run was aborted'));
+        if (signal?.aborted) abort();
+        else signal?.addEventListener('abort', abort, { once: true });
+      }),
+    ]);
+  }
 
   /** The error a case makes every run and resume fail with */
   private failure(): Error | undefined {
@@ -760,8 +957,13 @@ export class ConformanceRuntime {
     this.runs.push(options);
     const failure = this.failure();
     if (failure) return Promise.reject(failure);
-    if (options.stream) streamParts(options);
-    return Promise.resolve(
+    if (!options.stream) {
+      return Promise.resolve(
+        this.record(conformanceRunResult(options.threadId ?? CONFORMANCE_GENERATED_THREAD))
+      );
+    }
+    streamParts(options);
+    return this.hold(options.signal).then(() =>
       this.record(conformanceRunResult(options.threadId ?? CONFORMANCE_GENERATED_THREAD))
     );
   }
@@ -770,8 +972,9 @@ export class ConformanceRuntime {
     this.runs.push({ ...options, threadId });
     const failure = this.failure();
     if (failure) return Promise.reject(failure);
-    if (options.stream) streamParts(options);
-    return Promise.resolve(this.record(conformancePausedResult(threadId)));
+    if (!options.stream) return Promise.resolve(this.record(conformancePausedResult(threadId)));
+    streamParts(options);
+    return this.hold(options.signal).then(() => this.record(conformancePausedResult(threadId)));
   }
 
   getMemory(): Promise<unknown> {
@@ -825,30 +1028,162 @@ export interface ConformanceResponse {
   body: string;
   /** The answer's headers, names in lower case, for the cases that check them */
   headers?: Readonly<Record<string, string>>;
-  /** What the adapter answered to the reconnect of a case with one */
-  reconnect?: ConformanceResponse;
+  /** What the adapter answered to the follow-ups of a case, in order */
+  followUps?: readonly ConformanceResponse[];
+}
+
+/** One request of a case, as an adapter's test sends it */
+export interface ConformanceRequest {
+  method: 'GET' | 'POST' | 'DELETE';
+  /** Relative to where the adapter is mounted, with the query */
+  path: string;
+  headers: Readonly<Record<string, string>>;
+  body?: string;
+  /** Read this many events of the answer, then drop the connection */
+  disconnectAfter?: number;
+  /** Call once the status and headers of the answer arrived, before its body is read */
+  onOpen?: () => void;
+}
+
+/** Sends one request of a case to the adapter and reads its answer, see {@link sendConformanceRequest} */
+export type ConformanceSend = (request: ConformanceRequest) => Promise<ConformanceResponse>;
+
+/**
+ * Sends a case to an adapter and every follow-up of it, in order: the first request (dropped
+ * after `disconnectAfter` events when the case says so), then each follow-up. The runtime of a
+ * case with `hold` is released once the first follow-up is answered, so a reconnect that opens
+ * while the run holds follows the rest of it live, and at the latest when everything was sent.
+ */
+export async function runConformanceCase(
+  testCase: ConformanceCase,
+  runtime: ConformanceRuntime,
+  send: ConformanceSend
+): Promise<ConformanceResponse> {
+  const method = conformanceMethod(testCase);
+  const body = method !== 'GET' ? testCase.body : undefined;
+  const request = (headers: Readonly<Record<string, string>> | undefined) => ({
+    method,
+    headers: {
+      ...(body !== undefined && { 'Content-Type': conformanceContentType(testCase) }),
+      ...headers,
+    },
+    ...(body !== undefined && { body }),
+  });
+  const route = CONFORMANCE_ROUTES[testCase.route];
+  const release = () => runtime.release();
+  try {
+    const first = await send({
+      ...request(testCase.headers),
+      path: route,
+      ...(testCase.disconnectAfter !== undefined && {
+        disconnectAfter: testCase.disconnectAfter,
+      }),
+    });
+    const followUps: ConformanceResponse[] = [];
+    for (const followUp of testCase.followUps ?? []) {
+      const base = { ...request(followUp.headers), onOpen: release };
+      const target = followUpTarget(followUp, first.body);
+      if (followUp.kind === 'start') {
+        followUps.push(await send({ ...base, path: route }));
+      } else if (followUp.kind === 'cancel') {
+        const streamId = parseStreamEventId(target)?.streamId ?? target;
+        followUps.push(
+          await send({
+            method: 'DELETE',
+            headers: { ...followUp.headers },
+            path: `${CONFORMANCE_ROUTES.agentStream}/${encodeURIComponent(streamId)}`,
+            onOpen: release,
+          })
+        );
+      } else if (followUp.via === 'query') {
+        followUps.push(
+          await send({ ...base, path: `${route}?lastEventId=${encodeURIComponent(target)}` })
+        );
+      } else {
+        followUps.push(
+          await send({
+            ...base,
+            path: route,
+            headers: { ...base.headers, 'Last-Event-ID': target },
+          })
+        );
+      }
+    }
+    return followUps.length > 0 ? { ...first, followUps } : first;
+  } finally {
+    release();
+  }
+}
+
+/** The event id a follow-up names: the id of its `after`th event of the first answer, or its own */
+function followUpTarget(followUp: ConformanceFollowUp, firstBody: string): string {
+  if (typeof followUp.after === 'string') return followUp.after;
+  if (followUp.after === undefined) return '';
+  return parseSseFrames(firstBody)[followUp.after - 1]?.id ?? '';
 }
 
 /**
- * The reconnect a case sends once its first request was answered with `first`: the route
- * (relative to where the adapter is mounted, with the query) and the headers to add to the
- * case's own. It goes with the case's method, body and content type. `undefined` for a case
- * without a reconnect.
+ * Sends a case's request with `fetcher` (`fetch` on a listening server, `app.request`, a route
+ * handler) and reads the answer: its status, the error code `codeOf` reads from a refusal (the
+ * shared envelope by default), its headers and its body, or the first `disconnectAfter` events
+ * of it before the connection is dropped.
  */
-export function conformanceReconnectRequest(
-  testCase: ConformanceCase,
-  first: ConformanceResponse
-): { path: string; headers: Record<string, string> } | undefined {
-  const { reconnect } = testCase;
-  if (!reconnect) return undefined;
-  const lastEventId =
-    typeof reconnect.after === 'string'
-      ? reconnect.after
-      : (parseSseFrames(first.body)[reconnect.after - 1]?.id ?? '');
-  const path = CONFORMANCE_ROUTES[testCase.route];
-  return reconnect.via === 'query'
-    ? { path: `${path}?lastEventId=${encodeURIComponent(lastEventId)}`, headers: {} }
-    : { path, headers: { 'Last-Event-ID': lastEventId } };
+export async function sendConformanceRequest(
+  request: ConformanceRequest,
+  fetcher: (path: string, init: RequestInit) => Response | Promise<Response>,
+  codeOf: (body: unknown) => string | undefined = envelopeCode
+): Promise<ConformanceResponse> {
+  const client = new AbortController();
+  const res = await fetcher(request.path, {
+    method: request.method,
+    headers: request.headers,
+    ...(request.body !== undefined && { body: request.body }),
+    signal: client.signal,
+  });
+  request.onOpen?.();
+  const body =
+    request.disconnectAfter === undefined || !res.body
+      ? await res.text()
+      : await readEvents(res.body, request.disconnectAfter, client);
+  const code = res.status >= 400 ? codeOf(parseJson(body)) : undefined;
+  const headers = Object.fromEntries(
+    [...res.headers.entries()].map(([name, value]) => [name.toLowerCase(), value])
+  );
+  return { status: res.status, code, body, headers };
+}
+
+/** The code of the shared error envelope, `{ error: { code } }` */
+function envelopeCode(body: unknown): string | undefined {
+  if (!isJsonObject(body) || !isJsonObject(body.error)) return undefined;
+  return typeof body.error.code === 'string' ? body.error.code : undefined;
+}
+
+/** Reads the first `count` events of an SSE body, then drops the connection */
+async function readEvents(
+  stream: ReadableStream<Uint8Array>,
+  count: number,
+  client: AbortController
+): Promise<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  try {
+    for (;;) {
+      const complete = text.slice(0, text.lastIndexOf('\n\n') + 2);
+      const frames = parseSseFrames(complete);
+      if (frames.length >= count) {
+        const ends = [...complete.matchAll(/\n\n/g)].map((match) => match.index + 2);
+        const cut = ends.find((end) => parseSseFrames(complete.slice(0, end)).length === count);
+        return complete.slice(0, cut);
+      }
+      const { value, done } = await reader.read();
+      if (done) return text;
+      text += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    client.abort();
+    await reader.cancel().catch(() => undefined);
+  }
 }
 
 /**
@@ -979,7 +1314,7 @@ export function checkConformance(
   }
 
   if (response.status === 200 && testCase.route.endsWith('Stream')) {
-    problems.push(...checkStreamEvents(response.body));
+    problems.push(...checkStreamEvents(response.body, testCase.disconnectAfter === undefined));
   }
 
   if (expect.streamThread !== undefined) {
@@ -1013,14 +1348,23 @@ export function checkConformance(
   if (expect.streamIds !== undefined)
     problems.push(...checkStreamIds(response.body, expect.streamIds));
 
-  if (testCase.reconnect) {
-    problems.push(
-      ...checkReconnect(testCase.reconnect, response, check).map(
-        (problem) => `reconnect: ${problem}`
-      )
-    );
-    if (runtime.runs.length !== runs) {
-      fail(`the reconnect started a run, ${runtime.runs.length} in all, expected ${runs}`);
+  (testCase.followUps ?? []).forEach((followUp, at) => {
+    const answer = response.followUps?.[at];
+    const label = `follow-up ${at + 1} (${followUp.kind ?? 'reconnect'})`;
+    if (!answer) fail(`${label}: the adapter sent none`);
+    else {
+      problems.push(
+        ...checkFollowUp(followUp, response, answer, check).map((problem) => `${label}: ${problem}`)
+      );
+    }
+  });
+
+  if (expect.runAborted !== undefined) {
+    const aborted = runtime.runs.at(-1)?.signal?.aborted ?? false;
+    if (aborted !== expect.runAborted) {
+      fail(
+        `the run was ${aborted ? '' : 'not '}aborted, expected it ${expect.runAborted ? '' : 'not '}to be`
+      );
     }
   }
 
@@ -1061,15 +1405,14 @@ function checkStreamIds(body: string, expected: boolean): string[] {
   return problems;
 }
 
-function checkReconnect(
-  reconnect: ConformanceReconnect,
+function checkFollowUp(
+  followUp: ConformanceFollowUp,
   first: ConformanceResponse,
+  answer: ConformanceResponse,
   check: ConformanceCheckOptions
 ): string[] {
-  const answer = first.reconnect;
-  if (!answer) return ['the adapter sent no reconnect'];
   const problems: string[] = [];
-  const { expect } = reconnect;
+  const { expect } = followUp;
   const status = check.statuses?.[expect.status] ?? expect.status;
   if (answer.status !== status) {
     problems.push(`status ${answer.status}, expected ${status}: ${answer.body.slice(0, 300)}`);
@@ -1078,19 +1421,8 @@ function checkReconnect(
   if (code !== undefined && answer.code !== code) {
     problems.push(`error code ${String(answer.code)}, expected ${code}`);
   }
-  if (answer.status === 200) problems.push(...checkStreamEvents(answer.body));
-  if (expect.replays) {
-    const after = typeof reconnect.after === 'number' ? reconnect.after : 0;
-    const expected = parseSseFrames(first.body).slice(after);
-    const replayed = parseSseFrames(answer.body);
-    if (!sameJson(replayed, expected)) {
-      problems.push(
-        `replayed ${JSON.stringify(replayed).slice(0, 300)}, expected ${JSON.stringify(expected).slice(0, 300)}`
-      );
-    }
-    if (!answer.body.trimEnd().endsWith('data: [DONE]'))
-      problems.push('the stream ends without [DONE]');
-  }
+  if (answer.status === 200) problems.push(...checkStreamEvents(answer.body, true));
+  if (expect.replays) problems.push(...checkReplay(followUp, first.body, answer.body));
   if (expect.streamError !== undefined) {
     const last = parseSseEvents(answer.body).at(-1);
     if (last?.type !== 'error' || last.code !== expect.streamError) {
@@ -1102,8 +1434,37 @@ function checkReconnect(
   return problems;
 }
 
-/** Every event of a stream must match its schema, and nothing may follow `finish` or `error` */
-function checkStreamEvents(body: string): string[] {
+/** A reconnect must continue the first answer right after the event it names, to `finish` */
+function checkReplay(followUp: ConformanceFollowUp, firstBody: string, body: string): string[] {
+  const problems: string[] = [];
+  const after = typeof followUp.after === 'number' ? followUp.after : 0;
+  const first = parseSseFrames(firstBody);
+  const named = first[after - 1]?.id;
+  const stream = named === undefined ? undefined : parseStreamEventId(named)?.streamId;
+  const replayed = parseSseFrames(body);
+  replayed.forEach((frame, at) => {
+    const expected = stream === undefined ? undefined : formatStreamEventId(stream, after + at + 1);
+    if (frame.id !== expected) {
+      problems.push(`event ${at} has the id ${String(frame.id)}, expected ${String(expected)}`);
+    }
+  });
+  const overlap = first.slice(after);
+  if (!sameJson(replayed.slice(0, overlap.length), overlap)) {
+    problems.push(
+      `replayed ${JSON.stringify(replayed).slice(0, 300)}, expected ${JSON.stringify(overlap).slice(0, 300)}`
+    );
+  }
+  if (replayed.at(-1)?.event.type !== 'finish')
+    problems.push('the replay does not end with finish');
+  if (!body.trimEnd().endsWith('data: [DONE]')) problems.push('the stream ends without [DONE]');
+  return problems;
+}
+
+/**
+ * Every event of a stream must match its schema, and nothing may follow `finish` or `error`,
+ * which a stream read to its end (`whole`) must end with
+ */
+function checkStreamEvents(body: string, whole: boolean): string[] {
   const events = parseSseEvents(body);
   const problems: string[] = [];
   events.forEach((event, at) => {
@@ -1115,8 +1476,10 @@ function checkStreamEvents(body: string): string[] {
     }
   });
   const end = events.findIndex((event) => event.type === 'finish' || event.type === 'error');
-  if (end === -1) problems.push('the stream ends without a finish or error event');
-  else if (end !== events.length - 1) problems.push(`events follow the ${events[end]?.type} event`);
+  if (end === -1) {
+    if (whole) problems.push('the stream ends without a finish or error event');
+  } else if (end !== events.length - 1)
+    problems.push(`events follow the ${events[end]?.type} event`);
   return problems;
 }
 

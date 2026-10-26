@@ -371,7 +371,7 @@ interface WorkerConfig extends QueueConfig {
 
 ### Durable Agent Jobs
 
-With `durable: true` every agent job runs as a durable run named after the job (`job:<jobId>`): it keeps a checkpoint after every model turn and tool batch. When a worker crashes or the pool shuts down mid-job, the next attempt (on this worker or another) recovers the run and goes on from its last step instead of running the whole job again. A tool call that returned keeps its result and never runs twice, one that was running reaches the model as "outcome unknown, verify before retrying". On `stop()` and `forceStop()` the pool aborts its durable runs with `RUN_SUSPENDED`, so they hand over at once instead of waiting for their lease.
+With `durable: true` every agent job runs as a durable run named after the job (`job:<jobId>`): it keeps a checkpoint after every model turn and tool batch. When a worker crashes or the pool shuts down mid-job, the next attempt (on this worker or another) recovers the run and goes on from its last step instead of running the whole job again. A tool call that returned keeps its result and never runs twice, one that was running reaches the model as "outcome unknown, verify before retrying". On `stop()` and `forceStop()` the pool aborts its durable runs with `RUN_SUSPENDED`, so they hand over at once instead of waiting for their lease. When BullMQ hands a stalled job on while its run is still held, the job is delayed until the run's lease runs out instead of using up an attempt.
 
 ```typescript
 const pool = new WorkerPool({ redis, tools, durable: true });

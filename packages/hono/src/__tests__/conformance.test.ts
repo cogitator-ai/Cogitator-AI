@@ -2,15 +2,15 @@ import { describe, it, expect } from 'vitest';
 import {
   CONFORMANCE_CASES,
   CONFORMANCE_NAMES,
-  CONFORMANCE_ROUTES,
   CONFORMANCE_SWARM,
   ConformanceRuntime,
   checkConformance,
-  conformanceContentType,
-  conformanceMethod,
-  conformanceReconnectRequest,
+  conformanceAuthorizeThread,
+  conformanceCaller,
+  conformanceResumableStreams,
+  runConformanceCase,
+  sendConformanceRequest,
   type ConformanceCase,
-  type ConformanceResponse,
   type ConformanceServerOptions,
 } from '@cogitator-ai/server-shared';
 import { cogitatorApp } from '../app.js';
@@ -19,13 +19,27 @@ import type { CogitatorAppOptions } from '../types.js';
 type Options = CogitatorAppOptions;
 
 function serverOptions(server: ConformanceServerOptions = {}): Partial<Options> {
-  const { forbiddenThreads, deps, ...options } = server;
+  const {
+    acceptContext,
+    threadMessageRoles,
+    limits,
+    anonymous,
+    workflowCheckpoints,
+    callers,
+    deps,
+  } = server;
+  const authorizeThread = conformanceAuthorizeThread(server);
+  const resumableStreams = conformanceResumableStreams(server);
   return {
-    ...options,
-    ...(forbiddenThreads && {
-      authorizeThread: (_auth, id) => !forbiddenThreads.includes(id),
-    }),
+    ...(acceptContext !== undefined && { acceptContext }),
+    ...(threadMessageRoles && { threadMessageRoles }),
+    ...(limits && { limits }),
+    ...(anonymous && { anonymous }),
+    ...(workflowCheckpoints && { workflowCheckpoints }),
+    ...(callers && { auth: (c) => conformanceCaller((name) => c.req.header(name)) }),
+    ...(authorizeThread && { authorizeThread }),
     ...(deps && { deps: () => deps }),
+    ...(resumableStreams !== undefined && { resumableStreams }),
   };
 }
 
@@ -43,26 +57,9 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
     ...serverOptions(testCase.server),
   });
 
-  const send = async (
-    path: string,
-    extraHeaders: Record<string, string> = {}
-  ): Promise<ConformanceResponse> => {
-    const res = await app.request(path, {
-      method: conformanceMethod(testCase),
-      headers: { 'Content-Type': conformanceContentType(testCase), ...extraHeaders },
-      body: testCase.body,
-    });
-    const body = await res.text();
-    const code = res.ok ? undefined : (JSON.parse(body) as { error: { code: string } }).error.code;
-    const headers = Object.fromEntries(
-      [...res.headers.entries()].map(([name, value]) => [name.toLowerCase(), value])
-    );
-    return { status: res.status, code, body, headers };
-  };
-
-  const first = await send(CONFORMANCE_ROUTES[testCase.route]);
-  const reconnect = conformanceReconnectRequest(testCase, first);
-  return reconnect ? { ...first, reconnect: await send(reconnect.path, reconnect.headers) } : first;
+  return runConformanceCase(testCase, runtime, (request) =>
+    sendConformanceRequest(request, (path, init) => app.request(path, init))
+  );
 }
 
 describe('server protocol conformance', () => {

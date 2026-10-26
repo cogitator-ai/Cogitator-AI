@@ -1,9 +1,13 @@
 import {
   AgentStreamSession,
+  ResumableStreams,
+  authorizeThreadAccess,
   lastEventIdOf,
-  type ResumableStreams,
+  type ResumableStreamOptions,
+  type StreamCaller,
   type StreamFollower,
 } from '@cogitator-ai/server-shared';
+import type { ServerContractOptions } from '../types.js';
 import type { RunOptions, RunResult } from '@cogitator-ai/types';
 import { StreamWriter } from '../streaming/stream-writer.js';
 import { describeRunError, errorResponse, runErrorResponse } from './http.js';
@@ -45,12 +49,45 @@ export interface StreamRunOptions {
   /** How often a heartbeat comment is written while the stream is open; `0` turns it off */
   heartbeatMs?: number;
   /** The handler's resumable streams, when `resumableStreams` is on */
-  streams?: ResumableStreams;
+  streams?: ResumableStreams<Request>;
 }
 
-/** The user `beforeRun` named, who alone may reconnect to the run's stream */
-function userIdOf(runContext: Record<string, unknown>): string | undefined {
-  return typeof runContext.userId === 'string' ? runContext.userId : undefined;
+/**
+ * The resumable streams of a handler. A reconnect and a cancel do not run `beforeRun` (its
+ * side effects would repeat, and a cancel has no input), so a handler that identifies callers
+ * in `beforeRun` must bind streams to them with `owner`, which reads the request.
+ *
+ * @throws Error for `resumableStreams` next to `beforeRun` without an `owner`
+ */
+export function resumableStreamsOf(
+  option: boolean | ResumableStreamOptions<Request> | undefined,
+  identifiesCallers: boolean
+): ResumableStreams<Request> | undefined {
+  if (!option) return undefined;
+  const options = option === true ? {} : option;
+  if (identifiesCallers && !options.owner) {
+    throw new Error(
+      'resumableStreams needs an owner next to beforeRun: a reconnect does not run beforeRun, so owner(req) must tell the caller of a stream apart, as beforeRun does'
+    );
+  }
+  return new ResumableStreams<Request>({ owner: () => undefined, ...options });
+}
+
+/** The caller of a reconnect or cancel: the request, and `authorizeThread` for the stream's thread */
+function callerOf(
+  req: Request,
+  contract: ServerContractOptions | undefined
+): StreamCaller<Request> {
+  const authorize = contract?.authorizeThread;
+  return {
+    auth: req,
+    authorizeThread: (threadId) =>
+      authorizeThreadAccess(
+        authorize && ((_req: Request | undefined, id: string) => authorize(req, id)),
+        req,
+        threadId
+      ),
+  };
 }
 
 /**
@@ -75,8 +112,8 @@ async function resumableAgentRun(
   streams: ResumableStreams
 ): Promise<Response> {
   try {
-    const stream = await streams.startAgentRun({
-      userId: userIdOf(runContext),
+    const opened = await streams.startAgentRun({
+      auth: req,
       threadId,
       ...(runContext.signal instanceof AbortSignal && { signal: runContext.signal }),
       execute: async (session, signal) => {
@@ -89,30 +126,37 @@ async function resumableAgentRun(
       },
       describeError: describeRunError,
     });
-    return followStream(req, stream, heartbeatMs);
+    return opened.ok ? followStream(req, opened.stream, heartbeatMs) : errorResponse(opened.error);
   } catch (err) {
     return runErrorResponse(err);
   }
 }
 
 /**
- * Answers a request that reconnects to a resumable stream with `Last-Event-ID` or
- * `?lastEventId=`: the rest of the stream, or the refusal. `undefined` for a request that names
- * no event. The caller is the user `beforeRun` named for it.
+ * Answers the requests of a handler with resumable streams that start no run: `DELETE` with
+ * `?streamId=` cancels the run of a stream, a request with `Last-Event-ID` or `?lastEventId=`
+ * reconnects to its stream. `undefined` for any other request. Neither reads the body nor runs
+ * `beforeRun` or `deps`: `owner` identifies the caller, and `authorizeThread` checks the
+ * stream's thread.
  */
-export async function reconnectStream(
+export async function answerStreamRequest(
   req: Request,
-  streams: ResumableStreams,
-  runContext: Record<string, unknown>,
+  streams: ResumableStreams<Request>,
+  contract: ServerContractOptions | undefined,
   heartbeatMs: number | undefined
 ): Promise<Response | undefined> {
-  const lastEventId = lastEventIdOf(
-    req.headers.get('last-event-id'),
-    new URL(req.url).searchParams.getAll('lastEventId')
-  );
-  if (lastEventId === undefined) return undefined;
+  const query = new URL(req.url).searchParams;
   try {
-    const attached = await streams.reconnect(lastEventId, userIdOf(runContext));
+    if (req.method === 'DELETE') {
+      const cancelled = await streams.cancel(query.get('streamId') ?? '', callerOf(req, contract));
+      return cancelled.ok ? new Response(null, { status: 204 }) : errorResponse(cancelled.error);
+    }
+    const lastEventId = lastEventIdOf(
+      req.headers.get('last-event-id'),
+      query.getAll('lastEventId')
+    );
+    if (lastEventId === undefined) return undefined;
+    const attached = await streams.reconnect(lastEventId, callerOf(req, contract));
     return attached.ok
       ? followStream(req, attached.stream, heartbeatMs)
       : errorResponse(attached.error);

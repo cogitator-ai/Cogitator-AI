@@ -6,7 +6,7 @@ import {
   generateId,
   resolveSseHeartbeatMs,
 } from '@cogitator-ai/server-shared';
-import type { HonoEnv, CogitatorAppOptions } from '../types.js';
+import type { AuthContext, HonoEnv, CogitatorAppOptions } from '../types.js';
 
 /**
  * Sets the Cogitator context of each request.
@@ -17,7 +17,7 @@ import type { HonoEnv, CogitatorAppOptions } from '../types.js';
 export function createContextMiddleware(opts: CogitatorAppOptions) {
   const sseHeartbeatMs = resolveSseHeartbeatMs(opts.sseHeartbeatMs);
   const limits = checkRunLimits(opts.limits);
-  const resumableStreams = ResumableStreams.from(opts.resumableStreams);
+  const resumableStreams = ResumableStreams.from<AuthContext>(opts.resumableStreams);
   return createMiddleware<HonoEnv>(async (c, next) => {
     c.set('cogitator', {
       runtime: opts.cogitator,

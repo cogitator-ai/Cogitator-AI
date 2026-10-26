@@ -14,10 +14,17 @@ export interface DurableRunRef {
   readonly threadId: string;
 }
 
-/** Who holds a durable run: the process that runs it, until `expiresAt` unless it renews */
-export interface DurableRunLease {
-  /** The `durable.owner` of the runtime that holds it */
+/**
+ * Who takes a durable run: the runtime's `durable.owner` and the instance of the runtime, new for
+ * every `Cogitator`, so another live runtime with the same owner never takes a run this one holds
+ */
+export interface DurableRunHolder {
   owner: string;
+  instance: string;
+}
+
+/** Who holds a durable run: the process that runs it, until `expiresAt` unless it renews */
+export interface DurableRunLease extends DurableRunHolder {
   /** Epoch milliseconds the lease ends at, when the store knows it */
   expiresAt?: number;
 }
@@ -49,10 +56,16 @@ export interface DurableRunRecord extends DurableRunRef {
   userId?: string;
   checkpoint: RunCheckpoint;
   /**
-   * The messages the run's conversation starts with (system prompt, history, input), kept once.
-   * `save()` without it keeps the base the store holds
+   * The messages the run's conversation starts with (system prompt, history, input, and without
+   * a memory log every message the run added), kept once. `save()` without it keeps the base the
+   * store holds
    */
   base?: Message[];
+  /**
+   * When set, `save()` gets in `base` only the messages from this index on: the store keeps its
+   * first `baseFrom` messages and adds these after them, so a step writes what is new
+   */
+  baseFrom?: number;
   /** What happened since `checkpoint`, see {@link DurableRunMark}. `save()` replaces it */
   journal: DurableRunMark[];
   /** Epoch milliseconds of the last `save()` */
@@ -91,27 +104,45 @@ export interface DurableRunFilter {
  */
 export interface DurableRunStore {
   /**
-   * Takes the run for `owner`, or renews the lease `owner` holds, for `ttlMs`. False while
-   * another owner holds a lease that has not run out
+   * Takes the run for `holder`, or renews the lease its instance holds, for `ttlMs`. False while
+   * another instance holds a lease that has not run out, unless `replacing` names that instance:
+   * the runtime passes it to take back a run of its own `owner` whose instance is gone (a process
+   * that restarted)
    */
-  acquire(ref: DurableRunRef, owner: string, ttlMs: number): Promise<boolean>;
+  acquire(
+    ref: DurableRunRef,
+    holder: DurableRunHolder,
+    ttlMs: number,
+    options?: { replacing?: string }
+  ): Promise<boolean>;
   /**
-   * Extends the lease `owner` holds by `ttlMs`. False when it holds none: it ran out, another
-   * owner took it, or the run was deleted. A run that loses its lease stops, so it never goes on
-   * past a process that recovered it
+   * Extends the lease `holder` holds by `ttlMs`. False when it holds none: it ran out, another
+   * instance took it, or the run was deleted. A run that loses its lease stops, so it never goes
+   * on past a process that recovered it
    */
-  renew(ref: DurableRunRef, owner: string, ttlMs: number): Promise<boolean>;
-  /** Lets the run go, when `owner` holds it, so another process may take it at once */
-  release(ref: DurableRunRef, owner: string): Promise<void>;
-  /** Keeps the run's checkpoint, its journal emptied (or `record.journal`), and `base` when given */
-  save(record: DurableRunRecord): Promise<void>;
-  /** Adds marks to the run's journal */
-  append(ref: DurableRunRef, marks: readonly DurableRunMark[]): Promise<void>;
+  renew(ref: DurableRunRef, holder: DurableRunHolder, ttlMs: number): Promise<boolean>;
+  /** Lets the run go, when `holder` holds it, so another process may take it at once */
+  release(ref: DurableRunRef, holder: DurableRunHolder): Promise<void>;
+  /**
+   * Keeps the run's checkpoint, its journal (`record.journal`, usually empty) and `base` when
+   * given, all at once, and only while `holder` holds the lease: false when it does not, so a
+   * process that lost a run never overwrites the checkpoint of the one that took it over
+   */
+  save(record: DurableRunRecord, holder: DurableRunHolder): Promise<boolean>;
+  /** Adds marks to the run's journal while `holder` holds the lease, false when it does not */
+  append(
+    ref: DurableRunRef,
+    marks: readonly DurableRunMark[],
+    holder: DurableRunHolder
+  ): Promise<boolean>;
   /** The run with its base and journal, null when the store has none */
   load(ref: DurableRunRef): Promise<DurableRunRecord | null>;
   list(filter?: DurableRunFilter): Promise<DurableRunSummary[]>;
-  /** Forgets the run and its lease */
-  delete(ref: DurableRunRef): Promise<void>;
+  /**
+   * Forgets the run and its lease. With `holder`, only while it holds the lease: false when it
+   * does not
+   */
+  delete(ref: DurableRunRef, holder?: DurableRunHolder): Promise<boolean>;
 }
 
 /** `CogitatorConfig.durable`: how durable runs are kept */
@@ -137,6 +168,14 @@ export interface DurableRunsConfig {
    * without waiting for their leases to run out
    */
   owner?: string;
+  /**
+   * What a run does when its store keeps failing (after `storeRetries`): `suspend` (default)
+   * stops it with `RUN_SUSPENDED`, its last checkpoint kept for a recovery, `continue` lets it
+   * go on without checkpoints (a recovery may then repeat what it did since the last one)
+   */
+  onStoreError?: 'suspend' | 'continue';
+  /** How often a failed write to the store is tried again, with a growing pause. Default: 3 */
+  storeRetries?: number;
 }
 
 /** Options of a recovered run: those of `cogitator.start()` the checkpoint does not fix */

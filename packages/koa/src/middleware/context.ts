@@ -1,5 +1,5 @@
 import type { Context, Next } from 'koa';
-import type { CogitatorAppOptions, CogitatorState, RouteContext } from '../types.js';
+import type { AuthContext, CogitatorAppOptions, CogitatorState, RouteContext } from '../types.js';
 import {
   DEFAULT_THREAD_MESSAGE_ROLES,
   ResumableStreams,
@@ -28,7 +28,7 @@ export function createContextMiddleware(opts: CogitatorAppOptions) {
     anonymous: opts.anonymous,
     deps: opts.deps,
     workflowCheckpoints: opts.workflowCheckpoints,
-    resumableStreams: ResumableStreams.from(opts.resumableStreams),
+    resumableStreams: ResumableStreams.from<AuthContext>(opts.resumableStreams),
   };
 
   return async (ctx: Context, next: Next) => {

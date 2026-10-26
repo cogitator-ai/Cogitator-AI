@@ -3,9 +3,11 @@ import { nanoid } from 'nanoid';
 import type {
   BuiltContext,
   CogitatorConfig,
+  DurableRunHolder,
   DurableRunInfo,
   DurableRunRecord,
   DurableRunStore,
+  DurableRunSummary,
   DurableRunsConfig,
   RecoveredAgentRuns,
   RecoverRunOptions,
@@ -309,6 +311,7 @@ import { InMemoryRunCheckpointStore, ThreadRunCheckpointStore } from './cogitato
 import { InMemoryDurableRunStore, ThreadDurableRunStore } from './cogitator/durable-stores';
 import {
   DEFAULT_DURABLE_LEASE_MS,
+  DEFAULT_STORE_RETRIES,
   DurableRunKeeper,
   rebuildDurableRun,
   type RebuiltRun,
@@ -727,6 +730,8 @@ export class Cogitator implements ToolInvoker {
   private threadDurableRuns?: { memory: MemoryAdapter; store: ThreadDurableRunStore };
   /** Who this runtime's durable runs are held by, see `DurableRunsConfig.owner` */
   private readonly durableOwner: string;
+  /** Who this runtime's durable runs are held by: its owner and this instance of it */
+  private readonly durableHolder: DurableRunHolder;
   /** The durable runs this runtime has going, by run id */
   private readonly durableRunsGoing = new Set<string>();
   /** The Zod schemas of the questions tools of this process's runs wait on */
@@ -807,6 +812,15 @@ export class Cogitator implements ToolInvoker {
       });
     }
     this.durableOwner = durable?.owner ?? `cogitator_${nanoid(12)}`;
+    this.durableHolder = { owner: this.durableOwner, instance: `instance_${nanoid(16)}` };
+    LIVE_INSTANCES.add(this.durableHolder.instance);
+    const retries = durable?.storeRetries;
+    if (retries !== undefined && !(Number.isInteger(retries) && retries >= 0)) {
+      throw new CogitatorError({
+        message: `durable.storeRetries must be 0 or a whole number, got ${String(retries)}`,
+        code: ErrorCode.CONFIGURATION_ERROR,
+      });
+    }
     this.pricer = new CallPricer(config.llm?.pricing, (name) =>
       Object.hasOwn(config.llm?.backends ?? {}, name)
         ? config.llm?.backends?.[name]?.provider
@@ -971,6 +985,12 @@ export class Cogitator implements ToolInvoker {
     target: RunCheckpoint | string,
     ...[options = {}]: ResumeArgs<TDeps>
   ): Promise<RunResult> {
+    if (typeof target !== 'string' && target.status === 'running') {
+      throw new CogitatorError({
+        message: `Run ${target.runId} did not pause: it is a durable run left running, recover it with recoverRun()`,
+        code: ErrorCode.VALIDATION_ERROR,
+      });
+    }
     if (typeof target !== 'string' && target.version !== 1) {
       throw new CogitatorError({
         message: `Unsupported run checkpoint version: ${String(target.version)}`,
@@ -2133,6 +2153,8 @@ export class Cogitator implements ToolInvoker {
     tagEntries();
     let keeper: DurableRunKeeper | undefined;
     let handOver = false;
+    /** The durable run this execution holds in `durableRunsGoing` */
+    let reservedRun = resumeFrom?.recovered ? checkpoint?.runId : undefined;
     const explicitTrace = normalizeTraceParent(options.trace);
     const parentTrace = explicitTrace ?? currentTraceContext();
     let traceId = parentTrace?.traceId ?? newTraceId();
@@ -3365,7 +3387,10 @@ export class Cogitator implements ToolInvoker {
             .map((entry) => [entry.toolCallId, entry])
         );
         if (resumed) checkpointKept = false;
-        if (resumed && !runMemory.aside) await this.runCheckpointStore().delete(threadId);
+        if (resumed && !runMemory.aside) {
+          const store = this.runCheckpointStore();
+          if ((await store.load(threadId))?.runId === runId) await store.delete(threadId);
+        }
 
         /**
          * Decides the arguments a `wrapToolCall` middleware changed a call to: a deny refuses, an
@@ -3892,7 +3917,12 @@ export class Cogitator implements ToolInvoker {
             stops: (outcome) => outcome.interrupt !== undefined,
           });
         } catch (error) {
-          if (abortController.signal.aborted) await recordAbortedTurn();
+          if (
+            abortController.signal.aborted &&
+            !(keeper && isSuspension(abortController.signal.reason))
+          ) {
+            await recordAbortedTurn();
+          }
           throw error;
         }
 
@@ -4180,6 +4210,7 @@ export class Cogitator implements ToolInvoker {
       ): RunCheckpoint => {
         const permissionState = permissions.state();
         const placement = runMemory.placement;
+        const background = running ? (subagents?.backgroundOf(threadId, runId) ?? []) : [];
         return {
           version: 1,
           ...(running && { status: 'running' as const }),
@@ -4192,6 +4223,7 @@ export class Cogitator implements ToolInvoker {
           input,
           messages: restoreClearedOutputs(messages, middlewareState),
           ...(running && queue && queue.pending.length > 0 && { queued: [...queue.pending] }),
+          ...(background.length > 0 && { background }),
           toolCalls: [...calls],
           ...(prompt && { prompt }),
           ...(active !== agent && { activeAgent: active.name }),
@@ -4247,6 +4279,17 @@ export class Cogitator implements ToolInvoker {
         );
       };
       if (durable) {
+        if (!resumeFrom?.recovered) {
+          if (this.durableRunsGoing.has(runId)) {
+            throw new CogitatorError({
+              message: `Durable run ${runId} is going on in this runtime already`,
+              code: ErrorCode.RUN_LEASED,
+              details: { runId },
+            });
+          }
+          this.durableRunsGoing.add(runId);
+          reservedRun = runId;
+        }
         const store = this.durableStore();
         const owner = {
           runId,
@@ -4262,17 +4305,15 @@ export class Cogitator implements ToolInvoker {
             details: { runId },
           });
         }
-        keeper = new DurableRunKeeper(
-          store,
-          owner,
-          this.durableOwner,
-          durableConfig?.leaseMs ?? DEFAULT_DURABLE_LEASE_MS,
-          (error) => {
+        keeper = new DurableRunKeeper(store, owner, this.durableHolder, {
+          leaseMs: durableConfig?.leaseMs ?? DEFAULT_DURABLE_LEASE_MS,
+          retries: durableConfig?.storeRetries ?? DEFAULT_STORE_RETRIES,
+          onStoreError: durableConfig?.onStoreError ?? 'suspend',
+          stop: (error) => {
             if (!abortController.signal.aborted) abortController.abort(error);
-          }
-        );
+          },
+        });
         await keeper.begin();
-        this.durableRunsGoing.add(runId);
         const watched = keeper;
         queue?.watch((pending) => watched.queued(pending));
         if (!checkpoint) await keepDurable();
@@ -4300,6 +4341,7 @@ export class Cogitator implements ToolInvoker {
         if (budgetStop) {
           await closeTurnAtBudget(checkpoint.turn.toolCalls, checkpoint.turn.completed ?? []);
         } else if (resumeFrom.recovered) {
+          subagents?.restoreLost(threadId, runId, checkpoint.background ?? []);
           for (const { toolCall, result } of resumeFrom.recovered.repairs) {
             options.onToolResult?.(result);
             const toolMessage = createToolMessage(
@@ -4868,6 +4910,7 @@ export class Cogitator implements ToolInvoker {
         shown.text = '';
 
         if (!requestsTools || !response.toolCalls) {
+          await keepDurable();
           let delivered = 0;
           for (let next = queue?.takeAtStop() ?? []; next.length > 0 && delivered === 0;) {
             delivered = await deliver(next);
@@ -5315,8 +5358,8 @@ export class Cogitator implements ToolInvoker {
       throw error;
     } finally {
       runEnded = true;
+      if (reservedRun !== undefined) this.durableRunsGoing.delete(reservedRun);
       if (keeper) {
-        this.durableRunsGoing.delete(runId);
         await keeper.end(handOver ? 'hand-over' : 'forget').catch((error: unknown) => {
           getLogger().warn('Could not close the checkpoint of a durable run', {
             runId,
@@ -5755,7 +5798,9 @@ export class Cogitator implements ToolInvoker {
       ...summary,
       held:
         this.durableRunsGoing.has(summary.runId) ||
-        (summary.lease !== undefined && summary.lease.owner !== this.durableOwner),
+        (summary.lease !== undefined &&
+          (summary.lease.owner !== this.durableOwner ||
+            LIVE_INSTANCES.has(summary.lease.instance))),
     }));
   }
 
@@ -5909,7 +5954,8 @@ export class Cogitator implements ToolInvoker {
           ...savedToolResult(result)
         );
       }
-      await this.durableStore().delete(record);
+      await this.durableStore().delete(record, this.durableHolder);
+      this.durableRunsGoing.delete(runId);
     } catch (error) {
       await release();
       throw error;
@@ -5920,39 +5966,57 @@ export class Cogitator implements ToolInvoker {
   private async takeDurableRun(
     runId: string
   ): Promise<{ record: DurableRunRecord; release: () => Promise<void> }> {
-    await this.getMemory();
-    const store = this.durableStore();
-    const [summary] = await store.list({ runId });
-    if (!summary) {
-      throw new CogitatorError({
-        message: `No durable run ${runId} is kept`,
-        code: ErrorCode.RUN_NOT_FOUND,
-        details: { runId },
-      });
-    }
-    const leased = () =>
+    const leased = (expiresAt?: number) =>
       new CogitatorError({
         message: `Durable run ${runId} is held by a live process`,
         code: ErrorCode.RUN_LEASED,
-        details: { runId },
+        details: { runId, ...(expiresAt !== undefined && { expiresAt }) },
       });
     if (this.durableRunsGoing.has(runId)) throw leased();
-    const leaseMs = this.durableConfig()?.leaseMs ?? DEFAULT_DURABLE_LEASE_MS;
-    if (!(await store.acquire(summary, this.durableOwner, leaseMs))) throw leased();
-    const release = () => store.release(summary, this.durableOwner).catch(() => undefined);
-    const record = await store.load(summary).catch(async (error: unknown) => {
+    this.durableRunsGoing.add(runId);
+    let held: DurableRunSummary | undefined;
+    const store = () => this.durableStore();
+    const release = async () => {
+      this.durableRunsGoing.delete(runId);
+      if (held)
+        await store()
+          .release(held, this.durableHolder)
+          .catch(() => undefined);
+    };
+    try {
+      await this.getMemory();
+      const [found] = await store().list({ runId });
+      if (!found) {
+        throw new CogitatorError({
+          message: `No durable run ${runId} is kept`,
+          code: ErrorCode.RUN_NOT_FOUND,
+          details: { runId },
+        });
+      }
+      const lease = found.lease;
+      const replacing =
+        lease?.owner === this.durableOwner && !LIVE_INSTANCES.has(lease.instance)
+          ? lease.instance
+          : undefined;
+      const leaseMs = this.durableConfig()?.leaseMs ?? DEFAULT_DURABLE_LEASE_MS;
+      const taken = await store().acquire(found, this.durableHolder, leaseMs, {
+        ...(replacing !== undefined && { replacing }),
+      });
+      if (!taken) throw leased(lease?.expiresAt);
+      held = found;
+      const record = await store().load(found);
+      if (!record) {
+        throw new CogitatorError({
+          message: `No durable run ${runId} is kept`,
+          code: ErrorCode.RUN_NOT_FOUND,
+          details: { runId },
+        });
+      }
+      return { record, release };
+    } catch (error) {
       await release();
       throw error;
-    });
-    if (!record) {
-      await release();
-      throw new CogitatorError({
-        message: `No durable run ${runId} is kept`,
-        code: ErrorCode.RUN_NOT_FOUND,
-        details: { runId },
-      });
     }
-    return { record, release };
   }
 
   /** The permissions of this runtime's runs, made on first use */
@@ -7290,6 +7354,7 @@ export class Cogitator implements ToolInvoker {
    * ```
    */
   async close(): Promise<void> {
+    LIVE_INSTANCES.delete(this.durableHolder.instance);
     this.interruptSchemas.clear();
     await this.memoryUpkeepLayer?.close();
     this.memoryUpkeepLayer = undefined;
@@ -7525,6 +7590,9 @@ function assertRunId(runId: string): void {
     code: ErrorCode.VALIDATION_ERROR,
   });
 }
+
+/** The durable instances of the runtimes of this process, see `DurableRunHolder.instance` */
+const LIVE_INSTANCES = new Set<string>();
 
 /** Whether a run stopped to be handed over to another process, see `ErrorCode.RUN_SUSPENDED` */
 function isSuspension(reason: unknown): boolean {

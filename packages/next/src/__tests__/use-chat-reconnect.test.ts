@@ -10,6 +10,8 @@ const { useCogitatorChat } = await import('../client/use-chat.js');
 const encoder = new TextEncoder();
 
 interface Call {
+  url: string;
+  method: string;
   body: string;
   headers: Record<string, string>;
   /** Sends an event, with `id` when given */
@@ -24,7 +26,7 @@ type Respond = (call: Call, index: number) => Response | Promise<Response> | und
 
 function installFetch(respond: Respond) {
   const calls: Call[] = [];
-  const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+  const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
     let controller!: ReadableStreamDefaultController<Uint8Array>;
     const body = new ReadableStream<Uint8Array>({
       start(c) {
@@ -37,6 +39,8 @@ function installFetch(respond: Respond) {
       } catch {}
     });
     const call: Call = {
+      url,
+      method: init.method ?? 'GET',
       body: String(init.body),
       headers: init.headers as Record<string, string>,
       push: (event, id) =>
@@ -215,8 +219,69 @@ describe('useCogitatorChat reconnect', () => {
     await pending;
     await hook.flush();
 
-    expect(calls).toHaveLength(1);
+    expect(calls.map((call) => [call.method, call.url])).toEqual([
+      ['POST', '/api/chat'],
+      ['DELETE', '/api/chat?streamId=stream_abc'],
+    ]);
     expect(hook.result.current.error).toBeNull();
+  });
+
+  it('cancels the run of the stream it leaves on reload, then starts the new one', async () => {
+    const calls = installFetch((call, index) => {
+      if (index === 0) firstHalf(call);
+      if (index === 2) {
+        firstHalf(call);
+        secondHalf(call);
+      }
+      return undefined;
+    });
+    const hook = setup();
+
+    const pending = hook.result.current.send('Hi');
+    await vi.waitFor(() => expect(hook.result.current.messages.at(-1)?.content).toBe('Hel'));
+    await hook.result.current.reload();
+    await pending;
+    await hook.flush();
+
+    expect(calls.map((call) => call.method)).toEqual(['POST', 'DELETE', 'POST']);
+    expect(hook.result.current.messages.at(-1)?.content).toBe('Hello');
+  });
+
+  it('cancels no run of a stream without ids', async () => {
+    const calls = installFetch((call) => {
+      call.push({ type: 'start', messageId: 'a1' });
+      return undefined;
+    });
+    const hook = setup();
+
+    const pending = hook.result.current.send('Hi');
+    await vi.waitFor(() => expect(hook.result.current.isLoading).toBe(true));
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    hook.result.current.stop();
+    await pending;
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it('ends with an error, not a finished message, when every reconnect ends before finish', async () => {
+    const calls = installFetch((call, index) => {
+      if (index === 0) firstHalf(call);
+      call.close();
+      return undefined;
+    });
+    const onError = vi.fn();
+    const onFinish = vi.fn();
+    const hook = setup({ onError, onFinish, reconnect: { attempts: 2, delayMs: 0 } });
+
+    await hook.result.current.send('Hi');
+    await hook.flush();
+
+    expect(calls).toHaveLength(3);
+    expect(onFinish).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'The stream ended before the run finished' })
+    );
+    expect(hook.result.current.isLoading).toBe(false);
   });
 
   it('stops and shows the error when the server no longer keeps the stream', async () => {
