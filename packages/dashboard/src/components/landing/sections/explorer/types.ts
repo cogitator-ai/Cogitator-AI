@@ -10,6 +10,7 @@ export type FeatureId =
   | 'voice'
   | 'browser'
   | 'evals'
+  | 'harness'
   | 'sandbox'
   | 'safety'
   | 'observability'

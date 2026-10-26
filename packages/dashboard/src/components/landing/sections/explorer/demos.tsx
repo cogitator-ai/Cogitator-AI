@@ -15,6 +15,7 @@ const LOADERS: Record<FeatureId, DemoLoader> = {
   voice: () => import('./demos-a/VoiceDemo').then((module) => module.VoiceDemo),
   browser: () => import('./demos-a/BrowserDemo').then((module) => module.BrowserDemo),
   evals: () => import('./demos-a/EvalsDemo').then((module) => module.EvalsDemo),
+  harness: () => import('./demos-b/HarnessDemo').then((module) => module.HarnessDemo),
   sandbox: () => import('./demos-b/SandboxDemo').then((module) => module.SandboxDemo),
   safety: () => import('./demos-b/SafetyDemo').then((module) => module.SafetyDemo),
   observability: () => import('./demos-b/TraceDemo').then((module) => module.TraceDemo),

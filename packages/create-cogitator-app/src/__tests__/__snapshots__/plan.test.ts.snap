@@ -84,7 +84,6 @@ exports[`preset file trees > assistant generates the expected files 1`] = `
   "src/env.ts",
   "src/harness/facts.ts",
   "src/harness/scheduler.ts",
-  "src/harness/workspace.ts",
   "src/index.ts",
   "src/tools/calculator.ts",
   "src/tools/current-time.ts",

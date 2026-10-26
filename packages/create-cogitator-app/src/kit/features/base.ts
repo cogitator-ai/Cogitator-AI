@@ -1,7 +1,7 @@
 import { code, tsString } from '../code.js';
 import { providerInfo } from '../providers.js';
 import { ciInstallCommand, execCommand, runScript } from '../package-manager.js';
-import { runsOnBun, type ProjectSpec } from '../spec.js';
+import { hasFeature, runsOnBun, type ProjectSpec } from '../spec.js';
 import { cogitatorVersion, VERSIONS } from '../versions.js';
 import type { ProjectBuilder } from '../project.js';
 import type { FeatureModule } from './types.js';
@@ -202,6 +202,38 @@ function assistantAgent(project: ProjectBuilder): string {
     ...project.instructions,
     'When you are unsure, say so instead of guessing.',
   ];
+  const instructions = code`
+    [
+      ${lines.map((line) => `${tsString(line)},`).join('\n')}
+    ].join('\\n')
+  `;
+  if (hasFeature(project.spec, 'harness')) {
+    return code`
+      import { createHarnessAgent } from '@cogitator-ai/core';
+      import { tools } from '../tools/index.js';
+
+      /**
+       * The assistant on the harness of core: a workspace of files it reads and writes with your
+       * approval (\`workspace\`, by default ./workspace or WORKSPACE_DIR), a todo list for longer
+       * tasks, the skills of the workspace, and long tool results kept as files there.
+       */
+      export function createAssistant(workspace = process.env.WORKSPACE_DIR ?? 'workspace') {
+        return createHarnessAgent({
+          preset: 'assistant',
+          name: 'assistant',
+          description: 'The general-purpose assistant of this project',
+          instructions: ${instructions},
+          workspace,
+          tools,
+        });
+      }
+
+      /** The harness: its agent, the runtime settings src/cogitator.ts merges in and the run options. */
+      export const assistantHarness = createAssistant();
+
+      export const assistant = assistantHarness.agent;
+    `;
+  }
   return code`
     import { Agent } from '@cogitator-ai/core';
     import { tools } from '../tools/index.js';
@@ -209,9 +241,7 @@ function assistantAgent(project: ProjectBuilder): string {
     export const assistant = new Agent({
       name: 'assistant',
       description: 'The general-purpose assistant of this project',
-      instructions: [
-        ${lines.map((line) => `${tsString(line)},`).join('\n')}
-      ].join('\\n'),
+      instructions: ${instructions},
       tools,
     });
   `;

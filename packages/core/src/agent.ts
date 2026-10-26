@@ -212,6 +212,7 @@ export class Agent<TDeps = unknown> implements IAgent<TDeps> {
         timeout: this.config.timeout,
         ...(this.config.timeouts && { timeouts: { ...this.config.timeouts } }),
         ...(this.config.todos !== undefined && { todos: this.config.todos }),
+        ...(this.config.deferredTools && { deferredTools: [...this.config.deferredTools] }),
         ...(this.config.permissions && { permissions: copyPermissions(this.config.permissions) }),
         ...(this.config.budget && { budget: { ...this.config.budget } }),
       },
@@ -286,6 +287,9 @@ export class Agent<TDeps = unknown> implements IAgent<TDeps> {
       timeout: snapshot.config.timeout,
       ...(snapshot.config.timeouts && { timeouts: { ...snapshot.config.timeouts } }),
       ...(snapshot.config.todos !== undefined && { todos: snapshot.config.todos }),
+      ...(snapshot.config.deferredTools && {
+        deferredTools: [...snapshot.config.deferredTools],
+      }),
       ...(snapshot.config.permissions && {
         permissions: copyPermissions(snapshot.config.permissions),
       }),

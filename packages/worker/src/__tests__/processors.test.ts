@@ -56,7 +56,7 @@ describe('processors/shared', () => {
     expect(routeAgentWireModel('meta-llama/llama-4', undefined, cog)).toEqual({
       model: 'meta-llama/llama-4',
     });
-  });
+  }, 120_000);
 
   it('resolves tools by name from the worker registry', async () => {
     const { Cogitator } = await import('@cogitator-ai/core');

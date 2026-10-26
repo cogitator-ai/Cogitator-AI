@@ -15,6 +15,7 @@ function agentEntry(project: ProjectBuilder): string {
     import { createInterface${harness ? ', type Interface' : ''} } from 'node:readline/promises';
     import { styleText } from 'node:util';
     ${harness && "import type { ToolApprovalDecision, ToolApprovalRequest } from '@cogitator-ai/core';"}
+    ${harness && "import { assistantHarness } from './agents/assistant.js';"}
     import { agents, cogitator } from './cogitator.js';
     import { loadEnv } from './env.js';
     ${harness && "import { facts } from './harness/facts.js';"}
@@ -59,6 +60,7 @@ function agentEntry(project: ProjectBuilder): string {
       let streamed = false;
       const result = await cogitator.run(agents.assistant, {
         input,
+        ${harness && '...assistantHarness.runOptions,'}
         threadId: THREAD_ID,
         stream: true,
         ${harness && 'context: { factsAboutTheUser: await facts.context() },'}

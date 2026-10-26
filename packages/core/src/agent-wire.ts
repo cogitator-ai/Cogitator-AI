@@ -47,6 +47,7 @@ export const AGENT_CONFIG_WIRE_FIELDS = {
   timeout: 'carried',
   timeouts: 'carried',
   todos: 'carried',
+  deferredTools: 'carried',
   middleware: 'not carried: it is code, the receiving side runs its own (config middleware)',
   workspace: 'not carried: it is a live directory or container, the receiving side passes its own',
   permissions:
@@ -124,6 +125,7 @@ const agentShape = {
     })
     .optional(),
   todos: z.boolean().optional(),
+  deferredTools: z.array(z.string().min(1)).optional(),
   tools: z.array(toolSchemaSchema),
   handoffs: z.array(handoffSchema).optional(),
 };
@@ -297,6 +299,7 @@ function agentToWire(agent: IAgent, options: ToAgentWireOptions): AgentWireAgent
     ...(config.timeout !== undefined && { timeout: config.timeout }),
     ...(config.timeouts !== undefined && { timeouts: { ...config.timeouts } }),
     ...(config.todos !== undefined && { todos: config.todos }),
+    ...(config.deferredTools !== undefined && { deferredTools: [...config.deferredTools] }),
     tools: agent.tools.map((tool): ToolSchema => tool.toJSON()),
     ...(handoffs.length > 0 && { handoffs }),
   };
@@ -432,6 +435,7 @@ export function fromAgentWire(value: unknown, runtime: AgentWireRuntime): Agent 
         ...(item.timeout !== undefined && { timeout: item.timeout }),
         ...(item.timeouts !== undefined && { timeouts: item.timeouts }),
         ...(item.todos !== undefined && { todos: item.todos }),
+        ...(item.deferredTools !== undefined && { deferredTools: item.deferredTools }),
         tools: item.tools.map((schema) => tools.get(schema.name)!),
         ...(item.handoffs && { handoffs }),
       })

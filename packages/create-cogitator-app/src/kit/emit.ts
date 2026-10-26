@@ -2,7 +2,7 @@ import { code, tsKey, tsString, yamlString } from './code.js';
 import { yarnMajor } from './package-manager.js';
 import type { ComposeService, EnvVar, ProjectBuilder, RegistryEntry } from './project.js';
 import { DEFAULT_OLLAMA_URL } from './providers.js';
-import { qualifiedModel, runsOnBun, type PackageManager } from './spec.js';
+import { hasFeature, qualifiedModel, runsOnBun, type PackageManager } from './spec.js';
 import { BUN_ENGINES, NODE_ENGINES } from './versions.js';
 
 /** Where each script goes in package.json; the rest follow alphabetically. */
@@ -323,6 +323,13 @@ export function emitRegistry(project: ProjectBuilder): void {
     bindings.push(entry.binding);
     imports.set(entry.from, bindings);
   }
+  const harness = hasFeature(project.spec, 'harness');
+  if (harness) {
+    imports.set('./agents/assistant.js', [
+      ...(imports.get('./agents/assistant.js') ?? []),
+      'assistantHarness',
+    ]);
+  }
   const importLines = [...imports]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(
@@ -346,13 +353,30 @@ export function emitRegistry(project: ProjectBuilder): void {
       ${swarms && "import type { SwarmConfig } from '@cogitator-ai/swarms';"}
       ${importLines.join('\n')}
 
-      /**
-       * A runtime configured by cogitator.yml and the environment. \`overrides\` are
-       * merged over that configuration: tests pass a mock model backend here.
-       */
+      ${
+        harness
+          ? code`
+              /**
+               * A runtime configured by cogitator.yml and the environment. \`overrides\` are merged
+               * over that configuration (tests pass a mock model backend here), and the assistant
+               * harness fills in the runtime settings both leave unset, such as compaction and the
+               * tool result limit.
+               */
+            `
+          : code`
+              /**
+               * A runtime configured by cogitator.yml and the environment. \`overrides\` are
+               * merged over that configuration: tests pass a mock model backend here.
+               */
+            `
+      }
       export function createCogitator(overrides: CogitatorConfig = {}): Cogitator {
         const config = loadConfig();
-        return new Cogitator({ ...config, ${observed ? 'observers, ' : ''}...overrides, llm: { ...config.llm, ...overrides.llm } });
+        ${
+          harness
+            ? `return new Cogitator(assistantHarness.mergeConfig({ ...config, ${observed ? 'observers, ' : ''}...overrides, llm: { ...config.llm, ...overrides.llm } }));`
+            : `return new Cogitator({ ...config, ${observed ? 'observers, ' : ''}...overrides, llm: { ...config.llm, ...overrides.llm } });`
+        }
       }
 
       /** The runtime the project shares. */

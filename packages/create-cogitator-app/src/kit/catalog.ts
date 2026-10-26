@@ -54,7 +54,7 @@ export const FEATURE_CHOICES: Choice<FeatureId>[] = [
   {
     value: 'harness',
     label: 'Assistant harness',
-    hint: 'workspace file tools, approvals, core facts, scheduler',
+    hint: 'a harness agent: workspace files with approvals, todos, skills, facts, a scheduler',
   },
   { value: 'mcp', label: 'MCP', hint: 'tools from MCP servers, agents served over MCP' },
   { value: 'rag', label: 'RAG', hint: 'answers grounded in your docs/ folder' },

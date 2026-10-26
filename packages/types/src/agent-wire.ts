@@ -78,6 +78,8 @@ export interface AgentWireAgent {
   timeouts?: RunTimeouts;
   /** Whether the agent keeps a todo list with `write_todos`, as in `AgentConfig.todos` */
   todos?: boolean;
+  /** Tools whose schemas wait for `tool_search`, as in `AgentConfig.deferredTools` */
+  deferredTools?: string[];
   /** Tool schemas; tools are resolved by name on the receiving side */
   tools: ToolSchema[];
   /** Agents this one can hand the conversation over to */

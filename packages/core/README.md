@@ -87,8 +87,53 @@ console.log(result.output);
 - **PII Masking** - Personal data and secrets replaced with placeholders before they reach the provider
 - **Run Middleware** - Hooks around every model and tool call, tripwire guards that stop a run
 - **Agent Skills** - `SKILL.md` skills from the host or the workspace, activated on demand with `use_skill`, `write_todos` planning kept in the thread, deferred tools found with `tool_search`
+- **Harness Agent** - `createHarnessAgent()` assembles a coding or assistant agent from all of the above in one call: presets `coding` and `assistant`, every piece overridable, the result plain values
 - **Workspace** - Files and commands confined to one directory (`LocalWorkspace`, `DockerWorkspace`), `workspaceTools()`, long tool results saved there for the model to page through
 - **Observability** - OpenTelemetry GenAI spans, one trace across runs, workflows and swarms, OTLP and Langfuse exporters
+
+---
+
+## Harness Agent
+
+`createHarnessAgent()` puts the pieces of the runtime together into an agent ready to work in a project, so you do not wire a workspace, tools, todos, skills, subagents, permissions and compaction by hand:
+
+```typescript
+import { Cogitator, createHarnessAgent } from '@cogitator-ai/core';
+
+const harness = createHarnessAgent({ preset: 'coding', workspace: './my-app' });
+const cog = new Cogitator(
+  harness.mergeConfig({ llm: { defaultModel: 'anthropic/claude-sonnet-5-5' } })
+);
+
+const result = await cog.run(harness.agent, {
+  input: 'The add() test fails, fix it',
+  ...harness.runOptions,
+  onApproval: (request) => askTheUser(request),
+});
+await harness.dispose();
+```
+
+| Piece                                               | `coding`                                                          | `assistant`                           |
+| --------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------- |
+| Workspace (`workspace`)                             | the working directory                                             | `./workspace`                         |
+| File tools, `glob`, `grep`                          | yes                                                               | yes                                   |
+| `run_command` (`shell`)                             | yes                                                               | no                                    |
+| `write_todos` (`todos`)                             | yes                                                               | yes                                   |
+| `SKILL.md` skills of the workspace (`skills`)       | yes                                                               | yes                                   |
+| Subagents (`subagents`)                             | Markdown files and `general-purpose`, approvals bubble up         | no                                    |
+| Commands (`commands`)                               | Markdown files                                                    | no                                    |
+| `AGENTS.md` and `CLAUDE.md` (`projectInstructions`) | yes                                                               | no                                    |
+| Permission engine (`permissions`)                   | `default` mode: reads run, edits and commands ask                 | the same                              |
+| Memory files (`memoryFiles`)                        | no                                                                | when the runtime has a memory adapter |
+| Compaction (`compaction`)                           | old tool outputs cleared, conversation compressed near the window | the same                              |
+| Long tool results (`toolResults`)                   | past 30 000 characters saved to the workspace                     | the same                              |
+| `tool_search` (`toolSearch`)                        | your tools deferred once the model would see more than 20 tools   | the same                              |
+| Parallel read-only calls (`parallelToolCalls`)      | yes                                                               | yes                                   |
+| `maxIterations`                                     | 100                                                               | 30                                    |
+
+Every row is an option: `false` turns a piece off (also in the config `mergeConfig()` merges into), a value changes it, `agent` sets any other field of the agent. The project's own subagents, commands, hooks and allow rules apply only with `trusted: true`, settings files are read only with `settings: true`, both from `projectRoot` on this machine (the root of a `LocalWorkspace` by default, none for a remote workspace). The system prompt is your `instructions` (or the preset's) and a short section on the workspace, todos, subagents, deferred tools and approvals, only for what the agent has (`harnessPrompt: false` drops it). The runtime then adds the project's instructions and the skills.
+
+The result is plain values, nothing is hidden: `agent` (an `Agent`), `config` (the `Cogitator` fields the pieces need: project instructions, subagents, commands, hooks, settings, memory, compaction, limits), `runOptions` (`parallelToolCalls`, set per run), `workspace`, `mergeConfig(base)` (merges `config` deep into your config: the preset's defaults under yours, your `createHarnessAgent()` options over it) and `dispose()` (disposes a workspace the harness made from a path). Agents, runtimes and runs each hold the settings they read, which is why there are three. See [Harness Agent](https://cogitator.app/docs/core/harness-agent).
 
 ---
 
@@ -381,7 +426,7 @@ Frontmatter is read leniently: a skill without a description is skipped, other p
 
 `todos: true` gives the agent `write_todos({ todos: [{ id, content, status }] })`: each call replaces the list, at most one item is `in_progress`. The list is read back from the conversation, copied to the thread's metadata (`todos`, with the entry it was written at, so other branches do not take it) for later runs, reported with `onTodos` and returned as `result.todos`.
 
-A tool marked `deferred: true` keeps its schema out of the requests. The run offers `tool_search({ query, limit })` instead, which ranks the deferred tools with BM25 over names, descriptions and parameters and loads the best ones from the next turn on. The loaded set is read from the `tool_search` results in the history, so resumed and forked runs keep it. A call to a deferred tool that was never loaded still runs. Loading a tool changes the tool list and so the prompt cache prefix.
+A tool marked `deferred: true` keeps its schema out of the requests. The run offers `tool_search({ query, limit })` instead, which ranks the deferred tools with BM25 over names, descriptions and parameters and loads the best ones from the next turn on. The loaded set is read from the `tool_search` results in the history, so resumed and forked runs keep it. A call to a deferred tool that was never loaded still runs. Loading a tool changes the tool list and so the prompt cache prefix. `deferredTools: ['name', ...]` on the agent defers tools by name without changing them, for a tool other agents share.
 
 ```typescript
 const agent = new Agent({
