@@ -119,11 +119,19 @@ export const OpenAIEmbeddingConfigSchema = z.object({
   dimensions: z.number().positive().optional(),
 });
 
+const EmbeddingHeadersSchema = z.record(
+  z.string(),
+  z.string().refine((value) => !/[\r\n]/.test(value), {
+    message: 'A header value cannot contain a line break',
+  })
+);
+
 export const OllamaEmbeddingConfigSchema = z.object({
   provider: z.literal('ollama'),
   model: z.string().optional(),
   baseUrl: z.string().url().optional(),
   dimensions: z.number().positive().optional(),
+  headers: EmbeddingHeadersSchema.optional(),
 });
 
 export const GoogleEmbeddingConfigSchema = z.object({

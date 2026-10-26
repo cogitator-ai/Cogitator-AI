@@ -1,8 +1,21 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { findConfig, pickOllamaModel, resolveRunModel } from '../commands/run.js';
+
+const { listOllamaModels } = vi.hoisted(() => ({ listOllamaModels: vi.fn() }));
+
+vi.mock('../utils/ollama.js', () => ({
+  listOllamaModels,
+  resolveOllamaUrl: vi.fn(),
+}));
+
+import {
+  detectOllamaModel,
+  findConfig,
+  pickOllamaModel,
+  resolveRunModel,
+} from '../commands/run.js';
 
 describe('findConfig', () => {
   let tempDir: string;
@@ -102,5 +115,23 @@ describe('pickOllamaModel', () => {
 
   it('falls back to the first model', () => {
     expect(pickOllamaModel(['qwen2.5:0.5b', 'phi3'])).toBe('ollama/qwen2.5:0.5b');
+  });
+});
+
+describe('detectOllamaModel', () => {
+  beforeEach(() => {
+    listOllamaModels.mockReset();
+  });
+
+  it('forwards the API key and configured headers to model discovery', async () => {
+    const headers = { 'X-Gateway-Key': 'secret' };
+    listOllamaModels.mockResolvedValue([{ name: 'qwen3:8b', size: 1, modified_at: '' }]);
+
+    await expect(detectOllamaModel('http://h:1', 'k', headers)).resolves.toBe('ollama/qwen3:8b');
+    expect(listOllamaModels).toHaveBeenCalledWith('http://h:1', {
+      apiKey: 'k',
+      headers,
+      timeoutMs: 3000,
+    });
   });
 });

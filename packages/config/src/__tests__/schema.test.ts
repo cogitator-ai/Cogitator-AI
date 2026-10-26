@@ -355,6 +355,12 @@ describe('CogitatorConfigSchema', () => {
       { provider: 'openai', apiKey: 'sk-xxx', model: 'text-embedding-3-large', dimensions: 1024 },
       { provider: 'ollama', model: 'nomic-embed-text', dimensions: 768 },
       {
+        provider: 'ollama',
+        model: 'nomic-embed-text',
+        dimensions: 768,
+        headers: { 'X-Gateway-Key': 'secret' },
+      },
+      {
         provider: 'google',
         apiKey: 'g-xxx',
         baseUrl: 'https://proxy.example.com/v1beta',
@@ -372,6 +378,19 @@ describe('CogitatorConfigSchema', () => {
         memory: { embedding: { provider: 'ollama', dimensions: 1.5 } },
       })
     ).toThrow();
+  });
+
+  it('rejects invalid Ollama embedding headers', () => {
+    const result = CogitatorConfigSchema.safeParse({
+      memory: {
+        embedding: {
+          provider: 'ollama',
+          headers: { 'X-Key': 'secret\nInjected: value' },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
   });
 
   it('keeps every graph context option the context builder reads', () => {
