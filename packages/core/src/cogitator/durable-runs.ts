@@ -13,6 +13,7 @@ import type {
   ToolResult,
 } from '@cogitator-ai/types';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
+import { withoutStaleDurableEntries } from '@cogitator-ai/memory';
 import { getLogger } from '../logger';
 import { addSpend } from './run-budget';
 import { ABORTED_BEFORE_DISPATCH, OUTCOME_UNKNOWN } from '../utils/tool-history';
@@ -119,12 +120,16 @@ export class DurableRunKeeper {
     private readonly options: DurableRunKeeperOptions
   ) {}
 
+  /** The epoch of the lease this process holds, see `DurableRunLease.epoch` */
+  epoch = 0;
+
   /** Takes the run, or fails with `RUN_LEASED` when another process holds it */
   async begin(): Promise<void> {
     const taken = await this.faultless(() =>
       this.retried(() => this.store.acquire(this.owner, this.holder, this.options.leaseMs))
     );
-    if (!taken) throw leased(this.owner.runId);
+    if (taken === false) throw leased(this.owner.runId);
+    this.epoch = taken;
     this.renewal = setInterval(
       () => {
         void this.queue(() => this.write(() => this.renew())).catch(() => undefined);
@@ -209,10 +214,13 @@ export class DurableRunKeeper {
     return this.queue(() => this.write(() => this.appendHeld([mark])));
   }
 
-  /** Notes tool calls the run's budget charged to `agent`, so a recovery charges them too */
-  charged(agent: string, toolCalls: number): void {
+  /**
+   * Notes tool calls the run's budget charged to `agent`, so a recovery charges them too. The
+   * tool starts once the note is written
+   */
+  charged(agent: string, toolCalls: number): Promise<void> {
     const mark = this.named({ kind: 'charged', agent, toolCalls });
-    this.queue(() => this.write(() => this.appendHeld([mark]))).catch(() => undefined);
+    return this.queue(() => this.write(() => this.appendHeld([mark])));
   }
 
   /** Notes the messages queued on the run's handle that it has not delivered yet */
@@ -771,7 +779,7 @@ async function runEntries(
   });
   if (!found.success) throw unrecoverable(record, found.error);
   const prefix = `${record.runId}/`;
-  return found.data
+  const own = found.data
     .filter((entry) => {
       const tag = entry.metadata?.[DURABLE_RUN_ENTRY_KEY];
       return typeof tag === 'string' && tag.startsWith(prefix);
@@ -781,6 +789,7 @@ async function runEntries(
         ? a.seq - b.seq
         : a.createdAt.getTime() - b.createdAt.getTime()
     );
+  return withoutStaleDurableEntries(own);
 }
 
 /** Whether `entry` is part of the conversation the model reads, not an event or a cut reply */

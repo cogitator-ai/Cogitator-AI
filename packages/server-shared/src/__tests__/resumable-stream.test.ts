@@ -863,4 +863,37 @@ describe('ResumableStreams under pressure', () => {
     await settle();
     await frames.return(undefined);
   });
+
+  it('counts the detached time of a run from the last client that left on any process', async () => {
+    vi.useFakeTimers();
+    let clock = 0;
+    const now = () => clock;
+    let timers = 0;
+    const advanceTo = async (at: number) => {
+      clock = at;
+      await vi.advanceTimersByTimeAsync(at - timers);
+      timers = at;
+    };
+    const store = new InMemoryStreamReplayStore({ now });
+    const runner = new ResumableStreams({ store, now, detachedTimeoutMs: 1_000 });
+    const elsewhere = new ResumableStreams({ store, now, detachedTimeoutMs: 1_000 });
+    const { run, first } = await startRun(runner);
+    const before = await readThenLeave(first, 1);
+
+    await advanceTo(500);
+    const remote = opened(await elsewhere.reconnect(before[0]?.id ?? ''));
+    expect((await store.get(first.streamId))?.detachedAt).toBeUndefined();
+    await advanceTo(600);
+    const gone = new AbortController();
+    gone.abort();
+    for await (const frame of remote.frames(gone.signal)) void frame;
+    expect((await store.get(first.streamId))?.detachedAt).toBe(600);
+
+    await advanceTo(1_000);
+    expect(run.signal.aborted).toBe(false);
+    await advanceTo(1_599);
+    expect(run.signal.aborted).toBe(false);
+    await advanceTo(1_600);
+    expect(run.signal.aborted).toBe(true);
+  });
 });

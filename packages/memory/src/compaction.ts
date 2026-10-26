@@ -787,3 +787,26 @@ const strategies: Record<CompactionStrategy, StrategyFn> = {
   'sliding-window': slidingWindowStrategy,
   hybrid: hybridStrategy,
 };
+
+/** The event kind of the entry that marks a new lease epoch of a durable run in its thread */
+export const DURABLE_FENCE = 'durable_fence';
+
+/**
+ * `entries` (in the order they were written) without the entries a durable run wrote late: an
+ * entry that names a lease epoch (`metadata.durableEpoch`) older than one its run reached before
+ * it in the list, by a fence (`DURABLE_FENCE`) or an entry of a newer epoch. A process that lost
+ * its run to another can have a write land after the takeover, memory adapters cannot refuse it,
+ * so readers leave it out. Entries of other runs and entries without an epoch pass as they are
+ */
+export function withoutStaleDurableEntries<T extends MemoryEntry>(entries: readonly T[]): T[] {
+  const newest = new Map<string, number>();
+  return entries.filter((entry) => {
+    const tag = entry.metadata?.durableRun;
+    const epoch = entry.metadata?.durableEpoch;
+    if (typeof tag !== 'string' || typeof epoch !== 'number') return true;
+    const runId = tag.slice(0, tag.lastIndexOf('/'));
+    if (epoch < (newest.get(runId) ?? 0)) return false;
+    newest.set(runId, epoch);
+    return true;
+  });
+}

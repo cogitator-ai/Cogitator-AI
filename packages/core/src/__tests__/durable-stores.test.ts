@@ -59,7 +59,7 @@ describe.each(stores)('durable run store in %s', (_name, make) => {
     const store = await make(() => 0);
     const ref = { runId: 'r1', threadId: 't1' };
     const base: Message[] = [{ role: 'system', content: 'You help.' }];
-    expect(await store.acquire(ref, a, 100)).toBe(true);
+    expect(await store.acquire(ref, a, 100)).toBeTruthy();
     expect(await store.save(record('r1', 't1', base), a)).toBe(true);
     await store.append(ref, [{ kind: 'started', toolCallId: 'c1' }], a);
     await store.append(
@@ -126,7 +126,7 @@ describe.each(stores)('durable run store in %s', (_name, make) => {
     const store = await make(() => now);
     const ref = { runId: 'r1', threadId: 't1' };
 
-    expect(await store.acquire(ref, a, 100)).toBe(true);
+    expect(await store.acquire(ref, a, 100)).toBeTruthy();
     expect(await store.save(record('r1', 't1'), a)).toBe(true);
     expect(await store.acquire(ref, b, 100)).toBe(false);
     expect(await store.renew(ref, b, 100)).toBe(false);
@@ -137,14 +137,30 @@ describe.each(stores)('durable run store in %s', (_name, make) => {
     expect(await store.acquire(ref, b, 100)).toBe(false);
     now = 151;
     expect(await store.renew(ref, a, 100)).toBe(false);
-    expect(await store.acquire(ref, b, 100)).toBe(true);
+    expect(await store.acquire(ref, b, 100)).toBeTruthy();
     await store.release(ref, a);
     expect(await store.acquire(ref, a, 100)).toBe(false);
-    expect(await store.acquire(ref, a, 100, { replacing: 'b' })).toBe(true);
+    expect(await store.acquire(ref, a, 100, { replacing: 'b' })).toBeTruthy();
     expect(await store.renew(ref, b, 100)).toBe(false);
     await store.release(ref, a);
-    expect(await store.acquire(ref, b, 100)).toBe(true);
+    expect(await store.acquire(ref, b, 100)).toBeTruthy();
     await expect(store.acquire(ref, a, 0)).rejects.toThrow(RangeError);
+  });
+
+  it('counts a new lease epoch for every new holder, not for a renewal', async () => {
+    let now = 0;
+    const store = await make(() => now);
+    const ref = { runId: 'r1', threadId: 't1' };
+    expect(await store.acquire(ref, a, 100)).toBe(1);
+    await store.save(record('r1', 't1'), a);
+    expect(await store.acquire(ref, a, 100)).toBe(1);
+    expect((await store.load(ref))?.lease?.epoch).toBe(1);
+    now = 200;
+    expect(await store.acquire(ref, b, 100)).toBe(2);
+    await store.release(ref, b);
+    expect(await store.acquire(ref, b, 100)).toBe(3);
+    expect(await store.acquire(ref, a, 100, { replacing: 'b' })).toBe(4);
+    expect((await store.list())[0].lease?.epoch).toBe(4);
   });
 
   it('forgets a run with its lease, so its holder cannot renew it', async () => {

@@ -129,7 +129,7 @@ cogitatorApp({ cogitator, agents, resumableStreams: { store } });
 - `create` answers `false` when the store has no room without evicting a stream that goes on.
 - `read` answers the events after a sequence number, whether some were evicted (`gap`) and whether the stream finished.
 - `subscribe` and `onCancel` must reach listeners on every process, which takes pub/sub (Redis `PUBLISH`/`SUBSCRIBE` or similar), and `subscribe` delivers events in order.
-- `get` reports the `owner` and the `subscribers` across every process: a run checks them before it stops as detached, so a client following it on another process keeps it going.
+- `get` reports the `owner`, the `subscribers` across every process and `detachedAt`, when the last of them left on any process: a run checks them before it stops as detached, so a client following it on another process keeps it going, and one that came and went there restarts the count. Stamp `detachedAt` with the clock the hubs use (`now`, `Date.now` by default).
 
 `retentionMs` and `maxStreams` belong to the in-memory store, next to a `store` of your own they throw. `maxEvents` still bounds what waits for one client.
 

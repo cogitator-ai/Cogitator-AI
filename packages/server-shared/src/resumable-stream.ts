@@ -69,6 +69,11 @@ export interface ResumableStreamOptions<Auth = unknown> {
    */
   owner?: (auth: Auth | undefined) => string | undefined | Promise<string | undefined>;
   /**
+   * The clock, in ms since the epoch, which the detached time of a run is counted with against
+   * `detachedAt` of the store: give your store and the hub the same one. Default: `Date.now`
+   */
+  now?: () => number;
+  /**
    * Stops every run of a resumable stream when it aborts, such as a server that shuts down.
    * Abort it before the HTTP server closes: a close waits for the streams still open, and
    * stopping their runs is what ends them
@@ -424,6 +429,7 @@ class Producer implements ResumableStream {
     readonly streamId: string,
     readonly threadId: string,
     private readonly detachedTimeoutMs: number,
+    private readonly now: () => number,
     private readonly onEnd: () => void,
     signals: readonly AbortSignal[]
   ) {
@@ -517,18 +523,19 @@ class Producer implements ResumableStream {
     if (!this.stopper.signal.aborted) this.stopper.abort(reason);
   }
 
-  private armDetachedTimer(): void {
+  private armDetachedTimer(delayMs = this.detachedTimeoutMs): void {
     if (this.timer !== undefined) return;
     this.timer = setTimeout(() => {
       this.timer = undefined;
       void this.stopIfDetached();
-    }, this.detachedTimeoutMs);
+    }, delayMs);
     unrefTimer(this.timer);
   }
 
   /**
-   * Stops the run when still nobody follows its stream, on any process: a client may have
-   * reconnected to another process sharing the store
+   * Stops the run when still nobody follows its stream, on any process, and nobody did for
+   * `detachedTimeoutMs`: a client may have reconnected to another process sharing the store, or
+   * come and gone there since this process looked, which `detachedAt` of the store tells
    */
   private async stopIfDetached(): Promise<void> {
     if (this.ended || this.attached > 0) return;
@@ -536,6 +543,14 @@ class Producer implements ResumableStream {
       const record = await this.store.get(this.streamId);
       if (record && record.subscribers > 0) {
         this.armDetachedTimer();
+        return;
+      }
+      const left =
+        record?.detachedAt === undefined
+          ? 0
+          : this.detachedTimeoutMs - (this.now() - record.detachedAt);
+      if (left > 0) {
+        this.armDetachedTimer(left);
         return;
       }
     } catch (error) {
@@ -578,6 +593,7 @@ export class ResumableStreams<Auth = unknown> {
   readonly store: StreamReplayStore;
   readonly detachedTimeoutMs: number;
   private readonly maxEvents: number;
+  private readonly now: () => number;
   private readonly owner: (
     auth: Auth | undefined
   ) => string | undefined | Promise<string | undefined>;
@@ -604,7 +620,14 @@ export class ResumableStreams<Auth = unknown> {
       );
     }
     this.maxEvents = positiveLimit('maxEvents', maxEvents, DEFAULT_STREAM_MAX_EVENTS);
-    this.store = store ?? new InMemoryStreamReplayStore({ maxEvents, retentionMs, maxStreams });
+    this.store =
+      store ??
+      new InMemoryStreamReplayStore({
+        maxEvents,
+        retentionMs,
+        maxStreams,
+        ...(options.now && { now: options.now }),
+      });
     this.detachedTimeoutMs = positiveLimit(
       'detachedTimeoutMs',
       options.detachedTimeoutMs,
@@ -614,6 +637,7 @@ export class ResumableStreams<Auth = unknown> {
       throw new RangeError(`detachedTimeoutMs must be at most ${MAX_TIMER_MS} ms`);
     }
     this.owner = options.owner ?? defaultStreamOwner;
+    this.now = options.now ?? Date.now;
     const { until } = options;
     if (until?.aborted) this.close();
     else until?.addEventListener('abort', () => this.close(), { once: true });
@@ -637,7 +661,7 @@ export class ResumableStreams<Auth = unknown> {
       id: streamId,
       ...(owner.owner !== undefined && { owner: owner.owner }),
       threadId: owner.threadId,
-      createdAt: Date.now(),
+      createdAt: this.now(),
     });
     if (!created) return { ok: false, error: streamLimitReached() };
     const producer = new Producer(
@@ -645,6 +669,7 @@ export class ResumableStreams<Auth = unknown> {
       streamId,
       owner.threadId,
       this.detachedTimeoutMs,
+      this.now,
       () => this.producers.delete(streamId),
       [this.shutdown.signal, ...(owner.signal ? [owner.signal] : [])]
     );

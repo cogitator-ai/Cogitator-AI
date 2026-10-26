@@ -196,12 +196,16 @@ describeRedis('Core: durable runs in Redis', () => {
     };
 
     expect(await store.save(record, one)).toBe(false);
-    expect(await store.acquire(ref, one, 5_000)).toBe(true);
+    expect(await store.acquire(ref, one, 5_000)).toBeTruthy();
     expect(await store.save(record, one)).toBe(true);
     expect(await store.acquire(ref, two, 5_000)).toBe(false);
     expect(await store.save(record, two)).toBe(false);
     expect(await store.renew(ref, two, 5_000)).toBe(false);
+    await client.eval('return redis.call("EXPIRE", KEYS[1], 5)', 1, `{${prefix}}:run:r1`);
     expect(await store.renew(ref, one, 5_000)).toBe(true);
+    expect(
+      await client.eval('return redis.call("TTL", KEYS[1])', 1, `{${prefix}}:run:r1`)
+    ).toBeGreaterThan(1_000);
     await store.append(ref, [{ kind: 'started', toolCallId: 'c1' }], one);
     expect(await store.save({ ...record, base: undefined, journal: [] }, one)).toBe(true);
     await store.append(ref, [{ kind: 'started', toolCallId: 'c2' }], one);
@@ -231,7 +235,7 @@ describeRedis('Core: durable runs in Redis', () => {
       await client.eval('return redis.call("TTL", KEYS[1])', 1, `{${prefix}}:run:r1`)
     ).toBeGreaterThan(0);
 
-    expect(await store.acquire(ref, two, 5_000, { replacing: 'one' })).toBe(true);
+    expect(await store.acquire(ref, two, 5_000, { replacing: 'one' })).toBe(2);
     expect(await store.renew(ref, one, 5_000)).toBe(false);
     expect(await store.delete(ref, one)).toBe(false);
     expect(await store.delete(ref, two)).toBe(true);

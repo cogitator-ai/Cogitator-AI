@@ -25,6 +25,13 @@ export interface StreamRecord extends NewStreamRecord {
   lastSeq: number;
   /** Subscriptions open on the stream, across every process that shares the store */
   subscribers: number;
+  /**
+   * When the last subscription of the stream ended, on any process, in ms since the epoch.
+   * Absent while one is open. The run of the stream counts its detached time from it, so a
+   * client that came and went on another process restarts the count. A store that does not
+   * keep it lets the run count from when its own clients left
+   */
+  detachedAt?: number;
 }
 
 /** One event of a stream with its sequence number: `1` for the first, one more for each next */
@@ -59,8 +66,9 @@ export interface StreamSubscriber {
  * {@link read} and follows the live ones with {@link subscribe}, while the run goes on in the
  * process that started it. {@link subscribe} and {@link onCancel} must then reach listeners on
  * every process, which takes pub/sub (Redis `PUBLISH`/`SUBSCRIBE` or similar), and
- * `subscribers` of {@link StreamRecord} must count the subscriptions of every process, which
- * the run reads to tell whether any client is still attached. Events must reach a subscriber
+ * `subscribers` and `detachedAt` of {@link StreamRecord} must cover the subscriptions of every
+ * process, which the run reads to tell whether any client is still attached and since when no
+ * client is. Events must reach a subscriber
  * in the order of their sequence numbers. A follower that sees a sequence number skipped reads
  * the store again, and reports the events it cannot find as lost.
  */
@@ -165,6 +173,8 @@ interface KeptStream {
   subscribers: Set<StreamSubscriber>;
   cancelled: boolean;
   cancelListeners: Set<() => void>;
+  /** When the last subscription ended, absent while one is open */
+  detachedAt?: number;
 }
 
 /**
@@ -265,6 +275,7 @@ export class InMemoryStreamReplayStore implements StreamReplayStore {
         ...stream.record,
         lastSeq: stream.lastSeq,
         subscribers: stream.subscribers.size,
+        ...(stream.detachedAt !== undefined && { detachedAt: stream.detachedAt }),
       }
     );
   }
@@ -281,8 +292,11 @@ export class InMemoryStreamReplayStore implements StreamReplayStore {
       end: () => subscriber.end(),
     };
     stream.subscribers.add(own);
+    stream.detachedAt = undefined;
     return Promise.resolve(() => {
-      stream.subscribers.delete(own);
+      if (stream.subscribers.delete(own) && stream.subscribers.size === 0) {
+        stream.detachedAt = this.now();
+      }
       return Promise.resolve();
     });
   }

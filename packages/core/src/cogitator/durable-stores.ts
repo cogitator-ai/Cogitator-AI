@@ -70,6 +70,11 @@ function mayTake(
   return !lease || lease.instance === holder.instance || lease.instance === replacing;
 }
 
+/** The epoch a lease taken by `holder` gets: the live one's when its instance renews it, else one more than `last` */
+function nextEpoch(live: HeldLease | undefined, holder: DurableRunHolder, last: number): number {
+  return live && live.instance === holder.instance ? live.epoch : last + 1;
+}
+
 function isHeldBy(lease: HeldLease | undefined, holder: DurableRunHolder): boolean {
   return lease?.instance === holder.instance && lease.owner === holder.owner;
 }
@@ -88,6 +93,8 @@ interface KeptRun {
 export class InMemoryDurableRunStore implements DurableRunStore {
   private readonly runs = new Map<string, KeptRun>();
   private readonly leases = new Map<string, HeldLease>();
+  /** The last lease epoch of each run, kept while its lease comes and goes */
+  private readonly epochs = new Map<string, number>();
   private readonly now: () => number;
 
   /** @param options.now the clock leases run out by, `Date.now` by default */
@@ -100,11 +107,14 @@ export class InMemoryDurableRunStore implements DurableRunStore {
     holder: DurableRunHolder,
     ttlMs: number,
     options: { replacing?: string } = {}
-  ): Promise<boolean> {
+  ): Promise<number | false> {
     const ttl = positiveMs(ttlMs);
-    if (!mayTake(this.liveLease(ref.runId), holder, options.replacing)) return false;
-    this.leases.set(ref.runId, { ...holder, expiresAt: this.now() + ttl });
-    return true;
+    const live = this.liveLease(ref.runId);
+    if (!mayTake(live, holder, options.replacing)) return false;
+    const epoch = nextEpoch(live, holder, this.epochs.get(ref.runId) ?? 0);
+    this.epochs.set(ref.runId, epoch);
+    this.leases.set(ref.runId, { ...holder, expiresAt: this.now() + ttl, epoch });
+    return epoch;
   }
 
   async renew(ref: DurableRunRef, holder: DurableRunHolder, ttlMs: number): Promise<boolean> {
@@ -166,6 +176,7 @@ export class InMemoryDurableRunStore implements DurableRunStore {
     if (holder && !isHeldBy(this.liveLease(ref.runId), holder)) return false;
     this.runs.delete(ref.runId);
     this.leases.delete(ref.runId);
+    this.epochs.delete(ref.runId);
     return true;
   }
 
@@ -189,6 +200,8 @@ const THREAD_PAGE = 500;
 interface ThreadEntry {
   kept?: KeptRun;
   lease?: HeldLease;
+  /** The last lease epoch, kept while the lease comes and goes */
+  epoch?: number;
 }
 
 function isLease(value: unknown): value is HeldLease {
@@ -197,7 +210,8 @@ function isLease(value: unknown): value is HeldLease {
     value !== null &&
     typeof (value as { owner?: unknown }).owner === 'string' &&
     typeof (value as { instance?: unknown }).instance === 'string' &&
-    typeof (value as { expiresAt?: unknown }).expiresAt === 'number'
+    typeof (value as { expiresAt?: unknown }).expiresAt === 'number' &&
+    typeof (value as { epoch?: unknown }).epoch === 'number'
   );
 }
 
@@ -221,9 +235,11 @@ function entriesOf(thread: Thread | null): Map<string, ThreadEntry> {
     if (typeof value !== 'object' || value === null) continue;
     const kept: unknown = (value as { kept?: unknown }).kept;
     const lease: unknown = (value as { lease?: unknown }).lease;
+    const epoch: unknown = (value as { epoch?: unknown }).epoch;
     entries.set(runId, {
       ...(isKept(kept) && { kept }),
       ...(isLease(lease) && { lease }),
+      ...(typeof epoch === 'number' && { epoch }),
     });
   }
   return entries;
@@ -272,26 +288,35 @@ export class ThreadDurableRunStore implements DurableRunStore {
     holder: DurableRunHolder,
     ttlMs: number,
     options: { replacing?: string } = {}
-  ): Promise<boolean> {
+  ): Promise<number | false> {
     const ttl = positiveMs(ttlMs);
-    return this.change(
+    let epoch = 0;
+    const taken = await this.change(
       ref,
       (entries) => {
         const entry = entries.get(ref.runId) ?? {};
-        if (!mayTake(this.live(entry.lease), holder, options.replacing)) return false;
-        entries.set(ref.runId, { ...entry, lease: { ...holder, expiresAt: this.now() + ttl } });
+        const live = this.live(entry.lease);
+        if (!mayTake(live, holder, options.replacing)) return false;
+        epoch = nextEpoch(live, holder, entry.epoch ?? entry.lease?.epoch ?? 0);
+        entries.set(ref.runId, {
+          ...entry,
+          epoch,
+          lease: { ...holder, expiresAt: this.now() + ttl, epoch },
+        });
         return true;
       },
       ownerOf(ref)
     );
+    return taken ? epoch : false;
   }
 
   async renew(ref: DurableRunRef, holder: DurableRunHolder, ttlMs: number): Promise<boolean> {
     const ttl = positiveMs(ttlMs);
     return this.change(ref, (entries) => {
       const entry = entries.get(ref.runId);
-      if (!entry || !isHeldBy(this.live(entry.lease), holder)) return false;
-      entries.set(ref.runId, { ...entry, lease: { ...holder, expiresAt: this.now() + ttl } });
+      const live = this.live(entry?.lease);
+      if (!entry || !live || !isHeldBy(live, holder)) return false;
+      entries.set(ref.runId, { ...entry, lease: { ...live, expiresAt: this.now() + ttl } });
       return true;
     });
   }
@@ -300,8 +325,14 @@ export class ThreadDurableRunStore implements DurableRunStore {
     await this.change(ref, (entries) => {
       const entry = entries.get(ref.runId);
       if (!entry || !isHeldBy(entry.lease, holder)) return false;
-      if (entry.kept) entries.set(ref.runId, { kept: entry.kept });
-      else entries.delete(ref.runId);
+      if (entry.kept) {
+        entries.set(ref.runId, {
+          kept: entry.kept,
+          ...(entry.epoch !== undefined && { epoch: entry.epoch }),
+        });
+      } else {
+        entries.delete(ref.runId);
+      }
       return true;
     });
   }
@@ -483,12 +514,25 @@ end`;
 const ACQUIRE_SCRIPT = `${HELD}
 local held = holder(KEYS[1])
 if held and held ~= ARGV[1] and held ~= ARGV[4] then return 0 end
+local epoch
+if held == ARGV[1] then
+  epoch = tonumber(redis.call('GET', KEYS[2]) or '0')
+else
+  epoch = redis.call('INCR', KEYS[2])
+end
 redis.call('SET', KEYS[1], ARGV[1] .. '|' .. ARGV[2], 'PX', ARGV[3])
-return 1`;
+if tonumber(ARGV[5]) > 0 then redis.call('EXPIRE', KEYS[2], ARGV[5]) end
+return epoch`;
 
 const RENEW_SCRIPT = `${HELD}
 if holder(KEYS[1]) ~= ARGV[1] then return 0 end
 redis.call('PEXPIRE', KEYS[1], ARGV[2])
+local ttl = tonumber(ARGV[3])
+if ttl > 0 then
+  for i = 2, #KEYS do
+    if redis.call('EXISTS', KEYS[i]) == 1 then redis.call('EXPIRE', KEYS[i], ttl) end
+  end
+end
 return 1`;
 
 const RELEASE_SCRIPT = `${HELD}
@@ -496,7 +540,7 @@ if holder(KEYS[1]) == ARGV[1] then redis.call('DEL', KEYS[1]) end
 return 1`;
 
 const LEASE_SCRIPT = `
-return { redis.call('GET', KEYS[1]), redis.call('PTTL', KEYS[1]) }`;
+return { redis.call('GET', KEYS[1]), redis.call('PTTL', KEYS[1]), redis.call('GET', KEYS[2]) }`;
 
 /**
  * Writes a checkpoint while the caller holds the lease. A base extension says the size of the base
@@ -543,7 +587,7 @@ return 1`;
 
 const DELETE_SCRIPT = `${HELD}
 if ARGV[1] ~= '' and holder(KEYS[4]) ~= ARGV[1] then return 0 end
-redis.call('DEL', KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[7])
+redis.call('DEL', KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[7], KEYS[8])
 redis.call('ZREM', KEYS[5], ARGV[2])
 redis.call('ZREM', KEYS[6], ARGV[2])
 return 1`;
@@ -574,26 +618,36 @@ export class RedisDurableRunStore implements DurableRunStore {
     holder: DurableRunHolder,
     ttlMs: number,
     options: { replacing?: string } = {}
-  ): Promise<boolean> {
-    const taken = await this.client.eval(
-      ACQUIRE_SCRIPT,
-      1,
-      this.key('lease', ref.runId),
-      holder.instance,
-      holder.owner,
-      positiveMs(ttlMs),
-      options.replacing ?? ''
+  ): Promise<number | false> {
+    const epoch = Number(
+      await this.client.eval(
+        ACQUIRE_SCRIPT,
+        2,
+        this.key('lease', ref.runId),
+        this.key('epoch', ref.runId),
+        holder.instance,
+        holder.owner,
+        positiveMs(ttlMs),
+        options.replacing ?? '',
+        this.ttl
+      )
     );
-    return Number(taken) === 1;
+    return epoch > 0 ? epoch : false;
   }
 
   async renew(ref: DurableRunRef, holder: DurableRunHolder, ttlMs: number): Promise<boolean> {
     const renewed = await this.client.eval(
       RENEW_SCRIPT,
-      1,
+      6,
       this.key('lease', ref.runId),
+      this.key('run', ref.runId),
+      this.key('base', ref.runId),
+      this.key('base-size', ref.runId),
+      this.key('journal', ref.runId),
+      this.key('epoch', ref.runId),
       holder.instance,
-      positiveMs(ttlMs)
+      positiveMs(ttlMs),
+      this.ttl
     );
     return Number(renewed) === 1;
   }
@@ -690,7 +744,7 @@ export class RedisDurableRunStore implements DurableRunStore {
   async delete(ref: DurableRunRef, holder?: DurableRunHolder): Promise<boolean> {
     const deleted = await this.client.eval(
       DELETE_SCRIPT,
-      7,
+      8,
       this.key('run', ref.runId),
       this.key('base', ref.runId),
       this.key('journal', ref.runId),
@@ -698,6 +752,7 @@ export class RedisDurableRunStore implements DurableRunStore {
       this.indexKey(),
       this.threadKey(ref.threadId),
       this.key('base-size', ref.runId),
+      this.key('epoch', ref.runId),
       holder?.instance ?? '',
       ref.runId
     );
@@ -705,9 +760,14 @@ export class RedisDurableRunStore implements DurableRunStore {
   }
 
   private async leaseOf(runId: string): Promise<DurableRunLease | undefined> {
-    const reply = await this.client.eval(LEASE_SCRIPT, 1, this.key('lease', runId));
+    const reply = await this.client.eval(
+      LEASE_SCRIPT,
+      2,
+      this.key('lease', runId),
+      this.key('epoch', runId)
+    );
     if (!Array.isArray(reply)) return undefined;
-    const [held, ttl] = reply as [unknown, unknown];
+    const [held, ttl, epoch] = reply as [unknown, unknown, unknown];
     if (typeof held !== 'string') return undefined;
     const split = held.indexOf('|');
     if (split === -1) return undefined;
@@ -716,10 +776,14 @@ export class RedisDurableRunStore implements DurableRunStore {
       instance: held.slice(0, split),
       owner: held.slice(split + 1),
       ...(left > 0 && { expiresAt: Date.now() + left }),
+      ...(Number(epoch) > 0 && { epoch: Number(epoch) }),
     };
   }
 
-  private key(part: 'run' | 'base' | 'base-size' | 'journal' | 'lease', runId: string): string {
+  private key(
+    part: 'run' | 'base' | 'base-size' | 'journal' | 'lease' | 'epoch',
+    runId: string
+  ): string {
     return `${this.prefix}:${part}:${runId}`;
   }
 

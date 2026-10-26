@@ -32,6 +32,8 @@ export class RunMemory {
   private count = 0;
   /** Set once the run may write no more, see {@link seal} */
   private sealed = false;
+  /** The lease epoch the run's entries name, see {@link epoch} */
+  private leaseEpoch: number | undefined;
   /** Checked before every write, see {@link guard} */
   private check: (() => Promise<void>) | undefined;
   /** What the run's entries name in their metadata, for a durable run */
@@ -115,6 +117,14 @@ export class RunMemory {
    */
   tag(tag: string): void {
     this.taggedRun = tag;
+  }
+
+  /**
+   * Names the epoch of the durable run's lease in the metadata (`durableEpoch`) of every entry it
+   * writes from now on, so readers drop what it wrote late, after another process took it over
+   */
+  epoch(epoch: number): void {
+    this.leaseEpoch = epoch;
   }
 
   /** What the run's entries name in their metadata, see {@link tag} */
@@ -207,7 +217,13 @@ export class RunMemory {
         options.userId,
         this.place,
         event,
-        this.taggedRun === undefined ? metadata : { ...metadata, durableRun: this.taggedRun }
+        this.taggedRun === undefined
+          ? metadata
+          : {
+              ...metadata,
+              durableRun: this.taggedRun,
+              ...(this.leaseEpoch !== undefined && { durableEpoch: this.leaseEpoch }),
+            }
       );
       if (!entry) return;
       this.entries.set(message, entry.id);

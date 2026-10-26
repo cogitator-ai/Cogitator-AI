@@ -30,6 +30,12 @@ export interface DurableRunHolder {
 export interface DurableRunLease extends DurableRunHolder {
   /** Epoch milliseconds the lease ends at, when the store knows it */
   expiresAt?: number;
+  /**
+   * How many times the run was taken by a new holder, this one included: entries the run writes
+   * to its thread name the epoch they were written in, and readers drop those of an older epoch
+   * that came after a newer one began
+   */
+  epoch?: number;
 }
 
 /**
@@ -131,17 +137,18 @@ export interface DurableRunFilter {
  */
 export interface DurableRunStore {
   /**
-   * Takes the run for `holder`, or renews the lease its instance holds, for `ttlMs`. False while
-   * another instance holds a lease that has not run out, unless `replacing` names that instance:
-   * the runtime passes it to take back a run of its own `owner` whose instance is gone (a process
-   * that restarted)
+   * Takes the run for `holder`, or renews the lease its instance holds, for `ttlMs`, and answers
+   * the lease's epoch: one more than the last when a new holder takes it, the same when its
+   * instance renews it. False while another instance holds a lease that has not run out, unless
+   * `replacing` names that instance: the runtime passes it to take back a run of its own `owner`
+   * whose instance is gone (a process that restarted)
    */
   acquire(
     ref: DurableRunRef,
     holder: DurableRunHolder,
     ttlMs: number,
     options?: { replacing?: string }
-  ): Promise<boolean>;
+  ): Promise<number | false>;
   /**
    * Extends the lease `holder` holds by `ttlMs`. False when it holds none: it ran out, another
    * instance took it, or the run was deleted. A run that loses its lease stops, so it never goes

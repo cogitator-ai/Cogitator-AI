@@ -312,6 +312,7 @@ import {
 } from './tools/memory-file-tool';
 import { InMemoryRunCheckpointStore, ThreadRunCheckpointStore } from './cogitator/run-checkpoints';
 import { InMemoryDurableRunStore, ThreadDurableRunStore } from './cogitator/durable-stores';
+import { DURABLE_FENCE } from '@cogitator-ai/memory';
 import {
   DEFAULT_DURABLE_LEASE_MS,
   DEFAULT_STORE_RETRIES,
@@ -2349,6 +2350,7 @@ export class Cogitator implements ToolInvoker {
           },
         });
         await keeper.begin();
+        runMemory.epoch(keeper.epoch);
         const recovered = resumeFrom?.recovered;
         if (recovered) {
           recovered.stopHolding();
@@ -3815,6 +3817,8 @@ export class Cogitator implements ToolInvoker {
               toolSpanEnd: toolSpanStart,
             };
           }
+          /** The journal write of what the call was charged, awaited before the tool starts */
+          let charging: Promise<void> | undefined;
           const dispatch = (): string | undefined => {
             if (askedBefore.some((entry) => entry.toolCallId === toolCall.id)) return undefined;
             if (resumed?.children?.has(toolCall.id)) return undefined;
@@ -3831,7 +3835,7 @@ export class Cogitator implements ToolInvoker {
               return `The tool call budget is spent (${spent.scope} ${spent.used} of ${spent.limit}), the call did not run`;
             }
             runBudget.noteToolCalls(budgetKey(active), 1);
-            if (runBudget.configured) keeper?.charged(budgetKey(active), 1);
+            if (runBudget.configured) charging = keeper?.charged(budgetKey(active), 1);
             for (const parent of parents) parent.budget.noteToolCalls(parent.agentId(), 1);
             return undefined;
           };
@@ -3881,6 +3885,11 @@ export class Cogitator implements ToolInvoker {
                         permitChanged(toolCall, tool, args),
                     }),
                     dispatch,
+                    ...(keeper && {
+                      dispatched: async () => {
+                        await charging;
+                      },
+                    }),
                     stopped: () => stopRequest !== undefined,
                     ...(this.state.constitutionalAI && {
                       guardrails: this.state.constitutionalAI,
@@ -6015,7 +6024,15 @@ export class Cogitator implements ToolInvoker {
    * @throws CogitatorError `RUN_NOT_FOUND`, `RUN_LEASED` as `recoverRun()`
    */
   async discardRun(runId: string): Promise<void> {
-    const { record, release } = await this.takeDurableRun(runId);
+    const { record, release, epoch } = await this.takeDurableRun(runId);
+    const store = this.durableStore();
+    const leaseMs = this.durableConfig()?.leaseMs ?? DEFAULT_DURABLE_LEASE_MS;
+    const takenOver = () =>
+      new CogitatorError({
+        message: `Another process took durable run ${runId} over while it was being discarded`,
+        code: ErrorCode.RUN_LEASED,
+        details: { runId },
+      });
     try {
       const rebuilt = await rebuildDurableRun(record, this.state.memoryAdapter);
       const { checkpoint } = rebuilt;
@@ -6029,6 +6046,10 @@ export class Cogitator implements ToolInvoker {
         })
       );
       memory.tag(`${runId}/discard`);
+      memory.epoch(epoch);
+      memory.guard(async () => {
+        if (!(await store.renew(record, this.durableHolder, leaseMs))) throw takenOver();
+      });
       memory.open(checkpoint.branch);
       const settled = new Set(checkpoint.turn.completed ?? []);
       const answers = [
@@ -6053,7 +6074,7 @@ export class Cogitator implements ToolInvoker {
           ...savedToolResult(result)
         );
       }
-      await this.durableStore().delete(record, this.durableHolder);
+      if (!(await store.delete(record, this.durableHolder))) throw takenOver();
       await release();
     } catch (error) {
       await release();
@@ -6073,11 +6094,42 @@ export class Cogitator implements ToolInvoker {
     return lease.instance;
   }
 
+  /**
+   * Notes in the thread of a durable run this runtime takes over that its lease epoch `epoch`
+   * began: an entry of an older epoch that lands after it (a write of the former holder that
+   * came late) is dropped by every reader, see `withoutStaleDurableEntries`
+   */
+  private async fenceDurableRun(run: DurableRunSummary, epoch: number): Promise<void> {
+    const memory = this.state.memoryAdapter;
+    if (!memory) return;
+    const thread = await memory.getThread(run.threadId);
+    if (!thread.success || !thread.data) return;
+    const added = await memory.addEntry({
+      threadId: run.threadId,
+      message: {
+        role: 'system',
+        content: `Durable run ${run.runId} was taken over (lease epoch ${epoch})`,
+      },
+      tokenCount: 0,
+      type: 'custom',
+      event: { kind: DURABLE_FENCE, runId: run.runId, epoch },
+      metadata: { durableRun: `${run.runId}/fence-${epoch}`, durableEpoch: epoch },
+      activate: false,
+    });
+    if (!added.success) {
+      throw new CogitatorError({
+        message: `Could not fence durable run ${run.runId} in its thread: ${added.error}`,
+        code: ErrorCode.MEMORY_WRITE_FAILED,
+      });
+    }
+  }
+
   /** Takes a kept durable run for this runtime, with how to let it go again */
   private async takeDurableRun(runId: string): Promise<{
     record: DurableRunRecord;
     release: () => Promise<void>;
     stopHolding: () => void;
+    epoch: number;
   }> {
     const leased = (expiresAt?: number) =>
       new CogitatorError({
@@ -6116,8 +6168,9 @@ export class Cogitator implements ToolInvoker {
       const taken = await store().acquire(found, this.durableHolder, leaseMs, {
         ...(replacing !== undefined && { replacing }),
       });
-      if (!taken) throw leased(lease?.expiresAt);
+      if (taken === false) throw leased(lease?.expiresAt);
       held = found;
+      await this.fenceDurableRun(found, taken);
       holding = setInterval(
         () => {
           void store()
@@ -6135,7 +6188,7 @@ export class Cogitator implements ToolInvoker {
           details: { runId },
         });
       }
-      return { record, release, stopHolding };
+      return { record, release, stopHolding, epoch: taken };
     } catch (error) {
       await release();
       throw error;

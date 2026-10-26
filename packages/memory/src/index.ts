@@ -102,6 +102,8 @@ export {
   compactedHistory,
   readCompactedHistory,
   sinceSummary,
+  withoutStaleDurableEntries,
+  DURABLE_FENCE,
   HISTORY_ENTRY_TYPES,
   type SummarizeFn,
   type SummarizeOptions,

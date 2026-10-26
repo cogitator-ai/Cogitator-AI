@@ -103,6 +103,11 @@ export interface ToolCallExecution {
    */
   dispatch?: () => string | undefined;
   /**
+   * Awaited once `dispatch` counted the call, before the tool starts: a durable run records what
+   * the call was charged. A throw keeps the tool from starting
+   */
+  dispatched?: () => Promise<void>;
+  /**
    * Whether the run was stopped (`RunMiddlewareContext.stop`) while the call waited: checked right
    * before the tool starts, nothing awaited after it
    */
@@ -368,6 +373,14 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
     if (spent !== undefined) {
       releaseAll();
       return failed(spent, 'BUDGET_EXCEEDED');
+    }
+    if (execution.dispatched) {
+      try {
+        await execution.dispatched();
+      } catch (error) {
+        releaseAll();
+        throw error;
+      }
     }
     const result = await insideLockOwner(owner, () =>
       tool.sandbox?.type === 'docker' || tool.sandbox?.type === 'wasm'
