@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/openai-compat",
-  "version": "21.3.31",
+  "version": "21.3.32",
   "description": "OpenAI-compatible server for Cogitator agents: Chat Completions, Responses and Assistants APIs",
   "keywords": [
     "cogitator",
@@ -54,8 +54,8 @@
     "vitest": "^5.0.3"
   },
   "peerDependencies": {
-    "@cogitator-ai/core": "workspace:>=0.68.0",
-    "@cogitator-ai/types": "workspace:>=0.78.0",
+    "@cogitator-ai/core": "workspace:>=0.68.1",
+    "@cogitator-ai/types": "workspace:>=0.79.0",
     "ioredis": "^5.0.0 || ^6.0.0",
     "pg": "^8.0.0"
   },

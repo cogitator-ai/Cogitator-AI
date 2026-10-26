@@ -1,5 +1,16 @@
 # @cogitator-ai/memory
 
+## 0.27.0
+
+### Minor Changes
+
+- [#280](https://github.com/cogitator-ai/Cogitator-AI/pull/280) [`132e94f`](https://github.com/cogitator-ai/Cogitator-AI/commit/132e94f60407232b20ab06d608241460f3fb5a9e) Thanks [@bhushan4work](https://github.com/bhushan4work)! - Send Ollama custom headers from the CLI and the embedding service.
+
+### Patch Changes
+
+- Updated dependencies [[`132e94f`](https://github.com/cogitator-ai/Cogitator-AI/commit/132e94f60407232b20ab06d608241460f3fb5a9e)]:
+  - @cogitator-ai/types@0.79.0
+
 ## 0.26.7
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @cogitator-ai/core
 
+## 0.68.1
+
+### Patch Changes
+
+- Updated dependencies [[`132e94f`](https://github.com/cogitator-ai/Cogitator-AI/commit/132e94f60407232b20ab06d608241460f3fb5a9e)]:
+  - @cogitator-ai/memory@0.27.0
+  - @cogitator-ai/types@0.79.0
+  - @cogitator-ai/sandbox@0.8.9
+
 ## 0.68.0
 
 ### Minor Changes
