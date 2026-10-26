@@ -12,6 +12,7 @@ import {
   EmbeddingServiceConfigSchema,
   ContextBuilderConfigSchema,
   OpenAIEmbeddingConfigSchema,
+  OllamaEmbeddingConfigSchema,
 } from '../schema';
 
 describe('MemoryProviderSchema', () => {
@@ -298,6 +299,24 @@ describe('EmbeddingServiceConfigSchema', () => {
       dimensions: 512,
     };
     expect(EmbeddingServiceConfigSchema.parse(config)).toEqual(config);
+  });
+
+  it('keeps ollama embedding headers', () => {
+    const config = {
+      provider: 'ollama' as const,
+      headers: { 'X-Gateway-Key': 'secret' },
+    };
+    expect(OllamaEmbeddingConfigSchema.parse(config)).toEqual(config);
+    expect(EmbeddingServiceConfigSchema.parse(config)).toEqual(config);
+  });
+
+  it('rejects ollama embedding headers with a line break', () => {
+    expect(() =>
+      OllamaEmbeddingConfigSchema.parse({
+        provider: 'ollama',
+        headers: { 'X-Gateway-Key': 'secret\nInjected: value' },
+      })
+    ).toThrow('cannot contain a line break');
   });
 
   it('keeps google baseUrl', () => {

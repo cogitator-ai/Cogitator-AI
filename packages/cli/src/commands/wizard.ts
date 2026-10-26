@@ -395,10 +395,16 @@ export const wizardCommand = new Command('wizard')
 
     const modelSpinner = p.spinner();
     modelSpinner.start('Fetching available models...');
-    const modelOptions =
-      provider === 'ollama'
-        ? await fetchOllamaModelOptions(ollamaUrl, ollamaApiKey)
-        : await fetchProviderModels(provider);
+    let modelOptions;
+    if (provider === 'ollama') {
+      /*
+       * The URL and key this wizard collected, never the ones a cogitator.yml
+       * in the directory may hold: that file belongs to another setup.
+       */
+      modelOptions = await fetchOllamaModelOptions(ollamaUrl, ollamaApiKey);
+    } else {
+      modelOptions = await fetchProviderModels(provider);
+    }
     modelSpinner.stop(`Found ${chalk.cyan(modelOptions.length)} models`);
 
     const existingModel =

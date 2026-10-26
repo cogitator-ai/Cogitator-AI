@@ -24,11 +24,14 @@ export class OllamaEmbeddingService implements EmbeddingService {
   readonly dimensions: number;
 
   private baseUrl: string;
+  private readonly headers: Headers;
 
   constructor(config: Omit<OllamaEmbeddingConfig, 'provider'> = {}) {
     this.model = config.model ?? 'nomic-embed-text';
     this.baseUrl = config.baseUrl ?? 'http://localhost:11434';
     this.dimensions = config.dimensions ?? MODEL_DIMENSIONS[this.model] ?? 768;
+    this.headers = new Headers(config.headers);
+    this.headers.set('Content-Type', 'application/json');
   }
 
   async embed(text: string): Promise<number[]> {
@@ -38,9 +41,7 @@ export class OllamaEmbeddingService implements EmbeddingService {
 
     const response = await fetchWithRetry(`${this.baseUrl}/api/embed`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: this.headers,
       body: JSON.stringify({
         model: this.model,
         input: text,
@@ -71,9 +72,7 @@ export class OllamaEmbeddingService implements EmbeddingService {
 
     const response = await fetchWithRetry(`${this.baseUrl}/api/embed`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: this.headers,
       body: JSON.stringify({
         model: this.model,
         input: texts,

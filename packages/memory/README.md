@@ -981,6 +981,7 @@ import { OllamaEmbeddingService, createEmbeddingService } from '@cogitator-ai/me
 const embeddings = new OllamaEmbeddingService({
   model: 'nomic-embed-text',
   baseUrl: 'http://localhost:11434',
+  headers: { 'X-Gateway-Key': process.env.GATEWAY_KEY! },
 });
 
 const viaFactory = createEmbeddingService({
@@ -990,6 +991,8 @@ const viaFactory = createEmbeddingService({
 
 const vector = await embeddings.embed('Hello, world!');
 ```
+
+`headers` (or `memory.embedding.headers` in `cogitator.yml`) are sent with single and batch requests to `/api/embed`, for example when Ollama runs behind an authentication proxy. `Content-Type` stays `application/json` and wins over a custom content type, regardless of header-name casing.
 
 ### Google Embeddings
 

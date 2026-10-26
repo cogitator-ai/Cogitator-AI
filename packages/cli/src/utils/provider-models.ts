@@ -68,10 +68,11 @@ export function suggestedOllamaModels(): ModelOption[] {
 
 export async function fetchOllamaModelOptions(
   baseUrl: string,
-  apiKey?: string
+  apiKey?: string,
+  headers?: Record<string, string>
 ): Promise<ModelOption[]> {
   try {
-    const models = await listOllamaModels(baseUrl, { apiKey });
+    const models = await listOllamaModels(baseUrl, { apiKey, headers });
     if (models.length === 0) return suggestedOllamaModels();
     return models.map((m) => ({
       label: m.name,

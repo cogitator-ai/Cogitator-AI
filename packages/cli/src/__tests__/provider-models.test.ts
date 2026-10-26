@@ -61,6 +61,23 @@ describe('fetchOllamaModelOptions', () => {
       hint: 'recommended, pull it first',
     });
   });
+
+  it('sends the API key and configured headers when listing models', async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({ models: [{ name: 'qwen3:8b', size: 1, modified_at: '' }] })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const headers = { 'X-Gateway-Key': 'secret' };
+    await fetchOllamaModelOptions('http://localhost:11434', 'k', headers);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:11434/api/tags',
+      expect.objectContaining({
+        headers: { 'X-Gateway-Key': 'secret', Authorization: 'Bearer k' },
+      })
+    );
+  });
 });
 
 describe('API_KEY_ENV', () => {

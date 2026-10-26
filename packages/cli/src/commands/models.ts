@@ -8,9 +8,12 @@ import ora from 'ora';
 import { log } from '../utils/logger.js';
 import { CommandError, errorMessage, examplesHelp, printJson } from '../utils/cli.js';
 import {
+  environmentConnection,
   listOllamaModels,
   pullOllamaModel,
-  resolveOllamaUrl,
+  resolveOllamaConnection,
+  warnConfigError,
+  type OllamaConnection,
   type OllamaModelInfo,
 } from '../utils/ollama.js';
 
@@ -44,6 +47,7 @@ export function formatDate(isoDate: string, now: Date = new Date()): string {
 async function listModels(
   baseUrl: string,
   apiKey: string | undefined,
+  headers: Record<string, string> | undefined,
   json: boolean
 ): Promise<void> {
   const spinner = ora({
@@ -53,7 +57,7 @@ async function listModels(
 
   let models: OllamaModelInfo[];
   try {
-    models = await listOllamaModels(baseUrl, { apiKey });
+    models = await listOllamaModels(baseUrl, { apiKey, headers });
   } catch (error) {
     spinner.fail('Cannot connect to Ollama');
     throw new CommandError(`Cannot connect to Ollama at ${baseUrl}: ${errorMessage(error)}`, {
@@ -107,6 +111,7 @@ async function pullModel(
   baseUrl: string,
   model: string,
   apiKey: string | undefined,
+  headers: Record<string, string> | undefined,
   json: boolean
 ) {
   if (!json) {
@@ -133,7 +138,7 @@ async function pullModel(
           console.log(line);
         }
       },
-      { apiKey }
+      { apiKey, headers }
     );
   } catch (error) {
     if (process.stdout.isTTY && lastLine) console.log();
@@ -154,7 +159,10 @@ async function pullModel(
 export const modelsCommand = new Command('models')
   .description('List available Ollama models')
   .option('--pull <model>', 'Pull a model from Ollama registry')
-  .option('--url <url>', 'Ollama base URL (default: $OLLAMA_URL or http://localhost:11434)')
+  .option(
+    '--url <url>',
+    'Ollama base URL (first in precedence, over cogitator.yml and OLLAMA_BASE_URL, and it never receives the configured server credentials or headers)'
+  )
   .option('--json', 'print the models, or the pulled model, as JSON')
   .addHelpText(
     'after',
@@ -165,13 +173,34 @@ export const modelsCommand = new Command('models')
     ])
   )
   .action(async (options: { pull?: string; url?: string; json?: boolean }) => {
-    const baseUrl = resolveOllamaUrl(process.env, options.url);
-    const apiKey = process.env.OLLAMA_API_KEY;
+    let connection: OllamaConnection;
+    try {
+      connection = resolveOllamaConnection({ url: options.url });
+    } catch (error) {
+      if (options.pull) {
+        const detail =
+          error instanceof Error ? error.message.split('\n').slice(0, 4).join(' ') : String(error);
+        throw new CommandError(`Cannot read the Ollama configuration: ${detail}`);
+      }
+      warnConfigError(error, 'Using the environment only (OLLAMA_BASE_URL, OLLAMA_API_KEY)');
+      connection = environmentConnection(process.env, options.url);
+    }
 
     if (options.pull) {
-      await pullModel(baseUrl, options.pull, apiKey, options.json === true);
+      await pullModel(
+        connection.baseUrl,
+        options.pull,
+        connection.apiKey,
+        connection.headers,
+        options.json === true
+      );
       return;
     }
 
-    await listModels(baseUrl, apiKey, options.json === true);
+    await listModels(
+      connection.baseUrl,
+      connection.apiKey,
+      connection.headers,
+      options.json === true
+    );
   });

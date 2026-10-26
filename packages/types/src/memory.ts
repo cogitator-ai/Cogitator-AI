@@ -516,6 +516,8 @@ export interface OllamaEmbeddingConfig {
   model?: string;
   baseUrl?: string;
   dimensions?: number;
+  /** Custom headers for `/api/embed`. The JSON content type takes precedence. */
+  headers?: Record<string, string>;
 }
 
 export interface GoogleEmbeddingConfig {

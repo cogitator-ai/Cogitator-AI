@@ -1,4 +1,6 @@
+import chalk from 'chalk';
 import { resolveOllamaHost } from '@cogitator-ai/config';
+import { findConfig, loadRunConfig } from './run-config.js';
 
 export const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
 
@@ -17,12 +19,91 @@ export interface OllamaPullProgress {
 export interface OllamaRequestOptions {
   apiKey?: string;
   timeoutMs?: number;
+  headers?: Record<string, string>;
+}
+
+export interface OllamaConnection {
+  baseUrl: string;
+  apiKey?: string;
+  headers?: Record<string, string>;
+}
+
+export interface OllamaConnectionOptions {
+  /**
+   * A flag that overrides the URL of the config, such as `models --url`. An
+   * explicit URL names a server of its own, so the config file is not read at
+   * all for it: its credentials and headers never reach that server.
+   */
+  url?: string;
+  cwd?: string;
 }
 
 /**
- * The Ollama URL to use: `configured` (a flag or cogitator.yml), else
- * `OLLAMA_BASE_URL`, `OLLAMA_URL` or `OLLAMA_HOST`, each read the way Ollama
- * reads `OLLAMA_HOST`, the same way `loadConfig` reads them.
+ * The connection of a server named only by the environment: `resolveOllamaUrl`
+ * over `env`, and `OLLAMA_API_KEY` as its bearer token. No config file, no
+ * `.env` beside one, no headers, so it cannot fail on configuration.
+ */
+export function environmentConnection(
+  env: Record<string, string | undefined> = process.env,
+  url?: string
+): OllamaConnection {
+  const apiKey = env.OLLAMA_API_KEY;
+  return {
+    baseUrl: resolveOllamaUrl(env, url),
+    ...(apiKey ? { apiKey } : {}),
+  };
+}
+
+/**
+ * Warns on stderr when the Ollama configuration cannot be read, keeping stdout
+ * clean for commands with `--json`.
+ */
+export function warnConfigError(error: unknown, fallbackMessage: string): void {
+  const detail =
+    error instanceof Error ? error.message.split('\n').slice(0, 4).join(' ') : String(error);
+  console.error(chalk.yellow('⚠'), `Cannot read the Ollama configuration: ${detail}`);
+  console.error(chalk.dim(fallbackMessage));
+}
+
+/**
+ * The Ollama server and credentials the CLI uses, loaded the way `run` loads them:
+ * the `.env` next to the config file (or in `cwd`), `COGITATOR_CONFIG`, environment
+ * variables and `cogitator.yml`. An explicit `url` skips the config entirely and
+ * uses {@link environmentConnection} instead, so the configured server's credentials
+ * and headers are never sent to another one. Otherwise the server, key and headers
+ * are the ones `loadConfig` merges, the same the chat uses. Config errors are
+ * thrown, not hidden: `status` and `models` catch them and fall back to
+ * {@link environmentConnection}.
+ */
+export function resolveOllamaConnection(options: OllamaConnectionOptions = {}): OllamaConnection {
+  const cwd = options.cwd ?? process.cwd();
+  const env = process.env;
+  if (options.url !== undefined) return environmentConnection(env, options.url);
+
+  const configPath = findConfig(undefined, env, cwd);
+  if (env.COGITATOR_CONFIG && !configPath) {
+    throw new Error(`COGITATOR_CONFIG points to a missing file: ${env.COGITATOR_CONFIG}`);
+  }
+
+  const { config } = loadRunConfig(configPath, cwd);
+  const ollama = config.llm?.providers?.ollama;
+  const baseUrl = resolveOllamaUrl(env, ollama?.baseUrl);
+  const apiKey = ollama?.apiKey;
+  const headers = ollama?.headers;
+
+  return {
+    baseUrl,
+    ...(apiKey ? { apiKey } : {}),
+    ...(headers ? { headers } : {}),
+  };
+}
+
+/**
+ * The Ollama URL to use, in precedence: `configured` (an explicit `--url`, else
+ * the config's `llm.providers.ollama.baseUrl`), then `OLLAMA_BASE_URL`,
+ * `OLLAMA_URL` and `OLLAMA_HOST`, each read the way Ollama reads `OLLAMA_HOST`
+ * (port 11434 when none is given, `0.0.0.0` as `localhost`), then
+ * `http://localhost:11434`.
  */
 export function resolveOllamaUrl(
   env: Record<string, string | undefined> = process.env,
@@ -36,10 +117,19 @@ export function resolveOllamaUrl(
   return DEFAULT_OLLAMA_URL;
 }
 
-function buildHeaders(apiKey: string | undefined, json: boolean): Record<string, string> {
+function buildHeaders(
+  options: Pick<OllamaRequestOptions, 'apiKey' | 'headers'>,
+  json: boolean
+): Record<string, string> {
   const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(options.headers ?? {})) {
+    const lower = name.toLowerCase();
+    if (json && lower === 'content-type') continue;
+    if (options.apiKey && lower === 'authorization') continue;
+    headers[name] = value;
+  }
   if (json) headers['Content-Type'] = 'application/json';
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  if (options.apiKey) headers.Authorization = `Bearer ${options.apiKey}`;
   return headers;
 }
 
@@ -61,7 +151,7 @@ export async function listOllamaModels(
   options: OllamaRequestOptions = {}
 ): Promise<OllamaModelInfo[]> {
   const res = await fetch(`${baseUrl}/api/tags`, {
-    headers: buildHeaders(options.apiKey, false),
+    headers: buildHeaders(options, false),
     signal: AbortSignal.timeout(options.timeoutMs ?? 5000),
   });
   if (!res.ok) {
@@ -112,11 +202,11 @@ export async function pullOllamaModel(
   baseUrl: string,
   model: string,
   onProgress: (progress: OllamaPullProgress) => void,
-  options: Pick<OllamaRequestOptions, 'apiKey'> = {}
+  options: Pick<OllamaRequestOptions, 'apiKey' | 'headers'> = {}
 ): Promise<void> {
   const res = await fetch(`${baseUrl}/api/pull`, {
     method: 'POST',
-    headers: buildHeaders(options.apiKey, true),
+    headers: buildHeaders(options, true),
     body: JSON.stringify({ model, stream: true }),
   });
 

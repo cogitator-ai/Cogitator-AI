@@ -97,6 +97,7 @@ describeOllama('Chat Completions and Responses over a registered agent', () => {
       model: 'helper',
       messages,
       tools: [getWeather],
+      temperature: 0,
     });
     const call = first.choices[0].message.tool_calls?.[0];
     expect(first.choices[0].finish_reason).toBe('tool_calls');

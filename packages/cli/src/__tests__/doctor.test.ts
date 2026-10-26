@@ -22,6 +22,7 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   await Promise.all(servers.splice(0).map((server) => new Promise((r) => server.close(r))));
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 
 async function project(spec: Partial<ProjectSpecInput> = {}): Promise<string> {
@@ -146,24 +147,116 @@ describe('runDoctor', () => {
     expect(model?.fix).toContain('platform.openai.com');
   });
 
+  it('sends configured Ollama headers and lets the config apiKey replace custom authorization', async () => {
+    const dir = await project({ provider: 'ollama', model: 'llama3.2' });
+    for (const name of [
+      '@cogitator-ai/core',
+      '@cogitator-ai/config',
+      '@cogitator-ai/cli',
+      '@cogitator-ai/test-utils',
+    ]) {
+      installFake(dir, name, '1.0.0');
+    }
+    writeFileSync(
+      join(dir, 'cogitator.yml'),
+      [
+        'llm:',
+        '  defaultModel: ollama/llama3.2',
+        '  providers:',
+        '    ollama:',
+        '      baseUrl: http://ollama.example',
+        '      apiKey: config-key',
+        '      headers:',
+        '        X-Gateway-Key: secret',
+        '        authorization: Bearer custom',
+        '',
+      ].join('\n')
+    );
+    const fetchMock = vi.fn(async () =>
+      Response.json({ models: [{ name: 'llama3.2:latest', size: 1, modified_at: '' }] })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const checks = await runDoctor({
+      projectDir: dir,
+      env: {},
+      nodeVersion: 'v24.1.0',
+      probe: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://ollama.example/api/tags',
+      expect.objectContaining({
+        headers: { 'X-Gateway-Key': 'secret', Authorization: 'Bearer config-key' },
+      })
+    );
+    expect(checks.find((c) => c.id === 'model')).toMatchObject({ status: 'pass' });
+  });
+
+  it('prefers OLLAMA_API_KEY in the environment over the config apiKey in doctor', async () => {
+    const dir = await project({ provider: 'ollama', model: 'llama3.2' });
+    for (const name of [
+      '@cogitator-ai/core',
+      '@cogitator-ai/config',
+      '@cogitator-ai/cli',
+      '@cogitator-ai/test-utils',
+    ]) {
+      installFake(dir, name, '1.0.0');
+    }
+    writeFileSync(
+      join(dir, 'cogitator.yml'),
+      [
+        'llm:',
+        '  defaultModel: ollama/llama3.2',
+        '  providers:',
+        '    ollama:',
+        '      baseUrl: http://ollama.example',
+        '      apiKey: config-key',
+        '',
+      ].join('\n')
+    );
+    const fetchMock = vi.fn(async () =>
+      Response.json({ models: [{ name: 'llama3.2:latest', size: 1, modified_at: '' }] })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const checks = await runDoctor({
+      projectDir: dir,
+      env: { OLLAMA_API_KEY: 'env-key' },
+      nodeVersion: 'v24.1.0',
+      probe: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://ollama.example/api/tags',
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer env-key' },
+      })
+    );
+    expect(checks.find((c) => c.id === 'model')).toMatchObject({ status: 'pass' });
+  });
+
   it('checks that the memory service answers', async () => {
     const { port } = await listen();
     const dir = await project({ memory: 'postgres' });
-    vi.stubEnv('DATABASE_URL', `postgresql://cogitator:cogitator@127.0.0.1:${port}/cogitator`);
-
     const up = await runDoctor({
       projectDir: dir,
-      env: { OPENAI_API_KEY: 'sk' },
+      env: {
+        OPENAI_API_KEY: 'sk',
+        DATABASE_URL: `postgresql://cogitator:cogitator@127.0.0.1:${port}/cogitator`,
+      },
       nodeVersion: 'v24.1.0',
       probe: true,
       fetch: async () => new Response('{}', { status: 200 }),
     });
     expect(up.find((c) => c.id === 'memory')).toMatchObject({ status: 'pass' });
 
-    vi.stubEnv('DATABASE_URL', 'postgresql://cogitator:cogitator@127.0.0.1:1/cogitator');
     const down = await runDoctor({
       projectDir: dir,
-      env: { OPENAI_API_KEY: 'sk' },
+      env: {
+        OPENAI_API_KEY: 'sk',
+        DATABASE_URL: 'postgresql://cogitator:cogitator@127.0.0.1:1/cogitator',
+      },
       nodeVersion: 'v24.1.0',
       probe: true,
       fetch: async () => new Response('{}', { status: 200 }),
