@@ -26,6 +26,12 @@ export class RunMemory {
   private opened = false;
   private branchPoint: string | null | undefined;
   private leafId: string | undefined;
+  /** The entry each message the run saved became */
+  private readonly entries = new WeakMap<Message, string>();
+  /** Entries the run wrote */
+  private count = 0;
+  /** What the run's entries name in their metadata, for a durable run */
+  private taggedRun: string | undefined;
 
   /**
    * @param memory the runtime's memory adapter when it writes, read then: memory connects
@@ -99,6 +105,29 @@ export class RunMemory {
     };
   }
 
+  /**
+   * Names `tag` in the metadata (`durableRun`) of every entry the run writes from now on, so a
+   * durable run that stopped finds the entries it wrote after its last checkpoint
+   */
+  tag(tag: string): void {
+    this.taggedRun = tag;
+  }
+
+  /** What the run's entries name in their metadata, see {@link tag} */
+  get tagged(): string | undefined {
+    return this.taggedRun;
+  }
+
+  /** The entry `message` became, when the run saved this very message */
+  entryOf(message: Message): string | undefined {
+    return this.entries.get(message);
+  }
+
+  /** How many entries the run wrote */
+  get written(): number {
+    return this.count;
+  }
+
   /** Resolves once every write asked for so far is done, failed ones included */
   settled(): Promise<void> {
     return this.queue.then(() => undefined);
@@ -152,9 +181,11 @@ export class RunMemory {
         options.userId,
         this.place,
         event,
-        metadata
+        this.taggedRun === undefined ? metadata : { ...metadata, durableRun: this.taggedRun }
       );
       if (!entry) return;
+      this.entries.set(message, entry.id);
+      this.count++;
       if (this.branchPoint === undefined) this.branchPoint = entry.parentId ?? null;
       this.leafId = entry.id;
       if (this.place.parentId !== undefined) this.place.parentId = entry.id;

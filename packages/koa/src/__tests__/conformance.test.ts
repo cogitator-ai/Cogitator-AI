@@ -10,7 +10,9 @@ import {
   checkConformance,
   conformanceContentType,
   conformanceMethod,
+  conformanceReconnectRequest,
   type ConformanceCase,
+  type ConformanceResponse,
   type ConformanceServerOptions,
 } from '@cogitator-ai/server-shared';
 import { cogitatorApp } from '../app.js';
@@ -47,37 +49,46 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
   app.use(router.routes());
   app.use(router.allowedMethods());
 
-  const path = CONFORMANCE_ROUTES[testCase.route];
   const client = request(await serve(app));
   const method = conformanceMethod(testCase);
-  const sent =
-    method === 'GET'
-      ? client.get(path)
-      : method === 'DELETE'
-        ? client.delete(path)
-        : client.post(path);
-  const res = await sent
-    .set('Content-Type', conformanceContentType(testCase))
-    .buffer(true)
-    .parse((response, done) => {
-      let text = '';
-      response.setEncoding('utf8');
-      response.on('data', (chunk: string) => (text += chunk));
-      response.on('end', () => done(null, text));
-    })
-    .send(testCase.body);
-  const body = String(res.body);
-  const code =
-    res.status < 400 ? undefined : (JSON.parse(body) as { error: { code: string } }).error.code;
-  const headers = Object.fromEntries(
-    Object.entries(res.headers as Record<string, string | string[] | undefined>).flatMap(
-      ([name, value]) =>
-        value === undefined
-          ? []
-          : [[name.toLowerCase(), Array.isArray(value) ? value.join(', ') : value]]
-    )
-  );
-  return { status: res.status, code, body, headers };
+  const send = async (
+    path: string,
+    extraHeaders: Record<string, string> = {}
+  ): Promise<ConformanceResponse> => {
+    const sent =
+      method === 'GET'
+        ? client.get(path)
+        : method === 'DELETE'
+          ? client.delete(path)
+          : client.post(path);
+    const res = await sent
+      .set('Content-Type', conformanceContentType(testCase))
+      .set(extraHeaders)
+      .buffer(true)
+      .parse((response, done) => {
+        let text = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk: string) => (text += chunk));
+        response.on('end', () => done(null, text));
+      })
+      .send(testCase.body);
+    const body = String(res.body);
+    const code =
+      res.status < 400 ? undefined : (JSON.parse(body) as { error: { code: string } }).error.code;
+    const headers = Object.fromEntries(
+      Object.entries(res.headers as Record<string, string | string[] | undefined>).flatMap(
+        ([name, value]) =>
+          value === undefined
+            ? []
+            : [[name.toLowerCase(), Array.isArray(value) ? value.join(', ') : value]]
+      )
+    );
+    return { status: res.status, code, body, headers };
+  };
+
+  const first = await send(CONFORMANCE_ROUTES[testCase.route]);
+  const reconnect = conformanceReconnectRequest(testCase, first);
+  return reconnect ? { ...first, reconnect: await send(reconnect.path, reconnect.headers) } : first;
 }
 
 describe('server protocol conformance', () => {

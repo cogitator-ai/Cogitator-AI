@@ -9,6 +9,7 @@ import type {
 import type { AnonymousPolicy, RunLimits } from './contract.js';
 import type { StreamEvent } from './protocol.js';
 import { toAgentRunResponse } from './response.js';
+import { parseStreamEventId, type ResumableStreamOptions } from './resumable-stream.js';
 import { StreamEventSchema } from './stream-schemas.js';
 import type { ContextPolicy, ThreadMessageRole } from './validation.js';
 
@@ -73,6 +74,8 @@ export interface ConformanceServerOptions {
   deps?: Readonly<Record<string, unknown>>;
   /** The adapter's workflow checkpoint store */
   workflowCheckpoints?: CheckpointStore;
+  /** The adapter's `resumableStreams` option */
+  resumableStreams?: boolean | ResumableStreamOptions;
 }
 
 /**
@@ -94,6 +97,29 @@ export interface ConformanceRuntimeOptions {
   crash?: string;
   /** Messages the conformance thread holds, one a millisecond */
   threadEntries?: number;
+}
+
+/**
+ * The second request of a case: a reconnect to the stream the first one opened, sent to the
+ * same route with the same body, as a client that resends its request would
+ */
+export interface ConformanceReconnect {
+  /**
+   * The event id to reconnect with: the id of this event of the first answer (1 for the
+   * first), or this id as it is
+   */
+  after: number | string;
+  /** Where the id goes: the `Last-Event-ID` header (the default) or the `lastEventId` query parameter */
+  via?: 'header' | 'query';
+  expect: {
+    status: number;
+    /** The error code of a refusal */
+    code?: string;
+    /** The answer replays exactly the events of the first answer after `after`, with their ids */
+    replays?: true;
+    /** The stream ends with an `error` event of this code */
+    streamError?: string;
+  };
 }
 
 export interface ConformanceCase {
@@ -134,7 +160,14 @@ export interface ConformanceCase {
     hides?: string;
     /** The thread page the answer holds: how many messages, and whether a `nextCursor` */
     page?: { messages: number; nextCursor: boolean };
+    /**
+     * `true`: every event of the stream has an id of one stream, its sequence numbers 1, 2, 3
+     * and on. `false`: no event has an id
+     */
+    streamIds?: boolean;
   };
+  /** A reconnect to send once the first request is answered */
+  reconnect?: ConformanceReconnect;
 }
 
 const JSON_TYPE = 'application/json';
@@ -498,11 +531,69 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
       runOptions: { deps: { tenant: 'acme' } },
     },
   },
+  {
+    name: 'sends no event ids where streams are not resumable',
+    route: 'agentStream',
+    body: run({ input: 'hi' }),
+    expect: { status: 200, streamThread: true, streamIds: false },
+  },
   ...(['agentStream', 'agentResumeStream'] as const).flatMap((route): ConformanceCase[] => {
     const body =
       route === 'agentStream' ? run({ input: 'hi' }) : run({ threadId: CONFORMANCE_NAMES.thread });
     const label = route === 'agentStream' ? 'a stream' : 'a resume stream';
+    const resumable: ConformanceServerOptions = { resumableStreams: true };
+    const stream = { status: 200, streamThread: true, streamIds: true } as const;
     return [
+      {
+        name: `gives every event of ${label} an id of one stream, in order, where streams are resumable`,
+        route,
+        server: resumable,
+        body,
+        expect: stream,
+      },
+      {
+        name: `replays the rest of ${label} to a client that reconnects with Last-Event-ID`,
+        route,
+        server: resumable,
+        body,
+        expect: stream,
+        reconnect: { after: 3, expect: { status: 200, replays: true } },
+      },
+      {
+        name: `replays the rest of ${label} to a client that reconnects with ?lastEventId=`,
+        route,
+        server: resumable,
+        body,
+        expect: stream,
+        reconnect: { after: 6, via: 'query', expect: { status: 200, replays: true } },
+      },
+      {
+        name: `answers a reconnect to ${label} it does not keep with 404 STREAM_NOT_FOUND`,
+        route,
+        server: resumable,
+        body,
+        expect: stream,
+        reconnect: {
+          after: 'stream_00000000-0000-4000-8000-000000000000:1',
+          expect: { status: 404, code: 'STREAM_NOT_FOUND' },
+        },
+      },
+      {
+        name: `refuses a reconnect to ${label} with an id that names no event`,
+        route,
+        server: resumable,
+        body,
+        expect: stream,
+        reconnect: { after: 'not-an-event-id', expect: { status: 400, code: 'INVALID_INPUT' } },
+      },
+      {
+        name: `ends a reconnect to ${label} whose events were evicted with STREAM_RESUME_GAP`,
+        route,
+        server: { resumableStreams: { maxEvents: 2 } },
+        body,
+        expect: stream,
+        reconnect: { after: 1, expect: { status: 200, streamError: 'STREAM_RESUME_GAP' } },
+      },
       {
         name: `ends ${label} that failed unexpectedly without telling what it was`,
         route,
@@ -734,6 +825,30 @@ export interface ConformanceResponse {
   body: string;
   /** The answer's headers, names in lower case, for the cases that check them */
   headers?: Readonly<Record<string, string>>;
+  /** What the adapter answered to the reconnect of a case with one */
+  reconnect?: ConformanceResponse;
+}
+
+/**
+ * The reconnect a case sends once its first request was answered with `first`: the route
+ * (relative to where the adapter is mounted, with the query) and the headers to add to the
+ * case's own. It goes with the case's method, body and content type. `undefined` for a case
+ * without a reconnect.
+ */
+export function conformanceReconnectRequest(
+  testCase: ConformanceCase,
+  first: ConformanceResponse
+): { path: string; headers: Record<string, string> } | undefined {
+  const { reconnect } = testCase;
+  if (!reconnect) return undefined;
+  const lastEventId =
+    typeof reconnect.after === 'string'
+      ? reconnect.after
+      : (parseSseFrames(first.body)[reconnect.after - 1]?.id ?? '');
+  const path = CONFORMANCE_ROUTES[testCase.route];
+  return reconnect.via === 'query'
+    ? { path: `${path}?lastEventId=${encodeURIComponent(lastEventId)}`, headers: {} }
+    : { path, headers: { 'Last-Event-ID': lastEventId } };
 }
 
 /**
@@ -768,17 +883,26 @@ export interface ConformanceCheckOptions {
 
 /** Reads the `data:` events of an SSE body, skipping comments and `[DONE]` */
 export function parseSseEvents(body: string): StreamEvent[] {
-  const events: StreamEvent[] = [];
+  return parseSseFrames(body).map((frame) => frame.event);
+}
+
+/** Reads the events of an SSE body with the `id:` each carries, skipping comments and `[DONE]` */
+export function parseSseFrames(body: string): Array<{ id?: string; event: StreamEvent }> {
+  const frames: Array<{ id?: string; event: StreamEvent }> = [];
   for (const block of body.split('\n\n')) {
-    const data = block
-      .split('\n')
+    const lines = block.split('\n');
+    const data = lines
       .filter((line) => line.startsWith('data:'))
       .map((line) => line.slice(5).trimStart())
       .join('\n');
     if (!data || data === '[DONE]') continue;
-    events.push(JSON.parse(data) as StreamEvent);
+    const id = lines
+      .find((line) => line.startsWith('id:'))
+      ?.slice(3)
+      .trimStart();
+    frames.push({ ...(id !== undefined && { id }), event: JSON.parse(data) as StreamEvent });
   }
-  return events;
+  return frames;
 }
 
 function canonical(value: unknown): unknown {
@@ -886,6 +1010,20 @@ export function checkConformance(
     fail(`the answer tells the client ${expect.hides}`);
   }
 
+  if (expect.streamIds !== undefined)
+    problems.push(...checkStreamIds(response.body, expect.streamIds));
+
+  if (testCase.reconnect) {
+    problems.push(
+      ...checkReconnect(testCase.reconnect, response, check).map(
+        (problem) => `reconnect: ${problem}`
+      )
+    );
+    if (runtime.runs.length !== runs) {
+      fail(`the reconnect started a run, ${runtime.runs.length} in all, expected ${runs}`);
+    }
+  }
+
   if (expect.page !== undefined) {
     const answer = parseJson(response.body) as { messages?: unknown; nextCursor?: unknown };
     const count = Array.isArray(answer?.messages) ? answer.messages.length : undefined;
@@ -897,6 +1035,70 @@ export function checkConformance(
     }
   }
 
+  return problems;
+}
+
+/** The ids of a resumable stream: one stream, sequence numbers 1, 2, 3 and on. Else none */
+function checkStreamIds(body: string, expected: boolean): string[] {
+  const frames = parseSseFrames(body);
+  if (!expected) {
+    return frames.some((frame) => frame.id !== undefined)
+      ? ['events carry ids where streams are not resumable']
+      : [];
+  }
+  const problems: string[] = [];
+  const streams = new Set<string>();
+  frames.forEach((frame, at) => {
+    const id = frame.id === undefined ? undefined : parseStreamEventId(frame.id);
+    if (!id) {
+      problems.push(`event ${at} has the id ${String(frame.id)}, expected <streamId>:<seq>`);
+      return;
+    }
+    streams.add(id.streamId);
+    if (id.seq !== at + 1) problems.push(`event ${at} has sequence number ${id.seq}`);
+  });
+  if (streams.size > 1) problems.push(`the events name ${streams.size} streams`);
+  return problems;
+}
+
+function checkReconnect(
+  reconnect: ConformanceReconnect,
+  first: ConformanceResponse,
+  check: ConformanceCheckOptions
+): string[] {
+  const answer = first.reconnect;
+  if (!answer) return ['the adapter sent no reconnect'];
+  const problems: string[] = [];
+  const { expect } = reconnect;
+  const status = check.statuses?.[expect.status] ?? expect.status;
+  if (answer.status !== status) {
+    problems.push(`status ${answer.status}, expected ${status}: ${answer.body.slice(0, 300)}`);
+  }
+  const code = expect.code === undefined ? undefined : (check.codes?.[expect.code] ?? expect.code);
+  if (code !== undefined && answer.code !== code) {
+    problems.push(`error code ${String(answer.code)}, expected ${code}`);
+  }
+  if (answer.status === 200) problems.push(...checkStreamEvents(answer.body));
+  if (expect.replays) {
+    const after = typeof reconnect.after === 'number' ? reconnect.after : 0;
+    const expected = parseSseFrames(first.body).slice(after);
+    const replayed = parseSseFrames(answer.body);
+    if (!sameJson(replayed, expected)) {
+      problems.push(
+        `replayed ${JSON.stringify(replayed).slice(0, 300)}, expected ${JSON.stringify(expected).slice(0, 300)}`
+      );
+    }
+    if (!answer.body.trimEnd().endsWith('data: [DONE]'))
+      problems.push('the stream ends without [DONE]');
+  }
+  if (expect.streamError !== undefined) {
+    const last = parseSseEvents(answer.body).at(-1);
+    if (last?.type !== 'error' || last.code !== expect.streamError) {
+      problems.push(
+        `the stream ended with ${JSON.stringify(last)}, expected an ${expect.streamError} error`
+      );
+    }
+  }
   return problems;
 }
 

@@ -1,6 +1,7 @@
 import fp from 'fastify-plugin';
 import {
   DEFAULT_THREAD_MESSAGE_ROLES,
+  ResumableStreams,
   admitCaller,
   checkRunLimits,
   documentStreamEvents,
@@ -33,6 +34,7 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
     authorizeThread: opts.authorizeThread,
     deps: opts.deps,
     workflowCheckpoints: opts.workflowCheckpoints,
+    resumableStreams: ResumableStreams.from(opts.resumableStreams),
   };
 
   fastify.decorate('cogitator', context);

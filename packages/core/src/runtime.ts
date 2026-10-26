@@ -3,6 +3,13 @@ import { nanoid } from 'nanoid';
 import type {
   BuiltContext,
   CogitatorConfig,
+  DurableRunInfo,
+  DurableRunRecord,
+  DurableRunStore,
+  DurableRunsConfig,
+  RecoveredAgentRuns,
+  RecoverRunOptions,
+  RecoverRunsOptions,
   DelegatedResume,
   DefinitionFileOptions,
   ExpandedCommand,
@@ -299,6 +306,13 @@ import {
   memoryFileVisibility,
 } from './tools/memory-file-tool';
 import { InMemoryRunCheckpointStore, ThreadRunCheckpointStore } from './cogitator/run-checkpoints';
+import { InMemoryDurableRunStore, ThreadDurableRunStore } from './cogitator/durable-stores';
+import {
+  DEFAULT_DURABLE_LEASE_MS,
+  DurableRunKeeper,
+  rebuildDurableRun,
+  type RebuiltRun,
+} from './cogitator/durable-runs';
 import {
   parseStructuredOutput,
   structuredOutputProblem,
@@ -709,6 +723,12 @@ export class Cogitator implements ToolInvoker {
   private threadCheckpoints?: { memory: MemoryAdapter; store: ThreadRunCheckpointStore };
   /** The runs going on in each thread, for `multitaskStrategy` */
   private readonly threadRuns = new ThreadRuns();
+  private processDurableRuns?: InMemoryDurableRunStore;
+  private threadDurableRuns?: { memory: MemoryAdapter; store: ThreadDurableRunStore };
+  /** Who this runtime's durable runs are held by, see `DurableRunsConfig.owner` */
+  private readonly durableOwner: string;
+  /** The durable runs this runtime has going, by run id */
+  private readonly durableRunsGoing = new Set<string>();
   /** The Zod schemas of the questions tools of this process's runs wait on */
   private readonly interruptSchemas = new InterruptSchemas();
   /** Permission rules, settings files and session rules of this runtime's runs */
@@ -776,6 +796,17 @@ export class Cogitator implements ToolInvoker {
       });
     }
     this.config = config;
+    const durable = typeof config.durable === 'object' ? config.durable : undefined;
+    if (
+      durable?.leaseMs !== undefined &&
+      !(durable.leaseMs > 0 && Number.isFinite(durable.leaseMs))
+    ) {
+      throw new CogitatorError({
+        message: `durable.leaseMs must be a positive number of milliseconds, got ${String(durable.leaseMs)}`,
+        code: ErrorCode.CONFIGURATION_ERROR,
+      });
+    }
+    this.durableOwner = durable?.owner ?? `cogitator_${nanoid(12)}`;
     this.pricer = new CallPricer(config.llm?.pricing, (name) =>
       Object.hasOwn(config.llm?.backends ?? {}, name)
         ? config.llm?.backends?.[name]?.provider
@@ -863,6 +894,16 @@ export class Cogitator implements ToolInvoker {
     agent: Agent<TDeps>,
     options: StartOptions<TDeps> & RunDeps<TDeps>
   ): RunHandle & Required<Pick<RunHandle, 'setPermissionMode'>> {
+    return this.startWith(agent, options);
+  }
+
+  /** A run's handle, as `start()` gives it: also of a recovered run, its queue holding `queued` */
+  private startWith(
+    agent: Agent,
+    options: StartOptions,
+    resumeFrom?: ResumeFrom,
+    queued: readonly QueuedRunMessage[] = []
+  ): RunHandle & Required<Pick<RunHandle, 'setPermissionMode'>> {
     const { queue: queueOptions, onRefusedMessage, ...runOptions } = options;
     const queue = new RunQueue(queueOptions, (refused) => {
       try {
@@ -878,7 +919,8 @@ export class Cogitator implements ToolInvoker {
       ? AbortSignal.any([runOptions.signal, stop.signal])
       : stop.signal;
     const modes = new PermissionModeControl();
-    const result = this.launch(agent, { ...runOptions, signal }, undefined, queue, modes).finally(
+    for (const item of queued) queue.push(item.kind, item.content);
+    const result = this.launch(agent, { ...runOptions, signal }, resumeFrom, queue, modes).finally(
       () => {
         queue.close();
       }
@@ -2068,13 +2110,29 @@ export class Cogitator implements ToolInvoker {
   ): Promise<RunResult> {
     let checkpoint = resumeFrom?.checkpoint;
     let prompt: RunPrompt | undefined;
-    let runId = checkpoint?.runId ?? `run_${nanoid(12)}`;
+    if (!checkpoint && options.runId !== undefined) assertRunId(options.runId);
+    let runId = checkpoint?.runId ?? options.runId ?? `run_${nanoid(12)}`;
     const threadId = options.threadId ?? `thread_${nanoid(12)}`;
     const runMemory = new RunMemory(
       () => this.state.memoryAdapter,
       threadId,
       () => options
     );
+    const durableConfig = this.durableConfig();
+    const durable =
+      resumeFrom?.recovered !== undefined ||
+      ((options.durable ??
+        agent.config.durable ??
+        (durableConfig ? (durableConfig.enabled ?? true) : false)) &&
+        currentToolRuns().filter((id) => id !== runId).length === 0);
+    /** Names the entries this stretch of a durable run writes, see `RunMemory.tag` */
+    const durableStretch = nanoid(8);
+    const tagEntries = () => {
+      if (durable) runMemory.tag(`${runId}/${durableStretch}`);
+    };
+    tagEntries();
+    let keeper: DurableRunKeeper | undefined;
+    let handOver = false;
     const explicitTrace = normalizeTraceParent(options.trace);
     const parentTrace = explicitTrace ?? currentTraceContext();
     let traceId = parentTrace?.traceId ?? newTraceId();
@@ -2202,6 +2260,7 @@ export class Cogitator implements ToolInvoker {
         }
         runId = checkpoint.runId;
         if (seat) seat.runId = runId;
+        tagEntries();
         options = { ...options, userId: checkpoint.userId };
         runMemory.open(checkpoint.branch);
         if (!explicitTrace && checkpoint.trace) {
@@ -3782,10 +3841,13 @@ export class Cogitator implements ToolInvoker {
         const finished = new Map<string, ToolResult>();
         const dispatch = async (toolCall: ToolCall): Promise<ToolOutcome> => {
           throwIfAborted(abortController.signal);
+          await keeper?.started(toolCall.id);
+          throwIfAborted(abortController.signal);
           dispatched.add(toolCall.id);
           const outcome = await executeToolCall(toolCall);
           if (outcome.result && !abortController.signal.aborted) {
             finished.set(toolCall.id, outcome.result);
+            await keeper?.finished(toolCall.id, outcome.result);
           }
           return outcome;
         };
@@ -4104,6 +4166,118 @@ export class Cogitator implements ToolInvoker {
         return false;
       };
 
+      /** How many times in a row `beforeStop` kept the run going */
+      let stopContinuations = checkpoint?.stopHooks?.continuations ?? 0;
+      /** Whether `beforeStop` kept the run going since its last user message */
+      let stopContinued = checkpoint?.stopHooks?.continued ?? false;
+
+      /** The run as a checkpoint, at `turn` and waiting on `interrupts` */
+      const snapshot = (
+        turn: RunCheckpoint['turn'],
+        interrupts: RunInterrupt[] | undefined,
+        running: boolean,
+        calls: readonly ToolCall[] = allToolCalls
+      ): RunCheckpoint => {
+        const permissionState = permissions.state();
+        const placement = runMemory.placement;
+        return {
+          version: 1,
+          ...(running && { status: 'running' as const }),
+          runId,
+          agentId: active.id,
+          threadId,
+          ...(options.userId !== undefined && { userId: options.userId }),
+          model: effectiveModel,
+          ...(routeProvider !== undefined && { provider: routeProvider }),
+          input,
+          messages: restoreClearedOutputs(messages, middlewareState),
+          ...(running && queue && queue.pending.length > 0 && { queued: [...queue.pending] }),
+          toolCalls: [...calls],
+          ...(prompt && { prompt }),
+          ...(active !== agent && { activeAgent: active.name }),
+          ...(handoffs.length > 0 && { handoffs }),
+          turn,
+          ...(interrupts && { interrupts }),
+          iterations,
+          ...(iterationCap !== maxIterations && { iterationLimit: iterationCap }),
+          lastToolCallSignature: lastToolCallSig,
+          usage: {
+            inputTokens: totalInputTokens,
+            outputTokens: totalOutputTokens,
+            cachedInputTokens,
+            cacheWriteTokens,
+            reasoningTokens,
+            cost: costMeter.state(),
+          },
+          reasoning: reasoningParts,
+          startedAt: checkpoint?.startedAt ?? startTime,
+          trace: { traceId, rootSpanId },
+          ...(running && placement && { branch: placement }),
+          ...((parallelToolCalls !== undefined ||
+            maxParallelToolCalls !== undefined ||
+            Object.keys(ownTimeouts).length > 0) && {
+            toolExecution: {
+              ...(parallelToolCalls !== undefined && { parallelToolCalls }),
+              ...(maxParallelToolCalls !== undefined && { maxParallelToolCalls }),
+              ...(Object.keys(ownTimeouts).length > 0 && { timeouts: { ...ownTimeouts } }),
+            },
+          }),
+          ...(permissionState && { permissions: permissionState }),
+          ...(runBudget.configured && { budget: runBudget.state() }),
+          ...(harness.instructions.length > 0 && {
+            instructions: harness.instructions.map((file) => ({ ...file })),
+          }),
+          ...(pendingContext.length > 0 && { context: [...pendingContext] }),
+          ...((stopContinued || stopContinuations > 0) && {
+            stopHooks: { continuations: stopContinuations, continued: stopContinued },
+          }),
+          ...(control.command && { command: control.command }),
+        };
+      };
+      /** Saves a durable run's checkpoint after a step: at `turn` while its calls go on */
+      const keepDurable = async (
+        turn: RunCheckpoint['turn'] = { toolCalls: [], decisions: {} },
+        calls?: readonly ToolCall[]
+      ): Promise<void> => {
+        if (!keeper) return;
+        await runMemory.settled();
+        await keeper.save(
+          snapshot(turn, resumedInterrupts.length > 0 ? resumedInterrupts : undefined, true, calls),
+          runMemory
+        );
+      };
+      if (durable) {
+        const store = this.durableStore();
+        const owner = {
+          runId,
+          threadId,
+          agentId: agent.id,
+          agentName: agent.name,
+          ...(options.userId !== undefined && { userId: options.userId }),
+        };
+        if (!checkpoint && options.runId !== undefined && (await store.load(owner))) {
+          throw new CogitatorError({
+            message: `A durable run ${runId} is kept already: recover it instead of starting it again`,
+            code: ErrorCode.RUN_LEASED,
+            details: { runId },
+          });
+        }
+        keeper = new DurableRunKeeper(
+          store,
+          owner,
+          this.durableOwner,
+          durableConfig?.leaseMs ?? DEFAULT_DURABLE_LEASE_MS,
+          (error) => {
+            if (!abortController.signal.aborted) abortController.abort(error);
+          }
+        );
+        await keeper.begin();
+        this.durableRunsGoing.add(runId);
+        const watched = keeper;
+        queue?.watch((pending) => watched.queued(pending));
+        if (!checkpoint) await keepDurable();
+      }
+
       if (checkpoint && resumeFrom) {
         if (answeredNow.length > 0) {
           await runMemory.event(
@@ -4125,6 +4299,37 @@ export class Cogitator implements ToolInvoker {
         }
         if (budgetStop) {
           await closeTurnAtBudget(checkpoint.turn.toolCalls, checkpoint.turn.completed ?? []);
+        } else if (resumeFrom.recovered) {
+          for (const { toolCall, result } of resumeFrom.recovered.repairs) {
+            options.onToolResult?.(result);
+            const toolMessage = createToolMessage(
+              toolCall,
+              result,
+              registry.get(toolCall.name)?.maxResultLength ??
+                this.config.limits?.maxToolResultLength ??
+                DEFAULT_TOOL_RESULT_MAX_LENGTH
+            );
+            messages.push(toolMessage);
+            await runMemory.save(active.id, toolMessage, undefined, ...savedToolResult(result));
+          }
+          const turnCalls = checkpoint.turn.toolCalls;
+          await keepDurable(
+            turnCalls.length > 0 ? checkpoint.turn : undefined,
+            checkpoint.toolCalls
+          );
+          if (turnCalls.length > 0) {
+            pausedTurn = await handleToolTurn(turnCalls, {
+              decisions: checkpoint.turn.decisions,
+              interrupts: resumedInterrupts,
+              completed: checkpoint.turn.completed ?? [],
+              ...(checkpoint.turn.denied && { denied: checkpoint.turn.denied }),
+              ...(checkpoint.turn.automatic && { automatic: checkpoint.turn.automatic }),
+            });
+            if (!pausedTurn) {
+              await keepDurable();
+              reachedLimit();
+            }
+          }
         } else {
           const children = new Map<string, DelegatedResume>(
             Object.entries(checkpoint.turn.children ?? {}).map(([callId, child]) => [
@@ -4145,6 +4350,29 @@ export class Cogitator implements ToolInvoker {
             );
           const answeredOwn = ownDecisions(answeredDecisions);
           const resumedOwn = ownDecisions(resumeFrom.decisions);
+          if (keeper) {
+            const fallback = resumeFrom.defaultDecision;
+            const decided = {
+              ...checkpoint.turn.decisions,
+              ...answeredOwn,
+              ...resumedOwn,
+            };
+            await keepDurable(
+              {
+                ...checkpoint.turn,
+                decisions: {
+                  ...(fallback &&
+                    Object.fromEntries(
+                      checkpoint.turn.toolCalls
+                        .filter((call) => !(call.id in decided) && !children.has(call.id))
+                        .map((call) => [call.id, withoutRemember(fallback)])
+                    )),
+                  ...decided,
+                },
+              },
+              checkpoint.toolCalls
+            );
+          }
           pausedTurn = await handleToolTurn(checkpoint.turn.toolCalls, {
             decisions: {
               ...checkpoint.turn.decisions,
@@ -4162,7 +4390,10 @@ export class Cogitator implements ToolInvoker {
             ...(checkpoint.turn.results && { results: checkpoint.turn.results }),
             fresh: [...Object.keys(answeredOwn), ...Object.keys(resumedOwn)],
           });
-          if (!pausedTurn) reachedLimit();
+          if (!pausedTurn) {
+            await keepDurable();
+            reachedLimit();
+          }
         }
       }
 
@@ -4173,11 +4404,13 @@ export class Cogitator implements ToolInvoker {
       let emptyAnswerRetries = 0;
 
       let deliveredAtStop = false;
-      /** How many times in a row `beforeStop` kept the run going */
-      let stopContinuations = checkpoint?.stopHooks?.continuations ?? 0;
-      /** Whether `beforeStop` kept the run going since its last user message */
-      let stopContinued = checkpoint?.stopHooks?.continued ?? false;
-      while (!pausedTurn && !budgetStop && (iterations < iterationCap || limit.closingTurn)) {
+      const answeredBeforeStop = resumeFrom?.recovered?.answered === true;
+      while (
+        !answeredBeforeStop &&
+        !pausedTurn &&
+        !budgetStop &&
+        (iterations < iterationCap || limit.closingTurn)
+      ) {
         throwIfAborted(abortController.signal);
         if (stopRequest) break;
         const steering = queue?.takeForTurn(deliveredAtStop) ?? [];
@@ -4677,6 +4910,10 @@ export class Cogitator implements ToolInvoker {
           continue;
         }
         stopContinuations = 0;
+        await keepDurable({ toolCalls: response.toolCalls, decisions: {} }, [
+          ...allToolCalls,
+          ...response.toolCalls,
+        ]);
         pausedTurn = await handleToolTurn(response.toolCalls);
         runBudget.warn(
           budgetKey(active),
@@ -4684,6 +4921,7 @@ export class Cogitator implements ToolInvoker {
           totalInputTokens + totalOutputTokens
         );
         if (pausedTurn) break;
+        await keepDurable();
         if (reachedLimit()) break;
       }
 
@@ -4691,22 +4929,8 @@ export class Cogitator implements ToolInvoker {
 
       if (pausedTurn) {
         const pausedSpend = await this.keepSessionSpend(threadId, options, runBudget);
-        const permissionState = permissions.state();
-        const pausedCheckpoint: RunCheckpoint = {
-          version: 1,
-          runId,
-          agentId: active.id,
-          threadId,
-          ...(options.userId !== undefined && { userId: options.userId }),
-          model: effectiveModel,
-          ...(routeProvider !== undefined && { provider: routeProvider }),
-          input,
-          messages: restoreClearedOutputs(messages, middlewareState),
-          toolCalls: allToolCalls,
-          ...(prompt && { prompt }),
-          ...(active !== agent && { activeAgent: active.name }),
-          ...(handoffs.length > 0 && { handoffs }),
-          turn: {
+        const pausedCheckpoint = snapshot(
+          {
             toolCalls: pausedTurn.toolCalls,
             decisions: pausedTurn.decisions,
             ...(pausedTurn.completed.length > 0 && { completed: pausedTurn.completed }),
@@ -4723,41 +4947,9 @@ export class Cogitator implements ToolInvoker {
             ...(pausedTurn.children &&
               Object.keys(pausedTurn.children).length > 0 && { children: pausedTurn.children }),
           },
-          interrupts: pausedTurn.interrupts,
-          iterations,
-          ...(iterationCap !== maxIterations && { iterationLimit: iterationCap }),
-          lastToolCallSignature: lastToolCallSig,
-          usage: {
-            inputTokens: totalInputTokens,
-            outputTokens: totalOutputTokens,
-            cachedInputTokens,
-            cacheWriteTokens,
-            reasoningTokens,
-            cost: costMeter.state(),
-          },
-          reasoning: reasoningParts,
-          startedAt: checkpoint?.startedAt ?? startTime,
-          trace: { traceId, rootSpanId },
-          ...((parallelToolCalls !== undefined ||
-            maxParallelToolCalls !== undefined ||
-            Object.keys(ownTimeouts).length > 0) && {
-            toolExecution: {
-              ...(parallelToolCalls !== undefined && { parallelToolCalls }),
-              ...(maxParallelToolCalls !== undefined && { maxParallelToolCalls }),
-              ...(Object.keys(ownTimeouts).length > 0 && { timeouts: { ...ownTimeouts } }),
-            },
-          }),
-          ...(permissionState && { permissions: permissionState }),
-          ...(runBudget.configured && { budget: runBudget.state() }),
-          ...(harness.instructions.length > 0 && {
-            instructions: harness.instructions.map((file) => ({ ...file })),
-          }),
-          ...(pendingContext.length > 0 && { context: [...pendingContext] }),
-          ...((stopContinued || stopContinuations > 0) && {
-            stopHooks: { continuations: stopContinuations, continued: stopContinued },
-          }),
-          ...(control.command && { command: control.command }),
-        };
+          pausedTurn.interrupts,
+          false
+        );
         const waitingOn = pausedTurn.interrupts.filter((entry) => !isAnswered(entry));
         if (pausedTurn.pending.length > 0) {
           await runMemory.event(
@@ -5052,9 +5244,12 @@ export class Cogitator implements ToolInvoker {
       queue?.close();
       if (budget) await this.keepSessionSpend(threadId, options, budget).catch(() => undefined);
       if (prompt) await this.recordPrompt(prompt, undefined, Date.now() - startTime);
+      handOver =
+        keeper !== undefined &&
+        (isSuspension(error) || isSuspension(abortController.signal.reason));
       if (abortController.signal.aborted) {
         const reason = error instanceof Error ? error.message : String(error);
-        if (shown.text && options.saveInterruptedReply !== false) {
+        if (shown.text && options.saveInterruptedReply !== false && !handOver) {
           await runMemory.save(
             shown.agentId,
             { role: 'assistant', content: shown.text },
@@ -5120,6 +5315,15 @@ export class Cogitator implements ToolInvoker {
       throw error;
     } finally {
       runEnded = true;
+      if (keeper) {
+        this.durableRunsGoing.delete(runId);
+        await keeper.end(handOver ? 'hand-over' : 'forget').catch((error: unknown) => {
+          getLogger().warn('Could not close the checkpoint of a durable run', {
+            runId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
       if (this.runPipelines.has(runId)) this.runPipelines.delete(runId);
       if (!pausedOut && !checkpointKept) this.interruptSchemas.forgetRun(runId);
       if (this.runMemories.get(runId) === runMemory) this.runMemories.delete(runId);
@@ -5383,6 +5587,28 @@ export class Cogitator implements ToolInvoker {
     }
   }
 
+  /** The durable runs settings, undefined when runs keep no checkpoint while they go on */
+  private durableConfig(): DurableRunsConfig | undefined {
+    const durable = this.config.durable;
+    if (durable === undefined || durable === false) return undefined;
+    return durable === true ? {} : durable;
+  }
+
+  /** Where durable runs are kept: `durable.store`, the memory adapter's threads, or process memory */
+  private durableStore(): DurableRunStore {
+    const configured = this.durableConfig()?.store;
+    if (configured) return configured;
+    const memory = this.state.memoryAdapter;
+    if (memory) {
+      if (this.threadDurableRuns?.memory !== memory) {
+        this.threadDurableRuns = { memory, store: new ThreadDurableRunStore(memory) };
+      }
+      return this.threadDurableRuns.store;
+    }
+    this.processDurableRuns ??= new InMemoryDurableRunStore();
+    return this.processDurableRuns;
+  }
+
   private runCheckpointStore(): RunCheckpointStore {
     if (this.config.runCheckpoints) return this.config.runCheckpoints;
     const memory = this.state.memoryAdapter;
@@ -5514,6 +5740,219 @@ export class Cogitator implements ToolInvoker {
       options.reason
     );
     return true;
+  }
+
+  /**
+   * The durable runs kept (`durable`), with whether a live process holds each: a run nobody holds
+   * was left by a process that stopped, for `recoverRuns()` or `discardRun()`
+   */
+  async durableRuns(
+    filter: { threadId?: string; agentId?: string; userId?: string } = {}
+  ): Promise<DurableRunInfo[]> {
+    await this.getMemory();
+    const kept = await this.durableStore().list(filter);
+    return kept.map((summary) => ({
+      ...summary,
+      held:
+        this.durableRunsGoing.has(summary.runId) ||
+        (summary.lease !== undefined && summary.lease.owner !== this.durableOwner),
+    }));
+  }
+
+  /**
+   * Picks up the durable runs a stopped process left running and continues each from its last
+   * step: the conversation comes back from the checkpoint and the thread's log, a tool call that
+   * returned before the stop keeps its result, one that was running gets "outcome unknown,
+   * verify before retrying" (the model checks before it calls again), and messages queued on the
+   * run's handle are delivered. Runs a live process holds are left alone, and each run is taken
+   * under a lease, so two processes recovering at once never continue one run twice (with a
+   * store whose leases are atomic, see `DurableRunStore`). With `resume: false` the runs are only
+   * reported in `found`, for the host to `recoverRun()` or `discardRun()` them.
+   *
+   * @example
+   * ```ts
+   * const cog = new Cogitator({ memory, durable: { owner: process.env.HOSTNAME } });
+   * const { resumed } = await cog.recoverRuns({ agents: [assistant] });
+   * for (const { handle } of resumed) handle.result.then(deliver);
+   * ```
+   */
+  async recoverRuns<TDeps = unknown>(
+    options: RecoverRunsOptions<Agent<TDeps>, TDeps>
+  ): Promise<RecoveredAgentRuns> {
+    const recovered: RecoveredAgentRuns = { resumed: [], skipped: [], found: [] };
+    for (const run of await this.durableRuns()) {
+      if (run.held) continue;
+      if (options.filter && !options.filter(run)) continue;
+      if (options.resume === false) {
+        recovered.found.push(run);
+        continue;
+      }
+      const agent =
+        typeof options.agents === 'function'
+          ? options.agents(run)
+          : (options.agents.find((candidate) => candidate.id === run.agentId) ??
+            options.agents.find((candidate) => candidate.name === run.agentName));
+      if (!agent) {
+        recovered.skipped.push({
+          run,
+          reason: `agent "${run.agentName}" (${run.agentId}) was not given`,
+        });
+        continue;
+      }
+      try {
+        const handle = await this.recoverDurable(agent, run.runId, options.options?.(run) ?? {});
+        recovered.resumed.push({ run, handle });
+      } catch (error) {
+        recovered.skipped.push({
+          run,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return recovered;
+  }
+
+  /**
+   * Continues one durable run a stopped process left running, as `recoverRuns()` does, with the
+   * agent it was started with. Resolves once the run is taken, with its handle
+   *
+   * @throws CogitatorError `RUN_NOT_FOUND` when no such run is kept, `RUN_LEASED` when a live
+   * process holds it
+   */
+  async recoverRun<TDeps = unknown>(
+    agent: Agent<TDeps>,
+    runId: string,
+    ...[options = {} as RecoverRunOptions<TDeps>]: RecoverArgs<TDeps>
+  ): Promise<RunHandle & Required<Pick<RunHandle, 'setPermissionMode'>>> {
+    return this.recoverDurable(agent, runId, options);
+  }
+
+  private async recoverDurable(
+    agent: Agent,
+    runId: string,
+    options: RecoverRunOptions
+  ): Promise<RunHandle & Required<Pick<RunHandle, 'setPermissionMode'>>> {
+    const { record, release } = await this.takeDurableRun(runId);
+    try {
+      if (agent.id !== record.agentId && agent.name !== record.agentName) {
+        throw new CogitatorError({
+          message: `Durable run ${runId} belongs to agent "${record.agentName}", not "${agent.name}"`,
+          code: ErrorCode.VALIDATION_ERROR,
+        });
+      }
+      const rebuilt = await rebuildDurableRun(record, this.state.memoryAdapter);
+      return this.startWith(
+        agent,
+        {
+          ...options,
+          input: '',
+          threadId: record.threadId,
+          ...(record.userId !== undefined && { userId: record.userId }),
+        },
+        {
+          checkpoint: rebuilt.checkpoint,
+          decisions: {},
+          checkUser: false,
+          recovered: { repairs: rebuilt.repairs, answered: rebuilt.answered },
+        },
+        rebuilt.queued
+      );
+    } catch (error) {
+      await release();
+      throw error;
+    }
+  }
+
+  /**
+   * Ends a durable run a stopped process left running without going on: the tool calls of its
+   * last step that have no answer in the thread get one (the result a call returned, "outcome
+   * unknown" for one that was running, "Not run" for the others), so the next run of the thread
+   * reads a whole history, and the run is no longer kept
+   *
+   * @throws CogitatorError `RUN_NOT_FOUND`, `RUN_LEASED` as `recoverRun()`
+   */
+  async discardRun(runId: string): Promise<void> {
+    const { record, release } = await this.takeDurableRun(runId);
+    try {
+      const rebuilt = await rebuildDurableRun(record, this.state.memoryAdapter);
+      const { checkpoint } = rebuilt;
+      const memory = new RunMemory(
+        () => this.state.memoryAdapter,
+        record.threadId,
+        () => ({
+          input: '',
+          threadId: record.threadId,
+          ...(record.userId !== undefined && { userId: record.userId }),
+        })
+      );
+      memory.open(checkpoint.branch);
+      const settled = new Set(checkpoint.turn.completed ?? []);
+      const answers = [
+        ...rebuilt.repairs,
+        ...checkpoint.turn.toolCalls
+          .filter((call) => !settled.has(call.id))
+          .map((toolCall) => ({
+            toolCall,
+            result: {
+              callId: toolCall.id,
+              name: toolCall.name,
+              result: null,
+              error: 'Not run: the run was discarded after its process stopped',
+            } satisfies ToolResult,
+          })),
+      ];
+      for (const { toolCall, result } of answers) {
+        await memory.save(
+          checkpoint.agentId,
+          createToolMessage(toolCall, result),
+          undefined,
+          ...savedToolResult(result)
+        );
+      }
+      await this.durableStore().delete(record);
+    } catch (error) {
+      await release();
+      throw error;
+    }
+  }
+
+  /** Takes a kept durable run for this runtime, with how to let it go again */
+  private async takeDurableRun(
+    runId: string
+  ): Promise<{ record: DurableRunRecord; release: () => Promise<void> }> {
+    await this.getMemory();
+    const store = this.durableStore();
+    const [summary] = await store.list({ runId });
+    if (!summary) {
+      throw new CogitatorError({
+        message: `No durable run ${runId} is kept`,
+        code: ErrorCode.RUN_NOT_FOUND,
+        details: { runId },
+      });
+    }
+    const leased = () =>
+      new CogitatorError({
+        message: `Durable run ${runId} is held by a live process`,
+        code: ErrorCode.RUN_LEASED,
+        details: { runId },
+      });
+    if (this.durableRunsGoing.has(runId)) throw leased();
+    const leaseMs = this.durableConfig()?.leaseMs ?? DEFAULT_DURABLE_LEASE_MS;
+    if (!(await store.acquire(summary, this.durableOwner, leaseMs))) throw leased();
+    const release = () => store.release(summary, this.durableOwner).catch(() => undefined);
+    const record = await store.load(summary).catch(async (error: unknown) => {
+      await release();
+      throw error;
+    });
+    if (!record) {
+      await release();
+      throw new CogitatorError({
+        message: `No durable run ${runId} is kept`,
+        code: ErrorCode.RUN_NOT_FOUND,
+        details: { runId },
+      });
+    }
+    return { record, release };
   }
 
   /** The permissions of this runtime's runs, made on first use */
@@ -7000,6 +7439,10 @@ function waitForAbortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<
  * The options of `resume()`: optional, unless the agent declares its deps type, whose runs must
  * pass `deps` again (a checkpoint never holds them).
  */
+type RecoverArgs<TDeps> = unknown extends TDeps
+  ? [options?: RecoverRunOptions<TDeps>]
+  : [options: RecoverRunOptions<TDeps> & { deps: TDeps }];
+
 type ResumeArgs<TDeps> = unknown extends TDeps
   ? [options?: ResumeOptions]
   : [options: ResumeOptions<TDeps> & { deps: TDeps }];
@@ -7070,6 +7513,22 @@ interface ResumeFrom {
   defaultDecision?: ToolApprovalDecision;
   responses?: Record<string, unknown>;
   checkUser: boolean;
+  /** A durable run recovered after its process stopped, see `Cogitator.recoverRun` */
+  recovered?: Pick<RebuiltRun, 'repairs' | 'answered'>;
+}
+
+/** Fails a run whose own `runId` cannot name a run */
+function assertRunId(runId: string): void {
+  if (/^[\w.:-]{1,200}$/.test(runId)) return;
+  throw new CogitatorError({
+    message: `runId must be 1 to 200 letters, digits, '_', '.', ':' or '-', got ${JSON.stringify(runId)}`,
+    code: ErrorCode.VALIDATION_ERROR,
+  });
+}
+
+/** Whether a run stopped to be handed over to another process, see `ErrorCode.RUN_SUSPENDED` */
+function isSuspension(reason: unknown): boolean {
+  return reason instanceof CogitatorError && reason.code === ErrorCode.RUN_SUSPENDED;
 }
 
 /** How a run is steered from outside: its queued messages and its seat on its thread */

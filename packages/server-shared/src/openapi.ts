@@ -167,6 +167,44 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
     },
   };
 
+  const resumable = config.resumableStreams === true;
+  const reconnect = resumable
+    ? {
+        parameters: [
+          {
+            name: 'Last-Event-ID',
+            in: 'header',
+            required: false,
+            description:
+              'Reconnect to the stream of a run instead of starting one: the `id` of the last event the client got (`<streamId>:<seq>`). The answer replays the events after it, then follows the run to its end. The body is not read',
+            schema: { type: 'string' },
+          },
+          {
+            name: 'lastEventId',
+            in: 'query',
+            required: false,
+            description: 'The same as the `Last-Event-ID` header, for clients that cannot set it',
+            schema: { type: 'string' },
+          },
+        ],
+      }
+    : {};
+  const streamIds = resumable
+    ? ' Every event carries an `id` (`<streamId>:<seq>`). A client that loses the stream reconnects with it as `Last-Event-ID`, while the run goes on without it. A reconnect after events that are no longer kept gets one error event with STREAM_RESUME_GAP: fetch the thread to catch up'
+    : '';
+  const streamNotFound = resumable
+    ? ", or the stream a reconnect names is unknown, expired or not the caller's (STREAM_NOT_FOUND)"
+    : '';
+  const streamRefusals = resumable
+    ? {
+        400: {
+          description:
+            'The body breaks the request schema, or `Last-Event-ID` is not an event id (INVALID_INPUT)',
+          content: errorContent,
+        },
+      }
+    : {};
+
   for (const [name] of Object.entries(ctx.agents)) {
     spec.paths[`/agents/${name}/run`] = {
       post: {
@@ -229,19 +267,23 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
       post: {
         tags: ['agents'],
         summary: `Stream agent: ${name}`,
+        ...reconnect,
         requestBody: {
-          required: true,
+          required: !resumable,
           content: {
             'application/json': { schema: { $ref: '#/components/schemas/AgentRunRequest' } },
           },
         },
         responses: {
           200: {
-            description:
-              'SSE stream of protocol events. The start event (StreamStartEvent) names the thread of the run, and the finish event (StreamFinishEvent) repeats it with the usage and the outcome of the JSON run response. The stream is open before the run meets the other runs of its thread, so THREAD_BUSY and RUN_INTERRUPTED end it with an error event carrying that code, where /run answers 409',
+            description: `SSE stream of protocol events. The start event (StreamStartEvent) names the thread of the run, and the finish event (StreamFinishEvent) repeats it with the usage and the outcome of the JSON run response. The stream is open before the run meets the other runs of its thread, so THREAD_BUSY and RUN_INTERRUPTED end it with an error event carrying that code, where /run answers 409.${streamIds}`,
             content: SSE_CONTENT,
           },
           ...refusals,
+          ...streamRefusals,
+          ...(resumable && {
+            404: { description: `Agent not found${streamNotFound}`, content: errorContent },
+          }),
         },
       },
     };
@@ -250,21 +292,25 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
       post: {
         tags: ['agents'],
         summary: `Resume a paused run of ${name} and stream the rest of it`,
+        ...reconnect,
         requestBody: {
-          required: true,
+          required: !resumable,
           content: {
             'application/json': { schema: { $ref: '#/components/schemas/AgentResumeRequest' } },
           },
         },
         responses: {
           200: {
-            description:
-              'SSE stream of protocol events, as on /stream. A thread with no paused run, a run of the thread in the way and an answer after its interrupt expired end the stream with an error event carrying the code /resume answers with (RUN_NOT_PAUSED, THREAD_BUSY, RUN_INTERRUPTED, INTERRUPT_EXPIRED)',
+            description: `SSE stream of protocol events, as on /stream. A thread with no paused run, a run of the thread in the way and an answer after its interrupt expired end the stream with an error event carrying the code /resume answers with (RUN_NOT_PAUSED, THREAD_BUSY, RUN_INTERRUPTED, INTERRUPT_EXPIRED).${streamIds}`,
             content: SSE_CONTENT,
           },
           ...refusals,
+          ...streamRefusals,
           403: threadForbidden,
-          404: { description: 'Agent not found' },
+          404: {
+            description: `Agent not found${streamNotFound}`,
+            ...(resumable && { content: errorContent }),
+          },
         },
       },
     };

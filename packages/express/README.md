@@ -292,6 +292,30 @@ Events: `start`, `text-start`/`text-delta`/`text-end`, `tool-call-start`/`tool-c
 
 When the agent sets `reasoning: { summary: true }` and the provider returns a reasoning summary, it streams as its own part: `reasoning-start`, `reasoning-delta` (`{ id, delta }`), `reasoning-end`. A reasoning part is always closed before text or a tool call starts, so reasoning and text parts never interleave.
 
+## Resumable streams
+
+With `resumableStreams` on, a client that loses the stream of `/agents/:name/stream` or `/agents/:name/resume/stream` (a flaky network, a tab that went to sleep) gets back what it missed, and the run goes on while it is away:
+
+```typescript
+const server = new CogitatorServer({
+  app,
+  cogitator,
+  agents: { chat: chatAgent },
+  config: {
+    resumableStreams: true,
+  },
+});
+```
+
+- Every event carries an SSE `id`, `<streamId>:<seq>` with `seq` from 1 up. Heartbeat comments carry none.
+- A client that disconnects no longer stops the run. Its events keep going into the store.
+- The same route with `Last-Event-ID: <id>` (or `?lastEventId=<id>`) reconnects instead of starting a run, and the body is not read: the answer replays the events after that id with their ids, then follows the run to `finish` (and `data: [DONE]`) or `error`. Several clients may follow one stream.
+- Only the user who started the stream may reconnect to it (an anonymous caller only to an anonymous stream). Anyone else, an unknown or expired stream and an event id the stream never sent get `404 STREAM_NOT_FOUND` before any SSE header, an id that is not `<streamId>:<seq>` gets `400 INVALID_INPUT`.
+- A reconnect after events that are no longer kept (more than `maxEvents` since) gets one `error` event with `STREAM_RESUME_GAP`: fetch the thread (`GET /threads/:id`) to catch up.
+- A run nobody follows for `detachedTimeoutMs` (5 minutes by default) is stopped, so a client that never comes back does not run up cost. Its stream ends with an `error` event `STREAM_ABORTED`.
+
+`true` keeps the events in the memory of the process: 1000 events of each stream, a finished stream for 5 minutes, 1000 streams at once (`maxEvents`, `retentionMs`, `maxStreams`). Behind a load balancer with several processes, pass a `store` they share (`StreamReplayStore` from `@cogitator-ai/server-shared`, backed by Redis or similar with pub/sub), so a reconnect that lands on another process replays and follows the run. Off by default: no ids, and a client that disconnects stops the run.
+
 ## WebSocket Support
 
 Enable real-time bidirectional communication (requires the optional `ws` package):
@@ -462,6 +486,7 @@ interface CogitatorServerConfig {
     ) => boolean | Promise<boolean>;
     deps?: (req: Request) => unknown | Promise<unknown>; // HTTP runs, WebSocket runs use websocket.deps
     workflowCheckpoints?: CheckpointStore; // workflow checkpoints and /resume, none by default
+    resumableStreams?: boolean | ResumableStreamOptions; // see Resumable streams, off by default
   };
 }
 

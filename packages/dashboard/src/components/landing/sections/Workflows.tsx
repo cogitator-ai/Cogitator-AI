@@ -72,7 +72,7 @@ export async function WorkflowsSection() {
             Workflows that outlive <span className="text-l-muted">the process.</span>
           </>
         }
-        description="Wire agents, tools and human sign-offs into a DAG. Each finished node is checkpointed to Postgres or Redis, so a crash, a deploy or an approval that takes all afternoon picks up where it stopped — not from the top."
+        description="Wire agents, tools and human sign-offs into a DAG. Each finished node is checkpointed to Postgres or Redis, so a crash, a deploy or an approval that takes all afternoon picks up where it stopped, not from the top. Agent runs do the same with durable: a run that dies mid-tool goes on from its last step, on another process if need be."
       />
 
       <div className="mt-14 grid gap-4 lg:grid-cols-[1.08fr_1fr]">

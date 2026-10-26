@@ -4,9 +4,11 @@ import type { RunResult } from '@cogitator-ai/types';
 import { streamSSE } from 'hono/streaming';
 import {
   AgentStreamSession,
+  lastEventIdOf,
   parseResumeRequest,
   parseRunRequest,
   toAgentRunResponse,
+  type StreamFollower,
 } from '@cogitator-ai/server-shared';
 import { HonoStreamWriter } from '../streaming/hono-stream-writer.js';
 import type { HonoEnv, AgentListResponse } from '../types.js';
@@ -26,12 +28,58 @@ import {
   sendError,
 } from '../utils/request.js';
 
-function streamAgent(
+/** Writes the frames of a resumable stream to one client, until it ends or the client leaves */
+function followStream(c: Context<HonoEnv>, stream: StreamFollower): Response {
+  const client = createRequestAbortController(c);
+
+  return streamSSE(c, async (sse) => {
+    const writer = new HonoStreamWriter(sse, { heartbeatMs: c.get('cogitator').sseHeartbeatMs });
+    sse.onAbort(() => {
+      writer.close();
+      client.abort();
+    });
+
+    try {
+      for await (const frame of stream.frames(client.signal)) {
+        await writer.send(frame.event, frame.id);
+      }
+    } finally {
+      await writer.flush();
+      writer.close();
+    }
+  });
+}
+
+/**
+ * The answer to a request that reconnects to a resumable stream with `Last-Event-ID` or
+ * `?lastEventId=`, `undefined` for a request that is no reconnect
+ */
+async function reconnect(c: Context<HonoEnv>): Promise<Response | undefined> {
+  const streams = c.get('cogitator').resumableStreams;
+  const lastEventId =
+    streams && lastEventIdOf(c.req.header('last-event-id'), c.req.queries('lastEventId'));
+  if (!streams || lastEventId === undefined) return undefined;
+  const attached = await streams.reconnect(lastEventId, c.get('cogitatorAuth')?.userId);
+  return attached.ok ? followStream(c, attached.stream) : sendError(c, attached.error);
+}
+
+async function streamAgent(
   c: Context<HonoEnv>,
   threadId: string | undefined,
   errorLabel: string,
   execute: (session: AgentStreamSession, signal: AbortSignal) => Promise<RunResult>
-): Response {
+): Promise<Response> {
+  const streams = c.get('cogitator').resumableStreams;
+  if (streams) {
+    const stream = await streams.startAgentRun({
+      userId: c.get('cogitatorAuth')?.userId,
+      threadId,
+      execute,
+      describeError: (error) => describeError(error, errorLabel),
+    });
+    return followStream(c, stream);
+  }
+
   const abortController = createRequestAbortController(c);
 
   return streamSSE(c, async (stream) => {
@@ -151,6 +199,9 @@ export function createAgentRoutes(): Hono<HonoEnv> {
 
     if (!agent) return notFound(c, `Agent '${name}' not found`);
 
+    const reconnected = await reconnect(c);
+    if (reconnected) return reconnected;
+
     const body = await readJsonBody(c);
     if (!body.ok) return bodyRefused(c, body.refusal);
     const parsed = parseRunRequest(body.value, { acceptContext: ctx.acceptContext });
@@ -180,6 +231,9 @@ export function createAgentRoutes(): Hono<HonoEnv> {
     const agent = getOwn(ctx.agents, name);
 
     if (!agent) return notFound(c, `Agent '${name}' not found`);
+
+    const reconnected = await reconnect(c);
+    if (reconnected) return reconnected;
 
     const body = await readJsonBody(c);
     if (!body.ok) return bodyRefused(c, body.refusal);

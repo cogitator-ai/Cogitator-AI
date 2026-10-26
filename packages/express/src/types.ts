@@ -8,6 +8,8 @@ import type {
   ContextPolicy,
   PendingApproval,
   PendingInterrupt,
+  ResumableStreamOptions,
+  ResumableStreams,
   RunLimits,
   SwaggerConfig,
   ThreadMessageRole,
@@ -178,6 +180,16 @@ export interface CogitatorServerConfig {
      * answers 404 `CHECKPOINT_NOT_FOUND`.
      */
     workflowCheckpoints?: CheckpointStore;
+    /**
+     * Keeps the streams of `/agents/:name/stream` and `/agents/:name/resume/stream` so a
+     * client that loses one can resume it. Every event then carries an SSE `id`, and a client
+     * that disconnects no longer stops the run: it goes on, and the same route with
+     * `Last-Event-ID` (or `?lastEventId=`) replays what the client missed and follows the run to
+     * its end. A run nobody follows for `detachedTimeoutMs` (5 minutes) is stopped. `true` keeps
+     * the events in memory with the default limits. Default: off, a client that disconnects
+     * stops the run.
+     */
+    resumableStreams?: boolean | ResumableStreamOptions;
   };
 }
 
@@ -322,7 +334,8 @@ export type ExpressMiddleware = (
 type ServerOptions = NonNullable<CogitatorServerConfig['config']>;
 
 /** The options that stay unset when the server is not given them */
-type UnsetServerOptions = 'limits' | 'authorizeThread' | 'deps' | 'workflowCheckpoints';
+type UnsetServerOptions =
+  'limits' | 'authorizeThread' | 'deps' | 'workflowCheckpoints' | 'resumableStreams';
 
 /** The server's options with their defaults applied */
 export type ResolvedServerConfig = Required<Omit<ServerOptions, UnsetServerOptions>> &
@@ -334,6 +347,8 @@ export interface RouteContext {
   workflows: Record<string, Workflow<WorkflowState>>;
   swarms: Record<string, SwarmConfig>;
   config: ResolvedServerConfig;
+  /** The streams kept for clients to resume, when `resumableStreams` is on */
+  resumableStreams?: ResumableStreams;
 }
 
 export interface WebSocketMessage {

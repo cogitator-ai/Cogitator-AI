@@ -9,7 +9,9 @@ import {
   checkConformance,
   conformanceContentType,
   conformanceMethod,
+  conformanceReconnectRequest,
   type ConformanceCase,
+  type ConformanceResponse,
 } from '@cogitator-ai/server-shared';
 import { cogitatorPlugin } from '../plugin.js';
 import type { CogitatorPluginOptions } from '../types.js';
@@ -50,20 +52,30 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
     ...pluginOptions(testCase),
   });
 
-  const res = await app.inject({
-    method: conformanceMethod(testCase),
-    url: `/api${CONFORMANCE_ROUTES[testCase.route]}`,
-    ...(testCase.body !== undefined && {
-      headers: { 'content-type': conformanceContentType(testCase) },
-      payload: testCase.body,
-    }),
-  });
-  const ok = res.statusCode < 400;
-  const code = ok ? undefined : (res.json() as { error: { code: string } }).error.code;
-  const headers = Object.fromEntries(
-    Object.entries(res.headers).map(([name, value]) => [name.toLowerCase(), String(value)])
-  );
-  return { status: res.statusCode, code, body: res.body, headers };
+  const send = async (
+    path: string,
+    extraHeaders: Record<string, string> = {}
+  ): Promise<ConformanceResponse> => {
+    const res = await app!.inject({
+      method: conformanceMethod(testCase),
+      url: `/api${path}`,
+      headers: {
+        ...(testCase.body !== undefined && { 'content-type': conformanceContentType(testCase) }),
+        ...extraHeaders,
+      },
+      ...(testCase.body !== undefined && { payload: testCase.body }),
+    });
+    const ok = res.statusCode < 400;
+    const code = ok ? undefined : (res.json() as { error: { code: string } }).error.code;
+    const headers = Object.fromEntries(
+      Object.entries(res.headers).map(([name, value]) => [name.toLowerCase(), String(value)])
+    );
+    return { status: res.statusCode, code, body: res.body, headers };
+  };
+
+  const first = await send(CONFORMANCE_ROUTES[testCase.route]);
+  const reconnect = conformanceReconnectRequest(testCase, first);
+  return reconnect ? { ...first, reconnect: await send(reconnect.path, reconnect.headers) } : first;
 }
 
 describe('server protocol conformance', () => {

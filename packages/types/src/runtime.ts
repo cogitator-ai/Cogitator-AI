@@ -53,6 +53,7 @@ import type {
   SessionSpend,
 } from './permissions';
 import type { HooksConfig } from './hooks';
+import type { DurableRunsConfig } from './durable-runs';
 import type { InstructionsConfig, LoadedInstructionFile } from './instructions';
 
 /**
@@ -167,6 +168,14 @@ export interface CogitatorConfig {
    * pauses last as long as the memory does), or to process memory without one.
    */
   runCheckpoints?: RunCheckpointStore;
+  /**
+   * Durable runs: a run keeps a checkpoint after every model turn and every batch of tool calls,
+   * so when its process stops, another (or the same, restarted) recovers it with
+   * `cogitator.recoverRuns()` and goes on from its last step. `true` makes every run durable with
+   * the default store, an object sets the store, the lease and who holds the runs. Unset, runs
+   * keep no checkpoint while they go on, as before. An agent's `durable` and a run's own win
+   */
+  durable?: boolean | DurableRunsConfig;
   /**
    * What a run on a thread does while another run of this runtime goes on there (see
    * `MultitaskStrategy`), for runs that set no `multitaskStrategy` of their own. Unset, runs of
@@ -523,6 +532,20 @@ export interface RunOptions<TDeps = unknown> {
   multitaskStrategy?: MultitaskStrategy;
 
   /**
+   * Whether the run keeps a checkpoint after every step, so `cogitator.recoverRuns()` continues
+   * it after its process stops (see `CogitatorConfig.durable`). Overrides the agent's and the
+   * runtime's setting. A run started from a tool call of another run is never durable on its own:
+   * its caller is, and recovers the call
+   */
+  durable?: boolean;
+  /**
+   * The id the run gets instead of a new one, unique among the runs of the runtime: a queue job
+   * that may run again (on another worker) names its run so the next attempt recovers it. A
+   * durable run with this id that is still kept fails the run with `RUN_LEASED`
+   */
+  runId?: string;
+
+  /**
    * Hooks around this run's model and tool calls, after the Cogitator's and the agent's
    * middleware (see `RunMiddleware`). Pass them again to `resume()`.
    */
@@ -776,6 +799,11 @@ export interface RunCostTokens {
 
 export interface RunCheckpoint {
   version: 1;
+  /**
+   * `paused` (also when missing) for a run that waits for approvals or answers, `running` for the
+   * checkpoint a durable run keeps after every step (`durable`)
+   */
+  status?: 'paused' | 'running';
   runId: string;
   agentId: string;
   threadId: string;
@@ -784,7 +812,23 @@ export interface RunCheckpoint {
   model: string;
   provider?: string;
   input: string;
+  /** The conversation, all of it, except in a durable run's store, see `compact` */
   messages: Message[];
+  /**
+   * How a durable run's store keeps `messages` small: the first `base` messages are the record's
+   * `base`, and each of `logged` is the message of that entry of the thread's log at that index
+   * of the conversation. `messages` holds the others, in order. `written` counts the entries the
+   * run wrote to the log by then, all named `tag` in their metadata (`durableRun`), so a recovery
+   * takes in those it wrote after. Never set in a checkpoint handed to a caller
+   */
+  compact?: {
+    base: number;
+    logged: { at: number; entryId: string }[];
+    written?: number;
+    tag?: string;
+  };
+  /** Messages queued on the run's handle it had not delivered yet, see `RunHandle` */
+  queued?: QueuedRunMessage[];
   toolCalls: ToolCall[];
   prompt?: RunPrompt;
   /** The agent the run was in when it paused, after handoffs */

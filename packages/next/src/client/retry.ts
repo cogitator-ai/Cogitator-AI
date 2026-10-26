@@ -22,7 +22,8 @@ function abortReason(signal: AbortSignal): Error {
     : new DOMException('The operation was aborted.', 'AbortError');
 }
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+/** Waits `ms`, or rejects with the abort reason once `signal` aborts */
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (!signal) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }

@@ -369,6 +369,28 @@ describe('multitaskStrategy', () => {
   });
 });
 
+describe('durable', () => {
+  const path = 'test-durable-config.yaml';
+
+  afterEach(() => {
+    if (existsSync(path)) unlinkSync(path);
+  });
+
+  it('keeps durable runs of a YAML file and of defineConfig', () => {
+    writeFileSync(path, 'durable:\n  leaseMs: 30000\n  owner: worker-1\n');
+    expect(loadConfig({ configPath: path, skipEnv: true }).durable).toEqual({
+      leaseMs: 30000,
+      owner: 'worker-1',
+    });
+    expect(defineConfig({ durable: true }).durable).toBe(true);
+  });
+
+  it('refuses a lease that is not a positive number', () => {
+    writeFileSync(path, 'durable:\n  leaseMs: -1\n');
+    expect(() => loadConfig({ configPath: path, skipEnv: true })).toThrow(/durable/);
+  });
+});
+
 describe('permissions, budgets and limits.onExceeded', () => {
   const path = 'test-permissions-config.yaml';
 

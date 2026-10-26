@@ -5,9 +5,11 @@ import type { CogitatorState, AgentListResponse } from '../types.js';
 import { KoaStreamWriter, setupSSEHeaders } from '../streaming/index.js';
 import {
   AgentStreamSession,
+  lastEventIdOf,
   parseResumeRequest,
   parseRunRequest,
   toAgentRunResponse,
+  type StreamFollower,
 } from '@cogitator-ai/server-shared';
 import { getOwn } from '../utils/lookup.js';
 import {
@@ -19,12 +21,58 @@ import {
 } from '../utils/errors.js';
 import { getRequestBody, onClientDisconnect, refuseThread, runDeps } from '../utils/request.js';
 
+/** Writes the frames of a resumable stream to one client, until it ends or the client leaves */
+async function followStream(
+  ctx: ParameterizedContext<CogitatorState>,
+  stream: StreamFollower
+): Promise<void> {
+  setupSSEHeaders(ctx);
+  const writer = new KoaStreamWriter(ctx, { heartbeatMs: ctx.state.cogitator.sseHeartbeatMs });
+  const client = new AbortController();
+  onClientDisconnect(ctx, () => {
+    writer.close();
+    client.abort();
+  });
+
+  try {
+    for await (const frame of stream.frames(client.signal)) writer.send(frame.event, frame.id);
+  } finally {
+    writer.close();
+  }
+}
+
+/**
+ * Answers a request that reconnects to a resumable stream with `Last-Event-ID` or
+ * `?lastEventId=`, and says whether it was one
+ */
+async function reconnect(ctx: ParameterizedContext<CogitatorState>): Promise<boolean> {
+  const streams = ctx.state.cogitator.resumableStreams;
+  const lastEventId = streams && lastEventIdOf(ctx.get('last-event-id'), ctx.query.lastEventId);
+  if (!streams || lastEventId === undefined) return false;
+  const attached = await streams.reconnect(lastEventId, ctx.state.auth?.userId);
+  if (attached.ok) await followStream(ctx, attached.stream);
+  else sendError(ctx, attached.error);
+  return true;
+}
+
 async function streamAgent(
   ctx: ParameterizedContext<CogitatorState>,
   threadId: string | undefined,
   errorLabel: string,
   execute: (session: AgentStreamSession, signal: AbortSignal) => Promise<RunResult>
 ): Promise<void> {
+  const streams = ctx.state.cogitator.resumableStreams;
+  if (streams) {
+    const stream = await streams.startAgentRun({
+      userId: ctx.state.auth?.userId,
+      threadId,
+      execute,
+      describeError: (error) => describeError(error, errorLabel),
+    });
+    await followStream(ctx, stream);
+    return;
+  }
+
   setupSSEHeaders(ctx);
   const writer = new KoaStreamWriter(ctx, {
     heartbeatMs: ctx.state.cogitator.sseHeartbeatMs,
@@ -161,6 +209,8 @@ export function createAgentRoutes(): Router<CogitatorState> {
       return;
     }
 
+    if (await reconnect(ctx)) return;
+
     const parsed = parseRunRequest(getRequestBody(ctx), {
       acceptContext: ctx.state.cogitator.acceptContext,
     });
@@ -197,6 +247,8 @@ export function createAgentRoutes(): Router<CogitatorState> {
       notFound(ctx, `Agent '${name}' not found`);
       return;
     }
+
+    if (await reconnect(ctx)) return;
 
     const parsed = parseResumeRequest(getRequestBody(ctx));
     if (!parsed.ok) {

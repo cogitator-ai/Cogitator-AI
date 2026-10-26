@@ -161,3 +161,34 @@ describe('generateOpenAPISpec', () => {
     ).toMatchObject({ type: 'boolean' });
   });
 });
+
+describe('generateOpenAPISpec with resumable streams', () => {
+  const context = { agents: { bot: { config: { instructions: 'x' } } }, workflows: {}, swarms: {} };
+  const post = (resumableStreams: boolean, path: string) =>
+    generateOpenAPISpec(context, { resumableStreams }).paths[path]?.post as {
+      parameters?: Array<{ name: string; in: string }>;
+      requestBody: { required: boolean };
+      responses: Record<string, { description: string }>;
+    };
+
+  it.each(['/agents/bot/stream', '/agents/bot/resume/stream'])(
+    'documents the reconnect of %s',
+    (path) => {
+      const operation = post(true, path);
+      expect(operation.parameters?.map(({ name, in: where }) => [name, where])).toEqual([
+        ['Last-Event-ID', 'header'],
+        ['lastEventId', 'query'],
+      ]);
+      expect(operation.requestBody.required).toBe(false);
+      expect(operation.responses[404]?.description).toContain('STREAM_NOT_FOUND');
+      expect(operation.responses[200]?.description).toContain('STREAM_RESUME_GAP');
+    }
+  );
+
+  it('documents none of it where streams are not resumable', () => {
+    const operation = post(false, '/agents/bot/stream');
+    expect(operation.parameters).toBeUndefined();
+    expect(operation.requestBody.required).toBe(true);
+    expect(JSON.stringify(operation)).not.toContain('STREAM_NOT_FOUND');
+  });
+});

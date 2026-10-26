@@ -69,6 +69,11 @@ export interface AgentConfig<TDeps = unknown> {
   /** Deadlines of the stages of this agent's runs, see `RunTimeouts`. A run's `timeouts` win field by field */
   timeouts?: RunTimeouts;
   /**
+   * Whether this agent's runs keep a checkpoint after every step to be recovered after a crash,
+   * see `CogitatorConfig.durable`. Overrides the runtime's setting, a run's `durable` wins
+   */
+  durable?: boolean;
+  /**
    * Gives the model the built-in `write_todos` tool, to plan a long task as a todo list and keep
    * it current: each call replaces the list, with at most one item in progress. The list is kept
    * in the thread's metadata (`todos`) across runs and compaction, reported with

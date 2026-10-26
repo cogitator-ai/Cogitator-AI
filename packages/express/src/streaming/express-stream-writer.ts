@@ -66,15 +66,18 @@ export class ExpressStreamWriter {
     return true;
   }
 
-  private write(data: unknown): void {
+  private write(data: unknown, id?: string): void {
     if (!this.writable) return;
-    this.res.write(encodeSSE(data));
+    this.res.write(encodeSSE(data, id));
   }
 
-  /** Sends one protocol event; `finish`, the last one, is followed by `data: [DONE]` */
-  send(event: StreamEvent): void {
+  /**
+   * Sends one protocol event, with its `id` on a resumable stream. `finish`, the last one, is
+   * followed by `data: [DONE]`
+   */
+  send(event: StreamEvent, id?: string): void {
     if (!this.writable) return;
-    this.write(event);
+    this.write(event, id);
     if (event.type === 'finish') this.res.write(encodeDone());
   }
 

@@ -10,6 +10,8 @@ import type {
   PendingInterrupt,
   ReadinessCheckStatus,
   ReadinessResponse,
+  ResumableStreamOptions,
+  ResumableStreams,
   RunLimits,
   ThreadMessageRole,
   WorkflowResumeRequestBody,
@@ -146,6 +148,16 @@ export interface CogitatorAppOptions {
    * answers 404 `CHECKPOINT_NOT_FOUND`.
    */
   workflowCheckpoints?: CheckpointStore;
+  /**
+   * Keeps the streams of `/agents/:name/stream` and `/agents/:name/resume/stream` so a
+   * client that loses one can resume it. Every event then carries an SSE `id`, and a client
+   * that disconnects no longer stops the run: it goes on, and the same route with
+   * `Last-Event-ID` (or `?lastEventId=`) replays what the client missed and follows the run to
+   * its end. A run nobody follows for `detachedTimeoutMs` (5 minutes) is stopped. `true` keeps
+   * the events in memory with the default limits. Default: off, a client that disconnects
+   * stops the run.
+   */
+  resumableStreams?: boolean | ResumableStreamOptions;
 }
 
 export interface CogitatorContext {
@@ -167,6 +179,8 @@ export interface CogitatorContext {
   deps?: DepsFunction;
   /** The `workflowCheckpoints` option. Default: none, workflow runs keep no checkpoints */
   workflowCheckpoints?: CheckpointStore;
+  /** The streams kept for clients to resume, when `resumableStreams` is on */
+  resumableStreams?: ResumableStreams;
 }
 
 export type HonoEnv = {

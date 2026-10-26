@@ -48,6 +48,11 @@ export interface SwaggerConfig {
   auth?: boolean;
   /** The operator's run limits: the spec shows them as the defaults of the fields they cap */
   limits?: RunLimits;
+  /**
+   * The server keeps resumable streams (`resumableStreams`): the stream routes then document
+   * `Last-Event-ID` and `lastEventId`, the event ids and `STREAM_NOT_FOUND`
+   */
+  resumableStreams?: boolean;
 }
 
 export interface OpenAPIContext {

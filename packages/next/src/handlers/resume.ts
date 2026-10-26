@@ -1,5 +1,5 @@
 import type { Cogitator, Agent } from '@cogitator-ai/core';
-import { parseResumeRequest } from '@cogitator-ai/server-shared';
+import { ResumableStreams, parseResumeRequest } from '@cogitator-ai/server-shared';
 import type { ResumeDecisions, ResumeHandlerOptions, ResumeInput } from '../types.js';
 import {
   exceedsDeclaredSize,
@@ -12,7 +12,7 @@ import {
   runErrorResponse,
 } from './http.js';
 import { toAgentResponse } from './result.js';
-import { streamAgentRun } from './stream-run.js';
+import { reconnectStream, streamAgentRun } from './stream-run.js';
 
 function decisionsOf(input: ResumeInput): ResumeDecisions {
   return {
@@ -47,6 +47,8 @@ export function createResumeHandler(
   agent: Agent,
   options?: ResumeHandlerOptions
 ) {
+  const streams = options?.stream ? ResumableStreams.from(options.resumableStreams) : undefined;
+
   return async (req: Request): Promise<Response> => {
     if (exceedsDeclaredSize(req)) {
       return jsonError('Payload too large', 413, 'PAYLOAD_TOO_LARGE');
@@ -88,10 +90,15 @@ export function createResumeHandler(
     const decisions = decisionsOf(input);
 
     if (options?.stream) {
+      if (streams) {
+        const reconnected = await reconnectStream(req, streams, runContext, options.sseHeartbeatMs);
+        if (reconnected) return reconnected;
+      }
       return streamAgentRun({
         req,
         runContext,
         threadId: input.threadId,
+        streams,
         start: (callbacks) =>
           cogitator.resume(agent, input.threadId, { ...decisions, ...runContext, ...callbacks }),
         afterRun: options.afterRun,

@@ -646,6 +646,20 @@ const result = await handle.result; // or handle.abort(), which returns what was
 
 A tool pauses the run to ask a person with `context.interrupt({ reason, message, responseSchema, expiresAt })`. The run returns `status: 'paused'` with the question in `result.interrupts`, and `cog.resume(agent, threadId, { responses: { [interrupt.id]: answer } })` checks the answer against the schema (or fails with `INTERRUPT_ANSWER_INVALID`, `INTERRUPT_EXPIRED` after `expiresAt`) and runs the tool again, where `interrupt()` now returns the answer. Pending approvals are listed there too, as `kind: 'approval'`. `parseAnswer(text, schema)` and `answerFormat(schema)` from `@cogitator-ai/types` read a typed or spoken answer by the question's schema, `cog.pausedRun(threadId)` lists what a thread waits on and `cog.cancelPause(threadId, { userId, reason })` ends the pause with declined results.
 
+### Durable Runs
+
+With `durable` set, a run keeps a checkpoint after every model turn and every batch of tool calls, so when its process crashes or is stopped, another process (or the same one restarted) continues it from its last step:
+
+```typescript
+const cog = new Cogitator({ memory, durable: { owner: process.env.HOSTNAME } });
+
+// at startup
+const { resumed } = await cog.recoverRuns({ agents: [reporter] });
+for (const { handle } of resumed) handle.result.then(deliver);
+```
+
+A recovered run gets its conversation back from the checkpoint and the thread's log, keeps the results of tool calls that returned before the stop (they never run again), gives a call that was running `OUTCOME_UNKNOWN` ("outcome unknown, verify before retrying") and delivers the messages queued on its handle. Each step writes only what is new: the conversation's start once, messages the log holds as references. Runs are held under a lease (`leaseMs`, default 60 s, renewed at every step), so two processes never continue one run, and a run aborted with `RUN_SUSPENDED` hands over at once. `durable` on an agent or a run wins over the runtime's, `recoverRuns({ resume: false })` only reports the runs, `recoverRun(agent, runId)` and `discardRun(runId)` act on one, `durableRuns()` lists them. Stores: `InMemoryDurableRunStore` (default without memory), `ThreadDurableRunStore` (default with a memory adapter, one process at a time) and `RedisDurableRunStore` (atomic leases, any number of processes). See [Durable Runs](https://cogitator.app/docs/core/durable-runs) and [`examples/core/30-durable-runs.ts`](../../examples/core/30-durable-runs.ts).
+
 ### Permissions
 
 Rules decide tool calls before anyone is asked, in the grammar of Claude Code's `permissions` settings: `allow`, `ask` and `deny` lists of `Tool` or `Tool(specifier)` rules. Claude Code's names map onto the workspace tools (`Bash` to `run_command`, `Read` to `read_file`, `Edit` to `edit_file`, `Write`, `Glob`, `Grep`) and a tool's own name works too. A deny of any layer wins, then ask, then allow:

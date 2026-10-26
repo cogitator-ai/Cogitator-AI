@@ -62,20 +62,23 @@ export class StreamWriter {
     return this.closed;
   }
 
-  private async write(data: unknown): Promise<void> {
+  private async write(data: unknown, id?: string): Promise<void> {
     if (this.closed) return;
     try {
-      await this.writer.write(encodeSSE(data));
+      await this.writer.write(encodeSSE(data, id));
     } catch (error) {
       this.closed = true;
       throw error;
     }
   }
 
-  /** Sends one protocol event; `finish`, the last one, is followed by `data: [DONE]` */
-  async send(event: StreamEvent): Promise<void> {
+  /**
+   * Sends one protocol event, with its `id` on a resumable stream. `finish`, the last one, is
+   * followed by `data: [DONE]`
+   */
+  async send(event: StreamEvent, id?: string): Promise<void> {
     if (this.closed) return;
-    await this.write(event);
+    await this.write(event, id);
     if (event.type !== 'finish' || this.closed) return;
     try {
       await this.writer.write(encodeDone());

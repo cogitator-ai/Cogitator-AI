@@ -64,14 +64,15 @@ export class HonoStreamWriter {
   }
 
   /**
-   * Sends one protocol event; `finish`, the last one, is followed by `data: [DONE]`. Events
-   * are written in the order they were sent, also when nobody awaits them, so a run's
-   * callbacks can send without waiting. `flush()` waits for every event sent so far.
+   * Sends one protocol event, with its `id` on a resumable stream. `finish`, the last one, is
+   * followed by `data: [DONE]`. Events are written in the order they were sent, also when
+   * nobody awaits them, so a run's callbacks can send without waiting. `flush()` waits for
+   * every event sent so far.
    */
-  send(event: StreamEvent): Promise<void> {
+  send(event: StreamEvent, id?: string): Promise<void> {
     if (this.closed) return Promise.resolve();
     const written = this.queue.then(async () => {
-      await this.stream.writeSSE({ data: JSON.stringify(event) });
+      await this.stream.writeSSE({ data: JSON.stringify(event), ...(id !== undefined && { id }) });
       if (event.type === 'finish') await this.stream.writeSSE({ data: '[DONE]' });
     });
     this.queue = written.catch(() => undefined);

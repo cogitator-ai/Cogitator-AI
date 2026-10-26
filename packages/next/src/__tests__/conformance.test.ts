@@ -4,7 +4,9 @@ import {
   ConformanceRuntime,
   checkConformance,
   conformanceContentType,
+  conformanceReconnectRequest,
   type ConformanceCase,
+  type ConformanceResponse,
 } from '@cogitator-ai/server-shared';
 import type { Agent, Cogitator } from '@cogitator-ai/core';
 import { createAgentHandler } from '../handlers/agent.js';
@@ -43,8 +45,40 @@ const handlers = {
     createResumeHandler(runtime as unknown as Cogitator, agent, {
       ...contractOf(testCase),
       stream: true,
+      sseHeartbeatMs: 0,
+      resumableStreams: testCase.server?.resumableStreams,
     }),
 } as const;
+
+/**
+ * Sends a case to a handler, and its reconnect when it has one: the same request again with
+ * the reconnect's headers and query, as `useCogitatorChat` resends it
+ */
+async function answer(
+  handler: (req: Request) => Promise<Response>,
+  testCase: ConformanceCase,
+  body: string | undefined = testCase.body
+): Promise<ConformanceResponse> {
+  const send = async (query = '', headers: Record<string, string> = {}) => {
+    const res = await handler(
+      new Request(`http://localhost/api${query}`, {
+        method: 'POST',
+        headers: { 'Content-Type': conformanceContentType(testCase), ...headers },
+        body,
+      })
+    );
+    const text = await res.text();
+    const code = res.ok ? undefined : (JSON.parse(text) as { error: { code: string } }).error.code;
+    return { status: res.status, code, body: text, headers: Object.fromEntries(res.headers) };
+  };
+  const first = await send();
+  const reconnect = conformanceReconnectRequest(testCase, first);
+  if (!reconnect) return first;
+  const query = reconnect.path.includes('?')
+    ? reconnect.path.slice(reconnect.path.indexOf('?'))
+    : '';
+  return { ...first, reconnect: await send(query, reconnect.headers) };
+}
 
 function isHandled(testCase: ConformanceCase): testCase is ConformanceCase & {
   route: keyof typeof handlers;
@@ -58,20 +92,30 @@ describe('server protocol conformance', () => {
   )('%s', async (_name, testCase) => {
     const runtime = new ConformanceRuntime(testCase);
     const handler = handlers[testCase.route](runtime, testCase);
-    const res = await handler(
-      new Request('http://localhost/api', {
-        method: 'POST',
-        headers: { 'Content-Type': conformanceContentType(testCase) },
-        body: testCase.body,
-      })
-    );
-    const body = await res.text();
-    const code = res.ok ? undefined : (JSON.parse(body) as { error: { code: string } }).error.code;
-    const headers = Object.fromEntries(res.headers);
-    expect(
-      checkConformance(testCase, { status: res.status, code, body, headers }, runtime)
-    ).toEqual([]);
+    expect(checkConformance(testCase, await answer(handler, testCase), runtime)).toEqual([]);
   });
+});
+
+describe('chat stream resumable conformance', () => {
+  const cases = CONFORMANCE_CASES.filter(
+    (testCase) => testCase.route === 'agentStream' && testCase.expect.streamIds !== undefined
+  );
+
+  it.each(cases.map((testCase) => [testCase.name, testCase] as const))(
+    '%s',
+    async (_name, testCase) => {
+      const runtime = new ConformanceRuntime(testCase);
+      const handler = createChatHandler(runtime as unknown as Cogitator, agent, {
+        sseHeartbeatMs: 0,
+        resumableStreams: testCase.server?.resumableStreams,
+      });
+      const { input } = JSON.parse(testCase.body ?? '{}') as { input: string };
+      const body = JSON.stringify({ messages: [{ role: 'user', content: input }] });
+      expect(checkConformance(testCase, await answer(handler, testCase, body), runtime)).toEqual(
+        []
+      );
+    }
+  );
 });
 
 describe('chat stream conformance', () => {

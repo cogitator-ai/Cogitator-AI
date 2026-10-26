@@ -2,6 +2,7 @@ import { Router, json } from 'express';
 import { getLogger } from '@cogitator-ai/core';
 import {
   DEFAULT_THREAD_MESSAGE_ROLES,
+  ResumableStreams,
   checkRunLimits,
   resolveSseHeartbeatMs,
 } from '@cogitator-ai/server-shared';
@@ -40,6 +41,7 @@ export class CogitatorServer {
   private workflows: NonNullable<CogitatorServerConfig['workflows']>;
   private swarms: NonNullable<CogitatorServerConfig['swarms']>;
   private config: ResolvedServerConfig;
+  private resumableStreams: ResumableStreams | undefined;
   private routeContext: RouteContext | null = null;
   private initialized = false;
 
@@ -65,6 +67,7 @@ export class CogitatorServer {
       limits: checkRunLimits(cfg.limits),
       anonymous: cfg.anonymous ?? 'allow',
     } as ResolvedServerConfig;
+    this.resumableStreams = ResumableStreams.from(cfg.resumableStreams);
   }
 
   async init(): Promise<void> {
@@ -94,6 +97,7 @@ export class CogitatorServer {
       workflows: this.workflows,
       swarms: this.swarms,
       config: this.config,
+      resumableStreams: this.resumableStreams,
     };
     this.routeContext = ctx;
 
@@ -124,6 +128,7 @@ export class CogitatorServer {
       servers: this.config.swagger?.servers ?? [{ url: this.config.basePath }],
       auth: this.config.swagger?.auth ?? Boolean(this.config.auth),
       limits: this.config.limits,
+      resumableStreams: this.resumableStreams !== undefined,
     });
 
     router.get('/openapi.json', (_req, res) => {

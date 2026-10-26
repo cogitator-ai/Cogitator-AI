@@ -154,6 +154,47 @@ export { AgentStreamSession, createThreadId } from './stream-session.js';
 
 export type { AgentStreamCallbacks, AgentStreamSessionOptions } from './stream-session.js';
 
+export {
+  DEFAULT_DETACHED_TIMEOUT_MS,
+  ResumableStreams,
+  STREAM_ABORTED,
+  STREAM_NOT_FOUND,
+  STREAM_RESUME_GAP,
+  formatStreamEventId,
+  invalidLastEventId,
+  lastEventIdOf,
+  parseStreamEventId,
+  streamNotFound,
+} from './resumable-stream.js';
+
+export type {
+  ResumableAgentRunOptions,
+  ResumableStream,
+  ResumableStreamOptions,
+  StreamEventId,
+  StreamFollower,
+  StreamFrame,
+  StreamReconnection,
+} from './resumable-stream.js';
+
+export {
+  DEFAULT_STREAM_MAX_EVENTS,
+  DEFAULT_STREAM_MAX_STREAMS,
+  DEFAULT_STREAM_RETENTION_MS,
+  InMemoryStreamReplayStore,
+} from './stream-replay-store.js';
+
+export type {
+  InMemoryStreamReplayStoreOptions,
+  NewStreamRecord,
+  StoredStreamEvent,
+  StreamOwner,
+  StreamRecord,
+  StreamReplay,
+  StreamReplayStore,
+  StreamSubscriber,
+} from './stream-replay-store.js';
+
 export { swarmAgentNames, withSwarm } from './swarm.js';
 
 export type { ClosableSwarm, SwarmAgentSlots } from './swarm.js';
@@ -169,13 +210,16 @@ export {
   conformanceContentType,
   conformanceMethod,
   conformancePausedResult,
+  conformanceReconnectRequest,
   conformanceRunResult,
   parseSseEvents,
+  parseSseFrames,
 } from './conformance.js';
 
 export type {
   ConformanceCase,
   ConformanceCheckOptions,
+  ConformanceReconnect,
   ConformanceResponse,
   ConformanceRoute,
   ConformanceServerOptions,

@@ -7,6 +7,7 @@ import type {
   AnonymousPolicy,
   AuthorizeThread as SharedAuthorizeThread,
   ContextPolicy,
+  ResumableStreamOptions,
   RunLimits,
   ThreadMessageRole,
 } from '@cogitator-ai/server-shared';
@@ -159,6 +160,16 @@ export interface CogitatorDeps {
    * `404 CHECKPOINT_NOT_FOUND`.
    */
   workflowCheckpoints?: CheckpointStore;
+  /**
+   * Keeps the streams of `/agents/:name/stream` and `/agents/:name/resume/stream` so a
+   * client that loses one can resume it. Every event then carries an SSE `id`, and a client
+   * that disconnects no longer stops the run: it goes on, and the same route with
+   * `Last-Event-ID` (or `?lastEventId=`) replays what the client missed and follows the run to
+   * its end. A run nobody follows for `detachedTimeoutMs` (5 minutes) is stopped, and so is
+   * every run when `until` fires. `true` keeps the events in memory with the default limits.
+   * Default: off, a client that disconnects stops the run.
+   */
+  resumableStreams?: boolean | ResumableStreamOptions;
 }
 
 export type AgentRunRequest = z.input<typeof RunBody>;

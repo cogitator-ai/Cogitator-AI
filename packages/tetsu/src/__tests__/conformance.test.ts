@@ -10,7 +10,9 @@ import {
   checkConformance,
   conformanceContentType,
   conformanceMethod,
+  conformanceReconnectRequest,
   type ConformanceCase,
+  type ConformanceResponse,
   type ConformanceServerOptions,
 } from '@cogitator-ai/server-shared';
 import { cogitatorController } from '../index.js';
@@ -59,17 +61,26 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
   );
 
   const method = conformanceMethod(testCase);
-  const res = await request(`/api${CONFORMANCE_ROUTES[testCase.route]}`, {
-    method,
-    headers: { 'content-type': conformanceContentType(testCase) },
-    ...(method === 'POST' && { body: testCase.body }),
-  });
-  const body = await res.text();
-  const code = res.ok ? undefined : (JSON.parse(body) as { error: string }).error;
-  const headers = Object.fromEntries(
-    [...res.headers.entries()].map(([name, value]) => [name.toLowerCase(), value])
-  );
-  return { status: res.status, code, body, headers };
+  const send = async (
+    path: string,
+    extraHeaders: Record<string, string> = {}
+  ): Promise<ConformanceResponse> => {
+    const res = await request(`/api${path}`, {
+      method,
+      headers: { 'content-type': conformanceContentType(testCase), ...extraHeaders },
+      ...(method === 'POST' && { body: testCase.body }),
+    });
+    const body = await res.text();
+    const code = res.ok ? undefined : (JSON.parse(body) as { error: string }).error;
+    const headers = Object.fromEntries(
+      [...res.headers.entries()].map(([name, value]) => [name.toLowerCase(), value])
+    );
+    return { status: res.status, code, body, headers };
+  };
+
+  const first = await send(CONFORMANCE_ROUTES[testCase.route]);
+  const reconnect = conformanceReconnectRequest(testCase, first);
+  return reconnect ? { ...first, reconnect: await send(reconnect.path, reconnect.headers) } : first;
 }
 
 describe('server protocol conformance', () => {

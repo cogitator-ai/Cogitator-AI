@@ -1,9 +1,12 @@
-import { controller, route } from '@tetsujs/core';
+import { controller, reportFailure, route } from '@tetsujs/core';
+import type { BaseCtx } from '@tetsujs/core';
 import { sse } from '@tetsujs/sse';
 import type { ServerSentEvent } from '@tetsujs/sse';
 import { countMessageTokens } from '@cogitator-ai/memory';
 import {
   AgentStreamSession,
+  ResumableStreams,
+  STREAM_NOT_FOUND,
   checkRunLimits,
   createErrorEvent,
   createFinishEvent,
@@ -83,6 +86,7 @@ import {
   WorkflowListResponse,
   WorkflowRunResponse,
 } from './schemas.js';
+import { reconnectHook, resumableEvents } from './resumable.js';
 import { cogitatorSocket } from './socket.js';
 import { DONE_EVENT, eventsOf, resolveSignal, sseEvent } from './streaming.js';
 import type { AgentStreamCallbacks } from './streaming.js';
@@ -150,6 +154,9 @@ const BlackboardDisabled = errorEnvelope(
 const STREAM_DESCRIPTION =
   'Server-sent events in the Cogitator stream protocol, one JSON event per `data:` line, ending with `data: [DONE]`.';
 
+const RESUMABLE_STREAM_DESCRIPTION =
+  'Every event carries an `id` (`<streamId>:<seq>`). A client that loses the stream sends the same request with `Last-Event-ID` (or `?lastEventId=`) set to the last id it got: the answer replays the events after it and follows the run, which went on without the client, to its end. Events no longer kept end the reconnect with an `error` event `STREAM_RESUME_GAP`: read the thread to catch up.';
+
 const AGENT_STREAM_DESCRIPTION = `${STREAM_DESCRIPTION} The \`finish\` event carries the run usage, the same as \`usage\` in the JSON response of \`/run\`, with the reasoning and cache token counts the model reported. The stream is open before the run meets the other runs of its thread, so a run refused or stopped by one (\`THREAD_BUSY\`, \`RUN_INTERRUPTED\`) and a resume that answers an expired interrupt (\`INTERRUPT_EXPIRED\`) end it with an \`error\` event carrying that code, where \`/run\` and \`/resume\` answer 409 and 410.`;
 
 type RequestSchemas = ReturnType<typeof requestSchemas>;
@@ -195,9 +202,55 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
   const admitted = anonymousHook(deps.anonymous);
   const errors = cogitatorErrors();
   const heartbeatMs = resolveSseHeartbeatMs(deps.sseHeartbeatMs);
-  const { RunBody, SwarmRunBody, WorkflowRunBody, WorkflowResumeBody, AddMessageBody } =
-    requestSchemas(deps);
+  const {
+    RunBody,
+    SwarmRunBody,
+    WorkflowRunBody,
+    WorkflowResumeBody,
+    AddMessageBody,
+    ReconnectHeaders,
+    ReconnectQuery,
+  } = requestSchemas(deps);
   const streamOptions = () => ({ until: resolveSignal(deps.until), heartbeatMs });
+  const streams = ResumableStreams.from(deps.resumableStreams);
+  const reconnect = reconnectHook(deps, streams, streamOptions);
+  const StreamAgentNotFound = streams
+    ? errorsEnvelope(
+        ['AGENT_NOT_FOUND', STREAM_NOT_FOUND],
+        "No agent is registered under this name, or the stream a reconnect names is unknown, expired or not the caller's"
+      )
+    : AgentNotFound;
+  const agentStreamDescription = streams
+    ? `${AGENT_STREAM_DESCRIPTION} ${RESUMABLE_STREAM_DESCRIPTION}`
+    : AGENT_STREAM_DESCRIPTION;
+
+  /**
+   * Streams an agent run or resume: on a resumable stream the run outlives the request, and
+   * the request follows it like any client that reconnects
+   */
+  const agentStream = async (
+    ctx: BaseCtx,
+    start: StreamedRun,
+    threadId: string | undefined,
+    auth: AuthContext | undefined
+  ): Promise<Response> => {
+    if (!streams) {
+      return sse(ctx, (signal) => agentEvents(start, signal, threadId), streamOptions());
+    }
+    const stream = await streams.startAgentRun({
+      userId: auth?.userId,
+      threadId,
+      signal: resolveSignal(deps.until),
+      execute: (session, signal) =>
+        start({ stream: true, signal, ...session.callbacks }, session.threadId),
+      describeError: (error) => {
+        const described = describeError(error);
+        if (described.unexpected) reportFailure(ctx, 'stream', error);
+        return described;
+      },
+    });
+    return sse(ctx, (signal) => resumableEvents(stream, signal), streamOptions());
+  };
 
   const memoryOf = async () => {
     const memory = await deps.cogitator.getMemory();
@@ -285,13 +338,20 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       path: '/agents/:name/stream',
       schema: {
         params: NameParams,
+        headers: ReconnectHeaders,
+        query: ReconnectQuery,
         body: RunBody,
-        response: { 200: StreamOpened, 403: ThreadForbidden, 404: AgentNotFound, 415: NotJson },
+        response: {
+          200: StreamOpened,
+          403: ThreadForbidden,
+          404: StreamAgentNotFound,
+          415: NotJson,
+        },
       },
-      hooks: { beforeParse: [caller, admitted, jsonBody], onError: [errors] },
+      hooks: { beforeParse: [caller, admitted, reconnect, jsonBody], onError: [errors] },
       docs: {
         summary: 'Run an agent and stream tokens, tool calls and results',
-        description: AGENT_STREAM_DESCRIPTION,
+        description: agentStreamDescription,
         tags: ['agents'],
       },
       handler: async (ctx) => {
@@ -300,16 +360,12 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         const body = ctx.body;
         await checkThreadAccess(deps, auth, body.threadId);
         const runDeps = await runDepsOf(deps, ctx);
-        return sse(
+        return agentStream(
           ctx,
-          (signal) =>
-            agentEvents(
-              (callbacks, threadId) =>
-                runAgent(deps, agent, { ...body, threadId, ...callbacks }, auth, runDeps),
-              signal,
-              body.threadId
-            ),
-          streamOptions()
+          (callbacks, threadId) =>
+            runAgent(deps, agent, { ...body, threadId, ...callbacks }, auth, runDeps),
+          body.threadId,
+          auth
         );
       },
     }),
@@ -369,13 +425,20 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
       path: '/agents/:name/resume/stream',
       schema: {
         params: NameParams,
+        headers: ReconnectHeaders,
+        query: ReconnectQuery,
         body: ResumeBody,
-        response: { 200: StreamOpened, 403: ThreadForbidden, 404: AgentNotFound, 415: NotJson },
+        response: {
+          200: StreamOpened,
+          403: ThreadForbidden,
+          404: StreamAgentNotFound,
+          415: NotJson,
+        },
       },
-      hooks: { beforeParse: [caller, admitted, jsonBody], onError: [errors] },
+      hooks: { beforeParse: [caller, admitted, reconnect, jsonBody], onError: [errors] },
       docs: {
         summary: 'Resume a run paused for tool approvals or questions and stream the rest of it',
-        description: AGENT_STREAM_DESCRIPTION,
+        description: agentStreamDescription,
         tags: ['agents'],
       },
       handler: async (ctx) => {
@@ -385,23 +448,12 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         const resumeOptions = toResumeOptions(ctx.body);
         await checkThreadAccess(deps, auth, threadId);
         const runDeps = await runDepsOf(deps, ctx);
-        return sse(
+        return agentStream(
           ctx,
-          (signal) =>
-            agentEvents(
-              (callbacks) =>
-                resumeAgent(
-                  deps,
-                  agent,
-                  threadId,
-                  { ...resumeOptions, ...callbacks },
-                  auth,
-                  runDeps
-                ),
-              signal,
-              threadId
-            ),
-          streamOptions()
+          (callbacks) =>
+            resumeAgent(deps, agent, threadId, { ...resumeOptions, ...callbacks }, auth, runDeps),
+          threadId,
+          auth
         );
       },
     }),

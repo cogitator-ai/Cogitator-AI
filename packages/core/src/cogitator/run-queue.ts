@@ -23,6 +23,7 @@ export class RunQueue {
   private closed = false;
   private readonly steering: QueueDrainMode;
   private readonly followUp: QueueDrainMode;
+  private readonly watchers: ((pending: readonly QueuedRunMessage[]) => void)[] = [];
 
   /** @param onRefused hears of each message the run's input checks refused */
   constructor(
@@ -43,7 +44,19 @@ export class RunQueue {
       });
     }
     this.items.push({ kind, content });
+    this.changed();
     return true;
+  }
+
+  /** Calls `watcher` with the messages not delivered yet each time they change */
+  watch(watcher: (pending: readonly QueuedRunMessage[]) => void): void {
+    this.watchers.push(watcher);
+  }
+
+  private changed(): void {
+    if (this.watchers.length === 0) return;
+    const pending = this.pending;
+    for (const watcher of this.watchers) watcher(pending);
   }
 
   /** The messages not delivered yet, those the run is checking first, in the order they came */
@@ -107,7 +120,9 @@ export class RunQueue {
    */
   cancel(): QueuedRunMessage[] {
     this.closed = true;
-    return [...this.inFlight.splice(0), ...this.items.splice(0)];
+    const left = [...this.inFlight.splice(0), ...this.items.splice(0)];
+    if (left.length > 0) this.changed();
+    return left;
   }
 
   /**
@@ -118,6 +133,7 @@ export class RunQueue {
     const index = this.inFlight.indexOf(message);
     if (index === -1) return false;
     this.inFlight.splice(index, 1);
+    this.changed();
     return true;
   }
 
@@ -129,6 +145,7 @@ export class RunQueue {
     const index = this.items.indexOf(message);
     if (index === -1) return false;
     this.items.splice(index, 1);
+    this.changed();
     return true;
   }
 

@@ -14,6 +14,7 @@ export type {
   UseAgentOptions,
   UseAgentReturn,
   RetryConfig,
+  ReconnectConfig,
   ToolResultEvent,
   PendingApproval,
   PendingInterrupt,

@@ -57,6 +57,7 @@ Creates a Hono sub-application with all Cogitator endpoints.
 | `websocket`           | `WebSocketConfig`                                 | `{ path?, maxPayloadSize?, upgradeWebSocket? }` (see below)                                                                                                      |
 | `bodyLimit`           | `number`                                          | Max request body size in bytes (default 1 MiB)                                                                                                                   |
 | `sseHeartbeatMs`      | `number`                                          | How often SSE streams write a `: keep-alive` comment while a run is silent (default `5000`, `0` turns it off)                                                    |
+| `resumableStreams`    | `boolean \| ResumableStreamOptions`               | Keep the streams of agent runs so a client that loses one reconnects with `Last-Event-ID`, see [Resumable streams](#resumable-streams). Off by default           |
 | `acceptContext`       | `boolean \| string[]`                             | Keys of a run `context` clients may send: none by default, a list, or `true` for any (the model reads it as data from the application)                           |
 | `threadMessageRoles`  | `ThreadMessageRole[]`                             | Roles `POST /threads/:id/messages` accepts (default `user` and `assistant`)                                                                                      |
 | `limits`              | `RunLimits`                                       | `{ swarmTimeout?, workflowMaxIterations?, workflowMaxConcurrency? }`: caps on what a request may ask a swarm or workflow run for (see [Run limits](#run-limits)) |
@@ -305,6 +306,27 @@ app.post('/custom/stream', (c) =>
   })
 );
 ```
+
+## Resumable streams
+
+With `resumableStreams` on, a client that loses the stream of `/agents/:name/stream` or `/agents/:name/resume/stream` (a flaky network, a tab that went to sleep) gets back what it missed, and the run goes on while it is away:
+
+```typescript
+const api = cogitatorApp({
+  cogitator,
+  agents: { chat: chatAgent },
+  resumableStreams: { detachedTimeoutMs: 2 * 60_000 },
+});
+```
+
+- Every event carries an SSE `id`, `<streamId>:<seq>` with `seq` from 1 up. Heartbeat comments carry none.
+- A client that disconnects no longer stops the run. Its events keep going into the store.
+- The same route with `Last-Event-ID: <id>` (or `?lastEventId=<id>`) reconnects instead of starting a run, and the body is not read: the answer replays the events after that id with their ids, then follows the run to `finish` (and `data: [DONE]`) or `error`. Several clients may follow one stream.
+- Only the user who started the stream may reconnect to it (an anonymous caller only to an anonymous stream). Anyone else, an unknown or expired stream and an event id the stream never sent get `404 STREAM_NOT_FOUND` before any SSE header, an id that is not `<streamId>:<seq>` gets `400 INVALID_INPUT`.
+- A reconnect after events that are no longer kept (more than `maxEvents` since) gets one `error` event with `STREAM_RESUME_GAP`: fetch the thread (`GET /threads/:id`) to catch up.
+- A run nobody follows for `detachedTimeoutMs` (5 minutes by default) is stopped, so a client that never comes back does not run up cost. Its stream ends with an `error` event `STREAM_ABORTED`.
+
+`true` keeps the events in the memory of the process: 1000 events of each stream, a finished stream for 5 minutes, 1000 streams at once (`maxEvents`, `retentionMs`, `maxStreams`). Behind a load balancer with several processes, pass a `store` they share (`StreamReplayStore` from `@cogitator-ai/server-shared`, backed by Redis or similar with pub/sub), so a reconnect that lands on another process replays and follows the run. Off by default: no ids, and a client that disconnects stops the run.
 
 ## WebSocket
 

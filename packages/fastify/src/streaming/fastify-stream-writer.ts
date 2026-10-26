@@ -67,9 +67,9 @@ export class FastifyStreamWriter {
     return true;
   }
 
-  private write(data: unknown): void {
+  private write(data: unknown, id?: string): void {
     if (!this.writable) return;
-    this.reply.raw.write(encodeSSE(data));
+    this.reply.raw.write(encodeSSE(data, id));
   }
 
   private setupHeaders(): void {
@@ -90,14 +90,19 @@ export class FastifyStreamWriter {
     this.stopHeartbeat = startHeartbeat(() => this.heartbeat(), this.heartbeatMs);
   }
 
+  /** Opens the stream now, for one that may have no event to send */
+  open(): void {
+    if (this.writable && !this.started) this.setupHeaders();
+  }
+
   /**
-   * Sends one protocol event, opening the stream first when nothing was sent yet; `finish`,
-   * the last one, is followed by `data: [DONE]`
+   * Sends one protocol event, with its `id` on a resumable stream, opening the stream first
+   * when nothing was sent yet. `finish`, the last one, is followed by `data: [DONE]`
    */
-  send(event: StreamEvent): void {
+  send(event: StreamEvent, id?: string): void {
     if (!this.writable) return;
     if (!this.started) this.setupHeaders();
-    this.write(event);
+    this.write(event, id);
     if (event.type === 'finish') this.reply.raw.write(encodeDone());
   }
 

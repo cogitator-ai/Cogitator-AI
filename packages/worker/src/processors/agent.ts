@@ -11,6 +11,11 @@ import { createAgentFromConfig, resolveRuntime } from './shared.js';
 
 export { findToolOutput } from '@cogitator-ai/core';
 
+/** The run id of a durable agent job, the same for every attempt of the job */
+export function durableJobRunId(jobId: string): string {
+  return `job:${jobId}`;
+}
+
 export async function processAgentJob(
   payload: AgentJobPayload,
   runtime: WorkerRuntime = {},
@@ -20,20 +25,32 @@ export async function processAgentJob(
 
   const resolved = resolveRuntime(runtime);
   const agent = createAgentFromConfig(agentConfig, resolved);
-  const result = resume
-    ? await resolved.cogitator.resume(agent, resume.checkpoint ?? threadId, {
-        ...(resume.decisions && { decisions: resume.decisions }),
-        ...(resume.defaultDecision && { defaultDecision: resume.defaultDecision }),
-        ...(resume.responses && { responses: resume.responses }),
-        ...(userId !== undefined && { userId }),
-        ...(execution.signal && { signal: execution.signal }),
-      })
-    : await resolved.cogitator.run(agent, {
-        input,
-        threadId,
-        ...(userId !== undefined && { userId }),
-        ...(execution.signal && { signal: execution.signal }),
-      });
+  const durable = execution.durable === true && !resume;
+  const runId = durableJobRunId(payload.jobId);
+  const left = durable
+    ? (await resolved.cogitator.durableRuns({ threadId })).find((run) => run.runId === runId)
+    : undefined;
+  const result = left
+    ? await (
+        await resolved.cogitator.recoverRun(agent, runId, {
+          ...(execution.signal && { signal: execution.signal }),
+        })
+      ).result
+    : resume
+      ? await resolved.cogitator.resume(agent, resume.checkpoint ?? threadId, {
+          ...(resume.decisions && { decisions: resume.decisions }),
+          ...(resume.defaultDecision && { defaultDecision: resume.defaultDecision }),
+          ...(resume.responses && { responses: resume.responses }),
+          ...(userId !== undefined && { userId }),
+          ...(execution.signal && { signal: execution.signal }),
+        })
+      : await resolved.cogitator.run(agent, {
+          input,
+          threadId,
+          ...(userId !== undefined && { userId }),
+          ...(execution.signal && { signal: execution.signal }),
+          ...(durable && { durable: true, runId }),
+        });
 
   return {
     type: 'agent',

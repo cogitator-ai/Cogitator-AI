@@ -11,7 +11,9 @@ import {
   checkConformance,
   conformanceContentType,
   conformanceMethod,
+  conformanceReconnectRequest,
   type ConformanceCase,
+  type ConformanceResponse,
 } from '@cogitator-ai/server-shared';
 import { CogitatorServer } from '../server.js';
 import type { CogitatorServerConfig } from '../types.js';
@@ -64,14 +66,23 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
   });
   const { port } = server.address() as AddressInfo;
 
-  const res = await fetch(`http://127.0.0.1:${port}/api${CONFORMANCE_ROUTES[testCase.route]}`, {
-    method: conformanceMethod(testCase),
-    headers: { 'Content-Type': conformanceContentType(testCase) },
-    body: testCase.body,
-  });
-  const body = await res.text();
-  const code = res.ok ? undefined : (JSON.parse(body) as { error: { code: string } }).error.code;
-  return { status: res.status, code, body, headers: Object.fromEntries(res.headers) };
+  const send = async (
+    path: string,
+    headers: Record<string, string> = {}
+  ): Promise<ConformanceResponse> => {
+    const res = await fetch(`http://127.0.0.1:${port}/api${path}`, {
+      method: conformanceMethod(testCase),
+      headers: { 'Content-Type': conformanceContentType(testCase), ...headers },
+      body: testCase.body,
+    });
+    const body = await res.text();
+    const code = res.ok ? undefined : (JSON.parse(body) as { error: { code: string } }).error.code;
+    return { status: res.status, code, body, headers: Object.fromEntries(res.headers) };
+  };
+
+  const first = await send(CONFORMANCE_ROUTES[testCase.route]);
+  const reconnect = conformanceReconnectRequest(testCase, first);
+  return reconnect ? { ...first, reconnect: await send(reconnect.path, reconnect.headers) } : first;
 }
 
 describe('server protocol conformance', () => {
