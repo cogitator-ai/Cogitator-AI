@@ -82,6 +82,7 @@ describeOllama('Core: tool execution (Ollama)', () => {
           input: 'What is the temperature in Lisbon?',
           threadId,
           stream: true,
+          toolChoice: 'required',
           onToken: () => undefined,
           onToolInputStart: (event) => starts.push(event),
           onToolInputAvailable: (event) => available.push(event),
@@ -120,6 +121,7 @@ describeOllama('Core: tool execution (Ollama)', () => {
           input: 'How warm is it in Oslo?',
           threadId: session.threadId,
           stream: true,
+          toolChoice: 'required',
           ...session.callbacks,
         });
         session.complete(run);
