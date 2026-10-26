@@ -31,6 +31,17 @@ const agent = new Agent({
 
 `deferred` works on any tool: one made with `tool()`, an MCP tool (`tool.deferred = true` on the imported tools of a server you rarely use), or one that `restrictFileTools()` wraps.
 
+To defer a tool for one agent only, name it in the agent's `deferredTools` instead: the tool stays as it is, so other agents that share it, and the subagents the agent delegates to, still get its schema. [`createHarnessAgent()`](/docs/core/harness-agent) defers your tools this way once an agent has many.
+
+```typescript
+const agent = new Agent({
+  name: 'ops',
+  instructions: 'You run operations.',
+  tools: [...githubTools, ...linearTools],
+  deferredTools: linearTools.map((t) => t.name),
+});
+```
+
 ## How a search loads tools
 
 1. The first turn sends the schemas of the tools that are not deferred, plus `tool_search`. A run whose agent has no deferred tool gets no `tool_search`.

@@ -32,23 +32,23 @@ It is a composition layer and nothing more: the agent is an ordinary `Agent`, th
 
 `preset` picks the defaults, `coding` when left out:
 
-| Piece                                                                | `coding`                                                                                  | `assistant`            |
-| -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ---------------------- |
-| Workspace (`workspace`)                                              | the working directory of the process                                                      | `./workspace`          |
-| `read_file`, `write_file`, `edit_file`, `list_files`, `glob`, `grep` | yes                                                                                       | yes                    |
-| `run_command` (`shell`)                                              | yes                                                                                       | no                     |
-| `write_todos` (`todos`)                                              | yes                                                                                       | yes                    |
-| `SKILL.md` skills of the workspace (`skills`)                        | yes                                                                                       | yes                    |
-| Subagents (`subagents`)                                              | Markdown files of `agents/` folders and `general-purpose`, approvals bubble up            | no                     |
-| Commands (`commands`)                                                | Markdown files of `commands/` folders                                                     | no                     |
-| `AGENTS.md` and `CLAUDE.md` (`projectInstructions`)                  | yes                                                                                       | no                     |
-| Permission engine (`permissions`)                                    | `default` mode: reads run, edits and commands ask                                         | the same               |
-| Memory files (`memory`)                                              | no                                                                                        | when `memory` is given |
-| Compaction (`compaction`)                                            | old tool outputs cleared past 100 000 tokens, the conversation compressed near the window | the same               |
-| Long tool results (`toolResults`)                                    | past 30 000 characters saved to the workspace, the model gets the start and the path      | the same               |
-| `tool_search` (`toolSearch`)                                         | your tools deferred once the agent has more than 20                                       | the same               |
-| Parallel read-only calls (`parallelToolCalls`)                       | yes                                                                                       | yes                    |
-| `maxIterations`                                                      | 100                                                                                       | 30                     |
+| Piece                                                                | `coding`                                                                                  | `assistant`                           |
+| -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------- |
+| Workspace (`workspace`)                                              | the working directory of the process                                                      | `./workspace`                         |
+| `read_file`, `write_file`, `edit_file`, `list_files`, `glob`, `grep` | yes                                                                                       | yes                                   |
+| `run_command` (`shell`)                                              | yes                                                                                       | no                                    |
+| `write_todos` (`todos`)                                              | yes                                                                                       | yes                                   |
+| `SKILL.md` skills of the workspace (`skills`)                        | yes                                                                                       | yes                                   |
+| Subagents (`subagents`)                                              | Markdown files of `agents/` folders and `general-purpose`, approvals bubble up            | no                                    |
+| Commands (`commands`)                                                | Markdown files of `commands/` folders                                                     | no                                    |
+| `AGENTS.md` and `CLAUDE.md` (`projectInstructions`)                  | yes                                                                                       | no                                    |
+| Permission engine (`permissions`)                                    | `default` mode: reads run, edits and commands ask                                         | the same                              |
+| Memory files (`memory`)                                              | no                                                                                        | when the runtime has a memory adapter |
+| Compaction (`compaction`)                                            | old tool outputs cleared past 100 000 tokens, the conversation compressed near the window | the same                              |
+| Long tool results (`toolResults`)                                    | past 30 000 characters saved to the workspace, the model gets the start and the path      | the same                              |
+| `tool_search` (`toolSearch`)                                         | your tools deferred once the model would see more than 20 tools                           | the same                              |
+| Parallel read-only calls (`parallelToolCalls`)                       | yes                                                                                       | yes                                   |
+| `maxIterations`                                                      | 100                                                                                       | 30                                    |
 
 Pieces that are off in a preset stay off unless you turn them on: `createHarnessAgent({ preset: 'assistant', shell: true })` is an assistant that runs commands, `subagents: false` a coding agent that does everything itself.
 
@@ -81,14 +81,21 @@ const harness = createHarnessAgent({
 - `workspace` takes a `Workspace` (local, Docker, E2B, Daytona, Vercel Sandbox), a directory for a `LocalWorkspace`, or its options. A workspace you pass stays yours to start and dispose, one the harness made from a path is disposed by `harness.dispose()`. `false` leaves the agent without one, and its tools use the run's (`RunOptions.workspace`).
 - `workspaceTools` passes options to [`workspaceTools()`](/docs/tools/workspace) (`skipDirs`, `execTimeout`, `tools`), or `false` for none. `tools` adds your own: one named like a harness tool (`read_file`) replaces it.
 - `skills` takes a `SkillRegistry` configuration (its `dirs` are searched before the workspace) or a list of skill sources, `defineSkill()` skills among them.
-- `subagents` and `commands` are merged over the preset's configuration, so `subagents: { approvalMode: 'decline' }` keeps the files and `general-purpose`, and a subagent you name `general-purpose` replaces the built-in one.
+- `subagents` and `commands` are merged over the preset's configuration, `agents` by name: `subagents: { approvalMode: 'decline' }` keeps the files and `general-purpose`, and a `general-purpose` of yours (`{ description, model }`) is merged over the built-in one.
+- `toolSearch` counts every tool the model sees against its threshold (20): the harness's file tools, `write_todos`, the four subagent tools, `recall_tool_output` and the two skill tools, then yours. Past it, your tools are named in the agent's `deferredTools`, so their schemas wait for `tool_search` while the tools themselves stay as they are. `keep` names tools that are never deferred, `true` defers yours always, `false` never.
 - `permissions` takes the mode and the `allow`, `ask` and `deny` rules of the agent, and the runtime's `classifier`, `settings` and "always allow" layers. `false` turns the engine off: then only a tool that needs approval asks (`run_command`).
 - `memory`, `hooks`, `budget` and `compaction` are the runtime's `memory`, `hooks`, `budget` and `context`.
 - `agent` sets any other field of the `Agent`, last, over what the harness built.
 
 ### Trust and settings files
 
-A repository you open may hold subagents, commands, hooks and permission rules of its own. They apply only with `trusted: true`: subagents and commands of the project's `.claude/agents` and `.claude/commands` are read, and with `settings: true` the hooks and `allow` rules of its `.claude/settings.json`. The user's and the organization's managed files are read either way once their piece is on. `settings` is off by default, as in the Claude Agent SDK, and a local workspace's root is the project root the files are read from.
+A repository you open may hold subagents, commands, hooks and permission rules of its own. They apply only with `trusted: true`: subagents and commands of the project's `.claude/agents` and `.claude/commands` are read, and with `settings: true` the hooks and `allow` rules of its `.claude/settings.json`. The user's and the organization's managed files are read either way once their piece is on. `settings` is off by default, as in the Claude Agent SDK. With `permissions: false` it reads only the hooks, the permission engine stays off.
+
+The project is the directory `projectRoot` names on this machine, by default the root of a `LocalWorkspace`, wherever the process runs. Subagents, commands and settings files are read from the host's file system, so:
+
+- for a `DockerWorkspace`, pass its host directory as `projectRoot`
+- for a remote workspace (E2B, Daytona, Vercel Sandbox) there is no project on this machine: without `projectRoot` (a checkout on the host, say) only the user's and the managed files are read. `AGENTS.md` and the skills of the workspace are read through the workspace, so they work remotely too
+- `projectRoot: false` reads no project files for any workspace
 
 ```typescript
 createHarnessAgent({ workspace: '.', trusted: true, settings: true });
@@ -122,7 +129,7 @@ interface HarnessAgent {
 
 There are three parts because the runtime reads each setting in one place. An agent carries what is its own (tools, prompt, workspace, permissions), and goes as it is to `cog.run()`, a server adapter, Studio, a workflow node or `agentAsTool()`. Subagents, commands, hooks, project instructions, settings files, memory, compaction and the tool result limit are read by the `Cogitator` (`config`): it builds the subagent catalog and the hooks once, not per agent. How a run schedules its tool calls is a run option (`runOptions`), so pass it to each run.
 
-`mergeConfig(base)` merges `config` into a configuration of yours one level deep: `limits`, `permissions`, `memory` and the rest keep the fields of yours the harness does not set. A project generated by `create-cogitator-app` merges it into `cogitator.yml`:
+`mergeConfig(base)` merges `config` into a configuration of yours, field by field and deep into nested objects, maps such as `subagents.agents` by key. The preset's defaults (`limits.maxToolResultLength`, `context.clearToolOutputs`, the subagents and commands files) give way to `base`, and what you passed to `createHarnessAgent()` (`toolResults`, `compaction`, `subagents`, `budget`) wins over `base`. Arrays and class instances, such as a memory adapter or a classifier, are replaced, not merged. The `assistant` preset adds memory files (`files: { scope: 'user' }`) once the merged memory has an adapter and no `files` of its own. A project generated by `create-cogitator-app` merges it into `cogitator.yml`:
 
 ```typescript
 const cog = new Cogitator(assistantHarness.mergeConfig(loadConfig()));

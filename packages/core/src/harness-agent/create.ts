@@ -1,12 +1,16 @@
+import { resolve } from 'node:path';
 import type {
   AgentConfig,
   AgentSkillSource,
   CogitatorConfig,
   CommandsConfig,
   ContextManagerConfig,
+  DefinitionFileOptions,
+  HookSettingsOptions,
   HooksConfig,
   MemoryConfig,
   PermissionOptions,
+  PermissionSettingsOptions,
   PermissionsConfig,
   ProjectInstructionsOptions,
   RunMiddleware,
@@ -103,8 +107,10 @@ export interface HarnessAgentOptions<TDeps = unknown> {
   tools?: readonly Tool<unknown, unknown, TDeps>[];
   /**
    * Defer your tools until the model finds them with `tool_search`, so their schemas cost no
-   * context until used: `true` always, `false` never, default once the agent would have more
-   * than 20 tools. Tools you marked `deferred` stay deferred either way
+   * context until used: `true` always, `false` never, default once the model would see more than
+   * 20 tools (the harness's built-in ones counted, the skill tools as if the agent had skills).
+   * The tools are not changed: the agent names them in `deferredTools`. Tools you marked
+   * `deferred` stay deferred either way
    */
   toolSearch?: boolean | HarnessToolSearchOptions;
   /**
@@ -120,7 +126,8 @@ export interface HarnessAgentOptions<TDeps = unknown> {
    * subagents of `agents/` folders (the project's only with `trusted`) and a built-in
    * `general-purpose` one, whose approvals reach the user as the agent's own do
    * (`approvalMode: 'bubble'`). `true` for the same with `assistant`, `false` for none, or a
-   * configuration merged over the default
+   * configuration merged over the default, `agents` by name (a `general-purpose` of yours is
+   * merged over the built-in one)
    */
   subagents?: boolean | SubagentsConfig;
   /**
@@ -142,14 +149,23 @@ export interface HarnessAgentOptions<TDeps = unknown> {
    */
   permissions?: false | PermissionsConfig;
   /**
-   * Trust the project in the workspace (default false): its own subagents, commands, hooks and the
+   * Trust the project at `projectRoot` (default false): its own subagents, commands, hooks and the
    * `allow` rules and mode of its settings files apply. Trust only repositories you know
    */
   trusted?: boolean;
   /**
-   * Read the permission rules and hooks of Claude Code compatible settings files (`.claude/` and
-   * `.cogitator/` of the workspace, the user's and the managed ones). Default false, as the Claude
-   * Agent SDK. A local workspace's root is the project root
+   * The directory on this machine whose `.agents/`, `.cogitator/` and `.claude/` folders hold the
+   * project's subagents, commands and settings files. Default: the root of a `LocalWorkspace`.
+   * Give the host directory of a `DockerWorkspace` here. A remote workspace (E2B, Daytona, Vercel
+   * Sandbox) has none on this machine: without `projectRoot` only the user's and the managed
+   * files are read for it (its `AGENTS.md` and skills are read through the workspace either way).
+   * `false`: no project files, even for a local workspace
+   */
+  projectRoot?: string | false;
+  /**
+   * Read the permission rules and hooks of Claude Code compatible settings files (the project's at
+   * `projectRoot`, the user's and the managed ones). Default false, as the Claude Agent SDK. With
+   * `permissions: false` only the hooks are read
    */
   settings?: boolean;
   /** Hooks of the runtime, in the format of Claude Code's `settings.json` */
@@ -158,7 +174,8 @@ export interface HarnessAgentOptions<TDeps = unknown> {
   budget?: SessionBudgetConfig;
   /**
    * The runtime's memory. With `assistant` the agent also keeps notes in memory files
-   * (`files: { scope: 'user' }`) unless `files` says otherwise
+   * (`files: { scope: 'user' }`) whenever the runtime has a memory adapter, here or in the
+   * configuration `mergeConfig()` merges into, unless `files` says otherwise
    */
   memory?: MemoryConfig;
   /**
@@ -217,8 +234,10 @@ export interface HarnessAgent<TDeps = unknown> {
   /** The agent's workspace, undefined with `workspace: false` */
   readonly workspace: Workspace | undefined;
   /**
-   * `base` with {@link config} merged in: each field the harness sets merged one level deep over
-   * the same field of `base` (the harness's values win), every other field of `base` kept
+   * `base` with {@link config} merged in, field by field and deep into nested objects (maps such as
+   * `subagents.agents` by key): the preset's defaults give way to `base`, and what you passed to
+   * `createHarnessAgent()` wins over `base`. Arrays and class instances are replaced, not merged.
+   * Every other field of `base` is kept
    */
   mergeConfig(base?: CogitatorConfig): CogitatorConfig;
   /** Disposes the workspace when the harness made it (from a directory), else does nothing */
@@ -280,6 +299,10 @@ const GENERAL_PURPOSE: SubagentDefinitionInput = {
 
 const DEFAULT_TOOL_SEARCH_THRESHOLD = 20;
 const DEFAULT_MAX_TOOL_RESULT_LENGTH = 30_000;
+/** `agent`, `send_message`, `task_output` and `task_stop` */
+const SUBAGENT_TOOL_COUNT = 4;
+/** `use_skill` and `read_skill_file` */
+const SKILL_TOOL_COUNT = 2;
 
 /**
  * Assembles a production agent from the pieces the runtime has: a workspace with file tools
@@ -314,7 +337,7 @@ export function createHarnessAgent<TDeps = unknown>(
   }
 
   const { workspace, owned } = workspaceOf(options.workspace, defaults);
-  const localRoot = workspace instanceof LocalWorkspace ? workspace.root : undefined;
+  const projectRoot = projectRootOf(options.projectRoot, workspace);
   const trusted = options.trusted ?? false;
 
   const own = options.tools ?? [];
@@ -322,19 +345,30 @@ export function createHarnessAgent<TDeps = unknown>(
   const harnessTools = workspaceToolsOf(options, defaults, workspace).filter(
     (candidate) => !ownNames.has(candidate.name)
   );
-  const { tools: extraTools, deferred } = deferTools(own, harnessTools.length, options.toolSearch);
-  const tools: Tool<unknown, unknown, TDeps>[] = [...harnessTools, ...extraTools];
+  const tools: Tool<unknown, unknown, TDeps>[] = [...harnessTools, ...own];
 
   const permissions = options.permissions === false ? undefined : (options.permissions ?? {});
   const agentPermissions = permissions ? permissionOptionsOf(permissions) : undefined;
   const todos = options.todos ?? true;
-  const subagents = subagentsOf(options.subagents, defaults, trusted);
+  const subagentsOn =
+    options.subagents === undefined ? defaults.subagents : options.subagents !== false;
+  const delegates = subagentsOn && options.agent?.subagents !== false;
+  const skills = skillsOf(options.skills);
+  const clearsToolOutputs =
+    options.compaction !== false && options.compaction?.clearToolOutputs !== false;
   const parallel = options.parallelToolCalls ?? true;
   if (typeof parallel === 'number' && !(Number.isInteger(parallel) && parallel >= 1)) {
     throw new RangeError(
       'parallelToolCalls must be a boolean or a whole number of calls, 1 or more'
     );
   }
+
+  const builtIn =
+    (todos ? 1 : 0) +
+    (delegates ? SUBAGENT_TOOL_COUNT : 0) +
+    (clearsToolOutputs ? 1 : 0) +
+    (skills.length > 0 ? SKILL_TOOL_COUNT : 0);
+  const deferredTools = deferredNamesOf(own, harnessTools.length + builtIn, options.toolSearch);
 
   const prompt =
     options.harnessPrompt === false
@@ -346,21 +380,21 @@ export function createHarnessAgent<TDeps = unknown>(
           offload: workspace !== undefined || options.workspace === false,
           parallelToolCalls: parallel !== false,
           todos,
-          subagents: subagents !== undefined && options.agent?.subagents !== false,
-          toolSearch: deferred || tools.some((candidate) => candidate.deferred),
+          subagents: delegates,
+          toolSearch: deferredTools.length > 0 || tools.some((candidate) => candidate.deferred),
           permissions: permissions !== undefined || tools.some(needsApproval),
         });
   const instructions = [options.instructions ?? defaults.instructions, prompt]
     .filter((part) => part !== '')
     .join('\n\n');
 
-  const skills = skillsOf(options.skills);
   const agentConfig: AgentConfig<TDeps> = {
     name: options.name ?? defaults.name,
     ...(options.description !== undefined && { description: options.description }),
     ...(options.model !== undefined && { model: options.model }),
     instructions,
     tools,
+    ...(deferredTools.length > 0 && { deferredTools }),
     ...(skills.length > 0 && { skills }),
     ...(todos && { todos: true }),
     ...(workspace && { workspace }),
@@ -372,12 +406,12 @@ export function createHarnessAgent<TDeps = unknown>(
   };
   const agent = new Agent<TDeps>(agentConfig);
 
-  const config = runtimeConfigOf(options, defaults, {
-    permissions,
-    subagents,
+  const layers = configLayersOf(options, defaults, {
+    subagents: subagentsOn,
     trusted,
-    ...(localRoot !== undefined && { localRoot }),
+    ...(projectRoot !== undefined && { projectRoot }),
   });
+  const config: HarnessRuntimeConfig = composeConfig(layers, {});
   const runOptions: HarnessRunOptions =
     parallel === false
       ? {}
@@ -392,7 +426,7 @@ export function createHarnessAgent<TDeps = unknown>(
     config,
     runOptions,
     workspace,
-    mergeConfig: (base = {}) => mergeRuntimeConfig(base, config),
+    mergeConfig: (base = {}) => composeConfig(layers, base),
     dispose: async () => {
       if (owned) await workspace?.dispose();
     },
@@ -410,6 +444,16 @@ function workspaceOf(
   }
   if (isWorkspace(source)) return { workspace: source, owned: false };
   return { workspace: new LocalWorkspace(source), owned: true };
+}
+
+/** The project directory on this machine, see `HarnessAgentOptions.projectRoot` */
+function projectRootOf(
+  given: string | false | undefined,
+  workspace: Workspace | undefined
+): string | undefined {
+  if (given === false) return undefined;
+  if (given !== undefined) return resolve(given);
+  return workspace instanceof LocalWorkspace ? workspace.root : undefined;
 }
 
 function isWorkspace(candidate: Workspace | LocalWorkspaceOptions): candidate is Workspace {
@@ -436,40 +480,30 @@ function workspaceToolsOf(
 }
 
 /**
- * Your tools, deferred when the agent would have more than the threshold. A tool the runtime
- * knows by identity (the `read_file` of `workspaceTools()`, `recall_tool_output`) is kept as it
- * is: a copy would lose what the runtime knows of it
+ * Names of your tools to defer once the model would see more than the threshold. Tools the
+ * harness or the runtime relies on being seen (a workspace tool of yours, `recall_tool_output`)
+ * and the ones already `deferred` are left out
  */
-function deferTools<T extends Tool<unknown, unknown, never>>(
-  tools: readonly T[],
-  harnessCount: number,
+function deferredNamesOf(
+  tools: readonly Tool<unknown, unknown, never>[],
+  builtInCount: number,
   setting: boolean | HarnessToolSearchOptions | undefined
-): { tools: T[]; deferred: boolean } {
-  if (setting === false || tools.length === 0) return { tools: [...tools], deferred: false };
+): string[] {
+  if (setting === false || tools.length === 0) return [];
   const threshold = setting === true ? 0 : (setting?.threshold ?? DEFAULT_TOOL_SEARCH_THRESHOLD);
   if (!(threshold >= 0)) throw new RangeError('toolSearch.threshold must be 0 or more');
-  if (harnessCount + tools.length <= threshold) return { tools: [...tools], deferred: false };
+  if (builtInCount + tools.length <= threshold) return [];
   const keep = new Set(typeof setting === 'object' ? (setting.keep ?? []) : []);
-  let deferred = false;
-  const result = tools.map((candidate) => {
-    if (
-      candidate.deferred ||
-      keep.has(candidate.name) ||
-      isWorkspaceToolName(candidate.name) ||
-      readFileBinding(candidate) !== undefined ||
-      isRecallToolOutput(candidate)
-    ) {
-      return candidate;
-    }
-    deferred = true;
-    return deferredCopy(candidate);
-  });
-  return { tools: result, deferred };
-}
-
-function deferredCopy<T extends object>(source: T): T {
-  const copy: T = Object.create(Object.getPrototypeOf(source) as object | null) as T;
-  return Object.assign(copy, source, { deferred: true });
+  return tools
+    .filter(
+      (candidate) =>
+        !candidate.deferred &&
+        !keep.has(candidate.name) &&
+        !isWorkspaceToolName(candidate.name) &&
+        readFileBinding(candidate) === undefined &&
+        !isRecallToolOutput(candidate)
+    )
+    .map((candidate) => candidate.name);
 }
 
 function skillsOf(skills: HarnessAgentOptions['skills']): AgentSkillSource[] {
@@ -497,88 +531,93 @@ function permissionOptionsOf(permissions: PermissionsConfig): PermissionOptions 
   return own;
 }
 
-function subagentsOf(
-  given: boolean | SubagentsConfig | undefined,
-  defaults: PresetDefaults,
+/**
+ * The places of definition files: the project root on this machine and whether it is trusted,
+ * or only the user's and the managed folders when there is none
+ */
+function definitionFilesOf(
+  projectRoot: string | undefined,
   trusted: boolean
-): SubagentsConfig | undefined {
-  const on = given === undefined ? defaults.subagents : given !== false;
-  if (!on) return undefined;
-  const custom = typeof given === 'object' ? given : {};
-  return {
-    files: trusted ? { trusted: true } : true,
-    approvalMode: 'bubble',
-    ...custom,
-    agents: { 'general-purpose': GENERAL_PURPOSE, ...custom.agents },
-  };
+): DefinitionFileOptions | true {
+  if (projectRoot === undefined) return true;
+  return { root: projectRoot, ...(trusted && { trusted: true }) };
 }
 
-function commandsOf(
-  given: boolean | CommandsConfig | undefined,
-  defaults: PresetDefaults,
+/** Where settings files are read: the project's at its root, else only the user's and managed ones */
+function settingsAt(
+  projectRoot: string | undefined,
   trusted: boolean
-): CommandsConfig | undefined {
-  const on = given === undefined ? defaults.commands : given !== false;
-  if (!on) return undefined;
-  return { files: trusted ? { trusted: true } : true, ...(typeof given === 'object' && given) };
+): PermissionSettingsOptions & HookSettingsOptions {
+  if (projectRoot === undefined) return { layers: ['managed', 'user'] };
+  return { root: projectRoot, trusted };
 }
 
-function runtimeConfigOf(
+/** What the preset sets (under the base configuration) and what you passed (over it) */
+interface ConfigLayers {
+  defaults: HarnessRuntimeConfig;
+  explicit: HarnessRuntimeConfig;
+  /** Keep memory files when the merged configuration has a memory adapter */
+  memoryFiles: boolean;
+}
+
+function configLayersOf(
   options: Omit<HarnessAgentOptions, 'tools' | 'middleware' | 'agent'>,
   defaults: PresetDefaults,
-  pieces: {
-    permissions: PermissionsConfig | undefined;
-    subagents: SubagentsConfig | undefined;
-    trusted: boolean;
-    localRoot?: string;
-  }
-): HarnessRuntimeConfig {
-  const { trusted, localRoot } = pieces;
-  const settingsAt = { ...(localRoot !== undefined && { root: localRoot }), trusted };
+  pieces: { subagents: boolean; trusted: boolean; projectRoot?: string }
+): ConfigLayers {
+  const { trusted, projectRoot } = pieces;
+  const files = definitionFilesOf(projectRoot, trusted);
+  const at = settingsAt(projectRoot, trusted);
 
-  const projectFiles = options.projectInstructions ?? defaults.projectInstructions;
-
-  const runtimePermissions: PermissionsConfig = {};
-  const given = pieces.permissions;
-  if (given?.settings !== undefined) runtimePermissions.settings = given.settings;
-  else if (options.settings) runtimePermissions.settings = settingsAt;
-  if (given?.classifier) runtimePermissions.classifier = given.classifier;
-  if (given?.rememberIn) runtimePermissions.rememberIn = given.rememberIn;
-  if (given?.rememberLayers) runtimePermissions.rememberLayers = given.rememberLayers;
-
-  const hooks: HooksConfig = {
-    ...(options.settings && { settings: settingsAt }),
-    ...options.hooks,
-  };
-
-  const commands = commandsOf(options.commands, defaults, trusted);
-
-  const memory: MemoryConfig | undefined = options.memory && {
-    ...options.memory,
-    ...(defaults.memoryFiles && options.memory.files === undefined && { files: { scope: 'user' } }),
-  };
-
-  const compaction =
-    options.compaction === false ? undefined : { clearToolOutputs: true, ...options.compaction };
-
-  const limits = {
-    maxToolResultLength: options.toolResults?.maxLength ?? DEFAULT_MAX_TOOL_RESULT_LENGTH,
-    ...(options.toolResults?.retention !== undefined && {
-      toolResultRetention: options.toolResults.retention,
+  const preset: HarnessRuntimeConfig = {
+    ...(options.projectInstructions === undefined &&
+      defaults.projectInstructions && { instructions: { projectFiles: true } }),
+    ...(pieces.subagents && {
+      subagents: {
+        files,
+        approvalMode: 'bubble',
+        agents: { 'general-purpose': GENERAL_PURPOSE },
+      },
     }),
+    ...((options.commands === undefined ? defaults.commands : options.commands !== false) && {
+      commands: { files },
+    }),
+    ...(options.compaction !== false && { context: { clearToolOutputs: true } }),
+    limits: { maxToolResultLength: DEFAULT_MAX_TOOL_RESULT_LENGTH },
   };
 
-  return {
-    ...(projectFiles !== false && { instructions: { projectFiles } }),
-    ...(Object.keys(runtimePermissions).length > 0 && { permissions: runtimePermissions }),
-    ...(Object.keys(hooks).length > 0 && { hooks }),
-    ...(pieces.subagents && { subagents: pieces.subagents }),
-    ...(commands && { commands }),
-    ...(options.budget && { budget: options.budget }),
-    ...(memory && { memory }),
-    ...(compaction && { context: compaction }),
-    limits,
+  const given = options.permissions;
+  const permissions: PermissionsConfig = {};
+  if (given !== false) {
+    if (given?.settings !== undefined) permissions.settings = given.settings;
+    else if (options.settings) permissions.settings = at;
+    if (given?.classifier) permissions.classifier = given.classifier;
+    if (given?.rememberIn) permissions.rememberIn = given.rememberIn;
+    if (given?.rememberLayers) permissions.rememberLayers = given.rememberLayers;
+  }
+  const hooks: HooksConfig = { ...(options.settings && { settings: at }), ...options.hooks };
+  const toolResults = options.toolResults;
+  const limits = {
+    ...(toolResults?.maxLength !== undefined && { maxToolResultLength: toolResults.maxLength }),
+    ...(toolResults?.retention !== undefined && { toolResultRetention: toolResults.retention }),
   };
+
+  const explicit: HarnessRuntimeConfig = {
+    ...(options.projectInstructions !== undefined && {
+      instructions: { projectFiles: options.projectInstructions },
+    }),
+    ...(Object.keys(permissions).length > 0 && { permissions }),
+    ...(Object.keys(hooks).length > 0 && { hooks }),
+    ...(pieces.subagents &&
+      typeof options.subagents === 'object' && { subagents: options.subagents }),
+    ...(typeof options.commands === 'object' && { commands: options.commands }),
+    ...(options.budget && { budget: options.budget }),
+    ...(options.memory && { memory: options.memory }),
+    ...(typeof options.compaction === 'object' && { context: options.compaction }),
+    ...(Object.keys(limits).length > 0 && { limits }),
+  };
+
+  return { defaults: preset, explicit, memoryFiles: defaults.memoryFiles };
 }
 
 const MERGED_KEYS = [
@@ -593,22 +632,38 @@ const MERGED_KEYS = [
   'limits',
 ] as const satisfies readonly (keyof HarnessRuntimeConfig)[];
 
-function mergeRuntimeConfig(base: CogitatorConfig, harness: HarnessRuntimeConfig): CogitatorConfig {
+/** `base` between the preset's defaults and what you passed, see `HarnessAgent.mergeConfig` */
+function composeConfig(layers: ConfigLayers, base: CogitatorConfig): CogitatorConfig {
   const merged: CogitatorConfig = { ...base };
-  for (const key of MERGED_KEYS) {
-    const value = harness[key];
-    if (value === undefined) continue;
-    mergeKey(merged, base, key, value);
+  for (const key of MERGED_KEYS) mergeSection(merged, key, layers, base);
+  const memory = merged.memory;
+  if (layers.memoryFiles && memory?.adapter !== undefined && memory.files === undefined) {
+    merged.memory = { ...memory, files: { scope: 'user' } };
   }
   return merged;
 }
 
-function mergeKey<K extends (typeof MERGED_KEYS)[number]>(
+function mergeSection<K extends (typeof MERGED_KEYS)[number]>(
   target: CogitatorConfig,
-  base: CogitatorConfig,
   key: K,
-  value: NonNullable<CogitatorConfig[K]>
+  layers: ConfigLayers,
+  base: CogitatorConfig
 ): void {
-  const existing = base[key];
-  target[key] = (existing ? { ...existing, ...value } : value) as CogitatorConfig[K];
+  const value = deepMerge(deepMerge(layers.defaults[key], base[key]), layers.explicit[key]);
+  if (value !== undefined) target[key] = value as CogitatorConfig[K];
+}
+
+/** `higher` over `lower`: plain objects merged key by key, anything else replaced when set */
+function deepMerge(lower: unknown, higher: unknown): unknown {
+  if (higher === undefined) return lower;
+  if (!isPlainObject(lower) || !isPlainObject(higher)) return higher;
+  const merged: Record<string, unknown> = { ...lower };
+  for (const [key, value] of Object.entries(higher)) merged[key] = deepMerge(lower[key], value);
+  return merged;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }

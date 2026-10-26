@@ -134,6 +134,8 @@ export class RunHarness {
   /** Every project instruction file the run read, in order */
   private readonly instructionFiles: LoadedInstructionFile[] = [];
   private readonly found = new Set<string>();
+  /** The tools each agent's registry defers by name (`AgentConfig.deferredTools`) */
+  private readonly deferredNames = new WeakMap<ToolRegistry, ReadonlySet<string>>();
   private todoList: TodoItem[] | undefined;
   private searchTool?: Tool;
   private todosTool?: Tool;
@@ -266,6 +268,7 @@ export class RunHarness {
    * keep their names, a harness tool of the same name is left out.
    */
   addTools(owner: Agent, registry: ToolRegistry): void {
+    this.deferredNames.set(registry, new Set(owner.config.deferredTools ?? []));
     const add = (harnessTool: Tool, pinned?: number) => {
       if (registry.has(harnessTool.name)) return;
       registry.register(harnessTool);
@@ -295,13 +298,12 @@ export class RunHarness {
       });
       add(this.todosTool, Infinity);
     }
-    if (registry.getAll().some((candidate) => candidate.deferred)) {
+    if (registry.getAll().some((candidate) => this.isDeferred(registry, candidate))) {
       this.searchTool ??= toolSearchTool({
-        deferred: () =>
-          this.options
-            .registry()
-            .getAll()
-            .filter((candidate) => candidate.deferred),
+        deferred: () => {
+          const current = this.options.registry();
+          return current.getAll().filter((candidate) => this.isDeferred(current, candidate));
+        },
         onFound: (names) => {
           for (const name of names) this.found.add(name);
         },
@@ -316,11 +318,20 @@ export class RunHarness {
    * on.
    */
   schemas(registry: ToolRegistry, messages: readonly Message[], forced?: string): ToolSchema[] {
-    if (!registry.getAll().some((candidate) => candidate.deferred)) return registry.getSchemas();
+    if (!registry.getAll().some((candidate) => this.isDeferred(registry, candidate))) {
+      return registry.getSchemas();
+    }
     for (const name of toolsFoundIn(messages)) this.found.add(name);
     if (forced !== undefined) this.found.add(forced);
     return registry.getSchemas(
-      (candidate) => !candidate.deferred || this.found.has(candidate.name)
+      (candidate) => !this.isDeferred(registry, candidate) || this.found.has(candidate.name)
+    );
+  }
+
+  /** Whether `candidate` waits for `tool_search`: deferred itself, or by name for the registry's agent */
+  private isDeferred(registry: ToolRegistry, candidate: Tool): boolean {
+    return (
+      candidate.deferred === true || this.deferredNames.get(registry)?.has(candidate.name) === true
     );
   }
 

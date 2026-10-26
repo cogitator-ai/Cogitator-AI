@@ -357,9 +357,10 @@ export function emitRegistry(project: ProjectBuilder): void {
         harness
           ? code`
               /**
-               * A runtime configured by cogitator.yml and the environment, with the runtime settings
-               * of the assistant harness merged in. \`overrides\` are merged over that configuration:
-               * tests pass a mock model backend here.
+               * A runtime configured by cogitator.yml and the environment. \`overrides\` are merged
+               * over that configuration (tests pass a mock model backend here), and the assistant
+               * harness fills in the runtime settings both leave unset, such as compaction and the
+               * tool result limit.
                */
             `
           : code`

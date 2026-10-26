@@ -8,11 +8,11 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { dirname, join, resolve } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { MockLLMBackend, type MockChatResponse } from '@cogitator-ai/test-utils';
-import type { ChatRequest, Message, Tool, ToolCall } from '@cogitator-ai/types';
+import type { ChatRequest, HookRunRecord, Message, Tool, ToolCall } from '@cogitator-ai/types';
 import { Cogitator } from '../cogitator';
 import { createHarnessAgent, harnessPrompt } from '../harness-agent/index';
 import { tool } from '../tool';
@@ -27,6 +27,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -43,7 +44,7 @@ const turn = (...calls: ToolCall[]): MockChatResponse => ({
 });
 
 const sentTools = (request: ChatRequest | undefined): string[] =>
-  (request?.tools ?? []).map((schema) => schema.name).sort();
+  (request?.tools ?? []).map((schema) => schema.name);
 
 const systemPromptOf = (request: ChatRequest | undefined): string =>
   String(request?.messages.find((message: Message) => message.role === 'system')?.content ?? '');
@@ -62,6 +63,19 @@ function extraTools(count: number): Tool[] {
   );
 }
 
+function write(path: string, content: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, content);
+}
+
+/** Keeps the user's own settings, subagents and commands out of a test */
+function isolateHome(): void {
+  const home = join(dir, 'home');
+  mkdirSync(home, { recursive: true });
+  vi.stubEnv('HOME', home);
+  vi.stubEnv('CLAUDE_CONFIG_DIR', join(home, '.claude'));
+}
+
 describe('createHarnessAgent: the coding preset', () => {
   it('gives every workspace tool, todos, skills and permissions to the agent', () => {
     const harness = createHarnessAgent({ workspace: dir });
@@ -69,11 +83,13 @@ describe('createHarnessAgent: the coding preset', () => {
 
     expect(harness.preset).toBe('coding');
     expect(agent.name).toBe('coder');
-    expect(names(agent.tools)).toEqual([...WORKSPACE_TOOL_NAMES]);
-    expect(agent.config.todos).toBe(true);
-    expect(agent.config.skills).toEqual([{}]);
-    expect(agent.config.permissions).toEqual({});
-    expect(agent.config.maxIterations).toBe(100);
+    expect(names(agent.tools)).toEqual(expect.arrayContaining([...WORKSPACE_TOOL_NAMES]));
+    expect(agent.config).toMatchObject({
+      todos: true,
+      skills: [{}],
+      permissions: {},
+      maxIterations: 100,
+    });
     expect(agent.config.workspace).toBe(harness.workspace);
     expect(harness.workspace).toBeInstanceOf(LocalWorkspace);
     expect(harness.workspace?.root).toBe(dir);
@@ -83,16 +99,18 @@ describe('createHarnessAgent: the coding preset', () => {
     const { config, runOptions } = createHarnessAgent({ workspace: dir });
 
     expect(config.instructions).toEqual({ projectFiles: true });
-    expect(config.subagents?.files).toBe(true);
-    expect(config.subagents?.approvalMode).toBe('bubble');
-    expect(Object.keys(config.subagents?.agents ?? {})).toEqual(['general-purpose']);
-    expect(config.commands).toEqual({ files: true });
-    expect(config.context).toEqual({ clearToolOutputs: true });
-    expect(config.limits).toEqual({ maxToolResultLength: 30_000 });
+    expect(config.subagents).toMatchObject({
+      files: { root: dir },
+      approvalMode: 'bubble',
+      agents: { 'general-purpose': expect.objectContaining({ description: expect.any(String) }) },
+    });
+    expect(config.commands).toMatchObject({ files: { root: dir } });
+    expect(config.context).toMatchObject({ clearToolOutputs: true });
+    expect(config.limits).toMatchObject({ maxToolResultLength: 30_000 });
     expect(config.permissions).toBeUndefined();
     expect(config.hooks).toBeUndefined();
     expect(config.memory).toBeUndefined();
-    expect(runOptions).toEqual({ parallelToolCalls: true });
+    expect(runOptions).toMatchObject({ parallelToolCalls: true });
   });
 
   it('describes the workspace, the shell, todos, subagents and approvals in the system prompt', () => {
@@ -125,23 +143,23 @@ describe('createHarnessAgent: the assistant preset', () => {
     expect(harness.agent.instructions).toContain('## Planning');
   });
 
-  it('works in ./workspace by default and keeps memory files when the runtime has memory', () => {
-    const harness = createHarnessAgent({
-      preset: 'assistant',
-      memory: { adapter: 'memory' },
-    });
+  it('keeps memory files whenever the runtime has a memory adapter, here or in the base', () => {
+    const harness = createHarnessAgent({ preset: 'assistant', memory: { adapter: 'memory' } });
     expect(harness.workspace?.root).toBe(resolve('workspace'));
     expect(harness.config.memory).toEqual({ adapter: 'memory', files: { scope: 'user' } });
+
+    const plain = createHarnessAgent({ preset: 'assistant', workspace: dir });
+    expect(plain.config.memory).toBeUndefined();
+    expect(plain.mergeConfig({ memory: { adapter: 'memory' } }).memory).toEqual({
+      adapter: 'memory',
+      files: { scope: 'user' },
+    });
     expect(
-      createHarnessAgent({
-        preset: 'assistant',
-        workspace: dir,
-        memory: { adapter: 'memory', files: { scope: 'thread' } },
-      }).config.memory?.files
+      plain.mergeConfig({ memory: { adapter: 'memory', files: { scope: 'thread' } } }).memory?.files
     ).toEqual({ scope: 'thread' });
     expect(
-      createHarnessAgent({ preset: 'assistant', workspace: dir }).config.memory
-    ).toBeUndefined();
+      createHarnessAgent({ workspace: dir }).mergeConfig({ memory: { adapter: 'memory' } }).memory
+    ).toEqual({ adapter: 'memory' });
   });
 
   it('turns pieces of the coding preset on when asked', () => {
@@ -170,7 +188,7 @@ describe('createHarnessAgent: overrides', () => {
     const { agent } = createHarnessAgent({ workspace: dir, tools: [readFile, extra!] });
 
     expect(agent.tools.filter((candidate) => candidate.name === 'read_file')).toEqual([readFile]);
-    expect(names(agent.tools)).toContain('extra_0');
+    expect(agent.tools).toContain(extra);
   });
 
   it('takes instructions, the prompt switch, the agent escape hatch and limits', () => {
@@ -186,9 +204,11 @@ describe('createHarnessAgent: overrides', () => {
     expect(harness.agent.name).toBe('fixer');
     expect(harness.agent.model).toBe('mock/m');
     expect(harness.agent.instructions).toMatch(/^You fix bugs\.\n\n## Workspace/);
-    expect(harness.agent.config.maxIterations).toBe(7);
-    expect(harness.agent.config.timeouts).toEqual({ toolMs: 1000 });
-    expect(harness.agent.config.temperature).toBe(0.1);
+    expect(harness.agent.config).toMatchObject({
+      maxIterations: 7,
+      timeouts: { toolMs: 1000 },
+      temperature: 0.1,
+    });
 
     const bare = createHarnessAgent({
       workspace: dir,
@@ -217,8 +237,11 @@ describe('createHarnessAgent: overrides', () => {
     expect(harness.agent.config.todos).toBeUndefined();
     expect(harness.agent.config.skills).toBeUndefined();
     expect(harness.agent.config.permissions).toBeUndefined();
-    expect(harness.config).toEqual({ limits: { maxToolResultLength: 30_000 } });
-    expect(harness.runOptions).toEqual({});
+    for (const piece of ['subagents', 'commands', 'context', 'permissions', 'hooks'] as const) {
+      expect(harness.config[piece], piece).toBeUndefined();
+    }
+    expect(harness.config.instructions).toEqual({ projectFiles: false });
+    expect(harness.runOptions.parallelToolCalls).toBeUndefined();
     expect(harness.agent.instructions).not.toContain('##');
   });
 
@@ -247,18 +270,20 @@ describe('createHarnessAgent: overrides', () => {
       allow: ['Bash(npm test *)'],
       deny: ['Read(.env)'],
     });
-    expect(harness.config.permissions).toEqual({ classifier, rememberIn: 'session' });
+    expect(harness.config.permissions).toMatchObject({ classifier, rememberIn: 'session' });
+    expect(harness.config.permissions?.settings).toBeUndefined();
   });
 
-  it('reads settings files and trusts the project only when asked', () => {
+  it('reads settings files at the project root and trusts the project only when asked', () => {
     const untrusted = createHarnessAgent({ workspace: dir, settings: true });
     expect(untrusted.config.permissions?.settings).toEqual({ root: dir, trusted: false });
     expect(untrusted.config.hooks?.settings).toEqual({ root: dir, trusted: false });
+    expect(untrusted.config.subagents?.files).toEqual({ root: dir });
 
     const trusted = createHarnessAgent({ workspace: dir, settings: true, trusted: true });
     expect(trusted.config.permissions?.settings).toEqual({ root: dir, trusted: true });
-    expect(trusted.config.subagents?.files).toEqual({ trusted: true });
-    expect(trusted.config.commands?.files).toEqual({ trusted: true });
+    expect(trusted.config.subagents?.files).toEqual({ root: dir, trusted: true });
+    expect(trusted.config.commands?.files).toEqual({ root: dir, trusted: true });
 
     const own = createHarnessAgent({
       workspace: dir,
@@ -270,22 +295,60 @@ describe('createHarnessAgent: overrides', () => {
     expect(own.config.hooks?.settings).toBe(false);
   });
 
-  it('merges subagents and commands over the preset defaults', () => {
+  it('reads hooks but leaves the permission engine off with permissions: false', () => {
+    const harness = createHarnessAgent({ workspace: dir, settings: true, permissions: false });
+    expect(harness.config.permissions).toBeUndefined();
+    expect(harness.agent.config.permissions).toBeUndefined();
+    expect(harness.config.hooks?.settings).toEqual({ root: dir, trusted: false });
+  });
+
+  it('reads the project files of projectRoot, and none without one', () => {
+    const elsewhere = join(dir, 'checkout');
+    const custom = createHarnessAgent({
+      workspace: join(dir, 'ws'),
+      projectRoot: elsewhere,
+      trusted: true,
+      settings: true,
+    });
+    expect(custom.config.subagents?.files).toEqual({ root: elsewhere, trusted: true });
+    expect(custom.config.permissions?.settings).toEqual({ root: elsewhere, trusted: true });
+
+    const none = createHarnessAgent({
+      workspace: dir,
+      projectRoot: false,
+      trusted: true,
+      settings: true,
+    });
+    expect(none.config.subagents?.files).toBe(true);
+    expect(none.config.commands?.files).toBe(true);
+    expect(none.config.permissions?.settings).toEqual({ layers: ['managed', 'user'] });
+    expect(none.config.hooks?.settings).toEqual({ layers: ['managed', 'user'] });
+  });
+
+  it('merges subagents and commands over the preset defaults, agents by name', () => {
     const harness = createHarnessAgent({
       workspace: dir,
       subagents: {
         approvalMode: 'decline',
-        agents: { reviewer: { description: 'Reviews code', prompt: 'Review.' } },
+        agents: {
+          reviewer: { description: 'Reviews code', prompt: 'Review.' },
+          'general-purpose': { description: 'Does anything', model: 'mock/fast' },
+        },
       },
       commands: { commands: { hello: 'Say hello to $ARGUMENTS' } },
     });
     expect(harness.config.subagents?.approvalMode).toBe('decline');
-    expect(Object.keys(harness.config.subagents?.agents ?? {})).toEqual([
-      'general-purpose',
-      'reviewer',
-    ]);
-    expect(harness.config.commands).toEqual({
-      files: true,
+    expect(harness.config.subagents?.agents?.reviewer).toEqual({
+      description: 'Reviews code',
+      prompt: 'Review.',
+    });
+    expect(harness.config.subagents?.agents?.['general-purpose']).toMatchObject({
+      description: 'Does anything',
+      model: 'mock/fast',
+      prompt: expect.stringContaining('another agent handed you'),
+    });
+    expect(harness.config.commands).toMatchObject({
+      files: { root: dir },
       commands: { hello: 'Say hello to $ARGUMENTS' },
     });
   });
@@ -301,12 +364,12 @@ describe('createHarnessAgent: overrides', () => {
     });
     expect(harness.config.budget).toEqual({ session: { maxCostUsd: 2 } });
     expect(harness.config.hooks).toEqual({ hooks: { Stop: [] } });
-    expect(harness.config.context).toEqual({ clearToolOutputs: true, strategy: 'truncate' });
-    expect(harness.config.limits).toEqual({
+    expect(harness.config.context).toMatchObject({ clearToolOutputs: true, strategy: 'truncate' });
+    expect(harness.config.limits).toMatchObject({
       maxToolResultLength: 5000,
       toolResultRetention: 60_000,
     });
-    expect(harness.runOptions).toEqual({ parallelToolCalls: true, maxParallelToolCalls: 4 });
+    expect(harness.runOptions).toMatchObject({ parallelToolCalls: true, maxParallelToolCalls: 4 });
   });
 
   it('takes skill sources as a registry configuration or a list', () => {
@@ -334,17 +397,34 @@ describe('createHarnessAgent: overrides', () => {
 });
 
 describe('createHarnessAgent: tool_search', () => {
-  it('defers your tools once the agent would have more than 20, but not the harness tools', () => {
-    const few = createHarnessAgent({ workspace: dir, tools: extraTools(13) });
-    expect(few.agent.tools.some((candidate) => candidate.deferred)).toBe(false);
+  it('counts every tool the model sees, the built-in ones too, against the threshold', () => {
+    const few = createHarnessAgent({ workspace: dir, tools: extraTools(5) });
+    expect(few.agent.config.deferredTools).toBeUndefined();
 
-    const many = createHarnessAgent({ workspace: dir, tools: extraTools(14) });
-    const deferred = many.agent.tools.filter((candidate) => candidate.deferred);
-    expect(names(deferred)).toEqual(names(extraTools(14)));
+    const many = createHarnessAgent({ workspace: dir, tools: extraTools(6) });
+    expect(many.agent.config.deferredTools).toEqual(names(extraTools(6)));
     expect(many.agent.instructions).toContain('## More tools');
+
+    const lean = createHarnessAgent({
+      workspace: dir,
+      tools: extraTools(6),
+      subagents: false,
+      skills: false,
+    });
+    expect(lean.agent.config.deferredTools).toBeUndefined();
   });
 
-  it('keeps the tools named in keep and the ones the runtime knows by identity', () => {
+  it('defers by name without copying or changing a tool', () => {
+    const tools = extraTools(3);
+    const harness = createHarnessAgent({ workspace: dir, tools, toolSearch: true });
+    for (const original of tools) {
+      expect(harness.agent.tools).toContain(original);
+      expect(original.deferred).toBeUndefined();
+    }
+    expect(harness.agent.config.deferredTools).toEqual(names(tools));
+  });
+
+  it('keeps the tools named in keep, the workspace tools and recall_tool_output', () => {
     const recall = recallToolOutputTool(undefined, () => undefined);
     const [reader] = workspaceTools(undefined, { tools: ['read_file'] });
     const harness = createHarnessAgent({
@@ -353,52 +433,77 @@ describe('createHarnessAgent: tool_search', () => {
       tools: [...extraTools(3), recall, reader!],
       toolSearch: { threshold: 0, keep: ['extra_1'] },
     });
-    const byName = new Map(harness.agent.tools.map((candidate) => [candidate.name, candidate]));
-    expect(byName.get('extra_0')?.deferred).toBe(true);
-    expect(byName.get('extra_1')?.deferred).toBeUndefined();
-    expect(byName.get(recall.name)).toBe(recall);
-    expect(byName.get('read_file')).toBe(reader);
+    expect(harness.agent.config.deferredTools).toEqual(['extra_0', 'extra_2']);
   });
 
   it('defers always with true and never with false', () => {
     const always = createHarnessAgent({ workspace: dir, tools: extraTools(1), toolSearch: true });
-    expect(always.agent.tools.find((candidate) => candidate.name === 'extra_0')?.deferred).toBe(
-      true
-    );
+    expect(always.agent.config.deferredTools).toEqual(['extra_0']);
     const never = createHarnessAgent({ workspace: dir, tools: extraTools(30), toolSearch: false });
-    expect(never.agent.tools.some((candidate) => candidate.deferred)).toBe(false);
+    expect(never.agent.config.deferredTools).toBeUndefined();
+  });
+});
+
+describe('createHarnessAgent: mergeConfig', () => {
+  it('puts the base over the preset defaults and your options over the base', () => {
+    const harness = createHarnessAgent({
+      workspace: dir,
+      budget: { warnAt: 0.5 },
+      toolResults: { retention: 1000 },
+      subagents: { agents: { reviewer: { description: 'Reviews' } } },
+    });
+    const merged = harness.mergeConfig({
+      llm: { defaultModel: 'mock/m' },
+      limits: { maxConcurrentRuns: 2, maxToolResultLength: 50_000, toolResultRetention: 5 },
+      context: { clearToolOutputs: false, strategy: 'truncate' },
+      instructions: { projectFiles: { files: ['AGENTS.md'] } },
+      memory: { adapter: 'memory' },
+      budget: { session: { maxTokens: 10 }, warnAt: 0.9 },
+      subagents: {
+        maxDepth: 1,
+        agents: { researcher: { description: 'Researches' } },
+        files: { root: '/srv/repo', userDirs: [] },
+      },
+    });
+    expect(merged.llm).toEqual({ defaultModel: 'mock/m' });
+    expect(merged.limits).toEqual({
+      maxConcurrentRuns: 2,
+      maxToolResultLength: 50_000,
+      toolResultRetention: 1000,
+    });
+    expect(merged.context).toEqual({ clearToolOutputs: false, strategy: 'truncate' });
+    expect(merged.instructions).toEqual({ projectFiles: { files: ['AGENTS.md'] } });
+    expect(merged.memory).toEqual({ adapter: 'memory' });
+    expect(merged.budget).toEqual({ session: { maxTokens: 10 }, warnAt: 0.5 });
+    expect(merged.subagents).toMatchObject({
+      maxDepth: 1,
+      approvalMode: 'bubble',
+      files: { root: '/srv/repo', userDirs: [] },
+    });
+    expect(Object.keys(merged.subagents?.agents ?? {}).sort()).toEqual([
+      'general-purpose',
+      'researcher',
+      'reviewer',
+    ]);
+    expect(harness.mergeConfig()).toEqual(harness.config);
   });
 
-  it('copies a deferred tool without changing the one you passed', async () => {
-    const [extra] = extraTools(1);
-    const harness = createHarnessAgent({ workspace: dir, tools: [extra!], toolSearch: true });
-    const copy = harness.agent.tools.find((candidate) => candidate.name === 'extra_0');
-    expect(extra!.deferred).toBeUndefined();
-    expect(copy).not.toBe(extra);
-    expect(copy?.toJSON().name).toBe('extra_0');
-    await expect(
-      copy?.execute({}, { agentId: 'a', runId: 'r', signal: new AbortController().signal })
-    ).resolves.toBe(0);
+  it('replaces arrays and class instances instead of merging them', () => {
+    const adapter = new MockLLMBackend();
+    const harness = createHarnessAgent({
+      workspace: dir,
+      permissions: { rememberLayers: ['session'] },
+    });
+    const merged = harness.mergeConfig({
+      llm: { backends: { mock: adapter } },
+      permissions: { rememberLayers: ['local', 'session'], rememberIn: 'local' },
+    });
+    expect(merged.llm?.backends?.mock).toBe(adapter);
+    expect(merged.permissions).toEqual({ rememberLayers: ['session'], rememberIn: 'local' });
   });
 });
 
 describe('createHarnessAgent: the result', () => {
-  it('merges its config into a base config one level deep', () => {
-    const harness = createHarnessAgent({ workspace: dir, budget: { warnAt: 0.5 } });
-    const merged = harness.mergeConfig({
-      llm: { defaultModel: 'mock/m' },
-      limits: { maxConcurrentRuns: 2, maxToolResultLength: 1 },
-      memory: { adapter: 'memory' },
-      budget: { session: { maxTokens: 10 } },
-    });
-    expect(merged.llm).toEqual({ defaultModel: 'mock/m' });
-    expect(merged.limits).toEqual({ maxConcurrentRuns: 2, maxToolResultLength: 30_000 });
-    expect(merged.memory).toEqual({ adapter: 'memory' });
-    expect(merged.budget).toEqual({ session: { maxTokens: 10 }, warnAt: 0.5 });
-    expect(merged.subagents).toBe(harness.config.subagents);
-    expect(harness.mergeConfig()).toEqual(harness.config);
-  });
-
   it('disposes a workspace it made, never one you passed', async () => {
     const owned = createHarnessAgent({ workspace: join(dir, 'owned') });
     await owned.workspace?.start();
@@ -438,8 +543,7 @@ describe('harnessPrompt', () => {
 describe('a harness agent in a run (MockLLMBackend)', () => {
   it('writes, reads and plans in its workspace with project instructions in the prompt', async () => {
     const root = join(dir, 'project');
-    mkdirSync(root, { recursive: true });
-    writeFileSync(join(root, 'AGENTS.md'), 'Always write notes in English.\n');
+    write(join(root, 'AGENTS.md'), 'Always write notes in English.\n');
     const backend = new MockLLMBackend().setResponses([
       turn(
         call('t1', 'write_todos', {
@@ -473,22 +577,13 @@ describe('a harness agent in a run (MockLLMBackend)', () => {
       ]);
       const first = backend.getCalls()[0];
       expect(sentTools(first)).toEqual(
-        [
-          ...WORKSPACE_TOOL_NAMES,
-          'write_todos',
-          'recall_tool_output',
-          'agent',
-          'send_message',
-          'task_output',
-          'task_stop',
-        ].sort()
+        expect.arrayContaining([...WORKSPACE_TOOL_NAMES, 'write_todos', 'agent'])
       );
       const system = systemPromptOf(first);
       expect(system).toContain('## Workspace');
       expect(system).toContain('Always write notes in English.');
       expect(result.instructions?.map((file) => file.path)).toEqual(['AGENTS.md']);
-      const read = result.toolCalls.find((entry) => entry.name === 'read_file');
-      expect(read).toBeDefined();
+      expect(result.toolCalls.map((entry) => entry.name)).toContain('read_file');
     } finally {
       await cog.close();
       await harness.dispose();
@@ -524,15 +619,16 @@ describe('a harness agent in a run (MockLLMBackend)', () => {
     }
   });
 
-  it('sends deferred tools only after tool_search finds them', async () => {
+  it('sends deferred tools only after tool_search finds them, the tools left as they are', async () => {
     const backend = new MockLLMBackend().setResponses([
       turn(call('s1', 'tool_search', { query: 'extra tool number 3' })),
       { content: 'Found it.' },
     ]);
+    const tools = extraTools(25);
     const harness = createHarnessAgent({
       workspace: join(dir, 'project'),
       model: 'mock/m',
-      tools: extraTools(25),
+      tools,
       subagents: false,
     });
     const cog = new Cogitator(
@@ -542,12 +638,102 @@ describe('a harness agent in a run (MockLLMBackend)', () => {
       await cog.run(harness.agent, { input: 'Find the tool', ...harness.runOptions });
       const [first, second] = backend.getCalls();
       expect(sentTools(first)).toEqual(
-        [...WORKSPACE_TOOL_NAMES, 'tool_search', 'write_todos', 'recall_tool_output'].sort()
+        expect.arrayContaining([...WORKSPACE_TOOL_NAMES, 'tool_search', 'write_todos'])
       );
+      expect(sentTools(first).some((name) => name.startsWith('extra_'))).toBe(false);
       expect(sentTools(second)).toContain('extra_3');
+      expect(tools.every((candidate) => candidate.deferred === undefined)).toBe(true);
     } finally {
       await cog.close();
       await harness.dispose();
     }
+  });
+});
+
+describe('a harness agent with a project that is not the working directory', () => {
+  function project(): string {
+    isolateHome();
+    const root = join(dir, 'repo');
+    write(
+      join(root, '.claude/agents/reviewer.md'),
+      '---\nname: reviewer\ndescription: Reviews code ZZREVIEWER\n---\nYou review.\n'
+    );
+    write(
+      join(root, '.claude/commands/hello.md'),
+      '---\ndescription: hi\n---\nSAY ZZCMD $ARGUMENTS\n'
+    );
+    write(
+      join(root, '.claude/settings.json'),
+      JSON.stringify({
+        permissions: { allow: ['Bash(echo *)'] },
+        hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'true' }] }] },
+      })
+    );
+    expect(resolve(process.cwd())).not.toBe(root);
+    return root;
+  }
+
+  async function runIn(root: string, trusted: boolean) {
+    const backend = new MockLLMBackend().setResponses([
+      turn(call('c1', 'run_command', { command: 'echo hi' })),
+      { content: 'Done.' },
+    ]);
+    const hookRuns: HookRunRecord[] = [];
+    const harness = createHarnessAgent({
+      workspace: root,
+      model: 'mock/m',
+      trusted,
+      settings: true,
+      hooks: { onHookRun: (run) => hookRuns.push(run) },
+    });
+    const cog = new Cogitator(
+      harness.mergeConfig({ llm: { backends: { mock: backend }, retry: false } })
+    );
+    const asked: string[] = [];
+    try {
+      const subagents = await cog.listSubagents();
+      const commands = await cog.listCommands();
+      const result = await cog.run(harness.agent, {
+        input: '/hello world',
+        ...harness.runOptions,
+        onApproval: (request) => {
+          asked.push(request.toolName);
+          return { approved: true };
+        },
+      });
+      const first = backend.getCalls()[0];
+      const agentTool = JSON.stringify(first?.tools?.find((schema) => schema.name === 'agent'));
+      return {
+        subagents: subagents.agents.map((agent) => agent.name),
+        commands: commands.commands.map((command) => command.name),
+        expanded: result.command?.input,
+        listedToModel: agentTool.includes('ZZREVIEWER'),
+        hooks: hookRuns.map((run) => run.event),
+        asked,
+      };
+    } finally {
+      await cog.close();
+      await harness.dispose();
+    }
+  }
+
+  it('reads the subagents, commands, hooks and allow rules of a trusted project', async () => {
+    const seen = await runIn(project(), true);
+    expect(seen.subagents).toEqual(expect.arrayContaining(['reviewer', 'general-purpose']));
+    expect(seen.commands).toContain('hello');
+    expect(seen.expanded).toContain('SAY ZZCMD world');
+    expect(seen.listedToModel).toBe(true);
+    expect(seen.hooks).toContain('UserPromptSubmit');
+    expect(seen.asked).toEqual([]);
+  });
+
+  it('reads none of them from an untrusted project', async () => {
+    const seen = await runIn(project(), false);
+    expect(seen.subagents).not.toContain('reviewer');
+    expect(seen.commands).not.toContain('hello');
+    expect(seen.expanded).toBeUndefined();
+    expect(seen.listedToModel).toBe(false);
+    expect(seen.hooks).not.toContain('UserPromptSubmit');
+    expect(seen.asked).toEqual(['run_command']);
   });
 });

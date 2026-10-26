@@ -76,6 +76,12 @@ export interface AgentConfig<TDeps = unknown> {
    */
   todos?: boolean;
   /**
+   * Names of tools of this agent whose schemas wait until the model finds them with
+   * `tool_search`, as if they were `deferred`, without changing the tools themselves: a tool
+   * other agents share stays as it is for them. Names of tools the agent lacks are ignored
+   */
+  deferredTools?: readonly string[];
+  /**
    * Hooks around this agent's model and tool calls, after the Cogitator's middleware and
    * before the run's (see `RunMiddleware`). After a handoff, the agent the run went on as
    * brings its own.
@@ -162,6 +168,7 @@ export interface SerializedAgentConfig {
   timeout?: number;
   timeouts?: RunTimeouts;
   todos?: boolean;
+  deferredTools?: string[];
   permissions?: PermissionOptions;
   budget?: BudgetLimits;
 }

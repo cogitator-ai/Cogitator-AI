@@ -177,6 +177,7 @@ describe('agent wire format', () => {
       timeout: 600000,
       timeouts: { stepMs: 30000, chunkMs: 5000, toolMs: 60000 },
       todos: true,
+      deferredTools: ['cite'],
       middleware: [{ name: 'audit', afterModel: () => undefined }],
       workspace: new LocalWorkspace({ root: join(tmpdir(), 'wire-workspace'), create: false }),
       permissions: { mode: 'bypassPermissions', allow: ['Bash'] },
