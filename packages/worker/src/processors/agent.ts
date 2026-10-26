@@ -5,15 +5,24 @@
  * A paused run is a result, not a failure: it carries `status: 'paused'` and its checkpoint.
  */
 
+import { createHash } from 'node:crypto';
 import { toAgentWireRunResult } from '@cogitator-ai/core';
 import type { AgentJobPayload, AgentJobResult, JobExecutionOptions, WorkerRuntime } from '../types';
 import { createAgentFromConfig, resolveRuntime } from './shared.js';
 
 export { findToolOutput } from '@cogitator-ai/core';
 
-/** The run id of a durable agent job, the same for every attempt of the job */
+/** Job ids a run id can hold as they are: what `RunOptions.runId` takes, room left for `job:` */
+const PLAIN_JOB_ID = /^[\w.:-]{1,190}$/;
+
+/**
+ * The run id of a durable agent job, the same for every attempt of the job: `job:<jobId>`, or
+ * for a job id a run id cannot hold (slashes, spaces, other scripts, too long) `job:sha256-` and
+ * the hash of the id
+ */
 export function durableJobRunId(jobId: string): string {
-  return `job:${jobId}`;
+  if (PLAIN_JOB_ID.test(jobId)) return `job:${jobId}`;
+  return `job:sha256-${createHash('sha256').update(jobId).digest('hex')}`;
 }
 
 export async function processAgentJob(

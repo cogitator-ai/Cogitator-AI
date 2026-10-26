@@ -948,6 +948,48 @@ describe('durable runs under stress', () => {
     await second.close();
   });
 
+  it('tells a recovered run at its stop about a background agent it lost', async () => {
+    const inner = scriptedBackend([() => forever.then(() => answer('never'))]);
+    const outer = scriptedBackend([
+      callTools([
+        {
+          id: 'o1',
+          name: 'agent',
+          arguments: {
+            description: 'x',
+            prompt: 'dig',
+            subagent_type: 'digger',
+            run_in_background: true,
+          },
+        },
+      ]),
+      () => forever.then(() => answer('never')),
+    ]);
+    const config = (backends: { outer: typeof outer; inner: typeof inner }) => ({
+      llm: {
+        backends: { outer: backends.outer.backend, inner: backends.inner.backend },
+        retry: false as const,
+      },
+      memory: { adapter: 'sqlite' as const, sqlite: { path: join(dir, 'memory.db') } },
+      durable: { owner: 'host-a', takeoverOnRestart: true },
+      subagents: { agents: { digger: { description: 'digs', model: 'inner/m' } } },
+    });
+    const lead = new Agent({ name: 'lead', model: 'outer/m', instructions: 'Lead.' });
+    const first = new Cogitator(config({ outer, inner }));
+    first.run(lead, { input: 'Dig', threadId: 'lost-notice' }).catch(() => undefined);
+    await vi.waitFor(() => expect(outer.requests).toHaveLength(2));
+    await first.close();
+
+    const nextOuter = scriptedBackend([answer('all done'), answer('the digger was lost')]);
+    const second = new Cogitator(config({ outer: nextOuter, inner }));
+    const { resumed } = await second.recoverRuns({ agents: [lead] });
+    expect((await resumed[0].handle.result).output).toBe('the digger was lost');
+    const notice = userTexts(nextOuter.requests[1]).at(-1) ?? '';
+    expect(notice).toContain('<task-notification>');
+    expect(notice).toContain('outcome unknown');
+    await second.close();
+  });
+
   it('refuses to resume the checkpoint of a run left running', async () => {
     const store = new InMemoryDurableRunStore();
     const hang = countedTool('hang', forever);
@@ -1630,6 +1672,66 @@ describe('durable runs while they wait and start', () => {
     });
     const again = await second.cog.recoverRun(agent, kept.runId);
     expect((await again.result).output).toBe('done');
+  });
+});
+
+describe('durable runs keep their checkpoint through store errors', () => {
+  it.each([
+    ['taking the lease back', 'acquire', 2],
+    ['reading the checkpoint back', 'load', 2],
+    ['renewing the lease', 'renew', 1],
+    ['saving a step', 'save', 1],
+    ['noting a tool call', 'append', 1],
+  ] as const)('keeps it after an error %s', async (_name, method, from) => {
+    const parked = new InMemoryDurableRunStore();
+    const hang = countedTool('hang', forever);
+    const step = countedTool('step');
+    const agent = new Agent({
+      name: 'kept',
+      model: 'mock/m',
+      instructions: 'Go.',
+      tools: [hang.tool, step.tool],
+    });
+    const first = processWith([callTools([{ id: 'h', name: 'hang', arguments: {} }])], parked, 'a');
+    first.cog.run(agent, { input: 'Go', threadId: 'kept' }).catch(() => undefined);
+    await hang.started;
+    await first.cog.close();
+
+    const calls = { acquire: 0, load: 0, renew: 0, save: 0, append: 0 };
+    const failing = <T>(name: keyof typeof calls, call: () => Promise<T>): Promise<T> => {
+      if (name !== method) return call();
+      calls[name]++;
+      return calls[name] >= from ? Promise.reject(new Error('ECONNRESET')) : call();
+    };
+    const store: DurableRunStore = {
+      ...around(parked),
+      acquire: (...args) => failing('acquire', () => parked.acquire(...args)),
+      load: (...args) => failing('load', () => parked.load(...args)),
+      renew: (...args) => failing('renew', () => parked.renew(...args)),
+      save: (...args) => failing('save', () => parked.save(...args)),
+      append: (...args) => failing('append', () => parked.append(...args)),
+    };
+    const broken = new Cogitator({
+      llm: {
+        backends: {
+          mock: scriptedBackend([
+            callTools([{ id: 's', name: 'step', arguments: {} }]),
+            answer('done'),
+          ]).backend,
+        },
+      },
+      durable: { store, owner: 'a', takeoverOnRestart: true, storeRetries: 0 },
+    });
+    const [kept] = await parked.list();
+    const handle = await broken.recoverRun(agent, kept.runId);
+    await expect(handle.result).rejects.toThrow();
+    await broken.close();
+
+    expect(await parked.list()).toHaveLength(1);
+    const next = processWith([answer('recovered')], parked, 'a');
+    const { resumed } = await next.cog.recoverRuns({ agents: [agent] });
+    expect((await resumed[0].handle.result).output).toBe('recovered');
+    expect(await parked.list()).toEqual([]);
   });
 });
 

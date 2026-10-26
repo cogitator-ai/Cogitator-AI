@@ -1,7 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { createApp, group } from '@tetsujs/core';
 import { serve } from '@tetsujs/core/testing';
-import { parseSseFrames, type StreamFrame } from '@cogitator-ai/server-shared';
+import {
+  InMemoryStreamReplayStore,
+  parseSseFrames,
+  type NewStreamRecord,
+  type StreamFrame,
+  type StreamReplayStore,
+} from '@cogitator-ai/server-shared';
 import type { RunOptions } from '@cogitator-ai/types';
 import { cogitatorController } from '../index.js';
 import type { CogitatorDeps } from '../index.js';
@@ -169,6 +175,40 @@ describe('resumable streams', () => {
     }
     await reader.cancel();
     const signal = await started;
+
+    for (let i = 0; i < 200 && !signal.aborted; i++) await Bun.sleep(5);
+    expect(signal.aborted).toBe(true);
+  });
+
+  test('lets go of a stream whose client left while the store created it', async () => {
+    const { run, started } = gatedRun();
+    const { cogitator } = fakeCogitator(run);
+    const memory = new InMemoryStreamReplayStore();
+    const creating = deferred<void>();
+    const released = deferred<void>();
+    const store: StreamReplayStore = Object.assign(Object.create(memory) as StreamReplayStore, {
+      create: async (stream: NewStreamRecord) => {
+        creating.resolve();
+        await released.promise;
+        return memory.create(stream);
+      },
+    });
+    const request = serveCogitator({
+      cogitator,
+      agents: { chat: chatAgent() },
+      sseHeartbeatMs: 0,
+      resumableStreams: { store, detachedTimeoutMs: 1 },
+    });
+    const client = new AbortController();
+    const answer = request(PATH, { ...json({ input: 'hi' }), signal: client.signal }).catch(
+      () => undefined
+    );
+
+    await creating.promise;
+    client.abort();
+    released.resolve();
+    const signal = await started;
+    await answer;
 
     for (let i = 0; i < 200 && !signal.aborted; i++) await Bun.sleep(5);
     expect(signal.aborted).toBe(true);

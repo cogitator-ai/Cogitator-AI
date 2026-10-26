@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RunOptions } from '@cogitator-ai/types';
 import {
+  InMemoryStreamReplayStore,
   conformanceRunResult,
   parseSseFrames,
+  type NewStreamRecord,
+  type StreamReplayStore,
   type ResumableStreamOptions,
   type StreamFrame,
 } from '@cogitator-ai/server-shared';
@@ -157,6 +160,41 @@ describe('resumable streams', () => {
       text += decoder.decode((await reader.read()).value, { stream: true });
     }
     await reader.cancel();
+
+    await vi.waitFor(() => expect(signal()?.aborted).toBe(true));
+  });
+
+  it('lets go of a stream whose client left while the store created it', async () => {
+    const { runtime, signal } = gatedRuntime();
+    const memory = new InMemoryStreamReplayStore();
+    let reached!: () => void;
+    const creating = new Promise<void>((resolve) => (reached = resolve));
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const store: StreamReplayStore = Object.assign(Object.create(memory) as StreamReplayStore, {
+      create: async (stream: NewStreamRecord) => {
+        reached();
+        await released;
+        return memory.create(stream);
+      },
+    });
+    const app = appOf(runtime, { store, detachedTimeoutMs: 1 });
+    const client = new AbortController();
+    const answer = Promise.resolve(
+      app.fetch(
+        new Request(URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ input: 'hi' }),
+          signal: client.signal,
+        })
+      )
+    );
+
+    await creating;
+    client.abort();
+    release();
+    await answer;
 
     await vi.waitFor(() => expect(signal()?.aborted).toBe(true));
   });

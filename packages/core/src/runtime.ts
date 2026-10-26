@@ -2352,7 +2352,7 @@ export class Cogitator implements ToolInvoker {
         const recovered = resumeFrom?.recovered;
         if (recovered) {
           recovered.stopHolding();
-          if ((await store.load(owner))?.savedAt !== recovered.savedAt) {
+          if ((await keeper.savedAt()) !== recovered.savedAt) {
             const moved = new CogitatorError({
               message: `Durable run ${runId} went on in another process while this one waited to recover it`,
               code: ErrorCode.RUN_LEASED,

@@ -263,4 +263,33 @@ describe('durable agent jobs', () => {
     expect(packImpl).toHaveBeenCalledTimes(1);
     await pool.forceStop();
   });
+
+  it('name the run of any job id with a run id', async () => {
+    expect(durableJobRunId('order-42')).toBe('job:order-42');
+    const odd = ['orders/42', 'with space', 'заказ', 'x'.repeat(300)];
+    const ids = odd.map(durableJobRunId);
+    for (const id of ids) expect(id).toMatch(/^job:sha256-[0-9a-f]{64}$/);
+    expect(new Set(ids).size).toBe(odd.length);
+    expect(durableJobRunId('orders/42')).toBe(ids[0]);
+
+    const store = new InMemoryDurableRunStore();
+    const backend = shippingBackend();
+    const cogitator = new Cogitator({
+      llm: { backends: { mock: backend } },
+      durable: { store, owner: 'worker-1', enabled: false },
+    });
+    labelStarted.mockImplementation(() => undefined);
+    const quick = serializeAgent(
+      new Agent({ name: 'packer', model: 'mock/m', instructions: 'Pack.', tools: [pack] })
+    );
+    const payload: AgentJobPayload = {
+      type: 'agent',
+      jobId: 'orders/42 urgent',
+      agentConfig: quick,
+      input: 'Pack it',
+      threadId: 't-odd',
+    };
+    const result = await processAgentJob(payload, { cogitator, tools: [pack] }, { durable: true });
+    expect(result.status).toBe('completed');
+  });
 });

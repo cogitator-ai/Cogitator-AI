@@ -97,6 +97,11 @@ export class DurableRunKeeper {
   private stopped: CogitatorError | undefined;
   /** The store failed and the run goes on without checkpoints (`onStoreError: 'continue'`) */
   private detached = false;
+  /**
+   * A call to the store failed outside a write (taking the lease, reading the checkpoint back):
+   * the run cannot tell what the store holds, so its checkpoint is never forgotten
+   */
+  private faulted = false;
   private ended = false;
   /** Marks written so far, for their ids */
   private marks = 0;
@@ -115,8 +120,8 @@ export class DurableRunKeeper {
 
   /** Takes the run, or fails with `RUN_LEASED` when another process holds it */
   async begin(): Promise<void> {
-    const taken = await this.retried(() =>
-      this.store.acquire(this.owner, this.holder, this.options.leaseMs)
+    const taken = await this.faultless(() =>
+      this.retried(() => this.store.acquire(this.owner, this.holder, this.options.leaseMs))
     );
     if (!taken) throw leased(this.owner.runId);
     this.renewal = setInterval(
@@ -210,10 +215,10 @@ export class DurableRunKeeper {
   }
 
   /**
-   * Stops keeping the run. `forget` deletes it (it completed, paused, failed or was stopped)
-   * unless another process took it over, `hand-over` keeps its checkpoint and lets its lease go,
-   * for another process to recover it. A run whose store failed is never deleted: its last
-   * checkpoint stays for a recovery
+   * Stops keeping the run. `forget` deletes it, for an end the run reached itself (it completed,
+   * paused, failed on its own or was stopped), `hand-over` keeps its checkpoint and lets its lease
+   * go, for another process to recover it. A checkpoint is never forgotten after an error of the
+   * store, a lost lease or a recovery that gave up: its last checkpoint stays for a recovery
    */
   async end(how: 'forget' | 'hand-over'): Promise<void> {
     clearInterval(this.renewal);
@@ -223,7 +228,7 @@ export class DurableRunKeeper {
     }
     this.ended = true;
     if (this.stopped?.code === ErrorCode.RUN_LEASED) return;
-    const forget = how === 'forget' && !this.stopped;
+    const forget = how === 'forget' && !this.stopped && !this.faulted;
     try {
       if (forget) {
         await this.retried(() => this.store.delete(this.owner, this.holder));
@@ -237,6 +242,22 @@ export class DurableRunKeeper {
           : 'Could not let a durable run go: another process takes it once its lease runs out',
         { runId: this.owner.runId, error: messageOf(error) }
       );
+    }
+  }
+
+  /** When the checkpoint the store holds for the run was saved, undefined when it holds none */
+  async savedAt(): Promise<number | undefined> {
+    const record = await this.faultless(() => this.retried(() => this.store.load(this.owner)));
+    return record?.savedAt;
+  }
+
+  /** `operation`, the run marked as unsure of its store when it fails */
+  private async faultless<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      this.faulted = true;
+      throw error;
     }
   }
 

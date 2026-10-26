@@ -305,9 +305,12 @@ export class SubagentService {
       name: 'cogitator:subagents',
       beforeStop: async (_event, context) => {
         const mine = this.tasksStartedBy(context.threadId ?? '', context.runId);
+        const gone = [...(this.lost.get(context.threadId ?? '')?.values() ?? [])].filter(
+          (task) => task.startedBy === context.runId && !task.delivered
+        );
         const ready = (): SubagentTask[] =>
           mine.filter((task) => task.status !== 'running' && !task.delivered && task.background);
-        if (ready().length === 0) {
+        if (ready().length === 0 && gone.length === 0) {
           const going = mine.filter((task) => task.status === 'running' && task.done);
           if (going.length === 0) return undefined;
           await untilAborted(
@@ -316,9 +319,6 @@ export class SubagentService {
           );
         }
         const settled = ready();
-        const gone = [...(this.lost.get(context.threadId ?? '')?.values() ?? [])].filter(
-          (task) => task.startedBy === context.runId && !task.delivered
-        );
         if (settled.length === 0 && gone.length === 0) return undefined;
         for (const task of settled) task.delivered = true;
         for (const task of gone) task.delivered = true;

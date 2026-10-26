@@ -2,9 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Agent, Cogitator } from '@cogitator-ai/core';
 import type { RunOptions } from '@cogitator-ai/types';
 import {
+  InMemoryStreamReplayStore,
   conformanceRunResult,
   parseSseFrames,
+  type NewStreamRecord,
   type StreamFrame,
+  type StreamReplayStore,
 } from '@cogitator-ai/server-shared';
 import { createChatHandler } from '../handlers/chat.js';
 import type { ChatHandlerOptions } from '../types.js';
@@ -254,6 +257,41 @@ describe('resumable chat streams', () => {
       text += decoder.decode((await reader.read()).value, { stream: true });
     }
     await reader.cancel();
+
+    await vi.waitFor(() => expect(signal()?.aborted).toBe(true));
+  });
+
+  it('lets go of a stream whose client left while the store created it', async () => {
+    const { cogitator, signal } = gatedRuntime();
+    const memory = new InMemoryStreamReplayStore();
+    let reached!: () => void;
+    const creating = new Promise<void>((resolve) => (reached = resolve));
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const store: StreamReplayStore = Object.assign(Object.create(memory) as StreamReplayStore, {
+      create: async (stream: NewStreamRecord) => {
+        reached();
+        await released;
+        return memory.create(stream);
+      },
+    });
+    const handler = handlerOf(cogitator, {
+      resumableStreams: { owner: userOf, store, detachedTimeoutMs: 1 },
+    });
+    const client = new AbortController();
+    const answer = handler(
+      new Request('http://localhost/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: BODY,
+        signal: client.signal,
+      })
+    );
+
+    await creating;
+    client.abort();
+    release();
+    await answer;
 
     await vi.waitFor(() => expect(signal()?.aborted).toBe(true));
   });

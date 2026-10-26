@@ -57,9 +57,19 @@ export function sendRouteError(
   return sendFailure(reply, resolveError(request, error, label));
 }
 
+/**
+ * Calls `handler` once the client goes away before the answer ended, also when it already went
+ * away: a request can lose its client while a route awaits (the store creating a stream, the
+ * `deps` hook), and a `close` that fired then would never reach a handler added later
+ */
 export function onClientDisconnect(reply: FastifyReply, handler: () => void): void {
-  reply.raw.on('close', () => {
-    if (!reply.raw.writableEnded) handler();
+  const res = reply.raw;
+  if (res.closed) {
+    if (!res.writableEnded) handler();
+    return;
+  }
+  res.on('close', () => {
+    if (!res.writableEnded) handler();
   });
 }
 

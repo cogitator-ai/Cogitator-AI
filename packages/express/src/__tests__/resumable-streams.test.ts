@@ -1,11 +1,14 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import type { Server } from 'http';
 import type { AddressInfo } from 'net';
 import type { RunOptions } from '@cogitator-ai/types';
 import {
+  InMemoryStreamReplayStore,
   conformanceRunResult,
   parseSseFrames,
+  type NewStreamRecord,
+  type StreamReplayStore,
   type ResumableStreamOptions,
   type StreamFrame,
 } from '@cogitator-ai/server-shared';
@@ -50,11 +53,38 @@ function gatedRuntime() {
   return { runtime, release, running };
 }
 
+/** A store whose `create` waits for `release()`, telling when a request reached it */
+function slowStore() {
+  const memory = new InMemoryStreamReplayStore();
+  let reached!: () => void;
+  const creating = new Promise<void>((resolve) => (reached = resolve));
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  const store: StreamReplayStore = Object.assign(Object.create(memory) as StreamReplayStore, {
+    create: async (stream: NewStreamRecord) => {
+      reached();
+      await released;
+      return memory.create(stream);
+    },
+  });
+  return { store, creating, release };
+}
+
+/** Resolves once a response of the app closed, before or after it ended */
+function closedResponses(app: express.Express): Promise<void> {
+  return new Promise((resolve) => {
+    app.use((_req, res, next) => {
+      res.on('close', () => resolve());
+      next();
+    });
+  });
+}
+
 async function listen(
   runtime: unknown,
-  resumableStreams?: boolean | ResumableStreamOptions
+  resumableStreams?: boolean | ResumableStreamOptions,
+  app = express()
 ): Promise<string> {
-  const app = express();
   const cogitatorServer = new CogitatorServer({
     app,
     cogitator: runtime as Cogitator,
@@ -238,5 +268,29 @@ describe('resumable streams', () => {
     const refused = await reconnect(url, 'garbage');
     expect(refused.status).toBe(400);
     expect(JSON.parse(refused.body)).toMatchObject({ error: { code: 'INVALID_INPUT' } });
+  });
+
+  it('lets go of a stream whose client left while the store created it', async () => {
+    const { runtime, running } = gatedRuntime();
+    const { store, creating, release } = slowStore();
+    const app = express();
+    const closed = closedResponses(app);
+    const url = await listen(runtime, { store, detachedTimeoutMs: 1 }, app);
+    const client = new AbortController();
+    const answer = fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: 'hi' }),
+      signal: client.signal,
+    }).catch(() => undefined);
+
+    await creating;
+    client.abort();
+    await closed;
+    release();
+    const signal = await running;
+    await answer;
+
+    await vi.waitFor(() => expect(signal.aborted).toBe(true));
   });
 });

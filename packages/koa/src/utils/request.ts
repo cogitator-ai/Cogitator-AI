@@ -6,8 +6,17 @@ export function getRequestBody(ctx: Context): unknown {
   return (ctx.request as Context['request'] & { body?: unknown }).body;
 }
 
+/**
+ * Calls `listener` once the client goes away before the answer ended, also when it already went
+ * away: a request can lose its client while a route awaits (the store creating a stream, the
+ * `deps` hook), and a `close` that fired then would never reach a handler added later
+ */
 export function onClientDisconnect(ctx: Context, listener: () => void): void {
   const res = ctx.res;
+  if (res.closed) {
+    if (!res.writableFinished) listener();
+    return;
+  }
   res.once('close', () => {
     if (!res.writableFinished) listener();
   });

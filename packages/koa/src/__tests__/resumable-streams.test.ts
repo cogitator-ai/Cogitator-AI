@@ -3,8 +3,11 @@ import Koa from 'koa';
 import type { AddressInfo } from 'node:net';
 import type { RunOptions } from '@cogitator-ai/types';
 import {
+  InMemoryStreamReplayStore,
   conformanceRunResult,
   parseSseFrames,
+  type NewStreamRecord,
+  type StreamReplayStore,
   type ResumableStreamOptions,
   type StreamFrame,
 } from '@cogitator-ai/server-shared';
@@ -41,9 +44,9 @@ function gatedRuntime() {
 
 async function listen(
   runtime: CogitatorAppOptions['cogitator'],
-  resumableStreams?: boolean | ResumableStreamOptions
+  resumableStreams?: boolean | ResumableStreamOptions,
+  app = new Koa<CogitatorState>()
 ): Promise<string> {
-  const app = new Koa<CogitatorState>();
   const router = cogitatorApp({
     cogitator: runtime,
     agents: { bot: { config: { instructions: 'x', tools: [] } } as never },
@@ -135,5 +138,44 @@ describe('resumable streams', () => {
       expect(JSON.parse(refused.body)).toMatchObject({ error: { code: 'STREAM_NOT_FOUND' } });
     }
     expect((await reconnect(url, id, { 'x-user': 'alice' })).status).toBe(200);
+  });
+
+  it('lets go of a stream whose client left while the store created it', async () => {
+    const { runtime, signal } = gatedRuntime();
+    const memory = new InMemoryStreamReplayStore();
+    let reached!: () => void;
+    const creating = new Promise<void>((resolve) => (reached = resolve));
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const store: StreamReplayStore = Object.assign(Object.create(memory) as StreamReplayStore, {
+      create: async (stream: NewStreamRecord) => {
+        reached();
+        await released;
+        return memory.create(stream);
+      },
+    });
+    const app = new Koa<CogitatorState>();
+    let closedResponse!: () => void;
+    const closed = new Promise<void>((resolve) => (closedResponse = resolve));
+    app.use(async (ctx, next) => {
+      ctx.res.on('close', () => closedResponse());
+      await next();
+    });
+    const url = await listen(runtime, { store, detachedTimeoutMs: 1 }, app);
+    const client = new AbortController();
+    const answer = fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: 'hi' }),
+      signal: client.signal,
+    }).catch(() => undefined);
+
+    await creating;
+    client.abort();
+    await closed;
+    release();
+    await answer;
+
+    await vi.waitFor(() => expect(signal()?.aborted).toBe(true));
   });
 });

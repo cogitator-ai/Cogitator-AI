@@ -1,9 +1,11 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import {
   ConformanceRuntime,
   InMemoryStreamReplayStore,
   parseSseFrames,
+  type NewStreamRecord,
+  type StreamReplayStore,
 } from '@cogitator-ai/server-shared';
 import type { RunOptions } from '@cogitator-ai/types';
 import { cogitatorPlugin } from '../plugin.js';
@@ -175,5 +177,61 @@ describe('resumable streams', () => {
     expect(refused.statusCode).toBe(404);
     expect(refused.json()).toMatchObject({ error: { code: 'STREAM_NOT_FOUND' } });
     expect((await reconnect({ 'x-user': 'alice' })).statusCode).toBe(200);
+  });
+
+  it('lets go of a stream whose client left while the store created it', async () => {
+    const memory = new InMemoryStreamReplayStore();
+    let reached!: () => void;
+    const creating = new Promise<void>((resolve) => (reached = resolve));
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const store: StreamReplayStore = Object.assign(Object.create(memory) as StreamReplayStore, {
+      create: async (stream: NewStreamRecord) => {
+        reached();
+        await released;
+        return memory.create(stream);
+      },
+    });
+    let started!: (signal: AbortSignal) => void;
+    const running = new Promise<AbortSignal>((resolve) => (started = resolve));
+    const held = {
+      run: (_agent: unknown, options: RunOptions) =>
+        new Promise((_, reject) => {
+          started(options.signal!);
+          options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    };
+    app = Fastify({ logger: false });
+    let closedResponse!: () => void;
+    const closed = new Promise<void>((resolve) => (closedResponse = resolve));
+    app.addHook('onRequest', async (_request, reply) => {
+      reply.raw.on('close', () => closedResponse());
+    });
+    await app.register(cogitatorPlugin, {
+      cogitator: held as unknown as CogitatorPluginOptions['cogitator'],
+      agents: {
+        assistant: { name: 'assistant', config: { tools: [] } },
+      } as unknown as CogitatorPluginOptions['agents'],
+      prefix: '/api',
+      sseHeartbeatMs: 0,
+      resumableStreams: { store, detachedTimeoutMs: 1 },
+    });
+    const address = await app.listen({ port: 0, host: '127.0.0.1' });
+    const client = new AbortController();
+    const answer = fetch(`${address}/api/agents/assistant/stream`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: 'hi' }),
+      signal: client.signal,
+    }).catch(() => undefined);
+
+    await creating;
+    client.abort();
+    await closed;
+    release();
+    const signal = await running;
+    await answer;
+
+    await vi.waitFor(() => expect(signal.aborted).toBe(true));
   });
 });
