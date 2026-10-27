@@ -701,18 +701,35 @@ export function eventTrigger(
 
 /**
  * What tells two trigger definitions apart: the workflow, the type and the config as JSON with
- * its keys in order, `enabled` left out (it is state, not what the trigger is)
+ * its keys in order, `enabled` left out (it is state, not what the trigger is). A function of the
+ * config (an event trigger's `filter` or `transform`) counts by identity: two definitions with
+ * different functions are two triggers, and one brought back from a store that cannot keep
+ * functions is not taken over by a definition that has them
  */
 function definitionKey(trigger: Pick<WorkflowTrigger, 'workflowName' | 'type' | 'config'>): string {
   return JSON.stringify([trigger.workflowName, trigger.type, sortedJson(trigger.config)]);
 }
 
+const FUNCTION_IDS = new WeakMap<object, number>();
+let nextFunctionId = 0;
+
+/** A stable token of a function's identity */
+function functionId(fn: object): string {
+  let id = FUNCTION_IDS.get(fn);
+  if (id === undefined) {
+    id = ++nextFunctionId;
+    FUNCTION_IDS.set(fn, id);
+  }
+  return `function#${id}`;
+}
+
 function sortedJson(value: unknown): unknown {
+  if (typeof value === 'function') return functionId(value);
   if (Array.isArray(value)) return value.map(sortedJson);
   if (typeof value !== 'object' || value === null) return value;
   return Object.fromEntries(
     Object.entries(value)
-      .filter(([key, entry]) => key !== 'enabled' && typeof entry !== 'function')
+      .filter(([key]) => key !== 'enabled')
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       .map(([key, entry]) => [key, sortedJson(entry)])
   );

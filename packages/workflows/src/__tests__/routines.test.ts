@@ -257,6 +257,26 @@ describe('workflows on the core scheduler', () => {
     second.dispose();
   });
 
+  it('keeps triggers whose functions differ apart, and takes over one with the same functions', async () => {
+    const store = new InMemoryTriggerStore();
+    const manager = createTriggerManager({ store, onTriggerFire: async () => 'run' });
+    await manager.start();
+    const big = (payload: unknown) => (payload as { total: number }).total > 100;
+    const small = (payload: unknown) => (payload as { total: number }).total <= 100;
+    const event = (filter: (payload: unknown) => boolean) => ({
+      workflowName: 'w',
+      type: 'event' as const,
+      config: eventTrigger('order.created', { filter }),
+      enabled: true,
+    });
+    const first = await manager.register(event(big));
+    const second = await manager.register(event(small));
+    expect(second).not.toBe(first);
+    expect(await manager.register(event(big))).toBe(first);
+    expect(await store.list()).toHaveLength(2);
+    manager.dispose();
+  });
+
   it('re-exports the core timer stores', () => {
     expect(InMemoryTimerStore).toBe(core.InMemoryTimerStore);
     expect(FileTimerStore).toBe(core.FileTimerStore);
