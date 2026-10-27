@@ -9,9 +9,20 @@ import chalk from 'chalk';
 import { log, printBanner } from '../utils/logger.js';
 import { CommandError, examplesHelp } from '../utils/cli.js';
 import { Cogitator, Agent } from '@cogitator-ai/core';
+import { experimental_mcpConnector } from '@cogitator-ai/mcp';
 import type { CogitatorConfig } from '@cogitator-ai/types';
 import { listOllamaModels, resolveOllamaUrl } from '../utils/ollama.js';
 import { findConfig, loadRunConfig, type RunConfig } from '../utils/run-config.js';
+
+/**
+ * The config with an MCP connector for the servers of plugins, when it has plugins and names no
+ * connector: a config file cannot hold one, and plugins of the Claude Code format bring servers
+ */
+export function withPluginServers(config: CogitatorConfig): CogitatorConfig {
+  const plugins = config.experimental_plugins;
+  if (!plugins || plugins.mcp) return config;
+  return { ...config, experimental_plugins: { ...plugins, mcp: experimental_mcpConnector() } };
+}
 
 export { findConfig, loadRunConfig };
 export type { RunConfig };
@@ -249,7 +260,7 @@ export const runCommand = new Command('run')
       log.dim(`Auto-detected model: ${model}`);
     }
 
-    const cog = new Cogitator(config);
+    const cog = new Cogitator(withPluginServers(config));
 
     if (options.interactive || !message) {
       printBanner();
