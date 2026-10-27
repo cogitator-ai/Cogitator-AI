@@ -78,6 +78,49 @@ describe('cogitator schedule', () => {
     expect(await stores.store.listRoutines()).toEqual([]);
   });
 
+  it('pauses a trigger without overwriting what a runtime changed meanwhile', async () => {
+    const stores = experimental_fileTriggerStores(dir);
+    await stores.store.saveTriggerState({
+      id: 'digest.api',
+      routineId: 'digest',
+      fireCount: 3,
+      tokenHash: 'old',
+    });
+    const late = new Proxy(stores.store, {
+      get(target, property, receiver) {
+        if (property === 'getTriggerState') {
+          return async (id: string) => {
+            const state = await target.getTriggerState(id);
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            return state;
+          };
+        }
+        const value: unknown = Reflect.get(target, property, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const paused = runSchedulePause(
+      'digest.api',
+      false,
+      {},
+      {
+        ...context,
+        stores: () => ({ ...stores, store: late }),
+      }
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await experimental_fileTriggerStores(dir).store.patchTriggerState('digest.api', 'digest', {
+      tokenHash: 'new',
+      fireCountDelta: 1,
+    });
+    expect(await paused).toBe(0);
+    expect(await stores.store.getTriggerState('digest.api')).toMatchObject({
+      enabled: false,
+      tokenHash: 'new',
+      fireCount: 4,
+    });
+  });
+
   it('refuses a cron expression it cannot run and a missing target', async () => {
     expect(
       await runScheduleAdd('bad', { cron: 'every day', agent: 'a', prompt: 'p' }, context)

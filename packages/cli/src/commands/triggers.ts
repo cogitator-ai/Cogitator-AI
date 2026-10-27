@@ -268,12 +268,7 @@ export async function runSchedulePause(
     }
     for (const triggerId of triggerIds) {
       const routineId = splitTriggerId(triggerId)!.routineId;
-      const state = (await stores.store.getTriggerState(triggerId)) ?? {
-        id: triggerId,
-        routineId,
-        fireCount: 0,
-      };
-      await stores.store.saveTriggerState({ ...state, enabled });
+      await stores.store.patchTriggerState(triggerId, routineId, { enabled });
     }
     const scheduler = schedulerOf(stores);
     for (const entry of entries) {
