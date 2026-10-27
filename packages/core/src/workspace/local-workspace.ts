@@ -192,6 +192,8 @@ interface LocalWorkspaceState {
   sweeping?: Promise<void>;
   disposed: boolean;
   groups: ProcessGroups;
+  /** The snapshot store of the root, taken on first use and let go in `dispose()` */
+  store?: SnapshotStore;
 }
 
 /**
@@ -299,6 +301,10 @@ export class LocalWorkspace implements Workspace {
   async dispose(): Promise<void> {
     this.state.disposed = true;
     this.state.groups.killAll();
+    if (this.state.store) {
+      SnapshotStore.release(this.state.store);
+      this.state.store = undefined;
+    }
   }
 
   withCwd(cwd: string): LocalWorkspace {
@@ -643,9 +649,8 @@ export class LocalWorkspace implements Workspace {
    * snapshot read and stored. With `snapshots.retain`, older snapshots go after it
    */
   async snapshot(options: WorkspaceSnapshotOptions = {}): Promise<WorkspaceSnapshot> {
-    const root = await this.ready();
-    await this.ensureServiceDir();
-    const snapshot = await SnapshotStore.of(root).take({
+    const store = await this.snapshotStore();
+    const snapshot = await store.take({
       workspaceId: this.id,
       ...(options.label !== undefined && { label: options.label }),
       ...(options.metadata !== undefined && { metadata: options.metadata }),
@@ -665,7 +670,15 @@ export class LocalWorkspace implements Workspace {
         ...(large.length > 10 && { more: large.length - 10 }),
       });
     }
-    if (this.snapshotConfig.retain) await this.pruneSnapshots(this.snapshotConfig.retain);
+    if (this.snapshotConfig.retain) {
+      await this.pruneSnapshots(this.snapshotConfig.retain).catch((error: unknown) => {
+        getLogger().warn('Old workspace snapshots could not be pruned, the new one is kept', {
+          workspace: this.id,
+          snapshot: snapshot.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
     return snapshot;
   }
 
@@ -675,32 +688,36 @@ export class LocalWorkspace implements Workspace {
    * created, and what the snapshot did not have removed (a directory only once empty). Paths the
    * snapshot excluded or skipped are never touched, and a directory made since that holds such a
    * path stays. Unchanged files are told by their times, or by their content when those moved.
-   * With `dryRun` nothing changes. Refused with `BUSY` while a command the workspace started
-   * still runs, which could race the changes
+   * Present files the snapshot could not have kept (over its size limit, unreadable), special
+   * files and directories that cannot be read are left alone too (`kept`). With `dryRun`
+   * nothing changes, and `busy` says whether a restore would be refused now. Refused with `BUSY`
+   * while a command the workspace started still runs, which could race the changes
    */
   async restore(
     snapshotId: string,
     options: WorkspaceRestoreOptions = {}
   ): Promise<WorkspaceRestoreResult> {
-    const root = await this.ready();
+    const store = await this.snapshotStore();
     const dryRun = options.dryRun ?? false;
-    if (!dryRun && this.state.groups.busy()) {
+    const busy = this.state.groups.busy();
+    if (!dryRun && busy) {
       throw new WorkspaceError(
         'BUSY',
         'The workspace cannot be restored while a command started in it is still running (or left processes in the background): wait for it or dispose the workspace',
         { path: snapshotId }
       );
     }
-    return SnapshotStore.of(root).restore(snapshotId, this.restoreOps(), dryRun);
+    const result = await store.restore(snapshotId, this.restoreOps(), dryRun);
+    return dryRun ? { ...result, busy } : result;
   }
 
   async listSnapshots(): Promise<WorkspaceSnapshot[]> {
-    return SnapshotStore.of(await this.ready()).list();
+    return (await this.snapshotStore()).list();
   }
 
   /** Forgets a snapshot, then deletes the contents no other snapshot uses (see `gcGraceMs`) */
   async deleteSnapshot(snapshotId: string): Promise<void> {
-    await SnapshotStore.of(await this.ready()).delete(snapshotId, this.gcGrace());
+    await (await this.snapshotStore()).delete(snapshotId, this.gcGrace());
   }
 
   /**
@@ -710,7 +727,7 @@ export class LocalWorkspace implements Workspace {
   async pruneSnapshots(
     retention: SnapshotRetention = this.snapshotConfig.retain ?? {}
   ): Promise<{ deleted: string[]; gc: SnapshotGcReport }> {
-    return SnapshotStore.of(await this.ready()).prune(retention, this.gcGrace());
+    return (await this.snapshotStore()).prune(retention, this.gcGrace());
   }
 
   /**
@@ -727,10 +744,16 @@ export class LocalWorkspace implements Workspace {
         { path: snapshotId }
       );
     }
-    const from = SnapshotStore.of(await this.ready());
-    const toRoot = await local.ready();
-    await local.ensureServiceDir();
-    return from.copyTo(snapshotId, SnapshotStore.of(toRoot));
+    const from = await this.snapshotStore();
+    return from.copyTo(snapshotId, await local.snapshotStore());
+  }
+
+  /** The snapshot store of the root, taken once per workspace, with `.cogitator` made first */
+  private async snapshotStore(): Promise<SnapshotStore> {
+    const root = await this.ready();
+    await this.ensureServiceDir();
+    this.state.store ??= SnapshotStore.acquire(root);
+    return this.state.store;
   }
 
   private gcGrace(): number {

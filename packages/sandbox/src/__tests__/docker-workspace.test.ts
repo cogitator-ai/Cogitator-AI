@@ -329,6 +329,60 @@ describe.skipIf(!docker)('DockerWorkspace with Docker', () => {
     );
     await expect(workspace.remove('../up')).rejects.toMatchObject({ code: 'OUTSIDE_ROOT' });
   }, 60_000);
+
+  it('removes what a restore deletes inside the container, and refuses while commands run', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'docker-restore-')));
+    mkdirSync(join(root, 'gone'));
+    writeFileSync(join(root, 'gone', 'inner.txt'), 'inner');
+    writeFileSync(join(root, 'loose.txt'), 'loose');
+    const seen: { dryRun: boolean; goneThere: boolean }[] = [];
+    const planned = {
+      snapshotId: 'snap_x_12345678',
+      restored: ['kept.txt'],
+      deleted: ['gone', 'gone/inner.txt', 'loose.txt'],
+      unchanged: 0,
+      kept: [],
+    };
+    const restoring: Workspace & { disposed: boolean } = {
+      ...directoryHost(root),
+      snapshot: async () => ({
+        id: 'snap_x_12345678',
+        workspaceId: 'host',
+        createdAt: new Date().toISOString(),
+        exclude: [],
+      }),
+      restore: async (_id, restoreOptions) => {
+        const dryRun = restoreOptions?.dryRun ?? false;
+        seen.push({ dryRun, goneThere: existsSync(join(root, 'gone')) });
+        return { ...planned, dryRun, ...(dryRun && { busy: false }) };
+      },
+    };
+    const docked = new DockerWorkspace({ host: restoring, image: 'alpine:3.19', killGrace: 500 });
+    try {
+      const running = docked.exec('sleep 1');
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await expect(docked.restore!('snap_x_12345678')).rejects.toMatchObject({ code: 'BUSY' });
+      await expect(docked.restore!('snap_x_12345678', { dryRun: true })).resolves.toMatchObject({
+        busy: true,
+      });
+      await running;
+      await docked.exec('sleep 5 &', { background: 'keep' });
+      await expect(docked.restore!('snap_x_12345678')).rejects.toMatchObject({ code: 'BUSY' });
+      await docked.exec("pkill -f 'sleep 5'; true");
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      seen.length = 0;
+      const result = await docked.restore!('snap_x_12345678');
+      expect(result.deleted).toEqual(planned.deleted);
+      expect(seen).toEqual([
+        { dryRun: true, goneThere: true },
+        { dryRun: false, goneThere: false },
+      ]);
+      expect(existsSync(join(root, 'loose.txt'))).toBe(false);
+    } finally {
+      await docked.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 120_000);
 });
 
 describe('MarkerScanner', () => {

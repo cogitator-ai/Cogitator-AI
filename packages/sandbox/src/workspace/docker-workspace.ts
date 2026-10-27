@@ -124,6 +124,10 @@ interface DockerWorkspaceState {
   container?: DockerContainer;
   starting?: Promise<DockerContainer>;
   disposed: boolean;
+  /** Commands running in the container now */
+  running: number;
+  /** Process groups commands left in the background (`background: 'keep'`), while alive */
+  kept: Set<number>;
 }
 
 /**
@@ -189,11 +193,12 @@ export class DockerWorkspace implements Workspace {
     this.id = options.id ?? options.host.id;
     this.workdir = posix.resolve('/', options.workdir ?? DEFAULT_WORKDIR);
     this.cwd = normalizeCwd(options.cwd ?? options.host.cwd);
-    this.state = { disposed: false };
+    this.state = { disposed: false, running: 0, kept: new Set() };
     const host = options.host;
     if (host.snapshot && host.restore) {
       this.snapshot = (snapshotOptions) => host.snapshot!(snapshotOptions);
-      this.restore = (snapshotId, restoreOptions) => host.restore!(snapshotId, restoreOptions);
+      this.restore = (snapshotId, restoreOptions) =>
+        this.restoreInContainer(snapshotId, restoreOptions ?? {});
     }
     if (host.listSnapshots) this.listSnapshots = () => host.listSnapshots!();
     if (host.deleteSnapshot) this.deleteSnapshot = (snapshotId) => host.deleteSnapshot!(snapshotId);
@@ -395,6 +400,62 @@ export class DockerWorkspace implements Workspace {
 
   async exec(command: string, options: WorkspaceExecOptions = {}): Promise<WorkspaceExecResult> {
     if (options.signal?.aborted) throw aborted(options.signal);
+    this.state.running++;
+    try {
+      return await this.execNow(command, options);
+    } finally {
+      this.state.running--;
+    }
+  }
+
+  /**
+   * Brings the files back to a snapshot of the host workspace. What goes is removed in the
+   * container, where no symlink reaches the host, as `remove` does: the host's dry run says what,
+   * and each removed tree goes at once. The host then writes what changed, through its own
+   * placement. Refused with `BUSY` while a command runs in the container or left processes in the
+   * background, which could race the changes, and a dry run says so in `busy`
+   */
+  private async restoreInContainer(
+    snapshotId: string,
+    options: WorkspaceRestoreOptions
+  ): Promise<WorkspaceRestoreResult> {
+    const restore = this.host.restore!.bind(this.host);
+    const plan = await restore(snapshotId, { dryRun: true });
+    const busy = this.state.running > 0 || (await this.keptAlive());
+    if (options.dryRun) return { ...plan, busy: (plan.busy ?? false) || busy };
+    if (busy) {
+      throw new WorkspaceError(
+        'BUSY',
+        'The workspace cannot be restored while a command runs in its container (or left processes in the background): wait for it or dispose the workspace',
+        { path: snapshotId }
+      );
+    }
+    const deleted = new Set(plan.deleted);
+    const tops = plan.deleted.filter((path) => !ancestorsOf(path).some((dir) => deleted.has(dir)));
+    for (const path of tops) {
+      await this.remove(path, { recursive: true }).catch((error: unknown) => {
+        if (!WorkspaceError.is(error, 'NOT_FOUND')) throw error;
+      });
+    }
+    return restore(snapshotId);
+  }
+
+  /** Whether a process group a command left in the background is still alive in the container */
+  private async keptAlive(): Promise<boolean> {
+    if (this.state.kept.size === 0 || !this.state.container) return false;
+    const alive: number[] = [];
+    for (const group of this.state.kept) {
+      const code = await this.internal([GROUP_ALIVE_SCRIPT, String(group)], '.').catch(() => 0);
+      if (code === 46) alive.push(group);
+    }
+    this.state.kept = new Set(alive);
+    return alive.length > 0;
+  }
+
+  private async execNow(
+    command: string,
+    options: WorkspaceExecOptions
+  ): Promise<WorkspaceExecResult> {
     const container = await this.ready();
     const cwdPath = this.toHost(options.cwd ?? this.cwd);
     const cwd = await this.host.stat(cwdPath);
@@ -540,6 +601,7 @@ export class DockerWorkspace implements Workspace {
         if (kind !== 'exit') return;
         exitCode = value;
         if (options.background === 'kill') stopGroup('TERM');
+        else if (group !== undefined) this.state.kept.add(group);
         setTimeout(releaseRead, STDIO_GRACE).unref();
       }
     );
@@ -721,4 +783,16 @@ async function connect(config: SandboxDockerConfig | undefined): Promise<Docker>
 function defaultUser(): string | undefined {
   if (process.platform !== 'linux' || !process.getuid || !process.getgid) return undefined;
   return `${process.getuid()}:${process.getgid()}`;
+}
+
+/** `$1` a process group: exits 46 when a process of it is alive */
+const GROUP_ALIVE_SCRIPT = 'kill -0 "-$1" 2>/dev/null && exit 46; exit 0';
+
+/** The directories `path` is in, nearest first, the root left out */
+function ancestorsOf(path: string): string[] {
+  const dirs: string[] = [];
+  for (let at = path.lastIndexOf('/'); at > 0; at = path.lastIndexOf('/', at - 1)) {
+    dirs.push(path.slice(0, at));
+  }
+  return dirs;
 }

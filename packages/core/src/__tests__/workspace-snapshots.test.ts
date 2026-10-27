@@ -299,7 +299,7 @@ describe('LocalWorkspace snapshots', () => {
     expect(second.stats?.hashed).toBe(1);
   });
 
-  it('records a file that changes while it is read in one piece', async () => {
+  it('records a whole version of a file that changes while it is read, or skips it as changing', async () => {
     put('busy.txt', 'a'.repeat(100_000));
     let writes = 0;
     const writer = setInterval(() => {
@@ -310,10 +310,16 @@ describe('LocalWorkspace snapshots', () => {
       const snapshot = await workspace.snapshot();
       clearInterval(writer);
       writeFileSync(join(root, 'busy.txt'), 'final');
-      await workspace.restore(snapshot.id);
+      const result = await workspace.restore(snapshot.id);
       const back = text('busy.txt');
-      expect(back.length).toBe(100_000);
-      expect(new Set(back).size).toBe(1);
+      if (snapshot.skipped?.some((skip) => skip.path === 'busy.txt')) {
+        expect(snapshot.skipped).toEqual([{ path: 'busy.txt', reason: 'changing', size: 100_000 }]);
+        expect(result.kept).toEqual(['busy.txt']);
+        expect(back).toBe('final');
+      } else {
+        expect(back.length).toBe(100_000);
+        expect(new Set(back).size).toBe(1);
+      }
     } finally {
       clearInterval(writer);
     }

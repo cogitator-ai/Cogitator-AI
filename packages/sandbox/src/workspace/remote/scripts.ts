@@ -373,11 +373,12 @@ exit 0`;
  * `$1` the most bytes to print, then the \`find\` tests (`-o -path ./dir`, `-o -name dir`) of the
  * directories to leave out with everything in them: prints type, size and path (relative to the
  * root) of everything else in the root, NUL-separated and hex-encoded, so names that are not
- * UTF-8 arrive as they are. `.cogitator` is always left out. The output stops one byte past `$1`.
+ * UTF-8 arrive as they are, and each directory left out (`.cogitator` always) with the type `X`,
+ * without what it holds. The output stops one byte past `$1`.
  */
 export const SNAPSHOT_TREE = script(`cd -- "$root" || exit 1
 cap=$(($1 + 1)); shift
-find . -mindepth 1 \\( -path ./.cogitator "$@" \\) -prune -o -printf '%y\\0%s\\0%P\\0' 2>/dev/null | head -c "$cap" | od -An -v -tx1 | tr -d ' \\n'
+find . -mindepth 1 \\( -path ./.cogitator "$@" \\) -prune -printf 'X\\0%s\\0%P\\0' -o -printf '%y\\0%s\\0%P\\0' 2>/dev/null | head -c "$cap" | od -An -v -tx1 | tr -d ' \\n'
 exit 0`);
 
 /**

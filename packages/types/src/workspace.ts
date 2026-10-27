@@ -232,8 +232,12 @@ export interface WorkspaceSnapshotOptions {
 export interface WorkspaceSnapshotSkip {
   /** Path relative to the root, with `/` separators */
   path: string;
-  /** `too-large`: over `maxFileBytes`. `unreadable`: it could not be read (permissions, a race) */
-  reason: 'too-large' | 'unreadable';
+  /**
+   * `too-large`: over `maxFileBytes`. `unreadable`: it could not be read (permissions, a race),
+   * for a directory all it holds. `changing`: it changed every time it was read, so no whole
+   * version of it could be kept
+   */
+  reason: 'too-large' | 'unreadable' | 'changing';
   /** Its size in bytes when it was seen */
   size?: number;
 }
@@ -268,6 +272,11 @@ export interface WorkspaceSnapshot {
   exclude: readonly string[];
   /** Files the snapshot did not keep, which `restore()` leaves alone */
   skipped?: readonly WorkspaceSnapshotSkip[];
+  /**
+   * The size limit it kept files under: `restore()` leaves alone a file made since that is
+   * larger, as a snapshot could not have kept it
+   */
+  maxFileBytes?: number;
   /** What taking it cost, when the workspace measures it */
   stats?: WorkspaceSnapshotStats;
 }
@@ -291,10 +300,16 @@ export interface WorkspaceRestoreResult {
   /** Entries already as the snapshot has them */
   unchanged: number;
   /**
-   * Paths left as they are: files the snapshot skipped (`skipped`), and directories made since
-   * that hold excluded paths, which are never touched
+   * Paths left as they are, with everything under them: files the snapshot skipped (`skipped`),
+   * files made since that it could not have kept (over its size limit, unreadable), special
+   * files, directories that cannot be read, and directories made since that hold excluded paths
    */
   kept: string[];
+  /**
+   * With `dryRun`: whether a restore would be refused right now with `BUSY`, as commands the
+   * workspace started still run
+   */
+  busy?: boolean;
 }
 
 /**

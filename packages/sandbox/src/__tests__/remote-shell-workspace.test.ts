@@ -1056,4 +1056,32 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', { timeout: 60_000
     expect(readFileSync(join(root, 'app/node_modules/x/i.js'), 'utf8')).toBe('x\n');
     expect(readFileSync(join(root, 'app/a.ts'), 'utf8')).toBe('a\n');
   });
+
+  it('keeps a directory made since that holds excluded entries out of what a dry run deletes', async () => {
+    const { workspace, root } = fresh();
+    await workspace.write('a.txt', 'a');
+    const snapshot = await workspace.snapshot({ exclude: ['**/*.log'] });
+    await workspace.exec(
+      'mkdir -p fresh/node_modules/x logs && echo x > fresh/node_modules/x/i.js && echo y > fresh/y.txt && echo l > logs/app.log && echo gone > logs/gone.txt'
+    );
+    const plan = await workspace.restore(snapshot.id, { dryRun: true });
+    expect(plan.deleted).toEqual(['fresh/y.txt', 'logs/gone.txt']);
+    expect(plan.kept).toEqual(['fresh', 'logs']);
+    const result = await workspace.restore(snapshot.id);
+    expect(result.deleted).toEqual(plan.deleted);
+    expect(readFileSync(join(root, 'fresh/node_modules/x/i.js'), 'utf8')).toBe('x\n');
+    expect(existsSync(join(root, 'fresh/y.txt'))).toBe(false);
+    expect(readFileSync(join(root, 'logs/app.log'), 'utf8')).toBe('l\n');
+  });
+
+  it('keeps a file made since that is over the size limit of the snapshot', async () => {
+    const { workspace, root } = fresh();
+    await workspace.write('a.txt', 'a');
+    const snapshot = await workspace.snapshot({ maxFileBytes: 100 });
+    expect(snapshot.maxFileBytes).toBe(100);
+    await workspace.write('big.bin', 'b'.repeat(500));
+    const result = await workspace.restore(snapshot.id);
+    expect(result.kept).toEqual(['big.bin']);
+    expect(readFileSync(join(root, 'big.bin'), 'utf8')).toBe('b'.repeat(500));
+  });
 });

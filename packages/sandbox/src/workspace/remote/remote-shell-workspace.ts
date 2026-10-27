@@ -134,6 +134,8 @@ interface TreeEntry {
   size: number;
   key: string;
   name: string;
+  /** A directory the listing left out with everything in it, as an exclude asked */
+  pruned: boolean;
 }
 
 interface ScriptResult {
@@ -152,11 +154,12 @@ const snapshotRecordSchema = z.object({
     .array(
       z.object({
         path: z.string(),
-        reason: z.enum(['too-large', 'unreadable']),
+        reason: z.enum(['too-large', 'unreadable', 'changing']),
         size: z.number().optional(),
       })
     )
     .optional(),
+  maxFileBytes: z.number().int().positive().optional(),
 });
 
 /**
@@ -584,7 +587,7 @@ export class RemoteShellWorkspace implements Workspace {
     const excluded = excludedBy(exclude);
     const skipped: WorkspaceSnapshotSkip[] = [];
     const kept = (await this.tree(exclude)).filter((entry) => {
-      if (excluded(entry.name)) return false;
+      if (entry.pruned || excluded(entry.name)) return false;
       if (entry.type === 'file' && entry.size > maxFileBytes) {
         skipped.push({ path: entry.name, reason: 'too-large', size: entry.size });
         return false;
@@ -599,6 +602,7 @@ export class RemoteShellWorkspace implements Workspace {
       ...(options.metadata !== undefined && { metadata: options.metadata }),
       exclude,
       ...(skipped.length > 0 && { skipped }),
+      maxFileBytes,
     };
     const bytes = kept.reduce(
       (sum, entry) => sum + (entry.type === 'directory' ? 0 : entry.size),
@@ -652,10 +656,19 @@ export class RemoteShellWorkspace implements Workspace {
     const dirs: string[] = [];
     const kept: string[] = [];
     const present = new Map<string, WorkspaceEntryType>();
+    const left: string[] = [];
     for (const entry of await this.tree(record.exclude)) {
-      if (excluded(entry.name)) continue;
+      if (entry.pruned || excluded(entry.name)) {
+        left.push(entry.name);
+        continue;
+      }
       present.set(entry.key, entry.type);
-      if (skipped.has(entry.name)) {
+      const tooLarge =
+        record.maxFileBytes !== undefined &&
+        entry.type === 'file' &&
+        entry.size > record.maxFileBytes &&
+        !saved.has(entry.key);
+      if (skipped.has(entry.name) || tooLarge) {
         kept.push(entry.name);
         continue;
       }
@@ -667,7 +680,7 @@ export class RemoteShellWorkspace implements Workspace {
     }
     dirs.sort((a, b) => depth(b) - depth(a));
     const keptDirs = new Set<string>();
-    for (const path of kept) {
+    for (const path of [...kept, ...left]) {
       for (let at = path.lastIndexOf('/'); at > 0; at = path.lastIndexOf('/', at - 1)) {
         keptDirs.add(path.slice(0, at));
       }
@@ -795,6 +808,7 @@ export class RemoteShellWorkspace implements Workspace {
         size: Number(fields[i + 1]),
         key,
         name: Buffer.from(key, 'latin1').toString('utf8'),
+        pruned: fields[i] === 'X',
       });
     }
     return entries;
