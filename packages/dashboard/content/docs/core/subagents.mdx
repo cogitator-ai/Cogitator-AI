@@ -148,5 +148,5 @@ A subagent reads its prompt, the preloaded skills, its memory and the task. `sub
 - The call's `model` takes only `inherit` and aliases, and an unpriced model is refused under a cost budget.
 - Background subagents keep the tools their definition gives them, approvals they hit are declined unless the run's `onApproval` decides them, and a run that pauses or fails stops them.
 - Subagent names are lowercase letters, digits and hyphens only.
-- Inline MCP servers need `subagents.mcp` to connect them. `initialPrompt`, `autoCompactWindow`, `omitClaudeMd` and `experimental` are read but not applied, plugin folders are not read yet.
+- Inline MCP servers need `subagents.mcp` to connect them. `initialPrompt`, `autoCompactWindow`, `omitClaudeMd` and `experimental` are read but not applied. Subagents of [plugins](/docs/core/plugins) come last, named `plugin:name`.
 - A worktree is made from the current commit, not from the default branch.

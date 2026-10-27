@@ -27,9 +27,9 @@ export interface DefinitionDiagnostic {
 /**
  * Where a subagent or a command comes from, highest precedence first: the organization's managed
  * directory, code (`SubagentsConfig.agents`, as Claude Code's `--agents` JSON), the project's
- * folders and the user's folders
+ * folders, the user's folders, and plugins (named `plugin:name`, so they never take another's name)
  */
-export type DefinitionSource = 'managed' | 'code' | 'project' | 'user';
+export type DefinitionSource = 'managed' | 'code' | 'project' | 'user' | 'plugin';
 
 /** Where a subagent keeps what it learns across sessions, see {@link SubagentDefinition.memory} */
 export type SubagentMemoryScope = 'user' | 'project' | 'local';
@@ -90,12 +90,14 @@ export interface SubagentDefinition {
   source: DefinitionSource;
   /** The file it was read from, unset for one in code */
   path?: string;
+  /** The id of the plugin it comes from, for `source: 'plugin'` */
+  plugin?: string;
 }
 
 /** A subagent defined in code, as an entry of Claude Code's `--agents` JSON */
 export type SubagentDefinitionInput = Omit<
   SubagentDefinition,
-  'name' | 'source' | 'path' | 'prompt'
+  'name' | 'source' | 'path' | 'prompt' | 'plugin'
 > & {
   /** The system prompt (default: none, the agent works from the task alone) */
   prompt?: string;
@@ -281,10 +283,12 @@ export interface CommandDefinition {
   template: string;
   source: DefinitionSource;
   path?: string;
+  /** The id of the plugin it comes from, for `source: 'plugin'` */
+  plugin?: string;
 }
 
 /** A command in code */
-export type CommandDefinitionInput = Omit<CommandDefinition, 'name' | 'source' | 'path'>;
+export type CommandDefinitionInput = Omit<CommandDefinition, 'name' | 'source' | 'path' | 'plugin'>;
 
 /** Commands of a runtime, see `CogitatorConfig.commands` */
 export interface CommandsConfig {
@@ -312,6 +316,8 @@ export interface ExpandedCommand {
   effort?: ReasoningEffort;
   source: DefinitionSource;
   path?: string;
+  /** The id of the plugin it comes from, for `source: 'plugin'` */
+  plugin?: string;
 }
 
 /** A background subagent, as `task_output` reports it */

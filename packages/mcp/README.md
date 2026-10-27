@@ -214,15 +214,16 @@ if (!client.isConnected()) {
 
 ### Transport Types
 
-| Transport | Use Case                                     |
-| --------- | -------------------------------------------- |
-| `stdio`   | Local MCP servers spawned as child processes |
-| `http`    | Remote MCP servers over Streamable HTTP      |
-| `sse`     | Alias of `http` (also Streamable HTTP)       |
+| Transport    | Use Case                                             |
+| ------------ | ---------------------------------------------------- |
+| `stdio`      | Local MCP servers spawned as child processes         |
+| `http`       | Remote MCP servers over Streamable HTTP              |
+| `sse`        | Alias of `http` (also Streamable HTTP)               |
+| `legacy-sse` | Servers of the older HTTP+SSE protocol (client only) |
 
-The legacy HTTP+SSE transport is not supported; `sse` connects with Streamable HTTP, which streams responses over SSE itself.
+`sse` connects with Streamable HTTP, which streams responses over SSE itself, as the server's `sse` serves it. A server of the older HTTP+SSE protocol, which opens its event stream with a GET and takes messages in POSTs to the endpoint it names, needs `legacy-sse`: `experimental_mcpConnector()` uses it for `type: "sse"` of a `.mcp.json`, as Claude Code does.
 
-`createStdioTransport()` and `createHttpTransport()` build the same SDK transports the client uses, if you drive `@modelcontextprotocol/sdk`'s `Client` directly.
+`createStdioTransport()`, `createHttpTransport()` and `createSseTransport()` build the same SDK transports the client uses, if you drive `@modelcontextprotocol/sdk`'s `Client` directly.
 
 ### Client Methods
 
@@ -305,6 +306,23 @@ await cleanup();
 ```
 
 ---
+
+### Servers of plugins and subagents
+
+`experimental_mcpConnector()` connects MCP servers given as `.mcp.json` writes them: `command`, `args`, `env` and `cwd` for stdio, `url` (with `type: 'sse'` for SSE) and `headers` for HTTP. Pass it as `experimental_plugins.mcp` for the servers of [plugins](https://cogitator.app/docs/core/plugins), or as `subagents.mcp` for the inline servers of subagents. Each server's tools are named `mcp__<server>__<tool>` and carry their server in `mcp`, so a plugin server `plugin:deploy:api` gives `mcp__plugin_deploy_api__<tool>`, as in Claude Code, and permission rules and hook matchers name them that way.
+
+```typescript
+import { Cogitator } from '@cogitator-ai/core';
+import { experimental_mcpConnector } from '@cogitator-ai/mcp';
+
+const mcp = experimental_mcpConnector({ timeout: 20_000 });
+const cog = new Cogitator({
+  experimental_plugins: { dirs: ['./plugins/deploy'], mcp },
+  subagents: { files: true, mcp },
+});
+```
+
+`cogitator run` adds the connector by itself when its config has `experimental_plugins`.
 
 ## MCP Server
 

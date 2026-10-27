@@ -198,6 +198,13 @@ const ATTEMPTS = 10;
 /** Most milliseconds one try may take */
 const ATTEMPT_TIMEOUT = 60_000;
 
+/**
+ * Tokens one model call of a try may write: far above a tool call or a haiku, it ends the
+ * runaway generation a small model falls into now and then (tens of thousands of tokens until
+ * the run's timeout) so the next try starts instead
+ */
+const MAX_ATTEMPT_TOKENS = 512;
+
 /** Covers every try at its longest */
 const TEST_TIMEOUT = ATTEMPTS * ATTEMPT_TIMEOUT + 30_000;
 
@@ -233,6 +240,7 @@ describe.skipIf(ollamaReason !== null)(
         skills: [new SkillRegistry({ dirs: [skills] })],
         maxIterations: 2,
         timeout: ATTEMPT_TIMEOUT,
+        maxTokens: MAX_ATTEMPT_TOKENS,
       });
       const activated: string[] = [];
       await tryRuns(
@@ -261,6 +269,7 @@ describe.skipIf(ollamaReason !== null)(
         todos: true,
         maxIterations: 2,
         timeout: ATTEMPT_TIMEOUT,
+        maxTokens: MAX_ATTEMPT_TOKENS,
       });
       let todos: readonly TodoItem[] | undefined;
       await tryRuns(
@@ -288,6 +297,7 @@ describe.skipIf(ollamaReason !== null)(
         tools: [releaseNotes, ...unrelated],
         maxIterations: 2,
         timeout: ATTEMPT_TIMEOUT,
+        maxTokens: MAX_ATTEMPT_TOKENS,
       });
       const found: string[] = [];
       await tryRuns(

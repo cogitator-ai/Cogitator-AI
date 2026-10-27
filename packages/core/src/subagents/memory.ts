@@ -24,7 +24,7 @@ const MAX_NOTE_BYTES = 256 * 1024;
  * The folder of subagent `name`'s memory, where Claude Code keeps it so both share it:
  * `~/.claude/agent-memory/<name>/` for `user` (`CLAUDE_CONFIG_DIR` when set),
  * `<root>/.claude/agent-memory/<name>/` for `project` and `<root>/.claude/agent-memory-local/<name>/`
- * for `local`
+ * for `local`. A plugin's subagent `plugin:name` keeps it in the folder `plugin.name`
  */
 export function agentMemoryDir(scope: SubagentMemoryScope, name: string, root: string): string {
   const claude = process.env.CLAUDE_CONFIG_DIR?.trim();
@@ -32,10 +32,10 @@ export function agentMemoryDir(scope: SubagentMemoryScope, name: string, root: s
     scope === 'user'
       ? join(claude ? resolve(claude) : join(homedir(), '.claude'), 'agent-memory')
       : join(resolve(root), '.claude', scope === 'project' ? 'agent-memory' : 'agent-memory-local');
-  const dir = resolve(base, name);
+  const dir = resolve(base, name.split(':').join('.'));
   const under = relative(base, dir);
   if (
-    !/^[a-z0-9][a-z0-9-]*$/.test(name) ||
+    !/^[a-z0-9][a-z0-9-]*(?::[a-z0-9][a-z0-9-]*)*$/.test(name) ||
     under === '' ||
     under.startsWith('..') ||
     under.includes(sep)

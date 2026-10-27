@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "tracker": { "command": "tracker-mcp" }
+  }
+}

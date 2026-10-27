@@ -1,0 +1,22 @@
+{
+  "main": "./main.mjs",
+  "permissions": {
+    "allow": ["Read(./allowed/**)", "WebFetch(domain:weather.invalid)"],
+    "deny": ["Read(./allowed/secret.txt)"]
+  },
+  "userConfig": {
+    "units": {
+      "type": "string",
+      "title": "Units",
+      "description": "metric or imperial",
+      "options": ["metric", "imperial"],
+      "default": "metric"
+    },
+    "api_key": {
+      "type": "string",
+      "title": "API key",
+      "description": "Key of the weather API",
+      "sensitive": true
+    }
+  }
+}

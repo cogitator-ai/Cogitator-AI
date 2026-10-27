@@ -103,7 +103,7 @@ export function codeCommands(config: CommandsConfig): CommandDefinition[] {
 /**
  * Finds the subagents a run may delegate to: those of the managed directories, then the ones in
  * code, the host's `dirs`, the trusted project's `.agents/agents`, `.cogitator/agents` and
- * `.claude/agents`, and the user's folders, the first one of a name winning. The folders are
+ * `.claude/agents`, the user's folders, and the runtime's plugins, the first one of a name winning. The folders are
  * read for every run, so an edited file counts from the next delegation on, as in Claude Code
  */
 export class SubagentFinder {
@@ -112,12 +112,24 @@ export class SubagentFinder {
   private readonly folders = new Map<string, string>();
   private readonly log: DiagnosticLog;
 
-  constructor(config: SubagentsConfig) {
+  constructor(
+    config: SubagentsConfig,
+    /** The subagents of the runtime's plugins, as they are now: last in precedence, named `plugin:name` */
+    private readonly plugins: () => readonly SubagentDefinition[] = () => []
+  ) {
     this.code = codeSubagents(config);
     this.log = new DiagnosticLog('subagent', config.onDiagnostic);
   }
 
-  async catalog(place: DefinitionPlace, signal?: AbortSignal): Promise<SubagentCatalog> {
+  /**
+   * The subagents of `place`, with `plugins` as the plugins' (the ones of the generations a run
+   * holds), else the plugins' as they are now
+   */
+  async catalog(
+    place: DefinitionPlace,
+    signal?: AbortSignal,
+    plugins?: readonly SubagentDefinition[]
+  ): Promise<SubagentCatalog> {
     const diagnostics: DefinitionDiagnostic[] = [];
     const found: SubagentDefinition[] = [];
     if (place.options) {
@@ -135,6 +147,7 @@ export class SubagentFinder {
     } else {
       found.push(...this.code);
     }
+    found.push(...(plugins ?? this.plugins()));
     const byName = new Map<string, SubagentDefinition>();
     for (const definition of found) {
       const kept = byName.get(definition.name);
@@ -188,7 +201,11 @@ export class CommandFinder {
   private readonly code: CommandDefinition[];
   private readonly log: DiagnosticLog;
 
-  constructor(config: CommandsConfig) {
+  constructor(
+    config: CommandsConfig,
+    /** The commands of the runtime's plugins, as they are now: last in precedence, named `plugin:name` */
+    private readonly plugins: () => readonly CommandDefinition[] = () => []
+  ) {
     this.code = codeCommands(config);
     this.log = new DiagnosticLog('command', config.onDiagnostic);
   }
@@ -211,6 +228,7 @@ export class CommandFinder {
     } else {
       found.push(...this.code);
     }
+    found.push(...this.plugins());
     const byName = new Map<string, CommandDefinition>();
     for (const command of found) {
       if (!byName.has(command.name)) byName.set(command.name, command);

@@ -45,6 +45,7 @@
     "@cogitator-ai/config": "workspace:*",
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/deploy": "workspace:*",
+    "@cogitator-ai/evals": "workspace:*",
     "@cogitator-ai/mcp": "workspace:*",
     "@cogitator-ai/memory": "workspace:*",
     "@cogitator-ai/models": "workspace:*",

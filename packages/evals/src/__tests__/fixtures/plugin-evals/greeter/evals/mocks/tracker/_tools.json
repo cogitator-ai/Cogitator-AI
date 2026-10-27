@@ -1,0 +1,16 @@
+{
+  "tools": [
+    {
+      "name": "create_issue",
+      "description": "Create an issue in the tracker",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "priority": { "type": "string", "enum": ["low", "medium", "high"] }
+        },
+        "required": ["title"]
+      }
+    }
+  ]
+}

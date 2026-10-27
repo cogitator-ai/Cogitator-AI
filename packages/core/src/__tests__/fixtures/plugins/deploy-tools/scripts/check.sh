@@ -1,0 +1,3 @@
+#!/bin/sh
+printf '%s|%s|%s\n' "$CLAUDE_PLUGIN_ROOT" "$CLAUDE_PLUGIN_OPTION_API_ENDPOINT" "$CLAUDE_PLUGIN_DATA" >> "$CLAUDE_PLUGIN_DATA/hook.log"
+exit 0

@@ -1,0 +1,24 @@
+{
+  "name": "deploy-tools",
+  "displayName": "Deploy Tools",
+  "version": "1.2.0",
+  "description": "Deployment commands, a review agent, and a status hook",
+  "author": { "name": "Example Team", "email": "dev@example.com" },
+  "homepage": "https://example.com/docs/deploy-tools",
+  "license": "MIT",
+  "keywords": ["deployment"],
+  "userConfig": {
+    "api_endpoint": {
+      "type": "string",
+      "title": "API endpoint",
+      "description": "Your team's API endpoint",
+      "default": "https://deploy.example.com"
+    },
+    "api_token": {
+      "type": "string",
+      "title": "API token",
+      "description": "Token for the deployment API",
+      "sensitive": true
+    }
+  }
+}

@@ -269,9 +269,12 @@ const myPlugin = defineBackend({
   create: (config) => new MyBackend(config),
 });
 
-registerLLMBackend(myPlugin);
+const dispose = registerLLMBackend(myPlugin);
 const backend = createLLMBackendFromPlugin('my-provider', { apiKey: '...' });
+dispose();
 ```
+
+`registerLLMBackend` returns its disposer. An `LLMPlugin` is also one kind of [plugin](#plugins-experimental) contribution (`context.registerLLMBackend`), for one runtime, and the built-in providers are registered that way by the core's own plugin `cogitator@builtin`.
 
 A backend's `provider` field is an `LLMBackendProvider`: a built-in provider name or one of your own, such as the plugin's provider or its key in `llm.backends`.
 
@@ -759,6 +762,47 @@ The frontmatter fields are Claude Code's: `name` and `description` (required), `
 ### Commands
 
 `commands` expands an input that names a command (`/review src/app.ts`) before the run starts, in the format of Claude Code's custom commands: Markdown files in `commands/` folders (`frontend/component.md` is `/frontend:component`) and templates in code. `$ARGUMENTS` is everything after the name, `$ARGUMENTS[N]` and `$N` the argument at 0-based position `N` (quotes keep words together), `$name` a named argument of `arguments`, `\$` escapes, `${CLAUDE_PROJECT_DIR}` is the project root, and arguments no placeholder takes are added as `ARGUMENTS: ...`. `allowed-tools` become allow rules of that run when permissions are set up, `model` runs it on another model, `disallowed-tools` and `effort` apply to that run, `description` and `argument-hint` are for a client's menu (`cog.listCommands()`). The project's files count once it is trusted, `result.command` reports what was expanded. See [Commands](https://cogitator.app/docs/core/commands).
+
+### Plugins (experimental)
+
+`experimental_plugins` loads plugins in the format of Claude Code's plugins: a folder with `.claude-plugin/plugin.json` and `skills/`, `commands/`, `agents/`, `hooks/hooks.json` and `.mcp.json` loads unchanged, and `.cogitator-plugin/plugin.json` adds `main` (code that runs in a process of its own), `permissions`, `ui.panels` and `engines.cogitator`. Plugins in code use the same `PluginContext` the core's own plugin uses, and every registration returns its disposer.
+
+```typescript
+import { Cogitator, experimental_definePlugin } from '@cogitator-ai/core';
+import { experimental_mcpConnector } from '@cogitator-ai/mcp';
+
+const helpers = experimental_definePlugin({
+  name: 'helpers',
+  activate(context) {
+    context.registerTool({
+      name: 'now',
+      description: 'The current time',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => new Date().toISOString(),
+    });
+  },
+});
+
+const cog = new Cogitator({
+  experimental_plugins: {
+    plugins: [helpers], // in code, id helpers@code
+    dirs: ['./plugins/deploy-tools'], // folders loaded in place, id deploy-tools@inline
+    mcp: experimental_mcpConnector(), // connects the plugins' MCP servers
+  }, // plus what `cogitator plugin install` installed (~/.cogitator/plugins)
+});
+
+await cog.experimental_plugins.reload('deploy-tools@inline'); // a new generation, the old one stays when it fails
+cog.experimental_plugins.list(); // id, status, generation, contributions, diagnostics
+```
+
+- Components are named as in Claude Code: skills `plugin:skill`, subagents `plugin:folder:name`, commands `/plugin:name`, MCP tools `mcp__plugin_<plugin>_<server>__<tool>`. `${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}` and `${user_config.KEY}` are put into hooks, MCP configs and text, hooks get `CLAUDE_PLUGIN_OPTION_<KEY>`.
+- `userConfig` options come from `pluginConfigs` of the settings, `sensitive` ones from the operating system's credential store (`experimental_keychainSecretStore`: `security`, `secret-tool`, PowerShell), never from a file, `SECRET_STORE_UNAVAILABLE` without one.
+- `enabledPlugins` of the settings layers decides what loads (managed, code `enabled`, local, project once trusted, user), else `defaultEnabled`.
+- Generations: registrations unload in reverse order, `reload(id)` swaps only a generation that loaded in full (its MCP servers started), `watch: true` reloads on file changes. Plugins load in the order of their `dependencies` (semver ranges) and unload in reverse, a missing, failed or wrong dependency blocks with `PLUGIN_DEPENDENCY_UNMET`, a cycle with `PLUGIN_DEPENDENCY_CYCLE`.
+- Isolation: code from a folder runs in a child process under Node's permission model (reads its folder, writes its data folder, no processes, workers, addons, network or DNS, no link out of its folder). `context.files`, `fetch` and `exec` go through the permission engine against the manifest's `permissions` (`Read(...)`, `Edit(...)`, `Bash(...)`, `WebFetch(domain:...)`), unallowed requests fail with `PLUGIN_PERMISSION_DENIED`. A plugin with code and no `permissions` registers no hooks or MCP servers, the host's `deny` rules apply to every plugin, and a version that drops `permissions` keeps the ones granted. A plugin in the host's code gets the same checks and no more.
+- `experimental_PluginInstaller` installs from marketplaces (Claude Code's `marketplace.json`), npm and git, pinned to the commit, npm version and integrity or archive digest, the plugin's permissions agreed to at install. `experimental_validatePlugin` checks a folder as `claude plugin validate` does.
+
+See [Plugins](https://cogitator.app/docs/core/plugins).
 
 ### PII Masking
 

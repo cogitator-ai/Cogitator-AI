@@ -665,3 +665,49 @@ commands:
     });
   });
 });
+
+describe('experimental_plugins', () => {
+  const path = 'test-plugins-config.yaml';
+
+  afterEach(() => {
+    if (existsSync(path)) unlinkSync(path);
+  });
+
+  it('keeps them through a YAML file', () => {
+    writeFileSync(
+      path,
+      `
+experimental_plugins:
+  dirs: [./plugins/review]
+  installed: false
+  settings:
+    root: /srv/app
+    trusted: true
+  enabled:
+    review@inline: true
+    noisy@team: false
+  options:
+    review@inline:
+      level: 2
+      strict: true
+  permissions:
+    deny: ['WebFetch(domain:internal.example.com)']
+  isolation:
+    maxHeapMb: 128
+  watch:
+    debounceMs: 500
+`
+    );
+    const config = loadConfig({ configPath: path, skipEnv: true });
+    expect(config.experimental_plugins).toEqual({
+      dirs: ['./plugins/review'],
+      installed: false,
+      settings: { root: '/srv/app', trusted: true },
+      enabled: { 'review@inline': true, 'noisy@team': false },
+      options: { 'review@inline': { level: 2, strict: true } },
+      permissions: { deny: ['WebFetch(domain:internal.example.com)'] },
+      isolation: { maxHeapMb: 128 },
+      watch: { debounceMs: 500 },
+    });
+  });
+});

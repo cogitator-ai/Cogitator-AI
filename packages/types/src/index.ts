@@ -59,3 +59,4 @@ export * from './skill';
 export * from './todos';
 export * from './web';
 export * from './workspace';
+export * from './plugins';

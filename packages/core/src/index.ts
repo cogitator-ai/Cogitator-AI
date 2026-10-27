@@ -115,6 +115,7 @@ export {
   type ParsedDefinition,
 } from './subagents/definitions';
 export { SubagentFinder, CommandFinder, type CommandCatalog } from './subagents/catalog';
+export * from './plugins/index';
 export {
   AGENT_TOOL,
   SEND_MESSAGE,

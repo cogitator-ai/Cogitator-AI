@@ -3,6 +3,9 @@ import type {
   ForkPreview,
   ForkSummary,
   HostStatus,
+  PluginActionResult,
+  PluginPanelCallResult,
+  PluginsState,
   RewindRequest,
   RewindSummary,
   RunRecord,
@@ -107,12 +110,33 @@ export const api = {
       method: 'POST',
       body: { input },
     }),
+  plugins: () => request<PluginsState>('/api/plugins'),
+  reloadPlugin: (id: string) =>
+    request<PluginActionResult>(`/api/plugins/${encodeURIComponent(id)}/reload`, {
+      method: 'POST',
+      body: {},
+    }),
+  setPluginEnabled: (id: string, enabled: boolean) =>
+    request<PluginActionResult>(`/api/plugins/${encodeURIComponent(id)}/enabled`, {
+      method: 'POST',
+      body: { enabled },
+    }),
+  callPanel: (plugin: string, panel: string, method: string, params: unknown) =>
+    request<PluginPanelCallResult>(
+      `/api/plugins/${encodeURIComponent(plugin)}/panels/${encodeURIComponent(panel)}/call`,
+      { method: 'POST', body: { method, ...(params !== undefined && { params }) } }
+    ),
   rerun: (runId: string, fromNode: string) =>
     request<{ runId: string }>(`/api/runs/${encodeURIComponent(runId)}/rerun`, {
       method: 'POST',
       body: { fromNode },
     }),
 };
+
+/** Where the page of a plugin's panel is served, for its sandboxed frame. */
+export function panelUrl(plugin: string, panel: string): string {
+  return `/api/plugins/${encodeURIComponent(plugin)}/panels/${encodeURIComponent(panel)}`;
+}
 
 /** Server-sent events of the studio, reconnecting after a dropped connection. */
 export function subscribe(

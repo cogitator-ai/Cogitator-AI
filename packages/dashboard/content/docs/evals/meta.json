@@ -8,6 +8,7 @@
     "assertions",
     "comparison",
     "experiments",
+    "plugin-evals",
     "reporters"
   ]
 }

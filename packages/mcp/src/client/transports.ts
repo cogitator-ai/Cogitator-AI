@@ -4,6 +4,7 @@
  * Provides factory functions for creating MCP transports.
  */
 
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
@@ -72,6 +73,21 @@ export function createStdioTransport(config: StdioTransportConfig): Transport {
  */
 export function createHttpTransport(config: HttpTransportConfig): Transport {
   return new StreamableHTTPClientTransport(new URL(config.url), {
+    requestInit: config.headers ? { headers: config.headers } : undefined,
+  });
+}
+
+/**
+ * Create an SSE transport for a server of the older HTTP+SSE protocol: a GET opens the event
+ * stream, messages go in POSTs to the endpoint the server names. `headers` go with both
+ *
+ * @example
+ * ```typescript
+ * const transport = createSseTransport({ url: 'http://localhost:3000/sse' });
+ * ```
+ */
+export function createSseTransport(config: HttpTransportConfig): Transport {
+  return new SSEClientTransport(new URL(config.url), {
     requestInit: config.headers ? { headers: config.headers } : undefined,
   });
 }

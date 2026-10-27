@@ -42,7 +42,8 @@
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/memory": "workspace:*",
     "@cogitator-ai/models": "workspace:*",
-    "@cogitator-ai/types": "workspace:*"
+    "@cogitator-ai/types": "workspace:*",
+    "zod": "^4.6.5"
   },
   "peerDependencies": {
     "@cogitator-ai/swarms": "workspace:>=0.15.4",
@@ -81,8 +82,7 @@
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
     "vite": "^7.3.7",
-    "vitest": "^5.0.3",
-    "zod": "^4.6.5"
+    "vitest": "^5.0.3"
   },
   "repository": {
     "type": "git",

@@ -122,7 +122,7 @@ It also returns the connected `client`. For stdio servers, `env` is merged over 
 | `autoReconnect`                                        | `boolean`                    | Auto-reconnect on connection loss (default: true)    |
 | `onReconnecting`, `onReconnected`, `onReconnectFailed` | callbacks                    | Reconnection lifecycle hooks                         |
 
-The `http` transport speaks MCP Streamable HTTP; servers that only offer the legacy HTTP+SSE transport are not supported. Besides `getTools()`, the client has `listToolDefinitions()` (raw MCP definitions), `isConnected()`, `reconnect()` and `close()`.
+The `http` transport speaks MCP Streamable HTTP (`sse` is an alias of it, as the server's `sse` serves it). A server that only offers the older HTTP+SSE protocol, which opens its event stream with a GET and takes messages in POSTs, needs `transport: 'legacy-sse'`, which `experimental_mcpConnector()` uses for `type: "sse"` of a `.mcp.json`, as Claude Code does. Besides `getTools()`, the client has `listToolDefinitions()` (raw MCP definitions), `isConnected()`, `reconnect()` and `close()`.
 
 ### Retry and Reconnection
 
@@ -426,6 +426,23 @@ const deleteOrder = tool({
   },
 });
 ```
+
+## Servers of plugins and subagents
+
+`experimental_mcpConnector()` connects MCP servers given as `.mcp.json` writes them: `command`, `args`, `env` and `cwd` for stdio, `url` (with `type: 'sse'` for SSE) and `headers` for HTTP. Pass it as `experimental_plugins.mcp` for the servers of [plugins](/docs/core/plugins), or as `subagents.mcp` for the inline servers of subagents. Each server's tools are named `mcp__<server>__<tool>` and carry their server in `mcp`, so a plugin server `plugin:deploy:api` gives `mcp__plugin_deploy_api__<tool>`, as in Claude Code, and permission rules and hook matchers name them that way.
+
+```typescript
+import { Cogitator } from '@cogitator-ai/core';
+import { experimental_mcpConnector } from '@cogitator-ai/mcp';
+
+const mcp = experimental_mcpConnector({ timeout: 20_000 });
+const cog = new Cogitator({
+  experimental_plugins: { dirs: ['./plugins/deploy'], mcp },
+  subagents: { files: true, mcp },
+});
+```
+
+`cogitator run` adds the connector by itself when its config has `experimental_plugins`.
 
 ## Tool Adapter
 

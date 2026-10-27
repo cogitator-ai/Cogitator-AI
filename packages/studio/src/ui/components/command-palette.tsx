@@ -8,7 +8,9 @@ import {
   LayoutDashboard,
   Moon,
   Network,
+  PanelsTopLeft,
   Plus,
+  Puzzle,
   Search,
   Sun,
   Workflow,
@@ -71,6 +73,7 @@ export function CommandPalette({
 }) {
   const host = useStudio((state) => state.host);
   const runs = useStudio((state) => state.runs);
+  const plugins = useStudio((state) => state.plugins);
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
   const [found, setFound] = useState<RunRecord[]>([]);
@@ -115,6 +118,14 @@ export function CommandPalette({
         hint: <Kbd keys={['G', 'R']} />,
         run: () => navigate('runs'),
       },
+      {
+        id: 'plugins',
+        group: 'Go to',
+        label: 'Plugins',
+        icon: Puzzle,
+        keywords: 'extensions panels reload enable disable',
+        run: () => navigate('plugins'),
+      },
       ...(registry?.agents ?? []).map((agent): Command => ({
         id: `agent-${agent.key}`,
         group: 'Agents',
@@ -142,6 +153,19 @@ export function CommandPalette({
         keywords: `run ${swarm.key} ${swarm.strategy} ${swarm.agents.join(' ')}`,
         run: () => navigate('swarms', swarm.key),
       })),
+      ...(plugins?.plugins ?? []).flatMap((plugin) =>
+        plugin.status === 'active'
+          ? plugin.contributions.panels.map((panel): Command => ({
+              id: `panel-${plugin.id}-${panel.id}`,
+              group: 'Panels',
+              label: panel.title,
+              hint: plugin.displayName ?? plugin.name,
+              icon: PanelsTopLeft,
+              keywords: `plugin ${plugin.id} ${panel.description ?? ''}`,
+              run: () => navigate('plugins', plugin.id, 'panels', panel.id),
+            }))
+          : []
+      ),
       ...(registry?.agents ?? []).map((agent): Command => ({
         id: `new-${agent.key}`,
         group: 'Actions',
@@ -180,9 +204,9 @@ export function CommandPalette({
           .sort((a, b) => b.startedAt - a.startedAt)
           .slice(0, 5)
           .map((run) => runCommand(run, 'Recent runs'));
-    const order = ['Go to', 'Agents', 'Workflows', 'Recent runs', 'Runs', 'Actions'];
+    const order = ['Go to', 'Agents', 'Workflows', 'Panels', 'Recent runs', 'Runs', 'Actions'];
     return [...matching, ...recent].sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group));
-  }, [host, runs, found, normalized, onShortcuts]);
+  }, [host, runs, plugins, found, normalized, onShortcuts]);
 
   useEffect(() => setActive(0), [normalized]);
   useEffect(() => {

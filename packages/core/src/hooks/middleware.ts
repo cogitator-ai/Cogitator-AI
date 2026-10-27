@@ -406,6 +406,7 @@ export function hooksMiddleware(
           timeoutMs,
           maxBytes,
           ...(config.env && { env: config.env }),
+          ...(deps.scoped?.env && { extraEnv: deps.scoped.env }),
         };
         if (handler.async) {
           const state = stateOf(context);
@@ -450,6 +451,7 @@ export function hooksMiddleware(
           maxBytes,
           signal: signalOf(call, context),
           allowedEnv,
+          ...(deps.scoped?.env && { extraEnv: deps.scoped.env }),
         });
         if (outcome.timedOut) {
           return finish({
