@@ -313,12 +313,15 @@ describe('LocalWorkspace snapshots', () => {
       const result = await workspace.restore(snapshot.id);
       const back = text('busy.txt');
       if (snapshot.skipped?.some((skip) => skip.path === 'busy.txt')) {
-        expect(snapshot.skipped).toEqual([{ path: 'busy.txt', reason: 'changing', size: 100_000 }]);
+        expect(snapshot.skipped).toEqual([
+          { path: 'busy.txt', reason: 'changing', size: expect.any(Number) },
+        ]);
+        const seen = snapshot.skipped?.[0]?.size ?? -1;
+        expect(seen >= 0 && seen <= 100_000).toBe(true);
         expect(result.kept).toEqual(['busy.txt']);
         expect(back).toBe('final');
       } else {
-        expect(back.length).toBe(100_000);
-        expect(new Set(back).size).toBe(1);
+        expect(['', 'a', 'b', 'c'].map((char) => char.repeat(char ? 100_000 : 0))).toContain(back);
       }
     } finally {
       clearInterval(writer);

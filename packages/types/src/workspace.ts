@@ -244,7 +244,10 @@ export interface WorkspaceSnapshotSkip {
    * refuses to read those (`refuseHardLinks`)
    */
   reason: 'too-large' | 'unreadable' | 'changing' | 'hard-link';
-  /** Its size in bytes when it was seen */
+  /**
+   * Its size in bytes when it was seen: for `changing`, one of the sizes it went through while
+   * it changed, 0 too when it was seen just after a writer truncated it
+   */
   size?: number;
 }
 
