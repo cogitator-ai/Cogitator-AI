@@ -3,7 +3,8 @@
  * `plugin:skill` as Claude Code names them, their text with the plugin's variables put in
  */
 
-import { basename, posix } from 'node:path';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, posix } from 'node:path';
 import type {
   PluginSkillSpec,
   SkillCatalog,
@@ -28,19 +29,24 @@ export class PluginFolderSkills implements SkillLoader {
   private found: string[] = [];
   private readonly folder: string;
 
+  /**
+   * `store` is a folder of the generation's own, where the files of its skills are kept as they
+   * were when it loaded (without one they are kept in memory)
+   */
   constructor(
     private readonly plugin: string,
     dirs: readonly string[],
     private readonly variables: PluginVariables,
-    private readonly rootSkill = false
+    private readonly rootSkill = false,
+    private readonly store?: string
   ) {
     this.folder = basename(dirs[0] ?? '');
     this.registry = new SkillRegistry({ dirs: [...dirs], workspace: false });
   }
 
   discover(_context?: SkillDiscoveryContext): Promise<SkillCatalog> {
-    this.catalog ??= this.registry.discover({}).then((inner) => {
-      const wrapped = this.wrap(inner);
+    this.catalog ??= this.registry.discover({}).then(async (inner) => {
+      const wrapped = await this.wrap(inner);
       this.found = wrapped.skills.map((skill) => skill.name);
       return wrapped;
     });
@@ -52,7 +58,11 @@ export class PluginFolderSkills implements SkillLoader {
     return [...this.found];
   }
 
-  private wrap(inner: SkillCatalog): SkillCatalog {
+  /**
+   * The catalog of the skills found, renamed, each skill's body and listed files read once now:
+   * the generation serves them as they were when it loaded, however the folder changes after
+   */
+  private async wrap(inner: SkillCatalog): Promise<SkillCatalog> {
     const byName = new Map<string, { manifest: SkillManifest; original: string }>();
     for (const skill of inner.skills) {
       const last = this.rootSkill && skill.name === this.folder ? this.plugin : skill.name;
@@ -61,21 +71,66 @@ export class PluginFolderSkills implements SkillLoader {
         byName.set(name, { manifest: { ...skill, name }, original: skill.name });
       }
     }
-    const original = (name: string): string => {
-      const found = byName.get(name);
+    const frozen = new Map<string, FrozenSkill>();
+    let index = 0;
+    for (const [name, { original }] of byName) {
+      frozen.set(name, await this.freeze(inner, original, index++));
+    }
+    const skillOf = (name: string): FrozenSkill => {
+      const found = frozen.get(name);
       if (!found) throw new Error(`There is no skill "${name}"`);
-      return found.original;
+      return found;
     };
     const text = (value: string) => substitute(value, this.variables, 'placeholder');
     return {
       skills: [...byName.values()].map((entry) => entry.manifest),
       diagnostics: inner.diagnostics,
       get: (name) => byName.get(name)?.manifest,
-      body: async (name) => text(await inner.body(original(name))),
-      files: (name) => inner.files(original(name)),
-      readFile: async (name, path) => text(await inner.readFile(original(name), path)),
+      body: async (name) => text(skillOf(name).body),
+      files: async (name) => [...skillOf(name).files.keys()],
+      readFile: async (name, path) => {
+        const file = skillOf(name).files.get(path);
+        if (file === undefined) {
+          throw new Error(`${path} is not a file of the skill ${name} as this version loaded it`);
+        }
+        if ('error' in file) throw new Error(file.error);
+        return text('text' in file ? file.text : await readFile(file.path, 'utf8'));
+      },
     };
   }
+
+  /** The body and listed files of the skill `original`, read now (files to `store` when given) */
+  private async freeze(inner: SkillCatalog, original: string, index: number): Promise<FrozenSkill> {
+    const body = await inner.body(original);
+    const files = new Map<string, FrozenFile>();
+    for (const path of await inner.files(original)) {
+      let content: string;
+      try {
+        content = await inner.readFile(original, path);
+      } catch (error) {
+        files.set(path, { error: error instanceof Error ? error.message : String(error) });
+        continue;
+      }
+      if (!this.store) {
+        files.set(path, { text: content });
+        continue;
+      }
+      const target = join(this.store, String(index), ...path.split('/'));
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, content, 'utf8');
+      files.set(path, { path: target });
+    }
+    return { body, files };
+  }
+}
+
+/** A file of a skill as a generation loaded it: in memory, in its store, or why it did not read */
+type FrozenFile = { text: string } | { path: string } | { error: string };
+
+/** A skill of a plugin folder as a generation loaded it */
+interface FrozenSkill {
+  body: string;
+  files: Map<string, FrozenFile>;
 }
 
 /** Skills a plugin defined in code with `registerSkill`, held in memory */

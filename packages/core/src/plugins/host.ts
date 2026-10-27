@@ -6,9 +6,10 @@
  * on as it was
  */
 
-import { mkdir, readFile, realpath } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { watch, type FSWatcher } from 'node:fs';
-import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import {
   CogitatorError,
   ErrorCode,
@@ -67,7 +68,7 @@ import { experimental_keychainSecretStore, secretServiceOf } from './secrets';
 import { satisfies } from './semver';
 import { loadPluginSettings, type PluginSettings } from './settings';
 import { PluginCodeSkills, PluginFolderSkills, PLUGIN_SKILL_NAME } from './skills';
-import { defaultPluginsRoot, pluginDataDir, readInstalledPlugins } from './store';
+import { defaultPluginsRoot, pluginDataDir, pluginIdFolder, readInstalledPlugins } from './store';
 import {
   pluginEnvironment,
   referencesOptions,
@@ -1312,11 +1313,16 @@ export class experimental_PluginHost {
   ): Promise<void> {
     const name = state.manifest.name;
     if (layout.skillDirs.length > 0 || layout.rootSkill) {
+      const store = await mkdtemp(
+        join(tmpdir(), `cogitator-skills-${pluginIdFolder(state.candidate.id)}-`)
+      );
+      generation.track(() => rm(store, { recursive: true, force: true }), 'skill files');
       const loader = new PluginFolderSkills(
         name,
         layout.rootSkill ? [layout.root] : layout.skillDirs,
         variables,
-        layout.rootSkill
+        layout.rootSkill,
+        store
       );
       generation.contributions.skills.push(loader);
       generation.wait(loader.discover(), true);

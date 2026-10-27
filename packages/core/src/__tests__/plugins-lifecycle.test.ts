@@ -657,6 +657,36 @@ describe('plugin lifecycle', () => {
     expect(unloaded).toEqual([1, 2]);
   });
 
+  it('keeps the skill text and files of a held generation of a folder plugin', async () => {
+    const dir = join(base, 'skilled');
+    const skill = join(dir, 'skills', 'notes');
+    mkdirSync(join(dir, '.claude-plugin'), { recursive: true });
+    mkdirSync(skill, { recursive: true });
+    writeFileSync(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'skilled' }));
+    const write = (version: number) => {
+      writeFileSync(
+        join(skill, 'SKILL.md'),
+        `---\nname: notes\ndescription: Notes\n---\nRead notes version ${version}.\n`
+      );
+      writeFileSync(join(skill, 'notes.md'), `notes ${version}`);
+    };
+    write(1);
+    const plugins = host([], { dirs: [dir] });
+    await plugins.load();
+    const lease = plugins.lease();
+    write(2);
+    expect((await plugins.reload('skilled@inline'))[0]).toMatchObject({ ok: true, generation: 2 });
+    const held = await lease.snapshot.skills[0]?.discover();
+    expect(await held?.body('skilled:notes')).toBe('Read notes version 1.');
+    expect(await held?.files('skilled:notes')).toEqual(['notes.md']);
+    expect(await held?.readFile('skilled:notes', 'notes.md')).toBe('notes 1');
+    const fresh = await plugins.snapshot().skills[0]?.discover();
+    expect(await fresh?.body('skilled:notes')).toBe('Read notes version 2.');
+    expect(await fresh?.readFile('skilled:notes', 'notes.md')).toBe('notes 2');
+    lease.release();
+    await plugins.dispose();
+  });
+
   it('unloads a held generation on dispose without waiting for the run', async () => {
     const unloaded: string[] = [];
     const plugins = host([
