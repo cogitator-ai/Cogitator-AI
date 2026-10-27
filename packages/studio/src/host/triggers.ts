@@ -341,7 +341,10 @@ export class ProjectTriggers {
     return plain(item);
   }
 
-  /** Answers an item a routine's run waits on: the run goes on and the item is archived. */
+  /**
+   * Answers an item a routine's run waits on, archived or not: the run goes on, the item is
+   * marked answered and archived.
+   */
   async respond(id: string, answer: InboxAnswer): Promise<TriggerFireResult> {
     const manager = this.configured();
     try {
@@ -359,16 +362,13 @@ export class ProjectTriggers {
   async approve(approvalId: string, approved: boolean, reason?: string): Promise<ApprovalOutcome> {
     const manager = this.manager;
     if (!manager) return { decided: false };
-    const waiting = await manager.inbox.list({
-      kind: 'approval',
-      status: ['unread', 'read'],
-      limit: APPROVAL_SCAN,
-    });
+    const waiting = await manager.inbox.list({ kind: 'approval', limit: APPROVAL_SCAN });
     const item = waiting.find(
       (candidate) =>
-        candidate.id === approvalId ||
-        candidate.approvalId === approvalId ||
-        approvalsOf(candidate).includes(approvalId)
+        candidate.answeredAt === undefined &&
+        (candidate.id === approvalId ||
+          candidate.approvalId === approvalId ||
+          approvalsOf(candidate).includes(approvalId))
     );
     if (!item) return { decided: false };
     const decision: InboxDecision = { approved, ...(reason !== undefined && { reason }) };

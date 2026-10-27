@@ -17,6 +17,12 @@ import { api } from '../api';
 import { Empty, ErrorText, messageOf, Topbar } from '../components/common';
 import { Markdown } from '../components/markdown';
 import { excerpt, formatTime, timeAgo } from '../format';
+import {
+  isWorkflowRequest,
+  ratingOf,
+  waitsForAnswer,
+  workflowAnswerFormOf,
+} from '../inbox-answers';
 import { href, navigate } from '../router';
 import { useStudio } from '../store';
 
@@ -137,11 +143,86 @@ function InboxRow({
   );
 }
 
+/**
+ * The answer to a request of a routine's workflow, in the form its type takes: a choice sends
+ * its value, text sends the text, a rating sends a number
+ */
+function WorkflowAnswerForm({
+  item,
+  onAnswer,
+}: {
+  item: InboxItem;
+  onAnswer: (a: InboxAnswer) => void;
+}) {
+  const form = workflowAnswerFormOf(item);
+  const [text, setText] = useState('');
+  if (form.type === 'approve-reject') return <ApprovalForm item={item} onAnswer={onAnswer} />;
+  if (form.type === 'multi-choice') {
+    return (
+      <div className="inbox-answer">
+        <div className="inbox-answer-actions">
+          {form.choices.map((choice) => (
+            <button
+              key={choice.id}
+              type="button"
+              className="btn btn-secondary btn-sm"
+              title={choice.description}
+              onClick={() => onAnswer({ decision: choice.value })}
+              data-testid="inbox-choice"
+            >
+              {choice.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  const rating = form.type === 'numeric-rating';
+  const value = rating ? ratingOf(text) : text.trim();
+  return (
+    <div className="inbox-answer">
+      {rating ? (
+        <input
+          className="input"
+          type="number"
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          placeholder="A number"
+          aria-label="Rating"
+          data-testid="inbox-rating"
+        />
+      ) : (
+        <textarea
+          className="input"
+          rows={3}
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          placeholder="Your answer"
+          aria-label="Answer"
+          data-testid="inbox-answer"
+        />
+      )}
+      <div className="inbox-answer-actions">
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
+          disabled={value === undefined || value === ''}
+          onClick={() => value !== undefined && value !== '' && onAnswer({ decision: value })}
+          data-testid="inbox-send"
+        >
+          <Send size={12} />
+          Send
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** Approve and Reject for an item a run waits on, answered through the routine. */
 function ApprovalForm({ item, onAnswer }: { item: InboxItem; onAnswer: (a: InboxAnswer) => void }) {
   const [reason, setReason] = useState('');
   const ids = approvalsOf(item);
-  const workflow = item.approvalId !== undefined && item.threadId === undefined;
+  const workflow = isWorkflowRequest(item);
   const answer = (approved: boolean): InboxAnswer => {
     if (workflow) return { decision: approved };
     const decision = approved
@@ -270,7 +351,7 @@ function InboxDetail({
       setAnswered(
         `Answered, the run ${result.runId ? `${result.runId} ` : ''}goes on and its outcome comes to the inbox.`
       );
-      onChange({ ...item, status: 'archived' });
+      onChange({ ...item, status: 'archived', answeredAt: Date.now() });
     } catch (failure) {
       setError(messageOf(failure));
     } finally {
@@ -278,8 +359,7 @@ function InboxDetail({
     }
   };
 
-  const waits =
-    (item.kind === 'approval' || item.kind === 'question') && item.status !== 'archived';
+  const waits = waitsForAnswer(item);
   return (
     <section className="panel inbox-detail" data-testid="inbox-detail">
       <div className="panel-head">
@@ -404,6 +484,8 @@ function InboxDetail({
             </div>
             {busy ? (
               <span className="spinner" />
+            ) : isWorkflowRequest(item) ? (
+              <WorkflowAnswerForm item={item} onAnswer={(answer) => void respond(answer)} />
             ) : item.kind === 'approval' ? (
               <ApprovalForm item={item} onAnswer={(answer) => void respond(answer)} />
             ) : (
