@@ -354,6 +354,11 @@ export interface ActiveRoutineRun {
   /** The description of a task */
   description?: string;
   userId?: string;
+  /**
+   * Inbox items of the run that ended but could not be written yet (the inbox store was down):
+   * the manager writes them again, with the ids they carry, and drops the record once they are in
+   */
+  pendingItems?: InboxItemInput[];
 }
 
 /** How a firing of a routine ended up, kept in its history */

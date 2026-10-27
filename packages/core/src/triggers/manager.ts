@@ -164,6 +164,8 @@ const RUN_CLAIM_TTL = 3 * 24 * 60 * 60 * 1000;
 const SCHEDULE_INIT_TTL = 30_000;
 /** The durable lease the runtime's runs default to, ms */
 const DEFAULT_RECOVERY_LEASE_MS = 60_000;
+/** How often inbox items that could not be written are written again, without durable runs */
+const DELIVERY_RETRY_MS = 5_000;
 /** The shortest wait between two attempts to take up runs a stopped process left */
 const MIN_RECOVERY_INTERVAL_MS = 50;
 /** Failed firings in a row after which a schedule entry is skipped until resumed */
@@ -268,6 +270,8 @@ export class experimental_TriggerManager {
   private stopped = false;
   private recoveryTimer?: ReturnType<typeof setInterval>;
   private recovering?: Promise<void>;
+  /** Inbox items of runs that ended while the inbox store was down, by run */
+  private readonly undelivered = new Map<string, InboxItemInput[]>();
   /** Runs kept going on that no runtime keeps, with when that was first seen */
   private readonly orphans = new Map<string, number>();
 
@@ -356,22 +360,25 @@ export class experimental_TriggerManager {
    * after this manager started
    */
   private watchRecovery(): void {
-    if (!this.durable || !this.runtime.recoverRuns) return;
-    const every = Math.max(
-      MIN_RECOVERY_INTERVAL_MS,
-      Math.floor((this.runtime.durableLeaseMs ?? DEFAULT_RECOVERY_LEASE_MS) / 2)
-    );
+    const every = this.durable
+      ? Math.max(
+          MIN_RECOVERY_INTERVAL_MS,
+          Math.floor((this.runtime.durableLeaseMs ?? DEFAULT_RECOVERY_LEASE_MS) / 2)
+        )
+      : DELIVERY_RETRY_MS;
     this.recoveryTimer = setInterval(() => {
       if (!this.stopped) this.track(this.recoverOnce());
     }, every);
     this.recoveryTimer.unref?.();
   }
 
-  /** One `recover()` at a time */
+  /** One round at a time: inbox items written again, then runs left taken up */
   private recoverOnce(): Promise<void> {
-    this.recovering ??= this.recover().finally(() => {
-      this.recovering = undefined;
-    });
+    this.recovering ??= this.retryDeliveries()
+      .then(() => this.recover())
+      .finally(() => {
+        this.recovering = undefined;
+      });
     return this.recovering;
   }
 
@@ -1182,7 +1189,9 @@ export class experimental_TriggerManager {
           if (this.runningTasks.get(task.triggerId) === task.runId) {
             this.runningTasks.delete(task.triggerId);
           }
-          if (!(ended && handedOver(ended))) await this.dropActive(task.runId);
+          if (!(ended && handedOver(ended)) && !this.undelivered.has(task.runId)) {
+            await this.dropActive(task.runId);
+          }
         })
     );
     return { outcome };
@@ -1200,7 +1209,7 @@ export class experimental_TriggerManager {
     };
     if (outcome.kind === 'error') {
       if (handedOver(outcome)) return;
-      await this.addToInbox({
+      await this.deliver(task.runId, {
         ...common,
         kind: 'failure',
         title: `Scheduled task failed: ${description}`,
@@ -1211,7 +1220,8 @@ export class experimental_TriggerManager {
     if (outcome.kind !== 'agent') return;
     const result = outcome.result;
     if (result.status === 'paused') {
-      await this.addToInbox(
+      await this.deliver(
+        task.runId,
         waitingItem(result, `Scheduled task: ${description}`, common, {
           agent: task.agent,
           taskId: task.triggerId,
@@ -1220,7 +1230,7 @@ export class experimental_TriggerManager {
       );
       return;
     }
-    await this.addToInbox({
+    await this.deliver(task.runId, {
       ...common,
       kind: 'result',
       title: `Scheduled task: ${description}`,
@@ -1564,7 +1574,9 @@ export class experimental_TriggerManager {
           lease?.release();
           this.replaced.delete(run.runId);
           if (live.runs.get(run.runId) === run) live.runs.delete(run.runId);
-          if (kept && !(ended && handedOver(ended))) await this.dropActive(run.runId);
+          if (kept && !(ended && handedOver(ended)) && !this.undelivered.has(run.runId)) {
+            await this.dropActive(run.runId);
+          }
           this.next(registered);
         })
     );
@@ -1718,7 +1730,7 @@ export class experimental_TriggerManager {
       }
     }
     this.report({ type: 'completed', routineId: routine.id, runId: run.runId, status });
-    if (item) await this.addToInbox(item);
+    if (item) await this.deliver(run.runId, item);
     const agent = this.agentOf(routine);
     if (notification) {
       try {
@@ -1752,6 +1764,59 @@ export class experimental_TriggerManager {
         ...(item.routineId !== undefined && { routineId: item.routineId }),
       });
       return undefined;
+    }
+  }
+
+  /**
+   * Writes the inbox item of a run that ended, under an id made from the run and what the item
+   * is about, so writing it again never makes a second item. When the inbox store fails, the
+   * item waits: in memory, and in the run's record of a run going on when it has one, which then
+   * stays until the item is in. `retryDeliveries` writes it again
+   */
+  private async deliver(runId: string, input: InboxItemInput): Promise<void> {
+    const item: InboxItemInput = { ...input, id: input.id ?? deliveryId(runId, input) };
+    if (await this.addToInbox(item)) return;
+    this.undelivered.set(runId, [...(this.undelivered.get(runId) ?? []), item]);
+    if (!this.durable) return;
+    try {
+      const active = await this.store.getActiveRun(runId);
+      if (active) {
+        await this.store.saveActiveRun({
+          ...active,
+          pendingItems: [...(active.pendingItems ?? []), item],
+        });
+      }
+    } catch (error) {
+      this.report({ type: 'error', error: errorText(error) });
+    }
+  }
+
+  /**
+   * Writes again the inbox items of runs that ended while the inbox store was down: those this
+   * process holds, and those a stopped process left in its records of runs going on. A record
+   * whose items are all in is dropped
+   */
+  private async retryDeliveries(): Promise<void> {
+    for (const [runId, items] of [...this.undelivered]) {
+      const left: InboxItemInput[] = [];
+      for (const item of items) if (!(await this.addToInbox(item))) left.push(item);
+      if (left.length > 0) {
+        this.undelivered.set(runId, left);
+        continue;
+      }
+      this.undelivered.delete(runId);
+      if (this.durable && !this.runsHere().has(runId)) await this.dropActive(runId);
+    }
+    if (!this.durable) return;
+    const here = this.runsHere();
+    for (const active of await this.store.listActiveRuns()) {
+      const items = active.pendingItems;
+      if (!items || items.length === 0 || here.has(active.runId)) continue;
+      if (this.undelivered.has(active.runId)) continue;
+      const left: InboxItemInput[] = [];
+      for (const item of items) if (!(await this.addToInbox(item))) left.push(item);
+      if (left.length === 0) await this.dropActive(active.runId);
+      else await this.store.saveActiveRun({ ...active, pendingItems: left });
     }
   }
 
@@ -2022,7 +2087,7 @@ export class experimental_TriggerManager {
     const here = this.runsHere();
     const active = new Map(
       (await this.store.listActiveRuns())
-        .filter((run) => !here.has(run.runId))
+        .filter((run) => !here.has(run.runId) && (run.pendingItems?.length ?? 0) === 0)
         .map((run) => [run.runId, run])
     );
     if (active.size === 0) {
@@ -2097,6 +2162,20 @@ export class experimental_TriggerManager {
       );
     }
   }
+}
+
+/**
+ * The id of the inbox item a run ended with: from the run, the kind and what the item waits on,
+ * so an item written again replaces itself, and a run that pauses twice gets an item per pause
+ */
+function deliveryId(runId: string, item: InboxItemInput): string {
+  const waitsOn = [
+    ...(item.actions ?? []).map((action) => action.approvalId ?? action.id),
+    ...(Array.isArray(item.metadata?.interrupts)
+      ? (item.metadata.interrupts as { id?: unknown }[]).map((entry) => String(entry.id))
+      : []),
+  ].join(',');
+  return `inbox_${digest(`${runId}\n${item.kind}\n${waitsOn}`)}`;
 }
 
 function answeredAlready(itemId: string): CogitatorError {

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { MockLLMBackend, createMockRunResult } from '@cogitator-ai/test-utils';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import type {
+  InboxItem,
   ResumeOptions,
   RoutineStore,
   RoutineWorkflow,
@@ -1361,6 +1362,90 @@ describe('recovery after a lease runs out', () => {
     expect(started[0].options.threadId).toBe(`task_${taskEntry}`);
     started[0].settle.ok('reminded');
     await vi.waitFor(async () => expect((await schedules.get(taskEntry))?.fired).toBe(true));
+    await manager.stop();
+  });
+});
+
+describe('inbox items while the inbox store is down', () => {
+  /** An inbox store whose next `failures` writes fail */
+  class DownInbox extends experimental_InMemoryInboxStore {
+    failures = 0;
+
+    override async add(item: InboxItem): Promise<void> {
+      if (this.failures > 0) {
+        this.failures--;
+        throw new Error('the inbox store is down');
+      }
+      return super.add(item);
+    }
+  }
+
+  it('lands a result and an approval once the store is back, the record dropped only after', async () => {
+    const inbox = new DownInbox();
+    const store = new experimental_InMemoryRoutineStore();
+    const { runtime: fake, started } = fakeRuntime({ durable: true, durableLeaseMs: 100 });
+    const manager = new experimental_TriggerManager(
+      {
+        agents: { worker: worker() },
+        store,
+        inbox,
+        routines: [routine({ overlap: 'parallel', triggers: [{ kind: 'api', token: 't' }] })],
+      },
+      fake
+    );
+    await manager.start();
+    const done = await manager.fire('digest.api');
+    const waits = await manager.fire('digest.api');
+    inbox.failures = Number.MAX_SAFE_INTEGER;
+    started[0].settle.ok('the result');
+    started[1].settle.ok('waits', 'paused');
+    await vi.waitFor(async () => {
+      const kept = await store.listActiveRuns();
+      expect(kept.map((run) => run.runId).sort()).toEqual([done.runId, waits.runId].sort());
+      expect(kept.every((run) => (run.pendingItems?.length ?? 0) > 0)).toBe(true);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(await store.listActiveRuns()).toHaveLength(2);
+    expect(await manager.inbox.list()).toEqual([]);
+    inbox.failures = 0;
+    await vi.waitFor(async () => expect(await manager.inbox.list()).toHaveLength(2));
+    await vi.waitFor(async () => expect(await store.listActiveRuns()).toEqual([]));
+    const items = await manager.inbox.list();
+    expect(items.map((item) => item.kind).sort()).toEqual(['question', 'result']);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(await manager.inbox.list()).toHaveLength(2);
+    await manager.stop();
+  });
+
+  it('writes the items a stopped process could not, from its records, when it starts', async () => {
+    const store = new experimental_InMemoryRoutineStore();
+    const item = {
+      id: 'inbox_left_1',
+      kind: 'result' as const,
+      title: 'Digest',
+      summary: 'left behind',
+      routineId: 'digest',
+      runId: 'trg_digest.api.left',
+    };
+    await store.saveActiveRun({
+      runId: 'trg_digest.api.left',
+      kind: 'routine',
+      eventId: 'evt_left',
+      triggerId: 'digest.api',
+      routineId: 'digest',
+      source: 'api',
+      at: 1,
+      threadId: 'thread_left',
+      pendingItems: [item],
+    });
+    const { runtime: fake } = fakeRuntime({ durable: true });
+    const manager = new experimental_TriggerManager(
+      { agents: { worker: worker() }, store, routines: [routine()] },
+      fake
+    );
+    await manager.start();
+    expect((await manager.inbox.list()).map((entry) => entry.id)).toEqual(['inbox_left_1']);
+    expect(await store.listActiveRuns()).toEqual([]);
     await manager.stop();
   });
 });
