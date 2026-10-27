@@ -1003,6 +1003,7 @@ export const CommandsConfigSchema = z.object({
  */
 export const PluginsConfigSchema = z.object({
   dirs: z.array(z.string().min(1)).optional(),
+  root: z.string().min(1).optional(),
   installed: z.union([z.boolean(), z.object({ root: z.string().min(1) })]).optional(),
   settings: z
     .union([

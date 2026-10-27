@@ -90,6 +90,7 @@ import type {
   HooksConfig,
   ProjectInstructionsOptions,
   ToolCallVerdict,
+  LLMPlugin,
 } from '@cogitator-ai/types';
 import { memoryAgentId, type Agent } from './agent';
 import { ToolRegistry } from './registry';
@@ -851,8 +852,16 @@ export class Cogitator implements ToolInvoker {
   public readonly tools: ToolRegistry = new ToolRegistry();
   /** The plugins of this runtime: the core's own, and those of `experimental_plugins` */
   private readonly pluginHost: experimental_PluginHost;
-  /** The hooks middleware of each hook set a plugin registered */
-  private readonly pluginHookLayers = new WeakMap<PluginHookSet, RunMiddleware>();
+  /**
+   * The hooks middleware of each hook set a plugin registered, per snapshot it runs in: its
+   * `mcp_tool` hooks call the MCP servers of that snapshot
+   */
+  private readonly pluginHookLayers = new WeakMap<
+    PluginSnapshot,
+    WeakMap<PluginHookSet, RunMiddleware>
+  >();
+  /** Backends a run builds from the plugin of a generation a reload replaced, by that plugin */
+  private readonly heldBackends = new WeakMap<LLMPlugin, LLMBackend>();
   /** The plugin each cached backend was built from, so a reload builds it again */
   private readonly backendPlugins = new Map<string, unknown>();
 
@@ -932,7 +941,7 @@ export class Cogitator implements ToolInvoker {
     const pluginSettings = this.pluginSettings();
     this.pluginHost = new experimental_PluginHost({
       ...(config.experimental_plugins && { config: config.experimental_plugins }),
-      root: pluginSettings?.root ?? this.permissionRoot(),
+      root: config.experimental_plugins?.root ?? pluginSettings?.root ?? this.permissionRoot(),
       ...(pluginSettings && { settings: pluginSettings }),
       core: [corePlugin(() => this.config.llm)],
       cogitatorVersion: CORE_VERSION,
@@ -1201,6 +1210,21 @@ export class Cogitator implements ToolInvoker {
     args: unknown,
     ...[options = {}]: InvocationArgs<TDeps>
   ): Promise<ToolInvocationResult> {
+    const lease = this.pluginHost.lease();
+    try {
+      return await this.invokeToolIn(lease.snapshot, tool, args, options);
+    } finally {
+      lease.release();
+    }
+  }
+
+  /** {@link invokeTool} with the plugins of `snapshot`, which the call holds while it runs */
+  private async invokeToolIn<TParams, TResult, TDeps>(
+    snapshot: PluginSnapshot,
+    tool: Tool<TParams, TResult, TDeps>,
+    args: unknown,
+    options: ToolInvocationOptions & { deps?: TDeps }
+  ): Promise<ToolInvocationResult> {
     let toolCall: ToolCall = {
       id: options.toolCallId ?? `call_${nanoid(12)}`,
       name: tool.name,
@@ -1252,9 +1276,9 @@ export class Cogitator implements ToolInvoker {
     };
     const runId = options.runId ?? `run_${nanoid(12)}`;
     const middleware = new MiddlewarePipeline([
-      ...this.hooksMiddlewareLayers(),
+      ...this.hooksMiddlewareLayers(snapshot),
       ...(this.config.middleware ?? []),
-      ...this.pluginHost.snapshot().middleware,
+      ...snapshot.middleware,
       ...(agent?.config.middleware ?? []),
       ...this.builtinMiddleware(),
     ]);
@@ -1671,8 +1695,8 @@ export class Cogitator implements ToolInvoker {
    * those of the settings files, read where the permission settings are read unless `hooks.settings`
    * names other places, a project's own only once it is trusted. None without `hooks`
    */
-  private hooksMiddlewareLayers(): RunMiddleware[] {
-    const plugins = this.pluginHooksLayers();
+  private hooksMiddlewareLayers(snapshot: PluginSnapshot): RunMiddleware[] {
+    const plugins = this.pluginHooksLayers(snapshot);
     const hooks = this.config.hooks;
     if (!hooks) return plugins;
     const settings = this.hookSettings();
@@ -1692,15 +1716,21 @@ export class Cogitator implements ToolInvoker {
    * settings files still decide whether hooks may run at all (`disableAllHooks`,
    * `allowManagedHooksOnly`), as for a subagent's frontmatter hooks
    */
-  private pluginHooksLayers(): RunMiddleware[] {
-    const sets = this.pluginHost.snapshot().hooks;
+  private pluginHooksLayers(snapshot: PluginSnapshot): RunMiddleware[] {
+    const sets = snapshot.hooks;
     if (sets.length === 0) return [];
+    let layers = this.pluginHookLayers.get(snapshot);
+    if (!layers) {
+      layers = new WeakMap();
+      this.pluginHookLayers.set(snapshot, layers);
+    }
+    const cache = layers;
     return sets.map((set) => {
-      let layer = this.pluginHookLayers.get(set);
+      let layer = cache.get(set);
       if (!layer) {
         const { deps, config } = this.frontmatterHookSetup();
         layer = hooksMiddleware(
-          { ...config, mcp: this.pluginHookMcp(config.mcp) },
+          { ...config, mcp: this.pluginHookMcp(config.mcp, snapshot) },
           {
             ...deps,
             scoped: {
@@ -1711,7 +1741,7 @@ export class Cogitator implements ToolInvoker {
             },
           }
         );
-        this.pluginHookLayers.set(set, layer);
+        cache.set(set, layer);
       }
       return layer;
     });
@@ -1719,16 +1749,18 @@ export class Cogitator implements ToolInvoker {
 
   /**
    * Calls the MCP tools of `mcp_tool` hooks: a tool of a plugin's own MCP server (named
-   * `plugin:<plugin>:<server>`) directly, any other through `hooks.mcp`
+   * `plugin:<plugin>:<server>`) of `snapshot` (the generations the run holds) directly, any other
+   * through `hooks.mcp`
    */
-  private pluginHookMcp(fallback: HookMcpCaller | undefined): HookMcpCaller {
+  private pluginHookMcp(
+    fallback: HookMcpCaller | undefined,
+    snapshot: PluginSnapshot
+  ): HookMcpCaller {
     return {
       callTool: async (server, name, input, signal) => {
-        const found = this.pluginHost
-          .snapshot()
-          .tools.find(
-            (candidate) => candidate.mcp?.server === server && candidate.mcp?.tool === name
-          );
+        const found = snapshot.tools.find(
+          (candidate) => candidate.mcp?.server === server && candidate.mcp?.tool === name
+        );
         if (!found) {
           if (fallback) return fallback.callTool(server, name, input, signal);
           return { text: `No MCP tool ${name} of server ${server} is loaded`, isError: true };
@@ -2632,7 +2664,7 @@ export class Cogitator implements ToolInvoker {
       let iterations = checkpoint?.iterations ?? 0;
 
       const builtins = this.builtinMiddleware();
-      const hookLayers = this.hooksMiddlewareLayers();
+      const hookLayers = this.hooksMiddlewareLayers(pluginSnapshot);
       const pluginMiddleware = pluginSnapshot.middleware;
       const pipelineFor = (owner: Agent) =>
         new MiddlewarePipeline([
@@ -2739,7 +2771,11 @@ export class Cogitator implements ToolInvoker {
       const subagents = this.subagentService;
       const subagentDepth = currentToolRuns().filter((id) => id !== runId).length;
       let subagentCatalog = subagents
-        ? await subagents.catalog(workspaceOf(active), abortController.signal)
+        ? await subagents.catalog(
+            workspaceOf(active),
+            abortController.signal,
+            pluginSnapshot.agents
+          )
         : undefined;
       const permissionService = this.permissionsOf();
       const permissionRootOf = (owner: Agent): string =>
@@ -2874,7 +2910,7 @@ export class Cogitator implements ToolInvoker {
         input = checkpoint.input;
         effectiveModel = checkpoint.model;
         routeProvider = checkpoint.provider;
-        ({ backend, model } = this.turnRoute(effectiveModel, routeProvider));
+        ({ backend, model } = this.turnRoute(effectiveModel, routeProvider, pluginSnapshot));
         messages = [...checkpoint.messages];
         if (checkpoint.instructions) harness.restoreInstructions(checkpoint.instructions);
         if (checkpoint.context) pendingContext.push(...checkpoint.context);
@@ -2913,7 +2949,7 @@ export class Cogitator implements ToolInvoker {
           effectiveModel = `${recommendation.provider}/${recommendation.modelId}`;
           routeProvider = undefined;
         }
-        ({ backend, model } = this.turnRoute(effectiveModel, routeProvider));
+        ({ backend, model } = this.turnRoute(effectiveModel, routeProvider, pluginSnapshot));
 
         if (costRouter && this.config.limits?.onExceeded !== 'interrupt') {
           const budgetCheck = recommendation
@@ -2998,10 +3034,13 @@ export class Cogitator implements ToolInvoker {
         if (restored) reportTodos(restored.todos);
       }
 
-      let candidates = this.modelCandidates(active, effectiveModel, routeProvider, {
-        backend,
-        model,
-      });
+      let candidates = this.modelCandidates(
+        active,
+        effectiveModel,
+        routeProvider,
+        { backend, model },
+        pluginSnapshot
+      );
       let fellBackTo: string | undefined;
       const allToolCalls: ToolCall[] = [...(checkpoint?.toolCalls ?? [])];
       let totalInputTokens = checkpoint?.usage.inputTokens ?? 0;
@@ -3169,7 +3208,11 @@ export class Cogitator implements ToolInvoker {
         }
         await harness.prepare(target);
         if (subagents && workspaceOf(target) !== workspaceOf(active)) {
-          subagentCatalog = await subagents.catalog(workspaceOf(target), abortController.signal);
+          subagentCatalog = await subagents.catalog(
+            workspaceOf(target),
+            abortController.signal,
+            pluginSnapshot.agents
+          );
         }
         const kept = harness.forHandoff(target, messages);
         if (kept.length !== messages.length) {
@@ -3237,11 +3280,14 @@ export class Cogitator implements ToolInvoker {
         ({ registry, targets: handoffTargets } = buildRegistry(target));
         effectiveModel = this.resolveModel(target);
         routeProvider = target.config.provider;
-        ({ backend, model } = this.turnRoute(effectiveModel, routeProvider));
-        candidates = this.modelCandidates(target, effectiveModel, routeProvider, {
-          backend,
-          model,
-        });
+        ({ backend, model } = this.turnRoute(effectiveModel, routeProvider, pluginSnapshot));
+        candidates = this.modelCandidates(
+          target,
+          effectiveModel,
+          routeProvider,
+          { backend, model },
+          pluginSnapshot
+        );
         reasoning = options.reasoning ?? target.config.reasoning;
         responseFormat = toLLMResponseFormat(target.config.responseFormat);
         lastToolCallSig = '';
@@ -7092,7 +7138,8 @@ export class Cogitator implements ToolInvoker {
     owner: Agent,
     modelString: string,
     explicitProvider: string | undefined,
-    primary: ModelRoute
+    primary: ModelRoute,
+    snapshot?: PluginSnapshot
   ): ModelCandidate[] {
     const candidates: ModelCandidate[] = [
       { name: this.pricedModel(modelString, explicitProvider), ...primary },
@@ -7102,7 +7149,7 @@ export class Cogitator implements ToolInvoker {
         typeof fallback === 'string' ? [fallback, undefined] : [fallback.model, fallback.provider];
       const name = this.pricedModel(fallbackModel, fallbackProvider);
       if (candidates.some((candidate) => candidate.name === name)) continue;
-      candidates.push({ name, ...this.turnRoute(fallbackModel, fallbackProvider) });
+      candidates.push({ name, ...this.turnRoute(fallbackModel, fallbackProvider, snapshot) });
     }
     return candidates;
   }
@@ -7131,11 +7178,60 @@ export class Cogitator implements ToolInvoker {
 
   /**
    * The route of an agent turn on `modelString`: as {@link route}, on a backend without PII
-   * masking, which the turn's middleware does instead.
+   * masking, which the turn's middleware does instead. With `snapshot`, the plugin generations a
+   * run holds: a provider of a plugin comes from them, even after a reload replaced it
    */
-  private turnRoute(modelString: string, explicitProvider?: string): ModelRoute {
+  private turnRoute(
+    modelString: string,
+    explicitProvider?: string,
+    snapshot?: PluginSnapshot
+  ): ModelRoute {
     const { provider, model } = this.chatRoute(modelString, explicitProvider);
-    return { backend: this.turnBackendFor(provider), model };
+    return { backend: this.heldTurnBackend(provider, snapshot), model };
+  }
+
+  /**
+   * The turn backend of `name` for a run that holds `snapshot`: the shared one, unless the plugin
+   * that brings the provider in `snapshot` is no longer the one that brings it now, then one of
+   * the run's own, built from the plugin of its generation
+   */
+  private heldTurnBackend(name: string, snapshot: PluginSnapshot | undefined): LLMBackend {
+    if (!snapshot || Object.hasOwn(this.config.llm?.backends ?? {}, name)) {
+      return this.turnBackendFor(name);
+    }
+    const held = this.pluginBackendOf(name, snapshot);
+    if (!held || held === this.pluginBackendOf(name, this.pluginHost.snapshot())) {
+      return this.turnBackendFor(name);
+    }
+    let backend = this.heldBackends.get(held);
+    if (!backend) {
+      backend = withLLMRetry(this.backendFromPlugin(name, held), this.config.llm?.retry);
+      this.heldBackends.set(held, backend);
+    }
+    return backend;
+  }
+
+  /**
+   * The plugin that brings provider `name` in `snapshot`: the core's for a built-in provider, a
+   * third party's only when no provider of that name is registered globally
+   */
+  private pluginBackendOf(name: string, snapshot: PluginSnapshot): LLMPlugin | undefined {
+    const contributed = snapshot.backends.get(name);
+    if (!contributed) return undefined;
+    const fromCore = snapshot.backendOwners.get(name)?.endsWith('@builtin') === true;
+    return fromCore || !hasLLMPlugin(name) ? contributed : undefined;
+  }
+
+  /** The backend `plugin` builds for provider `name`, with its `llm.plugins` config checked */
+  private backendFromPlugin(name: string, plugin: LLMPlugin): LLMBackend {
+    const config = this.config.llm?.plugins?.[name];
+    if (plugin.validateConfig && !plugin.validateConfig(config)) {
+      throw new CogitatorError({
+        message: `Invalid configuration for provider '${name}' (llm.plugins.${name})`,
+        code: ErrorCode.CONFIGURATION_ERROR,
+      });
+    }
+    return plugin.factory(config);
   }
 
   private chatRoute(
@@ -7303,18 +7399,9 @@ export class Cogitator implements ToolInvoker {
   private createBackend(name: string): LLMBackend {
     const custom = this.config.llm?.backends;
     if (custom && Object.hasOwn(custom, name)) return custom[name];
-    const snapshot = this.pluginHost.snapshot();
-    const contributed = snapshot.backends.get(name);
-    const fromCore = snapshot.backendOwners.get(name)?.endsWith('@builtin') === true;
-    if (contributed && (fromCore || !hasLLMPlugin(name))) {
-      const config = this.config.llm?.plugins?.[name];
-      if (contributed.validateConfig && !contributed.validateConfig(config)) {
-        throw new CogitatorError({
-          message: `Invalid configuration for provider '${name}' (llm.plugins.${name})`,
-          code: ErrorCode.CONFIGURATION_ERROR,
-        });
-      }
-      const backend = contributed.factory(config);
+    const contributed = this.pluginBackendOf(name, this.pluginHost.snapshot());
+    if (contributed) {
+      const backend = this.backendFromPlugin(name, contributed);
       this.backendPlugins.set(name, contributed);
       return backend;
     }

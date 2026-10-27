@@ -445,6 +445,12 @@ export interface PluginsConfig {
   /** Plugin folders loaded in place, as Claude Code's `--plugin-dir`: ids `name@inline` */
   dirs?: readonly string[];
   /**
+   * The project the plugins work in: `${CLAUDE_PROJECT_DIR}`, where the relative paths of
+   * `context.files` and of the permission rules start (default the root of the plugin settings,
+   * else of `permissions.settings`, else the working directory)
+   */
+  root?: string;
+  /**
    * Load the plugins installed with `cogitator plugin install` (default true), or where they are
    * kept (default `COGITATOR_PLUGINS_DIR` or `~/.cogitator/plugins`)
    */

@@ -415,9 +415,14 @@ export class SubagentService {
 
   /**
    * The subagents a run in `workspace` may delegate to: the project's folders are read from the
-   * workspace's current directory up to the project root
+   * workspace's current directory up to the project root, `plugins` the subagents of the plugin
+   * generations the run holds
    */
-  catalog(workspace: Workspace | undefined, signal?: AbortSignal): Promise<SubagentCatalog> {
+  catalog(
+    workspace: Workspace | undefined,
+    signal?: AbortSignal,
+    plugins?: readonly SubagentDefinition[]
+  ): Promise<SubagentCatalog> {
     const root = this.rootOf(workspace);
     return this.finder.catalog(
       {
@@ -425,7 +430,8 @@ export class SubagentService {
         root,
         ...(workspace && { start: resolve(workspace.root, workspace.cwd) }),
       },
-      signal
+      signal,
+      plugins
     );
   }
 

@@ -248,6 +248,103 @@ describe('plugins in the runtime', () => {
     expect(unloaded).toEqual([1]);
   });
 
+  it('keeps a run on the LLM provider and MCP servers of the generation it started with', async () => {
+    let version = 0;
+    const pinged: number[] = [];
+    let cog: Cogitator | undefined;
+    const reloader = tool({
+      name: 'reload_plugins',
+      description: 'Reloads the plugins',
+      parameters: z.object({}),
+      execute: async () => {
+        await cog?.experimental_plugins.reload('swapping@code');
+        return 'reloaded';
+      },
+    });
+    const turns = (label: string): LLMBackend => {
+      const answer = (request: ChatRequest): ChatResponse =>
+        request.messages.some((message) => message.role === 'tool')
+          ? {
+              id: label,
+              content: `${label} done`,
+              finishReason: 'stop',
+              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            }
+          : {
+              id: label,
+              content: '',
+              toolCalls: [{ id: 'r1', name: 'reload_plugins', arguments: {} }],
+              finishReason: 'tool_calls',
+              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            };
+      return {
+        provider: 'swap',
+        chat: async (request) => answer(request),
+        async *chatStream(request) {
+          const response = answer(request);
+          yield {
+            id: label,
+            delta: { content: response.content },
+            ...(response.toolCalls && { toolCalls: response.toolCalls }),
+            finishReason: response.finishReason,
+            usage: response.usage,
+          };
+        },
+      };
+    };
+    ({ cog } = runtime({
+      experimental_plugins: plugins({
+        mcp: async () => {
+          const generation = version;
+          const ping = tool({
+            name: 'mcp__plugin_swapping_api__ping',
+            description: 'Ping',
+            parameters: z.object({}),
+            execute: async () => {
+              pinged.push(generation);
+              return 'pong';
+            },
+          });
+          return {
+            tools: [{ ...ping, mcp: { server: 'plugin:swapping:api', tool: 'ping' } }],
+            close: async () => undefined,
+          };
+        },
+        plugins: [
+          {
+            name: 'swapping',
+            activate(context) {
+              const label = `gen${++version}`;
+              context.registerLLMBackend({
+                provider: 'swap',
+                metadata: { name: 'swap' },
+                factory: () => turns(label),
+              });
+              context.registerMcpServer('api', { command: 'api-server' });
+              context.registerHooks({
+                PostToolUse: [
+                  {
+                    matcher: 'reload_plugins',
+                    hooks: [{ type: 'mcp_tool', server: 'plugin:swapping:api', tool: 'ping' }],
+                  },
+                ],
+              });
+            },
+          },
+        ],
+      }),
+    }));
+    const agent = new Agent({
+      name: 'a',
+      model: 'swap/m',
+      instructions: 'x',
+      tools: [reloader],
+    });
+    expect((await cog.run(agent, { input: 'go' })).output).toBe('gen1 done');
+    expect(pinged).toEqual([1]);
+    expect(version).toBe(2);
+  });
+
   it('puts the options of a plugin its HTTP hook allows into the hook headers', async () => {
     const received: (string | undefined)[] = [];
     const server = createServer((request, response) => {

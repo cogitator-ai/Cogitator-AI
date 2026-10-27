@@ -860,6 +860,43 @@ describe('plugin lifecycle', () => {
     }
   );
 
+  it(
+    'watches the folder an installed plugin moved to after an update',
+    { timeout: 15_000 },
+    async () => {
+      const pluginsRoot = join(base, '.plugins');
+      const first = installedPlugin(pluginsRoot, 'moving', '1.0.0', { version: '1.0.0' });
+      await writeInstalledPlugins(pluginsRoot, [first.record]);
+      const plugins = new experimental_PluginHost({
+        root: base,
+        config: {
+          installed: { root: pluginsRoot },
+          watch: { debounceMs: 30 },
+          secrets: experimental_memorySecretStore(),
+          onEvent: (event) => events.push(event),
+        },
+      });
+      await plugins.load();
+      const second = installedPlugin(pluginsRoot, 'moving', '2.0.0', { version: '2.0.0' });
+      await writeInstalledPlugins(pluginsRoot, [second.record]);
+      expect(await plugins.reload('moving@mkt')).toEqual([
+        { id: 'moving@mkt', ok: true, generation: 2 },
+      ]);
+      mkdirSync(join(second.dir, 'commands'), { recursive: true });
+      const deadline = Date.now() + 10_000;
+      let writes = 0;
+      while (
+        Date.now() < deadline &&
+        !events.some((event) => event.type === 'loaded' && event.generation === 3)
+      ) {
+        writeFileSync(join(second.dir, 'commands', 'new.md'), `New ${++writes}.`);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      expect(plugins.snapshot().commands.map((entry) => entry.name)).toEqual(['moving:new']);
+      await plugins.dispose();
+    }
+  );
+
   it('refuses two registrations of one name in a plugin and leaves the plugin failed', async () => {
     const plugins = host([
       {

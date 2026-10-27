@@ -121,7 +121,15 @@ export class SubagentFinder {
     this.log = new DiagnosticLog('subagent', config.onDiagnostic);
   }
 
-  async catalog(place: DefinitionPlace, signal?: AbortSignal): Promise<SubagentCatalog> {
+  /**
+   * The subagents of `place`, with `plugins` as the plugins' (the ones of the generations a run
+   * holds), else the plugins' as they are now
+   */
+  async catalog(
+    place: DefinitionPlace,
+    signal?: AbortSignal,
+    plugins?: readonly SubagentDefinition[]
+  ): Promise<SubagentCatalog> {
     const diagnostics: DefinitionDiagnostic[] = [];
     const found: SubagentDefinition[] = [];
     if (place.options) {
@@ -139,7 +147,7 @@ export class SubagentFinder {
     } else {
       found.push(...this.code);
     }
-    found.push(...this.plugins());
+    found.push(...(plugins ?? this.plugins()));
     const byName = new Map<string, SubagentDefinition>();
     for (const definition of found) {
       const kept = byName.get(definition.name);

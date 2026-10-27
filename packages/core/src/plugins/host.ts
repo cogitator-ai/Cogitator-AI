@@ -182,7 +182,8 @@ export class experimental_PluginHost {
   private readonly order: string[] = [];
   private readonly listeners = new Set<() => void>();
   private readonly reported = new Set<string>();
-  private readonly watchers = new Map<string, FSWatcher>();
+  /** The watcher of each watched plugin, with the folder it watches */
+  private readonly watchers = new Map<string, { watcher: FSWatcher; dir: string }>();
   private readonly watchTimers = new Map<string, NodeJS.Timeout>();
   private snapshotCache?: PluginSnapshot;
   /** The generations `snapshotCache` was taken from */
@@ -421,7 +422,7 @@ export class experimental_PluginHost {
    */
   dispose(): Promise<void> {
     this.epoch++;
-    for (const watcher of this.watchers.values()) watcher.close();
+    for (const { watcher } of this.watchers.values()) watcher.close();
     this.watchers.clear();
     for (const timer of this.watchTimers.values()) clearTimeout(timer);
     this.watchTimers.clear();
@@ -1858,8 +1859,8 @@ export class experimental_PluginHost {
       if (state.candidate.dir && state.status !== 'disabled')
         wanted.set(state.candidate.id, state.candidate.dir);
     }
-    for (const [id, watcher] of this.watchers) {
-      if (!wanted.has(id)) {
+    for (const [id, { watcher, dir }] of this.watchers) {
+      if (wanted.get(id) !== dir) {
         watcher.close();
         this.watchers.delete(id);
       }
@@ -1882,14 +1883,14 @@ export class experimental_PluginHost {
         });
         watcher.on('error', (error) => {
           watcher.close();
-          if (this.watchers.get(id) === watcher) this.watchers.delete(id);
+          if (this.watchers.get(id)?.watcher === watcher) this.watchers.delete(id);
           this.report(
             id,
             'warning',
             `The plugin folder stopped being watched (${message(error)}), the next reload watches it again`
           );
         });
-        this.watchers.set(id, watcher);
+        this.watchers.set(id, { watcher, dir });
       } catch (error) {
         this.report(id, 'warning', `The plugin folder cannot be watched: ${message(error)}`);
       }
