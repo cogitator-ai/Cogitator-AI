@@ -69,31 +69,46 @@ export interface PanelBridgeOptions {
   frame: () => PanelWindow | null | undefined;
   /** Calls the panel's handler `method` with `params`: what it resolves with is the result. */
   call: (method: string, params: unknown) => Promise<unknown>;
+  /** Hears, once, that the bridge closed because the frame navigated away from the panel's page. */
+  onNavigatedAway?: () => void;
 }
 
 export interface PanelBridge {
   /** Answers a `message` event of the studio's window, when it is a request of the panel. */
   handle(message: PanelMessage): void;
+  /**
+   * The frame finished loading a document. The first load is the panel's page. The sandbox does
+   * not keep a page from navigating its own frame, to any address, so every later load means the
+   * page left it: the bridge closes for good, answers nothing more and calls `onNavigatedAway`.
+   */
+  frameLoaded(): void;
+  /** Whether it stopped answering, disposed or closed by a navigation. */
+  readonly closed: boolean;
   /** Stops answering: calls still going are not posted back. */
   dispose(): void;
 }
 
 /**
- * Answers the requests of one panel's page. Each request is forwarded to `call`, and its result or
- * error is posted to the frame it came from, as long as the frame still shows that page: a
- * response is dropped once the bridge is disposed or the frame got a new window. A sandboxed page
- * has an opaque origin, so responses are posted to `*`, but only to that frame's window.
+ * Answers the requests of one panel's page, in one frame. Each request is forwarded to `call`, and
+ * its result or error is posted to the frame it came from, as long as the frame still shows that
+ * page: a response is dropped once the bridge is closed or the frame got a new window. A sandboxed
+ * page has an opaque origin, so responses are posted to `*`, but only to that frame's window. A
+ * frame that loads a second document closes the bridge, see `frameLoaded`.
  */
 export function createPanelBridge(options: PanelBridgeOptions): PanelBridge {
-  let disposed = false;
+  let closed = false;
+  let loads = 0;
   return {
+    get closed() {
+      return closed;
+    },
     handle(message) {
-      if (disposed) return;
+      if (closed) return;
       const target = options.frame();
       const request = panelRequest(message, target);
       if (!request || !target) return;
       const reply = (response: PanelResponse) => {
-        if (disposed || options.frame() !== target) return;
+        if (closed || options.frame() !== target) return;
         target.postMessage(response, '*');
       };
       const pending = (async () => options.call(request.method, request.params))();
@@ -107,8 +122,14 @@ export function createPanelBridge(options: PanelBridgeOptions): PanelBridge {
           })
       );
     },
+    frameLoaded() {
+      loads++;
+      if (loads === 1 || closed) return;
+      closed = true;
+      options.onNavigatedAway?.();
+    },
     dispose() {
-      disposed = true;
+      closed = true;
     },
   };
 }

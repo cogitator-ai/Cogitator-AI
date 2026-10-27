@@ -143,4 +143,42 @@ describe('createPanelBridge', () => {
     expect(frame.posted).toEqual([]);
     expect(call).toHaveBeenCalledTimes(2);
   });
+  it('closes for good when the frame loads a second document, the page navigating away', async () => {
+    const frame = new FakeWindow();
+    const finishers: Array<(value: unknown) => void> = [];
+    const call = vi.fn(() => new Promise((resolve) => finishers.push(resolve)));
+    const onNavigatedAway = vi.fn();
+    const bridge = createPanelBridge({ frame: () => frame, call, onNavigatedAway });
+
+    bridge.frameLoaded();
+    expect(bridge.closed).toBe(false);
+    bridge.handle(message(frame, { type: 'cogitator:request', id: 1, method: 'secret' }));
+    expect(call).toHaveBeenCalledTimes(1);
+
+    bridge.frameLoaded();
+    expect(bridge.closed).toBe(true);
+    expect(onNavigatedAway).toHaveBeenCalledTimes(1);
+
+    finishers[0]('answered after the page left');
+    bridge.handle(message(frame, { type: 'cogitator:request', id: 2, method: 'secret' }));
+    bridge.frameLoaded();
+    await flush();
+    expect(frame.posted).toEqual([]);
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(onNavigatedAway).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not report a navigation for a bridge that was disposed', () => {
+    const onNavigatedAway = vi.fn();
+    const bridge = createPanelBridge({
+      frame: () => new FakeWindow(),
+      call: async () => null,
+      onNavigatedAway,
+    });
+    bridge.frameLoaded();
+    bridge.dispose();
+    bridge.frameLoaded();
+    expect(bridge.closed).toBe(true);
+    expect(onNavigatedAway).not.toHaveBeenCalled();
+  });
 });

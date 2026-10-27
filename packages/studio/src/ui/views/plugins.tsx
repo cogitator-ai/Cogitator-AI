@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   CircleCheck,
   Info,
@@ -7,6 +7,7 @@ import {
   PowerOff,
   Puzzle,
   RotateCw,
+  ShieldAlert,
   ShieldCheck,
   SquareArrowOutUpRight,
   TriangleAlert,
@@ -17,7 +18,7 @@ import type {
   PluginReloadRecord,
   PluginStatusRecord,
 } from '../../protocol';
-import { createPanelBridge } from '../../plugin-bridge';
+import { createPanelBridge, type PanelBridge } from '../../plugin-bridge';
 import { api, panelUrl } from '../api';
 import { Empty, ErrorText, messageOf, Topbar } from '../components/common';
 import { href } from '../router';
@@ -448,28 +449,35 @@ export function PluginsView({ focus }: { focus?: string }) {
 export function PluginPanelView({ pluginId, panelId }: { pluginId: string; panelId: string }) {
   const plugins = useStudio((state) => state.plugins);
   const frame = useRef<HTMLIFrameElement>(null);
+  const bridge = useRef<PanelBridge>(undefined);
   const [nonce, setNonce] = useState(0);
+  const [closedFrame, setClosedFrame] = useState<string>();
   const plugin = plugins?.plugins.find((candidate) => candidate.id === pluginId);
   const panel = plugin?.contributions.panels.find((candidate) => candidate.id === panelId);
   const live = plugin?.status === 'active' && panel !== undefined;
+  const frameKey = `${plugin?.generation ?? 0}:${nonce}`;
+  const closed = closedFrame === frameKey;
 
-  useEffect(() => {
-    if (!live) return;
-    const bridge = createPanelBridge({
+  useLayoutEffect(() => {
+    if (!live || closed) return;
+    const current = createPanelBridge({
       frame: () => frame.current?.contentWindow,
       call: async (method, params) =>
         (await api.callPanel(pluginId, panelId, method, params)).result,
+      onNavigatedAway: () => setClosedFrame(frameKey),
     });
+    bridge.current = current;
     const listener = (event: MessageEvent) => {
       const data: unknown = event.data;
-      bridge.handle({ source: event.source, origin: event.origin, data });
+      current.handle({ source: event.source, origin: event.origin, data });
     };
     window.addEventListener('message', listener);
     return () => {
       window.removeEventListener('message', listener);
-      bridge.dispose();
+      current.dispose();
+      if (bridge.current === current) bridge.current = undefined;
     };
-  }, [live, pluginId, panelId]);
+  }, [live, closed, frameKey, pluginId, panelId]);
 
   const crumbs = [
     { label: 'Plugins', to: ['plugins'] },
@@ -515,15 +523,17 @@ export function PluginPanelView({ pluginId, panelId }: { pluginId: string; panel
         crumbs={crumbs}
         actions={
           <>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => setNonce((value) => value + 1)}
-              data-testid="reload-panel"
-            >
-              <RotateCw size={12} />
-              Reload page
-            </button>
+            {!closed && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setNonce((value) => value + 1)}
+                data-testid="reload-panel"
+              >
+                <RotateCw size={12} />
+                Reload page
+              </button>
+            )}
             <a className="btn btn-ghost btn-sm" href={href('plugins', pluginId)}>
               <SquareArrowOutUpRight size={12} />
               Plugin
@@ -531,18 +541,42 @@ export function PluginPanelView({ pluginId, panelId }: { pluginId: string; panel
           </>
         }
       />
-      <div className="plugin-frame-wrap">
-        <iframe
-          key={`${plugin.generation}:${nonce}`}
-          ref={frame}
-          className="plugin-frame"
-          title={panel.title}
-          src={panelUrl(pluginId, panelId)}
-          sandbox="allow-scripts"
-          referrerPolicy="no-referrer"
-          data-testid="plugin-frame"
-        />
-      </div>
+      {closed ? (
+        <div className="scroll" data-testid="panel-closed">
+          <Empty
+            icon={ShieldAlert}
+            title="The panel navigated away and was closed"
+            action={
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => setNonce((value) => value + 1)}
+                data-testid="reopen-panel"
+              >
+                <RotateCw size={12} />
+                Open again
+              </button>
+            }
+          >
+            Its page left the panel for another address, and that address may have carried what the
+            plugin's handlers gave the page. The plugin answers this page no more.
+          </Empty>
+        </div>
+      ) : (
+        <div className="plugin-frame-wrap">
+          <iframe
+            key={frameKey}
+            ref={frame}
+            className="plugin-frame"
+            title={panel.title}
+            src={panelUrl(pluginId, panelId)}
+            sandbox="allow-scripts"
+            referrerPolicy="no-referrer"
+            onLoad={() => bridge.current?.frameLoaded()}
+            data-testid="plugin-frame"
+          />
+        </div>
+      )}
     </>
   );
 }

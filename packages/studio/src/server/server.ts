@@ -73,9 +73,25 @@ const MIME: Record<string, string> = {
 };
 
 /**
+ * The policy of the studio's own pages. `frame-src 'self'` is what keeps a plugin panel, which
+ * the sandbox lets navigate its own frame, from taking that frame to another site: the browser
+ * checks such a navigation against the policy of the page the frame is in.
+ */
+const UI_CSP = [
+  "default-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "frame-src 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+
+/**
  * What a plugin panel's page may do: run its own inline scripts and styles, show inline images and
- * fonts, nothing over the network, no forms, and in a sandbox of its own also when opened on its
- * own, so it never runs with the studio's origin.
+ * fonts, load and fetch nothing from any address, post no forms, and run in a sandbox of its own
+ * also when opened on its own, so it never gets the studio's origin. Its own policy cannot keep it
+ * from navigating its frame, `UI_CSP` keeps that navigation on the studio's address and the UI
+ * closes a panel that navigates at all.
  */
 const PANEL_CSP = [
   "default-src 'none'",
@@ -89,6 +105,38 @@ const PANEL_CSP = [
   "frame-ancestors 'self'",
   'sandbox allow-scripts',
 ].join('; ');
+
+/**
+ * Browser features a panel page never gets: devices, sensors, payment, credentials, the clipboard,
+ * capture and fullscreen. A frame sandboxed to an opaque origin is refused most of them already,
+ * this also covers the page opened on its own.
+ */
+const PANEL_PERMISSIONS_POLICY = [
+  'accelerometer',
+  'autoplay',
+  'camera',
+  'clipboard-read',
+  'clipboard-write',
+  'display-capture',
+  'encrypted-media',
+  'fullscreen',
+  'geolocation',
+  'gyroscope',
+  'hid',
+  'idle-detection',
+  'magnetometer',
+  'microphone',
+  'midi',
+  'payment',
+  'picture-in-picture',
+  'publickey-credentials-get',
+  'screen-wake-lock',
+  'serial',
+  'usb',
+  'xr-spatial-tracking',
+]
+  .map((feature) => `${feature}=()`)
+  .join(', ');
 
 const PluginEnabledBody = z.object({ enabled: z.boolean() });
 const PanelCallBody = z.object({
@@ -392,10 +440,7 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
       'content-type': type,
       'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-store',
       'x-content-type-options': 'nosniff',
-      ...(type.startsWith('text/html') && {
-        'content-security-policy':
-          "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
-      }),
+      ...(type.startsWith('text/html') && { 'content-security-policy': UI_CSP }),
     });
     res.end(readFileSync(file));
   }
@@ -604,6 +649,9 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
           'content-security-policy': PANEL_CSP,
           'referrer-policy': 'no-referrer',
           'cross-origin-resource-policy': 'same-origin',
+          'cross-origin-opener-policy': 'same-origin',
+          'permissions-policy': PANEL_PERMISSIONS_POLICY,
+          'x-dns-prefetch-control': 'off',
         });
         res.end(html);
         return;

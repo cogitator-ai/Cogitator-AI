@@ -209,7 +209,17 @@ describe('studio server plugins', () => {
     expect(csp).toContain('sandbox allow-scripts');
     expect(csp).not.toContain('allow-same-origin');
     expect(csp).not.toMatch(/connect-src/);
+    expect(response.headers.get('cross-origin-opener-policy')).toBe('same-origin');
+    expect(response.headers.get('x-dns-prefetch-control')).toBe('off');
+    expect(response.headers.get('referrer-policy')).toBe('no-referrer');
+    const permissions = response.headers.get('permissions-policy') ?? '';
+    for (const feature of ['camera=()', 'microphone=()', 'geolocation=()', 'clipboard-read=()']) {
+      expect(permissions).toContain(feature);
+    }
     expect(await response.text()).toContain('cogitator:request');
+
+    const ui = await fetch(`${base}/`);
+    expect(ui.headers.get('content-security-policy')).toContain("frame-src 'self'");
 
     const missing = await fetch(`${base}${plugin('board@code')}/panels/nope`);
     expect(missing.status).toBe(404);
