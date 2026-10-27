@@ -315,6 +315,38 @@ describe('snapshot store safety', () => {
     expect(text('extra/stuff.txt')).toBe('stuff');
   });
 
+  it('restores into directories made read-only since the snapshot, then gives them their mode', async () => {
+    if (asRoot) return;
+    put('ro/a.txt', 'v1');
+    put('ro/deep/b.txt', 'b1');
+    put('top.txt', 't1');
+    chmodSync(join(root, 'ro', 'deep'), 0o555);
+    const snapshot = await workspace.snapshot();
+    chmodSync(join(root, 'ro', 'deep'), 0o755);
+    put('ro/a.txt', 'v2');
+    put('ro/new.txt', 'new');
+    put('ro/deep/b.txt', 'b2');
+    put('top.txt', 't2');
+    chmodSync(join(root, 'ro'), 0o555);
+    chmodSync(join(root, 'ro', 'deep'), 0o555);
+    chmodSync(root, 0o555);
+
+    const plan = await workspace.restore(snapshot.id, { dryRun: true });
+    expect(plan.restored.sort()).toEqual(['ro', 'ro/a.txt', 'ro/deep/b.txt', 'top.txt']);
+    expect(plan.deleted).toEqual(['ro/new.txt']);
+    const done = await workspace.restore(snapshot.id);
+
+    expect(done.restored).toEqual(plan.restored);
+    expect(done.deleted).toEqual(plan.deleted);
+    expect(text('ro/a.txt')).toBe('v1');
+    expect(text('ro/deep/b.txt')).toBe('b1');
+    expect(text('top.txt')).toBe('t1');
+    expect(existsSync(join(root, 'ro', 'new.txt'))).toBe(false);
+    expect(statSync(join(root, 'ro')).mode & 0o777).toBe(0o755);
+    expect(statSync(join(root, 'ro', 'deep')).mode & 0o777).toBe(0o555);
+    expect(statSync(root).mode & 0o777).toBe(0o555);
+  });
+
   it('keeps the store for its owner only', async () => {
     put('.env', 'SECRET=1');
     chmodSync(join(root, '.env'), 0o600);

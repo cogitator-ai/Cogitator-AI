@@ -212,6 +212,12 @@ interface RestorePlan {
   writes: { path: string; entry: FileEntry | { type: 'symlink'; target: string } }[];
   /** Modes to set, files first, then directories deepest first */
   chmods: { path: string; mode: number }[];
+  /**
+   * Directories of the owner whose mode keeps the restore from changing what is in them (one
+   * made read-only since the snapshot), with the mode they have: opened for the owner while
+   * the restore runs, then given the mode the snapshot holds, or this one back
+   */
+  opened: { path: string; mode: number }[];
 }
 
 /**
@@ -630,16 +636,35 @@ export class SnapshotStore {
     }
     const result: WorkspaceRestoreResult = { snapshotId: id, dryRun, ...plan.result };
     if (dryRun) return result;
-    for (const removal of plan.removals) await ops.remove(removal.path, removal.recursive);
-    for (const path of plan.mkdirs) await ops.mkdir(path);
-    for (const { path, entry } of plan.writes) {
-      if (entry.type === 'file') {
-        await ops.writeFile(path, await this.readBlob(entry.hash), entry.mode);
-      } else {
-        await ops.symlink(path, entry.target);
+    const set = new Set<string>();
+    try {
+      for (const { path, mode } of plan.opened) await ops.chmod(opsPath(path), mode | 0o700);
+      for (const removal of plan.removals) await ops.remove(removal.path, removal.recursive);
+      for (const path of plan.mkdirs) await ops.mkdir(path);
+      for (const { path, entry } of plan.writes) {
+        if (entry.type === 'file') {
+          await ops.writeFile(path, await this.readBlob(entry.hash), entry.mode);
+        } else {
+          await ops.symlink(path, entry.target);
+        }
+      }
+      for (const { path, mode } of plan.chmods) {
+        await ops.chmod(path, mode);
+        set.add(path);
+      }
+    } finally {
+      for (const { path, mode } of [...plan.opened].reverse()) {
+        if (set.has(path)) continue;
+        await ops.chmod(opsPath(path), mode).catch((error: unknown) => {
+          if (WorkspaceError.is(error, 'NOT_FOUND')) return;
+          getLogger().warn('A directory a restore opened could not be given its mode back', {
+            path,
+            mode: mode.toString(8),
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       }
     }
-    for (const { path, mode } of plan.chmods) await ops.chmod(path, mode);
     return result;
   }
 
@@ -800,7 +825,18 @@ export class SnapshotStore {
       .filter((removal) => present.get(removal.path)?.type === 'dir')
       .sort((a, b) => depth(b.path) - depth(a.path) || compare(b.path, a.path));
     dirModes.sort((a, b) => depth(b.path) - depth(a.path));
+    const opened = await this.closedDirectories(present, [
+      ...removals.flatMap(({ path, recursive }) => [
+        parentOf(path),
+        ...(recursive && present.get(path)?.type === 'dir'
+          ? [path, ...contentsOf(path).filter((each) => present.get(each)?.type === 'dir')]
+          : []),
+      ]),
+      ...mkdirs.map(parentOf),
+      ...writes.map(({ path }) => parentOf(path)),
+    ]);
     return {
+      opened,
       result: {
         restored: restored.sort(compare),
         deleted: [...new Set(deleted)].sort(compare),
@@ -812,6 +848,42 @@ export class SnapshotStore {
       writes,
       chmods: [...fileModes, ...dirModes],
     };
+  }
+
+  /**
+   * Of the directories `dirs` (paths, `''` the root) a restore changes what is in, those there
+   * now whose mode keeps it from that, with their mode: the owner's, which the restore opens for
+   * the time it runs. Refused with `DENIED`, before anything changes, for one of another user
+   */
+  private async closedDirectories(
+    present: Map<string, Present>,
+    dirs: readonly string[]
+  ): Promise<{ path: string; mode: number }[]> {
+    const closed: { path: string; mode: number }[] = [];
+    for (const path of [...new Set(dirs)].sort((a, b) => depth(a) - depth(b) || compare(a, b))) {
+      const now = present.get(path);
+      const info =
+        path === '' ? await lstat(this.root) : now?.type === 'dir' ? now.info : undefined;
+      if (!info) continue;
+      const absolute = this.absolute(path);
+      if (
+        await access(absolute, constants.W_OK | constants.X_OK).then(
+          () => true,
+          () => false
+        )
+      ) {
+        continue;
+      }
+      if (process.getuid === undefined || info.uid !== process.getuid()) {
+        throw new WorkspaceError(
+          'DENIED',
+          `${path === '' ? 'The root' : path} cannot be changed and belongs to another user, so what is in it cannot be restored: fix its permissions and restore again`,
+          { path: path === '' ? '.' : path }
+        );
+      }
+      closed.push({ path, mode: info.mode & 0o7777 });
+    }
+    return closed;
   }
 
   /**
@@ -1642,4 +1714,15 @@ class Limiter {
       this.waiting.shift()?.();
     }
   }
+}
+
+/** The directory a path lies in, `''` for the root */
+function parentOf(path: string): string {
+  const at = path.lastIndexOf('/');
+  return at === -1 ? '' : path.slice(0, at);
+}
+
+/** A path as the restore operations take it, the root as `.` */
+function opsPath(path: string): string {
+  return path === '' ? '.' : path;
 }
