@@ -514,7 +514,7 @@ const EMPTY_SNAPSHOT: PluginSnapshot = {
 
 /** A runtime that hands out runs a test drives itself */
 function fakeRuntime(extra: Partial<TriggerRuntime> = {}) {
-  const resumed: { threadId: string; options: ResumeOptions; settle: Settle }[] = [];
+  const resumed: { threadId: string; runId: string; options: ResumeOptions; settle: Settle }[] = [];
   const started: { options: StartOptions; settle: Settle; aborted: () => boolean }[] = [];
   const runtime: TriggerRuntime = {
     durable: false,
@@ -527,11 +527,11 @@ function fakeRuntime(extra: Partial<TriggerRuntime> = {}) {
         run.settle.fail(new Error('aborted'));
       });
     },
-    resume: (_agent, threadId, options) => {
+    resume: async (_agent, threadId, runId, options) => {
       const run = pending();
       options.signal?.addEventListener('abort', () => run.settle.fail(new Error('aborted')));
-      resumed.push({ threadId, options, settle: run.settle });
-      return run.promise;
+      resumed.push({ threadId, runId, options, settle: run.settle });
+      return { result: run.promise };
     },
     notify: async () => undefined,
     ...extra,
@@ -720,6 +720,221 @@ describe('runs the manager follows', () => {
     expect(leases.filter((entry) => entry === 'taken')).toHaveLength(2);
     expect(leases.filter((entry) => entry === 'released')).toHaveLength(2);
     expect(await store.listActiveRuns()).toEqual([]);
+    await manager.stop();
+  });
+});
+
+/** A store whose next routine read waits until `open()` is called */
+class HeldReads extends experimental_InMemoryRoutineStore {
+  private held?: Promise<void>;
+  private opened?: () => void;
+  /** Whether a read waits for `open()` */
+  waiting = false;
+
+  holdNext(): void {
+    this.held = new Promise<void>((resolve) => {
+      this.opened = resolve;
+    });
+  }
+
+  open(): void {
+    this.opened?.();
+  }
+
+  override async getRoutine(id: string) {
+    const held = this.held;
+    this.held = undefined;
+    if (held) {
+      this.waiting = true;
+      await held;
+      this.waiting = false;
+    }
+    return super.getRoutine(id);
+  }
+}
+
+describe('second review', () => {
+  it('an answer to an item whose run no longer waits resumes nothing in its thread', async () => {
+    const backend = new MockLLMBackend().setResponses([
+      { toolCalls: [{ id: 'call_1', name: 'deploy', arguments: {} }], finishReason: 'tool_calls' },
+      { toolCalls: [{ id: 'call_2', name: 'deploy', arguments: {} }], finishReason: 'tool_calls' },
+      { content: 'deployed second' },
+    ]);
+    const deploy = tool({
+      name: 'deploy',
+      description: 'Deploys',
+      parameters: z.object({}),
+      requiresApproval: true,
+      execute: async () => 'ok',
+    });
+    const agent = new Agent({
+      name: 'worker',
+      model: 'mock/m',
+      instructions: 'x',
+      tools: [deploy],
+    });
+    const { manager } = runtime(
+      {
+        agents: { worker: agent },
+        inbox: new experimental_InMemoryInboxStore(),
+        routines: [
+          routine({
+            session: { threadId: 'shared_thread' },
+            overlap: 'parallel',
+            triggers: [{ kind: 'api', token: 't' }],
+          }),
+        ],
+      },
+      backend
+    );
+    await manager.start();
+    await manager.fire('digest.api');
+    await manager.idle();
+    const [first] = await manager.inbox.list({ kind: 'approval' });
+    await manager.fire('digest.api');
+    await manager.idle();
+    const second = (await manager.inbox.list({ kind: 'approval' })).find(
+      (item) => item.id !== first.id
+    )!;
+    expect(second.runId).not.toBe(first.runId);
+    await expect(
+      manager.respond(first.id, { defaultDecision: { approved: true } })
+    ).rejects.toMatchObject({ code: 'INBOX_ITEM_ANSWERED' });
+    expect(backend.getCallCount()).toBe(2);
+    await manager.respond(second.id, { defaultDecision: { approved: true } });
+    await manager.idle();
+    expect((await manager.inbox.list({ kind: 'result' }))[0]?.summary).toBe('deployed second');
+  });
+
+  it('gives an answer back when the run could not be taken up, so it can be answered again', async () => {
+    let fail = true;
+    const { runtime: fake, resumed } = fakeRuntime();
+    const manager = new experimental_TriggerManager(
+      {
+        agents: { worker: worker() },
+        routines: [routine({ triggers: [{ kind: 'api', token: 't' }] })],
+      },
+      {
+        ...fake,
+        resume: async (agent, threadId, runId, options) => {
+          if (fail) throw new Error('the checkpoint store is down');
+          return fake.resume(agent, threadId, runId, options);
+        },
+      }
+    );
+    const item = await manager.inbox.add({
+      kind: 'approval',
+      title: 'Approve',
+      summary: '',
+      routineId: 'digest',
+      runId: 'trg_digest.api.one',
+      threadId: 'thread_one',
+    });
+    await expect(manager.respond(item.id, { defaultDecision: { approved: true } })).rejects.toThrow(
+      /store is down/
+    );
+    expect((await manager.inbox.get(item.id))?.answeredAt).toBeUndefined();
+    fail = false;
+    await manager.respond(item.id, { defaultDecision: { approved: true } });
+    expect(resumed.map((entry) => entry.runId)).toEqual(['trg_digest.api.one']);
+    resumed[0].settle.ok('done');
+    await manager.idle();
+  });
+
+  it('keeps a durable run resumed by an answer for recovery', async () => {
+    const store = new experimental_InMemoryRoutineStore();
+    const { runtime: fake, resumed } = fakeRuntime({ durable: true });
+    const manager = new experimental_TriggerManager(
+      {
+        agents: { worker: worker() },
+        store,
+        routines: [routine({ triggers: [{ kind: 'api', token: 't' }] })],
+      },
+      fake
+    );
+    const item = await manager.inbox.add({
+      kind: 'approval',
+      title: 'Approve',
+      summary: '',
+      routineId: 'digest',
+      triggerId: 'digest.api',
+      runId: 'trg_digest.api.two',
+      threadId: 'thread_two',
+    });
+    await manager.respond(item.id, { defaultDecision: { approved: true } });
+    expect(resumed[0].options.durable).toBe(true);
+    expect((await store.listActiveRuns()).map((run) => run.runId)).toEqual(['trg_digest.api.two']);
+    resumed[0].settle.ok('done');
+    await manager.idle();
+    expect(await store.listActiveRuns()).toEqual([]);
+  });
+
+  it('holds the slot of a queued firing while its routine is read', async () => {
+    const store = new HeldReads();
+    const { runtime: fake, started } = fakeRuntime();
+    const manager = new experimental_TriggerManager({ agents: { worker: worker() }, store }, fake);
+    await manager.create(
+      routine({
+        id: 'stored',
+        overlap: 'queue',
+        maxConcurrent: 1,
+        triggers: [{ kind: 'api', token: { env: 'COGITATOR_TEST_TOKEN' } }],
+      })
+    );
+    expect((await manager.fire('stored.api')).status).toBe('started');
+    expect((await manager.fire('stored.api')).status).toBe('queued');
+    store.holdNext();
+    started[0].settle.ok('first');
+    await vi.waitFor(() => expect(store.waiting).toBe(true));
+    expect((await manager.fire('stored.api')).status).toBe('queued');
+    store.open();
+    await vi.waitFor(() => expect(started).toHaveLength(2));
+    expect(started.filter((run) => !run.aborted())).toHaveLength(2);
+    started[1].settle.ok('second');
+    await vi.waitFor(() => expect(started).toHaveLength(3));
+    started[2].settle.ok('third');
+    await manager.idle();
+  });
+
+  it('takes up a durable run of an agent a routine names directly, not in agents', async () => {
+    const direct = new Agent({ name: 'direct', model: 'mock/m', instructions: 'x' });
+    const store = new experimental_InMemoryRoutineStore();
+    await store.saveActiveRun({
+      runId: 'trg_own.api.old',
+      kind: 'routine',
+      eventId: 'evt_own',
+      triggerId: 'own.api',
+      routineId: 'own',
+      source: 'api',
+      at: 1,
+      threadId: 'thread_own',
+    });
+    const run = pending();
+    const { runtime: fake } = fakeRuntime({
+      durable: true,
+      recoverRuns: async (filter, agentOf) =>
+        filter('trg_own.api.old') && agentOf('direct', direct.id) === direct
+          ? [{ runId: 'trg_own.api.old', handle: handleOf(run.promise, () => undefined) }]
+          : [],
+    });
+    const manager = new experimental_TriggerManager(
+      {
+        store,
+        routines: [
+          routine({
+            id: 'own',
+            target: { agent: direct },
+            triggers: [{ kind: 'api', token: 't' }],
+          }),
+        ],
+      },
+      fake
+    );
+    await manager.start();
+    expect((await manager.get('own'))?.active).toBe(1);
+    run.settle.ok('recovered');
+    await manager.idle();
+    expect((await manager.inbox.list())[0]?.summary).toBe('recovered');
     await manager.stop();
   });
 });

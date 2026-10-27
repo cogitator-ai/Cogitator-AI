@@ -973,7 +973,23 @@ export class Cogitator implements ToolInvoker {
     if (config.experimental_triggers) {
       this.triggerManager = new experimental_TriggerManager(config.experimental_triggers, {
         start: (agent, options) => this.start(agent, options),
-        resume: (agent, threadId, options) => this.resume(agent, threadId, options),
+        resume: async (agent, threadId, runId, options) => {
+          await this.getMemory();
+          const checkpoint = await this.runCheckpointStore().load(threadId);
+          if (!checkpoint) {
+            throw new CogitatorError({
+              message: `Thread ${threadId} has no paused run`,
+              code: ErrorCode.RUN_NOT_PAUSED,
+            });
+          }
+          if (checkpoint.runId !== runId) {
+            throw new CogitatorError({
+              message: `The run paused in thread ${threadId} is ${checkpoint.runId}, not ${runId}`,
+              code: ErrorCode.RUN_NOT_FOUND,
+            });
+          }
+          return { result: this.resume(agent, checkpoint, options) };
+        },
         notify: (notification, scope) => this.notifyRoutine(notification, scope),
         recoverRuns: async (filter, agentOf) => {
           const recovered = await this.recoverRuns({

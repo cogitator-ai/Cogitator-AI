@@ -82,7 +82,17 @@ export interface TriggerNotifyScope {
 /** What the manager needs of the runtime it starts runs in */
 export interface TriggerRuntime {
   start(agent: Agent, options: StartOptions): RunHandle;
-  resume(agent: Agent, threadId: string, options: ResumeOptions): Promise<RunResult>;
+  /**
+   * Takes up run `runId`, paused in thread `threadId`: resolves once its checkpoint is read and
+   * it goes on, with its result to wait for. Rejects before anything runs when no run waits
+   * there (`RUN_NOT_PAUSED`) or another run of the thread does (`RUN_NOT_FOUND`)
+   */
+  resume(
+    agent: Agent,
+    threadId: string,
+    runId: string,
+    options: ResumeOptions
+  ): Promise<{ result: Promise<RunResult> }>;
   /** Runs the `Notification` hooks and middleware of the runtime */
   notify(notification: RunNotification, scope: TriggerNotifyScope): Promise<void>;
   /** Continues the durable runs a stopped process left, for those the filter takes */
@@ -130,6 +140,8 @@ interface PendingFiring {
 interface RoutineLive {
   runs: Map<string, LiveRun>;
   queue: PendingFiring[];
+  /** Queued firings taken off the queue whose run is about to start: they hold a slot */
+  starting: number;
 }
 
 /** Firings a routine run id is made of: its trigger and what tells the event apart */
@@ -420,7 +432,7 @@ export class experimental_TriggerManager {
   private liveOf(routineId: string): RoutineLive {
     let live = this.live.get(routineId);
     if (!live) {
-      live = { runs: new Map(), queue: [] };
+      live = { runs: new Map(), queue: [], starting: 0 };
       this.live.set(routineId, live);
     }
     return live;
@@ -1191,9 +1203,10 @@ export class experimental_TriggerManager {
       this.report({ type: 'fired', event, status: 'skipped', reason });
       return this.result(event, routine.id, 'skipped', { reason });
     };
-    if (live.runs.size >= max) {
+    const going = live.runs.size + live.starting;
+    if (going >= max) {
       if (overlap === 'skip' || overlap === 'parallel') {
-        return skip(`${live.runs.size} run(s) of the routine going on, at most ${max}`);
+        return skip(`${going} run(s) of the routine going on, at most ${max}`);
       }
       if (overlap === 'queue') {
         if (routine.session !== undefined && routine.session !== 'new') {
@@ -1397,12 +1410,22 @@ export class experimental_TriggerManager {
     const live = this.live.get(registered.routine.id);
     if (!live || live.queue.length === 0 || this.stopped) return;
     const max = registered.routine.maxConcurrent ?? 1;
-    if (live.runs.size >= max) return;
+    if (live.runs.size + live.starting >= max) return;
     const waiting = live.queue.shift()!;
+    live.starting++;
+    let holding = true;
+    const release = (): void => {
+      if (!holding) return;
+      holding = false;
+      live.starting--;
+    };
     this.track(
-      this.find(registered.routine.id).then((fresh) =>
-        fresh ? this.launch(fresh, waiting.event, waiting.runId) : undefined
-      )
+      this.find(registered.routine.id)
+        .then((fresh) => {
+          release();
+          return fresh ? this.launch(fresh, waiting.event, waiting.runId) : undefined;
+        })
+        .finally(release)
     );
   }
 
@@ -1614,19 +1637,48 @@ export class experimental_TriggerManager {
       runId: run.runId,
       threadId: run.threadId,
     };
-    const lease = this.runtime.plugins?.lease();
-    const finished = settle(
-      this.runtime.resume(agent, threadId, {
+    const taken = await this.takeUp(item.id, () =>
+      this.runtime.resume(agent, threadId, run.runId, {
         ...resumeAnswer(answer),
         signal: controller.signal,
+        ...(this.durable && { durable: true }),
         ...(registered.routine.userId !== undefined && { userId: registered.routine.userId }),
       })
     );
-    await this.follow(registered, event, run, record, finished, lease, false);
+    const lease = this.runtime.plugins?.lease();
+    await this.follow(registered, event, run, record, settle(taken.result), lease, true);
     return this.result(event, registered.routine.id, 'started', {
       runId: run.runId,
       threadId: run.threadId,
     });
+  }
+
+  /**
+   * Resumes the run of an inbox item whose answer was just claimed. When the run no longer waits
+   * (another run of its thread paused since, or nothing waits there), the item stays answered and
+   * the call throws `INBOX_ITEM_ANSWERED`. Any other failure before the run goes on gives the
+   * answer back, so the item can be answered again
+   */
+  private async takeUp(
+    itemId: string,
+    resume: () => Promise<{ result: Promise<RunResult> }>
+  ): Promise<{ result: Promise<RunResult> }> {
+    try {
+      return await resume();
+    } catch (error) {
+      const gone =
+        CogitatorError.isCogitatorError(error) &&
+        (error.code === ErrorCode.RUN_NOT_FOUND || error.code === ErrorCode.RUN_NOT_PAUSED);
+      if (gone) {
+        throw new CogitatorError({
+          message: `The run of inbox item ${itemId} no longer waits for an answer`,
+          code: ErrorCode.INBOX_ITEM_ANSWERED,
+          cause: error instanceof Error ? error : new Error(String(error)),
+        });
+      }
+      await this.inbox.releaseAnswer(itemId);
+      throw error;
+    }
   }
 
   /** Answers a task an agent gave itself whose run waits for a person: its agent resumes it */
@@ -1655,13 +1707,14 @@ export class experimental_TriggerManager {
       description: typeof meta.description === 'string' ? meta.description : '',
       ...(item.userId !== undefined && { userId: item.userId }),
     };
-    await this.followTask(
-      task,
-      this.runtime.resume(agent, threadId, {
+    const taken = await this.takeUp(item.id, () =>
+      this.runtime.resume(agent, threadId, task.runId, {
         ...resumeAnswer(answer),
+        ...(this.durable && { durable: true }),
         ...(item.userId !== undefined && { userId: item.userId }),
       })
     );
+    await this.followTask(task, taken.result);
     return {
       type: 'routine_fire',
       status: 'started',
@@ -1739,6 +1792,20 @@ export class experimental_TriggerManager {
   }
 
   /**
+   * Every agent a run of this manager may be on: those of `experimental_triggers.agents` and the
+   * agents routines in code or of plugins name directly as their target
+   */
+  private async knownAgents(): Promise<Agent[]> {
+    const found = new Set<Agent>(Object.values(this.config.agents ?? {}));
+    for (const { routine } of await this.all()) {
+      if ('agent' in routine.target && typeof routine.target.agent !== 'string') {
+        found.add(routine.target.agent);
+      }
+    }
+    return [...found];
+  }
+
+  /**
    * Continues the durable runs of routines and of tasks agents gave themselves that a stopped
    * process left, as the store kept them going on (not from the history, which drops old
    * records). Each takes a lease on the plugins, its outcome reaches the inbox
@@ -1747,12 +1814,12 @@ export class experimental_TriggerManager {
     if (!this.durable || !this.runtime.recoverRuns) return;
     const active = new Map((await this.store.listActiveRuns()).map((run) => [run.runId, run]));
     if (active.size === 0) return;
-    const agents = this.config.agents ?? {};
+    const agents = await this.knownAgents();
     const recovered = await this.runtime.recoverRuns(
       (runId) => active.has(runId),
       (agentName, agentId) =>
-        Object.values(agents).find((agent) => agent.id === agentId) ??
-        Object.values(agents).find((agent) => agent.name === agentName)
+        agents.find((agent) => agent.id === agentId) ??
+        agents.find((agent) => agent.name === agentName)
     );
     for (const { runId, handle } of recovered) {
       const kept = active.get(runId);
