@@ -1,5 +1,13 @@
 # @cogitator-ai/voice
 
+## 0.10.9
+
+### Patch Changes
+
+- Updated dependencies [[`7d6092d`](https://github.com/cogitator-ai/Cogitator-AI/commit/7d6092d211da63b353b138165e23d5dbae362445)]:
+  - @cogitator-ai/types@0.83.0
+  - @cogitator-ai/core@0.72.0
+
 ## 0.10.8
 
 ### Patch Changes
