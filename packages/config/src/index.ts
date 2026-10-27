@@ -7,6 +7,7 @@
 export { loadConfig, defineConfig, type LoadConfigOptions } from './config';
 export {
   CogitatorConfigSchema,
+  TriggersConfigSchema,
   MultitaskStrategySchema,
   DurableRunsConfigSchema,
   LLMConfigSchema,

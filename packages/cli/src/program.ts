@@ -21,6 +21,7 @@ import { skillCommand } from './commands/skill.js';
 import { wizardCommand } from './commands/wizard.js';
 import { rewindCommand } from './commands/rewind.js';
 import { pluginCommand } from './commands/plugin.js';
+import { inboxCommand, scheduleCommand, triggerCommand } from './commands/triggers.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf-8')) as {
@@ -60,6 +61,9 @@ export function createProgram(): Command {
     wizardCommand,
     rewindCommand,
     pluginCommand,
+    scheduleCommand,
+    inboxCommand,
+    triggerCommand,
   ]) {
     program.addCommand(command);
   }
