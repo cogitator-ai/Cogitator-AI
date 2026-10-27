@@ -95,20 +95,20 @@ const workspace = new LocalWorkspace({
 });
 ```
 
-| Option                | Default                   | What it does                                                                  |
-| --------------------- | ------------------------- | ----------------------------------------------------------------------------- |
-| `root`                | required                  | The directory the workspace is confined to                                    |
-| `cwd`                 | `.`                       | Current directory, relative to the root                                       |
-| `create`              | `true`                    | Create the root when missing                                                  |
-| `maxFileBytes`        | 10 MiB                    | Largest file `read` and `write` accept                                        |
-| `refuseHardLinks`     | `false`                   | Refuse to read files with more than one hard link (code `DENIED`)             |
-| `exec.shell`          | `/bin/sh`                 | The shell commands run with (`cmd.exe /d /s /c` on Windows without one)       |
-| `exec.timeout`        | 120000                    | Milliseconds before a command is stopped                                      |
-| `exec.killGrace`      | 2000                      | Milliseconds between SIGTERM and SIGKILL                                      |
-| `exec.maxOutputBytes` | 1 MiB                     | Bytes of stdout and of stderr a result keeps                                  |
-| `exec.env`            | none                      | Variables every command gets                                                  |
-| `exec.inheritEnv`     | `WORKSPACE_INHERITED_ENV` | What commands inherit from your environment, `true` for all of it             |
-| `exec.launch`         | none                      | Changes what is spawned, e.g. to run commands under `sandbox-exec` or `bwrap` |
+| Option                | Default                   | What it does                                                                           |
+| --------------------- | ------------------------- | -------------------------------------------------------------------------------------- |
+| `root`                | required                  | The directory the workspace is confined to                                             |
+| `cwd`                 | `.`                       | Current directory, relative to the root                                                |
+| `create`              | `true`                    | Create the root when missing                                                           |
+| `maxFileBytes`        | 10 MiB                    | Largest file `read` and `write` accept                                                 |
+| `refuseHardLinks`     | `false`                   | Refuse to read files with more than one hard link (code `DENIED`), snapshots skip them |
+| `exec.shell`          | `/bin/sh`                 | The shell commands run with (`cmd.exe /d /s /c` on Windows without one)                |
+| `exec.timeout`        | 120000                    | Milliseconds before a command is stopped                                               |
+| `exec.killGrace`      | 2000                      | Milliseconds between SIGTERM and SIGKILL                                               |
+| `exec.maxOutputBytes` | 1 MiB                     | Bytes of stdout and of stderr a result keeps                                           |
+| `exec.env`            | none                      | Variables every command gets                                                           |
+| `exec.inheritEnv`     | `WORKSPACE_INHERITED_ENV` | What commands inherit from your environment, `true` for all of it                      |
+| `exec.launch`         | none                      | Changes what is spawned, e.g. to run commands under `sandbox-exec` or `bwrap`          |
 
 By default a command inherits only what a shell needs (`PATH`, `HOME`, the locale and a few more, see `WORKSPACE_INHERITED_ENV`), so the API keys in your environment do not reach commands the model writes. `HOME` is passed, so a command can still read what your home directory holds, such as `~/.ssh` and `~/.aws`: run untrusted commands in a `DockerWorkspace`.
 

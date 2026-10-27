@@ -60,6 +60,7 @@ A checkpoint is taken before every user message the run writes: the input, and e
 - **Symlinks** are recorded as links and never followed, a directory with its mode, a file with its mode. Sockets and devices are left out.
 - **Files that change while they are read** are read again, up to five times, so a snapshot holds a whole version of each file. One that never holds still is skipped as `changing`.
 - **Directories that cannot be read** are recorded as skipped (`unreadable`), and a restore leaves everything under them alone.
+- **The workspace's read rules hold.** With `refuseHardLinks`, a file with more than one hard link (possibly a file outside the root) is neither read nor stored: it is skipped as `hard-link`, kept on restore, and a restore rewrites one at a path it restores without reading it.
 - **Files are hashed as they are read**, a chunk at a time into a temporary file of the store, never held whole.
 - **Owner only.** The store's directories are `0700` and its files `0600`, so a copy of a `.env` is no more readable than the file. Blobs and manifests are synced to disk before a manifest names them, and a blob is reused only at the size it was stored with.
 
@@ -78,7 +79,7 @@ const result = await workspace.restore(snapshot.id, { dryRun: true });
 // { snapshotId, dryRun: true, restored: ['src/app.ts'], deleted: ['dist/out.js'], unchanged: 42, kept: [], busy: false }
 ```
 
-A restore is refused with `BUSY` while a command the workspace started still runs (or a process it left in the background), as it could race the changes, and a dry run says so in `busy`.
+A restore is refused with `BUSY` while a command the workspace started still runs (or a process it left in the background), as it could race the changes, and a dry run says so in `busy`. While a restore changes the files, a command asked for is refused with `BUSY` in turn.
 
 ## Rewinding
 
@@ -96,7 +97,7 @@ const report = await cog.rewind('chat', entry.id, { files: true, agents: [coder]
 3. **Memory**: the memory items that stood only on the cut entries become `stale` (`staleBecause: { reason: 'rewound' }`), and the summaries and memory files of the branch left behind are not seen from the new one.
 4. **Runs**: the paused run of the thread and its durable runs are dropped (`runs.paused`, `runs.durable`), as their checkpoints hold the conversation that was cut.
 
-Files go first, so a restore that fails leaves the conversation as it was and the rewind can be made again. Before a real restore that changes anything, the workspace takes a snapshot of the files as they are (`files.safetySnapshotId`): `workspace.restore(report.files.safetySnapshotId)` undoes the file part of a rewind that went too far. It covers every path the restore changes or deletes: it leaves out only what the checkpoint left out, keeps files as large as the largest one the restore rewrites or deletes, and a retention of the workspace (`snapshots.retain`) keeps the checkpoint being restored (`WorkspaceSnapshotOptions.protect`). A rewind that would change a file the safety snapshot could not keep (one that cannot be read) is refused with `DENIED`, naming the files, before anything changes: it could not be undone.
+Files go first, so a restore that fails leaves the conversation as it was and the rewind can be made again. Before a real restore that changes anything, the workspace takes a snapshot of the files as they are (`files.safetySnapshotId`): `workspace.restore(report.files.safetySnapshotId)` undoes the file part of a rewind that went too far. It covers every path the restore changes or deletes: it leaves out only what the checkpoint left out, keeps files as large as the largest one the restore rewrites or deletes, and a retention of the workspace (`snapshots.retain`) keeps the checkpoint being restored (`WorkspaceSnapshotOptions.protect`). A rewind that would change a file the safety snapshot could not keep (one it skipped, or one the workspace's own `snapshots.exclude` leaves out) is refused with `DENIED`, naming the files, before anything changes: it could not be undone.
 
 The checkpoint must be one the workspace keeps, taken in this thread (or a thread it was forked from) for this entry (or the entry it was copied from). A checkpoint reference forged into an entry's metadata, or a workspace the thread did not run in, is refused with `VALIDATION_ERROR`. A run takes its checkpoints in the workspace of the agent it is on, also after a handoff.
 
