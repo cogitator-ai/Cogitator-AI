@@ -55,7 +55,7 @@ import {
   storableProblem,
   triggerIdOf,
 } from './routines';
-import { experimental_Scheduler, type ScheduledFire } from './scheduler';
+import { experimental_Scheduler, type ScheduledFire, type ScheduledHold } from './scheduler';
 import { InMemoryTimerStore } from './timer-stores';
 import {
   readApiFire,
@@ -155,6 +155,11 @@ const RUN_CLAIM_TTL = 3 * 24 * 60 * 60 * 1000;
 const SCHEDULE_INIT_TTL = 30_000;
 /** Failed firings in a row after which a schedule entry is skipped until resumed */
 const SCHEDULE_RETRIES = 5;
+/** How far ahead the entry of a one-shot task is held while its run goes on, renewed meanwhile */
+const TASK_HOLD_MS = 5 * 60 * 1000;
+/** The first wait before a one-shot task whose run failed is due again, doubled each time */
+const TASK_RETRY_BASE_MS = 1000;
+const TASK_RETRY_MAX_MS = 5 * 60 * 1000;
 const HOUR = 60 * 60 * 1000;
 const MAX_SUMMARY = 300;
 
@@ -931,14 +936,11 @@ export class experimental_TriggerManager {
     return event.dedupKey !== undefined ? digest(event.dedupKey) : keyPart(event.id);
   }
 
-  private async fireScheduled(fire: ScheduledFire): Promise<void> {
+  private async fireScheduled(fire: ScheduledFire): Promise<ScheduledHold | undefined> {
     const { entry, occurrence } = fire;
     const trigger = entry.trigger;
-    if (!trigger) return;
-    if (trigger.agent !== undefined) {
-      await this.fireAgentTask(entry, occurrence);
-      return;
-    }
+    if (!trigger) return undefined;
+    if (trigger.agent !== undefined) return this.fireAgentTask(entry, occurrence);
     const routineId = trigger.routineId;
     const triggerId = trigger.triggerId;
     const registered = routineId ? await this.find(routineId) : undefined;
@@ -951,10 +953,10 @@ export class experimental_TriggerManager {
         type: 'error',
         error: `Schedule ${entry.id} fires routine trigger ${routineId}.${triggerId}, which is gone: it is removed`,
       });
-      return;
+      return undefined;
     }
     const state = await this.state(routineId, triggerId);
-    if (!this.enabled(registered.routine, spec, state)) return;
+    if (!this.enabled(registered.routine, spec, state)) return undefined;
     const event = experimental_createTriggerEvent({
       source: 'cron',
       triggerId: fullTriggerId(routineId, triggerId),
@@ -963,16 +965,21 @@ export class experimental_TriggerManager {
       verified: { method: 'schedule', ok: true },
     });
     await this.dispatch(registered, event, String(occurrence));
+    return undefined;
   }
 
   /**
    * A task an agent gave itself came due: its agent continues the thread it was given in. While
    * the run of an earlier occurrence of the task goes on, this one is skipped. A one-shot task
-   * waits for its run, so a run that failed (a provider down, say) counts as a failed firing
-   * and the scheduler fires it again, up to its retries, unless it is `bestEffort`: its failure
-   * goes to the inbox once no retry is left
+   * is held while its run goes on (its entry pushed `TASK_HOLD_MS` ahead and renewed, so neither
+   * this poll nor another process waits for it or fires it again) and settled when the run ends:
+   * fired, or on a failure (a provider down, say) due again after a backoff, up to its retries,
+   * unless it is `bestEffort`. Its failure goes to the inbox once no retry is left
    */
-  private async fireAgentTask(entry: TimerEntry, occurrence: number): Promise<void> {
+  private async fireAgentTask(
+    entry: TimerEntry,
+    occurrence: number
+  ): Promise<ScheduledHold | undefined> {
     const name = entry.trigger?.agent ?? '';
     const agent = this.config.agents?.[name];
     if (!agent) {
@@ -980,19 +987,31 @@ export class experimental_TriggerManager {
         `Task ${entry.id} runs on agent ${name}, which is not in experimental_triggers.agents`
       );
     }
+    const oneShot = !entry.cron && !(entry.type === 'recurring' && entry.interval);
+    const meta = entry.metadata ?? {};
+    const hold = (): ScheduledHold => ({ holdUntil: Date.now() + TASK_HOLD_MS });
     const going = this.runningTasks.get(entry.id);
     if (going !== undefined) {
+      if (oneShot) return hold();
       this.report({
         type: 'error',
         error: `Task ${entry.id} skipped the occurrence of ${new Date(occurrence).toISOString()}: its run ${going} goes on`,
       });
-      return;
+      return undefined;
     }
-    const meta = entry.metadata ?? {};
+    if (
+      oneShot &&
+      typeof meta.taskRun === 'string' &&
+      (await this.store.getActiveRun(meta.taskRun))
+    ) {
+      return hold();
+    }
     const description =
       typeof meta.description === 'string' ? meta.description : (entry.name ?? '');
     const runId = `${RUN_ID_PREFIX}${idPart(entry.id)}_${occurrence}`;
-    if (!(await this.store.claimKey(`run:${runId}`, RUN_CLAIM_TTL))) return;
+    if (!(await this.store.claimKey(`run:${runId}`, RUN_CLAIM_TTL))) {
+      return oneShot ? hold() : undefined;
+    }
     const threadId = typeof meta.threadId === 'string' ? meta.threadId : `task_${idPart(entry.id)}`;
     const userId = typeof meta.userId === 'string' ? meta.userId : undefined;
     const event = experimental_createTriggerEvent({
@@ -1015,6 +1034,9 @@ export class experimental_TriggerManager {
       description,
       ...(userId !== undefined && { userId }),
     };
+    if (oneShot) {
+      await this.scheduler.store.update(entry.id, { metadata: { ...meta, taskRun: runId } });
+    }
     const handle = this.runtime.start(agent, {
       input: experimental_agentTaskInput(event),
       threadId,
@@ -1023,16 +1045,61 @@ export class experimental_TriggerManager {
       ...(this.durable && { durable: true }),
       inputMetadata: { trigger: event },
     });
-    const oneShot = !entry.cron && !(entry.type === 'recurring' && entry.interval);
     const retried =
       oneShot && meta.bestEffort !== true && (entry.consecutiveErrors ?? 0) + 1 < SCHEDULE_RETRIES;
-    const followed = await this.followTask(task, handle.result, { reportFailure: !retried });
-    if (!oneShot) return;
-    const outcome = await followed.outcome;
-    if (outcome.kind === 'error' && !handedOver(outcome)) {
-      await this.store.releaseKey(`run:${runId}`);
-      throw outcome.error;
+    await this.followTask(task, handle.result, { reportFailure: !retried, holdEntry: oneShot });
+    return oneShot ? hold() : undefined;
+  }
+
+  /**
+   * Keeps the entry of a one-shot task held while its run goes on, pushing it ahead every third
+   * of `TASK_HOLD_MS`. Returns what stops it, resolving once a push going on is done
+   */
+  private holdEntry(entryId: string): () => Promise<void> {
+    let pushing: Promise<unknown> = Promise.resolve();
+    const timer = setInterval(() => {
+      pushing = this.scheduler.store
+        .update(entryId, { firesAt: Date.now() + TASK_HOLD_MS })
+        .catch((error: unknown) => this.report({ type: 'error', error: errorText(error) }));
+    }, TASK_HOLD_MS / 3);
+    timer.unref?.();
+    return async () => {
+      clearInterval(timer);
+      await pushing;
+    };
+  }
+
+  /**
+   * Settles the entry of a one-shot task once the run it holds the entry for has ended: fired
+   * when it completed (or failed, for `bestEffort`), else its failures in a row counted and due
+   * again after a backoff, which the scheduler skips past its retries. A run handed over to
+   * another process or suspended leaves the entry held, for whoever takes the run up
+   */
+  private async settleTaskEntry(task: ActiveRoutineRun, outcome: Outcome): Promise<void> {
+    const entry = await this.scheduler.get(task.triggerId);
+    if (!entry || entry.fired || entry.cancelled || entry.metadata?.taskRun !== task.runId) return;
+    if (entry.cron || (entry.type === 'recurring' && entry.interval)) return;
+    if (handedOver(outcome)) return;
+    const now = Date.now();
+    const failed = outcome.kind === 'error';
+    if (!failed || entry.metadata?.bestEffort === true) {
+      await this.scheduler.store.update(entry.id, {
+        lastRunAt: now,
+        lastRunStatus: failed ? 'error' : 'ok',
+        consecutiveErrors: 0,
+        ...(failed ? { lastError: errorText(outcome.error) } : { lastError: undefined }),
+      });
+      await this.scheduler.store.markFired(entry.id);
+      return;
     }
+    const errors = (entry.consecutiveErrors ?? 0) + 1;
+    await this.scheduler.store.update(entry.id, {
+      lastRunAt: now,
+      lastRunStatus: 'error',
+      lastError: errorText(outcome.error),
+      consecutiveErrors: errors,
+      firesAt: now + Math.min(TASK_RETRY_BASE_MS * 2 ** (errors - 1), TASK_RETRY_MAX_MS),
+    });
   }
 
   /**
@@ -1042,20 +1109,24 @@ export class experimental_TriggerManager {
   private async followTask(
     task: ActiveRoutineRun,
     result: Promise<RunResult>,
-    options: { reportFailure?: boolean } = {}
+    options: { reportFailure?: boolean; holdEntry?: boolean } = {}
   ): Promise<{ outcome: Promise<Outcome> }> {
     this.runningTasks.set(task.triggerId, task.runId);
     if (this.durable) await this.saveActive(task);
     const lease = this.runtime.plugins?.lease();
     const outcome = settle(result);
+    const stopHolding = options.holdEntry
+      ? this.holdEntry(task.triggerId)
+      : () => Promise.resolve();
     let ended: Outcome | undefined;
     this.track(
       outcome
-        .then((settled) => {
+        .then(async (settled) => {
           ended = settled;
-          return settled.kind === 'error' && options.reportFailure === false
-            ? undefined
-            : this.finishTask(task, settled);
+          await stopHolding();
+          await this.settleTaskEntry(task, settled);
+          if (settled.kind === 'error' && options.reportFailure === false) return;
+          await this.finishTask(task, settled);
         })
         .finally(async () => {
           lease?.release();

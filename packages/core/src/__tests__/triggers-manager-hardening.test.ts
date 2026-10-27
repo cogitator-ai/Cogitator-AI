@@ -1133,7 +1133,7 @@ describe('runs handed over', () => {
     expect((await manager.history()).map((run) => run.status)).not.toContain('failed');
   });
 
-  it('keep the record of a suspended task for recovery, with no failure and no retry', async () => {
+  it('keep the record and the held entry of a suspended task, with no failure and no retry', async () => {
     const store = new experimental_InMemoryRoutineStore();
     const { runtime: fake, started } = fakeRuntime({ durable: true });
     const manager = new experimental_TriggerManager(
@@ -1150,11 +1150,89 @@ describe('runs handed over', () => {
     started[0].settle.fail(
       new CogitatorError({ message: 'store down', code: ErrorCode.RUN_SUSPENDED })
     );
-    await vi.waitFor(async () => expect((await manager.scheduler.get(entry.id))?.fired).toBe(true));
     await manager.idle();
+    const held = await manager.scheduler.get(entry.id);
+    expect(held?.fired).toBe(false);
+    expect(held?.firesAt).toBeGreaterThan(Date.now() + 60_000);
     expect(started).toHaveLength(1);
     expect(await store.listActiveRuns()).toHaveLength(1);
     expect(await manager.inbox.list()).toEqual([]);
+    await manager.stop();
+  });
+});
+
+describe('one-shot tasks held while they run', () => {
+  it('a long task leaves the poll free for other schedules', async () => {
+    const { runtime: fake, started } = fakeRuntime();
+    const manager = new experimental_TriggerManager(
+      {
+        agents: { worker: worker() },
+        pollInterval: 20,
+        routines: [routine({ triggers: [{ kind: 'cron', cron: '* * * * * *' }] })],
+      },
+      fake
+    );
+    await manager.start();
+    const task = await manager.scheduler.add({
+      at: Date.now() - 1,
+      trigger: { agent: 'worker' },
+      metadata: { description: 'Long', source: 'agent' },
+    });
+    await vi.waitFor(() => expect(started.length).toBeGreaterThanOrEqual(1));
+    const taskRun = started.find((run) => run.options.threadId === `task_${task.id}`)!;
+    expect(taskRun).toBeDefined();
+    await vi.waitFor(
+      () =>
+        expect(
+          started.filter((run) => run.options.threadId !== `task_${task.id}`).length
+        ).toBeGreaterThanOrEqual(1),
+      { timeout: 2_500 }
+    );
+    const held = await manager.scheduler.get(task.id);
+    expect(held?.fired).toBe(false);
+    expect(held?.firesAt).toBeGreaterThan(Date.now() + 60_000);
+    taskRun.settle.ok('done');
+    for (const run of started) run.settle.ok('done');
+    await vi.waitFor(async () => expect((await manager.scheduler.get(task.id))?.fired).toBe(true));
+    await manager.stop();
+  });
+
+  it('after a restart, waits for a run kept going on and starts a run that was lost', async () => {
+    const schedules = new InMemoryTimerStore();
+    const store = new experimental_InMemoryRoutineStore();
+    const entry = (taskRun: string) =>
+      schedules.schedule({
+        workflowId: 'heartbeat',
+        runId: 'scheduler',
+        nodeId: 'task',
+        firesAt: Date.now() - 1,
+        type: 'fixed',
+        trigger: { agent: 'worker' },
+        metadata: { description: 'Remind', source: 'agent', taskRun },
+      });
+    const kept = await entry('trg_kept_1');
+    const lost = await entry('trg_lost_1');
+    await store.saveActiveRun({
+      runId: 'trg_kept_1',
+      kind: 'task',
+      eventId: 'evt_kept',
+      triggerId: kept,
+      source: 'agent',
+      at: 1,
+      threadId: 'thread_kept',
+      agent: 'worker',
+    });
+    const { runtime: fake, started } = fakeRuntime();
+    const manager = new experimental_TriggerManager(
+      { agents: { worker: worker() }, store, schedules, pollInterval: 20 },
+      fake
+    );
+    await manager.start();
+    await vi.waitFor(() => expect(started).toHaveLength(1));
+    expect(started[0].options.threadId).toBe(`task_${lost}`);
+    expect((await schedules.get(kept))?.firesAt).toBeGreaterThan(Date.now() + 60_000);
+    started[0].settle.ok('done');
+    await vi.waitFor(async () => expect((await schedules.get(lost))?.fired).toBe(true));
     await manager.stop();
   });
 });

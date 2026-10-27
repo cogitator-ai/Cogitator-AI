@@ -25,6 +25,16 @@ export interface ScheduledFire {
   signal: AbortSignal;
 }
 
+/**
+ * What `fire` returns for a one-shot entry whose work goes on after it returned: the entry is
+ * neither fired nor failed, it waits until `holdUntil` (ms since epoch) and the one who holds it
+ * settles it (`markFired`, or a retry through `update`) once the work ends, or holds it longer.
+ * Its failures in a row are left as they are
+ */
+export interface ScheduledHold {
+  holdUntil: number;
+}
+
 /** What `add` takes */
 export interface ScheduleInput {
   name?: string;
@@ -54,8 +64,11 @@ export interface ScheduleInput {
 /** Options of {@link experimental_Scheduler} */
 export interface SchedulerOptions extends TimerClaimListeners {
   store: TimerStore;
-  /** What a due occurrence does. A throw counts as a failed run */
-  fire: (fire: ScheduledFire) => void | Promise<void>;
+  /**
+   * What a due occurrence does. A throw counts as a failed run. A one-shot entry may return a
+   * {@link ScheduledHold} instead of finishing: its work goes on, the entry waits meanwhile
+   */
+  fire: (fire: ScheduledFire) => void | ScheduledHold | Promise<void | ScheduledHold>;
   /** The cron engine. Default: the one over `cron-parser`, loaded by `start()` and `add()` */
   cron?: CronEngine;
   /** The entries this scheduler runs, the rest it gives back. Default: all */
@@ -324,17 +337,19 @@ export class experimental_Scheduler {
     let status: 'ok' | 'error' = 'ok';
     let errorMessage: string | undefined;
     let lastOccurrence: number | undefined;
+    let hold: ScheduledHold | undefined;
 
     const lost = new AbortController();
     const stopRenewing = claims.keep(entry, lost);
     try {
       for (const occurrence of plan.fire) {
-        await this.options.fire({
+        const fired = await this.options.fire({
           entry,
           occurrence,
           missed: plan.missed,
           signal: lost.signal,
         });
+        if (fired) hold = fired;
         lastOccurrence = occurrence;
       }
     } catch (error) {
@@ -345,6 +360,16 @@ export class experimental_Scheduler {
     }
 
     const durationMs = Date.now() - startedAt;
+    if (status === 'ok' && hold !== undefined && plan.next === null) {
+      await store.update(entry.id, {
+        firesAt: hold.holdUntil,
+        lastRunAt: startedAt,
+        ...(lastOccurrence !== undefined && { lastOccurrence }),
+      });
+      await claims.release(entry);
+      this.options.onRunComplete?.(entry, status, undefined, durationMs);
+      return;
+    }
     const patch: Partial<TimerEntry> = { lastRunAt: startedAt, lastRunStatus: status };
     if (lastOccurrence !== undefined) patch.lastOccurrence = lastOccurrence;
     if (status === 'error') {

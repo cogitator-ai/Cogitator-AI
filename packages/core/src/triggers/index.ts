@@ -19,6 +19,7 @@ export {
 export {
   experimental_Scheduler,
   type ScheduledFire,
+  type ScheduledHold,
   type ScheduleInput,
   type SchedulerOptions,
 } from './scheduler';
