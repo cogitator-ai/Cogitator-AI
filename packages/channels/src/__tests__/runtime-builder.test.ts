@@ -288,6 +288,13 @@ vi.mock('@cogitator-ai/core', async (importOriginal) => {
     parseModel,
     restrictFileTools: actual.restrictFileTools,
     pendingQuestions: actual.pendingQuestions,
+    experimental_createCronEngine: actual.experimental_createCronEngine,
+    experimental_createTriggerEvent: actual.experimental_createTriggerEvent,
+    experimental_agentTaskInput: actual.experimental_agentTaskInput,
+    experimental_Scheduler: actual.experimental_Scheduler,
+    verifyGitHubSignature: actual.verifyGitHubSignature,
+    verifyMailgunSignature: actual.verifyMailgunSignature,
+    secretsEqual: actual.secretsEqual,
     tool: toolFactory,
   };
 });

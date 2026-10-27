@@ -43,7 +43,13 @@ export {
 } from './thread-key';
 export type { ConversationRef, StoredConversation } from './thread-key';
 export { formatEnvelope, formatElapsed } from './envelope';
-export { getNextCronMs } from './cron';
+export { getNextCronMs, channelsCron } from './cron';
+export {
+  experimental_emailTriggerParser,
+  experimental_channelSink,
+  type EmailTriggerParserOptions,
+  type ChannelSinkOptions,
+} from './triggers';
 
 export { TerminalChannel, terminalChannel } from './channels/terminal';
 export type { TerminalConfig } from './channels/terminal';
