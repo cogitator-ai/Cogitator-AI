@@ -424,7 +424,10 @@ export type PluginSettingsOptions = HookSettingsOptions;
 export interface PluginIsolationConfig {
   /** Milliseconds `activate` may take (default 10 000) */
   activateTimeoutMs?: number;
-  /** Milliseconds a call into the plugin may take when its tool sets none (default 120 000) */
+  /**
+   * Milliseconds a call into the plugin may take when its tool sets none, and the longest wait for
+   * the next chunk of a stream from one of its LLM backends (default 120 000)
+   */
   callTimeoutMs?: number;
   /** Megabytes of heap the process may use (default 256) */
   maxHeapMb?: number;

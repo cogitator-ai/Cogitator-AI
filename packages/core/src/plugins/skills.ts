@@ -3,7 +3,7 @@
  * `plugin:skill` as Claude Code names them, their text with the plugin's variables put in
  */
 
-import { posix } from 'node:path';
+import { basename, posix } from 'node:path';
 import type {
   PluginSkillSpec,
   SkillCatalog,
@@ -19,13 +19,14 @@ export const PLUGIN_SKILL_NAME = /^[\p{Ll}\p{Nd}]+(?:-[\p{Ll}\p{Nd}]+)*$/u;
 
 /**
  * The skills of a plugin's folders, renamed `plugin:name` (a skill at the plugin root takes the
- * plugin's name), their body and files with `${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}` and
+ * name its frontmatter gives, else the plugin's), their body and files with `${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}` and
  * the plugin's options that are not secrets put in. The folders are read once
  */
 export class PluginFolderSkills implements SkillLoader {
   private readonly registry: SkillRegistry;
   private catalog?: Promise<SkillCatalog>;
   private found: string[] = [];
+  private readonly folder: string;
 
   constructor(
     private readonly plugin: string,
@@ -33,6 +34,7 @@ export class PluginFolderSkills implements SkillLoader {
     private readonly variables: PluginVariables,
     private readonly rootSkill = false
   ) {
+    this.folder = basename(dirs[0] ?? '');
     this.registry = new SkillRegistry({ dirs: [...dirs], workspace: false });
   }
 
@@ -53,7 +55,7 @@ export class PluginFolderSkills implements SkillLoader {
   private wrap(inner: SkillCatalog): SkillCatalog {
     const byName = new Map<string, { manifest: SkillManifest; original: string }>();
     for (const skill of inner.skills) {
-      const last = this.rootSkill ? this.plugin : skill.name;
+      const last = this.rootSkill && skill.name === this.folder ? this.plugin : skill.name;
       const name = `${this.plugin}:${last}`;
       if (!byName.has(name)) {
         byName.set(name, { manifest: { ...skill, name }, original: skill.name });

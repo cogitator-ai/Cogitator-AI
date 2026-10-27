@@ -7,6 +7,7 @@
  */
 
 import dgram from 'node:dgram';
+import { EventEmitter } from 'node:events';
 import dns from 'node:dns';
 import { syncBuiltinESMExports } from 'node:module';
 import net from 'node:net';
@@ -66,32 +67,43 @@ const send = (message: ProcessMessage): void => {
 };
 
 function closeNetwork(): void {
-  const refuse = (): never => {
+  function refuse(): never {
     const error = new Error(
       'The network is closed to an isolated plugin: ask the host with context.fetch, which its permissions must allow'
     ) as NodeJS.ErrnoException;
     error.code = 'ERR_ACCESS_DENIED';
     throw error;
-  };
+  }
   const seal = (target: object, key: string): void => {
     Object.defineProperty(target, key, { value: refuse, writable: false, configurable: false });
   };
+  const sealFunctions = (target: object, skip: ReadonlySet<string> = new Set()): void => {
+    for (const key of Object.getOwnPropertyNames(target)) {
+      if (skip.has(key)) continue;
+      const descriptor = Object.getOwnPropertyDescriptor(target, key);
+      if (descriptor && typeof descriptor.value === 'function') seal(target, key);
+    }
+  };
+  const sealClass = (type: unknown): void => {
+    if (typeof type !== 'function') return;
+    for (
+      let prototype: object | null = (type as { prototype: object }).prototype;
+      prototype && prototype !== Object.prototype && prototype !== EventEmitter.prototype;
+      prototype = Object.getPrototypeOf(prototype) as object | null
+    ) {
+      sealFunctions(prototype, new Set(['constructor']));
+    }
+  };
   seal(net.Socket.prototype, 'connect');
   seal(net.Server.prototype, 'listen');
-  seal(dgram.Socket.prototype, 'bind');
-  seal(dgram.Socket.prototype, 'send');
-  for (const key of [
-    'lookup',
-    'lookupService',
-    'resolve',
-    'resolve4',
-    'resolve6',
-    'resolveAny',
-    'reverse',
-  ]) {
-    seal(dns, key);
-    seal(dns.promises, key);
-  }
+  sealClass(dgram.Socket);
+  for (const key of ['connect', 'createConnection', 'createServer']) seal(net, key);
+  seal(dgram, 'createSocket');
+  sealClass(dns.Resolver);
+  sealClass(dns.promises.Resolver);
+  const readOnly = new Set(['getDefaultResultOrder', 'getServers']);
+  sealFunctions(dns, readOnly);
+  sealFunctions(dns.promises, readOnly);
   syncBuiltinESMExports();
 }
 

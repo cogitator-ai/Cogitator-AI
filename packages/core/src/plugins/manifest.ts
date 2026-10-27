@@ -352,6 +352,7 @@ export async function readPluginLayout(
     manifestReport
   );
   let fields: Record<string, unknown>;
+  let added: EntryAdditions = { keepDefault: new Set() };
   if (claude || cogitator) {
     if (
       claude?.name !== undefined &&
@@ -365,7 +366,10 @@ export async function readPluginLayout(
       );
     }
     fields = { ...claude, ...cogitator };
-    if (options.entry) fields = withEntry(fields, options.entry, manifestReport);
+    if (options.entry) {
+      added = withEntry(fields, options.entry, manifestReport);
+      fields = added.fields ?? fields;
+    }
   } else {
     fields = options.entry ? entryAsManifest(options.entry, manifestReport) : {};
   }
@@ -382,7 +386,11 @@ export async function readPluginLayout(
   const paths = new PathChecker(root, report);
   const skillDirs: string[] = [];
   const defaultSkills = join(root, 'skills');
-  if (isDirectory(defaultSkills)) skillDirs.push(defaultSkills);
+  const listsOwnSkills =
+    options.entry?.skills !== undefined &&
+    typeof options.entry.source === 'string' &&
+    /^\.\/?$/.test(options.entry.source.trim());
+  if (isDirectory(defaultSkills) && !listsOwnSkills) skillDirs.push(defaultSkills);
   for (const path of listOf(manifest.skills)) {
     const resolved = paths.check(path, 'skills', { dot: true, kind: 'directory' });
     if (resolved && !skillDirs.includes(resolved)) skillDirs.push(resolved);
@@ -391,10 +399,15 @@ export async function readPluginLayout(
     skillDirs.length === 0 && manifest.skills === undefined && isFile(join(root, 'SKILL.md'));
   const commandFiles: ComponentFile[] = [];
   const inlineCommands: InlineCommand[] = [];
-  if (manifest.commands === undefined) {
+  if (manifest.commands === undefined || added.keepDefault.has('commands')) {
     commandFiles.push(...(await markdownUnder(join(root, 'commands'), report)));
-  } else if (isPathList(manifest.commands)) {
-    if (isDirectory(join(root, 'commands')) && !coversDefault(manifest.commands, 'commands')) {
+  }
+  if (manifest.commands !== undefined && isPathList(manifest.commands)) {
+    if (
+      !added.keepDefault.has('commands') &&
+      isDirectory(join(root, 'commands')) &&
+      !coversDefault(manifest.commands, 'commands')
+    ) {
       report('warning', 'Default commands/ folder is ignored because the manifest sets "commands"');
     }
     for (const path of listOf(manifest.commands)) {
@@ -405,7 +418,7 @@ export async function readPluginLayout(
         commandFiles.push({ path: resolved, name: basename(resolved).replace(/\.md$/i, '') });
       } else report('error', `commands path is not a Markdown file or a folder: ${path}`);
     }
-  } else {
+  } else if (manifest.commands !== undefined) {
     for (const [commandName, entry] of Object.entries(manifest.commands)) {
       if ((entry.source === undefined) === (entry.content === undefined)) {
         report('error', `commands.${commandName} must set exactly one of source and content`);
@@ -425,10 +438,15 @@ export async function readPluginLayout(
     }
   }
   const agentFiles: ComponentFile[] = [];
-  if (manifest.agents === undefined) {
+  if (manifest.agents === undefined || added.keepDefault.has('agents')) {
     agentFiles.push(...(await markdownUnder(join(root, 'agents'), report)));
-  } else {
-    if (isDirectory(join(root, 'agents')) && !coversDefault(manifest.agents, 'agents')) {
+  }
+  if (manifest.agents !== undefined) {
+    if (
+      !added.keepDefault.has('agents') &&
+      isDirectory(join(root, 'agents')) &&
+      !coversDefault(manifest.agents, 'agents')
+    ) {
       report('warning', 'Default agents/ folder is ignored because the manifest sets "agents"');
     }
     for (const path of listOf(manifest.agents)) {
@@ -456,6 +474,19 @@ export async function readPluginLayout(
     } else {
       hooks.push({ hooks: value, source: options.entry ? 'marketplace entry' : CLAUDE_MANIFEST });
     }
+  }
+  if (added.hooks) {
+    const replaced = new Set(Object.keys(added.hooks));
+    for (let at = hooks.length - 1; at >= 0; at--) {
+      const source = hooks[at];
+      if (!source) continue;
+      const kept = Object.fromEntries(
+        Object.entries(source.hooks).filter(([event]) => !replaced.has(event))
+      ) as HookSettings;
+      if (Object.keys(kept).length === 0) hooks.splice(at, 1);
+      else hooks[at] = { ...source, hooks: kept };
+    }
+    hooks.push({ hooks: added.hooks, source: 'marketplace entry' });
   }
   const mcpServers: Record<string, PluginMcpServerConfig> = {};
   const defaultMcp = join(root, '.mcp.json');
@@ -502,9 +533,9 @@ export async function readPluginLayout(
     format: cogitator ? 'cogitator' : 'claude',
     skillDirs,
     rootSkill,
-    commandFiles,
+    commandFiles: uniqueFiles(commandFiles),
     inlineCommands,
-    agentFiles,
+    agentFiles: uniqueFiles(agentFiles),
     hooks,
     mcpServers,
     ...(main !== undefined && { main }),
@@ -707,15 +738,28 @@ function entryAsManifest(entry: MarketplacePluginEntry, report: Report): Record<
   return fields;
 }
 
+/** What a marketplace entry adds to a plugin's own manifest */
+interface EntryAdditions {
+  /** The manifest with the entry's fields, unset when there is no manifest to add to */
+  fields?: Record<string, unknown>;
+  /** Component folders that still load by default although the manifest now names paths */
+  keepDefault: Set<'agents' | 'commands'>;
+  /** The entry's hooks, which replace the manifest's hooks of the same events */
+  hooks?: HookSettings;
+}
+
 /**
  * A manifest with the component fields of its marketplace entry: with `strict` (the default)
- * appended (hooks replace the manifest's per event), without it a conflict that fails the plugin
+ * appended (the default folders kept, hooks replacing the manifest's per event), without it a
+ * conflict that fails the plugin
  */
 function withEntry(
   fields: Record<string, unknown>,
   entry: MarketplacePluginEntry,
   report: Report
-): Record<string, unknown> {
+): EntryAdditions {
+  const keepDefault = new Set<'agents' | 'commands'>();
+  let hooks: HookSettings | undefined;
   const declared = ENTRY_COMPONENTS.filter((key) => entry[key] !== undefined);
   const merged: Record<string, unknown> = { ...fields };
   for (const key of [
@@ -731,13 +775,13 @@ function withEntry(
     if (entry[key] !== undefined) merged[key] = entry[key];
   }
   if (merged.version === undefined && entry.version !== undefined) merged.version = entry.version;
-  if (declared.length === 0) return merged;
+  if (declared.length === 0) return { fields: merged, keepDefault };
   if (entry.strict === false) {
     report(
       'error',
       `Plugin ${String(fields.name ?? entry.name)} has conflicting manifests: both plugin.json and marketplace entry specify components`
     );
-    return merged;
+    return { fields: merged, keepDefault };
   }
   for (const key of declared) {
     const value = entry[key];
@@ -749,7 +793,7 @@ function withEntry(
         );
         continue;
       }
-      merged.hooks = [...listOf(fields.hooks as PluginManifest['hooks']), value];
+      hooks = value as HookSettings;
       continue;
     }
     if (key === 'commands' && isRecord(value) && !Array.isArray(value)) {
@@ -759,17 +803,15 @@ function withEntry(
           : value;
       continue;
     }
-    const own = fields[key] === undefined ? defaultPathOf(key) : fields[key];
+    if (fields[key] === undefined && (key === 'agents' || key === 'commands')) {
+      keepDefault.add(key);
+    }
     merged[key] = [
-      ...listOf(own as PluginManifest['skills']),
+      ...listOf(fields[key] as PluginManifest['skills']),
       ...listOf(value as PluginManifest['skills']),
     ];
   }
-  return merged;
-}
-
-function defaultPathOf(key: (typeof ENTRY_COMPONENTS)[number]): string[] {
-  return key === 'skills' ? [] : [`./${key}/`];
+  return { fields: merged, keepDefault, ...(hooks && { hooks }) };
 }
 
 /** The fields read as a manifest, dependencies and options normalized */
@@ -782,7 +824,7 @@ function manifestOf(fields: Record<string, unknown>, report: Report): PluginMani
         typeof entry === 'string' ? dependencyOf(entry) : { ...entry };
       if (dependency.version !== undefined && !isValidRange(dependency.version)) {
         report(
-          'error',
+          'warning',
           `dependencies: "${dependency.version}" of ${dependency.name} is not a semver range, the dependency is ignored`
         );
         continue;
@@ -1025,6 +1067,12 @@ function serversOf(
 }
 
 /** The Markdown files under `dir`, named by their path with `:` between folders */
+/** `files` without a file listed twice, the first kept */
+function uniqueFiles(files: readonly ComponentFile[]): ComponentFile[] {
+  const seen = new Set<string>();
+  return files.filter((file) => !seen.has(file.path) && seen.add(file.path));
+}
+
 async function markdownUnder(dir: string, report: Report): Promise<ComponentFile[]> {
   if (!isDirectory(dir)) return [];
   const files: ComponentFile[] = [];

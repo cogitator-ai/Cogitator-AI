@@ -8,6 +8,8 @@
 
 import { fork, type ChildProcess } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
+import { readdir, realpath } from 'node:fs/promises';
+import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import {
@@ -233,6 +235,41 @@ function wireError(error: unknown): WireError {
   return { name: 'Error', message: String(error) };
 }
 
+/** Most entries of a plugin folder `linkOutside` walks before it gives up */
+const MAX_CHECKED_ENTRIES = 100_000;
+
+/**
+ * The first link under `root` whose target is outside it: the permission model follows links, so
+ * such a link would let the process read outside the folders it was given. A folder too large to
+ * walk counts as one
+ */
+async function linkOutside(root: string): Promise<string | undefined> {
+  let seen = 0;
+  const walk = async (dir: string): Promise<string | undefined> => {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (++seen > MAX_CHECKED_ENTRIES) return `more than ${MAX_CHECKED_ENTRIES} files to check`;
+      const path = join(dir, entry.name);
+      if (entry.isSymbolicLink()) {
+        const target = await realpath(path).catch(() => undefined);
+        if (target === undefined) continue;
+        if (target !== root && !target.startsWith(`${root}${sep}`)) return path;
+      } else if (entry.isDirectory()) {
+        const found = await walk(path);
+        if (found) return found;
+      }
+    }
+    return undefined;
+  };
+  return walk(root);
+}
+
+/** Why `signal` aborted, as the error a cancelled call rejects with */
+function abortReasonOf(signal: AbortSignal | undefined): Error {
+  const reason: unknown = signal?.reason;
+  return reason instanceof Error ? reason : new Error('Aborted');
+}
+
 interface PendingCall {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -274,6 +311,13 @@ export class IsolatedPluginProcess {
   /** Starts the process and activates the plugin in it, throwing when either fails */
   static async start(options: IsolatedPluginOptions): Promise<IsolatedPluginProcess> {
     const { identity } = options;
+    const escape = await linkOutside(identity.root);
+    if (escape) {
+      throw new CogitatorError({
+        message: `The plugin folder holds a link that leads outside it (${escape}), which its process could read through: remove it`,
+        code: ErrorCode.PLUGIN_INVALID,
+      });
+    }
     const loader = realpathSync(childFile());
     const execArgv = [
       permissionFlag(),
@@ -491,35 +535,41 @@ export class IsolatedPluginProcess {
         })
       );
     }
+    if (signal?.aborted) return Promise.reject(abortReasonOf(signal));
     const id = ++this.nextCall;
     return new Promise((resolve, reject) => {
-      const call: PendingCall = { resolve, reject };
+      const onAbort = () => {
+        if (!this.pending.delete(id)) return;
+        clearTimeout(call.timer);
+        this.send({ t: 'cancel', id });
+        call.reject(abortReasonOf(signal));
+      };
+      const done = () => signal?.removeEventListener('abort', onAbort);
+      const call: PendingCall = {
+        resolve: (value) => {
+          done();
+          resolve(value);
+        },
+        reject: (error) => {
+          done();
+          reject(error);
+        },
+      };
       call.timer = setTimeout(() => {
         this.pending.delete(id);
         this.send({ t: 'cancel', id });
-        reject(
-          new CogitatorError({
-            message: `Plugin ${this.options.identity.id} did not answer within ${timeoutMs} ms`,
-            code: ErrorCode.TOOL_TIMEOUT,
-          })
-        );
+        call.reject(this.timeoutError(timeoutMs));
       }, timeoutMs);
-      if (signal) {
-        const onAbort = () => {
-          if (!this.pending.has(id)) return;
-          this.pending.delete(id);
-          clearTimeout(call.timer);
-          this.send({ t: 'cancel', id });
-          reject(signal.reason instanceof Error ? signal.reason : new Error('Aborted'));
-        };
-        if (signal.aborted) {
-          onAbort();
-          return;
-        }
-        signal.addEventListener('abort', onAbort, { once: true });
-      }
       this.pending.set(id, call);
+      signal?.addEventListener('abort', onAbort, { once: true });
       this.send({ ...message, id } as HostMessage);
+    });
+  }
+
+  private timeoutError(timeoutMs: number): CogitatorError {
+    return new CogitatorError({
+      message: `Plugin ${this.options.identity.id} did not answer within ${timeoutMs} ms`,
+      code: ErrorCode.TOOL_TIMEOUT,
     });
   }
 
@@ -679,6 +729,7 @@ export class IsolatedPluginProcess {
     request: Omit<ChatRequest, 'signal'>,
     signal: AbortSignal | undefined
   ): AsyncGenerator<ChatStreamChunk> {
+    if (signal?.aborted) throw abortReasonOf(signal);
     const id = ++this.nextCall;
     const queue: ChatStreamChunk[] = [];
     let finished = false;
@@ -688,6 +739,7 @@ export class IsolatedPluginProcess {
       wake?.();
       wake = undefined;
     };
+    const timeoutMs = this.callTimeoutMs;
     const call: PendingCall = {
       resolve: () => {
         finished = true;
@@ -701,6 +753,7 @@ export class IsolatedPluginProcess {
       onChunk: (chunk) => {
         const parsed = ChunkSchema.safeParse(chunk);
         if (parsed.success) queue.push(parsed.data as unknown as ChatStreamChunk);
+        idle();
         notify();
       },
       onEnd: () => {
@@ -708,13 +761,23 @@ export class IsolatedPluginProcess {
         notify();
       },
     };
+    const idle = () => {
+      clearTimeout(call.timer);
+      call.timer = setTimeout(() => {
+        if (!this.pending.delete(id)) return;
+        this.send({ t: 'cancel', id });
+        call.reject(this.timeoutError(timeoutMs));
+      }, timeoutMs);
+    };
     const onAbort = () => {
-      this.pending.delete(id);
+      if (!this.pending.delete(id)) return;
+      clearTimeout(call.timer);
       this.send({ t: 'cancel', id });
-      call.reject(signal?.reason instanceof Error ? signal.reason : new Error('Aborted'));
+      call.reject(abortReasonOf(signal));
     };
     signal?.addEventListener('abort', onAbort, { once: true });
     this.pending.set(id, call);
+    idle();
     this.send({ t: 'stream', id, handle, backend, request });
     try {
       for (;;) {
@@ -726,6 +789,7 @@ export class IsolatedPluginProcess {
         });
       }
     } finally {
+      clearTimeout(call.timer);
       signal?.removeEventListener('abort', onAbort);
       if (this.pending.delete(id)) this.send({ t: 'cancel', id });
     }

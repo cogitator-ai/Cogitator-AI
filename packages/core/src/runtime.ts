@@ -7292,11 +7292,18 @@ export class Cogitator implements ToolInvoker {
     return backend;
   }
 
+  /**
+   * The backend of provider `name`: `llm.backends`, then the built-in providers, then a provider
+   * registered globally with `registerLLMBackend`, then one a plugin brings. A plugin never takes
+   * over a provider registered globally, nor gets its `llm.plugins` config
+   */
   private createBackend(name: string): LLMBackend {
     const custom = this.config.llm?.backends;
     if (custom && Object.hasOwn(custom, name)) return custom[name];
-    const contributed = this.pluginHost.snapshot().backends.get(name);
-    if (contributed) {
+    const snapshot = this.pluginHost.snapshot();
+    const contributed = snapshot.backends.get(name);
+    const fromCore = snapshot.backendOwners.get(name)?.endsWith('@builtin') === true;
+    if (contributed && (fromCore || !hasLLMPlugin(name))) {
       const config = this.config.llm?.plugins?.[name];
       if (contributed.validateConfig && !contributed.validateConfig(config)) {
         throw new CogitatorError({

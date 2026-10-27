@@ -51,7 +51,7 @@ import { readHookSettings } from '../hooks/settings';
 import { stringify as stringifyYaml } from 'yaml';
 import { readFrontmatter } from '../skills/frontmatter';
 import { parseCommandFile, parseSubagentFile } from '../subagents/definitions';
-import { PluginPermissions, pluginCapabilities } from './capabilities';
+import { loaderVariableOf, PluginPermissions, pluginCapabilities } from './capabilities';
 import {
   Generation,
   isBuiltTool,
@@ -142,6 +142,15 @@ interface PluginState {
   generation?: Generation;
   generations: number;
   isolated: boolean;
+  /** The plugin of the same name that loads instead of this one */
+  shadowedBy?: string;
+}
+
+/** What a plugin is found as now, put on its state once a generation of it loads */
+interface Found {
+  candidate: Candidate;
+  manifest: PluginManifest;
+  format: PluginInfo['format'];
 }
 
 function message(error: unknown): string {
@@ -178,6 +187,8 @@ export class experimental_PluginHost {
   private loading?: Promise<void>;
   private queue: Promise<unknown> = Promise.resolve();
   private disposed = false;
+  /** Bumped by `dispose()`: reloads asked for before it do nothing after it */
+  private epoch = 0;
   private settings?: PluginSettings;
   private readonly pluginsRoot: string;
 
@@ -245,7 +256,9 @@ export class experimental_PluginHost {
    * `PLUGIN_RELOAD_FAILED` in the result
    */
   reload(id?: string): Promise<PluginReloadResult[]> {
+    const epoch = this.epoch;
     return this.serial(async () => {
+      if (epoch !== this.epoch) return [];
       if (id !== undefined && !this.states.has(id)) {
         throw new CogitatorError({
           message: `No plugin ${id} is known to the host`,
@@ -263,7 +276,8 @@ export class experimental_PluginHost {
   async setEnabled(id: string, enabled: boolean): Promise<PluginReloadResult[]> {
     const current = this.config.enabled ?? {};
     (this.config as { enabled?: Record<string, boolean> }).enabled = { ...current, [id]: enabled };
-    return this.serial(() => this.reconcile('none'));
+    const epoch = this.epoch;
+    return this.serial(async () => (epoch === this.epoch ? this.reconcile('none') : []));
   }
 
   /** Hears every change of what the live plugins add. Returns what stops it */
@@ -279,6 +293,7 @@ export class experimental_PluginHost {
     const agents = new Map<string, SubagentDefinition>();
     const commands = new Map<string, CommandDefinition>();
     const backends = new Map<string, LLMPlugin>();
+    const backendOwners = new Map<string, string>();
     const skills = [];
     const hooks = [];
     const middleware: RunMiddleware[] = [];
@@ -314,6 +329,7 @@ export class experimental_PluginHost {
           continue;
         }
         backends.set(provider, backend);
+        backendOwners.set(provider, id);
       }
       skills.push(...set.skills);
       if (set.codeSkills && set.codeSkills.size > 0) skills.push(set.codeSkills);
@@ -330,6 +346,7 @@ export class experimental_PluginHost {
       hooks,
       middleware,
       backends,
+      backendOwners,
       panels,
     };
     return this.snapshotCache;
@@ -372,13 +389,14 @@ export class experimental_PluginHost {
    * their folders. A later `load()` loads them again
    */
   dispose(): Promise<void> {
+    this.epoch++;
+    for (const watcher of this.watchers.values()) watcher.close();
+    this.watchers.clear();
+    for (const timer of this.watchTimers.values()) clearTimeout(timer);
+    this.watchTimers.clear();
     return this.serial(async () => {
       this.disposed = true;
-      for (const watcher of this.watchers.values()) watcher.close();
-      this.watchers.clear();
-      for (const timer of this.watchTimers.values()) clearTimeout(timer);
-      this.watchTimers.clear();
-      for (const id of [...this.order].reverse()) {
+      for (const id of this.unloadOrder(this.order)) {
         const state = this.states.get(id);
         if (!state?.generation || state.candidate.origin === 'core') continue;
         await this.unload(state);
@@ -388,6 +406,17 @@ export class experimental_PluginHost {
       this.disposed = false;
       this.changed();
     });
+  }
+
+  /**
+   * `ids` in the order to unload them: every plugin before the plugins it depends on (the reverse
+   * of the order they load in), so a dependency never goes while what needs it is still loaded
+   */
+  private unloadOrder(ids: readonly string[]): string[] {
+    const wanted = new Set(ids);
+    return this.resolveGraph()
+      .order.filter((id) => wanted.has(id))
+      .reverse();
   }
 
   private panelOf(plugin: string, panel: string): PluginPanelEntry {
@@ -522,10 +551,17 @@ export class experimental_PluginHost {
     for (const dir of this.config.dirs ?? []) {
       try {
         const layout = await readPluginLayout(resolve(this.root, dir));
-        const id = `${layout.manifest.name}@inline`;
+        const known =
+          layout.fatal.length > 0
+            ? [...this.states.values()].find(
+                (state) => state.candidate.origin === 'dir' && state.candidate.dir === layout.root
+              )
+            : undefined;
+        const name = known?.candidate.name ?? layout.manifest.name;
+        const id = known?.candidate.id ?? `${name}@inline`;
         found.push({
           id,
-          name: layout.manifest.name,
+          name,
           origin: 'dir',
           dir: layout.root,
           layout: {
@@ -570,22 +606,19 @@ export class experimental_PluginHost {
         }
       }
     }
-    const byName = new Map<string, Candidate>();
-    const kept: Candidate[] = [];
-    for (const candidate of found) {
-      const winner = byName.get(candidate.name);
-      if (winner) {
+    const ids = new Set<string>();
+    return found.filter((candidate) => {
+      if (ids.has(candidate.id)) {
         this.record({
           level: 'warning',
           plugin: candidate.id,
-          message: `Not loaded: the name "${candidate.name}" is already taken by ${winner.id}, which takes precedence`,
+          message: `Not loaded: ${candidate.id} is found twice, the first one loads`,
         });
-        continue;
+        return false;
       }
-      byName.set(candidate.name, candidate);
-      kept.push(candidate);
-    }
-    return kept;
+      ids.add(candidate.id);
+      return true;
+    });
   }
 
   /**
@@ -604,15 +637,17 @@ export class experimental_PluginHost {
     for (const warning of this.settings.warnings)
       this.record({ level: 'warning', message: warning });
     const seen = new Set<string>();
+    const incoming = new Map<string, Found>();
     for (const candidate of candidates) {
       seen.add(candidate.id);
       const existing = this.states.get(candidate.id);
-      const manifest = candidate.definition ??
-        candidate.layout?.manifest ?? { name: candidate.name };
-      const state: PluginState = existing ?? {
+      const found: Found = {
         candidate,
-        manifest,
+        manifest: candidate.definition ?? candidate.layout?.manifest ?? { name: candidate.name },
         format: candidate.definition ? 'code' : (candidate.layout?.format ?? 'claude'),
+      };
+      const state: PluginState = existing ?? {
+        ...found,
         enabled: false,
         enabledBy: 'default',
         status: 'disabled',
@@ -621,29 +656,41 @@ export class experimental_PluginHost {
         isolated: false,
       };
       if (!existing) this.states.set(candidate.id, state);
-      if (!existing?.generation || rebuilds(candidate.id)) {
-        state.candidate = candidate;
-        state.manifest = manifest;
-        state.format = candidate.definition ? 'code' : (candidate.layout?.format ?? 'claude');
-      }
+      if (!state.generation?.live) Object.assign(state, found);
+      else if (rebuilds(candidate.id)) incoming.set(candidate.id, found);
       for (const diagnostic of candidate.layout?.diagnostics ?? []) this.record(diagnostic);
     }
+    const gone: PluginState[] = [];
     for (const [id, state] of this.states) {
       if (state.candidate.origin === 'core' || seen.has(id)) continue;
-      if (state.generation) await this.unload(state);
       this.states.delete(id);
+      if (state.generation) gone.push(state);
     }
-    this.decideEnabled();
+    this.decideEnabled(candidates);
     const graph = this.resolveGraph();
+    const off = (id: string, state: PluginState) =>
+      !state.enabled || graph.blocked.has(id) || state.shadowedBy !== undefined;
+    for (const id of [...graph.order].reverse()) {
+      const state = this.states.get(id);
+      if (state?.generation && off(id, state)) await this.unload(state);
+    }
+    const goneOrder = [...this.order].reverse();
+    gone.sort((a, b) => goneOrder.indexOf(a.candidate.id) - goneOrder.indexOf(b.candidate.id));
+    for (const state of gone) await this.unload(state);
     const results: PluginReloadResult[] = [];
     for (const id of graph.order) {
       const state = this.states.get(id);
       if (!state) continue;
-      const blocked = graph.blocked.get(id);
-      if (!state.enabled || blocked) {
+      const blocked =
+        graph.blocked.get(id) ??
+        (state.enabled && !state.shadowedBy ? this.downDependency(state) : undefined);
+      if (off(id, state) || blocked) {
         if (state.generation) await this.unload(state);
-        state.status = state.enabled ? 'blocked' : 'disabled';
-        if (blocked) {
+        state.status = state.enabled && !state.shadowedBy ? 'blocked' : 'disabled';
+        if (state.shadowedBy !== undefined) {
+          state.error = `The name "${state.manifest.name}" is taken by ${state.shadowedBy}, which takes precedence`;
+          this.report(id, 'warning', `Not loaded: ${state.error}`);
+        } else if (blocked) {
           state.error = blocked.message;
           this.report(id, 'error', blocked.message);
           this.emit({ type: 'blocked', plugin: id, error: blocked.message });
@@ -651,18 +698,39 @@ export class experimental_PluginHost {
         continue;
       }
       if (state.generation && !rebuilds(id)) continue;
-      results.push(await this.build(state));
+      results.push(await this.build(state, incoming.get(id)));
     }
     this.watch();
     this.changed();
     return results;
   }
 
-  /** Decides `enabled` of every plugin: the settings, then each one's default, then dependencies */
-  private decideEnabled(): void {
+  /**
+   * The error of a dependency of `state` that has no live generation (it failed to load), which
+   * keeps `state` from loading
+   */
+  private downDependency(state: PluginState): CogitatorError | undefined {
+    for (const dependency of state.manifest.dependencies ?? []) {
+      const target = this.dependencyTarget(state, dependency);
+      if (!target || target.generation?.live) continue;
+      return new CogitatorError({
+        message: `${state.candidate.id} needs the plugin ${target.candidate.id}, which did not load${target.error ? `: ${target.error}` : ''}`,
+        code: ErrorCode.PLUGIN_DEPENDENCY_UNMET,
+      });
+    }
+    return undefined;
+  }
+
+  /**
+   * Decides `enabled` of every plugin: the settings, then each one's default, then dependencies.
+   * Of the enabled plugins that share a name one loads: the one managed settings enable, else the
+   * first found (code, then folders, then installed). A disabled plugin shadows nothing
+   */
+  private decideEnabled(candidates: readonly Candidate[]): void {
     const enabled = this.settings?.enabled ?? new Map();
     for (const state of this.states.values()) {
       if (state.candidate.origin === 'core') continue;
+      delete state.shadowedBy;
       const entry = enabled.get(state.candidate.id);
       if (entry) {
         state.enabled = entry.value;
@@ -672,23 +740,52 @@ export class experimental_PluginHost {
         state.enabledBy = 'default';
       }
     }
+    const shadow = () => {
+      const byName = new Map<string, PluginState[]>();
+      for (const candidate of candidates) {
+        const state = this.states.get(candidate.id);
+        if (!state?.enabled) continue;
+        const group = byName.get(state.candidate.name) ?? [];
+        group.push(state);
+        byName.set(state.candidate.name, group);
+      }
+      for (const group of byName.values()) {
+        const winner = group.find((state) => state.enabledBy === 'managed') ?? group[0];
+        if (!winner) continue;
+        for (const state of group) {
+          if (state !== winner) state.shadowedBy = winner.candidate.id;
+        }
+      }
+    };
+    shadow();
     let grew = true;
     while (grew) {
       grew = false;
       for (const state of this.states.values()) {
-        if (!state.enabled) continue;
+        if (!state.enabled || state.shadowedBy !== undefined) continue;
         for (const dependency of state.manifest.dependencies ?? []) {
           const target = this.dependencyTarget(state, dependency);
-          if (target && !target.enabled && !enabled.has(target.candidate.id)) {
+          if (
+            target &&
+            !target.enabled &&
+            target.shadowedBy === undefined &&
+            !enabled.has(target.candidate.id)
+          ) {
             target.enabled = true;
             target.enabledBy = 'default';
             grew = true;
           }
         }
       }
+      if (grew) shadow();
     }
   }
 
+  /**
+   * The plugin `dependency` of `state` names: the one of its marketplace (the marketplace of
+   * `state` when it names none), else one of that name, a local copy from code or a folder standing
+   * in for any marketplace as in Claude Code
+   */
   private dependencyTarget(
     state: PluginState,
     dependency: PluginDependency
@@ -696,15 +793,21 @@ export class experimental_PluginHost {
     const marketplace = dependency.marketplace ?? state.candidate.marketplace;
     const exact = this.states.get(`${dependency.name}@${marketplace}`);
     if (exact) return exact;
-    if (dependency.marketplace !== undefined) return undefined;
-    return [...this.states.values()].find(
+    const named = [...this.states.values()].filter(
       (candidate) => candidate.candidate.name === dependency.name
+    );
+    if (dependency.marketplace === undefined) {
+      return named.find((candidate) => candidate.shadowedBy === undefined) ?? named[0];
+    }
+    return named.find(
+      (candidate) => candidate.candidate.origin === 'dir' || candidate.candidate.origin === 'code'
     );
   }
 
   /**
    * The order plugins load in, dependencies first, and the ones that may not load: a cycle, or a
-   * dependency missing, off, blocked or of a version its range does not allow
+   * dependency missing, off, blocked or installed at a version its range does not allow (a local
+   * copy, from code or a folder, is not checked against the range, as in Claude Code)
    */
   private resolveGraph(): { order: string[]; blocked: Map<string, CogitatorError> } {
     const ids = [...this.states.keys()].filter(
@@ -743,6 +846,7 @@ export class experimental_PluginHost {
           );
         } else if (
           dependency.version !== undefined &&
+          target.candidate.origin === 'installed' &&
           (target.manifest.version === undefined ||
             !satisfies(target.manifest.version, dependency.version))
         ) {
@@ -803,16 +907,28 @@ export class experimental_PluginHost {
     return { order, blocked };
   }
 
-  /** Builds a new generation of `state` and puts it live, the old one unloaded after the swap */
-  private async build(state: PluginState): Promise<PluginReloadResult> {
+  /**
+   * Builds a new generation of `state` (as `found` now, when a live one serves) and puts it live,
+   * the old one unloaded after the swap. A generation that fails leaves the live one, and what the
+   * plugin was found as, as they were
+   */
+  private async build(state: PluginState, found?: Found): Promise<PluginReloadResult> {
     const id = state.candidate.id;
     const previous = state.generation;
     const generation = new Generation(state.generations + 1, () => this.changed());
+    generation.replacing = previous?.live === true;
+    const before: Found = {
+      candidate: state.candidate,
+      manifest: state.manifest,
+      format: state.format,
+    };
+    if (found) Object.assign(state, found);
     try {
       await this.activate(state, generation);
       await generation.settled();
       if (generation.isDisposed) throw new Error('The plugin was unloaded while it loaded');
     } catch (error) {
+      if (previous?.live) Object.assign(state, before);
       const failures = await generation.dispose();
       for (const failure of failures) {
         this.report(
@@ -950,6 +1066,7 @@ export class experimental_PluginHost {
     return {
       ...(state.candidate.dir !== undefined && { root: state.candidate.dir }),
       data: pluginDataDir(this.pluginsRoot, state.candidate.id),
+      projectDir: this.root,
       options,
       secrets,
     };
@@ -986,10 +1103,19 @@ export class experimental_PluginHost {
     };
   }
 
+  /**
+   * The rules an installed plugin runs under: what its manifest declares, cut to what was granted.
+   * A version that drops its `permissions` keeps the ones granted, so leaving the block out never
+   * lifts the checks
+   */
   private grantedOf(state: PluginState): PluginPermissionsSpec | undefined {
     const declared = state.manifest.permissions;
     const record = state.candidate.record;
-    if (!declared || !record) return declared;
+    if (!record) return declared;
+    if (!declared) {
+      const kept = record.grantedPermissions;
+      return kept && { allow: [...(kept.allow ?? [])], deny: [...(kept.deny ?? [])] };
+    }
     const granted = new Set(record.grantedPermissions?.allow ?? []);
     const allow = (declared.allow ?? []).filter((rule) => {
       if (granted.has(rule)) return true;
@@ -1115,7 +1241,7 @@ export class experimental_PluginHost {
     }
     for (const source of layout.hooks) context.addHooks(source.hooks, source.source);
     for (const [server, config] of Object.entries(layout.mcpServers)) {
-      context.registerMcpServer(server, config);
+      context.addMcpServer(server, config);
     }
     for (const panel of layout.panels) context.addPanel(panel.spec, panel.path);
   }
@@ -1139,7 +1265,14 @@ export class experimental_PluginHost {
       this.root
     );
     for (const warning of checks.warnings) this.report(id, 'warning', warning);
-    const enforce = permissions !== undefined;
+    const fileChecks =
+      candidate.origin === 'core'
+        ? undefined
+        : permissions !== undefined
+          ? checks
+          : PluginPermissions.hostDenyOnly(id, this.config.permissions?.deny ?? [], this.root);
+    const codeChecks =
+      permissions === undefined && candidate.layout?.main !== undefined ? checks : fileChecks;
     const capabilities = pluginCapabilities(checks, this.root, generation.signal);
     const sensitive = new Set(
       Object.entries(state.manifest.userConfig ?? {})
@@ -1182,9 +1315,12 @@ export class experimental_PluginHost {
         if (set.commands.get(kept.name) === kept) set.commands.delete(kept.name);
       });
     };
-    const addHooks = (hooks: HookSettings, source: string): PluginDisposer => {
-      const allowed = this.checkedHooks(id, hooks, source, variables, enforce ? checks : undefined);
-      if (!allowed) return async () => undefined;
+    const addHooks = (
+      hooks: HookSettings,
+      source: string,
+      guard: PluginPermissions | undefined
+    ): PluginDisposer => {
+      const allowed = this.checkedHooks(id, hooks, source, variables, guard);
       const entry = {
         plugin: id,
         hooks: allowed.hooks,
@@ -1192,13 +1328,15 @@ export class experimental_PluginHost {
         layer: state.enabledBy === 'default' ? ('session' as const) : state.enabledBy,
         env: pluginEnvironment(variables, true),
       };
+      let removed = false;
       void allowed.ready.then(() => {
-        if (generation.isDisposed) return;
+        if (generation.isDisposed || removed || Object.keys(entry.hooks).length === 0) return;
         set.hooks.push(entry);
         generation.touch();
       });
       generation.wait(allowed.ready);
       return generation.track(() => {
+        removed = true;
         const at = set.hooks.indexOf(entry);
         if (at !== -1) set.hooks.splice(at, 1);
       }, `hooks ${source}`);
@@ -1308,16 +1446,9 @@ export class experimental_PluginHost {
         const input = typeof command === 'string' ? { template: command } : command;
         return addCommand({ ...input, name: `${pluginName}:${commandName}`, source: 'plugin' });
       },
-      registerHooks: (hooks: HookSettings) => addHooks(hooks, 'code'),
+      registerHooks: (hooks: HookSettings) => addHooks(hooks, 'code', codeChecks),
       registerMcpServer: (server: string, config: PluginMcpServerConfig) =>
-        this.addMcpServer(
-          state,
-          generation,
-          server,
-          config,
-          variables,
-          enforce ? checks : undefined
-        ),
+        this.addMcpServer(state, generation, server, config, variables, codeChecks),
       registerLLMBackend: (plugin: LLMPlugin) => {
         if (
           typeof plugin.provider !== 'string' ||
@@ -1345,7 +1476,9 @@ export class experimental_PluginHost {
       onDispose: (dispose: PluginDisposer) => generation.track(dispose, 'onDispose'),
       addAgent,
       addCommand,
-      addHooks,
+      addHooks: (hooks: HookSettings, source: string) => addHooks(hooks, source, fileChecks),
+      addMcpServer: (server: string, config: PluginMcpServerConfig) =>
+        this.addMcpServer(state, generation, server, config, variables, fileChecks),
       addPanel,
     };
     return context;
@@ -1363,7 +1496,7 @@ export class experimental_PluginHost {
     source: string,
     variables: PluginVariables,
     checks: PluginPermissions | undefined
-  ): { hooks: HookSettings; ready: Promise<void> } | undefined {
+  ): { hooks: HookSettings; ready: Promise<void> } {
     const warnings: string[] = [];
     const loaded = readHookSettings(hooks, 'session', source, warnings);
     for (const warning of warnings) this.report(id, 'warning', warning, source);
@@ -1417,7 +1550,11 @@ export class experimental_PluginHost {
                       ? hook.handler.args?.map((arg) => substitute(arg, variables, 'placeholder'))
                       : undefined
                   )
-                : final.url;
+                : substitute(
+                    hook.handler.type === 'http' ? hook.handler.url : '',
+                    variables,
+                    'placeholder'
+                  );
             const decision = await checks.decide(
               final.type === 'command'
                 ? { kind: 'command', command: shown }
@@ -1468,11 +1605,22 @@ export class experimental_PluginHost {
     const resolved = substituteServer(config, variables);
     const connector = this.config.mcp;
     let close: (() => Promise<void>) | undefined;
+    let removed = false;
     const tools: Tool[] = [];
     const connect = async () => {
       if (checks) {
-        const decision =
-          typeof resolved.url === 'string'
+        const env =
+          typeof config.env === 'object' && config.env !== null ? Object.keys(config.env) : [];
+        const loader =
+          typeof resolved.url === 'string' || checks.scope !== 'granted'
+            ? undefined
+            : loaderVariableOf(env);
+        const decision = loader
+          ? {
+              allowed: false,
+              reason: `it sets ${loader}, which changes what the command loads`,
+            }
+          : typeof resolved.url === 'string'
             ? await checks.decide({ kind: 'fetch', url: resolved.url })
             : await checks.decide({
                 kind: 'command',
@@ -1482,6 +1630,9 @@ export class experimental_PluginHost {
                     ? config.args.map((arg) => substitute(String(arg), variables, 'placeholder'))
                     : undefined
                 ),
+                ...(typeof resolved.cwd === 'string' && {
+                  cwd: resolve(this.root, resolved.cwd),
+                }),
               });
         if (!decision.allowed) {
           this.report(
@@ -1505,7 +1656,7 @@ export class experimental_PluginHost {
           agent: id,
           signal: generation.signal,
         });
-        if (generation.isDisposed) {
+        if (generation.isDisposed || removed) {
           await connection.close();
           return;
         }
@@ -1524,11 +1675,16 @@ export class experimental_PluginHost {
         }
         generation.touch();
       } catch (error) {
-        this.report(id, 'error', `The MCP server ${full} did not start: ${message(error)}`);
+        const text = `The MCP server ${full} did not start: ${message(error)}`;
+        if (generation.replacing && !removed) {
+          throw new CogitatorError({ message: text, code: ErrorCode.PLUGIN_ACTIVATION_FAILED });
+        }
+        this.report(id, 'error', text);
       }
     };
-    generation.wait(connect());
+    generation.wait(connect(), true);
     return generation.track(async () => {
+      removed = true;
       set.mcpServers.delete(full);
       for (const tool of tools) if (set.tools.get(tool.name) === tool) set.tools.delete(tool.name);
       await close?.();
@@ -1614,11 +1770,7 @@ export class experimental_PluginHost {
       if (this.watchers.has(id)) continue;
       try {
         const watcher = watch(dir, { recursive: true }, (_event, file) => {
-          if (
-            typeof file === 'string' &&
-            (file.startsWith('node_modules') || file.startsWith('.git'))
-          )
-            return;
+          if (typeof file === 'string' && ignoredByWatch(file)) return;
           clearTimeout(this.watchTimers.get(id));
           this.watchTimers.set(
             id,
@@ -1630,7 +1782,15 @@ export class experimental_PluginHost {
             }, debounce)
           );
         });
-        watcher.on('error', () => watcher.close());
+        watcher.on('error', (error) => {
+          watcher.close();
+          if (this.watchers.get(id) === watcher) this.watchers.delete(id);
+          this.report(
+            id,
+            'warning',
+            `The plugin folder stopped being watched (${message(error)}), the next reload watches it again`
+          );
+        });
         this.watchers.set(id, watcher);
       } catch (error) {
         this.report(id, 'warning', `The plugin folder cannot be watched: ${message(error)}`);
@@ -1643,8 +1803,16 @@ export class experimental_PluginHost {
 interface InternalContext extends PluginContext {
   addAgent(definition: SubagentDefinition): PluginDisposer;
   addCommand(command: CommandDefinition): PluginDisposer;
+  /** Adds hooks from the plugin's files: checked like `registerHooks` of a plugin without code */
   addHooks(hooks: HookSettings, source: string): PluginDisposer;
+  /** Adds an MCP server from the plugin's files, checked like its hooks files */
+  addMcpServer(server: string, config: PluginMcpServerConfig): PluginDisposer;
   addPanel(panel: PluginPanelContribution, path?: string): PluginDisposer;
+}
+
+/** Whether a change to `file` (relative to a plugin folder) is one a reload ignores */
+function ignoredByWatch(file: string): boolean {
+  return file.split(/[\\/]/).some((part) => part === 'node_modules' || part === '.git');
 }
 
 /** Why `name` cannot name a component of a plugin, its parts separated by `:` */

@@ -8,6 +8,7 @@ import {
   pluginNameProblem,
 } from '../plugins/manifest';
 import { satisfies, maxSatisfying, isValidRange } from '../plugins/semver';
+import { PluginFolderSkills } from '../plugins/skills';
 import {
   substitute,
   pluginEnvironment,
@@ -182,6 +183,100 @@ describe('plugin manifests', () => {
     expect(loose.fatal).toEqual([
       'Plugin entry has conflicting manifests: both plugin.json and marketplace entry specify components',
     ]);
+  });
+
+  it('keeps the default agents and commands folders when a strict entry adds its own', async () => {
+    write('.claude-plugin/plugin.json', JSON.stringify({ name: 'kit' }));
+    write('agents/rev.md', '---\nname: rev\ndescription: Reviews\n---\nReview.');
+    write('extra/extra.md', '---\nname: extra\ndescription: Extra\n---\nExtra.');
+    write('more/cmd.md', 'More.');
+    const layout = await readPluginLayout(dir, {
+      entry: {
+        name: 'kit',
+        source: './',
+        agents: ['./extra/extra.md'],
+        commands: ['./more/cmd.md'],
+      },
+    });
+    expect(layout.agentFiles.map((file) => file.name).sort()).toEqual(['extra', 'rev']);
+    expect(layout.commandFiles.map((file) => file.name)).toEqual(['cmd']);
+    expect(layout.diagnostics.filter((entry) => entry.level === 'error')).toEqual([]);
+    expect(layout.fatal).toEqual([]);
+  });
+
+  it("replaces the manifest's hooks of an event with a strict entry's", async () => {
+    write('.claude-plugin/plugin.json', JSON.stringify({ name: 'hooked' }));
+    write(
+      'hooks/hooks.json',
+      JSON.stringify({
+        hooks: {
+          Stop: [{ hooks: [{ type: 'command', command: 'echo manifest-stop' }] }],
+          SessionStart: [{ hooks: [{ type: 'command', command: 'echo manifest-start' }] }],
+        },
+      })
+    );
+    const layout = await readPluginLayout(dir, {
+      entry: {
+        name: 'hooked',
+        source: './',
+        hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo entry-stop' }] }] },
+      },
+    });
+    const commands = layout.hooks.flatMap((source) =>
+      Object.entries(source.hooks).flatMap(([event, groups]) =>
+        (groups ?? []).flatMap((group) =>
+          group.hooks.map(
+            (handler) => `${event} ${handler.type === 'command' ? handler.command : ''}`
+          )
+        )
+      )
+    );
+    expect(commands.sort()).toEqual(['SessionStart echo manifest-start', 'Stop echo entry-stop']);
+  });
+
+  it('loads only the skills a root-source entry lists, not the whole skills folder', async () => {
+    write('skills/xlsx/SKILL.md', '---\nname: xlsx\ndescription: Sheets\n---\nSheets.');
+    write('skills/docx/SKILL.md', '---\nname: docx\ndescription: Docs\n---\nDocs.');
+    write('skills/art/SKILL.md', '---\nname: art\ndescription: Art\n---\nArt.');
+    const layout = await readPluginLayout(dir, {
+      entry: {
+        name: 'document-skills',
+        source: './',
+        strict: false,
+        skills: ['./skills/xlsx', './skills/docx'],
+      },
+    });
+    expect(layout.skillDirs.map((path) => path.split(/[\\/]/).pop()).sort()).toEqual([
+      'docx',
+      'xlsx',
+    ]);
+  });
+
+  it('names a skill at the plugin root after its frontmatter, else after the plugin', async () => {
+    const named = join(dir, 'named');
+    mkdirSync(named, { recursive: true });
+    writeFileSync(join(named, 'SKILL.md'), '---\nname: pdf-tools\ndescription: PDFs\n---\nPDFs.');
+    const bare = join(dir, 'bare');
+    mkdirSync(bare, { recursive: true });
+    writeFileSync(join(bare, 'SKILL.md'), '---\nname: bare\ndescription: Bare\n---\nBare.');
+    const variables = { options: {}, secrets: {} };
+    const first = await new PluginFolderSkills('kit', [named], variables, true).discover();
+    const second = await new PluginFolderSkills('solo', [bare], variables, true).discover();
+    expect(first.skills.map((skill) => skill.name)).toEqual(['kit:pdf-tools']);
+    expect(second.skills.map((skill) => skill.name)).toEqual(['solo:solo']);
+  });
+
+  it('ignores a dependency with an invalid range instead of failing the plugin', async () => {
+    write(
+      '.claude-plugin/plugin.json',
+      JSON.stringify({ name: 'loose', dependencies: [{ name: 'lib', version: 'not a range' }] })
+    );
+    const layout = await readPluginLayout(dir);
+    expect(layout.fatal).toEqual([]);
+    expect(layout.manifest.dependencies).toEqual([]);
+    expect(layout.diagnostics.map((entry) => entry.message)).toContain(
+      'dependencies: "not a range" of lib is not a semver range, the dependency is ignored'
+    );
   });
 
   it('extends a Claude Code manifest with the Cogitator one', async () => {

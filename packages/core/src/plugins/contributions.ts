@@ -58,6 +58,8 @@ export interface PluginSnapshot {
   readonly middleware: readonly RunMiddleware[];
   /** LLM backend providers by name */
   readonly backends: ReadonlyMap<string, LLMPlugin>;
+  /** The id of the plugin each provider of `backends` comes from */
+  readonly backendOwners: ReadonlyMap<string, string>;
   readonly panels: readonly PluginPanelEntry[];
 }
 
@@ -87,6 +89,7 @@ export class Generation {
   readonly controller = new AbortController();
   private readonly stack: { dispose: () => Promise<void>; label: string }[] = [];
   private readonly pending = new Set<Promise<unknown>>();
+  private failure?: { error: unknown };
   private disposed = false;
 
   constructor(
@@ -97,6 +100,9 @@ export class Generation {
 
   /** Whether the host serves this generation's registrations */
   live = false;
+
+  /** Whether the generation replaces a live one, which goes on when this one fails to load */
+  replacing = false;
 
   get signal(): AbortSignal {
     return this.controller.signal;
@@ -134,16 +140,25 @@ export class Generation {
     };
   }
 
-  /** Something the generation finishes before it counts as loaded */
-  wait(work: Promise<unknown>): void {
-    const kept = work.catch(() => undefined);
+  /**
+   * Something the generation finishes before it counts as loaded. With `fatal`, its failure fails
+   * the load: `settled()` throws it
+   */
+  wait(work: Promise<unknown>, fatal = false): void {
+    const kept = work.catch((error: unknown) => {
+      if (fatal) this.failure ??= { error };
+    });
     this.pending.add(kept);
     void kept.finally(() => this.pending.delete(kept));
   }
 
-  /** Waits for everything `wait` was given, including what that work starts */
+  /**
+   * Waits for everything `wait` was given, including what that work starts, and throws the first
+   * failure of fatal work
+   */
   async settled(): Promise<void> {
     while (this.pending.size > 0) await Promise.all([...this.pending]);
+    if (this.failure) throw this.failure.error;
   }
 
   /**

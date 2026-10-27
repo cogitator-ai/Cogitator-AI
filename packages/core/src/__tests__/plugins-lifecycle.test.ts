@@ -7,6 +7,7 @@ import { ErrorCode, type PluginDefinition, type PluginHostEvent } from '@cogitat
 import { experimental_PluginHost } from '../plugins/host';
 import { experimental_definePlugin } from '../plugins/define';
 import { experimental_memorySecretStore } from '../plugins/secrets';
+import { writeInstalledPlugins } from '../plugins/store';
 import { tool } from '../tool';
 
 const echo = (name: string) =>
@@ -202,7 +203,7 @@ describe('plugin lifecycle', () => {
     await plugins.dispose();
   });
 
-  it('blocks a plugin whose dependency is missing, disabled or of a version its range does not allow', async () => {
+  it('blocks a plugin whose dependency is missing or disabled, a local copy satisfying any range', async () => {
     const plugins = new experimental_PluginHost({
       root: base,
       config: {
@@ -225,11 +226,212 @@ describe('plugin lifecycle', () => {
     expect(plugins.get('needs-off@code')?.error).toBe(
       'needs-off@code needs the plugin off@code, which is disabled'
     );
-    expect(plugins.get('needs-new@code')?.error).toBe(
-      'Requires "old@code" ^2.0.0, installed 1.4.0'
-    );
+    expect(plugins.get('needs-new@code')?.status).toBe('active');
     expect(plugins.get('needs-old@code')?.status).toBe('active');
     expect(plugins.get('off@code')).toMatchObject({ status: 'disabled', enabledBy: 'session' });
+    await plugins.dispose();
+  });
+
+  it('checks a version range against an installed dependency, and lets a local copy stand in for a marketplace', async () => {
+    const pluginsRoot = join(base, '.plugins');
+    const lib = join(pluginsRoot, 'cache', 'mkt', 'lib', '1.4.0');
+    mkdirSync(join(lib, '.claude-plugin'), { recursive: true });
+    writeFileSync(
+      join(lib, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'lib', version: '1.4.0' })
+    );
+    await writeInstalledPlugins(pluginsRoot, [
+      {
+        id: 'lib@mkt',
+        name: 'lib',
+        marketplace: 'mkt',
+        version: '1.4.0',
+        installPath: lib,
+        source: { source: 'path', path: './lib' },
+        pin: {},
+        installedAt: new Date().toISOString(),
+        lastUpdated: new Date().toISOString(),
+      },
+    ]);
+    const plugins = host([
+      { name: 'wants-two', dependencies: [{ name: 'lib', marketplace: 'mkt', version: '^2.0.0' }] },
+      { name: 'wants-one', dependencies: [{ name: 'lib', marketplace: 'mkt', version: '^1.2.0' }] },
+      { name: 'helper' },
+      { name: 'wants-helper', dependencies: [{ name: 'helper', marketplace: 'elsewhere' }] },
+    ]);
+    await plugins.load();
+    expect(plugins.get('wants-two@code')?.error).toBe('Requires "lib@mkt" ^2.0.0, installed 1.4.0');
+    expect(plugins.get('wants-one@code')?.status).toBe('active');
+    expect(plugins.get('wants-helper@code')?.status).toBe('active');
+    await plugins.dispose();
+  });
+
+  it('blocks the plugins that depend on one that fails to activate', async () => {
+    const activated: string[] = [];
+    const plugins = host([
+      {
+        name: 'broken',
+        activate() {
+          activated.push('broken');
+          throw new Error('no database');
+        },
+      },
+      {
+        name: 'consumer',
+        dependencies: [{ name: 'broken' }],
+        activate() {
+          activated.push('consumer');
+        },
+      },
+      {
+        name: 'top',
+        dependencies: [{ name: 'consumer' }],
+        activate() {
+          activated.push('top');
+        },
+      },
+    ]);
+    await plugins.load();
+    expect(activated).toEqual(['broken']);
+    expect(plugins.get('broken@code')?.status).toBe('failed');
+    expect(plugins.get('consumer@code')).toMatchObject({ status: 'blocked' });
+    expect(plugins.get('consumer@code')?.error).toBe(
+      'consumer@code needs the plugin broken@code, which did not load: no database'
+    );
+    expect(plugins.get('top@code')?.status).toBe('blocked');
+    await plugins.dispose();
+  });
+
+  it('unloads a plugin before the plugins it depends on', async () => {
+    const log: string[] = [];
+    const tracked = (name: string, dependencies: { name: string }[] = []) => ({
+      name,
+      dependencies,
+      activate() {
+        log.push(`${name} on`);
+        return () => {
+          log.push(`${name} off`);
+        };
+      },
+    });
+    const plugins = host([tracked('base'), tracked('app', [{ name: 'base' }])]);
+    await plugins.load();
+    await plugins.setEnabled('base@code', false);
+    expect(log).toEqual(['base on', 'app on', 'app off', 'base off']);
+    await plugins.setEnabled('base@code', true);
+    log.length = 0;
+    await plugins.dispose();
+    expect(log).toEqual(['app off', 'base off']);
+  });
+
+  it('lets a disabled plugin shadow nothing, the enabled one of the name loading', async () => {
+    const dir = join(base, 'twin');
+    mkdirSync(join(dir, '.claude-plugin'), { recursive: true });
+    writeFileSync(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'twin' }));
+    const plugins = new experimental_PluginHost({
+      root: base,
+      config: {
+        plugins: [{ name: 'twin' }],
+        dirs: [dir],
+        enabled: { 'twin@code': false },
+        installed: false,
+        secrets: experimental_memorySecretStore(),
+      },
+    });
+    await plugins.load();
+    expect(plugins.get('twin@code')?.status).toBe('disabled');
+    expect(plugins.get('twin@inline')?.status).toBe('active');
+    await plugins.setEnabled('twin@code', true);
+    expect(plugins.get('twin@code')?.status).toBe('active');
+    expect(plugins.get('twin@inline')).toMatchObject({
+      status: 'disabled',
+      error: 'The name "twin" is taken by twin@code, which takes precedence',
+    });
+    await plugins.dispose();
+  });
+
+  it('keeps the old generation when a reload fails to start an MCP server', async () => {
+    let connects = 0;
+    const lookup = echo('remote_lookup');
+    const plugins = new experimental_PluginHost({
+      root: base,
+      config: {
+        plugins: [
+          {
+            name: 'remote',
+            activate(context) {
+              context.registerMcpServer('api', { command: 'api-server' });
+            },
+          },
+        ],
+        installed: false,
+        secrets: experimental_memorySecretStore(),
+        mcp: async () => {
+          if (++connects > 1) throw new Error('connection refused');
+          return { tools: [lookup], close: async () => undefined };
+        },
+      },
+    });
+    await plugins.load();
+    expect(plugins.snapshot().tools.map((entry) => entry.name)).toEqual(['remote_lookup']);
+    const [result] = await plugins.reload('remote@code');
+    expect(result).toMatchObject({
+      id: 'remote@code',
+      ok: false,
+      generation: 1,
+      code: ErrorCode.PLUGIN_RELOAD_FAILED,
+    });
+    expect(result?.error).toMatch(/did not start: connection refused/);
+    expect(plugins.snapshot().tools.map((entry) => entry.name)).toEqual(['remote_lookup']);
+    await plugins.dispose();
+  });
+
+  it('does nothing for a reload asked for before dispose', async () => {
+    let activations = 0;
+    const plugins = host([
+      {
+        name: 'late',
+        activate() {
+          activations++;
+        },
+      },
+    ]);
+    await plugins.load();
+    const reloaded = plugins.reload();
+    await plugins.dispose();
+    expect(await reloaded).toEqual([]);
+    expect(activations).toBe(1);
+    expect(plugins.get('late@code')?.status).toBe('unloaded');
+  });
+
+  it('puts the project folder in for ${CLAUDE_PROJECT_DIR}', async () => {
+    const plugins = host([
+      {
+        name: 'paths',
+        activate(context) {
+          context.registerCommand('where', 'Work in ${CLAUDE_PROJECT_DIR}/src');
+        },
+      },
+    ]);
+    await plugins.load();
+    expect(plugins.snapshot().commands[0]?.template).toBe(`Work in ${base}/src`);
+    await plugins.dispose();
+  });
+
+  it('never adds hooks whose disposer ran before their checks finished', async () => {
+    const plugins = host([
+      {
+        name: 'fleeting',
+        activate(context) {
+          const dispose = context.registerHooks({
+            Stop: [{ hooks: [{ type: 'command', command: 'echo bye' }] }],
+          });
+          void dispose();
+        },
+      },
+    ]);
+    await plugins.load();
+    expect(plugins.snapshot().hooks).toEqual([]);
     await plugins.dispose();
   });
 
@@ -283,6 +485,17 @@ describe('plugin lifecycle', () => {
         .commands.map((entry) => entry.name)
         .sort()
     ).toEqual(['folder:one', 'folder:two']);
+    expect(plugins.get('folder@inline')?.version).toBe('1.0.0');
+    writeFileSync(join(dir, '.claude-plugin', 'plugin.json'), '{ "name": "folder",');
+    const [broken] = await plugins.reload('folder@inline');
+    expect(broken).toMatchObject({
+      id: 'folder@inline',
+      ok: false,
+      generation: 2,
+      code: ErrorCode.PLUGIN_RELOAD_FAILED,
+    });
+    expect(plugins.list().map((entry) => entry.id)).toEqual(['folder@inline']);
+    expect(plugins.snapshot().commands).toHaveLength(2);
     await plugins.dispose();
   });
 

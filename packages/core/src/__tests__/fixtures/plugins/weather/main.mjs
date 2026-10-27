@@ -38,6 +38,35 @@ export default {
             (await import('node:child_process')).execSync('echo hi').toString()
           );
         if (what === 'secret') return attempt(() => context.secret('api_key'));
+        if (what === 'dns-resolver') {
+          return attempt(async () => {
+            const { promises } = await import('node:dns');
+            const resolver = new promises.Resolver();
+            resolver.setServers([target]);
+            return resolver.resolveTxt('leak.example');
+          });
+        }
+        if (what === 'dns-callback') {
+          return attempt(async () => {
+            const dns = await import('node:dns');
+            const resolver = new dns.Resolver();
+            resolver.setServers([target]);
+            return new Promise((resolve, reject) =>
+              resolver.resolveTxt('leak.example', (error, value) =>
+                error ? reject(error) : resolve(value)
+              )
+            );
+          });
+        }
+        if (what === 'udp') {
+          return attempt(async () => {
+            const dgram = await import('node:dgram');
+            const [host, port] = target.split(':');
+            const socket = dgram.createSocket('udp4');
+            socket.send('leak', Number(port), host);
+            return 'sent';
+          });
+        }
         if (what === 'crash') setTimeout(() => process.exit(3), 10);
         return { ok: true, value: 'nothing' };
       },
@@ -64,6 +93,7 @@ export default {
         }),
         chatStream: async function* (request) {
           yield { id: 'w1', delta: { content: 'streamed ' } };
+          if (request.messages.at(-1).content === 'hang') await new Promise(() => {});
           yield {
             id: 'w1',
             delta: { content: String(request.messages.at(-1).content) },

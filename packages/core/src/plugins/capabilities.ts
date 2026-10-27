@@ -74,6 +74,52 @@ function realOf(path: string): string {
   }
 }
 
+/** Variables that change what a program loads or runs before its own code */
+const LOADER_VARIABLES = new Set([
+  'PATH',
+  'HOME',
+  'SHELL',
+  'ENV',
+  'BASH_ENV',
+  'ZDOTDIR',
+  'PROMPT_COMMAND',
+  'SHELLOPTS',
+  'BASHOPTS',
+  'PS4',
+  'IFS',
+  'NODE_OPTIONS',
+  'NODE_PATH',
+  'PYTHONPATH',
+  'PYTHONHOME',
+  'PYTHONSTARTUP',
+  'PERL5OPT',
+  'PERL5LIB',
+  'PERLLIB',
+  'RUBYOPT',
+  'RUBYLIB',
+  'JAVA_TOOL_OPTIONS',
+  '_JAVA_OPTIONS',
+  'JDK_JAVA_OPTIONS',
+  'CLASSPATH',
+  'XDG_CONFIG_HOME',
+]);
+
+const LOADER_PREFIXES = ['LD_', 'DYLD_', 'NPM_CONFIG_', 'GIT_', 'BUN_', 'DENO_', 'UV_', 'PIP_'];
+
+/**
+ * The first of the variables `names` that changes what a program loads or how a shell starts (a preload,
+ * a module path, a package manager's config): such a variable turns an allowed command into any
+ * code, so a plugin with `permissions` may not set it for its MCP servers
+ */
+export function loaderVariableOf(names: Iterable<string>): string | undefined {
+  return [...names].find((name) => {
+    const upper = name.toUpperCase();
+    return (
+      LOADER_VARIABLES.has(upper) || LOADER_PREFIXES.some((prefix) => upper.startsWith(prefix))
+    );
+  });
+}
+
 /** What a plugin asks for, in the shape a permission rule checks */
 export type CapabilityRequest =
   | { kind: 'read' | 'edit'; path: string }
@@ -87,6 +133,11 @@ export type CapabilityRequest =
 export class PluginPermissions {
   private readonly rules: PermissionRuleSet;
   readonly warnings: readonly string[];
+  /**
+   * `granted` when the plugin's own rules decide, `hostDeny` when only the host's deny rules do
+   * (a plugin without `permissions`, see `hostDenyOnly`)
+   */
+  scope: 'granted' | 'hostDeny' = 'granted';
 
   private readonly projectRoot: string;
 
@@ -107,6 +158,25 @@ export class PluginPermissions {
       },
     ]);
     this.warnings = this.rules.warnings;
+  }
+
+  /**
+   * The checks of a plugin that declares no `permissions`, for the hooks and MCP servers its files
+   * bring: they run as in Claude Code, unless a `deny` rule of the host refuses them
+   */
+  static hostDenyOnly(
+    plugin: string,
+    hostDeny: readonly string[],
+    projectRoot: string
+  ): PluginPermissions {
+    const checks = new PluginPermissions(
+      plugin,
+      { allow: ['Bash', 'WebFetch'] },
+      hostDeny,
+      projectRoot
+    );
+    checks.scope = 'hostDeny';
+    return checks;
   }
 
   /** Whether the rules allow `request`, and why */
@@ -252,6 +322,35 @@ async function readCapped(response: Response): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+/** The variables of the host a command of a plugin gets: where programs are, never its secrets */
+const EXEC_VARIABLES = [
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TZ',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'SystemRoot',
+  'ComSpec',
+  'PATHEXT',
+  'WINDIR',
+  'USERPROFILE',
+];
+
+function execEnvironment(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const name of EXEC_VARIABLES) {
+    const value = process.env[name];
+    if (value !== undefined) env[name] = value;
+  }
+  return env;
+}
+
 function runShell(
   command: string,
   cwd: string,
@@ -265,6 +364,7 @@ function runShell(
       windows ? ['/d', '/s', '/c', command] : ['-c', command],
       {
         cwd,
+        env: execEnvironment(),
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
         detached: !windows,
