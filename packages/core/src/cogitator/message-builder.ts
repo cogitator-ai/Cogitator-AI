@@ -487,7 +487,7 @@ export async function saveEntry(
   event?: EntryEvent,
   metadata?: Record<string, unknown>,
   entryId?: string,
-  mayWrite?: () => Promise<boolean>
+  mayWrite?: () => boolean | Promise<boolean>
 ): Promise<MemoryEntry | undefined> {
   if (!memoryAdapter) return undefined;
 
@@ -497,7 +497,8 @@ export async function saveEntry(
     reportMemoryError(err, 'save', onError);
     return undefined;
   }
-  if (mayWrite && !(await mayWrite())) return undefined;
+  const allowed = mayWrite?.() ?? true;
+  if (!(typeof allowed === 'boolean' ? allowed : await allowed)) return undefined;
   try {
     return unwrap(
       await memoryAdapter.addEntry({

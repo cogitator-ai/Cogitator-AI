@@ -222,13 +222,13 @@ export class RunMemory {
    * Whether a write may go on: the run is not sealed and its guard passes (it throws when the
    * run lost its lease). Asked right before the entry is added, after every wait of the write
    * (a file checkpoint, making the thread), as the run may lose its thread meanwhile, and before
-   * a file checkpoint, so a run that lost it takes none
+   * a file checkpoint, so a run that lost it takes none. Answered at once, without a wait, for a
+   * run without a guard, so its entries are written as soon as before
    */
-  private async mayWrite(): Promise<boolean> {
+  private mayWrite(): boolean | Promise<boolean> {
     if (this.sealed) return false;
     if (!this.check) return true;
-    await this.check();
-    return !this.sealed;
+    return this.check().then(() => !this.sealed);
   }
 
   private write(
@@ -248,7 +248,8 @@ export class RunMemory {
       let fields = metadata;
       let checkpoint: TakenCheckpoint | undefined;
       if (fromUser && this.checkpointer) {
-        if (!(await this.mayWrite())) return;
+        const allowed = this.mayWrite();
+        if (!(typeof allowed === 'boolean' ? allowed : await allowed)) return;
         const named = `entry_${nanoid(12)}`;
         checkpoint = await this.checkpointer(named);
         if (checkpoint) {
