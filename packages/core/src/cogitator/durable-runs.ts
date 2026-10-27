@@ -222,7 +222,12 @@ export class DurableRunKeeper {
    */
   charged(agent: string, toolCalls: number): Promise<void> {
     const mark = this.named({ kind: 'charged', agent, toolCalls });
-    return this.queue(() => this.write(() => this.appendHeld([mark])));
+    return this.queue(() =>
+      this.write(async () => {
+        await this.renew();
+        await this.appendHeld([mark]);
+      })
+    );
   }
 
   /** Notes the messages queued on the run's handle that it has not delivered yet */
@@ -267,6 +272,7 @@ export class DurableRunKeeper {
           : 'Could not let a durable run go: another process takes it once its lease runs out',
         { runId: this.owner.runId, error: messageOf(error) }
       );
+      if (forget) await this.store.release(this.owner, this.holder).catch(() => undefined);
     }
   }
 
@@ -492,6 +498,8 @@ export async function rebuildDurableRun(
   let budget = checkpoint.budget && structuredClone(checkpoint.budget);
   let turnCalls = checkpoint.turn.toolCalls;
   let queued = [...(checkpoint.queued ?? [])];
+  /** A message the run took woke it after the checkpoint: a repeated tool call is no duplicate then */
+  let wokeUp = false;
   const queueKey = (item: DurableQueuedMessage) =>
     item.id ?? `${item.kind}:${JSON.stringify(item.content)}`;
   let iterationLimit = checkpoint.iterationLimit;
@@ -508,6 +516,7 @@ export async function rebuildDurableRun(
       addSpend(budget.spent, mark.agent, { toolCalls: mark.toolCalls });
     }
     if (mark.kind === 'delivered') {
+      if (mark.queued.kind !== 'inject') wokeUp = true;
       const at = queued.findIndex((item) => queueKey(item) === queueKey(mark.queued));
       if (at !== -1) queued.splice(at, 1);
       delivered.push(mark);
@@ -547,6 +556,7 @@ export async function rebuildDurableRun(
         content: message.content,
         ...(typeof id === 'string' && { id }),
       });
+      if (kind !== 'inject') wokeUp = true;
       extend(entry.metadata?.iterationLimit);
       adoptedQueued.push(key);
       const at = queued.findIndex((item) => queueKey(item) === key);
@@ -648,6 +658,7 @@ export async function rebuildDurableRun(
       messages,
       toolCalls,
       iterations,
+      ...(wokeUp && { lastToolCallSignature: '' }),
       usage: runUsage,
       ...(finishReason !== undefined && { finishReason }),
       ...(budget && { budget }),

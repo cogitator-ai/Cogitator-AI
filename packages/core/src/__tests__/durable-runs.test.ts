@@ -2147,6 +2147,91 @@ describe('durable runs whose recovery stops early or kept more', () => {
   });
 });
 
+describe('durable runs after a hand-over or a follow-up', () => {
+  it('records a session spend once when its run was handed over', async () => {
+    const quick = countedTool('quick');
+    const hang = countedTool('hang', forever);
+    const agent = new Agent({
+      name: 'spender',
+      model: 'mock/m',
+      instructions: 'Go.',
+      tools: [quick.tool, hang.tool],
+    });
+    const memory = { adapter: 'sqlite' as const, sqlite: { path: join(dir, 'memory.db') } };
+    const make = (turns: ScriptedTurn[]) => {
+      const scripted = scriptedBackend(turns);
+      return {
+        scripted,
+        cog: new Cogitator({
+          llm: { backends: { mock: scripted.backend } },
+          memory,
+          budget: { session: { maxToolCalls: 10 } },
+          durable: { owner: 'host-a', takeoverOnRestart: true },
+        }),
+      };
+    };
+    const first = make([
+      callTools([{ id: 'q', name: 'quick', arguments: {} }]),
+      callTools([{ id: 'h', name: 'hang', arguments: {} }]),
+    ]);
+    const controller = new AbortController();
+    const run = first.cog.run(agent, {
+      input: 'Go',
+      threadId: 'spend',
+      signal: controller.signal,
+    });
+    await hang.started;
+    controller.abort(new CogitatorError({ message: 'redeploy', code: ErrorCode.RUN_SUSPENDED }));
+    await expect(run).rejects.toThrow('redeploy');
+    await first.cog.close();
+
+    const second = make([answer('done')]);
+    const { resumed } = await second.cog.recoverRuns({ agents: [agent] });
+    const result = await resumed[0].handle.result;
+    expect(result.sessionSpend?.toolCalls).toBe(2);
+    await second.cog.close();
+  });
+
+  it('runs a tool again after a follow-up the journal delivered', async () => {
+    const store = new InMemoryDurableRunStore();
+    const step = countedTool('step');
+    const agent = new Agent({
+      name: 'again',
+      model: 'mock/m',
+      instructions: 'Go.',
+      tools: [step.tool],
+    });
+    const asked = deferred();
+    const first = processWith(
+      [
+        callTools([{ id: 's1', name: 'step', arguments: {} }]),
+        answer('first answer'),
+        () => {
+          asked.resolve();
+          return forever.then(() => answer('never'));
+        },
+      ],
+      store,
+      'a'
+    );
+    const handle = first.cog.start(agent, { input: 'Go', threadId: 'again' });
+    handle.followUp('Do the step once more');
+    handle.result.catch(() => undefined);
+    await asked.promise;
+    await first.cog.close();
+
+    const second = processWith(
+      [callTools([{ id: 's2', name: 'step', arguments: {} }]), answer('done twice')],
+      store,
+      'a'
+    );
+    const { resumed } = await second.cog.recoverRuns({ agents: [agent] });
+    expect((await resumed[0].handle.result).output).toBe('done twice');
+    expect(step.calls).toHaveBeenCalledTimes(2);
+    expect(toolTexts(second.requests[1]).s2).toContain('step done');
+  });
+});
+
 /** The durable record of the one run kept for `threadId`, read from the store on the memory */
 async function loadRecord(cog: Cogitator, threadId: string): Promise<DurableRunRecord | null> {
   const [run] = await cog.durableRuns({ threadId });

@@ -5392,13 +5392,15 @@ export class Cogitator implements ToolInvoker {
       return finished;
     } catch (error) {
       queue?.close();
-      if (budget) await this.keepSessionSpend(threadId, options, budget).catch(() => undefined);
-      if (prompt) await this.recordPrompt(prompt, undefined, Date.now() - startTime);
       const handOver =
         keeper !== undefined &&
         (isSuspension(error) || isSuspension(abortController.signal.reason));
       const taken =
         keeper !== undefined && (isLeaseLoss(error) || isLeaseLoss(abortController.signal.reason));
+      if (budget && !handOver && !taken) {
+        await this.keepSessionSpend(threadId, options, budget).catch(() => undefined);
+      }
+      if (prompt) await this.recordPrompt(prompt, undefined, Date.now() - startTime);
       if (loopReached && !handOver && !taken) keeper?.finish();
       if (taken) {
         runMemory.seal();
@@ -5471,7 +5473,10 @@ export class Cogitator implements ToolInvoker {
     } finally {
       runEnded = true;
       if (reservedRun !== undefined) this.durableRunsGoing.delete(reservedRun);
-      if (resumeFrom?.recovered && !keeper) await resumeFrom.recovered.release();
+      if (resumeFrom?.recovered) {
+        resumeFrom.recovered.stopHolding();
+        if (!keeper) await resumeFrom.recovered.release();
+      }
       if (keeper) {
         await keeper.end().catch((error: unknown) => {
           getLogger().warn('Could not close the checkpoint of a durable run', {
