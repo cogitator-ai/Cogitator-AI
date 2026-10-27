@@ -1014,12 +1014,12 @@ export class Cogitator implements ToolInvoker {
       ...this.hooksMiddlewareLayers(snapshot),
       ...(this.config.middleware ?? []),
       ...snapshot.middleware,
-      ...(scope.agent.config.middleware ?? []),
+      ...(scope.agent?.config.middleware ?? []),
     ]);
     const context: RunMiddlewareContext = {
       runId: scope.runId,
-      agentId: scope.agent.id,
-      agentName: scope.agent.name,
+      agentId: scope.agent?.id ?? `routine:${scope.routineId}`,
+      agentName: scope.agent?.name ?? scope.routineName,
       iteration: 0,
       signal: new AbortController().signal,
       state: new Map(),

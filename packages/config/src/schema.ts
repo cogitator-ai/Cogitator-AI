@@ -1070,7 +1070,7 @@ export const CheckpointsConfigSchema = z.union([
 
 /**
  * Experimental. The parts of `experimental_triggers` a config file can hold: routines (targets by
- * name, secrets as `{ env }`), the poll interval and limits. Agents, workflows and stores come
+ * name, secrets as `{ env }` rather than text in the file), the poll interval and limits. Agents, workflows and stores come
  * from code
  */
 export const TriggersConfigSchema = z.object({

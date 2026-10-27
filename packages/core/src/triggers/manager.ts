@@ -67,7 +67,11 @@ import { generateTriggerToken, hashTriggerToken } from './verify';
 
 /** Who the hooks of a routine's notification are for */
 export interface TriggerNotifyScope {
-  agent: Agent;
+  /** The agent of an agent routine: its middleware hears the notification too */
+  agent?: Agent;
+  /** The routine, the name the hooks see for a workflow routine */
+  routineId: string;
+  routineName: string;
   runId: string;
   threadId?: string;
   userId?: string;
@@ -1289,10 +1293,12 @@ export class experimental_TriggerManager {
     this.report({ type: 'completed', routineId: routine.id, runId: run.runId, status });
     if (item) await this.addToInbox(item);
     const agent = this.agentOf(routine);
-    if (notification && agent) {
+    if (notification) {
       try {
         await this.runtime.notify(notification, {
-          agent,
+          ...(agent && { agent }),
+          routineId: routine.id,
+          routineName: name,
           runId: run.runId,
           threadId: run.threadId,
           ...(routine.userId !== undefined && { userId: routine.userId }),

@@ -561,6 +561,38 @@ describe('experimental_TriggerManager', () => {
     expect(item).toMatchObject({ kind: 'result', summary: 'report ready', workflowRunId: 'wf_1' });
   });
 
+  it('tells the Notification hooks what a workflow routine came to', async () => {
+    const heard: { type: string; agentName: string }[] = [];
+    const listener: RunMiddleware = {
+      name: 'listener',
+      onNotification: (event, context) => {
+        heard.push({ type: event.type, agentName: context.agentName });
+      },
+    };
+    const workflow: RoutineWorkflow = {
+      name: 'report',
+      run: async () => ({ status: 'completed', output: 'ok' }),
+    };
+    const { manager } = runtime(
+      {
+        workflows: { report: workflow },
+        routines: [
+          routine({
+            name: 'Daily report',
+            target: { workflow: 'report' },
+            triggers: [{ kind: 'api', token: 't' }],
+          }),
+        ],
+      },
+      undefined,
+      { middleware: [listener] }
+    );
+    await manager.start();
+    await manager.fire('digest.api');
+    await manager.idle();
+    expect(heard).toEqual([{ type: 'routine_result', agentName: 'Daily report' }]);
+  });
+
   it('saves routines made at run time, pauses and removes them', async () => {
     const { manager } = runtime({});
     await manager.start();
