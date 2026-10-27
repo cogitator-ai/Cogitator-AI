@@ -68,21 +68,6 @@ function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`;
 }
 
-/** Whether some user message at or before `entryId` on its branch names a file checkpoint. */
-function checkpointedAt(tree: ThreadTree, entryId: string): boolean {
-  const byId = new Map(tree.entries.map((entry) => [entry.id, entry]));
-  const seen = new Set<string>();
-  let id: string | null | undefined = entryId;
-  while (id && !seen.has(id)) {
-    seen.add(id);
-    const entry = byId.get(id);
-    if (!entry) return false;
-    if (entry.checkpoint) return true;
-    id = entry.parentId;
-  }
-  return false;
-}
-
 function FileList({ title, paths }: { title: string; paths: string[] }) {
   if (paths.length === 0) return null;
   return (
@@ -568,7 +553,7 @@ export function ThreadTreePanel({
   const shape = tree && shapeOf(tree);
   const roots = shape?.children.get(null) ?? [];
   const leafId = tree?.branching ? tree.activeLeafId : undefined;
-  const offerFiles = tree && open ? checkpointedAt(tree, open.entry.id) : false;
+  const offerFiles = open?.entry.files !== undefined;
   const actions: TreeActions = {
     enabled: tree?.branching === true,
     ...(open && { open: { kind: open.kind, entryId: open.entry.id } }),

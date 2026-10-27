@@ -290,6 +290,11 @@ export interface TreeEntry {
   runId?: string;
   /** Whether it is a user message that names a file checkpoint, files a rewind can restore. */
   checkpoint?: boolean;
+  /**
+   * The files a rewind or a fork to it restores, as the runtime picks the checkpoint: `exact`,
+   * as they were there, or `before`, as they were before its turn. Missing when there are none
+   */
+  files?: 'exact' | 'before';
 }
 
 /** Every branch of a thread's memory, with the one its next message goes on. */

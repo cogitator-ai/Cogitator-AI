@@ -480,13 +480,45 @@ export class StudioHost {
       includeToolCalls: true,
     });
     if (!read.success) throw new Error(read.error);
-    const entries = read.data.slice(-TREE_ENTRIES).map(treeEntry);
+    const all =
+      read.data.length > TREE_ENTRIES
+        ? await memory.getEntries({ threadId, types: 'all' })
+        : { success: true as const, data: read.data };
+    if (!all.success) throw new Error(all.error);
+    const filesAt = this.filesAt(all.data);
+    const entries = read.data.slice(-TREE_ENTRIES).map((entry) => {
+      const files = filesAt(entry.id);
+      return { ...treeEntry(entry), ...(files && { files }) };
+    });
     return {
       threadId,
       ...(thread.data.activeLeafId && { activeLeafId: thread.data.activeLeafId }),
       entries,
       truncated: read.data.length > TREE_ENTRIES,
       branching: typeof memory.getPath === 'function',
+    };
+  }
+
+  /**
+   * What files a rewind or a fork to each entry of `tree` (every entry of a thread) restores, by
+   * the runtime's own `checkpointAt`, so the studio offers them exactly when the runtime can
+   */
+  private filesAt(tree: readonly MemoryEntry[]): (entryId: string) => TreeEntry['files'] {
+    const checkpointAt = this.core.checkpointAt;
+    if (typeof checkpointAt !== 'function') return () => undefined;
+    const byId = new Map(tree.map((entry) => [entry.id, entry]));
+    return (entryId) => {
+      const path: MemoryEntry[] = [];
+      const seen = new Set<string>();
+      for (let id: string | null | undefined = entryId; id && !seen.has(id);) {
+        seen.add(id);
+        const entry = byId.get(id);
+        if (!entry) break;
+        path.unshift(entry);
+        id = entry.parentId;
+      }
+      const at = checkpointAt(path, path.length - 1, tree);
+      return at ? (at.exact ? 'exact' : 'before') : undefined;
     };
   }
 
