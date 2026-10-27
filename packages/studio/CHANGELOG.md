@@ -1,5 +1,20 @@
 # @cogitator-ai/studio
 
+## 0.7.0
+
+### Minor Changes
+
+- [#307](https://github.com/cogitator-ai/Cogitator-AI/pull/307) [`c826f57`](https://github.com/cogitator-ai/Cogitator-AI/commit/c826f57cd32cd086717a1eb6f7b1c3857dff73b6) - Rewind and fork threads from the memory tree. Every entry gets "Rewind here" and "Fork here" buttons: a rewind shows a dry run first (entries that leave the branch, stale memory items, runs that get dropped, and with "Restore files" the files written back and deleted), and a busy thread can be rewound by aborting its run. A fork opens a new thread that links back to its origin and shows the conversation it starts from. Rewound turns stay in the chat, faded, and are left out when a thread is replayed after a restart. User messages that name a file checkpoint are marked in the tree, and scripts get `POST /api/threads/:id/rewind` and `POST /api/threads/:id/fork`. A fork with "Restore files" previews its file restore first, and both answers carry the safety snapshot taken before files change. Threads of the studio's own memory are kept entry by entry (ids, metadata and file checkpoints included) after every chat, rewind and fork, so a restart replays exactly the branch a thread was on, with every branch of the thread (so entries forks were copied from stay after a rewind), its metadata and the threads a fork comes from, which its file rewinds need. A forced rewind leaves stopping runs to the runtime, which validates the rewind first.
+
+### Patch Changes
+
+- Updated dependencies [[`c826f57`](https://github.com/cogitator-ai/Cogitator-AI/commit/c826f57cd32cd086717a1eb6f7b1c3857dff73b6)]:
+  - @cogitator-ai/types@0.82.0
+  - @cogitator-ai/core@0.71.0
+  - @cogitator-ai/memory@0.29.0
+  - @cogitator-ai/swarms@0.15.4
+  - @cogitator-ai/workflows@0.14.23
+
 ## 0.6.3
 
 ### Patch Changes

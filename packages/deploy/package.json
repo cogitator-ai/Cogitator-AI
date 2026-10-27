@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/deploy",
-  "version": "0.7.8",
+  "version": "0.7.9",
   "description": "One-command deployment for Cogitator agents",
   "keywords": [
     "cogitator",
