@@ -35,7 +35,7 @@ import { namedIn, type MemoryObservation, type MemoryObservations } from './memo
 import { MemoryRetriever, type Retrieval } from './retrieval/retriever';
 import { analyzeQuery } from './retrieval/query';
 import type { GraphContextBuilder } from './knowledge-graph/graph-context-builder';
-import { readCompactedHistory, withoutStaleDurableEntries } from './compaction';
+import { durableFencesOf, readCompactedHistory, withoutStaleDurableEntries } from './compaction';
 import { calendarDate, isTimeZone } from './time-resolution';
 import {
   ContextAssembler,
@@ -1179,6 +1179,8 @@ export class ContextBuilder {
   private async readHistory(options: BuildContextOptions): Promise<MemoryEntry[]> {
     const memory = this.deps.memoryAdapter;
     if (options.leafId === null) return [];
+    const thread = await memory.getThread(options.threadId);
+    const fences = durableFencesOf(thread.success ? thread.data?.metadata : undefined);
     const getPath = memory.getPath?.bind(memory);
     if (getPath) {
       return withoutStaleDurableEntries(
@@ -1192,14 +1194,16 @@ export class ContextBuilder {
             }
           ),
           'getPath'
-        )
+        ),
+        fences
       );
     }
     return withoutStaleDurableEntries(
       unwrap(
         await memory.getEntries({ threadId: options.threadId, includeToolCalls: true }),
         'getEntries'
-      )
+      ),
+      fences
     );
   }
 

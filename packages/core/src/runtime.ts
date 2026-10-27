@@ -312,7 +312,12 @@ import {
 } from './tools/memory-file-tool';
 import { InMemoryRunCheckpointStore, ThreadRunCheckpointStore } from './cogitator/run-checkpoints';
 import { InMemoryDurableRunStore, ThreadDurableRunStore } from './cogitator/durable-stores';
-import { DURABLE_FENCE } from '@cogitator-ai/memory';
+import {
+  DURABLE_FENCE,
+  DURABLE_FENCES_KEY,
+  durableFencesOf,
+  type DurableFence,
+} from '@cogitator-ai/memory';
 import {
   DEFAULT_DURABLE_LEASE_MS,
   DEFAULT_STORE_RETRIES,
@@ -2157,7 +2162,11 @@ export class Cogitator implements ToolInvoker {
     };
     tagEntries();
     let keeper: DurableRunKeeper | undefined;
-    let handOver = false;
+    /**
+     * Set once the run got to its loop: an error from then on is an end of its own (a model or a
+     * tool that failed, a cancel), one before it (its configuration, a recovery that gave up) is not
+     */
+    let loopReached = false;
     /** The durable run this execution holds in `durableRunsGoing` */
     let reservedRun = resumeFrom?.recovered ? checkpoint?.runId : undefined;
     const explicitTrace = normalizeTraceParent(options.trace);
@@ -4292,6 +4301,8 @@ export class Cogitator implements ToolInvoker {
       /** Whether `beforeStop` kept the run going since its last user message */
       let stopContinued = checkpoint?.stopHooks?.continued ?? false;
 
+      /** Why the model's last turn ended, see `RunCheckpoint.finishReason` */
+      let lastFinishReason: ChatResponse['finishReason'] | undefined = checkpoint?.finishReason;
       /** The run answered and has not settled what happens at its stop, see `RunCheckpoint.stopping` */
       let stopping = false;
 
@@ -4358,6 +4369,7 @@ export class Cogitator implements ToolInvoker {
           ...(pendingContext.length > 0 && { context: [...pendingContext] }),
           ...(running && limit.closingTurn && { closingTurn: true as const }),
           ...(running && stopping && { stopping: true as const }),
+          ...(running && lastFinishReason !== undefined && { finishReason: lastFinishReason }),
           ...((stopContinued || stopContinuations > 0) && {
             stopHooks: { continuations: stopContinuations, continued: stopContinued },
           }),
@@ -4377,6 +4389,7 @@ export class Cogitator implements ToolInvoker {
         );
       };
       if (keeper && !checkpoint) await keepDurable();
+      loopReached = true;
 
       if (checkpoint && resumeFrom) {
         if (answeredNow.length > 0) {
@@ -4498,7 +4511,6 @@ export class Cogitator implements ToolInvoker {
         }
       }
 
-      let lastFinishReason: ChatResponse['finishReason'] | undefined;
       const streamsText = Boolean(options.stream && (options.onToken ?? options.onReasoning));
       const onToken = options.onToken ?? (() => undefined);
       let structuredRepaired = false;
@@ -5024,6 +5036,7 @@ export class Cogitator implements ToolInvoker {
           requestsTools ? response.toolCalls : undefined,
           undefined,
           keeper && {
+            finishReason: response.finishReason,
             ...(runBudget.configured && { runBudget: runBudget.state() }),
             runUsage: {
               inputTokens: totalInputTokens,
@@ -5202,6 +5215,7 @@ export class Cogitator implements ToolInvoker {
           },
           middlewareContext()
         );
+        keeper?.finish();
         options.onRunComplete?.(paused);
         pausedOut = true;
         return paused;
@@ -5372,6 +5386,7 @@ export class Cogitator implements ToolInvoker {
           }
         : result;
 
+      keeper?.finish();
       options.onRunComplete?.(finished);
 
       return finished;
@@ -5379,11 +5394,12 @@ export class Cogitator implements ToolInvoker {
       queue?.close();
       if (budget) await this.keepSessionSpend(threadId, options, budget).catch(() => undefined);
       if (prompt) await this.recordPrompt(prompt, undefined, Date.now() - startTime);
-      handOver =
+      const handOver =
         keeper !== undefined &&
         (isSuspension(error) || isSuspension(abortController.signal.reason));
       const taken =
         keeper !== undefined && (isLeaseLoss(error) || isLeaseLoss(abortController.signal.reason));
+      if (loopReached && !handOver && !taken) keeper?.finish();
       if (taken) {
         runMemory.seal();
       } else if (abortController.signal.aborted) {
@@ -5457,7 +5473,7 @@ export class Cogitator implements ToolInvoker {
       if (reservedRun !== undefined) this.durableRunsGoing.delete(reservedRun);
       if (resumeFrom?.recovered && !keeper) await resumeFrom.recovered.release();
       if (keeper) {
-        await keeper.end(handOver ? 'hand-over' : 'forget').catch((error: unknown) => {
+        await keeper.end().catch((error: unknown) => {
           getLogger().warn('Could not close the checkpoint of a durable run', {
             runId,
             error: error instanceof Error ? error.message : String(error),
@@ -6119,6 +6135,20 @@ export class Cogitator implements ToolInvoker {
     if (!added.success) {
       throw new CogitatorError({
         message: `Could not fence durable run ${run.runId} in its thread: ${added.error}`,
+        code: ErrorCode.MEMORY_WRITE_FAILED,
+      });
+    }
+    const fence: DurableFence = {
+      epoch,
+      at: added.data.createdAt.toISOString(),
+      ...(added.data.seq !== undefined && { seq: added.data.seq }),
+    };
+    const updated = await memory.updateThread(run.threadId, {
+      [DURABLE_FENCES_KEY]: { ...durableFencesOf(thread.data.metadata), [run.runId]: fence },
+    });
+    if (!updated.success) {
+      throw new CogitatorError({
+        message: `Could not fence durable run ${run.runId} in its thread: ${updated.error}`,
         code: ErrorCode.MEMORY_WRITE_FAILED,
       });
     }

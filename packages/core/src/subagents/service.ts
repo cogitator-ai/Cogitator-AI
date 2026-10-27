@@ -7,6 +7,7 @@ import type {
   HooksConfig,
   Message,
   PermissionMode,
+  RunCheckpoint,
   RunHandle,
   RunMiddleware,
   RunResult,
@@ -149,11 +150,18 @@ interface SubagentTask {
   note?: string;
 }
 
-/** A background subagent of a durable run whose process stopped while it ran */
+/**
+ * A background subagent of a durable run whose process stopped while it ran, or after it ended
+ * and before the run read how
+ */
 interface LostTask {
   taskId: string;
   agent: string;
   name?: string;
+  /** How it ended, when it ended before the process stopped */
+  status?: 'completed' | 'paused' | 'failed' | 'stopped';
+  output?: string;
+  error?: string;
   /** The run that started it */
   startedBy: string;
   /** Whether the run read that it was lost */
@@ -165,6 +173,15 @@ const LOST_TASK =
   'The process that ran this agent stopped before it finished: outcome unknown, verify before retrying';
 
 function lostStatus(task: LostTask): BackgroundSubagentStatus {
+  if (task.status) {
+    return {
+      taskId: task.taskId,
+      agent: task.agent,
+      status: task.status,
+      ...(task.output !== undefined && { output: task.output }),
+      ...(task.error !== undefined && { error: task.error }),
+    };
+  }
   return { taskId: task.taskId, agent: task.agent, status: 'failed', error: LOST_TASK };
 }
 
@@ -341,25 +358,29 @@ export class SubagentService {
    * The background subagents run `runId` started that are still going, and those it lost with a
    * process that it has not been told about yet, for a durable run's checkpoint
    */
-  backgroundOf(
-    threadId: string,
-    runId: string
-  ): { taskId: string; agent: string; name?: string }[] {
+  backgroundOf(threadId: string, runId: string): NonNullable<RunCheckpoint['background']> {
     const lost = [...(this.lost.get(threadId)?.values() ?? [])].filter(
       (task) => task.startedBy === runId && !task.delivered
     );
     return [
       ...this.tasksStartedBy(threadId, runId)
-        .filter((task) => task.background && task.status === 'running')
+        .filter((task) => task.background && (task.status === 'running' || !task.delivered))
         .map((task) => ({
           taskId: task.id,
           agent: task.definition.name,
           ...(task.name !== undefined && { name: task.name }),
+          ...(task.status !== 'running' && { status: task.status }),
+          ...(task.status !== 'running' &&
+            task.result?.output !== undefined && { output: task.result.output }),
+          ...(task.status !== 'running' && task.error !== undefined && { error: task.error }),
         })),
       ...lost.map((task) => ({
         taskId: task.taskId,
         agent: task.agent,
         ...(task.name !== undefined && { name: task.name }),
+        ...(task.status && { status: task.status }),
+        ...(task.output !== undefined && { output: task.output }),
+        ...(task.error !== undefined && { error: task.error }),
       })),
     ];
   }
@@ -372,7 +393,7 @@ export class SubagentService {
   restoreLost(
     threadId: string,
     runId: string,
-    tasks: readonly { taskId: string; agent: string; name?: string }[]
+    tasks: NonNullable<RunCheckpoint['background']>
   ): void {
     if (tasks.length === 0) return;
     let kept = this.lost.get(threadId);
@@ -788,7 +809,13 @@ export class SubagentService {
   private reportLost(task: LostTask): Record<string, unknown> {
     task.delivered = true;
     const status = lostStatus(task);
-    return { agentId: task.taskId, agent: task.agent, status: status.status, error: status.error };
+    return {
+      agentId: task.taskId,
+      agent: task.agent,
+      status: status.status,
+      ...(status.output !== undefined && { output: status.output }),
+      ...(status.error !== undefined && { error: status.error }),
+    };
   }
 
   private find(threadId: string, key: string): SubagentTask | undefined {

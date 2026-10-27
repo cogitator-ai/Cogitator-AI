@@ -13,7 +13,7 @@ import type {
   ToolResult,
 } from '@cogitator-ai/types';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
-import { withoutStaleDurableEntries } from '@cogitator-ai/memory';
+import { durableFencesOf, withoutStaleDurableEntries } from '@cogitator-ai/memory';
 import { getLogger } from '../logger';
 import { addSpend } from './run-budget';
 import { ABORTED_BEFORE_DISPATCH, OUTCOME_UNKNOWN } from '../utils/tool-history';
@@ -105,6 +105,8 @@ export class DurableRunKeeper {
    */
   private faulted = false;
   private ended = false;
+  /** Set once the run reached an end of its own, see {@link finish} */
+  private reachedEnd = false;
   /** Marks written so far, for their ids */
   private marks = 0;
   /**
@@ -230,12 +232,20 @@ export class DurableRunKeeper {
   }
 
   /**
-   * Stops keeping the run. `forget` deletes it, for an end the run reached itself (it completed,
-   * paused, failed on its own or was stopped), `hand-over` keeps its checkpoint and lets its lease
-   * go, for another process to recover it. A checkpoint is never forgotten after an error of the
-   * store, a lost lease or a recovery that gave up: its last checkpoint stays for a recovery
+   * Notes that the run reached an end of its own (it completed, paused, failed in its loop or was
+   * cancelled): {@link end} then forgets its checkpoint. The one way a checkpoint is forgotten
    */
-  async end(how: 'forget' | 'hand-over'): Promise<void> {
+  finish(): void {
+    this.reachedEnd = true;
+  }
+
+  /**
+   * Stops keeping the run. It forgets the checkpoint only when the run called {@link finish} and
+   * neither the store failed nor another process took the run: every other end (a hand-over, a
+   * configuration error, a recovery that gave up, an error of the store) keeps the checkpoint and
+   * lets the lease go, for a recovery
+   */
+  async end(): Promise<void> {
     clearInterval(this.renewal);
     for (let drained = this.chain; ; drained = this.chain) {
       await drained.catch(() => undefined);
@@ -243,7 +253,7 @@ export class DurableRunKeeper {
     }
     this.ended = true;
     if (this.stopped?.code === ErrorCode.RUN_LEASED) return;
-    const forget = how === 'forget' && !this.stopped && !this.faulted;
+    const forget = this.reachedEnd && !this.stopped && !this.faulted;
     try {
       if (forget) {
         await this.retried(() => this.store.delete(this.owner, this.holder));
@@ -478,6 +488,7 @@ export async function rebuildDurableRun(
   const toolCalls = callsAt(record, messages);
   let iterations = checkpoint.iterations;
   let runUsage = checkpoint.usage;
+  let finishReason = checkpoint.finishReason;
   let budget = checkpoint.budget && structuredClone(checkpoint.budget);
   let turnCalls = checkpoint.turn.toolCalls;
   let queued = [...(checkpoint.queued ?? [])];
@@ -522,6 +533,8 @@ export async function rebuildDurableRun(
       if (usage) runUsage = usage;
       const spent = budgetOf(entry.metadata?.runBudget);
       if (spent) budget = spent;
+      const reason = entry.metadata?.finishReason;
+      if (typeof reason === 'string' && isFinishReason(reason)) finishReason = reason;
       iterations++;
       turnCalls = calls;
       toolCalls.push(...calls);
@@ -636,6 +649,7 @@ export async function rebuildDurableRun(
       toolCalls,
       iterations,
       usage: runUsage,
+      ...(finishReason !== undefined && { finishReason }),
       ...(budget && { budget }),
       turn:
         turnCalls === checkpoint.turn.toolCalls
@@ -677,6 +691,19 @@ function budgetOf(value: unknown): RunCheckpoint['budget'] | undefined {
   if (typeof spent !== 'object' || spent === null) return undefined;
   if (typeof recorded !== 'object' || recorded === null) return undefined;
   return value as RunCheckpoint['budget'];
+}
+
+const FINISH_REASONS: readonly string[] = [
+  'stop',
+  'tool_calls',
+  'length',
+  'error',
+  'content_filter',
+  'refusal',
+];
+
+function isFinishReason(value: string): value is NonNullable<RunCheckpoint['finishReason']> {
+  return FINISH_REASONS.includes(value);
 }
 
 function failed(call: ToolCall, error: string): ToolResult {
@@ -789,7 +816,11 @@ async function runEntries(
         ? a.seq - b.seq
         : a.createdAt.getTime() - b.createdAt.getTime()
     );
-  return withoutStaleDurableEntries(own);
+  const thread = await memory.getThread(record.threadId);
+  return withoutStaleDurableEntries(
+    own,
+    durableFencesOf(thread.success ? thread.data?.metadata : undefined)
+  );
 }
 
 /** Whether `entry` is part of the conversation the model reads, not an event or a cut reply */

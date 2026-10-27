@@ -1982,6 +1982,171 @@ describe('durable runs and late writes of a former holder', () => {
   });
 });
 
+describe('durable runs whose recovery stops early or kept more', () => {
+  it('keeps a run whose recovery fails on its configuration', async () => {
+    const parked = new InMemoryDurableRunStore();
+    const hang = countedTool('hang', forever);
+    const agent = new Agent({
+      name: 'configured',
+      model: 'mock/m',
+      instructions: 'Go.',
+      tools: [hang.tool],
+    });
+    const first = processWith([callTools([{ id: 'h', name: 'hang', arguments: {} }])], parked, 'a');
+    first.cog.run(agent, { input: 'Go', threadId: 'config' }).catch(() => undefined);
+    await hang.started;
+    await first.cog.close();
+
+    const second = processWith([answer('unused')], parked, 'a');
+    const [kept] = await second.cog.durableRuns();
+    const handle = await second.cog.recoverRun(agent, kept.runId, {
+      toolChoice: { type: 'function', function: { name: 'missing' } },
+    });
+    await expect(handle.result).rejects.toMatchObject({ code: ErrorCode.VALIDATION_ERROR });
+    await second.cog.close();
+    expect(await parked.list()).toHaveLength(1);
+
+    const third = processWith([answer('recovered')], parked, 'a');
+    const { resumed } = await third.cog.recoverRuns({ agents: [agent] });
+    expect((await resumed[0].handle.result).output).toBe('recovered');
+  });
+
+  it('drops a late write of the former holder even before the new one wrote anything', async () => {
+    const hang = countedTool('hang', forever);
+    const agent = new Agent({
+      name: 'quiet',
+      model: 'mock/m',
+      instructions: 'Go.',
+      tools: [hang.tool],
+    });
+    const first = processOn([callTools([{ id: 'h', name: 'hang', arguments: {} }])]);
+    first.cog.run(agent, { input: 'Go', threadId: 'quiet' }).catch(() => undefined);
+    await hang.started;
+    await first.cog.close();
+
+    const second = processOn([answer('unused')]);
+    const [kept] = await second.cog.durableRuns();
+    const stopped = new AbortController();
+    stopped.abort(new Error('not now'));
+    const handle = await second.cog.recoverRun(agent, kept.runId, { signal: stopped.signal });
+    await expect(handle.result).rejects.toThrow('not now');
+    const memory = (await second.cog.getMemory())!;
+    await memory.addEntry({
+      threadId: 'quiet',
+      message: { role: 'assistant', content: 'stale answer' },
+      tokenCount: 3,
+      metadata: { durableRun: `${kept.runId}/zombie`, durableEpoch: 1 },
+    });
+    await second.cog.close();
+
+    const third = processOn([answer('next')]);
+    await third.cog.run(new Agent({ name: 'reader', model: 'mock/m', instructions: 'Read.' }), {
+      input: 'Again',
+      threadId: 'quiet',
+      durable: false,
+    });
+    const said = third.requests[0].messages.map((message) => message.content);
+    expect(said).not.toContain('stale answer');
+    await third.cog.close();
+  });
+
+  it('reports a cut off answer it recovered as truncated', async () => {
+    const store = new InMemoryDurableRunStore();
+    const hold: RunMiddleware = { name: 'hold', afterRun: () => forever };
+    const agent = new Agent({ name: 'cut', model: 'mock/m', instructions: 'Answer.' });
+    const first = new Cogitator({
+      llm: {
+        backends: {
+          mock: scriptedBackend([{ ...answer('a long ans'), finishReason: 'length' }]).backend,
+        },
+      },
+      durable: { store, owner: 'a', takeoverOnRestart: true },
+      middleware: [hold],
+    });
+    const turned = deferred();
+    first
+      .run(agent, { input: 'Go on', threadId: 'cut', onModelTurn: () => turned.resolve() })
+      .catch(() => undefined);
+    await turned.promise;
+    await vi.waitFor(async () => {
+      const [kept] = await store.list();
+      const record = kept && (await store.load(kept));
+      expect(record?.checkpoint.stopping).toBeUndefined();
+      expect(record?.checkpoint.finishReason).toBe('length');
+    });
+    await first.close();
+
+    const second = processWith([answer('never')], store, 'a');
+    const { resumed } = await second.cog.recoverRuns({ agents: [agent] });
+    const result = await resumed[0].handle.result;
+    expect(result.output).toBe('a long ans');
+    expect(result.truncated).toBe(true);
+  });
+
+  it('keeps how a background agent ended until the run reads it', async () => {
+    const innerDone = deferred();
+    const inner = scriptedBackend([
+      () => {
+        innerDone.resolve();
+        return answer('gold');
+      },
+    ]);
+    const quick = countedTool('quick');
+    const outer = scriptedBackend([
+      callTools([
+        {
+          id: 'o1',
+          name: 'agent',
+          arguments: {
+            description: 'x',
+            prompt: 'dig',
+            subagent_type: 'digger',
+            run_in_background: true,
+            name: 'dig',
+          },
+        },
+      ]),
+      async () => {
+        await innerDone.promise;
+        await new Promise((resolve) => setImmediate(resolve));
+        return callTools([{ id: 'q', name: 'quick', arguments: {} }]);
+      },
+      () => forever.then(() => answer('never')),
+    ]);
+    const config = (backend: typeof outer) => ({
+      llm: {
+        backends: { outer: backend.backend, inner: inner.backend },
+        retry: false as const,
+      },
+      memory: { adapter: 'sqlite' as const, sqlite: { path: join(dir, 'memory.db') } },
+      durable: { owner: 'host-a', takeoverOnRestart: true },
+      subagents: { agents: { digger: { description: 'digs', model: 'inner/m' } } },
+    });
+    const lead = new Agent({
+      name: 'lead',
+      model: 'outer/m',
+      instructions: 'Lead.',
+      tools: [quick.tool],
+    });
+    const first = new Cogitator(config(outer));
+    first.run(lead, { input: 'Dig', threadId: 'ended-unread' }).catch(() => undefined);
+    await vi.waitFor(() => expect(outer.requests).toHaveLength(3));
+    await first.close();
+
+    const next = scriptedBackend([
+      callTools([{ id: 'o2', name: 'task_output', arguments: { task_id: 'dig' } }]),
+      answer('found gold'),
+    ]);
+    const second = new Cogitator(config(next));
+    const { resumed } = await second.recoverRuns({ agents: [lead] });
+    expect((await resumed[0].handle.result).output).toBe('found gold');
+    const report = toolTexts(next.requests[1]).o2;
+    expect(report).toContain('completed');
+    expect(report).toContain('gold');
+    await second.close();
+  });
+});
+
 /** The durable record of the one run kept for `threadId`, read from the store on the memory */
 async function loadRecord(cog: Cogitator, threadId: string): Promise<DurableRunRecord | null> {
   const [run] = await cog.durableRuns({ threadId });

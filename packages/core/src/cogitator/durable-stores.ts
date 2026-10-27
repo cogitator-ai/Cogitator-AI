@@ -72,7 +72,7 @@ function mayTake(
 
 /** The epoch a lease taken by `holder` gets: the live one's when its instance renews it, else one more than `last` */
 function nextEpoch(live: HeldLease | undefined, holder: DurableRunHolder, last: number): number {
-  return live && live.instance === holder.instance ? live.epoch : last + 1;
+  return live?.instance === holder.instance ? live.epoch : last + 1;
 }
 
 function isHeldBy(lease: HeldLease | undefined, holder: DurableRunHolder): boolean {
@@ -638,13 +638,14 @@ export class RedisDurableRunStore implements DurableRunStore {
   async renew(ref: DurableRunRef, holder: DurableRunHolder, ttlMs: number): Promise<boolean> {
     const renewed = await this.client.eval(
       RENEW_SCRIPT,
-      6,
+      7,
       this.key('lease', ref.runId),
       this.key('run', ref.runId),
       this.key('base', ref.runId),
       this.key('base-size', ref.runId),
       this.key('journal', ref.runId),
       this.key('epoch', ref.runId),
+      this.threadKey(ref.threadId),
       holder.instance,
       positiveMs(ttlMs),
       this.ttl

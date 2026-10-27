@@ -12,6 +12,7 @@ import type {
   ToolProgress,
 } from './tool';
 import type {
+  ChatResponse,
   LLMBackend,
   LLMProvider,
   LLMProvidersConfig,
@@ -840,15 +841,29 @@ export interface RunCheckpoint {
    */
   stopping?: true;
   /**
+   * Why the run's last model turn ended, so a recovered run that already answered still reports
+   * a cut off (`length`) or withheld (`content_filter`) answer
+   */
+  finishReason?: ChatResponse['finishReason'];
+  /**
    * The run used up `maxIterations` and its next model call is the closing one, without tools,
    * that answers with what it has (`onIterationLimit: 'answer'`)
    */
   closingTurn?: true;
   /**
-   * Background subagents a durable run had going: lost when its process stops, so the recovered
-   * run reports them as failed with an unknown outcome (`task_output`, the stop notice)
+   * Background subagents of a durable run whose outcome the run has not read: those going on,
+   * lost when its process stops, so the recovered run reports them as failed with an unknown
+   * outcome (`task_output`, the stop notice), and those that ended, with how
    */
-  background?: { taskId: string; agent: string; name?: string }[];
+  background?: {
+    taskId: string;
+    agent: string;
+    name?: string;
+    /** How it ended, for one that ended before the checkpoint */
+    status?: 'completed' | 'paused' | 'failed' | 'stopped';
+    output?: string;
+    error?: string;
+  }[];
   toolCalls: ToolCall[];
   prompt?: RunPrompt;
   /** The agent the run was in when it paused, after handoffs */
