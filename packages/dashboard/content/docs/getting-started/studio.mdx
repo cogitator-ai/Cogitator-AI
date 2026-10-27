@@ -28,6 +28,7 @@ It opens http://localhost:4321 (the next free port when it is taken). The studio
 - **Memory tree**: the `Tree` button next to a chat (or `T`) opens a panel with every branch of the thread as its memory keeps it. Forks and replays branch off where they went on from, a branch a studio fork started is labelled `fork`, events (a model change, a pause for approval, an interruption) show in line, the active branch is highlighted and its last entry is marked `next message`, the one the next message goes after. Each entry links to the run that wrote it. The panel shows the newest 500 entries, and a memory without branches shows its entries as a list.
 - **Rewind and fork a thread**: every entry of the memory tree gets two buttons on hover, to rewind the thread to it or fork it into a new thread from there, with the files of the agent's workspace when it keeps file checkpoints, see [Rewind and fork](#rewind-and-fork).
 - **Time-travel forks**: pick a step of a finished run (before each tool call), change the input, add context or replace a tool result, and run on from there. The original and the fork are shown side by side, with the tool calls that differ highlighted. A fork of a run that wrote to memory goes on a branch of its thread from where the run started, so it shows in the memory tree and never in the conversation it split from.
+- **Plugins**: every plugin of the project's runtime with its status, what it adds, its permissions and diagnostics, Reload and Enable or Disable, and the panels plugins add, each in a sandboxed frame, see [Plugins](#plugins).
 - **History**: runs and threads are kept in `.cogitator/studio/` as JSON files, searchable by input, output and error and filtered by agent, workflow or kind. Runs a stopped studio left behind are marked failed.
 - **Keyboard**: `⌘K` (`Ctrl+K`) opens a command palette over agents, workflows, the whole run history and actions, `/` searches the page, `G O` and `G R` go to the overview and the runs, `J` and `K` walk the run list and the trace, `N` starts a thread, `T` opens the memory tree, and `?` lists every shortcut.
 - **Themes**: light and dark, following the system until you pick one, which the browser remembers.
@@ -41,6 +42,56 @@ Each entry of the memory tree has two buttons on hover or focus, **Rewind here**
 - **Restore files** shows in both cards when the runtime has files to restore at the entry, picked as a rewind picks them: a [file checkpoint](/docs/core/file-checkpoints) of a user message at or before the entry, or of the one right after it (the end of a turn): turn `checkpoints: true` on the runtime, the agent or the run, and give the agent a workspace that can snapshot (`LocalWorkspace` and the sandbox workspaces can). The box is unchecked by default. Checked, the dry run lists the files the rewind writes back and the files it deletes, and Apply or Fork restores the agent's workspace to that point, after a snapshot of the files as they were (`safetySnapshotId` in the answer) to undo it. User messages with a checkpoint have `checkpoint: true` in the tree, and every entry a rewind can restore files at has `files`: `exact` for the files as they were there, `before` for the files from before its turn.
 
 Scripts reach the same through `POST /api/threads/:id/rewind` with `{ entryId, files?, memory?, dryRun?, force? }` (a `RewindSummary` with the updated `thread`) and `POST /api/threads/:id/fork` with `{ entryId, files? }` (a `ForkSummary` with the new `thread`). A bad body answers 400, as does a point the runtime cannot rewind or fork at (no checkpoint there, an entry off the active branch), an unknown thread 404, and a thread a run goes on in 409.
+
+## Plugins
+
+The **Plugins** page (in the sidebar and the command palette) lists the plugins of the project's runtime, the ones its [`experimental_plugins`](/docs/core/plugins) gives it: the core's own plugin, plugins in code, plugin folders and installed plugins. Each card shows the plugin's id, version, origin, manifest format, status (`active`, `disabled`, `blocked`, `failed` or `unloaded`) with its error, generation, whether it runs isolated in a process of its own, what decided that it is enabled, its dependencies, what it adds (tools, skills, agents, commands, hooks, MCP servers, LLM backends, middleware and panels), its permission rules and its diagnostics. The page updates live whenever the runtime's plugins change.
+
+- **Reload** builds a new generation of the plugin beside the old one and swaps them once it loaded. A reload that fails says so with its error, and the old generation goes on serving.
+- **Enable** and **Disable** turn the plugin on or off for this runtime, over the settings files (managed settings still win), and load or unload what it adds. The core's own plugin is always on.
+- A project that configures no `experimental_plugins` shows only the core's own plugin, and the studio never loads plugins into it, so installed plugins do not show up in a project that did not ask for them. Reload, Enable and Disable are not offered there.
+
+### Panels
+
+A panel a plugin registers, `ui.panels` in its manifest or `context.registerPanel({ id, title, html, handlers })` in code (see [Studio panels](/docs/core/plugins#studio-panels)), is listed under **Panels** in the sidebar and opens in a frame sandboxed with `allow-scripts` only, never `allow-same-origin`: the page runs with an opaque origin and cannot reach the studio, its API or its cookies. The page is served with `X-Content-Type-Options: nosniff` and a Content-Security-Policy that allows its own inline scripts and styles and `data:` images, fonts and media, and nothing over the network: no `fetch`, no external scripts or styles, no form posts. The policy sandboxes the page also when its URL is opened on its own.
+
+The page talks to its plugin through the parent window:
+
+```html
+<script>
+  let next = 0;
+  const pending = new Map();
+  window.addEventListener('message', (event) => {
+    const data = event.data;
+    if (data?.type !== 'cogitator:response' || !pending.has(data.id)) return;
+    const { resolve, reject } = pending.get(data.id);
+    pending.delete(data.id);
+    if ('error' in data) reject(new Error(data.error));
+    else resolve(data.result);
+  });
+  function call(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = ++next;
+      pending.set(id, { resolve, reject });
+      window.parent.postMessage({ type: 'cogitator:request', id, method, params }, '*');
+    });
+  }
+</script>
+```
+
+A request is `{ type: 'cogitator:request', id, method, params }`: `id` is a string (up to 200 characters) or a finite number the page picks to match the answer, `method` names one of the panel's `handlers`, and `params` is any JSON value, which the handler gets. The studio answers `{ type: 'cogitator:response', id, result }` with what the handler returned as JSON, or `{ type: 'cogitator:response', id, error }` with the message when the handler threw or the panel has no such handler. Only messages of the panel's own frame are answered: other windows and a page the frame navigated to on another origin are ignored, and an answer that comes after the frame was reloaded is dropped. **Reload page** reloads the frame, and a reload of the plugin reloads it with the new generation.
+
+### Plugin endpoints
+
+| Request                                    | Body                          | Answer                                                                             |
+| ------------------------------------------ | ----------------------------- | ---------------------------------------------------------------------------------- |
+| `GET /api/plugins`                         |                               | `PluginsState`: `available`, `configured` and `plugins` (`PluginRecord[]`)         |
+| `POST /api/plugins/:id/reload`             | `{}`                          | `PluginActionResult`: `results` (`{ id, ok, generation, error? }[]`) and `plugins` |
+| `POST /api/plugins/:id/enabled`            | `{ enabled: boolean }`        | `PluginActionResult`                                                               |
+| `GET /api/plugins/:id/panels/:panel`       |                               | The panel's page, `text/html` with the policy above                                |
+| `POST /api/plugins/:id/panels/:panel/call` | `{ method: string, params? }` | `{ result }`                                                                       |
+
+Ids are URL-encoded (`board%40code` for `board@code`) and bodies are JSON, as for every other post. A bad body answers 400, as do a panel without the handler and disabling the core's own plugin, an unknown plugin or panel answers 404, a reload or an enable in a project without `experimental_plugins` 409, and a handler that throws 500, with its message as `error`. The event stream sends `{ type: 'plugins', plugins }` whenever the runtime's plugins change.
 
 ## How it works
 

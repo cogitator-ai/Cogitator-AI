@@ -309,7 +309,7 @@ const cog = new Cogitator({ llm: { plugins: { 'my-provider': { apiKey: '...' } }
 const agent = new Agent({ name: 'a', model: 'my-provider/model-x', instructions: '...' });
 ```
 
-Registering a provider name twice throws; `unregisterLLMBackend(provider)` removes one. A failing `validateConfig` makes the first run on that provider fail with `Invalid configuration for provider '...'`.
+Registering a provider name twice throws, and `unregisterLLMBackend(provider)` removes one, as does the disposer `registerLLMBackend` returns. A backend plugin is also one kind of [plugin](/docs/core/plugins) contribution: `context.registerLLMBackend(plugin)` of a plugin makes the provider known to that runtime only, and unloads it with the plugin. The built-in providers themselves are registered this way, by the core's own plugin `cogitator@builtin`. `llm.backends` wins over plugin providers, the built-in names over a plugin of the same name. A failing `validateConfig` makes the first run on that provider fail with `Invalid configuration for provider '...'`.
 
 List registered plugins:
 

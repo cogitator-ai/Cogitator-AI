@@ -64,6 +64,7 @@ cogitator run -m ollama/llama3.1:8b "What is the capital of France?"
 | `cogitator logs`           | View Docker Compose service logs                                                                                |
 | `cogitator deploy`         | Deploy with Docker or Fly.io (see [`@cogitator-ai/deploy`](https://www.npmjs.com/package/@cogitator-ai/deploy)) |
 | `cogitator rewind`         | Rewind a thread's conversation, memory and files to an entry, a dry run first                                   |
+| `cogitator plugin <cmd>`   | Install, update, enable, disable and validate plugins and marketplaces, run plugin evals (experimental)         |
 
 Every command ends with examples in its `--help`.
 
@@ -263,6 +264,38 @@ cogitator rewind thread_42 entry_abc --files --no-memory --yes
 
 Before it rewinds, the command prints the dry run (entries that leave the branch, stale memory items, files restored and deleted, runs dropped) and asks. `--json` never prompts, so it needs `--dry-run` or `--yes`. Without `--agent`, the agent is the one whose id the thread names, else the only registry agent with a workspace. The command runs in a process of its own: a run of the project's other processes is seen only when it is durable, and the command warns when runs are not durable by default, so stop such runs before you rewind with `--files`.
 
+### cogitator plugin
+
+Manage [plugins](/docs/core/plugins) in the format of Claude Code's plugins and the marketplaces they come from (experimental). Plugins are kept under `COGITATOR_PLUGINS_DIR` (default `~/.cogitator/plugins`), and every install is pinned to the exact commit, npm version and integrity or archive digest it fetched.
+
+```bash
+cogitator plugin marketplace add your-org/claude-plugins
+cogitator plugin install formatter@your-org --scope project
+cogitator plugin install npm:@acme/review-kit@^2.0.0
+cogitator plugin install git+https://git.example.com/tools.git#v1.2.0
+cogitator plugin configure formatter@your-org --set endpoint=https://x.example --secret token
+cogitator plugin list --json
+cogitator plugin update
+cogitator plugin disable formatter@your-org
+cogitator plugin uninstall formatter@your-org --prune --yes
+cogitator plugin validate ./my-plugin --strict
+cogitator plugin eval ./my-plugin
+```
+
+| Subcommand                                                                  | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `install <plugin>` (`i`)                                                    | From a marketplace (`name@marketplace`), npm (`npm:<package>[@version]`) or git (`git+<url>[#ref]`, `github:<owner>/<repo>[#ref]`). `-s, --scope user\|project\|local` picks the settings file that enables it, `--config key=value` sets options, `--secret key` reads a secret from the terminal, `--marketplace <source>` adds the marketplace first, `-y, --yes` grants the permissions the plugin asks for and runs a `command` source without asking |
+| `uninstall <plugin>` (`remove`, `rm`)                                       | Removes its files, data (`--keep-data` keeps it), options, secrets and `enabledPlugins` entries, `--prune` also the dependencies nothing needs. Refused while an installed plugin depends on it                                                                                                                                                                                                                                                            |
+| `enable <plugin>`, `disable <plugin>`                                       | Writes `enabledPlugins` of the scope. Enabling needs the dependencies installed, disabling is refused while an enabled plugin depends on it, managed settings win                                                                                                                                                                                                                                                                                          |
+| `update [plugin]`                                                           | Fetches the source again and installs a new version only when its version changed                                                                                                                                                                                                                                                                                                                                                                          |
+| `list`                                                                      | The installed plugins, enabled or not, with load errors. `--available --json` adds what the marketplaces offer                                                                                                                                                                                                                                                                                                                                             |
+| `configure <plugin>`                                                        | `--set key=value`, `--secret key`, `--unset key`                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `validate <path>`                                                           | As `claude plugin validate`: exit 0 passed, 1 failed, 2 when the check itself failed, `--strict` fails on warnings                                                                                                                                                                                                                                                                                                                                         |
+| `marketplace add <source>`, `list`, `remove <name>` (`rm`), `update [name]` | `owner/repo`, a git URL, an https link to a `marketplace.json` or a local folder or file                                                                                                                                                                                                                                                                                                                                                                   |
+| `eval [target]`                                                             | Runs the plugin's eval suite, see [Plugin evals](/docs/evals/plugin-evals)                                                                                                                                                                                                                                                                                                                                                                                 |
+
+Every subcommand that changes something takes `--json` and then prints one object with `command`, `outcome` (`ok` or `failed`), `message` and, on a failure, `failureCode`.
+
 ### cogitator build
 
 Bundles a gateway module with [esbuild](https://esbuild.github.io) into a single self-starting ES module. The bundle starts the exported `gateway` and stops it gracefully on `SIGINT`/`SIGTERM`. esbuild ships with the CLI, so the project needs no extra dependency.
@@ -389,6 +422,7 @@ The model, memory and `deploy:` section all come from one config file: the `-c` 
 | ------------------------------------------------------- | ------------------------- | ----------------------------------- |
 | `COGITATOR_CONFIG`                                      | `run`                     | Config file path                    |
 | `COGITATOR_MODEL`                                       | `run`                     | Default model                       |
+| `COGITATOR_PLUGINS_DIR`                                 | `plugin`, runtime         | Where installed plugins are kept    |
 | `OLLAMA_URL` / `OLLAMA_HOST`                            | `run`, `models`, `status` | Ollama endpoint                     |
 | `OLLAMA_API_KEY`                                        | `run`, `models`, `wizard` | Ollama Cloud / authenticated Ollama |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` | `run`, `init`, `wizard`   | Provider keys                       |

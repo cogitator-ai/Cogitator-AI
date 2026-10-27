@@ -13,39 +13,40 @@ cp .env.example .env  # add GOOGLE_API_KEY at minimum
 
 ## Examples
 
-| #   | File                      | Description                                                                                     |
-| --- | ------------------------- | ----------------------------------------------------------------------------------------------- |
-| 01  | `01-basic-agent.ts`       | Custom tools with Zod schemas, streaming, usage tracking                                        |
-| 02  | `02-built-in-tools.ts`    | Built-in tools: calculator, datetime, filesystem, regex                                         |
-| 03  | `03-tool-caching.ts`      | Cache tool results with TTL, semantic matching, cache invalidation                              |
-| 04  | `04-context-manager.ts`   | Long conversation handling, truncation, sliding windows                                         |
-| 05  | `05-tree-of-thought.ts`   | Tree-of-Thought reasoning for complex problem solving                                           |
-| 06  | `06-reflection.ts`        | Self-analyzing agents that learn from past runs                                                 |
-| 07  | `07-agent-optimizer.ts`   | Auto-optimize agent instructions and few-shot demos                                             |
-| 08  | `08-time-travel.ts`       | Checkpoint, replay, fork, and compare agent runs                                                |
-| 09  | `09-cost-routing.ts`      | Budget-aware model selection, cost tracking                                                     |
-| 10  | `10-constitutional-ai.ts` | Guardrails, content filtering, critique-and-revise                                              |
-| 11  | `11-prompt-injection.ts`  | Prompt injection detection and threat analysis                                                  |
-| 12  | `12-causal-reasoning.ts`  | Causal graphs, interventions, counterfactual reasoning                                          |
-| 13  | `13-model-registry.ts`    | Model registry: pricing, filtering, provider discovery                                          |
-| 14  | `14-approvals.ts`         | Pause before a sensitive tool, resume after a person decides                                    |
-| 15  | `15-handoffs.ts`          | A triage agent hands the conversation to billing or tech support                                |
-| 16  | `16-decisions.ts`         | Decision models: typed answers with probabilities, a routing tool                               |
-| 17  | `17-provider-surface.ts`  | `llm.pricing`, OpenAI-compatible server profiles, `error.kind`                                  |
-| 18  | `18-tool-contract.ts`     | Tool names, `json` and `resource` parts, result size, cancelling                                |
-| 19  | `19-model-fallback.ts`    | `fallbackModels`, circuit breakers, every failed attempt reported                               |
-| 20  | `20-tool-deps.ts`         | Typed per-request `deps` for tools, kept out of the prompt                                      |
-| 21  | `21-run-middleware.ts`    | Middleware around model and tool calls, tripwire guards                                         |
-| 22  | `22-workspace.ts`         | A workspace for files and commands, long tool results saved there                               |
-| 23  | `23-skills-and-todos.ts`  | `SKILL.md` skills (sample in `skills/`), `write_todos`, `tool_search`                           |
-| 24  | `24-run-control.ts`       | `cog.start()` steering, a tool that asks a person, double-texting                               |
-| 25  | `25-tool-execution.ts`    | Parallel safe tools and a barrier, `toolOutput()`, progress, streamed tool input, timeouts      |
-| 26  | `26-permissions.ts`       | Claude Code rules from `.claude/settings.json`, plan mode, the audit log, a session budget      |
-| 27  | `27-hooks.ts`             | Claude Code hooks from `.claude/settings.json`, `AGENTS.md` in the system prompt                |
-| 28  | `28-subagents.ts`         | `.claude/agents` subagents, an approval that bubbles up, a `.claude/commands` command           |
-| 29  | `29-harness-agent.ts`     | `createHarnessAgent()`: the `coding` preset fixes a bug with approvals, the `assistant` preset  |
-| 30  | `30-durable-runs.ts`      | A durable run killed with `SIGKILL` mid-tool, recovered by another process with `recoverRuns()` |
-| 31  | `31-rewind.ts`            | File checkpoints per message, a rewind of conversation and files, a fork into another directory |
+| #   | File                      | Description                                                                                                                      |
+| --- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| 01  | `01-basic-agent.ts`       | Custom tools with Zod schemas, streaming, usage tracking                                                                         |
+| 02  | `02-built-in-tools.ts`    | Built-in tools: calculator, datetime, filesystem, regex                                                                          |
+| 03  | `03-tool-caching.ts`      | Cache tool results with TTL, semantic matching, cache invalidation                                                               |
+| 04  | `04-context-manager.ts`   | Long conversation handling, truncation, sliding windows                                                                          |
+| 05  | `05-tree-of-thought.ts`   | Tree-of-Thought reasoning for complex problem solving                                                                            |
+| 06  | `06-reflection.ts`        | Self-analyzing agents that learn from past runs                                                                                  |
+| 07  | `07-agent-optimizer.ts`   | Auto-optimize agent instructions and few-shot demos                                                                              |
+| 08  | `08-time-travel.ts`       | Checkpoint, replay, fork, and compare agent runs                                                                                 |
+| 09  | `09-cost-routing.ts`      | Budget-aware model selection, cost tracking                                                                                      |
+| 10  | `10-constitutional-ai.ts` | Guardrails, content filtering, critique-and-revise                                                                               |
+| 11  | `11-prompt-injection.ts`  | Prompt injection detection and threat analysis                                                                                   |
+| 12  | `12-causal-reasoning.ts`  | Causal graphs, interventions, counterfactual reasoning                                                                           |
+| 13  | `13-model-registry.ts`    | Model registry: pricing, filtering, provider discovery                                                                           |
+| 14  | `14-approvals.ts`         | Pause before a sensitive tool, resume after a person decides                                                                     |
+| 15  | `15-handoffs.ts`          | A triage agent hands the conversation to billing or tech support                                                                 |
+| 16  | `16-decisions.ts`         | Decision models: typed answers with probabilities, a routing tool                                                                |
+| 17  | `17-provider-surface.ts`  | `llm.pricing`, OpenAI-compatible server profiles, `error.kind`                                                                   |
+| 18  | `18-tool-contract.ts`     | Tool names, `json` and `resource` parts, result size, cancelling                                                                 |
+| 19  | `19-model-fallback.ts`    | `fallbackModels`, circuit breakers, every failed attempt reported                                                                |
+| 20  | `20-tool-deps.ts`         | Typed per-request `deps` for tools, kept out of the prompt                                                                       |
+| 21  | `21-run-middleware.ts`    | Middleware around model and tool calls, tripwire guards                                                                          |
+| 22  | `22-workspace.ts`         | A workspace for files and commands, long tool results saved there                                                                |
+| 23  | `23-skills-and-todos.ts`  | `SKILL.md` skills (sample in `skills/`), `write_todos`, `tool_search`                                                            |
+| 24  | `24-run-control.ts`       | `cog.start()` steering, a tool that asks a person, double-texting                                                                |
+| 25  | `25-tool-execution.ts`    | Parallel safe tools and a barrier, `toolOutput()`, progress, streamed tool input, timeouts                                       |
+| 26  | `26-permissions.ts`       | Claude Code rules from `.claude/settings.json`, plan mode, the audit log, a session budget                                       |
+| 27  | `27-hooks.ts`             | Claude Code hooks from `.claude/settings.json`, `AGENTS.md` in the system prompt                                                 |
+| 28  | `28-subagents.ts`         | `.claude/agents` subagents, an approval that bubbles up, a `.claude/commands` command                                            |
+| 29  | `29-harness-agent.ts`     | `createHarnessAgent()`: the `coding` preset fixes a bug with approvals, the `assistant` preset                                   |
+| 30  | `30-durable-runs.ts`      | A durable run killed with `SIGKILL` mid-tool, recovered by another process with `recoverRuns()`                                  |
+| 31  | `31-rewind.ts`            | File checkpoints per message, a rewind of conversation and files, a fork into another directory                                  |
+| 32  | `32-plugins.ts`           | A Claude Code plugin loaded unchanged, a plugin in code, an isolated plugin refused by its permissions, hot reload by generation |
 
 ## Running
 

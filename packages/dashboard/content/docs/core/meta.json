@@ -15,6 +15,7 @@
     "hooks",
     "subagents",
     "commands",
+    "plugins",
     "project-instructions",
     "llm-backends",
     "model-registry",

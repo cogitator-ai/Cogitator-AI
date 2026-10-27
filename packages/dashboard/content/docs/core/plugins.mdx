@@ -1,0 +1,273 @@
+---
+title: Plugins
+description: Experimental plugins in the format of Claude Code's plugins, with a Cogitator extension for code, isolation, permissions and Studio panels, loaded by generations and installed from marketplaces, npm and git.
+---
+
+## Overview
+
+A plugin bundles what an agent runtime can be extended with: tools, skills, subagents, commands, hooks, MCP servers, LLM backends, Studio panels and the settings they need. Cogitator reads plugins in the format of Claude Code: a folder with `.claude-plugin/plugin.json` (or none at all) and the standard `skills/`, `commands/`, `agents/`, `hooks/hooks.json` and `.mcp.json`. A plugin written for Claude Code loads here unchanged. A Cogitator-native manifest, `.cogitator-plugin/plugin.json`, extends it with code, Studio panels, a permissions manifest and engine constraints, and Claude Code never sees it.
+
+**Experimental.** Every entry point carries the `experimental_` prefix (`experimental_plugins`, `cog.experimental_plugins`, `experimental_definePlugin`, `experimental_PluginInstaller`, ...) and may change in a minor release. The full list is in [docs/EXPERIMENTAL_API.md](https://github.com/cogitator-ai/Cogitator-AI/blob/main/docs/EXPERIMENTAL_API.md).
+
+```typescript
+import { Cogitator, Agent } from '@cogitator-ai/core';
+import { experimental_mcpConnector } from '@cogitator-ai/mcp';
+
+const cog = new Cogitator({
+  llm: { defaultModel: 'ollama/qwen3:8b' },
+  experimental_plugins: {
+    dirs: ['./plugins/deploy-tools'],
+    mcp: experimental_mcpConnector(),
+  },
+});
+
+const agent = new Agent({ name: 'ops', instructions: 'You run deployments.' });
+const result = await cog.run(agent, { input: '/deploy-tools:status production' });
+
+for (const plugin of cog.experimental_plugins.list()) {
+  console.log(plugin.id, plugin.status, plugin.contributions);
+}
+```
+
+Without `experimental_plugins` nothing changes: the runtime has only the core's own plugin, which registers the built-in LLM providers.
+
+## Where plugins come from
+
+| Source                                                                              | Id                                                        | Runs                                                   |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------ |
+| The core's own plugin (built-in providers)                                          | `cogitator@builtin`                                       | In the host process, always on                         |
+| `experimental_plugins.plugins`, definitions in code                                 | `name@code`                                               | In the host process                                    |
+| `experimental_plugins.dirs`, folders loaded in place (Claude Code's `--plugin-dir`) | `name@inline`                                             | Declarative parts in the host, code in its own process |
+| Installed with `cogitator plugin install` (`installed`, on by default)              | `name@marketplace`, `name@npm`, `name@git`, `name@github` | Declarative parts in the host, code in its own process |
+
+When two plugins share a name, code wins over folders and folders over installed plugins. The one left out is reported as a diagnostic.
+
+## Layout and manifest
+
+A plugin folder in Claude Code's standard layout:
+
+```text
+deploy-tools/
+├── .claude-plugin/plugin.json     # optional, name defaults to the folder
+├── .cogitator-plugin/plugin.json  # optional, Cogitator's extension
+├── skills/deploy/SKILL.md         # skill deploy-tools:deploy
+├── commands/status.md             # command /deploy-tools:status
+├── commands/db/migrate.md         # command /deploy-tools:db:migrate
+├── agents/review/security.md      # subagent deploy-tools:review:<name>
+├── hooks/hooks.json               # { "hooks": { "PreToolUse": [...] } }
+└── .mcp.json                      # server plugin:deploy-tools:<server>
+```
+
+Cogitator reads every field of Claude Code's manifest that applies at run time: `name` (required, no spaces, `@`, `:` or path separators), `displayName`, `version`, `description`, `author`, `homepage`, `repository`, `license`, `keywords`, `defaultEnabled`, `dependencies`, `userConfig`, `skills`, `commands` (paths or a map of `source`/`content` entries), `agents`, `hooks` (files or inline) and `mcpServers` (files or inline). The same rules hold as in Claude Code:
+
+- component paths start with `./`, must exist and stay inside the plugin, links followed (`path escapes plugin directory`, `path not found`)
+- `commands` and `agents` replace their default folder, `skills` adds to `skills/`, `hooks` and `mcpServers` merge with `hooks/hooks.json` and `.mcp.json`
+- an unknown top-level field is stripped with a warning, an unknown key inside a `userConfig` option fails the plugin
+- a hooks file needs the `{ "hooks": { ... } }` wrapper, an inline `hooks` value does not.
+
+`.cogitator-plugin/plugin.json` takes the same fields, which override Claude Code's field by field, plus Cogitator's own:
+
+| Field               | What it does                                                                                                                        |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `main`              | An ES module whose default export is a plugin definition (see [Plugins in code](#plugins-in-code)). It runs in a process of its own |
+| `permissions`       | `{ allow, deny }` permission rules of what the plugin may do beyond its folder, see [Isolation](#isolation-and-permissions)         |
+| `ui.panels`         | Studio panels: `{ id, title, entry: './ui/panel.html', icon?, description? }`                                                       |
+| `engines.cogitator` | A semver range of Cogitator versions the plugin works with                                                                          |
+
+Claude Code features without a counterpart here (`lspServers`, `outputStyles`, `themes`, `monitors`, `workflows`, `channels`, `bin/`, the main thread `agent` of `settings.json`, MCP bundles `.mcpb`) are reported as warnings and skipped.
+
+## What a plugin adds
+
+| Component     | Name in the runtime                                                       | Notes                                                                                       |
+| ------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Tools         | their own name                                                            | Every agent of the runtime gets them, after its own tools and `cog.tools`                   |
+| Skills        | `plugin:skill`                                                            | Every agent may activate them with `use_skill`                                              |
+| Subagents     | `plugin:folder:name`                                                      | `permissionMode`, `hooks` and `mcpServers` of a plugin agent are ignored, as in Claude Code |
+| Commands      | `/plugin:name`, `/plugin:folder:name`                                     | Expanded before the run, as [commands](/docs/core/commands)                                 |
+| Hooks         | in the plugin's own hook layer                                            | The managed `disableAllHooks` and `allowManagedHooksOnly` still apply                       |
+| MCP servers   | `plugin:<plugin>:<server>`, tools `mcp__plugin_<plugin>_<server>__<tool>` | Connected by `experimental_plugins.mcp`, without it skipped with a diagnostic               |
+| LLM backends  | `provider/model`                                                          | The [LLMPlugin](/docs/core/llm-backends) of before is one kind of contribution              |
+| Middleware    |                                                                           | Plugins in the host's process only                                                          |
+| Studio panels |                                                                           | See [Studio panels](#studio-panels)                                                         |
+
+A run takes what the live plugins add when it starts, so a reload never changes a run that is going on.
+
+## Variables
+
+The files of a plugin reference its paths and options as in Claude Code:
+
+| Variable                                             | Value                                       |
+| ---------------------------------------------------- | ------------------------------------------- |
+| `${CLAUDE_PLUGIN_ROOT}` (`${COGITATOR_PLUGIN_ROOT}`) | The folder of the loaded version            |
+| `${CLAUDE_PLUGIN_DATA}` (`${COGITATOR_PLUGIN_DATA}`) | `<plugins>/data/<id>/`, kept across updates |
+| `${CLAUDE_PROJECT_DIR}`                              | The project root                            |
+| `${user_config.KEY}`                                 | An option value                             |
+
+They are put into hook commands and arguments, MCP server configs, and the text of skills, commands and agents. A secret option goes into MCP configs and the arguments of an exec-form hook, while in text the model reads it becomes `[sensitive option KEY]`, and a shell-form hook command that names an option is refused. Hook processes get `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA` and `CLAUDE_PLUGIN_OPTION_<KEY>` for every option.
+
+## Options and secrets
+
+A plugin's settings are Claude Code's `userConfig`: each option has a `type` (`string`, `number`, `boolean`, `directory`, `file`), a `title` and a `description`, and may be `required`, have a `default`, fixed `options`, be `multiple` or `sensitive`.
+
+- Plain values are read from `pluginConfigs["<id>"].options` of the user's (or managed) settings, `experimental_plugins.options` in code, then the defaults.
+- A `sensitive` value is a secret: it lives in the operating system's credential store, never in a settings file. `experimental_keychainSecretStore()` uses the system's own tools without a dependency: `security` on macOS, `secret-tool` on Linux, the Credential Manager through PowerShell on Windows. The secret goes to the tool's standard input, never on a command line.
+- Without such a tool a secret cannot be saved or read and the call fails with `SECRET_STORE_UNAVAILABLE`. Claude Code falls back to a plain `~/.claude/.credentials.json` there, Cogitator does not. Pass `experimental_plugins.secrets` with a store of your own (or `experimental_memorySecretStore()`) on a server.
+
+```bash
+cogitator plugin configure deploy-tools@team --set api_endpoint=https://deploy.example.com --secret api_token
+```
+
+## Enabling plugins
+
+Whether a plugin loads follows `enabledPlugins` of the settings files, read where the [permission settings](/docs/tools/permissions) are (`.claude/` and `.cogitator/` of the project, `~/.cogitator` and `~/.claude` of the user, the managed directories):
+
+```json title=".cogitator/settings.json"
+{ "enabledPlugins": { "deploy-tools@team": true, "noisy@team": false } }
+```
+
+The highest layer that names a plugin decides: managed, then `experimental_plugins.enabled` in code, then the local, project and user files. A project's own files count only once the project is trusted (`experimental_plugins.settings.trusted`, or `permissions.settings.trusted`), as for hooks. A plugin no layer names follows its `defaultEnabled` (true by default), and a plugin an enabled plugin depends on is enabled with it unless a layer turns it off.
+
+## Plugins in code
+
+A plugin in code registers what it adds through its `PluginContext`. The core's own plugin, the host's plugins and third-party plugins all use this one API, and every registration returns its disposer.
+
+```typescript
+import { experimental_definePlugin } from '@cogitator-ai/core';
+
+export default experimental_definePlugin({
+  name: 'weather',
+  version: '1.0.0',
+  permissions: { allow: ['WebFetch(domain:api.weather.example.com)'] },
+  activate(context) {
+    context.registerTool({
+      name: 'weather_now',
+      description: 'The weather in a city now',
+      parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+      readOnly: true,
+      execute: async ({ city }) => {
+        const response = await context.fetch(
+          `https://api.weather.example.com/now?q=${String(city)}`
+        );
+        return response.text;
+      },
+    });
+    context.registerSkill({
+      name: 'forecast',
+      description: 'Explains a forecast',
+      instructions: '...',
+    });
+    const dispose = context.registerCommand('today', 'What is the weather in $ARGUMENTS today?');
+    context.onDispose(() => console.log('unloading'));
+    return () => dispose();
+  },
+});
+```
+
+| `PluginContext`                                                                           |                                                                             |
+| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `plugin`                                                                                  | `{ id, name, version, root, dataDir, isolated }`                            |
+| `options`, `secret(key)`                                                                  | Option values that are not secrets, and a secret from the store             |
+| `files`, `fetch`, `exec`                                                                  | What the plugin may do beyond its folder, checked against its `permissions` |
+| `registerTool(tool)`                                                                      | A `tool()` or a spec with a JSON Schema `parameters`                        |
+| `registerSkill`, `registerAgent`, `registerCommand`, `registerHooks`, `registerMcpServer` | The components a folder plugin declares, in code                            |
+| `registerLLMBackend(plugin)`                                                              | An `LLMPlugin`: agents with models `provider/model` run on it               |
+| `registerMiddleware(middleware)`, `registerPanel(panel)`                                  | Run middleware (host process only) and Studio panels                        |
+| `onDispose(dispose)`, `signal`, `logger`                                                  | Cleanup, an abort signal of the unload, a logger tagged with the plugin     |
+
+`ToolRegistry.register()` and `registerLLMBackend()` return their disposer too.
+
+## Lifecycle
+
+Each load of a plugin is a generation. Its registrations and the disposers they return are kept in order, and unloading a generation runs them in reverse order, the disposer `activate` returned first. A disposer that throws does not stop the others, its failure is a diagnostic.
+
+```typescript
+const results = await cog.experimental_plugins.reload('deploy-tools@team');
+// [{ id: 'deploy-tools@team', ok: false, generation: 3, error: '...' }]
+```
+
+`reload(id)` builds a new generation next to the live one (a new process for an isolated plugin) and swaps them only once the new one loaded in full, MCP servers connected and hooks checked. When it fails, the half-built generation is unloaded and the old one serves on: the result has `ok: false`, `code: 'PLUGIN_RELOAD_FAILED'` and the generation still serving, and a `reload-failed` event is emitted. `reload()` without an id rebuilds every plugin and picks up plugins installed, removed, enabled or disabled since. `watch: true` reloads a folder plugin when its files change.
+
+Plugins load in the order of their `dependencies` (`"name"`, `"name@marketplace"`, or `{ name, marketplace?, version? }` with a semver range). A plugin whose dependency is missing, disabled, of a version outside its range or blocked is `blocked` with `PLUGIN_DEPENDENCY_UNMET`, every plugin of a dependency cycle with `PLUGIN_DEPENDENCY_CYCLE`, and the others load anyway. `cog.experimental_plugins.list()` gives each plugin's `status` (`active`, `disabled`, `blocked`, `failed`, `unloaded`), `error`, `generation`, `contributions` and `diagnostics`.
+
+## Isolation and permissions
+
+A plugin with code from a folder (a `main` of an installed plugin or of a `dirs` folder) never runs in the host's process. It runs in a child process under Node's permission model:
+
+- it reads only its own folder and writes only its data folder
+- it cannot start processes, workers, native addons or WASI, or open the inspector
+- the network is closed before its code runs (`net`, `tls`, `dgram`, `dns`, `fetch`, WebSocket).
+
+Everything else it asks the host for, through `context.files`, `context.fetch` and `context.exec`, and the host decides with the [permission engine](/docs/tools/permissions) against the plugin's `permissions`, in `dontAsk` mode: what no `allow` rule covers is refused with `PLUGIN_PERMISSION_DENIED`, a `deny` rule refuses what an `allow` rule would let through, and `experimental_plugins.permissions.deny` refuses over every plugin.
+
+```json title=".cogitator-plugin/plugin.json"
+{
+  "main": "./main.mjs",
+  "permissions": {
+    "allow": [
+      "Read(./docs/**)",
+      "Bash(git status)",
+      "WebFetch(domain:api.example.com)",
+      "Bash(${CLAUDE_PLUGIN_ROOT}/scripts/check.sh)"
+    ],
+    "deny": ["Read(./docs/private/**)"]
+  }
+}
+```
+
+Paths in the rules start from the project root, `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` are put in. For a plugin that declares `permissions`, the commands of its hooks and stdio MCP servers and the URLs of its HTTP hooks and remote servers are checked against them too, and the ones its rules do not allow are left out. The permissions an installed plugin asks for are agreed to at install, and rules a later version adds load only once agreed to again.
+
+Plugins in the host's code get no privileges beyond that: their `files`, `fetch` and `exec` are checked against their `permissions` the same way (their own imports are the host's code). A plugin in Claude Code's format without a Cogitator manifest keeps Claude Code's trust model: enabling it trusts its hooks and MCP servers, which run as processes of the user. The OS-level sandbox for those processes is planned separately, and Node's permission model is a guard rail rather than a security boundary against hostile native code.
+
+## Installing plugins
+
+```bash
+cogitator plugin marketplace add your-org/claude-plugins   # owner/repo, git URL, https marketplace.json, ./path
+cogitator plugin install formatter@your-org                # from a marketplace
+cogitator plugin install npm:@acme/review-kit@^2.0.0       # straight from npm
+cogitator plugin install git+https://git.example.com/tools.git#v1.2.0
+cogitator plugin list
+cogitator plugin update formatter@your-org
+cogitator plugin disable formatter@your-org --scope project
+cogitator plugin uninstall formatter@your-org --prune
+cogitator plugin validate ./my-plugin --strict
+```
+
+Marketplaces are Claude Code's `.claude-plugin/marketplace.json` with the same plugin sources: a relative path inside the marketplace, `github`, `url` (git), `git-subdir`, `npm`, `archive` (zip over https with a `sha256` pin) and `command`. Marketplaces declared in `extraKnownMarketplaces` of the settings are fetched when first used. Reserved and official marketplace names are refused as Claude Code refuses them.
+
+Every install is pinned to exactly what it fetched, in `<plugins>/installed_plugins.json` (`COGITATOR_PLUGINS_DIR`, default `~/.cogitator/plugins`):
+
+- a git source: the full commit SHA
+- an npm package: the exact version and its `sha512` integrity, checked against the tarball, fetched with your npm client and its `.npmrc`, without install scripts
+- an archive: its SHA-256.
+
+The version a plugin is installed under is its manifest's `version`, else its entry's, else the source's (a 12-character commit or digest), and an update installs a new version only when that version changed, as in Claude Code. A dependency with a range installs at the highest `<name>--v<version>` tag that satisfies it. Downloads go over https only, never to loopback, link-local or metadata addresses, and git and npm take http only to this machine.
+
+`experimental_PluginInstaller` gives the same operations in code.
+
+## Studio panels
+
+A plugin adds pages to [Studio](/docs/getting-started/studio): `ui.panels` in its manifest, or `context.registerPanel({ id, title, html, handlers })` in code. Studio shows a Plugins page with every plugin, its status, contributions, permissions and diagnostics, with Reload and Enable or Disable, and opens a panel in a sandboxed frame without network access. The page asks its plugin through `window.parent.postMessage({ type: 'cogitator:request', id, method, params })` and gets `{ type: 'cogitator:response', id, result }` or `{ ..., error }` back, `method` naming one of the panel's handlers.
+
+## Evals
+
+`cogitator plugin eval` runs a plugin's eval suite in the format of `claude plugin eval`, with and without the plugin, see [Plugin evals](/docs/evals/plugin-evals).
+
+## Differences from Claude Code
+
+- Plugin components are namespaced the same way, but subagents named `plugin:name` keep their memory in the folder `plugin.name`.
+- MCP bundles (`.mcpb`, `.dxt`), LSP servers, output styles, themes, monitors, workflows, channels and `bin/` are not loaded, and the main thread `agent` of a plugin's `settings.json` does not apply.
+- Secrets never fall back to a plain file.
+- A marketplace source of type `npm` is not supported, as in Claude Code.
+
+## Error codes
+
+| Code                                                 | When                                                                                               |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `PLUGIN_NOT_FOUND`                                   | No such plugin, marketplace or panel                                                               |
+| `PLUGIN_INVALID`                                     | A manifest that keeps the plugin from loading, an `engines.cogitator` range this version is not in |
+| `PLUGIN_ACTIVATION_FAILED`                           | The plugin's process did not start, did not activate in time or exited                             |
+| `PLUGIN_DEPENDENCY_UNMET`, `PLUGIN_DEPENDENCY_CYCLE` | See [Lifecycle](#lifecycle)                                                                        |
+| `PLUGIN_PERMISSION_DENIED`                           | A request its permissions do not allow, permissions not granted at install                         |
+| `PLUGIN_RELOAD_FAILED`                               | A reload failed and the previous generation goes on, in the reload result                          |
+| `PLUGIN_INSTALL_FAILED`                              | A fetch, a check of a pin or a write failed                                                        |
+| `SECRET_STORE_UNAVAILABLE`                           | No credential store of the system                                                                  |

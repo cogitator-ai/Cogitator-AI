@@ -202,7 +202,7 @@ export async function featuresB(): Promise<ExplorerFeature[]> {
       pkg: '@cogitator-ai/core',
       title: 'Harness agent',
       summary:
-        'One call assembles a coding or assistant agent: file tools and a shell in a workspace, todos, skills, subagents, AGENTS.md, permissions that ask before edits and commands, and compaction for long sessions.',
+        'One call assembles a coding or assistant agent: file tools and a shell in a workspace, todos, skills, subagents, AGENTS.md, permissions that ask before edits and commands, and compaction for long sessions. Claude Code plugins add their skills, commands, hooks and MCP servers unchanged.',
       href: '/docs/core/harness-agent',
       code: harness,
     },

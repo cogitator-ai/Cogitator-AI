@@ -27,6 +27,7 @@ Website docs: [Evals](https://cogitator.app/docs/evals), [Datasets](https://cogi
 - **Assertions** — threshold, noRegression, custom assertion with auto-detection of lower-is-better metrics
 - **A/B Testing** - EvalComparison with McNemar's test (exact for few discordant pairs), the paired t-test or Wilcoxon signed-rank, Holm's correction across metrics, bootstrap confidence intervals, effect sizes, latency and cost comparisons and pairwise judging
 - **Experiment Tracking** - named runs with metadata saved as versioned run files, a `RunStore` directory of runs, `compareRuns()` with the A/B statistics, per-case regressions and improvements, and warnings when datasets, prompt versions, metrics or judges differ. Agent cases keep the `traceId` and versioned `prompt` of their runs
+- **Plugin Evals** - `experimental_runPluginEvals()` runs a plugin's eval suite in the format of Claude Code's `claude plugin eval`, with and without the plugin, six grader types, MCP mocks and a JSON and HTML report
 - **8 Reporters** - console (colored table), JSON, CSV, JUnit XML, Markdown (pull request comments), self-contained HTML, GitHub Actions annotations and job summary, CI (exit code on failure), plus `reportComparison()` for comparisons
 - **Vitest** - `describeEval` from `@cogitator-ai/evals/vitest` runs a suite as a test file, one test per case plus one for the assertions, and `evalMatchers` from `@cogitator-ai/evals/matchers` (Vitest 5) adds `toHaveCalledTool`, `toFollowTrajectory`, `toHaveRetrieved` and `toScoreAtLeast`
 - **Builder API** — Fluent `EvalBuilder` for composable eval pipelines
@@ -676,6 +677,83 @@ if (base) {
 
 ---
 
+## Plugin Evals
+
+Experimental. `experimental_runPluginEvals()` runs a plugin's eval suite in the format of Claude Code's `claude plugin eval`: each case's prompt several times with the plugin loaded (the with-arm) and with no plugin (the without-arm), scores every run with the case's graders and writes `aggregate-result.json` and a self-contained `report.html`. From the command line it is `cogitator plugin eval`. Needs `@cogitator-ai/core`.
+
+```typescript
+import { experimental_runPluginEvals } from '@cogitator-ai/evals';
+
+const { result, reportFile } = await experimental_runPluginEvals({
+  target: './my-plugin',
+  llm: { defaultModel: 'anthropic/claude-sonnet-5-5' },
+  judgeModel: 'anthropic/claude-haiku-4-5',
+  threshold: 0.8,
+  maxCostUsd: 5,
+});
+
+console.log(result.aggregates.overallScore, result.aggregates.meanDelta, reportFile);
+```
+
+A suite lives in `evals/` of the plugin, one directory per case with a `prompt.md` (frontmatter with the run settings, body the prompt) or a `case.yaml`, and graders in `graders/<name>.md` or under `graders:` of `case.yaml`:
+
+```text
+my-plugin/
+├── .claude-plugin/plugin.json
+├── skills/commit-message/SKILL.md
+└── evals/
+    ├── writes-commit-message/
+    │   ├── prompt.md
+    │   └── graders/
+    │       ├── skill-fired.md
+    │       └── criteria.md
+    └── mocks/<server>/<tool>.md
+```
+
+```markdown
+---
+runs: 3
+max_turns: 10
+allowed_tools: [Read, Glob, Grep, Skill]
+---
+
+Write me a commit message for this change: I renamed getUser to fetchUser and updated the three call sites.
+```
+
+Each run gets a fresh temporary workspace, a new runtime with only the plugin under test (no user or project settings, hooks, memory or other plugins) and only the tools the case may use: the read-only tools its `allowed_tools` lists (`Read`, `Glob`, `Grep`, `Skill`, `Agent`, `TodoWrite` and the rest of Claude Code's read-only set) plus what `allowTools` grants for the whole run, such as `Write` or `Bash(npm test *)`. A tool that is not granted is not given to the model, and runs never stop to ask. Claude Code's tool names map to Cogitator's (`Read` to `read_file`, `Bash` to `run_command`, `Skill` to `use_skill`, `Agent` to `agent`), and graders see the calls under Claude Code's names and input shapes.
+
+The six grader types are `regex` (over `last_message`, `trace`, `files`, `mock_calls` or `{ source: file, path }`), `tool_used`, `tool_order`, `file_exists`, `llm` and `baseline`. The last two ask the judge three times and pass on two PASS votes. A run's score is the weighted share of its graders that passed, a case's score the mean of its with-arm runs, and its delta the with-arm score minus the without-arm score. In a two-arm run, graders that can only pass with the plugin (`tool_used: Skill`, mock call graders of the plugin's own servers, `arm: with-only`) are reported as plugin-fired indicators with `scored: false`.
+
+| Option        | Default                                             | Description                                                                         |
+| ------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `target`      | the working directory                               | A plugin directory, a `prompt.md` or `case.yaml`, or an installed plugin by name    |
+| `llm`         | required                                            | The LLM configuration of the runs and the judge: providers, keys, backends, model   |
+| `model`       | each case's `model`, else `llm.defaultModel`        | Model of the agent under test                                                       |
+| `judgeModel`  | the agent's model                                   | Model of `llm` and `baseline` graders                                               |
+| `runs`        | each case's `runs`, else 3                          | Runs per case per arm, 1 to 50                                                      |
+| `concurrency` | 1                                                   | Agent runs at once, 1 to 8. Results keep case order                                 |
+| `ablation`    | decided per case                                    | `none` runs the with-arm only, `with-without` adds the baseline to every case       |
+| `threshold`   | 1                                                   | A case passes when its with-arm score is at least this                              |
+| `maxCostUsd`  | none                                                | Once the cost estimate reaches it no further run starts, and the result is partial  |
+| `allowTools`  | none                                                | Tools granted beyond the read-only set, as permission rules                         |
+| `scaffold`    | false                                               | Run each case's `context.scaffold_script`                                           |
+| `caseGlob`    | none                                                | Only the cases whose name matches                                                   |
+| `tags`        | none                                                | Only the cases with any of these tags                                               |
+| `evalDir`     | `experimental.evals` of `plugin.json`, else `evals` | The eval directory, a relative path of plain directory names                        |
+| `outputDir`   | `<evalDir>/results/<timestamp>/`                    | Where `aggregate-result.json` and `report.html` go                                  |
+| `keepTemp`    | false                                               | Keep every run's temporary directory                                                |
+| `exec`        | none                                                | How granted `Bash` commands are spawned, such as a `launch` that adds an OS sandbox |
+| `signal`      | none                                                | Stops starting runs: the result is partial, `interrupted`                           |
+| `onProgress`  | none                                                | Hears warnings, each case with its notices, each finished run, and skipped runs     |
+
+The result, `PluginEvalResult`, is the document written to `aggregate-result.json`: `schemaVersion: 1`, `cogitatorVersion`, `outcome` (`passed`, `failed`, `partial` or `interrupted`), `partial` and `partialReason` (`cost_ceiling`, `interrupted` or `auth_failed`), `aggregates` (`overallScore`, `casesPassed`, `casesTotal`, `meanDelta`, `baselineScore`, `perfectRuns`), `apiErrors`, `loadErrors`, `costUsd`, `durationSeconds`, and `cases[]` with `aggregates.score` and `delta` and every run of `arms.with` and `arms.without` with its `error`, `aborted`, `skippedPaidGraders` and grader results with explanations and judge votes. A suite that cannot start (no plugin, no case, an invalid option) throws `PluginEvalError`, a case that does not load is reported with its `error` and scores 0.
+
+Through `cogitator plugin eval` the outcome is the exit code: `0` when every case met the threshold, `1` for a case below it, a case that did not load, a run that ended on a provider error or an invalid option, `2` for a partial run, `130` when interrupted and `143` when terminated.
+
+Supported from Claude Code's format: `prompt.md` and `case.yaml` with every field (an unknown key is an error), `context.scaffold_script`, `context.history_file` (such a case runs one arm by default), `context.add_dirs` (read-only), `env` keys matching `EVAL_[A-Z0-9_]*`, every grader type and option, the exclusion rules of two-arm runs, and `fixed` MCP mocks with `{{input.<field>}}` and `{{file:...}}` substitutions, `expect:` guards, `error: true` and `_tools.json`. Not supported: `type: agent` and `_server.md` mocks (the case fails to load and names the file), `--mocks off` and the plugin's real MCP servers, skills-directory plugins (`name@skills-dir`), images shown to the `llm` judge (a binary file fails the grader), the trust prompt and report publishing. Granted `Bash` commands run in the workspace directory without an OS sandbox unless `exec.launch` adds one, and `env` reaches those commands only. The judge votes at temperature 1 on the agent's model unless `judgeModel` names another.
+
+---
+
 ## Builder API
 
 `EvalBuilder` provides a fluent interface for constructing eval suites.
@@ -754,20 +832,22 @@ result.report('ci');
 
 ### Core
 
-| Export           | Description                                                         |
-| ---------------- | ------------------------------------------------------------------- |
-| `EvalSuite`      | Main evaluation runner                                              |
-| `EvalComparison` | A/B testing runner with statistical significance                    |
-| `calibrateJudge` | Agreement of a judge metric with labelled examples                  |
-| `EvalBuilder`    | Fluent builder for EvalSuite                                        |
-| `compareRuns`    | Compares two saved runs or suite results case by case               |
-| `RunStore`       | Directory of run files: save, list, load, latest                    |
-| `loadRun`        | Reads and validates a run file                                      |
-| `caseKey`        | The key a case is matched by across runs                            |
-| `Dataset`        | Immutable dataset with from/fromJsonl/fromCsv/filter/sample/shuffle |
-| `loadJsonl`      | Low-level JSONL file loader                                         |
-| `loadCsv`        | Low-level CSV file loader                                           |
-| `isLLMMetric`    | Type guard: checks if a `MetricFn` is an `LLMMetricFn`              |
+| Export                        | Description                                                         |
+| ----------------------------- | ------------------------------------------------------------------- |
+| `EvalSuite`                   | Main evaluation runner                                              |
+| `EvalComparison`              | A/B testing runner with statistical significance                    |
+| `calibrateJudge`              | Agreement of a judge metric with labelled examples                  |
+| `EvalBuilder`                 | Fluent builder for EvalSuite                                        |
+| `compareRuns`                 | Compares two saved runs or suite results case by case               |
+| `RunStore`                    | Directory of run files: save, list, load, latest                    |
+| `loadRun`                     | Reads and validates a run file                                      |
+| `caseKey`                     | The key a case is matched by across runs                            |
+| `Dataset`                     | Immutable dataset with from/fromJsonl/fromCsv/filter/sample/shuffle |
+| `loadJsonl`                   | Low-level JSONL file loader                                         |
+| `loadCsv`                     | Low-level CSV file loader                                           |
+| `isLLMMetric`                 | Type guard: checks if a `MetricFn` is an `LLMMetricFn`              |
+| `experimental_runPluginEvals` | Runs a plugin's eval suite, Claude Code's plugin eval format        |
+| `PluginEvalError`             | Thrown when a plugin eval run cannot start                          |
 
 ### Metrics
 
