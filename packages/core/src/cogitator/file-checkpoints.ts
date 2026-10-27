@@ -114,23 +114,26 @@ function mayChangeFiles(entry: MemoryEntry): boolean {
 /**
  * The file checkpoint that holds the files as they were at entry `index` of `path` (a branch,
  * oldest first), the latest one not after it. A user message's checkpoint is taken right before
- * the message is written, so it holds the files at the entry before it too: the first user
- * message after the point, when only session events and notes come between, gives the files at
- * the point exactly. Otherwise it is the checkpoint of the nearest user message at or before the
- * point. Undefined when no message there has one
+ * the message is written, so it holds the files at the entry before it too: a user message after
+ * the point, when only session events and notes come between, gives the files at the point
+ * exactly. Otherwise it is the checkpoint of the nearest user message at or before the point.
+ * Undefined when no message there has one.
+ *
+ * With `tree`, every entry of the thread, the messages after the point are looked for on every
+ * branch, and of those that name a checkpoint the one written last is taken: the choice does not
+ * depend on the active branch, so a rewind to the point, which leaves the messages after it off
+ * the active branch, restores the same checkpoint when it is repeated, as a fork from the point
+ * does. Without it only the message after the point on `path` counts
  */
 export function checkpointAt(
   path: readonly MemoryEntry[],
-  index: number
+  index: number,
+  tree?: readonly MemoryEntry[]
 ): CheckpointAtPoint | undefined {
-  for (let next = index + 1; next < path.length; next++) {
-    const entry = path[next];
-    if (mayChangeFiles(entry)) break;
-    if (!isUserMessage(entry)) continue;
-    const checkpoint = fileCheckpointOf(entry.metadata);
-    if (checkpoint) return { entryId: entry.id, checkpoint, exact: true };
-    break;
-  }
+  const point = path[index];
+  if (!point) return undefined;
+  const after = tree ? checkpointAfterInTree(point.id, tree) : checkpointAfterOnPath(path, index);
+  if (after) return after;
   let exact = true;
   for (let at = index; at >= 0; at--) {
     const entry = path[at];
@@ -141,6 +144,59 @@ export function checkpointAt(
     if (mayChangeFiles(entry)) exact = false;
   }
   return undefined;
+}
+
+/** The checkpoint of the user message after entry `index` of `path`, see {@link checkpointAt} */
+function checkpointAfterOnPath(
+  path: readonly MemoryEntry[],
+  index: number
+): CheckpointAtPoint | undefined {
+  for (let next = index + 1; next < path.length; next++) {
+    const entry = path[next];
+    if (mayChangeFiles(entry)) return undefined;
+    if (!isUserMessage(entry)) continue;
+    const checkpoint = fileCheckpointOf(entry.metadata);
+    return checkpoint ? { entryId: entry.id, checkpoint, exact: true } : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * The checkpoint of the user message written last of those after entry `pointId` on any branch of
+ * `tree`, see {@link checkpointAt}
+ */
+function checkpointAfterInTree(
+  pointId: string,
+  tree: readonly MemoryEntry[]
+): CheckpointAtPoint | undefined {
+  const children = new Map<string, MemoryEntry[]>();
+  for (const entry of tree) {
+    if (typeof entry.parentId !== 'string') continue;
+    const siblings = children.get(entry.parentId) ?? [];
+    siblings.push(entry);
+    children.set(entry.parentId, siblings);
+  }
+  const seen = new Set<string>([pointId]);
+  const queue = [...(children.get(pointId) ?? [])];
+  let found: { entry: MemoryEntry; checkpoint: FileCheckpointRef } | undefined;
+  for (const entry of queue) {
+    if (seen.has(entry.id) || mayChangeFiles(entry)) continue;
+    seen.add(entry.id);
+    if (!isUserMessage(entry)) {
+      queue.push(...(children.get(entry.id) ?? []));
+      continue;
+    }
+    const checkpoint = fileCheckpointOf(entry.metadata);
+    if (checkpoint && (!found || writtenAfter(entry, found.entry))) found = { entry, checkpoint };
+  }
+  return found && { entryId: found.entry.id, checkpoint: found.checkpoint, exact: true };
+}
+
+/** Whether entry `a` was written after entry `b`: by their place in the thread, else their time */
+function writtenAfter(a: MemoryEntry, b: MemoryEntry): boolean {
+  if (a.seq !== undefined && b.seq !== undefined && a.seq !== b.seq) return a.seq > b.seq;
+  const time = a.createdAt.getTime() - b.createdAt.getTime();
+  return time !== 0 ? time > 0 : a.id > b.id;
 }
 
 /**
@@ -291,15 +347,17 @@ export interface FileRestorePlan {
 }
 
 /**
- * How the files at entry `index` of `path` are restored: from {@link checkpointAt} into
- * `options.workspace`, or the workspace of the first of `options.agents` that has one
+ * How the files at entry `index` of `path` are restored: from {@link checkpointAt} (with `tree`,
+ * every entry of the thread) into `options.workspace`, or the workspace of the first of
+ * `options.agents` that has one
  */
 export function fileRestorePlan(
   path: readonly MemoryEntry[],
   index: number,
-  options: { workspace?: Workspace; agents?: readonly (Agent | string)[] }
+  options: { workspace?: Workspace; agents?: readonly (Agent | string)[] },
+  tree?: readonly MemoryEntry[]
 ): FileRestorePlan {
-  const at = checkpointAt(path, index);
+  const at = checkpointAt(path, index, tree);
   if (!at) {
     throw new CogitatorError({
       message: `There is no file checkpoint at or before entry ${path[index]?.id}: turn checkpoints on (CogitatorConfig.checkpoints) for runs with a workspace`,

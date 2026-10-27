@@ -1,4 +1,13 @@
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -286,6 +295,147 @@ describe('rewind and fork guards, round two', () => {
     expect(report.runs.interrupted).toHaveLength(1);
     await expect(aside).rejects.toMatchObject({ code: ErrorCode.RUN_INTERRUPTED });
     gate.resolve();
+  });
+});
+
+describe('rewind and fork guards, round five', () => {
+  async function threadIds(cog: Cogitator): Promise<string[]> {
+    const memory = await cog.getMemory();
+    const page = await memory!.listThreads();
+    if (!page.success) throw new Error(page.error);
+    return page.data.threads.map((thread) => thread.id).sort();
+  }
+
+  async function forksOf(cog: Cogitator, threadId: string): Promise<unknown> {
+    const memory = await cog.getMemory();
+    const read = await memory!.getThread(threadId);
+    if (!read.success) throw new Error(read.error);
+    return read.data?.metadata.memoryForks;
+  }
+
+  it('restores the same checkpoint when a rewind to a point is repeated, as a fork from it does', async () => {
+    const { cog } = runtime({ one: [write('a.txt', 'v1')], two: [write('a.txt', 'v2')] });
+    const agent = coder();
+    await cog.run(agent, { input: 'one', threadId: 'r' });
+    await cog.run(agent, { input: 'two', threadId: 'r' });
+    expect(text('a.txt')).toBe('v2');
+    const entries = await path(cog, 'r');
+    const point = entries[entries.findIndex((entry) => entry.message.content === 'two') - 1]!;
+
+    const first = await cog.rewind('r', point.id, { files: true, workspace });
+    expect(text('a.txt')).toBe('v1');
+    expect(first.files).toMatchObject({ exact: true, restored: ['a.txt'] });
+    const again = await cog.rewind('r', point.id, { files: true, workspace });
+    expect(text('a.txt')).toBe('v1');
+    expect(again.files).toMatchObject({ entryId: first.files!.entryId, exact: true, restored: [] });
+    const fork = await cog.forkThread('r', point.id, { files: true, workspace, dryRun: true });
+    expect(fork.files?.entryId).toBe(first.files!.entryId);
+  });
+
+  it('drops the checkpoint of a user message that could not be written', async () => {
+    const { cog } = runtime({ one: [write('a.txt', 'v1')] });
+    const memory = (await cog.getMemory())!;
+    const add = memory.addEntry.bind(memory);
+    memory.addEntry = async (entry) =>
+      entry.message.role === 'user' ? { success: false, error: 'the store is full' } : add(entry);
+    await cog.run(coder(), { input: 'one', threadId: 'lost' });
+    const taken = await workspace.listSnapshots();
+    expect(taken.filter((snapshot) => snapshot.metadata?.threadId === 'lost')).toEqual([]);
+  });
+
+  it('keeps one key for a workspace whose root is made later under a symlink', async () => {
+    const real = join(base, 'real');
+    mkdirSync(real);
+    symlinkSync(real, join(base, 'link'));
+    const runs = new WorkspaceRuns();
+    const later = new LocalWorkspace({ root: join(base, 'link', 'later') });
+    const same = new LocalWorkspace({ root: join(real, 'later') });
+    const done = deferred();
+    try {
+      const seat = await runs.enter(
+        { runId: () => 'early', threadId: 'early', abort: () => undefined, done: done.promise },
+        later
+      );
+      await later.start();
+      expect(later.root).toBe(join(real, 'later'));
+      expect((await runs.active(later)).map((run) => run.runId())).toEqual(['early']);
+      expect((await runs.active(same)).map((run) => run.runId())).toEqual(['early']);
+      const tool = deferred();
+      seat.track(tool.promise);
+      expect(await runs.toolsInFlight(same)).toBe(1);
+      tool.resolve();
+      seat.release();
+      expect(await runs.active(later)).toEqual([]);
+    } finally {
+      done.resolve();
+      await Promise.all([later.dispose(), same.dispose()]);
+    }
+  });
+
+  it('leaves no thread, link or copied checkpoint behind when a fork is refused, nor after a dry run', async () => {
+    const { cog } = runtime({
+      one: [write('private.txt', 'from the checkpoint')],
+      two: [write('a.txt', 'x')],
+    });
+    const agent = coder();
+    await cog.run(agent, { input: 'one', threadId: 'p' });
+    await cog.run(agent, { input: 'two', threadId: 'p' });
+    const forkRoot = join(base, 'fork-refused');
+    const target = new LocalWorkspace({ root: forkRoot, snapshots: { exclude: ['private.txt'] } });
+    try {
+      await target.start();
+      writeFileSync(join(forkRoot, 'private.txt'), 'only here');
+      const entries = await path(cog, 'p');
+      const point = entries[entries.findIndex((entry) => entry.message.content === 'two') - 1]!;
+      const options = { files: true, workspace: target, source: workspace } as const;
+
+      const refused = await cog.forkThread('p', point.id, options).catch((error: unknown) => error);
+      expect(WorkspaceError.is(refused, 'DENIED')).toBe(true);
+      expect(await threadIds(cog)).toEqual(['p']);
+      expect(await forksOf(cog, 'p')).toBeUndefined();
+      expect(await target.listSnapshots()).toEqual([]);
+
+      const plan = await cog.forkThread('p', point.id, { ...options, dryRun: true });
+      expect(plan.snapshotsCopied.length).toBeGreaterThan(0);
+      expect(await target.listSnapshots()).toEqual([]);
+    } finally {
+      await target.dispose();
+    }
+  });
+
+  it('takes the fork back when its files fail to restore, keeping the safety snapshot only for a restore that began', async () => {
+    const { cog } = runtime({ one: [write('a.txt', 'v1')], two: [write('a.txt', 'v2')] });
+    const agent = coder();
+    await cog.run(agent, { input: 'one', threadId: 'q' });
+    await cog.run(agent, { input: 'two', threadId: 'q' });
+    const target = new LocalWorkspace({ root: join(base, 'fork-failing') });
+    try {
+      await target.start();
+      writeFileSync(join(base, 'fork-failing', 'a.txt'), 'in the fork');
+      const entries = await path(cog, 'q');
+      const point = entries[entries.findIndex((entry) => entry.message.content === 'two') - 1]!;
+      const restore = target.restore.bind(target);
+      let failure = new WorkspaceError('BUSY', 'a command started');
+      vi.spyOn(target, 'restore').mockImplementation(async (id, options) => {
+        if (options?.dryRun) return restore(id, options);
+        throw failure;
+      });
+      const options = { files: true, workspace: target, source: workspace } as const;
+
+      await expect(cog.forkThread('q', point.id, options)).rejects.toBe(failure);
+      expect(await threadIds(cog)).toEqual(['q']);
+      expect(await forksOf(cog, 'q')).toEqual([]);
+      expect(await target.listSnapshots()).toEqual([]);
+
+      failure = new WorkspaceError('IO', 'the disk went away halfway');
+      await expect(cog.forkThread('q', point.id, options)).rejects.toBe(failure);
+      expect(await threadIds(cog)).toEqual(['q']);
+      const left = await target.listSnapshots();
+      expect(left.map((snapshot) => snapshot.metadata?.safety)).toEqual([true]);
+      expect(text('a.txt', join(base, 'fork-failing'))).toBe('in the fork');
+    } finally {
+      await target.dispose();
+    }
   });
 });
 

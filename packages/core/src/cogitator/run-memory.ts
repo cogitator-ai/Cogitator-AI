@@ -14,6 +14,12 @@ import {
 import { getLogger } from '../logger';
 import { saveEntry, type EntryEvent, type EntryPlacement } from './message-builder';
 
+/** A file checkpoint taken for a user message, and how to drop it when the message is not written */
+export interface TakenCheckpoint {
+  ref: FileCheckpointRef;
+  discard(): Promise<void>;
+}
+
 /**
  * What a run writes to its thread's memory, in the order it writes it. A run on a branch
  * (`RunOptions.branch`) chains its entries after the branch point, any other run adds each one
@@ -42,7 +48,7 @@ export class RunMemory {
   /** What the run's entries name in their metadata, for a durable run */
   private taggedRun: string | undefined;
   /** Takes the file checkpoint of a user message about to be written, see {@link checkpoints} */
-  private checkpointer: ((entryId: string) => Promise<FileCheckpointRef | undefined>) | undefined;
+  private checkpointer: ((entryId: string) => Promise<TakenCheckpoint | undefined>) | undefined;
 
   /**
    * @param memory the runtime's memory adapter when it writes, read then: memory connects
@@ -135,9 +141,9 @@ export class RunMemory {
   /**
    * Takes a file checkpoint with `take` before every user message the run writes from now on
    * ({@link saveUser}), given the id the entry is about to get, and names it in the entry's
-   * metadata (`fileCheckpoint`)
+   * metadata (`fileCheckpoint`). A checkpoint whose message could not be written is discarded
    */
-  checkpoints(take: (entryId: string) => Promise<FileCheckpointRef | undefined>): void {
+  checkpoints(take: (entryId: string) => Promise<TakenCheckpoint | undefined>): void {
     this.checkpointer = take;
   }
 
@@ -231,12 +237,13 @@ export class RunMemory {
       }
       let entryId: string | undefined;
       let fields = metadata;
+      let checkpoint: TakenCheckpoint | undefined;
       if (fromUser && this.checkpointer) {
         const named = `entry_${nanoid(12)}`;
-        const checkpoint = await this.checkpointer(named);
+        checkpoint = await this.checkpointer(named);
         if (checkpoint) {
           entryId = named;
-          fields = { ...fields, [FILE_CHECKPOINT_KEY]: checkpoint };
+          fields = { ...fields, [FILE_CHECKPOINT_KEY]: checkpoint.ref };
         }
       }
       const entry = await saveEntry(
@@ -259,7 +266,10 @@ export class RunMemory {
             },
         entryId
       );
-      if (!entry) return;
+      if (!entry) {
+        await checkpoint?.discard();
+        return;
+      }
       this.entries.set(message, entry.id);
       this.count++;
       if (this.branchPoint === undefined) this.branchPoint = entry.parentId ?? null;

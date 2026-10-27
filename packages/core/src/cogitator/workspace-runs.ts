@@ -1,7 +1,6 @@
-import { realpath } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 import type { Workspace } from '@cogitator-ai/types';
-import { LocalWorkspace } from '../workspace/local-workspace';
+import { canonicalPath, LocalWorkspace } from '../workspace/local-workspace';
 
 /** A run working in a workspace, as {@link WorkspaceRuns} keeps it */
 export interface WorkspaceRun {
@@ -176,18 +175,31 @@ export class WorkspaceRuns {
   }
 }
 
+/** The key of each workspace, worked out once: it never changes while the workspace lives */
+const keys = new WeakMap<Workspace, Promise<string>>();
+
 /**
  * The key of a workspace: for a directory of this machine (a `LocalWorkspace`, or a workspace over
- * one such as `DockerWorkspace`, whose root is its host's) the real path of its root, so every
- * workspace over one directory shares it, for any other (a sandbox) its id
+ * one such as `DockerWorkspace`, whose root is its host's) the canonical path of its root (see
+ * `canonicalPath`), so every workspace over one directory shares it, also one whose root is made
+ * later under a symlink, for any other (a sandbox) its id
  */
-async function keyOf(workspace: Workspace): Promise<string> {
+function keyOf(workspace: Workspace): Promise<string> {
+  let key = keys.get(workspace);
+  if (!key) {
+    key = workOutKey(workspace);
+    keys.set(workspace, key);
+  }
+  return key;
+}
+
+async function workOutKey(workspace: Workspace): Promise<string> {
   const local =
     workspace instanceof LocalWorkspace ||
     ('host' in workspace && workspace.host instanceof LocalWorkspace);
   if (!local) return `workspace:${workspace.id}`;
   const root = resolve(workspace.root);
-  return `local:${await realpath(root).catch(() => root)}`;
+  return `local:${await canonicalPath(root).catch(() => root)}`;
 }
 
 /** Whether two workspace keys share files: the same sandbox, or local roots one holding the other */

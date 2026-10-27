@@ -2517,7 +2517,15 @@ export class Cogitator implements ToolInvoker {
           );
           const workspace = workspaceOf(active);
           if (!settings || !workspace) return undefined;
-          return takeFileCheckpoint(workspace, settings, { entryId, threadId, runId });
+          const ref = await takeFileCheckpoint(workspace, settings, { entryId, threadId, runId });
+          return (
+            ref && {
+              ref,
+              discard: async () => {
+                await workspace.deleteSnapshot?.(ref.snapshotId).catch(() => undefined);
+              },
+            }
+          );
         });
       }
       const parentRunId = currentToolRuns()
@@ -7551,7 +7559,14 @@ export class Cogitator implements ToolInvoker {
           details: { threadId, toEntryId },
         });
       }
-      const files = rewindsFiles ? fileRestorePlan(path, index, options) : undefined;
+      const files = rewindsFiles
+        ? fileRestorePlan(
+            path,
+            index,
+            options,
+            unwrapMemory(await memory.getEntries({ threadId, types: 'all' }))
+          )
+        : undefined;
       const checkpoint = files ? await this.verifyCheckpoint(memory, threadId, files) : undefined;
       return { thread, path, index, files, checkpoint };
     };
@@ -7651,7 +7666,9 @@ export class Cogitator implements ToolInvoker {
    * them as they were taken first (`files.safetySnapshotId`): when it is another workspace than
    * `source` (where the checkpoints are kept, `workspace` by default), every checkpoint of the
    * branch is copied into it first (`copySnapshot`), so later rewinds of the fork restore there
-   * too. The files are restored once the fork is made, so a fork that fails changes no files.
+   * too. Every check, the safety snapshot's included, runs before the fork is made, and the files
+   * are restored once it is: a fork refused leaves nothing behind, one whose files then fail to
+   * restore takes the thread and the checkpoints copied for it back, and a dry run leaves no copy behind.
    * With `files` the thread and the workspace are held for the whole fork, as by `rewind`, and
    * `dryRun` reports what the fork would restore without making it.
    *
@@ -7710,12 +7727,12 @@ export class Cogitator implements ToolInvoker {
     const releaseThread = await this.threadRuns.lock(threadId);
     let releaseWorkspace: (() => void) | undefined;
     try {
-      const active = unwrapMemory(await getPath({ threadId, types: 'all' }));
-      const onActive = active.findIndex((entry) => entry.id === atEntryId);
-      const files =
-        onActive === -1
-          ? fileRestorePlan(branch, branch.length - 1, options)
-          : fileRestorePlan(active, onActive, options);
+      const files = fileRestorePlan(
+        branch,
+        branch.length - 1,
+        options,
+        unwrapMemory(await memory.getEntries({ threadId, types: 'all' }))
+      );
       const source = options.source ?? files.workspace;
       const checkpoint = await this.verifyCheckpoint(memory, threadId, {
         ...files,
@@ -7724,59 +7741,84 @@ export class Cogitator implements ToolInvoker {
       this.refuseFromOwnTool('fork', threadId, await this.workspaceRuns.active(files.workspace));
       releaseWorkspace = await this.workspaceRuns.lock(files.workspace);
 
+      const target = files.workspace;
       const copied: string[] = [];
-      if (source !== files.workspace) {
-        if (!source.copySnapshot) {
-          throw new CogitatorError({
-            message: `Workspace ${source.id} cannot copy its snapshots into the workspace of the fork`,
-            code: ErrorCode.VALIDATION_ERROR,
-          });
-        }
-        const copy = source.copySnapshot.bind(source);
-        const wanted = dryRun ? [files.at.checkpoint] : checkpointsOn(branch, files.at.checkpoint);
-        for (const checkpoint of wanted) {
-          try {
-            await copy(checkpoint.snapshotId, files.workspace);
-            copied.push(checkpoint.snapshotId);
-          } catch (error) {
-            if (checkpoint.snapshotId === files.at.checkpoint.snapshotId) throw error;
-            getLogger().warn('A file checkpoint of the forked branch could not be copied', {
-              snapshot: checkpoint.snapshotId,
-              error: error instanceof Error ? error.message : String(error),
+      const added: string[] = [];
+      const dropAdded = async () => {
+        for (const id of added) await target.deleteSnapshot?.(id).catch(() => undefined);
+      };
+      try {
+        if (source !== target) {
+          if (!source.copySnapshot) {
+            throw new CogitatorError({
+              message: `Workspace ${source.id} cannot copy its snapshots into the workspace of the fork`,
+              code: ErrorCode.VALIDATION_ERROR,
             });
           }
+          const copy = source.copySnapshot.bind(source);
+          const listed = await target.listSnapshots?.();
+          const had = listed && new Set(listed.map((snapshot) => snapshot.id));
+          const wanted = dryRun
+            ? [files.at.checkpoint]
+            : checkpointsOn(branch, files.at.checkpoint);
+          for (const checkpoint of wanted) {
+            try {
+              await copy(checkpoint.snapshotId, target);
+              copied.push(checkpoint.snapshotId);
+              if (had && !had.has(checkpoint.snapshotId)) added.push(checkpoint.snapshotId);
+            } catch (error) {
+              if (checkpoint.snapshotId === files.at.checkpoint.snapshotId) throw error;
+              getLogger().warn('A file checkpoint of the forked branch could not be copied', {
+                snapshot: checkpoint.snapshotId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+          if (dryRun) {
+            copied.push(
+              ...checkpointsOn(branch)
+                .map((checkpoint) => checkpoint.snapshotId)
+                .filter((id) => !copied.includes(id))
+            );
+          }
         }
+        let plan = await files.restore({ dryRun: true });
+        const going = await this.goingOn(threadId, target);
         if (dryRun) {
-          copied.push(
-            ...checkpointsOn(branch)
-              .map((checkpoint) => checkpoint.snapshotId)
-              .filter((id) => !copied.includes(id))
-          );
+          await dropAdded();
+          return { dryRun: true, snapshotsCopied: copied, files: plan, going: going.ids };
         }
-      }
-      let plan = await files.restore({ dryRun: true });
-      const going = await this.goingOn(threadId, files.workspace);
-      if (dryRun) return { dryRun: true, snapshotsCopied: copied, files: plan, going: going.ids };
 
-      this.refuseBusy('fork', threadId, going, plan, options.force ?? false, true);
-      if (going.thread.count > 0 || going.ids.length > 0 || going.tools > 0) {
-        await this.stopRuns(threadId, going, `Thread ${threadId} is being forked with its files`);
-        await this.awaitTools(
-          'fork',
+        this.refuseBusy('fork', threadId, going, plan, options.force ?? false, true);
+        if (going.thread.count > 0 || going.ids.length > 0 || going.tools > 0) {
+          await this.stopRuns(threadId, going, `Thread ${threadId} is being forked with its files`);
+          await this.awaitTools('fork', threadId, target, options.toolSettleMs ?? TOOL_SETTLE_MS);
+          plan = await files.restore({ dryRun: true });
+          if (plan.busy) throw workspaceBusy('fork', threadId, plan);
+        }
+        const safety = await this.takeSafetySnapshot(files, plan, checkpoint, {
           threadId,
-          files.workspace,
-          options.toolSettleMs ?? TOOL_SETTLE_MS
-        );
-        plan = await files.restore({ dryRun: true });
-        if (plan.busy) throw workspaceBusy('fork', threadId, plan);
+          reason: 'fork',
+          entryId: atEntryId,
+        });
+        let thread: Thread;
+        try {
+          thread = unwrapMemory(await forkThread(threadId, atEntryId, options.newThreadId));
+        } catch (error) {
+          await safety?.drop();
+          throw error;
+        }
+        try {
+          const restored = await this.restoreAfterSafety(files, safety);
+          return { thread, snapshotsCopied: copied, files: restored };
+        } catch (error) {
+          await this.unmakeFork(memory, threadId, thread.id);
+          throw error;
+        }
+      } catch (error) {
+        await dropAdded();
+        throw error;
       }
-      const thread = unwrapMemory(await forkThread(threadId, atEntryId, options.newThreadId));
-      const restored = await this.restoreWithSafety(files, plan, checkpoint, {
-        threadId: thread.id,
-        reason: 'fork',
-        entryId: atEntryId,
-      });
-      return { thread, snapshotsCopied: copied, files: restored };
     } finally {
       releaseWorkspace?.();
       releaseThread();
@@ -8022,47 +8064,113 @@ export class Cogitator implements ToolInvoker {
     target: WorkspaceSnapshot,
     place: { threadId: string; reason: 'rewind' | 'fork'; entryId: string }
   ): Promise<FileRewindReport> {
+    const safety = await this.takeSafetySnapshot(files, plan, target, place);
+    return this.restoreAfterSafety(files, safety);
+  }
+
+  /**
+   * The safety snapshot of {@link restoreWithSafety}, taken and checked: undefined when the
+   * restore changes nothing or the workspace cannot snapshot, refused with `DENIED` (the snapshot
+   * deleted) when it could not keep a path the restore changes
+   */
+  private async takeSafetySnapshot(
+    files: FileRestorePlan,
+    plan: WorkspaceRestoreResult,
+    target: WorkspaceSnapshot,
+    place: { threadId: string; reason: 'rewind' | 'fork'; entryId: string }
+  ): Promise<{ id: string; drop(): Promise<void> } | undefined> {
     const { workspace } = files;
-    let safetySnapshotId: string | undefined;
-    const changes = plan.restored.length > 0 || plan.deleted.length > 0;
-    if (changes && workspace.snapshot) {
-      let largest = target.maxFileBytes ?? WORKSPACE_SNAPSHOT_MAX_FILE_BYTES;
-      for (const path of [...plan.restored, ...plan.deleted]) {
-        const info = await workspace.stat(path).catch(() => undefined);
-        if (info?.type === 'file' && info.size > largest) largest = info.size;
-      }
-      const safety = await workspace.snapshot({
-        label: `before-${place.reason}`,
-        exclude: target.exclude,
-        maxFileBytes: largest,
-        protect: [target.id],
-        metadata: { ...place, safety: true },
-      });
-      const changed = [...plan.restored, ...plan.deleted];
-      const unread = (safety.skipped ?? [])
-        .map((skip) => skip.path)
-        .filter((path) => changed.some((each) => each === path || each.startsWith(`${path}/`)));
-      const leftOut = changed.filter(leavesOut(safety.exclude));
-      if (unread.length > 0 || leftOut.length > 0) {
-        await workspace.deleteSnapshot?.(safety.id).catch(() => undefined);
-        const why = [
-          unread.length > 0 &&
-            `${unread.join(', ')}, which it could not read (unreadable, hard links the workspace refuses, too large or changing)`,
-          leftOut.length > 0 &&
-            `${leftOut.join(', ')}, which the workspace's own snapshot excludes leave out`,
-        ]
-          .filter((part): part is string => typeof part === 'string')
-          .join(', and ');
-        throw new WorkspaceError(
-          'DENIED',
-          `The ${place.reason} would change files the snapshot taken first could not keep to undo it: ${why}. Move them away or change what the workspace leaves out, then ${place.reason} again`,
-          { path: [...unread, ...leftOut][0] }
+    const changed = [...plan.restored, ...plan.deleted];
+    if (changed.length === 0 || !workspace.snapshot) return undefined;
+    let largest = target.maxFileBytes ?? WORKSPACE_SNAPSHOT_MAX_FILE_BYTES;
+    for (const path of changed) {
+      const info = await workspace.stat(path).catch(() => undefined);
+      if (info?.type === 'file' && info.size > largest) largest = info.size;
+    }
+    const safety = await workspace.snapshot({
+      label: `before-${place.reason}`,
+      exclude: target.exclude,
+      maxFileBytes: largest,
+      protect: [target.id],
+      metadata: { ...place, safety: true },
+    });
+    const drop = async () => {
+      await workspace.deleteSnapshot?.(safety.id).catch(() => undefined);
+    };
+    const unread = (safety.skipped ?? [])
+      .map((skip) => skip.path)
+      .filter((path) => changed.some((each) => each === path || each.startsWith(`${path}/`)));
+    const leftOut = changed.filter(leavesOut(safety.exclude));
+    if (unread.length > 0 || leftOut.length > 0) {
+      await drop();
+      const why = [
+        unread.length > 0 &&
+          `${unread.join(', ')}, which it could not read (unreadable, hard links the workspace refuses, too large or changing)`,
+        leftOut.length > 0 &&
+          `${leftOut.join(', ')}, which the workspace's own snapshot excludes leave out`,
+      ]
+        .filter((part): part is string => typeof part === 'string')
+        .join(', and ');
+      throw new WorkspaceError(
+        'DENIED',
+        `The ${place.reason} would change files the snapshot taken first could not keep to undo it: ${why}. Move them away or change what the workspace leaves out, then ${place.reason} again`,
+        { path: [...unread, ...leftOut][0] }
+      );
+    }
+    return { id: safety.id, drop };
+  }
+
+  /**
+   * Restores the files of `files` once `safety` is taken. A restore refused before it changed
+   * anything (`BUSY`) drops the safety snapshot, one that failed on the way keeps it to undo what
+   * it changed
+   */
+  private async restoreAfterSafety(
+    files: FileRestorePlan,
+    safety: { id: string; drop(): Promise<void> } | undefined
+  ): Promise<FileRewindReport> {
+    try {
+      const restored = await files.restore();
+      return { ...restored, ...(safety && { safetySnapshotId: safety.id }) };
+    } catch (error) {
+      if (error instanceof WorkspaceError && error.code === 'BUSY') await safety?.drop();
+      else if (safety) {
+        getLogger().warn(
+          'A file restore failed on the way, the files as they were before it are in the safety snapshot',
+          {
+            workspace: files.workspace.id,
+            snapshot: safety.id,
+            error: error instanceof Error ? error.message : String(error),
+          }
         );
       }
-      safetySnapshotId = safety.id;
+      throw error;
     }
-    const restored = await files.restore();
-    return { ...restored, ...(safetySnapshotId !== undefined && { safetySnapshotId }) };
+  }
+
+  /**
+   * Takes back a fork whose files could not be restored: deletes thread `forkId` and the note of
+   * it in the metadata of `threadId`, so a failed fork leaves no thread behind
+   */
+  private async unmakeFork(memory: MemoryAdapter, threadId: string, forkId: string): Promise<void> {
+    try {
+      unwrapMemory(await memory.deleteThread(forkId));
+      const source = unwrapMemory(await memory.getThread(threadId));
+      const known: unknown = source?.metadata[FORKS_KEY];
+      if (Array.isArray(known) && known.includes(forkId)) {
+        unwrapMemory(
+          await memory.updateThread(threadId, {
+            [FORKS_KEY]: known.filter((id) => id !== forkId),
+          })
+        );
+      }
+    } catch (error) {
+      getLogger().warn('A fork whose files could not be restored could not be taken back', {
+        threadId,
+        fork: forkId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /** The cascade over this runtime's memory stores, and the memory ids of `options.agents` */

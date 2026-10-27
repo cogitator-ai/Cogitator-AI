@@ -1158,6 +1158,31 @@ export class LocalWorkspace implements Workspace {
 }
 
 /**
+ * `path` made absolute with every symlink resolved, dangling ones included, and what does not
+ * exist yet kept as it is: the real path of its nearest existing ancestor (as `realpath` gives it)
+ * with the rest after it, the real path it will have once it is made, so a key built from it
+ * stays the same when it is
+ */
+export function canonicalPath(path: string): Promise<string> {
+  const absolute = resolve(path);
+  return canonicalFrom(absolute, 0, absolute);
+}
+
+async function canonicalFrom(path: string, hops: number, given: string): Promise<string> {
+  if (hops > MAX_SYMLINK_HOPS) {
+    throw new WorkspaceError('INVALID_PATH', `Too many symlinks in ${given}`, { path: given });
+  }
+  const real = await realpath(path).catch(() => undefined);
+  if (real !== undefined) return real;
+  const parent = dirname(path);
+  if (parent === path) return path;
+  const here = join(await canonicalFrom(parent, hops, given), basename(path));
+  const info = await lstat(here).catch(() => undefined);
+  if (!info?.isSymbolicLink()) return here;
+  return canonicalFrom(resolve(dirname(here), await readlink(here)), hops + 1, given);
+}
+
+/**
  * `path` with every symlink resolved, also a dangling one (which `realpath` refuses, but writing
  * through it would create its target), or all but the last component when `followFinal` is off.
  * Components that do not exist yet are kept as they are.
