@@ -240,9 +240,10 @@ export interface WorkspaceSnapshotSkip {
   /**
    * `too-large`: over `maxFileBytes`. `unreadable`: it could not be read (permissions, a race),
    * for a directory all it holds. `changing`: it changed every time it was read, so no whole
-   * version of it could be kept
+   * version of it could be kept. `hard-link`: it has more than one hard link and the workspace
+   * refuses to read those (`refuseHardLinks`)
    */
-  reason: 'too-large' | 'unreadable' | 'changing';
+  reason: 'too-large' | 'unreadable' | 'changing' | 'hard-link';
   /** Its size in bytes when it was seen */
   size?: number;
 }

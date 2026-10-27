@@ -115,7 +115,7 @@ const manifestSchema = z.object({
   skipped: z.array(
     z.object({
       path: z.string(),
-      reason: z.enum(['too-large', 'unreadable', 'changing']),
+      reason: z.enum(['too-large', 'unreadable', 'changing', 'hard-link']),
       size: z.number().optional(),
     })
   ),
@@ -162,6 +162,17 @@ export interface SnapshotTakeOptions {
   metadata?: Record<string, unknown>;
   exclude?: readonly string[];
   maxFileBytes?: number;
+  /**
+   * Leave out files with more than one hard link, as the workspace refuses to read them (a hard
+   * link in the root may be a file outside it): they are listed in `skipped` as `hard-link`
+   */
+  refuseHardLinks?: boolean;
+}
+
+/** What the workspace refuses to read, which a restore does not read either */
+export interface SnapshotReadPolicy {
+  /** Do not read files with more than one hard link: one at a path to restore is rewritten */
+  refuseHardLinks?: boolean;
 }
 
 export interface SnapshotRetention {
@@ -291,10 +302,15 @@ export class SnapshotStore {
   }
 
   /** Brings the files back to snapshot `id`, or says what that would change with `dryRun` */
-  restore(id: string, ops: SnapshotRestoreOps, dryRun: boolean): Promise<WorkspaceRestoreResult> {
+  restore(
+    id: string,
+    ops: SnapshotRestoreOps,
+    dryRun: boolean,
+    policy: SnapshotReadPolicy = {}
+  ): Promise<WorkspaceRestoreResult> {
     return this.exclusive(async () => {
       await this.manifest(id);
-      return this.working(() => this.restoreNow(id, ops, dryRun));
+      return this.working(() => this.restoreNow(id, ops, dryRun, policy));
     });
   }
 
@@ -438,6 +454,7 @@ export class SnapshotStore {
     }
     const previous = await this.newest();
     const excluded = excluderOf(exclude);
+    const refuseHardLinks = options.refuseHardLinks ?? false;
     const skipped: WorkspaceSnapshotSkip[] = [];
     const stats: Omit<WorkspaceSnapshotStats, 'durationMs'> = {
       files: 0,
@@ -460,6 +477,10 @@ export class SnapshotStore {
       entries: Map<string, TreeEntry>,
       name: string
     ): Promise<void> => {
+      if (refuseHardLinks && info.nlink > 1) {
+        skipped.push({ path, reason: 'hard-link', size: info.size });
+        return;
+      }
       if (
         prior?.type === 'file' &&
         unchanged(prior, info) &&
@@ -471,7 +492,7 @@ export class SnapshotStore {
         stats.reused++;
         return;
       }
-      const stored = await this.storeFile(full, info, maxFileBytes, shards);
+      const stored = await this.storeFile(full, info, maxFileBytes, shards, refuseHardLinks);
       if (typeof stored === 'string') {
         skipped.push({ path, reason: stored, size: info.size });
         return;
@@ -589,7 +610,8 @@ export class SnapshotStore {
   private async restoreNow(
     id: string,
     ops: SnapshotRestoreOps,
-    dryRun: boolean
+    dryRun: boolean,
+    policy: SnapshotReadPolicy
   ): Promise<WorkspaceRestoreResult> {
     const manifest = await this.manifest(id);
     const wanted = await this.flatten(manifest.tree);
@@ -602,7 +624,7 @@ export class SnapshotStore {
         );
       }
     }
-    const plan = await this.plan(manifest, wanted);
+    const plan = await this.plan(manifest, wanted, policy);
     for (const { entry } of plan.writes) {
       if (entry.type === 'file') await this.verifyBlob(entry.hash);
     }
@@ -629,7 +651,11 @@ export class SnapshotStore {
    * holds such a path is never removed. Refused before anything changes when a path to write
    * lies in a directory that cannot be read
    */
-  private async plan(manifest: Manifest, wanted: Map<string, FlatEntry>): Promise<RestorePlan> {
+  private async plan(
+    manifest: Manifest,
+    wanted: Map<string, FlatEntry>,
+    policy: SnapshotReadPolicy
+  ): Promise<RestorePlan> {
     const excluded = excluderOf([...WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE, ...manifest.exclude]);
     const { present, excludedUnder } = await this.scan(excluded);
     const skippedPaths = new Set(manifest.skipped.map((skip) => skip.path));
@@ -731,6 +757,7 @@ export class SnapshotStore {
         const same =
           (unchanged(entry, now.info) && !entry.racy) ||
           (now.info.size === entry.size &&
+            !(policy.refuseHardLinks && now.info.nlink > 1) &&
             (await this.hashOf(this.absolute(path), now.info)) === entry.hash);
         if (same) {
           if ((now.info.mode & 0o7777) !== entry.mode) {
@@ -1145,19 +1172,21 @@ export class SnapshotStore {
     absolute: string,
     seen: Stats,
     maxBytes: number,
-    shards: Set<string>
+    shards: Set<string>,
+    refuseHardLinks: boolean
   ): Promise<
     | { hash: string; size: number; info: Stats; racy: boolean; storedBytes: number }
     | 'too-large'
     | 'unreadable'
     | 'changing'
+    | 'hard-link'
   > {
     await this.ensureDir(join(this.dir, 'tmp'));
     let last: { temp: string; hash: string; size: number; info: Stats; still: boolean } | undefined;
     try {
       for (let attempt = 0; attempt < READ_ATTEMPTS; attempt++) {
         if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 10 * attempt));
-        const read = await this.readToTemp(absolute, seen, maxBytes);
+        const read = await this.readToTemp(absolute, seen, maxBytes, refuseHardLinks);
         if (typeof read === 'string') return read;
         if (last) await unlink(last.temp).catch(() => undefined);
         last = read;
@@ -1195,11 +1224,13 @@ export class SnapshotStore {
   private async readToTemp(
     absolute: string,
     seen: Stats,
-    maxBytes: number
+    maxBytes: number,
+    refuseHardLinks: boolean
   ): Promise<
     | { temp: string; hash: string; size: number; info: Stats; still: boolean }
     | 'too-large'
     | 'unreadable'
+    | 'hard-link'
   > {
     const source = await open(absolute, constants.O_RDONLY | O_NOFOLLOW | O_NONBLOCK).catch(
       () => undefined
@@ -1211,6 +1242,7 @@ export class SnapshotStore {
         return 'unreadable';
       const parent = dirname(absolute);
       if ((await realpath(parent).catch(() => undefined)) !== parent) return 'unreadable';
+      if (refuseHardLinks && before.nlink > 1) return 'hard-link';
       if (before.size > maxBytes) return 'too-large';
       const temp = join(this.dir, 'tmp', `${token()}.part`);
       const target = await open(
@@ -1423,6 +1455,15 @@ export function excluderOf(globs: readonly string[]): (path: string) => boolean 
     .map((glob) => workspaceGlobMatcher(glob.slice(0, -3)));
   return (path) =>
     matchers.some((matches) => matches(path)) || dirs.some((matches) => matches(path));
+}
+
+/**
+ * Whether a snapshot with `globs` leaves `path` out: the path itself or one of the directories
+ * it is in is left out, see {@link excluderOf}
+ */
+export function leavesOut(globs: readonly string[]): (path: string) => boolean {
+  const excluded = excluderOf(globs);
+  return (path) => excluded(path) || ancestorsOf(path).some((dir) => excluded(dir));
 }
 
 function recordOf(manifest: Manifest): WorkspaceSnapshot {

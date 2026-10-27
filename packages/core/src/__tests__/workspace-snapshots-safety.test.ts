@@ -1,6 +1,7 @@
 import {
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -22,6 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WorkspaceError, type WorkspaceErrorCode } from '@cogitator-ai/types';
 import { LocalWorkspace } from '../workspace/local-workspace';
 import { SnapshotStore, WORKSPACE_CHECKPOINTS_DIR } from '../workspace/snapshot-store';
+import { deferred } from './helpers/scripted-backend';
 
 const asRoot = process.getuid?.() === 0;
 
@@ -447,6 +449,73 @@ describe('snapshot store safety', () => {
     } finally {
       await fresh.dispose();
     }
+  });
+
+  it('leaves hard links out when the workspace refuses to read them, and keeps them on restore', async () => {
+    const outside = join(base, 'outside-secret.txt');
+    writeFileSync(outside, 'secret outside the root');
+    const strict = new LocalWorkspace({ root, refuseHardLinks: true, snapshots: { gcGraceMs: 0 } });
+    try {
+      put('plain.txt', 'plain');
+      linkSync(outside, join(root, 'linked.txt'));
+      const snapshot = await strict.snapshot();
+      expect(snapshot.skipped).toEqual([
+        { path: 'linked.txt', reason: 'hard-link', size: 'secret outside the root'.length },
+      ]);
+      for (const blob of blobFiles()) {
+        expect(readFileSync(blob, 'utf8')).not.toContain('secret outside the root');
+      }
+      put('plain.txt', 'changed');
+      const result = await strict.restore(snapshot.id);
+      expect(result.kept).toEqual(['linked.txt']);
+      expect(text('linked.txt')).toBe('secret outside the root');
+
+      unlinkSync(join(root, 'linked.txt'));
+      put('linked.txt', 'x'.repeat('secret outside the root'.length));
+      const own = await strict.snapshot();
+      unlinkSync(join(root, 'linked.txt'));
+      linkSync(outside, join(root, 'linked.txt'));
+      const read = vi.spyOn(
+        SnapshotStore.prototype as unknown as { hashOf(): Promise<string> },
+        'hashOf'
+      );
+      await strict.restore(own.id);
+      expect(read.mock.calls.map((call: unknown[]) => call[0])).not.toContain(
+        join(root, 'linked.txt')
+      );
+      expect(text('linked.txt')).toBe('x'.repeat('secret outside the root'.length));
+      expect(readFileSync(outside, 'utf8')).toBe('secret outside the root');
+    } finally {
+      await strict.dispose();
+    }
+  });
+
+  it('refuses commands while a restore changes the files', async () => {
+    put('a.txt', 'one');
+    const snapshot = await workspace.snapshot();
+    put('a.txt', 'two');
+    const restoring = deferred<void>();
+    const release = deferred<void>();
+    const store = SnapshotStore.prototype as unknown as {
+      restore(...args: unknown[]): Promise<unknown>;
+    };
+    const original = store.restore;
+    vi.spyOn(store, 'restore').mockImplementation(async function (
+      this: unknown,
+      ...args: unknown[]
+    ) {
+      if (args[2] === false) {
+        restoring.resolve();
+        await release.promise;
+      }
+      return original.apply(this, args);
+    });
+    const done = workspace.restore(snapshot.id);
+    await restoring.promise;
+    await expectCode(workspace.exec('true'), 'BUSY');
+    release.resolve();
+    await done;
+    await expect(workspace.exec('true')).resolves.toMatchObject({ exitCode: 0 });
   });
 
   it('lets go of a store once every workspace over its root is disposed', async () => {

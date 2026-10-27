@@ -194,6 +194,8 @@ interface LocalWorkspaceState {
   groups: ProcessGroups;
   /** The snapshot store of the root, taken on first use and let go in `dispose()` */
   store?: SnapshotStore;
+  /** Restores changing the files now: commands are refused meanwhile */
+  restoring: number;
 }
 
 /**
@@ -263,7 +265,7 @@ export class LocalWorkspace implements Workspace {
     positive(this.execConfig.timeout, DEFAULT_EXEC_TIMEOUT, 'exec.timeout');
     positive(this.execConfig.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES, 'exec.maxOutputBytes');
     positive(this.execConfig.killGrace, DEFAULT_KILL_GRACE, 'exec.killGrace');
-    this.state = { disposed: false, groups: new ProcessGroups() };
+    this.state = { disposed: false, groups: new ProcessGroups(), restoring: 0 };
   }
 
   /**
@@ -625,6 +627,13 @@ export class LocalWorkspace implements Workspace {
     const launch = this.execConfig.launch
       ? { ...planned, ...this.execConfig.launch(planned) }
       : planned;
+    if (this.state.restoring > 0) {
+      throw new WorkspaceError(
+        'BUSY',
+        'A snapshot is being restored in the workspace: run the command once it is done',
+        { path: cwdPath }
+      );
+    }
     this.state.groups.prune();
     return runProcess({
       launch,
@@ -645,13 +654,15 @@ export class LocalWorkspace implements Workspace {
    * leave out. A file is kept by its sha256, read only when its size, times, inode or mode
    * changed since the snapshot before, and its content is stored once however many snapshots
    * hold it. A symlink is recorded as a link, never followed, a directory with its mode, and a
-   * file over `maxFileBytes` is skipped (listed in `skipped`, logged). `stats` says what the
+   * file over `maxFileBytes` is skipped (listed in `skipped`, logged), as is a file with more
+   * than one hard link when the workspace refuses to read those (`refuseHardLinks`). `stats` says what the
    * snapshot read and stored. With `snapshots.retain`, older snapshots go after it
    */
   async snapshot(options: WorkspaceSnapshotOptions = {}): Promise<WorkspaceSnapshot> {
     const store = await this.snapshotStore();
     const snapshot = await store.take({
       workspaceId: this.id,
+      refuseHardLinks: this.refuseHardLinks,
       ...(options.label !== undefined && { label: options.label }),
       ...(options.metadata !== undefined && { metadata: options.metadata }),
       exclude: [...(this.snapshotConfig.exclude ?? []), ...(options.exclude ?? [])],
@@ -694,7 +705,8 @@ export class LocalWorkspace implements Workspace {
    * Present files the snapshot could not have kept (over its size limit, unreadable), special
    * files and directories that cannot be read are left alone too (`kept`). With `dryRun`
    * nothing changes, and `busy` says whether a restore would be refused now. Refused with `BUSY`
-   * while a command the workspace started still runs, which could race the changes
+   * while a command the workspace started still runs, which could race the changes, and a
+   * command asked for while a restore changes the files is refused with `BUSY` too
    */
   async restore(
     snapshotId: string,
@@ -710,8 +722,20 @@ export class LocalWorkspace implements Workspace {
         { path: snapshotId }
       );
     }
-    const result = await store.restore(snapshotId, this.restoreOps(), dryRun);
-    return dryRun ? { ...result, busy } : result;
+    if (dryRun) {
+      const result = await store.restore(snapshotId, this.restoreOps(), true, {
+        refuseHardLinks: this.refuseHardLinks,
+      });
+      return { ...result, busy };
+    }
+    this.state.restoring++;
+    try {
+      return await store.restore(snapshotId, this.restoreOps(), false, {
+        refuseHardLinks: this.refuseHardLinks,
+      });
+    } finally {
+      this.state.restoring--;
+    }
   }
 
   async listSnapshots(): Promise<WorkspaceSnapshot[]> {
