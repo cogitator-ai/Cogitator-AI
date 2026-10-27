@@ -24,6 +24,7 @@ import { experimental_PluginHost } from '../plugins/host';
 import { experimental_memorySecretStore } from '../plugins/secrets';
 import { checkGitUrl, marketplaceSourceOf, parseMarketplace } from '../plugins/install/marketplace';
 import { npmNameProblem } from '../plugins/install/sources';
+import { archiveRootOf } from '../plugins/install/zip';
 import { npmInvocation, runTool } from '../plugins/install/run';
 import { pluginDataDir, readInstalledPlugins } from '../plugins/store';
 import { download, isLoopbackHost, isPrivateHost } from '../plugins/install/fetch';
@@ -415,6 +416,48 @@ describe('plugin installer', () => {
     );
     await expect(tools.install('tampered@zip-market')).rejects.toThrow(
       /does not match its sha256 pin/
+    );
+  });
+
+  it('keeps the component folder of an archived plugin without a manifest as its root', () => {
+    const target = join(base, 'unpacked');
+    expect(archiveRootOf(target, ['commands/hello.md'])).toBe(target);
+    expect(archiveRootOf(target, ['skills/', 'skills/review/SKILL.md'])).toBe(target);
+    expect(archiveRootOf(target, ['.claude-plugin/plugin.json'])).toBe(target);
+    expect(archiveRootOf(target, ['kit/commands/hello.md'])).toBe(join(target, 'kit'));
+    expect(
+      archiveRootOf(target, ['skills/.claude-plugin/plugin.json', 'skills/commands/a.md'])
+    ).toBe(join(target, 'skills'));
+  });
+
+  it('installs an archive of a plugin without a manifest with its commands', async () => {
+    const zip = buildZip({ 'commands/hello.md': 'Say hello.\n' });
+    const repo = join(base, 'bare-zip-market');
+    writeJson(join(repo, '.claude-plugin', 'marketplace.json'), {
+      name: 'bare-zip-market',
+      owner: { name: 'Team' },
+      plugins: [
+        {
+          name: 'greeter',
+          source: {
+            source: 'archive',
+            url: 'https://artifacts.example.com/greeter.zip',
+            sha256: createHash('sha256').update(zip).digest('hex'),
+          },
+        },
+      ],
+    });
+    const tools = new experimental_PluginInstaller({
+      root,
+      projectRoot: project,
+      userDirs: [home],
+      secrets,
+      fetchFn: async () => new Response(new Uint8Array(zip)),
+    });
+    await tools.addMarketplace(repo);
+    const result = await tools.install('greeter@bare-zip-market');
+    expect(readFileSync(join(result.installPath, 'commands', 'hello.md'), 'utf8')).toBe(
+      'Say hello.\n'
     );
   });
 

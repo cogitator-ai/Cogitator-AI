@@ -133,12 +133,31 @@ export async function unzip(archive: Buffer, target: string): Promise<string[]> 
   return written;
 }
 
-/** The folder of an unpacked plugin: the target itself, or its one folder when it holds only that */
+const PLUGIN_FOLDERS = new Set([
+  '.claude-plugin',
+  '.cogitator-plugin',
+  'commands',
+  'agents',
+  'skills',
+  'hooks',
+]);
+
+/**
+ * The folder of an unpacked plugin: the target itself, or its one folder when it holds only that.
+ * A lone folder a plugin is made of (`commands/`, `skills/`, ...) is the plugin's own unless it
+ * holds a manifest of its own, so an archive of a plugin without a manifest keeps its components
+ */
 export function archiveRootOf(target: string, written: readonly string[]): string {
   const tops = new Set(written.map((name) => name.split('/')[0] ?? ''));
-  if (tops.size === 1) {
-    const [only] = [...tops];
-    if (only && written.every((name) => name.includes('/'))) return join(target, only);
+  if (tops.size !== 1) return target;
+  const [only] = [...tops];
+  if (!only || !written.every((name) => name.includes('/'))) return target;
+  if (PLUGIN_FOLDERS.has(only)) {
+    const wrapped = written.some(
+      (name) =>
+        name.startsWith(`${only}/.claude-plugin/`) || name.startsWith(`${only}/.cogitator-plugin/`)
+    );
+    if (!wrapped) return target;
   }
-  return target;
+  return join(target, only);
 }
