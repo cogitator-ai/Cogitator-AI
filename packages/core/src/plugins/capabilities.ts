@@ -19,7 +19,7 @@ import {
   type Tool,
 } from '@cogitator-ai/types';
 import { PermissionRuleSet, resolvePermission } from '../permissions/engine';
-import { mcpNamePart } from '../permissions/rules';
+import { mcpNamePart, targetCovers } from '../permissions/rules';
 
 /** Largest file `files.readFile` reads and largest response body `fetch` reads */
 export const MAX_PLUGIN_READ_BYTES = 10 * 1024 * 1024;
@@ -81,6 +81,24 @@ const READ = capability('plugin_read', 'read', 'path');
 const EDIT = capability('plugin_edit', 'edit', 'path');
 const COMMAND = capability('plugin_command', 'command', 'command');
 const FETCH = capability('plugin_fetch', 'fetch', 'url');
+
+/**
+ * The rule name that lets a plugin register routines and triggers of the trigger manager:
+ * `"Routine"` in the `allow` of its `permissions`
+ */
+export const PLUGIN_ROUTINE_RULE = 'Routine';
+
+const ROUTINE: Tool = {
+  name: PLUGIN_ROUTINE_RULE,
+  description: 'A plugin routine',
+  parameters: z.object({}).loose(),
+  execute: async () => undefined,
+  toJSON: () => ({
+    name: PLUGIN_ROUTINE_RULE,
+    description: PLUGIN_ROUTINE_RULE,
+    parameters: { type: 'object', properties: {} },
+  }),
+};
 
 /** `path` with its links followed, as the permission engine compares real paths */
 function realOf(path: string): string {
@@ -220,6 +238,31 @@ export class PluginPermissions {
       return { allowed: !refused, reason };
     }
     return { allowed: decision.decision === 'allow', reason };
+  }
+
+  /**
+   * Throws `PLUGIN_PERMISSION_DENIED` unless an `allow` rule `Routine` lets the plugin register
+   * routines and triggers and no `deny` or `ask` rule names it. A routine starts runs on its
+   * own, without a person: nothing allows it but that rule
+   */
+  checkRoutines(): void {
+    const covers = (behavior: 'allow' | 'deny' | 'ask') =>
+      this.rules.rules(behavior).some((rule) => targetCovers(rule.target, ROUTINE));
+    const allowed =
+      this.scope === 'granted' &&
+      this.rules
+        .rules('allow')
+        .some(
+          (rule) => rule.parsed.specifier === undefined && targetCovers(rule.target, ROUTINE)
+        ) &&
+      !covers('deny') &&
+      !covers('ask');
+    if (allowed) return;
+    throw new CogitatorError({
+      message: `Plugin ${this.plugin} may not register routines or triggers: its permissions do not allow "${PLUGIN_ROUTINE_RULE}"`,
+      code: ErrorCode.PLUGIN_PERMISSION_DENIED,
+      details: { plugin: this.plugin },
+    });
   }
 
   /** Throws `PLUGIN_PERMISSION_DENIED` unless the rules allow `request` */

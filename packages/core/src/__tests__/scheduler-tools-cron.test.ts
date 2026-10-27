@@ -32,12 +32,23 @@ describe('schedule_task with cron', () => {
 
     const before = Date.now();
     const seconds = (await schedule.execute(
-      { description: 'Tick', cron: '*/10 * * * * *' },
+      { description: 'Tick', cron: '30 * * * * *' },
       context
     )) as { firesAt: string };
     const at = Date.parse(seconds.firesAt);
     expect(at).toBeGreaterThan(before);
-    expect(at - before).toBeLessThanOrEqual(10_000);
+    expect(at - before).toBeLessThanOrEqual(60_000);
+    expect(new Date(at).getUTCSeconds()).toBe(30);
+  });
+
+  it('refuses a cron task that would run more often than once a minute', async () => {
+    const { store, schedule } = tools();
+    for (const cron of ['*/10 * * * * *', '* 5 * * * *', '0,30 * * * * *']) {
+      await expect(schedule.execute({ description: 'Tick', cron }, context)).rejects.toThrow(
+        /at most once a minute/
+      );
+    }
+    expect(await store.getPending()).toHaveLength(0);
   });
 
   it('refuses an unknown time zone, and a time zone without cron', async () => {

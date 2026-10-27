@@ -20,10 +20,28 @@ export interface SchedulerToolsConfig {
    * `trigger.agent`, and the tools see only this agent's tasks
    */
   agent?: string;
-  /** Most tasks waiting at once, a task past it is refused. Default: no limit */
+  /**
+   * Most tasks waiting at once, a task past it is refused. Default {@link DEFAULT_MAX_TASKS}:
+   * a model that schedules itself in a loop stops there. `Infinity` for no limit
+   */
   maxTasks?: number;
   /** Whether `schedule_task` asks for approval before it schedules. Default: no */
   requiresApproval?: boolean;
+}
+
+/** How many tasks may wait at once unless `maxTasks` says otherwise */
+export const DEFAULT_MAX_TASKS = 20;
+
+/**
+ * Why a cron expression fires a task more often than once a minute, undefined when it does not:
+ * with 6 fields the seconds field must be one second
+ */
+function subMinuteProblem(expression: string): string | undefined {
+  const fields = expression.trim().split(/\s+/);
+  if (fields.length !== 6) return undefined;
+  return /^[0-5]?\d$/.test(fields[0])
+    ? undefined
+    : `A task runs at most once a minute: the seconds field of "${expression}" must be one second, such as 0`;
 }
 
 const scheduleParams = z.object({
@@ -43,7 +61,10 @@ const scheduleParams = z.object({
     ),
   at: z.string().optional().describe('ISO datetime string for when to fire'),
   channel: z.string().optional().describe('Channel to deliver the task to'),
-  userId: z.string().optional().describe('User ID associated with the task'),
+  userId: z
+    .string()
+    .optional()
+    .describe('The user the task is for: only the user of this conversation may be given'),
   bestEffort: z.boolean().optional().describe('If true, skip retries on failure (fire-and-forget)'),
 });
 
@@ -58,7 +79,11 @@ const cancelParams = z.object({
  * expression in a time zone), `list_tasks` and `cancel_task`. A cron task's first time is the
  * first occurrence of its expression. Tasks are entries of `store` with `metadata.source` set to
  * `agent`: when one comes due, its description reaches the agent as data, not as instructions.
- * The tools never show or cancel the schedules of routines kept in the same store
+ * The tools never show or cancel the schedules of routines kept in the same store.
+ *
+ * A task is for the user of the run that scheduled it (`defaultUserId` when the run has none): the
+ * model cannot name another. At most `maxTasks` (default {@link DEFAULT_MAX_TASKS}) wait at once,
+ * and a cron task runs at most once a minute
  */
 export function createSchedulerTools(config: SchedulerToolsConfig) {
   const { store, defaultChannel, defaultUserId } = config;
@@ -90,13 +115,15 @@ export function createSchedulerTools(config: SchedulerToolsConfig) {
       if (timezone !== undefined && !cronExpression) {
         throw new Error('timezone goes with cron only');
       }
-      if (config.maxTasks !== undefined) {
-        const waiting = (await store.getPending()).filter(ownTask).length;
-        if (waiting >= config.maxTasks) {
-          throw new Error(
-            `There are ${waiting} tasks waiting already, the most there may be: cancel one first`
-          );
-        }
+      if (userId !== undefined && userId !== context.userId) {
+        throw new Error('A task can only be scheduled for the user of this conversation');
+      }
+      const maxTasks = config.maxTasks ?? DEFAULT_MAX_TASKS;
+      const waiting = (await store.getPending()).filter(ownTask).length;
+      if (waiting >= maxTasks) {
+        throw new Error(
+          `There are ${waiting} tasks waiting already, the most there may be: cancel one first`
+        );
       }
 
       let firesAt: number;
@@ -116,6 +143,8 @@ export function createSchedulerTools(config: SchedulerToolsConfig) {
         const problem = engineNow.problem(cronExpression, zone);
         if (problem) throw new Error(problem);
         cronExpr = engineNow.normalize(cronExpression);
+        const tooOften = subMinuteProblem(cronExpr);
+        if (tooOften) throw new Error(tooOften);
         firesAt = engineNow.next(cronExpr, Date.now(), zone);
         type = 'cron';
       } else {
@@ -145,7 +174,7 @@ export function createSchedulerTools(config: SchedulerToolsConfig) {
           ...(context.conversationId !== undefined && { conversationId: context.conversationId }),
           ...(config.agent !== undefined &&
             context.threadId !== undefined && { threadId: context.threadId }),
-          userId: userId ?? context.userId ?? defaultUserId,
+          userId: context.userId ?? defaultUserId,
           ...(bestEffort ? { bestEffort: true } : {}),
         },
       });

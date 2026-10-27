@@ -17,6 +17,7 @@ import type {
   TriggerState,
   WebhookTriggerSpec,
 } from '@cogitator-ai/types';
+import { createHash } from 'node:crypto';
 import { experimental_createTriggerEvent } from './envelope';
 import {
   resolveTriggerSecret,
@@ -28,9 +29,14 @@ import {
   verifySlackSignature,
 } from './verify';
 
-/** What a request comes to: an event to fire, or the answer to give without firing */
+/**
+ * What a request comes to: an event to fire, or the answer to give without firing. `replay` is a
+ * value the sender's signature covers that may start one run only, however the rest of the
+ * request (which the signature does not cover) changes: the manager claims it for `ttlMs`
+ */
 export type SourceOutcome =
-  { kind: 'event'; event: TriggerEvent } | { kind: 'answer'; response: TriggerHttpResponse };
+  | { kind: 'event'; event: TriggerEvent; replay?: { key: string; ttlMs: number } }
+  | { kind: 'answer'; response: TriggerHttpResponse };
 
 /** Who the request is for */
 export interface SourceTarget {
@@ -122,6 +128,9 @@ export function readApiFire(
   const token = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
   if (!token) return refused(401, 'UNAUTHORIZED', 'A bearer token is required');
   const configured = resolveTriggerSecret(spec.token);
+  if (spec.token !== undefined && configured === undefined) {
+    return refused(503, 'CONFIGURATION_ERROR', 'The token of this trigger is not set');
+  }
   const valid =
     configured !== undefined
       ? secretsEqual(token, configured)
@@ -251,7 +260,14 @@ function gitHubText(payload: unknown): string | undefined {
   return parts.length > 0 ? parts.join('\n\n') : undefined;
 }
 
-/** A GitHub webhook delivery: signature, event name, filters, delivery id */
+/** A GitHub event or action name: lowercase letters and `_`, as GitHub names them */
+const GITHUB_NAME = /^[a-z_]{1,64}$/;
+
+/**
+ * A GitHub webhook delivery: signature, event name, filters. The event and delivery headers are
+ * not signed, so the event name must look like one, and repeats are told apart by the signed
+ * body rather than by `X-GitHub-Delivery`: a replayed body under a new delivery id is a duplicate
+ */
 export function readGitHub(
   spec: GitHubTriggerSpec,
   request: TriggerHttpRequest,
@@ -266,6 +282,9 @@ export function readGitHub(
     return refused(401, 'UNAUTHORIZED', 'Invalid signature');
   }
   const eventName = headerValue(request.headers, 'x-github-event') ?? '';
+  if (!GITHUB_NAME.test(eventName)) {
+    return refused(400, 'VALIDATION_ERROR', 'X-GitHub-Event is not an event name');
+  }
   if (eventName === 'ping') return answer(200, { ok: true, pong: true });
   let payload: unknown;
   try {
@@ -280,6 +299,9 @@ export function readGitHub(
     return refused(400, 'VALIDATION_ERROR', 'The body is not valid JSON');
   }
   const action = stringAt(payload, 'action');
+  if (action !== undefined && !GITHUB_NAME.test(action)) {
+    return refused(400, 'VALIDATION_ERROR', 'The action is not an action name');
+  }
   const name = action ? `${eventName}.${action}` : eventName;
   if (spec.events && !spec.events.some((wanted) => wanted === eventName || wanted === name)) {
     return answer(202, { ignored: true, reason: `The trigger does not take ${name} events` });
@@ -287,9 +309,9 @@ export function readGitHub(
   if (spec.filters && !spec.filters.every((filter) => matchesGitHubFilter(payload, filter))) {
     return answer(202, { ignored: true, reason: 'The event does not match the filters' });
   }
-  const delivery = headerValue(request.headers, 'x-github-delivery');
   const actor = stringAt(payload, 'sender', 'login');
   const text = gitHubText(payload);
+  const bodyHash = createHash('sha256').update(request.rawBody).digest('hex');
   return {
     kind: 'event',
     event: experimental_createTriggerEvent({
@@ -300,10 +322,13 @@ export function readGitHub(
       ...(payload !== undefined && { payload }),
       ...(text !== undefined && { text }),
       ...(actor !== undefined && { actor }),
-      ...(delivery && { dedupKey: delivery }),
+      dedupKey: `sha256:${bodyHash}`,
     }),
   };
 }
+
+/** Form fields of Mailgun's signature: they prove the sender once, they are not the mail */
+const MAILGUN_SIGNATURE_FIELDS = ['timestamp', 'token', 'signature'];
 
 /** The mail of a provider's request, read from its usual fields */
 async function defaultEmail(
@@ -367,16 +392,18 @@ async function mailgunSignature(
 }
 
 /**
- * Inbound mail from a provider's webhook. Mailgun is checked by its signature (no older than
- * `maxAgeSeconds`, the signature is the delivery id against replays), Postmark and SendGrid by
- * the secret in the URL (`?token=`), in `X-Webhook-Token` or as basic auth
+ * Inbound mail from a provider's webhook. Mailgun is checked by its signature, no older than
+ * `maxAgeSeconds`. The signature covers only its timestamp and token, not the mail, so it starts
+ * one run at most whatever `Message-Id` and text come with it (the manager claims it), and its
+ * fields stay out of the payload. Postmark and SendGrid are checked by the secret in the URL
+ * (`?token=`), in `X-Webhook-Token` or as basic auth
  */
 export async function readEmail(
   spec: EmailTriggerSpec,
   request: TriggerHttpRequest,
   target: SourceTarget
 ): Promise<SourceOutcome> {
-  let replayKey: string | undefined;
+  let replay: { key: string; ttlMs: number } | undefined;
   let method: 'mailgun' | 'secret';
   if (spec.provider === 'mailgun') {
     const signingKey = resolveTriggerSecret(spec.signingKey);
@@ -401,11 +428,12 @@ export async function readEmail(
     ) {
       return refused(401, 'UNAUTHORIZED', 'Invalid signature');
     }
+    const maxAge = spec.maxAgeSeconds ?? 300;
     const age = Math.abs(Date.now() / 1000 - Number(timestamp));
-    if (!Number.isFinite(age) || age > (spec.maxAgeSeconds ?? 300)) {
+    if (!Number.isFinite(age) || age > maxAge) {
       return refused(401, 'UNAUTHORIZED', 'Stale signature');
     }
-    replayKey = signature?.toLowerCase();
+    replay = { key: `mailgun:${(signature ?? '').toLowerCase()}`, ttlMs: maxAge * 2 * 1000 };
     method = 'mailgun';
   } else {
     if (!emailSecretMatches(spec, request)) return refused(401, 'UNAUTHORIZED', 'Unauthorized');
@@ -423,9 +451,16 @@ export async function readEmail(
   ]
     .filter((part): part is string => part !== undefined && part !== '')
     .join('\n\n');
-  const dedupKey = mail.messageId ?? replayKey;
+  const payload =
+    spec.provider === 'mailgun' && mail.fields !== undefined
+      ? Object.fromEntries(
+          Object.entries(mail.fields).filter(([name]) => !MAILGUN_SIGNATURE_FIELDS.includes(name))
+        )
+      : mail.fields;
+  const dedupKey = mail.messageId;
   return {
     kind: 'event',
+    ...(replay !== undefined && { replay }),
     event: experimental_createTriggerEvent({
       source: 'email',
       ...target,
@@ -435,7 +470,7 @@ export async function readEmail(
         ok: true,
         ...(mail.authentication !== undefined && { detail: mail.authentication }),
       },
-      ...(mail.fields !== undefined && { payload: mail.fields }),
+      ...(payload !== undefined && { payload }),
       ...(text !== '' && { text }),
       ...(mail.from !== undefined && { actor: mail.from }),
       ...(dedupKey !== undefined && { dedupKey }),

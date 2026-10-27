@@ -1,12 +1,16 @@
 /**
  * Schemas of routines and triggers as JSON carries them: a saved routine, one an isolated plugin
  * registers over its channel, one the CLI or a config file gives. Targets are names, secrets are
- * text or `{ env }`, and there are no functions
+ * `{ env }` (the name of the variable that holds them, never the secret as text in a file or a
+ * message), and there are no functions
  */
 
 import { z } from 'zod';
 
-const secret = z.union([z.string().min(1), z.object({ env: z.string().min(1) }).strict()]);
+const secret = z
+  .object({ env: z.string().min(1) })
+  .strict()
+  .describe('The name of the environment variable that holds the secret: { "env": "NAME" }');
 
 const base = {
   id: z.string().optional(),

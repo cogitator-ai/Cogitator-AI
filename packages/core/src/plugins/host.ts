@@ -1606,6 +1606,18 @@ export class experimental_PluginHost {
       },
       registerPanel: (panel: PluginPanelContribution) => addPanel(panel),
       registerRoutine: (routine: RoutineDefinition) => {
+        checks.checkRoutines();
+        if (
+          routine.userId !== undefined ||
+          routine.owner !== undefined ||
+          (routine.session !== undefined && routine.session !== 'new')
+        ) {
+          throw new CogitatorError({
+            message: `Plugin ${id}: a plugin's routine may not set userId, owner or session.threadId`,
+            code: ErrorCode.PLUGIN_PERMISSION_DENIED,
+            details: { plugin: id },
+          });
+        }
         if (typeof routine.id !== 'string' || !TRIGGER_ID.test(routine.id)) {
           throw new TypeError(
             `Plugin ${id}: a routine id is lowercase letters, digits, "_" and "-", got "${String(routine.id)}"`
@@ -1624,6 +1636,7 @@ export class experimental_PluginHost {
         });
       },
       registerTrigger: (routineId: string, trigger: TriggerSpec) => {
+        checks.checkRoutines();
         const entry = set.routines.get(`${pluginName}:${routineId}`);
         if (!entry) {
           throw new TypeError(
