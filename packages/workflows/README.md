@@ -635,6 +635,8 @@ const triggers = createTriggerManager({
 });
 await triggers.start(); // brings back the triggers of its store, disabled ones stay disabled
 
+// registering the same trigger again (on every boot) takes over the one the store brought back
+
 await triggers.register({
   workflowName: 'daily-report',
   type: 'cron',
@@ -689,7 +691,9 @@ const [approval] = await cog.experimental_triggers!.inbox.list({ kind: 'approval
 await cog.experimental_triggers!.respond(approval.id, { decision: true });
 ```
 
-`experimental_inboxNotifier(inbox)` (an `ApprovalNotifier`) and `experimental_inboxDeadLetterQueue(inbox, dlq)` put approvals and failures of any workflow in an inbox.
+Each firing runs the workflow from `{ input, trigger }`: `input` is the routine's prompt with the event wrapped as untrusted data, `trigger` what the manager vouches for (event id, source, trigger, times, how the sender was checked). The event's payload and text reach the state only inside `input`, or through an `input(context)` of your own that reads `context.event`.
+
+`experimental_inboxNotifier(inbox)` (an `ApprovalNotifier`) and `experimental_inboxDeadLetterQueue(inbox, dlq)` put approvals and failures of any workflow in an inbox. The notifier keeps one item per request (`experimental_approvalItemId(requestId)`): a timeout or an escalation closes it as a `failure`, an escalated or delegated request comes as its own `approval` item, so no request can be answered from two items. Answering a request that was answered meanwhile, or timed out, throws `INBOX_ITEM_ANSWERED`.
 
 ---
 

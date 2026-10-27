@@ -82,7 +82,7 @@ curl -X POST http://localhost:3000/cogitator/triggers/digest.api/fire \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"text": "Release 2.3 shipped last night"}'
 # 202 {"type":"routine_fire","status":"started","eventId":"evt_...","routineId":"digest",
-#      "triggerId":"digest.api","runId":"trg_digest.api_evt_...","threadId":"routine_digest_digest.api_evt_..."}
+#      "triggerId":"digest.api","runId":"trg_digest.api.evt_...","threadId":"routine_digest_digest.api.evt_..."}
 ```
 
 `start()` is not called for you, since routines call real models. It loads the cron engine, makes sure each cron trigger has its entry in the schedules store, polls that store and continues the durable runs of routines a stopped process left. `cog.close()` stops the manager. The token the manager issued is kept as its SHA-256 in the routine store, which lives in memory here: use [a store that persists](#stores), or give the trigger a token of its own (`{ kind: 'api', token: { env: 'DIGEST_TOKEN' } }`).
@@ -152,7 +152,7 @@ A cron trigger fires through its entry in the schedules store, the same store [t
 { kind: 'api', token: { env: 'DIGEST_TOKEN' } }  // a token of your own
 ```
 
-Fires on `POST /triggers/:id/fire` with `Authorization: Bearer <token>` and an optional JSON body `{ "text": "..." }`, at most 65 536 characters (`413` past that). A token given in the spec is compared in constant time. Without one, `issueToken(id)` makes a token (`cgt_` and 32 random bytes) and returns it once, the store keeps only its SHA-256 and its last 4 characters as a hint, and `rotateToken(id)` replaces it, the one before stops working. `issueToken` of a trigger with a token in its spec is refused (`VALIDATION_ERROR`). An `Idempotency-Key` header makes repeats of a call start one run.
+Fires on `POST /triggers/:id/fire` with `Authorization: Bearer <token>` and an optional JSON body `{ "text": "..." }`, at most 65 536 characters (`413` past that). A token given in the spec is compared in constant time. Without one, `issueToken(id)` makes a token (`cgt_` and 32 random bytes) and returns it once, the store keeps only its SHA-256 and its last 4 characters as a hint, and `rotateToken(id)` replaces it, the one before stops working. `issueToken` of a trigger with a token in its spec is refused (`VALIDATION_ERROR`). A token given as `{ env }` whose variable is not set answers `503 CONFIGURATION_ERROR`, never falls back to an issued token. An `Idempotency-Key` header makes repeats of a call start one run.
 
 ### Webhook
 
@@ -178,7 +178,7 @@ Fires on `POST /triggers/:id/webhook` signed with an HMAC of the raw body: `algo
 }
 ```
 
-Checks `X-Hub-Signature-256` over the raw body and answers GitHub's `ping` with `200`. The event is named from `X-GitHub-Event` and the payload's `action`: `events` takes `pull_request` for every action or `pull_request.opened` for one, every event when unset. Each filter reads a dot path of the payload and must hold: `equals` a value, `contains` a substring (of a text, or an item or label name of a list), `matches` a regular expression the whole value matches. An event the trigger does not take answers `202 { ignored: true, reason }` and starts nothing. `X-GitHub-Delivery` is the delivery id, so GitHub's redeliveries start one run, and form-encoded deliveries are read too. The event's text is what people wrote (the title and body of a pull request, issue, release or discussion, a comment or review), its actor `sender.login`.
+Checks `X-Hub-Signature-256` over the raw body and answers GitHub's `ping` with `200`. The event is named from `X-GitHub-Event` and the payload's `action`: `events` takes `pull_request` for every action or `pull_request.opened` for one, every event when unset. Each filter reads a dot path of the payload and must hold: `equals` a value, `contains` a substring (of a text, or an item or label name of a list), `matches` a regular expression the whole value matches. An event the trigger does not take answers `202 { ignored: true, reason }` and starts nothing. `X-GitHub-Event` and `X-GitHub-Delivery` are not signed: an event or action name that is not lowercase letters and `_` is refused (`400`), and repeats are told apart by a SHA-256 of the signed body, not by the delivery id, so a redelivery and a captured body sent again under a new delivery id both start no second run. Form-encoded deliveries are read too. The event's text is what people wrote (the title and body of a pull request, issue, release or discussion, a comment or review), its actor `sender.login`.
 
 ### Email
 
@@ -190,7 +190,7 @@ import { experimental_emailTriggerParser } from '@cogitator-ai/channels';
 { kind: 'email', provider: 'sendgrid', basicAuth: { username: 'sendgrid', password: { env: 'INBOUND_PASSWORD' } } }
 ```
 
-Inbound mail from a provider's webhook, checked as the [email channel](/docs/channels/email) checks it. Mailgun is checked by its signature (timestamp and token, no older than `maxAgeSeconds`, default 300), and the signature itself guards against a replay. Postmark and SendGrid send a secret: `token` in the URL (`?token=`) or in `X-Webhook-Token`, or `basicAuth`. The mail is read from the provider's usual fields, or by `parse`: `experimental_emailTriggerParser(provider, { maxAttachmentBytes?, trustedAuthservIds? })` of the channels package reads it as the email channel does, MIME, the sender's DKIM, SPF and DMARC verdict and the quoted reply stripped. The subject and text become the event's text, the sender its actor, the verdict `verified.detail` (`pass`, `fail`, `none`), and `Message-Id` the delivery id. `parse` is a function, so it goes only on routines in code.
+Inbound mail from a provider's webhook, checked as the [email channel](/docs/channels/email) checks it. Mailgun is checked by its signature (timestamp and token, no older than `maxAgeSeconds`, default 300). The signature does not cover the mail, so each signature starts one run at most, whatever `Message-Id` and text come with it, and `timestamp`, `token` and `signature` stay out of the payload. Postmark and SendGrid send a secret: `token` in the URL (`?token=`) or in `X-Webhook-Token`, or `basicAuth`. The mail is read from the provider's usual fields, or by `parse`: `experimental_emailTriggerParser(provider, { maxAttachmentBytes?, trustedAuthservIds? })` of the channels package reads it as the email channel does, MIME, the sender's DKIM, SPF and DMARC verdict and the quoted reply stripped. The subject and text become the event's text, the sender its actor, the verdict `verified.detail` (`pass`, `fail`, `none`), and `Message-Id` the delivery id. `parse` is a function, so it goes only on routines in code.
 
 ### Slack
 
@@ -214,7 +214,7 @@ Checks Slack's `v0` signature over `v0:<timestamp>:<raw body>`, refusing a times
 | `429`  | `{ error: { code: 'RATE_LIMITED', message } }`                     | Over `maxPerHour`, with `Retry-After`                                                                  |
 | `500`  | `{ error: { code: 'INTERNAL_ERROR', message } }`                   | The run could not be started, the details stay in the log                                              |
 
-`TriggerFireResult` is `{ type: 'routine_fire', status, eventId, routineId, triggerId, runId?, threadId?, reason? }`, `skipped` with the reason it was skipped.
+`TriggerFireResult` is `{ type: 'routine_fire', status, eventId, routineId?, triggerId, runId?, threadId?, reason? }`, `skipped` with the reason it was skipped. `routineId` is absent only when `respond()` resumed a task an agent gave itself. A `401` is also the answer to a Mailgun signature used before, as `200 duplicate`, and a `503 CONFIGURATION_ERROR` to a trigger whose secret variable is not set.
 
 ## What the model sees
 
@@ -261,9 +261,9 @@ Tools still decide what the model can do. The block keeps the event from speakin
 
 A provider retries, two processes poll the same schedule, a person fires a trigger twice: each event still starts one run.
 
-- **Delivery id.** An event with a delivery id (`X-GitHub-Delivery`, Slack's `event_id`, a mail's `Message-Id`, the webhook's `deliveryHeader`, an API call's `Idempotency-Key`) claims `dedup:<triggerId>:<id>` in the routine store for `dedupTtlMs` (default 24 hours). A repeat finds it taken and is answered `duplicate`.
-- **Run id.** Every firing gets a run id made from the event: `trg_<routineId>.<triggerId>_<key>`, the key being the occurrence in ms for a schedule, a digest of the delivery id when there is one, else the event id (`trg_digest.morning_1761552000000`). The run id is claimed in the store for 3 days before the run starts, so a second worker firing the same occurrence finds it taken.
-- **Durable runs.** With [durable runs](/docs/core/durable-runs) on the runtime (or `experimental_triggers.durable: true`), routine runs are durable under that run id: a second start of it finds the run held by another process and is recorded `skipped`, and `start()` continues the routine runs a stopped process left, their outcome to the inbox as if nothing happened.
+- **Delivery id.** An event with a delivery id (a digest of a GitHub body, Slack's `event_id`, a mail's `Message-Id`, the webhook's `deliveryHeader`, an API call's `Idempotency-Key`) claims `dedup:<triggerId>:<id>` in the routine store for `dedupTtlMs` (default 24 hours). A repeat finds it taken and is answered `duplicate`. Once `dedupTtlMs` is over, the same delivery id starts a run again.
+- **Run id.** Every firing gets a run id made from the event: `trg_<routineId>.<triggerId>.<key>`, the key being the occurrence in ms for a schedule, a digest of the delivery id when there is one, else the event id (`trg_digest.morning.1761552000000`). Routine ids, trigger ids and keys hold no `.`, so two triggers never share a run id (a trigger id too long for a run id goes by its digest). The run id is claimed in the store before the run starts, for `dedupTtlMs` when it comes from a delivery id and for 3 days otherwise, so a second worker firing the same occurrence finds it taken.
+- **Durable runs.** With [durable runs](/docs/core/durable-runs) on the runtime (or `experimental_triggers.durable: true`), routine runs are durable under that run id: a second start of it finds the run held by another process and is recorded `skipped`, and `start()` continues the routine runs and agent tasks a stopped process left, their outcome to the inbox as if nothing happened. The store keeps each run going on apart from the history (`saveActiveRun`), so a run is taken up however many firings came after it, and it holds a lease on the plugins as a new run does.
 
 A firing that fails to start gives its claims back, so a retry of the provider starts it then. Each run gets its own thread, `routine_<routineId>_<routineId>.<triggerId>_<key>`, unless the routine continues one with `session: { threadId }`.
 
@@ -280,7 +280,7 @@ What a firing does while runs of its routine go on:
 | `parallel`       | It starts next to them. `maxConcurrent` is unlimited by default, past a limit you set the firing is skipped                                                                                              |
 | `replace`        | The oldest run going on is aborted (recorded `replaced`) and the new one starts                                                                                                                          |
 
-Runs are counted, and firings queued, in the process that runs them: with several processes `maxConcurrent` holds per process, and a queued firing is lost when its process stops (the history keeps it as `queued`). A run of a workflow that waits for an approval goes on until it is answered, so it counts too.
+Runs are counted, and firings queued, in the process that runs them: with several processes `maxConcurrent` holds per process. `stop()` drops the firings still queued: their claims are given back, so a provider's redelivery starts them, and the history records them `skipped`. A run of a workflow that waits for an approval goes on until it is answered, so it counts too, and so does a run `respond()` resumed: `replace` aborts it like any other, and when it ends the queue moves on. A replaced run stays `replaced` in the history whatever it ended with, and puts no failure in the inbox.
 
 ## Catch-up
 
@@ -292,7 +292,7 @@ A schedule whose process was down or asleep has occurrences it missed. `catchUp`
 | `all`              | Every missed occurrence in the window, oldest first, at most the latest 100                                |
 | `none`             | Nothing missed: the latest occurrence runs only when it is no more than two polls late (at least a minute) |
 
-Routines look back 7 days by default. Tasks agents give themselves with `schedule_task` (and the heartbeat tasks of channels) catch up the `latest` with no window. Each occurrence that runs gets its own run id, so a caught-up occurrence is still started once. An entry whose firing failed 5 times in a row is skipped until it is resumed.
+Routines look back 7 days by default. Tasks agents give themselves with `schedule_task` (and the heartbeat tasks of channels) catch up the `latest` with no window. Each occurrence that runs gets its own run id, so a caught-up occurrence is still started once. The missed occurrences are found walking forward from the last one that ran, as the schedule fires them, so across a daylight saving change the repeated hour runs once and an occurrence moved past the skipped hour is the one caught up. An entry whose firing failed 5 times in a row is skipped until it is resumed, and paused entries and those out of retries never hold up the others of a poll.
 
 ## Stores
 
@@ -309,6 +309,8 @@ Routines look back 7 days by default. Tasks agents give themselves with `schedul
 | In memory       | One process                                                                                                                                                                                                              |
 | Files           | One runtime and the CLI: every change locks the file and a read sees what the other changed. Two runtimes polling the same schedules file both run what is due (the routine store's claims still start each firing once) |
 | Redis, Postgres | Any number of runtimes: claims are taken with `SET NX PX` or one insert, schedule entries are claimed while they fire                                                                                                    |
+
+Every change to a trigger's state goes through `patchTriggerState`, one atomic step in each store (a script in Redis, one statement in Postgres, the file's lock), so a firing that counts itself and a pause or a token rotation at the same moment keep each other's fields. The Postgres store removes expired claims in batches of 500, at most once a minute. The Redis inbox keeps sorted sets of each user's items and of each status, and reads a page of the narrowest one at a time, never the whole inbox. A routine store of your own implements `patchTriggerState`, `saveActiveRun`, `getActiveRun`, `listActiveRuns` and `deleteActiveRun` besides the rest, an inbox store `claimAnswer` and `releaseAnswer`.
 
 ### Files the CLI shares
 
@@ -365,24 +367,25 @@ What routines come to waits in `cog.experimental_triggers.inbox` for a person to
 | `approval` | A run paused on tool calls that need [approval](/docs/tools/approvals), a workflow's human node waits | `actions` Approve and Reject per tool call, `approvalId`                          |
 | `question` | A run paused on a question, plan or budget                                                            | `metadata.interrupts` with their ids and messages                                 |
 
-An item has `status` `unread`, `read` or `archived`, `routineId`, `triggerId`, `triggerEventId`, `source`, `runId`, `threadId` (or `workflowRunId`), `userId` (the routine's) and `metadata.owner` (the routine's `owner`). Tasks agents gave themselves add items titled `Scheduled task: <description>`.
+An item has `status` `unread`, `read` or `archived`, `answeredAt` once a person answered it, `routineId`, `triggerId`, `triggerEventId`, `source`, `runId`, `threadId` (or `workflowRunId`), `userId` (the routine's) and `metadata.owner` (the routine's `owner`). Tasks agents gave themselves add items titled `Scheduled task: <description>`, and when such a task waits for approval or an answer, an `approval` or `question` item with `metadata.agent` that `respond()` answers by resuming it on that agent.
 
 ```typescript
 const inbox = triggers.inbox;
 const unread = await inbox.list({ status: 'unread', kind: ['failure', 'approval'], limit: 20 });
 await inbox.markRead(unread[0].id);
 await inbox.archive(unread[0].id);
-const older = await inbox.list({ before: unread.at(-1)?.createdAt });
+const last = unread.at(-1);
+const older = last ? await inbox.list({ before: last.createdAt, beforeId: last.id }) : [];
 
 const stop = inbox.subscribe((change) => console.log(change.type)); // added, updated, deleted
 await inbox.add({ kind: 'result', title: 'Imported 42 invoices', summary: 'No errors' });
 ```
 
-`list` takes `status`, `kind` (one or a list), `routineId`, `userId` (`null` for items without one), `before` (a time, for paging) and `limit` (default 50), newest first. `add` is open to your own code, `update`, `markRead`, `markUnread`, `archive` and `delete` change items, and `subscribe` hears every change, as Studio's live view does.
+`list` takes `status`, `kind` (one or a list), `routineId`, `userId` (`null` for items without one), `before` and `beforeId` (the time and id of the last item of a page, so the next page skips none of the same millisecond) and `limit` (default 50), newest first. `add` is open to your own code, `update`, `markRead`, `markUnread`, `archive` and `delete` change items, and `subscribe` hears every change, as Studio's live view does.
 
 ### Answering a run that waits
 
-`respond(itemId, answer)` answers an `approval` or `question` item: the run goes on, its outcome comes to the inbox as a new item, and the answered one is archived.
+`respond(itemId, answer)` answers an `approval` or `question` item: the run goes on, its outcome comes to the inbox as a new item, and the answered one gets `answeredAt` and is archived. The answer is claimed in one atomic step of the inbox store (`claimAnswer`), so two answers at once resume the run once. Archiving an item does not answer it, and marking it unread does not make an answered one answerable again.
 
 ```typescript
 const [waiting] = await triggers.inbox.list({ kind: 'approval', status: 'unread' });
@@ -395,7 +398,7 @@ await triggers.respond(question.id, { responses: { [interruptId]: 'Use the stagi
 await triggers.respond(workflowItem.id, { decision: true, respondedBy: 'ana' });
 ```
 
-`decisions` (by tool call id), `defaultDecision` and `responses` (by interrupt id) are those of `cog.resume()`, `decision` and `respondedBy` answer a [workflow's](#routines-as-workflows) approval. An item that waits for nothing, or whose routine is gone, throws `TRIGGER_NOT_FOUND`, an item answered or archived already `INBOX_ITEM_ANSWERED`. The server adapters' inbox routes read and mark items, they do not answer them: answer through `respond()`, or in [Studio](#studio).
+`decisions` (by tool call id), `defaultDecision` and `responses` (by interrupt id) are those of `cog.resume()`, `decision` and `respondedBy` answer a [workflow's](#routines-as-workflows) approval. An item that waits for nothing, or whose routine is gone, throws `TRIGGER_NOT_FOUND`, an item answered already `INBOX_ITEM_ANSWERED` (so does a workflow approval answered elsewhere or timed out). The server adapters' inbox routes read and mark items, they do not answer them: answer through `respond()`, or in [Studio](#studio).
 
 ### Sinks and notifications
 
@@ -453,7 +456,7 @@ const cog = new Cogitator({
 await cog.experimental_triggers!.start();
 ```
 
-`agent` names the agent the tasks run on, which must be in `experimental_triggers.agents`: the tasks get `trigger.agent`, and the tools see and cancel only that agent's tasks, never the schedules of routines kept in the same store. `triggers.schedulerTools('assistant', { timezone, maxTasks, requiresApproval, defaultChannel, defaultUserId })` builds the same tools over the manager's own schedules store and cron engine. `maxTasks` refuses a task past that many waiting, `requiresApproval` makes `schedule_task` ask before it schedules. When a task comes due, the agent gets its description as a note it wrote earlier, in a `<trigger-payload>` block, since it may carry text from where the agent took it. See [Scheduling tasks](/docs/tools/built-in#scheduling-tasks) for the tool's arguments.
+`agent` names the agent the tasks run on, which must be in `experimental_triggers.agents`: the tasks get `trigger.agent`, and the tools see and cancel only that agent's tasks, never the schedules of routines kept in the same store. `triggers.schedulerTools('assistant', { timezone, maxTasks, requiresApproval, defaultChannel, defaultUserId })` builds the same tools over the manager's own schedules store and cron engine. `maxTasks` (default 20) refuses a task past that many waiting, `requiresApproval` makes `schedule_task` ask before it schedules. A task is always for the user of the run that scheduled it (`defaultUserId` when the run has none): `userId` is taken only when it is that user, the tool fails otherwise. A cron task runs at most once a minute, so a 6-field expression needs one second in its first field (`0 */5 * * * *`). While the run of a task goes on, its next occurrences are skipped. A task whose run waits for approval or an answer comes to the inbox as an `approval` or `question` item, and `respond()` resumes it on its agent. When a task comes due, the agent gets its description as a note it wrote earlier, in a `<trigger-payload>` block, since it may carry text from where the agent took it. See [Scheduling tasks](/docs/tools/built-in#scheduling-tasks) for the tool's arguments.
 
 ## Routines as workflows
 
@@ -468,6 +471,7 @@ import { experimental_definePlugin } from '@cogitator-ai/core';
 
 export default experimental_definePlugin({
   name: 'triage',
+  permissions: { allow: ['Routine'] },
   activate(context) {
     context.registerRoutine({
       id: 'new-issues',
@@ -482,8 +486,10 @@ export default experimental_definePlugin({
 });
 ```
 
+- A plugin needs the permission `Routine` in the `allow` of its `permissions`: without it, `registerRoutine` and `registerTrigger` throw `PLUGIN_PERMISSION_DENIED`, so a plugin that declares nothing, isolated or not, starts no runs on its own. A `deny` or `ask` rule `Routine` of the host takes it away.
+- A plugin's routine may not set `userId`, `owner` or `session: { threadId }` (`PLUGIN_PERMISSION_DENIED`): who a run acts for and whose chat it continues are for the host to decide.
 - A plugin's routine is named `<plugin>:<id>` (`triage:new-issues`, its trigger `triage:new-issues.github`), its `id` given without the prefix. `registerTrigger(routineId, spec)` adds a trigger to a routine of the same plugin, named without the prefix too.
-- It targets an agent or workflow of `experimental_triggers` by name, or, in code in the host's process, one of its own. A plugin isolated in its own process registers JSON only: names, secrets as `{ env }`, no `parse`.
+- It targets an agent or workflow by a name `experimental_triggers.pluginTargets` lists (`{ agents?: string[], workflows?: string[] }`, none by default), or, in code in the host's process, an agent or workflow of its own. A routine whose target is not listed is reported through `onEvent` as an `error` and does not run. A plugin isolated in its own process registers JSON only: names, secrets as `{ env }`, no `parse`.
 - A run of it holds a lease on the plugins, as any run does, so the generation it came from stays loaded until the run ends, however the plugin reloads meanwhile. When the plugin unloads, its routines and their schedules go, and a reload brings them back as the new generation registers them.
 - A cron expression that is not valid is reported through `onEvent` as an `error`, and the rest of the plugin loads.
 
@@ -493,12 +499,14 @@ See [Plugins](/docs/core/plugins#plugins-in-code).
 
 Give a server adapter the manager as `triggers` and it serves four routes, see [Triggers and inbox](/docs/server-adapters#triggers-and-inbox):
 
-| Route                        | Auth                                 | What it does                                                           |
-| ---------------------------- | ------------------------------------ | ---------------------------------------------------------------------- |
-| `POST /triggers/:id/fire`    | The trigger's bearer token           | Fires an API trigger                                                   |
-| `POST /triggers/:id/webhook` | The sender's signature               | Delivers a webhook, GitHub, email or Slack event                       |
-| `GET /inbox`                 | The adapter's `auth` and `anonymous` | The caller's items, `?status=unread&kind=failure&limit=20&before=<ms>` |
-| `PATCH /inbox/:id`           | The adapter's `auth` and `anonymous` | `{ "status": "read" \| "unread" \| "archived" }`                       |
+| Route                        | Auth                                 | What it does                                                                         |
+| ---------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------ |
+| `POST /triggers/:id/fire`    | The trigger's bearer token           | Fires an API trigger                                                                 |
+| `POST /triggers/:id/webhook` | The sender's signature               | Delivers a webhook, GitHub, email or Slack event                                     |
+| `GET /inbox`                 | The adapter's `auth` and `anonymous` | The caller's items, `?status=unread&kind=failure&limit=20&before=<ms>&beforeId=<id>` |
+| `PATCH /inbox/:id`           | The adapter's `auth` and `anonymous` | `{ "status": "read" \| "unread" \| "archived" }`                                     |
+
+A caller without a user id gets `401` from the inbox routes unless the adapter is set to `anonymous: 'allow'` explicitly, then they see the items without a user. Routines run without anyone watching, so their results stay closed by default even on a server that lets anonymous callers chat. `PATCH` changes the status only, never whether an item was answered.
 
 `triggers.handle(id, 'fire' | 'webhook', request)` answers a request with its raw body for a server of your own (`TriggerHttpRequest`: `method`, `headers`, `rawBody`, `query`, `ip`).
 
@@ -523,7 +531,7 @@ cogitator trigger fire digest.api --text "Breaking news" --url http://localhost:
 
 ## Config file
 
-`experimental_triggers` in `cogitator.yml` holds what JSON can: routines (targets by name, secrets as `{ env }`), `pollInterval`, `dedupTtlMs`, `maxQueued` and `durable`. Agents, workflows, stores, sinks and `parse` functions come from code.
+`experimental_triggers` in `cogitator.yml` holds what JSON can: routines (targets by name, secrets as `{ env }` only, a secret written as text in the file is refused), `pollInterval`, `dedupTtlMs`, `maxQueued` and `durable`. Agents, workflows, stores, sinks and `parse` functions come from code.
 
 ```yaml title="cogitator.yml"
 experimental_triggers:
@@ -559,6 +567,7 @@ A trigger of a kind the schema does not know, or a field it does not take, fails
 | `experimental_triggers`       | Default       | What it does                                                                      |
 | ----------------------------- | ------------- | --------------------------------------------------------------------------------- |
 | `agents`, `workflows`         |               | What routines run, by name                                                        |
+| `pluginTargets`               | none          | `{ agents?, workflows? }`: the names routines of plugins may run                  |
 | `routines`                    | `[]`          | Routines in code                                                                  |
 | `store`, `schedules`, `inbox` | in memory     | See [Stores](#stores)                                                             |
 | `sinks`                       | `[]`          | Who hears of new inbox items                                                      |
@@ -571,7 +580,7 @@ A trigger of a kind the schema does not know, or a field it does not take, fails
 
 | `cog.experimental_triggers`                      | What it does                                                                                                          |
 | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `start()`, `stop()`, `isStarted`                 | Starts once and resolves when the schedules are in place, stops polling (runs going on finish)                        |
+| `start()`, `stop()`, `isStarted`                 | Starts once and resolves when the schedules are in place, stops polling after a start going on (runs going on finish) |
 | `idle()`                                         | Resolves once every run going on has ended and reached the inbox                                                      |
 | `list()`, `get(id)`                              | `RoutineInfo`: the routine without its secrets, `origin`, triggers with state and `nextFireAt`, `active` and `queued` |
 | `create(routine)`, `remove(id)`                  | Routines of the store                                                                                                 |
@@ -586,9 +595,10 @@ A trigger of a kind the schema does not know, or a field it does not take, fails
 
 ## Error codes
 
-| Code                  | When                                                                                                                                             |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `TRIGGER_NOT_FOUND`   | No routine, trigger or inbox item with that id (404), an `issueToken` of a trigger that is not an API trigger                                    |
-| `INBOX_ITEM_ANSWERED` | An inbox item answered or archived already (409)                                                                                                 |
-| `VALIDATION_ERROR`    | A routine `create()` refuses, `issueToken` of a trigger with its own token, a workflow's answer without a decision                               |
-| `CONFIGURATION_ERROR` | An invalid routine in code or cron expression at `start()`, `cron-parser` not installed, an agent `schedulerTools` names that is not in `agents` |
+| Code                       | When                                                                                                                                             |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `TRIGGER_NOT_FOUND`        | No routine, trigger or inbox item with that id (404), an `issueToken` of a trigger that is not an API trigger                                    |
+| `INBOX_ITEM_ANSWERED`      | An inbox item answered already, or a workflow approval answered elsewhere or timed out (409)                                                     |
+| `VALIDATION_ERROR`         | A routine `create()` refuses, `issueToken` of a trigger with its own token, a workflow's answer without a decision                               |
+| `CONFIGURATION_ERROR`      | An invalid routine in code or cron expression at `start()`, `cron-parser` not installed, an agent `schedulerTools` names that is not in `agents` |
+| `PLUGIN_PERMISSION_DENIED` | A plugin without the `Routine` permission registers a routine or trigger, or a plugin's routine sets `userId`, `owner` or `session.threadId`     |

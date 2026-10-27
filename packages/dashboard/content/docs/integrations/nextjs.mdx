@@ -227,14 +227,14 @@ export const { GET } = inbox;
 export const { PATCH } = inbox;
 ```
 
-| Route                            | Auth                                                                      | Body                                                             |
-| -------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `POST /api/triggers/:id/fire`    | The trigger's own bearer token                                            | `{ "text": "..." }`, read raw                                    |
-| `POST /api/triggers/:id/webhook` | The sender's signature (HMAC, GitHub, Mailgun, Postmark, SendGrid, Slack) | Any content type, read raw                                       |
-| `GET /api/inbox`                 | `auth` and `anonymous`                                                    | `?status=unread&kind=failure&routineId=...&limit=20&before=<ms>` |
-| `PATCH /api/inbox/:id`           | `auth` and `anonymous`                                                    | `{ "status": "read" \| "unread" \| "archived" }`                 |
+| Route                            | Auth                                                                      | Body                                                                           |
+| -------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `POST /api/triggers/:id/fire`    | The trigger's own bearer token                                            | `{ "text": "..." }`, read raw                                                  |
+| `POST /api/triggers/:id/webhook` | The sender's signature (HMAC, GitHub, Mailgun, Postmark, SendGrid, Slack) | Any content type, read raw                                                     |
+| `GET /api/inbox`                 | `auth` and `anonymous`                                                    | `?status=unread&kind=failure&routineId=...&limit=20&before=<ms>&beforeId=<id>` |
+| `PATCH /api/inbox/:id`           | `auth` and `anonymous`                                                    | `{ "status": "read" \| "unread" \| "archived" }`                               |
 
-The trigger handler runs no auth of its own: a trigger checks the token or the signature over the body exactly as it came, read raw for any content type up to 10 MiB and never parsed or re-serialized. A larger body answers `413 PAYLOAD_TOO_LARGE`, a `route` other than `fire` and `webhook` `404`, and everything else is the trigger manager's answer. The inbox handlers take the caller from `auth` (`{ userId }`, `undefined` for an anonymous caller), and `anonymous: 'deny'` turns away callers without a user id: a caller sees and changes only the items of its `userId`, an anonymous caller only the items without one, and another user's item answers `404 NOT_FOUND`. `params` may be a promise (Next 15 and later) or the object itself.
+The trigger handler runs no auth of its own: a trigger checks the token or the signature over the body exactly as it came, read raw for any content type up to 10 MiB and never parsed or re-serialized. A larger body answers `413 PAYLOAD_TOO_LARGE`, a `route` other than `fire` and `webhook` `404`, and everything else is the trigger manager's answer. The inbox handlers take the caller from `auth` (`{ userId }`, `undefined` for an anonymous caller). A caller without a user id, which is every caller without `auth`, gets `401 UNAUTHORIZED` unless `anonymous: 'allow'` is set, then they see the items without one. A caller sees and changes only the items of its `userId`, and another user's item answers `404 NOT_FOUND`. `params` may be a promise (Next 15 and later) or the object itself.
 
 ## Client: useCogitatorChat
 
