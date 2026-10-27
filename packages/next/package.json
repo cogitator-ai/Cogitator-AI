@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/next",
-  "version": "0.13.2",
+  "version": "0.14.0",
   "description": "Next.js integration for Cogitator AI runtime",
   "type": "module",
   "main": "./dist/index.js",
