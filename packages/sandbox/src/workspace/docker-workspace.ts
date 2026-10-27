@@ -412,8 +412,9 @@ export class DockerWorkspace implements Workspace {
    * Brings the files back to a snapshot of the host workspace. What goes is removed in the
    * container, where no symlink reaches the host, as `remove` does: the host's dry run says what,
    * and each removed tree goes at once. The host then writes what changed, through its own
-   * placement. Refused with `BUSY` while a command runs in the container or left processes in the
-   * background, which could race the changes, and a dry run says so in `busy`
+   * placement, and the result lists both, as the dry run does. Refused with `BUSY` before
+   * anything goes while a command runs in the container or on the host workspace, or left
+   * processes in the background, which could race the changes, and a dry run says so in `busy`
    */
   private async restoreInContainer(
     snapshotId: string,
@@ -421,8 +422,8 @@ export class DockerWorkspace implements Workspace {
   ): Promise<WorkspaceRestoreResult> {
     const restore = this.host.restore!.bind(this.host);
     const plan = await restore(snapshotId, { dryRun: true });
-    const busy = this.state.running > 0 || (await this.keptAlive());
-    if (options.dryRun) return { ...plan, busy: (plan.busy ?? false) || busy };
+    const busy = (plan.busy ?? false) || this.state.running > 0 || (await this.keptAlive());
+    if (options.dryRun) return { ...plan, busy };
     if (busy) {
       throw new WorkspaceError(
         'BUSY',
@@ -437,7 +438,11 @@ export class DockerWorkspace implements Workspace {
         if (!WorkspaceError.is(error, 'NOT_FOUND')) throw error;
       });
     }
-    return restore(snapshotId);
+    const done = await restore(snapshotId);
+    return {
+      ...done,
+      deleted: [...new Set([...plan.deleted, ...done.deleted])].sort(),
+    };
   }
 
   /** Whether a process group a command left in the background is still alive in the container */

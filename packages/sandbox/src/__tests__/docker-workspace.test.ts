@@ -336,6 +336,7 @@ describe.skipIf(!docker)('DockerWorkspace with Docker', () => {
     writeFileSync(join(root, 'gone', 'inner.txt'), 'inner');
     writeFileSync(join(root, 'loose.txt'), 'loose');
     const seen: { dryRun: boolean; goneThere: boolean }[] = [];
+    let hostBusy = false;
     const planned = {
       snapshotId: 'snap_x_12345678',
       restored: ['kept.txt'],
@@ -354,7 +355,8 @@ describe.skipIf(!docker)('DockerWorkspace with Docker', () => {
       restore: async (_id, restoreOptions) => {
         const dryRun = restoreOptions?.dryRun ?? false;
         seen.push({ dryRun, goneThere: existsSync(join(root, 'gone')) });
-        return { ...planned, dryRun, ...(dryRun && { busy: false }) };
+        if (dryRun) return { ...planned, dryRun, busy: hostBusy };
+        return { ...planned, dryRun, deleted: [] };
       },
     };
     const docked = new DockerWorkspace({ host: restoring, image: 'alpine:3.19', killGrace: 500 });
@@ -370,9 +372,16 @@ describe.skipIf(!docker)('DockerWorkspace with Docker', () => {
       await expect(docked.restore!('snap_x_12345678')).rejects.toMatchObject({ code: 'BUSY' });
       await docked.exec("pkill -f 'sleep 5'; true");
       await new Promise((resolve) => setTimeout(resolve, 200));
+      hostBusy = true;
+      await expect(docked.restore!('snap_x_12345678')).rejects.toMatchObject({ code: 'BUSY' });
+      expect(existsSync(join(root, 'loose.txt'))).toBe(true);
+      hostBusy = false;
+      seen.length = 0;
+      const dry = await docked.restore!('snap_x_12345678', { dryRun: true });
       seen.length = 0;
       const result = await docked.restore!('snap_x_12345678');
       expect(result.deleted).toEqual(planned.deleted);
+      expect({ ...result, dryRun: true, busy: false }).toEqual(dry);
       expect(seen).toEqual([
         { dryRun: true, goneThere: true },
         { dryRun: false, goneThere: false },
