@@ -397,6 +397,13 @@ export abstract class BranchingMemoryAdapter extends ChangeReportingMemoryAdapte
     const source = await this.getThread(threadId);
     if (!source.success) return source;
     if (!source.data) return this.failure(`Thread not found: ${threadId}`);
+    if (newThreadId !== undefined) {
+      const taken = await this.getThread(newThreadId);
+      if (!taken.success) return taken;
+      if (taken.data) {
+        return this.failure(`Thread ${newThreadId} exists already: fork into a new id`);
+      }
+    }
     const path = await this.getPath({
       threadId,
       leafId: atEntryId,

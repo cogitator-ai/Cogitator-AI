@@ -7716,6 +7716,16 @@ export class Cogitator implements ToolInvoker {
         details: { threadId, atEntryId },
       });
     }
+    if (
+      options.newThreadId !== undefined &&
+      unwrapMemory(await memory.getThread(options.newThreadId))
+    ) {
+      throw new CogitatorError({
+        message: `Thread ${options.newThreadId} exists already: fork into a new id`,
+        code: ErrorCode.VALIDATION_ERROR,
+        details: { threadId, newThreadId: options.newThreadId },
+      });
+    }
     const dryRun = options.dryRun ?? false;
     if (!options.files) {
       if (dryRun) return { dryRun: true, snapshotsCopied: [], going: [] };

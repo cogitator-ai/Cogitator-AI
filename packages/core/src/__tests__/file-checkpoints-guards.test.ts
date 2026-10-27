@@ -403,6 +403,35 @@ describe('rewind and fork guards, round five', () => {
     }
   });
 
+  it('refuses a fork into a thread id taken already, before it changes anything', async () => {
+    const { cog } = runtime({ one: [write('a.txt', 'v1')], two: [write('a.txt', 'v2')] });
+    const agent = coder();
+    await cog.run(agent, { input: 'one', threadId: 'src' });
+    await cog.run(agent, { input: 'two', threadId: 'src' });
+    await cog.run(agent, { input: 'one', threadId: 'taken' });
+    const before = await path(cog, 'taken');
+    const snapshots = (await workspace.listSnapshots()).length;
+    const entries = await path(cog, 'src');
+    const point = entries[entries.findIndex((entry) => entry.message.content === 'two') - 1]!;
+
+    for (const options of [
+      {},
+      { files: true, workspace },
+      { files: true, workspace, dryRun: true },
+    ]) {
+      const refused = await cog
+        .forkThread('src', point.id, { ...options, newThreadId: 'taken' })
+        .catch((error: unknown) => error);
+      expect(codeOf(refused)).toBe(ErrorCode.VALIDATION_ERROR);
+    }
+    expect((await path(cog, 'taken')).map((entry) => entry.id)).toEqual(
+      before.map((entry) => entry.id)
+    );
+    expect(await forksOf(cog, 'src')).toBeUndefined();
+    expect(await workspace.listSnapshots()).toHaveLength(snapshots);
+    expect(text('a.txt')).toBe('v1');
+  });
+
   it('takes the fork back when its files fail to restore, keeping the safety snapshot only for a restore that began', async () => {
     const { cog } = runtime({ one: [write('a.txt', 'v1')], two: [write('a.txt', 'v2')] });
     const agent = coder();

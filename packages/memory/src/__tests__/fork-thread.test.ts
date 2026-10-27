@@ -28,6 +28,33 @@ describe('forkThread', () => {
     expect(unwrap(await memory.getEntries({ threadId: 'broken' }))).toEqual([]);
     expect(unwrap(await memory.getThread('t'))?.metadata.memoryForks).toEqual(['kept']);
   });
+
+  it('refuses a new id that names a thread already, before it changes anything', async () => {
+    const memory = new InMemoryAdapter();
+    await memory.connect();
+    unwrap(await memory.createThread('agent', {}, 't'));
+    const point = unwrap(await say(memory, 'first'));
+    unwrap(await memory.createThread('agent', { mine: true }, 'taken'));
+    unwrap(
+      await memory.addEntry({
+        threadId: 'taken',
+        message: { role: 'user', content: 'keep' },
+        tokenCount: 1,
+      })
+    );
+    const add = memory.addEntry.bind(memory);
+    memory.addEntry = async (entry) =>
+      entry.threadId === 'taken' ? { success: false, error: 'the store is full' } : add(entry);
+
+    const refused = await memory.forkThread('t', point.id, 'taken');
+
+    expect(refused.success).toBe(false);
+    expect(refused.success ? '' : refused.error).toContain('exists already');
+    expect(unwrap(await memory.getThread('taken'))?.metadata).toEqual({ mine: true });
+    const kept = unwrap(await memory.getEntries({ threadId: 'taken' }));
+    expect(kept.map((entry) => entry.message.content)).toEqual(['keep']);
+    expect(unwrap(await memory.getThread('t'))?.metadata.memoryForks).toBeUndefined();
+  });
 });
 
 function say(memory: InMemoryAdapter, content: string) {
