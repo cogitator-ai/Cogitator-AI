@@ -563,6 +563,8 @@ describe('rewind and fork', () => {
     await settled(waiting.runId, ['waiting']);
     const rewind = `/api/threads/${earlier.threadId}/rewind`;
     expect(await status(rewind, { entryId: done.memory?.leafId })).toBe(409);
+    expect(await status(rewind, { entryId: 'entry_not_there', force: true })).toBe(400);
+    expect((await run(waiting.runId)).run.status).toBe('waiting');
     const forced = await api<RewindSummary>(rewind, {
       method: 'POST',
       body: { entryId: done.memory?.leafId, force: true },
@@ -767,6 +769,38 @@ describe('rewind and fork across restarts', () => {
     );
     expect(rewound.files).toMatchObject({ dryRun: false, restored: ['notes.txt'] });
     expect(readFileSync(join(WORKSPACE, 'notes.txt'), 'utf-8')).toBe('origin');
+  });
+
+  it('keeps what a fork of a fork copied after its origin is rewound and the studio restarts', async () => {
+    const a = await chat('write notes.txt first a', undefined, 'coder');
+    await settled(a.runId);
+    const aPath = await activePath(a.threadId);
+    const b = await api<ForkSummary & { thread: ThreadRecord }>(`/api/threads/${a.threadId}/fork`, {
+      method: 'POST',
+      body: { entryId: aPath.at(-1)!.id },
+    });
+    const more = await chat('write notes.txt then b', b.threadId, 'coder');
+    await settled(more.runId);
+    const bPath = await activePath(b.threadId);
+    const c = await api<ForkSummary & { thread: ThreadRecord }>(`/api/threads/${b.threadId}/fork`, {
+      method: 'POST',
+      body: { entryId: bPath.at(-1)!.id },
+    });
+    const bStart = bPath.find((entry) => entry.text === 'write notes.txt first a')!;
+    await api(`/api/threads/${b.threadId}/rewind`, {
+      method: 'POST',
+      body: { entryId: bStart.id },
+    });
+    await restart();
+    const cPath = await activePath(c.threadId);
+    const point = cPath[cPath.findIndex((entry) => entry.text === 'write notes.txt then b') - 1]!;
+    writeFileSync(join(WORKSPACE, 'notes.txt'), 'by hand');
+    const rewound = await api<RewindSummary & { thread: ThreadRecord }>(
+      `/api/threads/${c.threadId}/rewind`,
+      { method: 'POST', body: { entryId: point.id, files: true } }
+    );
+    expect(rewound.files).toMatchObject({ dryRun: false, restored: ['notes.txt'] });
+    expect(readFileSync(join(WORKSPACE, 'notes.txt'), 'utf-8')).toBe('first a');
   });
 
   it('replays a fork rewound inside the branch it copied without the cut messages', async () => {

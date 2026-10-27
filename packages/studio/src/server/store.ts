@@ -419,8 +419,9 @@ export class StudioStore {
     thread.replay = {
       metadata: { ...replay.metadata },
       entries: replay.entries.map((entry) => ({ ...entry })),
+      ...(replay.activeLeafId !== undefined && { activeLeafId: replay.activeLeafId }),
     };
-    if (thread.forkOf) thread.base = baseOf(replay.entries);
+    if (thread.forkOf) thread.base = baseOf(replay);
     this.persistThreads();
     return thread;
   }
@@ -480,6 +481,7 @@ export class StudioStore {
         replay: {
           metadata: { ...fork.replay.metadata },
           entries: fork.replay.entries.map((entry) => ({ ...entry })),
+          ...(fork.replay.activeLeafId !== undefined && { activeLeafId: fork.replay.activeLeafId }),
         },
       }),
     };
@@ -896,9 +898,25 @@ export class StudioStore {
   }
 }
 
-/** The user and assistant messages a forked branch copied from its origin (`metadata.forkOf`) */
-function baseOf(entries: readonly ReplayEntry[]): HistoryMessage[] {
-  return entries.flatMap((entry): HistoryMessage[] => {
+/**
+ * The user and assistant messages the active branch of a forked thread copied from its origin
+ * (`metadata.forkOf`)
+ */
+function baseOf(replay: ThreadReplay): HistoryMessage[] {
+  const byId = new Map(replay.entries.map((entry) => [entry.id, entry]));
+  const path: ReplayEntry[] = [];
+  const seen = new Set<string>();
+  for (
+    let id: string | null | undefined = replay.activeLeafId;
+    id && !seen.has(id);
+    id = byId.get(id)?.parentId
+  ) {
+    seen.add(id);
+    const entry = byId.get(id);
+    if (!entry) break;
+    path.unshift(entry);
+  }
+  return path.flatMap((entry): HistoryMessage[] => {
     if (entry.metadata?.forkOf === undefined) return [];
     const role = entry.message.role;
     if ((entry.type ?? 'message') !== 'message' || (role !== 'user' && role !== 'assistant')) {

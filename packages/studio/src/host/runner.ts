@@ -337,9 +337,6 @@ export class StudioHost {
   ): Promise<RewindSummary> {
     const agent = this.agent(key);
     await this.seed(threadId, agent, seed);
-    if (request.force && !request.dryRun) {
-      for (const [runId, thread] of this.runThreads) if (thread === threadId) this.stop(runId);
-    }
     const report = await this.project.cogitator.rewind(threadId, request.entryId, {
       agents: [agent],
       ...(request.memory !== undefined && { memory: request.memory }),
@@ -410,18 +407,26 @@ export class StudioHost {
     if (!memory?.getPath) return { metadata: {}, entries: [] };
     const thread = await memory.getThread(threadId);
     if (!thread.success) throw new Error(thread.error);
-    const path = await memory.getPath({ threadId, types: 'all', includeToolCalls: true });
-    if (!path.success) throw new Error(path.error);
-    const entries = path.data.map((entry): ReplayEntry => ({
-      id: entry.id,
-      ...(entry.type !== undefined && { type: entry.type }),
-      message: entry.message,
-      ...(entry.toolCalls && { toolCalls: entry.toolCalls }),
-      ...(entry.toolResults && { toolResults: entry.toolResults }),
-      ...(entry.metadata && { metadata: entry.metadata }),
-      ...(entry.event && { event: entry.event }),
-    }));
-    return { metadata: replayable(thread.data?.metadata ?? {}), entries };
+    const all = await memory.getEntries({ threadId, types: 'all', includeToolCalls: true });
+    if (!all.success) throw new Error(all.error);
+    const entries = [...all.data]
+      .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+      .map((entry): ReplayEntry => ({
+        id: entry.id,
+        parentId: entry.parentId ?? null,
+        ...(entry.type !== undefined && { type: entry.type }),
+        message: entry.message,
+        ...(entry.toolCalls && { toolCalls: entry.toolCalls }),
+        ...(entry.toolResults && { toolResults: entry.toolResults }),
+        ...(entry.metadata && { metadata: entry.metadata }),
+        ...(entry.event && { event: entry.event }),
+      }));
+    const activeLeafId = thread.data?.activeLeafId;
+    return {
+      metadata: replayable(thread.data?.metadata ?? {}),
+      entries,
+      ...(activeLeafId !== undefined && { activeLeafId }),
+    };
   }
 
   /** Tells the server the active branch of a thread of the studio's own memory, after a run */
@@ -604,7 +609,6 @@ export class StudioHost {
       await memory.updateThread(threadId, replay.metadata);
     }
     if (replay?.entries.length) {
-      let parentId: string | null = null;
       for (const entry of replay.entries) {
         const added = await memory.addEntry({
           id: entry.id,
@@ -616,10 +620,14 @@ export class StudioHost {
           ...(entry.metadata && { metadata: entry.metadata }),
           ...(entry.event && { event: entry.event }),
           tokenCount: Math.ceil(JSON.stringify(entry.message.content).length / 4),
-          parentId,
+          parentId: entry.parentId,
+          activate: false,
         });
         if (!added.success) throw new Error(added.error);
-        parentId = added.data.id;
+      }
+      if (replay.activeLeafId !== undefined && memory.checkout) {
+        const moved = await memory.checkout(threadId, replay.activeLeafId);
+        if (!moved.success) throw new Error(moved.error);
       }
       return;
     }
@@ -737,14 +745,17 @@ export class StudioHost {
             ...(memory && { memory }),
           });
         },
-        (error: unknown) =>
+        (error: unknown) => {
+          const interrupted =
+            error instanceof Error && 'code' in error && error.code === 'RUN_INTERRUPTED';
           this.emit({
             type: 'run.failed',
             runId,
             error: controller?.signal.aborted ? STOPPED : message(error),
             endedAt: Date.now(),
-            stopped: controller?.signal.aborted === true,
-          })
+            stopped: controller?.signal.aborted === true || interrupted,
+          });
+        }
       )
       .finally(() => {
         this.controllers.delete(runId);

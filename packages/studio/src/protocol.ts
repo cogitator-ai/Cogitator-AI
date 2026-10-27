@@ -358,11 +358,17 @@ export interface ThreadRecord {
 
 /**
  * A thread of the studio's own memory as a fresh memory gets it back: its metadata (where it
- * was forked from among it, which file rewinds check) and its active branch.
+ * was forked from among it, which file rewinds check) and its whole tree of entries.
  */
 export interface ThreadReplay {
   metadata: Record<string, unknown>;
+  /**
+   * Every entry of the thread, every branch, oldest first: the entries forks of the thread
+   * were copied from stay, also once a rewind took them off its active branch.
+   */
   entries: ReplayEntry[];
+  /** The entry the active branch ends at. */
+  activeLeafId?: string;
 }
 
 /** A thread a forked thread comes from, replayed before it so the fork's provenance resolves. */
@@ -377,6 +383,8 @@ export interface ThreadLineage {
 /** An entry of a thread's active branch, as a fresh memory gets it back after a restart. */
 export interface ReplayEntry {
   id: string;
+  /** The entry it follows, `null` for a root. */
+  parentId: string | null;
   type?: MemoryEntryType;
   message: Message;
   toolCalls?: ToolCall[];
