@@ -1,0 +1,5 @@
+{
+  "name": "weather",
+  "version": "2.0.0",
+  "description": "Weather tools that run in a process of their own"
+}

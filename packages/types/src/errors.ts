@@ -88,6 +88,25 @@ export enum ErrorCode {
   /** A guard (`tripwire()` in a run middleware) stopped the run */
   GUARDRAIL_TRIPPED = 'GUARDRAIL_TRIPPED',
 
+  /** No plugin with that id is known to the host or installed */
+  PLUGIN_NOT_FOUND = 'PLUGIN_NOT_FOUND',
+  /** A plugin's manifest or one of its files is not valid */
+  PLUGIN_INVALID = 'PLUGIN_INVALID',
+  /** A plugin failed while it loaded: its `activate` threw, its process did not start */
+  PLUGIN_ACTIVATION_FAILED = 'PLUGIN_ACTIVATION_FAILED',
+  /** Plugins depend on each other in a cycle */
+  PLUGIN_DEPENDENCY_CYCLE = 'PLUGIN_DEPENDENCY_CYCLE',
+  /** A plugin's dependency is missing, disabled or of a version its range does not allow */
+  PLUGIN_DEPENDENCY_UNMET = 'PLUGIN_DEPENDENCY_UNMET',
+  /** A plugin asked for something its `permissions` do not allow */
+  PLUGIN_PERMISSION_DENIED = 'PLUGIN_PERMISSION_DENIED',
+  /** A new generation of a plugin failed to load: the previous one goes on */
+  PLUGIN_RELOAD_FAILED = 'PLUGIN_RELOAD_FAILED',
+  /** A plugin or a marketplace could not be fetched, checked or written */
+  PLUGIN_INSTALL_FAILED = 'PLUGIN_INSTALL_FAILED',
+  /** No credential store of the operating system is there to keep a secret in */
+  SECRET_STORE_UNAVAILABLE = 'SECRET_STORE_UNAVAILABLE',
+
   VALIDATION_ERROR = 'VALIDATION_ERROR',
   CONFIGURATION_ERROR = 'CONFIGURATION_ERROR',
   INTERNAL_ERROR = 'INTERNAL_ERROR',
@@ -154,6 +173,16 @@ export const ERROR_STATUS_CODES: Record<ErrorCode, number> = {
   [ErrorCode.PROMPT_INJECTION_DETECTED]: 400,
   [ErrorCode.PII_DETECTED]: 400,
   [ErrorCode.GUARDRAIL_TRIPPED]: 400,
+
+  [ErrorCode.PLUGIN_NOT_FOUND]: 404,
+  [ErrorCode.PLUGIN_INVALID]: 400,
+  [ErrorCode.PLUGIN_ACTIVATION_FAILED]: 500,
+  [ErrorCode.PLUGIN_DEPENDENCY_CYCLE]: 409,
+  [ErrorCode.PLUGIN_DEPENDENCY_UNMET]: 424,
+  [ErrorCode.PLUGIN_PERMISSION_DENIED]: 403,
+  [ErrorCode.PLUGIN_RELOAD_FAILED]: 500,
+  [ErrorCode.PLUGIN_INSTALL_FAILED]: 502,
+  [ErrorCode.SECRET_STORE_UNAVAILABLE]: 503,
 
   [ErrorCode.VALIDATION_ERROR]: 400,
   [ErrorCode.CONFIGURATION_ERROR]: 500,

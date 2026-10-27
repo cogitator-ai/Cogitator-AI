@@ -48,6 +48,8 @@ export interface CommandOptions {
   platform?: NodeJS.Platform;
   /** Which variables of the process's environment it gets, see `HooksConfig.env` */
   env?: HooksConfig['env'];
+  /** Variables it gets on top of them, such as a plugin's `CLAUDE_PLUGIN_ROOT` */
+  extraEnv?: Readonly<Record<string, string>>;
 }
 
 const PLACEHOLDERS = ['CLAUDE_PROJECT_DIR', 'COGITATOR_PROJECT_DIR'] as const;
@@ -70,7 +72,8 @@ function substitute(text: string, projectDir: string): string {
  */
 export function hookEnvironment(
   projectDir: string,
-  policy: HooksConfig['env'] = 'inherit'
+  policy: HooksConfig['env'] = 'inherit',
+  extra: Readonly<Record<string, string>> = {}
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   const allowed = policy === 'inherit' ? undefined : new Set(policy.allow);
@@ -79,6 +82,7 @@ export function hookEnvironment(
     if (allowed && !allowed.has(key)) continue;
     env[key] = value;
   }
+  Object.assign(env, extra);
   env.CLAUDE_PROJECT_DIR = projectDir;
   env.COGITATOR_PROJECT_DIR = projectDir;
   return env;
@@ -171,7 +175,7 @@ export function startCommand(handler: CommandHookHandler, options: CommandOption
     try {
       child = spawn(file, args, {
         cwd: options.cwd,
-        env: hookEnvironment(options.projectDir, options.env),
+        env: hookEnvironment(options.projectDir, options.env, options.extraEnv),
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: group,
         windowsHide: true,

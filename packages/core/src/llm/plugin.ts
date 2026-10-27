@@ -4,23 +4,15 @@
  * Allows registration and discovery of custom LLM backends.
  */
 
-import type { LLMBackend } from '@cogitator-ai/types';
+import type {
+  LLMBackend,
+  LLMBackendFactory,
+  LLMPlugin,
+  LLMPluginMetadata,
+  PluginDisposer,
+} from '@cogitator-ai/types';
 
-export type LLMBackendFactory<TConfig = unknown> = (config: TConfig) => LLMBackend;
-
-export interface LLMPluginMetadata {
-  name: string;
-  version?: string;
-  description?: string;
-  author?: string;
-}
-
-export interface LLMPlugin<TConfig = unknown> {
-  metadata: LLMPluginMetadata;
-  provider: string;
-  factory: LLMBackendFactory<TConfig>;
-  validateConfig?: (config: unknown) => config is TConfig;
-}
+export type { LLMBackendFactory, LLMPlugin, LLMPluginMetadata } from '@cogitator-ai/types';
 
 type RegisteredPlugin = {
   metadata: LLMPluginMetadata;
@@ -31,16 +23,21 @@ type RegisteredPlugin = {
 class LLMPluginRegistry {
   private plugins = new Map<string, RegisteredPlugin>();
 
-  register<TConfig>(plugin: LLMPlugin<TConfig>): void {
+  /** Registers `plugin`, returning what removes it again (only while it is still the one registered) */
+  register<TConfig>(plugin: LLMPlugin<TConfig>): PluginDisposer {
     if (this.plugins.has(plugin.provider)) {
       throw new Error(`Plugin for provider '${plugin.provider}' is already registered`);
     }
 
-    this.plugins.set(plugin.provider, {
+    const registered: RegisteredPlugin = {
       metadata: plugin.metadata,
       factory: plugin.factory as LLMBackendFactory,
       validateConfig: plugin.validateConfig as ((config: unknown) => boolean) | undefined,
-    });
+    };
+    this.plugins.set(plugin.provider, registered);
+    return () => {
+      if (this.plugins.get(plugin.provider) === registered) this.plugins.delete(plugin.provider);
+    };
   }
 
   unregister(provider: string): boolean {
@@ -82,8 +79,13 @@ class LLMPluginRegistry {
 
 export const llmPluginRegistry = new LLMPluginRegistry();
 
-export function registerLLMBackend<TConfig>(plugin: LLMPlugin<TConfig>): void {
-  llmPluginRegistry.register(plugin);
+/**
+ * Makes `plugin` known to every runtime of the process: agents with models `provider/model` run on
+ * it. Returns what removes it again. A plugin of a runtime registers its backends with
+ * `PluginContext.registerLLMBackend` instead, for that runtime only
+ */
+export function registerLLMBackend<TConfig>(plugin: LLMPlugin<TConfig>): PluginDisposer {
+  return llmPluginRegistry.register(plugin);
 }
 
 export function unregisterLLMBackend(provider: string): boolean {

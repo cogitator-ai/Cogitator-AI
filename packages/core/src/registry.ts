@@ -44,8 +44,9 @@ export class ToolRegistry {
    *
    * @param tool - Tool to register
    * @param options - `replace: true` replaces a tool of the same name without a warning
+   * @returns What removes the tool again, while it is still the one registered under its name
    */
-  register(tool: Tool, options?: ToolRegisterOptions): void {
+  register(tool: Tool, options?: ToolRegisterOptions): () => void {
     const lengthError = toolResultLengthError(
       tool.maxResultLength,
       `maxResultLength of tool "${tool.name}"`
@@ -59,6 +60,9 @@ export class ToolRegistry {
       );
     }
     this.tools.set(tool.name, tool);
+    return () => {
+      if (this.tools.get(tool.name) === tool) this.tools.delete(tool.name);
+    };
   }
 
   /**
@@ -67,9 +71,13 @@ export class ToolRegistry {
    *
    * @param tools - Array of tools to register
    * @param options - `replace: true` replaces tools of the same name without a warning
+   * @returns What removes them again, in reverse order
    */
-  registerMany(tools: Tool[], options?: ToolRegisterOptions): void {
-    for (const tool of tools) this.register(tool, options);
+  registerMany(tools: Tool[], options?: ToolRegisterOptions): () => void {
+    const disposers = tools.map((tool) => this.register(tool, options));
+    return () => {
+      for (const dispose of [...disposers].reverse()) dispose();
+    };
   }
 
   /**

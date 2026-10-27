@@ -54,6 +54,7 @@ import type {
   SessionSpend,
 } from './permissions';
 import type { HooksConfig } from './hooks';
+import type { PluginsConfig } from './plugins';
 import type { DurableQueuedMessage, DurableRunsConfig } from './durable-runs';
 import type { CogitatorCheckpointsConfig, FileCheckpointsConfig } from './checkpoints';
 import type { InstructionsConfig, LoadedInstructionFile } from './instructions';
@@ -270,6 +271,14 @@ export interface CogitatorConfig {
    * it is
    */
   commands?: CommandsConfig;
+  /**
+   * Experimental. Plugins of this runtime, in the format of Claude Code's plugins with Cogitator's
+   * extension: plugins in code, plugin folders and the plugins `cogitator plugin install`
+   * installed, each adding tools, skills, subagents, commands, hooks, MCP servers, LLM backends
+   * and Studio panels. Unset, only the core's own plugin loads (the built-in LLM providers), as
+   * before. See `cog.experimental_plugins`
+   */
+  experimental_plugins?: PluginsConfig;
   /**
    * What a session (a thread across its runs) and each agent in it may spend in money, tokens and
    * tool calls. A run that reaches a limit pauses with an interrupt of kind `budget`

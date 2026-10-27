@@ -243,7 +243,12 @@ export function parseCommandFile(
     }
   }
   const description = stringOf(fields.description, 'description', report) ?? firstLineOf(template);
-  const argumentHint = stringOf(fields['argument-hint'], 'argument-hint', report);
+  const hint = fields['argument-hint'];
+  const argumentHint =
+    Array.isArray(hint) &&
+    hint.every((entry) => typeof entry === 'string' || typeof entry === 'number')
+      ? hint.map((entry) => `[${String(entry)}]`).join(' ')
+      : stringOf(hint, 'argument-hint', report);
   const args = nameListOf(fields.arguments, 'arguments', report, true);
   const allowedTools = toolListOf(fields['allowed-tools'], 'allowed-tools', report);
   const disallowedTools = toolListOf(fields['disallowed-tools'], 'disallowed-tools', report);

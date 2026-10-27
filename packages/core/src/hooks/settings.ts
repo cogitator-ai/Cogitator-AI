@@ -322,6 +322,8 @@ export interface ScopedHooks {
   layer: PermissionLayer;
   /** The file they come from */
   source: string;
+  /** Variables their command hooks get on top of the environment, such as a plugin's `CLAUDE_PLUGIN_ROOT` */
+  env?: Readonly<Record<string, string>>;
 }
 
 /** The hooks and HTTP allowlists given in code, see `HooksConfig` */

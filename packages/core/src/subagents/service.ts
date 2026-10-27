@@ -119,6 +119,8 @@ export interface SubagentServiceOptions {
    * default), such as a cost budget its unknown price would slip past. Undefined when it may
    */
   modelProblem?: (model: string | undefined) => string | undefined;
+  /** The subagents of the runtime's plugins, as they are now */
+  plugins?: () => readonly SubagentDefinition[];
 }
 
 /** A delegation the service keeps, to read its result and continue it */
@@ -317,7 +319,7 @@ export class SubagentService {
     private readonly cogitator: Cogitator,
     private readonly options: SubagentServiceOptions
   ) {
-    this.finder = new SubagentFinder(options.config);
+    this.finder = new SubagentFinder(options.config, options.plugins);
     this.middleware = {
       name: 'cogitator:subagents',
       beforeStop: async (_event, context) => {
@@ -1218,7 +1220,7 @@ export class SubagentService {
   private frontmatterHooks(definition: SubagentDefinition): RunMiddleware {
     const { deps, config } = this.options.hooks();
     const layer =
-      definition.source === 'code'
+      definition.source === 'code' || definition.source === 'plugin'
         ? ('session' as const)
         : definition.source === 'managed'
           ? ('managed' as const)

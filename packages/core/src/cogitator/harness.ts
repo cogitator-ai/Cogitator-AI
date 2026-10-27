@@ -5,6 +5,7 @@ import {
   type Message,
   type ProjectInstructionsOptions,
   type SkillCatalog,
+  type SkillLoader,
   type TodoItem,
   type Tool,
   type ToolCall,
@@ -110,6 +111,8 @@ export interface RunHarnessOptions {
   signal: AbortSignal;
   /** Which project instruction files of the agents' workspaces to read, unset for none */
   instructions?: ProjectInstructionsOptions;
+  /** Skills every agent of the run gets after its own, such as the skills of the runtime's plugins */
+  skills?: readonly SkillLoader[];
 }
 
 /**
@@ -153,7 +156,7 @@ export class RunHarness {
     if (this.catalogs.has(owner)) return;
     let loaders;
     try {
-      loaders = skillLoadersOf(owner.config.skills);
+      loaders = [...skillLoadersOf(owner.config.skills), ...(this.options.skills ?? [])];
     } catch (error) {
       throw new CogitatorError({
         message: `The skills of agent "${owner.name}" are invalid: ${error instanceof Error ? error.message : String(error)}`,

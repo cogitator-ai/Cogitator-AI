@@ -1,0 +1,595 @@
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ErrorCode } from '@cogitator-ai/types';
+import {
+  experimental_PluginInstaller,
+  type PluginInstallQuestion,
+} from '../plugins/install/installer';
+import { experimental_PluginHost } from '../plugins/host';
+import { experimental_memorySecretStore } from '../plugins/secrets';
+import { marketplaceSourceOf, parseMarketplace } from '../plugins/install/marketplace';
+import { readInstalledPlugins } from '../plugins/store';
+
+const FIXTURES = join(__dirname, 'fixtures', 'plugins');
+
+const git = (cwd: string, ...args: string[]) =>
+  execFileSync(
+    'git',
+    [
+      '-c',
+      'user.email=test@example.com',
+      '-c',
+      'user.name=Test',
+      '-c',
+      'commit.gpgsign=false',
+      '-c',
+      'tag.gpgsign=false',
+      ...args,
+    ],
+    { cwd, encoding: 'utf8' }
+  ).trim();
+
+function writeJson(path: string, value: unknown): void {
+  mkdirSync(join(path, '..'), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function gitRepo(dir: string): string {
+  mkdirSync(dir, { recursive: true });
+  git(dir, 'init', '--quiet', '--initial-branch=main');
+  git(dir, 'add', '-A');
+  git(dir, 'commit', '--quiet', '-m', 'initial');
+  return git(dir, 'rev-parse', 'HEAD');
+}
+
+function plugin(dir: string, name: string, extra: Record<string, unknown> = {}): void {
+  writeJson(join(dir, '.claude-plugin', 'plugin.json'), {
+    name,
+    description: `The ${name} plugin`,
+    ...extra,
+  });
+  mkdirSync(join(dir, 'commands'), { recursive: true });
+  writeFileSync(join(dir, 'commands', 'hello.md'), `Say hello from ${name}.\n`);
+}
+
+/** A registry that serves packages from memory, as npm's registry API does */
+function registry(): {
+  server: Server;
+  url: () => string;
+  publish: (dir: string, name: string, version: string) => void;
+} {
+  const packages = new Map<
+    string,
+    { versions: Record<string, unknown>; tarballs: Map<string, Buffer> }
+  >();
+  const server = createServer((request, response) => {
+    const path = decodeURIComponent((request.url ?? '/').split('?')[0] ?? '/').slice(1);
+    for (const [name, entry] of packages) {
+      if (path === name) {
+        const versions = Object.keys(entry.versions);
+        response.setHeader('content-type', 'application/json');
+        response.end(
+          JSON.stringify({
+            name,
+            'dist-tags': { latest: versions.at(-1) },
+            versions: entry.versions,
+          })
+        );
+        return;
+      }
+      const tarball = entry.tarballs.get(path);
+      if (tarball) {
+        response.setHeader('content-type', 'application/octet-stream');
+        response.end(tarball);
+        return;
+      }
+    }
+    response.statusCode = 404;
+    response.end('{}');
+  });
+  const url = () => `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  return {
+    server,
+    url,
+    publish(dir, name, version) {
+      const stage = mkdtempSync(join(tmpdir(), 'cog-pack-'));
+      cpSync(dir, join(stage, 'package'), { recursive: true });
+      writeJson(join(stage, 'package', 'package.json'), { name, version });
+      const file = join(stage, 'package.tgz');
+      execFileSync('tar', ['-czf', file, '-C', stage, 'package']);
+      const bytes = readFileSync(file);
+      rmSync(stage, { recursive: true, force: true });
+      const entry = packages.get(name) ?? { versions: {}, tarballs: new Map<string, Buffer>() };
+      const tarballPath = `${name}/-/${name.split('/').pop()}-${version}.tgz`;
+      entry.tarballs.set(tarballPath, bytes);
+      entry.versions[version] = {
+        name,
+        version,
+        dist: {
+          tarball: `${url()}/${tarballPath}`,
+          integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}`,
+          shasum: createHash('sha1').update(bytes).digest('hex'),
+        },
+      };
+      packages.set(name, entry);
+    },
+  };
+}
+
+describe('plugin installer', () => {
+  let base: string;
+  let root: string;
+  let home: string;
+  let project: string;
+  let questions: PluginInstallQuestion[];
+  const secrets = experimental_memorySecretStore();
+  const npm = registry();
+
+  beforeAll(async () => {
+    await new Promise<void>((resolve) => npm.server.listen(0, '127.0.0.1', resolve));
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => npm.server.close(() => resolve()));
+  });
+
+  beforeEach(() => {
+    base = mkdtempSync(join(tmpdir(), 'cog-install-'));
+    root = join(base, 'plugins');
+    home = join(base, 'home');
+    project = join(base, 'project');
+    mkdirSync(project, { recursive: true });
+    questions = [];
+    vi.stubEnv('npm_config_cache', join(base, 'npm-cache'));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  const installer = (answer = true) =>
+    new experimental_PluginInstaller({
+      root,
+      projectRoot: project,
+      userDirs: [home],
+      secrets,
+      confirm: async (question) => {
+        questions.push(question);
+        return answer;
+      },
+    });
+
+  const settings = () =>
+    JSON.parse(readFileSync(join(home, 'settings.json'), 'utf8')) as Record<string, unknown>;
+
+  it('installs from a git marketplace with a relative source and pins the marketplace commit', async () => {
+    const repo = join(base, 'market');
+    plugin(join(repo, 'plugins', 'greeter'), 'greeter', { version: '1.0.0' });
+    writeJson(join(repo, '.claude-plugin', 'marketplace.json'), {
+      name: 'team-tools',
+      owner: { name: 'Team' },
+      plugins: [{ name: 'greeter', source: './plugins/greeter', description: 'Greets' }],
+    });
+    const commit = gitRepo(repo);
+    const tools = installer();
+    const added = await tools.addMarketplace(`file://${repo}`);
+    expect(added.marketplace).toMatchObject({ name: 'team-tools', commit });
+    const result = await tools.install('greeter@team-tools');
+    expect(result).toMatchObject({
+      id: 'greeter@team-tools',
+      version: '1.0.0',
+      alreadyInstalled: false,
+    });
+    expect(result.installPath).toBe(join(root, 'cache', 'team-tools', 'greeter', '1.0.0'));
+    expect(existsSync(join(result.installPath, 'commands', 'hello.md'))).toBe(true);
+    expect(existsSync(join(result.installPath, '.git'))).toBe(false);
+    expect(settings()).toMatchObject({ enabledPlugins: { 'greeter@team-tools': true } });
+    const host = new experimental_PluginHost({
+      root: project,
+      settings: { userDirs: [home], layers: ['user'] },
+      config: { installed: { root } },
+    });
+    await host.load();
+    expect(host.get('greeter@team-tools')).toMatchObject({ status: 'active', origin: 'installed' });
+    expect(host.snapshot().commands.map((command) => command.name)).toEqual(['greeter:hello']);
+    await host.dispose();
+  });
+
+  it('installs straight from a git repository at a pinned commit and keeps it on update until asked', async () => {
+    const repo = join(base, 'direct');
+    plugin(repo, 'direct-tool');
+    const first = gitRepo(repo);
+    writeFileSync(join(repo, 'commands', 'hello.md'), 'A newer hello.\n');
+    git(repo, 'commit', '--quiet', '-am', 'second');
+    const second = git(repo, 'rev-parse', 'HEAD');
+    const tools = installer();
+    const result = await tools.install(`git+file://${repo}#${first}`);
+    expect(result).toMatchObject({ id: 'direct-tool@git', version: first.slice(0, 12) });
+    const [record] = (await readInstalledPlugins(root)).records;
+    expect(record?.pin).toEqual({ commit: first });
+    expect(record?.source).toMatchObject({ source: 'url', sha: first });
+    expect(readFileSync(join(result.installPath, 'commands', 'hello.md'), 'utf8')).toBe(
+      'Say hello from direct-tool.\n'
+    );
+    const same = await tools.update('direct-tool@git');
+    expect(same[0]).toMatchObject({ updated: false, from: first.slice(0, 12) });
+    expect(second).not.toBe(first);
+  });
+
+  it('installs from an npm registry with a pinned version and integrity, without install scripts', async () => {
+    const source = join(base, 'npm-plugin');
+    plugin(source, 'npm-tool', { version: '1.4.0' });
+    npm.publish(source, 'npm-tool', '1.4.0');
+    npm.publish(source, 'npm-tool', '1.5.0');
+    const repo = join(base, 'npm-market');
+    writeJson(join(repo, '.claude-plugin', 'marketplace.json'), {
+      name: 'npm-market',
+      owner: { name: 'Team' },
+      plugins: [
+        {
+          name: 'npm-tool',
+          source: { source: 'npm', package: 'npm-tool', version: '~1.4.0', registry: npm.url() },
+        },
+      ],
+    });
+    const tools = installer();
+    await tools.addMarketplace(repo);
+    const result = await tools.install('npm-tool@npm-market');
+    expect(result.version).toBe('1.4.0');
+    const [record] = (await readInstalledPlugins(root)).records;
+    expect(record?.pin.npmVersion).toBe('1.4.0');
+    expect(record?.pin.integrity).toMatch(/^sha512-/);
+    expect(existsSync(join(result.installPath, 'commands', 'hello.md'))).toBe(true);
+  });
+
+  it('refuses an npm source that is a git address or a folder', async () => {
+    const repo = join(base, 'bad-market');
+    writeJson(join(repo, '.claude-plugin', 'marketplace.json'), {
+      name: 'bad-market',
+      owner: { name: 'Team' },
+      plugins: [
+        { name: 'from-git', source: { source: 'npm', package: 'git+https://example.com/x.git' } },
+        { name: 'from-folder', source: { source: 'npm', package: 'file:vendor/x' } },
+        { name: 'escaping', source: { source: 'npm', package: '../x' } },
+      ],
+    });
+    const tools = installer();
+    await tools.addMarketplace(repo);
+    await expect(tools.install('from-git@bad-market')).rejects.toThrow(
+      /a git address is not an npm package/
+    );
+    await expect(tools.install('from-folder@bad-market')).rejects.toThrow(
+      /a folder is not an npm package/
+    );
+    await expect(tools.install('escaping@bad-market')).rejects.toThrow(/has no plugin escaping/);
+  });
+
+  it('asks for the permissions a plugin wants, records them, and refuses without consent', async () => {
+    const repo = join(base, 'perm-market');
+    const dir = join(repo, 'plugins', 'guarded');
+    plugin(dir, 'guarded', { version: '1.0.0' });
+    writeJson(join(dir, '.cogitator-plugin', 'plugin.json'), {
+      permissions: { allow: ['Read(./docs/**)'], deny: ['Read(./docs/secret.md)'] },
+    });
+    writeJson(join(repo, '.claude-plugin', 'marketplace.json'), {
+      name: 'perm-market',
+      owner: { name: 'Team' },
+      plugins: [{ name: 'guarded', source: './plugins/guarded' }],
+    });
+    const refused = installer(false);
+    await refused.addMarketplace(repo);
+    await expect(refused.install('guarded@perm-market')).rejects.toMatchObject({
+      code: ErrorCode.PLUGIN_PERMISSION_DENIED,
+    });
+    expect(questions).toEqual([
+      {
+        kind: 'permissions',
+        plugin: 'guarded@perm-market',
+        allow: ['Read(./docs/**)'],
+        deny: ['Read(./docs/secret.md)'],
+        update: false,
+      },
+    ]);
+    const granted = installer(true);
+    await granted.install('guarded@perm-market');
+    const [record] = (await readInstalledPlugins(root)).records;
+    expect(record?.grantedPermissions).toEqual({
+      allow: ['Read(./docs/**)'],
+      deny: ['Read(./docs/secret.md)'],
+    });
+    expect(record?.installPath).toBe(realpathSync(join(repo, 'plugins', 'guarded')));
+  });
+
+  it('installs a dependency at the highest tag its range allows', async () => {
+    const lib = join(base, 'vault');
+    plugin(lib, 'secrets-vault', { version: '2.1.0' });
+    gitRepo(lib);
+    git(lib, 'tag', 'secrets-vault--v2.1.0');
+    writeJson(join(lib, '.claude-plugin', 'plugin.json'), {
+      name: 'secrets-vault',
+      version: '2.1.3',
+    });
+    git(lib, 'commit', '--quiet', '-am', 'patch');
+    git(lib, 'tag', 'secrets-vault--v2.1.3');
+    writeJson(join(lib, '.claude-plugin', 'plugin.json'), {
+      name: 'secrets-vault',
+      version: '2.2.0',
+    });
+    git(lib, 'commit', '--quiet', '-am', 'minor');
+    git(lib, 'tag', 'secrets-vault--v2.2.0');
+    const repo = join(base, 'dep-market');
+    plugin(join(repo, 'plugins', 'deploy-kit'), 'deploy-kit', {
+      version: '3.1.0',
+      dependencies: [{ name: 'secrets-vault', version: '~2.1.0' }],
+    });
+    writeJson(join(repo, '.claude-plugin', 'marketplace.json'), {
+      name: 'dep-market',
+      owner: { name: 'Team' },
+      plugins: [
+        { name: 'deploy-kit', source: './plugins/deploy-kit' },
+        { name: 'secrets-vault', source: { source: 'url', url: `file://${lib}` } },
+      ],
+    });
+    const tools = installer();
+    await tools.addMarketplace(repo);
+    const result = await tools.install('deploy-kit@dep-market');
+    expect(
+      result.installed.map((record) => [record.id, record.version, record.dependency === true])
+    ).toEqual([
+      ['deploy-kit@dep-market', '3.1.0', false],
+      ['secrets-vault@dep-market', '2.1.3', true],
+    ]);
+    expect(settings()).toEqual({ enabledPlugins: { 'deploy-kit@dep-market': true } });
+    await expect(tools.uninstall('secrets-vault@dep-market')).rejects.toMatchObject({
+      code: ErrorCode.PLUGIN_DEPENDENCY_UNMET,
+    });
+    const removed = await tools.uninstall('deploy-kit@dep-market', { prune: true });
+    expect(removed.removed).toEqual(['deploy-kit@dep-market', 'secrets-vault@dep-market']);
+    expect((await readInstalledPlugins(root)).records).toEqual([]);
+  });
+
+  it('installs an archive over https checked against its sha256 pin', async () => {
+    const zip = buildZip({
+      'formatter/.claude-plugin/plugin.json': JSON.stringify({
+        name: 'formatter',
+        version: '2.0.0',
+      }),
+      'formatter/commands/format.md': 'Format the file.\n',
+    });
+    const digest = createHash('sha256').update(zip).digest('hex');
+    const repo = join(base, 'zip-market');
+    writeJson(join(repo, '.claude-plugin', 'marketplace.json'), {
+      name: 'zip-market',
+      owner: { name: 'Team' },
+      plugins: [
+        {
+          name: 'formatter',
+          source: {
+            source: 'archive',
+            url: 'https://artifacts.example.com/formatter.zip',
+            sha256: digest,
+          },
+        },
+        {
+          name: 'tampered',
+          source: {
+            source: 'archive',
+            url: 'https://artifacts.example.com/formatter.zip',
+            sha256: '0'.repeat(64),
+          },
+        },
+      ],
+    });
+    const tools = new experimental_PluginInstaller({
+      root,
+      projectRoot: project,
+      userDirs: [home],
+      secrets,
+      fetchFn: async () => new Response(new Uint8Array(zip)),
+    });
+    await tools.addMarketplace(repo);
+    const result = await tools.install('formatter@zip-market');
+    expect(result.version).toBe('2.0.0');
+    expect(readFileSync(join(result.installPath, 'commands', 'format.md'), 'utf8')).toBe(
+      'Format the file.\n'
+    );
+    await expect(tools.install('tampered@zip-market')).rejects.toThrow(
+      /does not match its sha256 pin/
+    );
+  });
+
+  it('saves options to the user settings and secrets to the store, and removes both on uninstall', async () => {
+    const repo = join(base, 'opt-market');
+    plugin(join(repo, 'p'), 'configured', {
+      userConfig: {
+        endpoint: { type: 'string', title: 'Endpoint', description: 'Where' },
+        token: { type: 'string', title: 'Token', description: 'Secret', sensitive: true },
+      },
+    });
+    writeJson(join(repo, '.claude-plugin', 'marketplace.json'), {
+      name: 'opt-market',
+      owner: { name: 'T' },
+      plugins: [{ name: 'configured', source: './p' }],
+    });
+    const tools = installer();
+    await tools.addMarketplace(repo);
+    const result = await tools.install('configured@opt-market', {
+      options: { endpoint: 'https://x.example' },
+    });
+    expect(result.notes).toEqual([
+      'userConfig options not yet set: token (cogitator plugin configure configured@opt-market)',
+    ]);
+    await tools.configure('configured@opt-market', { secrets: { token: 't-1' } });
+    expect(settings()).toMatchObject({
+      pluginConfigs: { 'configured@opt-market': { options: { endpoint: 'https://x.example' } } },
+    });
+    expect(await secrets.get('cogitator-plugin:configured@opt-market', 'token')).toBe('t-1');
+    await expect(
+      tools.configure('configured@opt-market', { options: { token: 'plain' } })
+    ).rejects.toThrow(/is sensitive/);
+    await tools.uninstall('configured@opt-market');
+    expect(await secrets.get('cogitator-plugin:configured@opt-market', 'token')).toBeUndefined();
+    expect(settings()).toEqual({});
+  });
+
+  it('reads marketplace sources as claude plugin marketplace add does', () => {
+    expect(marketplaceSourceOf('acme/tools')).toEqual({ source: 'github', repo: 'acme/tools' });
+    expect(marketplaceSourceOf('acme/tools#v2')).toEqual({
+      source: 'github',
+      repo: 'acme/tools',
+      ref: 'v2',
+    });
+    expect(marketplaceSourceOf('acme/tools@v2')).toEqual({
+      source: 'github',
+      repo: 'acme/tools',
+      ref: 'v2',
+    });
+    expect(marketplaceSourceOf('git@gitlab.com:acme/tools.git#main')).toEqual({
+      source: 'git',
+      url: 'git@gitlab.com:acme/tools.git',
+      ref: 'main',
+    });
+    expect(marketplaceSourceOf('https://example.com/repo.git')).toEqual({
+      source: 'git',
+      url: 'https://example.com/repo.git',
+    });
+    expect(marketplaceSourceOf('https://github.com/acme/tools')).toEqual({
+      source: 'git',
+      url: 'https://github.com/acme/tools.git',
+    });
+    expect(marketplaceSourceOf('https://example.com/marketplace.json')).toEqual({
+      source: 'url',
+      url: 'https://example.com/marketplace.json',
+    });
+    expect(marketplaceSourceOf('./market', '/work')).toEqual({
+      source: 'directory',
+      path: '/work/market',
+    });
+    expect(() => marketplaceSourceOf('not a source')).toThrow(/Invalid marketplace source format/);
+  });
+
+  it('checks a marketplace file: bad entries are skipped, official names refused', () => {
+    const read = parseMarketplace(
+      JSON.stringify({
+        name: 'mine',
+        owner: { name: 'Me' },
+        plugins: [
+          { name: 'ok', source: './ok' },
+          { name: 'no-prefix', source: 'plugins/x' },
+          { name: 'escapes', source: './../x' },
+          { name: 'ok', source: './again' },
+          { name: 'bad name', source: './x' },
+        ],
+      }),
+      'marketplace.json',
+      { source: 'directory', path: '/m' }
+    );
+    expect(read.manifest.plugins.map((entry) => entry.name)).toEqual(['ok']);
+    expect(read.diagnostics.map((entry) => entry.message)).toEqual([
+      'plugins.1.source: Invalid string: must start with "./"',
+      'plugins[2].source: Path contains "..": ./../x',
+      'Duplicate plugin name "ok" found in marketplace',
+      'plugins[4]: the plugin name "bad name" holds spaces, use kebab-case',
+    ]);
+    expect(() =>
+      parseMarketplace(
+        JSON.stringify({ name: 'claude-plugins-official', owner: { name: 'x' }, plugins: [] }),
+        'm.json',
+        { source: 'github', repo: 'someone/fake' }
+      )
+    ).toThrow(/impersonates an official Anthropic\/Claude marketplace/);
+    expect(() =>
+      parseMarketplace(
+        JSON.stringify({ name: 'npm', owner: { name: 'x' }, plugins: [] }),
+        'm.json',
+        { source: 'directory', path: '/m' }
+      )
+    ).toThrow(/reserved/);
+  });
+
+  it('loads a plugin of the Claude Code fixture installed from a local marketplace', async () => {
+    const repo = join(base, 'cc-market');
+    cpSync(join(FIXTURES, 'deploy-tools'), join(repo, 'plugins', 'deploy-tools'), {
+      recursive: true,
+    });
+    writeJson(join(repo, '.claude-plugin', 'marketplace.json'), {
+      name: 'cc-market',
+      owner: { name: 'T' },
+      plugins: [{ name: 'deploy-tools', source: './plugins/deploy-tools' }],
+    });
+    gitRepo(repo);
+    const tools = installer();
+    await tools.addMarketplace(`file://${repo}`);
+    const result = await tools.install('deploy-tools@cc-market');
+    expect(result.version).toBe('1.2.0');
+    expect((await tools.setEnabled('deploy-tools@cc-market', false)).file).toBe(
+      join(home, 'settings.json')
+    );
+    expect(settings()).toMatchObject({ enabledPlugins: { 'deploy-tools@cc-market': false } });
+  });
+});
+
+/** A zip archive of `files`, stored without compression */
+function buildZip(files: Record<string, string>): Buffer {
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const [name, text] of Object.entries(files)) {
+    const data = Buffer.from(text);
+    const nameBytes = Buffer.from(name);
+    const crc = crc32(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    locals.push(local, nameBytes, data);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE((0o100644 << 16) >>> 0, 38);
+    central.writeUInt32LE(offset, 42);
+    centrals.push(central, nameBytes);
+    offset += 30 + nameBytes.length + data.length;
+  }
+  const directory = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(Object.keys(files).length, 8);
+  end.writeUInt16LE(Object.keys(files).length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, directory, end]);
+}
+
+function crc32(data: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of data) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
