@@ -726,9 +726,12 @@ export class experimental_PluginHost {
     for (const id of graph.order) {
       const state = this.states.get(id);
       if (!state) continue;
-      const blocked =
-        graph.blocked.get(id) ??
-        (state.enabled && !state.shadowedBy ? this.downDependency(state) : undefined);
+      const down = state.enabled && !state.shadowedBy ? this.downDependency(state) : undefined;
+      if (down?.outOfRange && state.generation?.live && incoming.has(id)) {
+        results.push(this.refuseReload(state, down.error.message));
+        continue;
+      }
+      const blocked = graph.blocked.get(id) ?? down?.error;
       if (off(id, state) || blocked) {
         if (state.generation) await this.unload(state);
         state.status = state.enabled && !state.shadowedBy ? 'blocked' : 'disabled';
@@ -771,17 +774,39 @@ export class experimental_PluginHost {
   }
 
   /**
-   * The error of a dependency of `state` that has no live generation (it failed to load), which
-   * keeps `state` from loading
+   * Why a dependency of `state` keeps it from loading now: it has no live generation (it failed
+   * to load), or the generation that serves is of a version outside the range (`outOfRange`, as
+   * when the dependency's own reload failed and its old version goes on)
    */
-  private downDependency(state: PluginState): CogitatorError | undefined {
+  private downDependency(
+    state: PluginState
+  ): { error: CogitatorError; outOfRange: boolean } | undefined {
     for (const dependency of this.manifestOf(state).dependencies ?? []) {
       const target = this.dependencyTarget(state, dependency);
-      if (!target || target.generation?.live) continue;
-      return new CogitatorError({
-        message: `${state.candidate.id} needs the plugin ${target.candidate.id}, which did not load${target.error ? `: ${target.error}` : ''}`,
-        code: ErrorCode.PLUGIN_DEPENDENCY_UNMET,
-      });
+      if (!target) continue;
+      if (!target.generation?.live) {
+        return {
+          error: new CogitatorError({
+            message: `${state.candidate.id} needs the plugin ${target.candidate.id}, which did not load${target.error ? `: ${target.error}` : ''}`,
+            code: ErrorCode.PLUGIN_DEPENDENCY_UNMET,
+          }),
+          outOfRange: false,
+        };
+      }
+      const loaded = installedVersion(target, target.manifest);
+      if (
+        dependency.version !== undefined &&
+        target.candidate.origin === 'installed' &&
+        (loaded === undefined || !satisfies(loaded, dependency.version))
+      ) {
+        return {
+          error: new CogitatorError({
+            message: `Requires "${target.candidate.id}" ${dependency.version}, loaded ${loaded ?? 'without a version'}`,
+            code: ErrorCode.PLUGIN_DEPENDENCY_UNMET,
+          }),
+          outOfRange: true,
+        };
+      }
     }
     return undefined;
   }
@@ -913,13 +938,13 @@ export class experimental_PluginHost {
         } else if (
           dependency.version !== undefined &&
           target.candidate.origin === 'installed' &&
-          (this.manifestOf(target).version === undefined ||
-            !satisfies(this.manifestOf(target).version ?? '', dependency.version))
+          (installedVersion(target, this.manifestOf(target)) === undefined ||
+            !satisfies(installedVersion(target, this.manifestOf(target)) ?? '', dependency.version))
         ) {
           blocked.set(
             id,
             new CogitatorError({
-              message: `Requires "${target.candidate.id}" ${dependency.version}, installed ${this.manifestOf(target).version ?? 'without a version'}`,
+              message: `Requires "${target.candidate.id}" ${dependency.version}, installed ${installedVersion(target, this.manifestOf(target)) ?? 'without a version'}`,
               code: ErrorCode.PLUGIN_DEPENDENCY_UNMET,
             })
           );
@@ -1881,6 +1906,14 @@ interface InternalContext extends PluginContext {
   /** Adds an MCP server from the plugin's files, checked like its hooks files */
   addMcpServer(server: string, config: PluginMcpServerConfig): PluginDisposer;
   addPanel(panel: PluginPanelContribution, path?: string): PluginDisposer;
+}
+
+/**
+ * The version a dependency's range is checked against, as the installer checks it: the
+ * `version` of `manifest`, else the version the plugin was installed under (an npm package's)
+ */
+function installedVersion(state: PluginState, manifest: PluginManifest): string | undefined {
+  return manifest.version ?? state.candidate.record?.version;
 }
 
 /** Whether a change to `file` (relative to a plugin folder) is one a reload ignores */

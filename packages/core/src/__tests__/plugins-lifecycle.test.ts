@@ -416,6 +416,86 @@ describe('plugin lifecycle', () => {
     await plugins.dispose();
   });
 
+  const installedPlugin = (
+    pluginsRoot: string,
+    name: string,
+    version: string,
+    manifest: Record<string, unknown>
+  ) => {
+    const dir = join(pluginsRoot, 'cache', 'mkt', name, version);
+    mkdirSync(join(dir, '.claude-plugin'), { recursive: true });
+    writeFileSync(
+      join(dir, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name, ...manifest })
+    );
+    return {
+      dir,
+      record: {
+        id: `${name}@mkt`,
+        name,
+        marketplace: 'mkt',
+        version,
+        installPath: dir,
+        source: { source: 'path' as const, path: `./${name}` },
+        pin: {},
+        installedAt: new Date().toISOString(),
+        lastUpdated: new Date().toISOString(),
+      },
+    };
+  };
+
+  it('checks a range against the version an installed plugin was installed under when its manifest has none', async () => {
+    const pluginsRoot = join(base, '.plugins');
+    const lib = installedPlugin(pluginsRoot, 'npm-lib', '1.2.0', {});
+    const app = installedPlugin(pluginsRoot, 'app', '1.0.0', {
+      dependencies: [{ name: 'npm-lib', version: '^1.0.0' }],
+    });
+    await writeInstalledPlugins(pluginsRoot, [lib.record, app.record]);
+    const plugins = host([]);
+    await plugins.load();
+    expect(plugins.get('app@mkt')?.status).toBe('active');
+    await plugins.dispose();
+  });
+
+  it('keeps a consumer when the reload of the dependency its new version needs failed', async () => {
+    const pluginsRoot = join(base, '.plugins');
+    const lib = installedPlugin(pluginsRoot, 'lib', '1.0.0', { version: '1.0.0' });
+    const app = installedPlugin(pluginsRoot, 'app', '1.0.0', {
+      version: '1.0.0',
+      dependencies: [{ name: 'lib', version: '^1.0.0' }],
+    });
+    await writeInstalledPlugins(pluginsRoot, [lib.record, app.record]);
+    const plugins = host([]);
+    await plugins.load();
+    mkdirSync(join(lib.dir, '.cogitator-plugin'), { recursive: true });
+    writeFileSync(
+      join(lib.dir, '.cogitator-plugin', 'plugin.json'),
+      JSON.stringify({ version: '2.0.0', main: './missing.mjs' })
+    );
+    writeFileSync(
+      join(app.dir, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'app',
+        version: '2.0.0',
+        dependencies: [{ name: 'lib', version: '^2.0.0' }],
+      })
+    );
+    const results = await plugins.reload();
+    expect(results.find((result) => result.id === 'lib@mkt')).toMatchObject({
+      ok: false,
+      generation: 1,
+    });
+    expect(results.find((result) => result.id === 'app@mkt')).toMatchObject({
+      ok: false,
+      generation: 1,
+      code: ErrorCode.PLUGIN_RELOAD_FAILED,
+      error: 'Requires "lib@mkt" ^2.0.0, loaded 1.0.0',
+    });
+    expect(plugins.get('app@mkt')).toMatchObject({ status: 'active', version: '1.0.0' });
+    expect(plugins.get('lib@mkt')).toMatchObject({ status: 'active', version: '1.0.0' });
+    await plugins.dispose();
+  });
+
   it('blocks the plugins that depend on one that fails to activate', async () => {
     const activated: string[] = [];
     const plugins = host([

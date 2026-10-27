@@ -451,6 +451,7 @@ export function hooksMiddleware(
           maxBytes,
           signal: signalOf(call, context),
           allowedEnv,
+          ...(deps.scoped?.env && { extraEnv: deps.scoped.env }),
         });
         if (outcome.timedOut) {
           return finish({

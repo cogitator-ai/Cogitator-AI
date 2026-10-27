@@ -7,6 +7,8 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -244,6 +246,65 @@ describe('plugins in the runtime', () => {
     expect(seenDuringRun).toEqual([[]]);
     await new Promise((resolve) => setImmediate(resolve));
     expect(unloaded).toEqual([1]);
+  });
+
+  it('puts the options of a plugin its HTTP hook allows into the hook headers', async () => {
+    const received: (string | undefined)[] = [];
+    const server = createServer((request, response) => {
+      received.push(request.headers.authorization);
+      response.end('{}');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const dir = join(base, 'notifier');
+      mkdirSync(join(dir, '.claude-plugin'), { recursive: true });
+      mkdirSync(join(dir, 'hooks'), { recursive: true });
+      writeFileSync(
+        join(dir, '.claude-plugin', 'plugin.json'),
+        JSON.stringify({
+          name: 'notifier',
+          userConfig: {
+            token: { type: 'string', title: 'Token', description: 'Token', sensitive: true },
+          },
+        })
+      );
+      writeFileSync(
+        join(dir, 'hooks', 'hooks.json'),
+        JSON.stringify({
+          hooks: {
+            Stop: [
+              {
+                hooks: [
+                  {
+                    type: 'http',
+                    url: `http://127.0.0.1:${port}/done`,
+                    headers: { Authorization: 'Bearer $CLAUDE_PLUGIN_OPTION_TOKEN' },
+                    allowedEnvVars: ['CLAUDE_PLUGIN_OPTION_TOKEN'],
+                  },
+                ],
+              },
+            ],
+          },
+        })
+      );
+      const { cog } = runtime(
+        {
+          experimental_plugins: plugins({
+            dirs: [dir],
+            secrets: experimental_memorySecretStore({
+              'cogitator-plugin:notifier@inline': { token: 'tok-1' },
+            }),
+          }),
+        },
+        new MockLLMBackend().setResponses([{ content: 'done' }])
+      );
+      const agent = new Agent({ name: 'a', model: 'mock/m', instructions: 'x' });
+      expect((await cog.run(agent, { input: 'go' })).output).toBe('done');
+      expect(received).toEqual(['Bearer tok-1']);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it('never lets a plugin take over a provider registered globally, nor its config', async () => {

@@ -263,15 +263,28 @@ export interface HttpOptions {
    * settings' `httpHookAllowedEnvVars` when they set one
    */
   allowedEnv: ReadonlySet<string>;
+  /**
+   * Variables of the hook's scope over the process's own, such as a plugin's
+   * `CLAUDE_PLUGIN_OPTION_<KEY>`: a header still names only the allowed ones
+   */
+  extraEnv?: Readonly<Record<string, string>>;
 }
 
-/** `$VAR` and `${VAR}` in a header value replaced by the allowed environment variables, others empty */
-export function interpolateHeader(value: string, allowed: ReadonlySet<string>): string {
+/**
+ * `$VAR` and `${VAR}` in a header value replaced by the allowed environment variables (from
+ * `extraEnv`, else the process's), others empty
+ */
+export function interpolateHeader(
+  value: string,
+  allowed: ReadonlySet<string>,
+  extraEnv: Readonly<Record<string, string>> = {}
+): string {
   return value.replace(
     /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
     (_match, braced?: string, bare?: string) => {
       const name = braced ?? bare ?? '';
-      return allowed.has(name) ? (process.env[name] ?? '') : '';
+      if (!allowed.has(name)) return '';
+      return Object.hasOwn(extraEnv, name) ? (extraEnv[name] ?? '') : (process.env[name] ?? '');
     }
   );
 }
@@ -289,7 +302,7 @@ export async function postHook(
   const signal = AbortSignal.any([timeout, options.signal]);
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(handler.headers ?? {})) {
-    headers[name] = interpolateHeader(value, options.allowedEnv);
+    headers[name] = interpolateHeader(value, options.allowedEnv, options.extraEnv);
   }
   headers['content-type'] = 'application/json';
   const ended = (fields: Partial<HttpOutcome>): HttpOutcome => ({
