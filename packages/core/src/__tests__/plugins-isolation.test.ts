@@ -432,6 +432,40 @@ describe('isolated plugins', () => {
     expect(kindsOf(plugins)).toEqual([]);
   });
 
+  it('fails the activation of an isolated plugin whose registration the host refuses', async () => {
+    const tool = (type: string) => `export default {
+        name: 'schemas',
+        activate(context) {
+          context.registerTool({
+            name: 'schemas_tool',
+            description: 'A tool',
+            parameters: { type: '${type}' },
+            execute: async () => 'ok',
+          });
+        },
+      };`;
+    const dir = codePlugin('schemas', {}, tool('object'));
+    const plugins = hostOf([dir]);
+    await plugins.load();
+    expect(plugins.snapshot().tools.map((entry) => entry.name)).toEqual(['schemas_tool']);
+    writeFileSync(join(dir, 'main.mjs'), tool('string'));
+    const [result] = await plugins.reload('schemas@inline');
+    expect(result).toMatchObject({
+      ok: false,
+      generation: 1,
+      code: ErrorCode.PLUGIN_RELOAD_FAILED,
+    });
+    expect(result?.error).toMatch(/a registration was refused/);
+    expect(plugins.snapshot().tools.map((entry) => entry.name)).toEqual(['schemas_tool']);
+    writeFileSync(
+      join(dir, '.cogitator-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'schemas' })
+    );
+    const [plain] = await plugins.reload('schemas@inline');
+    expect(plain).toMatchObject({ ok: true, generation: 2 });
+    expect(plugins.get('schemas@inline')?.isolated).toBe(false);
+  });
+
   it('keeps the live generation when a reload finds main missing', async () => {
     const dir = codePlugin(
       'coded',

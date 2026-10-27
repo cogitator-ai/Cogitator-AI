@@ -299,6 +299,9 @@ export class IsolatedPluginProcess {
   private readonly registrations = new Map<number, PluginDisposer>();
   private disposing = false;
   private exited = false;
+  /** Set once `activate` answered: a registration refused before fails the activation */
+  private activated = false;
+  private refused?: string;
   private readonly callTimeoutMs: number;
 
   private constructor(
@@ -382,6 +385,16 @@ export class IsolatedPluginProcess {
             options: options.options,
           });
         } else if (message.t === 'activated') {
+          if (this.refused !== undefined) {
+            settle(
+              new CogitatorError({
+                message: `Plugin ${options.identity.id} failed to activate: a registration was refused: ${this.refused}`,
+                code: ErrorCode.PLUGIN_ACTIVATION_FAILED,
+              })
+            );
+            return;
+          }
+          this.activated = true;
           settle();
         } else if (message.t === 'activate-failed') {
           settle(
@@ -438,9 +451,9 @@ export class IsolatedPluginProcess {
           const dispose = this.register(message.handle, message.registration);
           this.registrations.set(message.handle, dispose);
         } catch (error) {
-          context.logger.error(
-            `A registration of the plugin was refused: ${error instanceof Error ? error.message : String(error)}`
-          );
+          const text = error instanceof Error ? error.message : String(error);
+          if (!this.activated) this.refused ??= text;
+          else context.logger.error(`A registration of the plugin was refused: ${text}`);
         }
         return;
       }

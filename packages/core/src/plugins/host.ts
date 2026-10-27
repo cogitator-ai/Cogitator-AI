@@ -689,6 +689,7 @@ export class experimental_PluginHost {
         isolated: false,
       };
       if (!existing) this.states.set(candidate.id, state);
+      if (!state.generation?.live || rebuilds(candidate.id)) state.diagnostics = [];
       if (!state.generation?.live) Object.assign(state, found);
       else if (rebuilds(candidate.id)) incoming.set(candidate.id, found);
       for (const diagnostic of candidate.layout?.diagnostics ?? []) this.record(diagnostic);
@@ -848,7 +849,8 @@ export class experimental_PluginHost {
   /**
    * The plugin `dependency` of `state` names: the one of its marketplace (the marketplace of
    * `state` when it names none), else one of that name, a local copy from code or a folder standing
-   * in for any marketplace as in Claude Code
+   * in for any marketplace as in Claude Code. A plugin another one of its name shadows stands for
+   * the one that loads instead
    */
   private dependencyTarget(
     state: PluginState,
@@ -856,13 +858,13 @@ export class experimental_PluginHost {
   ): PluginState | undefined {
     const marketplace = dependency.marketplace ?? state.candidate.marketplace;
     const exact = this.states.get(`${dependency.name}@${marketplace}`);
-    if (exact) return exact;
-    const named = [...this.states.values()].filter(
-      (candidate) => candidate.candidate.name === dependency.name
-    );
-    if (dependency.marketplace === undefined) {
-      return named.find((candidate) => candidate.shadowedBy === undefined) ?? named[0];
-    }
+    if (exact) return exact.shadowedBy ? (this.states.get(exact.shadowedBy) ?? exact) : exact;
+    const loads = (candidate: PluginState) =>
+      candidate.enabled && candidate.shadowedBy === undefined;
+    const named = [...this.states.values()]
+      .filter((candidate) => candidate.candidate.name === dependency.name)
+      .sort((a, b) => Number(loads(b)) - Number(loads(a)));
+    if (dependency.marketplace === undefined) return named[0];
     return named.find(
       (candidate) => candidate.candidate.origin === 'dir' || candidate.candidate.origin === 'code'
     );
@@ -1027,6 +1029,7 @@ export class experimental_PluginHost {
       return { id, ok: false, generation: 0, error: text, code };
     }
     state.generations = generation.number;
+    state.isolated = state.candidate.layout?.main !== undefined;
     generation.live = true;
     state.generation = generation;
     state.status = 'active';
@@ -1116,7 +1119,11 @@ export class experimental_PluginHost {
     return values;
   }
 
-  private async secretsOf(state: PluginState): Promise<Record<string, string>> {
+  /**
+   * The secret options of `state` from the credential store. A secret that cannot be read is a
+   * warning on a first load, and fails a reload (`replacing`), whose live generation has it
+   */
+  private async secretsOf(state: PluginState, replacing: boolean): Promise<Record<string, string>> {
     const secrets: Record<string, string> = {};
     for (const [key, option] of Object.entries(state.manifest.userConfig ?? {})) {
       if (option.sensitive !== true) continue;
@@ -1131,11 +1138,11 @@ export class experimental_PluginHost {
           );
         }
       } catch (error) {
-        this.report(
-          state.candidate.id,
-          'warning',
-          `The secret option ${key} could not be read: ${message(error)}`
-        );
+        const text = `The secret option ${key} could not be read: ${message(error)}`;
+        if (replacing) {
+          throw new CogitatorError({ message: text, code: ErrorCode.SECRET_STORE_UNAVAILABLE });
+        }
+        this.report(state.candidate.id, 'warning', text);
       }
     }
     return secrets;
@@ -1230,7 +1237,7 @@ export class experimental_PluginHost {
       });
     }
     const options = this.optionsOf(state);
-    const secrets = await this.secretsOf(state);
+    const secrets = await this.secretsOf(state, generation.replacing);
     const variables = this.variablesOf(state, options, secrets);
     if (variables.data) await mkdir(variables.data, { recursive: true, mode: 0o700 });
     const permissions = this.permissionsOf(state, variables);
@@ -1242,7 +1249,6 @@ export class experimental_PluginHost {
       if (typeof returned === 'function') generation.track(returned, 'activate');
     }
     if (layout?.main) {
-      state.isolated = true;
       const isolated = await IsolatedPluginProcess.start({
         identity: {
           id: candidate.id,
@@ -1287,7 +1293,7 @@ export class experimental_PluginHost {
         layout.rootSkill
       );
       generation.contributions.skills.push(loader);
-      generation.wait(loader.discover());
+      generation.wait(loader.discover(), true);
       generation.track(() => {
         const at = generation.contributions.skills.indexOf(loader);
         if (at !== -1) generation.contributions.skills.splice(at, 1);
@@ -1417,7 +1423,7 @@ export class experimental_PluginHost {
         set.hooks.push(entry);
         generation.touch();
       });
-      generation.wait(allowed.ready);
+      generation.wait(allowed.ready, true);
       return generation.track(() => {
         removed = true;
         const at = set.hooks.indexOf(entry);

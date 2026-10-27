@@ -266,6 +266,156 @@ describe('plugin lifecycle', () => {
     await plugins.dispose();
   });
 
+  it('resolves a dependency to the local copy that shadows the installed one', async () => {
+    const pluginsRoot = join(base, '.plugins');
+    const installed = (name: string, extra: Record<string, unknown> = {}) => {
+      const dir = join(pluginsRoot, 'cache', 'mkt', name, '1.0.0');
+      mkdirSync(join(dir, '.claude-plugin'), { recursive: true });
+      writeFileSync(
+        join(dir, '.claude-plugin', 'plugin.json'),
+        JSON.stringify({ name, version: '1.0.0', ...extra })
+      );
+      return {
+        id: `${name}@mkt`,
+        name,
+        marketplace: 'mkt',
+        version: '1.0.0',
+        installPath: dir,
+        source: { source: 'path' as const, path: `./${name}` },
+        pin: {},
+        installedAt: new Date().toISOString(),
+        lastUpdated: new Date().toISOString(),
+      };
+    };
+    await writeInstalledPlugins(pluginsRoot, [
+      installed('app', { dependencies: ['lib'] }),
+      installed('lib'),
+    ]);
+    const local = join(base, 'lib-dev');
+    mkdirSync(join(local, '.claude-plugin'), { recursive: true });
+    writeFileSync(join(local, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'lib' }));
+    const plugins = host([], { dirs: [local] });
+    await plugins.load();
+    expect(plugins.get('lib@inline')?.status).toBe('active');
+    expect(plugins.get('lib@mkt')?.status).toBe('disabled');
+    expect(plugins.get('app@mkt')?.status).toBe('active');
+    await plugins.dispose();
+  });
+
+  it('resolves a dependency by name to the copy that loads, not a disabled one', async () => {
+    const pluginsRoot = join(base, '.plugins');
+    const app = join(pluginsRoot, 'cache', 'mkt', 'app', '1.0.0');
+    mkdirSync(join(app, '.claude-plugin'), { recursive: true });
+    writeFileSync(
+      join(app, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'app', version: '1.0.0', dependencies: ['lib'] })
+    );
+    await writeInstalledPlugins(pluginsRoot, [
+      {
+        id: 'app@mkt',
+        name: 'app',
+        marketplace: 'mkt',
+        version: '1.0.0',
+        installPath: app,
+        source: { source: 'path', path: './app' },
+        pin: {},
+        installedAt: new Date().toISOString(),
+        lastUpdated: new Date().toISOString(),
+      },
+    ]);
+    const local = join(base, 'lib-dev');
+    mkdirSync(join(local, '.claude-plugin'), { recursive: true });
+    writeFileSync(join(local, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'lib' }));
+    const plugins = new experimental_PluginHost({
+      root: base,
+      config: {
+        plugins: [{ name: 'lib' }],
+        dirs: [local],
+        enabled: { 'lib@code': false },
+        installed: { root: pluginsRoot },
+        secrets: experimental_memorySecretStore(),
+      },
+    });
+    await plugins.load();
+    expect(plugins.get('lib@code')?.status).toBe('disabled');
+    expect(plugins.get('lib@inline')?.status).toBe('active');
+    expect(plugins.get('app@mkt')?.status).toBe('active');
+    await plugins.dispose();
+  });
+
+  it('fails a reload whose secrets cannot be read, the live generation keeping them', async () => {
+    let down = false;
+    const seen: (string | undefined)[] = [];
+    const plugins = new experimental_PluginHost({
+      root: base,
+      config: {
+        plugins: [
+          {
+            name: 'keyed',
+            userConfig: {
+              token: { type: 'string', title: 'Token', description: 'Token', sensitive: true },
+            },
+            async activate(context) {
+              seen.push(await context.secret('token').catch(() => undefined));
+            },
+          },
+        ],
+        installed: false,
+        secrets: {
+          get: async () => {
+            if (down) throw new Error('the keychain is locked');
+            return 't-1';
+          },
+          set: async () => undefined,
+          delete: async () => undefined,
+        },
+      },
+    });
+    await plugins.load();
+    down = true;
+    const [result] = await plugins.reload('keyed@code');
+    expect(result).toMatchObject({
+      ok: false,
+      generation: 1,
+      code: ErrorCode.PLUGIN_RELOAD_FAILED,
+    });
+    expect(result?.error).toMatch(/could not be read: the keychain is locked/);
+    expect(seen).toEqual(['t-1']);
+    await plugins.dispose();
+  });
+
+  it('shows only the problems of the generation it built last', async () => {
+    const dir = join(base, 'fixing');
+    mkdirSync(join(dir, '.claude-plugin'), { recursive: true });
+    mkdirSync(join(dir, 'hooks'), { recursive: true });
+    writeFileSync(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'fixing' }));
+    const hooks = (command: string) =>
+      writeFileSync(
+        join(dir, 'hooks', 'hooks.json'),
+        JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command }] }] } })
+      );
+    hooks('rm -rf ./build');
+    const plugins = new experimental_PluginHost({
+      root: base,
+      config: {
+        dirs: [dir],
+        installed: false,
+        permissions: { deny: ['Bash(rm *)'] },
+        secrets: experimental_memorySecretStore(),
+      },
+    });
+    await plugins.load();
+    const refused = () =>
+      (plugins.get('fixing@inline')?.diagnostics ?? []).filter((entry) =>
+        entry.message.includes('do not allow its Stop hook')
+      );
+    expect(refused()).toHaveLength(1);
+    hooks('echo done');
+    expect((await plugins.reload('fixing@inline'))[0]).toMatchObject({ ok: true });
+    expect(refused()).toEqual([]);
+    await plugins.dispose();
+  });
+
   it('blocks the plugins that depend on one that fails to activate', async () => {
     const activated: string[] = [];
     const plugins = host([
