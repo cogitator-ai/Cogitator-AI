@@ -641,7 +641,8 @@ export class RemoteShellWorkspace implements Workspace {
   /**
    * Brings the files back to a snapshot: entries made since are removed, every file the archive
    * holds is rewritten from it (so `restored` lists them all, changed or not), the paths the
-   * snapshot excluded or skipped left alone. With `dryRun` nothing changes.
+   * snapshot excluded or skipped left alone with everything under them. With `dryRun` nothing
+   * changes.
    */
   async restore(
     snapshotId: string,
@@ -657,11 +658,19 @@ export class RemoteShellWorkspace implements Workspace {
     const kept: string[] = [];
     const present = new Map<string, WorkspaceEntryType>();
     const left: string[] = [];
+    const keptRoots = new Set<string>();
+    const underKept = (name: string): boolean => {
+      for (let at = name.lastIndexOf('/'); at > 0; at = name.lastIndexOf('/', at - 1)) {
+        if (keptRoots.has(name.slice(0, at))) return true;
+      }
+      return false;
+    };
     for (const entry of await this.tree(record.exclude)) {
       if (entry.pruned || excluded(entry.name)) {
         left.push(entry.name);
         continue;
       }
+      if (underKept(entry.name)) continue;
       present.set(entry.key, entry.type);
       const tooLarge =
         record.maxFileBytes !== undefined &&
@@ -670,6 +679,7 @@ export class RemoteShellWorkspace implements Workspace {
         !saved.has(entry.key);
       if (skipped.has(entry.name) || tooLarge) {
         kept.push(entry.name);
+        keptRoots.add(entry.name);
         continue;
       }
       if (entry.type === 'directory') {

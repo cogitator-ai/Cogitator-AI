@@ -1074,6 +1074,23 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', { timeout: 60_000
     expect(readFileSync(join(root, 'logs/app.log'), 'utf8')).toBe('l\n');
   });
 
+  it('leaves alone what lies under a skipped path that became a directory', async () => {
+    const { workspace, root } = fresh();
+    await workspace.write('big.bin', 'x'.repeat(2048));
+    await workspace.write('a.txt', 'a');
+    const snapshot = await workspace.snapshot({ maxFileBytes: 1024 });
+    await workspace.exec(
+      'rm big.bin && mkdir -p big.bin/deep && echo keep > big.bin/important.txt && echo d > big.bin/deep/x'
+    );
+    const plan = await workspace.restore(snapshot.id, { dryRun: true });
+    expect(plan.kept).toEqual(['big.bin']);
+    expect(plan.deleted).toEqual([]);
+    const result = await workspace.restore(snapshot.id);
+    expect(result.deleted).toEqual([]);
+    expect(readFileSync(join(root, 'big.bin/important.txt'), 'utf8')).toBe('keep\n');
+    expect(readFileSync(join(root, 'big.bin/deep/x'), 'utf8')).toBe('d\n');
+  });
+
   it('keeps a file made since that is over the size limit of the snapshot', async () => {
     const { workspace, root } = fresh();
     await workspace.write('a.txt', 'a');
