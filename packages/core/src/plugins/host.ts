@@ -15,6 +15,7 @@ import {
   type CommandDefinition,
   type CommandDefinitionInput,
   type HookEventName,
+  type HookHandlerConfig,
   type HookMatcherGroup,
   type HookSettings,
   type InstalledPluginRecord,
@@ -1617,46 +1618,30 @@ export class experimental_PluginHost {
       };
       if (!group.includes(target)) group.push(target);
       const final = handler;
-      if (checks && (final.type === 'command' || final.type === 'http')) {
-        checksDone.push(
-          (async () => {
-            const shown =
-              final.type === 'command'
-                ? commandText(
-                    substitute(
-                      hook.handler.type === 'command' ? hook.handler.command : '',
-                      variables,
-                      'placeholder'
-                    ),
-                    hook.handler.type === 'command'
-                      ? hook.handler.args?.map((arg) => substitute(arg, variables, 'placeholder'))
-                      : undefined
-                  )
-                : substitute(
-                    hook.handler.type === 'http' ? hook.handler.url : '',
-                    variables,
-                    'placeholder'
-                  );
-            const decision = await checks.decide(
-              final.type === 'command'
-                ? { kind: 'command', command: shown }
-                : { kind: 'fetch', url: final.url }
-            );
-            if (decision.allowed) {
-              target.hooks = [...target.hooks, final];
-              return;
-            }
-            this.report(
-              id,
-              'error',
-              `The plugin's permissions do not allow its ${hook.event} hook ${shown}: the hook is skipped (${decision.reason})`,
-              source
-            );
-          })()
-        );
-      } else {
+      if (!checks) {
         target.hooks = [...target.hooks, final];
+        continue;
       }
+      checksDone.push(
+        (async () => {
+          const { allowed, reason, shown } = await hookDecision(
+            checks,
+            hook.handler,
+            final,
+            variables
+          );
+          if (allowed) {
+            target.hooks = [...target.hooks, final];
+            return;
+          }
+          this.report(
+            id,
+            'error',
+            `The plugin's permissions do not allow its ${hook.event} hook ${shown}: the hook is skipped (${reason})`,
+            source
+          );
+        })()
+      );
     }
     return {
       hooks: settings,
@@ -1975,6 +1960,62 @@ function agentOf(
     { ...parsed.definition, name: full, source: 'plugin', path: file.path },
     (warning) => report('warning', warning)
   );
+}
+
+/** The variables a plugin's HTTP hook may put in its headers: the plugin's own, never the host's */
+const OWN_HOOK_VARIABLE = /^(?:CLAUDE|COGITATOR)_PLUGIN_[A-Z0-9_]+$/;
+
+/**
+ * Whether `checks` let a hook of a plugin run, decided for each kind of handler, with how the
+ * handler is shown in a diagnostic (secrets as placeholders). `original` is the handler as the
+ * plugin wrote it, `final` with its variables put in
+ */
+async function hookDecision(
+  checks: PluginPermissions,
+  original: HookHandlerConfig,
+  final: HookHandlerConfig,
+  variables: PluginVariables
+): Promise<{ allowed: boolean; reason: string; shown: string }> {
+  const shown = (text: string) => substitute(text, variables, 'placeholder');
+  switch (final.type) {
+    case 'command': {
+      const written = original.type === 'command' ? original : final;
+      const line = commandText(shown(written.command), written.args?.map(shown));
+      return { ...(await checks.decide({ kind: 'command', command: line })), shown: line };
+    }
+    case 'http': {
+      const url = shown(original.type === 'http' ? original.url : final.url);
+      const foreign =
+        checks.scope === 'granted'
+          ? (final.allowedEnvVars ?? []).find((name) => !OWN_HOOK_VARIABLE.test(name))
+          : undefined;
+      if (foreign !== undefined) {
+        return {
+          allowed: false,
+          reason: `it puts the host's variable ${foreign} in its headers`,
+          shown: url,
+        };
+      }
+      return { ...(await checks.decide({ kind: 'fetch', url: final.url })), shown: url };
+    }
+    case 'mcp_tool': {
+      const name = `${final.server} ${final.tool}`;
+      return {
+        ...(await checks.decide({ kind: 'mcp', server: final.server, tool: final.tool })),
+        shown: `mcp_tool ${name}`,
+      };
+    }
+    case 'prompt':
+      return {
+        allowed: true,
+        reason: 'a prompt hook only asks the model about the event',
+        shown: 'prompt',
+      };
+    default: {
+      const unknown: never = final;
+      return { allowed: false, reason: 'an unknown kind of hook', shown: String(unknown) };
+    }
+  }
 }
 
 /** A command line for a permission check: the exec form's arguments quoted where they need it */

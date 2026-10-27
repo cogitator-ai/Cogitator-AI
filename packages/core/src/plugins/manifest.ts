@@ -512,6 +512,9 @@ export async function readPluginLayout(
   let main: string | undefined;
   if (manifest.main !== undefined) {
     main = paths.check(manifest.main, 'main', { kind: 'file' });
+    if (main === undefined) {
+      fatal.push(`main ${manifest.main} is not a file inside the plugin, so its code cannot load`);
+    }
   }
   const panels: { spec: PluginPanelSpec; path: string }[] = [];
   const seenPanels = new Set<string>();

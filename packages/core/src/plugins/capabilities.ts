@@ -19,6 +19,7 @@ import {
   type Tool,
 } from '@cogitator-ai/types';
 import { PermissionRuleSet, resolvePermission } from '../permissions/engine';
+import { mcpNamePart } from '../permissions/rules';
 
 /** Largest file `files.readFile` reads and largest response body `fetch` reads */
 export const MAX_PLUGIN_READ_BYTES = 10 * 1024 * 1024;
@@ -55,6 +56,22 @@ function capability(
       }),
       ...(field === 'url' && { url: (params: unknown) => read(params) }),
     },
+    execute: async () => undefined,
+    toJSON: () => ({ name, description: name, parameters: { type: 'object', properties: {} } }),
+  };
+}
+
+/**
+ * The tool an MCP call of a plugin is checked as: `mcp__<server>__<tool>`, matched by the rules
+ * that name its server or tool (`mcp__github`, `mcp__github__create_issue`)
+ */
+function mcpCapability(server: string, tool: string): Tool {
+  const name = `mcp__${mcpNamePart(server)}__${mcpNamePart(tool)}`;
+  return {
+    name,
+    description: 'A plugin MCP call',
+    parameters: z.object({}).loose(),
+    mcp: { server, tool },
     execute: async () => undefined,
     toJSON: () => ({ name, description: name, parameters: { type: 'object', properties: {} } }),
   };
@@ -124,7 +141,8 @@ export function loaderVariableOf(names: Iterable<string>): string | undefined {
 export type CapabilityRequest =
   | { kind: 'read' | 'edit'; path: string }
   | { kind: 'command'; command: string; cwd?: string }
-  | { kind: 'fetch'; url: string };
+  | { kind: 'fetch'; url: string }
+  | { kind: 'mcp'; server: string; tool: string };
 
 /**
  * Decides what a plugin asks for with its `permissions` (the rules it was granted) and the host's
@@ -186,7 +204,9 @@ export class PluginPermissions {
         ? [COMMAND, { command: request.command, ...(request.cwd && { cwd: request.cwd }) }]
         : request.kind === 'fetch'
           ? [FETCH, { url: request.url }]
-          : [request.kind === 'read' ? READ : EDIT, { path: request.path }];
+          : request.kind === 'mcp'
+            ? [mcpCapability(request.server, request.tool), {}]
+            : [request.kind === 'read' ? READ : EDIT, { path: request.path }];
     const decision = await resolvePermission(tool, args, {
       mode: 'dontAsk',
       rules: this.rules,
@@ -194,10 +214,12 @@ export class PluginPermissions {
       cwd: this.projectRoot,
       projectRoot: this.projectRoot,
     });
-    return {
-      allowed: decision.decision === 'allow',
-      reason: decision.rule ? `${decision.reason} (${decision.rule.rule})` : decision.reason,
-    };
+    const reason = decision.rule ? `${decision.reason} (${decision.rule.rule})` : decision.reason;
+    if (request.kind === 'mcp' && this.scope === 'hostDeny') {
+      const refused = decision.decision === 'deny' && decision.decidedBy === 'rule';
+      return { allowed: !refused, reason };
+    }
+    return { allowed: decision.decision === 'allow', reason };
   }
 
   /** Throws `PLUGIN_PERMISSION_DENIED` unless the rules allow `request` */
@@ -209,7 +231,9 @@ export class PluginPermissions {
         ? `run "${request.command}"`
         : request.kind === 'fetch'
           ? `fetch ${request.url}`
-          : `${request.kind === 'read' ? 'read' : 'write'} ${request.path}`;
+          : request.kind === 'mcp'
+            ? `call the MCP tool ${request.tool} of ${request.server}`
+            : `${request.kind === 'read' ? 'read' : 'write'} ${request.path}`;
     throw new CogitatorError({
       message: `Plugin ${this.plugin} may not ${what}: its permissions allow no such request (${reason})`,
       code: ErrorCode.PLUGIN_PERMISSION_DENIED,
