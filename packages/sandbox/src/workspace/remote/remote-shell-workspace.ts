@@ -3,6 +3,7 @@ import { posix } from 'node:path';
 import { z } from 'zod';
 import {
   WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE,
+  WORKSPACE_SNAPSHOT_MAX_FILE_BYTES,
   WorkspaceError,
   workspaceGlobMatcher,
   type Workspace,
@@ -16,8 +17,11 @@ import {
   type WorkspaceRemoveOptions,
   type WorkspaceRemoveResult,
   type WorkspaceRenameOptions,
+  type WorkspaceRestoreOptions,
+  type WorkspaceRestoreResult,
   type WorkspaceSnapshot,
   type WorkspaceSnapshotOptions,
+  type WorkspaceSnapshotSkip,
   type WorkspaceStat,
   type WorkspaceWriteOptions,
 } from '@cogitator-ai/types';
@@ -144,6 +148,15 @@ const snapshotRecordSchema = z.object({
   label: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   exclude: z.array(z.string()),
+  skipped: z
+    .array(
+      z.object({
+        path: z.string(),
+        reason: z.enum(['too-large', 'unreadable']),
+        size: z.number().optional(),
+      })
+    )
+    .optional(),
 });
 
 /**
@@ -555,13 +568,29 @@ export class RemoteShellWorkspace implements Workspace {
 
   /**
    * Records the files of the root as a tar archive in `.cogitator/snapshots` inside the sandbox,
-   * but for what `exclude` leaves out, and always `.cogitator/**`. Refused with `TOO_LARGE` when
-   * the files are over `maxSnapshotBytes`.
+   * but for what the default excludes (`.cogitator`, `node_modules` and `.git` at any depth) and
+   * `exclude` leave out. A file over `maxFileBytes` is skipped and listed in `skipped`. Refused
+   * with `TOO_LARGE` when the files are over `maxSnapshotBytes`.
    */
   async snapshot(options: WorkspaceSnapshotOptions = {}): Promise<WorkspaceSnapshot> {
     const exclude = [
       ...new Set([...WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE, ...(options.exclude ?? [])]),
     ];
+    const maxFileBytes = positive(
+      options.maxFileBytes,
+      WORKSPACE_SNAPSHOT_MAX_FILE_BYTES,
+      'maxFileBytes'
+    );
+    const excluded = excludedBy(exclude);
+    const skipped: WorkspaceSnapshotSkip[] = [];
+    const kept = (await this.tree(exclude)).filter((entry) => {
+      if (excluded(entry.name)) return false;
+      if (entry.type === 'file' && entry.size > maxFileBytes) {
+        skipped.push({ path: entry.name, reason: 'too-large', size: entry.size });
+        return false;
+      }
+      return true;
+    });
     const record: WorkspaceSnapshot = {
       id: `snap_${Date.now().toString(36)}_${randomUUID().replace(/-/g, '').slice(0, 8)}`,
       workspaceId: this.id,
@@ -569,9 +598,8 @@ export class RemoteShellWorkspace implements Workspace {
       ...(options.label !== undefined && { label: options.label }),
       ...(options.metadata !== undefined && { metadata: options.metadata }),
       exclude,
+      ...(skipped.length > 0 && { skipped }),
     };
-    const excluded = excludedBy(exclude);
-    const kept = (await this.tree(exclude)).filter((entry) => !excluded(entry.name));
     const bytes = kept.reduce(
       (sum, entry) => sum + (entry.type === 'directory' ? 0 : entry.size),
       0
@@ -607,18 +635,30 @@ export class RemoteShellWorkspace implements Workspace {
   }
 
   /**
-   * Brings the files back to a snapshot: entries made since are removed, changed ones rewritten
-   * from the archive, the paths the snapshot excluded left alone.
+   * Brings the files back to a snapshot: entries made since are removed, every file the archive
+   * holds is rewritten from it (so `restored` lists them all, changed or not), the paths the
+   * snapshot excluded or skipped left alone. With `dryRun` nothing changes.
    */
-  async restore(snapshotId: string): Promise<void> {
+  async restore(
+    snapshotId: string,
+    options: WorkspaceRestoreOptions = {}
+  ): Promise<WorkspaceRestoreResult> {
     const record = await this.snapshotRecord(snapshotId);
     const saved = await this.savedPaths(record.id, 'list');
     const savedDirectories = await this.savedPaths(record.id, 'dirs');
     const excluded = excludedBy(record.exclude);
+    const skipped = new Set((record.skipped ?? []).map((skip) => skip.path));
     const files: string[] = [];
     const dirs: string[] = [];
+    const kept: string[] = [];
+    const present = new Map<string, WorkspaceEntryType>();
     for (const entry of await this.tree(record.exclude)) {
       if (excluded(entry.name)) continue;
+      present.set(entry.key, entry.type);
+      if (skipped.has(entry.name)) {
+        kept.push(entry.name);
+        continue;
+      }
       if (entry.type === 'directory') {
         if (!savedDirectories.has(entry.key)) dirs.push(entry.key);
       } else if (!saved.has(entry.key) || savedDirectories.has(entry.key)) {
@@ -626,17 +666,44 @@ export class RemoteShellWorkspace implements Workspace {
       }
     }
     dirs.sort((a, b) => depth(b) - depth(a));
+    const keptDirs = new Set<string>();
+    for (const path of kept) {
+      for (let at = path.lastIndexOf('/'); at > 0; at = path.lastIndexOf('/', at - 1)) {
+        keptDirs.add(path.slice(0, at));
+      }
+    }
+    const removable = dirs.filter((key) => !keptDirs.has(utf8(key)));
+    const restored: string[] = [];
+    let unchanged = 0;
+    for (const key of saved) {
+      const directory = savedDirectories.has(key);
+      if (directory && present.get(key) === 'directory') {
+        unchanged++;
+        continue;
+      }
+      restored.push(utf8(key));
+    }
+    const result: WorkspaceRestoreResult = {
+      snapshotId: record.id,
+      dryRun: options.dryRun ?? false,
+      restored: restored.sort(),
+      deleted: [...files, ...removable].map(utf8).sort(),
+      unchanged,
+      kept: [...kept, ...dirs.map(utf8).filter((path) => keptDirs.has(path))].sort(),
+    };
+    if (options.dryRun) return result;
     const lists: string[] = [];
     let code: number;
     try {
       lists.push(await this.upload('list', nulList(files), 'restore'));
-      lists.push(await this.upload('list', nulList(dirs), 'restore'));
+      lists.push(await this.upload('list', nulList(removable), 'restore'));
       ({ code } = await this.script(scripts.SNAPSHOT_RESTORE, [record.id, ...lists], 'restore'));
     } finally {
       await this.discard(lists, 'restore');
     }
     if (code === SCRIPT_EXIT.notFound) throw snapshotMissing(snapshotId);
     this.check(code, 'restore');
+    return result;
   }
 
   /** The snapshots kept in the sandbox, oldest first. */
@@ -1250,6 +1317,11 @@ function excludedBy(exclude: readonly string[]): (path: string) => boolean {
       prefix = prefix.slice(0, slash);
     }
   };
+}
+
+/** A path kept as its bytes in a `latin1` string, read as UTF-8 */
+function utf8(key: string): string {
+  return Buffer.from(key, 'latin1').toString('utf8');
 }
 
 /** A fresh random token for a file name nobody can guess. */

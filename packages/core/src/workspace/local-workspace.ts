@@ -11,6 +11,7 @@ import {
   rm,
   rmdir,
   stat,
+  symlink,
   unlink,
   type FileHandle,
 } from 'node:fs/promises';
@@ -29,6 +30,10 @@ import {
   type WorkspaceRemoveOptions,
   type WorkspaceRemoveResult,
   type WorkspaceRenameOptions,
+  type WorkspaceRestoreOptions,
+  type WorkspaceRestoreResult,
+  type WorkspaceSnapshot,
+  type WorkspaceSnapshotOptions,
   type WorkspaceStat,
   type WorkspaceWriteOptions,
 } from '@cogitator-ai/types';
@@ -43,6 +48,12 @@ import {
   type PinnedEntry,
 } from './placement';
 import { abortError, ProcessGroups, runProcess, type WorkspaceLaunch } from './process';
+import {
+  SnapshotStore,
+  type SnapshotGcReport,
+  type SnapshotRestoreOps,
+  type SnapshotRetention,
+} from './snapshot-store';
 
 const DEFAULT_MAX_FILE_BYTES = 10 * 1024 * 1024;
 const DEFAULT_EXEC_TIMEOUT = 120_000;
@@ -60,6 +71,7 @@ const PENDING_DIR = `${WORKSPACE_SERVICE_DIR}/pending`;
 const TEMP_PREFIX = '.cogitator-tmp-';
 const LEFTOVER_AGE = 60 * 60 * 1000;
 const SWEEP_MAX_DIRS = 5_000;
+const O_DIRECTORY = constants.O_DIRECTORY ?? 0;
 
 /**
  * Environment variables a command inherits from the process by default: what a shell needs to
@@ -111,6 +123,27 @@ export interface LocalWorkspaceOptions {
    */
   leftoverAge?: number;
   exec?: LocalWorkspaceExecConfig;
+  /** How `snapshot()` records the files and how long snapshots are kept */
+  snapshots?: LocalWorkspaceSnapshotConfig;
+}
+
+/** How a `LocalWorkspace` keeps its snapshots, see `LocalWorkspace.snapshot()` */
+export interface LocalWorkspaceSnapshotConfig {
+  /** Globs every snapshot leaves out, on top of the defaults and a call's own `exclude` */
+  exclude?: readonly string[];
+  /** Files larger than this many bytes are skipped unless a call says otherwise (default: 10 MiB) */
+  maxFileBytes?: number;
+  /**
+   * Which snapshots are kept: after each new one, the snapshots beyond `count` (oldest first)
+   * and those older than `maxAgeMs` are deleted, with the contents only they used. Default: all
+   * kept, delete them with `deleteSnapshot()` or `pruneSnapshots()`
+   */
+  retain?: SnapshotRetention;
+  /**
+   * Milliseconds a stored content that no snapshot uses is kept before a collection deletes it
+   * (default: one hour), so a snapshot another process is taking keeps what it stored already
+   */
+  gcGraceMs?: number;
 }
 
 export interface LocalWorkspaceExecConfig {
@@ -180,8 +213,9 @@ interface LocalWorkspaceState {
  * its directory confined. Use `DockerWorkspace` from `@cogitator-ai/sandbox` for commands you do
  * not trust.
  *
- * Snapshots are not implemented: copying the tree for every checkpoint is too slow for real
- * projects, so `snapshot` and `restore` are left out until a content-addressed store backs them.
+ * Snapshots are kept content-addressed in `.cogitator/checkpoints` (see `snapshot()`), cheap
+ * enough to take one before every user message: a file that did not change since the snapshot
+ * before is not read again, and a content or a directory that did not change is stored once.
  *
  * The workspace starts itself on first use, `start()` only makes errors (a missing root with
  * `create: false`) surface early. `dispose()` kills the commands still running and what they
@@ -204,6 +238,7 @@ export class LocalWorkspace implements Workspace {
   private readonly refuseHardLinks: boolean;
   private readonly leftoverAge: number;
   private readonly execConfig: LocalWorkspaceExecConfig;
+  private readonly snapshotConfig: LocalWorkspaceSnapshotConfig;
   private readonly state: LocalWorkspaceState;
 
   constructor(options: LocalWorkspaceOptions) {
@@ -218,6 +253,11 @@ export class LocalWorkspace implements Workspace {
     if (!(this.leftoverAge >= 0))
       throw new RangeError('leftoverAge must be 0 or more milliseconds');
     this.execConfig = options.exec ?? {};
+    this.snapshotConfig = options.snapshots ?? {};
+    positive(this.snapshotConfig.maxFileBytes, DEFAULT_MAX_FILE_BYTES, 'snapshots.maxFileBytes');
+    if (this.snapshotConfig.gcGraceMs !== undefined && !(this.snapshotConfig.gcGraceMs >= 0)) {
+      throw new RangeError('snapshots.gcGraceMs must be 0 or more milliseconds');
+    }
     positive(this.execConfig.timeout, DEFAULT_EXEC_TIMEOUT, 'exec.timeout');
     positive(this.execConfig.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES, 'exec.maxOutputBytes');
     positive(this.execConfig.killGrace, DEFAULT_KILL_GRACE, 'exec.killGrace');
@@ -238,6 +278,7 @@ export class LocalWorkspace implements Workspace {
       refuseHardLinks: this.refuseHardLinks,
       leftoverAge: this.leftoverAge,
       exec: this.execConfig,
+      snapshots: this.snapshotConfig,
     });
   }
 
@@ -590,6 +631,208 @@ export class LocalWorkspace implements Workspace {
       onStdout: options.onStdout,
       onStderr: options.onStderr,
     });
+  }
+
+  /**
+   * Records the files of the root in `.cogitator/checkpoints`, but for what the default excludes
+   * (`.cogitator`, `node_modules` and `.git` at any depth), `snapshots.exclude` and `exclude`
+   * leave out. A file is kept by its sha256, read only when its size, times, inode or mode
+   * changed since the snapshot before, and its content is stored once however many snapshots
+   * hold it. A symlink is recorded as a link, never followed, a directory with its mode, and a
+   * file over `maxFileBytes` is skipped (listed in `skipped`, logged). `stats` says what the
+   * snapshot read and stored. With `snapshots.retain`, older snapshots go after it
+   */
+  async snapshot(options: WorkspaceSnapshotOptions = {}): Promise<WorkspaceSnapshot> {
+    const root = await this.ready();
+    await this.ensureServiceDir();
+    const snapshot = await SnapshotStore.of(root).take({
+      workspaceId: this.id,
+      ...(options.label !== undefined && { label: options.label }),
+      ...(options.metadata !== undefined && { metadata: options.metadata }),
+      exclude: [...(this.snapshotConfig.exclude ?? []), ...(options.exclude ?? [])],
+      maxFileBytes: positive(
+        options.maxFileBytes,
+        this.snapshotConfig.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES,
+        'maxFileBytes'
+      ),
+    });
+    const large = (snapshot.skipped ?? []).filter((skip) => skip.reason === 'too-large');
+    if (large.length > 0) {
+      getLogger().warn('A workspace snapshot skipped files over its size limit', {
+        workspace: this.id,
+        snapshot: snapshot.id,
+        files: large.slice(0, 10).map((skip) => skip.path),
+        ...(large.length > 10 && { more: large.length - 10 }),
+      });
+    }
+    if (this.snapshotConfig.retain) await this.pruneSnapshots(this.snapshotConfig.retain);
+    return snapshot;
+  }
+
+  /**
+   * Brings the files back to a snapshot through the workspace's own safe placement: a changed
+   * file is written again atomically with its mode, a symlink made again, a missing directory
+   * created, and what the snapshot did not have removed (a directory only once empty). Paths the
+   * snapshot excluded or skipped are never touched, and a directory made since that holds such a
+   * path stays. Unchanged files are told by their times, or by their content when those moved.
+   * With `dryRun` nothing changes. Refused with `BUSY` while a command the workspace started
+   * still runs, which could race the changes
+   */
+  async restore(
+    snapshotId: string,
+    options: WorkspaceRestoreOptions = {}
+  ): Promise<WorkspaceRestoreResult> {
+    const root = await this.ready();
+    const dryRun = options.dryRun ?? false;
+    if (!dryRun && this.state.groups.busy()) {
+      throw new WorkspaceError(
+        'BUSY',
+        'The workspace cannot be restored while a command started in it is still running (or left processes in the background): wait for it or dispose the workspace',
+        { path: snapshotId }
+      );
+    }
+    return SnapshotStore.of(root).restore(snapshotId, this.restoreOps(), dryRun);
+  }
+
+  async listSnapshots(): Promise<WorkspaceSnapshot[]> {
+    return SnapshotStore.of(await this.ready()).list();
+  }
+
+  /** Forgets a snapshot, then deletes the contents no other snapshot uses (see `gcGraceMs`) */
+  async deleteSnapshot(snapshotId: string): Promise<void> {
+    await SnapshotStore.of(await this.ready()).delete(snapshotId, this.gcGrace());
+  }
+
+  /**
+   * Deletes the snapshots `retention` (default `snapshots.retain`, else none) does not keep,
+   * then collects the contents no snapshot uses: a mark over every manifest, a sweep of the rest
+   */
+  async pruneSnapshots(
+    retention: SnapshotRetention = this.snapshotConfig.retain ?? {}
+  ): Promise<{ deleted: string[]; gc: SnapshotGcReport }> {
+    return SnapshotStore.of(await this.ready()).prune(retention, this.gcGrace());
+  }
+
+  /**
+   * Copies a snapshot with every content it uses into the snapshots of `target`, a
+   * `LocalWorkspace` or a workspace over one (`DockerWorkspace`), so `target.restore()` brings
+   * its files back there, under the same id
+   */
+  async copySnapshot(snapshotId: string, target: Workspace): Promise<WorkspaceSnapshot> {
+    const local = localOf(target);
+    if (!local) {
+      throw new WorkspaceError(
+        'UNSUPPORTED',
+        `A snapshot of a LocalWorkspace can be copied into another LocalWorkspace (or a workspace over one), not into ${target.id}`,
+        { path: snapshotId }
+      );
+    }
+    const from = SnapshotStore.of(await this.ready());
+    const toRoot = await local.ready();
+    await local.ensureServiceDir();
+    return from.copyTo(snapshotId, SnapshotStore.of(toRoot));
+  }
+
+  private gcGrace(): number {
+    return this.snapshotConfig.gcGraceMs ?? LEFTOVER_AGE;
+  }
+
+  /** How a restore writes: every path resolved inside the root, nothing followed out of it */
+  private restoreOps(): SnapshotRestoreOps {
+    return {
+      writeFile: (path, bytes, mode) => this.replaceFile(path, bytes, mode),
+      symlink: (path, target) => this.replaceWithSymlink(path, target),
+      mkdir: async (path) => {
+        const { absolute } = await this.locate(path, false);
+        await this.mkdirAt(absolute, path);
+      },
+      remove: async (path, recursive) => {
+        await this.remove(path, { recursive });
+      },
+      chmod: (path, mode) => this.chmodAt(path, mode),
+    };
+  }
+
+  /** Writes a file with `mode` through a temporary file renamed over what is at `path`, a symlink included */
+  private async replaceFile(path: string, bytes: Uint8Array, mode: number): Promise<void> {
+    const { absolute, relative: rel } = await this.locate(path, false);
+    if (rel === '.') throw new WorkspaceError('NOT_A_FILE', 'The root is not a file', { path });
+    this.refuseInternal(rel, path);
+    await this.mkdirAt(dirname(absolute), path);
+    const temp = join(dirname(absolute), `${TEMP_PREFIX}${nanoid(12)}`);
+    const handle = await this.openVerified(
+      temp,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+      path
+    );
+    let renamed = false;
+    try {
+      let written = 0;
+      while (written < bytes.byteLength) {
+        const { bytesWritten } = await handle.write(
+          bytes,
+          written,
+          bytes.byteLength - written,
+          written
+        );
+        written += bytesWritten;
+      }
+      await handle.chmod(mode & 0o7777);
+      await handle.sync();
+      await handle.close();
+      await this.verifyParent(absolute, path);
+      await rename(temp, absolute).catch((error: unknown) => {
+        throw ioError(error, path);
+      });
+      renamed = true;
+      await syncDirectory(dirname(absolute));
+    } finally {
+      if (!renamed) {
+        await handle.close().catch(() => undefined);
+        await unlink(temp).catch(() => undefined);
+      }
+    }
+  }
+
+  /** Makes a symlink to `target` at a temporary name and renames it over what is at `path` */
+  private async replaceWithSymlink(path: string, target: string): Promise<void> {
+    const { absolute, relative: rel } = await this.locate(path, false);
+    if (rel === '.') throw new WorkspaceError('NOT_A_FILE', 'The root is not a symlink', { path });
+    this.refuseInternal(rel, path);
+    await this.mkdirAt(dirname(absolute), path);
+    const temp = join(dirname(absolute), `${TEMP_PREFIX}${nanoid(12)}`);
+    await symlink(target, temp).catch((error: unknown) => {
+      throw ioError(error, path);
+    });
+    try {
+      await this.verifyParent(absolute, path);
+      await rename(temp, absolute);
+    } catch (error) {
+      await unlink(temp).catch(() => undefined);
+      throw ioError(error, path);
+    }
+  }
+
+  /** Changes the mode of a file or a directory, opened without following a symlink */
+  private async chmodAt(path: string, mode: number): Promise<void> {
+    const { absolute } = await this.locate(path, false);
+    const info = await this.lstatOf(absolute, path);
+    if (info.isSymbolicLink()) return;
+    const flags = info.isDirectory()
+      ? constants.O_RDONLY | O_DIRECTORY | O_NOFOLLOW
+      : constants.O_RDONLY | O_NOFOLLOW | O_NONBLOCK;
+    const handle = await open(absolute, flags).catch((error: unknown) => {
+      throw ioError(error, path);
+    });
+    try {
+      const opened = await handle.stat();
+      if (!sameFile(opened, info)) {
+        throw new WorkspaceError('OUTSIDE_ROOT', `${path} changed while it was opened`, { path });
+      }
+      await handle.chmod(mode & 0o7777);
+    } finally {
+      await handle.close();
+    }
   }
 
   private shellLaunch(command: string, cwd: string, env: Record<string, string>): WorkspaceLaunch {
@@ -1087,4 +1330,11 @@ function ioError(error: unknown, path: string): WorkspaceError {
     default:
       return new WorkspaceError('IO', `${path}: ${code ?? message}`, { path, cause: error });
   }
+}
+
+/** The `LocalWorkspace` behind `workspace`: itself, or the host of a workspace over one */
+function localOf(workspace: Workspace): LocalWorkspace | undefined {
+  if (workspace instanceof LocalWorkspace) return workspace;
+  if ('host' in workspace && workspace.host instanceof LocalWorkspace) return workspace.host;
+  return undefined;
 }

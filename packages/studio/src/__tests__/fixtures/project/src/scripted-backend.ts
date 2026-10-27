@@ -55,6 +55,15 @@ function decide(request: ChatRequest): {
       ],
     };
   }
+  if (request.model === 'coder') {
+    const write = /^write (\S+) (.+)$/s.exec(input);
+    if (write)
+      return {
+        content: '',
+        toolCalls: [call('write_file', { path: write[1], content: write[2] })],
+      };
+    return { content: `Nothing to write for ${input}` };
+  }
   if (input.includes('weather'))
     return { content: '', toolCalls: [call('lookup_weather', { city: 'Lisbon' })] };
   if (input.includes('publish'))

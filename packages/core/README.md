@@ -77,6 +77,7 @@ console.log(result.output);
 - **Agent Memory Tools** - `search_memory`, `open_turns` and `list_entities` with a citation lock, and memory files under `/memories` through the `memory` tool, Anthropic's own `memory_20250818` on Claude 4 and later through the Anthropic backend, a tool with the same commands everywhere else
 - **Memory Between Runs** - A pre-turn brief of cards quoting their sources (`memory.brief`), observations of entities (`memory.observations`), and a background pass that marks repeats stale and folds lessons into a playbook (`memory.consolidation`, `cog.consolidateMemory()`)
 - **Forget, Redact, Rewind** - `cog.forget()`, `cog.redactEntries()` and `cog.rewind()` take turns, threads or a whole user out of memory with every summary, item, fact, vector and memory file derived from them
+- **File Checkpoints** - `checkpoints: true` snapshots the workspace before every user message (content-addressed, unchanged files never read again), and `cog.rewind(thread, entry, { files: true })` brings back conversation, memory and files in one operation, `cog.forkThread()` forks with the files
 - **26 Built-in Tools** - Web search, SQL, email, GitHub, filesystem, and more
 - **Reflection Engine** - Self-improvement through tool call analysis
 - **Tree-of-Thought** - Advanced reasoning with branch exploration
@@ -919,6 +920,27 @@ await workspace.dispose();
 
 Tools and middleware get the run's workspace as `context.workspace` (`RunOptions.workspace`, else the agent's). A workspace starts itself on first use, the runtime only uses it, and whoever creates it disposes it. Only regular files are read and written, writes are atomic (a temporary file renamed over the target), and `remove` and `rename` check what they move and never replace an entry they did not check, so a symlink swapped in at the wrong moment cannot reach outside the root. `remove` and `rename` refuse with code `BUSY` while a command the workspace started still runs. Commands run in their own process group with a trimmed environment, a call returns when the command exits, its background processes stopped then unless `background: 'keep'`, and a timeout, an abort or `dispose()` kills the group. When a tool result is longer than the model may read and the agent has the `read_file` of `workspaceTools()`, the full text is saved in the workspace that `read_file` reads to `.cogitator/tool-results/<runId>/<toolCallId>.txt` (ignored by git, removed after `limits.toolResultRetention`, 7 days by default) and the model gets a preview with the path, to page through with `read_file`. `remove(path, { trash: true })` moves entries to `.cogitator/trash/`. See [Workspace](https://cogitator.app/docs/tools/workspace).
 
+#### File Checkpoints and Rewind
+
+`LocalWorkspace` keeps snapshots content-addressed in `.cogitator/checkpoints` (sha256 blobs for file contents and directory trees, a manifest per snapshot), so a snapshot per user message stays cheap: a file whose size, times, inode and mode did not change is not read again, and `.cogitator`, `node_modules` and `.git` are always left out. With `checkpoints` on, a run takes one before every user message it writes and names it in the entry (`metadata.fileCheckpoint`), and `rewind` restores the files with the conversation and memory:
+
+```typescript
+const cog = new Cogitator({ memory: { adapter: 'sqlite' }, checkpoints: true });
+await cog.run(coder, { input: 'Refactor the parser', threadId: 'chat' });
+
+const plan = await cog.rewind('chat', entry.id, { files: true, agents: [coder], dryRun: true });
+console.log(plan.files?.restored, plan.files?.deleted, plan.conversation.cut);
+await cog.rewind('chat', entry.id, { files: true, agents: [coder] });
+
+const fork = await cog.forkThread('chat', entry.id, {
+  files: true,
+  workspace: other,
+  source: workspace,
+});
+```
+
+`restore(id, { dryRun })` writes through the workspace's safe placement (atomic, `O_NOFOLLOW`), deletes what the snapshot did not have and never touches excluded or skipped paths. A rewind refuses with `THREAD_BUSY` while a run goes on in the thread unless `force`, restores files only with `files: true` (or `checkpoints.rewindFiles`), and drops the thread's paused and durable runs. `snapshots: { retain, exclude, maxFileBytes, gcGraceMs }` on the workspace and `pruneSnapshots()` keep the store small. See [File Checkpoints and Rewind](https://cogitator.app/docs/core/file-checkpoints).
+
 ### Tool Registry
 
 ```typescript
@@ -1546,7 +1568,7 @@ await cog.rewind('chat', earlier.id); // the turns after it stay on their branch
 - `forget` and `redactEntries` drop the paused runs of the threads they touch (`threads` and `threadsChanged` in the report), also from a `runCheckpoints` store of your own, and a fork does not copy the paused run of its origin.
 - `rewind` deletes nothing: the memory items that stood only on the turns after `toEntryId` become `stale` (`staleBecause: { reason: 'rewound' }`). It marks them before it moves the thread, so one that failed can be made again (a rewind the store refuses leaves them as they were), and a thread that stands at `toEntryId` already is left as it is. Memory extraction and compaction under way stop before their next model call once the run's branch is no longer the active one. Compaction refuses to write a summary whose entries were deleted or redacted while it was written, and extraction drops the items whose entries went while the model answered.
 
-Items, files, facts and the graph are kept by the memory id of an agent (its configured `id`, else its name). Every run notes in the thread's metadata the memory id of its agent and of every agent it hands over to (`metadata.memoryAgentIds`), and the user it ran for (`metadata.memoryUserIds`), and a call goes through the memory of the agents the threads name. A thread written before this release names only the agents that ran in it since, so pass `agents` (agents or their memory ids) for the ones before, and for a user without threads. The lists are read again just before each write, which narrows, but does not close, the window in which two runs writing at once keep only one name. `graph` is a knowledge graph of your own to go through. Each call returns a `MemoryCascadeReport`. `MemoryCascadeCall` (`agents`, `graph`, `keepReplies`) is the type of the options of `forget` and `redactEntries`, and `rewind` takes only `agents`.
+Items, files, facts and the graph are kept by the memory id of an agent (its configured `id`, else its name). Every run notes in the thread's metadata the memory id of its agent and of every agent it hands over to (`metadata.memoryAgentIds`), and the user it ran for (`metadata.memoryUserIds`), and a call goes through the memory of the agents the threads name. A thread written before this release names only the agents that ran in it since, so pass `agents` (agents or their memory ids) for the ones before, and for a user without threads. The lists are read again just before each write, which narrows, but does not close, the window in which two runs writing at once keep only one name. `graph` is a knowledge graph of your own to go through. Each call returns a `MemoryCascadeReport`, `rewind` a `RewindReport` that extends it. `MemoryCascadeCall` (`agents`, `graph`, `keepReplies`) is the type of the options of `forget` and `redactEntries`, and `rewind` takes `RewindOptions` (`agents`, `memory`, `files`, `workspace`, `dryRun`, `force`): it drops the paused and durable runs of the thread, refuses with `THREAD_BUSY` while a run goes on there unless `force`, and with `files` restores the workspace from its [file checkpoint](#file-checkpoints-and-rewind).
 
 All three throw `CogitatorError` (`VALIDATION_ERROR`) when no memory is configured or the agents to go through are not known (a thread that names none and no `agents`, or a user without threads), `redactEntries` also when the adapter cannot redact, and `rewind` also when the adapter has no branches. A store that fails part of the way throws its own error, and the call can be made again, as derived memory goes before the entries.
 

@@ -172,6 +172,12 @@ export type NewMemoryEntry = Omit<
   MemoryEntry,
   'id' | 'createdAt' | 'seq' | 'formatVersion' | 'parentId'
 > & {
+  /**
+   * The id the entry gets instead of a new one, such as one a caller names in a record written
+   * before the entry (letters, digits, `_` and `-`, at most 128). An id the adapter keeps
+   * already fails the add
+   */
+  id?: string;
   createdAt?: Date;
   parentId?: string | null;
   activate?: boolean;

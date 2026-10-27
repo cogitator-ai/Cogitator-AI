@@ -2,8 +2,9 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type * as CoreModule from '@cogitator-ai/core';
-import type { Agent, TimeTravel } from '@cogitator-ai/core';
+import type { Agent, FileRewindReport, RewindReport, TimeTravel } from '@cogitator-ai/core';
 import { InMemoryAdapter } from '@cogitator-ai/memory';
+import { fileCheckpointOf } from '@cogitator-ai/types';
 import type {
   ExecutionCheckpoint,
   MemoryEntry,
@@ -21,13 +22,17 @@ import type {
 import type * as WorkflowsModule from '@cogitator-ai/workflows';
 import type * as SwarmsModule from '@cogitator-ai/swarms';
 import type {
+  FileRestoreSummary,
   ForkOrigin,
+  ForkSummary,
   HistoryMessage,
   HostEvent,
   HostRequest,
   MemoryPlace,
   RawSpan,
   RegistryInfo,
+  RewindRequest,
+  RewindSummary,
   RunRecord,
   StepRecord,
   ThreadTree,
@@ -136,6 +141,54 @@ function treeEntry(entry: MemoryEntry): TreeEntry {
     ...(entry.toolCalls?.length && { toolCalls: entry.toolCalls.map((call) => call.name) }),
     ...(entry.event !== undefined && { event: plain(entry.event) }),
     createdAt: new Date(entry.createdAt).getTime(),
+    ...(fileCheckpointOf(entry.metadata) && { checkpoint: true }),
+  };
+}
+
+/** The text of a message entry, its text parts joined. */
+function textOf(entry: MemoryEntry): string {
+  const content = entry.message.content;
+  if (typeof content === 'string') return content;
+  return content
+    .map((part) => (part.type === 'text' ? part.text : ''))
+    .filter(Boolean)
+    .join('\n');
+}
+
+function fileSummary(files: FileRewindReport): FileRestoreSummary {
+  return {
+    snapshotId: files.snapshotId,
+    dryRun: files.dryRun,
+    restored: [...files.restored],
+    deleted: [...files.deleted],
+    unchanged: files.unchanged,
+    kept: [...files.kept],
+    entryId: files.entryId,
+    exact: files.exact,
+    workspaceId: files.workspaceId,
+  };
+}
+
+function rewindSummary(report: RewindReport): RewindSummary {
+  return {
+    threadId: report.threadId,
+    toEntryId: report.toEntryId,
+    dryRun: report.dryRun,
+    conversation: {
+      rewound: report.conversation.rewound,
+      cut: [...report.conversation.cut],
+      ...(report.conversation.previousLeafId !== undefined && {
+        previousLeafId: report.conversation.previousLeafId,
+      }),
+    },
+    staleItems: report.items.stale.length,
+    ...(report.files && { files: fileSummary(report.files) }),
+    runs: {
+      going: [...report.runs.going],
+      interrupted: [...report.runs.interrupted],
+      paused: report.runs.paused,
+      durable: [...report.runs.durable],
+    },
   };
 }
 
@@ -165,6 +218,8 @@ export class StudioHost {
   private readonly controllers = new Map<string, AbortController>();
   private readonly approvals = new Map<string, PendingApproval>();
   private readonly seeded = new Set<string>();
+  /** The thread of each chat run going on, which a forced rewind of the thread stops first. */
+  private readonly runThreads = new Map<string, string>();
   private readonly workflowRunIds = new Map<string, string>();
   private timeTravel?: Promise<TimeTravel>;
   private manager?: Promise<WorkflowsModule.DefaultWorkflowManager>;
@@ -232,7 +287,79 @@ export class StudioHost {
         return this.runSwarm(request.swarm, request.input);
       case 'thread.tree':
         return this.threadTree(request.threadId, request.agent, request.history);
+      case 'thread.rewind':
+        return this.rewind(request.threadId, request.agent, request.history, request);
+      case 'thread.fork':
+        return this.forkThread(request);
     }
+  }
+
+  /**
+   * Rewinds a thread to an entry of its active branch through the runtime, with the agent's
+   * workspace for its files, or reports what it would change with `dryRun`.
+   */
+  private async rewind(
+    threadId: string,
+    key: string,
+    history: readonly HistoryMessage[],
+    request: RewindRequest
+  ): Promise<RewindSummary> {
+    const agent = this.agent(key);
+    await this.seed(threadId, agent, history);
+    if (request.force && !request.dryRun) {
+      for (const [runId, thread] of this.runThreads) if (thread === threadId) this.stop(runId);
+    }
+    const report = await this.project.cogitator.rewind(threadId, request.entryId, {
+      agents: [agent],
+      ...(request.memory !== undefined && { memory: request.memory }),
+      ...(request.files !== undefined && { files: request.files }),
+      ...(request.dryRun !== undefined && { dryRun: request.dryRun }),
+      ...(request.force !== undefined && { force: request.force }),
+    });
+    return rewindSummary(report);
+  }
+
+  /**
+   * Forks a thread at an entry into `newThreadId` through the runtime, with the files of the
+   * agent's workspace restored to that point when asked, and the messages of the forked branch.
+   */
+  private async forkThread(request: {
+    threadId: string;
+    agent: string;
+    history: readonly HistoryMessage[];
+    entryId: string;
+    newThreadId: string;
+    files?: boolean;
+  }): Promise<ForkSummary> {
+    const agent = this.agent(request.agent);
+    await this.seed(request.threadId, agent, request.history);
+    const result = await this.project.cogitator.forkThread(request.threadId, request.entryId, {
+      newThreadId: request.newThreadId,
+      agents: [agent],
+      ...(request.files !== undefined && { files: request.files }),
+    });
+    const threadId = result.thread.id;
+    this.seeded.add(threadId);
+    return {
+      threadId,
+      snapshotsCopied: [...result.snapshotsCopied],
+      ...(result.files && { files: fileSummary(result.files) }),
+      base: await this.messagesOf(threadId),
+    };
+  }
+
+  /** The user and assistant messages of a thread's active branch with their text. */
+  private async messagesOf(threadId: string): Promise<HistoryMessage[]> {
+    const memory = await this.project.cogitator.getMemory();
+    if (!memory?.getPath) return [];
+    const path = await memory.getPath({ threadId, types: ['message'] });
+    if (!path.success) throw new Error(path.error);
+    return path.data.flatMap((entry): HistoryMessage[] => {
+      const role = entry.message.role;
+      if (role !== 'user' && role !== 'assistant') return [];
+      const content = textOf(entry);
+      return content ? [{ role, content }] : [];
+    });
   }
 
   /**
@@ -445,6 +572,7 @@ export class StudioHost {
         },
       })
     );
+    this.runThreads.set(runId, threadId);
     this.finish(runId, done, controller);
     return { runId };
   }
@@ -499,9 +627,8 @@ export class StudioHost {
       )
       .finally(() => {
         this.controllers.delete(runId);
-        for (const [id, pending] of this.approvals) {
-          if (pending.runId === runId) this.decide(id, false, STOPPED);
-        }
+        this.runThreads.delete(runId);
+        this.rejectApprovals(runId, STOPPED);
       });
   }
 
@@ -553,10 +680,15 @@ export class StudioHost {
     const controller = this.controllers.get(runId);
     if (!controller) return { stopped: false };
     controller.abort(new Error(STOPPED));
-    for (const [id, pending] of this.approvals) {
-      if (pending.runId === runId) this.decide(id, false, STOPPED);
-    }
+    this.rejectApprovals(runId, STOPPED);
     return { stopped: true };
+  }
+
+  /** Rejects the approvals a run waits for, so a run that was stopped does not wait on. */
+  private rejectApprovals(runId: string, reason: string): void {
+    for (const [id, pending] of this.approvals) {
+      if (pending.runId === runId) this.decide(id, false, reason);
+    }
   }
 
   private travel(): Promise<TimeTravel> {

@@ -54,6 +54,8 @@ export const AGENT_CONFIG_WIRE_FIELDS = {
     'not carried: the receiving side decides what its tools may do, a sender must not widen it',
   budget: 'not carried: the receiving side decides what a session may spend',
   durable: 'not carried: the receiving side decides whether its runs keep checkpoints',
+  checkpoints:
+    'not carried: file checkpoints belong to the workspace, which the receiving side passes itself',
   subagents:
     'not carried: the receiving side decides which of its subagents an agent may delegate to',
 } as const satisfies Record<keyof AgentConfig, string>;

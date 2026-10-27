@@ -24,6 +24,9 @@ import { CONVERSATION_ENTRY_TYPES } from '@cogitator-ai/types';
 
 const MAX_TRACKED_THREADS = 10_000;
 
+/** What a caller-given entry id may be made of, see `NewMemoryEntry.id` */
+const ENTRY_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
 export abstract class BaseMemoryAdapter implements MemoryAdapter {
   abstract readonly provider: MemoryProvider;
 
@@ -62,6 +65,19 @@ export abstract class BaseMemoryAdapter implements MemoryAdapter {
 
   protected generateId(prefix: string): string {
     return `${prefix}_${nanoid(12)}`;
+  }
+
+  /**
+   * The id a new entry gets: the one it names (`NewMemoryEntry.id`), else a new one. A failure
+   * for a malformed id, so no adapter stores a key it cannot read back
+   */
+  protected entryIdOf(entry: NewMemoryEntry): MemoryResult<string> {
+    if (entry.id === undefined) return this.success(this.generateId('entry'));
+    return ENTRY_ID.test(entry.id)
+      ? this.success(entry.id)
+      : this.failure(
+          `Invalid entry id ${JSON.stringify(entry.id)}: letters, digits, _ and - only, at most 128`
+        );
   }
 
   /**

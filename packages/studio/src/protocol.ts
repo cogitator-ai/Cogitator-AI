@@ -286,6 +286,8 @@ export interface TreeEntry {
   createdAt: number;
   /** The run that wrote it, when the studio knows. */
   runId?: string;
+  /** Whether it is a user message that names a file checkpoint, files a rewind can restore. */
+  checkpoint?: boolean;
 }
 
 /** Every branch of a thread's memory, with the one its next message goes on. */
@@ -339,6 +341,82 @@ export interface ThreadRecord {
   createdAt: number;
   updatedAt: number;
   runs: string[];
+  /** Runs whose entries a rewind took off the active branch, kept to show faded. */
+  rewoundRuns?: string[];
+  /** The thread and entry this thread was forked from. */
+  forkOf?: { threadId: string; entryId: string };
+  /** The conversation a forked thread starts from, shown above its own turns and replayed with them. */
+  base?: HistoryMessage[];
+}
+
+/** What a file restore of a rewind or a fork changed, or would change in a dry run. */
+export interface FileRestoreSummary {
+  snapshotId: string;
+  dryRun: boolean;
+  /** Files written back as the checkpoint has them. */
+  restored: string[];
+  /** Files removed, as the checkpoint did not have them. */
+  deleted: string[];
+  unchanged: number;
+  /** Paths left as they are, such as files the checkpoint skipped. */
+  kept: string[];
+  /** The user message whose checkpoint it is. */
+  entryId: string;
+  /** Whether the checkpoint holds the files at that very point, not before the turn it is in. */
+  exact: boolean;
+  workspaceId: string;
+}
+
+/** What a rewind of a thread changed, or would change in a dry run. */
+export interface RewindSummary {
+  threadId: string;
+  toEntryId: string;
+  dryRun: boolean;
+  conversation: {
+    /** Whether the active leaf moved back. */
+    rewound: boolean;
+    /** The entries that leave the active branch, oldest first. */
+    cut: string[];
+    previousLeafId?: string;
+  };
+  /** Memory items that stood only on the entries cut off. */
+  staleItems: number;
+  files?: FileRestoreSummary;
+  runs: {
+    /** Runs going on in the thread when the rewind began. */
+    going: string[];
+    /** Runs the rewind aborted, with `force`. */
+    interrupted: string[];
+    /** Whether the paused run of the thread is dropped. */
+    paused: boolean;
+    /** Durable runs of the thread dropped. */
+    durable: string[];
+  };
+}
+
+/** A thread forked from another at an entry. */
+export interface ForkSummary {
+  threadId: string;
+  /** Snapshots copied into the fork's workspace. */
+  snapshotsCopied: string[];
+  files?: FileRestoreSummary;
+  /** The user and assistant messages of the forked branch, oldest first. */
+  base: HistoryMessage[];
+}
+
+/** What a rewind is asked to do. */
+export interface RewindRequest {
+  entryId: string;
+  files?: boolean;
+  memory?: boolean;
+  dryRun?: boolean;
+  force?: boolean;
+}
+
+/** What a fork of a thread is asked to do. */
+export interface ThreadForkRequest {
+  entryId: string;
+  files?: boolean;
 }
 
 export interface ForkRequest {
@@ -506,6 +584,21 @@ export type HostRequest =
       agent: string;
       history: HistoryMessage[];
     }
+  | ({
+      type: 'thread.rewind';
+      requestId: string;
+      threadId: string;
+      agent: string;
+      history: HistoryMessage[];
+    } & RewindRequest)
+  | ({
+      type: 'thread.fork';
+      requestId: string;
+      threadId: string;
+      agent: string;
+      newThreadId: string;
+      history: HistoryMessage[];
+    } & ThreadForkRequest)
   | { type: 'workflow.run'; requestId: string; workflow: string; input: unknown }
   | { type: 'swarm.run'; requestId: string; swarm: string; input: string }
   | { type: 'workflow.rerun'; requestId: string; run: RunRecord; fromNode: string };
@@ -522,4 +615,11 @@ export type HostMessage =
   | { type: 'load-failed'; error: string }
   | { type: 'event'; event: HostEvent }
   | { type: 'response'; requestId: string; ok: true; data: unknown }
-  | { type: 'response'; requestId: string; ok: false; error: string };
+  | {
+      type: 'response';
+      requestId: string;
+      ok: false;
+      error: string;
+      /** The code of a runtime error, such as `THREAD_BUSY` or `VALIDATION_ERROR`. */
+      code?: string;
+    };

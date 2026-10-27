@@ -6,13 +6,15 @@ import { fileURLToPath } from 'node:url';
 import { calculateCost, initializeModels } from '@cogitator-ai/models';
 import type {
   ForkRequest,
+  ForkSummary,
   HostStatus,
+  RewindSummary,
   RunRecord,
   StudioEvent,
   ThreadRecord,
   ThreadTree,
 } from '../protocol.js';
-import { HostManager } from './host-manager.js';
+import { HostManager, HostRequestError } from './host-manager.js';
 import { StudioStore, type Pricer } from './store.js';
 
 export interface StudioOptions {
@@ -126,6 +128,20 @@ function optionalBoolean(body: Record<string, unknown>, field: string): boolean 
   if (value === undefined || value === null) return undefined;
   if (typeof value !== 'boolean') throw new HttpError(400, `"${field}" must be true or false`);
   return value;
+}
+
+/**
+ * A refusal of the runtime as the status it answers with: a thread a run goes on in is a
+ * conflict, a point the runtime cannot rewind or fork at is a bad request.
+ */
+function runtimeRefusal(error: unknown): unknown {
+  if (!(error instanceof Error)) return error;
+  const code = error instanceof HostRequestError ? error.code : undefined;
+  if (code === 'THREAD_BUSY' || error.message.includes('has a run going on')) {
+    return new HttpError(409, error.message);
+  }
+  if (code === 'VALIDATION_ERROR') return new HttpError(400, error.message);
+  return error;
 }
 
 function sameToken(given: string | undefined, expected: string): boolean {
@@ -323,6 +339,12 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
     return run;
   }
 
+  function threadOr404(id: string): ThreadRecord {
+    const thread = store.getThread(id);
+    if (!thread) throw new HttpError(404, `There is no thread ${id}`);
+    return thread;
+  }
+
   async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const parts = url.pathname.split('/').filter(Boolean).slice(1).map(decodeURIComponent);
     const method = req.method ?? 'GET';
@@ -397,6 +419,61 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
           history: store.history(thread.id),
         });
         return send(res, 200, store.attribute(tree));
+      }
+      case 'POST /threads/:id/rewind': {
+        const thread = threadOr404(parts[1]);
+        const body = await readJson(req);
+        const entryId = requireString(body, 'entryId');
+        const files = optionalBoolean(body, 'files');
+        const memory = optionalBoolean(body, 'memory');
+        const dryRun = optionalBoolean(body, 'dryRun');
+        const force = optionalBoolean(body, 'force');
+        const summary = await manager
+          .request<RewindSummary>({
+            type: 'thread.rewind',
+            threadId: thread.id,
+            agent: thread.agent,
+            history: store.history(thread.id),
+            entryId,
+            ...(files !== undefined && { files }),
+            ...(memory !== undefined && { memory }),
+            ...(dryRun !== undefined && { dryRun }),
+            ...(force !== undefined && { force }),
+          })
+          .catch((error: unknown) => {
+            throw runtimeRefusal(error);
+          });
+        const changed = summary.conversation.rewound
+          ? store.markRewound(thread.id, summary.conversation.cut)
+          : thread;
+        if (summary.conversation.rewound) broadcastThread(changed);
+        return send(res, 200, { ...summary, thread: changed ?? thread });
+      }
+      case 'POST /threads/:id/fork': {
+        const thread = threadOr404(parts[1]);
+        const body = await readJson(req);
+        const entryId = requireString(body, 'entryId');
+        const files = optionalBoolean(body, 'files');
+        const fork = await manager
+          .request<ForkSummary>({
+            type: 'thread.fork',
+            threadId: thread.id,
+            agent: thread.agent,
+            history: store.history(thread.id),
+            entryId,
+            newThreadId: `studio_${randomUUID()}`,
+            ...(files !== undefined && { files }),
+          })
+          .catch((error: unknown) => {
+            throw runtimeRefusal(error);
+          });
+        const forked = store.addForkedThread(thread, {
+          threadId: fork.threadId,
+          entryId,
+          base: fork.base,
+        });
+        broadcastThread(forked);
+        return send(res, 201, { ...fork, thread: forked });
       }
       case 'POST /chat': {
         const body = await readJson(req);

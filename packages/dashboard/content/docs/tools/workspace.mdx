@@ -50,18 +50,18 @@ After a handoff, the agent the run went on as brings its own workspace, unless t
 
 ## The interface
 
-| Member                                                   | What it does                                                                                    |
-| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `id`, `root`, `cwd`                                      | Stable id, absolute root, current directory relative to the root (`.` by default)               |
-| `start()`, `dispose()`                                   | Prepare (optional) and release, both idempotent                                                 |
-| `withCwd(cwd)`                                           | The same workspace (id, files, container) with another current directory                        |
-| `contains(path)`                                         | Whether a path lies inside the root once symlinks are followed, never throws                    |
-| `read`, `readBytes`, `write`                             | Text (UTF-8) or bytes of regular files, with a size limit (`maxBytes`)                          |
-| `list(path, { recursive, glob, ... })`                   | Entries with type, size and modification time, symlinked directories listed but not entered     |
-| `stat`, `exists`, `mkdir`, `rename`                      | What their names say, `rename` refuses to replace an entry unless `overwrite` is set            |
-| `remove(path, { recursive, trash })`                     | Deletes, or with `trash: true` moves the entry to `.cogitator/trash/<time>/` inside the root    |
-| `exec(command, options)`                                 | A shell command in `cwd` or `options.cwd`, streaming `onStdout`/`onStderr`, `timeout`, `signal` |
-| `snapshot`, `restore`, `listSnapshots`, `deleteSnapshot` | Optional: record the files and go back to them                                                  |
+| Member                                                                   | What it does                                                                                        |
+| ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `id`, `root`, `cwd`                                                      | Stable id, absolute root, current directory relative to the root (`.` by default)                   |
+| `start()`, `dispose()`                                                   | Prepare (optional) and release, both idempotent                                                     |
+| `withCwd(cwd)`                                                           | The same workspace (id, files, container) with another current directory                            |
+| `contains(path)`                                                         | Whether a path lies inside the root once symlinks are followed, never throws                        |
+| `read`, `readBytes`, `write`                                             | Text (UTF-8) or bytes of regular files, with a size limit (`maxBytes`)                              |
+| `list(path, { recursive, glob, ... })`                                   | Entries with type, size and modification time, symlinked directories listed but not entered         |
+| `stat`, `exists`, `mkdir`, `rename`                                      | What their names say, `rename` refuses to replace an entry unless `overwrite` is set                |
+| `remove(path, { recursive, trash })`                                     | Deletes, or with `trash: true` moves the entry to `.cogitator/trash/<time>/` inside the root        |
+| `exec(command, options)`                                                 | A shell command in `cwd` or `options.cwd`, streaming `onStdout`/`onStderr`, `timeout`, `signal`     |
+| `snapshot`, `restore`, `listSnapshots`, `deleteSnapshot`, `copySnapshot` | Optional: record the files and go back to them, see [File Checkpoints](/docs/core/file-checkpoints) |
 
 `exec` resolves with `{ stdout, stderr, exitCode, timedOut, truncated, durationMs }`, also for a non-zero exit or a timeout (exit code 124), and rejects with code `ABORTED` when its signal aborts. A timeout or an abort sends SIGTERM to the command's process group, then SIGKILL. The call returns when the command itself exits, even when a process it started in the background (`server &`) still holds its output open: with `background: 'kill'` (the default) the rest of the group is stopped then, with `background: 'keep'` it runs on until `dispose()`, its output no longer read, so redirect it (`server > server.log 2>&1 &`).
 
@@ -137,7 +137,7 @@ What the guard does not stop:
 
 ### Snapshots
 
-`LocalWorkspace` does not implement snapshots. Copying the tree for every checkpoint is too slow for real projects, so they wait for a content-addressed store that keeps each version of a file once. Remote workspaces implement them as tar archives inside their sandbox, see [Remote Workspaces](/docs/tools/remote-workspaces#same-behavior-on-every-provider). The interface is ready for a checkpoint per user message: `snapshot({ label, metadata, exclude })` returns an `id`, the `workspaceId`, `createdAt` and the globs it left out (`.cogitator/**` by default, so restoring never wipes the trash or saved results), and `listSnapshots()` and `deleteSnapshot(id)` manage what is kept.
+`LocalWorkspace` keeps snapshots content-addressed in `.cogitator/checkpoints`: every file content and directory listing is stored once under its sha256, and a file whose size, times, inode and mode did not change since the snapshot before is not read again, so a snapshot per user message stays cheap on a real project. `snapshot({ label, metadata, exclude, maxFileBytes })` returns an `id`, the `workspaceId`, `createdAt`, the globs it left out (`.cogitator`, `node_modules` and `.git` at any depth always, so restoring never wipes the trash, saved results, dependencies or the repository), the files it `skipped` and its `stats`. `restore(id, { dryRun })` brings the files back through the safe placement above and reports what it `restored`, `deleted` and `kept`, `listSnapshots()`, `deleteSnapshot(id)`, `pruneSnapshots(retention)` and `copySnapshot(id, target)` manage what is kept, and the `snapshots` option sets excludes, the size cap and a retention policy. Remote workspaces implement the same API with tar archives inside their sandbox, see [Remote Workspaces](/docs/tools/remote-workspaces#same-behavior-on-every-provider). Runs take a snapshot before every user message with `checkpoints: true`, and `cog.rewind()` restores it with the conversation, see [File Checkpoints and Rewind](/docs/core/file-checkpoints).
 
 ## DockerWorkspace
 

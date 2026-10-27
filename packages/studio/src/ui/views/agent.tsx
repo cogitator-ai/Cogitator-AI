@@ -11,6 +11,7 @@ import {
   Bot,
   ChevronRight,
   GitBranch,
+  GitFork,
   Info,
   Plus,
   Search,
@@ -19,7 +20,7 @@ import {
   SquareTerminal,
   Wrench,
 } from 'lucide-react';
-import type { AgentInfo, RunRecord, ThreadRecord } from '../../protocol';
+import type { AgentInfo, HistoryMessage, RunRecord, ThreadRecord } from '../../protocol';
 import { api } from '../api';
 import {
   CopyButton,
@@ -65,11 +66,55 @@ function Reasoning({ text, live }: { text: string; live: boolean }) {
   );
 }
 
-function Turn({ run }: { run: RunRecord }) {
+/** The conversation a forked thread starts from, as the fork copied it. */
+function BaseMessages({ messages }: { messages: HistoryMessage[] }) {
+  return (
+    <div className="turn is-base" data-testid="base-messages">
+      {messages.map((message, index) =>
+        message.role === 'user' ? (
+          <div key={index} className="msg-user">
+            {message.content}
+          </div>
+        ) : (
+          <div key={index} className="msg-assistant">
+            <Markdown text={message.content} />
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+function ForkNotice({ thread, agentKey }: { thread: ThreadRecord; agentKey: string }) {
+  const source = useStudio((state) =>
+    thread.forkOf ? state.threads[thread.forkOf.threadId] : undefined
+  );
+  if (!thread.forkOf) return null;
+  return (
+    <div className="notice chat-notice" data-testid="fork-notice">
+      <GitFork size={14} />
+      <span>
+        Forked from{' '}
+        <a className="link" href={href('agents', agentKey, thread.forkOf.threadId)}>
+          {source?.title ?? 'another thread'}
+        </a>
+        , it goes on from the conversation up to that point.
+      </span>
+    </div>
+  );
+}
+
+function Turn({ run, rewound }: { run: RunRecord; rewound: boolean }) {
   const live = run.status === 'running' || run.status === 'waiting';
   const tokens = run.usage ? run.usage.inputTokens + run.usage.outputTokens : undefined;
   return (
-    <div className="turn" data-testid="turn" data-run={run.id} data-status={run.status}>
+    <div
+      className={`turn ${rewound ? 'is-rewound' : ''}`}
+      data-testid="turn"
+      data-run={run.id}
+      data-status={run.status}
+      data-rewound={rewound || undefined}
+    >
       <div className="msg-user">{run.input}</div>
       <div className="msg-assistant">
         {run.reasoning && (
@@ -105,6 +150,14 @@ function Turn({ run }: { run: RunRecord }) {
         {!(live && !run.usage) && (
           <div className="turn-meta">
             <StatusIcon status={run.status} size={14} />
+            {rewound && (
+              <span
+                className="chip turn-rewound"
+                data-tip="A rewind took this turn off the active branch, the next message does not see it"
+              >
+                rewound
+              </span>
+            )}
             {run.usage && (
               <>
                 <span className="sep">·</span>
@@ -275,6 +328,8 @@ export function AgentView({ agentKey, threadId }: { agentKey: string; threadId?:
     .map((id) => runs[id])
     .filter((run): run is RunRecord => run !== undefined);
   const active = turns.find((run) => run.status === 'running' || run.status === 'waiting');
+  const rewound = new Set(thread?.rewoundRuns ?? []);
+  const base = thread?.base ?? [];
   const [input, setInput] = useState('');
   const [error, setError] = useState<string>();
   const [sending, setSending] = useState(false);
@@ -413,7 +468,8 @@ export function AgentView({ agentKey, threadId }: { agentKey: string; threadId?:
             }}
           >
             <div className="chat-inner" data-testid="messages">
-              {memory === 'studio' && turns.length === 0 && (
+              {thread && <ForkNotice thread={thread} agentKey={agentKey} />}
+              {memory === 'studio' && turns.length === 0 && !thread?.forkOf && (
                 <div className="notice chat-notice">
                   <Info size={14} />
                   <span>
@@ -422,9 +478,10 @@ export function AgentView({ agentKey, threadId }: { agentKey: string; threadId?:
                   </span>
                 </div>
               )}
-              {turns.length === 0 && <AgentIntro agent={agent} />}
+              {turns.length === 0 && base.length === 0 && <AgentIntro agent={agent} />}
+              {base.length > 0 && <BaseMessages messages={base} />}
               {turns.map((run) => (
-                <Turn key={run.id} run={run} />
+                <Turn key={run.id} run={run} rewound={rewound.has(run.id)} />
               ))}
             </div>
           </div>
@@ -493,8 +550,10 @@ export function AgentView({ agentKey, threadId }: { agentKey: string; threadId?:
         {thread && treeOpen && (
           <ThreadTreePanel
             threadId={thread.id}
+            agentKey={agentKey}
             version={`${progress}:${finishedOnThread}`}
             onClose={() => setTreeOpen(false)}
+            onRewound={() => void loadThread(thread.id).catch(() => undefined)}
           />
         )}
       </div>

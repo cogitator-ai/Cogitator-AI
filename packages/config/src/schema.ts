@@ -1016,10 +1016,22 @@ export const DurableRunsConfigSchema = z.union([
   }),
 ]);
 
+/** File checkpoints before every user message, see `CogitatorConfig.checkpoints` */
+export const CheckpointsConfigSchema = z.union([
+  z.boolean(),
+  z.object({
+    enabled: z.boolean().optional(),
+    exclude: z.array(z.string().min(1)).optional(),
+    maxFileBytes: z.number().int().positive().optional(),
+    rewindFiles: z.boolean().optional(),
+  }),
+]);
+
 export const CogitatorConfigSchema = z.object({
   llm: LLMConfigSchema.optional(),
   multitaskStrategy: MultitaskStrategySchema.optional(),
   durable: DurableRunsConfigSchema.optional(),
+  checkpoints: CheckpointsConfigSchema.optional(),
   prompts: PromptsConfigSchema.optional(),
   limits: LimitsConfigSchema.optional(),
   permissions: PermissionsConfigSchema.optional(),

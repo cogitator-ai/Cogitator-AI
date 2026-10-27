@@ -129,6 +129,26 @@ export class ThreadRuns {
       throw error;
     }
   }
+
+  /** The ids of the runs going on in `threadId` (a run not started yet has none), oldest first */
+  active(threadId: string): { count: number; runIds: string[] } {
+    const seats = this.threads.get(threadId) ?? [];
+    return {
+      count: seats.length,
+      runIds: seats.flatMap((seat) => (seat.runId === undefined ? [] : [seat.runId])),
+    };
+  }
+
+  /**
+   * Aborts every run going on in `threadId` with `reason` and resolves once they are all done, so
+   * what changes the thread next does not race them
+   */
+  async interrupt(threadId: string, reason: Error): Promise<string[]> {
+    const seats = [...(this.threads.get(threadId) ?? [])];
+    for (const seat of seats) seat.controller.abort(reason);
+    await Promise.all(seats.map((seat) => seat.done));
+    return seats.flatMap((seat) => (seat.runId === undefined ? [] : [seat.runId]));
+  }
 }
 
 function createSeat(userId: string | undefined): Seat {

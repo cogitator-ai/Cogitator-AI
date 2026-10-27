@@ -244,12 +244,20 @@ class Cogitator {
     options?: MemoryCascadeCall & { reason?: string }
   ): Promise<MemoryCascadeReport>;
   // Rewinds the thread to an entry of its active branch, items standing only on the turns after it
-  // go stale. Also throws when the adapter has no branches
+  // go stale, its paused and durable runs are dropped, and with files the workspace is restored
+  // from the file checkpoint at that point. Throws when the adapter has no branches, THREAD_BUSY
+  // while a run goes on (unless force)
   rewind(
     threadId: string,
     toEntryId: string,
-    options?: Pick<MemoryCascadeCall, 'agents'> // { agents? } only
-  ): Promise<MemoryCascadeReport>;
+    options?: RewindOptions // { agents?, memory?, files?, workspace?, dryRun?, force? }
+  ): Promise<RewindReport>; // MemoryCascadeReport + conversation, files, runs
+  // Copies the branch up to an entry into a new thread, with files the workspace restored there
+  forkThread(
+    threadId: string,
+    atEntryId: string,
+    options?: ForkThreadOptions // { newThreadId?, files?, workspace?, source?, agents?, force? }
+  ): Promise<ForkThreadResult>; // { thread, snapshotsCopied, files? }
 
   // Versioned instructions and A/B tests
   readonly prompts: PromptRegistry;

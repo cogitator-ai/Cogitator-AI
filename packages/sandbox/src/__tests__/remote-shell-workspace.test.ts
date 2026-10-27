@@ -14,7 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
-import { WorkspaceError } from '@cogitator-ai/types';
+import { WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE, WorkspaceError } from '@cogitator-ai/types';
 import type {
   RemoteProcess,
   RemoteRunResult,
@@ -742,7 +742,7 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', { timeout: 60_000
     });
     expect(first).toMatchObject({
       label: 'before',
-      exclude: ['.cogitator/**', 'build/**'],
+      exclude: [...WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE, 'build/**'],
       workspaceId: workspace.id,
     });
 
@@ -751,7 +751,17 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', { timeout: 60_000
     await workspace.exec(
       `echo v2 > src/a.txt && rm -r src/old empty && mkdir -p newdir/deep && echo n > newdir/deep/n.txt && echo b2 > build/out.txt && echo b3 > build/new.txt && rm alink && ln -s ${shellQuote(outside)} alink && touch .cogitator/tool-results/r/2.txt`
     );
-    await workspace.restore(first.id);
+    const plan = await workspace.restore(first.id, { dryRun: true });
+    expect(plan).toMatchObject({
+      dryRun: true,
+      deleted: ['newdir', 'newdir/deep', 'newdir/deep/n.txt'],
+    });
+    expect(plan.restored).toEqual(
+      expect.arrayContaining(['alink', 'empty', 'src/a.txt', 'src/old'])
+    );
+    expect(readFileSync(join(root, 'src/a.txt'), 'utf8')).toBe('v2\n');
+    const result = await workspace.restore(first.id);
+    expect(result).toMatchObject({ dryRun: false, deleted: plan.deleted, restored: plan.restored });
     expect(readFileSync(join(root, 'src/a.txt'), 'utf8')).toBe('v1\n');
     expect(readFileSync(join(root, 'src/old/k.txt'), 'utf8')).toBe('keep\n');
     expect(statSync(join(root, 'empty')).isDirectory()).toBe(true);
@@ -766,7 +776,7 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', { timeout: 60_000
     const listed = await workspace.listSnapshots();
     expect(listed.map((snapshot) => snapshot.id)).toEqual([first.id, second.id]);
     expect(listed[0]).toEqual(first);
-    expect(second.exclude).toEqual(['.cogitator/**']);
+    expect(second.exclude).toEqual(WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE);
     await workspace.deleteSnapshot(first.id);
     expect((await workspace.listSnapshots()).map((snapshot) => snapshot.id)).toEqual([second.id]);
     await expect(workspace.restore(first.id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
@@ -1010,8 +1020,40 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', { timeout: 60_000
     await workspace.write('big.txt', 'x'.repeat(200));
     await expect(workspace.snapshot()).rejects.toMatchObject({ code: 'TOO_LARGE' });
     await expect(workspace.snapshot({ exclude: ['big.txt'] })).resolves.toMatchObject({
-      exclude: ['.cogitator/**', 'big.txt'],
+      exclude: [...WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE, 'big.txt'],
     });
     expect(await workspace.listSnapshots()).toHaveLength(1);
+  });
+
+  it('skips files over maxFileBytes and leaves them alone on restore', async () => {
+    const { workspace, root } = fresh();
+    await workspace.write('big.bin', 'x'.repeat(2048));
+    await workspace.write('small.txt', 'small');
+    const snapshot = await workspace.snapshot({ maxFileBytes: 1024 });
+    expect(snapshot.skipped).toEqual([{ path: 'big.bin', reason: 'too-large', size: 2048 }]);
+    expect((await workspace.listSnapshots())[0]?.skipped).toEqual(snapshot.skipped);
+    await workspace.write('big.bin', 'y'.repeat(4096));
+    await workspace.write('small.txt', 'changed');
+    const result = await workspace.restore(snapshot.id);
+    expect(result.kept).toEqual(['big.bin']);
+    expect(result.deleted).toEqual([]);
+    expect(readFileSync(join(root, 'big.bin'), 'utf8')).toBe('y'.repeat(4096));
+    expect(readFileSync(join(root, 'small.txt'), 'utf8')).toBe('small');
+  });
+
+  it('leaves node_modules and .git out of snapshots by default', async () => {
+    const { workspace, root } = fresh();
+    await workspace.exec(
+      'mkdir -p node_modules/dep app/node_modules/x .git && echo d > node_modules/dep/i.js && echo x > app/node_modules/x/i.js && echo h > .git/HEAD && echo a > app/a.ts'
+    );
+    const snapshot = await workspace.snapshot();
+    await workspace.exec(
+      'echo d2 > node_modules/dep/i.js && echo h2 > .git/HEAD && echo a2 > app/a.ts'
+    );
+    await workspace.restore(snapshot.id);
+    expect(readFileSync(join(root, 'node_modules/dep/i.js'), 'utf8')).toBe('d2\n');
+    expect(readFileSync(join(root, '.git/HEAD'), 'utf8')).toBe('h2\n');
+    expect(readFileSync(join(root, 'app/node_modules/x/i.js'), 'utf8')).toBe('x\n');
+    expect(readFileSync(join(root, 'app/a.ts'), 'utf8')).toBe('a\n');
   });
 });

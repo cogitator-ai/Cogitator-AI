@@ -62,6 +62,7 @@ cogitator run -m ollama/llama3.1:8b "What is the capital of France?"
 | `cogitator status`         | Show Docker Compose and Ollama status (alias: `ps`)                                                             |
 | `cogitator logs`           | View Docker Compose service logs                                                                                |
 | `cogitator deploy`         | Deploy with Docker or Fly.io (see [`@cogitator-ai/deploy`](https://www.npmjs.com/package/@cogitator-ai/deploy)) |
+| `cogitator rewind`         | Rewind a thread's conversation, memory and files to an entry, a dry run first                                   |
 
 Every command ends with examples in its `--help`.
 
@@ -276,6 +277,19 @@ cogitator daemon uninstall
 ```
 
 The PID file (`.cogitator/daemon.pid`) records the launched script, so `stop` never signals an unrelated process that reused the PID. Service definitions use absolute paths, the current `PATH`, and start on login (`loginctl enable-linger` keeps a systemd user service running after logout).
+
+---
+
+### cogitator rewind
+
+```bash
+cogitator rewind thread_42                                  # the active branch, entries with a file checkpoint marked [files]
+cogitator rewind thread_42 entry_abc --files --dry-run      # what would change
+cogitator rewind thread_42 entry_abc --files                # shows the plan, asks, rewinds conversation, memory and files
+cogitator rewind thread_42 entry_abc --files --no-memory -y # restore the files only, without a prompt
+```
+
+Loads the runtime and agents the registry exports (`src/cogitator.ts`, `--registry` for another) and calls `cog.rewind()`. `--agent <key>` picks the agent whose workspace to restore (the thread's agent by default), `--force` aborts the runs going on in the thread, `--json` prints the report. Without a terminal it needs `--yes`. See [File Checkpoints and Rewind](https://cogitator.app/docs/core/file-checkpoints).
 
 ---
 

@@ -8,6 +8,7 @@ import type { ZodType } from 'zod';
 import type { ReasoningConfig } from './llm';
 import type { RunMiddleware } from './middleware';
 import type { Workspace } from './workspace';
+import type { FileCheckpointsConfig } from './checkpoints';
 import type { RunTimeouts } from './runtime';
 import type { BudgetLimits, PermissionOptions } from './permissions';
 
@@ -73,6 +74,11 @@ export interface AgentConfig<TDeps = unknown> {
    * see `CogitatorConfig.durable`. Overrides the runtime's setting, a run's `durable` wins
    */
   durable?: boolean;
+  /**
+   * Whether this agent's runs take a file checkpoint before every user message, see
+   * `CogitatorConfig.checkpoints`. Overrides the runtime's setting, a run's `checkpoints` win
+   */
+  checkpoints?: boolean | FileCheckpointsConfig;
   /**
    * Gives the model the built-in `write_todos` tool, to plan a long task as a todo list and keep
    * it current: each call replaces the list, with at most one item in progress. The list is kept

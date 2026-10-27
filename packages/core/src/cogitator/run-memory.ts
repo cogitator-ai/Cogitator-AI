@@ -1,12 +1,15 @@
-import type {
-  MemoryAdapter,
-  MemoryEntry,
-  Message,
-  RunCheckpoint,
-  RunMemoryPlace,
-  RunOptions,
-  ToolCall,
-  ToolResult,
+import { nanoid } from 'nanoid';
+import {
+  FILE_CHECKPOINT_KEY,
+  type FileCheckpointRef,
+  type MemoryAdapter,
+  type MemoryEntry,
+  type Message,
+  type RunCheckpoint,
+  type RunMemoryPlace,
+  type RunOptions,
+  type ToolCall,
+  type ToolResult,
 } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
 import { saveEntry, type EntryEvent, type EntryPlacement } from './message-builder';
@@ -38,6 +41,8 @@ export class RunMemory {
   private check: (() => Promise<void>) | undefined;
   /** What the run's entries name in their metadata, for a durable run */
   private taggedRun: string | undefined;
+  /** Takes the file checkpoint of a user message about to be written, see {@link checkpoints} */
+  private checkpointer: ((entryId: string) => Promise<FileCheckpointRef | undefined>) | undefined;
 
   /**
    * @param memory the runtime's memory adapter when it writes, read then: memory connects
@@ -127,6 +132,15 @@ export class RunMemory {
     this.leaseEpoch = epoch;
   }
 
+  /**
+   * Takes a file checkpoint with `take` before every user message the run writes from now on
+   * ({@link saveUser}), given the id the entry is about to get, and names it in the entry's
+   * metadata (`fileCheckpoint`)
+   */
+  checkpoints(take: (entryId: string) => Promise<FileCheckpointRef | undefined>): void {
+    this.checkpointer = take;
+  }
+
   /** What the run's entries name in their metadata, see {@link tag} */
   get tagged(): string | undefined {
     return this.taggedRun;
@@ -175,6 +189,14 @@ export class RunMemory {
     return this.write(agentId, message, toolCalls, toolResults, undefined, metadata);
   }
 
+  /**
+   * Saves a message the user sent (the input, a queued message), with `metadata` on its entry,
+   * after the file checkpoint of the files as they are right before it, when the run takes them
+   */
+  saveUser(agentId: string, message: Message, metadata?: Record<string, unknown>): Promise<void> {
+    return this.write(agentId, message, undefined, undefined, undefined, metadata, true);
+  }
+
   /** Records an event of the session, with a note of it as its message */
   event(agentId: string, event: EntryEvent, note: string): Promise<void> {
     return this.write(agentId, { role: 'system', content: note }, undefined, undefined, event);
@@ -196,7 +218,8 @@ export class RunMemory {
     toolCalls?: ToolCall[],
     toolResults?: ToolResult[],
     event?: EntryEvent,
-    metadata?: Record<string, unknown>
+    metadata?: Record<string, unknown>,
+    fromUser = false
   ): Promise<void> {
     if (!this.opened || !this.enabled || this.sealed) return Promise.resolve();
     const options = this.options();
@@ -205,6 +228,16 @@ export class RunMemory {
       if (this.check) {
         await this.check();
         if (this.sealed) return;
+      }
+      let entryId: string | undefined;
+      let fields = metadata;
+      if (fromUser && this.checkpointer) {
+        const named = `entry_${nanoid(12)}`;
+        const checkpoint = await this.checkpointer(named);
+        if (checkpoint) {
+          entryId = named;
+          fields = { ...fields, [FILE_CHECKPOINT_KEY]: checkpoint };
+        }
       }
       const entry = await saveEntry(
         this.threadId,
@@ -218,12 +251,13 @@ export class RunMemory {
         this.place,
         event,
         this.taggedRun === undefined
-          ? metadata
+          ? fields
           : {
-              ...metadata,
+              ...fields,
               durableRun: this.taggedRun,
               ...(this.leaseEpoch !== undefined && { durableEpoch: this.leaseEpoch }),
-            }
+            },
+        entryId
       );
       if (!entry) return;
       this.entries.set(message, entry.id);

@@ -19,6 +19,7 @@ import { buildCommand } from './commands/build.js';
 import { daemonCommand } from './commands/daemon.js';
 import { skillCommand } from './commands/skill.js';
 import { wizardCommand } from './commands/wizard.js';
+import { rewindCommand } from './commands/rewind.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf-8')) as {
@@ -56,6 +57,7 @@ export function createProgram(): Command {
     daemonCommand,
     skillCommand,
     wizardCommand,
+    rewindCommand,
   ]) {
     program.addCommand(command);
   }

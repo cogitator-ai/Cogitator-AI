@@ -15,6 +15,7 @@ export * from './providers';
 export * from './runtime';
 export * from './run-control';
 export * from './durable-runs';
+export * from './checkpoints';
 export * from './permissions';
 export * from './instructions';
 export * from './hooks';

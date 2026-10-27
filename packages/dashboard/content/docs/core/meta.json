@@ -4,6 +4,7 @@
     "cogitator",
     "run-control",
     "durable-runs",
+    "file-checkpoints",
     "budgets",
     "agents",
     "harness-agent",

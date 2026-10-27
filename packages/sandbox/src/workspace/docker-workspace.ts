@@ -17,6 +17,8 @@ import {
   type WorkspaceRemoveOptions,
   type WorkspaceRemoveResult,
   type WorkspaceRenameOptions,
+  type WorkspaceRestoreOptions,
+  type WorkspaceRestoreResult,
   type WorkspaceSnapshot,
   type WorkspaceSnapshotOptions,
   type WorkspaceStat,
@@ -160,9 +162,19 @@ export class DockerWorkspace implements Workspace {
   /** Where the root is mounted in the container */
   readonly workdir: string;
   readonly snapshot?: (options?: WorkspaceSnapshotOptions) => Promise<WorkspaceSnapshot>;
-  readonly restore?: (snapshotId: string) => Promise<void>;
+  readonly restore?: (
+    snapshotId: string,
+    options?: WorkspaceRestoreOptions
+  ) => Promise<WorkspaceRestoreResult>;
+  readonly listSnapshots?: () => Promise<WorkspaceSnapshot[]>;
+  readonly deleteSnapshot?: (snapshotId: string) => Promise<void>;
+  readonly copySnapshot?: (snapshotId: string, target: Workspace) => Promise<WorkspaceSnapshot>;
+  /**
+   * The workspace on the host whose root is mounted: files are read and written, and snapshots
+   * taken and restored, through it
+   */
+  readonly host: Workspace;
   private readonly options: DockerWorkspaceOptions;
-  private readonly host: Workspace;
   private readonly state: DockerWorkspaceState;
 
   constructor(options: DockerWorkspaceOptions) {
@@ -181,7 +193,12 @@ export class DockerWorkspace implements Workspace {
     const host = options.host;
     if (host.snapshot && host.restore) {
       this.snapshot = (snapshotOptions) => host.snapshot!(snapshotOptions);
-      this.restore = (snapshotId) => host.restore!(snapshotId);
+      this.restore = (snapshotId, restoreOptions) => host.restore!(snapshotId, restoreOptions);
+    }
+    if (host.listSnapshots) this.listSnapshots = () => host.listSnapshots!();
+    if (host.deleteSnapshot) this.deleteSnapshot = (snapshotId) => host.deleteSnapshot!(snapshotId);
+    if (host.copySnapshot) {
+      this.copySnapshot = (snapshotId, target) => host.copySnapshot!(snapshotId, target);
     }
   }
 

@@ -121,11 +121,13 @@ export class MockMemoryAdapter implements MemoryAdapter {
     };
   }
 
-  async addEntry(entry: Omit<MemoryEntry, 'id' | 'createdAt'>): Promise<MemoryResult<MemoryEntry>> {
+  async addEntry(
+    entry: Omit<MemoryEntry, 'id' | 'createdAt'> & { id?: string }
+  ): Promise<MemoryResult<MemoryEntry>> {
     this._calls.push({ method: 'addEntry', args: [entry] });
 
     const memoryEntry: MemoryEntry = {
-      id: `entry_${nanoid(8)}`,
+      id: entry.id ?? `entry_${nanoid(8)}`,
       threadId: entry.threadId,
       message: entry.message,
       tokenCount: entry.tokenCount ?? 0,

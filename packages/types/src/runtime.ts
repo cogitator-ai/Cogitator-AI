@@ -55,6 +55,7 @@ import type {
 } from './permissions';
 import type { HooksConfig } from './hooks';
 import type { DurableQueuedMessage, DurableRunsConfig } from './durable-runs';
+import type { CogitatorCheckpointsConfig, FileCheckpointsConfig } from './checkpoints';
 import type { InstructionsConfig, LoadedInstructionFile } from './instructions';
 
 /**
@@ -177,6 +178,16 @@ export interface CogitatorConfig {
    * keep no checkpoint while they go on, as before. An agent's `durable` and a run's own win
    */
   durable?: boolean | DurableRunsConfig;
+  /**
+   * File checkpoints: a run with a workspace that can snapshot (`LocalWorkspace`,
+   * `DockerWorkspace` over one, the remote workspaces) takes a snapshot of its files before every
+   * user message it writes to the thread, and names it in the entry
+   * (`metadata.fileCheckpoint`), so `rewind()` can bring the files back with the conversation.
+   * `true` turns them on for every run, an object also sets what snapshots leave out and whether
+   * a rewind restores files by default. Unset, runs take no checkpoints, as before. An agent's
+   * `checkpoints` and a run's own win
+   */
+  checkpoints?: boolean | CogitatorCheckpointsConfig;
   /**
    * What a run on a thread does while another run of this runtime goes on there (see
    * `MultitaskStrategy`), for runs that set no `multitaskStrategy` of their own. Unset, runs of
@@ -538,6 +549,11 @@ export interface RunOptions<TDeps = unknown> {
    * runtime's setting. A run started from a tool call of another run is never durable on its own:
    * its caller is, and recovers the call
    */
+  /**
+   * Whether the run takes a file checkpoint before every user message it writes, see
+   * `CogitatorConfig.checkpoints`. Overrides the agent's and the runtime's setting
+   */
+  checkpoints?: boolean | FileCheckpointsConfig;
   durable?: boolean;
   /**
    * The id the run gets instead of a new one, unique among the runs of the runtime: a queue job

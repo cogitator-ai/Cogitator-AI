@@ -74,14 +74,21 @@ export interface Workspace {
    */
   snapshot?(options?: WorkspaceSnapshotOptions): Promise<WorkspaceSnapshot>;
   /**
-   * Brings the files back to a snapshot: changed files rewritten, new ones removed, the paths the
-   * snapshot excluded left alone
+   * Brings the files back to a snapshot: changed files rewritten, files and directories made
+   * since removed, the paths the snapshot excluded or skipped left alone. With `dryRun` nothing
+   * changes and the result says what would. Fails with `NOT_FOUND` for a snapshot it does not keep
    */
-  restore?(snapshotId: string): Promise<void>;
+  restore?(snapshotId: string, options?: WorkspaceRestoreOptions): Promise<WorkspaceRestoreResult>;
   /** The snapshots kept, oldest first */
   listSnapshots?(): Promise<WorkspaceSnapshot[]>;
   /** Forgets a snapshot and frees what only it kept */
   deleteSnapshot?(snapshotId: string): Promise<void>;
+  /**
+   * Copies a snapshot into the snapshots of `target`, under the same id, so `target.restore()`
+   * can bring its files back there, such as the workspace of a forked thread. Fails with
+   * `UNSUPPORTED` for a target whose snapshots this workspace cannot write
+   */
+  copySnapshot?(snapshotId: string, target: Workspace): Promise<WorkspaceSnapshot>;
 }
 
 export interface WorkspaceReadOptions {
@@ -189,19 +196,64 @@ export interface WorkspaceEntry extends WorkspaceStat {
   name: string;
 }
 
-/** Paths a snapshot leaves out unless told otherwise: the workspace's own trash, tool results and temporary files. */
-export const WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE: readonly string[] = ['.cogitator/**'];
+/**
+ * Paths every snapshot leaves out, and `restore()` leaves alone: the workspace's own directory
+ * (trash, tool results, the snapshots themselves), dependencies a package manager installs again
+ * and the git repository, at any depth.
+ */
+export const WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE: readonly string[] = [
+  '.cogitator/**',
+  '**/node_modules/**',
+  '**/.git/**',
+];
+
+/** Largest file a snapshot keeps unless told otherwise, 10 MiB: larger ones are skipped. */
+export const WORKSPACE_SNAPSHOT_MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 export interface WorkspaceSnapshotOptions {
   /** What the snapshot marks, e.g. the id of the user message it was taken before */
   label?: string;
   /**
-   * Globs (relative to the root) the snapshot leaves out, and `restore()` leaves alone
-   * (default: {@link WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE})
+   * Globs (relative to the root) the snapshot leaves out on top of
+   * {@link WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE}, and `restore()` leaves alone. A glob leaves out
+   * what it matches and everything under it
    */
   exclude?: readonly string[];
+  /**
+   * Files larger than this many bytes are not kept: the snapshot lists them in `skipped` and
+   * `restore()` leaves them as they are (default {@link WORKSPACE_SNAPSHOT_MAX_FILE_BYTES})
+   */
+  maxFileBytes?: number;
   /** Your own data to keep with the snapshot */
   metadata?: Record<string, unknown>;
+}
+
+/** A file a snapshot did not keep, and why. */
+export interface WorkspaceSnapshotSkip {
+  /** Path relative to the root, with `/` separators */
+  path: string;
+  /** `too-large`: over `maxFileBytes`. `unreadable`: it could not be read (permissions, a race) */
+  reason: 'too-large' | 'unreadable';
+  /** Its size in bytes when it was seen */
+  size?: number;
+}
+
+/** What taking a snapshot cost, to tell a cheap one (most files unchanged) from a full one. */
+export interface WorkspaceSnapshotStats {
+  /** Files the snapshot holds */
+  files: number;
+  /** Directories and symlinks it holds */
+  others: number;
+  /** Bytes of the files it holds */
+  bytes: number;
+  /** Files read and hashed, as they were new or changed since the snapshot before */
+  hashed: number;
+  /** Files taken from the snapshot before without reading them, as they did not change */
+  reused: number;
+  /** Bytes of content stored anew, the rest was kept already */
+  storedBytes: number;
+  /** Milliseconds the snapshot took */
+  durationMs: number;
 }
 
 /** A recorded state of a workspace's files, see `Workspace.snapshot()`. */
@@ -214,6 +266,35 @@ export interface WorkspaceSnapshot {
   metadata?: Record<string, unknown>;
   /** The globs the snapshot left out */
   exclude: readonly string[];
+  /** Files the snapshot did not keep, which `restore()` leaves alone */
+  skipped?: readonly WorkspaceSnapshotSkip[];
+  /** What taking it cost, when the workspace measures it */
+  stats?: WorkspaceSnapshotStats;
+}
+
+export interface WorkspaceRestoreOptions {
+  /** Change nothing, only say what a restore would change (default: false) */
+  dryRun?: boolean;
+}
+
+/** What `Workspace.restore()` changed, or would change with `dryRun`. Paths are relative to the root. */
+export interface WorkspaceRestoreResult {
+  snapshotId: string;
+  dryRun: boolean;
+  /**
+   * Files, symlinks and directories written back: changed or removed since the snapshot. A
+   * workspace that cannot tell changed files from unchanged ones lists every file it rewrote
+   */
+  restored: string[];
+  /** Files, symlinks and directories removed, as the snapshot did not have them */
+  deleted: string[];
+  /** Entries already as the snapshot has them */
+  unchanged: number;
+  /**
+   * Paths left as they are: files the snapshot skipped (`skipped`), and directories made since
+   * that hold excluded paths, which are never touched
+   */
+  kept: string[];
 }
 
 /**

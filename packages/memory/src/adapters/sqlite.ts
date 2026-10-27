@@ -438,9 +438,11 @@ export class SQLiteAdapter
   private async storeEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>> {
     if (!this.db) return this.failure('Not connected');
     const db = this.db;
-    const { activate, parentId: askedParent, ...fields } = entry;
+    const named = this.entryIdOf(entry);
+    if (!named.success) return named;
+    const id = named.data;
+    const { activate, parentId: askedParent, id: _asked, ...fields } = entry;
     const createdAt = this.entryTimestamp(entry);
-    const id = this.generateId('entry');
     const type = fields.type ?? (fields.message?.role === 'tool' ? 'tool_result' : 'message');
 
     try {

@@ -299,12 +299,14 @@ export class MemoryCascade {
    * `stale` with `staleBecause: { reason: 'rewound' }`. They are marked before the thread moves,
    * and as they were again when the store refuses the rewind, such as for an entry another
    * checkout took off the active branch meanwhile. A thread that stands at `toEntryId` already is
-   * left as it is.
+   * left as it is. With `dryRun` nothing changes: the report names the items that would become
+   * stale.
    */
   async rewind(
     threadId: string,
     toEntryId: string,
-    who: CascadeAgents
+    who: CascadeAgents,
+    options: { dryRun?: boolean } = {}
   ): Promise<MemoryCascadeReport> {
     const rewind = this.memory.rewind?.bind(this.memory);
     const getPath = this.memory.getPath?.bind(this.memory);
@@ -314,9 +316,12 @@ export class MemoryCascade {
     const report = emptyReport();
     const before = unwrap(await getPath({ threadId, types: 'all' }));
     const at = before.findIndex((entry) => entry.id === toEntryId);
+    if (options.dryRun && at === -1) {
+      throw new Error(`Entry ${toEntryId} is not on the active branch of thread ${threadId}`);
+    }
     const cut = new Set(at === -1 ? [] : before.slice(at + 1).map((entry) => entry.id));
     if (cut.size === 0 || !this.itemAdapter || !this.items) {
-      unwrap(await rewind(threadId, toEntryId));
+      if (!options.dryRun) unwrap(await rewind(threadId, toEntryId));
       return report;
     }
     const marked: MemoryItem[] = [];
@@ -326,6 +331,10 @@ export class MemoryCascade {
       );
       const cutOff = found.filter((item) => fateOf(item.evidence, cut) === 'gone');
       if (cutOff.length === 0) continue;
+      if (options.dryRun) {
+        report.items.stale.push(...cutOff.map((item) => item.id));
+        continue;
+      }
       const stale = new Set(
         await this.items.markStale(
           cutOff.map((item) => item.id),
@@ -335,6 +344,7 @@ export class MemoryCascade {
       );
       marked.push(...cutOff.filter((item) => stale.has(item.id)));
     }
+    if (options.dryRun) return report;
     const moved = await rewind(threadId, toEntryId);
     if (!moved.success) {
       for (const item of marked) unwrap(await this.itemAdapter.putItem(item));

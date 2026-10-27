@@ -1,12 +1,22 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { request } from 'node:http';
 import { startStudio, type StudioHandle } from '../server/server.js';
 import type {
+  ForkSummary,
   HostStatus,
+  RewindSummary,
   RunRecord,
   StudioEvent,
   StudioStats,
@@ -18,6 +28,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = join(HERE, 'fixtures', 'project');
 const SCRATCH = join(HERE, '.scratch');
 const PRICE = 0.002;
+const WORKSPACE = join(SCRATCH, 'workspace');
+process.env.STUDIO_FIXTURE_WORKSPACE = WORKSPACE;
 
 let studio: StudioHandle;
 let base: string;
@@ -66,12 +78,22 @@ function settled(id: string, statuses: RunRecord['status'][] = ['completed', 'fa
 
 async function chat(
   input: string,
-  threadId?: string
+  threadId?: string,
+  agent = 'assistant'
 ): Promise<{ runId: string; threadId: string }> {
   return api('/api/chat', {
     method: 'POST',
-    body: { agent: 'assistant', input, ...(threadId && { threadId }) },
+    body: { agent, input, ...(threadId && { threadId }) },
   });
+}
+
+async function status(path: string, body: unknown): Promise<number> {
+  const response = await fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return response.status;
 }
 
 beforeAll(async () => {
@@ -102,6 +124,7 @@ describe('loading the project', () => {
       'assistant',
       'researcher',
       'publisher',
+      'coder',
     ]);
     expect(state.host.registry.defaultModel).toBe('scripted/test-model');
     expect(
@@ -407,6 +430,147 @@ describe('time-travel forks', () => {
     await expect(
       api(`/api/runs/${runId}/fork`, { method: 'POST', body: { step: 7 } })
     ).rejects.toThrow('no step 7');
+  });
+});
+
+describe('rewind and fork', () => {
+  const notes = join(WORKSPACE, 'notes.txt');
+  let threadId: string;
+  let first: RunRecord;
+  let second: RunRecord;
+
+  beforeAll(async () => {
+    const started = await chat('write notes.txt first', undefined, 'coder');
+    threadId = started.threadId;
+    first = (await settled(started.runId)).run;
+    const next = await chat('write notes.txt second', threadId, 'coder');
+    second = (await settled(next.runId)).run;
+  });
+
+  it('marks the user messages that name a file checkpoint in the tree', async () => {
+    expect(first.status).toBe('completed');
+    expect(second.status).toBe('completed');
+    expect(readFileSync(notes, 'utf-8')).toBe('second');
+    const tree = await api<ThreadTree>(`/api/threads/${threadId}/tree`);
+    const users = tree.entries.filter((entry) => entry.type === 'message' && entry.role === 'user');
+    expect(users.map((entry) => [entry.text, entry.checkpoint])).toEqual([
+      ['write notes.txt first', true],
+      ['write notes.txt second', true],
+    ]);
+    expect(
+      tree.entries.filter((entry) => entry.role !== 'user').every((entry) => !entry.checkpoint)
+    ).toBe(true);
+  });
+
+  it('reports what a rewind would change in a dry run and changes nothing', async () => {
+    const dry = await api<RewindSummary & { thread: ThreadRecord }>(
+      `/api/threads/${threadId}/rewind`,
+      { method: 'POST', body: { entryId: first.memory?.leafId, files: true, dryRun: true } }
+    );
+    expect(dry.dryRun).toBe(true);
+    expect(dry.conversation.rewound).toBe(false);
+    expect(dry.conversation.cut).toContain(second.memory?.leafId);
+    expect(dry.conversation.previousLeafId).toBe(second.memory?.leafId);
+    expect(dry.files).toMatchObject({ dryRun: true, restored: ['notes.txt'], exact: true });
+    expect(dry.thread.rewoundRuns).toBeUndefined();
+    expect(readFileSync(notes, 'utf-8')).toBe('second');
+    const tree = await api<ThreadTree>(`/api/threads/${threadId}/tree`);
+    expect(tree.activeLeafId).toBe(second.memory?.leafId);
+  });
+
+  it('restores the files, moves the active leaf back and marks the rewound run', async () => {
+    const rewound = await api<RewindSummary & { thread: ThreadRecord }>(
+      `/api/threads/${threadId}/rewind`,
+      { method: 'POST', body: { entryId: first.memory?.leafId, files: true } }
+    );
+    expect(rewound.conversation.rewound).toBe(true);
+    expect(rewound.files).toMatchObject({ dryRun: false, restored: ['notes.txt'] });
+    expect(readFileSync(notes, 'utf-8')).toBe('first');
+    expect(rewound.thread.rewoundRuns).toEqual([second.id]);
+    const tree = await api<ThreadTree>(`/api/threads/${threadId}/tree`);
+    expect(tree.activeLeafId).toBe(first.memory?.leafId);
+    const { thread } = await api<{ thread: ThreadRecord }>(`/api/threads/${threadId}`);
+    expect(thread.rewoundRuns).toEqual([second.id]);
+    expect(studio.store.history(threadId).map((message) => message.content)).toEqual([
+      'write notes.txt first',
+      first.output,
+    ]);
+  });
+
+  it('forks the thread with its files into a new thread that starts from the branch', async () => {
+    const tree = await api<ThreadTree>(`/api/threads/${threadId}/tree`);
+    const start = tree.entries.find((entry) => entry.text === 'write notes.txt first');
+    const fork = await api<ForkSummary & { thread: ThreadRecord }>(
+      `/api/threads/${threadId}/fork`,
+      { method: 'POST', body: { entryId: start?.id, files: true } }
+    );
+    expect(fork.threadId).toMatch(/^studio_/);
+    expect(fork.thread).toMatchObject({
+      id: fork.threadId,
+      agent: 'coder',
+      title: 'Fork of write notes.txt first',
+      runs: [],
+      forkOf: { threadId, entryId: start?.id },
+      base: [{ role: 'user', content: 'write notes.txt first' }],
+    });
+    expect(fork.files).toMatchObject({ dryRun: false, deleted: ['notes.txt'] });
+    expect(existsSync(notes)).toBe(false);
+    const forked = await api<ThreadTree>(`/api/threads/${fork.threadId}/tree`);
+    expect(forked.entries.map((entry) => [entry.role, entry.text, entry.checkpoint])).toEqual([
+      ['user', 'write notes.txt first', true],
+    ]);
+    expect(studio.store.history(fork.threadId)).toEqual(fork.thread.base);
+
+    const next = await chat('write notes.txt again', fork.threadId, 'coder');
+    const { run: continued } = await settled(next.runId);
+    expect(continued.status).toBe('completed');
+    expect(readFileSync(notes, 'utf-8')).toBe('again');
+    expect(studio.store.history(fork.threadId).map((message) => message.content)).toEqual([
+      'write notes.txt first',
+      'write notes.txt again',
+      continued.output,
+    ]);
+  });
+
+  it('refuses bad bodies, unknown threads and points without a checkpoint', async () => {
+    const rewind = `/api/threads/${threadId}/rewind`;
+    expect(await status(rewind, {})).toBe(400);
+    expect(await status(rewind, { entryId: 5 })).toBe(400);
+    expect(await status(rewind, { entryId: first.memory?.leafId, files: 'yes' })).toBe(400);
+    expect(await status(rewind, { entryId: first.memory?.leafId, dryRun: 1 })).toBe(400);
+    expect(await status(rewind, { entryId: 'not-an-entry', dryRun: true })).toBe(400);
+    expect(await status(`/api/threads/${threadId}/fork`, {})).toBe(400);
+    expect(await status(`/api/threads/${threadId}/fork`, { entryId: '' })).toBe(400);
+    expect(await status('/api/threads/nope/rewind', { entryId: 'x' })).toBe(404);
+    expect(await status('/api/threads/nope/fork', { entryId: 'x' })).toBe(404);
+
+    const plain = await chat('hello there');
+    const { run } = await settled(plain.runId);
+    expect(
+      await status(`/api/threads/${plain.threadId}/rewind`, {
+        entryId: run.memory?.leafId,
+        files: true,
+        dryRun: true,
+      })
+    ).toBe(400);
+  });
+
+  it('refuses to rewind a thread a run goes on in, unless asked to abort it', async () => {
+    const earlier = await chat('hello to start');
+    const { run: done } = await settled(earlier.runId);
+    const waiting = await chat('publish it', earlier.threadId);
+    await settled(waiting.runId, ['waiting']);
+    const rewind = `/api/threads/${earlier.threadId}/rewind`;
+    expect(await status(rewind, { entryId: done.memory?.leafId })).toBe(409);
+    const forced = await api<RewindSummary>(rewind, {
+      method: 'POST',
+      body: { entryId: done.memory?.leafId, force: true },
+    });
+    expect(forced.conversation.rewound).toBe(true);
+    const { run: stopped } = await settled(waiting.runId);
+    expect(stopped.status).toBe('stopped');
+    const tree = await api<ThreadTree>(`/api/threads/${earlier.threadId}/tree`);
+    expect(tree.activeLeafId).toBe(done.memory?.leafId);
   });
 });
 

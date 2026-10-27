@@ -45,6 +45,7 @@ cp .env.example .env  # add GOOGLE_API_KEY at minimum
 | 28  | `28-subagents.ts`         | `.claude/agents` subagents, an approval that bubbles up, a `.claude/commands` command           |
 | 29  | `29-harness-agent.ts`     | `createHarnessAgent()`: the `coding` preset fixes a bug with approvals, the `assistant` preset  |
 | 30  | `30-durable-runs.ts`      | A durable run killed with `SIGKILL` mid-tool, recovered by another process with `recoverRuns()` |
+| 31  | `31-rewind.ts`            | File checkpoints per message, a rewind of conversation and files, a fork into another directory |
 
 ## Running
 

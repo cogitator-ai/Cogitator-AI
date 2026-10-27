@@ -206,7 +206,7 @@ const copy = unwrap(await memory.forkThread(thread.id, retry.id, 'rome-vatican')
 
 `deleteEntry` splices an entry out of its branch: its children go after its parent, and when it was the active leaf, its parent becomes the leaf. `clearThread` removes every entry and the leaf with them.
 
-These methods are optional on the `MemoryAdapter` interface, so an adapter of your own may leave them out. Every built-in adapter has them, and a run on a branch needs `getPath`. `cog.rewind(threadId, toEntryId)` rewinds a thread and marks as `stale` the memory items that stood only on the turns it left, see [Forgetting, Redacting and Rewinding](#forgetting-redacting-and-rewinding).
+These methods are optional on the `MemoryAdapter` interface, so an adapter of your own may leave them out. Every built-in adapter has them, and a run on a branch needs `getPath`. `cog.rewind(threadId, toEntryId)` rewinds a thread and marks as `stale` the memory items that stood only on the turns it left, see [Forgetting, Redacting and Rewinding](#forgetting-redacting-and-rewinding). With [file checkpoints](/docs/core/file-checkpoints) it brings back the files of the workspace to the same point, in the same operation.
 
 #### Entries Written Before Trees
 

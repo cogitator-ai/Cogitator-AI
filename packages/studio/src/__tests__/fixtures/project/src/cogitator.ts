@@ -1,4 +1,13 @@
-import { Agent, agentAsTool, Cogitator, tool } from '@cogitator-ai/core';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  Agent,
+  agentAsTool,
+  Cogitator,
+  LocalWorkspace,
+  tool,
+  workspaceTools,
+} from '@cogitator-ai/core';
 import { WorkflowBuilder } from '@cogitator-ai/workflows';
 import { z } from 'zod';
 import { scripted } from './scripted-backend.js';
@@ -67,7 +76,22 @@ const publisher = new Agent({
   permissions: { mode: 'default' },
 });
 
-export const agents = { assistant, researcher, publisher };
+const workspace = new LocalWorkspace({
+  root:
+    process.env.STUDIO_FIXTURE_WORKSPACE ?? join(tmpdir(), 'cogitator-studio-fixture-workspace'),
+});
+
+const coder = new Agent({
+  name: 'coder',
+  description: 'Writes files in its workspace',
+  model: 'scripted/coder',
+  instructions: 'Write the files the user asks for.',
+  tools: workspaceTools(undefined, { tools: ['read_file', 'write_file'] }),
+  workspace,
+  checkpoints: true,
+});
+
+export const agents = { assistant, researcher, publisher, coder };
 
 type ReportState = { topic: string; draft?: string; review?: string };
 

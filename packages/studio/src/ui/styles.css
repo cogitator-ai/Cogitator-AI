@@ -1615,6 +1615,108 @@ a.tree-entry:hover {
   font-size: 10.5px;
 }
 
+.tree-row {
+  position: relative;
+}
+
+.tree-row .tree-entry {
+  padding-right: 52px;
+}
+
+.tree-actions {
+  position: absolute;
+  top: 1px;
+  right: 2px;
+  display: flex;
+  gap: 1px;
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.tree-row:hover .tree-actions,
+.tree-row:focus-within .tree-actions,
+.tree-row.is-open .tree-actions {
+  opacity: 1;
+}
+
+.tree-actions .btn-icon.btn-sm {
+  width: 22px;
+  height: 22px;
+}
+
+.tree-actions .is-on {
+  background: var(--active);
+  color: var(--text);
+}
+
+.tree-card {
+  display: grid;
+  gap: 8px;
+  margin: 4px 2px 8px 15px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.tree-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+
+.tree-card-list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding-left: 16px;
+  color: var(--text-2);
+}
+
+.tree-card-list .is-warn {
+  color: var(--warn);
+}
+
+.tree-card-files {
+  display: grid;
+  gap: 1px;
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.tree-card-label {
+  color: var(--text-3);
+  font-weight: 500;
+}
+
+.tree-card .error-text {
+  margin-top: 0;
+}
+
+.tree-card-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.check input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 .tree-forks {
   display: grid;
   gap: 6px;
@@ -1710,6 +1812,23 @@ a.tree-entry:hover {
   gap: 14px;
   padding-bottom: 28px;
   animation: rise 0.25s var(--ease) both;
+}
+
+.turn.is-rewound {
+  opacity: 0.55;
+}
+
+.turn.is-base {
+  opacity: 0.75;
+}
+
+.turn.is-rewound:hover,
+.turn.is-rewound:focus-within {
+  opacity: 0.8;
+}
+
+.turn-rewound {
+  font-size: 10.5px;
 }
 
 .msg-user {
