@@ -14,6 +14,11 @@ export {
   connectMCPServer,
 } from './client/mcp-client';
 export { createStdioTransport, createHttpTransport } from './client/transports';
+export {
+  experimental_mcpConnector,
+  mcpClientConfigOf,
+  type McpConnectorOptions,
+} from './client/connector';
 export type { StdioTransportConfig, HttpTransportConfig } from './client/transports';
 
 export { MCPServer, serveMCPTools } from './server/mcp-server';
