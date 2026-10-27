@@ -88,6 +88,11 @@ export enum ErrorCode {
   /** A guard (`tripwire()` in a run middleware) stopped the run */
   GUARDRAIL_TRIPPED = 'GUARDRAIL_TRIPPED',
 
+  /** No routine, trigger or inbox item with that id is known to the trigger manager */
+  TRIGGER_NOT_FOUND = 'TRIGGER_NOT_FOUND',
+  /** An inbox item was answered or archived already */
+  INBOX_ITEM_ANSWERED = 'INBOX_ITEM_ANSWERED',
+
   /** No plugin with that id is known to the host or installed */
   PLUGIN_NOT_FOUND = 'PLUGIN_NOT_FOUND',
   /** A plugin's manifest or one of its files is not valid */
@@ -174,6 +179,8 @@ export const ERROR_STATUS_CODES: Record<ErrorCode, number> = {
   [ErrorCode.PII_DETECTED]: 400,
   [ErrorCode.GUARDRAIL_TRIPPED]: 400,
 
+  [ErrorCode.TRIGGER_NOT_FOUND]: 404,
+  [ErrorCode.INBOX_ITEM_ANSWERED]: 409,
   [ErrorCode.PLUGIN_NOT_FOUND]: 404,
   [ErrorCode.PLUGIN_INVALID]: 400,
   [ErrorCode.PLUGIN_ACTIVATION_FAILED]: 500,

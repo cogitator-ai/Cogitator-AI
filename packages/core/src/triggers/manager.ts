@@ -160,7 +160,7 @@ function configurationError(message: string): CogitatorError {
 }
 
 function notFound(message: string): CogitatorError {
-  return new CogitatorError({ message, code: ErrorCode.VALIDATION_ERROR, statusCode: 404 });
+  return new CogitatorError({ message, code: ErrorCode.TRIGGER_NOT_FOUND });
 }
 
 /**
@@ -187,6 +187,7 @@ export class experimental_TriggerManager {
   private readonly pending = new Set<Promise<unknown>>();
   /** Runs aborted by `overlap: 'replace'`: their end is recorded as replaced, not failed */
   private readonly replaced = new Set<string>();
+  private readonly listeners = new Set<(event: TriggerManagerEvent) => void>();
   private cronEngine?: CronEngine;
   private started?: Promise<void>;
   private unsubscribePlugins?: () => void;
@@ -295,11 +296,24 @@ export class experimental_TriggerManager {
 
   private report(event: TriggerManagerEvent): void {
     if (event.type === 'error') getLogger().warn('Trigger manager', { error: event.error });
-    try {
-      this.config.onEvent?.(event);
-    } catch (error) {
-      getLogger().warn('experimental_triggers.onEvent failed', { error: errorText(error) });
+    for (const listener of [this.config.onEvent, ...this.listeners]) {
+      try {
+        listener?.(event);
+      } catch (error) {
+        getLogger().warn('A listener of the trigger manager failed', { error: errorText(error) });
+      }
     }
+  }
+
+  /** Hears what the manager does (firings, ended runs, inbox items, errors), as `onEvent` does */
+  subscribe(listener: (event: TriggerManagerEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** Whether `start()` ran and the schedules are polled */
+  get isStarted(): boolean {
+    return this.scheduler.isRunning;
   }
 
   private checkCron(routine: RoutineDefinition, engine: CronEngine): void {
@@ -1317,6 +1331,12 @@ export class experimental_TriggerManager {
     const item = await this.inbox.get(itemId);
     if (!item || (item.kind !== 'approval' && item.kind !== 'question') || !item.runId) {
       throw notFound(`No inbox item ${itemId} that waits for an answer`);
+    }
+    if (item.status === 'archived') {
+      throw new CogitatorError({
+        message: `Inbox item ${itemId} was answered or archived already`,
+        code: ErrorCode.INBOX_ITEM_ANSWERED,
+      });
     }
     if (item.approvalId !== undefined && item.threadId === undefined) {
       return this.respondToWorkflow(item, answer);

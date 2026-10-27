@@ -498,6 +498,14 @@ describe('experimental_TriggerManager', () => {
     await manager.idle();
     const items = await manager.inbox.list();
     expect(items.find((item) => item.id === waiting.id)?.status).toBe('archived');
+    await expect(
+      manager.respond(waiting.id, { defaultDecision: { approved: true } })
+    ).rejects.toMatchObject({
+      code: 'INBOX_ITEM_ANSWERED',
+    });
+    await expect(manager.respond('inbox_missing', {})).rejects.toMatchObject({
+      code: 'TRIGGER_NOT_FOUND',
+    });
     expect(items.find((item) => item.kind === 'result')?.summary).toBe('deployed');
   });
 
@@ -516,9 +524,15 @@ describe('experimental_TriggerManager', () => {
       failing,
       { middleware: [listener] }
     );
+    const events: string[] = [];
+    const unsubscribe = manager.subscribe((event) => events.push(event.type));
+    expect(manager.isStarted).toBe(false);
     await manager.start();
+    expect(manager.isStarted).toBe(true);
     await manager.fire('digest.api');
     await manager.idle();
+    unsubscribe();
+    expect(events).toEqual(expect.arrayContaining(['fired', 'completed', 'inbox']));
     expect(heard.map((event) => event.type)).toContain('routine_failed');
     expect(sink.notify).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'failure', routineId: 'digest' })
