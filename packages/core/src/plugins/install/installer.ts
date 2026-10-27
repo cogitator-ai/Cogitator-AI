@@ -492,14 +492,14 @@ export class experimental_PluginInstaller {
     }
     const existing = records.find((record) => record.id === provisionalId);
     if (existing && !direct) {
-      if (!dependency) await this.enable(existing.id, options.scope ?? 'user');
+      const notes = dependency ? [] : await this.adopt(existing, options);
       return {
         id: existing.id,
         version: existing.version,
         installPath: existing.installPath,
         installed: [],
         alreadyInstalled: true,
-        notes: [],
+        notes,
       };
     }
     this.progress(`Fetching ${provisionalId}`);
@@ -541,13 +541,14 @@ export class experimental_PluginInstaller {
       const id = `${name}@${marketplaceName}`;
       const prior = records.find((record) => record.id === id);
       if (prior && direct) {
+        const adopted = dependency ? [] : await this.adopt(prior, options);
         return {
           id,
           version: prior.version,
           installPath: prior.installPath,
           installed: [],
           alreadyInstalled: true,
-          notes: [`${id} is installed already: cogitator plugin update ${id}`],
+          notes: [`${id} is installed already: cogitator plugin update ${id}`, ...adopted],
         };
       }
       const version = versionOf(layout, entry, fetched);
@@ -602,6 +603,36 @@ export class experimental_PluginInstaller {
     } finally {
       await rm(staging, { recursive: true, force: true });
     }
+  }
+
+  /**
+   * Takes an installed plugin as one the person installed: it is no longer only a dependency (so
+   * `uninstall --prune` keeps it), it is enabled in `options.scope`, and the options and secrets
+   * given are checked and saved. Returns notes for the person
+   */
+  private async adopt(
+    record: InstalledPluginRecord,
+    options: PluginInstallOptions
+  ): Promise<string[]> {
+    const given = options.options !== undefined || options.secrets !== undefined;
+    const layout = given
+      ? await readPluginLayout(record.installPath, {
+          ...(record.entry && { entry: record.entry }),
+          fallbackName: record.name,
+          id: record.id,
+        })
+      : undefined;
+    if (layout) checkOptions(record.id, layout, options);
+    if (record.dependency) {
+      const { dependency: _dependency, ...own } = record;
+      const latest = await this.list();
+      await writeInstalledPlugins(
+        this.root,
+        latest.map((candidate) => (candidate.id === record.id ? own : candidate))
+      );
+    }
+    await this.enable(record.id, options.scope ?? 'user');
+    return layout ? this.saveOptions(record.id, layout, options) : [];
   }
 
   /** Installs a dependency that is not installed yet, at a version its range allows */
@@ -815,10 +846,11 @@ export class experimental_PluginInstaller {
     options: { yes?: boolean; signal?: AbortSignal },
     need?: { range: string; for: string }
   ): Promise<PluginUpdateResult> {
-    const ranges = [
+    const constraints = [
       ...(await this.rangesOn(record, await this.list(), need?.for)),
-      ...(need ? [need.range] : []),
+      ...(need ? [{ range: need.range, from: need.for }] : []),
     ];
+    const ranges = constraints.map((constraint) => constraint.range);
     const direct = ['npm', 'git', 'github'].includes(record.marketplace);
     const notes: string[] = [];
     let entry = record.entry;
@@ -880,12 +912,22 @@ export class experimental_PluginInstaller {
         );
       }
       const version = versionOf(layout, entry, fetched);
-      const unmet = need ? ranges.find((range) => !satisfies(version, range)) : undefined;
+      const unmet = constraints.find((constraint) => !satisfies(version, constraint.range));
       if (unmet !== undefined) {
-        throw failed(
-          `Dependency "${record.id}" is installed at ${record.version}, and its source gives ${version}, which does not satisfy ${unmet}${unmet === need?.range ? ` that ${need.for} needs` : ''}`,
-          ErrorCode.PLUGIN_DEPENDENCY_UNMET
-        );
+        const why = `${version} does not satisfy ${unmet.range}, which ${unmet.from} needs`;
+        if (need) {
+          throw failed(
+            `Dependency "${record.id}" is installed at ${record.version}, and its source gives ${why}`,
+            ErrorCode.PLUGIN_DEPENDENCY_UNMET
+          );
+        }
+        return {
+          id: record.id,
+          from: record.version,
+          to: record.version,
+          updated: false,
+          notes: [...notes, `${record.name} stays at ${record.version}: ${why}`],
+        };
       }
       if (version === record.version && !fetched.inPlace) {
         return {
@@ -997,13 +1039,16 @@ export class experimental_PluginInstaller {
     });
   }
 
-  /** The version ranges the installed plugins put on `record` through their dependencies */
+  /**
+   * The version ranges the installed plugins (but `except`) put on `record` through their
+   * dependencies, each with the plugin that puts it
+   */
   private async rangesOn(
     record: InstalledPluginRecord,
     records: readonly InstalledPluginRecord[],
     except?: string
-  ): Promise<string[]> {
-    const ranges: string[] = [];
+  ): Promise<{ range: string; from: string }[]> {
+    const ranges: { range: string; from: string }[] = [];
     for (const candidate of records) {
       if (candidate.id === record.id || candidate.id === except) continue;
       const layout = await readPluginLayout(candidate.installPath, {
@@ -1016,7 +1061,7 @@ export class experimental_PluginInstaller {
           need.name === record.name &&
           (need.marketplace ?? candidate.marketplace) === record.marketplace
         ) {
-          ranges.push(need.version);
+          ranges.push({ range: need.version, from: candidate.id });
         }
       }
     }

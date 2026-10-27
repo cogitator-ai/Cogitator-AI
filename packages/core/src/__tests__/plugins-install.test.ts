@@ -724,6 +724,68 @@ describe('plugin installer', () => {
     expect(await versions()).toEqual({ 'new-app@deps': '1.0.0', 'lib@deps': '2.1.0' });
   });
 
+  it("takes a dependency installed by hand as the person's own, keeping it on a prune", async () => {
+    const repo = gitMarket('own', [
+      { name: 'app', extra: { version: '1.0.0', dependencies: ['lib'] } },
+      {
+        name: 'lib',
+        extra: {
+          version: '1.0.0',
+          userConfig: { level: { type: 'string', title: 'Level', description: 'How much' } },
+        },
+      },
+    ]);
+    const tools = installer();
+    await tools.addMarketplace(`file://${repo}`);
+    await tools.install('app@own');
+    const flag = async () =>
+      (await readInstalledPlugins(root)).records.find((record) => record.id === 'lib@own')
+        ?.dependency;
+    expect(await flag()).toBe(true);
+    await expect(tools.install('lib@own', { options: { nope: 'x' } })).rejects.toThrow(
+      /declares no option nope/
+    );
+    const again = await tools.install('lib@own', { options: { level: 'high' } });
+    expect(again.alreadyInstalled).toBe(true);
+    expect(await flag()).toBeUndefined();
+    expect(settings()).toMatchObject({
+      enabledPlugins: { 'app@own': true, 'lib@own': true },
+      pluginConfigs: { 'lib@own': { options: { level: 'high' } } },
+    });
+    const removed = await tools.uninstall('app@own', { prune: true });
+    expect(removed.removed).toEqual(['app@own']);
+    expect((await readInstalledPlugins(root)).records.map((record) => record.id)).toEqual([
+      'lib@own',
+    ]);
+  });
+
+  it('keeps a dependency at its version when an update would leave a range of a plugin that needs it', async () => {
+    const repo = gitMarket('ranged', [
+      {
+        name: 'app',
+        extra: { version: '1.0.0', dependencies: [{ name: 'lib', version: '^1.0.0' }] },
+      },
+      { name: 'lib', extra: { version: '1.0.0' } },
+    ]);
+    const tools = installer();
+    await tools.addMarketplace(`file://${repo}`);
+    await tools.install('app@ranged');
+    writeJson(join(repo, 'plugins', 'lib', '.claude-plugin', 'plugin.json'), {
+      name: 'lib',
+      version: '2.0.0',
+    });
+    git(repo, 'commit', '--quiet', '-am', 'lib two');
+    const [result] = await tools.update('lib@ranged');
+    expect(result).toMatchObject({ updated: false, from: '1.0.0', to: '1.0.0' });
+    expect(result?.notes).toContain(
+      'lib stays at 1.0.0: 2.0.0 does not satisfy ^1.0.0, which app@ranged needs'
+    );
+    const lib = (await readInstalledPlugins(root)).records.find(
+      (record) => record.id === 'lib@ranged'
+    );
+    expect(lib?.version).toBe('1.0.0');
+  });
+
   it('gives every plugin id a data folder of its own', () => {
     const folders = ['foo-bar@baz', 'foo@bar-baz', 'Tool@x', 'tool@x'].map((id) =>
       pluginDataDir(root, id).toLowerCase()
