@@ -154,7 +154,7 @@ const snapshotRecordSchema = z.object({
     .array(
       z.object({
         path: z.string(),
-        reason: z.enum(['too-large', 'unreadable', 'changing', 'hard-link']),
+        reason: z.enum(['too-large', 'unreadable', 'changing', 'hard-link', 'unsupported-name']),
         size: z.number().optional(),
       })
     )

@@ -79,6 +79,13 @@ export interface Workspace {
    * changes and the result says what would. Fails with `NOT_FOUND` for a snapshot it does not keep
    */
   restore?(snapshotId: string, options?: WorkspaceRestoreOptions): Promise<WorkspaceRestoreResult>;
+  /**
+   * Holds the workspace for a restore made in more than one step around it, such as a
+   * `DockerWorkspace` removing in its container what the restore deletes before it restores
+   * through this one: commands are refused with `BUSY` until the returned release. Refused with
+   * `BUSY` itself while a command started here still runs
+   */
+  holdForRestore?(): () => void;
   /** The snapshots kept, oldest first */
   listSnapshots?(): Promise<WorkspaceSnapshot[]>;
   /** Forgets a snapshot and frees what only it kept */
@@ -241,9 +248,10 @@ export interface WorkspaceSnapshotSkip {
    * `too-large`: over `maxFileBytes`. `unreadable`: it could not be read (permissions, a race),
    * for a directory all it holds. `changing`: it changed every time it was read, so no whole
    * version of it could be kept. `hard-link`: it has more than one hard link and the workspace
-   * refuses to read those (`refuseHardLinks`)
+   * refuses to read those (`refuseHardLinks`). `unsupported-name`: its name cannot be kept
+   * on this system (a backslash on Windows)
    */
-  reason: 'too-large' | 'unreadable' | 'changing' | 'hard-link';
+  reason: 'too-large' | 'unreadable' | 'changing' | 'hard-link' | 'unsupported-name';
   /**
    * Its size in bytes when it was seen: for `changing`, one of the sizes it went through while
    * it changed, 0 too when it was seen just after a writer truncated it

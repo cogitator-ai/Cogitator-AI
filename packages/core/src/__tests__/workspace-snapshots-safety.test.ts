@@ -347,6 +347,55 @@ describe('snapshot store safety', () => {
     expect(statSync(root).mode & 0o777).toBe(0o555);
   });
 
+  it('gives a file that replaced a read-only directory the mode the snapshot holds', async () => {
+    if (asRoot) return;
+    put('spot', 'a file');
+    chmodSync(join(root, 'spot'), 0o640);
+    const snapshot = await workspace.snapshot();
+    rmSync(join(root, 'spot'));
+    put('spot/inner.txt', 'inside');
+    chmodSync(join(root, 'spot'), 0o555);
+
+    const done = await workspace.restore(snapshot.id);
+
+    expect(done.restored).toEqual(['spot']);
+    expect(statSync(join(root, 'spot')).isFile()).toBe(true);
+    expect(statSync(join(root, 'spot')).mode & 0o777).toBe(0o640);
+    expect(text('spot')).toBe('a file');
+  });
+
+  it('restores a name with a backslash from a store opened anew', async () => {
+    if (process.platform === 'win32') return;
+    put('a\\b.txt', 'one');
+    put('dir\\x/c.txt', 'two');
+    const snapshot = await workspace.snapshot();
+    expect(snapshot.skipped ?? []).toEqual([]);
+    put('a\\b.txt', 'changed');
+    rmSync(join(root, 'dir\\x'), { recursive: true });
+    await workspace.dispose();
+    workspace = new LocalWorkspace({ root, snapshots: { gcGraceMs: 0 } });
+
+    const done = await workspace.restore(snapshot.id);
+
+    expect(done.restored.sort()).toEqual(['a\\b.txt', 'dir\\x', 'dir\\x/c.txt']);
+    expect(text('a\\b.txt')).toBe('one');
+    expect(text('dir\\x/c.txt')).toBe('two');
+  });
+
+  it('holds the workspace for a restore made in steps, refusing commands meanwhile', async () => {
+    const release = workspace.holdForRestore();
+    await expectCode(workspace.exec('true'), 'BUSY');
+    release();
+    release();
+    expect((await workspace.exec('true')).exitCode).toBe(0);
+    const started = deferred();
+    const running = workspace.exec('echo go; sleep 0.3', { onStdout: () => started.resolve() });
+    await started.promise;
+    expect(() => workspace.holdForRestore()).toThrow(WorkspaceError);
+    await running;
+    workspace.holdForRestore()();
+  });
+
   it('keeps the store for its owner only', async () => {
     put('.env', 'SECRET=1');
     chmodSync(join(root, '.env'), 0o600);

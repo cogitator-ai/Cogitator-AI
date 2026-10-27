@@ -115,7 +115,7 @@ const manifestSchema = z.object({
   skipped: z.array(
     z.object({
       path: z.string(),
-      reason: z.enum(['too-large', 'unreadable', 'changing', 'hard-link']),
+      reason: z.enum(['too-large', 'unreadable', 'changing', 'hard-link', 'unsupported-name']),
       size: z.number().optional(),
     })
   ),
@@ -215,9 +215,10 @@ interface RestorePlan {
   /**
    * Directories of the owner whose mode keeps the restore from changing what is in them (one
    * made read-only since the snapshot), with the mode they have: opened for the owner while
-   * the restore runs, then given the mode the snapshot holds, or this one back
+   * the restore runs, then given the mode the snapshot holds, or this one back while the
+   * directory is still that one (`ino`), not one the restore removed or replaced
    */
-  opened: { path: string; mode: number }[];
+  opened: { path: string; mode: number; ino: number }[];
 }
 
 /**
@@ -533,6 +534,10 @@ export class SnapshotStore {
             if (failure.error) break;
             const path = rel === '' ? name : `${rel}/${name}`;
             if (excluded(path)) continue;
+            if (!validName(name)) {
+              skipped.push({ path, reason: 'unsupported-name' });
+              continue;
+            }
             const full = join(absolute, name);
             const info = await lstat(full).catch(() => undefined);
             if (!info) continue;
@@ -653,8 +658,10 @@ export class SnapshotStore {
         set.add(path);
       }
     } finally {
-      for (const { path, mode } of [...plan.opened].reverse()) {
+      for (const { path, mode, ino } of [...plan.opened].reverse()) {
         if (set.has(path)) continue;
+        const now = await lstat(this.absolute(path)).catch(() => undefined);
+        if (!now?.isDirectory() || now.ino !== ino) continue;
         await ops.chmod(opsPath(path), mode).catch((error: unknown) => {
           if (WorkspaceError.is(error, 'NOT_FOUND')) return;
           getLogger().warn('A directory a restore opened could not be given its mode back', {
@@ -858,8 +865,8 @@ export class SnapshotStore {
   private async closedDirectories(
     present: Map<string, Present>,
     dirs: readonly string[]
-  ): Promise<{ path: string; mode: number }[]> {
-    const closed: { path: string; mode: number }[] = [];
+  ): Promise<{ path: string; mode: number; ino: number }[]> {
+    const closed: { path: string; mode: number; ino: number }[] = [];
     for (const path of [...new Set(dirs)].sort((a, b) => depth(a) - depth(b) || compare(a, b))) {
       const now = present.get(path);
       const info =
@@ -881,7 +888,7 @@ export class SnapshotStore {
           { path: path === '' ? '.' : path }
         );
       }
-      closed.push({ path, mode: info.mode & 0o7777 });
+      closed.push({ path, mode: info.mode & 0o7777, ino: info.ino });
     }
     return closed;
   }
@@ -1577,14 +1584,19 @@ function ancestorsOf(path: string): string[] {
   return dirs;
 }
 
+/**
+ * Whether a tree may hold an entry named `name`, the same rule for the snapshot that writes the
+ * tree and every read of it: any name of one component, a backslash included, but on Windows,
+ * where it separates components
+ */
 function validName(name: string): boolean {
   return (
     name !== '' &&
     name !== '.' &&
     name !== '..' &&
     !name.includes('/') &&
-    !name.includes('\\') &&
-    !name.includes('\0')
+    !name.includes('\0') &&
+    (process.platform !== 'win32' || !name.includes('\\'))
   );
 }
 

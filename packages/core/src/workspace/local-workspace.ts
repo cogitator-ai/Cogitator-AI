@@ -738,6 +738,22 @@ export class LocalWorkspace implements Workspace {
     }
   }
 
+  holdForRestore(): () => void {
+    if (this.state.groups.busy()) {
+      throw new WorkspaceError(
+        'BUSY',
+        'The workspace cannot be held for a restore while a command started in it is still running (or left processes in the background): wait for it or dispose the workspace'
+      );
+    }
+    this.state.restoring++;
+    let held = true;
+    return () => {
+      if (!held) return;
+      held = false;
+      this.state.restoring--;
+    };
+  }
+
   async listSnapshots(): Promise<WorkspaceSnapshot[]> {
     return (await this.snapshotStore()).list();
   }
