@@ -162,7 +162,7 @@ Runs never stop to ask. A run gets the read-only tools its case lists in `allowe
 cogitator plugin eval . --allow-tools Write Edit "Bash(npm test *)"
 ```
 
-A grant with a specifier, such as `Bash(npm test *)` or `WebFetch(domain:example.com)`, gives the tool and refuses every call the rule does not allow, with the reason the model reads. A skill's `allowed-tools` and a case's `allowed_tools` cannot widen the grants.
+A grant with a specifier, such as `Bash(npm test *)` or `WebFetch(domain:example.com)`, gives the tool and refuses every call the rule does not allow, with the reason the model reads. A skill's `allowed-tools` and a case's `allowed_tools` cannot widen the grants. The grants hold for the agents a run delegates to through `Agent` as well, and their calls are recorded in the run's tool calls with the delegated agent's name in `agent`, so the graders see them.
 
 ## Mocks
 
@@ -196,7 +196,7 @@ The target is a plugin directory (default `.`), a single `prompt.md` or `case.ya
 | `--judge-model <model>`                              | each case's agent model                                           | Model of `llm` and `baseline` graders                                                                         |
 | `--ablation <mode>`                                  | decided per case                                                  | `none` runs one arm, `with-without` adds the no-plugin baseline                                               |
 | `--threshold <0..1>`                                 | `1.0`                                                             | A case passes when its with-arm score is at least this                                                        |
-| `--max-cost-usd <usd>`                               | no ceiling                                                        | Checked before each run starts: once spent, nothing further starts                                            |
+| `--max-cost-usd <usd>`                               | no ceiling                                                        | Checked before each run and judge grader: once spent, nothing further starts and the result is partial        |
 | `--allow-tools <tools...>`                           | none                                                              | Grant tools beyond the read-only set                                                                          |
 | `--scaffold`                                         | off                                                               | Run each case's `scaffold_script`                                                                             |
 | `--case <glob>`                                      | every case                                                        | Only the cases whose name matches                                                                             |
