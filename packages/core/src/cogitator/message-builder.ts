@@ -471,6 +471,8 @@ export interface EntryEvent {
  * Saves a message, or a session event, to the thread, making the thread first when it is
  * missing, with `metadata` on the entry (a user message also carries its `userId`) and the id
  * `entryId` when given. A failure goes to `onError` and the run goes on. Returns the stored entry.
+ * `mayWrite` is asked right before the entry is added, with nothing awaited after it: false
+ * writes nothing, and what it throws fails the save
  */
 export async function saveEntry(
   threadId: string,
@@ -484,13 +486,19 @@ export async function saveEntry(
   placement?: EntryPlacement,
   event?: EntryEvent,
   metadata?: Record<string, unknown>,
-  entryId?: string
+  entryId?: string,
+  mayWrite?: () => Promise<boolean>
 ): Promise<MemoryEntry | undefined> {
   if (!memoryAdapter) return undefined;
 
   try {
     await createThreadIfMissing(memoryAdapter, threadId, agentId, userId);
-
+  } catch (err) {
+    reportMemoryError(err, 'save', onError);
+    return undefined;
+  }
+  if (mayWrite && !(await mayWrite())) return undefined;
+  try {
     return unwrap(
       await memoryAdapter.addEntry({
         ...(entryId !== undefined && { id: entryId }),

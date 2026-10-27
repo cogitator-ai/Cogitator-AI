@@ -218,6 +218,19 @@ export class RunMemory {
     };
   }
 
+  /**
+   * Whether a write may go on: the run is not sealed and its guard passes (it throws when the
+   * run lost its lease). Asked right before the entry is added, after every wait of the write
+   * (a file checkpoint, making the thread), as the run may lose its thread meanwhile, and before
+   * a file checkpoint, so a run that lost it takes none
+   */
+  private async mayWrite(): Promise<boolean> {
+    if (this.sealed) return false;
+    if (!this.check) return true;
+    await this.check();
+    return !this.sealed;
+  }
+
   private write(
     agentId: string,
     message: Message,
@@ -231,14 +244,11 @@ export class RunMemory {
     const options = this.options();
     const written = this.queue.then(async () => {
       if (this.sealed) return;
-      if (this.check) {
-        await this.check();
-        if (this.sealed) return;
-      }
       let entryId: string | undefined;
       let fields = metadata;
       let checkpoint: TakenCheckpoint | undefined;
       if (fromUser && this.checkpointer) {
+        if (!(await this.mayWrite())) return;
         const named = `entry_${nanoid(12)}`;
         checkpoint = await this.checkpointer(named);
         if (checkpoint) {
@@ -246,26 +256,33 @@ export class RunMemory {
           fields = { ...fields, [FILE_CHECKPOINT_KEY]: checkpoint.ref };
         }
       }
-      const entry = await saveEntry(
-        this.threadId,
-        agentId,
-        message,
-        this.memory(),
-        toolCalls,
-        toolResults,
-        options.onMemoryError,
-        options.userId,
-        this.place,
-        event,
-        this.taggedRun === undefined
-          ? fields
-          : {
-              ...fields,
-              durableRun: this.taggedRun,
-              ...(this.leaseEpoch !== undefined && { durableEpoch: this.leaseEpoch }),
-            },
-        entryId
-      );
+      let entry: MemoryEntry | undefined;
+      try {
+        entry = await saveEntry(
+          this.threadId,
+          agentId,
+          message,
+          this.memory(),
+          toolCalls,
+          toolResults,
+          options.onMemoryError,
+          options.userId,
+          this.place,
+          event,
+          this.taggedRun === undefined
+            ? fields
+            : {
+                ...fields,
+                durableRun: this.taggedRun,
+                ...(this.leaseEpoch !== undefined && { durableEpoch: this.leaseEpoch }),
+              },
+          entryId,
+          () => this.mayWrite()
+        );
+      } catch (error) {
+        await checkpoint?.discard();
+        throw error;
+      }
       if (!entry) {
         await checkpoint?.discard();
         return;
