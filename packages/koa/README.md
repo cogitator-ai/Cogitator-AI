@@ -257,6 +257,28 @@ A run or stream body may also name a `multitaskStrategy` for a thread that alrea
 
 `POST /agents/:name/resume/stream` takes the same body and streams the rest of the run like `/stream`. `start` and `finish` name the resumed thread, and a body, agent or thread refused before the stream opens is answered as JSON, just like `/resume`. A thread with no paused run ends the open stream with an `error` event, `code: 'RUN_NOT_PAUSED'`, and disconnecting aborts the resume.
 
+## Triggers and inbox (experimental)
+
+Give the router the runtime's trigger manager as `triggers` and it serves the routes of API triggers, webhooks and the inbox of their results. Start the manager yourself.
+
+```typescript
+const cog = new Cogitator({ experimental_triggers: { agents, routines } });
+const triggers = cog.experimental_triggers;
+await triggers?.start();
+
+const router = cogitatorApp({ cogitator: cog, agents, triggers, auth });
+app.use(router.routes());
+```
+
+| Route                        | Auth                                                                      | Body                                                             |
+| ---------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `POST /triggers/:id/fire`    | the trigger's own bearer token                                            | `{ "text": "..." }`, read raw                                    |
+| `POST /triggers/:id/webhook` | the sender's signature (HMAC, GitHub, Mailgun, Postmark, SendGrid, Slack) | any content type, read raw                                       |
+| `GET /inbox`                 | the adapter's `auth` and `anonymous`                                      | `?status=unread&kind=failure&routineId=...&limit=20&before=<ms>` |
+| `PATCH /inbox/:id`           | the adapter's `auth` and `anonymous`                                      | `{ "status": "read" \| "unread" \| "archived" }`                 |
+
+The two trigger routes authenticate themselves, so they run before the router's `auth`, JSON body parser and body limit: a trigger checks the token or the signature over the body exactly as it came, which is read raw for any content type (JSON, forms, multipart) up to 10 MiB and never parsed or re-serialized. A larger body answers `413 PAYLOAD_TOO_LARGE`. They answer with the status, JSON body and headers of the trigger manager, `{ error: { code, message } }` on a refusal. The inbox routes go through `auth` and `anonymous` like every other route: a caller sees and changes only the items of its `userId`, an anonymous caller only the items without one, and another user's item answers `404 NOT_FOUND`. `/openapi.json` documents them. Without `triggers` none of these routes exist.
+
 ## Route Prefix
 
 ```typescript

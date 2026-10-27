@@ -1,6 +1,7 @@
 export { createChatHandler } from './handlers/chat.js';
 export { createAgentHandler } from './handlers/agent.js';
 export { createResumeHandler } from './handlers/resume.js';
+export { createTriggerHandler, createInboxHandler } from './handlers/triggers.js';
 
 export type {
   ChatMessage,
@@ -12,6 +13,9 @@ export type {
   ResumeDecisions,
   ResumeInput,
   ResumeHandlerOptions,
+  InboxCaller,
+  InboxHandlerOptions,
+  RouteParams,
   PendingApproval,
   PendingInterrupt,
   MultitaskStrategy,

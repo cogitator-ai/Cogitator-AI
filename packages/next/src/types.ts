@@ -52,6 +52,29 @@ export interface AgentInput {
   multitaskStrategy?: MultitaskStrategy;
 }
 
+/** The `params` of a dynamic route: a promise since Next 15, the object itself before */
+export type RouteParams<P> = P | Promise<P>;
+
+/** Who calls the inbox, as the `auth` of `createInboxHandler` establishes it */
+export interface InboxCaller {
+  userId?: string;
+}
+
+/** What `createInboxHandler` takes */
+export interface InboxHandlerOptions {
+  /**
+   * Establishes the caller of a request: a caller sees and changes only the items of its
+   * `userId`, an anonymous caller (no `userId`, or no `auth`) only the items without one. An
+   * error it throws answers `401`, or the client error `status` it carries
+   */
+  auth?: (req: Request) => InboxCaller | undefined | Promise<InboxCaller | undefined>;
+  /**
+   * Whether a caller without a user id may read the inbox: `'allow'` (the default) lets them,
+   * `'deny'` answers `401 UNAUTHORIZED`
+   */
+  anonymous?: AnonymousPolicy;
+}
+
 /** What every handler takes to keep the server contract of the Cogitator adapters */
 export interface ServerContractOptions {
   /**

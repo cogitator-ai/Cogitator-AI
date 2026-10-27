@@ -10,6 +10,7 @@ import type {
   ResumableStreamOptions,
   RunLimits,
   ThreadMessageRole,
+  TriggersHost,
 } from '@cogitator-ai/server-shared';
 import type {
   AddMessageBody,
@@ -102,15 +103,22 @@ export interface CogitatorDeps {
   workflows?: Record<string, Workflow<WorkflowState>>;
   swarms?: Record<string, SwarmConfig>;
   /**
-   * Establishes the caller before every route except `/health` and `/ready`, and
-   * before the WebSocket handshake: a function, or a `callerHook()` wrapped in
+   * Experimental. The runtime's trigger manager (`cog.experimental_triggers`): the controller
+   * then serves `POST /triggers/:id/fire` and `/webhook` (without `auth`, a trigger checks its
+   * caller by token or signature) and `GET /inbox`, `PATCH /inbox/:id` (behind `auth`, a
+   * caller's own items). Start it yourself with `start()`
+   */
+  triggers?: TriggersHost;
+  /**
+   * Establishes the caller before every route except `/health`, `/ready` and the trigger
+   * routes, and before the WebSocket handshake: a function, or a `callerHook()` wrapped in
    * `secured()` from `@tetsujs/openapi` to document it.
    */
   auth?: Authenticate | CallerHook;
   /**
    * Whether a caller without a `userId` may use the API: `'allow'` (the default) lets them
-   * in, `'deny'` answers `401 UNAUTHORIZED`, on every route but `/health` and `/ready` and on
-   * the WebSocket handshake. It covers callers `auth` returned `{}` for and, without `auth`,
+   * in, `'deny'` answers `401 UNAUTHORIZED`, on every route but `/health`, `/ready` and the
+   * trigger routes and on the WebSocket handshake. It covers callers `auth` returned `{}` for and, without `auth`,
    * every caller. `auth` returning `undefined` answers `401` under either policy.
    */
   anonymous?: AnonymousPolicy;

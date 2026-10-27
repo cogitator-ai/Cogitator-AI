@@ -18,6 +18,9 @@ import {
   toolRoutes,
   workflowRoutes,
   swarmRoutes,
+  triggerRoutes,
+  inboxRoutes,
+  documentTriggers,
 } from './routes/index.js';
 import { isModuleNotFound, sendError, sendFailure } from './routes/utils.js';
 
@@ -44,6 +47,9 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
   fastify.decorateRequest('cogitatorStartTime', 0);
 
   const prefix = opts.prefix ?? '/cogitator';
+  const triggers = opts.triggers;
+
+  if (triggers) await fastify.register(triggerRoutes, { prefix, host: triggers });
 
   await fastify.register(
     async (instance) => {
@@ -126,10 +132,11 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
                 { name: 'health', description: 'Health check endpoints' },
               ],
             },
-            transformObject: (documentObject) =>
-              'openapiObject' in documentObject
-                ? documentStreamEvents(documentObject.openapiObject)
-                : documentObject.swaggerObject,
+            transformObject: (documentObject) => {
+              if (!('openapiObject' in documentObject)) return documentObject.swaggerObject;
+              const document = documentStreamEvents(documentObject.openapiObject);
+              return triggers ? documentTriggers(document, prefix) : document;
+            },
           });
 
           await instance.register(swaggerUiModule.default, {
@@ -154,6 +161,7 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
         await api.register(toolRoutes);
         await api.register(workflowRoutes);
         await api.register(swarmRoutes);
+        if (triggers) await api.register(inboxRoutes, { host: triggers });
 
         if (websocketEnabled) {
           const { websocketRoutes } = await import('./websocket/handler.js');

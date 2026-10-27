@@ -21,13 +21,7 @@ export function createBodyParser(options: BodyParserOptions = {}) {
       return;
     }
     if (BODY_METHODS.has(ctx.method) && ctx.is('application/json') && !isBodyConsumed(ctx)) {
-      const declaredLength = Number(ctx.get('content-length'));
-      if (Number.isFinite(declaredLength) && declaredLength > limit) {
-        await discardBody(ctx);
-        throw new PayloadTooLargeError();
-      }
-
-      const raw = await readBody(ctx, limit);
+      const raw = (await readRawBody(ctx, limit)).toString('utf8');
       if (raw.trim()) {
         try {
           (ctx.request as Context['request'] & { body?: unknown }).body = JSON.parse(raw);
@@ -41,7 +35,8 @@ export function createBodyParser(options: BodyParserOptions = {}) {
   };
 }
 
-function isBodyConsumed(ctx: Context): boolean {
+/** Whether a body parser upstream of the router already read the body */
+export function isBodyConsumed(ctx: Context): boolean {
   return (
     (ctx.request as Context['request'] & { body?: unknown }).body !== undefined ||
     ctx.req.readableEnded
@@ -66,7 +61,20 @@ function discardBody(ctx: Context): Promise<void> {
   });
 }
 
-function readBody(ctx: Context, limit: number): Promise<string> {
+/**
+ * Reads the body of a request as the client sent it, at most `limit` bytes. A body over the limit,
+ * declared or streamed, is discarded and rejects with a `413` error
+ */
+export async function readRawBody(ctx: Context, limit: number): Promise<Buffer> {
+  const declaredLength = Number(ctx.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > limit) {
+    await discardBody(ctx);
+    throw new PayloadTooLargeError();
+  }
+  return readBody(ctx, limit);
+}
+
+function readBody(ctx: Context, limit: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const req = ctx.req;
     const chunks: Buffer[] = [];
@@ -98,7 +106,7 @@ function readBody(ctx: Context, limit: number): Promise<string> {
       }
       chunks.push(chunk);
     };
-    const onEnd = () => settle(() => resolve(Buffer.concat(chunks).toString('utf8')));
+    const onEnd = () => settle(() => resolve(Buffer.concat(chunks)));
     const onError = (err: Error) => settle(() => reject(err));
     const onClose = () => settle(() => reject(new RequestAbortedError()));
 

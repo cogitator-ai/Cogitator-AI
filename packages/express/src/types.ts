@@ -13,6 +13,7 @@ import type {
   RunLimits,
   SwaggerConfig,
   ThreadMessageRole,
+  TriggersHost,
   WorkflowResumeRequestBody,
   WorkflowRunRequestBody,
 } from '@cogitator-ai/server-shared';
@@ -128,6 +129,13 @@ export interface CogitatorServerConfig {
   agents?: Record<string, Agent>;
   workflows?: Record<string, Workflow<WorkflowState>>;
   swarms?: Record<string, SwarmConfig>;
+  /**
+   * Experimental. The runtime's trigger manager (`cog.experimental_triggers`): the server then
+   * serves `POST /triggers/:id/fire` and `/webhook` (before `auth`, a trigger checks its caller
+   * by token or signature) and `GET /inbox`, `PATCH /inbox/:id` (behind `auth`, a caller's own
+   * items). Start it yourself with `start()`
+   */
+  triggers?: TriggersHost;
   config?: {
     basePath?: string;
     enableWebSocket?: boolean;

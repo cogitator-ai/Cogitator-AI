@@ -53,6 +53,12 @@ export interface SwaggerConfig {
    * `Last-Event-ID` and `lastEventId`, the event ids and `STREAM_NOT_FOUND`
    */
   resumableStreams?: boolean;
+  /**
+   * Experimental. The server serves triggers and the inbox (`triggers`): the spec then documents
+   * `POST /triggers/{id}/fire`, `POST /triggers/{id}/webhook`, `GET /inbox` and
+   * `PATCH /inbox/{id}`
+   */
+  triggers?: boolean;
 }
 
 export interface OpenAPIContext {

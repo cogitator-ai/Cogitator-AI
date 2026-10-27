@@ -14,6 +14,8 @@ import {
   createToolRoutes,
   createWorkflowRoutes,
   createSwarmRoutes,
+  createTriggerRoutes,
+  createInboxRoutes,
 } from './routes/index.js';
 import { createSwaggerRoutes } from './swagger/index.js';
 import { forRoutes, routeUnmatched } from './middleware/unmatched.js';
@@ -32,6 +34,7 @@ export function cogitatorApp(opts: CogitatorAppOptions): Router<CogitatorState> 
   const authenticate = opts.auth ? [createAuthMiddleware(opts.auth)] : [];
   const anonymous = createAnonymousMiddleware(opts.anonymous);
 
+  if (opts.triggers) router.use(createTriggerRoutes(opts.triggers, errorHandler).routes());
   router.use(forRoutes(errorHandler));
   router.use(forRoutes(createBodyParser({ limit: opts.bodyLimit })));
   router.use(forRoutes(context));
@@ -45,6 +48,7 @@ export function cogitatorApp(opts: CogitatorAppOptions): Router<CogitatorState> 
         auth: opts.swagger?.auth ?? Boolean(opts.auth),
         ...(opts.limits && { limits: opts.limits }),
         ...(opts.resumableStreams && { resumableStreams: true }),
+        ...(opts.triggers && { triggers: true }),
       })
     );
   }
@@ -55,6 +59,7 @@ export function cogitatorApp(opts: CogitatorAppOptions): Router<CogitatorState> 
     createToolRoutes(),
     createWorkflowRoutes(),
     createSwarmRoutes(),
+    ...(opts.triggers ? [createInboxRoutes(opts.triggers)] : []),
   ];
 
   for (const sub of publicRouters) router.use(sub.routes());

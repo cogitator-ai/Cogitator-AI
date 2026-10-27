@@ -291,3 +291,28 @@ export type {
 export { MAX_THREAD_PAGE_LIMIT, parseThreadPageQuery, readThreadPage } from './thread-page.js';
 
 export type { ThreadPage, ThreadPageQuery } from './thread-page.js';
+
+export {
+  TRIGGER_ROUTES,
+  INBOX_STATUSES,
+  INBOX_KINDS,
+  MAX_INBOX_PAGE,
+  MAX_TRIGGER_BODY_BYTES,
+  TRIGGER_BODY_TOO_LARGE,
+  handleTriggerRoute,
+  listInboxRoute,
+  patchInboxRoute,
+  triggerRequestOf,
+  type TriggersHost,
+  type TriggerRouteAnswer,
+} from './triggers.js';
+export {
+  ConformanceTriggers,
+  TRIGGER_CONFORMANCE_CASES,
+  TRIGGER_CONFORMANCE_TOKEN,
+  TRIGGER_CONFORMANCE_SECRET,
+  triggerConformanceSignature,
+  checkTriggerConformanceCase,
+  type TriggerConformanceCase,
+  type TriggerConformanceResponse,
+} from './conformance-triggers.js';
