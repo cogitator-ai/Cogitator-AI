@@ -122,7 +122,7 @@ It also returns the connected `client`. For stdio servers, `env` is merged over 
 | `autoReconnect`                                        | `boolean`                    | Auto-reconnect on connection loss (default: true)    |
 | `onReconnecting`, `onReconnected`, `onReconnectFailed` | callbacks                    | Reconnection lifecycle hooks                         |
 
-The `http` transport speaks MCP Streamable HTTP; servers that only offer the legacy HTTP+SSE transport are not supported. Besides `getTools()`, the client has `listToolDefinitions()` (raw MCP definitions), `isConnected()`, `reconnect()` and `close()`.
+The `http` transport speaks MCP Streamable HTTP (`sse` is an alias of it, as the server's `sse` serves it). A server that only offers the older HTTP+SSE protocol, which opens its event stream with a GET and takes messages in POSTs, needs `transport: 'legacy-sse'`, which `experimental_mcpConnector()` uses for `type: "sse"` of a `.mcp.json`, as Claude Code does. Besides `getTools()`, the client has `listToolDefinitions()` (raw MCP definitions), `isConnected()`, `reconnect()` and `close()`.
 
 ### Retry and Reconnection
 
