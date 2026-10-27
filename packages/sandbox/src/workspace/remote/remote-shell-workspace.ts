@@ -132,6 +132,8 @@ interface ListedEntry {
 interface TreeEntry {
   type: WorkspaceEntryType;
   size: number;
+  /** Its permission bits */
+  mode: number;
   key: string;
   name: string;
   /** A directory the listing left out with everything in it, as an exclude asked */
@@ -617,13 +619,11 @@ export class RemoteShellWorkspace implements Workspace {
     const lists: string[] = [];
     try {
       lists.push(await this.upload('list', nulList(kept.map((entry) => entry.key)), 'snapshot'));
+      const directories = kept.filter((entry) => entry.type === 'directory');
       lists.push(
-        await this.upload(
-          'list',
-          nulList(kept.filter((entry) => entry.type === 'directory').map((entry) => entry.key)),
-          'snapshot'
-        )
+        await this.upload('list', nulList(directories.map((entry) => entry.key)), 'snapshot')
       );
+      lists.push(await this.upload('list', modeList(directories), 'snapshot'));
       const { code } = await this.script(
         scripts.SNAPSHOT_CREATE,
         [record.id, JSON.stringify(record), ...lists],
@@ -651,12 +651,14 @@ export class RemoteShellWorkspace implements Workspace {
     const record = await this.snapshotRecord(snapshotId);
     const saved = await this.savedPaths(record.id, 'list');
     const savedDirectories = await this.savedPaths(record.id, 'dirs');
+    const savedModes = await this.savedModes(record.id);
     const excluded = excludedBy(record.exclude);
     const skipped = new Set((record.skipped ?? []).map((skip) => skip.path));
     const files: string[] = [];
     const dirs: string[] = [];
     const kept: string[] = [];
     const present = new Map<string, WorkspaceEntryType>();
+    const presentModes = new Map<string, number>();
     const left: string[] = [];
     const keptRoots = new Set<string>();
     const underKept = (name: string): boolean => {
@@ -672,6 +674,7 @@ export class RemoteShellWorkspace implements Workspace {
       }
       if (underKept(entry.name)) continue;
       present.set(entry.key, entry.type);
+      if (entry.type === 'directory') presentModes.set(entry.key, entry.mode);
       const tooLarge =
         record.maxFileBytes !== undefined &&
         entry.type === 'file' &&
@@ -700,7 +703,12 @@ export class RemoteShellWorkspace implements Workspace {
     let unchanged = 0;
     for (const key of saved) {
       const directory = savedDirectories.has(key);
-      if (directory && present.get(key) === 'directory') {
+      const mode = savedModes?.get(key);
+      if (
+        directory &&
+        present.get(key) === 'directory' &&
+        (mode === undefined || presentModes.get(key) === mode)
+      ) {
         unchanged++;
         continue;
       }
@@ -769,7 +777,34 @@ export class RemoteShellWorkspace implements Workspace {
    * The paths (`list`) or the directories (`dirs`) a snapshot holds, each as its bytes in a
    * `latin1` string, so names that are not UTF-8 compare as they are.
    */
+  /**
+   * The modes of the directories snapshot `id` holds, by key, undefined for a snapshot taken
+   * before they were kept
+   */
+  private async savedModes(id: string): Promise<Map<string, number> | undefined> {
+    const lines = await this.savedList(id, 'modes').catch((error: unknown) => {
+      if (WorkspaceError.is(error, 'NOT_FOUND')) return undefined;
+      throw error;
+    });
+    if (!lines) return undefined;
+    const modes = new Map<string, number>();
+    for (const line of lines) {
+      const at = line.indexOf(' ./');
+      if (at > 0) modes.set(line.slice(at + 3), Number.parseInt(line.slice(0, at), 8));
+    }
+    return modes;
+  }
+
   private async savedPaths(id: string, kind: 'list' | 'dirs'): Promise<Set<string>> {
+    const paths = new Set<string>();
+    for (const name of await this.savedList(id, kind)) {
+      if (name.startsWith('./')) paths.add(name.slice(2));
+    }
+    return paths;
+  }
+
+  /** The NUL-separated list `kind` of snapshot `id`, its names as `latin1` strings */
+  private async savedList(id: string, kind: 'list' | 'dirs' | 'modes'): Promise<string[]> {
     const { code, stdout } = await this.script(
       scripts.SNAPSHOT_SAVED,
       [id, kind, integer(LISTING_CAP)],
@@ -784,11 +819,7 @@ export class RemoteShellWorkspace implements Workspace {
         `The paths of snapshot ${id} are over ${LISTING_CAP} bytes`
       );
     }
-    const paths = new Set<string>();
-    for (const name of Buffer.from(hex, 'hex').toString('latin1').split('\0')) {
-      if (name.startsWith('./')) paths.add(name.slice(2));
-    }
-    return paths;
+    return Buffer.from(hex, 'hex').toString('latin1').split('\0');
   }
 
   /**
@@ -811,11 +842,12 @@ export class RemoteShellWorkspace implements Workspace {
     }
     const fields = Buffer.from(hex, 'hex').toString('latin1').split('\0');
     const entries: TreeEntry[] = [];
-    for (let i = 0; i + 2 < fields.length; i += 3) {
-      const key = fields[i + 2];
+    for (let i = 0; i + 3 < fields.length; i += 4) {
+      const key = fields[i + 3];
       entries.push({
         type: entryType(fields[i]),
         size: Number(fields[i + 1]),
+        mode: Number.parseInt(fields[i + 2], 8),
         key,
         name: Buffer.from(key, 'latin1').toString('utf8'),
         pruned: fields[i] === 'X',
@@ -1362,6 +1394,14 @@ function depth(path: string): number {
 /** Paths given as `latin1` strings of their bytes, as a NUL-separated list of `./path`. */
 function nulList(keys: readonly string[]): Buffer {
   return Buffer.from(keys.map((key) => `./${key}\0`).join(''), 'latin1');
+}
+
+/** The modes of `directories` as a snapshot keeps them: `<octal mode> ./<path>`, NUL-terminated */
+function modeList(directories: readonly TreeEntry[]): Buffer {
+  return Buffer.from(
+    directories.map((entry) => `${entry.mode.toString(8)} ./${entry.key}\0`).join(''),
+    'latin1'
+  );
 }
 
 /** A byte limit as the integer a shell compares, never in exponent notation. */

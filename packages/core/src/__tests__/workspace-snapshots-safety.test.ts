@@ -396,6 +396,21 @@ describe('snapshot store safety', () => {
     workspace.holdForRestore()();
   });
 
+  it('plans a change of mode alone, of a file and of a directory, as the restore makes it', async () => {
+    put('dir/a.txt', 'a');
+    chmodSync(join(root, 'dir'), 0o755);
+    chmodSync(join(root, 'dir', 'a.txt'), 0o644);
+    const snapshot = await workspace.snapshot();
+    chmodSync(join(root, 'dir'), 0o700);
+    chmodSync(join(root, 'dir', 'a.txt'), 0o600);
+    const plan = await workspace.restore(snapshot.id, { dryRun: true });
+    expect(plan.restored.sort()).toEqual(['dir', 'dir/a.txt']);
+    const done = await workspace.restore(snapshot.id);
+    expect(done.restored.sort()).toEqual(plan.restored.sort());
+    expect(statSync(join(root, 'dir')).mode & 0o777).toBe(0o755);
+    expect(statSync(join(root, 'dir', 'a.txt')).mode & 0o777).toBe(0o644);
+  });
+
   it('keeps the store for its owner only', async () => {
     put('.env', 'SECRET=1');
     chmodSync(join(root, '.env'), 0o600);

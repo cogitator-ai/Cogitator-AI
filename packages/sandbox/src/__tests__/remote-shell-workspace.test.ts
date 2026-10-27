@@ -1074,6 +1074,22 @@ describe.skipIf(!host)('RemoteShellWorkspace on a real shell', { timeout: 60_000
     expect(readFileSync(join(root, 'logs/app.log'), 'utf8')).toBe('l\n');
   });
 
+  it('plans the mode of a directory changed since, as the extract puts it back', async () => {
+    const { workspace } = fresh();
+    await workspace.exec('mkdir -p empty && chmod 755 empty');
+    await workspace.write('a.txt', 'a');
+    const snapshot = await workspace.snapshot();
+    await workspace.exec('chmod 700 empty');
+    const plan = await workspace.restore(snapshot.id, { dryRun: true });
+    expect(plan.restored).toContain('empty');
+    expect(plan.deleted).toEqual([]);
+    const result = await workspace.restore(snapshot.id);
+    expect(result.restored).toEqual(plan.restored);
+    expect((await workspace.exec('stat -c %a empty')).stdout.trim()).toBe('755');
+    const again = await workspace.restore(snapshot.id, { dryRun: true });
+    expect(again.restored).not.toContain('empty');
+  });
+
   it('leaves alone what lies under a skipped path that became a directory', async () => {
     const { workspace, root } = fresh();
     await workspace.write('big.bin', 'x'.repeat(2048));
