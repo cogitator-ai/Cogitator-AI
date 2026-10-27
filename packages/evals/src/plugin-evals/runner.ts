@@ -398,6 +398,18 @@ export async function experimental_runPluginEvals(
         const excluded = plan.excluded.has(grader.name);
         if (excluded && arm === 'without') continue;
         const base = { name: grader.name, type: grader.type, weight: grader.weight };
+        if (isPaidGrader(grader) && signal.aborted) {
+          skippedPaid = true;
+          partialReason ??= 'interrupted';
+          graders.push({
+            ...base,
+            passed: false,
+            scored: false,
+            skipped: true,
+            explanation: 'skipped: the run was interrupted before this judge grader',
+          });
+          continue;
+        }
         const judge = isPaidGrader(grader) ? judgeOf(plan) : undefined;
         if (isPaidGrader(grader) && (ceilingReached() || !judge)) {
           skippedPaid = true;
@@ -412,11 +424,23 @@ export async function experimental_runPluginEvals(
           continue;
         }
         try {
-          const verdict = await grade(grader, outcome.capture, judge ?? noJudge);
+          const verdict = await grade(grader, outcome.capture, judge ?? noJudge, signal);
           cost += verdict.costUsd ?? 0;
           spent += verdict.costUsd ?? 0;
           graders.push({ ...base, ...verdict, scored: !excluded });
         } catch (error) {
+          if (isPaidGrader(grader) && signal.aborted) {
+            skippedPaid = true;
+            partialReason ??= 'interrupted';
+            graders.push({
+              ...base,
+              passed: false,
+              scored: false,
+              skipped: true,
+              explanation: 'skipped: the run was interrupted while the judge graded',
+            });
+            continue;
+          }
           graders.push({
             ...base,
             passed: false,

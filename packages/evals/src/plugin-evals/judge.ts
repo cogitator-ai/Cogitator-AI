@@ -2,6 +2,7 @@ import {
   bindJudgeContext,
   createJudgeMetric,
   judgeContextFor,
+  type JudgeRunOptions,
   type JudgeVerdict,
 } from '../metrics/llm-judge';
 import { tagged } from '../metrics/judge-prompt';
@@ -24,7 +25,8 @@ export interface JudgeAnswer {
 
 /** Asks the judge model, three votes per question */
 export interface PluginEvalJudge {
-  ask(question: JudgeQuestion): Promise<JudgeAnswer>;
+  /** Asks `question`, its judge runs aborted with `signal` */
+  ask(question: JudgeQuestion, signal?: AbortSignal): Promise<JudgeAnswer>;
 }
 
 const LLM_INSTRUCTIONS = `You grade one run of an AI agent against a rubric. Read the <rubric> and the <evidence> from the run (and the <task> the agent was given), then decide whether the evidence meets the rubric.
@@ -85,21 +87,31 @@ export function createPluginEvalJudge(cogitator: JudgeCogitator, model: string):
     JudgeConfigSchema.parse({ model, temperature: 1, samples: JUDGE_VOTES })
   );
   return {
-    async ask(question) {
+    async ask(question, signal) {
       const message = messageOf(question);
       const metric = createJudgeMetric(
         question.kind === 'llm' ? 'llm' : 'baseline',
         question.kind === 'llm' ? LLM_INSTRUCTIONS : BASELINE_INSTRUCTIONS,
         { message: () => ({ message }), score: verdictScore }
       );
+      signal?.throwIfAborted();
+      const scoped = signal
+        ? {
+            ...context,
+            cogitator: {
+              run: (options: JudgeRunOptions) => context.cogitator.run({ ...options, signal }),
+            },
+          }
+        : context;
       const scored = await bindJudgeContext(
         metric,
-        context
+        scoped
       )({
         case: { input: question.prompt },
         output: '',
         duration: 0,
       });
+      signal?.throwIfAborted();
       return {
         votes: votesOf(scored.metadata, scored.error ?? scored.details ?? 'no verdict'),
         costUsd: scored.usage?.cost ?? 0,

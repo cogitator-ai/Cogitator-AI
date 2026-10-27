@@ -344,6 +344,42 @@ describe('experimental_runPluginEvals', () => {
     });
   });
 
+  it('stops the judge and starts no further judge grader once the run is interrupted', async () => {
+    const controller = new AbortController();
+    let judged = 0;
+    class InterruptedJudge extends ScriptedBackend {
+      override async chat(request: ChatRequest): Promise<ChatResponse> {
+        const user = textOf(request.messages.find((message) => message.role === 'user'));
+        if (user.includes('You grade one run')) {
+          judged++;
+          controller.abort(new Error('interrupted'));
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        return super.chat(request);
+      }
+    }
+    const root = plugin({
+      'evals/judged/prompt.md': '---\nruns: 1\n---\nGreet Ada.\n',
+      'evals/judged/graders/first.md': '---\ntype: llm\n---\nPASS if it greets Ada.\n',
+      'evals/judged/graders/second.md': '---\ntype: llm\n---\nPASS if it is polite.\n',
+    });
+    const { result } = await experimental_runPluginEvals(
+      options(new InterruptedJudge(), {
+        target: root,
+        ablation: 'none',
+        signal: controller.signal,
+      })
+    );
+    expect(judged).toBeGreaterThan(0);
+    expect(judged).toBeLessThanOrEqual(3);
+    expect(result).toMatchObject({ partial: true, partialReason: 'interrupted' });
+    const graders = result.cases[0]?.arms.with[0]?.graders ?? [];
+    expect(graders.map((g) => [g.name, g.skipped === true])).toEqual([
+      ['first', true],
+      ['second', true],
+    ]);
+  });
+
   it('filters cases by name glob, by tag and by a single case file', async () => {
     const backend = new ScriptedBackend();
     const byGlob = await experimental_runPluginEvals(

@@ -112,7 +112,8 @@ export function isPaidGrader(grader: PluginEvalGrader): boolean {
 export async function grade(
   grader: PluginEvalGrader,
   capture: RunCapture,
-  judge: PluginEvalJudge
+  judge: PluginEvalJudge,
+  signal?: AbortSignal
 ): Promise<Verdict> {
   switch (grader.type) {
     case 'regex': {
@@ -198,12 +199,15 @@ export async function grade(
           explanation: `${targetLabel(grader.focus)} is a binary file, which the judge cannot read: write it out as text and grade that`,
         };
       }
-      const answer = await judge.ask({
-        kind: 'llm',
-        criteria: grader.criteria,
-        evidence: content.text,
-        prompt: capture.prompt,
-      });
+      const answer = await judge.ask(
+        {
+          kind: 'llm',
+          criteria: grader.criteria,
+          evidence: content.text,
+          prompt: capture.prompt,
+        },
+        signal
+      );
       return {
         ...tally(answer.votes),
         votes: answer.votes,
@@ -218,13 +222,16 @@ export async function grade(
         return { passed: false, explanation: `${grader.baselineFile}: ${reference.error}` };
       }
       const run = readableTranscript(capture.entries);
-      const answer = await judge.ask({
-        kind: 'baseline',
-        criteria: grader.criteria,
-        reference: readableTranscript(reference),
-        run,
-        prompt: capture.prompt,
-      });
+      const answer = await judge.ask(
+        {
+          kind: 'baseline',
+          criteria: grader.criteria,
+          reference: readableTranscript(reference),
+          run,
+          prompt: capture.prompt,
+        },
+        signal
+      );
       return {
         ...tally(answer.votes),
         votes: answer.votes,
