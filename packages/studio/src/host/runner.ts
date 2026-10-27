@@ -24,6 +24,7 @@ import type * as SwarmsModule from '@cogitator-ai/swarms';
 import type {
   FileRestoreSummary,
   ForkOrigin,
+  ForkPreview,
   ForkSummary,
   HistoryMessage,
   HostEvent,
@@ -31,9 +32,11 @@ import type {
   MemoryPlace,
   RawSpan,
   RegistryInfo,
+  ReplayEntry,
   RewindRequest,
   RewindSummary,
   RunRecord,
+  ThreadForkRequest,
   StepRecord,
   ThreadTree,
   TreeEntry,
@@ -145,6 +148,16 @@ function treeEntry(entry: MemoryEntry): TreeEntry {
   };
 }
 
+/** What brings a thread of the studio's own memory back after a restart. */
+interface ThreadSeed {
+  history: readonly HistoryMessage[];
+  replay?: readonly ReplayEntry[];
+}
+
+function seedOf(request: ThreadSeed): ThreadSeed {
+  return { history: request.history, ...(request.replay && { replay: request.replay }) };
+}
+
 /** The text of a message entry, its text parts joined. */
 function textOf(entry: MemoryEntry): string {
   const content = entry.message.content;
@@ -166,6 +179,8 @@ function fileSummary(files: FileRewindReport): FileRestoreSummary {
     entryId: files.entryId,
     exact: files.exact,
     workspaceId: files.workspaceId,
+    ...(files.busy !== undefined && { busy: files.busy }),
+    ...(files.safetySnapshotId !== undefined && { safetySnapshotId: files.safetySnapshotId }),
   };
 }
 
@@ -270,7 +285,7 @@ export class StudioHost {
   handle(request: HostRequest): Promise<unknown> {
     switch (request.type) {
       case 'chat':
-        return this.chat(request.agent, request.input, request.threadId, request.history);
+        return this.chat(request.agent, request.input, request.threadId, seedOf(request));
       case 'stop':
         return Promise.resolve(this.stop(request.runId));
       case 'approve':
@@ -286,9 +301,9 @@ export class StudioHost {
       case 'swarm.run':
         return this.runSwarm(request.swarm, request.input);
       case 'thread.tree':
-        return this.threadTree(request.threadId, request.agent, request.history);
+        return this.threadTree(request.threadId, request.agent, seedOf(request));
       case 'thread.rewind':
-        return this.rewind(request.threadId, request.agent, request.history, request);
+        return this.rewind(request.threadId, request.agent, seedOf(request), request);
       case 'thread.fork':
         return this.forkThread(request);
     }
@@ -301,11 +316,11 @@ export class StudioHost {
   private async rewind(
     threadId: string,
     key: string,
-    history: readonly HistoryMessage[],
+    seed: ThreadSeed,
     request: RewindRequest
   ): Promise<RewindSummary> {
     const agent = this.agent(key);
-    await this.seed(threadId, agent, history);
+    await this.seed(threadId, agent, seed);
     if (request.force && !request.dryRun) {
       for (const [runId, thread] of this.runThreads) if (thread === threadId) this.stop(runId);
     }
@@ -316,27 +331,48 @@ export class StudioHost {
       ...(request.dryRun !== undefined && { dryRun: request.dryRun }),
       ...(request.force !== undefined && { force: request.force }),
     });
-    return rewindSummary(report);
+    const summary = rewindSummary(report);
+    if (!report.dryRun && this.options.memory === 'studio') {
+      summary.replay = await this.replayOf(threadId);
+    }
+    return summary;
   }
 
   /**
    * Forks a thread at an entry into `newThreadId` through the runtime, with the files of the
    * agent's workspace restored to that point when asked, and the messages of the forked branch.
    */
-  private async forkThread(request: {
-    threadId: string;
-    agent: string;
-    history: readonly HistoryMessage[];
-    entryId: string;
-    newThreadId: string;
-    files?: boolean;
-  }): Promise<ForkSummary> {
+  private async forkThread(
+    request: {
+      threadId: string;
+      agent: string;
+      entryId: string;
+      newThreadId: string;
+    } & ThreadForkRequest &
+      ThreadSeed
+  ): Promise<ForkSummary | ForkPreview> {
     const agent = this.agent(request.agent);
-    await this.seed(request.threadId, agent, request.history);
-    const result = await this.project.cogitator.forkThread(request.threadId, request.entryId, {
-      newThreadId: request.newThreadId,
+    await this.seed(request.threadId, agent, seedOf(request));
+    const options = {
       agents: [agent],
       ...(request.files !== undefined && { files: request.files }),
+      ...(request.force !== undefined && { force: request.force }),
+    };
+    if (request.dryRun) {
+      const plan = await this.project.cogitator.forkThread(request.threadId, request.entryId, {
+        ...options,
+        dryRun: true,
+      });
+      return {
+        dryRun: true,
+        snapshotsCopied: [...plan.snapshotsCopied],
+        ...(plan.files && { files: fileSummary(plan.files) }),
+        going: [...plan.going],
+      };
+    }
+    const result = await this.project.cogitator.forkThread(request.threadId, request.entryId, {
+      ...options,
+      newThreadId: request.newThreadId,
     });
     const threadId = result.thread.id;
     this.seeded.add(threadId);
@@ -345,7 +381,40 @@ export class StudioHost {
       snapshotsCopied: [...result.snapshotsCopied],
       ...(result.files && { files: fileSummary(result.files) }),
       base: await this.messagesOf(threadId),
+      ...(this.options.memory === 'studio' && { replay: await this.replayOf(threadId) }),
     };
+  }
+
+  /**
+   * The active branch of a thread entry by entry, with ids and metadata, for the server to replay
+   * into a fresh memory after a restart
+   */
+  private async replayOf(threadId: string): Promise<ReplayEntry[]> {
+    const memory = await this.project.cogitator.getMemory();
+    if (!memory?.getPath) return [];
+    const path = await memory.getPath({ threadId, types: 'all', includeToolCalls: true });
+    if (!path.success) throw new Error(path.error);
+    return path.data.map((entry) => ({
+      id: entry.id,
+      ...(entry.type !== undefined && { type: entry.type }),
+      message: entry.message,
+      ...(entry.toolCalls && { toolCalls: entry.toolCalls }),
+      ...(entry.toolResults && { toolResults: entry.toolResults }),
+      ...(entry.metadata && { metadata: entry.metadata }),
+      ...(entry.event && { event: entry.event }),
+    }));
+  }
+
+  /** Tells the server the active branch of a thread of the studio's own memory, after a run */
+  private async reportReplay(threadId: string): Promise<void> {
+    if (this.options.memory !== 'studio') return;
+    try {
+      this.emit({ type: 'thread.replay', threadId, entries: await this.replayOf(threadId) });
+    } catch (error) {
+      console.error(
+        `[studio host] could not read thread ${threadId} to keep it: ${message(error)}`
+      );
+    }
   }
 
   /** The user and assistant messages of a thread's active branch with their text. */
@@ -367,13 +436,9 @@ export class StudioHost {
    * studio shows. A memory without trees gives its entries as a list. The studio's own memory
    * gets the thread's earlier messages first, as a chat in it would.
    */
-  private async threadTree(
-    threadId: string,
-    key: string,
-    history: readonly HistoryMessage[]
-  ): Promise<ThreadTree> {
+  private async threadTree(threadId: string, key: string, seed: ThreadSeed): Promise<ThreadTree> {
     const agent = this.project.agents.get(key);
-    if (agent) await this.seed(threadId, agent, history);
+    if (agent) await this.seed(threadId, agent, seed);
     const memory = await this.project.cogitator.getMemory();
     const empty: ThreadTree = { threadId, entries: [], truncated: false, branching: false };
     if (!memory) return empty;
@@ -494,18 +559,40 @@ export class StudioHost {
   }
 
   /** Replays a thread's earlier messages into the studio's own memory, once per host. */
-  private async seed(
-    threadId: string,
-    agent: Agent,
-    history: readonly HistoryMessage[]
-  ): Promise<void> {
+  /**
+   * Brings a thread of the studio's own memory back after a restart: its active branch entry by
+   * entry, with the ids and metadata it had (file checkpoints included), or for a thread kept
+   * before the studio kept branches, its finished turns
+   */
+  private async seed(threadId: string, agent: Agent, seed: ThreadSeed): Promise<void> {
     if (this.options.memory !== 'studio' || this.seeded.has(threadId)) return;
     this.seeded.add(threadId);
-    if (history.length === 0) return;
+    const { history, replay } = seed;
+    if (history.length === 0 && !replay?.length) return;
     const memory = await this.project.cogitator.getMemory();
     if (!memory) return;
     const existing = await memory.getThread(threadId);
     if (!existing.success || !existing.data) await memory.createThread(agent.id, {}, threadId);
+    if (replay?.length) {
+      let parentId: string | null = null;
+      for (const entry of replay) {
+        const added = await memory.addEntry({
+          id: entry.id,
+          threadId,
+          message: entry.message,
+          ...(entry.type !== undefined && { type: entry.type }),
+          ...(entry.toolCalls && { toolCalls: entry.toolCalls }),
+          ...(entry.toolResults && { toolResults: entry.toolResults }),
+          ...(entry.metadata && { metadata: entry.metadata }),
+          ...(entry.event && { event: entry.event }),
+          tokenCount: Math.ceil(JSON.stringify(entry.message.content).length / 4),
+          parentId,
+        });
+        if (!added.success) throw new Error(added.error);
+        parentId = added.data.id;
+      }
+      return;
+    }
     for (const entry of history) {
       await memory.addEntry({
         threadId,
@@ -519,10 +606,10 @@ export class StudioHost {
     key: string,
     input: string,
     threadId: string,
-    history: readonly HistoryMessage[]
+    seed: ThreadSeed
   ): Promise<{ runId: string }> {
     const agent = this.agent(key);
-    await this.seed(threadId, agent, history);
+    await this.seed(threadId, agent, seed);
     const controller = new AbortController();
     let current = '';
     const { runId, done } = await this.begin({ kind: 'agent', target: key, threadId }, () =>
@@ -574,6 +661,10 @@ export class StudioHost {
     );
     this.runThreads.set(runId, threadId);
     this.finish(runId, done, controller);
+    void done.then(
+      () => this.reportReplay(threadId),
+      () => this.reportReplay(threadId)
+    );
     return { runId };
   }
 

@@ -1,8 +1,10 @@
 /**
  * What the studio's three parts say to each other: the runtime host (a child
  * process that runs the project), the server, and the UI in the browser. The
- * file has no imports, so the UI bundle can share it.
+ * file imports types only, so the UI bundle can share it.
  */
+
+import type { MemoryEntryType, Message, ToolCall, ToolResult } from '@cogitator-ai/types';
 
 export interface ToolInfo {
   name: string;
@@ -345,8 +347,24 @@ export interface ThreadRecord {
   rewoundRuns?: string[];
   /** The thread and entry this thread was forked from. */
   forkOf?: { threadId: string; entryId: string };
-  /** The conversation a forked thread starts from, shown above its own turns and replayed with them. */
+  /** The conversation a forked thread starts from, shown above its own turns. */
   base?: HistoryMessage[];
+  /**
+   * The active branch of the thread as the studio's own memory last had it, entry by entry with
+   * their ids and metadata, replayed into a fresh memory after a restart.
+   */
+  replay?: ReplayEntry[];
+}
+
+/** An entry of a thread's active branch, as a fresh memory gets it back after a restart. */
+export interface ReplayEntry {
+  id: string;
+  type?: MemoryEntryType;
+  message: Message;
+  toolCalls?: ToolCall[];
+  toolResults?: ToolResult[];
+  metadata?: Record<string, unknown>;
+  event?: Record<string, unknown>;
 }
 
 /** What a file restore of a rewind or a fork changed, or would change in a dry run. */
@@ -360,6 +378,10 @@ export interface FileRestoreSummary {
   unchanged: number;
   /** Paths left as they are, such as files the checkpoint skipped. */
   kept: string[];
+  /** With a dry run: whether commands the workspace runs would refuse the restore now. */
+  busy?: boolean;
+  /** The snapshot of the files from right before the restore, to undo it. */
+  safetySnapshotId?: string;
   /** The user message whose checkpoint it is. */
   entryId: string;
   /** Whether the checkpoint holds the files at that very point, not before the turn it is in. */
@@ -392,6 +414,8 @@ export interface RewindSummary {
     /** Durable runs of the thread dropped. */
     durable: string[];
   };
+  /** The active branch after the rewind, when the studio keeps its own memory. */
+  replay?: ReplayEntry[];
 }
 
 /** A thread forked from another at an entry. */
@@ -402,6 +426,18 @@ export interface ForkSummary {
   files?: FileRestoreSummary;
   /** The user and assistant messages of the forked branch, oldest first. */
   base: HistoryMessage[];
+  /** The active branch of the new thread, when the studio keeps its own memory. */
+  replay?: ReplayEntry[];
+}
+
+/** What a fork with its files would restore, made without a thread. */
+export interface ForkPreview {
+  dryRun: true;
+  /** Snapshots the fork would copy into its workspace. */
+  snapshotsCopied: string[];
+  files?: FileRestoreSummary;
+  /** Runs in the thread or the workspace that a fork with files has to wait for, or stop. */
+  going: string[];
 }
 
 /** What a rewind is asked to do. */
@@ -417,6 +453,10 @@ export interface RewindRequest {
 export interface ThreadForkRequest {
   entryId: string;
   files?: boolean;
+  /** Only say what a fork with files would restore, make no thread. */
+  dryRun?: boolean;
+  /** Stop the runs in the way of a fork with files first. */
+  force?: boolean;
 }
 
 export interface ForkRequest {
@@ -519,7 +559,8 @@ export type HostEvent =
       output?: unknown;
       error?: string;
     }
-  | { type: 'swarm.event'; runId: string; event: SwarmEventRecord };
+  | { type: 'swarm.event'; runId: string; event: SwarmEventRecord }
+  | { type: 'thread.replay'; threadId: string; entries: ReplayEntry[] };
 
 /** An event of a swarm run as the swarm emitted it (`team:task-claimed` and the rest). */
 export interface SwarmEventRecord {
@@ -565,6 +606,7 @@ export type HostRequest =
       input: string;
       threadId: string;
       history: HistoryMessage[];
+      replay?: ReplayEntry[];
     }
   | { type: 'stop'; requestId: string; runId: string }
   | {
@@ -583,6 +625,7 @@ export type HostRequest =
       threadId: string;
       agent: string;
       history: HistoryMessage[];
+      replay?: ReplayEntry[];
     }
   | ({
       type: 'thread.rewind';
@@ -590,6 +633,7 @@ export type HostRequest =
       threadId: string;
       agent: string;
       history: HistoryMessage[];
+      replay?: ReplayEntry[];
     } & RewindRequest)
   | ({
       type: 'thread.fork';
@@ -598,6 +642,7 @@ export type HostRequest =
       agent: string;
       newThreadId: string;
       history: HistoryMessage[];
+      replay?: ReplayEntry[];
     } & ThreadForkRequest)
   | { type: 'workflow.run'; requestId: string; workflow: string; input: unknown }
   | { type: 'swarm.run'; requestId: string; swarm: string; input: string }

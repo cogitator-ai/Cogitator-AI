@@ -1,5 +1,6 @@
 import type {
   ForkRequest,
+  ForkPreview,
   ForkSummary,
   HostStatus,
   RewindRequest,
@@ -66,11 +67,16 @@ export const api = {
       `/api/threads/${encodeURIComponent(threadId)}/rewind`,
       { method: 'POST', body: rewind }
     ),
-  forkThread: (threadId: string, fork: ThreadForkRequest) =>
+  forkThread: (threadId: string, fork: Omit<ThreadForkRequest, 'dryRun'>) =>
     request<ForkSummary & { thread: ThreadRecord }>(
       `/api/threads/${encodeURIComponent(threadId)}/fork`,
       { method: 'POST', body: fork }
     ),
+  forkPreview: (threadId: string, fork: Omit<ThreadForkRequest, 'dryRun' | 'force'>) =>
+    request<ForkPreview>(`/api/threads/${encodeURIComponent(threadId)}/fork`, {
+      method: 'POST',
+      body: { ...fork, dryRun: true },
+    }),
   chat: (agent: string, input: string, threadId?: string) =>
     request<{ runId: string; threadId: string }>('/api/chat', {
       method: 'POST',

@@ -12,6 +12,7 @@ import type {
   HostEvent,
   RawSpan,
   RegistryInfo,
+  ReplayEntry,
   RunRecord,
   RunStatus,
   SpanRecord,
@@ -42,6 +43,8 @@ export interface RunQuery {
 /** What changed after an event, for the server to push to the UI. */
 export interface StoreChange {
   runs: RunRecord[];
+  /** A thread that changed, such as the active branch the studio keeps of it */
+  thread?: ThreadRecord;
   token?: { runId: string; text: string; revision: number };
   reasoning?: { runId: string; text: string; revision: number };
 }
@@ -403,10 +406,34 @@ export class StudioStore {
     return thread;
   }
 
+  /**
+   * Keeps the active branch of a thread of the studio's own memory, entry by entry, to replay
+   * after a restart. A forked thread's `base` follows it: the messages it copied from its origin
+   * that are still on the branch
+   */
+  keepReplay(threadId: string, entries: readonly ReplayEntry[]): ThreadRecord | undefined {
+    const thread = this.threads.get(threadId);
+    if (!thread) return undefined;
+    thread.replay = entries.map((entry) => ({ ...entry }));
+    if (thread.forkOf) thread.base = baseOf(entries);
+    this.persistThreads();
+    return thread;
+  }
+
+  /** The active branch the studio keeps of a thread, for a fresh memory after a restart. */
+  replay(threadId: string): ReplayEntry[] | undefined {
+    return this.threads.get(threadId)?.replay;
+  }
+
   /** The thread a fork of `source` at `entryId` made, starting from the messages `base`. */
   addForkedThread(
     source: ThreadRecord,
-    fork: { threadId: string; entryId: string; base: readonly HistoryMessage[] }
+    fork: {
+      threadId: string;
+      entryId: string;
+      base: readonly HistoryMessage[];
+      replay?: readonly ReplayEntry[];
+    }
   ): ThreadRecord {
     if (this.threads.has(fork.threadId)) throw new Error(`Thread ${fork.threadId} exists already`);
     const now = Date.now();
@@ -419,6 +446,7 @@ export class StudioStore {
       runs: [],
       forkOf: { threadId: source.id, entryId: fork.entryId },
       base: fork.base.map((message) => ({ role: message.role, content: message.content })),
+      ...(fork.replay && { replay: fork.replay.map((entry) => ({ ...entry })) }),
     };
     this.threads.set(thread.id, thread);
     this.persistThreads();
@@ -593,6 +621,10 @@ export class StudioStore {
 
   private change(event: HostEvent): StoreChange {
     switch (event.type) {
+      case 'thread.replay': {
+        const thread = this.keepReplay(event.threadId, event.entries);
+        return { runs: [], ...(thread && { thread }) };
+      }
       case 'run.started': {
         const run: RunRecord = {
           id: event.runId,
@@ -827,4 +859,24 @@ export class StudioStore {
       }
     }
   }
+}
+
+/** The user and assistant messages a forked branch copied from its origin (`metadata.forkOf`) */
+function baseOf(entries: readonly ReplayEntry[]): HistoryMessage[] {
+  return entries.flatMap((entry): HistoryMessage[] => {
+    if (entry.metadata?.forkOf === undefined) return [];
+    const role = entry.message.role;
+    if ((entry.type ?? 'message') !== 'message' || (role !== 'user' && role !== 'assistant')) {
+      return [];
+    }
+    const content = entry.message.content;
+    const text =
+      typeof content === 'string'
+        ? content
+        : content
+            .map((part) => (part.type === 'text' ? part.text : ''))
+            .filter(Boolean)
+            .join('\n');
+    return text ? [{ role, content: text }] : [];
+  });
 }

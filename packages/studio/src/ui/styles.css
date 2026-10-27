@@ -1679,7 +1679,8 @@ a.tree-entry:hover {
   color: var(--text-2);
 }
 
-.tree-card-list .is-warn {
+.tree-card-list .is-warn,
+.tree-card > .is-warn {
   color: var(--warn);
 }
 

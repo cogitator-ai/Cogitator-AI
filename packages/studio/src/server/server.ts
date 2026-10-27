@@ -6,8 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { calculateCost, initializeModels } from '@cogitator-ai/models';
 import type {
   ForkRequest,
+  ForkPreview,
   ForkSummary,
   HostStatus,
+  ReplayEntry,
   RewindSummary,
   RunRecord,
   StudioEvent,
@@ -239,6 +241,7 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
     onEvent: (event) => {
       const change = store.apply(event);
       broadcastRuns(change.runs);
+      if (change.thread) broadcastThread(change.thread);
       if (change.token) broadcast({ type: 'token', ...change.token });
       if (change.reasoning) broadcast({ type: 'reasoning', ...change.reasoning });
       if (
@@ -337,6 +340,12 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
     res.end(readFileSync(file));
   }
 
+  /** The active branch the studio keeps of a thread, for the host to replay after a restart */
+  function replayOf(threadId: string): { replay?: ReplayEntry[] } {
+    const replay = store.replay(threadId);
+    return replay ? { replay } : {};
+  }
+
   function runOr404(id: string): RunRecord {
     const run = store.getRun(id);
     if (!run) throw new HttpError(404, `There is no run ${id}`);
@@ -421,6 +430,7 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
           threadId: thread.id,
           agent: thread.agent,
           history: store.history(thread.id),
+          ...replayOf(thread.id),
         });
         return send(res, 200, store.attribute(tree));
       }
@@ -438,6 +448,7 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
             threadId: thread.id,
             agent: thread.agent,
             history: store.history(thread.id),
+            ...replayOf(thread.id),
             entryId,
             ...(files !== undefined && { files }),
             ...(memory !== undefined && { memory }),
@@ -447,37 +458,47 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
           .catch((error: unknown) => {
             throw runtimeRefusal(error);
           });
+        const { replay, ...reported } = summary;
+        if (replay) store.keepReplay(thread.id, replay);
         const changed = summary.conversation.rewound
           ? store.markRewound(thread.id, summary.conversation.cut)
           : thread;
         if (summary.conversation.rewound) broadcastThread(changed);
-        return send(res, 200, { ...summary, thread: changed ?? thread });
+        return send(res, 200, { ...reported, thread: changed ?? thread });
       }
       case 'POST /threads/:id/fork': {
         const thread = threadOr404(parts[1]);
         const body = await readJson(req);
         const entryId = requireString(body, 'entryId');
         const files = optionalBoolean(body, 'files');
+        const dryRun = optionalBoolean(body, 'dryRun');
+        const force = optionalBoolean(body, 'force');
         const fork = await manager
-          .request<ForkSummary>({
+          .request<ForkSummary | ForkPreview>({
             type: 'thread.fork',
             threadId: thread.id,
             agent: thread.agent,
             history: store.history(thread.id),
+            ...replayOf(thread.id),
             entryId,
             newThreadId: `studio_${randomUUID()}`,
             ...(files !== undefined && { files }),
+            ...(dryRun !== undefined && { dryRun }),
+            ...(force !== undefined && { force }),
           })
           .catch((error: unknown) => {
             throw runtimeRefusal(error);
           });
+        if ('dryRun' in fork) return send(res, 200, fork);
+        const { replay, ...made } = fork;
         const forked = store.addForkedThread(thread, {
           threadId: fork.threadId,
           entryId,
           base: fork.base,
+          ...(replay && { replay }),
         });
         broadcastThread(forked);
-        return send(res, 201, { ...fork, thread: forked });
+        return send(res, 201, { ...made, thread: forked });
       }
       case 'POST /chat': {
         const body = await readJson(req);
@@ -492,6 +513,7 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
           input,
           threadId,
           history: store.history(threadId),
+          ...replayOf(threadId),
         });
         broadcastThread(store.addRunToThread(threadId, runId));
         return send(res, 202, { runId, threadId });

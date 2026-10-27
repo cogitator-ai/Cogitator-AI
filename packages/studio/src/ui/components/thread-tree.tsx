@@ -1,6 +1,12 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { GitBranch, GitFork, RotateCcw, X } from 'lucide-react';
-import type { FileRestoreSummary, RewindSummary, ThreadTree, TreeEntry } from '../../protocol';
+import type {
+  FileRestoreSummary,
+  ForkPreview,
+  RewindSummary,
+  ThreadTree,
+  TreeEntry,
+} from '../../protocol';
 import { api, ApiError } from '../api';
 import { href, navigate } from '../router';
 import { useStudio } from '../store';
@@ -108,6 +114,11 @@ function FilesPreview({ files }: { files: FileRestoreSummary }) {
       {!files.exact && (
         <span className="muted">
           The checkpoint holds the files from before the turn this entry is in.
+        </span>
+      )}
+      {files.busy && (
+        <span className="is-warn">
+          Commands still run in the workspace: the restore is refused until they end
         </span>
       )}
     </>
@@ -269,17 +280,39 @@ function ForkCard({
   onCancel: () => void;
 }) {
   const [files, setFiles] = useState(false);
+  const [preview, setPreview] = useState<ForkPreview>();
   const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
   const [working, setWorking] = useState(false);
 
-  const fork = async () => {
+  useEffect(() => {
+    let current = true;
+    setPreview(undefined);
+    setError(undefined);
+    setBusy(false);
+    if (!files) return;
+    api
+      .forkPreview(threadId, { entryId: entry.id, files: true })
+      .then((read) => current && setPreview(read))
+      .catch((failure: unknown) => current && setError(messageOf(failure)));
+    return () => {
+      current = false;
+    };
+  }, [threadId, entry.id, files]);
+
+  const fork = async (force: boolean) => {
     setWorking(true);
     setError(undefined);
     try {
-      const forked = await api.forkThread(threadId, { entryId: entry.id, files });
+      const forked = await api.forkThread(threadId, {
+        entryId: entry.id,
+        files,
+        ...(force && { force: true }),
+      });
       navigate('agents', agentKey, forked.threadId);
     } catch (failure) {
       setError(messageOf(failure));
+      setBusy(failure instanceof ApiError && failure.status === 409);
     } finally {
       setWorking(false);
     }
@@ -293,17 +326,43 @@ function ForkCard({
       </div>
       <span className="muted">A new thread starts from this point, this one stays as it is.</span>
       {offerFiles && <FilesCheck checked={files} onChange={setFiles} disabled={working} />}
+      {files && (
+        <span className="muted">
+          The files are restored in the agent's workspace, which this thread works in too.
+        </span>
+      )}
+      {files && !preview && !error && (
+        <span className="muted">
+          <span className="spinner" style={{ width: 10, height: 10 }} /> Checking what changes
+        </span>
+      )}
+      {preview && preview.going.length > 0 && (
+        <span className="is-warn">A run goes on in the thread or its workspace</span>
+      )}
+      {preview?.files && <FilesPreview files={preview.files} />}
       {error && <ErrorText>{error}</ErrorText>}
       <div className="tree-card-actions">
-        <button
-          type="button"
-          className="btn btn-primary btn-sm"
-          disabled={working}
-          onClick={() => void fork()}
-          data-testid="fork-apply"
-        >
-          Fork
-        </button>
+        {busy ? (
+          <button
+            type="button"
+            className="btn btn-danger btn-sm"
+            disabled={working}
+            onClick={() => void fork(true)}
+            data-testid="fork-force"
+          >
+            Abort the run and fork
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            disabled={working || (files && !preview)}
+            onClick={() => void fork(false)}
+            data-testid="fork-apply"
+          >
+            Fork
+          </button>
+        )}
         <button type="button" className="btn btn-ghost btn-sm" onClick={onCancel}>
           Cancel
         </button>

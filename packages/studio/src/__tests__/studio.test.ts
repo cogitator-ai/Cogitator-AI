@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { request } from 'node:http';
 import { startStudio, type StudioHandle } from '../server/server.js';
 import type {
+  ForkPreview,
   ForkSummary,
   HostStatus,
   RewindSummary,
@@ -663,6 +664,107 @@ describe('swarms', () => {
     await expect(
       api('/api/swarms/nowhere/run', { method: 'POST', body: { input: 'go' } })
     ).rejects.toThrow('There is no swarm "nowhere" in the registry');
+  });
+});
+
+describe('rewind and fork across restarts', () => {
+  async function restart(): Promise<void> {
+    await studio.close();
+    studio = await startStudio({
+      projectDir: FIXTURE,
+      studioDir,
+      port: 0,
+      watch: false,
+      price: () => PRICE,
+    });
+    base = studio.url.replace(/\/$/, '').replace('localhost', '127.0.0.1');
+    await studio.ready();
+  }
+
+  async function activePath(threadId: string): Promise<ThreadTree['entries']> {
+    const tree = await api<ThreadTree>(`/api/threads/${threadId}/tree`);
+    const byId = new Map(tree.entries.map((entry) => [entry.id, entry]));
+    const path: ThreadTree['entries'] = [];
+    for (let id = tree.activeLeafId; id; id = byId.get(id)?.parentId ?? undefined) {
+      const entry = byId.get(id);
+      if (!entry) break;
+      path.unshift(entry);
+    }
+    return path;
+  }
+
+  it('previews a fork with its files and makes no thread', async () => {
+    const started = await chat('write notes.txt preview', undefined, 'coder');
+    await settled(started.runId);
+    const next = await chat('write notes.txt later', started.threadId, 'coder');
+    await settled(next.runId);
+    const before = await api<{ threads: ThreadRecord[] }>('/api/state');
+    const path = await activePath(started.threadId);
+    const point = path[path.findIndex((entry) => entry.text === 'write notes.txt later') - 1]!;
+    const preview = await api<ForkPreview>(`/api/threads/${started.threadId}/fork`, {
+      method: 'POST',
+      body: { entryId: point.id, files: true, dryRun: true },
+    });
+    expect(preview).toMatchObject({
+      dryRun: true,
+      files: { dryRun: true, restored: ['notes.txt'] },
+    });
+    expect(readFileSync(join(WORKSPACE, 'notes.txt'), 'utf-8')).toBe('later');
+    const after = await api<{ threads: ThreadRecord[] }>('/api/state');
+    expect(after.threads.length).toBe(before.threads.length);
+  });
+
+  it('keeps entry ids and checkpoints across restarts, and a rewind inside a run exactly', async () => {
+    const started = await chat('write notes.txt kept', undefined, 'coder');
+    const { run: first } = await settled(started.runId);
+    const next = await chat('write notes.txt cut', started.threadId, 'coder');
+    await settled(next.runId);
+    const before = await activePath(started.threadId);
+    await restart();
+    const after = await activePath(started.threadId);
+    expect(after.map((entry) => entry.id)).toEqual(before.map((entry) => entry.id));
+    expect(after.map((entry) => entry.checkpoint ?? false)).toEqual(
+      before.map((entry) => entry.checkpoint ?? false)
+    );
+
+    const asked = after.find((entry) => entry.text === 'write notes.txt cut')!;
+    const rewound = await api<RewindSummary & { thread: ThreadRecord }>(
+      `/api/threads/${started.threadId}/rewind`,
+      { method: 'POST', body: { entryId: asked.id, files: true } }
+    );
+    expect(rewound.conversation.rewound).toBe(true);
+    expect(rewound.thread.rewoundRuns).toEqual([next.runId]);
+    expect(rewound.files?.safetySnapshotId).toMatch(/^snap_/);
+    await restart();
+    const kept = await activePath(started.threadId);
+    expect(kept.at(-1)?.id).toBe(asked.id);
+    expect(kept.map((entry) => entry.text)).toContain('write notes.txt kept');
+    expect(kept.some((entry) => entry.id === first.memory?.leafId)).toBe(true);
+  });
+
+  it('replays a fork rewound inside the branch it copied without the cut messages', async () => {
+    const started = await chat('write notes.txt alpha');
+    await settled(started.runId);
+    const next = await chat('write notes.txt beta', started.threadId);
+    await settled(next.runId);
+    const path = await activePath(started.threadId);
+    const fork = await api<ForkSummary & { thread: ThreadRecord }>(
+      `/api/threads/${started.threadId}/fork`,
+      { method: 'POST', body: { entryId: path.at(-1)!.id } }
+    );
+    const copied = await activePath(fork.threadId);
+    const alphaAnswer =
+      copied[copied.findIndex((entry) => entry.text === 'write notes.txt beta') - 1]!;
+    await api(`/api/threads/${fork.threadId}/rewind`, {
+      method: 'POST',
+      body: { entryId: alphaAnswer.id },
+    });
+    await restart();
+    const { thread } = await api<{ thread: ThreadRecord }>(`/api/threads/${fork.threadId}`);
+    expect(thread.base?.map((message) => message.content)).not.toContain('write notes.txt beta');
+    const replayed = await activePath(fork.threadId);
+    expect(replayed.map((entry) => entry.text)).not.toContain('write notes.txt beta');
+    expect(replayed.at(-1)?.id).toBe(alphaAnswer.id);
   });
 });
 
