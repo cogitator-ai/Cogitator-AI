@@ -70,7 +70,7 @@ function jsonSafe(value: unknown): unknown {
 
 /** Text that cannot open or close the payload block it is put in */
 export function neutralizePayloadTags(text: string): string {
-  return text.replace(/<(\s*\/?\s*)(trigger-payload)/gi, '&lt;$1$2');
+  return text.replace(/<(\s*(?:\/\s*)?)(trigger-payload)/gi, '&lt;$1$2');
 }
 
 function attribute(value: string): string {

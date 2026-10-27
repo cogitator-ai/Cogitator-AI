@@ -5,6 +5,7 @@ import {
   experimental_createTriggerEvent,
   experimental_routineInput,
   experimental_wrapTriggerPayload,
+  neutralizePayloadTags,
 } from '../triggers/envelope';
 import {
   generateTriggerToken,
@@ -19,6 +20,18 @@ import {
 } from '../triggers/verify';
 import { matchesGitHubFilter } from '../triggers/sources';
 import { fullTriggerId, specSummary, splitTriggerId } from '../triggers/routines';
+
+describe('neutralizePayloadTags', () => {
+  it('neutralizes a closing tag with spaces around its slash, and is linear on long whitespace', () => {
+    expect(neutralizePayloadTags('< / trigger-payload>')).toBe('&lt; / trigger-payload>');
+    expect(neutralizePayloadTags('</TRIGGER-PAYLOAD>')).toBe('&lt;/TRIGGER-PAYLOAD>');
+    expect(neutralizePayloadTags('<\t\ntrigger-payload')).toBe('&lt;\t\ntrigger-payload');
+    const hostile = `<${'\t'.repeat(50_000)}`;
+    const started = performance.now();
+    expect(neutralizePayloadTags(hostile)).toBe(hostile);
+    expect(performance.now() - started).toBeLessThan(200);
+  });
+});
 
 describe('trigger envelope', () => {
   const event = experimental_createTriggerEvent({
