@@ -256,9 +256,11 @@ interface Recording {
 }
 
 /**
- * The middleware every run gets: it hides the tools the run was not granted from the model,
- * refuses calls to them and lets granted calls run without asking, and records the main run's
- * messages and tool calls under Claude Code's names for the graders
+ * The middleware of the eval's runtime, so every run gets it, the agents the agent under test
+ * delegates to included: it hides the tools the run was not granted from the model, refuses calls
+ * to them and lets granted calls run without asking, and records the tool calls under Claude
+ * Code's names for the graders (a delegated agent's with its name in `agent`), and the main run's
+ * messages for the transcript
  */
 function recorder(
   core: Core,
@@ -313,14 +315,18 @@ function recorder(
           }
         }
       }
-      if (context.parentRunId === undefined) {
-        const input =
-          core.claudeToolOf(tool)?.input(toolCall.arguments, root) ?? toolCall.arguments;
-        const name = tool.mcp ? tool.name : claudeNameOf(tool.name);
-        recording.toolCalls.push({ id: toolCall.id, name, tool: tool.name, input });
-        const entry = pending.get(toolCall.id);
-        if (entry) entry.input = input;
-      }
+      const input = core.claudeToolOf(tool)?.input(toolCall.arguments, root) ?? toolCall.arguments;
+      const name = tool.mcp ? tool.name : claudeNameOf(tool.name);
+      const delegated = context.parentRunId !== undefined;
+      recording.toolCalls.push({
+        id: toolCall.id,
+        name,
+        tool: tool.name,
+        input,
+        ...(delegated && { agent: context.agentName }),
+      });
+      const entry = delegated ? undefined : pending.get(toolCall.id);
+      if (entry) entry.input = input;
       return { decision: 'allow' };
     },
     wrapToolCall: async (call, next, context) => {
@@ -525,6 +531,9 @@ export async function executeRun(spec: RunSpec): Promise<RunOutcome> {
     ...(subagents && {
       subagents: { files: false, agents: { 'general-purpose': GENERAL_PURPOSE } },
     }),
+    middleware: [
+      recorder(core, spec.grants, mockedNames, { workspace, projectRoot: root }, recording),
+    ],
   });
 
   const timeoutMs = evalCase.timeoutSeconds * 1000;
@@ -547,9 +556,6 @@ export async function executeRun(spec: RunSpec): Promise<RunOutcome> {
       signal: controller.signal,
       useMemory: false,
       saveHistory: false,
-      middleware: [
-        recorder(core, spec.grants, mockedNames, { workspace, projectRoot: root }, recording),
-      ],
       permissions: { mode: 'dontAsk', ...(deny.length > 0 && { deny }) },
       ...(evalCase.context.historyFile && { history: historyOf(evalCase.context.historyFile) }),
       onRunError: (_error, _runId, usage) => {

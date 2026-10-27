@@ -184,6 +184,8 @@ export interface PluginEvalToolCall {
   /** The Cogitator tool that ran */
   tool: string;
   input: Record<string, unknown>;
+  /** The delegated agent that made the call, unset for a call of the agent under test */
+  agent?: string;
 }
 
 /** A call to a mocked MCP tool */

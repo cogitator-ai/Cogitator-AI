@@ -401,6 +401,7 @@ export async function experimental_runPluginEvals(
         const judge = isPaidGrader(grader) ? judgeOf(plan) : undefined;
         if (isPaidGrader(grader) && (ceilingReached() || !judge)) {
           skippedPaid = true;
+          if (ceilingReached()) partialReason ??= 'cost_ceiling';
           graders.push({
             ...base,
             passed: false,

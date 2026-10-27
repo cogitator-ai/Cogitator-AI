@@ -75,6 +75,16 @@ class ScriptedBackend extends MockLLMBackend {
       }
       return this.answer(textOf(results.at(-1)));
     }
+    if (user.includes('Delegate the commands')) {
+      if (results.length === 0) {
+        return this.call('agent', {
+          description: 'Run commands',
+          prompt: 'Run the commands.',
+          subagent_type: 'general-purpose',
+        });
+      }
+      return this.answer(textOf(results.at(-1)));
+    }
     if (user.includes('Run the commands')) {
       const commands = ['echo hi', 'touch stray.txt'];
       const next = commands[results.length];
@@ -319,6 +329,19 @@ describe('experimental_runPluginEvals', () => {
     });
     expect(result.costUsd).toBe(2);
     expect(events.filter((e) => e.type === 'skipped')).toHaveLength(3);
+  });
+
+  it('reports a partial result when the last run skips a judge grader at the cost ceiling', async () => {
+    const backend = new ScriptedBackend(1);
+    const { result } = await experimental_runPluginEvals(
+      options(backend, { caseGlob: 'greets', runs: 1, ablation: 'none', maxCostUsd: 0.5 })
+    );
+    expect(result.cases[0]?.arms.with[0]?.skippedPaidGraders).toBe(true);
+    expect(result).toMatchObject({
+      partial: true,
+      partialReason: 'cost_ceiling',
+      outcome: 'partial',
+    });
   });
 
   it('filters cases by name glob, by tag and by a single case file', async () => {
@@ -603,6 +626,32 @@ describe('experimental_runPluginEvals suites', () => {
     expect(run?.lastMessage).toMatch(/outside what the eval run grants: Bash\(echo \*\)/);
     const offered = new Set(backend.requests.flatMap((r) => (r.tools ?? []).map((t) => t.name)));
     expect([...offered].sort()).toEqual(['agent', 'run_command', 'write_todos']);
+  });
+
+  it('holds the agents the agent under test delegates to to the grants, and records their calls', async () => {
+    const root = plugin({
+      'evals/delegated/prompt.md':
+        '---\nruns: 1\nallowed_tools: [Agent]\n---\nDelegate the commands.\n',
+      'evals/delegated/graders/echoed.md':
+        '---\ntype: tool_used\ntool: Bash\ninput_match: echo hi\nmin: 1\nmax: 1\n---\n',
+      'evals/delegated/graders/no-stray.md':
+        '---\ntype: file_exists\npath: stray.txt\nexists: false\n---\n',
+    });
+    const backend = new ScriptedBackend();
+    const { result } = await experimental_runPluginEvals(
+      options(backend, { target: root, ablation: 'none', allowTools: ['Bash(echo *)'] })
+    );
+    const run = result.cases[0]?.arms.with[0];
+    expect(run?.filesCreated).toEqual([]);
+    expect(run?.toolCalls.map((call) => [call.name, call.agent ?? null, call.input])).toEqual([
+      [
+        'Agent',
+        null,
+        expect.objectContaining({ prompt: 'Run the commands.', subagent_type: 'general-purpose' }),
+      ],
+      ['Bash', 'general-purpose', { command: 'echo hi' }],
+    ]);
+    expect(run?.graders.map((g) => g.passed)).toEqual([true, true]);
   });
 
   it('evaluates an installed plugin by name and writes results under the working directory', async () => {
