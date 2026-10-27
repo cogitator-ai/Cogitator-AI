@@ -153,6 +153,8 @@ const DEFAULT_CATCH_UP_WINDOW = 7 * 24 * 60 * 60 * 1000;
 /** How long the claim on a firing's run id is kept: longer than a provider retries */
 const RUN_CLAIM_TTL = 3 * 24 * 60 * 60 * 1000;
 const SCHEDULE_INIT_TTL = 30_000;
+/** Failed firings in a row after which a schedule entry is skipped until resumed */
+const SCHEDULE_RETRIES = 5;
 const HOUR = 60 * 60 * 1000;
 const MAX_SUMMARY = 300;
 
@@ -256,6 +258,7 @@ export class experimental_TriggerManager {
       store: config.schedules ?? new InMemoryTimerStore(),
       ...(config.cron && { cron: config.cron }),
       pollInterval: config.pollInterval ?? 1000,
+      maxRetries: SCHEDULE_RETRIES,
       accepts: (entry) => entry.trigger !== undefined,
       fire: (fire) => this.fireScheduled(fire),
       onError: (error, entry) =>
@@ -951,7 +954,10 @@ export class experimental_TriggerManager {
 
   /**
    * A task an agent gave itself came due: its agent continues the thread it was given in. While
-   * the run of an earlier occurrence of the task goes on, this one is skipped
+   * the run of an earlier occurrence of the task goes on, this one is skipped. A one-shot task
+   * waits for its run, so a run that failed (a provider down, say) counts as a failed firing
+   * and the scheduler fires it again, up to its retries, unless it is `bestEffort`: its failure
+   * goes to the inbox once no retry is left
    */
   private async fireAgentTask(entry: TimerEntry, occurrence: number): Promise<void> {
     const name = entry.trigger?.agent ?? '';
@@ -1004,24 +1010,38 @@ export class experimental_TriggerManager {
       ...(this.durable && { durable: true }),
       inputMetadata: { trigger: event },
     });
-    await this.followTask(task, handle.result);
+    const oneShot = !entry.cron && !(entry.type === 'recurring' && entry.interval);
+    const retried =
+      oneShot && meta.bestEffort !== true && (entry.consecutiveErrors ?? 0) + 1 < SCHEDULE_RETRIES;
+    const followed = await this.followTask(task, handle.result, { reportFailure: !retried });
+    if (!oneShot) return;
+    const outcome = await followed.outcome;
+    if (outcome.kind === 'error' && !isRunLeased(outcome.error)) {
+      await this.store.releaseKey(`run:${runId}`);
+      throw outcome.error;
+    }
   }
 
   /**
    * Waits for the run of a task in the background: the task's next occurrences are skipped
    * meanwhile, its outcome goes to the inbox, and a durable run is kept for `recover`
    */
-  private async followTask(task: ActiveRoutineRun, result: Promise<RunResult>): Promise<void> {
+  private async followTask(
+    task: ActiveRoutineRun,
+    result: Promise<RunResult>,
+    options: { reportFailure?: boolean } = {}
+  ): Promise<{ outcome: Promise<Outcome> }> {
     this.runningTasks.set(task.triggerId, task.runId);
     if (this.durable) await this.saveActive(task);
     const lease = this.runtime.plugins?.lease();
+    const outcome = settle(result);
     this.track(
-      result
-        .then(
-          (done): Outcome => ({ kind: 'agent', result: done }),
-          (error: unknown): Outcome => ({ kind: 'error', error })
+      outcome
+        .then((settled) =>
+          settled.kind === 'error' && options.reportFailure === false
+            ? undefined
+            : this.finishTask(task, settled)
         )
-        .then((outcome) => this.finishTask(task, outcome))
         .finally(async () => {
           lease?.release();
           if (this.runningTasks.get(task.triggerId) === task.runId) {
@@ -1030,6 +1050,7 @@ export class experimental_TriggerManager {
           await this.dropActive(task.runId);
         })
     );
+    return { outcome };
   }
 
   /** What a task's run came to, in the inbox: its answer, its failure, or what it waits for */

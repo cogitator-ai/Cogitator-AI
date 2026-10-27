@@ -1024,6 +1024,91 @@ describe('third review', () => {
   });
 });
 
+describe('fourth review', () => {
+  it('an answer its question refuses leaves the item to be answered again', async () => {
+    const ask = tool({
+      name: 'ask',
+      description: 'Asks how many',
+      parameters: z.object({}),
+      execute: async (_params, context) => {
+        const reply = await context.interrupt!({
+          reason: 'count',
+          message: 'How many?',
+          responseSchema: z.number(),
+        });
+        return `got ${String(reply)}`;
+      },
+    });
+    const backend = new MockLLMBackend().setResponses([
+      { toolCalls: [{ id: 'c1', name: 'ask', arguments: {} }], finishReason: 'tool_calls' },
+      { content: 'counted' },
+    ]);
+    const agent = new Agent({ name: 'worker', model: 'mock/m', instructions: 'x', tools: [ask] });
+    const { manager } = runtime(
+      {
+        agents: { worker: agent },
+        routines: [routine({ triggers: [{ kind: 'api', token: 't' }] })],
+      },
+      backend
+    );
+    await manager.start();
+    await manager.fire('digest.api');
+    await manager.idle();
+    const [question] = await manager.inbox.list({ kind: 'question' });
+    await expect(
+      manager.respond(question.id, { responses: { 'c1#0': 'three' } })
+    ).rejects.toMatchObject({ code: 'INTERRUPT_ANSWER_INVALID' });
+    expect((await manager.inbox.get(question.id))?.answeredAt).toBeUndefined();
+    await manager.respond(question.id, { responses: { 'c1#0': 3 } });
+    await manager.idle();
+    expect((await manager.inbox.list({ kind: 'result' }))[0]?.summary).toBe('counted');
+  });
+
+  it('fires a one-shot task again when its run failed, its failure in the inbox once', async () => {
+    const backend = new MockLLMBackend().setResponses([
+      { error: new Error('the provider is down') },
+      { content: 'reminded' },
+    ]);
+    const { manager } = runtime(
+      { inbox: new experimental_InMemoryInboxStore(), pollInterval: 20 },
+      backend
+    );
+    await manager.start();
+    const [schedule] = manager.schedulerTools('worker');
+    const { id } = (await schedule.execute(
+      { description: 'Call mom', at: new Date(Date.now() + 20).toISOString() },
+      { agentId: 'a', runId: 'r', signal: new AbortController().signal, threadId: 't' }
+    )) as { id: string };
+    await vi.waitFor(async () => expect((await manager.scheduler.get(id))?.fired).toBe(true), {
+      timeout: 3_000,
+    });
+    expect(backend.getCallCount()).toBe(2);
+    await manager.idle();
+    expect((await manager.inbox.list()).map((item) => item.summary)).toEqual(['reminded']);
+  });
+
+  it('runs routines durable only when the runtime has durable runs enabled', () => {
+    const off = keepRuntime(
+      new Cogitator({
+        memory: { adapter: 'memory' },
+        durable: { enabled: false },
+        experimental_triggers: { agents: { worker: worker() } },
+      })
+    );
+    const on = keepRuntime(
+      new Cogitator({
+        memory: { adapter: 'memory' },
+        durable: {},
+        experimental_triggers: { agents: { worker: worker() } },
+      })
+    );
+    const durableOf = (cog: Cogitator) =>
+      (cog.experimental_triggers as unknown as { durable: boolean }).durable;
+    expect(durableOf(off)).toBe(false);
+    expect(durableOf(on)).toBe(true);
+  });
+});
+
 describe('a shared store', () => {
   it('runs the stores of other processes through the same patch', async () => {
     const store: RoutineStore = new experimental_InMemoryRoutineStore();

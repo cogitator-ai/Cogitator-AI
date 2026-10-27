@@ -988,6 +988,14 @@ export class Cogitator implements ToolInvoker {
               code: ErrorCode.RUN_NOT_FOUND,
             });
           }
+          if (options.responses) {
+            answerInterrupts(
+              checkpointInterrupts(checkpoint),
+              options.responses,
+              Date.now(),
+              (id) => this.interruptSchemas.get(checkpoint.runId, id)
+            );
+          }
           return { result: this.resume(agent, checkpoint, options) };
         },
         notify: (notification, scope) => this.notifyRoutine(notification, scope),
@@ -1003,7 +1011,7 @@ export class Cogitator implements ToolInvoker {
           lease: () => this.pluginHost.lease(),
           onChange: (listener) => this.pluginHost.onChange(listener),
         },
-        durable: Boolean(config.durable),
+        durable: this.durableByDefault,
       });
     }
   }
