@@ -4,6 +4,8 @@
  */
 
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { win32 } from 'node:path';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 
 /** How a command ended */
@@ -20,8 +22,6 @@ export interface ToolOptions {
   env?: Readonly<Record<string, string>>;
   /** Milliseconds before the command is killed (default 120 000) */
   timeoutMs?: number;
-  /** Run it through the system shell: only for a command a person accepted, never for data */
-  shell?: boolean;
   signal?: AbortSignal;
 }
 
@@ -30,72 +30,6 @@ const MAX_OUTPUT = 4 * 1024 * 1024;
 /** A failed run of an install tool, typed `Error` for the promise it rejects */
 function installFailure(message: string): Error {
   return new CogitatorError({ message, code: ErrorCode.PLUGIN_INSTALL_FAILED });
-}
-
-/** The characters `cmd.exe` reads as its own syntax, escaped with `^` */
-const CMD_META = new Set([
-  '(',
-  ')',
-  '[',
-  ']',
-  '%',
-  '!',
-  '^',
-  '"',
-  '`',
-  '<',
-  '>',
-  '&',
-  '|',
-  ';',
-  ',',
-  ' ',
-  '*',
-  '?',
-]);
-
-function caretEscaped(text: string): string {
-  let out = '';
-  for (const char of text) out += CMD_META.has(char) ? `^${char}` : char;
-  return out;
-}
-
-/**
- * `arg` as one argument of a `cmd.exe /c` line that runs a `.cmd` shim: quoted the way the C
- * runtime splits arguments (backslashes before a quote doubled), then every `cmd.exe` meta
- * character escaped twice, once for `cmd.exe` and once for the batch file it starts. Nothing in
- * `arg` can end the argument or start another command
- */
-export function cmdArgument(arg: string): string {
-  let quoted = '"';
-  let slashes = 0;
-  for (const char of arg) {
-    if (char === '\\') {
-      slashes++;
-      continue;
-    }
-    quoted += char === '"' ? `${'\\'.repeat(slashes * 2 + 1)}"` : `${'\\'.repeat(slashes)}${char}`;
-    slashes = 0;
-  }
-  quoted += `${'\\'.repeat(slashes * 2)}"`;
-  return caretEscaped(caretEscaped(quoted));
-}
-
-/**
- * How to start `file` with `args`: as it is, or, for a `.cmd` or `.bat` file on Windows (which
- * only `cmd.exe` runs), through `cmd.exe` with every argument escaped by {@link cmdArgument},
- * never through a shell that would read the arguments as commands
- */
-function launchOf(
-  file: string,
-  args: readonly string[],
-  shell: boolean
-): { file: string; args: string[]; verbatim: boolean; shell: boolean } {
-  if (shell || process.platform !== 'win32' || !/\.(cmd|bat)$/i.test(file)) {
-    return { file, args: [...args], verbatim: false, shell };
-  }
-  const line = [caretEscaped(file), ...args.map(cmdArgument)].join(' ');
-  return { file: 'cmd.exe', args: ['/d', '/s', '/c', `"${line}"`], verbatim: true, shell: false };
 }
 
 /**
@@ -110,8 +44,7 @@ export function runTool(
 ): Promise<ToolResult> {
   return new Promise((resolve, reject) => {
     const windows = process.platform === 'win32';
-    const launch = launchOf(file, args, options.shell === true);
-    const child = spawn(launch.file, launch.args, {
+    const child = spawn(file, [...args], {
       ...(options.cwd !== undefined && { cwd: options.cwd }),
       env: {
         ...process.env,
@@ -123,8 +56,7 @@ export function runTool(
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      windowsVerbatimArguments: launch.verbatim,
-      shell: launch.shell,
+      shell: false,
       detached: !windows,
     });
     let stdout = '';
@@ -213,7 +145,68 @@ export async function mustRun(
   return result.stdout;
 }
 
-/** The npm client of the platform */
-export function npmCommand(): string {
-  return process.platform === 'win32' ? 'npm.cmd' : 'npm';
+/** How npm is started: a program and the arguments before npm's own */
+export interface NpmInvocation {
+  file: string;
+  args: string[];
+}
+
+/**
+ * How to start npm without a shell: `npm` on POSIX, and on Windows (where `npm` is a `.cmd`
+ * shim only `cmd.exe` runs) node itself with npm's `npm-cli.js`, from `npm_execpath` when it
+ * names one, else the npm that came with this node. Without one the install fails: npm never
+ * runs through `cmd.exe`, which would read its arguments as commands
+ */
+export function npmInvocation(
+  host: {
+    platform: NodeJS.Platform;
+    env: NodeJS.ProcessEnv;
+    execPath: string;
+    exists: (path: string) => boolean;
+  } = {
+    platform: process.platform,
+    env: process.env,
+    execPath: process.execPath,
+    exists: existsSync,
+  }
+): NpmInvocation {
+  if (host.platform !== 'win32') return { file: 'npm', args: [] };
+  const named = host.env.npm_execpath;
+  const candidates = [
+    ...(named && /npm-cli\.js$/i.test(named) ? [named] : []),
+    win32.join(win32.dirname(host.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ];
+  const cli = candidates.find((path) => host.exists(path));
+  if (!cli) {
+    throw installFailure(
+      `npm-cli.js was not found next to ${host.execPath}: install npm with node, or set npm_execpath to its npm-cli.js`
+    );
+  }
+  return { file: host.execPath, args: [cli] };
+}
+
+/** Runs npm with `args` (see {@link npmInvocation}), as {@link runTool} runs a tool */
+export function runNpm(args: readonly string[], options: ToolOptions = {}): Promise<ToolResult> {
+  const npm = npmInvocation();
+  return runTool(npm.file, [...npm.args, ...args], options);
+}
+
+/** Runs npm with `args` and throws its error output unless it exits 0, as {@link mustRun} */
+export function mustRunNpm(args: readonly string[], options: ToolOptions = {}): Promise<string> {
+  const npm = npmInvocation();
+  return mustRun(npm.file, [...npm.args, ...args], options);
+}
+
+/**
+ * Runs `command` through the system shell (`/bin/sh -c`, `cmd.exe /d /s /c` on Windows). Only
+ * for the command of a `command` plugin source, which a person read and accepted as it is: no
+ * other caller may hand data to a shell
+ */
+export function runAcceptedShellCommand(
+  command: string,
+  options: ToolOptions = {}
+): Promise<ToolResult> {
+  return process.platform === 'win32'
+    ? runTool('cmd.exe', ['/d', '/s', '/c', command], options)
+    : runTool('/bin/sh', ['-c', command], options);
 }

@@ -22,7 +22,7 @@ import { isInside, withoutTrailingSlashes } from '../manifest';
 import { compareVersions, isValidRange, maxSatisfying, parseVersion, satisfies } from '../semver';
 import { download, isLoopbackHost } from './fetch';
 import { checkGitUrl, cloneAt, gitUrlOf } from './marketplace';
-import { mustRun, npmCommand, runTool } from './run';
+import { mustRun, mustRunNpm, runAcceptedShellCommand, runNpm, runTool } from './run';
 import { archiveRootOf, MAX_ARCHIVE_ENTRIES, MAX_UNPACKED_BYTES, unzip } from './zip';
 
 /** A plugin fetched to disk */
@@ -246,7 +246,7 @@ export function npmNameProblem(name: string): string | undefined {
 
 /** The registry npm uses when none is given */
 async function defaultRegistry(): Promise<string | undefined> {
-  const result = await runTool(npmCommand(), ['config', 'get', 'registry']).catch(() => undefined);
+  const result = await runNpm(['config', 'get', 'registry']).catch(() => undefined);
   return result?.code === 0 ? withoutTrailingSlashes(result.stdout.trim()) : undefined;
 }
 
@@ -317,8 +317,7 @@ async function fetchNpm(
   if (!isValidRange(wanted) && !NPM_TAG.test(wanted)) {
     throw failed(`npm source ${value}: "${wanted}" is neither a semver range nor a dist-tag`);
   }
-  const viewed = await mustRun(
-    npmCommand(),
+  const viewed = await mustRunNpm(
     ['view', `${name}@${wanted}`, 'name', 'version', 'dist', '--json', ...registryArgs],
     { timeoutMs: 60_000, ...(context.signal && { signal: context.signal }) }
   );
@@ -340,8 +339,7 @@ async function fetchNpm(
   });
   const expected = best.dist?.integrity ?? best['dist.integrity'];
   const shasum = best.dist?.shasum ?? best['dist.shasum'];
-  const packed = await mustRun(
-    npmCommand(),
+  const packed = await mustRunNpm(
     [
       'pack',
       `${name}@${best.version}`,
@@ -472,15 +470,11 @@ async function fetchCommand(
     );
   }
   const windows = process.platform === 'win32';
-  const result = await runTool(
-    windows ? 'cmd.exe' : '/bin/sh',
-    windows ? ['/d', '/s', '/c', source.command] : ['-c', source.command],
-    {
-      cwd: homedir(),
-      timeoutMs: (source.timeout ?? 60) * 1000,
-      ...(context.signal && { signal: context.signal }),
-    }
-  );
+  const result = await runAcceptedShellCommand(source.command, {
+    cwd: homedir(),
+    timeoutMs: (source.timeout ?? 60) * 1000,
+    ...(context.signal && { signal: context.signal }),
+  });
   if (result.code !== 0)
     throw failed(`The command exited with code ${String(result.code)}: ${result.stderr.trim()}`);
   const lines = result.stdout.split(/\r?\n/).filter((line) => line.trim() !== '');

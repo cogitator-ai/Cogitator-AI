@@ -24,7 +24,7 @@ import { experimental_PluginHost } from '../plugins/host';
 import { experimental_memorySecretStore } from '../plugins/secrets';
 import { checkGitUrl, marketplaceSourceOf, parseMarketplace } from '../plugins/install/marketplace';
 import { npmNameProblem } from '../plugins/install/sources';
-import { cmdArgument, runTool } from '../plugins/install/run';
+import { npmInvocation, runTool } from '../plugins/install/run';
 import { pluginDataDir, readInstalledPlugins } from '../plugins/store';
 import { download, isLoopbackHost, isPrivateHost } from '../plugins/install/fetch';
 
@@ -803,14 +803,30 @@ describe('plugin installer', () => {
     expect(questions).toEqual([]);
   });
 
-  it('quotes an argument of a .cmd tool so cmd.exe reads none of it as syntax', () => {
-    expect(cmdArgument('foo')).toBe('^^^"foo^^^"');
-    expect(cmdArgument('a & b')).toBe('^^^"a^^^ ^^^&^^^ b^^^"');
-    expect(cmdArgument('say "hi"')).toBe('^^^"say^^^ \\^^^"hi\\^^^"^^^"');
-    expect(cmdArgument('C:\\path\\')).toBe('^^^"C:\\path\\\\^^^"');
-    for (const arg of ['x | y', 'x > y', '%PATH%', 'x ^ y', '(x)']) {
-      expect(cmdArgument(arg).replace(/\^./g, '')).not.toMatch(/[|>%^()&"]/);
-    }
+  it('starts npm without a shell: npm on POSIX, node with npm-cli.js on Windows', () => {
+    const host = (env: NodeJS.ProcessEnv, present: string[]) => ({
+      platform: 'win32' as const,
+      env,
+      execPath: 'C:\\node\\node.exe',
+      exists: (path: string) => present.includes(path),
+    });
+    const bundled = 'C:\\node\\node_modules\\npm\\bin\\npm-cli.js';
+    expect(
+      npmInvocation({ platform: 'linux', env: {}, execPath: '/usr/bin/node', exists: () => false })
+    ).toEqual({ file: 'npm', args: [] });
+    expect(npmInvocation(host({}, [bundled]))).toEqual({
+      file: 'C:\\node\\node.exe',
+      args: [bundled],
+    });
+    expect(
+      npmInvocation(
+        host({ npm_execpath: 'D:\\npm\\bin\\npm-cli.js' }, ['D:\\npm\\bin\\npm-cli.js'])
+      )
+    ).toEqual({ file: 'C:\\node\\node.exe', args: ['D:\\npm\\bin\\npm-cli.js'] });
+    expect(
+      npmInvocation(host({ npm_execpath: 'D:\\pnpm\\pnpm.cjs' }, ['D:\\pnpm\\pnpm.cjs', bundled]))
+    ).toEqual({ file: 'C:\\node\\node.exe', args: [bundled] });
+    expect(() => npmInvocation(host({}, []))).toThrow(/npm-cli\.js was not found/);
   });
 
   it.skipIf(process.platform === 'win32')(
@@ -829,6 +845,76 @@ describe('plugin installer', () => {
     await expect(tools.install('git+-oProxyCommand=touch@x:y')).rejects.toThrow();
     expect(() => checkGitUrl('-oProxyCommand=touch@x:y')).toThrow(/read as an option of git/);
   });
+
+  it.each(['relative', 'archive', 'npm'] as const)(
+    'checks the version a %s dependency would install at against every range on it, before writing',
+    async (kind) => {
+      const archives = new Map<string, Buffer>();
+      const lib = `lib-${kind}`;
+      const libEntry = (version: string) => {
+        if (kind === 'relative') {
+          plugin(join(market, 'plugins', lib), lib, { version });
+          return { name: lib, source: `./plugins/${lib}` };
+        }
+        if (kind === 'archive') {
+          const zip = buildZip({
+            [`${lib}/.claude-plugin/plugin.json`]: JSON.stringify({ name: lib, version }),
+          });
+          const url = `https://artifacts.example.com/${lib}-${version}.zip`;
+          archives.set(url, zip);
+          const sha256 = createHash('sha256').update(zip).digest('hex');
+          return { name: lib, source: { source: 'archive', url, sha256 } };
+        }
+        const dir = join(base, `${lib}-${version}`);
+        plugin(dir, lib, { version });
+        npm.publish(dir, lib, version);
+        return { name: lib, source: { source: 'npm', package: lib, registry: npm.url() } };
+      };
+      const market = join(base, `market-${kind}`);
+      const publish = (version: string) => {
+        plugin(join(market, 'plugins', 'wants-two'), 'wants-two', {
+          version: '1.0.0',
+          dependencies: [{ name: lib, version: '^2.0.0' }],
+        });
+        plugin(join(market, 'plugins', 'wants-one'), 'wants-one', {
+          version: '1.0.0',
+          dependencies: [{ name: lib, version: '^1.0.0' }],
+        });
+        writeJson(join(market, '.claude-plugin', 'marketplace.json'), {
+          name: `m-${kind}`,
+          owner: { name: 'Team' },
+          plugins: [
+            { name: 'wants-two', source: './plugins/wants-two' },
+            { name: 'wants-one', source: './plugins/wants-one' },
+            libEntry(version),
+          ],
+        });
+      };
+      publish('1.0.0');
+      const tools = new experimental_PluginInstaller({
+        root,
+        projectRoot: project,
+        userDirs: [home],
+        secrets,
+        confirm: async () => true,
+        fetchFn: async (input) => {
+          const zip = archives.get(String(input));
+          return zip ? new Response(new Uint8Array(zip)) : new Response(null, { status: 404 });
+        },
+      });
+      await tools.addMarketplace(market);
+      const ids = async () => (await readInstalledPlugins(root)).records.map((r) => r.id).sort();
+      await expect(tools.install(`wants-two@m-${kind}`)).rejects.toThrow();
+      expect(await ids()).toEqual([]);
+      await tools.install(`wants-one@m-${kind}`);
+      expect(await ids()).toEqual([`${lib}@m-${kind}`, `wants-one@m-${kind}`]);
+      publish('2.0.0');
+      const [updated] = await tools.update(`${lib}@m-${kind}`);
+      expect(updated).toMatchObject({ updated: false, to: '1.0.0' });
+      const record = (await readInstalledPlugins(root)).records.find((r) => r.name === lib);
+      expect(record?.version).toBe('1.0.0');
+    }
+  );
 
   it('gives every plugin id a data folder of its own', () => {
     const folders = ['foo-bar@baz', 'foo@bar-baz', 'Tool@x', 'tool@x'].map((id) =>

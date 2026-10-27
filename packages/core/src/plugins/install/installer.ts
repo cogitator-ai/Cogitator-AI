@@ -124,6 +124,26 @@ export interface PluginUpdateResult {
   notes: string[];
 }
 
+/** A version range a plugin puts on another, and the plugin that puts it */
+interface VersionConstraint {
+  range: string;
+  from: string;
+}
+
+/** A range the plugin `for`, being installed or updated, needs of another */
+interface VersionNeed {
+  range: string;
+  for: string;
+}
+
+/** The first of `constraints` that `version` does not satisfy */
+function firstUnmet(
+  version: string,
+  constraints: readonly VersionConstraint[]
+): VersionConstraint | undefined {
+  return constraints.find((constraint) => !satisfies(version, constraint.range));
+}
+
 function failed(
   message: string,
   code: ErrorCode = ErrorCode.PLUGIN_INSTALL_FAILED
@@ -479,7 +499,8 @@ export class experimental_PluginInstaller {
     marketplace: { known: KnownMarketplace; read: ReadMarketplace } | undefined,
     options: PluginInstallOptions,
     chain: readonly string[],
-    dependency = false
+    dependency = false,
+    need?: VersionNeed
   ): Promise<PluginInstallResult> {
     const records = await this.list();
     const direct = marketplace === undefined;
@@ -552,6 +573,16 @@ export class experimental_PluginInstaller {
         };
       }
       const version = versionOf(layout, entry, fetched);
+      const unmet = firstUnmet(
+        version,
+        await this.versionConstraints({ id, name, marketplace: marketplaceName }, need)
+      );
+      if (unmet) {
+        throw failed(
+          `${id} ${version} does not satisfy ${unmet.range}, which ${unmet.from} needs`,
+          ErrorCode.PLUGIN_DEPENDENCY_UNMET
+        );
+      }
       const installPath = fetched.inPlace
         ? fetched.dir
         : cachePath(this.root, marketplaceName, name, version);
@@ -678,11 +709,17 @@ export class experimental_PluginInstaller {
         `Dependency "${id}" is not in the marketplace ${target}`,
         ErrorCode.PLUGIN_DEPENDENCY_UNMET
       );
+    const wanted: VersionNeed | undefined =
+      need.version !== undefined ? { range: need.version, for: chain.at(-1) ?? id } : undefined;
+    const constraints = await this.versionConstraints(
+      { id, name: need.name, marketplace: target },
+      wanted
+    );
     const pinned = await pinnedEntry(
       entry,
       id,
       need.name,
-      need.version !== undefined ? [need.version] : []
+      constraints.map((constraint) => constraint.range)
     );
     const result = await this.installEntry(
       pinned,
@@ -690,7 +727,8 @@ export class experimental_PluginInstaller {
       { known, read: ownRead },
       { ...options, scope: 'user' },
       chain,
-      true
+      true,
+      wanted
     );
     return result.installed;
   }
@@ -844,12 +882,9 @@ export class experimental_PluginInstaller {
   private async updateOne(
     record: InstalledPluginRecord,
     options: { yes?: boolean; signal?: AbortSignal },
-    need?: { range: string; for: string }
+    need?: VersionNeed
   ): Promise<PluginUpdateResult> {
-    const constraints = [
-      ...(await this.rangesOn(record, await this.list(), need?.for)),
-      ...(need ? [{ range: need.range, from: need.for }] : []),
-    ];
+    const constraints = await this.versionConstraints(record, need);
     const ranges = constraints.map((constraint) => constraint.range);
     const direct = ['npm', 'git', 'github'].includes(record.marketplace);
     const notes: string[] = [];
@@ -912,7 +947,7 @@ export class experimental_PluginInstaller {
         );
       }
       const version = versionOf(layout, entry, fetched);
-      const unmet = constraints.find((constraint) => !satisfies(version, constraint.range));
+      const unmet = firstUnmet(version, constraints);
       if (unmet !== undefined) {
         const why = `${version} does not satisfy ${unmet.range}, which ${unmet.from} needs`;
         if (need) {
@@ -1040,17 +1075,18 @@ export class experimental_PluginInstaller {
   }
 
   /**
-   * The version ranges the installed plugins (but `except`) put on `record` through their
-   * dependencies, each with the plugin that puts it
+   * Every version range on the plugin `target`, with the plugin that puts it: those of the
+   * installed plugins' dependencies, but of `need.for` (the plugin being installed or updated,
+   * whose installed version no longer counts), and `need` itself. Install, dependency install and
+   * update all check the version they would write against these, before writing anything
    */
-  private async rangesOn(
-    record: InstalledPluginRecord,
-    records: readonly InstalledPluginRecord[],
-    except?: string
-  ): Promise<{ range: string; from: string }[]> {
-    const ranges: { range: string; from: string }[] = [];
-    for (const candidate of records) {
-      if (candidate.id === record.id || candidate.id === except) continue;
+  private async versionConstraints(
+    target: Pick<InstalledPluginRecord, 'id' | 'name' | 'marketplace'>,
+    need?: VersionNeed
+  ): Promise<VersionConstraint[]> {
+    const ranges: VersionConstraint[] = [];
+    for (const candidate of await this.list()) {
+      if (candidate.id === target.id || candidate.id === need?.for) continue;
       const layout = await readPluginLayout(candidate.installPath, {
         ...(candidate.entry && { entry: candidate.entry }),
         fallbackName: candidate.name,
@@ -1058,13 +1094,14 @@ export class experimental_PluginInstaller {
       for (const need of layout?.manifest.dependencies ?? []) {
         if (
           need.version !== undefined &&
-          need.name === record.name &&
-          (need.marketplace ?? candidate.marketplace) === record.marketplace
+          need.name === target.name &&
+          (need.marketplace ?? candidate.marketplace) === target.marketplace
         ) {
           ranges.push({ range: need.version, from: candidate.id });
         }
       }
     }
+    if (need) ranges.push({ range: need.range, from: need.for });
     return ranges;
   }
 
