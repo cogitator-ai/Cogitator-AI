@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -606,6 +607,40 @@ describe('experimental_runPluginEvals suites', () => {
     expect(run?.tempDir).toBeDefined();
     expect(existsSync(join(run?.tempDir ?? '', 'workspace', 'docs', 'guide.md'))).toBe(true);
     dirs.push(run?.tempDir ?? '');
+  });
+
+  it('gives each run a plugin data folder of its own and its workspace as the project', async () => {
+    const hook = {
+      type: 'command',
+      command: 'sh',
+      args: [
+        '-c',
+        'echo x >> "$1/count"; printf %s "$2" > "$1/project"',
+        'sh',
+        '${CLAUDE_PLUGIN_DATA}',
+        '${CLAUDE_PROJECT_DIR}',
+      ],
+    };
+    const root = plugin({
+      'hooks/hooks.json': JSON.stringify({ hooks: { Stop: [{ hooks: [hook] }] } }),
+      'evals/counted/prompt.md': '---\nruns: 2\n---\nGreet Ada.\n',
+      'evals/counted/graders/hello.md': GRADER,
+    });
+    const { result } = await experimental_runPluginEvals(
+      options(new ScriptedBackend(), { target: root, ablation: 'none', keepTemp: true })
+    );
+    const runs = result.cases[0]?.arms.with ?? [];
+    expect(runs).toHaveLength(2);
+    for (const run of runs) {
+      const temp = run.tempDir ?? '';
+      dirs.push(temp);
+      const data = join(temp, 'plugins', 'data');
+      const [folder] = readdirSync(data);
+      expect(readFileSync(join(data, folder ?? '', 'count'), 'utf8')).toBe('x\n');
+      expect(realpathSync(readFileSync(join(data, folder ?? '', 'project'), 'utf8'))).toBe(
+        realpathSync(join(temp, 'workspace'))
+      );
+    }
   });
 
   it('ends a run at its timeout and grades what it produced', async () => {

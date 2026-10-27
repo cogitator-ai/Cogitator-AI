@@ -523,7 +523,8 @@ export async function executeRun(spec: RunSpec): Promise<RunOutcome> {
     ...(spec.arm === 'with' && {
       experimental_plugins: {
         dirs: evalCase.plugins,
-        installed: false,
+        root,
+        installed: { root: join(tempDir, 'plugins') },
         settings: false,
         mcp: connector,
       },

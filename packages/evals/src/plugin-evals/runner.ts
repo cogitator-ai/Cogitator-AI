@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
@@ -124,9 +125,15 @@ async function checkPluginsLoad(
   llm: PluginEvalOptions['llm'],
   dirs: readonly string[]
 ): Promise<void> {
+  const store = mkdtempSync(join(tmpdir(), 'cogitator-plugin-eval-probe-'));
   const probe = new core.Cogitator({
     llm,
-    experimental_plugins: { dirs, installed: false, settings: false },
+    experimental_plugins: {
+      dirs,
+      root: store,
+      installed: { root: join(store, 'plugins') },
+      settings: false,
+    },
   });
   try {
     await probe.experimental_plugins.load();
@@ -140,6 +147,7 @@ async function checkPluginsLoad(
     }
   } finally {
     await probe.close().catch(() => undefined);
+    rmSync(store, { recursive: true, force: true });
   }
 }
 
