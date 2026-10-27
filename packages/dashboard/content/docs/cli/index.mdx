@@ -63,6 +63,7 @@ cogitator run -m ollama/llama3.1:8b "What is the capital of France?"
 | `cogitator status`         | Show Docker Compose and Ollama status (alias: `ps`)                                                             |
 | `cogitator logs`           | View Docker Compose service logs                                                                                |
 | `cogitator deploy`         | Deploy with Docker or Fly.io (see [`@cogitator-ai/deploy`](https://www.npmjs.com/package/@cogitator-ai/deploy)) |
+| `cogitator rewind`         | Rewind a thread's conversation, memory and files to an entry, a dry run first                                   |
 
 Every command ends with examples in its `--help`.
 
@@ -237,6 +238,30 @@ cogitator run            # interactive
 Interactive commands: `/model [name]`, `/clear`, `/help`, `exit` / `quit` (Ctrl+D also exits).
 
 ---
+
+### cogitator rewind
+
+Rewind a thread of the project's registry (`src/cogitator.ts`, which exports the runtime as `cogitator` and the agents as `agents`) to an entry: its conversation and memory, and with `--files` the files of the agent's workspace from the [file checkpoint](/docs/core/file-checkpoints) at that point. Without an entry it lists the active branch of the thread, the user messages with a checkpoint marked `[files]`.
+
+```bash
+cogitator rewind thread_42
+cogitator rewind thread_42 entry_abc --files --dry-run
+cogitator rewind thread_42 entry_abc --files
+cogitator rewind thread_42 entry_abc --files --no-memory --yes
+```
+
+| Option                  | Default            | Description                                                       |
+| ----------------------- | ------------------ | ----------------------------------------------------------------- |
+| `--files`               | `false`            | Restore the files from the checkpoint at that point               |
+| `--no-memory`           | -                  | Leave the conversation and memory as they are, restore files only |
+| `--dry-run`             | `false`            | Show what the rewind would change, change nothing                 |
+| `-y, --yes`             | `false`            | Rewind without asking (needed when stdin is not a terminal)       |
+| `--force`               | `false`            | Abort the runs going on in the thread first                       |
+| `-a, --agent <key>`     | the thread's agent | The registry agent whose workspace to restore                     |
+| `-r, --registry <path>` | `src/cogitator.ts` | The registry module                                               |
+| `--json`                | `false`            | Print the report as JSON                                          |
+
+Before it rewinds, the command prints the dry run (entries that leave the branch, stale memory items, files restored and deleted, runs dropped) and asks. `--json` never prompts, so it needs `--dry-run` or `--yes`. Without `--agent`, the agent is the one whose id the thread names, else the only registry agent with a workspace. The command runs in a process of its own: a run of the project's other processes is seen only when it is durable, and the command warns when runs are not durable by default, so stop such runs before you rewind with `--files`.
 
 ### cogitator build
 

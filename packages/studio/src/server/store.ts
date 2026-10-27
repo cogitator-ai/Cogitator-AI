@@ -12,6 +12,9 @@ import type {
   HostEvent,
   RawSpan,
   RegistryInfo,
+  ReplayEntry,
+  ThreadLineage,
+  ThreadReplay,
   RunRecord,
   RunStatus,
   SpanRecord,
@@ -42,6 +45,8 @@ export interface RunQuery {
 /** What changed after an event, for the server to push to the UI. */
 export interface StoreChange {
   runs: RunRecord[];
+  /** A thread that changed, such as the active branch the studio keeps of it */
+  thread?: ThreadRecord;
   token?: { runId: string; text: string; revision: number };
   reasoning?: { runId: string; text: string; revision: number };
 }
@@ -381,18 +386,127 @@ export class StudioStore {
     };
   }
 
-  /** The finished turns of a thread, to replay into a fresh memory. */
+  /**
+   * Marks the runs of a thread that a rewind took off its active branch: those whose last entry
+   * is among `cut`. Their turns stay in the thread, shown as rewound, and are not replayed.
+   */
+  markRewound(threadId: string, cut: readonly string[]): ThreadRecord | undefined {
+    const thread = this.threads.get(threadId);
+    if (!thread) return undefined;
+    const gone = new Set(cut);
+    const rewound = new Set(thread.rewoundRuns ?? []);
+    for (const runId of thread.runs) {
+      const place = this.runs.get(runId)?.memory;
+      if (place?.leafId && place.threadId === threadId && gone.has(place.leafId)) {
+        rewound.add(runId);
+      }
+    }
+    if (rewound.size === (thread.rewoundRuns?.length ?? 0)) return thread;
+    thread.rewoundRuns = thread.runs.filter((runId) => rewound.has(runId));
+    thread.updatedAt = Date.now();
+    this.persistThreads();
+    return thread;
+  }
+
+  /**
+   * Keeps the active branch of a thread of the studio's own memory, entry by entry, to replay
+   * after a restart. A forked thread's `base` follows it: the messages it copied from its origin
+   * that are still on the branch
+   */
+  keepReplay(threadId: string, replay: ThreadReplay): ThreadRecord | undefined {
+    const thread = this.threads.get(threadId);
+    if (!thread) return undefined;
+    thread.replay = {
+      metadata: { ...replay.metadata },
+      entries: replay.entries.map((entry) => ({ ...entry })),
+      ...(replay.activeLeafId !== undefined && { activeLeafId: replay.activeLeafId }),
+    };
+    if (thread.forkOf) thread.base = baseOf(replay);
+    this.persistThreads();
+    return thread;
+  }
+
+  /** The thread as the studio keeps it, for a fresh memory after a restart. */
+  replay(threadId: string): ThreadReplay | undefined {
+    return this.threads.get(threadId)?.replay;
+  }
+
+  /**
+   * The threads a thread was forked from (`forkOf`, in turn), oldest first, with what replays
+   * each, so a fresh memory knows where the fork comes from
+   */
+  lineage(threadId: string): ThreadLineage[] {
+    const lineage: ThreadLineage[] = [];
+    const seen = new Set<string>([threadId]);
+    for (
+      let from = this.threads.get(threadId)?.forkOf?.threadId;
+      from !== undefined && !seen.has(from) && lineage.length < 64;
+      from = this.threads.get(from)?.forkOf?.threadId
+    ) {
+      seen.add(from);
+      const source = this.threads.get(from);
+      if (!source) break;
+      lineage.unshift({
+        threadId: source.id,
+        agent: source.agent,
+        history: this.history(source.id),
+        ...(source.replay && { replay: source.replay }),
+      });
+    }
+    return lineage;
+  }
+
+  /** The thread a fork of `source` at `entryId` made, starting from the messages `base`. */
+  addForkedThread(
+    source: ThreadRecord,
+    fork: {
+      threadId: string;
+      entryId: string;
+      base: readonly HistoryMessage[];
+      replay?: ThreadReplay;
+    }
+  ): ThreadRecord {
+    if (this.threads.has(fork.threadId)) throw new Error(`Thread ${fork.threadId} exists already`);
+    const now = Date.now();
+    const thread: ThreadRecord = {
+      id: fork.threadId,
+      agent: source.agent,
+      title: `Fork of ${source.title}`.slice(0, 80),
+      createdAt: now,
+      updatedAt: now,
+      runs: [],
+      forkOf: { threadId: source.id, entryId: fork.entryId },
+      base: fork.base.map((message) => ({ role: message.role, content: message.content })),
+      ...(fork.replay && {
+        replay: {
+          metadata: { ...fork.replay.metadata },
+          entries: fork.replay.entries.map((entry) => ({ ...entry })),
+          ...(fork.replay.activeLeafId !== undefined && { activeLeafId: fork.replay.activeLeafId }),
+        },
+      }),
+    };
+    this.threads.set(thread.id, thread);
+    this.persistThreads();
+    return thread;
+  }
+
+  /**
+   * The conversation of a thread, to replay into a fresh memory: the messages a fork starts from,
+   * then its finished turns, without those a rewind took off the branch.
+   */
   history(threadId: string): HistoryMessage[] {
     const thread = this.threads.get(threadId);
     if (!thread) return [];
-    return thread.runs.flatMap((runId) => {
+    const rewound = new Set(thread.rewoundRuns ?? []);
+    const turns = thread.runs.flatMap((runId) => {
       const run = this.runs.get(runId);
-      if (run?.status !== 'completed') return [];
+      if (run?.status !== 'completed' || rewound.has(runId)) return [];
       return [
         { role: 'user' as const, content: run.input },
         { role: 'assistant' as const, content: run.output ?? '' },
       ];
     });
+    return [...(thread.base ?? []), ...turns];
   }
 
   /** Marks the runs still going as failed, when the host they ran in went away. */
@@ -544,6 +658,10 @@ export class StudioStore {
 
   private change(event: HostEvent): StoreChange {
     switch (event.type) {
+      case 'thread.replay': {
+        const thread = this.keepReplay(event.threadId, event.replay);
+        return { runs: [], ...(thread && { thread }) };
+      }
       case 'run.started': {
         const run: RunRecord = {
           id: event.runId,
@@ -778,4 +896,40 @@ export class StudioStore {
       }
     }
   }
+}
+
+/**
+ * The user and assistant messages the active branch of a forked thread copied from its origin
+ * (`metadata.forkOf`)
+ */
+function baseOf(replay: ThreadReplay): HistoryMessage[] {
+  const byId = new Map(replay.entries.map((entry) => [entry.id, entry]));
+  const path: ReplayEntry[] = [];
+  const seen = new Set<string>();
+  for (
+    let id: string | null | undefined = replay.activeLeafId;
+    id && !seen.has(id);
+    id = byId.get(id)?.parentId
+  ) {
+    seen.add(id);
+    const entry = byId.get(id);
+    if (!entry) break;
+    path.unshift(entry);
+  }
+  return path.flatMap((entry): HistoryMessage[] => {
+    if (entry.metadata?.forkOf === undefined) return [];
+    const role = entry.message.role;
+    if ((entry.type ?? 'message') !== 'message' || (role !== 'user' && role !== 'assistant')) {
+      return [];
+    }
+    const content = entry.message.content;
+    const text =
+      typeof content === 'string'
+        ? content
+        : content
+            .map((part) => (part.type === 'text' ? part.text : ''))
+            .filter(Boolean)
+            .join('\n');
+    return text ? [{ role, content: text }] : [];
+  });
 }

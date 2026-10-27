@@ -1,8 +1,10 @@
 /**
  * What the studio's three parts say to each other: the runtime host (a child
  * process that runs the project), the server, and the UI in the browser. The
- * file has no imports, so the UI bundle can share it.
+ * file imports types only, so the UI bundle can share it.
  */
+
+import type { MemoryEntryType, Message, ToolCall, ToolResult } from '@cogitator-ai/types';
 
 export interface ToolInfo {
   name: string;
@@ -286,6 +288,13 @@ export interface TreeEntry {
   createdAt: number;
   /** The run that wrote it, when the studio knows. */
   runId?: string;
+  /** Whether it is a user message that names a file checkpoint, files a rewind can restore. */
+  checkpoint?: boolean;
+  /**
+   * The files a rewind or a fork to it restores, as the runtime picks the checkpoint: `exact`,
+   * as they were there, or `before`, as they were before its turn. Missing when there are none
+   */
+  files?: 'exact' | 'before';
 }
 
 /** Every branch of a thread's memory, with the one its next message goes on. */
@@ -339,6 +348,146 @@ export interface ThreadRecord {
   createdAt: number;
   updatedAt: number;
   runs: string[];
+  /** Runs whose entries a rewind took off the active branch, kept to show faded. */
+  rewoundRuns?: string[];
+  /** The thread and entry this thread was forked from. */
+  forkOf?: { threadId: string; entryId: string };
+  /** The conversation a forked thread starts from, shown above its own turns. */
+  base?: HistoryMessage[];
+  /**
+   * The thread as the studio's own memory last had it, its metadata and its active branch entry
+   * by entry with ids and metadata, replayed into a fresh memory after a restart.
+   */
+  replay?: ThreadReplay;
+}
+
+/**
+ * A thread of the studio's own memory as a fresh memory gets it back: its metadata (where it
+ * was forked from among it, which file rewinds check) and its whole tree of entries.
+ */
+export interface ThreadReplay {
+  metadata: Record<string, unknown>;
+  /**
+   * Every entry of the thread, every branch, oldest first: the entries forks of the thread
+   * were copied from stay, also once a rewind took them off its active branch.
+   */
+  entries: ReplayEntry[];
+  /** The entry the active branch ends at. */
+  activeLeafId?: string;
+}
+
+/** A thread a forked thread comes from, replayed before it so the fork's provenance resolves. */
+export interface ThreadLineage {
+  threadId: string;
+  /** The registry key of the thread's agent. */
+  agent: string;
+  history: HistoryMessage[];
+  replay?: ThreadReplay;
+}
+
+/** An entry of a thread's active branch, as a fresh memory gets it back after a restart. */
+export interface ReplayEntry {
+  id: string;
+  /** The entry it follows, `null` for a root. */
+  parentId: string | null;
+  type?: MemoryEntryType;
+  message: Message;
+  toolCalls?: ToolCall[];
+  toolResults?: ToolResult[];
+  metadata?: Record<string, unknown>;
+  event?: Record<string, unknown>;
+}
+
+/** What a file restore of a rewind or a fork changed, or would change in a dry run. */
+export interface FileRestoreSummary {
+  snapshotId: string;
+  dryRun: boolean;
+  /** Files written back as the checkpoint has them. */
+  restored: string[];
+  /** Files removed, as the checkpoint did not have them. */
+  deleted: string[];
+  unchanged: number;
+  /** Paths left as they are, such as files the checkpoint skipped. */
+  kept: string[];
+  /** With a dry run: whether commands the workspace runs would refuse the restore now. */
+  busy?: boolean;
+  /** The snapshot of the files from right before the restore, to undo it. */
+  safetySnapshotId?: string;
+  /** The user message whose checkpoint it is. */
+  entryId: string;
+  /** Whether the checkpoint holds the files at that very point, not before the turn it is in. */
+  exact: boolean;
+  workspaceId: string;
+}
+
+/** What a rewind of a thread changed, or would change in a dry run. */
+export interface RewindSummary {
+  threadId: string;
+  toEntryId: string;
+  dryRun: boolean;
+  conversation: {
+    /** Whether the active leaf moved back. */
+    rewound: boolean;
+    /** The entries that leave the active branch, oldest first. */
+    cut: string[];
+    previousLeafId?: string;
+  };
+  /** Memory items that stood only on the entries cut off. */
+  staleItems: number;
+  files?: FileRestoreSummary;
+  runs: {
+    /** Runs going on in the thread when the rewind began. */
+    going: string[];
+    /** Runs the rewind aborted, with `force`. */
+    interrupted: string[];
+    /** Whether the paused run of the thread is dropped. */
+    paused: boolean;
+    /** Durable runs of the thread dropped. */
+    durable: string[];
+  };
+  /** The thread after the rewind, when the studio keeps its own memory. */
+  replay?: ThreadReplay;
+}
+
+/** A thread forked from another at an entry. */
+export interface ForkSummary {
+  threadId: string;
+  /** Snapshots copied into the fork's workspace. */
+  snapshotsCopied: string[];
+  files?: FileRestoreSummary;
+  /** The user and assistant messages of the forked branch, oldest first. */
+  base: HistoryMessage[];
+  /** The new thread, when the studio keeps its own memory. */
+  replay?: ThreadReplay;
+}
+
+/** What a fork with its files would restore, made without a thread. */
+export interface ForkPreview {
+  dryRun: true;
+  /** Snapshots the fork would copy into its workspace. */
+  snapshotsCopied: string[];
+  files?: FileRestoreSummary;
+  /** Runs in the thread or the workspace that a fork with files has to wait for, or stop. */
+  going: string[];
+}
+
+/** What a rewind is asked to do. */
+export interface RewindRequest {
+  entryId: string;
+  files?: boolean;
+  memory?: boolean;
+  dryRun?: boolean;
+  force?: boolean;
+}
+
+/** What a fork of a thread is asked to do. */
+export interface ThreadForkRequest {
+  entryId: string;
+  files?: boolean;
+  /** Only say what a fork with files would restore, make no thread. */
+  dryRun?: boolean;
+  /** Stop the runs in the way of a fork with files first. */
+  force?: boolean;
 }
 
 export interface ForkRequest {
@@ -441,7 +590,8 @@ export type HostEvent =
       output?: unknown;
       error?: string;
     }
-  | { type: 'swarm.event'; runId: string; event: SwarmEventRecord };
+  | { type: 'swarm.event'; runId: string; event: SwarmEventRecord }
+  | { type: 'thread.replay'; threadId: string; replay: ThreadReplay };
 
 /** An event of a swarm run as the swarm emitted it (`team:task-claimed` and the rest). */
 export interface SwarmEventRecord {
@@ -487,6 +637,9 @@ export type HostRequest =
       input: string;
       threadId: string;
       history: HistoryMessage[];
+      replay?: ThreadReplay;
+      /** The threads it was forked from, oldest first, to replay before it. */
+      lineage?: ThreadLineage[];
     }
   | { type: 'stop'; requestId: string; runId: string }
   | {
@@ -505,7 +658,31 @@ export type HostRequest =
       threadId: string;
       agent: string;
       history: HistoryMessage[];
+      replay?: ThreadReplay;
+      /** The threads it was forked from, oldest first, to replay before it. */
+      lineage?: ThreadLineage[];
     }
+  | ({
+      type: 'thread.rewind';
+      requestId: string;
+      threadId: string;
+      agent: string;
+      history: HistoryMessage[];
+      replay?: ThreadReplay;
+      /** The threads it was forked from, oldest first, to replay before it. */
+      lineage?: ThreadLineage[];
+    } & RewindRequest)
+  | ({
+      type: 'thread.fork';
+      requestId: string;
+      threadId: string;
+      agent: string;
+      newThreadId: string;
+      history: HistoryMessage[];
+      replay?: ThreadReplay;
+      /** The threads it was forked from, oldest first, to replay before it. */
+      lineage?: ThreadLineage[];
+    } & ThreadForkRequest)
   | { type: 'workflow.run'; requestId: string; workflow: string; input: unknown }
   | { type: 'swarm.run'; requestId: string; swarm: string; input: string }
   | { type: 'workflow.rerun'; requestId: string; run: RunRecord; fromNode: string };
@@ -522,4 +699,11 @@ export type HostMessage =
   | { type: 'load-failed'; error: string }
   | { type: 'event'; event: HostEvent }
   | { type: 'response'; requestId: string; ok: true; data: unknown }
-  | { type: 'response'; requestId: string; ok: false; error: string };
+  | {
+      type: 'response';
+      requestId: string;
+      ok: false;
+      error: string;
+      /** The code of a runtime error, such as `THREAD_BUSY` or `VALIDATION_ERROR`. */
+      code?: string;
+    };

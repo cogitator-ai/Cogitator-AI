@@ -937,9 +937,11 @@ export class MongoDBAdapter
   private async storeEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>> {
     if (!this.db) return this.failure('Not connected');
 
-    const id = this.generateId('entry');
+    const named = this.entryIdOf(entry);
+    if (!named.success) return named;
+    const id = named.data;
     const createdAt = this.entryTimestamp(entry);
-    const { activate, parentId: askedParent, ...fields } = entry;
+    const { activate, parentId: askedParent, id: _asked, ...fields } = entry;
     const type = fields.type ?? (fields.message?.role === 'tool' ? 'tool_result' : 'message');
     const moves = activate !== false;
     let inserted = false;

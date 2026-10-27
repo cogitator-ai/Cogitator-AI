@@ -256,7 +256,7 @@ export async function featuresB(): Promise<ExplorerFeature[]> {
       pkg: '@cogitator-ai/core',
       title: 'Time travel',
       summary:
-        'Checkpoint a finished run at any tool call, fork it with a different tool result or input, and diff the two timelines.',
+        'Checkpoint a finished run at any tool call, fork it with a different tool result or input, and diff the two timelines. File checkpoints take a thread back to any message with its files, or fork it with them.',
       href: '/docs/advanced/time-travel',
       code: timeTravel,
     },

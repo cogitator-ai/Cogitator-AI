@@ -65,6 +65,8 @@ interface Seat extends ThreadSeat {
  */
 export class ThreadRuns {
   private readonly threads = new Map<string, Seat[]>();
+  /** Threads an operation holds for itself (a rewind), which new runs wait for, see {@link lock} */
+  private readonly locks = new Map<string, Promise<void>>();
 
   /**
    * Seats a run on `threadId`, once `strategy` lets it: `enqueue` waits for the runs before it,
@@ -77,10 +79,24 @@ export class ThreadRuns {
   async admit(threadId: string, run: RunOnThread): Promise<ThreadAdmission | undefined> {
     const { strategy, signal, ancestorRunIds, userId } = run;
     if (signal?.aborted) throw abortReason(signal);
-    const seats = this.threads.get(threadId) ?? [];
-    if (seats.some((seat) => seat.runId !== undefined && ancestorRunIds.includes(seat.runId))) {
+    if (
+      (this.threads.get(threadId) ?? []).some(
+        (seat) => seat.runId !== undefined && ancestorRunIds.includes(seat.runId)
+      )
+    ) {
       return undefined;
     }
+    for (let held = this.locks.get(threadId); held; held = this.locks.get(threadId)) {
+      if (strategy === 'reject') {
+        throw new CogitatorError({
+          message: `Thread ${threadId} is being rewound`,
+          code: ErrorCode.THREAD_BUSY,
+          details: { threadId },
+        });
+      }
+      await settledOrAborted(held, signal);
+    }
+    const seats = this.threads.get(threadId) ?? [];
     if (strategy !== undefined && !run.shared && seats.some((seat) => seat.userId !== userId)) {
       throw new CogitatorError({
         message: `Thread ${threadId} belongs to another user`,
@@ -129,6 +145,60 @@ export class ThreadRuns {
       throw error;
     }
   }
+
+  /**
+   * Holds `threadId` for one operation until the returned release: runs asking for a seat there
+   * meanwhile wait for it (`reject` ones fail with `THREAD_BUSY`), and a second hold waits for
+   * the first. The runs seated already go on, the holder deals with them
+   */
+  async lock(threadId: string, signal?: AbortSignal): Promise<() => void> {
+    for (let held = this.locks.get(threadId); held; held = this.locks.get(threadId)) {
+      await settledOrAborted(held, signal);
+    }
+    let release: () => void = () => undefined;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.locks.set(threadId, hold);
+    return () => {
+      if (this.locks.get(threadId) === hold) this.locks.delete(threadId);
+      release();
+    };
+  }
+
+  /** The ids of the runs going on in `threadId` (a run not started yet has none), oldest first */
+  active(threadId: string): { count: number; runIds: string[] } {
+    const seats = this.threads.get(threadId) ?? [];
+    return {
+      count: seats.length,
+      runIds: seats.flatMap((seat) => (seat.runId === undefined ? [] : [seat.runId])),
+    };
+  }
+
+  /**
+   * Aborts every run going on in `threadId` with `reason` and resolves once they are all done, so
+   * what changes the thread next does not race them
+   */
+  async interrupt(threadId: string, reason: Error): Promise<string[]> {
+    const seats = [...(this.threads.get(threadId) ?? [])];
+    for (const seat of seats) seat.controller.abort(reason);
+    await Promise.all(seats.map((seat) => seat.done));
+    return seats.flatMap((seat) => (seat.runId === undefined ? [] : [seat.runId]));
+  }
+}
+
+/** Resolves once `held` does, rejects when `signal` aborts first */
+function settledOrAborted(held: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+  if (!signal) return held;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<void>((resolve, reject) => {
+    const listener = () => reject(abortReason(signal));
+    signal.addEventListener('abort', listener, { once: true });
+    void held.then(() => {
+      signal.removeEventListener('abort', listener);
+      resolve();
+    });
+  });
 }
 
 function createSeat(userId: string | undefined): Seat {

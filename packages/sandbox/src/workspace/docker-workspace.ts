@@ -17,6 +17,8 @@ import {
   type WorkspaceRemoveOptions,
   type WorkspaceRemoveResult,
   type WorkspaceRenameOptions,
+  type WorkspaceRestoreOptions,
+  type WorkspaceRestoreResult,
   type WorkspaceSnapshot,
   type WorkspaceSnapshotOptions,
   type WorkspaceStat,
@@ -122,6 +124,16 @@ interface DockerWorkspaceState {
   container?: DockerContainer;
   starting?: Promise<DockerContainer>;
   disposed: boolean;
+  /** Commands running in the container now */
+  running: number;
+  /**
+   * Process groups of the commands, kept until they are found gone: a group a command left in
+   * the background, or one still stopping after SIGTERM (`background: 'kill'`, a timeout, an
+   * abort) until SIGKILL, may still write
+   */
+  kept: Set<number>;
+  /** Restores changing the files now: commands are refused meanwhile */
+  restoring: number;
 }
 
 /**
@@ -160,9 +172,19 @@ export class DockerWorkspace implements Workspace {
   /** Where the root is mounted in the container */
   readonly workdir: string;
   readonly snapshot?: (options?: WorkspaceSnapshotOptions) => Promise<WorkspaceSnapshot>;
-  readonly restore?: (snapshotId: string) => Promise<void>;
+  readonly restore?: (
+    snapshotId: string,
+    options?: WorkspaceRestoreOptions
+  ) => Promise<WorkspaceRestoreResult>;
+  readonly listSnapshots?: () => Promise<WorkspaceSnapshot[]>;
+  readonly deleteSnapshot?: (snapshotId: string) => Promise<void>;
+  readonly copySnapshot?: (snapshotId: string, target: Workspace) => Promise<WorkspaceSnapshot>;
+  /**
+   * The workspace on the host whose root is mounted: files are read and written, and snapshots
+   * taken and restored, through it
+   */
+  readonly host: Workspace;
   private readonly options: DockerWorkspaceOptions;
-  private readonly host: Workspace;
   private readonly state: DockerWorkspaceState;
 
   constructor(options: DockerWorkspaceOptions) {
@@ -177,11 +199,17 @@ export class DockerWorkspace implements Workspace {
     this.id = options.id ?? options.host.id;
     this.workdir = posix.resolve('/', options.workdir ?? DEFAULT_WORKDIR);
     this.cwd = normalizeCwd(options.cwd ?? options.host.cwd);
-    this.state = { disposed: false };
+    this.state = { disposed: false, running: 0, kept: new Set(), restoring: 0 };
     const host = options.host;
     if (host.snapshot && host.restore) {
       this.snapshot = (snapshotOptions) => host.snapshot!(snapshotOptions);
-      this.restore = (snapshotId) => host.restore!(snapshotId);
+      this.restore = (snapshotId, restoreOptions) =>
+        this.restoreInContainer(snapshotId, restoreOptions ?? {});
+    }
+    if (host.listSnapshots) this.listSnapshots = () => host.listSnapshots!();
+    if (host.deleteSnapshot) this.deleteSnapshot = (snapshotId) => host.deleteSnapshot!(snapshotId);
+    if (host.copySnapshot) {
+      this.copySnapshot = (snapshotId, target) => host.copySnapshot!(snapshotId, target);
     }
   }
 
@@ -378,6 +406,92 @@ export class DockerWorkspace implements Workspace {
 
   async exec(command: string, options: WorkspaceExecOptions = {}): Promise<WorkspaceExecResult> {
     if (options.signal?.aborted) throw aborted(options.signal);
+    if (this.state.restoring > 0) {
+      throw new WorkspaceError(
+        'BUSY',
+        'A snapshot is being restored in the workspace: run the command once it is done'
+      );
+    }
+    this.state.running++;
+    try {
+      return await this.execNow(command, options);
+    } finally {
+      this.state.running--;
+    }
+  }
+
+  /**
+   * Brings the files back to a snapshot of the host workspace. What goes is removed in the
+   * container, where no symlink reaches the host, as `remove` does: the host's dry run says what,
+   * and each removed tree goes at once. The host then writes what changed, through its own
+   * placement, and the result lists both, as the dry run does. Refused with `BUSY` before
+   * anything goes while a command runs in the container or on the host workspace, or left
+   * processes in the background, which could race the changes, and a dry run says so in `busy`
+   */
+  private async restoreInContainer(
+    snapshotId: string,
+    options: WorkspaceRestoreOptions
+  ): Promise<WorkspaceRestoreResult> {
+    const restore = this.host.restore!.bind(this.host);
+    const plan = await restore(snapshotId, { dryRun: true });
+    const busy = (plan.busy ?? false) || this.state.running > 0 || (await this.keptAlive());
+    if (options.dryRun) return { ...plan, busy };
+    if (busy || this.state.running > 0) {
+      throw new WorkspaceError(
+        'BUSY',
+        'The workspace cannot be restored while a command runs in its container (or left processes in the background): wait for it or dispose the workspace',
+        { path: snapshotId }
+      );
+    }
+    const releaseHost = this.host.holdForRestore?.();
+    this.state.restoring++;
+    try {
+      return await this.restoreNow(snapshotId, plan, restore);
+    } finally {
+      this.state.restoring--;
+      releaseHost?.();
+    }
+  }
+
+  /** The removals in the container and the host's writes of a restore no command can race */
+  private async restoreNow(
+    snapshotId: string,
+    plan: WorkspaceRestoreResult,
+    restore: (
+      snapshotId: string,
+      options?: WorkspaceRestoreOptions
+    ) => Promise<WorkspaceRestoreResult>
+  ): Promise<WorkspaceRestoreResult> {
+    const deleted = new Set(plan.deleted);
+    const tops = plan.deleted.filter((path) => !ancestorsOf(path).some((dir) => deleted.has(dir)));
+    for (const path of tops) {
+      await this.remove(path, { recursive: true }).catch((error: unknown) => {
+        if (!WorkspaceError.is(error, 'NOT_FOUND')) throw error;
+      });
+    }
+    const done = await restore(snapshotId);
+    return {
+      ...done,
+      deleted: [...new Set([...plan.deleted, ...done.deleted])].sort(),
+    };
+  }
+
+  /** Whether a process group a command left in the background is still alive in the container */
+  private async keptAlive(): Promise<boolean> {
+    if (this.state.kept.size === 0 || !this.state.container) return false;
+    const alive: number[] = [];
+    for (const group of this.state.kept) {
+      const code = await this.internal([GROUP_ALIVE_SCRIPT, String(group)], '.').catch(() => 0);
+      if (code === 46) alive.push(group);
+    }
+    this.state.kept = new Set(alive);
+    return alive.length > 0;
+  }
+
+  private async execNow(
+    command: string,
+    options: WorkspaceExecOptions
+  ): Promise<WorkspaceExecResult> {
     const container = await this.ready();
     const cwdPath = this.toHost(options.cwd ?? this.cwd);
     const cwd = await this.host.stat(cwdPath);
@@ -503,12 +617,14 @@ export class DockerWorkspace implements Workspace {
     const stopGroup = (signals: 'TERM' | 'KILL') => {
       if (group === undefined) return;
       const target = group;
+      const kill = () =>
+        void signalGroup(container, target, 'KILL').then(() => this.state.kept.delete(target));
       if (signals === 'KILL') {
-        void signalGroup(container, target, 'KILL');
+        kill();
         return;
       }
       void signalGroup(container, target, 'TERM').then(() => {
-        setTimeout(() => void signalGroup(container, target, 'KILL'), options.killGrace).unref();
+        setTimeout(kill, options.killGrace).unref();
       });
     };
     const markers = new MarkerScanner(
@@ -517,6 +633,7 @@ export class DockerWorkspace implements Workspace {
       (kind, value) => {
         if (kind === 'pgid') {
           group = value > 1 ? value : undefined;
+          if (group !== undefined) this.state.kept.add(group);
           if (stopReason) stopGroup('TERM');
           return;
         }
@@ -704,4 +821,16 @@ async function connect(config: SandboxDockerConfig | undefined): Promise<Docker>
 function defaultUser(): string | undefined {
   if (process.platform !== 'linux' || !process.getuid || !process.getgid) return undefined;
   return `${process.getuid()}:${process.getgid()}`;
+}
+
+/** `$1` a process group: exits 46 when a process of it is alive */
+const GROUP_ALIVE_SCRIPT = 'kill -0 "-$1" 2>/dev/null && exit 46; exit 0';
+
+/** The directories `path` is in, nearest first, the root left out */
+function ancestorsOf(path: string): string[] {
+  const dirs: string[] = [];
+  for (let at = path.lastIndexOf('/'); at > 0; at = path.lastIndexOf('/', at - 1)) {
+    dirs.push(path.slice(0, at));
+  }
+  return dirs;
 }

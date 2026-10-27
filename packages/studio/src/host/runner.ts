@@ -2,8 +2,9 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type * as CoreModule from '@cogitator-ai/core';
-import type { Agent, TimeTravel } from '@cogitator-ai/core';
+import type { Agent, FileRewindReport, RewindReport, TimeTravel } from '@cogitator-ai/core';
 import { InMemoryAdapter } from '@cogitator-ai/memory';
+import { fileCheckpointOf } from '@cogitator-ai/types';
 import type {
   ExecutionCheckpoint,
   MemoryEntry,
@@ -21,14 +22,23 @@ import type {
 import type * as WorkflowsModule from '@cogitator-ai/workflows';
 import type * as SwarmsModule from '@cogitator-ai/swarms';
 import type {
+  FileRestoreSummary,
   ForkOrigin,
+  ForkPreview,
+  ForkSummary,
   HistoryMessage,
   HostEvent,
   HostRequest,
   MemoryPlace,
   RawSpan,
   RegistryInfo,
+  ReplayEntry,
+  ThreadLineage,
+  ThreadReplay,
+  RewindRequest,
+  RewindSummary,
   RunRecord,
+  ThreadForkRequest,
   StepRecord,
   ThreadTree,
   TreeEntry,
@@ -136,6 +146,80 @@ function treeEntry(entry: MemoryEntry): TreeEntry {
     ...(entry.toolCalls?.length && { toolCalls: entry.toolCalls.map((call) => call.name) }),
     ...(entry.event !== undefined && { event: plain(entry.event) }),
     createdAt: new Date(entry.createdAt).getTime(),
+    ...(fileCheckpointOf(entry.metadata) && { checkpoint: true }),
+  };
+}
+
+/** What brings a thread of the studio's own memory back after a restart. */
+interface ThreadSeed {
+  history: readonly HistoryMessage[];
+  replay?: ThreadReplay;
+  lineage?: readonly ThreadLineage[];
+}
+
+function seedOf(request: ThreadSeed): ThreadSeed {
+  return {
+    history: request.history,
+    ...(request.replay && { replay: request.replay }),
+    ...(request.lineage && { lineage: request.lineage }),
+  };
+}
+
+/** Thread metadata of a run's state, which a replay leaves out: paused and durable runs */
+function replayable(metadata: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(metadata).filter(
+      ([key]) => key !== 'pausedRun' && key !== 'durableRuns' && !key.startsWith('durableFence')
+    )
+  );
+}
+
+/** The text of a message entry, its text parts joined. */
+function textOf(entry: MemoryEntry): string {
+  const content = entry.message.content;
+  if (typeof content === 'string') return content;
+  return content
+    .map((part) => (part.type === 'text' ? part.text : ''))
+    .filter(Boolean)
+    .join('\n');
+}
+
+function fileSummary(files: FileRewindReport): FileRestoreSummary {
+  return {
+    snapshotId: files.snapshotId,
+    dryRun: files.dryRun,
+    restored: [...files.restored],
+    deleted: [...files.deleted],
+    unchanged: files.unchanged,
+    kept: [...files.kept],
+    entryId: files.entryId,
+    exact: files.exact,
+    workspaceId: files.workspaceId,
+    ...(files.busy !== undefined && { busy: files.busy }),
+    ...(files.safetySnapshotId !== undefined && { safetySnapshotId: files.safetySnapshotId }),
+  };
+}
+
+function rewindSummary(report: RewindReport): RewindSummary {
+  return {
+    threadId: report.threadId,
+    toEntryId: report.toEntryId,
+    dryRun: report.dryRun,
+    conversation: {
+      rewound: report.conversation.rewound,
+      cut: [...report.conversation.cut],
+      ...(report.conversation.previousLeafId !== undefined && {
+        previousLeafId: report.conversation.previousLeafId,
+      }),
+    },
+    staleItems: report.items.stale.length,
+    ...(report.files && { files: fileSummary(report.files) }),
+    runs: {
+      going: [...report.runs.going],
+      interrupted: [...report.runs.interrupted],
+      paused: report.runs.paused,
+      durable: [...report.runs.durable],
+    },
   };
 }
 
@@ -164,7 +248,13 @@ export class StudioHost {
   private readonly als = new AsyncLocalStorage<RunContext>();
   private readonly controllers = new Map<string, AbortController>();
   private readonly approvals = new Map<string, PendingApproval>();
-  private readonly seeded = new Set<string>();
+  /**
+   * The replay of each thread into the studio's memory, once per host: a request asked for while
+   * it runs waits for it, so no run sees part of a thread
+   */
+  private readonly seeded = new Map<string, Promise<void>>();
+  /** The thread of each chat run going on, which a forced rewind of the thread stops first. */
+  private readonly runThreads = new Map<string, string>();
   private readonly workflowRunIds = new Map<string, string>();
   private timeTravel?: Promise<TimeTravel>;
   private manager?: Promise<WorkflowsModule.DefaultWorkflowManager>;
@@ -215,7 +305,7 @@ export class StudioHost {
   handle(request: HostRequest): Promise<unknown> {
     switch (request.type) {
       case 'chat':
-        return this.chat(request.agent, request.input, request.threadId, request.history);
+        return this.chat(request.agent, request.input, request.threadId, seedOf(request));
       case 'stop':
         return Promise.resolve(this.stop(request.runId));
       case 'approve':
@@ -231,8 +321,142 @@ export class StudioHost {
       case 'swarm.run':
         return this.runSwarm(request.swarm, request.input);
       case 'thread.tree':
-        return this.threadTree(request.threadId, request.agent, request.history);
+        return this.threadTree(request.threadId, request.agent, seedOf(request));
+      case 'thread.rewind':
+        return this.rewind(request.threadId, request.agent, seedOf(request), request);
+      case 'thread.fork':
+        return this.forkThread(request);
     }
+  }
+
+  /**
+   * Rewinds a thread to an entry of its active branch through the runtime, with the agent's
+   * workspace for its files, or reports what it would change with `dryRun`.
+   */
+  private async rewind(
+    threadId: string,
+    key: string,
+    seed: ThreadSeed,
+    request: RewindRequest
+  ): Promise<RewindSummary> {
+    const agent = this.agent(key);
+    await this.seed(threadId, agent, seed);
+    const report = await this.project.cogitator.rewind(threadId, request.entryId, {
+      agents: [agent],
+      ...(request.memory !== undefined && { memory: request.memory }),
+      ...(request.files !== undefined && { files: request.files }),
+      ...(request.dryRun !== undefined && { dryRun: request.dryRun }),
+      ...(request.force !== undefined && { force: request.force }),
+    });
+    const summary = rewindSummary(report);
+    if (!report.dryRun && this.options.memory === 'studio') {
+      summary.replay = await this.replayOf(threadId);
+    }
+    return summary;
+  }
+
+  /**
+   * Forks a thread at an entry into `newThreadId` through the runtime, with the files of the
+   * agent's workspace restored to that point when asked, and the messages of the forked branch.
+   */
+  private async forkThread(
+    request: {
+      threadId: string;
+      agent: string;
+      entryId: string;
+      newThreadId: string;
+    } & ThreadForkRequest &
+      ThreadSeed
+  ): Promise<ForkSummary | ForkPreview> {
+    const agent = this.agent(request.agent);
+    await this.seed(request.threadId, agent, seedOf(request));
+    const options = {
+      agents: [agent],
+      ...(request.files !== undefined && { files: request.files }),
+      ...(request.force !== undefined && { force: request.force }),
+    };
+    if (request.dryRun) {
+      const plan = await this.project.cogitator.forkThread(request.threadId, request.entryId, {
+        ...options,
+        dryRun: true,
+      });
+      return {
+        dryRun: true,
+        snapshotsCopied: [...plan.snapshotsCopied],
+        ...(plan.files && { files: fileSummary(plan.files) }),
+        going: [...plan.going],
+      };
+    }
+    const result = await this.project.cogitator.forkThread(request.threadId, request.entryId, {
+      ...options,
+      newThreadId: request.newThreadId,
+    });
+    const threadId = result.thread.id;
+    this.seeded.set(threadId, Promise.resolve());
+    return {
+      threadId,
+      snapshotsCopied: [...result.snapshotsCopied],
+      ...(result.files && { files: fileSummary(result.files) }),
+      base: await this.messagesOf(threadId),
+      ...(this.options.memory === 'studio' && { replay: await this.replayOf(threadId) }),
+    };
+  }
+
+  /**
+   * The active branch of a thread entry by entry, with ids and metadata, for the server to replay
+   * into a fresh memory after a restart
+   */
+  private async replayOf(threadId: string): Promise<ThreadReplay> {
+    const memory = await this.project.cogitator.getMemory();
+    if (!memory?.getPath) return { metadata: {}, entries: [] };
+    const thread = await memory.getThread(threadId);
+    if (!thread.success) throw new Error(thread.error);
+    const all = await memory.getEntries({ threadId, types: 'all', includeToolCalls: true });
+    if (!all.success) throw new Error(all.error);
+    const entries = [...all.data]
+      .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+      .map((entry): ReplayEntry => ({
+        id: entry.id,
+        parentId: entry.parentId ?? null,
+        ...(entry.type !== undefined && { type: entry.type }),
+        message: entry.message,
+        ...(entry.toolCalls && { toolCalls: entry.toolCalls }),
+        ...(entry.toolResults && { toolResults: entry.toolResults }),
+        ...(entry.metadata && { metadata: entry.metadata }),
+        ...(entry.event && { event: entry.event }),
+      }));
+    const activeLeafId = thread.data?.activeLeafId;
+    return {
+      metadata: replayable(thread.data?.metadata ?? {}),
+      entries,
+      ...(activeLeafId !== undefined && { activeLeafId }),
+    };
+  }
+
+  /** Tells the server the active branch of a thread of the studio's own memory, after a run */
+  private async reportReplay(threadId: string): Promise<void> {
+    if (this.options.memory !== 'studio') return;
+    try {
+      this.emit({ type: 'thread.replay', threadId, replay: await this.replayOf(threadId) });
+    } catch (error) {
+      console.error(
+        `[studio host] could not read thread ${threadId} to keep it: ${message(error)}`
+      );
+    }
+  }
+
+  /** The user and assistant messages of a thread's active branch with their text. */
+  private async messagesOf(threadId: string): Promise<HistoryMessage[]> {
+    const memory = await this.project.cogitator.getMemory();
+    if (!memory?.getPath) return [];
+    const path = await memory.getPath({ threadId, types: ['message'] });
+    if (!path.success) throw new Error(path.error);
+    return path.data.flatMap((entry): HistoryMessage[] => {
+      const role = entry.message.role;
+      if (role !== 'user' && role !== 'assistant') return [];
+      const content = textOf(entry);
+      return content ? [{ role, content }] : [];
+    });
   }
 
   /**
@@ -240,13 +464,9 @@ export class StudioHost {
    * studio shows. A memory without trees gives its entries as a list. The studio's own memory
    * gets the thread's earlier messages first, as a chat in it would.
    */
-  private async threadTree(
-    threadId: string,
-    key: string,
-    history: readonly HistoryMessage[]
-  ): Promise<ThreadTree> {
+  private async threadTree(threadId: string, key: string, seed: ThreadSeed): Promise<ThreadTree> {
     const agent = this.project.agents.get(key);
-    if (agent) await this.seed(threadId, agent, history);
+    if (agent) await this.seed(threadId, agent, seed);
     const memory = await this.project.cogitator.getMemory();
     const empty: ThreadTree = { threadId, entries: [], truncated: false, branching: false };
     if (!memory) return empty;
@@ -260,13 +480,45 @@ export class StudioHost {
       includeToolCalls: true,
     });
     if (!read.success) throw new Error(read.error);
-    const entries = read.data.slice(-TREE_ENTRIES).map(treeEntry);
+    const all =
+      read.data.length > TREE_ENTRIES
+        ? await memory.getEntries({ threadId, types: 'all' })
+        : { success: true as const, data: read.data };
+    if (!all.success) throw new Error(all.error);
+    const filesAt = this.filesAt(all.data);
+    const entries = read.data.slice(-TREE_ENTRIES).map((entry) => {
+      const files = filesAt(entry.id);
+      return { ...treeEntry(entry), ...(files && { files }) };
+    });
     return {
       threadId,
       ...(thread.data.activeLeafId && { activeLeafId: thread.data.activeLeafId }),
       entries,
       truncated: read.data.length > TREE_ENTRIES,
       branching: typeof memory.getPath === 'function',
+    };
+  }
+
+  /**
+   * What files a rewind or a fork to each entry of `tree` (every entry of a thread) restores, by
+   * the runtime's own `checkpointAt`, so the studio offers them exactly when the runtime can
+   */
+  private filesAt(tree: readonly MemoryEntry[]): (entryId: string) => TreeEntry['files'] {
+    const checkpointAt = this.core.checkpointAt;
+    if (typeof checkpointAt !== 'function') return () => undefined;
+    const byId = new Map(tree.map((entry) => [entry.id, entry]));
+    return (entryId) => {
+      const path: MemoryEntry[] = [];
+      const seen = new Set<string>();
+      for (let id: string | null | undefined = entryId; id && !seen.has(id);) {
+        seen.add(id);
+        const entry = byId.get(id);
+        if (!entry) break;
+        path.unshift(entry);
+        id = entry.parentId;
+      }
+      const at = checkpointAt(path, path.length - 1, tree);
+      return at ? (at.exact ? 'exact' : 'before') : undefined;
     };
   }
 
@@ -366,19 +618,64 @@ export class StudioHost {
     return { runId, done };
   }
 
-  /** Replays a thread's earlier messages into the studio's own memory, once per host. */
-  private async seed(
-    threadId: string,
-    agent: Agent,
-    history: readonly HistoryMessage[]
-  ): Promise<void> {
-    if (this.options.memory !== 'studio' || this.seeded.has(threadId)) return;
-    this.seeded.add(threadId);
-    if (history.length === 0) return;
+  /**
+   * Brings a thread of the studio's own memory back after a restart: its active branch entry by
+   * entry, with the ids and metadata it had (file checkpoints included), or for a thread kept
+   * before the studio kept branches, its finished turns
+   */
+  private seed(threadId: string, agent: Agent, seed: ThreadSeed): Promise<void> {
+    if (this.options.memory !== 'studio') return Promise.resolve();
+    const known = this.seeded.get(threadId);
+    if (known) return known;
+    const replayed = this.replay(threadId, agent, seed);
+    this.seeded.set(threadId, replayed);
+    replayed.catch(() => {
+      if (this.seeded.get(threadId) === replayed) this.seeded.delete(threadId);
+    });
+    return replayed;
+  }
+
+  private async replay(threadId: string, agent: Agent, seed: ThreadSeed): Promise<void> {
+    for (const ancestor of seed.lineage ?? []) {
+      const owner = this.project.agents.get(ancestor.agent) ?? agent;
+      await this.seed(ancestor.threadId, owner, {
+        history: ancestor.history,
+        ...(ancestor.replay && { replay: ancestor.replay }),
+      });
+    }
+    const { history, replay } = seed;
+    if (history.length === 0 && !replay?.entries.length) return;
     const memory = await this.project.cogitator.getMemory();
     if (!memory) return;
     const existing = await memory.getThread(threadId);
-    if (!existing.success || !existing.data) await memory.createThread(agent.id, {}, threadId);
+    if (!existing.success || !existing.data) {
+      await memory.createThread(agent.id, replay?.metadata ?? {}, threadId);
+    } else if (replay) {
+      await memory.updateThread(threadId, replay.metadata);
+    }
+    if (replay?.entries.length) {
+      for (const entry of replay.entries) {
+        const added = await memory.addEntry({
+          id: entry.id,
+          threadId,
+          message: entry.message,
+          ...(entry.type !== undefined && { type: entry.type }),
+          ...(entry.toolCalls && { toolCalls: entry.toolCalls }),
+          ...(entry.toolResults && { toolResults: entry.toolResults }),
+          ...(entry.metadata && { metadata: entry.metadata }),
+          ...(entry.event && { event: entry.event }),
+          tokenCount: Math.ceil(JSON.stringify(entry.message.content).length / 4),
+          parentId: entry.parentId,
+          activate: false,
+        });
+        if (!added.success) throw new Error(added.error);
+      }
+      if (replay.activeLeafId !== undefined && memory.checkout) {
+        const moved = await memory.checkout(threadId, replay.activeLeafId);
+        if (!moved.success) throw new Error(moved.error);
+      }
+      return;
+    }
     for (const entry of history) {
       await memory.addEntry({
         threadId,
@@ -392,10 +689,10 @@ export class StudioHost {
     key: string,
     input: string,
     threadId: string,
-    history: readonly HistoryMessage[]
+    seed: ThreadSeed
   ): Promise<{ runId: string }> {
     const agent = this.agent(key);
-    await this.seed(threadId, agent, history);
+    await this.seed(threadId, agent, seed);
     const controller = new AbortController();
     let current = '';
     const { runId, done } = await this.begin({ kind: 'agent', target: key, threadId }, () =>
@@ -445,7 +742,12 @@ export class StudioHost {
         },
       })
     );
+    this.runThreads.set(runId, threadId);
     this.finish(runId, done, controller);
+    void done.then(
+      () => this.reportReplay(threadId),
+      () => this.reportReplay(threadId)
+    );
     return { runId };
   }
 
@@ -488,20 +790,22 @@ export class StudioHost {
             ...(memory && { memory }),
           });
         },
-        (error: unknown) =>
+        (error: unknown) => {
+          const interrupted =
+            error instanceof Error && 'code' in error && error.code === 'RUN_INTERRUPTED';
           this.emit({
             type: 'run.failed',
             runId,
             error: controller?.signal.aborted ? STOPPED : message(error),
             endedAt: Date.now(),
-            stopped: controller?.signal.aborted === true,
-          })
+            stopped: controller?.signal.aborted === true || interrupted,
+          });
+        }
       )
       .finally(() => {
         this.controllers.delete(runId);
-        for (const [id, pending] of this.approvals) {
-          if (pending.runId === runId) this.decide(id, false, STOPPED);
-        }
+        this.runThreads.delete(runId);
+        this.rejectApprovals(runId, STOPPED);
       });
   }
 
@@ -553,10 +857,15 @@ export class StudioHost {
     const controller = this.controllers.get(runId);
     if (!controller) return { stopped: false };
     controller.abort(new Error(STOPPED));
-    for (const [id, pending] of this.approvals) {
-      if (pending.runId === runId) this.decide(id, false, STOPPED);
-    }
+    this.rejectApprovals(runId, STOPPED);
     return { stopped: true };
+  }
+
+  /** Rejects the approvals a run waits for, so a run that was stopped does not wait on. */
+  private rejectApprovals(runId: string, reason: string): void {
+    for (const [id, pending] of this.approvals) {
+      if (pending.runId === runId) this.decide(id, false, reason);
+    }
   }
 
   private travel(): Promise<TimeTravel> {

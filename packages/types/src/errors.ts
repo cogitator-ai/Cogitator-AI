@@ -54,6 +54,11 @@ export enum ErrorCode {
   RUN_INTERRUPTED = 'RUN_INTERRUPTED',
   /** The thread has a run going on and the new one asked to be refused (`multitaskStrategy: 'reject'`) */
   THREAD_BUSY = 'THREAD_BUSY',
+  /**
+   * A run of this runtime works in the workspace a file restore (`rewind`, `forkThread` with
+   * `files`) would change, and the call did not ask to stop it (`force`)
+   */
+  WORKSPACE_BUSY = 'WORKSPACE_BUSY',
   /** An answer came after its interrupt's `expiresAt` */
   INTERRUPT_EXPIRED = 'INTERRUPT_EXPIRED',
   /** An answer does not match its interrupt's schema: the run still waits for a fitting one */
@@ -130,6 +135,7 @@ export const ERROR_STATUS_CODES: Record<ErrorCode, number> = {
   [ErrorCode.RUN_CHUNK_TIMEOUT]: 504,
   [ErrorCode.RUN_INTERRUPTED]: 409,
   [ErrorCode.THREAD_BUSY]: 409,
+  [ErrorCode.WORKSPACE_BUSY]: 409,
   [ErrorCode.INTERRUPT_EXPIRED]: 410,
   [ErrorCode.INTERRUPT_ANSWER_INVALID]: 400,
   [ErrorCode.RUN_LEASED]: 409,

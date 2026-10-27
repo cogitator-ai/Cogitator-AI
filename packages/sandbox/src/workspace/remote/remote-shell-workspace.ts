@@ -3,6 +3,7 @@ import { posix } from 'node:path';
 import { z } from 'zod';
 import {
   WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE,
+  WORKSPACE_SNAPSHOT_MAX_FILE_BYTES,
   WorkspaceError,
   workspaceGlobMatcher,
   type Workspace,
@@ -16,8 +17,11 @@ import {
   type WorkspaceRemoveOptions,
   type WorkspaceRemoveResult,
   type WorkspaceRenameOptions,
+  type WorkspaceRestoreOptions,
+  type WorkspaceRestoreResult,
   type WorkspaceSnapshot,
   type WorkspaceSnapshotOptions,
+  type WorkspaceSnapshotSkip,
   type WorkspaceStat,
   type WorkspaceWriteOptions,
 } from '@cogitator-ai/types';
@@ -128,8 +132,12 @@ interface ListedEntry {
 interface TreeEntry {
   type: WorkspaceEntryType;
   size: number;
+  /** Its permission bits */
+  mode: number;
   key: string;
   name: string;
+  /** A directory the listing left out with everything in it, as an exclude asked */
+  pruned: boolean;
 }
 
 interface ScriptResult {
@@ -144,6 +152,16 @@ const snapshotRecordSchema = z.object({
   label: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   exclude: z.array(z.string()),
+  skipped: z
+    .array(
+      z.object({
+        path: z.string(),
+        reason: z.enum(['too-large', 'unreadable', 'changing', 'hard-link', 'unsupported-name']),
+        size: z.number().optional(),
+      })
+    )
+    .optional(),
+  maxFileBytes: z.number().int().positive().optional(),
 });
 
 /**
@@ -555,13 +573,29 @@ export class RemoteShellWorkspace implements Workspace {
 
   /**
    * Records the files of the root as a tar archive in `.cogitator/snapshots` inside the sandbox,
-   * but for what `exclude` leaves out, and always `.cogitator/**`. Refused with `TOO_LARGE` when
-   * the files are over `maxSnapshotBytes`.
+   * but for what the default excludes (`.cogitator`, `node_modules` and `.git` at any depth) and
+   * `exclude` leave out. A file over `maxFileBytes` is skipped and listed in `skipped`. Refused
+   * with `TOO_LARGE` when the files are over `maxSnapshotBytes`.
    */
   async snapshot(options: WorkspaceSnapshotOptions = {}): Promise<WorkspaceSnapshot> {
     const exclude = [
       ...new Set([...WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE, ...(options.exclude ?? [])]),
     ];
+    const maxFileBytes = positive(
+      options.maxFileBytes,
+      WORKSPACE_SNAPSHOT_MAX_FILE_BYTES,
+      'maxFileBytes'
+    );
+    const excluded = excludedBy(exclude);
+    const skipped: WorkspaceSnapshotSkip[] = [];
+    const kept = (await this.tree(exclude)).filter((entry) => {
+      if (entry.pruned || excluded(entry.name)) return false;
+      if (entry.type === 'file' && entry.size > maxFileBytes) {
+        skipped.push({ path: entry.name, reason: 'too-large', size: entry.size });
+        return false;
+      }
+      return true;
+    });
     const record: WorkspaceSnapshot = {
       id: `snap_${Date.now().toString(36)}_${randomUUID().replace(/-/g, '').slice(0, 8)}`,
       workspaceId: this.id,
@@ -569,9 +603,9 @@ export class RemoteShellWorkspace implements Workspace {
       ...(options.label !== undefined && { label: options.label }),
       ...(options.metadata !== undefined && { metadata: options.metadata }),
       exclude,
+      ...(skipped.length > 0 && { skipped }),
+      maxFileBytes,
     };
-    const excluded = excludedBy(exclude);
-    const kept = (await this.tree(exclude)).filter((entry) => !excluded(entry.name));
     const bytes = kept.reduce(
       (sum, entry) => sum + (entry.type === 'directory' ? 0 : entry.size),
       0
@@ -585,13 +619,11 @@ export class RemoteShellWorkspace implements Workspace {
     const lists: string[] = [];
     try {
       lists.push(await this.upload('list', nulList(kept.map((entry) => entry.key)), 'snapshot'));
+      const directories = kept.filter((entry) => entry.type === 'directory');
       lists.push(
-        await this.upload(
-          'list',
-          nulList(kept.filter((entry) => entry.type === 'directory').map((entry) => entry.key)),
-          'snapshot'
-        )
+        await this.upload('list', nulList(directories.map((entry) => entry.key)), 'snapshot')
       );
+      lists.push(await this.upload('list', modeList(directories), 'snapshot'));
       const { code } = await this.script(
         scripts.SNAPSHOT_CREATE,
         [record.id, JSON.stringify(record), ...lists],
@@ -607,18 +639,52 @@ export class RemoteShellWorkspace implements Workspace {
   }
 
   /**
-   * Brings the files back to a snapshot: entries made since are removed, changed ones rewritten
-   * from the archive, the paths the snapshot excluded left alone.
+   * Brings the files back to a snapshot: entries made since are removed, every file the archive
+   * holds is rewritten from it (so `restored` lists them all, changed or not), the paths the
+   * snapshot excluded or skipped left alone with everything under them. With `dryRun` nothing
+   * changes.
    */
-  async restore(snapshotId: string): Promise<void> {
+  async restore(
+    snapshotId: string,
+    options: WorkspaceRestoreOptions = {}
+  ): Promise<WorkspaceRestoreResult> {
     const record = await this.snapshotRecord(snapshotId);
     const saved = await this.savedPaths(record.id, 'list');
     const savedDirectories = await this.savedPaths(record.id, 'dirs');
+    const savedModes = await this.savedModes(record.id);
     const excluded = excludedBy(record.exclude);
+    const skipped = new Set((record.skipped ?? []).map((skip) => skip.path));
     const files: string[] = [];
     const dirs: string[] = [];
+    const kept: string[] = [];
+    const present = new Map<string, WorkspaceEntryType>();
+    const presentModes = new Map<string, number>();
+    const left: string[] = [];
+    const keptRoots = new Set<string>();
+    const underKept = (name: string): boolean => {
+      for (let at = name.lastIndexOf('/'); at > 0; at = name.lastIndexOf('/', at - 1)) {
+        if (keptRoots.has(name.slice(0, at))) return true;
+      }
+      return false;
+    };
     for (const entry of await this.tree(record.exclude)) {
-      if (excluded(entry.name)) continue;
+      if (entry.pruned || excluded(entry.name)) {
+        left.push(entry.name);
+        continue;
+      }
+      if (underKept(entry.name)) continue;
+      present.set(entry.key, entry.type);
+      if (entry.type === 'directory') presentModes.set(entry.key, entry.mode);
+      const tooLarge =
+        record.maxFileBytes !== undefined &&
+        entry.type === 'file' &&
+        entry.size > record.maxFileBytes &&
+        !saved.has(entry.key);
+      if (skipped.has(entry.name) || tooLarge) {
+        kept.push(entry.name);
+        keptRoots.add(entry.name);
+        continue;
+      }
       if (entry.type === 'directory') {
         if (!savedDirectories.has(entry.key)) dirs.push(entry.key);
       } else if (!saved.has(entry.key) || savedDirectories.has(entry.key)) {
@@ -626,17 +692,49 @@ export class RemoteShellWorkspace implements Workspace {
       }
     }
     dirs.sort((a, b) => depth(b) - depth(a));
+    const keptDirs = new Set<string>();
+    for (const path of [...kept, ...left]) {
+      for (let at = path.lastIndexOf('/'); at > 0; at = path.lastIndexOf('/', at - 1)) {
+        keptDirs.add(path.slice(0, at));
+      }
+    }
+    const removable = dirs.filter((key) => !keptDirs.has(utf8(key)));
+    const restored: string[] = [];
+    let unchanged = 0;
+    for (const key of saved) {
+      const directory = savedDirectories.has(key);
+      const mode = savedModes?.get(key);
+      if (
+        directory &&
+        present.get(key) === 'directory' &&
+        (mode === undefined || presentModes.get(key) === mode)
+      ) {
+        unchanged++;
+        continue;
+      }
+      restored.push(utf8(key));
+    }
+    const result: WorkspaceRestoreResult = {
+      snapshotId: record.id,
+      dryRun: options.dryRun ?? false,
+      restored: restored.sort(),
+      deleted: [...files, ...removable].map(utf8).sort(),
+      unchanged,
+      kept: [...kept, ...dirs.map(utf8).filter((path) => keptDirs.has(path))].sort(),
+    };
+    if (options.dryRun) return result;
     const lists: string[] = [];
     let code: number;
     try {
       lists.push(await this.upload('list', nulList(files), 'restore'));
-      lists.push(await this.upload('list', nulList(dirs), 'restore'));
+      lists.push(await this.upload('list', nulList(removable), 'restore'));
       ({ code } = await this.script(scripts.SNAPSHOT_RESTORE, [record.id, ...lists], 'restore'));
     } finally {
       await this.discard(lists, 'restore');
     }
     if (code === SCRIPT_EXIT.notFound) throw snapshotMissing(snapshotId);
     this.check(code, 'restore');
+    return result;
   }
 
   /** The snapshots kept in the sandbox, oldest first. */
@@ -679,7 +777,34 @@ export class RemoteShellWorkspace implements Workspace {
    * The paths (`list`) or the directories (`dirs`) a snapshot holds, each as its bytes in a
    * `latin1` string, so names that are not UTF-8 compare as they are.
    */
+  /**
+   * The modes of the directories snapshot `id` holds, by key, undefined for a snapshot taken
+   * before they were kept
+   */
+  private async savedModes(id: string): Promise<Map<string, number> | undefined> {
+    const lines = await this.savedList(id, 'modes').catch((error: unknown) => {
+      if (WorkspaceError.is(error, 'NOT_FOUND')) return undefined;
+      throw error;
+    });
+    if (!lines) return undefined;
+    const modes = new Map<string, number>();
+    for (const line of lines) {
+      const at = line.indexOf(' ./');
+      if (at > 0) modes.set(line.slice(at + 3), Number.parseInt(line.slice(0, at), 8));
+    }
+    return modes;
+  }
+
   private async savedPaths(id: string, kind: 'list' | 'dirs'): Promise<Set<string>> {
+    const paths = new Set<string>();
+    for (const name of await this.savedList(id, kind)) {
+      if (name.startsWith('./')) paths.add(name.slice(2));
+    }
+    return paths;
+  }
+
+  /** The NUL-separated list `kind` of snapshot `id`, its names as `latin1` strings */
+  private async savedList(id: string, kind: 'list' | 'dirs' | 'modes'): Promise<string[]> {
     const { code, stdout } = await this.script(
       scripts.SNAPSHOT_SAVED,
       [id, kind, integer(LISTING_CAP)],
@@ -694,11 +819,7 @@ export class RemoteShellWorkspace implements Workspace {
         `The paths of snapshot ${id} are over ${LISTING_CAP} bytes`
       );
     }
-    const paths = new Set<string>();
-    for (const name of Buffer.from(hex, 'hex').toString('latin1').split('\0')) {
-      if (name.startsWith('./')) paths.add(name.slice(2));
-    }
-    return paths;
+    return Buffer.from(hex, 'hex').toString('latin1').split('\0');
   }
 
   /**
@@ -721,13 +842,15 @@ export class RemoteShellWorkspace implements Workspace {
     }
     const fields = Buffer.from(hex, 'hex').toString('latin1').split('\0');
     const entries: TreeEntry[] = [];
-    for (let i = 0; i + 2 < fields.length; i += 3) {
-      const key = fields[i + 2];
+    for (let i = 0; i + 3 < fields.length; i += 4) {
+      const key = fields[i + 3];
       entries.push({
         type: entryType(fields[i]),
         size: Number(fields[i + 1]),
+        mode: Number.parseInt(fields[i + 2], 8),
         key,
         name: Buffer.from(key, 'latin1').toString('utf8'),
+        pruned: fields[i] === 'X',
       });
     }
     return entries;
@@ -1252,6 +1375,11 @@ function excludedBy(exclude: readonly string[]): (path: string) => boolean {
   };
 }
 
+/** A path kept as its bytes in a `latin1` string, read as UTF-8 */
+function utf8(key: string): string {
+  return Buffer.from(key, 'latin1').toString('utf8');
+}
+
 /** A fresh random token for a file name nobody can guess. */
 function token(): string {
   return randomUUID().replace(/-/g, '');
@@ -1266,6 +1394,14 @@ function depth(path: string): number {
 /** Paths given as `latin1` strings of their bytes, as a NUL-separated list of `./path`. */
 function nulList(keys: readonly string[]): Buffer {
   return Buffer.from(keys.map((key) => `./${key}\0`).join(''), 'latin1');
+}
+
+/** The modes of `directories` as a snapshot keeps them: `<octal mode> ./<path>`, NUL-terminated */
+function modeList(directories: readonly TreeEntry[]): Buffer {
+  return Buffer.from(
+    directories.map((entry) => `${entry.mode.toString(8)} ./${entry.key}\0`).join(''),
+    'latin1'
+  );
 }
 
 /** A byte limit as the integer a shell compares, never in exponent notation. */

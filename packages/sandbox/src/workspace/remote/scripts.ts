@@ -371,29 +371,31 @@ exit 0`;
 
 /**
  * `$1` the most bytes to print, then the \`find\` tests (`-o -path ./dir`, `-o -name dir`) of the
- * directories to leave out with everything in them: prints type, size and path (relative to the
- * root) of everything else in the root, NUL-separated and hex-encoded, so names that are not
- * UTF-8 arrive as they are. `.cogitator` is always left out. The output stops one byte past `$1`.
+ * directories to leave out with everything in them: prints type, size, mode (octal) and path
+ * (relative to the root) of everything else in the root, NUL-separated and hex-encoded, so names that are not
+ * UTF-8 arrive as they are, and each directory left out (`.cogitator` always) with the type `X`,
+ * without what it holds. The output stops one byte past `$1`.
  */
 export const SNAPSHOT_TREE = script(`cd -- "$root" || exit 1
 cap=$(($1 + 1)); shift
-find . -mindepth 1 \\( -path ./.cogitator "$@" \\) -prune -o -printf '%y\\0%s\\0%P\\0' 2>/dev/null | head -c "$cap" | od -An -v -tx1 | tr -d ' \\n'
+find . -mindepth 1 \\( -path ./.cogitator "$@" \\) -prune -printf 'X\\0%s\\0%m\\0%P\\0' -o -printf '%y\\0%s\\0%m\\0%P\\0' 2>/dev/null | head -c "$cap" | od -An -v -tx1 | tr -d ' \\n'
 exit 0`);
 
 /**
- * `$1` snapshot id, `$2` its record (JSON), `$3` and `$4` the names of the uploaded lists of
- * paths and of directories: keeps the lists, archives the paths listed, then writes the record,
+ * `$1` snapshot id, `$2` its record (JSON), `$3`, `$4` and `$5` the names of the uploaded lists
+ * of paths, of directories and of the modes of the directories: keeps the lists, archives the paths listed, then writes the record,
  * which marks the snapshot complete. Files that vanish meanwhile are skipped, and a snapshot that
  * fails leaves nothing behind.
  */
 export const SNAPSHOT_CREATE = script(`id=$1
 temp "$3"; l=$f
 temp "$4"; dl=$f
-trap 'rm -f -- "$l" "$dl"' EXIT
+temp "$5"; ml=$f
+trap 'rm -f -- "$l" "$dl" "$ml"' EXIT
 servicedir snapshots 1
 cd -- "$root/.cogitator/snapshots" || exit 1
-trap 'rm -f -- "$l" "$dl" "$id.tar.part" "$id.json.part"; [ -f "$id.json" ] || rm -f -- "$id.list" "$id.dirs" "$id.tar"' EXIT
-cat -- "$l" > "$id.list" && cat -- "$dl" > "$id.dirs" || exit 1
+trap 'rm -f -- "$l" "$dl" "$ml" "$id.tar.part" "$id.json.part"; [ -f "$id.json" ] || rm -f -- "$id.list" "$id.dirs" "$id.modes" "$id.tar"' EXIT
+cat -- "$l" > "$id.list" && cat -- "$dl" > "$id.dirs" && cat -- "$ml" > "$id.modes" || exit 1
 tar -C "$root" --null --no-recursion --ignore-failed-read -T "$id.list" -cf "$id.tar.part" 2>/dev/null
 c=$?
 { [ "$c" -le 1 ] && [ -s "$id.tar.part" ]; } || exit 1
@@ -403,12 +405,12 @@ printf '%s' "$2" > "$id.json.part" && mv -f -- "$id.json.part" "$id.json" || exi
 /** `$1` snapshot id: removes what an unfinished snapshot left. */
 export const SNAPSHOT_DISCARD = script(`servicedir snapshots 0 || exit 0
 cd -- "$root/.cogitator/snapshots" || exit 0
-[ -f "$1.json" ] || rm -f -- "$1.list" "$1.dirs" "$1.tar" "$1.tar.part"
+[ -f "$1.json" ] || rm -f -- "$1.list" "$1.dirs" "$1.modes" "$1.tar" "$1.tar.part"
 exit 0`);
 
 /**
- * `$1` snapshot id, `$2` `list` or `dirs`, `$3` the most bytes to print: prints that list of
- * the snapshot hex-encoded.
+ * `$1` snapshot id, `$2` `list`, `dirs` or `modes`, `$3` the most bytes to print: prints that
+ * list of the snapshot hex-encoded (a snapshot taken before modes were kept has no `modes`).
  */
 export const SNAPSHOT_SAVED = script(`servicedir snapshots 0 || exit ${E.notFound}
 f="$root/.cogitator/snapshots/$1.$2"
@@ -442,4 +444,4 @@ tar -xpf ".cogitator/snapshots/$1.tar" || exit 1`);
 export const SNAPSHOT_DELETE = script(`servicedir snapshots 0 || exit ${E.notFound}
 cd -- "$root/.cogitator/snapshots" || exit ${E.notFound}
 [ -f "$1.json" ] || exit ${E.notFound}
-rm -f -- "$1.json" "$1.tar" "$1.list" "$1.dirs"`);
+rm -f -- "$1.json" "$1.tar" "$1.list" "$1.dirs" "$1.modes"`);

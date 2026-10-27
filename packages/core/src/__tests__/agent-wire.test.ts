@@ -106,6 +106,8 @@ function project(key: keyof AgentConfig, config: AgentConfig): unknown {
       return AGENT_CONFIG_WIRE_FIELDS.subagents;
     case 'durable':
       return AGENT_CONFIG_WIRE_FIELDS.durable;
+    case 'checkpoints':
+      return AGENT_CONFIG_WIRE_FIELDS.checkpoints;
     case 'responseFormat': {
       const format = config.responseFormat;
       return format?.type === 'json_schema'
@@ -186,6 +188,7 @@ describe('agent wire format', () => {
       budget: { maxCostUsd: 1000 },
       subagents: ['reviewer'],
       durable: true,
+      checkpoints: { exclude: ['dist/**'] },
     };
     const original = new Agent(full);
 
@@ -203,6 +206,7 @@ describe('agent wire format', () => {
     expect(received.config.budget).toBeUndefined();
     expect(received.config.subagents).toBeUndefined();
     expect(received.config.durable).toBeUndefined();
+    expect(received.config.checkpoints).toBeUndefined();
   });
 
   it('carries the agents a handoff reaches, cycles included', () => {

@@ -4,6 +4,7 @@
 
 import { nanoid } from 'nanoid';
 import type {
+  ForkThreadEntryOptions,
   MemoryAdapter,
   MemoryProvider,
   MemoryResult,
@@ -23,6 +24,9 @@ import type {
 import { CONVERSATION_ENTRY_TYPES } from '@cogitator-ai/types';
 
 const MAX_TRACKED_THREADS = 10_000;
+
+/** What a caller-given entry id may be made of, see `NewMemoryEntry.id` */
+const ENTRY_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 export abstract class BaseMemoryAdapter implements MemoryAdapter {
   abstract readonly provider: MemoryProvider;
@@ -62,6 +66,19 @@ export abstract class BaseMemoryAdapter implements MemoryAdapter {
 
   protected generateId(prefix: string): string {
     return `${prefix}_${nanoid(12)}`;
+  }
+
+  /**
+   * The id a new entry gets: the one it names (`NewMemoryEntry.id`), else a new one. A failure
+   * for a malformed id, so no adapter stores a key it cannot read back
+   */
+  protected entryIdOf(entry: NewMemoryEntry): MemoryResult<string> {
+    if (entry.id === undefined) return this.success(this.generateId('entry'));
+    return ENTRY_ID.test(entry.id)
+      ? this.success(entry.id)
+      : this.failure(
+          `Invalid entry id ${JSON.stringify(entry.id)}: letters, digits, _ and - only, at most 128`
+        );
   }
 
   /**
@@ -376,11 +393,19 @@ export abstract class BranchingMemoryAdapter extends ChangeReportingMemoryAdapte
   async forkThread(
     threadId: string,
     atEntryId: string,
-    newThreadId?: string
+    newThreadId?: string,
+    options: ForkThreadEntryOptions = {}
   ): Promise<MemoryResult<Thread>> {
     const source = await this.getThread(threadId);
     if (!source.success) return source;
     if (!source.data) return this.failure(`Thread not found: ${threadId}`);
+    if (newThreadId !== undefined) {
+      const taken = await this.getThread(newThreadId);
+      if (!taken.success) return taken;
+      if (taken.data) {
+        return this.failure(`Thread ${newThreadId} exists already: fork into a new id`);
+      }
+    }
     const path = await this.getPath({
       threadId,
       leafId: atEntryId,
@@ -397,8 +422,19 @@ export abstract class BranchingMemoryAdapter extends ChangeReportingMemoryAdapte
     if (!fork.success) return fork;
     const known = source.data.metadata[FORKS_KEY];
     const forks = Array.isArray(known) ? known.filter((id) => typeof id === 'string') : [];
+    const takeBack = async <T>(failed: MemoryResult<T>): Promise<MemoryResult<T>> => {
+      await this.deleteThread(fork.data.id);
+      const now = await this.getThread(threadId);
+      const listed: unknown = now.success ? now.data?.metadata[FORKS_KEY] : undefined;
+      if (Array.isArray(listed) && listed.includes(fork.data.id)) {
+        await this.updateThread(threadId, {
+          [FORKS_KEY]: listed.filter((id) => id !== fork.data.id),
+        });
+      }
+      return failed;
+    };
     const noted = await this.updateThread(threadId, { [FORKS_KEY]: [...forks, fork.data.id] });
-    if (!noted.success) return noted;
+    if (!noted.success) return takeBack(noted);
     let parentId: string | null = null;
     const copies = new Map<string, string>();
     for (const entry of path.data) {
@@ -407,15 +443,19 @@ export abstract class BranchingMemoryAdapter extends ChangeReportingMemoryAdapte
         ...copy,
         threadId: fork.data.id,
         parentId,
-        metadata: { ...entry.metadata, forkOf: id },
+        metadata: {
+          ...entry.metadata,
+          ...(id === atEntryId && options.pointMetadata),
+          forkOf: id,
+        },
         ...(entry.event && { event: withCopiedIds(entry.event, copies) }),
       });
-      if (!added.success) return added;
+      if (!added.success) return takeBack(added);
       copies.set(id, added.data.id);
       parentId = added.data.id;
     }
     const forked = await this.getThread(fork.data.id);
-    if (!forked.success) return forked;
+    if (!forked.success) return takeBack(forked);
     return forked.data
       ? this.success(forked.data)
       : this.failure(`Thread not found: ${fork.data.id}`);

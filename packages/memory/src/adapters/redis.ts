@@ -200,6 +200,7 @@ end
  */
 const ADD_ENTRY = `${SWEEP_INDEX}${TREE}
 if redis.call('EXISTS', KEYS[1]) == 0 then return {0} end
+if redis.call('EXISTS', KEYS[3]) == 1 then return {-2} end
 chain(KEYS[2], KEYS[6], KEYS[7], ARGV[4], ARGV[3])
 local parent = nil
 if ARGV[5] == 'leaf' then
@@ -1122,10 +1123,12 @@ export class RedisAdapter
 
   private async storeEntry(entry: NewMemoryEntry): Promise<MemoryResult<MemoryEntry>> {
     return this.run(async (client) => {
-      const id = this.generateId('entry');
+      const named = this.entryIdOf(entry);
+      if (!named.success) return named;
+      const id = named.data;
       const createdAt = this.entryTimestamp(entry);
       const seq = await client.incr(`${this.prefix}entries:seq`);
-      const { activate, parentId: askedParent, ...fields } = entry;
+      const { activate, parentId: askedParent, id: _asked, ...fields } = entry;
       const type = fields.type ?? (fields.message?.role === 'tool' ? 'tool_result' : 'message');
       const stored = {
         ...fields,
@@ -1161,6 +1164,7 @@ export class RedisAdapter
       if (Number(status) === -1) {
         return this.failure(`Parent entry ${askedParent} is not in thread ${entry.threadId}`);
       }
+      if (Number(status) === -2) return this.failure(`Entry ${id} already exists`);
       this.reportExpired(expired.map(String));
       if (Number(status) !== 1) return this.failure(`Thread not found: ${entry.threadId}`);
 

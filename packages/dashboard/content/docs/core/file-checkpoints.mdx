@@ -1,0 +1,185 @@
+---
+title: File Checkpoints and Rewind
+description: Take a snapshot of the workspace before every user message, then rewind a thread's conversation, memory and files to an earlier message in one operation, or fork it with its files.
+---
+
+## Overview
+
+An agent that edits a project changes files with its tools and with shell commands. When a turn goes wrong, going back in the conversation is not enough: the files stay as the agent left them. File checkpoints close that gap. Before every user message a run writes to its thread, it takes a snapshot of its workspace and names it in the message's entry. `cog.rewind()` then takes the conversation, the memory that stood on it and the files back to the same point together, and `cog.forkThread()` starts a new thread from a point with the files as they were there.
+
+- [Turning it on](#turning-it-on): `checkpoints` for the runtime, an agent or one run
+- [What a checkpoint holds](#what-a-checkpoint-holds): a content-addressed store in `.cogitator/checkpoints`
+- [Rewinding](#rewinding): conversation, memory and files, a dry run first
+- [Forking with files](#forking-with-files): a new thread, and its own workspace if you want
+- [Workspaces](#workspaces): local, Docker and remote
+- [Keeping the store small](#keeping-the-store-small): retention and garbage collection
+- [Studio and CLI](#studio-and-cli)
+
+Without `checkpoints` nothing changes: runs take no snapshots, as before.
+
+## Turning It On
+
+```typescript
+import { Agent, Cogitator, LocalWorkspace, workspaceTools } from '@cogitator-ai/core';
+
+const workspace = new LocalWorkspace({ root: './project' });
+const cog = new Cogitator({
+  memory: { adapter: 'sqlite', sqlite: { path: './memory.db' } },
+  checkpoints: { exclude: ['dist/**'] },
+});
+const coder = new Agent({
+  name: 'coder',
+  model: 'ollama/qwen3:8b',
+  instructions: 'You edit the project.',
+  tools: workspaceTools(),
+  workspace,
+});
+```
+
+A run takes checkpoints when its `checkpoints` (or its agent's, or the runtime's) say so, it has a workspace that can snapshot (`RunOptions.workspace`, else the agent's) and it saves to memory. `true` turns them on with the defaults, an object sets them up:
+
+| Option         | Default | What it does                                                                                                                      |
+| -------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`      | `true`  | Whether checkpoints are on once `checkpoints` is an object                                                                        |
+| `exclude`      | none    | Globs the snapshots leave out on top of the workspace's defaults. The excludes of the runtime, the agent and the run add up       |
+| `maxFileBytes` | 10 MiB  | Files larger than this are skipped: listed in the snapshot's `skipped`, logged, and left alone by a restore                       |
+| `rewindFiles`  | `false` | Runtime only: whether `rewind()` restores files when its call does not say. Restoring rewrites and removes files, so it is opt-in |
+
+The most specific level that sets `checkpoints` turns them on or off: `checkpoints: false` on an agent wins over the runtime's `true`, and a run's own wins over both. A run started from a tool call of another run (a subagent, `agentAsTool`) takes none, its caller's checkpoint covers the turn.
+
+A checkpoint is taken before every user message the run writes: the input, and every message queued with `steer`, `followUp` or `inject`. Its entry keeps `metadata.fileCheckpoint` (`FILE_CHECKPOINT_KEY`) with the snapshot id, the workspace id and its root, and the snapshot is labelled with the entry's id. As the snapshot is taken before every message, changes made by shell commands between messages are caught as well as edits made with `write_file`. A snapshot that fails is logged and the message is saved without one, the run goes on. `fileCheckpointOf(entry.metadata)` reads it back.
+
+## What a Checkpoint Holds
+
+`LocalWorkspace.snapshot()` keeps its snapshots in `.cogitator/checkpoints` inside the root, content-addressed:
+
+- **Blobs by sha256.** Every file content and every directory listing (a tree, as git keeps them) is stored once, under its hash. A file or a directory that did not change since the snapshot before costs nothing in a new one.
+- **One manifest per snapshot** names its root tree, its label and metadata, its excludes, the files it skipped and what taking it cost (`stats`).
+- **Unchanged files are not read again.** A file whose size, modification and change times, inode and mode are what the snapshot before recorded keeps its hash without being read, so a snapshot per message costs a walk of the tree plus the files that changed. A file changed within two seconds of a snapshot is read again by the next one, as its times may not have moved within the clock's granularity.
+- **Excludes.** `.cogitator`, `node_modules` and `.git` at any depth are always left out, `exclude` adds to them. A glob leaves out what it matches and everything under it.
+- **Symlinks** are recorded as links and never followed, a directory with its mode, a file with its mode. Sockets and devices are left out.
+- **Files that change while they are read** are read again, up to five times, so a snapshot holds a whole version of each file. One that never holds still is skipped as `changing`.
+- **Directories that cannot be read** are recorded as skipped (`unreadable`), and a restore leaves everything under them alone.
+- **Any name a directory holds is kept**, a backslash included (on Windows, where it separates components, such an entry is skipped as `unsupported-name`).
+- **The workspace's read rules hold.** With `refuseHardLinks`, a file with more than one hard link (possibly a file outside the root) is neither read nor stored: it is skipped as `hard-link`, kept on restore, and a restore rewrites one at a path it restores without reading it.
+- **Files are hashed as they are read**, a chunk at a time into a temporary file of the store, never held whole.
+- **Owner only.** The store's directories are `0700` and its files `0600`, so a copy of a `.env` is no more readable than the file. Blobs and manifests are synced to disk before a manifest names them, and a blob is reused only at the size it was stored with.
+
+`snapshot.stats` reports `files`, `bytes`, `hashed` (files read), `reused` (files taken from the snapshot before without reading them), `storedBytes` and `durationMs`.
+
+`restore(snapshotId, { dryRun })` plans every change before it makes one, so a dry run reports exactly what the restore then does. It writes through the workspace's own safe placement: each changed file is written to a temporary file with `O_NOFOLLOW` and renamed over the path with its mode, symlinks are made again, missing directories created (a directory of yours made read-only since is opened while the restore runs, then given the mode the snapshot holds or its own back, one of another user refuses the restore with `DENIED` before anything changes, in the dry run too), and what the snapshot did not have is removed (a directory once empty, and a directory a file replaces with everything in it, which `deleted` lists). Left alone, with everything under them (`kept`):
+
+- paths the snapshot excluded (the default excludes always, whatever a manifest says) or skipped,
+- files made since that the snapshot could not have kept: larger than its `maxFileBytes`, or unreadable,
+- special files, directories that cannot be read, and directories made since that hold any of the above.
+
+A restore that would write into a directory that cannot be read is refused with `DENIED`, and a content that does not match its hash fails it with `IO`, both before anything changes. The result says what changed:
+
+```typescript
+const result = await workspace.restore(snapshot.id, { dryRun: true });
+// { snapshotId, dryRun: true, restored: ['src/app.ts'], deleted: ['dist/out.js'], unchanged: 42, kept: [], busy: false }
+```
+
+A restore is refused with `BUSY` while a command the workspace started still runs (or a process it left in the background), as it could race the changes, and a dry run says so in `busy`. While a restore changes the files, a command asked for is refused with `BUSY` in turn.
+
+## Rewinding
+
+```typescript
+const plan = await cog.rewind('chat', entry.id, { files: true, agents: [coder], dryRun: true });
+console.log(plan.conversation.cut.length, plan.files?.restored, plan.files?.deleted);
+
+const report = await cog.rewind('chat', entry.id, { files: true, agents: [coder] });
+```
+
+`rewind(threadId, toEntryId, options?)` takes `toEntryId`, an entry of the thread's active branch, and in one operation:
+
+1. **Files**, only with `files: true` (or `checkpoints.rewindFiles`): the workspace is restored from the checkpoint at that point. When `toEntryId` is the last entry before a user message (the end of a turn, only notes and session events between), that message's checkpoint holds the files exactly as they were there (`files.exact: true`). Otherwise it is the checkpoint of the nearest user message at or before the point, the files as they were before that turn (`exact: false`). The message after the point is looked for on every branch of the thread, not only the active one (the one written last when there are several), so a rewind repeated to the same point restores the same checkpoint, although the first one took the messages after it off the active branch, and a fork from the point takes it too.
+2. **Conversation**: new entries go after `toEntryId`, the entries after it stay on a branch of their own (`conversation.cut`), as [memory rewinds](/docs/memory#forgetting-redacting-and-rewinding) do.
+3. **Memory**: the memory items that stood only on the cut entries become `stale` (`staleBecause: { reason: 'rewound' }`), and the summaries and memory files of the branch left behind are not seen from the new one.
+4. **Runs**: the paused run of the thread and its durable runs are dropped (`runs.paused`, `runs.durable`), as their checkpoints hold the conversation that was cut.
+
+Files go first, so a restore that fails leaves the conversation as it was and the rewind can be made again. Before a real restore that changes anything, the workspace takes a snapshot of the files as they are (`files.safetySnapshotId`): `workspace.restore(report.files.safetySnapshotId)` undoes the file part of a rewind that went too far. It covers every path the restore changes or deletes: it leaves out only what the checkpoint left out, keeps files as large as the largest one the restore rewrites or deletes, and a retention of the workspace (`snapshots.retain`) keeps the checkpoint being restored (`WorkspaceSnapshotOptions.protect`). A rewind that would change a file the safety snapshot could not keep (one it skipped, or one the workspace's own `snapshots.exclude` leaves out) is refused with `DENIED`, naming the files, before anything changes: it could not be undone. A restore that fails keeps the safety snapshot, whatever the error, unless the files are still those it holds, as when the restore was refused before it changed anything.
+
+The checkpoint must be one the workspace keeps, taken in this thread (or a thread it was forked from) for this entry (or the entry it was copied from). A checkpoint reference forged into an entry's metadata, or a workspace the thread did not run in, is refused with `VALIDATION_ERROR`. A run takes its checkpoints in the workspace of the agent it is on, also after a handoff.
+
+| Option      | Default                          | What it does                                                                                                                                          |
+| ----------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `files`     | `checkpoints.rewindFiles`        | Restore the files from the checkpoint at that point                                                                                                   |
+| `memory`    | `true`                           | Rewind the conversation and memory. `memory: false` with `files: true` restores the files only                                                        |
+| `workspace` | the workspace of one of `agents` | The workspace to restore                                                                                                                              |
+| `agents`    | the agents the thread names      | Agents (or memory ids) whose memory to go through, and whose workspace to restore                                                                     |
+| `dryRun`    | `false`                          | Change nothing, report what would change                                                                                                              |
+| `force`     | `false`                          | Stop what is in the way first: the runs of the thread here, with files the runs of other threads in the workspace, and the durable runs of the thread |
+
+The `RewindReport` extends the `MemoryCascadeReport` with `threadId`, `toEntryId`, `dryRun`, `conversation` (`rewound`, `cut`, `previousLeafId`), `files` (the restore result with the `entryId` whose checkpoint was restored, `exact`, `workspaceId` and `safetySnapshotId`) and `runs` (`going`, `interrupted`, `paused`, `durable`).
+
+Rewinding files is destructive, so it is guarded:
+
+- Files are restored only when asked (`files: true` or `rewindFiles`). Look at a `dryRun` first, the Studio and the CLI always do.
+- The thread is held for the whole rewind, and with files the workspace too: a run asked for meanwhile waits for it (a run with `multitaskStrategy: 'reject'` fails with `THREAD_BUSY`), then goes on after the rewound point.
+- While a run goes on in the thread, here or as a durable run another process holds, the rewind is refused with `THREAD_BUSY`. With files, a run of this runtime of another thread in the same workspace, or a command the workspace still runs, refuses it with `WORKSPACE_BUSY`. `force` stops the runs here (they end with `RUN_INTERRUPTED`, also one that waits for an approval or an approval hook) after a dry run of the restore checked it can be made, and drops the durable runs of the thread, which stop at their next step. A durable run another process holds is never forced while files are restored, as its tools may still write: the rewind waits for its lease to run out. Workspaces overlap when one root holds the other (`/project` and `/project/sub`): a run in either counts for a restore of both. A tool call may also go on after its run stopped, regardless of its abort signal: the runtime counts the tool calls in each workspace until they end, refuses a file restore while some still run (`WORKSPACE_BUSY`), and with `force` waits `toolSettleMs` (10 seconds by default) for those of the runs it stopped, refusing past it.
+- A tool of a run asking to rewind its own run's thread (or workspace) gets `VALIDATION_ERROR`: the rewind would have to stop the very run that waits for it.
+- No checkpoint at or before the point, no workspace, or a workspace that cannot restore fail with `VALIDATION_ERROR` before anything changes. So does an entry that is not on the active branch.
+- A restore never writes outside the workspace root: every path is resolved inside it and no symlink is followed.
+
+## Forking With Files
+
+```typescript
+const fork = new LocalWorkspace({ root: './project-fork' });
+const { thread, files, snapshotsCopied } = await cog.forkThread('chat', entry.id, {
+  files: true,
+  workspace: fork,
+  source: workspace,
+});
+await cog.run(coder, { input: 'Try another approach', threadId: thread.id, workspace: fork });
+```
+
+`forkThread(threadId, atEntryId, options?)` copies the branch up to `atEntryId` into a new thread (`MemoryAdapter.forkThread`). The copied entries keep their metadata, the checkpoint references included. When the files at the point come from the user message right after it, which the fork does not copy, the fork's copy of the point names that checkpoint in `metadata.fileCheckpointAt` (`FILE_CHECKPOINT_AT_KEY`, `fileCheckpointAtOf()`), so a rewind of the fork to its point, or a fork of the fork from there, restores the same files exactly. With `files: true` the fork's `workspace` (or the workspace of one of `agents`) gets the files as they were at that point. When it is another workspace than `source` (where the checkpoints are kept, `workspace` by default), every checkpoint of the branch is copied into it first (`copySnapshot`, `snapshotsCopied`), so later rewinds of the fork restore there too. The files are restored once the fork is made, after a safety snapshot of the fork's workspace (`files.safetySnapshotId`). A `newThreadId` that names a thread already is refused with `VALIDATION_ERROR` before anything changes. Every check runs before the fork is made, the safety snapshot's included, so a refused fork leaves no thread behind, and a fork whose files then fail to restore takes back the thread, its link in the source thread and the checkpoints copied for it. With `files` the thread and the workspace are held as by a rewind, the same runs are in the way (`THREAD_BUSY`, `WORKSPACE_BUSY`) unless `force`, and the checkpoint is checked the same way.
+
+`dryRun: true` previews a fork with files without making the thread: it returns a `ForkThreadPlan` (`dryRun`, `snapshotsCopied` it would copy, `files`, `going`). Into another workspace than `source`, the checkpoint to restore is copied into that workspace's store for the plan and removed again, so the dry run leaves nothing there.
+
+## Workspaces
+
+- **`LocalWorkspace`** keeps the content-addressed store described above, `copySnapshot(id, target)` copies a snapshot with its contents into another `LocalWorkspace` (or a workspace over one).
+- **`DockerWorkspace`** snapshots through its host workspace, so a `DockerWorkspace` over a `LocalWorkspace` has the same store, `listSnapshots`, `deleteSnapshot` and `copySnapshot`. Its restore removes what goes inside the container, where no symlink reaches the host, as its `remove` does, then the host writes what changed, and reports both as its dry run does. It is refused with `BUSY` before anything goes while a command runs in the container or on the host workspace, or left processes there, a process still stopping after SIGTERM included. The host is held for the whole restore (`Workspace.holdForRestore`), so a command asked for there meanwhile is refused with `BUSY` instead of racing the removals.
+- **Remote workspaces** (`E2BWorkspace`, `DaytonaWorkspace`, `VercelSandboxWorkspace`) keep tar archives in `.cogitator/snapshots` inside the sandbox with the same API: the same default excludes, `maxFileBytes` and `skipped`, `restore(id, { dryRun })` with the same result, keeping directories that hold excluded entries and files over the snapshot's size limit. A tar restore rewrites every file it holds, so `restored` lists them all. Their snapshots live and die with the sandbox. See [Remote Workspaces](/docs/tools/remote-workspaces).
+
+A workspace of your own takes checkpoints once it implements `snapshot` and `restore` of the [`Workspace`](/docs/tools/workspace) interface.
+
+## Keeping the Store Small
+
+Contents are shared between snapshots, so a snapshot per message costs only what changed. To bound the store, give the workspace a retention policy, or prune when you like:
+
+```typescript
+const workspace = new LocalWorkspace({
+  root: './project',
+  snapshots: { retain: { count: 200, maxAgeMs: 14 * 24 * 3600_000 }, exclude: ['*.log'] },
+});
+const { deleted, gc } = await workspace.pruneSnapshots({ count: 50 });
+```
+
+| `snapshots` option | Default  | What it does                                                                                                     |
+| ------------------ | -------- | ---------------------------------------------------------------------------------------------------------------- |
+| `exclude`          | none     | Globs every snapshot of the workspace leaves out                                                                 |
+| `maxFileBytes`     | 10 MiB   | Files larger than this are skipped unless a call says otherwise                                                  |
+| `retain`           | keep all | After each snapshot, keep at most `count` (the newest) and none older than `maxAgeMs`                            |
+| `gcGraceMs`        | one hour | How long a content no snapshot uses is kept before a collection deletes it, for a snapshot another process takes |
+
+`deleteSnapshot(id)` and `pruneSnapshots(retention)` run a mark and sweep collection: every blob a manifest reaches is kept, every other one older than `gcGraceMs` is deleted. A manifest whose trees cannot be read is logged and keeps what it still reaches (`gc.unreadable`), and a retention prune that fails is logged without failing the snapshot it followed. A rewind to a point whose checkpoint was pruned fails with `VALIDATION_ERROR`.
+
+Several processes may share a store. A snapshot, a restore or a copy leaves a marker in `.cogitator/checkpoints/locks` while it works, and a collection takes `locks/gc.lock` and leaves its sweep for later while a marker is there (`gc.deferred`), so it never deletes a blob another process has just reused. A collection only sweeps the names the store gives, in directories it checked to be its own, never through a symlink, so a command that plants one in the store cannot make it delete files elsewhere.
+
+## Studio and CLI
+
+In [Cogitator Studio](/docs/getting-started/studio#rewind-and-fork) the memory tree of a thread has rewind and fork buttons on its entries: a rewind shows its dry run first, with the files it would restore and delete when "Restore files" is checked.
+
+The CLI rewinds a thread of a project's registry (`src/cogitator.ts`):
+
+```bash
+cogitator rewind thread_42                         # the active branch, entries with checkpoints marked [files]
+cogitator rewind thread_42 entry_abc --files --dry-run
+cogitator rewind thread_42 entry_abc --files       # shows the plan, asks, then rewinds
+cogitator rewind thread_42 entry_abc --files --no-memory --yes
+```
+
+`--agent <key>` picks the registry agent whose workspace to restore (by default the agent the thread belongs to, else the only registry agent with a workspace), `--force` stops the runs in the way, `--json` prints the report and needs `--dry-run` or `--yes`, as it never prompts. The command runs in a process of its own, so it sees a run of the project's other processes only when that run is durable, and it warns when runs are not durable by default (`cog.durableByDefault`).

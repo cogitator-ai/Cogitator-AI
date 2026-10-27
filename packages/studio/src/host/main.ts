@@ -32,13 +32,19 @@ try {
   process.on('message', (request: HostRequest) => {
     host.handle(request).then(
       (data) => send({ type: 'response', requestId: request.requestId, ok: true, data }),
-      (error: unknown) =>
-        send({
+      (error: unknown) => {
+        const code =
+          error instanceof Error && 'code' in error && typeof error.code === 'string'
+            ? error.code
+            : undefined;
+        return send({
           type: 'response',
           requestId: request.requestId,
           ok: false,
           error: error instanceof Error ? error.message : String(error),
-        })
+          ...(code && { code }),
+        });
+      }
     );
   });
   process.once('SIGTERM', () => {

@@ -204,14 +204,17 @@ export class InMemoryAdapter
         return this.failure(`Parent entry ${entry.parentId} is not in thread ${entry.threadId}`);
       }
     }
+    const id = this.entryIdOf(entry);
+    if (!id.success) return id;
+    if (this.entries.has(id.data)) return this.failure(`Entry ${id.data} already exists`);
     const copied = this.stored(entry, 'entry');
     if (!copied.success) return copied;
     const evicted = this.makeRoom(entry.threadId, entry.parentId ?? thread.activeLeafId);
 
-    const { activate, parentId: askedParent, ...fields } = copied.data;
+    const { activate, parentId: askedParent, id: _asked, ...fields } = copied.data;
     const full: MemoryEntry = {
       ...fields,
-      id: this.generateId('entry'),
+      id: id.data,
       createdAt: this.entryTimestamp(entry),
       type: fields.type ?? (fields.message?.role === 'tool' ? 'tool_result' : 'message'),
       parentId: askedParent === undefined ? (thread.activeLeafId ?? null) : askedParent,

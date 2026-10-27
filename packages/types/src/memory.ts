@@ -172,10 +172,25 @@ export type NewMemoryEntry = Omit<
   MemoryEntry,
   'id' | 'createdAt' | 'seq' | 'formatVersion' | 'parentId'
 > & {
+  /**
+   * The id the entry gets instead of a new one, such as one a caller names in a record written
+   * before the entry (letters, digits, `_` and `-`, at most 128). An id the adapter keeps
+   * already fails the add
+   */
+  id?: string;
   createdAt?: Date;
   parentId?: string | null;
   activate?: boolean;
 };
+
+/** What `MemoryAdapter.forkThread` adds to the entries it copies */
+export interface ForkThreadEntryOptions {
+  /**
+   * Metadata the copy of `atEntryId`, the fork's last entry, gets besides what the original has,
+   * such as the file checkpoint of the files at that point (`fileCheckpointAt`)
+   */
+  pointMetadata?: Record<string, unknown>;
+}
 
 /** Which part of a thread's tree `getPath` reads */
 export interface PathQueryOptions {
@@ -431,12 +446,15 @@ export interface MemoryAdapter {
   /**
    * A new thread holding copies of the branch up to `atEntryId`, each copy naming its original
    * in `metadata.forkOf`, the thread naming its origin in `metadata.forkedFrom` and the origin
-   * listing it in `metadata.memoryForks`. A paused run of the origin is not copied.
+   * listing it in `metadata.memoryForks`. A paused run of the origin is not copied. A
+   * `newThreadId` that names a thread already is refused before anything changes, and a fork that
+   * fails on the way is taken back: the thread it made is deleted and the origin no longer lists it.
    */
   forkThread?(
     threadId: string,
     atEntryId: string,
-    newThreadId?: string
+    newThreadId?: string,
+    options?: ForkThreadEntryOptions
   ): Promise<MemoryResult<Thread>>;
   /**
    * Calls `listener` with every change the adapter makes from now on, until the returned

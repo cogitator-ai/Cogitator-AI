@@ -5,6 +5,15 @@
  */
 
 export { Cogitator, type MemoryCascadeCall } from './runtime';
+export type {
+  RewindOptions,
+  RewindReport,
+  FileRewindReport,
+  ForkThreadOptions,
+  ForkThreadResult,
+  CheckpointAtPoint,
+} from './cogitator/file-checkpoints';
+export { checkpointAt } from './cogitator/file-checkpoints';
 export { CallPricer } from './cogitator/run-cost';
 export { Agent, AgentDeserializationError, memoryAgentId } from './agent';
 export {
@@ -209,9 +218,19 @@ export {
   WORKSPACE_INHERITED_ENV,
   type LocalWorkspaceOptions,
   type LocalWorkspaceExecConfig,
+  type LocalWorkspaceSnapshotConfig,
   type WorkspaceLaunch,
+  WORKSPACE_CHECKPOINTS_DIR,
+  type SnapshotGcReport,
+  type SnapshotRetention,
 } from './workspace/index';
-export { WorkspaceError, WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE } from '@cogitator-ai/types';
+export {
+  WorkspaceError,
+  WORKSPACE_SNAPSHOT_DEFAULT_EXCLUDE,
+  WORKSPACE_SNAPSHOT_MAX_FILE_BYTES,
+  FILE_CHECKPOINT_KEY,
+  fileCheckpointOf,
+} from '@cogitator-ai/types';
 export {
   toolResultPath,
   TOOL_RESULTS_DIR,

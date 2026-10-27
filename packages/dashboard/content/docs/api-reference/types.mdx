@@ -927,6 +927,7 @@ type NewMemoryEntry = Omit<
   MemoryEntry,
   'id' | 'createdAt' | 'seq' | 'formatVersion' | 'parentId'
 > & {
+  id?: string; // the id the entry gets instead of a new one, an id kept already fails the add
   createdAt?: Date;
   parentId?: string | null; // default: after the active leaf
   activate?: boolean; // default: true, the entry becomes the active leaf

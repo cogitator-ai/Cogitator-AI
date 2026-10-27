@@ -1,9 +1,14 @@
 import type {
   ForkRequest,
+  ForkPreview,
+  ForkSummary,
   HostStatus,
+  RewindRequest,
+  RewindSummary,
   RunRecord,
   StudioEvent,
   StudioStats,
+  ThreadForkRequest,
   ThreadRecord,
   ThreadTree,
 } from '../protocol';
@@ -13,6 +18,17 @@ export interface StateResponse {
   project: string;
   runs: RunRecord[];
   threads: ThreadRecord[];
+}
+
+/** A request the studio refused, with the HTTP status it answered. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
 }
 
 export interface RunTree {
@@ -30,7 +46,7 @@ async function request<T>(path: string, init?: { method?: string; body?: unknown
   });
   const text = await response.text();
   const json = (text ? JSON.parse(text) : {}) as T & { error?: string };
-  if (!response.ok) throw new Error(json.error ?? `HTTP ${response.status}`);
+  if (!response.ok) throw new ApiError(json.error ?? `HTTP ${response.status}`, response.status);
   return json;
 }
 
@@ -46,6 +62,21 @@ export const api = {
   thread: (id: string) =>
     request<{ thread: ThreadRecord; runs: RunRecord[] }>(`/api/threads/${encodeURIComponent(id)}`),
   threadTree: (id: string) => request<ThreadTree>(`/api/threads/${encodeURIComponent(id)}/tree`),
+  rewind: (threadId: string, rewind: RewindRequest) =>
+    request<RewindSummary & { thread: ThreadRecord }>(
+      `/api/threads/${encodeURIComponent(threadId)}/rewind`,
+      { method: 'POST', body: rewind }
+    ),
+  forkThread: (threadId: string, fork: Omit<ThreadForkRequest, 'dryRun'>) =>
+    request<ForkSummary & { thread: ThreadRecord }>(
+      `/api/threads/${encodeURIComponent(threadId)}/fork`,
+      { method: 'POST', body: fork }
+    ),
+  forkPreview: (threadId: string, fork: Omit<ThreadForkRequest, 'dryRun' | 'force'>) =>
+    request<ForkPreview>(`/api/threads/${encodeURIComponent(threadId)}/fork`, {
+      method: 'POST',
+      body: { ...fork, dryRun: true },
+    }),
   chat: (agent: string, input: string, threadId?: string) =>
     request<{ runId: string; threadId: string }>('/api/chat', {
       method: 'POST',

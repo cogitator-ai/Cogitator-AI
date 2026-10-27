@@ -6,13 +6,18 @@ import { fileURLToPath } from 'node:url';
 import { calculateCost, initializeModels } from '@cogitator-ai/models';
 import type {
   ForkRequest,
+  ForkPreview,
+  ForkSummary,
   HostStatus,
+  RewindSummary,
+  ThreadLineage,
+  ThreadReplay,
   RunRecord,
   StudioEvent,
   ThreadRecord,
   ThreadTree,
 } from '../protocol.js';
-import { HostManager } from './host-manager.js';
+import { HostManager, HostRequestError } from './host-manager.js';
 import { StudioStore, type Pricer } from './store.js';
 
 export interface StudioOptions {
@@ -128,6 +133,24 @@ function optionalBoolean(body: Record<string, unknown>, field: string): boolean 
   return value;
 }
 
+/**
+ * A refusal of the runtime as the status it answers with: a thread a run goes on in is a
+ * conflict, a point the runtime cannot rewind or fork at is a bad request.
+ */
+function runtimeRefusal(error: unknown): unknown {
+  if (!(error instanceof Error)) return error;
+  const code = error instanceof HostRequestError ? error.code : undefined;
+  if (
+    code === 'THREAD_BUSY' ||
+    code === 'WORKSPACE_BUSY' ||
+    error.message.includes('has a run going on')
+  ) {
+    return new HttpError(409, error.message);
+  }
+  if (code === 'VALIDATION_ERROR') return new HttpError(400, error.message);
+  return error;
+}
+
 function sameToken(given: string | undefined, expected: string): boolean {
   if (!given) return false;
   const a = Buffer.from(given);
@@ -219,6 +242,7 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
     onEvent: (event) => {
       const change = store.apply(event);
       broadcastRuns(change.runs);
+      if (change.thread) broadcastThread(change.thread);
       if (change.token) broadcast({ type: 'token', ...change.token });
       if (change.reasoning) broadcast({ type: 'reasoning', ...change.reasoning });
       if (
@@ -317,10 +341,23 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
     res.end(readFileSync(file));
   }
 
+  /** The active branch the studio keeps of a thread, for the host to replay after a restart */
+  function replayOf(threadId: string): { replay?: ThreadReplay; lineage?: ThreadLineage[] } {
+    const replay = store.replay(threadId);
+    const lineage = store.lineage(threadId);
+    return { ...(replay && { replay }), ...(lineage.length > 0 && { lineage }) };
+  }
+
   function runOr404(id: string): RunRecord {
     const run = store.getRun(id);
     if (!run) throw new HttpError(404, `There is no run ${id}`);
     return run;
+  }
+
+  function threadOr404(id: string): ThreadRecord {
+    const thread = store.getThread(id);
+    if (!thread) throw new HttpError(404, `There is no thread ${id}`);
+    return thread;
   }
 
   async function api(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -395,8 +432,75 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
           threadId: thread.id,
           agent: thread.agent,
           history: store.history(thread.id),
+          ...replayOf(thread.id),
         });
         return send(res, 200, store.attribute(tree));
+      }
+      case 'POST /threads/:id/rewind': {
+        const thread = threadOr404(parts[1]);
+        const body = await readJson(req);
+        const entryId = requireString(body, 'entryId');
+        const files = optionalBoolean(body, 'files');
+        const memory = optionalBoolean(body, 'memory');
+        const dryRun = optionalBoolean(body, 'dryRun');
+        const force = optionalBoolean(body, 'force');
+        const summary = await manager
+          .request<RewindSummary>({
+            type: 'thread.rewind',
+            threadId: thread.id,
+            agent: thread.agent,
+            history: store.history(thread.id),
+            ...replayOf(thread.id),
+            entryId,
+            ...(files !== undefined && { files }),
+            ...(memory !== undefined && { memory }),
+            ...(dryRun !== undefined && { dryRun }),
+            ...(force !== undefined && { force }),
+          })
+          .catch((error: unknown) => {
+            throw runtimeRefusal(error);
+          });
+        const { replay, ...reported } = summary;
+        if (replay) store.keepReplay(thread.id, replay);
+        const changed = summary.conversation.rewound
+          ? store.markRewound(thread.id, summary.conversation.cut)
+          : thread;
+        if (summary.conversation.rewound) broadcastThread(changed);
+        return send(res, 200, { ...reported, thread: changed ?? thread });
+      }
+      case 'POST /threads/:id/fork': {
+        const thread = threadOr404(parts[1]);
+        const body = await readJson(req);
+        const entryId = requireString(body, 'entryId');
+        const files = optionalBoolean(body, 'files');
+        const dryRun = optionalBoolean(body, 'dryRun');
+        const force = optionalBoolean(body, 'force');
+        const fork = await manager
+          .request<ForkSummary | ForkPreview>({
+            type: 'thread.fork',
+            threadId: thread.id,
+            agent: thread.agent,
+            history: store.history(thread.id),
+            ...replayOf(thread.id),
+            entryId,
+            newThreadId: `studio_${randomUUID()}`,
+            ...(files !== undefined && { files }),
+            ...(dryRun !== undefined && { dryRun }),
+            ...(force !== undefined && { force }),
+          })
+          .catch((error: unknown) => {
+            throw runtimeRefusal(error);
+          });
+        if ('dryRun' in fork) return send(res, 200, fork);
+        const { replay, ...made } = fork;
+        const forked = store.addForkedThread(thread, {
+          threadId: fork.threadId,
+          entryId,
+          base: fork.base,
+          ...(replay && { replay }),
+        });
+        broadcastThread(forked);
+        return send(res, 201, { ...made, thread: forked });
       }
       case 'POST /chat': {
         const body = await readJson(req);
@@ -411,6 +515,7 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
           input,
           threadId,
           history: store.history(threadId),
+          ...replayOf(threadId),
         });
         broadcastThread(store.addRunToThread(threadId, runId));
         return send(res, 202, { runId, threadId });

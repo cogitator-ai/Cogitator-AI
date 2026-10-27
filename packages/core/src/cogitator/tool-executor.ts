@@ -113,6 +113,11 @@ export interface ToolCallExecution {
    * before the tool starts, nothing awaited after it
    */
   stopped?: () => boolean;
+  /**
+   * Gets the tool's own promise once it started: it may run on after the call returned, for a
+   * call that timed out or was aborted while the tool goes on regardless of its signal
+   */
+  onStarted?: (execution: Promise<unknown>) => void;
 }
 
 /**
@@ -353,6 +358,7 @@ async function runTool(call: ToolCallRequest, execution: ToolCallExecution): Pro
     onUpdate: execution.onUpdate,
     onStart: (started) => {
       running = started;
+      execution.onStarted?.(started);
     },
   };
   try {

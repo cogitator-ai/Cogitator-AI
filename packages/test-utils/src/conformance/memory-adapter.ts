@@ -33,6 +33,7 @@ export type MemoryAdapterScenario =
   | 'tool-calls-on-request'
   | 'missing-not-null'
   | 'entry-needs-thread'
+  | 'entry-named-id'
   | 'delete-entry'
   | 'clear-thread'
   | 'delete-thread-cascades'
@@ -1041,6 +1042,42 @@ const SCENARIOS: Record<MemoryAdapterScenario, (adapter: MemoryAdapter) => Promi
     refused(await adapter.checkout(id, c!.id), 'checkout of a deleted entry');
     refused(await adapter.rewind(id, b!.id), 'rewind to an entry past the leaf');
     assert.equal(ok(await adapter.getThread(id), 'getThread')?.activeLeafId, a!.id);
+  },
+
+  async 'entry-named-id'(adapter) {
+    const { agentId, threadId } = scope();
+    const id = threadId();
+    const other = threadId();
+    await newThread(adapter, agentId, id);
+    await newThread(adapter, agentId, other);
+    const named = `entry_named_${randomUUID().replace(/-/g, '').slice(0, 10)}`;
+    const added = ok(
+      await adapter.addEntry({ id: named, threadId: id, message: user('named'), tokenCount: 1 }),
+      'addEntry with an id'
+    );
+    assert.equal(added.id, named, 'the entry keeps the id it was given');
+    assert.equal(ok(await adapter.getEntry(named), 'getEntry')?.message.content, 'named');
+    refused(
+      await adapter.addEntry({ id: named, threadId: id, message: user('again'), tokenCount: 1 }),
+      'addEntry with an id the thread has'
+    );
+    refused(
+      await adapter.addEntry({
+        id: named,
+        threadId: other,
+        message: user('elsewhere'),
+        tokenCount: 1,
+      }),
+      'addEntry with an id another thread has'
+    );
+    refused(
+      await adapter.addEntry({ id: 'bad id/..', threadId: id, message: user('x'), tokenCount: 1 }),
+      'addEntry with a malformed id'
+    );
+    assert.deepEqual(contents(ok(await adapter.getEntries({ threadId: id }), 'getEntries')), [
+      'named',
+    ]);
+    assert.deepEqual(contents(ok(await adapter.getEntries({ threadId: other }), 'getEntries')), []);
   },
 
   async 'tree-concurrent-appends'(adapter) {

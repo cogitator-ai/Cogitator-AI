@@ -65,6 +65,17 @@ function hostEntry(): string {
     : fileURLToPath(new URL('../host/main.ts', import.meta.url));
 }
 
+/** A request the host refused or failed, with the code of the runtime error when it had one. */
+export class HostRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code?: string
+  ) {
+    super(message);
+    this.name = 'HostRequestError';
+  }
+}
+
 interface Pending {
   resolve: (data: unknown) => void;
   reject: (error: Error) => void;
@@ -169,7 +180,7 @@ export class HostManager {
           if (!pending) break;
           this.pending.delete(message.requestId);
           if (message.ok) pending.resolve(message.data);
-          else pending.reject(new Error(message.error));
+          else pending.reject(new HostRequestError(message.error, message.code));
           break;
         }
       }
