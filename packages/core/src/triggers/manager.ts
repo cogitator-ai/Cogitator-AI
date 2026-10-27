@@ -1313,19 +1313,16 @@ export class experimental_TriggerManager {
    * (by tool call id), `responses` for questions (by interrupt id). The run goes on and its
    * outcome reaches the inbox; the item is archived
    */
-  async respond(
-    itemId: string,
-    answer: Pick<ResumeOptions, 'decisions' | 'defaultDecision' | 'responses'>
-  ): Promise<TriggerFireResult> {
+  async respond(itemId: string, answer: RoutineAnswer): Promise<TriggerFireResult> {
     const item = await this.inbox.get(itemId);
-    if (
-      !item ||
-      (item.kind !== 'approval' && item.kind !== 'question') ||
-      !item.threadId ||
-      !item.runId
-    ) {
+    if (!item || (item.kind !== 'approval' && item.kind !== 'question') || !item.runId) {
       throw notFound(`No inbox item ${itemId} that waits for an answer`);
     }
+    if (item.approvalId !== undefined && item.threadId === undefined) {
+      return this.respondToWorkflow(item, answer);
+    }
+    const threadId = item.threadId;
+    if (!threadId) throw notFound(`No inbox item ${itemId} that waits for an answer`);
     const registered = item.routineId ? await this.find(item.routineId) : undefined;
     const agent = registered ? this.agentOf(registered.routine) : undefined;
     if (!registered || !agent) throw notFound(`The routine of inbox item ${itemId} is gone`);
@@ -1341,7 +1338,7 @@ export class experimental_TriggerManager {
       eventId: item.triggerEventId ?? event.id,
       triggerId: event.triggerId,
       source: item.source ?? 'manual',
-      threadId: item.threadId,
+      threadId,
       startedAt: Date.now(),
     };
     const record: RoutineRunRecord = {
@@ -1359,8 +1356,10 @@ export class experimental_TriggerManager {
     const lease = this.runtime.plugins?.lease();
     this.track(
       this.runtime
-        .resume(agent, item.threadId, {
-          ...answer,
+        .resume(agent, threadId, {
+          ...(answer.decisions !== undefined && { decisions: answer.decisions }),
+          ...(answer.defaultDecision !== undefined && { defaultDecision: answer.defaultDecision }),
+          ...(answer.responses !== undefined && { responses: answer.responses }),
           ...(registered.routine.userId !== undefined && { userId: registered.routine.userId }),
         })
         .then(
@@ -1377,6 +1376,38 @@ export class experimental_TriggerManager {
       runId: run.runId,
       threadId: run.threadId,
     });
+  }
+
+  /** Answers an approval a routine's workflow waits on, through its `respond` */
+  private async respondToWorkflow(
+    item: InboxItem,
+    answer: RoutineAnswer
+  ): Promise<TriggerFireResult> {
+    const registered = item.routineId ? await this.find(item.routineId) : undefined;
+    const workflow = registered ? this.workflowOf(registered.routine) : undefined;
+    if (!registered || !workflow?.respond || item.approvalId === undefined) {
+      throw notFound(`The workflow of inbox item ${item.id} cannot be answered`);
+    }
+    const decision =
+      answer.decision ??
+      answer.decisions?.[item.approvalId]?.approved ??
+      answer.defaultDecision?.approved;
+    if (decision === undefined) {
+      throw new CogitatorError({
+        message: `Inbox item ${item.id} needs a decision`,
+        code: ErrorCode.VALIDATION_ERROR,
+      });
+    }
+    await workflow.respond(item.approvalId, decision, answer.respondedBy);
+    await this.inbox.archive(item.id);
+    return {
+      type: 'routine_fire',
+      status: 'started',
+      eventId: item.triggerEventId ?? item.id,
+      routineId: registered.routine.id,
+      triggerId: item.triggerId ?? fullTriggerId(registered.routine.id, 'manual'),
+      ...(item.runId !== undefined && { runId: item.runId }),
+    };
   }
 
   /** The history of firings, newest first */
@@ -1450,6 +1481,19 @@ export class experimental_TriggerManager {
       );
     }
   }
+}
+
+/**
+ * An answer to a routine that waits for a person: `decisions` for an agent's approvals (by tool
+ * call id), `responses` for its questions (by interrupt id), `decision` for a workflow's approval
+ */
+export interface RoutineAnswer extends Pick<
+  ResumeOptions,
+  'decisions' | 'defaultDecision' | 'responses'
+> {
+  decision?: unknown;
+  /** Who answers, for a workflow's approval */
+  respondedBy?: string;
 }
 
 /** How a run of a routine ended, before it is written down */

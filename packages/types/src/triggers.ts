@@ -396,6 +396,11 @@ export interface RoutineWorkflowOutcome {
 export interface RoutineWorkflow {
   readonly name: string;
   run(context: RoutineWorkflowContext): Promise<RoutineWorkflowOutcome>;
+  /**
+   * Answers an approval the workflow waits on (an inbox item's `approvalId`): the trigger
+   * manager's `respond()` calls it for a routine that runs a workflow
+   */
+  respond?(approvalId: string, decision: unknown, respondedBy?: string): Promise<void>;
 }
 
 /** What an inbox item is about */

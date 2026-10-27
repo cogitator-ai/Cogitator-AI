@@ -157,6 +157,7 @@ export class DefaultTriggerManager implements ITriggerManager {
   private eventListeners = new Map<string, () => void>();
   private config: TriggerManagerConfig;
   private _started = false;
+  private restoring?: Promise<void>;
 
   constructor(config: TriggerManagerConfig = {}) {
     this.config = config;
@@ -190,10 +191,79 @@ export class DefaultTriggerManager implements ITriggerManager {
   }
 
   /**
-   * Start the trigger manager
+   * Starts the manager and brings back the triggers of its store: cron triggers are scheduled
+   * again, webhooks answered and event triggers listen, disabled ones stay disabled. A trigger
+   * that cannot come back is skipped with its error recorded on it. Resolves once they are back
    */
-  start(): void {
+  start(): Promise<void> {
+    if (this._started && this.restoring) return this.restoring;
     this._started = true;
+    this.restoring = this.restore();
+    return this.restoring;
+  }
+
+  private async restore(): Promise<void> {
+    for (const trigger of await this.store.list()) {
+      try {
+        this.activate(trigger);
+        if (!trigger.enabled) this.deactivate(trigger);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[TriggerManager] Trigger '${trigger.id}' could not be restored:`, message);
+        await this.store.update(trigger.id, {
+          lastError: message,
+          errorCount: trigger.errorCount + 1,
+        });
+      }
+    }
+  }
+
+  /** Hands a stored trigger to its executor or event listener */
+  private activate(trigger: WorkflowTrigger): void {
+    switch (trigger.type) {
+      case 'cron':
+        this.cronExecutor.unregister(trigger.id);
+        this.cronExecutor.register(
+          trigger.workflowName,
+          { ...(trigger.config as CronTriggerConfig), enabled: trigger.enabled },
+          trigger.id
+        );
+        break;
+      case 'webhook': {
+        const config = trigger.config as WebhookTriggerConfig;
+        const errors = validateWebhookTriggerConfig(config);
+        if (errors.length > 0) {
+          throw new Error(`Invalid webhook trigger config: ${errors.join('; ')}`);
+        }
+        this.webhookExecutor.unregister(trigger.id);
+        this.webhookExecutor.register(trigger.workflowName, config, trigger.id);
+        break;
+      }
+      case 'event':
+        this.registerEventTrigger(
+          trigger.id,
+          trigger.workflowName,
+          trigger.config as EventTriggerConfig
+        );
+        break;
+    }
+  }
+
+  private deactivate(trigger: WorkflowTrigger): void {
+    switch (trigger.type) {
+      case 'cron':
+        this.cronExecutor.disable(trigger.id);
+        break;
+      case 'webhook':
+        this.webhookExecutor.disable(trigger.id);
+        break;
+      case 'event': {
+        const unsubscribe = this.eventListeners.get(trigger.id);
+        unsubscribe?.();
+        this.eventListeners.delete(trigger.id);
+        break;
+      }
+    }
   }
 
   /**
@@ -201,6 +271,7 @@ export class DefaultTriggerManager implements ITriggerManager {
    */
   stop(): void {
     this._started = false;
+    this.restoring = undefined;
     this.cronExecutor.dispose();
     this.webhookExecutor.dispose();
   }

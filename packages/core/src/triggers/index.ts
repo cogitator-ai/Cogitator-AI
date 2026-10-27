@@ -81,6 +81,7 @@ export {
 } from './inbox';
 export {
   experimental_TriggerManager,
+  type RoutineAnswer,
   type TriggerNotifyScope,
   type TriggerRuntime,
 } from './manager';

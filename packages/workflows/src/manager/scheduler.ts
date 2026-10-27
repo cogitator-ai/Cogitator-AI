@@ -16,7 +16,23 @@ import type {
   ScheduleOptions,
   RunStore,
 } from '@cogitator-ai/types';
-import { getNextCronOccurrence, validateCronExpression } from '../timers/cron-parser';
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
+import { getLogger, planOccurrences } from '@cogitator-ai/core';
+import {
+  getNextCronOccurrence,
+  validateCronExpression,
+  workflowsCron,
+} from '../timers/cron-parser';
+
+/** Throws for a cron expression the scheduler cannot run */
+function checkCron(expression: string, timezone?: string): void {
+  const valid = validateCronExpression(expression);
+  const zone = timezone === undefined ? undefined : workflowsCron.problem('* * * * *', timezone);
+  const problem = valid.valid ? zone : valid.error;
+  if (problem !== undefined) {
+    throw new CogitatorError({ message: problem, code: ErrorCode.VALIDATION_ERROR });
+  }
+}
 
 /**
  * Priority queue item
@@ -36,6 +52,8 @@ export interface SchedulerConfig {
   maxConcurrency?: number;
   pollInterval?: number;
   onRunReady?: (runId: string) => void;
+  /** A cron job that could not schedule its run. Default: a warning in the log */
+  onError?: (error: Error, jobId: string) => void;
 }
 
 /**
@@ -194,6 +212,7 @@ export class JobScheduler {
   private maxConcurrency: number;
   private pollInterval: number;
   private onRunReady?: (runId: string) => void;
+  private onError?: (error: Error, jobId: string) => void;
   private runningCount = 0;
   private pollTimer?: ReturnType<typeof setInterval>;
   private disposed = false;
@@ -203,6 +222,7 @@ export class JobScheduler {
     this.maxConcurrency = config.maxConcurrency ?? Infinity;
     this.pollInterval = config.pollInterval ?? 1000;
     this.onRunReady = config.onRunReady;
+    this.onError = config.onError;
   }
 
   /**
@@ -247,7 +267,7 @@ export class JobScheduler {
     if (options.at) {
       scheduledFor = options.at;
     } else if (options.cron) {
-      validateCronExpression(options.cron);
+      checkCron(options.cron, options.timezone);
       scheduledFor = getNextCronOccurrence(options.cron, {
         currentDate: new Date(),
         timezone: options.timezone,
@@ -301,7 +321,7 @@ export class JobScheduler {
       jobOptions?: Omit<ScheduleOptions, 'at' | 'cron' | 'timezone'>;
     } = {}
   ): string {
-    validateCronExpression(expression);
+    checkCron(expression, options.timezone);
 
     const jobId = options.id ?? nanoid();
     const nextRun = getNextCronOccurrence(expression, {
@@ -417,6 +437,13 @@ export class JobScheduler {
     this.cronJobs.clear();
   }
 
+  private reportError(error: unknown, jobId: string): void {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    if (this.onError) this.onError(failure, jobId);
+    else
+      getLogger().warn('A cron job could not schedule its run', { jobId, error: failure.message });
+  }
+
   private tick(): void {
     if (this.disposed) return;
 
@@ -429,12 +456,18 @@ export class JobScheduler {
         this.scheduleRun(job.workflow, {
           ...job.options,
           triggerId: `cron:${job.id}`,
-        }).catch(() => {});
+        }).catch((error: unknown) => this.reportError(error, job.id));
 
-        job.nextRun = getNextCronOccurrence(job.expression, {
-          currentDate: new Date(now + 1000),
-          timezone: job.timezone,
-        }).getTime();
+        const plan = planOccurrences(
+          {
+            firesAt: job.nextRun,
+            cron: job.expression,
+            ...(job.timezone !== undefined && { timezone: job.timezone }),
+          },
+          workflowsCron,
+          { now, graceMs: this.pollInterval * 2 }
+        );
+        job.nextRun = plan.next ?? Infinity;
       }
     }
 

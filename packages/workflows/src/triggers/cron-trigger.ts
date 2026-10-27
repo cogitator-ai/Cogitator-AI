@@ -7,10 +7,12 @@
 
 import { nanoid } from 'nanoid';
 import type { CronTriggerConfig, TriggerContext, WorkflowTrigger } from '@cogitator-ai/types';
+import { planOccurrences } from '@cogitator-ai/core';
 import {
   parseCronExpression,
   getNextCronOccurrence,
   isValidCronExpression,
+  workflowsCron,
 } from '../timers/cron-parser';
 
 /**
@@ -277,23 +279,15 @@ export class CronTriggerExecutor {
     }
 
     const results: CronTriggerResult[] = [];
-    const now = Date.now();
-    let currentTime = since;
-
-    while (currentTime < now && results.length < maxCatchUp) {
-      const nextRun = getNextCronOccurrence(state.config.expression, {
-        timezone: state.config.timezone,
-        currentDate: new Date(currentTime),
-      });
-
-      if (!nextRun || nextRun.getTime() >= now) {
-        break;
-      }
-
-      const result = await this.fire(triggerId, nextRun.getTime());
-      results.push(result);
-
-      currentTime = nextRun.getTime() + 1;
+    const missed = workflowsCron.between(
+      state.config.expression,
+      since,
+      Date.now() - 1,
+      state.config.timezone,
+      maxCatchUp
+    );
+    for (const occurrence of missed) {
+      results.push(await this.fire(triggerId, occurrence));
     }
 
     return results;
@@ -388,13 +382,18 @@ export class CronTriggerExecutor {
       return;
     }
 
-    let occurrence = due;
-    for (let fired = 0; occurrence <= Date.now() && fired < maxCatchUp; fired++) {
+    const plan = planOccurrences(
+      {
+        firesAt: due,
+        cron: state.config.expression,
+        ...(state.config.timezone !== undefined && { timezone: state.config.timezone }),
+        catchUp: 'all',
+      },
+      workflowsCron,
+      { now: Date.now(), graceMs: 0, maxCatchUp }
+    );
+    for (const occurrence of plan.fire) {
       await this.fire(triggerId, occurrence);
-      occurrence = getNextCronOccurrence(state.config.expression, {
-        timezone: state.config.timezone,
-        currentDate: new Date(occurrence),
-      }).getTime();
     }
   }
 

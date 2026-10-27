@@ -10,6 +10,7 @@
  */
 
 import { CronExpressionParser } from 'cron-parser';
+import { experimental_createCronEngine, isKnownTimezone } from '@cogitator-ai/core';
 
 /**
  * Cron field descriptor
@@ -81,6 +82,18 @@ export const CRON_PRESETS: Record<string, string> = {
 };
 
 /**
+ * The cron engine of workflows: the core's, with the presets above on top of those of
+ * `cron-parser`, so a workflow, a routine and `schedule_task` read an expression alike
+ */
+export const workflowsCron = experimental_createCronEngine(CronExpressionParser, {
+  presets: CRON_PRESETS,
+});
+
+function normalize(expression: string): string {
+  return workflowsCron.normalize(expression);
+}
+
+/**
  * Parsed cron expression result
  */
 export interface ParsedCron {
@@ -116,24 +129,17 @@ export function validateCronExpression(expression: string): {
   error?: string;
   normalized?: string;
 } {
-  const normalized = CRON_PRESETS[expression.toLowerCase()] ?? expression;
-
-  try {
-    CronExpressionParser.parse(normalized);
-    return { valid: true, normalized };
-  } catch (error) {
-    return {
-      valid: false,
-      error: error instanceof Error ? error.message : 'Invalid cron expression',
-    };
-  }
+  const problem = workflowsCron.problem(expression);
+  return problem === undefined
+    ? { valid: true, normalized: normalize(expression) }
+    : { valid: false, error: problem };
 }
 
 /**
  * Parse a cron expression
  */
 export function parseCronExpression(expression: string, timezone?: string): ParsedCron {
-  const normalized = CRON_PRESETS[expression.toLowerCase()] ?? expression;
+  const normalized = normalize(expression);
   const parts = normalized.trim().split(/\s+/);
 
   const hasSeconds = parts.length === 6;
@@ -159,7 +165,16 @@ export function parseCronExpression(expression: string, timezone?: string): Pars
  * Get the next occurrence of a cron expression
  */
 export function getNextCronOccurrence(expression: string, options: CronIteratorOptions = {}): Date {
-  const normalized = CRON_PRESETS[expression.toLowerCase()] ?? expression;
+  const normalized = normalize(expression);
+  if (!options.startDate && !options.endDate) {
+    return new Date(
+      workflowsCron.next(
+        normalized,
+        (options.currentDate ?? new Date()).getTime(),
+        options.timezone
+      )
+    );
+  }
 
   const interval = CronExpressionParser.parse(normalized, {
     currentDate: options.currentDate ?? new Date(),
@@ -178,7 +193,7 @@ export function getPreviousCronOccurrence(
   expression: string,
   options: CronIteratorOptions = {}
 ): Date {
-  const normalized = CRON_PRESETS[expression.toLowerCase()] ?? expression;
+  const normalized = normalize(expression);
 
   const interval = CronExpressionParser.parse(normalized, {
     currentDate: options.currentDate ?? new Date(),
@@ -198,7 +213,7 @@ export function getNextCronOccurrences(
   count: number,
   options: CronIteratorOptions = {}
 ): Date[] {
-  const normalized = CRON_PRESETS[expression.toLowerCase()] ?? expression;
+  const normalized = normalize(expression);
   const occurrences: Date[] = [];
 
   const interval = CronExpressionParser.parse(normalized, {
@@ -223,7 +238,7 @@ export function getNextCronOccurrences(
  * Check if a cron expression matches a given date
  */
 export function cronMatchesDate(expression: string, date: Date, timezone?: string): boolean {
-  const normalized = CRON_PRESETS[expression.toLowerCase()] ?? expression;
+  const normalized = normalize(expression);
   const parsed = parseCronExpression(normalized);
 
   let minute: number;
@@ -309,7 +324,7 @@ export function msUntilNextCronOccurrence(
  * Get human-readable description of a cron expression
  */
 export function describeCronExpression(expression: string): string {
-  const normalized = CRON_PRESETS[expression.toLowerCase()] ?? expression;
+  const normalized = normalize(expression);
   const parts = normalized.trim().split(/\s+/);
 
   const presetDescriptions: Record<string, string> = {
@@ -454,7 +469,7 @@ export function createCronIterator(
   hasPrev: () => boolean;
   reset: (date?: Date) => void;
 } {
-  const normalized = CRON_PRESETS[expression.toLowerCase()] ?? expression;
+  const normalized = normalize(expression);
 
   let interval = CronExpressionParser.parse(normalized, {
     currentDate: options.currentDate ?? new Date(),
@@ -509,12 +524,7 @@ export function getSupportedTimezones(): string[] {
  * Check if timezone is valid
  */
 export function isValidTimezone(timezone: string): boolean {
-  try {
-    Intl.DateTimeFormat(undefined, { timeZone: timezone });
-    return true;
-  } catch {
-    return false;
-  }
+  return isKnownTimezone(timezone);
 }
 
 export { CRON_FIELDS };
