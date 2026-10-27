@@ -235,8 +235,10 @@ import {
   type WorkspaceRun,
 } from './cogitator/workspace-runs';
 import {
+  checkpointAt,
   checkpointSettings,
   checkpointsOn,
+  forkPointMetadata,
   emptyCascadeReport,
   fileRestorePlan,
   takeFileCheckpoint,
@@ -7661,7 +7663,9 @@ export class Cogitator implements ToolInvoker {
   /**
    * Forks `threadId` at `atEntryId` into a new thread holding the branch up to it (see
    * `MemoryAdapter.forkThread`): each copied entry keeps its metadata, the file checkpoints the
-   * user messages name included. With `files: true` the workspace of the fork (`workspace`, or
+   * user messages name included, and the copy of the point names the checkpoint of the files
+   * exactly at it (`fileCheckpointAt`) when the message it was taken for lies after the point, so
+   * rewinds and forks of the fork restore those files from there too. With `files: true` the workspace of the fork (`workspace`, or
    * the workspace of one of `agents`) gets the files as they were at that point, a snapshot of
    * them as they were taken first (`files.safetySnapshotId`): when it is another workspace than
    * `source` (where the checkpoints are kept, `workspace` by default), every checkpoint of the
@@ -7727,9 +7731,13 @@ export class Cogitator implements ToolInvoker {
       });
     }
     const dryRun = options.dryRun ?? false;
+    const readTree = async () => unwrapMemory(await memory.getEntries({ threadId, types: 'all' }));
     if (!options.files) {
       if (dryRun) return { dryRun: true, snapshotsCopied: [], going: [] };
-      const thread = unwrapMemory(await forkThread(threadId, atEntryId, options.newThreadId));
+      const at = checkpointAt(branch, branch.length - 1, await readTree());
+      const thread = unwrapMemory(
+        await forkThread(threadId, atEntryId, options.newThreadId, forkPointMetadata(branch, at))
+      );
       return { thread, snapshotsCopied: [] };
     }
 
@@ -7737,12 +7745,7 @@ export class Cogitator implements ToolInvoker {
     const releaseThread = await this.threadRuns.lock(threadId);
     let releaseWorkspace: (() => void) | undefined;
     try {
-      const files = fileRestorePlan(
-        branch,
-        branch.length - 1,
-        options,
-        unwrapMemory(await memory.getEntries({ threadId, types: 'all' }))
-      );
+      const files = fileRestorePlan(branch, branch.length - 1, options, await readTree());
       const source = options.source ?? files.workspace;
       const checkpoint = await this.verifyCheckpoint(memory, threadId, {
         ...files,
@@ -7813,7 +7816,14 @@ export class Cogitator implements ToolInvoker {
         });
         let thread: Thread;
         try {
-          thread = unwrapMemory(await forkThread(threadId, atEntryId, options.newThreadId));
+          thread = unwrapMemory(
+            await forkThread(
+              threadId,
+              atEntryId,
+              options.newThreadId,
+              forkPointMetadata(branch, files.at)
+            )
+          );
         } catch (error) {
           await safety?.drop();
           throw error;

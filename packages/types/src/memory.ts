@@ -183,6 +183,15 @@ export type NewMemoryEntry = Omit<
   activate?: boolean;
 };
 
+/** What `MemoryAdapter.forkThread` adds to the entries it copies */
+export interface ForkThreadEntryOptions {
+  /**
+   * Metadata the copy of `atEntryId`, the fork's last entry, gets besides what the original has,
+   * such as the file checkpoint of the files at that point (`fileCheckpointAt`)
+   */
+  pointMetadata?: Record<string, unknown>;
+}
+
 /** Which part of a thread's tree `getPath` reads */
 export interface PathQueryOptions {
   threadId: string;
@@ -444,7 +453,8 @@ export interface MemoryAdapter {
   forkThread?(
     threadId: string,
     atEntryId: string,
-    newThreadId?: string
+    newThreadId?: string,
+    options?: ForkThreadEntryOptions
   ): Promise<MemoryResult<Thread>>;
   /**
    * Calls `listener` with every change the adapter makes from now on, until the returned

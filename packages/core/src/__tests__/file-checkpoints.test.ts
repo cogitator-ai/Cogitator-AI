@@ -13,6 +13,7 @@ import { z } from 'zod';
 import {
   CogitatorError,
   ErrorCode,
+  FILE_CHECKPOINT_AT_KEY,
   FILE_CHECKPOINT_KEY,
   fileCheckpointOf,
   type ChatRequest,
@@ -28,7 +29,7 @@ import { tool } from '../tool';
 import { workspaceTools } from '../tools/workspace-tools';
 import { LocalWorkspace } from '../workspace/local-workspace';
 import { WORKSPACE_CHECKPOINTS_DIR } from '../workspace/snapshot-store';
-import { checkpointAt, checkpointSettings } from '../cogitator/file-checkpoints';
+import { checkpointAt, checkpointSettings, checkpointsOn } from '../cogitator/file-checkpoints';
 import { answer, callTools, deferred, scriptedBackend } from './helpers/scripted-backend';
 
 let base: string;
@@ -587,5 +588,23 @@ describe('checkpointAt', () => {
     expect(checkpointAt(branch, 1)).toMatchObject({ entryId: 'u1', exact: false });
     expect(checkpointAt(branch, 3)).toMatchObject({ entryId: 'u1', exact: false });
     expect(checkpointAt([entry('a', 'assistant')], 0)).toBeUndefined();
+  });
+
+  it('takes the checkpoint a forked point names of the files at it, as exact as a message after it', () => {
+    const at = { snapshotId: 's2', workspaceId: 'w', root: '/r', entryId: 'source-u2' };
+    const point: MemoryEntry = {
+      ...entry('a1', 'assistant'),
+      metadata: { [FILE_CHECKPOINT_AT_KEY]: at, forkOf: 'source-a1' },
+    };
+    const branch = [entry('u1', 'user', 's1'), point, entry('ev', 'system', undefined, 'label')];
+    const expected = {
+      entryId: 'source-u2',
+      checkpoint: { snapshotId: 's2', workspaceId: 'w', root: '/r' },
+    };
+    expect(checkpointAt(branch, 1)).toEqual({ ...expected, exact: true });
+    expect(checkpointAt(branch, 2, branch)).toEqual({ ...expected, exact: true });
+    const later = [...branch, entry('a2', 'assistant')];
+    expect(checkpointAt(later, 3)).toEqual({ ...expected, exact: false });
+    expect(checkpointsOn(branch).map((checkpoint) => checkpoint.snapshotId)).toEqual(['s1', 's2']);
   });
 });

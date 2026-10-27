@@ -298,6 +298,38 @@ describe('rewind and fork guards, round two', () => {
   });
 });
 
+describe('rewind and fork guards, round seven', () => {
+  it('keeps the exact checkpoint of the point in a fork, for its rewinds and its forks', async () => {
+    writeFileSync(join(root, 'a.txt'), 'v0');
+    const { cog } = runtime({ one: [write('a.txt', 'v1')], two: [write('a.txt', 'v2')] });
+    const agent = coder();
+    await cog.run(agent, { input: 'one', threadId: 's' });
+    await cog.run(agent, { input: 'two', threadId: 's' });
+    const entries = await path(cog, 's');
+    const point = entries[entries.findIndex((entry) => entry.message.content === 'two') - 1]!;
+
+    const { thread, files } = await cog.forkThread('s', point.id, { files: true, workspace });
+    expect(files).toMatchObject({ exact: true });
+    expect(text('a.txt')).toBe('v1');
+    writeFileSync(join(root, 'a.txt'), 'changed in the fork');
+    const leaf = (await path(cog, thread.id)).at(-1)!;
+    const rewound = await cog.rewind(thread.id, leaf.id, { files: true, workspace });
+    expect(rewound.files).toMatchObject({ exact: true, entryId: files!.entryId });
+    expect(text('a.txt')).toBe('v1');
+
+    const plain = await cog.forkThread('s', point.id);
+    writeFileSync(join(root, 'a.txt'), 'changed again');
+    const plainLeaf = (await path(cog, plain.thread.id)).at(-1)!;
+    await cog.rewind(plain.thread.id, plainLeaf.id, { files: true, workspace });
+    expect(text('a.txt')).toBe('v1');
+
+    writeFileSync(join(root, 'a.txt'), 'changed once more');
+    const again = await cog.forkThread(thread.id, leaf.id, { files: true, workspace });
+    expect(again.files).toMatchObject({ exact: true, entryId: files!.entryId });
+    expect(text('a.txt')).toBe('v1');
+  });
+});
+
 describe('rewind and fork guards, round five', () => {
   async function threadIds(cog: Cogitator): Promise<string[]> {
     const memory = await cog.getMemory();

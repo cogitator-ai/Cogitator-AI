@@ -53,3 +53,31 @@ export function fileCheckpointOf(
     return undefined;
   return { snapshotId, workspaceId, root };
 }
+
+/**
+ * The metadata key an entry keeps, when it is the point a thread was forked at, the checkpoint
+ * that holds the files exactly as they were there, see {@link FileCheckpointAtRef}
+ */
+export const FILE_CHECKPOINT_AT_KEY = 'fileCheckpointAt';
+
+/**
+ * The checkpoint of the files at an entry itself (`entry.metadata.fileCheckpointAt`): the one of
+ * the user message that came right after it in the thread it was forked from, which the fork
+ * does not copy
+ */
+export interface FileCheckpointAtRef extends FileCheckpointRef {
+  /** The user message entry the checkpoint was taken for, in the thread forked from */
+  entryId: string;
+}
+
+/** The checkpoint of the files at the entry itself `metadata` names, when it is well-formed */
+export function fileCheckpointAtOf(
+  metadata: Record<string, unknown> | undefined
+): FileCheckpointAtRef | undefined {
+  const value = metadata?.[FILE_CHECKPOINT_AT_KEY];
+  if (typeof value !== 'object' || value === null) return undefined;
+  const checkpoint = fileCheckpointOf({ [FILE_CHECKPOINT_KEY]: value });
+  const { entryId } = value as Record<string, unknown>;
+  if (!checkpoint || typeof entryId !== 'string') return undefined;
+  return { ...checkpoint, entryId };
+}

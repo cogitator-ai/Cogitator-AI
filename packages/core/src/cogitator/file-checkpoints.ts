@@ -1,10 +1,14 @@
 import {
   CogitatorError,
   ErrorCode,
+  FILE_CHECKPOINT_AT_KEY,
+  fileCheckpointAtOf,
   fileCheckpointOf,
   type CogitatorCheckpointsConfig,
+  type FileCheckpointAtRef,
   type FileCheckpointRef,
   type FileCheckpointsConfig,
+  type ForkThreadEntryOptions,
   type MemoryEntry,
   type MemoryResult,
   type Thread,
@@ -123,7 +127,11 @@ function mayChangeFiles(entry: MemoryEntry): boolean {
  * branch, and of those that name a checkpoint the one written last is taken: the choice does not
  * depend on the active branch, so a rewind to the point, which leaves the messages after it off
  * the active branch, restores the same checkpoint when it is repeated, as a fork from the point
- * does. Without it only the message after the point on `path` counts
+ * does. Without it only the message after the point on `path` counts.
+ *
+ * An entry a thread was forked at names the checkpoint of the files at it
+ * (`fileCheckpointAt`, the one of the message after it in the thread forked from, which the
+ * fork does not copy): it counts as such a message's checkpoint, at or before the point
  */
 export function checkpointAt(
   path: readonly MemoryEntry[],
@@ -137,6 +145,9 @@ export function checkpointAt(
   let exact = true;
   for (let at = index; at >= 0; at--) {
     const entry = path[at];
+    const own = fileCheckpointAtOf(entry.metadata);
+    const ownRef = fileCheckpointRefOf(own);
+    if (own && ownRef) return { entryId: own.entryId, checkpoint: ownRef, exact };
     if (isUserMessage(entry)) {
       const checkpoint = fileCheckpointOf(entry.metadata);
       if (checkpoint) return { entryId: entry.id, checkpoint, exact };
@@ -144,6 +155,13 @@ export function checkpointAt(
     if (mayChangeFiles(entry)) exact = false;
   }
   return undefined;
+}
+
+/** The reference of a checkpoint at an entry, without the entry it was taken for */
+function fileCheckpointRefOf(at: FileCheckpointAtRef | undefined): FileCheckpointRef | undefined {
+  if (!at) return undefined;
+  const { entryId: _entryId, ...checkpoint } = at;
+  return checkpoint;
 }
 
 /** The checkpoint of the user message after entry `index` of `path`, see {@link checkpointAt} */
@@ -200,6 +218,20 @@ function writtenAfter(a: MemoryEntry, b: MemoryEntry): boolean {
 }
 
 /**
+ * What a fork of `branch` (the entries up to the point, oldest first) at its last entry writes on
+ * the copy of the point: the checkpoint `at` the files at it are in when it is exact and the
+ * message it was taken for lies after the point, so the fork does not copy it. Rewinds and forks
+ * of the fork then restore it from the point, as they would in the thread forked from
+ */
+export function forkPointMetadata(
+  branch: readonly MemoryEntry[],
+  at: CheckpointAtPoint | undefined
+): ForkThreadEntryOptions {
+  if (!at?.exact || branch.some((entry) => entry.id === at.entryId)) return {};
+  return { pointMetadata: { [FILE_CHECKPOINT_AT_KEY]: { ...at.checkpoint, entryId: at.entryId } } };
+}
+
+/**
  * The snapshots the user messages of `path` name, each once, in the order of the path, then
  * `also` when the path does not name it
  */
@@ -209,7 +241,11 @@ export function checkpointsOn(
 ): FileCheckpointRef[] {
   const seen = new Set<string>();
   const found: FileCheckpointRef[] = [];
-  for (const checkpoint of [...path.map((entry) => fileCheckpointOf(entry.metadata)), also]) {
+  const named = path.flatMap((entry) => [
+    fileCheckpointOf(entry.metadata),
+    fileCheckpointRefOf(fileCheckpointAtOf(entry.metadata)),
+  ]);
+  for (const checkpoint of [...named, also]) {
     if (!checkpoint || seen.has(checkpoint.snapshotId)) continue;
     seen.add(checkpoint.snapshotId);
     found.push(checkpoint);

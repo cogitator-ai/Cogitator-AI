@@ -4,6 +4,7 @@
 
 import { nanoid } from 'nanoid';
 import type {
+  ForkThreadEntryOptions,
   MemoryAdapter,
   MemoryProvider,
   MemoryResult,
@@ -392,7 +393,8 @@ export abstract class BranchingMemoryAdapter extends ChangeReportingMemoryAdapte
   async forkThread(
     threadId: string,
     atEntryId: string,
-    newThreadId?: string
+    newThreadId?: string,
+    options: ForkThreadEntryOptions = {}
   ): Promise<MemoryResult<Thread>> {
     const source = await this.getThread(threadId);
     if (!source.success) return source;
@@ -441,7 +443,11 @@ export abstract class BranchingMemoryAdapter extends ChangeReportingMemoryAdapte
         ...copy,
         threadId: fork.data.id,
         parentId,
-        metadata: { ...entry.metadata, forkOf: id },
+        metadata: {
+          ...entry.metadata,
+          ...(id === atEntryId && options.pointMetadata),
+          forkOf: id,
+        },
         ...(entry.event && { event: withCopiedIds(entry.event, copies) }),
       });
       if (!added.success) return takeBack(added);

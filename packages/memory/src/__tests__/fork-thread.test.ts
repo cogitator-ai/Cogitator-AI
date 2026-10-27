@@ -55,6 +55,24 @@ describe('forkThread', () => {
     expect(kept.map((entry) => entry.message.content)).toEqual(['keep']);
     expect(unwrap(await memory.getThread('t'))?.metadata.memoryForks).toBeUndefined();
   });
+
+  it('puts pointMetadata on the copy of the point only', async () => {
+    const memory = new InMemoryAdapter();
+    await memory.connect();
+    unwrap(await memory.createThread('agent', {}, 't'));
+    unwrap(await say(memory, 'first'));
+    const point = unwrap(await say(memory, 'second'));
+    unwrap(await say(memory, 'after'));
+
+    unwrap(await memory.forkThread('t', point.id, 'f', { pointMetadata: { note: 'here' } }));
+
+    const copies = unwrap(await memory.getEntries({ threadId: 'f' }));
+    expect(copies.map((entry) => [entry.message.content, entry.metadata?.note])).toEqual([
+      ['first', undefined],
+      ['second', 'here'],
+    ]);
+    expect(copies[1]?.metadata?.forkOf).toBe(point.id);
+  });
 });
 
 function say(memory: InMemoryAdapter, content: string) {
