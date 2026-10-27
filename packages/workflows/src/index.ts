@@ -407,3 +407,13 @@ export {
   type RedisTimerStoreOptions,
   type PostgresTimerStoreOptions,
 } from './timers/durable-timer-stores';
+
+export {
+  experimental_routineWorkflow,
+  experimental_inboxNotifier,
+  experimental_inboxDeadLetterQueue,
+  experimental_approvalItemId,
+  type RoutineWorkflowOptions,
+  type InboxOrigin,
+} from './routines';
+export { workflowsCron } from './timers/cron-parser';

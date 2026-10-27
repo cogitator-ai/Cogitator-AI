@@ -11,6 +11,8 @@ import {
   createToolRoutes,
   createWorkflowRoutes,
   createSwarmRoutes,
+  createTriggerRoutes,
+  createInboxRoutes,
 } from './routes/index.js';
 import { createSwaggerRoutes } from './swagger/index.js';
 import { createWebSocketRoutes } from './websocket/handler.js';
@@ -25,6 +27,7 @@ export function cogitatorApp(opts: CogitatorAppOptions): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
 
   app.use('*', createContextMiddleware(opts));
+  if (opts.triggers) app.route('/', createTriggerRoutes(opts.triggers));
   app.use('*', createBodyLimitMiddleware(opts.bodyLimit));
 
   if (opts.auth) {
@@ -41,6 +44,7 @@ export function cogitatorApp(opts: CogitatorAppOptions): Hono<HonoEnv> {
         auth: opts.swagger?.auth ?? Boolean(opts.auth),
         ...(opts.limits && { limits: opts.limits }),
         ...(opts.resumableStreams && { resumableStreams: true }),
+        ...(opts.triggers && { triggers: true }),
       })
     );
   }
@@ -52,6 +56,7 @@ export function cogitatorApp(opts: CogitatorAppOptions): Hono<HonoEnv> {
   app.route('/', createToolRoutes());
   app.route('/', createWorkflowRoutes());
   app.route('/', createSwarmRoutes());
+  if (opts.triggers) app.route('/', createInboxRoutes(opts.triggers, opts.anonymous));
 
   if (opts.enableWebSocket) {
     app.route('/', createWebSocketRoutes(opts.websocket));

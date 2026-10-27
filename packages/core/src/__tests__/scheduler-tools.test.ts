@@ -197,26 +197,57 @@ describe('scheduler tools', () => {
     expect(entry.metadata.userId).toBe('user_99');
   });
 
-  it('schedule_task prefers explicit params over context', async () => {
+  it('schedule_task takes the channel it is given but the user of the run', async () => {
     const tools = createSchedulerTools({ store: mockStore });
     const scheduleTool = byName(tools).schedule;
+    const context = {
+      agentId: 'a1',
+      runId: 'r1',
+      signal: new AbortController().signal,
+      channelType: 'telegram',
+      channelId: 'chat_123',
+      userId: 'user_99',
+    };
 
     await scheduleTool.execute(
-      { description: 'Override test', delay: '1m', channel: 'discord', userId: 'explicit_user' },
-      {
-        agentId: 'a1',
-        runId: 'r1',
-        signal: new AbortController().signal,
-        channelType: 'telegram',
-        channelId: 'chat_123',
-        userId: 'user_99',
-      }
+      { description: 'Same user', delay: '1m', channel: 'discord', userId: 'user_99' },
+      context
     );
-
     const entry = mockStore.schedule.mock.calls[0][0];
     expect(entry.metadata.channel).toBe('discord');
-    expect(entry.metadata.userId).toBe('explicit_user');
+    expect(entry.metadata.userId).toBe('user_99');
     expect(entry.metadata.channelId).toBe('chat_123');
+
+    await expect(
+      scheduleTool.execute(
+        { description: 'Other user', delay: '1m', userId: 'explicit_user' },
+        context
+      )
+    ).rejects.toThrow(/user of this conversation/);
+    await expect(
+      scheduleTool.execute(
+        { description: 'No user in the run', delay: '1m', userId: 'explicit_user' },
+        { ...context, userId: undefined }
+      )
+    ).rejects.toThrow(/user of this conversation/);
+    expect(mockStore.schedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('schedule_task refuses past the default of 20 waiting tasks', async () => {
+    const pending = Array.from({ length: 20 }, (_, at) => ({ id: `t${at}`, firesAt: at }));
+    mockStore.getPending.mockResolvedValueOnce(pending);
+    const scheduleTool = byName(createSchedulerTools({ store: mockStore })).schedule;
+    await expect(
+      scheduleTool.execute(
+        { description: 'One more', delay: '1m' },
+        {
+          agentId: 'a1',
+          runId: 'r1',
+          signal: new AbortController().signal,
+        }
+      )
+    ).rejects.toThrow(/20 tasks waiting already/);
+    expect(mockStore.schedule).not.toHaveBeenCalled();
   });
 
   it('schedule_task stores channelId from context', async () => {

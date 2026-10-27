@@ -10,6 +10,7 @@
  */
 
 import type { TimerEntry, TimerStore } from '@cogitator-ai/types';
+import { experimental_TimerClaims, experimental_TimerPoller } from '@cogitator-ai/core';
 
 /**
  * Timer handler function
@@ -128,10 +129,10 @@ export class TimerManager {
     Pick<TimerManagerConfig, TimerManagerCallback>;
   private handlers = new Map<string, TimerHandler>();
   private defaultHandler?: TimerHandler;
-  private pollTimer?: ReturnType<typeof setInterval>;
+  private readonly claims: experimental_TimerClaims;
+  private readonly poller: experimental_TimerPoller;
   private cleanupTimer?: ReturnType<typeof setInterval>;
   private running = false;
-  private processing = false;
 
   private processedTotal = 0;
   private errorTotal = 0;
@@ -156,6 +157,22 @@ export class TimerManager {
       onDeadLetter: config.onDeadLetter,
       onClaimLost: config.onClaimLost,
     };
+    const listeners = {
+      onError: (error: Error, entry?: TimerEntry) => this.config.onError?.(error, entry),
+      onClaimLost: (entry: TimerEntry) => this.config.onClaimLost?.(entry),
+    };
+    this.claims = new experimental_TimerClaims(store, listeners);
+    this.poller = new experimental_TimerPoller({
+      store,
+      process: (entry) => this.processTimer(entry),
+      pollInterval: this.config.pollInterval,
+      batchSize: this.config.batchSize,
+      immediate: false,
+      afterPoll: async () => {
+        this.lastPollAt = Date.now();
+      },
+      onError: listeners.onError,
+    });
   }
 
   /**
@@ -185,12 +202,7 @@ export class TimerManager {
       await this.processOverdueTimers();
     }
 
-    this.pollTimer = setInterval(() => {
-      this.poll().catch((error: unknown) => {
-        const err = error instanceof Error ? error : new Error(String(error));
-        this.config.onError?.(err);
-      });
-    }, this.config.pollInterval);
+    this.poller.start();
 
     if (this.config.enableCleanup) {
       this.cleanupTimer = setInterval(() => {
@@ -210,44 +222,12 @@ export class TimerManager {
 
     this.running = false;
 
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = undefined;
-    }
-
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = undefined;
     }
 
-    while (this.processing) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  }
-
-  /**
-   * Poll for overdue timers and process them
-   */
-  private async poll(): Promise<void> {
-    if (!this.running || this.processing) return;
-
-    this.processing = true;
-    this.lastPollAt = Date.now();
-
-    try {
-      const overdue = await this.store.getOverdue();
-      const batch = overdue.slice(0, this.config.batchSize);
-
-      for (const entry of overdue.slice(this.config.batchSize)) {
-        await this.releaseClaim(entry);
-      }
-
-      for (const entry of batch) {
-        await this.processTimer(entry);
-      }
-    } finally {
-      this.processing = false;
-    }
+    await this.poller.stop();
   }
 
   /**
@@ -281,13 +261,13 @@ export class TimerManager {
 
       if (!handler) {
         this.config.onTimerMissed?.(entry, Date.now() - entry.firesAt);
-        await this.releaseClaim(entry);
+        await this.claims.release(entry);
         return;
       }
 
-      if (!(await this.confirmClaim(entry))) return;
+      if (!(await this.claims.confirm(entry))) return;
 
-      const stopRenewing = this.keepClaim(entry);
+      const stopRenewing = this.claims.keep(entry);
       try {
         await handler(entry);
       } finally {
@@ -313,65 +293,6 @@ export class TimerManager {
         await this.store.markFired(entry.id);
         this.config.onDeadLetter?.(entry, err);
       }
-    }
-  }
-
-  /**
-   * Renews the store's claim on a timer before its handler runs; `false`
-   * when the claim is gone or could not be renewed
-   */
-  private async confirmClaim(entry: TimerEntry): Promise<boolean> {
-    const store = this.store;
-    if (!store.renew || !store.claimTtl) return true;
-    try {
-      if (await store.renew(entry.id)) return true;
-      this.config.onClaimLost?.(entry);
-    } catch (error) {
-      this.config.onError?.(toError(error), entry);
-    }
-    return false;
-  }
-
-  /**
-   * Renews the store's claim on a timer every `claimTtl / 3` until the
-   * returned function is called; it resolves once no renewal is in flight.
-   */
-  private keepClaim(entry: TimerEntry): () => Promise<void> {
-    const store = this.store;
-    const renew = store.renew;
-    if (!renew || !store.claimTtl) return async () => undefined;
-
-    let lost = false;
-    let renewal: Promise<void> = Promise.resolve();
-    const tick = async (): Promise<void> => {
-      if (lost) return;
-      try {
-        if (await renew.call(store, entry.id)) return;
-        lost = true;
-        clearInterval(interval);
-        this.config.onClaimLost?.(entry);
-      } catch (error) {
-        this.config.onError?.(toError(error), entry);
-      }
-    };
-    const interval = setInterval(() => {
-      renewal = renewal.then(tick);
-    }, store.claimTtl / 3);
-
-    return async () => {
-      clearInterval(interval);
-      await renewal;
-    };
-  }
-
-  /**
-   * Gives up the store's claim on a timer this manager will not run now
-   */
-  private async releaseClaim(entry: TimerEntry): Promise<void> {
-    try {
-      await this.store.release?.(entry.id);
-    } catch (error) {
-      this.config.onError?.(toError(error), entry);
     }
   }
 

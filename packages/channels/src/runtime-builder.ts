@@ -43,7 +43,7 @@ import type { EmbeddingServiceConfig } from '@cogitator-ai/types';
 import { createSelfConfigTools } from './tools/self-config';
 import { Gateway } from './gateway';
 import { legacyThreadKey } from './thread-key';
-import { getNextCronMs } from './cron';
+import { channelsCron, getNextCronMs } from './cron';
 import { HeartbeatScheduler } from './heartbeat';
 import { SimpleTimerStore } from './simple-timer-store';
 import { telegramChannel } from './channels/telegram';
@@ -256,6 +256,7 @@ export class RuntimeBuilder {
           store: timerStore,
           defaultChannel: firstChannelName ?? 'system',
           defaultUserId: channelOwner(firstChannel),
+          cron: channelsCron,
         })
       );
     }

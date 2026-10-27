@@ -5,6 +5,7 @@ import {
   ResumableStreams,
   checkRunLimits,
   resolveSseHeartbeatMs,
+  type AnonymousPolicy,
 } from '@cogitator-ai/server-shared';
 import type { Server as HttpServer } from 'http';
 import type {
@@ -29,6 +30,8 @@ import {
   createToolRoutes,
   createWorkflowRoutes,
   createSwarmRoutes,
+  createTriggerRoutes,
+  createInboxRoutes,
 } from './routes/index.js';
 import { generateOpenAPISpec, serveSwaggerUI } from './swagger/index.js';
 import { setupWebSocket } from './websocket/index.js';
@@ -45,6 +48,9 @@ export class CogitatorServer {
   private agents: NonNullable<CogitatorServerConfig['agents']>;
   private workflows: NonNullable<CogitatorServerConfig['workflows']>;
   private swarms: NonNullable<CogitatorServerConfig['swarms']>;
+  private triggers: CogitatorServerConfig['triggers'];
+  /** `anonymous` as configured, unset when it was not: the inbox is closed to anonymous callers then */
+  private readonly configuredAnonymous: AnonymousPolicy | undefined;
   private config: ResolvedServerConfig;
   private resumableStreams: ResumableStreams<AuthContext> | undefined;
   private routeContext: RouteContext | null = null;
@@ -56,8 +62,10 @@ export class CogitatorServer {
     this.agents = options.agents || {};
     this.workflows = options.workflows || {};
     this.swarms = options.swarms || {};
+    this.triggers = options.triggers;
 
     const cfg = options.config ?? {};
+    this.configuredAnonymous = cfg.anonymous;
     this.config = {
       ...DEFAULT_CONFIG,
       ...cfg,
@@ -86,6 +94,8 @@ export class CogitatorServer {
     if (this.config.cors) {
       router.use(createCorsMiddleware(this.config.cors));
     }
+
+    if (this.triggers) router.use(createTriggerRoutes(this.triggers));
 
     router.use(createJsonBodyGuard());
     router.use(json());
@@ -117,6 +127,7 @@ export class CogitatorServer {
     router.use(createToolRoutes(ctx));
     router.use(createWorkflowRoutes(ctx));
     router.use(createSwarmRoutes(ctx));
+    if (this.triggers) router.use(createInboxRoutes(this.triggers, this.configuredAnonymous));
 
     router.use(notFoundHandler);
     router.use(errorHandler);
@@ -134,6 +145,7 @@ export class CogitatorServer {
       auth: this.config.swagger?.auth ?? Boolean(this.config.auth),
       limits: this.config.limits,
       resumableStreams: this.resumableStreams !== undefined,
+      triggers: this.triggers !== undefined,
     });
 
     router.get('/openapi.json', (_req, res) => {

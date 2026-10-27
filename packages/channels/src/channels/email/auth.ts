@@ -1,4 +1,7 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import {
+  secretsEqual as coreSecretsEqual,
+  verifyMailgunSignature as coreVerifyMailgunSignature,
+} from '@cogitator-ai/core';
 import { alignedDomains, headersOf, type EmailHeaders } from './address';
 
 /**
@@ -208,10 +211,7 @@ export function headerAuthentication(
  * comparison (of the expected secret with itself), so only the length of the secret can show.
  */
 export function secretsEqual(given: string, expected: string): boolean {
-  const givenBytes = Buffer.from(given);
-  const expectedBytes = Buffer.from(expected);
-  const sameLength = givenBytes.length === expectedBytes.length;
-  return timingSafeEqual(sameLength ? givenBytes : expectedBytes, expectedBytes) && sameLength;
+  return coreSecretsEqual(given, expected);
 }
 
 /**
@@ -224,10 +224,5 @@ export function verifyMailgunSignature(
   signature: string | undefined,
   signingKey: string
 ): boolean {
-  if (!signature || !/^[0-9a-f]+$/i.test(signature)) return false;
-  const expected = Buffer.from(
-    createHmac('sha256', signingKey).update(timestamp).update(token).digest('hex')
-  );
-  const given = Buffer.from(signature.toLowerCase());
-  return given.length === expected.length && timingSafeEqual(given, expected);
+  return coreVerifyMailgunSignature(timestamp, token, signature, signingKey);
 }

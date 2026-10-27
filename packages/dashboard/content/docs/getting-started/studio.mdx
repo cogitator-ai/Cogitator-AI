@@ -1,6 +1,6 @@
 ---
 title: Cogitator Studio
-description: 'A local debugger for agent projects: chat, approvals, traces and costs, workflow runs and time-travel forks.'
+description: 'A local debugger for agent projects: chat, approvals, traces and costs, workflow runs, time-travel forks and the inbox of routines.'
 ---
 
 Cogitator Studio: a local debugger for Cogitator agent projects. Chat with every agent of a project, approve the tool calls that need it, read the trace and the cost of each run, run workflows and rerun them from a node, and fork a run from any step to see what a different input or tool result changes.
@@ -29,6 +29,7 @@ It opens http://localhost:4321 (the next free port when it is taken). The studio
 - **Rewind and fork a thread**: every entry of the memory tree gets two buttons on hover, to rewind the thread to it or fork it into a new thread from there, with the files of the agent's workspace when it keeps file checkpoints, see [Rewind and fork](#rewind-and-fork).
 - **Time-travel forks**: pick a step of a finished run (before each tool call), change the input, add context or replace a tool result, and run on from there. The original and the fork are shown side by side, with the tool calls that differ highlighted. A fork of a run that wrote to memory goes on a branch of its thread from where the run started, so it shows in the memory tree and never in the conversation it split from.
 - **Plugins**: every plugin of the project's runtime with its status, what it adds, its permissions and diagnostics, Reload and Enable or Disable, and the panels plugins add, each in a sandboxed frame, see [Plugins](#plugins).
+- **Inbox and Schedules**: the [routines](/docs/core/triggers) of `experimental_triggers`, what starts them and what they came to. Start the triggers, run a trigger now, pause and resume it, read results and failures, approve or reject a run that waits and answer its questions, see [Routines](#routines-inbox-and-schedules).
 - **History**: runs and threads are kept in `.cogitator/studio/` as JSON files, searchable by input, output and error and filtered by agent, workflow or kind. Runs a stopped studio left behind are marked failed.
 - **Keyboard**: `⌘K` (`Ctrl+K`) opens a command palette over agents, workflows, the whole run history and actions, `/` searches the page, `G O` and `G R` go to the overview and the runs, `J` and `K` walk the run list and the trace, `N` starts a thread, `T` opens the memory tree, and `?` lists every shortcut.
 - **Themes**: light and dark, following the system until you pick one, which the browser remembers.
@@ -94,6 +95,37 @@ A request is `{ type: 'cogitator:request', id, method, params }`: `id` is a stri
 | `POST /api/plugins/:id/panels/:panel/call` | `{ method: string, params? }` | `{ result }`                                                                       |
 
 Ids are URL-encoded (`board%40code` for `board@code`) and bodies are JSON, as for every other post. A bad body answers 400, as do a panel without the handler and disabling the core's own plugin, an unknown plugin or panel answers 404, a reload or an enable in a project without `experimental_plugins` 409, and a handler that throws 500, with its message as `error`. The event stream sends `{ type: 'plugins', plugins }` whenever the runtime's plugins change.
+
+## Routines: Inbox and Schedules
+
+A project whose runtime configures [`experimental_triggers`](/docs/core/triggers) gets two more pages in the sidebar and the command palette.
+
+**Schedules** lists the routines, the ones in code, in the routine store and from plugins, each with its task, the agent or workflow it runs, its overlap rule, the thread it runs in and its runs going on or queued. Each trigger shows its kind, what it reacts to (the cron expression and time zone of a schedule, the events of a webhook), whether it is on, its next occurrence, when it last fired and how often. **Run now** fires a trigger by hand, as a person, with the optional text of the card as the event's text, and **Pause** and **Resume** turn it off and on. Below are the pending schedule entries, the cron triggers' and the tasks agents gave themselves with `schedule_task`, with Run now, Pause and Resume, and the latest 50 firings with their status, source, run and reason.
+
+The studio never starts the trigger manager by itself, since routines may call real models: **Start** at the top of the page starts the triggers and **Stop** stops them, and a reload of the project leaves them stopped. Until then schedules do not fire, cron triggers have no schedule entry yet and Run now of a schedule entry is refused, while Run now of a trigger works either way.
+
+**Inbox** lists what the routines came to, newest first: results, failures, approvals and questions, filtered by Unread, All (everything not archived) or Archived and by kind, and updated live. An item shows its summary and the whole result, its routine, trigger, source, run and thread (linked when the studio keeps that run or thread), and can be marked read or unread and archived. An approval is approved or rejected, with a reason the model reads, and a question is answered in text, sent as JSON when it parses as JSON. A request of a routine's workflow takes the answer its type asks for: approve or reject, one of its choices (sent as the choice's value), text, or a number for a rating. The run goes on, its outcome comes to the inbox as a new item, and the answered one is marked answered and archived. An archived item that still waits can be answered, an answered one cannot, whatever its status. The sidebar shows the unread count next to **Inbox**.
+
+An approval of a routine's run can also be answered through `POST /api/approvals/:id`, the route the chat's approvals use: an id the studio knows as a chat's approval is answered as before, else the route looks for an inbox item that waits on it, by the tool call id of an agent's approval (an Approve or Reject action of the item), the `approvalId` of a workflow's approval or the item's own id. An agent's item is answered with `{ decisions: { [toolCallId]: { approved, reason? } } }` (every approval of the item when the item's id is given), a workflow's with `{ decision: approved }`. The answer is `{ decided: true, inboxItemId, result }`, or `{ decided: false }` when nothing waits on the id.
+
+### Routine endpoints
+
+| Request                          | Body                                                                    | Answer                                                                           |
+| -------------------------------- | ----------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `GET /api/schedules`             |                                                                         | `TriggersState`: `configured`, `started`, `routines`, `schedules` and `history`  |
+| `POST /api/schedules/start`      | `{}`                                                                    | `TriggersState`                                                                  |
+| `POST /api/schedules/stop`       | `{}`                                                                    | `TriggersState`                                                                  |
+| `POST /api/schedules/:id/run`    | `{}`                                                                    | `TriggersState`, the entry fires on the next poll                                |
+| `POST /api/schedules/:id/pause`  | `{}`                                                                    | `TriggersState`                                                                  |
+| `POST /api/schedules/:id/resume` | `{}`                                                                    | `TriggersState`                                                                  |
+| `POST /api/triggers/:id/fire`    | `{ text? }`                                                             | `TriggerFireResult`: `status` (`started`, `queued`, `skipped`), `runId` and more |
+| `GET /api/inbox?status=&kind=`   |                                                                         | `InboxListing`: `configured`, `items` (`InboxItemRecord[]`) and `unread`         |
+| `POST /api/inbox/:id/read`       | `{}`                                                                    | The item                                                                         |
+| `POST /api/inbox/:id/unread`     | `{}`                                                                    | The item                                                                         |
+| `POST /api/inbox/:id/archive`    | `{}`                                                                    | The item                                                                         |
+| `POST /api/inbox/:id/respond`    | `{ decisions?, defaultDecision?, responses?, decision?, respondedBy? }` | `TriggerFireResult` of the run going on                                          |
+
+A trigger id is `<routineId>.<triggerId>` (`digest.morning`). `:id` of `run` is a schedule entry, of `pause` and `resume` a schedule entry, a trigger or a routine: the entry of a routine's cron trigger is paused through the trigger, so the trigger's state says the same. `status` takes `unread`, `read` and `archived` separated by commas, or `all`, and lists every item but the archived ones when left out. `kind` takes `result`, `approval`, `question` and `failure` the same way, `limit` is up to 500 (100 by default). A project without `experimental_triggers` answers `GET /api/schedules` and `GET /api/inbox` with `configured: false` and nothing in them, and every change, a start of the triggers included, with 409. An unknown trigger, schedule entry or item answers 404, a Run now of a paused entry or of triggers that are not started 409, a bad body or query 400. The event stream sends `{ type: 'inbox', change, unread }` for every change of the inbox, `change` being `{ type: 'added' | 'updated', item }` or `{ type: 'deleted', id }`.
 
 ## How it works
 

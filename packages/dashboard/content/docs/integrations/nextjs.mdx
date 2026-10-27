@@ -196,6 +196,46 @@ return (
 
 The rest of the run streams into a new assistant message (a JSON `resumeApi` is appended as one message). `pendingApprovals` clears once the resume is accepted, when the server has nothing paused anymore (`409`), or when the user sends a new message, which declines the waiting calls. `useCogitatorAgent({ api, resumeApi })` exposes the `pendingApprovals` of its last result and `resume(decisions)`.
 
+## Triggers and inbox
+
+`createTriggerHandler` and `createInboxHandler` (experimental) serve the routes of API triggers, webhooks and the inbox of their results from the runtime's [trigger manager](/docs/core/triggers), as the [server adapters](/docs/server-adapters#triggers-and-inbox) do. Start the manager yourself:
+
+```typescript title="lib/cogitator.ts"
+import { Cogitator } from '@cogitator-ai/core';
+import { createInboxHandler } from '@cogitator-ai/next';
+
+export const cog = new Cogitator({ experimental_triggers: { agents, routines } });
+await cog.experimental_triggers?.start();
+
+export const inbox = createInboxHandler(cog.experimental_triggers!, {
+  auth: async (req) => ({ userId: await getUserId(req) }),
+});
+```
+
+```typescript title="app/api/triggers/[id]/[route]/route.ts"
+import { createTriggerHandler } from '@cogitator-ai/next';
+import { cog } from '@/lib/cogitator';
+
+export const POST = createTriggerHandler(cog.experimental_triggers!);
+```
+
+```typescript title="app/api/inbox/route.ts"
+export const { GET } = inbox;
+```
+
+```typescript title="app/api/inbox/[id]/route.ts"
+export const { PATCH } = inbox;
+```
+
+| Route                            | Auth                                                                      | Body                                                                           |
+| -------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `POST /api/triggers/:id/fire`    | The trigger's own bearer token                                            | `{ "text": "..." }`, read raw                                                  |
+| `POST /api/triggers/:id/webhook` | The sender's signature (HMAC, GitHub, Mailgun, Postmark, SendGrid, Slack) | Any content type, read raw                                                     |
+| `GET /api/inbox`                 | `auth` and `anonymous`                                                    | `?status=unread&kind=failure&routineId=...&limit=20&before=<ms>&beforeId=<id>` |
+| `PATCH /api/inbox/:id`           | `auth` and `anonymous`                                                    | `{ "status": "read" \| "unread" \| "archived" }`                               |
+
+The trigger handler runs no auth of its own: a trigger checks the token or the signature over the body exactly as it came, read raw for any content type up to 10 MiB and never parsed or re-serialized. A larger body answers `413 PAYLOAD_TOO_LARGE`, a `route` other than `fire` and `webhook` `404`, and everything else is the trigger manager's answer. The inbox handlers take the caller from `auth` (`{ userId }`, `undefined` for an anonymous caller). A caller without a user id, which is every caller without `auth`, gets `401 UNAUTHORIZED` unless `anonymous: 'allow'` is set, then they see the items without one. A caller sees and changes only the items of its `userId`, and another user's item answers `404 NOT_FOUND`. `params` may be a promise (Next 15 and later) or the object itself.
+
 ## Client: useCogitatorChat
 
 The `useCogitatorChat` hook manages the entire chat lifecycle -- sending messages, processing the SSE stream, handling tool calls, and tracking loading state.

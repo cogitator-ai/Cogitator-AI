@@ -4,3 +4,4 @@ export { createThreadRoutes } from './threads.js';
 export { createToolRoutes } from './tools.js';
 export { createWorkflowRoutes } from './workflows.js';
 export { createSwarmRoutes } from './swarms.js';
+export { createTriggerRoutes, createInboxRoutes } from './triggers.js';

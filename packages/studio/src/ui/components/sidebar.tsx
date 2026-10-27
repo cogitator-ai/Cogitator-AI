@@ -1,6 +1,8 @@
 import {
   Activity,
   Bot,
+  CalendarClock,
+  Inbox,
   Keyboard,
   LayoutDashboard,
   Monitor,
@@ -14,6 +16,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { INBOX_UNREAD_CAP } from '../../protocol';
 import { MOD } from '../hotkeys';
 import { href } from '../router';
 import { useStudio } from '../store';
@@ -86,6 +89,7 @@ export function Sidebar({
   const runs = useStudio((state) => state.runs);
   const theme = useTheme();
   const plugins = useStudio((state) => state.plugins);
+  const inbox = useStudio((state) => state.inbox);
   const registry = host.state === 'ready' ? host.registry : undefined;
   const pluginTrouble = plugins?.plugins.some(
     (plugin) => plugin.status === 'failed' || plugin.status === 'blocked'
@@ -154,6 +158,29 @@ export function Sidebar({
           }
         >
           Plugins
+        </NavLink>
+        <NavLink
+          to={['inbox']}
+          icon={Inbox}
+          active={route[0] === 'inbox'}
+          testId="nav-inbox"
+          meta={
+            inbox && inbox.unread > 0 ? (
+              <span className="sb-count" aria-label={`${inbox.unread} unread`}>
+                {inbox.unread > INBOX_UNREAD_CAP ? `${INBOX_UNREAD_CAP}+` : inbox.unread}
+              </span>
+            ) : undefined
+          }
+        >
+          Inbox
+        </NavLink>
+        <NavLink
+          to={['schedules']}
+          icon={CalendarClock}
+          active={route[0] === 'schedules'}
+          testId="nav-schedules"
+        >
+          Schedules
         </NavLink>
 
         <div className="sb-section">

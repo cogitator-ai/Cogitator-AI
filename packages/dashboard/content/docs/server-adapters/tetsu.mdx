@@ -67,8 +67,11 @@ interface CogitatorDeps {
   acceptContext?: boolean | string[]; // context keys clients may send: none by default, a list, or true for any
   threadMessageRoles?: ('user' | 'assistant' | 'system')[]; // roles of POST /threads/:id/messages, default user and assistant
   workflowCheckpoints?: CheckpointStore; // workflow checkpoints and /workflows/:name/resume, none by default
+  triggers?: TriggersHost; // experimental: the trigger manager, serves /triggers/:id/fire, /webhook and /inbox
 }
 ```
+
+With `triggers` the controller serves the [trigger and inbox routes](/docs/server-adapters#triggers-and-inbox). The two trigger routes run neither `auth`, nor the anonymous policy, nor the JSON body check, read the body Tetsu keeps as `rawBody`, and answer with the trigger manager's status and body rather than the Tetsu envelope. The inbox routes answer refusals in the envelope, `422 VALIDATION_FAILED` for a query or body that breaks their schemas.
 
 ## Errors
 

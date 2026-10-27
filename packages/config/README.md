@@ -500,6 +500,24 @@ limits:
   maxToolResultLength: 100000 # characters of a tool result the model reads
 ```
 
+### Triggers Configuration (experimental)
+
+The parts of `experimental_triggers` a file can hold: routines, the poll interval and limits. The agents and workflows routines name, the stores and sinks come from code, and secrets go by their environment variable (`{ env: NAME }`), not as text in the file.
+
+```yaml
+experimental_triggers:
+  pollInterval: 1000
+  routines:
+    - id: digest
+      prompt: Summarize the news of the day
+      target: { agent: assistant }
+      overlap: skip
+      catchUp: latest
+      triggers:
+        - { kind: cron, cron: '0 18 * * 1-5', timezone: Europe/Moscow }
+        - { kind: github, secret: { env: GITHUB_WEBHOOK_SECRET }, events: [pull_request.opened] }
+```
+
 ### Logging Configuration
 
 ```yaml
@@ -674,6 +692,7 @@ import type { CogitatorConfigInput, CogitatorConfigOutput } from '@cogitator-ai/
 | `LLMRetryConfigSchema`            | `llm.retry` (`false` or retry options) |
 | `ModelCircuitBreakerConfigSchema` | `llm.modelCircuitBreaker`              |
 | `PromptsConfigSchema`             | `prompts` (`autoDeployWinner`)         |
+| `TriggersConfigSchema`            | `experimental_triggers` (experimental) |
 
 `KnowledgeGraphConfigSchema` and `PromptOptimizationConfigSchema` validate those configs on their own; they are not keys of `CogitatorConfigSchema`.
 

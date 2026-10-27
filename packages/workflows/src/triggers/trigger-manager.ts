@@ -157,6 +157,9 @@ export class DefaultTriggerManager implements ITriggerManager {
   private eventListeners = new Map<string, () => void>();
   private config: TriggerManagerConfig;
   private _started = false;
+  private restoring?: Promise<void>;
+  /** Changes with every `start()` and `stop()`: a restore of an earlier start stops there */
+  private generation = 0;
 
   constructor(config: TriggerManagerConfig = {}) {
     this.config = config;
@@ -190,10 +193,83 @@ export class DefaultTriggerManager implements ITriggerManager {
   }
 
   /**
-   * Start the trigger manager
+   * Starts the manager and brings back the triggers of its store: cron triggers are scheduled
+   * again, webhooks answered and event triggers listen, disabled ones stay disabled. A trigger
+   * that cannot come back is skipped with its error recorded on it. Resolves once they are back
    */
-  start(): void {
+  start(): Promise<void> {
+    if (this._started && this.restoring) return this.restoring;
     this._started = true;
+    const generation = ++this.generation;
+    this.restoring = this.restore(generation);
+    return this.restoring;
+  }
+
+  /** Brings back the stored triggers, unless `stop()` came while the store was read */
+  private async restore(generation: number): Promise<void> {
+    const stored = await this.store.list();
+    for (const trigger of stored) {
+      if (generation !== this.generation) return;
+      try {
+        this.activate(trigger);
+        if (!trigger.enabled) this.deactivate(trigger);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[TriggerManager] Trigger '${trigger.id}' could not be restored:`, message);
+        await this.store.update(trigger.id, {
+          lastError: message,
+          errorCount: trigger.errorCount + 1,
+        });
+      }
+    }
+  }
+
+  /** Hands a stored trigger to its executor or event listener */
+  private activate(trigger: WorkflowTrigger): void {
+    switch (trigger.type) {
+      case 'cron':
+        this.cronExecutor.unregister(trigger.id);
+        this.cronExecutor.register(
+          trigger.workflowName,
+          { ...(trigger.config as CronTriggerConfig), enabled: trigger.enabled },
+          trigger.id
+        );
+        break;
+      case 'webhook': {
+        const config = trigger.config as WebhookTriggerConfig;
+        const errors = validateWebhookTriggerConfig(config);
+        if (errors.length > 0) {
+          throw new Error(`Invalid webhook trigger config: ${errors.join('; ')}`);
+        }
+        this.webhookExecutor.unregister(trigger.id);
+        this.webhookExecutor.register(trigger.workflowName, config, trigger.id);
+        break;
+      }
+      case 'event':
+        this.registerEventTrigger(
+          trigger.id,
+          trigger.workflowName,
+          trigger.config as EventTriggerConfig
+        );
+        break;
+    }
+  }
+
+  private deactivate(trigger: WorkflowTrigger): void {
+    switch (trigger.type) {
+      case 'cron':
+        this.cronExecutor.disable(trigger.id);
+        break;
+      case 'webhook':
+        this.webhookExecutor.disable(trigger.id);
+        break;
+      case 'event': {
+        const unsubscribe = this.eventListeners.get(trigger.id);
+        unsubscribe?.();
+        this.eventListeners.delete(trigger.id);
+        break;
+      }
+    }
   }
 
   /**
@@ -201,6 +277,8 @@ export class DefaultTriggerManager implements ITriggerManager {
    */
   stop(): void {
     this._started = false;
+    this.generation++;
+    this.restoring = undefined;
     this.cronExecutor.dispose();
     this.webhookExecutor.dispose();
   }
@@ -213,12 +291,41 @@ export class DefaultTriggerManager implements ITriggerManager {
   }
 
   /**
-   * Register a trigger
+   * Registers a trigger and returns its id. A trigger of the store with the same workflow, type
+   * and config (what `start()` brought back after a restart) is taken over instead of added
+   * again: it keeps its id and counts, takes the `enabled` given, and a program that registers
+   * its triggers on every boot does not get one more each time. It is not started a second
+   * time, so a cron trigger with `runImmediately` fires once per start, not once more for the
+   * registration
    */
   async register(
     trigger: Omit<WorkflowTrigger, 'id' | 'createdAt' | 'triggerCount' | 'errorCount'>
   ): Promise<string> {
     if (!this._started) throw new Error('TriggerManager is not started');
+    await this.restoring;
+    const key = definitionKey(trigger);
+    const existing = (await this.store.list(trigger.workflowName)).find(
+      (stored) => definitionKey(stored) === key
+    );
+    if (existing) {
+      const updated: WorkflowTrigger = {
+        ...existing,
+        config: trigger.config,
+        enabled: trigger.enabled,
+      };
+      if (existing.type === 'webhook') {
+        const errors = validateWebhookTriggerConfig(updated.config as WebhookTriggerConfig);
+        if (errors.length > 0) {
+          throw new Error(`Invalid webhook trigger config: ${errors.join('; ')}`);
+        }
+      }
+      await this.store.save(updated);
+      if (existing.enabled !== updated.enabled) {
+        if (updated.enabled) await this.enable(existing.id);
+        else await this.disable(existing.id);
+      }
+      return existing.id;
+    }
     const id = nanoid();
     const now = Date.now();
 
@@ -601,4 +708,43 @@ export function eventTrigger(
     eventType,
     ...options,
   };
+}
+
+/**
+ * What tells two trigger definitions apart: the workflow, the type and the config as JSON with
+ * its keys in order, the config's own `enabled` left out (it is state, not what the trigger is),
+ * an `enabled` deeper in it (in an input, say) kept. A function of the config (an event
+ * trigger's `filter` or `transform`) counts by identity: two definitions with different functions
+ * are two triggers, and one brought back from a store that cannot keep functions is not taken
+ * over by a definition that has them
+ */
+function definitionKey(trigger: Pick<WorkflowTrigger, 'workflowName' | 'type' | 'config'>): string {
+  const config = Object.fromEntries(
+    Object.entries(trigger.config).filter(([key]) => key !== 'enabled')
+  );
+  return JSON.stringify([trigger.workflowName, trigger.type, sortedJson(config)]);
+}
+
+const FUNCTION_IDS = new WeakMap<object, number>();
+let nextFunctionId = 0;
+
+/** A stable token of a function's identity */
+function functionId(fn: object): string {
+  let id = FUNCTION_IDS.get(fn);
+  if (id === undefined) {
+    id = ++nextFunctionId;
+    FUNCTION_IDS.set(fn, id);
+  }
+  return `function#${id}`;
+}
+
+function sortedJson(value: unknown): unknown {
+  if (typeof value === 'function') return functionId(value);
+  if (Array.isArray(value)) return value.map(sortedJson);
+  if (typeof value !== 'object' || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([key, entry]) => [key, sortedJson(entry)])
+  );
 }

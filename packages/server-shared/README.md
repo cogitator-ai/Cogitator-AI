@@ -346,6 +346,15 @@ What every adapter keeps the same, so an application behaves alike on any of the
 - `workflowRunFailure(described, checkpointId)`: How a failed workflow run is answered: as the error it failed with, plus the `checkpointId` of the last checkpoint it saved, which `errorEnvelope` carries next to `code` and `message`. A run that saved none is answered as any other error.
 - `parseThreadPageQuery(query)`, `readThreadPage(memory, threadId, page, thread?)`, `MAX_THREAD_PAGE_LIMIT`: `GET /threads/:id?limit&cursor`, the newest `limit` messages of what is left and a `nextCursor` for the page before them. The cursor tells apart entries that share a time, so no message is skipped or repeated across pages.
 
+### 12. Triggers and Inbox (experimental)
+
+The routes every adapter serves when it is given the runtime's trigger manager (`triggers: cog.experimental_triggers`), and none without it:
+
+- `POST /triggers/:id/fire` and `POST /triggers/:id/webhook`: `handleTriggerRoute(host, route, id, request)` hands the body to the trigger byte for byte, any content type, and answers what the trigger answers (`202` with a `TriggerFireResult`, `200` for a duplicate, `401`, `404`, `409`, `429` with `Retry-After`). Adapters mount them before their auth and JSON body guard, since a trigger checks its caller itself by token or signature, and refuse bodies over `MAX_TRIGGER_BODY_BYTES` (10 MiB) with `TRIGGER_BODY_TOO_LARGE`. `triggerRequestOf()` builds the request from a Node one.
+- `GET /inbox` and `PATCH /inbox/:id`: `listInboxRoute(host, query, userId, anonymous?)` (`status`, `kind`, `routineId`, `limit` up to `MAX_INBOX_PAGE`, `before` and `beforeId`, answers `{ items, nextBefore?, nextBeforeId? }`) and `patchInboxRoute(host, id, body, userId, anonymous?)` (`{ status }`, never the answered state) behind the adapter's auth: a caller sees and changes only the items of their user id. `anonymous` is the adapter's policy as configured: a caller without a user id gets `401` (`INBOX_SIGN_IN_REQUIRED`, `admitInboxCaller`) unless it is `'allow'`, then they see the items without one.
+- `TriggersHost` is what the routes need of the manager, `TRIGGER_ROUTES`, `INBOX_STATUSES` and `INBOX_KINDS` the routes and values. `generateOpenAPISpec(ctx, { triggers: true })` documents them.
+- Conformance: `TRIGGER_CONFORMANCE_CASES`, `ConformanceTriggers` and `checkTriggerConformanceCase` check that raw bodies arrive untouched, trigger routes ignore the adapter's auth and the inbox keeps to the caller's items.
+
 ## Packages Built on `@cogitator-ai/server-shared`
 
 The following adapters and integrations build on `@cogitator-ai/server-shared`:

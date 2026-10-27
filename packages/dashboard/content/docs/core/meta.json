@@ -16,6 +16,7 @@
     "subagents",
     "commands",
     "plugins",
+    "triggers",
     "project-instructions",
     "llm-backends",
     "model-registry",

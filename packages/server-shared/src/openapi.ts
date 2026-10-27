@@ -603,6 +603,252 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
     };
   }
 
+  if (config.triggers) {
+    (spec.tags ??= []).push({
+      name: 'triggers',
+      description: 'Routines started by API calls and webhooks, and the inbox of their results',
+    });
+    const id = {
+      name: 'id',
+      in: 'path',
+      required: true,
+      description: 'The trigger, `<routineId>.<triggerId>`',
+      schema: { type: 'string' },
+    };
+    const fired = {
+      description: 'The firing was taken: a run started, was queued or skipped (see `status`)',
+      content: {
+        'application/json': { schema: { $ref: '#/components/schemas/TriggerFireResult' } },
+      },
+    };
+    const duplicate = {
+      description:
+        'The event was delivered before (`status: duplicate`), or Slack asked to verify the URL',
+      content: { 'application/json': { schema: { type: 'object' } } },
+    };
+    const triggerRefusals = {
+      401: {
+        description: 'The token or signature is not valid (UNAUTHORIZED)',
+        content: errorContent,
+      },
+      404: {
+        description: 'No such trigger, or not one for this route (NOT_FOUND)',
+        content: errorContent,
+      },
+      409: { description: 'The trigger is paused (TRIGGER_DISABLED)', content: errorContent },
+      413: { description: 'The body is over 10 MiB (PAYLOAD_TOO_LARGE)', content: errorContent },
+      429: {
+        description: 'The trigger took `maxPerHour` events in the last hour (RATE_LIMITED)',
+        headers: retryAfter,
+        content: errorContent,
+      },
+    };
+    spec.paths['/triggers/{id}/fire'] = {
+      post: {
+        tags: ['triggers'],
+        summary: 'Fire an API trigger',
+        description:
+          "Starts a session of the routine with its prompt as the task and `text` as untrusted data. Authenticated by the trigger's own bearer token, not by the server's auth. `Idempotency-Key` makes repeats start one run",
+        security: [{ triggerToken: [] }],
+        parameters: [
+          id,
+          { name: 'Idempotency-Key', in: 'header', required: false, schema: { type: 'string' } },
+        ],
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: { text: { type: 'string', maxLength: 65536 } },
+              },
+            },
+          },
+        },
+        responses: {
+          200: duplicate,
+          202: fired,
+          400: {
+            description: 'The body is not `{ text }` (VALIDATION_ERROR)',
+            content: errorContent,
+          },
+          ...triggerRefusals,
+        },
+      },
+    };
+    spec.paths['/triggers/{id}/webhook'] = {
+      post: {
+        tags: ['triggers'],
+        summary: 'Deliver a webhook to a trigger',
+        description:
+          'A generic webhook signed with HMAC over the raw body, a GitHub delivery (`X-Hub-Signature-256`), inbound mail of Mailgun, Postmark or SendGrid, or a Slack Events API callback. The body is read as it came, any content type. The payload reaches the routine as untrusted data',
+        security: [],
+        parameters: [id],
+        requestBody: { required: true, content: { '*/*': { schema: {} } } },
+        responses: { 200: duplicate, 202: fired, ...triggerRefusals },
+      },
+    };
+    spec.paths['/inbox'] = {
+      get: {
+        tags: ['triggers'],
+        summary: "The caller's inbox",
+        description:
+          "Results, failures, approvals and questions of routines, newest first: the items of the caller's user id. A caller without one gets 401 unless the server is set to anonymous: 'allow', then the items of no user",
+        parameters: [
+          {
+            name: 'status',
+            in: 'query',
+            required: false,
+            description: 'unread, read, archived, comma-separated',
+            schema: { type: 'string' },
+          },
+          {
+            name: 'kind',
+            in: 'query',
+            required: false,
+            description: 'result, approval, question, failure, comma-separated',
+            schema: { type: 'string' },
+          },
+          { name: 'routineId', in: 'query', required: false, schema: { type: 'string' } },
+          {
+            name: 'limit',
+            in: 'query',
+            required: false,
+            schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
+          },
+          {
+            name: 'before',
+            in: 'query',
+            required: false,
+            description:
+              'Only items created before this time (ms), the `nextBefore` of the page before',
+            schema: { type: 'integer' },
+          },
+          {
+            name: 'beforeId',
+            in: 'query',
+            required: false,
+            description:
+              'With `before`: also the items created at that time whose id sorts before this one, the `nextBeforeId` of the page before',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          200: {
+            description: 'A page of items',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['items'],
+                  properties: {
+                    items: { type: 'array', items: { $ref: '#/components/schemas/InboxItem' } },
+                    nextBefore: { type: 'integer' },
+                    nextBeforeId: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+          400: {
+            description: 'A query parameter is not valid (INVALID_INPUT)',
+            content: errorContent,
+          },
+          401: {
+            description:
+              "A caller without a user id where the server is not set to anonymous: 'allow' (UNAUTHORIZED)",
+            content: errorContent,
+          },
+        },
+      },
+    };
+    spec.paths['/inbox/{id}'] = {
+      patch: {
+        tags: ['triggers'],
+        summary: 'Mark an inbox item read, unread or archived',
+        description:
+          'Changes the status only: whether an approval or question was answered (`answeredAt`) stays as it is',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['status'],
+                properties: { status: { type: 'string', enum: ['unread', 'read', 'archived'] } },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: 'The item after the change',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/InboxItem' } } },
+          },
+          400: {
+            description: 'The body is not `{ status }` (INVALID_INPUT)',
+            content: errorContent,
+          },
+          401: {
+            description:
+              "A caller without a user id where the server is not set to anonymous: 'allow' (UNAUTHORIZED)",
+            content: errorContent,
+          },
+          404: { description: "No such item of the caller's (NOT_FOUND)", content: errorContent },
+        },
+      },
+    };
+    const components = (spec.components ??= {});
+    const schemas = (components.schemas ??= {});
+    schemas.TriggerFireResult = {
+      type: 'object',
+      required: ['type', 'status', 'eventId', 'triggerId'],
+      properties: {
+        type: { type: 'string', enum: ['routine_fire'] },
+        status: { type: 'string', enum: ['started', 'queued', 'skipped', 'duplicate'] },
+        eventId: { type: 'string' },
+        routineId: { type: 'string' },
+        triggerId: { type: 'string' },
+        runId: { type: 'string' },
+        threadId: { type: 'string' },
+        reason: { type: 'string' },
+      },
+    };
+    schemas.InboxItem = {
+      type: 'object',
+      required: ['id', 'kind', 'title', 'summary', 'status', 'createdAt'],
+      properties: {
+        id: { type: 'string' },
+        kind: { type: 'string', enum: ['result', 'approval', 'question', 'failure'] },
+        title: { type: 'string' },
+        summary: { type: 'string' },
+        body: { type: 'string' },
+        status: { type: 'string', enum: ['unread', 'read', 'archived'] },
+        createdAt: { type: 'integer' },
+        updatedAt: { type: 'integer' },
+        answeredAt: {
+          type: 'integer',
+          description: 'When a person answered the approval or question, set once',
+        },
+        routineId: { type: 'string' },
+        triggerId: { type: 'string' },
+        triggerEventId: { type: 'string' },
+        source: { type: 'string' },
+        runId: { type: 'string' },
+        threadId: { type: 'string' },
+        workflowRunId: { type: 'string' },
+        approvalId: { type: 'string' },
+        actions: { type: 'array', items: { type: 'object' } },
+        metadata: { type: 'object' },
+      },
+    };
+    components.securitySchemes = {
+      ...components.securitySchemes,
+      triggerToken: { type: 'http', scheme: 'bearer', description: "The API trigger's own token" },
+    };
+  }
+
   return spec;
 }
 

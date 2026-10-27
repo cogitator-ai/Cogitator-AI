@@ -65,6 +65,9 @@ cogitator run -m ollama/llama3.1:8b "What is the capital of France?"
 | `cogitator deploy`         | Deploy with Docker or Fly.io (see [`@cogitator-ai/deploy`](https://www.npmjs.com/package/@cogitator-ai/deploy)) |
 | `cogitator rewind`         | Rewind a thread's conversation, memory and files to an entry, a dry run first                                   |
 | `cogitator plugin <cmd>`   | Install, update, enable, disable and validate plugins and marketplaces, run plugin evals (experimental)         |
+| `cogitator schedule <cmd>` | List, add, run now, pause, resume and remove the schedules of routines (experimental)                           |
+| `cogitator inbox`          | Read the inbox of routines: results, failures and runs waiting for an answer (experimental)                     |
+| `cogitator trigger <cmd>`  | Fire the API trigger of a running server, issue its token (experimental)                                        |
 
 Every command ends with examples in its `--help`.
 
@@ -296,6 +299,65 @@ cogitator plugin eval ./my-plugin
 
 Every subcommand that changes something takes `--json` and then prints one object with `command`, `outcome` (`ok` or `failed`), `message` and, on a failure, `failureCode`.
 
+### cogitator schedule
+
+Work on the [routines](/docs/core/triggers) a runtime keeps in files (`experimental_fileTriggerStores`, experimental) while it runs. Every subcommand takes `--dir <path>` (default `COGITATOR_TRIGGERS_DIR`, else `.cogitator/triggers`) and `--json`.
+
+```bash
+cogitator schedule list
+cogitator schedule add digest --cron "0 9 * * 1-5" --timezone Europe/Berlin --agent assistant --prompt "Summarize the news"
+cogitator schedule run digest
+cogitator schedule pause digest.cron
+cogitator schedule resume digest
+cogitator schedule rm digest
+```
+
+| Subcommand                  | Description                                                                                                                                                                                                                                                                                                                                            |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `list` (`ls`)               | The routines of the store with their triggers (paused or not, next occurrence, times fired) and every pending schedule entry: the cron triggers' of every routine, those in code included, and the tasks agents gave themselves                                                                                                                        |
+| `add <id>`                  | Saves a routine to the store that runs on a cron schedule: `--cron` (5 or 6 fields, or a preset such as `@daily`) and `--prompt` are required, `--agent` or `--workflow` names what it runs, `--timezone`, `--name`, `--catch-up latest\|none\|all`, `--overlap skip\|queue\|parallel\|replace`. The running runtime fires it from the next occurrence |
+| `rm <id>` (`remove`)        | Removes a routine of the store with its schedules and trigger state, or a schedule entry that is not a routine's. The schedule of a routine in code is refused: remove the trigger from the code, or pause it                                                                                                                                          |
+| `run <id>`                  | Makes a schedule due now, by schedule id, routine id or `<routine>.<trigger>`: the runtime polling the folder runs it on its next poll                                                                                                                                                                                                                 |
+| `pause <id>`, `resume <id>` | Pauses or resumes a schedule entry, a routine or one trigger of it. A resumed schedule goes on from its next occurrence                                                                                                                                                                                                                                |
+
+The CLI runs nothing itself: a routine runs in the runtime whose `experimental_triggers` uses the same folder, and the files lock as they change, so both can work on them at once.
+
+### cogitator inbox
+
+Read what routines came to, from the inbox file of the same folder. Without a subcommand it lists unread and read items, newest first.
+
+```bash
+cogitator inbox --unread
+cogitator inbox --kind failure --limit 10
+cogitator inbox show inbox_abc
+cogitator inbox read inbox_abc
+cogitator inbox archive inbox_abc
+```
+
+| Option or subcommand                       | Description                                                                                  |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `--unread`, `--archived`, `--all`          | Only unread items, only archived ones, or every item (archived ones are left out by default) |
+| `--kind <kind>`                            | `result`, `approval`, `question` or `failure`                                                |
+| `--limit <n>`                              | Most items, 50 by default                                                                    |
+| `show <id>`                                | One item in full, with its routine, run and thread                                           |
+| `read <id>`, `unread <id>`, `archive <id>` | Marks an item                                                                                |
+
+Answering an approval or a question is done in code (`respond()`) or in [Studio](/docs/getting-started/studio#routines-inbox-and-schedules).
+
+### cogitator trigger
+
+```bash
+cogitator trigger token digest.api
+cogitator trigger fire digest.api --text "Breaking news" --url http://localhost:3000/cogitator
+```
+
+| Subcommand   | Description                                                                                                                                                                                                                                                                           |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `token <id>` | Issues a new token for an API trigger of a routine of the store (`--dir`), printed once. The store keeps only its SHA-256, and the token issued before stops working. A trigger with a token in its spec is refused, and a routine in code gets its token from `issueToken()` in code |
+| `fire <id>`  | POSTs to `<url>/triggers/<id>/fire` of a running server: `--url` (default `COGITATOR_URL`, where the server adapter is mounted), `--token` (default `COGITATOR_TRIGGER_TOKEN`), `--text` (what the routine gets as untrusted data) and `--idempotency-key`                            |
+
+With `--json` every subcommand of `schedule`, `inbox` and `trigger` prints one object with `command` and `outcome` (`ok` or `failed`), then what it found or did (`routines` and `schedules`, `items`, `item`, `token`, `result`), or `message` and `failureCode` on a failure.
+
 ### cogitator build
 
 Bundles a gateway module with [esbuild](https://esbuild.github.io) into a single self-starting ES module. The bundle starts the exported `gateway` and stops it gracefully on `SIGINT`/`SIGTERM`. esbuild ships with the CLI, so the project needs no extra dependency.
@@ -418,15 +480,17 @@ The model, memory and `deploy:` section all come from one config file: the `-c` 
 
 ## Environment Variables
 
-| Variable                                                | Used by                   | Description                         |
-| ------------------------------------------------------- | ------------------------- | ----------------------------------- |
-| `COGITATOR_CONFIG`                                      | `run`                     | Config file path                    |
-| `COGITATOR_MODEL`                                       | `run`                     | Default model                       |
-| `COGITATOR_PLUGINS_DIR`                                 | `plugin`, runtime         | Where installed plugins are kept    |
-| `OLLAMA_URL` / `OLLAMA_HOST`                            | `run`, `models`, `status` | Ollama endpoint                     |
-| `OLLAMA_API_KEY`                                        | `run`, `models`, `wizard` | Ollama Cloud / authenticated Ollama |
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` | `run`, `init`, `wizard`   | Provider keys                       |
-| `COGITATOR_DEBUG`                                       | all                       | Print stack traces                  |
-| `COGITATOR_TELEMETRY_DISABLED`, `DO_NOT_TRACK`          | `init`                    | Send no anonymous usage event       |
+| Variable                                                | Used by                                 | Description                                                               |
+| ------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------- |
+| `COGITATOR_CONFIG`                                      | `run`                                   | Config file path                                                          |
+| `COGITATOR_MODEL`                                       | `run`                                   | Default model                                                             |
+| `COGITATOR_PLUGINS_DIR`                                 | `plugin`, runtime                       | Where installed plugins are kept                                          |
+| `COGITATOR_TRIGGERS_DIR`                                | `schedule`, `inbox`, `trigger`, runtime | Where the file stores of routines are kept, default `.cogitator/triggers` |
+| `COGITATOR_URL`, `COGITATOR_TRIGGER_TOKEN`              | `trigger fire`                          | The server and the trigger's token                                        |
+| `OLLAMA_URL` / `OLLAMA_HOST`                            | `run`, `models`, `status`               | Ollama endpoint                                                           |
+| `OLLAMA_API_KEY`                                        | `run`, `models`, `wizard`               | Ollama Cloud / authenticated Ollama                                       |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` | `run`, `init`, `wizard`                 | Provider keys                                                             |
+| `COGITATOR_DEBUG`                                       | all                                     | Print stack traces                                                        |
+| `COGITATOR_TELEMETRY_DISABLED`, `DO_NOT_TRACK`          | `init`                                  | Send no anonymous usage event                                             |
 
 See [`@cogitator-ai/config`](https://www.npmjs.com/package/@cogitator-ai/config) and the [configuration guide](/docs/getting-started/configuration) for every `COGITATOR_*` variable.

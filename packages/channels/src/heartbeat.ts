@@ -1,5 +1,10 @@
 import type { ChannelMessage, TimerStore, TimerEntry } from '@cogitator-ai/types';
-import { getNextCronMs } from './cron';
+import {
+  experimental_agentTaskInput,
+  experimental_createTriggerEvent,
+  experimental_Scheduler,
+} from '@cogitator-ai/core';
+import { channelsCron, getNextCronMs } from './cron';
 
 export interface HeartbeatConfig {
   onFire: (msg: ChannelMessage) => Promise<void> | void;
@@ -24,66 +29,50 @@ export interface HeartbeatConfig {
   retentionMs?: number;
 }
 
-const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
-const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-
 function readString(meta: Record<string, unknown>, key: string): string | undefined {
   const value = meta[key];
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-function toError(err: unknown): Error {
-  return err instanceof Error ? err : new Error(String(err));
-}
-
+/**
+ * Fires the tasks of a `TimerStore` as messages to the gateway: tasks agents gave themselves with
+ * `schedule_task`, kept in `~/.cogitator/timers.json`. It is a client of the core's scheduler, so
+ * claims, retries and cron times work as they do for routines. A task's description reaches the
+ * agent as data (`source: 'agent'`), not as instructions. Entries of the trigger manager
+ * (`entry.trigger`) are left to it
+ */
 export class HeartbeatScheduler {
-  private timer: ReturnType<typeof setInterval> | null = null;
-  private staggerTimer: ReturnType<typeof setTimeout> | null = null;
-  private processing = false;
-  private running = false;
-  private lastCleanupAt = 0;
-  private readonly maxRetries: number;
+  private readonly scheduler: experimental_Scheduler;
 
   constructor(
     private store: TimerStore,
     private config: HeartbeatConfig
   ) {
-    this.maxRetries = config.maxRetries ?? 5;
+    this.scheduler = new experimental_Scheduler({
+      store,
+      cron: channelsCron,
+      fire: ({ entry }) => this.config.onFire(this.messageOf(entry)),
+      accepts: (entry) => entry.trigger === undefined,
+      pollInterval: config.pollInterval ?? 30_000,
+      batchSize: Number.MAX_SAFE_INTEGER,
+      ...(config.staggerMs !== undefined && { staggerMs: config.staggerMs }),
+      maxRetries: config.maxRetries ?? 5,
+      reschedule: 'append',
+      nextFire: (entry, now) => this.computeNextFire(entry, now),
+      cleanup: 'cutoff',
+      ...(config.retentionMs !== undefined && { retentionMs: config.retentionMs }),
+      ...(config.onRunComplete && { onRunComplete: config.onRunComplete }),
+      ...(config.onError && { onError: config.onError }),
+      ...(config.onClaimLost && { onClaimLost: config.onClaimLost }),
+    });
   }
 
   start(): void {
-    if (this.running) return;
-    this.running = true;
-
-    const stagger = this.config.staggerMs ? Math.floor(Math.random() * this.config.staggerMs) : 0;
-
-    const begin = () => {
-      this.staggerTimer = null;
-      if (!this.running) return;
-      void this.processOverdue();
-      this.timer = setInterval(
-        () => void this.processOverdue(),
-        this.config.pollInterval ?? 30_000
-      );
-    };
-
-    if (stagger > 0) {
-      this.staggerTimer = setTimeout(begin, stagger);
-    } else {
-      begin();
-    }
+    this.scheduler.startNow();
   }
 
   stop(): void {
-    this.running = false;
-    if (this.staggerTimer) {
-      clearTimeout(this.staggerTimer);
-      this.staggerTimer = null;
-    }
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
+    void this.scheduler.stop();
   }
 
   async listJobs(): Promise<TimerEntry[]> {
@@ -106,197 +95,43 @@ export class HeartbeatScheduler {
     await this.store.update(id, { enabled: false });
   }
 
-  private async processOverdue(): Promise<void> {
-    if (this.processing) return;
-    this.processing = true;
-
-    try {
-      const overdue = await this.store.getOverdue();
-      for (const entry of overdue) {
-        if (!this.running) {
-          await this.releaseClaim(entry);
-          continue;
-        }
-        try {
-          await this.processEntry(entry);
-        } catch (err) {
-          this.config.onError?.(toError(err), entry);
-        }
-      }
-      await this.cleanupIfDue();
-    } catch (err) {
-      this.config.onError?.(toError(err));
-    } finally {
-      this.processing = false;
-    }
-  }
-
-  private async cleanupIfDue(): Promise<void> {
-    const now = Date.now();
-    if (now - this.lastCleanupAt < CLEANUP_INTERVAL_MS) return;
-    this.lastCleanupAt = now;
-    await this.store.cleanup(now - (this.config.retentionMs ?? DEFAULT_RETENTION_MS));
-  }
-
   /**
-   * Fire a single task. With a store that claims timers, the claim is renewed right before the
-   * task fires (a task whose claim ran out while it waited is left to the worker that took it) and
-   * every `claimTtl / 3` while it runs. Disabled and exhausted tasks are released so another
-   * worker's poll is not blocked by this one's lease. A task that throws keeps the claim until its
-   * lease runs out, which spaces out the retries. A one-shot task that fails (its `onFire`
-   * throws, as `Gateway.injectMessage` does for a run that failed or was aborted by `stop()`)
-   * stays pending and fires again on a later poll or after a restart, up to `maxRetries`, unless
-   * it is `bestEffort`. The task's message goes to the `channel`,
-   * `channelId`, `topicId` and `conversationId` of its metadata, those it has.
+   * The message a task sends: to the `channel`, `channelId`, `topicId` and `conversationId` of its
+   * metadata, those it has, with its description wrapped as data the agent wrote earlier
    */
-  private async processEntry(entry: TimerEntry): Promise<void> {
-    if (entry.enabled === false) {
-      await this.releaseClaim(entry);
-      return;
-    }
-
-    if ((entry.consecutiveErrors ?? 0) >= this.maxRetries) {
-      if (entry.lastRunStatus !== 'skipped') {
-        await this.store.update(entry.id, { lastRunStatus: 'skipped' });
-      }
-      await this.releaseClaim(entry);
-      return;
-    }
-
-    if (!(await this.confirmClaim(entry))) return;
-
+  private messageOf(entry: TimerEntry): ChannelMessage {
     const meta = entry.metadata ?? {};
     const description = readString(meta, 'description') ?? entry.name ?? '';
     const userId = readString(meta, 'userId');
     const topicId = readString(meta, 'topicId');
     const conversationId = readString(meta, 'conversationId');
-    const msg: ChannelMessage = {
+    const event = experimental_createTriggerEvent({
+      source: 'agent',
+      triggerId: entry.id,
+      verified: { method: 'agent', ok: true },
+      text: description,
+      scheduledFor: entry.firesAt,
+    });
+    return {
       id: `heartbeat_${entry.id}`,
       channelType: readString(meta, 'channel') ?? 'system',
       channelId: readString(meta, 'channelId') ?? userId ?? 'system',
       userId: userId ?? 'system',
       ...(topicId && { topicId }),
       ...(conversationId && { conversationId }),
-      text: `[SCHEDULED TASK] Execute this task that was scheduled earlier: "${description}". If it's a reminder — deliver it in a friendly way. If it's an action (e.g. check something, fetch data, run a tool) — do it and report the result.`,
-      raw: { scheduled: true, taskId: entry.id },
-    };
-
-    const startedAt = Date.now();
-    let status: 'ok' | 'error' = 'ok';
-    let errorMsg: string | undefined;
-
-    const stopRenewing = this.keepClaim(entry);
-    try {
-      await this.config.onFire(msg);
-    } catch (err) {
-      status = 'error';
-      errorMsg = toError(err).message;
-    } finally {
-      await stopRenewing();
-    }
-
-    const durationMs = Date.now() - startedAt;
-
-    const patch: Partial<TimerEntry> = {
-      lastRunAt: startedAt,
-      lastRunStatus: status,
-    };
-
-    if (status === 'error') {
-      patch.lastError = errorMsg;
-      patch.consecutiveErrors = meta.bestEffort ? 0 : (entry.consecutiveErrors ?? 0) + 1;
-    } else {
-      patch.consecutiveErrors = 0;
-      patch.lastError = undefined;
-    }
-
-    await this.store.update(entry.id, patch);
-    const nextFiresAt = this.computeNextFire(entry);
-    const retry = status === 'error' && nextFiresAt === null && !meta.bestEffort;
-    if (!retry) await this.store.markFired(entry.id);
-
-    this.config.onRunComplete?.(entry, status, errorMsg, durationMs);
-
-    if (nextFiresAt !== null) {
-      await this.store.schedule({
-        workflowId: entry.workflowId ?? 'heartbeat',
-        runId: entry.runId ?? 'scheduler',
-        nodeId: entry.nodeId ?? 'task',
-        firesAt: nextFiresAt,
-        type: entry.type ?? (entry.cron ? 'cron' : 'recurring'),
-        ...(entry.cron ? { cron: entry.cron } : {}),
-        ...(entry.timezone ? { timezone: entry.timezone } : {}),
-        ...(entry.interval ? { interval: entry.interval } : {}),
-        metadata: meta,
-        name: entry.name,
-        lastRunAt: patch.lastRunAt,
-        lastRunStatus: patch.lastRunStatus,
-        ...(patch.lastError ? { lastError: patch.lastError } : {}),
-        consecutiveErrors: patch.consecutiveErrors,
-      });
-    }
-  }
-
-  private async confirmClaim(entry: TimerEntry): Promise<boolean> {
-    const store = this.store;
-    if (!store.renew || !store.claimTtl) return true;
-    try {
-      if (await store.renew(entry.id)) return true;
-      this.config.onClaimLost?.(entry);
-    } catch (err) {
-      this.config.onError?.(toError(err), entry);
-    }
-    return false;
-  }
-
-  /**
-   * Renews the store's claim on a task every `claimTtl / 3` until the returned function is called;
-   * it resolves once no renewal is in flight.
-   */
-  private keepClaim(entry: TimerEntry): () => Promise<void> {
-    const store = this.store;
-    const renew = store.renew;
-    if (!renew || !store.claimTtl) return async () => undefined;
-
-    let lost = false;
-    let renewal: Promise<void> = Promise.resolve();
-    const tick = async (): Promise<void> => {
-      if (lost) return;
-      try {
-        if (await renew.call(store, entry.id)) return;
-        lost = true;
-        clearInterval(interval);
-        this.config.onClaimLost?.(entry);
-      } catch (err) {
-        this.config.onError?.(toError(err), entry);
-      }
-    };
-    const interval = setInterval(() => {
-      renewal = renewal.then(tick);
-    }, store.claimTtl / 3);
-
-    return async () => {
-      clearInterval(interval);
-      await renewal;
+      text: experimental_agentTaskInput(event),
+      raw: { scheduled: true, taskId: entry.id, trigger: event },
     };
   }
 
-  private async releaseClaim(entry: TimerEntry): Promise<void> {
-    try {
-      await this.store.release?.(entry.id);
-    } catch (err) {
-      this.config.onError?.(toError(err), entry);
-    }
-  }
-
-  private computeNextFire(entry: TimerEntry): number | null {
+  private computeNextFire(entry: TimerEntry, now: number): number | null {
     if (entry.cron) {
       return this.config.getNextCronMs
         ? this.config.getNextCronMs(entry.cron)
-        : getNextCronMs(entry.cron, Date.now(), entry.timezone);
+        : getNextCronMs(entry.cron, now, entry.timezone);
     }
     if (entry.type === 'recurring' && entry.interval) {
-      return Date.now() + entry.interval;
+      return now + entry.interval;
     }
     return null;
   }

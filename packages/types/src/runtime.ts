@@ -55,6 +55,7 @@ import type {
 } from './permissions';
 import type { HooksConfig } from './hooks';
 import type { PluginsConfig } from './plugins';
+import type { TriggersConfig } from './triggers';
 import type { DurableQueuedMessage, DurableRunsConfig } from './durable-runs';
 import type { CogitatorCheckpointsConfig, FileCheckpointsConfig } from './checkpoints';
 import type { InstructionsConfig, LoadedInstructionFile } from './instructions';
@@ -279,6 +280,13 @@ export interface CogitatorConfig {
    * before. See `cog.experimental_plugins`
    */
   experimental_plugins?: PluginsConfig;
+  /**
+   * Experimental. Routines and what starts them: schedules, API calls, webhooks, GitHub, email
+   * and Slack events, tasks agents give themselves. Each firing starts a session with the
+   * routine's prompt as the task and the event as untrusted data, results and failures go to an
+   * inbox. Unset, there is no trigger manager. See `cog.experimental_triggers`
+   */
+  experimental_triggers?: TriggersConfig;
   /**
    * What a session (a thread across its runs) and each agent in it may spend in money, tokens and
    * tool calls. A run that reaches a limit pauses with an interrupt of kind `budget`
@@ -572,6 +580,11 @@ export interface RunOptions<TDeps = unknown> {
    * durable run with this id that is still kept fails the run with `RUN_LEASED`
    */
   runId?: string;
+  /**
+   * Metadata kept with the entry of the run's input in its thread, such as the trigger event a
+   * routine's run started from (`trigger`), so the session's log tells what started it
+   */
+  inputMetadata?: Record<string, unknown>;
 
   /**
    * Hooks around this run's model and tool calls, after the Cogitator's and the agent's

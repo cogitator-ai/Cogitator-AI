@@ -53,23 +53,23 @@ Middleware is code, so the [agent wire format](/docs/core/agents#sending-an-agen
 
 Every hook is optional. Each one gets the run's context as its last argument.
 
-| Hook                | When                                                      | What it can do                                                                                      |
-| ------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `startRun`          | A run starts, new or resumed, before its first model call | Return `{ context }` to add text after the system prompt, for this run only                         |
-| `beforeRun`         | A new run's input, before it is saved or sent             | Check it, return `{ context }` to add text after it. Also sees each queued message of `cog.start()` |
-| `beforeModel`       | Before each model turn                                    | Return `{ messages }` to change the conversation from then on                                       |
-| `wrapModelCall`     | Around each call, once per model a turn tries             | Change the request or the stream sink, call `next` again, or answer without it                      |
-| `afterModel`        | After each answer, before the run uses it                 | Return `{ content }` or `{ toolCalls }` to replace them                                             |
-| `beforeToolCall`    | Before the permissions decide a tool call                 | Deny it, ask for it, allow it, defer it to a person, or change its arguments                        |
-| `decideApproval`    | A call asks for approval, before `onApproval`             | Approve or decline it as a person would                                                             |
-| `wrapToolCall`      | Around each tool call that passed approval                | Change the arguments, or answer for the tool                                                        |
-| `afterToolBatch`    | Every call of a step resolved, before the next model call | Add context (`context.addContext`) or end the run (`context.stop`)                                  |
-| `beforeStop`        | The agent would stop with a final answer                  | Return `{ continueWith }` to keep it going with that message                                        |
-| `beforeCompaction`  | Before a compaction of the turn or the thread             | Return `{ skip: true }` to keep the conversation as it is                                           |
-| `afterCompaction`   | After a compaction ran                                    | Log or react                                                                                        |
-| `beforeModelSwitch` | A handoff would move the run to another model             | Return `{ block }` to keep the run on its agent                                                     |
-| `onNotification`    | The run needs a person (an approval, a question)          | Tell someone, it cannot change what happens                                                         |
-| `afterRun`          | A run ended: completed, paused or failed                  | Keep memory in shape for the next run, clean up after the run                                       |
+| Hook                | When                                                                                                         | What it can do                                                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `startRun`          | A run starts, new or resumed, before its first model call                                                    | Return `{ context }` to add text after the system prompt, for this run only                         |
+| `beforeRun`         | A new run's input, before it is saved or sent                                                                | Check it, return `{ context }` to add text after it. Also sees each queued message of `cog.start()` |
+| `beforeModel`       | Before each model turn                                                                                       | Return `{ messages }` to change the conversation from then on                                       |
+| `wrapModelCall`     | Around each call, once per model a turn tries                                                                | Change the request or the stream sink, call `next` again, or answer without it                      |
+| `afterModel`        | After each answer, before the run uses it                                                                    | Return `{ content }` or `{ toolCalls }` to replace them                                             |
+| `beforeToolCall`    | Before the permissions decide a tool call                                                                    | Deny it, ask for it, allow it, defer it to a person, or change its arguments                        |
+| `decideApproval`    | A call asks for approval, before `onApproval`                                                                | Approve or decline it as a person would                                                             |
+| `wrapToolCall`      | Around each tool call that passed approval                                                                   | Change the arguments, or answer for the tool                                                        |
+| `afterToolBatch`    | Every call of a step resolved, before the next model call                                                    | Add context (`context.addContext`) or end the run (`context.stop`)                                  |
+| `beforeStop`        | The agent would stop with a final answer                                                                     | Return `{ continueWith }` to keep it going with that message                                        |
+| `beforeCompaction`  | Before a compaction of the turn or the thread                                                                | Return `{ skip: true }` to keep the conversation as it is                                           |
+| `afterCompaction`   | After a compaction ran                                                                                       | Log or react                                                                                        |
+| `beforeModelSwitch` | A handoff would move the run to another model                                                                | Return `{ block }` to keep the run on its agent                                                     |
+| `onNotification`    | The run needs a person (an approval, a question), a routine's run ended (`routine_result`, `routine_failed`) | Tell someone, it cannot change what happens                                                         |
+| `afterRun`          | A run ended: completed, paused or failed                                                                     | Keep memory in shape for the next run, clean up after the run                                       |
 
 ### beforeRun
 

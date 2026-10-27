@@ -12,6 +12,7 @@ import { readdir, realpath } from 'node:fs/promises';
 import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { RoutineSchema, TriggerSpecSchema } from '../../triggers/schema';
 import {
   CogitatorError,
   ErrorCode,
@@ -91,6 +92,12 @@ const RegistrationSchema = z.discriminatedUnion('kind', [
     kind: z.literal('panel'),
     panel: z.record(z.string(), z.unknown()),
     methods: z.array(z.string()),
+  }),
+  z.object({ kind: z.literal('routine'), routine: z.record(z.string(), z.unknown()) }),
+  z.object({
+    kind: z.literal('trigger'),
+    routineId: z.string().min(1),
+    trigger: z.record(z.string(), z.unknown()),
   }),
 ]);
 
@@ -651,6 +658,13 @@ export class IsolatedPluginProcess {
           },
           factory: (config: unknown) => this.backend(handle, registration.provider, config),
         });
+      case 'routine':
+        return context.registerRoutine(RoutineSchema.parse(registration.routine));
+      case 'trigger':
+        return context.registerTrigger(
+          registration.routineId,
+          TriggerSpecSchema.parse(registration.trigger)
+        );
       case 'panel': {
         const spec = PanelSchema.parse(registration.panel);
         return context.registerPanel({

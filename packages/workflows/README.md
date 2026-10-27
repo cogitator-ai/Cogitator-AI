@@ -342,6 +342,8 @@ formatDuration(90_000); // '1.5m'
 
 Aborting the run (`signal`, a manager's `pause()` or `cancel()`) stops the wait and fails the node with an `AbortError`, so the node is not checkpointed as completed and a resumed run waits again. Pass `{ timerStore }` to `timerWorkflowNode` together with `persist: true` configs (or use `createTimerNodeHelpers(store)`) to persist timers: an interrupted persisted timer is cancelled in its store, and on resume the node waits only until the original `firesAt`, so a pause never shortens or extends the wait. A persisted timer cancelled through its store while the node waits (`TimerManager.cancel`) is not marked fired: the node reports `cancelled: true` and `onCancelled` when the wait ends. `createTimerManager(store)` and `createRecurringScheduler(manager)` process persisted and recurring timers. Cron helpers: `validateCronExpression`, `getNextCronOccurrence(s)`, `describeCronExpression`, `CRON_PRESETS`.
 
+The timers and cron of workflows run on the core's scheduler: the cron helpers compute through the core's cron engine with `CRON_PRESETS` on top (`workflowsCron`), `TimerManager` takes timers through the core's poller and claims, and `InMemoryTimerStore` and `FileTimerStore` are the core's classes (a `FileTimerStore` sees what other processes wrote). `JobScheduler` refuses an invalid cron expression or time zone with `VALIDATION_ERROR` and reports a run it could not schedule to `onError` instead of dropping it.
+
 ---
 
 ## Saga Patterns
@@ -631,7 +633,10 @@ const triggers = createTriggerManager({
     return run;
   },
 });
-triggers.start();
+await triggers.start(); // brings back the triggers of its store, disabled ones stay disabled
+
+// registering the same trigger again (on every boot) takes over the one the store brought back,
+// one whose filter or transform is another function stays a trigger of its own
 
 await triggers.register({
   workflowName: 'daily-report',
@@ -657,6 +662,39 @@ const response = await triggers.handleWebhook({
   body,
 });
 ```
+
+---
+
+### Routines as workflows (experimental)
+
+A routine of the core's trigger manager (`experimental_triggers`) can run a workflow instead of an agent. `experimental_routineWorkflow` runs it under the firing's run id with the routine's prompt and the event in its state: its human nodes wait for approvals that go to the inbox and are answered with the manager's `respond()` (or from Studio), nodes that finally fail after their retries go to the inbox and the dead letter queue, compensation runs as in any saga, and the outcome reaches the inbox as the routine's result or failure.
+
+```typescript
+import { experimental_routineWorkflow } from '@cogitator-ai/workflows';
+
+const cog = new Cogitator({
+  experimental_triggers: {
+    workflows: {
+      booking: experimental_routineWorkflow({ workflow: bookingWorkflow, runtime: engine }),
+    },
+    routines: [
+      {
+        id: 'booking',
+        prompt: 'Book the trip the request asks for.',
+        target: { workflow: 'booking' },
+        triggers: [{ kind: 'api' }],
+      },
+    ],
+  },
+});
+
+const [approval] = await cog.experimental_triggers!.inbox.list({ kind: 'approval' });
+await cog.experimental_triggers!.respond(approval.id, { decision: true });
+```
+
+Each firing runs the workflow from `{ input, trigger }`: `input` is the routine's prompt with the event wrapped as untrusted data, `trigger` what the manager vouches for (event id, source, trigger, times, how the sender was checked). The event's payload and text reach the state only inside `input`, or through an `input(context)` of your own that reads `context.event`.
+
+`experimental_inboxNotifier(inbox)` (an `ApprovalNotifier`) and `experimental_inboxDeadLetterQueue(inbox, dlq)` put approvals and failures of any workflow in an inbox. The notifier keeps one item per request (`experimental_approvalItemId(requestId)`), the item of the request's assignee (the routine's user as `metadata.routineUserId`): a timeout or an escalation closes it as a `failure`, an escalated or delegated request comes as its own `approval` item, so no request can be answered from two items. Answering a request that was answered meanwhile, or timed out, throws `INBOX_ITEM_ANSWERED`.
 
 ---
 

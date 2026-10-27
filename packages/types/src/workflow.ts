@@ -452,6 +452,18 @@ export interface TimerEntry {
   lastError?: string;
   consecutiveErrors?: number;
   enabled?: boolean;
+  /**
+   * The routine trigger the entry fires (`routineId`, `triggerId`), or the agent a task it gave
+   * itself runs on (`agent`): the trigger manager runs these entries, `HeartbeatScheduler` leaves
+   * them alone
+   */
+  trigger?: { routineId?: string; triggerId?: string; agent?: string };
+  /** What the schedule does about occurrences it missed, see `ScheduleCatchUp`. Unset: `latest` */
+  catchUp?: 'latest' | 'none' | 'all';
+  /** How far back missed occurrences are caught up, ms. Unset: no limit */
+  catchUpWindowMs?: number;
+  /** The last occurrence the entry fired for, ms since epoch */
+  lastOccurrence?: number;
 }
 
 export interface TimerStore {

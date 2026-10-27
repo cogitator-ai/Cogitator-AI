@@ -91,6 +91,7 @@ export function pluginRecord(info: PluginInfo): PluginRecord {
         ...(panel.description !== undefined && { description: panel.description }),
         ...(panel.icon !== undefined && { icon: panel.icon }),
       })),
+      routines: [...(contributions.routines ?? [])],
     },
     diagnostics: info.diagnostics.map((diagnostic) => ({
       level: diagnostic.level,

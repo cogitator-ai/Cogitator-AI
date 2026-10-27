@@ -299,6 +299,37 @@ A run that names a thread may also name a `multitaskStrategy` for when the threa
 
 On a new conversation the server picks the thread and names it in `start`. A message sent under a strategy before the request ahead of it has named its thread waits for that `start`, so the messages share one thread instead of starting one each (a request that ends without naming one lets the next message start a thread of its own). Approvals and questions belong to the request that paused: when a later message runs on the thread, the server gives up the paused run, so `pendingApprovals` and `pendingInterrupts` clear once that message finishes, or show its own pause instead. A rejected message never ran, so the pause before it stays.
 
+### Triggers and inbox (experimental)
+
+`createTriggerHandler` and `createInboxHandler` serve the routes of API triggers, webhooks and the inbox of their results from the runtime's trigger manager. Start the manager yourself.
+
+```typescript
+// lib/cogitator.ts
+export const cog = new Cogitator({ experimental_triggers: { agents, routines } });
+await cog.experimental_triggers?.start();
+export const inbox = createInboxHandler(cog.experimental_triggers!, {
+  auth: async (req) => ({ userId: await userIdOf(req) }),
+});
+
+// app/api/triggers/[id]/[route]/route.ts
+export const POST = createTriggerHandler(cog.experimental_triggers!);
+
+// app/api/inbox/route.ts
+export const { GET } = inbox;
+
+// app/api/inbox/[id]/route.ts
+export const { PATCH } = inbox;
+```
+
+| Route                            | Auth                                                                      | Body                                                             |
+| -------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `POST /api/triggers/:id/fire`    | the trigger's own bearer token                                            | `{ "text": "..." }`, read raw                                    |
+| `POST /api/triggers/:id/webhook` | the sender's signature (HMAC, GitHub, Mailgun, Postmark, SendGrid, Slack) | any content type, read raw                                       |
+| `GET /api/inbox`                 | `auth` and `anonymous`                                                    | `?status=unread&kind=failure&routineId=...&limit=20&before=<ms>` |
+| `PATCH /api/inbox/:id`           | `auth` and `anonymous`                                                    | `{ "status": "read" \| "unread" \| "archived" }`                 |
+
+The trigger handler authenticates nothing itself: a trigger checks the token or the signature over the body exactly as it came, read raw for any content type (JSON, forms, multipart) up to 10 MiB and never parsed or re-serialized. A larger body answers `413 PAYLOAD_TOO_LARGE`, and a `route` other than `fire` and `webhook` `404`. It answers with the status, JSON body and headers of the trigger manager, `{ error: { code, message } }` on a refusal. The inbox handlers take the caller from `auth` (`{ userId }`, `undefined` for an anonymous caller). A caller without a user id, which is every caller without `auth`, gets `401 UNAUTHORIZED` unless `anonymous: 'allow'` is set, then they see the items without one. A caller sees and changes only the items of its `userId`, and another user's item answers `404 NOT_FOUND`. `params` may be a promise (Next 15 and later) or the object itself.
+
 ## Client Hooks
 
 ### `useCogitatorChat`

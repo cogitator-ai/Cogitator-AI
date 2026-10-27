@@ -241,6 +241,27 @@ A run or stream body may also name a `multitaskStrategy` for a thread that alrea
 
 `POST /agents/:name/resume/stream` takes the same body and streams the rest of the run like `/stream`. `start` and `finish` name the resumed thread, and a body, agent or thread refused before the stream opens is answered as JSON, just like `/resume`. A thread with no paused run ends the open stream with an `error` event, `code: 'RUN_NOT_PAUSED'`, and disconnecting aborts the resume.
 
+## Triggers and inbox (experimental)
+
+Give the plugin the runtime's trigger manager as `triggers` and it serves the routes of API triggers, webhooks and the inbox of their results. Start the manager yourself.
+
+```typescript
+const cog = new Cogitator({ experimental_triggers: { agents, routines } });
+const triggers = cog.experimental_triggers;
+await triggers?.start();
+
+await fastify.register(cogitatorPlugin, { cogitator: cog, agents, triggers, auth, prefix: '/api' });
+```
+
+| Route                        | Auth                                                                      | Body                                                             |
+| ---------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `POST /triggers/:id/fire`    | the trigger's own bearer token                                            | `{ "text": "..." }`, read raw                                    |
+| `POST /triggers/:id/webhook` | the sender's signature (HMAC, GitHub, Mailgun, Postmark, SendGrid, Slack) | any content type, read raw                                       |
+| `GET /inbox`                 | the adapter's `auth` and `anonymous`                                      | `?status=unread&kind=failure&routineId=...&limit=20&before=<ms>` |
+| `PATCH /inbox/:id`           | the adapter's `auth` and `anonymous`                                      | `{ "status": "read" \| "unread" \| "archived" }`                 |
+
+The two trigger routes authenticate themselves, so they are registered beside the API routes, in a context of their own with a raw body parser, and none of the plugin's hooks run on them (`auth`, the anonymous policy, the JSON body check, rate limiting). A trigger checks the token or the signature over the body exactly as it came, which is read raw for any content type (JSON, forms, multipart) up to 10 MiB and never parsed or re-serialized. A larger body answers `413 PAYLOAD_TOO_LARGE`. They answer with the status, JSON body and headers of the trigger manager, `{ error: { code, message } }` on a refusal. The inbox routes go through `auth` and `anonymous` like every other route: a caller sees and changes only the items of its `userId`, a caller without one gets `401 UNAUTHORIZED` unless `anonymous` is set to `'allow'` explicitly (then the items without a user), and another user's item answers `404 NOT_FOUND`. With `enableSwagger` the document lists them. Without `triggers` none of these routes exist.
+
 ## SSE Streaming
 
 The `/agents/:name/stream` endpoint returns Server-Sent Events:

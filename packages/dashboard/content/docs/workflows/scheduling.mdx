@@ -10,6 +10,7 @@ Three pieces cover "run this later":
 - **`WorkflowManager`** runs workflows now or at a given time, keeps a record of every run in a `RunStore`, and cancels, retries and replays runs.
 - **The trigger system** activates workflows from cron schedules, HTTP requests or internal events. The `TriggerManager` coordinates all trigger types; you decide in `onTriggerFire` how a fired trigger starts a run.
 - **`TimerManager`** fires persisted timers from a `TimerStore` — in one process, or claimed across several workers with the Redis and Postgres stores.
+- **Routines** of the core's [trigger manager](/docs/core/triggers) (experimental) run a workflow on a cron schedule, an API call or a signed webhook from GitHub, email or Slack, once per event, with its approvals and failures in an inbox, see [Routines as workflows](#routines-as-workflows).
 
 ## WorkflowManager
 
@@ -71,7 +72,7 @@ console.log(workflowManager.getCronJobs()); // { id, workflowName, expression, t
 workflowManager.unregisterCronJob(jobId); // runs already queued are kept
 ```
 
-`registerCronJob(workflow, expression, { id?, timezone?, jobOptions? })` returns the job id. While the manager is started, every occurrence queues a run with `jobOptions` (any `ScheduleOptions` except `at`, `cron` and `timezone`) and `triggerId: 'cron:<jobId>'`. Cron jobs live in the manager's memory: register them again after a restart.
+`registerCronJob(workflow, expression, { id?, timezone?, jobOptions? })` returns the job id. It and `schedule()` with `cron` check the expression and the time zone first and throw a `VALIDATION_ERROR` for one they cannot use, instead of a job that never runs. A cron job whose run could not be queued goes to the `onError(error, jobId)` of a `JobScheduler` (`createJobScheduler({ runStore, onError })`), a warning in the log by default, and the job goes on with its next occurrence. While the manager is started, every occurrence queues a run with `jobOptions` (any `ScheduleOptions` except `at`, `cron` and `timezone`) and `triggerId: 'cron:<jobId>'`. Cron jobs live in the manager's memory: register them again after a restart.
 
 ### Pause and resume
 
@@ -102,10 +103,10 @@ const manager = createTriggerManager({
     }),
 });
 
-manager.start();
+await manager.start();
 ```
 
-`register`, `fire` and `handleWebhook` throw until `start()` is called. Triggers live in a `TriggerStore` (`InMemoryTriggerStore` by default; pass `store` to keep them elsewhere) and events go through a `TriggerEventEmitter` (`eventEmitter` option). `registerWorkflow(workflow, [{ type, config }, ...])` registers several triggers for one workflow at once.
+`register`, `fire` and `handleWebhook` throw until `start()` is called. `register` of a trigger the store holds already (the same workflow, type and config, `enabled` aside) takes it over instead of adding one more: it keeps its id and counts and takes the `enabled` given, so a program that registers its triggers on every boot does not double them. A function of the config (an event trigger's `filter` or `transform`) counts by identity: triggers with different functions stay apart, and a trigger brought back from a store that cannot keep functions is not taken over by a definition that has them. A trigger taken over is not started again: a cron trigger with `runImmediately` fires once when `start()` brings it back, not once more when it is registered. `start()` brings back the triggers of the manager's store and resolves once they are back: cron triggers are scheduled again, webhooks answered and event triggers listen, while disabled ones stay disabled. A trigger that cannot come back (its expression no longer parses, say) is skipped with the error recorded as its `lastError`, and the others start. Calling `start()` again returns the same promise, and a `stop()` that comes while the store is read leaves the triggers stopped. Triggers live in a `TriggerStore` (`InMemoryTriggerStore` by default, pass `store` to keep them elsewhere) and events go through a `TriggerEventEmitter` (`eventEmitter` option). `registerWorkflow(workflow, [{ type, config }, ...])` registers several triggers for one workflow at once.
 
 ### Registering Triggers
 
@@ -445,18 +446,88 @@ await timers.schedule({
 ```
 
 - Handlers are looked up by the timer's `workflowId`; `setDefaultHandler` catches the rest. A manager without a matching handler releases the timer so a manager that has one runs it right away.
-- With `InMemoryTimerStore` / `FileTimerStore` one manager owns the store. With `RedisTimerStore` / `PostgresTimerStore` several managers can poll one store: `getOverdue()` claims the timers it returns for `claimTtl` ms (default 60 s), the manager renews the claim every `claimTtl / 3` while the handler runs, and a timer whose worker died becomes available again when its claim runs out.
+- `InMemoryTimerStore` and `FileTimerStore` are the core's, re-exported here, so the trigger manager, the heartbeat scheduler of channels and a `TimerManager` read the same files. With them one manager owns the store (`FileTimerStore` locks its file, so the CLI can change it meanwhile). With `RedisTimerStore` / `PostgresTimerStore` several managers can poll one store: `getOverdue()` claims the timers it returns for `claimTtl` ms (default 60 s), the manager renews the claim every `claimTtl / 3` while the handler runs, and a timer whose worker died becomes available again when its claim runs out.
 - A failed handler is retried on later polls until `maxRetries` consecutive errors (default `5`; `0` retries forever), then the timer is marked fired and `onDeadLetter` is called.
 - `cancel`, `cancelRun`, `cancelWorkflow`, `getPendingTimers`, `getStats` and `processNow()` manage timers; fired timers older than `cleanupMaxAge` (7 days) are cleaned up hourly.
 - `createRecurringScheduler(timers).scheduleRecurring(id, { workflowId, runId, nodeId, interval })` schedules an interval timer; call `scheduleNext(id, runId)` from its handler to queue the next one.
 - `Duration.minutes(5)`, `parseDuration('2h')` and `formatDuration(ms)` convert durations.
+
+## Routines as Workflows
+
+A [routine](/docs/core/triggers) of the core's trigger manager can run a workflow instead of an agent. `experimental_routineWorkflow` turns a workflow into one, to put under `experimental_triggers.workflows`:
+
+```typescript
+import { Cogitator } from '@cogitator-ai/core';
+import {
+  PostgresApprovalStore,
+  WorkflowBuilder,
+  approvalNode,
+  experimental_routineWorkflow,
+  humanWorkflowNode,
+} from '@cogitator-ai/workflows';
+
+type Payout = {
+  approved?: boolean;
+  output?: string;
+};
+
+const payout = new WorkflowBuilder<Payout>('payout')
+  .initialState({})
+  .addNode(
+    'approve',
+    humanWorkflowNode<Payout>(approvalNode('finance', { title: 'Pay this invoice?' }), {
+      stateMapper: (answer) => ({ approved: answer.approved }),
+    })
+  )
+  .addNode(
+    'pay',
+    async ({ state }) => {
+      if (!state.approved) throw new Error('Not approved');
+      return { state: { output: 'Paid' } };
+    },
+    { after: ['approve'], config: { retries: 2 } }
+  )
+  .build();
+
+const engine = new Cogitator(); // runs the workflow's agent nodes
+
+const cog = new Cogitator({
+  experimental_triggers: {
+    workflows: {
+      payout: experimental_routineWorkflow({
+        workflow: payout,
+        runtime: engine,
+        approvalStore: new PostgresApprovalStore({ client: pool }),
+      }),
+    },
+    routines: [
+      {
+        id: 'payout',
+        prompt: 'Pay the invoice that came in.',
+        target: { workflow: 'payout' },
+        overlap: 'parallel',
+        triggers: [{ kind: 'webhook', secret: { env: 'BILLING_SECRET' } }],
+      },
+    ],
+  },
+});
+```
+
+- Each firing runs the workflow under the firing's run id, from the state `{ input, trigger }`: `input` the routine's prompt with the event wrapped as untrusted data, `trigger` what the manager vouches for about the event (its `id`, `source`, `triggerId`, `routineId`, `occurredAt`, `scheduledFor`, `verified`). The event's payload, text and sender are not in the state as they came. `input: (context) => state` builds another state from the `RoutineWorkflowContext` (`routine`, `event`, `input`, `runId`, `signal`, `inbox`): read `context.event` there, and keep what came from outside apart from instructions.
+- A human node's request goes to the inbox as an `approval` item, its `approvalId` the request, through `experimental_inboxNotifier(inbox, origin)`, one item per request (`experimental_approvalItemId(requestId)`). The item is its assignee's (`userId`), so the person who decides sees it in their inbox, and the user the routine runs for is kept as `metadata.routineUserId`. A request without an assignee is the routine user's. A timeout or an escalation closes the item of the request as a `failure` nobody can answer, an escalated or delegated request comes as its own `approval` item, so no request is answerable from two items. `approvalNotifier` adds a notifier of your own beside it.
+- `cog.experimental_triggers.respond(itemId, { decision, respondedBy? })` answers the approval through the workflow's `approvalStore` (in memory by default, Postgres or Redis to survive a restart), marks the item answered and archives it, and the run goes on. A request answered meanwhile, or timed out, throws `INBOX_ITEM_ANSWERED`, and the item stays answered.
+- A node that fails after its retries goes to the inbox as a `failure` item through `experimental_inboxDeadLetterQueue(inbox, inner, origin)`, its entry kept in `deadLetterQueue` (in memory by default), and the [saga's compensation](/docs/workflows/sagas) runs as usual.
+- What the workflow comes to is the routine's `result` (`state.output` when it is text, else the state as JSON, or `output: (result) => text`) or `failure` item.
+- `checkpointStore`, `defaultRetry`, `maxIterations` and `maxConcurrency` are those of the executor, and `runtime` may be a `WorkflowExecutor` too.
+
+The run of a routine goes on while its workflow waits for a person, so it counts against `maxConcurrent`: give such a routine `overlap: 'parallel'` or `queue` when several firings may wait at once. `experimental_inboxNotifier` and `experimental_inboxDeadLetterQueue` work on any `InboxWriter`, for workflows of your own that report to the inbox.
 
 ## Lifecycle
 
 ```typescript
 const manager = createTriggerManager({ onTriggerFire: handler });
 
-manager.start();
+await manager.start();
 
 // ... register triggers, handle webhooks, emit events ...
 

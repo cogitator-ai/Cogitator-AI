@@ -66,8 +66,11 @@ interface CogitatorAppOptions {
   authorizeThread?: (auth, threadId) => boolean | Promise<boolean>; // false answers 403 THREAD_FORBIDDEN
   deps?: (c) => unknown | Promise<unknown>; // the deps agent runs pass to their tools, never from the body
   workflowCheckpoints?: CheckpointStore; // workflow checkpoints and /workflows/:name/resume, none by default
+  triggers?: TriggersHost; // experimental: the trigger manager, serves /triggers/:id/fire, /webhook and /inbox
 }
 ```
+
+With `triggers` the app serves the [trigger and inbox routes](/docs/server-adapters#triggers-and-inbox), the two trigger routes before `auth` and `bodyLimit`.
 
 ## Request Handling
 

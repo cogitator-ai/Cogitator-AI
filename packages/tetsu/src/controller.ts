@@ -90,6 +90,7 @@ import {
 } from './schemas.js';
 import { reconnectHook, resumableEvents, streamCaller } from './resumable.js';
 import { cogitatorSocket } from './socket.js';
+import { triggerRoutes } from './triggers.js';
 import { DONE_EVENT, eventsOf, resolveSignal, sseEvent } from './streaming.js';
 import type { AgentStreamCallbacks } from './streaming.js';
 import type { AuthContext, CogitatorDeps } from './types.js';
@@ -858,9 +859,13 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         if (!cancelled.ok) throw refusalError(cancelled.error);
       },
     });
+  const triggers =
+    deps.triggers &&
+    triggerRoutes(deps.triggers, { caller, admitted, errors, anonymous: deps.anonymous });
   return {
     ...routes,
     ...(cancelAgentStream && { cancelAgentStream }),
+    ...triggers,
     ...(socket && { socket }),
   };
 });

@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { verifyGitHubSignature as coreVerifyGitHubSignature } from '@cogitator-ai/core';
 import { createServer, type IncomingMessage, type RequestListener, type Server } from 'node:http';
 import { z } from 'zod';
 import type { Attachment, Channel, ChannelMessage, SendOptions } from '@cogitator-ai/types';
@@ -175,10 +175,7 @@ export function verifyGitHubSignature(
   signature: string | undefined,
   secret: string
 ): boolean {
-  if (!signature?.startsWith('sha256=')) return false;
-  const expected = Buffer.from(createHmac('sha256', secret).update(body).digest('hex'));
-  const given = Buffer.from(signature.slice('sha256='.length).toLowerCase());
-  return given.length === expected.length && timingSafeEqual(given, expected);
+  return coreVerifyGitHubSignature(body, signature, secret);
 }
 
 /** The JSON of a delivery, sent as `application/json` or as the `payload` field of a form. */

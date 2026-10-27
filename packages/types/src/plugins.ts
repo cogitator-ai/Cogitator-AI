@@ -16,6 +16,7 @@ import type {
   SubagentMcpConnector,
 } from './subagents';
 import type { Tool } from './tool';
+import type { RoutineDefinition, TriggerSpec } from './triggers';
 
 /**
  * Undoes one registration: a tool, a skill, a hook set, a server. A plugin's registrations are
@@ -333,6 +334,14 @@ export interface PluginContext {
   registerMiddleware(middleware: RunMiddleware): PluginDisposer;
   /** A Studio panel */
   registerPanel(panel: PluginPanelContribution): PluginDisposer;
+  /**
+   * A routine of the runtime's trigger manager, named `plugin:id`, with its triggers. It targets
+   * an agent or workflow of `experimental_triggers` by name, or, in code, one of its own. Firing
+   * it takes a lease on the plugins as a run does, so the plugin stays loaded until the run ends
+   */
+  registerRoutine(routine: RoutineDefinition): PluginDisposer;
+  /** One more trigger of a routine this plugin registered, by the routine's id without `plugin:` */
+  registerTrigger(routineId: string, trigger: TriggerSpec): PluginDisposer;
   /** Runs `dispose` when the plugin unloads, in reverse order with its registrations */
   onDispose(dispose: PluginDisposer): PluginDisposer;
 }
@@ -368,6 +377,8 @@ export interface PluginContributions {
   /** Middleware, counted */
   middleware: number;
   panels: readonly PluginPanelSpec[];
+  /** Routines, by id with `plugin:` */
+  routines: readonly string[];
 }
 
 /** A plugin as the host knows it */

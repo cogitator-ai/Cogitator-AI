@@ -8,10 +8,12 @@ import { navigate, useRoute } from './router';
 import { connect, useStudio } from './store';
 import { AgentView } from './views/agent';
 import { CompareView } from './views/compare';
+import { InboxView } from './views/inbox';
 import { OverviewView } from './views/overview';
 import { PluginPanelView, PluginsView } from './views/plugins';
 import { RunView } from './views/run';
 import { RunsView } from './views/runs';
+import { SchedulesView } from './views/schedules';
 import { SwarmView } from './views/swarm';
 import { WorkflowView } from './views/workflow';
 
@@ -66,6 +68,8 @@ function Page({ route }: { route: string[] }) {
   if (section === 'plugins' && id && extra === 'panels' && item)
     return <PluginPanelView key={`${id}/${item}`} pluginId={id} panelId={item} />;
   if (section === 'plugins') return <PluginsView focus={id} />;
+  if (section === 'inbox') return <InboxView itemId={id} />;
+  if (section === 'schedules') return <SchedulesView focus={id} />;
   return <OverviewView />;
 }
 

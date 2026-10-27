@@ -20,6 +20,11 @@ export interface UiState {
   stats?: StudioStats;
   /** The plugins of the project's runtime, once the project loaded. */
   plugins?: PluginsState;
+  /**
+   * The inbox of the project's routines, once the project loaded: whether it has one, its unread
+   * items, and a revision raised by every change, which the pages that show it reload on.
+   */
+  inbox?: { configured: boolean; unread: number; revision: number };
 }
 
 let state: UiState = {
@@ -75,6 +80,22 @@ export async function loadPlugins(): Promise<void> {
   }
 }
 
+/** Loads whether the project has an inbox and how many of its items are unread. */
+export async function loadInbox(): Promise<void> {
+  try {
+    const listing = await api.inbox({ status: ['unread'], limit: 1 });
+    set({
+      inbox: {
+        configured: listing.configured,
+        unread: listing.unread,
+        revision: (state.inbox?.revision ?? 0) + 1,
+      },
+    });
+  } catch {
+    return;
+  }
+}
+
 function apply(event: StudioEvent): void {
   switch (event.type) {
     case 'host': {
@@ -85,11 +106,21 @@ function apply(event: StudioEvent): void {
         (before.state !== 'ready' || before.loadedAt !== event.status.loadedAt)
       ) {
         void loadPlugins();
+        void loadInbox();
       }
       break;
     }
     case 'plugins':
       set({ plugins: event.plugins });
+      break;
+    case 'inbox':
+      set({
+        inbox: {
+          configured: true,
+          unread: event.unread,
+          revision: (state.inbox?.revision ?? 0) + 1,
+        },
+      });
       break;
     case 'run':
       upsertRuns([event.run]);
@@ -127,7 +158,10 @@ export async function refresh(): Promise<void> {
     threads: Object.fromEntries(response.threads.map((thread) => [thread.id, thread])),
   });
   upsertRuns(response.runs);
-  if (response.host.state === 'ready') void loadPlugins();
+  if (response.host.state === 'ready') {
+    void loadPlugins();
+    void loadInbox();
+  }
   await loadStats();
 }
 

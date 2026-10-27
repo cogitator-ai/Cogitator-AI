@@ -75,6 +75,7 @@ interface CogitatorServerConfig {
   agents?: Record<string, Agent>;
   workflows?: Record<string, Workflow>;
   swarms?: Record<string, SwarmConfig>;
+  triggers?: TriggersHost; // experimental: the trigger manager, serves /triggers/:id/fire, /webhook and /inbox
   config?: {
     basePath?: string; // default: '/cogitator'
     enableWebSocket?: boolean; // default: false
@@ -98,6 +99,8 @@ interface CogitatorServerConfig {
   };
 }
 ```
+
+With `triggers` the server serves the [trigger and inbox routes](/docs/server-adapters#triggers-and-inbox): the two trigger routes go before the JSON parser, `auth` and `rateLimit`, reading the body raw, and the inbox routes after `auth` like every other route.
 
 `init()` mounts the router once (calling it again does nothing); `server.isInitialized` tells whether it ran. It writes nothing to the console: `init()` and the WebSocket setup report through the core logger at `debug` level (`LOG_LEVEL=debug`, or your own logger via `setLogger()` from `@cogitator-ai/core`).
 

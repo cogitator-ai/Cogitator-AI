@@ -262,6 +262,14 @@ function contextOf(
         'registerMiddleware needs the host process: an isolated plugin adds hooks, tools and backends instead'
       );
     },
+    registerRoutine: (routine: unknown) =>
+      register({ kind: 'routine', routine: plainObject(routine, 'A routine') }),
+    registerTrigger: (routineId: string, trigger: unknown) =>
+      register({
+        kind: 'trigger',
+        routineId,
+        trigger: plainObject(trigger, `A trigger of routine ${routineId}`),
+      }),
     registerPanel(panel: PanelLike) {
       const { handlers, ...spec } = panel;
       const handle = nextHandle + 1;

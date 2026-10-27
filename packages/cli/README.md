@@ -64,6 +64,9 @@ cogitator run -m ollama/llama3.1:8b "What is the capital of France?"
 | `cogitator deploy`         | Deploy with Docker or Fly.io (see [`@cogitator-ai/deploy`](https://www.npmjs.com/package/@cogitator-ai/deploy)) |
 | `cogitator rewind`         | Rewind a thread's conversation, memory and files to an entry, a dry run first                                   |
 | `cogitator plugin <cmd>`   | Install, update, enable, disable and validate plugins and marketplaces, run plugin evals (experimental)         |
+| `cogitator schedule <cmd>` | List, add, run now, pause, resume and remove the schedules of routines (experimental)                           |
+| `cogitator inbox`          | Read the inbox of routines: results, failures and questions (experimental)                                      |
+| `cogitator trigger <cmd>`  | Fire an API trigger of a running server, issue a trigger token (experimental)                                   |
 
 Every command ends with examples in its `--help`.
 
@@ -328,6 +331,38 @@ Every subcommand that changes something takes `--json` and then prints one objec
 
 `plugin eval` writes `aggregate-result.json` and a self-contained `report.html` under `<eval dir>/results/<timestamp>/` and exits as `claude plugin eval` does: `0` when every case met `--threshold`, `1` for a case below it, a case that failed to load or a run that ended on a provider error, `2` for a partial run (the `--max-cost-usd` ceiling), `130` when interrupted and `143` when terminated. A command-line error (an unknown option, a wrong value) exits `1`, not `2`, and `--mocks off` and `--allow-real-servers` exit `1` since real plugin MCP servers are not started. `--json` prints its result document instead of the object above.
 
+### cogitator schedule, inbox and trigger
+
+Manage the [routines](https://cogitator.app/docs/core/triggers) a runtime keeps in files (experimental): `experimental_fileTriggerStores()` puts the routine store, the schedules and the inbox in `.cogitator/triggers` (`COGITATOR_TRIGGERS_DIR`, `--dir`), the runtime polls them while the CLI changes them, and file locks keep the two from losing each other's writes.
+
+```bash
+cogitator schedule add digest --cron "0 9 * * 1-5" --timezone Europe/Moscow --agent assistant --prompt "Summarize the news"
+cogitator schedule list
+cogitator schedule run digest         # due now: the runtime runs it on its next poll
+cogitator schedule pause digest.cron  # one trigger, or a whole routine by its id
+cogitator schedule resume digest
+cogitator schedule rm digest
+cogitator inbox --unread
+cogitator inbox show inbox_abc
+cogitator inbox archive inbox_abc
+cogitator trigger token digest.api    # shown once, the store keeps its SHA-256
+cogitator trigger fire digest.api --text "Breaking news" --url http://localhost:3000/cogitator
+```
+
+| Subcommand                                            | Description                                                                                                                                          |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schedule list` (`ls`)                                | The routines of the store with their triggers, and every pending schedule, those of routines in code and the tasks agents gave themselves included   |
+| `schedule add <id>`                                   | A routine of the store on `--cron` (5 or 6 fields or a preset), `--timezone`, `--agent` or `--workflow`, `--prompt`, `--catch-up`, `--overlap`       |
+| `schedule run <id>`                                   | Makes the schedule due now. Triggers without a schedule fire through their API                                                                       |
+| `schedule pause <id>`, `resume <id>`                  | A schedule, a routine or `<routine>.<trigger>`, kept in the trigger state so a restart keeps it. A resumed schedule goes on from its next occurrence |
+| `schedule rm <id>`                                    | A routine of the store with its schedules, or a schedule entry. Routines in code are paused, not removed                                             |
+| `inbox [--unread\|--all\|--archived] [--kind <kind>]` | Unread and read items by default, newest first                                                                                                       |
+| `inbox show\|read\|unread\|archive <id>`              | One item in full, or its status                                                                                                                      |
+| `trigger fire <id>`                                   | `POST /triggers/<id>/fire` with `--text`, `--url` or `COGITATOR_URL`, `--token` or `COGITATOR_TRIGGER_TOKEN`, `--idempotency-key`                    |
+| `trigger token <id>`                                  | A new token for an API trigger of a routine of the store, the one before stops working                                                               |
+
+Every subcommand takes `--json`.
+
 ### cogitator skill
 
 ```bash
@@ -408,16 +443,18 @@ The model, memory and `deploy:` section all come from one config file: the `-c` 
 
 ## Environment Variables
 
-| Variable                                                | Used by                   | Description                         |
-| ------------------------------------------------------- | ------------------------- | ----------------------------------- |
-| `COGITATOR_CONFIG`                                      | `run`                     | Config file path                    |
-| `COGITATOR_MODEL`                                       | `run`                     | Default model                       |
-| `COGITATOR_PLUGINS_DIR`                                 | `plugin`, runtime         | Where installed plugins are kept    |
-| `OLLAMA_URL` / `OLLAMA_HOST`                            | `run`, `models`, `status` | Ollama endpoint                     |
-| `OLLAMA_API_KEY`                                        | `run`, `models`, `wizard` | Ollama Cloud / authenticated Ollama |
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` | `run`, `init`, `wizard`   | Provider keys                       |
-| `COGITATOR_DEBUG`                                       | all                       | Print stack traces                  |
-| `COGITATOR_TELEMETRY_DISABLED`, `DO_NOT_TRACK`          | `init`                    | Send no anonymous usage event       |
+| Variable                                                | Used by                                 | Description                                |
+| ------------------------------------------------------- | --------------------------------------- | ------------------------------------------ |
+| `COGITATOR_CONFIG`                                      | `run`                                   | Config file path                           |
+| `COGITATOR_MODEL`                                       | `run`                                   | Default model                              |
+| `COGITATOR_PLUGINS_DIR`                                 | `plugin`, runtime                       | Where installed plugins are kept           |
+| `COGITATOR_TRIGGERS_DIR`                                | `schedule`, `inbox`, `trigger`, runtime | Where the file stores of routines are kept |
+| `COGITATOR_URL`, `COGITATOR_TRIGGER_TOKEN`              | `trigger fire`                          | The server and the trigger's token         |
+| `OLLAMA_URL` / `OLLAMA_HOST`                            | `run`, `models`, `status`               | Ollama endpoint                            |
+| `OLLAMA_API_KEY`                                        | `run`, `models`, `wizard`               | Ollama Cloud / authenticated Ollama        |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` | `run`, `init`, `wizard`                 | Provider keys                              |
+| `COGITATOR_DEBUG`                                       | all                                     | Print stack traces                         |
+| `COGITATOR_TELEMETRY_DISABLED`, `DO_NOT_TRACK`          | `init`                                  | Send no anonymous usage event              |
 
 See [`@cogitator-ai/config`](https://www.npmjs.com/package/@cogitator-ai/config) and the [configuration guide](https://cogitator.app/docs/getting-started/configuration) for every `COGITATOR_*` variable.
 

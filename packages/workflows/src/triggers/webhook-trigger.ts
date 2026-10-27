@@ -13,6 +13,7 @@ import type {
   TriggerContext,
   WorkflowTrigger,
 } from '@cogitator-ai/types';
+import { verifyHmacSignature } from '@cogitator-ai/core';
 import { type RateLimiter, createRateLimiter } from './rate-limiter';
 
 /**
@@ -436,14 +437,7 @@ export class WebhookTriggerExecutor {
           request.rawBody ??
           (typeof request.body === 'string' ? request.body : JSON.stringify(request.body));
 
-        const expectedSignature = crypto
-          .createHmac(algorithm, auth.secret)
-          .update(payload)
-          .digest('hex');
-
-        const actualSignature = signature.replace(/^sha(256|512)=/, '');
-
-        if (!this.timingSafeCompare(actualSignature, expectedSignature)) {
+        if (!verifyHmacSignature(payload, signature, auth.secret, algorithm)) {
           throw new WebhookAuthError('Invalid signature');
         }
         break;

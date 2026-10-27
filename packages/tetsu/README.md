@@ -346,6 +346,29 @@ A tool can also ask the user a question with `context.interrupt()`, which pauses
 
 A run or stream body, and a WebSocket `run` payload, may name a `multitaskStrategy` for a thread that already has a run going on in this Cogitator: `enqueue` waits for that run, `reject` refuses the new run with `THREAD_BUSY`, `interrupt` stops the running one (it fails with `RUN_INTERRUPTED`) and `rollback` stops it and branches from where it started. `/run` answers both codes with `409`. A stream has already answered `200` and sent `start` when its run meets the other runs of the thread, so it gets them as an `error` event instead (`{"type":"error","message":"…","code":"THREAD_BUSY"}`), and the WebSocket as an `error` frame with that `code`. Without one the Cogitator's `multitaskStrategy` applies. Swarm bodies have no thread queue: `multitaskStrategy` is left out of their schema and ignored.
 
+## Triggers and inbox (experimental)
+
+Give the controller the runtime's trigger manager as `triggers` and it serves the routes of API triggers, webhooks and the inbox of their results. Start the manager yourself.
+
+```typescript
+const cog = new Cogitator({ experimental_triggers: { agents, routines } });
+const triggers = cog.experimental_triggers;
+await triggers?.start();
+
+group('/cogitator', {
+  children: [cogitatorController({ cogitator: cog, agents, triggers, auth })],
+});
+```
+
+| Route                        | Auth                                                                      | Body                                                             |
+| ---------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `POST /triggers/:id/fire`    | the trigger's own bearer token                                            | `{ "text": "..." }`, read raw                                    |
+| `POST /triggers/:id/webhook` | the sender's signature (HMAC, GitHub, Mailgun, Postmark, SendGrid, Slack) | any content type, read raw                                       |
+| `GET /inbox`                 | `auth` and `anonymous`                                                    | `?status=unread&kind=failure&routineId=...&limit=20&before=<ms>` |
+| `PATCH /inbox/:id`           | `auth` and `anonymous`                                                    | `{ "status": "read" \| "unread" \| "archived" }`                 |
+
+The two trigger routes authenticate themselves, so they run neither `auth`, nor the anonymous policy, nor the JSON body check: a trigger checks the token or the signature over the body exactly as it came, kept by Tetsu as `rawBody` for any content type (JSON, forms, multipart) up to 10 MiB and never parsed or re-serialized. A larger body answers `413 PAYLOAD_TOO_LARGE`. They are provider-facing, so they answer with the status, JSON body and headers of the trigger manager, `{ error: { code, message } }` on a refusal, not the Tetsu envelope. The inbox routes are guarded like every other route and answer refusals in the Tetsu envelope: a query or body that breaks their schemas gets `422 VALIDATION_FAILED`, a caller sees and changes only the items of its `userId`, a caller without one gets `401 UNAUTHORIZED` unless `anonymous` is set to `'allow'` explicitly (then the items without a user), and another user's item answers `404 NOT_FOUND`. The OpenAPI document describes all four. Without `triggers` none of these routes exist.
+
 ## Streaming
 
 `/stream` endpoints answer with `text/event-stream` through `@tetsujs/sse`: keep-alive comments every `sseHeartbeatMs` (5 seconds by default, under the 10 second `idleTimeout` of `Bun.serve`), backpressure, and the run is aborted when the client goes away. Events follow the Cogitator stream protocol shared with the other adapters, one JSON object per `data:` line, ending with `data: [DONE]`:

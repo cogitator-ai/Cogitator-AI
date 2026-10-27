@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { isFlyAppName, isFlyOrgSlug, isOllamaModelName } from '@cogitator-ai/types';
+import { isFlyAppName, isFlyOrgSlug, isOllamaModelName, RoutineSchema } from '@cogitator-ai/types';
 
 export const OLLAMA_LOCAL_URL = 'http://localhost:11434';
 export const OLLAMA_CLOUD_URL = 'https://ollama.com';
@@ -1068,6 +1068,19 @@ export const CheckpointsConfigSchema = z.union([
   }),
 ]);
 
+/**
+ * Experimental. The parts of `experimental_triggers` a config file can hold: routines (targets by
+ * name, secrets as `{ env }` rather than text in the file), the poll interval and limits. Agents, workflows and stores come
+ * from code
+ */
+export const TriggersConfigSchema = z.object({
+  routines: z.array(RoutineSchema).optional(),
+  pollInterval: z.number().int().positive().optional(),
+  dedupTtlMs: z.number().int().positive().optional(),
+  maxQueued: z.number().int().nonnegative().optional(),
+  durable: z.boolean().optional(),
+});
+
 export const CogitatorConfigSchema = z.object({
   llm: LLMConfigSchema.optional(),
   multitaskStrategy: MultitaskStrategySchema.optional(),
@@ -1081,6 +1094,7 @@ export const CogitatorConfigSchema = z.object({
   subagents: SubagentsConfigSchema.optional(),
   commands: CommandsConfigSchema.optional(),
   experimental_plugins: PluginsConfigSchema.optional(),
+  experimental_triggers: TriggersConfigSchema.optional(),
   budget: SessionBudgetConfigSchema.optional(),
   memory: MemoryConfigSchema.optional(),
   sandbox: SandboxConfigSchema.optional(),

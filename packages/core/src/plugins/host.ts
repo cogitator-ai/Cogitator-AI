@@ -43,10 +43,12 @@ import {
   type PluginsConfig,
   type PluginStatus,
   type PluginToolSpec,
+  type RoutineDefinition,
   type RunMiddleware,
   type SubagentDefinition,
   type SubagentDefinitionInput,
   type Tool,
+  type TriggerSpec,
 } from '@cogitator-ai/types';
 import { getLogger, type Logger } from '../logger';
 import { readHookSettings } from '../hooks/settings';
@@ -57,11 +59,14 @@ import { loaderVariableOf, PluginPermissions, pluginCapabilities } from './capab
 import {
   Generation,
   isBuiltTool,
+  PluginRoutine,
   toolFromSpec,
   type PluginLease,
   type PluginPanelEntry,
+  type PluginRoutineEntry,
   type PluginSnapshot,
 } from './contributions';
+import { routineProblem, triggerIdOf, TRIGGER_ID } from '../triggers/routines';
 import { IsolatedPluginProcess } from './isolated/process';
 import { isInside, pluginNameProblem, readPluginLayout, type PluginLayout } from './manifest';
 import { experimental_keychainSecretStore, secretServiceOf } from './secrets';
@@ -308,6 +313,7 @@ export class experimental_PluginHost {
     const hooks = [];
     const middleware: RunMiddleware[] = [];
     const panels: PluginPanelEntry[] = [];
+    const routines = new Map<string, PluginRoutineEntry>();
     const generations: Generation[] = [];
     for (const id of this.order) {
       const generation = this.states.get(id)?.generation;
@@ -348,6 +354,10 @@ export class experimental_PluginHost {
       hooks.push(...set.hooks);
       middleware.push(...set.middleware);
       panels.push(...set.panels.values());
+      for (const [routineId, entry] of set.routines) {
+        if (routines.has(routineId)) continue;
+        routines.set(routineId, { plugin: id, routine: entry.full });
+      }
     }
     this.snapshotCache = {
       version: this.version,
@@ -360,6 +370,7 @@ export class experimental_PluginHost {
       backends,
       backendOwners,
       panels,
+      routines: [...routines.values()],
     };
     this.snapshotGenerations = generations;
     return this.snapshotCache;
@@ -1594,6 +1605,59 @@ export class experimental_PluginHost {
         });
       },
       registerPanel: (panel: PluginPanelContribution) => addPanel(panel),
+      registerRoutine: (routine: RoutineDefinition) => {
+        checks.checkRoutines();
+        if (
+          routine.userId !== undefined ||
+          routine.owner !== undefined ||
+          (routine.session !== undefined && routine.session !== 'new')
+        ) {
+          throw new CogitatorError({
+            message: `Plugin ${id}: a plugin's routine may not set userId, owner or session.threadId`,
+            code: ErrorCode.PLUGIN_PERMISSION_DENIED,
+            details: { plugin: id },
+          });
+        }
+        if (typeof routine.id !== 'string' || !TRIGGER_ID.test(routine.id)) {
+          throw new TypeError(
+            `Plugin ${id}: a routine id is lowercase letters, digits, "_" and "-", got "${String(routine.id)}"`
+          );
+        }
+        const full: RoutineDefinition = { ...routine, id: `${pluginName}:${routine.id}` };
+        const problem = routineProblem(full);
+        if (problem) throw new TypeError(`Plugin ${id}: ${problem}`);
+        if (set.routines.has(full.id)) {
+          throw new TypeError(`Plugin ${id} registered the routine ${full.id} twice`);
+        }
+        const entry = new PluginRoutine(full);
+        set.routines.set(full.id, entry);
+        return added(`routine ${full.id}`, () => {
+          if (set.routines.get(full.id) === entry) set.routines.delete(full.id);
+        });
+      },
+      registerTrigger: (routineId: string, trigger: TriggerSpec) => {
+        checks.checkRoutines();
+        const entry = set.routines.get(`${pluginName}:${routineId}`);
+        if (!entry) {
+          throw new TypeError(
+            `Plugin ${id} registered no routine ${routineId} to add a trigger to`
+          );
+        }
+        const triggerId = triggerIdOf(trigger);
+        const problem = routineProblem({
+          ...entry.routine,
+          triggers: [...(entry.full.triggers ?? []), trigger],
+        });
+        if (problem) throw new TypeError(`Plugin ${id}: ${problem}`);
+        entry.extra.push(trigger);
+        entry.changed();
+        return added(`trigger ${entry.routine.id}.${triggerId}`, () => {
+          const at = entry.extra.indexOf(trigger);
+          if (at === -1) return;
+          entry.extra.splice(at, 1);
+          entry.changed();
+        });
+      },
       onDispose: (dispose: PluginDisposer) => generation.track(dispose, 'onDispose'),
       addAgent,
       addCommand,
@@ -1826,6 +1890,7 @@ export class experimental_PluginHost {
       llmBackends: set ? [...set.backends.keys()] : [],
       middleware: set?.middleware.length ?? 0,
       panels: set ? [...set.panels.values()].map((entry) => entry.panel) : [],
+      routines: set ? [...set.routines.keys()] : [],
     };
     const { manifest, candidate } = state;
     return {
