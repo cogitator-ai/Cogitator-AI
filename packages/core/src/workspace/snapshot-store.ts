@@ -874,7 +874,7 @@ export class SnapshotStore {
       ) {
         continue;
       }
-      if (process.getuid === undefined || info.uid !== process.getuid()) {
+      if (info.uid !== process.getuid?.()) {
         throw new WorkspaceError(
           'DENIED',
           `${path === '' ? 'The root' : path} cannot be changed and belongs to another user, so what is in it cannot be restored: fix its permissions and restore again`,
