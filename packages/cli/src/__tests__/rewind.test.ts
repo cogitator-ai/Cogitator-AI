@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -130,6 +130,68 @@ describe('cogitator rewind', () => {
     await expect(runRewind(project(), 'missing', undefined, {}, io())).rejects.toThrow(
       'does not exist'
     );
+  });
+
+  it('says that only durable runs of other processes are seen', async () => {
+    const point = await firstTurnEnd();
+    await runRewind(project(), 'chat', point, { files: true, dryRun: true }, io());
+    expect(printed[0]).toContain('not durable');
+    const command = createProgram().commands.find((each) => each.name() === 'rewind')!;
+    let help = '';
+    command.configureOutput({ writeOut: (text) => (help += text) });
+    command.outputHelp();
+    expect(help).toContain('only when that run is durable');
+  });
+
+  it('finds the agent of a thread whose id the registry agents do not have', async () => {
+    const memory = await cog.getMemory();
+    await memory!.createThread('agent_from_another_process', {}, 'elsewhere');
+    await memory!.addEntry({
+      threadId: 'elsewhere',
+      message: { role: 'user', content: 'hello' },
+      tokenCount: 1,
+    });
+    const plain = new Agent({ name: 'plain', model: 'mock/m', instructions: 'x' });
+    const registry = {
+      cogitator: cog,
+      agents: new Map([
+        ['plain', plain],
+        ['coder', agent],
+      ]),
+    };
+    const path = await memory!.getPath!({ threadId: 'elsewhere' });
+    const entry = path.success ? path.data[0]!.id : '';
+    await expect(
+      runRewind(registry, 'elsewhere', entry, { files: true, dryRun: true }, io())
+    ).rejects.toThrow(/no file checkpoint/);
+    const lonely = { cogitator: cog, agents: new Map([['plain', plain]]) };
+    const refused = await runRewind(
+      lonely,
+      'elsewhere',
+      entry,
+      { files: true, dryRun: true },
+      io()
+    ).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(UsageError);
+    expect((refused as UsageError).hints.join(' ')).toContain('--agent');
+  });
+
+  it('keeps --json output pure: it needs --yes or --dry-run to rewind', async () => {
+    const point = await firstTurnEnd();
+    await expect(
+      runRewind(project(), 'chat', point, { files: true, json: true }, io(true))
+    ).rejects.toBeInstanceOf(UsageError);
+    const logs: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((line: string) => {
+      logs.push(line);
+    });
+    try {
+      await runRewind(project(), 'chat', point, { files: true, json: true, dryRun: true }, io());
+    } finally {
+      log.mockRestore();
+    }
+    expect(printed).toEqual([]);
+    expect(JSON.parse(logs.join('\n'))).toMatchObject({ ok: true, warnings: [expect.any(String)] });
   });
 
   it('is a command of the CLI', () => {

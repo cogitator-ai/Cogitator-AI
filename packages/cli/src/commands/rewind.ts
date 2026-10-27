@@ -29,7 +29,7 @@ export interface RewindFlags {
 
 /** What the command works on: the project's runtime and its agents by key */
 export interface RewindProject {
-  cogitator: Pick<Cogitator, 'rewind' | 'getMemory'>;
+  cogitator: Pick<Cogitator, 'rewind' | 'getMemory'> & { readonly durableByDefault?: boolean };
   agents: Map<string, Agent>;
 }
 
@@ -166,13 +166,11 @@ export async function runRewind(
   const thread = await memory.getThread(threadId);
   if (!thread.success) throw new CommandError(thread.error);
   if (!thread.data) throw new CommandError(`Thread ${threadId} does not exist`);
-  const agent = flags.agent
-    ? project.agents.get(flags.agent)
-    : [...project.agents.values()].find((candidate) => candidate.id === thread.data?.agentId);
-  if (flags.agent && !agent) {
-    throw new UsageError(`The registry has no agent "${flags.agent}"`, [
-      `Agents: ${[...project.agents.keys()].join(', ') || 'none'}`,
-    ]);
+  const agent = agentFor(project, thread.data.agentId, flags);
+  if (flags.json && entryId !== undefined && !flags.yes && !flags.dryRun) {
+    throw new UsageError(
+      '--json does not prompt: pass --dry-run to see the plan, or --yes to rewind'
+    );
   }
 
   if (entryId === undefined) {
@@ -205,6 +203,19 @@ export async function runRewind(
     return 0;
   }
 
+  if (flags.files && !agent?.config.workspace) {
+    throw new UsageError(
+      'Restoring files needs the workspace of the agent the thread ran with, and no registry agent was found for it',
+      [`Pass --agent <key> (agents: ${[...project.agents.keys()].join(', ') || 'none'})`]
+    );
+  }
+  const warnings =
+    project.cogitator.durableByDefault === false
+      ? [
+          'Runs are not durable in this project, so a run another process is running now cannot be seen from here: make sure none is before you rewind',
+        ]
+      : [];
+  if (!flags.json) for (const warning of warnings) io.print(chalk.yellow(`! ${warning}`));
   const options: RewindOptions = {
     ...(agent && { agents: [agent] }),
     ...(flags.files !== undefined && { files: flags.files }),
@@ -213,7 +224,7 @@ export async function runRewind(
   };
   const plan = await project.cogitator.rewind(threadId, entryId, { ...options, dryRun: true });
   if (flags.dryRun) {
-    if (flags.json) printJson({ ok: true, report: plan });
+    if (flags.json) printJson({ ok: true, report: plan, warnings });
     else for (const line of describeRewind(plan)) io.print(line);
     return 0;
   }
@@ -229,9 +240,35 @@ export async function runRewind(
     }
   }
   const report = await project.cogitator.rewind(threadId, entryId, options);
-  if (flags.json) printJson({ ok: true, report });
+  if (flags.json) printJson({ ok: true, report, warnings });
   else for (const line of describeRewind(report)) io.print(line);
   return 0;
+}
+
+/**
+ * The registry agent whose workspace and memory a rewind uses: `--agent`, else the one whose id
+ * the thread names, else the only agent of the registry with a workspace (an agent without a
+ * configured `id` gets a new one in every process, so the thread's id cannot name it)
+ */
+function agentFor(
+  project: RewindProject,
+  threadAgentId: string,
+  flags: RewindFlags
+): Agent | undefined {
+  const agents = [...project.agents.values()];
+  if (flags.agent) {
+    const named = project.agents.get(flags.agent);
+    if (!named) {
+      throw new UsageError(`The registry has no agent "${flags.agent}"`, [
+        `Agents: ${[...project.agents.keys()].join(', ') || 'none'}`,
+      ]);
+    }
+    return named;
+  }
+  const owner = agents.find((candidate) => candidate.id === threadAgentId);
+  if (owner) return owner;
+  const withWorkspace = agents.filter((candidate) => candidate.config.workspace !== undefined);
+  return withWorkspace.length === 1 ? withWorkspace[0] : undefined;
 }
 
 /** Prompts on the terminal, undefined when stdin is not one */
@@ -261,7 +298,10 @@ export const rewindCommand = new Command('rewind')
   .option('--no-memory', 'Leave the conversation and memory as they are, restore the files only')
   .option('--dry-run', 'Show what the rewind would change, change nothing')
   .option('-y, --yes', 'Rewind without asking')
-  .option('--force', 'Abort the runs going on in the thread first')
+  .option(
+    '--force',
+    'Stop the runs going on in the thread (and with --files in its workspace) first. Only runs of this process and durable runs of others are seen'
+  )
   .option(
     '-a, --agent <key>',
     'The registry agent whose workspace to restore (default: the thread one)'
@@ -270,12 +310,17 @@ export const rewindCommand = new Command('rewind')
   .option('--json', 'Print the result as JSON')
   .addHelpText(
     'after',
-    examplesHelp([
-      ['cogitator rewind thread_42', 'list the entries of the thread'],
-      ['cogitator rewind thread_42 entry_abc --files --dry-run', 'show what would change'],
-      ['cogitator rewind thread_42 entry_abc --files', 'rewind conversation, memory and files'],
-      ['cogitator rewind thread_42 entry_abc --files --no-memory -y', 'restore the files only'],
-    ])
+    `
+Runs going on: the command runs in a process of its own, so it sees a run of the project's
+other processes only when that run is durable (CogitatorConfig.durable): a run that is not
+is not detected. Stop such runs before you rewind with --files.
+` +
+      examplesHelp([
+        ['cogitator rewind thread_42', 'list the entries of the thread'],
+        ['cogitator rewind thread_42 entry_abc --files --dry-run', 'show what would change'],
+        ['cogitator rewind thread_42 entry_abc --files', 'rewind conversation, memory and files'],
+        ['cogitator rewind thread_42 entry_abc --files --no-memory -y', 'restore the files only'],
+      ])
   )
   .action(async (thread: string, entry: string | undefined, flags: RewindFlags) => {
     let code: number;

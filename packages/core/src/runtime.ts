@@ -5992,6 +5992,16 @@ export class Cogitator implements ToolInvoker {
   }
 
   /**
+   * Whether this runtime's runs are durable by default (`CogitatorConfig.durable` set and
+   * enabled). A run of another process shows in `durableRuns()`, and so to a rewind, only when it
+   * is durable
+   */
+  get durableByDefault(): boolean {
+    const durable = this.durableConfig();
+    return durable !== undefined && durable.enabled !== false;
+  }
+
+  /**
    * The durable runs kept (`durable`), with whether a live process holds each: a run nobody holds
    * was left by a process that stopped, for `recoverRuns()` or `discardRun()`
    */
