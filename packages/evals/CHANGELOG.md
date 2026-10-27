@@ -1,5 +1,13 @@
 # @cogitator-ai/evals
 
+## 0.13.2
+
+### Patch Changes
+
+- [#305](https://github.com/cogitator-ai/Cogitator-AI/pull/305) [`cb4a7fa`](https://github.com/cogitator-ai/Cogitator-AI/commit/cb4a7fa20594805d6bf150f680185cc07520fec0) - The LLM judge reads fenced JSON, outer braces and labelled scores with linear scans instead of regexes that could backtrack on crafted judge output. Verdicts parse the same as before.
+- Updated dependencies [[`cb4a7fa`](https://github.com/cogitator-ai/Cogitator-AI/commit/cb4a7fa20594805d6bf150f680185cc07520fec0)]:
+  - @cogitator-ai/core@0.70.0
+
 ## 0.13.1
 
 ### Patch Changes

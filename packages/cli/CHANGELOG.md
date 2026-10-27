@@ -1,5 +1,20 @@
 # @cogitator-ai/cli
 
+## 0.13.2
+
+### Patch Changes
+
+- Updated dependencies [[`cb4a7fa`](https://github.com/cogitator-ai/Cogitator-AI/commit/cb4a7fa20594805d6bf150f680185cc07520fec0)]:
+  - @cogitator-ai/types@0.81.0
+  - @cogitator-ai/core@0.70.0
+  - @cogitator-ai/config@0.32.0
+  - @cogitator-ai/memory@0.28.0
+  - @cogitator-ai/channels@0.20.5
+  - @cogitator-ai/deploy@0.7.8
+  - @cogitator-ai/mcp@19.7.5
+  - @cogitator-ai/studio@0.6.3
+  - create-cogitator-app@0.14.1
+
 ## 0.13.1
 
 ### Patch Changes
