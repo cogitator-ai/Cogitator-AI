@@ -1,0 +1,29 @@
+schema_version: '1.1'
+name: card
+graders:
+  - name: card-written
+    type: file_exists
+    path: '*.txt'
+  - name: card-text
+    type: regex
+    pattern: Ahoy from the house, Ada
+    target:
+      source: file
+      path: card.txt
+  - name: skill-then-write
+    type: tool_order
+    before: Skill
+    after:
+      tool: Write
+      input_match: card\.txt
+  - name: one-write
+    type: tool_used
+    tool: Write
+    min: 1
+    max: 1
+    arm: both
+  - name: no-bash
+    type: tool_used
+    tool: Bash
+    min: 0
+    max: 0

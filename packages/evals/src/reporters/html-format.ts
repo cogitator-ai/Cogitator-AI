@@ -74,8 +74,11 @@ details summary { cursor: pointer; }
 ul { padding-left: 20px; }
 `;
 
-/** A self-contained HTML page: inline CSS, no scripts and no external assets */
-export function htmlDocument(title: string, body: string): string {
+/**
+ * A self-contained HTML page: inline CSS, no scripts and no external assets. `style` adds rules
+ * of the page's own after the shared ones
+ */
+export function htmlDocument(title: string, body: string, style: string = ''): string {
   return [
     '<!doctype html>',
     '<html lang="en">',
@@ -83,7 +86,7 @@ export function htmlDocument(title: string, body: string): string {
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
     `<title>${escapeHtml(title)}</title>`,
-    `<style>${STYLE}</style>`,
+    `<style>${STYLE}${style}</style>`,
     '</head>',
     '<body>',
     '<main>',

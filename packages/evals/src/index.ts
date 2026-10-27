@@ -188,4 +188,35 @@ export type {
 } from './schema';
 
 export { createRunEvalTool, evalTools } from './tools';
+
+export { experimental_runPluginEvals, PluginEvalError } from './plugin-evals';
+export type {
+  PluginEvalAblation,
+  PluginEvalAbort,
+  PluginEvalArm,
+  PluginEvalBaselineGrader,
+  PluginEvalCaseAggregates,
+  PluginEvalCaseResult,
+  PluginEvalExpectation,
+  PluginEvalExpectType,
+  PluginEvalFileExistsGrader,
+  PluginEvalGrader,
+  PluginEvalGraderResult,
+  PluginEvalLlmGrader,
+  PluginEvalMockCall,
+  PluginEvalOptions,
+  PluginEvalOutcome,
+  PluginEvalPartialReason,
+  PluginEvalProgressEvent,
+  PluginEvalRegexGrader,
+  PluginEvalReport,
+  PluginEvalResult,
+  PluginEvalRunResult,
+  PluginEvalTarget,
+  PluginEvalToolCall,
+  PluginEvalToolMatcher,
+  PluginEvalToolOrderGrader,
+  PluginEvalToolUsedGrader,
+  PluginEvalVote,
+} from './plugin-evals';
 export type { EvalTool } from './tools';
