@@ -381,27 +381,30 @@ describe('WorkflowExecutor', () => {
 
   describe('parallel edge execution', () => {
     it('executes parallel targets via ParallelEdge', async () => {
-      const startTimes: Record<string, number> = {};
+      const started = new Set<string>();
+      const overlapped = new Set<string>();
+      let release!: () => void;
+      const allStarted = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const branch = (name: string) => async () => {
+        started.add(name);
+        if (started.size === 3) release();
+        const together = await Promise.race([
+          allStarted.then(() => true),
+          new Promise<false>((r) => setTimeout(() => r(false), 2_000)),
+        ]);
+        if (together) overlapped.add(name);
+        return { output: name };
+      };
 
       const workflow = new WorkflowBuilder<TestState>('parallel-edge')
         .initialState({ value: 0, steps: [] })
         .addNode('start', async () => ({ output: 'started' }))
         .addParallel('fanout', ['a', 'b', 'c'], { after: ['start'] })
-        .addNode('a', async () => {
-          startTimes.a = Date.now();
-          await new Promise((r) => setTimeout(r, 30));
-          return { output: 'a' };
-        })
-        .addNode('b', async () => {
-          startTimes.b = Date.now();
-          await new Promise((r) => setTimeout(r, 30));
-          return { output: 'b' };
-        })
-        .addNode('c', async () => {
-          startTimes.c = Date.now();
-          await new Promise((r) => setTimeout(r, 30));
-          return { output: 'c' };
-        })
+        .addNode('a', branch('a'))
+        .addNode('b', branch('b'))
+        .addNode('c', branch('c'))
         .build();
 
       const executor = new WorkflowExecutor(mockCogitator);
@@ -411,11 +414,7 @@ describe('WorkflowExecutor', () => {
       expect(result.nodeResults.get('a')?.output).toBe('a');
       expect(result.nodeResults.get('b')?.output).toBe('b');
       expect(result.nodeResults.get('c')?.output).toBe('c');
-
-      const startDiff_ab = Math.abs(startTimes.a - startTimes.b);
-      const startDiff_bc = Math.abs(startTimes.b - startTimes.c);
-      expect(startDiff_ab).toBeLessThan(20);
-      expect(startDiff_bc).toBeLessThan(20);
+      expect(overlapped).toEqual(new Set(['a', 'b', 'c']));
     });
 
     it('respects maxConcurrency with parallel edges', async () => {
