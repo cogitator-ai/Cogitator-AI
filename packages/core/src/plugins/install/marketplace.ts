@@ -418,7 +418,15 @@ export interface FetchedMarketplace {
 export async function fetchMarketplace(
   source: MarketplaceSource,
   pluginsRoot: string,
-  options: { fetchFn?: typeof fetch; signal?: AbortSignal } = {}
+  options: {
+    fetchFn?: typeof fetch;
+    signal?: AbortSignal;
+    /**
+     * Checks the marketplace read before its folder is replaced, throwing to refuse it: the files
+     * of the marketplace already there stay as they were
+     */
+    accept?: (read: ReadMarketplace) => void;
+  } = {}
 ): Promise<FetchedMarketplace> {
   if (source.source === 'file' || source.source === 'directory') {
     const file = source.source === 'file' ? source.path : join(source.path, MARKETPLACE_FILE);
@@ -429,7 +437,9 @@ export async function fetchMarketplace(
         code: ErrorCode.PLUGIN_INSTALL_FAILED,
       });
     });
-    return { root, file, read: parseMarketplace(text, file, source) };
+    const read = parseMarketplace(text, file, source);
+    options.accept?.(read);
+    return { root, file, read };
   }
   const staging = await mkdtemp(
     join(await ensureDir(join(pluginsRoot, 'marketplaces')), '.incoming-')
@@ -444,6 +454,7 @@ export async function fetchMarketplace(
       });
       const text = body.toString('utf8');
       const read = parseMarketplace(text, source.url, source);
+      options.accept?.(read);
       const root = join(pluginsRoot, 'marketplaces', read.manifest.name);
       await rm(root, { recursive: true, force: true });
       await mkdir(join(root, '.claude-plugin'), { recursive: true });
@@ -472,6 +483,7 @@ export async function fetchMarketplace(
       });
     });
     const read = parseMarketplace(text, relative, source);
+    options.accept?.(read);
     const root = join(pluginsRoot, 'marketplaces', read.manifest.name);
     await rm(root, { recursive: true, force: true });
     await rename(clone, root);

@@ -281,14 +281,19 @@ export async function runSetEnabled(
   context: PluginCommandContext = defaultContext()
 ): Promise<number> {
   return respond(enabled ? 'enable' : 'disable', flags, context, async () => {
-    const { file } = await installerOf(context, flags).setEnabled(
+    const { file, scope, overriddenBy } = await installerOf(context, flags).setEnabled(
       spec,
       enabled,
-      flags.scope ?? 'user'
+      flags.scope
     );
+    const state = enabled ? 'enabled' : 'disabled';
     return {
-      message: `Successfully ${enabled ? 'enabled' : 'disabled'} plugin: ${spec} (scope: ${flags.scope ?? 'user'})`,
-      details: { pluginId: spec, scope: flags.scope ?? 'user', file },
+      message:
+        `Successfully ${state} plugin: ${spec} (scope: ${scope})` +
+        (overriddenBy
+          ? `\nWarning: the ${overriddenBy} settings still have it ${enabled ? 'disabled' : 'enabled'}, which takes precedence`
+          : ''),
+      details: { pluginId: spec, scope, file, ...(overriddenBy && { overriddenBy }) },
     };
   });
 }
@@ -628,7 +633,11 @@ const uninstall = new Command('uninstall')
 const enable = new Command('enable')
   .description('Enable an installed plugin')
   .argument('<plugin>', 'name@marketplace')
-  .option('-s, --scope <scope>', 'user, project or local', parseScope, 'user')
+  .option(
+    '-s, --scope <scope>',
+    'user, project or local (default: the one that enables or disables it now, else user)',
+    parseScope
+  )
   .option(...json)
   .action(async (spec: string, flags: Parameters<typeof runSetEnabled>[2]) => {
     process.exitCode = await runSetEnabled(spec, true, flags);
@@ -637,7 +646,11 @@ const enable = new Command('enable')
 const disable = new Command('disable')
   .description('Disable an installed plugin without removing it')
   .argument('<plugin>', 'name@marketplace')
-  .option('-s, --scope <scope>', 'user, project or local', parseScope, 'user')
+  .option(
+    '-s, --scope <scope>',
+    'user, project or local (default: the one that enables or disables it now, else user)',
+    parseScope
+  )
   .option(...json)
   .action(async (spec: string, flags: Parameters<typeof runSetEnabled>[2]) => {
     process.exitCode = await runSetEnabled(spec, false, flags);

@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import {
   CogitatorError,
   ErrorCode,
@@ -22,6 +22,7 @@ import {
   type PluginSecretStore,
   type PluginSettingsOptions,
   type PluginSource,
+  type PermissionLayer,
 } from '@cogitator-ai/types';
 import { defaultUserDirs } from '../../permissions/settings';
 import { marketplaceNameProblem, readPluginLayout, type PluginLayout } from '../manifest';
@@ -129,9 +130,29 @@ function failed(
   return new CogitatorError({ message, code });
 }
 
-/** A version as a folder name */
+/**
+ * A version as a folder name. A version a folder name cannot hold (empty, `.`, `..`, starting
+ * with a dot) is refused: the folder of a version must stay inside the plugin's own folder
+ */
 function versionFolder(version: string): string {
-  return version.replace(/[^A-Za-z0-9._+-]/g, '_') || 'unknown';
+  const folder = version.replace(/[^A-Za-z0-9._+-]/g, '_');
+  if (folder === '' || folder.startsWith('.')) {
+    throw failed(`"${version}" cannot be the version of a plugin`, ErrorCode.PLUGIN_INVALID);
+  }
+  return folder;
+}
+
+/** Where version `version` of `name` from `marketplace` is kept, checked to stay in its folder */
+function cachePath(root: string, marketplace: string, name: string, version: string): string {
+  const plugin = join(root, 'cache', marketplace, name);
+  const path = join(plugin, versionFolder(version));
+  if (dirname(path) !== plugin || !isUnder(join(root, 'cache'), plugin)) {
+    throw failed(
+      `${name}@${marketplace} ${version} would be installed outside its folder`,
+      ErrorCode.PLUGIN_INVALID
+    );
+  }
+  return path;
 }
 
 const now = () => new Date().toISOString();
@@ -218,18 +239,21 @@ export class experimental_PluginInstaller {
       const source =
         typeof input === 'string' ? marketplaceSourceOf(input, this.projectRoot) : input;
       this.progress(`Fetching the marketplace ${describeSource(source)}`);
+      const { marketplaces } = await readKnownMarketplaces(this.root);
       const fetched = await fetchMarketplace(source, this.root, {
         ...(this.options.fetchFn && { fetchFn: this.options.fetchFn }),
         ...(options.signal && { signal: options.signal }),
+        accept: (read) => {
+          const taken = marketplaces.find((entry) => entry.name === read.manifest.name);
+          if (taken && JSON.stringify(taken.source) !== JSON.stringify(source)) {
+            throw failed(
+              `A marketplace named ${read.manifest.name} is already added from ${describeSource(taken.source)}: remove it first`
+            );
+          }
+        },
       });
       const name = fetched.read.manifest.name;
-      const { marketplaces } = await readKnownMarketplaces(this.root);
       const existing = marketplaces.find((marketplace) => marketplace.name === name);
-      if (existing && JSON.stringify(existing.source) !== JSON.stringify(source)) {
-        throw failed(
-          `A marketplace named ${name} is already added from ${describeSource(existing.source)}: remove it first`
-        );
-      }
       const marketplace: KnownMarketplace = {
         name,
         source,
@@ -272,12 +296,14 @@ export class experimental_PluginInstaller {
     const fetched = await fetchMarketplace(marketplace.source, this.root, {
       ...(this.options.fetchFn && { fetchFn: this.options.fetchFn }),
       ...(signal && { signal }),
+      accept: (read) => {
+        if (read.manifest.name !== marketplace.name) {
+          throw failed(
+            `The marketplace ${marketplace.name} now calls itself ${read.manifest.name}: remove it and add it again`
+          );
+        }
+      },
     });
-    if (fetched.read.manifest.name !== marketplace.name) {
-      throw failed(
-        `The marketplace ${marketplace.name} now calls itself ${fetched.read.manifest.name}: remove it and add it again`
-      );
-    }
     const refreshed: KnownMarketplace = {
       ...marketplace,
       installLocation: fetched.root,
@@ -299,8 +325,19 @@ export class experimental_PluginInstaller {
       const marketplace = marketplaces.find((entry) => entry.name === name);
       if (!marketplace) throw failed(`No marketplace ${name} is added`, ErrorCode.PLUGIN_NOT_FOUND);
       const records = await this.list();
+      const leaving = records.filter((entry) => entry.marketplace === name);
+      const staying = records.filter((entry) => entry.marketplace !== name);
+      for (const record of leaving) {
+        const dependents = await this.dependentsOf(record, staying);
+        if (dependents.length > 0) {
+          throw failed(
+            `${record.id} of the marketplace ${name} is needed by ${dependents.join(', ')}: uninstall them first`,
+            ErrorCode.PLUGIN_DEPENDENCY_UNMET
+          );
+        }
+      }
       const uninstalled: string[] = [];
-      for (const record of records.filter((entry) => entry.marketplace === name)) {
+      for (const record of leaving) {
         await this.removeRecord(record, { keepData: false });
         uninstalled.push(record.id);
       }
@@ -334,6 +371,13 @@ export class experimental_PluginInstaller {
     if (declared) {
       const fetched = await fetchMarketplace(declared.source, this.root, {
         ...(this.options.fetchFn && { fetchFn: this.options.fetchFn }),
+        accept: (read) => {
+          if (read.manifest.name !== name) {
+            throw failed(
+              `The marketplace declared as ${name} calls itself ${read.manifest.name}: fix extraKnownMarketplaces`
+            );
+          }
+        },
       });
       const marketplace: KnownMarketplace = {
         name,
@@ -506,6 +550,10 @@ export class experimental_PluginInstaller {
         };
       }
       const version = versionOf(layout, entry, fetched);
+      const installPath = fetched.inPlace
+        ? fetched.dir
+        : cachePath(this.root, marketplaceName, name, version);
+      checkOptions(id, layout, options);
       const granted = await this.grant(id, layout, undefined, options.yes === true, false);
       const installed: InstalledPluginRecord[] = [];
       for (const need of layout.manifest.dependencies ?? []) {
@@ -513,15 +561,15 @@ export class experimental_PluginInstaller {
           need,
           marketplaceName,
           marketplace?.read,
-          options,
+          {
+            ...(options.yes !== undefined && { yes: options.yes }),
+            ...(options.signal && { signal: options.signal }),
+          },
           [...chain, id],
           records
         );
         installed.push(...installedDependency);
       }
-      const installPath = fetched.inPlace
-        ? fetched.dir
-        : join(this.root, 'cache', marketplaceName, name, versionFolder(version));
       if (!fetched.inPlace) {
         this.progress(`Installing ${id} ${version}`);
         await copyPluginFolder(fetched.dir, installPath);
@@ -590,24 +638,12 @@ export class experimental_PluginInstaller {
         `Dependency "${id}" is not in the marketplace ${target}`,
         ErrorCode.PLUGIN_DEPENDENCY_UNMET
       );
-    let pinned: MarketplacePluginEntry = entry;
-    if (need.version !== undefined && typeof entry.source === 'object') {
-      const source = entry.source;
-      if (source.source === 'github' || source.source === 'url' || source.source === 'git-subdir') {
-        const url = source.source === 'github' ? gitUrlOf(source) : source.url;
-        const tag = await resolveTag(url, need.name, need.version);
-        if (!tag) {
-          throw failed(
-            `Dependency "${id}" has no git tag satisfying ${need.version}`,
-            ErrorCode.PLUGIN_DEPENDENCY_UNMET
-          );
-        }
-        const { sha: _sha, ...rest } = source;
-        pinned = { ...entry, source: { ...rest, ref: tag.tag } };
-      } else if (source.source === 'npm') {
-        pinned = { ...entry, source: { ...source, version: need.version } };
-      }
-    }
+    const pinned = await pinnedEntry(
+      entry,
+      id,
+      need.name,
+      need.version !== undefined ? [need.version] : []
+    );
     const result = await this.installEntry(
       pinned,
       target,
@@ -665,29 +701,10 @@ export class experimental_PluginInstaller {
     const spec = layout.manifest.userConfig ?? {};
     const values = options.options ?? {};
     const secrets = options.secrets ?? {};
-    for (const key of [...Object.keys(values), ...Object.keys(secrets)]) {
-      if (!Object.hasOwn(spec, key))
-        throw failed(`${id} declares no option ${key}`, ErrorCode.VALIDATION_ERROR);
-    }
-    const plain: Record<string, PluginOptionValue> = {};
-    for (const [key, value] of Object.entries(values)) {
-      if (spec[key]?.sensitive === true) {
-        throw failed(
-          `The option ${key} of ${id} is sensitive: give it as a secret`,
-          ErrorCode.VALIDATION_ERROR
-        );
-      }
-      plain[key] = value;
-    }
-    if (Object.keys(plain).length > 0)
-      await writePluginOptions(this.settingsFile('user'), id, plain);
+    checkOptions(id, layout, options);
+    if (Object.keys(values).length > 0)
+      await writePluginOptions(this.settingsFile('user'), id, { ...values });
     for (const [key, secret] of Object.entries(secrets)) {
-      if (spec[key]?.sensitive !== true) {
-        throw failed(
-          `The option ${key} of ${id} is not sensitive: give it as an option`,
-          ErrorCode.VALIDATION_ERROR
-        );
-      }
       await this.store.set(secretServiceOf(id), key, secret);
     }
     const settings = await loadPluginSettings(this.projectRoot, {
@@ -725,25 +742,38 @@ export class experimental_PluginInstaller {
       const layout = await readPluginLayout(record.installPath, {
         ...(record.entry && { entry: record.entry }),
         fallbackName: record.name,
-        id,
+        id: record.id,
       });
+      checkOptions(record.id, layout, values);
       for (const key of values.unset ?? []) {
-        const option = layout.manifest.userConfig?.[key];
-        if (!option) throw failed(`${id} declares no option ${key}`, ErrorCode.VALIDATION_ERROR);
-        if (option.sensitive === true) await this.store.delete(secretServiceOf(id), key);
-        else await writePluginOptions(this.settingsFile('user'), id, { [key]: undefined });
+        if (!layout.manifest.userConfig?.[key])
+          throw failed(`${record.id} declares no option ${key}`, ErrorCode.VALIDATION_ERROR);
       }
-      return this.saveOptions(id, layout, {
+      for (const key of values.unset ?? []) {
+        if (layout.manifest.userConfig?.[key]?.sensitive === true)
+          await this.store.delete(secretServiceOf(record.id), key);
+        else await writePluginOptions(this.settingsFile('user'), record.id, { [key]: undefined });
+      }
+      return this.saveOptions(record.id, layout, {
         ...(values.options && { options: values.options }),
         ...(values.secrets && { secrets: values.secrets }),
       });
     });
   }
 
+  /** The installed plugin `id`, or the one installed plugin named `id` when it has no `@` */
   private async record(id: string): Promise<InstalledPluginRecord> {
-    const record = (await this.list()).find(
-      (entry) => entry.id === id || (!id.includes('@') && entry.name === id)
-    );
+    const records = await this.list();
+    const exact = records.find((entry) => entry.id === id);
+    if (exact) return exact;
+    const named = id.includes('@') ? [] : records.filter((entry) => entry.name === id);
+    if (named.length > 1) {
+      throw failed(
+        `${id} is installed from several marketplaces (${named.map((entry) => entry.id).join(', ')}): name it as ${id}@<marketplace>`,
+        ErrorCode.VALIDATION_ERROR
+      );
+    }
+    const [record] = named;
     if (!record) throw failed(`No plugin ${id} is installed`, ErrorCode.PLUGIN_NOT_FOUND);
     return record;
   }
@@ -786,12 +816,18 @@ export class experimental_PluginInstaller {
         }
       }
       const read = await this.readKnown(known);
-      entry = read.manifest.plugins.find((candidate) => candidate.name === record.name);
-      if (!entry)
+      const listed = read.manifest.plugins.find((candidate) => candidate.name === record.name);
+      if (!listed)
         throw failed(
           `The marketplace ${record.marketplace} no longer has ${record.name}`,
           ErrorCode.PLUGIN_NOT_FOUND
         );
+      entry = await pinnedEntry(
+        listed,
+        record.id,
+        record.name,
+        await this.rangesOn(record, await this.list())
+      );
       marketplace = { known, read };
     }
     if (!entry) throw failed(`The record of ${record.id} keeps no source to update from`);
@@ -839,6 +875,9 @@ export class experimental_PluginInstaller {
           notes: [...notes, `${record.name} is already at the latest version (${version}).`],
         };
       }
+      const installPath = fetched.inPlace
+        ? fetched.dir
+        : cachePath(this.root, record.marketplace, record.name, version);
       const granted = await this.grant(
         record.id,
         layout,
@@ -856,9 +895,20 @@ export class experimental_PluginInstaller {
           'Some permissions of the new version were not granted, the plugin runs without them'
         );
       }
-      const installPath = fetched.inPlace
-        ? fetched.dir
-        : join(this.root, 'cache', record.marketplace, record.name, versionFolder(version));
+      for (const need of layout.manifest.dependencies ?? []) {
+        const added = await this.installDependency(
+          need,
+          record.marketplace,
+          marketplace?.read,
+          {
+            ...(options.yes !== undefined && { yes: options.yes }),
+            ...(options.signal && { signal: options.signal }),
+          },
+          [record.id],
+          await this.list()
+        );
+        for (const dependency of added) notes.push(`installed the dependency ${dependency.id}`);
+      }
       if (!fetched.inPlace) await copyPluginFolder(fetched.dir, installPath);
       if (
         record.installPath !== installPath &&
@@ -926,6 +976,31 @@ export class experimental_PluginInstaller {
     });
   }
 
+  /** The version ranges the installed plugins put on `record` through their dependencies */
+  private async rangesOn(
+    record: InstalledPluginRecord,
+    records: readonly InstalledPluginRecord[]
+  ): Promise<string[]> {
+    const ranges: string[] = [];
+    for (const candidate of records) {
+      if (candidate.id === record.id) continue;
+      const layout = await readPluginLayout(candidate.installPath, {
+        ...(candidate.entry && { entry: candidate.entry }),
+        fallbackName: candidate.name,
+      }).catch(() => undefined);
+      for (const need of layout?.manifest.dependencies ?? []) {
+        if (
+          need.version !== undefined &&
+          need.name === record.name &&
+          (need.marketplace ?? candidate.marketplace) === record.marketplace
+        ) {
+          ranges.push(need.version);
+        }
+      }
+    }
+    return ranges;
+  }
+
   private async dependentsOf(
     record: InstalledPluginRecord,
     records: readonly InstalledPluginRecord[]
@@ -981,15 +1056,16 @@ export class experimental_PluginInstaller {
   }
 
   /**
-   * Enables or disables the installed plugin `id` in the settings file of `scope` (default
-   * `user`). Enabling needs its dependencies installed, disabling is refused while an enabled
-   * plugin depends on it
+   * Enables or disables the installed plugin `id` in the settings file of `scope`. Without one it
+   * is the file that decides now (local, then project, then user, as Claude Code looks), else
+   * user. Enabling needs its dependencies installed, disabling is refused while an enabled plugin
+   * depends on it. `overriddenBy` names the layer whose settings still decide otherwise
    */
   setEnabled(
     id: string,
     enabled: boolean,
-    scope: PluginSettingsScope = 'user'
-  ): Promise<{ file: string }> {
+    scope?: PluginSettingsScope
+  ): Promise<{ file: string; scope: PluginSettingsScope; overriddenBy?: PermissionLayer }> {
     return this.serial(async () => {
       const record = await this.record(id);
       const records = await this.list();
@@ -1037,9 +1113,27 @@ export class experimental_PluginInstaller {
           );
         }
       }
-      const file = this.settingsFile(scope);
+      const deciding = settings.enabled.get(record.id)?.layer;
+      const chosen: PluginSettingsScope =
+        scope ??
+        (deciding === 'local' || deciding === 'project' || deciding === 'user' ? deciding : 'user');
+      const file = this.settingsFile(chosen);
       await writeEnabledPlugin(file, record.id, enabled);
-      return { file };
+      const after = (
+        await loadPluginSettings(this.projectRoot, {
+          root: this.projectRoot,
+          userDirs: [...(this.options.userDirs ?? defaultUserDirs())],
+          trusted: true,
+          ...(this.options.settings?.managedDirs && {
+            managedDirs: this.options.settings.managedDirs,
+          }),
+        })
+      ).enabled.get(record.id);
+      return {
+        file,
+        scope: chosen,
+        ...(after && after.value !== enabled && { overriddenBy: after.layer }),
+      };
     });
   }
 
@@ -1072,6 +1166,76 @@ export class experimental_PluginInstaller {
 async function ensure(dir: string): Promise<string> {
   await mkdir(dir, { recursive: true });
   return dir;
+}
+
+/**
+ * Throws unless `options` fit the options `layout` declares: every key declared, plain values for
+ * plain options and secrets for sensitive ones. Checked before anything is written
+ */
+function checkOptions(
+  id: string,
+  layout: PluginLayout,
+  options: Pick<PluginInstallOptions, 'options' | 'secrets'>
+): void {
+  const spec = layout.manifest.userConfig ?? {};
+  const values = options.options ?? {};
+  const secrets = options.secrets ?? {};
+  for (const key of [...Object.keys(values), ...Object.keys(secrets)]) {
+    if (!Object.hasOwn(spec, key))
+      throw failed(`${id} declares no option ${key}`, ErrorCode.VALIDATION_ERROR);
+  }
+  for (const key of Object.keys(values)) {
+    if (spec[key]?.sensitive === true) {
+      throw failed(
+        `The option ${key} of ${id} is sensitive: give it as a secret`,
+        ErrorCode.VALIDATION_ERROR
+      );
+    }
+  }
+  for (const key of Object.keys(secrets)) {
+    if (spec[key]?.sensitive !== true) {
+      throw failed(
+        `The option ${key} of ${id} is not sensitive: give it as an option`,
+        ErrorCode.VALIDATION_ERROR
+      );
+    }
+  }
+}
+
+/**
+ * `entry` pinned to the highest version every one of `ranges` allows: the git tag
+ * `<name>--v<version>` of a git source, the range of an npm one. Other sources stay as they are
+ */
+async function pinnedEntry(
+  entry: MarketplacePluginEntry,
+  id: string,
+  name: string,
+  ranges: readonly string[]
+): Promise<MarketplacePluginEntry> {
+  if (ranges.length === 0 || typeof entry.source !== 'object') return entry;
+  const source = entry.source;
+  if (source.source === 'github' || source.source === 'url' || source.source === 'git-subdir') {
+    const url = source.source === 'github' ? gitUrlOf(source) : source.url;
+    const tag = await resolveTag(url, name, ranges);
+    if (!tag) {
+      throw failed(
+        `"${id}" has no git tag satisfying ${ranges.join(' and ')}`,
+        ErrorCode.PLUGIN_DEPENDENCY_UNMET
+      );
+    }
+    const { sha: _sha, ...rest } = source;
+    return { ...entry, source: { ...rest, ref: tag.tag } };
+  }
+  if (source.source === 'npm') {
+    if (ranges.length > 1 && ranges.some((range) => range.includes('||'))) {
+      throw failed(
+        `The ranges ${ranges.join(' and ')} on "${id}" cannot be combined into one npm range`,
+        ErrorCode.PLUGIN_DEPENDENCY_UNMET
+      );
+    }
+    return { ...entry, source: { ...source, version: ranges.join(' ') } };
+  }
+  return entry;
 }
 
 function isUnder(root: string, path: string): boolean {

@@ -117,6 +117,29 @@ describe('cogitator plugin', () => {
     });
   });
 
+  it('disables in the project settings that enable a plugin, and warns when another scope overrides', async () => {
+    const source = marketplace();
+    await runMarketplace('add', source, {}, context());
+    await runInstall('greeter@local-tools', {}, context());
+    const projectSettings = join(base, 'project', '.cogitator', 'settings.json');
+    mkdirSync(join(base, 'project', '.cogitator'), { recursive: true });
+    writeFileSync(
+      projectSettings,
+      JSON.stringify({ enabledPlugins: { 'greeter@local-tools': true } })
+    );
+    expect(await runSetEnabled('greeter@local-tools', false, {}, context())).toBe(0);
+    expect(printed.at(-1)).toMatch(
+      /Successfully disabled plugin: greeter@local-tools \(scope: project\)$/
+    );
+    expect(JSON.parse(readFileSync(projectSettings, 'utf8'))).toEqual({
+      enabledPlugins: { 'greeter@local-tools': false },
+    });
+    expect(await runSetEnabled('greeter@local-tools', true, { scope: 'user' }, context())).toBe(0);
+    expect(printed.at(-1)).toMatch(
+      /scope: user\)\nWarning: the project settings still have it disabled, which takes precedence/
+    );
+  });
+
   it('answers with failed and a failure code in JSON', async () => {
     expect(await runInstall('missing@nowhere', { json: true }, context())).toBe(1);
     expect(JSON.parse(logged.at(-1) ?? '{}')).toMatchObject({

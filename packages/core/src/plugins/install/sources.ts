@@ -19,7 +19,7 @@ import {
   type PluginSource,
 } from '@cogitator-ai/types';
 import { isInside } from '../manifest';
-import { compareVersions, maxSatisfying, parseVersion } from '../semver';
+import { compareVersions, maxSatisfying, parseVersion, satisfies } from '../semver';
 import { download, isLoopbackHost } from './fetch';
 import { checkGitUrl, cloneAt, gitUrlOf } from './marketplace';
 import { mustRun, npmCommand, runTool } from './run';
@@ -103,6 +103,7 @@ async function fetchRelative(path: string, context: FetchContext): Promise<Fetch
   if (!isInside(root, real)) throw failed(`The plugin folder ${path} leaves the marketplace`);
   const inPlace = marketplace.source.source === 'directory' || marketplace.source.source === 'file';
   let sourceVersion = 'unknown';
+  let pinned: string | undefined;
   if (existsSync(join(root, '.git')) || (await insideGit(root))) {
     const commit = await runTool(
       'git',
@@ -112,12 +113,15 @@ async function fetchRelative(path: string, context: FetchContext): Promise<Fetch
       }
     ).catch(() => undefined);
     const sha = commit?.code === 0 ? commit.stdout.trim() : '';
-    if (/^[0-9a-f]{40}$/.test(sha)) sourceVersion = sha.slice(0, 12);
+    if (/^[0-9a-f]{40}$/.test(sha)) {
+      pinned = sha;
+      sourceVersion = sha.slice(0, 12);
+    }
   }
   return {
     dir: real,
     inPlace,
-    pin: sourceVersion === 'unknown' ? {} : { commit: sourceVersion },
+    pin: pinned === undefined ? {} : { commit: pinned },
     sourceVersion,
     source: { source: 'path', path },
   };
@@ -183,14 +187,40 @@ const NpmViewSchema = z.looseObject({
   version: z.string(),
   'dist.tarball': z.string().optional(),
   'dist.integrity': z.string().optional(),
+  'dist.shasum': z.string().optional(),
   dist: z
-    .looseObject({ tarball: z.string().optional(), integrity: z.string().optional() })
+    .looseObject({
+      tarball: z.string().optional(),
+      integrity: z.string().optional(),
+      shasum: z.string().optional(),
+    })
     .optional(),
 });
 
 const NpmPackSchema = z.array(
   z.looseObject({ filename: z.string(), integrity: z.string().optional() })
 );
+
+/**
+ * Whether `tarball` is the one the registry describes: its `sha512-` integrity when it gives one,
+ * else a `sha1-` integrity or the hex `shasum` older packages have. Nothing to check against fails
+ */
+function matchesRegistry(
+  tarball: Buffer,
+  sha512: string,
+  expected: string | undefined,
+  shasum: string | undefined
+): boolean {
+  const hashes = (expected ?? '').split(/\s+/).filter((hash) => hash !== '');
+  const strong = hashes.filter((hash) => hash.startsWith('sha512-'));
+  if (strong.length > 0) return strong.includes(sha512);
+  const sha1 = createHash('sha1').update(tarball);
+  const digest = sha1.digest();
+  const weak = hashes.filter((hash) => hash.startsWith('sha1-'));
+  if (weak.length > 0) return weak.includes(`sha1-${digest.toString('base64')}`);
+  if (shasum !== undefined) return shasum.toLowerCase() === digest.toString('hex');
+  return false;
+}
 
 /** The registry npm uses when none is given */
 async function defaultRegistry(): Promise<string | undefined> {
@@ -281,6 +311,7 @@ async function fetchNpm(
     return a && b && compareVersions(a, b) > 0 ? entry : top;
   });
   const expected = best.dist?.integrity ?? best['dist.integrity'];
+  const shasum = best.dist?.shasum ?? best['dist.shasum'];
   const packed = await mustRun(
     npmCommand(),
     [
@@ -299,9 +330,11 @@ async function fetchNpm(
   if (!file) throw failed(`npm pack ${name}@${best.version} gave no tarball`);
   const tarball = await readFile(join(context.staging, file));
   const integrity = `sha512-${createHash('sha512').update(tarball).digest('base64')}`;
-  if (expected !== undefined && expected.startsWith('sha512-') && expected !== integrity) {
+  if (!matchesRegistry(tarball, integrity, expected, shasum)) {
     throw failed(
-      `The tarball of ${name}@${best.version} does not match the integrity the registry gives`
+      expected === undefined && shasum === undefined
+        ? `The registry gives no integrity for ${name}@${best.version}, so its tarball cannot be checked`
+        : `The tarball of ${name}@${best.version} does not match the integrity the registry gives`
     );
   }
   return unpackTarball(
@@ -459,14 +492,16 @@ async function fetchCommand(
 }
 
 /**
- * The highest version of `name` that satisfies `range` among the repository's tags, as Claude
- * Code resolves a dependency's constraint: tags `<name>--v<version>`
+ * The highest version of `name` that satisfies `range` (every one of them, for the constraints of
+ * several plugins) among the repository's tags, as Claude Code resolves a dependency's
+ * constraint: tags `<name>--v<version>`
  */
 export async function resolveTag(
   url: string,
   name: string,
-  range: string
+  range: string | readonly string[]
 ): Promise<{ tag: string; version: string } | undefined> {
+  const ranges = typeof range === 'string' ? [range] : range;
   checkGitUrl(url);
   const listed = await mustRun(
     'git',
@@ -479,6 +514,7 @@ export async function resolveTag(
     .map((line) => line.split('\t')[1] ?? '')
     .filter((ref) => ref.startsWith(prefix) && !ref.endsWith('^{}'))
     .map((ref) => ref.slice(prefix.length));
-  const version = maxSatisfying(versions, range);
+  const fitting = versions.filter((version) => ranges.every((each) => satisfies(version, each)));
+  const version = maxSatisfying(fitting, ranges[0] ?? '*');
   return version === undefined ? undefined : { tag: `${name}--v${version}`, version };
 }

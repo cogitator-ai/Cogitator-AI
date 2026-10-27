@@ -206,6 +206,7 @@ describe('plugin installer', () => {
       config: { installed: { root } },
     });
     await host.load();
+    expect((await readInstalledPlugins(root)).records[0]?.pin).toEqual({ commit });
     expect(host.get('greeter@team-tools')).toMatchObject({ status: 'active', origin: 'installed' });
     expect(host.snapshot().commands.map((command) => command.name)).toEqual(['greeter:hello']);
     await host.dispose();
@@ -446,6 +447,171 @@ describe('plugin installer', () => {
     await tools.uninstall('configured@opt-market');
     expect(await secrets.get('cogitator-plugin:configured@opt-market', 'token')).toBeUndefined();
     expect(settings()).toEqual({});
+  });
+
+  const gitMarket = (
+    name: string,
+    plugins: { name: string; extra?: Record<string, unknown> }[],
+    folder = name
+  ) => {
+    const repo = join(base, folder);
+    for (const entry of plugins) plugin(join(repo, 'plugins', entry.name), entry.name, entry.extra);
+    writeJson(join(repo, '.claude-plugin', 'marketplace.json'), {
+      name,
+      owner: { name: 'Team' },
+      plugins: plugins.map((entry) => ({ name: entry.name, source: `./plugins/${entry.name}` })),
+    });
+    gitRepo(repo);
+    return repo;
+  };
+
+  it('refuses a version that would put the plugin outside its own folder', async () => {
+    const repo = gitMarket('dots', [
+      { name: 'good', extra: { version: '1.0.0' } },
+      { name: 'evil', extra: { version: '..' } },
+    ]);
+    const tools = installer();
+    await tools.addMarketplace(`file://${repo}`);
+    const good = await tools.install('good@dots');
+    await expect(tools.install('evil@dots')).rejects.toMatchObject({
+      code: ErrorCode.PLUGIN_INVALID,
+    });
+    expect(existsSync(join(good.installPath, 'commands', 'hello.md'))).toBe(true);
+    expect((await readInstalledPlugins(root)).records.map((record) => record.id)).toEqual([
+      'good@dots',
+    ]);
+  });
+
+  it('checks options before writing anything, and gives a dependency none of them', async () => {
+    const repo = gitMarket('opts', [
+      {
+        name: 'app',
+        extra: {
+          version: '1.0.0',
+          dependencies: ['lib'],
+          userConfig: {
+            endpoint: { type: 'string', title: 'Endpoint', description: 'Where' },
+            token: { type: 'string', title: 'Token', description: 'Secret', sensitive: true },
+          },
+        },
+      },
+      {
+        name: 'lib',
+        extra: {
+          version: '1.0.0',
+          userConfig: {
+            token: { type: 'string', title: 'Token', description: 'Secret', sensitive: true },
+          },
+        },
+      },
+    ]);
+    const tools = installer();
+    await tools.addMarketplace(`file://${repo}`);
+    await expect(tools.install('app@opts', { options: { nope: 'x' } })).rejects.toThrow(
+      /declares no option nope/
+    );
+    expect((await readInstalledPlugins(root)).records).toEqual([]);
+    expect(existsSync(join(home, 'settings.json'))).toBe(false);
+    const result = await tools.install('app@opts', {
+      options: { endpoint: 'https://x.example' },
+      secrets: { token: 'app-token' },
+    });
+    expect(result.installed.map((record) => record.id)).toEqual(['app@opts', 'lib@opts']);
+    expect(await secrets.get('cogitator-plugin:app@opts', 'token')).toBe('app-token');
+    expect(await secrets.get('cogitator-plugin:lib@opts', 'token')).toBeUndefined();
+    expect(settings()).toMatchObject({
+      pluginConfigs: { 'app@opts': { options: { endpoint: 'https://x.example' } } },
+    });
+  });
+
+  it('configures a plugin named without its marketplace under its full id, refusing an ambiguous name', async () => {
+    const options = {
+      userConfig: { endpoint: { type: 'string', title: 'Endpoint', description: 'Where' } },
+    };
+    const first = gitMarket('one', [{ name: 'tool', extra: { version: '1.0.0', ...options } }]);
+    const tools = installer();
+    await tools.addMarketplace(`file://${first}`);
+    await tools.install('tool@one');
+    await tools.configure('tool', { options: { endpoint: 'https://one.example' } });
+    expect(settings()).toMatchObject({
+      pluginConfigs: { 'tool@one': { options: { endpoint: 'https://one.example' } } },
+    });
+    expect(Object.keys(settings().pluginConfigs as object)).toEqual(['tool@one']);
+    const second = gitMarket('two', [{ name: 'tool', extra: { version: '1.0.0', ...options } }]);
+    await tools.addMarketplace(`file://${second}`);
+    await tools.install('tool@two');
+    await expect(tools.configure('tool', { options: { endpoint: 'x' } })).rejects.toThrow(
+      /installed from several marketplaces/
+    );
+  });
+
+  it('keeps the files of an added marketplace when another source has its name', async () => {
+    const first = gitMarket('team', [{ name: 'alpha', extra: { version: '1.0.0' } }], 'team-a');
+    const second = gitMarket('team', [{ name: 'beta', extra: { version: '1.0.0' } }], 'team-b');
+    const tools = installer();
+    await tools.addMarketplace(`file://${first}`);
+    await expect(tools.addMarketplace(`file://${second}`)).rejects.toThrow(/already added from/);
+    const read = await tools.readMarketplace('team');
+    expect(read.manifest.plugins.map((entry) => entry.name)).toEqual(['alpha']);
+  });
+
+  it('installs the dependencies a new version adds, and keeps a dependency within its range on update', async () => {
+    const lib = join(base, 'vault');
+    plugin(lib, 'vault', { version: '1.1.0' });
+    gitRepo(lib);
+    git(lib, 'tag', 'vault--v1.1.0');
+    writeJson(join(lib, '.claude-plugin', 'plugin.json'), { name: 'vault', version: '2.0.0' });
+    git(lib, 'commit', '--quiet', '-am', 'major');
+    git(lib, 'tag', 'vault--v2.0.0');
+    const repo = join(base, 'grow');
+    plugin(join(repo, 'plugins', 'app'), 'app', { version: '1.0.0' });
+    writeJson(join(repo, '.claude-plugin', 'marketplace.json'), {
+      name: 'grow',
+      owner: { name: 'Team' },
+      plugins: [
+        { name: 'app', source: './plugins/app' },
+        { name: 'vault', source: { source: 'url', url: `file://${lib}` } },
+      ],
+    });
+    gitRepo(repo);
+    const tools = installer();
+    await tools.addMarketplace(`file://${repo}`);
+    await tools.install('app@grow');
+    writeJson(join(repo, 'plugins', 'app', '.claude-plugin', 'plugin.json'), {
+      name: 'app',
+      version: '2.0.0',
+      dependencies: [{ name: 'vault', version: '^1.0.0' }],
+    });
+    git(repo, 'commit', '--quiet', '-am', 'needs vault');
+    const [updated] = await tools.update('app@grow');
+    expect(updated).toMatchObject({ updated: true, to: '2.0.0' });
+    expect(updated?.notes).toContain('installed the dependency vault@grow');
+    const versions = () =>
+      readInstalledPlugins(root).then(({ records }) =>
+        Object.fromEntries(records.map((record) => [record.id, record.version]))
+      );
+    expect(await versions()).toEqual({ 'app@grow': '2.0.0', 'vault@grow': '1.1.0' });
+    const [vault] = await tools.update('vault@grow');
+    expect(vault).toMatchObject({ updated: false, to: '1.1.0' });
+    expect(await versions()).toEqual({ 'app@grow': '2.0.0', 'vault@grow': '1.1.0' });
+  });
+
+  it('enables and disables in the settings file that decides, and says when another one overrides', async () => {
+    const repo = gitMarket('scoped', [{ name: 'tool', extra: { version: '1.0.0' } }]);
+    const tools = installer();
+    await tools.addMarketplace(`file://${repo}`);
+    await tools.install('tool@scoped');
+    writeJson(join(project, '.cogitator', 'settings.json'), {
+      enabledPlugins: { 'tool@scoped': true },
+    });
+    const off = await tools.setEnabled('tool@scoped', false);
+    expect(off).toMatchObject({ scope: 'project' });
+    expect(off.overriddenBy).toBeUndefined();
+    expect(
+      JSON.parse(readFileSync(join(project, '.cogitator', 'settings.json'), 'utf8'))
+    ).toMatchObject({ enabledPlugins: { 'tool@scoped': false } });
+    const user = await tools.setEnabled('tool@scoped', true, 'user');
+    expect(user).toMatchObject({ scope: 'user', overriddenBy: 'project' });
   });
 
   it('reads marketplace sources as claude plugin marketplace add does', () => {
