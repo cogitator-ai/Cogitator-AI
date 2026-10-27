@@ -527,14 +527,7 @@ export class IsolatedPluginProcess {
     signal?: AbortSignal,
     timeoutMs = this.callTimeoutMs
   ): Promise<unknown> {
-    if (this.exited) {
-      return Promise.reject(
-        new CogitatorError({
-          message: `The process of plugin ${this.options.identity.id} is not running`,
-          code: ErrorCode.PLUGIN_ACTIVATION_FAILED,
-        })
-      );
-    }
+    if (this.exited) return Promise.reject(this.notRunning());
     if (signal?.aborted) return Promise.reject(abortReasonOf(signal));
     const id = ++this.nextCall;
     return new Promise((resolve, reject) => {
@@ -566,7 +559,14 @@ export class IsolatedPluginProcess {
     });
   }
 
-  private timeoutError(timeoutMs: number): CogitatorError {
+  private notRunning(): Error {
+    return new CogitatorError({
+      message: `The process of plugin ${this.options.identity.id} is not running`,
+      code: ErrorCode.PLUGIN_ACTIVATION_FAILED,
+    });
+  }
+
+  private timeoutError(timeoutMs: number): Error {
     return new CogitatorError({
       message: `Plugin ${this.options.identity.id} did not answer within ${timeoutMs} ms`,
       code: ErrorCode.TOOL_TIMEOUT,

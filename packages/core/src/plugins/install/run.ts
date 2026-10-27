@@ -27,6 +27,11 @@ export interface ToolOptions {
 
 const MAX_OUTPUT = 4 * 1024 * 1024;
 
+/** A failed run of an install tool, typed `Error` for the promise it rejects */
+function installFailure(message: string): Error {
+  return new CogitatorError({ message, code: ErrorCode.PLUGIN_INSTALL_FAILED });
+}
+
 /** Runs `file` with `args`, failing only when it cannot start or is killed by the timeout */
 export function runTool(
   file: string,
@@ -72,13 +77,11 @@ export function runTool(
       clearTimeout(timer);
       options.signal?.removeEventListener('abort', onAbort);
       reject(
-        new CogitatorError({
-          message:
-            (error as NodeJS.ErrnoException).code === 'ENOENT'
-              ? `${file} is not installed or not on PATH`
-              : `${file} could not start: ${error.message}`,
-          code: ErrorCode.PLUGIN_INSTALL_FAILED,
-        })
+        installFailure(
+          (error as NodeJS.ErrnoException).code === 'ENOENT'
+            ? `${file} is not installed or not on PATH`
+            : `${file} could not start: ${error.message}`
+        )
       );
     });
     child.on('close', (code) => {
@@ -86,12 +89,11 @@ export function runTool(
       options.signal?.removeEventListener('abort', onAbort);
       if (killed) {
         reject(
-          new CogitatorError({
-            message: options.signal?.aborted
+          installFailure(
+            options.signal?.aborted
               ? `${file} was stopped`
-              : `${file} ${args[0] ?? ''} timed out after ${Math.round(timeoutMs / 1000)}s`,
-            code: ErrorCode.PLUGIN_INSTALL_FAILED,
-          })
+              : `${file} ${args[0] ?? ''} timed out after ${Math.round(timeoutMs / 1000)}s`
+          )
         );
         return;
       }
