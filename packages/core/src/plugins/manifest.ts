@@ -924,13 +924,20 @@ export function isInside(root: string, path: string): boolean {
   );
 }
 
+/** `text` without the `/` it ends with, in one pass from the end (no regex to backtrack) */
+export function withoutTrailingSlashes(text: string): string {
+  let end = text.length;
+  while (end > 0 && text.charCodeAt(end - 1) === 0x2f) end--;
+  return text.slice(0, end);
+}
+
 function isPathList(value: PluginManifest['commands']): value is string | readonly string[] {
   return typeof value === 'string' || Array.isArray(value);
 }
 
 function coversDefault(value: string | readonly string[], folder: string): boolean {
   return listOf(value).some((path) => {
-    const clean = path.replace(/\/+$/, '');
+    const clean = withoutTrailingSlashes(path);
     return clean === `./${folder}` || clean.startsWith(`./${folder}/`);
   });
 }

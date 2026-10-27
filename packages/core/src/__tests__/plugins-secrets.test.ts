@@ -10,6 +10,40 @@ import {
 } from '../plugins/secrets';
 import { loadPluginSettings, writeEnabledPlugin, writePluginOptions } from '../plugins/settings';
 
+/**
+ * The flags of a line `security -i` reads (`-s "service" -a "account" ...`), each quoted value
+ * with its `\\` escapes undone, read in one pass
+ */
+function interactiveFlags(line: string): Map<string, string> {
+  const flags = new Map<string, string>();
+  let at = 0;
+  let flag: string | undefined;
+  while (at < line.length) {
+    const char = line[at] ?? '';
+    if (char === '"') {
+      let value = '';
+      at++;
+      while (at < line.length && line[at] !== '"') {
+        if (line[at] === '\\') at++;
+        value += line[at] ?? '';
+        at++;
+      }
+      at++;
+      if (flag !== undefined) flags.set(flag, value);
+      flag = undefined;
+      continue;
+    }
+    if (char === '-') {
+      const end = line.indexOf(' ', at);
+      flag = line.slice(at, end === -1 ? line.length : end);
+      at = end === -1 ? line.length : end;
+      continue;
+    }
+    at++;
+  }
+  return flags;
+}
+
 /** A credential tool kept in memory, answering as `security` and `secret-tool` do */
 function fakeTool(): {
   run: SecretCommandRunner;
@@ -21,12 +55,12 @@ function fakeTool(): {
     calls.push({ file, args, input });
     if (file === 'security') {
       if (args[0] === '-i') {
-        const match =
-          /-s "((?:\\.|[^"])*)" -a "((?:\\.|[^"])*)" -l "(?:\\.|[^"])*" -w "((?:\\.|[^"])*)"/.exec(
-            input
-          );
-        if (!match) return { code: 1, stdout: '', stderr: 'bad line' };
-        items.set(`${match[1]}\n${match[2]}`, match[3] ?? '');
+        const flags = interactiveFlags(input);
+        const [service, account, secret] = [flags.get('-s'), flags.get('-a'), flags.get('-w')];
+        if (service === undefined || account === undefined || secret === undefined) {
+          return { code: 1, stdout: '', stderr: 'bad line' };
+        }
+        items.set(`${service}\n${account}`, secret);
         return { code: 0, stdout: '', stderr: '' };
       }
       const key = `${args[2]}\n${args[4]}`;

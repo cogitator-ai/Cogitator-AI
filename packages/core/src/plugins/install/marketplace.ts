@@ -32,6 +32,7 @@ import {
   marketplaceNameProblem,
   OFFICIAL_MARKETPLACES,
   pluginNameProblem,
+  withoutTrailingSlashes,
 } from '../manifest';
 import { download, isLoopbackHost } from './fetch';
 import { mustRun } from './run';
@@ -310,7 +311,7 @@ export function marketplaceSourceOf(input: string, cwd: string = process.cwd()):
     if (url.endsWith('.git') || url.includes('/_git/'))
       return { source: 'git', url, ...(ref && { ref }) };
     if (repository) {
-      return { source: 'git', url: `${url.replace(/\/+$/, '')}.git`, ...(ref && { ref }) };
+      return { source: 'git', url: `${withoutTrailingSlashes(url)}.git`, ...(ref && { ref }) };
     }
     return { source: 'url', url };
   }

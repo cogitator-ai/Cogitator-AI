@@ -18,7 +18,7 @@ import {
   type PluginPin,
   type PluginSource,
 } from '@cogitator-ai/types';
-import { isInside } from '../manifest';
+import { isInside, withoutTrailingSlashes } from '../manifest';
 import { compareVersions, maxSatisfying, parseVersion, satisfies } from '../semver';
 import { download, isLoopbackHost } from './fetch';
 import { checkGitUrl, cloneAt, gitUrlOf } from './marketplace';
@@ -225,7 +225,7 @@ function matchesRegistry(
 /** The registry npm uses when none is given */
 async function defaultRegistry(): Promise<string | undefined> {
   const result = await runTool(npmCommand(), ['config', 'get', 'registry']).catch(() => undefined);
-  return result?.code === 0 ? result.stdout.trim().replace(/\/+$/, '') : undefined;
+  return result?.code === 0 ? withoutTrailingSlashes(result.stdout.trim()) : undefined;
 }
 
 /** Splits `@scope/name@1.2.3` into the name and what follows the version `@` */
@@ -252,7 +252,8 @@ async function fetchNpm(
   }
   if (/^npm:/i.test(value))
     throw failed(`npm source ${value}: use the package's own name, not an npm: alias`);
-  const registry = source.registry?.replace(/\/+$/, '');
+  const registry =
+    source.registry === undefined ? undefined : withoutTrailingSlashes(source.registry);
   const fallback = await defaultRegistry();
   if (registry !== undefined) {
     const parsed = new URL(registry);

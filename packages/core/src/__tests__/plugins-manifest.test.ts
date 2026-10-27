@@ -6,7 +6,9 @@ import {
   experimental_validatePlugin,
   readPluginLayout,
   pluginNameProblem,
+  withoutTrailingSlashes,
 } from '../plugins/manifest';
+import { marketplaceSourceOf } from '../plugins/install/marketplace';
 import { satisfies, maxSatisfying, isValidRange } from '../plugins/semver';
 import { PluginFolderSkills } from '../plugins/skills';
 import {
@@ -264,6 +266,18 @@ describe('plugin manifests', () => {
     const second = await new PluginFolderSkills('solo', [bare], variables, true).discover();
     expect(first.skills.map((skill) => skill.name)).toEqual(['kit:pdf-tools']);
     expect(second.skills.map((skill) => skill.name)).toEqual(['solo:solo']);
+  });
+
+  it('trims trailing slashes in one pass, however many slashes a path holds', () => {
+    const slashes = '/'.repeat(200_000);
+    const started = performance.now();
+    expect(withoutTrailingSlashes(`${slashes}x`)).toBe(`${slashes}x`);
+    expect(withoutTrailingSlashes(`./commands${slashes}`)).toBe('./commands');
+    expect(withoutTrailingSlashes(slashes)).toBe('');
+    expect(
+      marketplaceSourceOf(`https://github.com/team/tools${slashes}a`, dir).source
+    ).toBeDefined();
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 
   it('ignores a dependency with an invalid range instead of failing the plugin', async () => {

@@ -77,8 +77,10 @@ export function checkDownloadUrl(url: string, what: string): URL {
 }
 
 /**
- * The body of `url`, read up to `maxBytes`: each redirect is checked like the URL itself. `fetchFn`
- * replaces the platform's fetch, for a host that routes downloads its own way
+ * The body of `url`, read up to `maxBytes`: each redirect is checked like the URL itself. `headers`
+ * (a marketplace's `Authorization`, say) go only to the origin of `url`: a redirect to another
+ * origin is followed without them, so a token never reaches a host it was not meant for.
+ * `fetchFn` replaces the platform's fetch, for a host that routes downloads its own way
  */
 export async function download(
   url: string,
@@ -93,6 +95,7 @@ export async function download(
   const fetchFn = options.fetchFn ?? fetch;
   const maxBytes = options.maxBytes ?? MAX_DOWNLOAD_BYTES;
   let current = checkDownloadUrl(url, what);
+  const origin = current.origin;
   const signal = AbortSignal.any([
     AbortSignal.timeout(TIMEOUT_MS),
     ...(options.signal ? [options.signal] : []),
@@ -102,7 +105,7 @@ export async function download(
     const response = await fetchFn(current, {
       redirect: 'manual',
       signal,
-      ...(options.headers && { headers: { ...options.headers } }),
+      ...(options.headers && current.origin === origin && { headers: { ...options.headers } }),
     });
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location');

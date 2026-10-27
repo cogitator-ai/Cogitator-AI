@@ -5,6 +5,7 @@
  * `installed_plugins.json` and `known_marketplaces.json`
  */
 
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -21,9 +22,17 @@ export function defaultPluginsRoot(): string {
   return configured ? resolve(configured) : join(homedir(), '.cogitator', 'plugins');
 }
 
-/** The id as a folder name: every character but letters, digits, `_` and `-` becomes `-` */
+/**
+ * The id as a folder name, one per id: the id with every character but letters, digits, `_` and
+ * `-` turned into `-` (as Claude Code names it, for a person to recognize), then `-` and the first
+ * 16 hex digits of the SHA-256 of the whole id. Ids the readable part alone would merge
+ * (`foo-bar@baz` and `foo@bar-baz`, or two that differ only in case on a filesystem that ignores
+ * it) get folders of their own
+ */
 export function pluginIdFolder(id: string): string {
-  return id.replace(/[^A-Za-z0-9_-]/g, '-');
+  const readable = id.replace(/[^A-Za-z0-9_-]/g, '-');
+  const digest = createHash('sha256').update(id).digest('hex').slice(0, 16);
+  return `${readable}-${digest}`;
 }
 
 /** `${CLAUDE_PLUGIN_DATA}` of the plugin `id` */

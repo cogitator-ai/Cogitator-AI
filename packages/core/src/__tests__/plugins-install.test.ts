@@ -23,7 +23,8 @@ import {
 import { experimental_PluginHost } from '../plugins/host';
 import { experimental_memorySecretStore } from '../plugins/secrets';
 import { marketplaceSourceOf, parseMarketplace } from '../plugins/install/marketplace';
-import { readInstalledPlugins } from '../plugins/store';
+import { pluginDataDir, readInstalledPlugins } from '../plugins/store';
+import { download } from '../plugins/install/fetch';
 
 const FIXTURES = join(__dirname, 'fixtures', 'plugins');
 
@@ -612,6 +613,42 @@ describe('plugin installer', () => {
     ).toMatchObject({ enabledPlugins: { 'tool@scoped': false } });
     const user = await tools.setEnabled('tool@scoped', true, 'user');
     expect(user).toMatchObject({ scope: 'user', overriddenBy: 'project' });
+  });
+
+  it('sends the headers of a download only to its own origin, never after a redirect away', async () => {
+    const seen: { url: string; authorization: string | null }[] = [];
+    const fetchFn = (async (input: URL | string, init?: RequestInit) => {
+      const url = String(input);
+      seen.push({ url, authorization: new Headers(init?.headers).get('authorization') });
+      if (url === 'https://market.example/a') {
+        return new Response(null, { status: 302, headers: { location: '/b' } });
+      }
+      if (url === 'https://market.example/b') {
+        return new Response(null, {
+          status: 302,
+          headers: { location: 'https://cdn.example/c' },
+        });
+      }
+      return new Response('body');
+    }) as typeof fetch;
+    const body = await download('https://market.example/a', 'The file', {
+      headers: { Authorization: 'Bearer secret-token' },
+      fetchFn,
+    });
+    expect(body.toString()).toBe('body');
+    expect(seen).toEqual([
+      { url: 'https://market.example/a', authorization: 'Bearer secret-token' },
+      { url: 'https://market.example/b', authorization: 'Bearer secret-token' },
+      { url: 'https://cdn.example/c', authorization: null },
+    ]);
+  });
+
+  it('gives every plugin id a data folder of its own', () => {
+    const folders = ['foo-bar@baz', 'foo@bar-baz', 'Tool@x', 'tool@x'].map((id) =>
+      pluginDataDir(root, id).toLowerCase()
+    );
+    expect(new Set(folders).size).toBe(4);
+    expect(pluginDataDir(root, 'foo-bar@baz')).toMatch(/[\\/]data[\\/]foo-bar-baz-[0-9a-f]{16}$/);
   });
 
   it('reads marketplace sources as claude plugin marketplace add does', () => {
