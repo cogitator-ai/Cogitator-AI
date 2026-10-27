@@ -24,13 +24,13 @@ describe('studio replay after a restart', () => {
     const host = await StudioHost.create(FIXTURE, studioDir, (event: HostEvent) => {
       if (event.type === 'run.completed' || event.type === 'run.failed') ended.add(event.runId);
     });
-    let memory: InMemoryAdapter | undefined;
+    const used = new Set<InMemoryAdapter>();
     const add = InMemoryAdapter.prototype.addEntry;
     vi.spyOn(InMemoryAdapter.prototype, 'addEntry').mockImplementation(async function (
       this: InMemoryAdapter,
       entry: NewMemoryEntry
     ) {
-      memory = this;
+      used.add(this);
       if (entry.activate === false) await new Promise((resolve) => setTimeout(resolve, 50));
       return add.call(this, entry);
     });
@@ -61,7 +61,8 @@ describe('studio replay after a restart', () => {
       await vi.waitFor(() => expect(runs.every((run) => ended.has(run.runId))).toBe(true), {
         timeout: 20_000,
       });
-      const read = await memory!.getPath({ threadId: 'replayed' });
+      const memory = [...used].at(-1)!;
+      const read = await memory.getPath({ threadId: 'replayed' });
       if (!read.success) throw new Error(read.error);
       const said = read.data.map((entry: MemoryEntry) => entry.message.content);
       expect(said.slice(0, 2)).toEqual(['earlier', 'answered earlier']);
