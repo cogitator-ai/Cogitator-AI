@@ -115,6 +115,7 @@ function Contributions({ plugin }: { plugin: PluginRecord }) {
     ['Commands', c.commands],
     ['MCP servers', c.mcpServers],
     ['LLM backends', c.llmBackends],
+    ['Routines', c.routines],
   ];
   const lists = named.filter(([, values]) => values.length > 0);
   const counts: Array<[string, number]> = [

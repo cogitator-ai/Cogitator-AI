@@ -4,12 +4,23 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { basename, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { calculateCost, initializeModels } from '@cogitator-ai/models';
+import type {
+  InboxItem,
+  InboxItemKind,
+  InboxItemStatus,
+  TriggerFireResult,
+} from '@cogitator-ai/types';
 import { z } from 'zod';
 import type {
+  ApprovalOutcome,
   ForkRequest,
   ForkPreview,
   ForkSummary,
   HostStatus,
+  InboxAnswer,
+  InboxItemRecord,
+  InboxListing,
+  InboxQuery,
   PluginActionResult,
   PluginPanelCallResult,
   PluginsState,
@@ -20,6 +31,7 @@ import type {
   StudioEvent,
   ThreadRecord,
   ThreadTree,
+  TriggersState,
 } from '../protocol.js';
 import { HostManager, HostRequestError } from './host-manager.js';
 import { StudioStore, type Pricer } from './store.js';
@@ -144,6 +156,36 @@ const PanelCallBody = z.object({
   params: z.unknown().optional(),
 });
 
+const Decision = z.object({ approved: z.boolean(), reason: z.string().max(4000).optional() });
+const InboxAnswerBody = z
+  .object({
+    decisions: z.record(z.string(), Decision).optional(),
+    defaultDecision: Decision.optional(),
+    responses: z.record(z.string(), z.unknown()).optional(),
+    decision: z.unknown().optional(),
+    respondedBy: z.string().max(200).optional(),
+  })
+  .refine(
+    (answer) =>
+      answer.decisions !== undefined ||
+      answer.defaultDecision !== undefined ||
+      answer.responses !== undefined ||
+      answer.decision !== undefined,
+    'Give decisions, defaultDecision, responses or decision'
+  );
+const FireBody = z.object({ text: z.string().max(100_000).optional() });
+const INBOX_STATUSES: readonly InboxItemStatus[] = ['unread', 'read', 'archived'];
+const INBOX_KINDS: readonly InboxItemKind[] = ['result', 'approval', 'question', 'failure'];
+const INBOX_STATUS_ROUTES: Record<string, InboxItemStatus> = {
+  read: 'read',
+  unread: 'unread',
+  archive: 'archived',
+};
+/** The items `GET /api/inbox` lists without a status: every one not archived. */
+const INBOX_OPEN: readonly InboxItemStatus[] = ['unread', 'read'];
+const DEFAULT_INBOX_LIMIT = 100;
+const MAX_INBOX_LIMIT = 500;
+
 class HttpError extends Error {
   constructor(
     readonly status: number,
@@ -257,6 +299,48 @@ function pluginRefusal(error: unknown): unknown {
   }
 }
 
+/**
+ * A refusal of a trigger or inbox request as the status it answers with: an unknown trigger,
+ * schedule or item is not found, a project without triggers, triggers that are not started and a
+ * paused schedule are conflicts, a bad request stays one.
+ */
+function triggerRefusal(error: unknown): unknown {
+  if (!(error instanceof HostRequestError)) return error;
+  switch (error.code) {
+    case 'TRIGGER_NOT_FOUND':
+    case 'SCHEDULE_NOT_FOUND':
+    case 'INBOX_ITEM_NOT_FOUND':
+      return new HttpError(404, error.message);
+    case 'TRIGGERS_NOT_CONFIGURED':
+    case 'TRIGGERS_NOT_STARTED':
+    case 'SCHEDULE_PAUSED':
+      return new HttpError(409, error.message);
+    case 'VALIDATION_ERROR':
+      return new HttpError(400, error.message);
+    default:
+      return error;
+  }
+}
+
+/** A comma-separated list of the query, each value one of `allowed`; undefined when it is not given. */
+function listParam<T extends string>(
+  url: URL,
+  name: string,
+  allowed: readonly T[]
+): T[] | undefined {
+  const raw = url.searchParams.get(name);
+  if (raw === null || raw === '' || raw === 'all') return undefined;
+  const values = raw.split(',').map((value) => value.trim());
+  const wrong = values.filter((value) => !(allowed as readonly string[]).includes(value));
+  if (wrong.length > 0) {
+    throw new HttpError(
+      400,
+      `"${name}" takes ${allowed.join(', ')} or all, separated by commas, not ${wrong.join(', ')}`
+    );
+  }
+  return values as T[];
+}
+
 function sameToken(given: string | undefined, expected: string): boolean {
   if (!given) return false;
   const a = Buffer.from(given);
@@ -361,6 +445,7 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
       }
     },
     onPlugins: (plugins) => broadcast({ type: 'plugins', plugins }),
+    onInbox: (change, unread) => broadcast({ type: 'inbox', change, unread }),
     onLost: (reason) => broadcastRuns(store.abandonRunning(reason)),
     onOutput: log,
   });
@@ -457,6 +542,27 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
     return manager.request<T>(request).catch((error: unknown) => {
       throw pluginRefusal(error);
     });
+  }
+
+  /** A trigger or inbox request to the host, its refusals answered with their own status. */
+  function triggerRequest<T>(request: Parameters<HostManager['request']>[0]): Promise<T> {
+    return manager.request<T>(request).catch((error: unknown) => {
+      throw triggerRefusal(error);
+    });
+  }
+
+  /** An inbox item with the studio's pages of its run and its thread, when it keeps them. */
+  function linked(item: InboxItem): InboxItemRecord {
+    const run = item.runId !== undefined ? store.getRun(item.runId) : undefined;
+    const thread = item.threadId !== undefined ? store.getThread(item.threadId) : undefined;
+    if (!run && !thread) return item;
+    return {
+      ...item,
+      links: {
+        ...(run && { run: run.id }),
+        ...(thread && { thread: { agent: thread.agent, threadId: thread.id } }),
+      },
+    };
   }
 
   function runOr404(id: string): RunRecord {
@@ -696,15 +802,99 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
         const body = await readJson(req);
         if (typeof body.approved !== 'boolean')
           throw new HttpError(400, '"approved" must be true or false');
+        const reason = optionalString(body, 'reason');
+        const chat = await manager.request<ApprovalOutcome>({
+          type: 'approve',
+          approvalId: parts[1],
+          approved: body.approved,
+          ...(reason && { reason }),
+          ...(optionalBoolean(body, 'remember') && { remember: true }),
+        });
+        if (chat.decided) return send(res, 200, chat);
         return send(
           res,
           200,
-          await manager.request({
-            type: 'approve',
+          await triggerRequest<ApprovalOutcome>({
+            type: 'inbox.approve',
             approvalId: parts[1],
             approved: body.approved,
-            ...(optionalString(body, 'reason') && { reason: optionalString(body, 'reason') }),
-            ...(optionalBoolean(body, 'remember') && { remember: true }),
+            ...(reason && { reason }),
+          })
+        );
+      }
+      case 'GET /inbox': {
+        const status = url.searchParams.has('status')
+          ? listParam(url, 'status', INBOX_STATUSES)
+          : INBOX_OPEN;
+        const kind = listParam(url, 'kind', INBOX_KINDS);
+        const limit = Number(url.searchParams.get('limit') ?? DEFAULT_INBOX_LIMIT);
+        const query: InboxQuery = {
+          ...(status && { status: [...status] }),
+          ...(kind && { kind }),
+          limit:
+            Number.isInteger(limit) && limit > 0
+              ? Math.min(limit, MAX_INBOX_LIMIT)
+              : DEFAULT_INBOX_LIMIT,
+        };
+        const listing = await triggerRequest<InboxListing>({ type: 'inbox.list', query });
+        return send(res, 200, { ...listing, items: listing.items.map(linked) });
+      }
+      case 'POST /inbox/:id/read':
+      case 'POST /inbox/:id/unread':
+      case 'POST /inbox/:id/archive': {
+        await readJson(req);
+        const item = await triggerRequest<InboxItem>({
+          type: 'inbox.update',
+          item: parts[1],
+          status: INBOX_STATUS_ROUTES[parts[2]],
+        });
+        return send(res, 200, linked(item));
+      }
+      case 'POST /inbox/:id/respond': {
+        const answer: InboxAnswer = parseBody(InboxAnswerBody, await readJson(req));
+        return send(
+          res,
+          200,
+          await triggerRequest<TriggerFireResult>({ type: 'inbox.respond', item: parts[1], answer })
+        );
+      }
+      case 'GET /schedules':
+        return send(res, 200, await triggerRequest<TriggersState>({ type: 'triggers.state' }));
+      case 'POST /schedules/:id': {
+        if (parts[1] !== 'start' && parts[1] !== 'stop')
+          throw new HttpError(404, `No route ${method} ${url.pathname}`);
+        await readJson(req);
+        return send(
+          res,
+          200,
+          await triggerRequest<TriggersState>({
+            type: parts[1] === 'start' ? 'triggers.start' : 'triggers.stop',
+          })
+        );
+      }
+      case 'POST /schedules/:id/run':
+      case 'POST /schedules/:id/pause':
+      case 'POST /schedules/:id/resume': {
+        await readJson(req);
+        const action = parts[2] === 'run' ? 'run' : parts[2] === 'pause' ? 'pause' : 'resume';
+        return send(
+          res,
+          200,
+          await triggerRequest<TriggersState>({
+            type: `schedules.${action}`,
+            schedule: parts[1],
+          })
+        );
+      }
+      case 'POST /triggers/:id/fire': {
+        const { text } = parseBody(FireBody, await readJson(req));
+        return send(
+          res,
+          200,
+          await triggerRequest<TriggerFireResult>({
+            type: 'triggers.fire',
+            trigger: parts[1],
+            ...(text !== undefined && { text }),
           })
         );
       }

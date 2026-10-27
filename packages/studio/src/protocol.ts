@@ -4,7 +4,19 @@
  * file imports types only, so the UI bundle can share it.
  */
 
-import type { MemoryEntryType, Message, ToolCall, ToolResult } from '@cogitator-ai/types';
+import type {
+  InboxItem,
+  InboxItemKind,
+  InboxItemStatus,
+  MemoryEntryType,
+  Message,
+  RoutineOverlap,
+  RoutineRunRecord,
+  ToolCall,
+  ToolResult,
+  TriggerFireResult,
+  TriggerKind,
+} from '@cogitator-ai/types';
 
 export interface ToolInfo {
   name: string;
@@ -528,6 +540,8 @@ export interface PluginContributionsRecord {
   /** Run middleware, counted. */
   middleware: number;
   panels: PluginPanelRecord[];
+  /** Routines, by id with `plugin:`. */
+  routines: string[];
 }
 
 /**
@@ -596,6 +610,145 @@ export interface PluginActionResult {
 /** What a panel handler returned, as JSON. */
 export interface PluginPanelCallResult {
   result: unknown;
+}
+
+/** A trigger of a routine, as the schedules page shows it, without its secrets. */
+export interface TriggerRecord {
+  /** `<routineId>.<triggerId>`, the id `POST /api/triggers/:id/fire` takes. */
+  id: string;
+  routineId: string;
+  kind: TriggerKind;
+  enabled: boolean;
+  /** The spec without its secrets: `cron` and `timezone` of a schedule, `events` and the rest. */
+  spec: Record<string, unknown>;
+  fireCount: number;
+  lastFiredAt?: number;
+  lastError?: string;
+  /** The next occurrence of a schedule. */
+  nextFireAt?: number;
+  /** The schedule entry of a cron trigger. */
+  scheduleId?: string;
+}
+
+/** A routine of the project's runtime with its triggers and the runs of it going on. */
+export interface RoutineRecord {
+  id: string;
+  name?: string;
+  description?: string;
+  /** The task each firing starts a session with. */
+  prompt: string;
+  target: { kind: 'agent' | 'workflow'; name: string };
+  enabled: boolean;
+  overlap: RoutineOverlap;
+  maxConcurrent?: number;
+  /** `new` for a thread per firing, else the thread every firing continues. */
+  session: string;
+  /** Where it is defined: in code, in the routine store or by a plugin. */
+  origin: 'code' | 'store' | 'plugin';
+  plugin?: string;
+  triggers: TriggerRecord[];
+  /** Runs of it going on. */
+  active: number;
+  /** Firings waiting for a run to end. */
+  queued: number;
+}
+
+/** A pending entry of the schedules store the trigger manager runs. */
+export interface ScheduleRecord {
+  id: string;
+  name?: string;
+  type: 'fixed' | 'dynamic' | 'cron' | 'recurring';
+  cron?: string;
+  timezone?: string;
+  /** Ms between the runs of a recurring entry. */
+  interval?: number;
+  firesAt: number;
+  enabled: boolean;
+  lastRunAt?: number;
+  lastRunStatus?: 'ok' | 'error' | 'skipped';
+  lastError?: string;
+  consecutiveErrors?: number;
+  /** What it runs: a trigger of a routine, or a task an agent gave itself. */
+  owner:
+    | { kind: 'routine'; routineId: string; triggerId: string }
+    | { kind: 'agent'; agent: string; description?: string; threadId?: string };
+}
+
+/** The routines, schedules and recent history of the project's runtime. */
+export interface TriggersState {
+  /**
+   * Whether the runtime has a trigger manager: false without `experimental_triggers` in its
+   * config, or with a core from before triggers.
+   */
+  configured: boolean;
+  /** Whether the manager polls its schedules: the studio starts it only when asked to. */
+  started: boolean;
+  routines: RoutineRecord[];
+  schedules: ScheduleRecord[];
+  /** The latest firings, newest first. */
+  history: RoutineRunRecord[];
+}
+
+/** Which inbox items a listing returns. */
+export interface InboxQuery {
+  /** Every status when left out. */
+  status?: InboxItemStatus[];
+  /** Every kind when left out. */
+  kind?: InboxItemKind[];
+  limit?: number;
+}
+
+/** An inbox item with the pages of the studio it links to. */
+export interface InboxItemRecord extends InboxItem {
+  /** The studio's page of its run and its thread's chat, when the studio keeps them. */
+  links?: { run?: string; thread?: { agent: string; threadId: string } };
+}
+
+/** The inbox of the project's runtime. */
+export interface InboxListing {
+  /** Whether the runtime has a trigger manager, and so an inbox. */
+  configured: boolean;
+  /** Newest first. */
+  items: InboxItemRecord[];
+  /** Unread items, counted up to `INBOX_UNREAD_CAP`: more than that are `INBOX_UNREAD_CAP + 1`. */
+  unread: number;
+}
+
+/** How far the unread items of the inbox are counted. */
+export const INBOX_UNREAD_CAP = 999;
+
+/** What happened to an inbox item. */
+export type InboxChangeRecord =
+  | { type: 'added'; item: InboxItem }
+  | { type: 'updated'; item: InboxItem }
+  | { type: 'deleted'; id: string };
+
+/** A decision on a tool call a routine's run waits on. */
+export interface InboxDecision {
+  approved: boolean;
+  /** Why it was rejected, as the model reads it. */
+  reason?: string;
+}
+
+/**
+ * An answer to an inbox item that waits for a person: `decisions` for an agent's approvals by tool
+ * call id, `responses` for its questions by interrupt id, `decision` for a workflow's approval.
+ */
+export interface InboxAnswer {
+  decisions?: Record<string, InboxDecision>;
+  defaultDecision?: InboxDecision;
+  responses?: Record<string, unknown>;
+  decision?: unknown;
+  respondedBy?: string;
+}
+
+/** What `POST /api/approvals/:id` did: answered a chat's approval, a routine's, or nothing. */
+export interface ApprovalOutcome {
+  decided: boolean;
+  /** The inbox item a routine's approval was answered through. */
+  inboxItemId?: string;
+  /** How the routine's run went on. */
+  result?: TriggerFireResult;
 }
 
 /** What the host reports while it runs things. */
@@ -722,7 +875,8 @@ export type StudioEvent =
   | { type: 'token'; runId: string; text: string; revision: number }
   | { type: 'reasoning'; runId: string; text: string; revision: number }
   | { type: 'thread'; thread: ThreadRecord }
-  | { type: 'plugins'; plugins: PluginsState };
+  | { type: 'plugins'; plugins: PluginsState }
+  | { type: 'inbox'; change: InboxChangeRecord; unread: number };
 
 export type HostStatus =
   | { state: 'starting' }
@@ -799,6 +953,27 @@ export type HostRequest =
       panel: string;
       method: string;
       params?: unknown;
+    }
+  | { type: 'triggers.state'; requestId: string }
+  | { type: 'triggers.start'; requestId: string }
+  | { type: 'triggers.stop'; requestId: string }
+  | { type: 'triggers.fire'; requestId: string; trigger: string; text?: string }
+  | {
+      type: 'schedules.run' | 'schedules.pause' | 'schedules.resume';
+      requestId: string;
+      /** A schedule entry, or for pause and resume also a trigger or a routine. */
+      schedule: string;
+    }
+  | { type: 'inbox.list'; requestId: string; query: InboxQuery }
+  | { type: 'inbox.update'; requestId: string; item: string; status: InboxItemStatus }
+  | { type: 'inbox.respond'; requestId: string; item: string; answer: InboxAnswer }
+  | {
+      type: 'inbox.approve';
+      requestId: string;
+      /** A tool call id or a workflow's approval id of an inbox item, or the item's id. */
+      approvalId: string;
+      approved: boolean;
+      reason?: string;
     };
 
 /** A message of a thread, replayed into a fresh memory when the host restarts. */
@@ -813,6 +988,7 @@ export type HostMessage =
   | { type: 'load-failed'; error: string }
   | { type: 'event'; event: HostEvent }
   | { type: 'plugins'; plugins: PluginsState }
+  | { type: 'inbox'; change: InboxChangeRecord; unread: number }
   | { type: 'response'; requestId: string; ok: true; data: unknown }
   | {
       type: 'response';

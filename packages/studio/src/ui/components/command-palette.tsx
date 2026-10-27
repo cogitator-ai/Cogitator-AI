@@ -2,8 +2,10 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNod
 import {
   Activity,
   Bot,
+  CalendarClock,
   CornerDownLeft,
   GitFork,
+  Inbox,
   Keyboard,
   LayoutDashboard,
   Moon,
@@ -125,6 +127,22 @@ export function CommandPalette({
         icon: Puzzle,
         keywords: 'extensions panels reload enable disable',
         run: () => navigate('plugins'),
+      },
+      {
+        id: 'inbox',
+        group: 'Go to',
+        label: 'Inbox',
+        icon: Inbox,
+        keywords: 'routines results approvals questions failures',
+        run: () => navigate('inbox'),
+      },
+      {
+        id: 'schedules',
+        group: 'Go to',
+        label: 'Schedules',
+        icon: CalendarClock,
+        keywords: 'routines triggers cron history start',
+        run: () => navigate('schedules'),
       },
       ...(registry?.agents ?? []).map((agent): Command => ({
         id: `agent-${agent.key}`,

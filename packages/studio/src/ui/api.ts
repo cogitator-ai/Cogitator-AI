@@ -1,8 +1,17 @@
 import type {
+  InboxItem,
+  InboxItemKind,
+  InboxItemStatus,
+  TriggerFireResult,
+} from '@cogitator-ai/types';
+import type {
+  ApprovalOutcome,
   ForkRequest,
   ForkPreview,
   ForkSummary,
   HostStatus,
+  InboxAnswer,
+  InboxListing,
   PluginActionResult,
   PluginPanelCallResult,
   PluginsState,
@@ -14,6 +23,7 @@ import type {
   ThreadForkRequest,
   ThreadRecord,
   ThreadTree,
+  TriggersState,
 } from '../protocol';
 
 export interface StateResponse {
@@ -91,7 +101,7 @@ export const api = {
       body: {},
     }),
   approve: (approvalId: string, approved: boolean, reason?: string, remember?: boolean) =>
-    request<{ decided: boolean }>(`/api/approvals/${encodeURIComponent(approvalId)}`, {
+    request<ApprovalOutcome>(`/api/approvals/${encodeURIComponent(approvalId)}`, {
       method: 'POST',
       body: { approved, ...(reason && { reason }), ...(remember && { remember: true }) },
     }),
@@ -126,6 +136,39 @@ export const api = {
       `/api/plugins/${encodeURIComponent(plugin)}/panels/${encodeURIComponent(panel)}/call`,
       { method: 'POST', body: { method, ...(params !== undefined && { params }) } }
     ),
+  inbox: (query: { status?: InboxItemStatus[] | 'all'; kind?: InboxItemKind; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (query.status) params.set('status', query.status === 'all' ? 'all' : query.status.join(','));
+    if (query.kind) params.set('kind', query.kind);
+    if (query.limit) params.set('limit', String(query.limit));
+    return request<InboxListing>(`/api/inbox?${params.toString()}`);
+  },
+  markInbox: (id: string, action: 'read' | 'unread' | 'archive') =>
+    request<InboxItem>(`/api/inbox/${encodeURIComponent(id)}/${action}`, {
+      method: 'POST',
+      body: {},
+    }),
+  respondInbox: (id: string, answer: InboxAnswer) =>
+    request<TriggerFireResult>(`/api/inbox/${encodeURIComponent(id)}/respond`, {
+      method: 'POST',
+      body: answer,
+    }),
+  schedules: () => request<TriggersState>('/api/schedules'),
+  startTriggers: (start: boolean) =>
+    request<TriggersState>(`/api/schedules/${start ? 'start' : 'stop'}`, {
+      method: 'POST',
+      body: {},
+    }),
+  schedule: (id: string, action: 'run' | 'pause' | 'resume') =>
+    request<TriggersState>(`/api/schedules/${encodeURIComponent(id)}/${action}`, {
+      method: 'POST',
+      body: {},
+    }),
+  fireTrigger: (id: string, text?: string) =>
+    request<TriggerFireResult>(`/api/triggers/${encodeURIComponent(id)}/fire`, {
+      method: 'POST',
+      body: text ? { text } : {},
+    }),
   rerun: (runId: string, fromNode: string) =>
     request<{ runId: string }>(`/api/runs/${encodeURIComponent(runId)}/rerun`, {
       method: 'POST',

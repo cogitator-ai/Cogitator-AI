@@ -34,6 +34,9 @@ try {
     },
     (plugins) => {
       void send({ type: 'plugins', plugins });
+    },
+    (change, unread) => {
+      void send({ type: 'inbox', change, unread });
     }
   );
   process.on('message', (request: HostRequest) => {

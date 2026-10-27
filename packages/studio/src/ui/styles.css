@@ -3721,3 +3721,242 @@ a.list-row:hover {
     display: none;
   }
 }
+
+/* Inbox and schedules */
+.field-title {
+  margin: 4px 0 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+.inbox-detail a,
+.plugin-card .kv a {
+  color: var(--accent-text);
+}
+
+.sb-link .sb-count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.status[data-status='inbox-result'],
+.status[data-status='started'] {
+  color: var(--ok);
+  background: var(--ok-soft);
+}
+
+.status[data-status='inbox-approval'],
+.status[data-status='inbox-question'],
+.status[data-status='paused'],
+.status[data-status='queued'] {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.status[data-status='inbox-failure'] {
+  color: var(--error);
+  background: var(--error-soft);
+}
+
+.inbox-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 340px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.inbox-list {
+  display: grid;
+  gap: 6px;
+}
+
+.inbox-row {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--text-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.inbox-row:hover {
+  background: var(--hover);
+}
+
+.inbox-row.active {
+  border-color: var(--accent-ring);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.inbox-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.inbox-row-title {
+  flex: 1;
+  color: var(--text);
+}
+
+.inbox-row[data-unread='true'] .inbox-row-title {
+  font-weight: 600;
+}
+
+.inbox-unread {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+
+.inbox-row[data-unread='true'] .inbox-unread {
+  background: var(--accent);
+}
+
+.inbox-row-time {
+  flex-shrink: 0;
+  font-size: 11.5px;
+}
+
+.inbox-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+}
+
+.inbox-row-summary {
+  font-size: 12.5px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.inbox-detail {
+  position: sticky;
+  top: 16px;
+}
+
+.inbox-detail-title {
+  min-width: 0;
+}
+
+.inbox-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.inbox-answer {
+  display: grid;
+  gap: 10px;
+}
+
+.inbox-answer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inbox-answer-actions .muted {
+  font-size: 12px;
+}
+
+.inbox-question {
+  display: grid;
+  gap: 6px;
+}
+
+.inbox-question > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.routine-prompt {
+  white-space: pre-wrap;
+}
+
+.routine-text {
+  margin-top: 8px;
+}
+
+.row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.trigger-what {
+  font-size: 12px;
+}
+
+.tr.trigger-row {
+  grid-template-columns: 76px minmax(0, 1fr) 76px 200px 190px;
+}
+
+.tr.schedule-row {
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 150px 140px 76px 190px;
+}
+
+.tr.history-row {
+  grid-template-columns: 96px minmax(0, 1fr) 72px minmax(0, 1fr) minmax(0, 1.2fr) 84px;
+}
+
+.tr.trigger-row > :nth-child(4),
+.tr.trigger-row > :nth-child(5),
+.tr.schedule-row > :nth-child(4),
+.tr.schedule-row > :nth-child(5),
+.tr.history-row > :nth-child(4),
+.tr.history-row > :nth-child(5) {
+  display: block;
+}
+
+.tr.trigger-row > .row-actions,
+.tr.schedule-row > .row-actions {
+  display: flex;
+}
+
+@media (max-width: 1100px) {
+  .inbox-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .inbox-detail {
+    position: static;
+  }
+
+  .tr.trigger-row,
+  .tr.schedule-row,
+  .tr.history-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+    padding: 10px 16px;
+  }
+
+  .tr.trigger-row > .row-actions,
+  .tr.schedule-row > .row-actions {
+    justify-content: flex-start;
+  }
+
+  .tr.thead.schedule-row,
+  .tr.thead.history-row {
+    display: none;
+  }
+}

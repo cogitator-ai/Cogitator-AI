@@ -29,6 +29,7 @@ import type {
   HistoryMessage,
   HostEvent,
   HostRequest,
+  InboxChangeRecord,
   MemoryPlace,
   PluginsState,
   RawSpan,
@@ -49,6 +50,7 @@ import { describeRegistry } from '../registry.js';
 import { openCheckpointStore } from './checkpoints.js';
 import { ProjectPlugins } from './plugins.js';
 import { importFromProject, loadProject, type LoadedProject } from './project.js';
+import { ProjectTriggers } from './triggers.js';
 
 const CHECKPOINT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const STOPPED = 'Stopped in Cogitator Studio';
@@ -265,6 +267,7 @@ export class StudioHost {
     private readonly project: LoadedProject,
     private readonly core: typeof CoreModule,
     private readonly plugins: ProjectPlugins,
+    private readonly triggers: ProjectTriggers,
     private readonly options: {
       projectDir: string;
       studioDir: string;
@@ -275,13 +278,15 @@ export class StudioHost {
 
   /**
    * Loads the project and its plugins. `onPlugins` hears every change of the runtime's plugins:
-   * one loaded, reloaded, enabled, disabled or failed.
+   * one loaded, reloaded, enabled, disabled or failed. `onInbox` hears every change of the inbox
+   * of its routines, with the unread items counted after it.
    */
   static async create(
     projectDir: string,
     studioDir: string,
     emit: (event: HostEvent) => void,
-    onPlugins: (plugins: PluginsState) => void = () => undefined
+    onPlugins: (plugins: PluginsState) => void = () => undefined,
+    onInbox: (change: InboxChangeRecord, unread: number) => void = () => undefined
   ): Promise<StudioHost> {
     const project = await loadProject(projectDir);
     const core = await importFromProject<typeof CoreModule>(projectDir, '@cogitator-ai/core');
@@ -293,7 +298,13 @@ export class StudioHost {
       memory = 'studio';
     }
     const plugins = await ProjectPlugins.open(project.cogitator, onPlugins);
-    const host = new StudioHost(project, core, plugins, { projectDir, studioDir, memory, emit });
+    const triggers = ProjectTriggers.open(project.cogitator, onInbox);
+    const host = new StudioHost(project, core, plugins, triggers, {
+      projectDir,
+      studioDir,
+      memory,
+      emit,
+    });
     project.cogitator.observe(host.observer());
     return host;
   }
@@ -309,6 +320,7 @@ export class StudioHost {
   async close(): Promise<void> {
     for (const controller of this.controllers.values()) controller.abort(new Error(STOPPED));
     this.plugins.close();
+    this.triggers.close();
     await this.project.cogitator.close();
   }
 
@@ -346,6 +358,28 @@ export class StudioHost {
         return this.plugins.panelHtml(request.plugin, request.panel);
       case 'plugins.call':
         return this.plugins.call(request.plugin, request.panel, request.method, request.params);
+      case 'triggers.state':
+        return this.triggers.state();
+      case 'triggers.start':
+        return this.triggers.start();
+      case 'triggers.stop':
+        return this.triggers.stop();
+      case 'triggers.fire':
+        return this.triggers.fire(request.trigger, request.text);
+      case 'schedules.run':
+        return this.triggers.schedule('run', request.schedule);
+      case 'schedules.pause':
+        return this.triggers.schedule('pause', request.schedule);
+      case 'schedules.resume':
+        return this.triggers.schedule('resume', request.schedule);
+      case 'inbox.list':
+        return this.triggers.inbox(request.query);
+      case 'inbox.update':
+        return this.triggers.update(request.item, request.status);
+      case 'inbox.respond':
+        return this.triggers.respond(request.item, request.answer);
+      case 'inbox.approve':
+        return this.triggers.approve(request.approvalId, request.approved, request.reason);
     }
   }
 
