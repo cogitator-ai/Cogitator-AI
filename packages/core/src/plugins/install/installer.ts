@@ -52,6 +52,7 @@ import {
   type ReadMarketplace,
 } from './marketplace';
 import { fetchPluginSource, resolveTag, splitPackage, type FetchedPlugin } from './sources';
+import { satisfies } from '../semver';
 
 /** How long an old version folder stays after an update, for runs that still use it */
 const ORPHAN_GRACE_MS = 14 * 24 * 60 * 60 * 1000;
@@ -614,7 +615,15 @@ export class experimental_PluginInstaller {
   ): Promise<InstalledPluginRecord[]> {
     const target = need.marketplace ?? marketplaceName;
     const id = `${need.name}@${target}`;
-    if (records.some((record) => record.id === id)) return [];
+    const installed = records.find((record) => record.id === id);
+    if (installed) {
+      if (need.version === undefined || satisfies(installed.version, need.version)) return [];
+      const updated = await this.updateOne(installed, options, {
+        range: need.version,
+        for: chain.at(-1) ?? id,
+      });
+      return updated.updated ? (await this.list()).filter((record) => record.id === id) : [];
+    }
     if (need.marketplace !== undefined && need.marketplace !== marketplaceName) {
       const allowed = read?.manifest.allowCrossMarketplaceDependenciesOn ?? [];
       if (!allowed.includes(need.marketplace)) {
@@ -796,10 +805,20 @@ export class experimental_PluginInstaller {
     });
   }
 
+  /**
+   * Updates `record` from its source. `need` is set when a plugin being installed or updated
+   * (`need.for`, whose installed version's ranges no longer count) needs `need.range` of it: the
+   * version must then satisfy that range and every other installed plugin's, or nothing is written
+   */
   private async updateOne(
     record: InstalledPluginRecord,
-    options: { yes?: boolean; signal?: AbortSignal }
+    options: { yes?: boolean; signal?: AbortSignal },
+    need?: { range: string; for: string }
   ): Promise<PluginUpdateResult> {
+    const ranges = [
+      ...(await this.rangesOn(record, await this.list(), need?.for)),
+      ...(need ? [need.range] : []),
+    ];
     const direct = ['npm', 'git', 'github'].includes(record.marketplace);
     const notes: string[] = [];
     let entry = record.entry;
@@ -822,12 +841,7 @@ export class experimental_PluginInstaller {
           `The marketplace ${record.marketplace} no longer has ${record.name}`,
           ErrorCode.PLUGIN_NOT_FOUND
         );
-      entry = await pinnedEntry(
-        listed,
-        record.id,
-        record.name,
-        await this.rangesOn(record, await this.list())
-      );
+      entry = await pinnedEntry(listed, record.id, record.name, ranges);
       marketplace = { known, read };
     }
     if (!entry) throw failed(`The record of ${record.id} keeps no source to update from`);
@@ -866,6 +880,13 @@ export class experimental_PluginInstaller {
         );
       }
       const version = versionOf(layout, entry, fetched);
+      const unmet = need ? ranges.find((range) => !satisfies(version, range)) : undefined;
+      if (unmet !== undefined) {
+        throw failed(
+          `Dependency "${record.id}" is installed at ${record.version}, and its source gives ${version}, which does not satisfy ${unmet}${unmet === need?.range ? ` that ${need.for} needs` : ''}`,
+          ErrorCode.PLUGIN_DEPENDENCY_UNMET
+        );
+      }
       if (version === record.version && !fetched.inPlace) {
         return {
           id: record.id,
@@ -979,11 +1000,12 @@ export class experimental_PluginInstaller {
   /** The version ranges the installed plugins put on `record` through their dependencies */
   private async rangesOn(
     record: InstalledPluginRecord,
-    records: readonly InstalledPluginRecord[]
+    records: readonly InstalledPluginRecord[],
+    except?: string
   ): Promise<string[]> {
     const ranges: string[] = [];
     for (const candidate of records) {
-      if (candidate.id === record.id) continue;
+      if (candidate.id === record.id || candidate.id === except) continue;
       const layout = await readPluginLayout(candidate.installPath, {
         ...(candidate.entry && { entry: candidate.entry }),
         fallbackName: candidate.name,

@@ -17,32 +17,93 @@ function refuse(message: string): CogitatorError {
   return new CogitatorError({ message, code: ErrorCode.PLUGIN_INSTALL_FAILED });
 }
 
-/** Whether `host` names this machine, a link-local address or a cloud metadata service */
+/** The four bytes of an IPv4 address, undefined for anything else */
+function ipv4Bytes(text: string): number[] | undefined {
+  if (isIP(text) !== 4) return undefined;
+  return text.split('.').map(Number);
+}
+
+/** The eight 16-bit groups of an IPv6 address (with a dotted IPv4 tail), undefined for anything else */
+function ipv6Groups(text: string): number[] | undefined {
+  if (isIP(text) !== 6) return undefined;
+  let address = text.toLowerCase();
+  const zone = address.indexOf('%');
+  if (zone !== -1) address = address.slice(0, zone);
+  const tail = address.lastIndexOf(':');
+  const dotted = ipv4Bytes(address.slice(tail + 1));
+  if (dotted) {
+    const [a = 0, b = 0, c = 0, d = 0] = dotted;
+    address = `${address.slice(0, tail + 1)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const [head = '', rest] = address.split('::');
+  const parse = (part: string) => (part === '' ? [] : part.split(':').map((g) => parseInt(g, 16)));
+  const front = parse(head);
+  const back = rest === undefined ? [] : parse(rest);
+  const groups =
+    rest === undefined
+      ? front
+      : [...front, ...Array<number>(8 - front.length - back.length).fill(0), ...back];
+  return groups.length === 8 ? groups : undefined;
+}
+
+/** Whether an IPv4 address is this machine, unspecified, link-local, multicast or a metadata service */
+function privateIpv4([a = 0, b = 0, c = 0, d = 0]: number[]): boolean {
+  return (
+    a === 127 ||
+    a === 0 ||
+    (a === 169 && b === 254) ||
+    a >= 224 ||
+    (a === 100 && b === 100 && c === 100 && d === 200)
+  );
+}
+
+/** The IPv4 address an IPv6 address carries: mapped, compatible, NAT64 (64:ff9b::/96) or 6to4 */
+function embeddedIpv4(groups: number[]): number[] | undefined {
+  const bytes = (high = 0, low = 0) => [high >> 8, high & 0xff, low >> 8, low & 0xff];
+  const zeros = (from: number, to: number) => groups.slice(from, to).every((group) => group === 0);
+  const mapped = zeros(0, 5) && groups[5] === 0xffff;
+  const compatible = zeros(0, 6) && groups[6] !== 0;
+  if (mapped || compatible) {
+    return bytes(groups[6], groups[7]);
+  }
+  if (groups[0] === 0x64 && groups[1] === 0xff9b && zeros(2, 6)) return bytes(groups[6], groups[7]);
+  if (groups[0] === 0x2002) return bytes(groups[1], groups[2]);
+  return undefined;
+}
+
+/**
+ * Whether `host` names this machine, an unspecified, link-local, unique-local or multicast
+ * address, or a cloud metadata service. An IPv6 address is read in full, so an IPv4 address it
+ * carries (`[::ffff:7f00:1]`, NAT64, 6to4) is checked as that address
+ */
 export function isPrivateHost(host: string): boolean {
   const name = host.replace(/^\[|\]$/g, '').toLowerCase();
   if (name === 'localhost' || name.endsWith('.localhost') || name === 'metadata.google.internal') {
     return true;
   }
-  const version = isIP(name);
-  if (version === 4) {
-    const [a = 0, b = 0] = name.split('.').map(Number);
-    return a === 127 || a === 0 || (a === 169 && b === 254) || name === '100.100.100.200';
-  }
-  if (version === 6) {
-    return (
-      name === '::1' ||
-      name === '::' ||
-      /^fe[89ab][0-9a-f]:/.test(name) ||
-      name.startsWith('::ffff:127.') ||
-      name.startsWith('::ffff:169.254.') ||
-      name === 'fd00:ec2::254'
-    );
-  }
-  return false;
+  const v4 = ipv4Bytes(name);
+  if (v4) return privateIpv4(v4);
+  const groups = ipv6Groups(name);
+  if (!groups) return false;
+  const embedded = embeddedIpv4(groups);
+  if (embedded) return privateIpv4(embedded);
+  const [first = 0] = groups;
+  const unspecifiedOrLoopback =
+    groups.slice(0, 7).every((group) => group === 0) && (groups[7] ?? 0) <= 1;
+  return (
+    unspecifiedOrLoopback ||
+    (first & 0xfe00) === 0xfc00 ||
+    (first & 0xffc0) === 0xfe80 ||
+    (first & 0xffc0) === 0xfec0 ||
+    (first & 0xff00) === 0xff00
+  );
 }
 
-/** Throws when a name of `url`'s host resolves to a private address, see {@link isPrivateHost} */
+/** Throws when `url`'s host, or an address its name resolves to, is private, see {@link isPrivateHost} */
 async function checkResolved(url: URL, what: string): Promise<void> {
+  if (isPrivateHost(url.hostname)) {
+    throw refuse(`${what} may not point at a loopback, link-local or metadata host: ${url.href}`);
+  }
   if (isIP(url.hostname.replace(/^\[|\]$/g, '')) !== 0) return;
   let addresses: { address: string }[];
   try {
@@ -58,7 +119,14 @@ async function checkResolved(url: URL, what: string): Promise<void> {
 /** Whether `host` is this machine: what a local registry or a test listens on */
 export function isLoopbackHost(host: string): boolean {
   const name = host.replace(/^\[|\]$/g, '').toLowerCase();
-  return name === 'localhost' || name === '::1' || name.startsWith('127.');
+  if (name === 'localhost') return true;
+  const v4 = ipv4Bytes(name);
+  if (v4) return v4[0] === 127;
+  const groups = ipv6Groups(name);
+  if (!groups) return false;
+  const embedded = embeddedIpv4(groups);
+  if (embedded) return embedded[0] === 127;
+  return groups.slice(0, 7).every((group) => group === 0) && groups[7] === 1;
 }
 
 /** Checks that `url` is an https URL to a public host, throwing why not */

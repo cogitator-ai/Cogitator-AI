@@ -24,7 +24,7 @@ import { experimental_PluginHost } from '../plugins/host';
 import { experimental_memorySecretStore } from '../plugins/secrets';
 import { marketplaceSourceOf, parseMarketplace } from '../plugins/install/marketplace';
 import { pluginDataDir, readInstalledPlugins } from '../plugins/store';
-import { download } from '../plugins/install/fetch';
+import { download, isLoopbackHost, isPrivateHost } from '../plugins/install/fetch';
 
 const FIXTURES = join(__dirname, 'fixtures', 'plugins');
 
@@ -641,6 +641,87 @@ describe('plugin installer', () => {
       { url: 'https://market.example/b', authorization: 'Bearer secret-token' },
       { url: 'https://cdn.example/c', authorization: null },
     ]);
+  });
+
+  it('refuses private addresses however an IPv6 address writes them', async () => {
+    const privateHosts = [
+      '127.0.0.1',
+      '169.254.169.254',
+      '0.0.0.0',
+      new URL('https://[::ffff:127.0.0.1]/').hostname,
+      new URL('https://[::ffff:169.254.169.254]/').hostname,
+      '[::ffff:7f00:1]',
+      '[::]',
+      '[::1]',
+      '[fd00:ec2::254]',
+      '[fc00::1]',
+      '[fe80::1]',
+      '[64:ff9b::a9fe:a9fe]',
+      '[2002:7f00:1::]',
+      '[ff02::1]',
+    ];
+    for (const host of privateHosts) expect([host, isPrivateHost(host)]).toEqual([host, true]);
+    for (const host of ['1.1.1.1', '[2606:4700::1111]', '[::ffff:8.8.8.8]', 'example.com']) {
+      expect([host, isPrivateHost(host)]).toEqual([host, false]);
+    }
+    expect(isLoopbackHost('[::ffff:7f00:1]')).toBe(true);
+    expect(isLoopbackHost('[::1]')).toBe(true);
+    expect(isLoopbackHost('[fe80::1]')).toBe(false);
+    const fetchFn = (async () =>
+      new Response(null, {
+        status: 302,
+        headers: { location: 'https://[::ffff:169.254.169.254]/latest' },
+      })) as unknown as typeof fetch;
+    await expect(download('https://[::ffff:127.0.0.1]/x', 'The file', { fetchFn })).rejects.toThrow(
+      /may not point at a loopback/
+    );
+    await expect(download('https://market.example/x', 'The file', { fetchFn })).rejects.toThrow(
+      /may not point at a loopback/
+    );
+  });
+
+  it('updates an installed dependency to the range a new plugin needs, or refuses before writing', async () => {
+    const lib = join(base, 'lib');
+    plugin(lib, 'lib', { version: '1.0.0' });
+    gitRepo(lib);
+    git(lib, 'tag', 'lib--v1.0.0');
+    writeJson(join(lib, '.claude-plugin', 'plugin.json'), { name: 'lib', version: '2.1.0' });
+    git(lib, 'commit', '--quiet', '-am', 'two');
+    git(lib, 'tag', 'lib--v2.1.0');
+    const repo = join(base, 'deps');
+    plugin(join(repo, 'plugins', 'old-app'), 'old-app', {
+      version: '1.0.0',
+      dependencies: [{ name: 'lib', version: '^1.0.0' }],
+    });
+    plugin(join(repo, 'plugins', 'new-app'), 'new-app', {
+      version: '1.0.0',
+      dependencies: [{ name: 'lib', version: '^2.0.0' }],
+    });
+    writeJson(join(repo, '.claude-plugin', 'marketplace.json'), {
+      name: 'deps',
+      owner: { name: 'Team' },
+      plugins: [
+        { name: 'old-app', source: './plugins/old-app' },
+        { name: 'new-app', source: './plugins/new-app' },
+        { name: 'lib', source: { source: 'url', url: `file://${lib}` } },
+      ],
+    });
+    gitRepo(repo);
+    const tools = installer();
+    await tools.addMarketplace(`file://${repo}`);
+    await tools.install('old-app@deps');
+    const versions = () =>
+      readInstalledPlugins(root).then(({ records }) =>
+        Object.fromEntries(records.map((record) => [record.id, record.version]))
+      );
+    expect(await versions()).toEqual({ 'old-app@deps': '1.0.0', 'lib@deps': '1.0.0' });
+    await expect(tools.install('new-app@deps')).rejects.toMatchObject({
+      code: ErrorCode.PLUGIN_DEPENDENCY_UNMET,
+    });
+    expect(await versions()).toEqual({ 'old-app@deps': '1.0.0', 'lib@deps': '1.0.0' });
+    await tools.uninstall('old-app@deps');
+    await tools.install('new-app@deps');
+    expect(await versions()).toEqual({ 'new-app@deps': '1.0.0', 'lib@deps': '2.1.0' });
   });
 
   it('gives every plugin id a data folder of its own', () => {
