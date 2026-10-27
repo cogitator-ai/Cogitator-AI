@@ -314,12 +314,17 @@ export class SnapshotStore {
     });
   }
 
-  /** Deletes the snapshots `retention` does not keep, then frees what no snapshot uses */
+  /**
+   * Deletes the snapshots `retention` does not keep, never one of `protect` (which still count
+   * toward it), then frees what no snapshot uses
+   */
   prune(
     retention: SnapshotRetention,
-    graceMs: number
+    graceMs: number,
+    protect: readonly string[] = []
   ): Promise<{ deleted: string[]; gc: SnapshotGcReport }> {
     return this.exclusive(async () => {
+      const kept = new Set(protect);
       const manifests = await this.manifests();
       const now = Date.now();
       const doomed = manifests.filter((manifest, index) => {
@@ -328,7 +333,7 @@ export class SnapshotStore {
         const tooOld =
           retention.maxAgeMs !== undefined &&
           now - Date.parse(manifest.createdAt) > retention.maxAgeMs;
-        return tooMany || tooOld;
+        return (tooMany || tooOld) && !kept.has(manifest.id);
       });
       if (doomed.length > 0) await this.verifyDir(join(this.dir, 'manifests'));
       for (const manifest of doomed) {

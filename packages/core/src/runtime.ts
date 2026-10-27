@@ -44,6 +44,7 @@ import type {
   EstimateOptions,
   MemoryAdapter,
   MemoryEntry,
+  WorkspaceSnapshot,
   WorkspaceRestoreResult,
   MemoryFilesConfig,
   MemoryFileAdapter,
@@ -134,11 +135,25 @@ interface GoingOn {
   held: { runId: string; foreign: boolean; expiresAt?: number }[];
   /** Every run in the way, each once */
   ids: string[];
+  /** Tool executions in the workspace that have not settled, of runs going on or ended */
+  tools: number;
 }
 
 /** Where the entries a rewind cuts start in the branch it read */
 function cutFrom(state: { index: number }): number {
   return state.index + 1;
+}
+
+/** Milliseconds a forced rewind or fork waits for the tool calls of the runs it stopped */
+const TOOL_SETTLE_MS = 10_000;
+
+/** The refusal of a restore while tool calls in the workspace have not ended */
+function toolsBusy(what: 'rewind' | 'fork', threadId: string, count: number): CogitatorError {
+  return new CogitatorError({
+    message: `${count} tool call(s) in the workspace the ${what} would restore have not ended, also of runs that stopped: they may still write the files. Wait for them, then ${what} again`,
+    code: ErrorCode.WORKSPACE_BUSY,
+    details: { threadId, toolCalls: count },
+  });
 }
 
 /** The refusal of a restore while commands the workspace started still run */
@@ -294,7 +309,12 @@ import {
   isEmbeddingAdapter,
   isFactAdapter,
 } from './cogitator/initializers';
-import { CogitatorError, ErrorCode, resolveModelRoute } from '@cogitator-ai/types';
+import {
+  CogitatorError,
+  ErrorCode,
+  resolveModelRoute,
+  WORKSPACE_SNAPSHOT_MAX_FILE_BYTES,
+} from '@cogitator-ai/types';
 import {
   buildInitialMessages,
   buildUserContent,
@@ -3949,6 +3969,7 @@ export class Cogitator implements ToolInvoker {
                     sandboxManager: this.state.sandboxManager,
                     initializeSandbox: () => initializeSandbox(this.config, this.state),
                     signal: abortController.signal,
+                    onStarted: (started) => workspaceSeat?.track(started),
                     extraContext: {
                       threadId,
                       userId: options.userId,
@@ -7529,8 +7550,8 @@ export class Cogitator implements ToolInvoker {
         });
       }
       const files = rewindsFiles ? fileRestorePlan(path, index, options) : undefined;
-      if (files) await this.verifyCheckpoint(memory, threadId, files);
-      return { thread, path, index, files };
+      const checkpoint = files ? await this.verifyCheckpoint(memory, threadId, files) : undefined;
+      return { thread, path, index, files, checkpoint };
     };
 
     const releaseThread = await this.threadRuns.lock(threadId);
@@ -7580,10 +7601,18 @@ export class Cogitator implements ToolInvoker {
       }
 
       this.refuseBusy('rewind', threadId, going, plan, options.force ?? false, rewindsFiles);
-      if (going.thread.count > 0 || going.ids.length > 0) {
+      if (going.thread.count > 0 || going.ids.length > 0 || (rewindsFiles && going.tools > 0)) {
         const stopped = await this.stopRuns(threadId, going, `Thread ${threadId} is being rewound`);
         report.runs.interrupted = stopped.interrupted;
         report.runs.durable = stopped.durable;
+        if (state.files) {
+          await this.awaitTools(
+            'rewind',
+            threadId,
+            state.files.workspace,
+            options.toolSettleMs ?? TOOL_SETTLE_MS
+          );
+        }
         state = await read();
         report.conversation.cut = rewindsMemory
           ? state.path.slice(cutFrom(state)).map((entry) => entry.id)
@@ -7592,8 +7621,8 @@ export class Cogitator implements ToolInvoker {
         if (plan?.busy) throw workspaceBusy('rewind', threadId, plan);
       }
 
-      if (state.files && plan)
-        report.files = await this.restoreWithSafety(state.files, plan, {
+      if (state.files && plan && state.checkpoint)
+        report.files = await this.restoreWithSafety(state.files, plan, state.checkpoint, {
           threadId,
           reason: 'rewind',
           entryId: toEntryId,
@@ -7686,7 +7715,10 @@ export class Cogitator implements ToolInvoker {
           ? fileRestorePlan(branch, branch.length - 1, options)
           : fileRestorePlan(active, onActive, options);
       const source = options.source ?? files.workspace;
-      await this.verifyCheckpoint(memory, threadId, { ...files, workspace: source });
+      const checkpoint = await this.verifyCheckpoint(memory, threadId, {
+        ...files,
+        workspace: source,
+      });
       this.refuseFromOwnTool('fork', threadId, await this.workspaceRuns.active(files.workspace));
       releaseWorkspace = await this.workspaceRuns.lock(files.workspace);
 
@@ -7725,13 +7757,19 @@ export class Cogitator implements ToolInvoker {
       if (dryRun) return { dryRun: true, snapshotsCopied: copied, files: plan, going: going.ids };
 
       this.refuseBusy('fork', threadId, going, plan, options.force ?? false, true);
-      if (going.thread.count > 0 || going.ids.length > 0) {
+      if (going.thread.count > 0 || going.ids.length > 0 || going.tools > 0) {
         await this.stopRuns(threadId, going, `Thread ${threadId} is being forked with its files`);
+        await this.awaitTools(
+          'fork',
+          threadId,
+          files.workspace,
+          options.toolSettleMs ?? TOOL_SETTLE_MS
+        );
         plan = await files.restore({ dryRun: true });
         if (plan.busy) throw workspaceBusy('fork', threadId, plan);
       }
       const thread = unwrapMemory(await forkThread(threadId, atEntryId, options.newThreadId));
-      const restored = await this.restoreWithSafety(files, plan, {
+      const restored = await this.restoreWithSafety(files, plan, checkpoint, {
         threadId: thread.id,
         reason: 'fork',
         entryId: atEntryId,
@@ -7776,8 +7814,11 @@ export class Cogitator implements ToolInvoker {
   private async goingOn(threadId: string, workspace: Workspace | undefined): Promise<GoingOn> {
     const thread = this.threadRuns.active(threadId);
     const inWorkspace = workspace
-      ? (await this.workspaceRuns.active(workspace)).filter((run) => run.threadId !== threadId)
+      ? (await this.workspaceRuns.active(workspace)).filter(
+          (run) => !thread.runIds.includes(run.runId())
+        )
       : [];
+    const tools = workspace ? await this.workspaceRuns.toolsInFlight(workspace) : 0;
     const now = Date.now();
     const instance = this.durableHolder.instance;
     const held = (await this.durableStore().list({ threadId })).flatMap((run) =>
@@ -7798,7 +7839,7 @@ export class Cogitator implements ToolInvoker {
         ...held.map((run) => run.runId),
       ]),
     ];
-    return { thread, inWorkspace, held, ids };
+    return { thread, inWorkspace, held, ids, tools };
   }
 
   /**
@@ -7836,12 +7877,28 @@ export class Cogitator implements ToolInvoker {
     if (going.inWorkspace.length > 0) {
       const runIds = going.inWorkspace.map((run) => run.runId());
       throw new CogitatorError({
-        message: `Runs of other threads work in the workspace the ${what} would restore (${runIds.join(', ')}): wait for them, or pass force to stop them first`,
+        message: `Other runs work in the workspace the ${what} would restore (${runIds.join(', ')}): wait for them, or pass force to stop them first`,
         code: ErrorCode.WORKSPACE_BUSY,
         details: { threadId, runIds },
       });
     }
+    if (files && going.tools > 0) throw toolsBusy(what, threadId, going.tools);
     if (plan?.busy) throw workspaceBusy(what, threadId, plan);
+  }
+
+  /**
+   * Waits until the tool executions in `workspace` settled, those of runs a forced rewind or fork
+   * stopped included: a tool that goes on regardless of its signal may still write the files.
+   * Refuses with `WORKSPACE_BUSY` when some still run after `timeoutMs`
+   */
+  private async awaitTools(
+    what: 'rewind' | 'fork',
+    threadId: string,
+    workspace: Workspace,
+    timeoutMs: number
+  ): Promise<void> {
+    if (await this.workspaceRuns.toolsSettled(workspace, timeoutMs)) return;
+    throw toolsBusy(what, threadId, await this.workspaceRuns.toolsInFlight(workspace));
   }
 
   /**
@@ -7884,7 +7941,7 @@ export class Cogitator implements ToolInvoker {
     memory: MemoryAdapter,
     threadId: string,
     files: Pick<FileRestorePlan, 'at' | 'workspace'>
-  ): Promise<void> {
+  ): Promise<WorkspaceSnapshot> {
     const { at, workspace } = files;
     const snapshotId = at.checkpoint.snapshotId;
     const list = workspace.listSnapshots?.bind(workspace);
@@ -7944,26 +8001,37 @@ export class Cogitator implements ToolInvoker {
         details: { snapshotId, threadId, entryId: at.entryId },
       });
     }
+    return record;
   }
 
   /**
    * Restores the files of `files`, after a snapshot of them as they are when the restore changes
-   * anything and the workspace can snapshot, named in the report to undo it
+   * anything and the workspace can snapshot, named in the report to undo it. The safety snapshot
+   * covers every path the restore changes or deletes: it leaves out only what the checkpoint
+   * `target` left out (which the restore never touches), keeps files as large as the largest one
+   * the restore rewrites or deletes, and keeps a retention of the workspace from pruning `target`
+   * before it is restored
    */
   private async restoreWithSafety(
     files: FileRestorePlan,
     plan: WorkspaceRestoreResult,
+    target: WorkspaceSnapshot,
     place: { threadId: string; reason: 'rewind' | 'fork'; entryId: string }
   ): Promise<FileRewindReport> {
     const { workspace } = files;
     let safetySnapshotId: string | undefined;
     const changes = plan.restored.length > 0 || plan.deleted.length > 0;
     if (changes && workspace.snapshot) {
-      const settings = checkpointSettings(this.config.checkpoints, undefined, true);
+      let largest = target.maxFileBytes ?? WORKSPACE_SNAPSHOT_MAX_FILE_BYTES;
+      for (const path of [...plan.restored, ...plan.deleted]) {
+        const info = await workspace.stat(path).catch(() => undefined);
+        if (info?.type === 'file' && info.size > largest) largest = info.size;
+      }
       const safety = await workspace.snapshot({
         label: `before-${place.reason}`,
-        ...(settings && { exclude: settings.exclude }),
-        ...(settings?.maxFileBytes !== undefined && { maxFileBytes: settings.maxFileBytes }),
+        exclude: target.exclude,
+        maxFileBytes: largest,
+        protect: [target.id],
         metadata: { ...place, safety: true },
       });
       safetySnapshotId = safety.id;

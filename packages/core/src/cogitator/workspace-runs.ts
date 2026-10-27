@@ -20,6 +20,11 @@ export interface WorkspaceRegistration {
   add(workspace: Workspace): Promise<void>;
   /** Takes the run out of every workspace it was counted in */
   release(): void;
+  /**
+   * Counts a tool execution of the run in every workspace the run works in until it settles, also
+   * after the run ended: a tool that goes on regardless of its signal may still write the files
+   */
+  track(execution: Promise<unknown>): void;
 }
 
 /**
@@ -31,6 +36,8 @@ export interface WorkspaceRegistration {
 export class WorkspaceRuns {
   private readonly roots = new Map<string, Set<WorkspaceRun>>();
   private readonly locks = new Map<string, Promise<void>>();
+  /** Tool executions that have not settled yet, by workspace */
+  private readonly tools = new Map<string, Set<Promise<unknown>>>();
 
   /** Registers `run` in `workspace`, once a restore holding it is done */
   async enter(
@@ -61,7 +68,50 @@ export class WorkspaceRuns {
         }
         entered.clear();
       },
+      track: (execution) => {
+        const settled = execution.then(
+          () => undefined,
+          () => undefined
+        );
+        for (const key of entered) {
+          const pending = this.tools.get(key) ?? new Set<Promise<unknown>>();
+          pending.add(settled);
+          this.tools.set(key, pending);
+          void settled.then(() => {
+            pending.delete(settled);
+            if (pending.size === 0 && this.tools.get(key) === pending) this.tools.delete(key);
+          });
+        }
+      },
     };
+  }
+
+  /** How many tool executions in `workspace` have not settled yet, of runs going on or ended */
+  async toolsInFlight(workspace: Workspace): Promise<number> {
+    return this.tools.get(await keyOf(workspace))?.size ?? 0;
+  }
+
+  /**
+   * Resolves true once every tool execution in `workspace` settled, false when some still run
+   * after `timeoutMs`
+   */
+  async toolsSettled(workspace: Workspace, timeoutMs: number): Promise<boolean> {
+    const key = await keyOf(workspace);
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const pending = this.tools.get(key);
+      if (!pending || pending.size === 0) return true;
+      const left = deadline - Date.now();
+      if (left <= 0) return false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        Promise.all(pending),
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, left);
+        }),
+      ]);
+      clearTimeout(timer);
+    }
   }
 
   /** The runs going on in `workspace` */

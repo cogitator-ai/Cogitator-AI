@@ -80,13 +80,20 @@ function runtime(
   return { cog, requests };
 }
 
+/** A tool that waits for `gate`, or ends when its call is aborted */
 const waiting = (gate: Promise<void>) =>
   tool({
     name: 'wait',
     description: 'Waits',
     parameters: z.object({}),
-    execute: async () => {
-      await gate;
+    execute: async (_args, context) => {
+      await Promise.race([
+        gate,
+        new Promise<void>((resolve) => {
+          if (context.signal.aborted) resolve();
+          context.signal.addEventListener('abort', () => resolve(), { once: true });
+        }),
+      ]);
       return 'waited';
     },
   });
@@ -113,6 +120,155 @@ async function path(cog: Cogitator, threadId: string): Promise<MemoryEntry[]> {
 function codeOf(error: unknown): string | undefined {
   return error instanceof CogitatorError ? error.code : undefined;
 }
+
+describe('rewind and fork guards, round two', () => {
+  it('waits with force for a tool that ignores its abort before it restores, and refuses past the wait', async () => {
+    const wrote = deferred();
+    const stubborn = tool({
+      name: 'stubborn',
+      description: 'Ignores its abort signal, then writes',
+      parameters: z.object({}),
+      execute: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        writeFileSync(join(root, 'a.txt'), 'late write');
+        wrote.resolve();
+        return 'written';
+      },
+    });
+    const forever = tool({
+      name: 'forever',
+      description: 'Never ends',
+      parameters: z.object({}),
+      execute: () => new Promise<string>(() => undefined),
+    });
+    const { cog } = runtime({
+      one: [write('a.txt', '1')],
+      slow: [{ id: 's', name: 'stubborn', arguments: {} }],
+      stuck: [{ id: 'f', name: 'forever', arguments: {} }],
+    });
+    const agent = coder({
+      tools: [...workspaceTools(undefined, { requireApproval: () => false }), stubborn, forever],
+    });
+    await cog.run(agent, { input: 'one', threadId: 't' });
+    await cog.run(agent, { input: 'one again', threadId: 't' });
+    const entries = await path(cog, 't');
+    const point = entries[entries.findIndex((entry) => entry.message.content === 'one again') - 1]!;
+
+    const slow = cog.run(agent, { input: 'slow', threadId: 't' });
+    slow.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const report = await cog.rewind('t', point.id, { files: true, agents: [agent], force: true });
+    await wrote.promise;
+    expect(report.files?.restored).toContain('a.txt');
+    expect(text('a.txt')).toBe('1');
+
+    const stopper = new AbortController();
+    const stuck = cog.run(agent, { input: 'stuck', threadId: 't', signal: stopper.signal });
+    stuck.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    stopper.abort();
+    await stuck.catch(() => undefined);
+    const later = (await path(cog, 't')).at(-1)!;
+    const plain = await cog
+      .rewind('t', later.id, { files: true, memory: false, agents: [agent] })
+      .catch((error: unknown) => error);
+    expect(codeOf(plain)).toBe(ErrorCode.WORKSPACE_BUSY);
+    const waited = await cog
+      .rewind('t', later.id, { files: true, agents: [agent], force: true, toolSettleMs: 100 })
+      .catch((error: unknown) => error);
+    expect(codeOf(waited)).toBe(ErrorCode.WORKSPACE_BUSY);
+    expect((waited as Error).message).toContain('have not ended');
+  });
+
+  it('keeps the checkpoint a retention would prune until it is restored', async () => {
+    const retained = new LocalWorkspace({
+      root,
+      id: 'project-ws',
+      snapshots: { retain: { count: 1 } },
+    });
+    try {
+      const { cog } = runtime({ one: [write('a.txt', '1')], two: [write('a.txt', '2')] });
+      const agent = coder({ workspace: retained });
+      await cog.run(agent, { input: 'one', threadId: 'r' });
+      await cog.run(agent, { input: 'two', threadId: 'r' });
+      const entries = await path(cog, 'r');
+      const point = entries[entries.findIndex((entry) => entry.message.content === 'two') - 1]!;
+      writeFileSync(join(root, 'a.txt'), 'later');
+      const report = await cog.rewind('r', point.id, { files: true, agents: [agent] });
+      expect(text('a.txt')).toBe('1');
+      expect(report.files?.safetySnapshotId).toBeDefined();
+    } finally {
+      await retained.dispose();
+    }
+  });
+
+  it('takes a safety snapshot that brings back exactly what the rewind changed', async () => {
+    const big = (fill: string) => fill.repeat(150);
+    const { cog } = runtime(
+      {
+        one: [write('big.txt', big('a')), write('small.txt', 's1')],
+        two: [write('big.txt', big('b')), write('extra.txt', 'x')],
+      },
+      { checkpoints: { maxFileBytes: 100, exclude: ['*.log'] } }
+    );
+    const agent = coder({ checkpoints: { maxFileBytes: 200 } });
+    await cog.run(agent, { input: 'one', threadId: 's' });
+    await cog.run(agent, { input: 'two', threadId: 's' });
+    writeFileSync(join(root, 'note.log'), 'a log the checkpoints leave out at runtime level');
+    const state = () =>
+      ['big.txt', 'small.txt', 'extra.txt', 'note.log'].map((name) => {
+        try {
+          return [name, text(name)];
+        } catch {
+          return [name, undefined];
+        }
+      });
+    const before = state();
+    const entries = await path(cog, 's');
+    const point = entries[entries.findIndex((entry) => entry.message.content === 'two') - 1]!;
+    const report = await cog.rewind('s', point.id, { files: true, agents: [agent] });
+    expect(text('big.txt')).toBe(big('a'));
+    await workspace.restore(report.files!.safetySnapshotId!);
+    expect(state()).toEqual(before);
+  });
+
+  it('counts a run on a side branch of the thread as busy, and stops it with force', async () => {
+    const gate = deferred();
+    const { cog } = runtime({
+      one: [write('a.txt', '1')],
+      go: [{ id: 'w', name: 'wait', arguments: {} }],
+    });
+    const agent = coder({
+      tools: [
+        ...workspaceTools(undefined, { requireApproval: () => false }),
+        waiting(gate.promise),
+      ],
+    });
+    await cog.run(agent, { input: 'one', threadId: 'side' });
+    await cog.run(agent, { input: 'one more', threadId: 'side' });
+    const entries = await path(cog, 'side');
+    const point = entries[entries.findIndex((entry) => entry.message.content === 'one more') - 1]!;
+    const aside = cog.run(agent, {
+      input: 'go',
+      threadId: 'side',
+      branch: { fromEntryId: point.id, activate: false },
+    });
+    aside.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const refused = await cog
+      .rewind('side', point.id, { files: true, agents: [agent] })
+      .catch((error: unknown) => error);
+    expect(codeOf(refused)).toBe(ErrorCode.WORKSPACE_BUSY);
+    const report = await cog.rewind('side', point.id, {
+      files: true,
+      agents: [agent],
+      force: true,
+    });
+    expect(report.runs.interrupted).toHaveLength(1);
+    await expect(aside).rejects.toMatchObject({ code: ErrorCode.RUN_INTERRUPTED });
+    gate.resolve();
+  });
+});
 
 describe('rewind and fork guards', () => {
   it('refuses while a run of another thread works in the same workspace, and stops it with force', async () => {

@@ -226,6 +226,11 @@ export interface WorkspaceSnapshotOptions {
   maxFileBytes?: number;
   /** Your own data to keep with the snapshot */
   metadata?: Record<string, unknown>;
+  /**
+   * Snapshots a retention policy the workspace applies after this one must keep, such as the
+   * one about to be restored
+   */
+  protect?: readonly string[];
 }
 
 /** A file a snapshot did not keep, and why. */

@@ -184,6 +184,12 @@ export interface RewindOptions {
    * its next step, and is never forced while files are restored, as its tools may still write
    */
   force?: boolean;
+  /**
+   * With files and `force`, milliseconds to wait for the tool calls of the stopped runs to end:
+   * a tool may go on regardless of its abort signal and still write the files. Past it the rewind
+   * is refused with `WORKSPACE_BUSY` (default: 10000)
+   */
+  toolSettleMs?: number;
 }
 
 /** What a file restore of a rewind or a fork did, see `Workspace.restore()` */
@@ -245,6 +251,8 @@ export interface ForkThreadOptions {
    * instead of refusing with `THREAD_BUSY` or `WORKSPACE_BUSY` (default: false)
    */
   force?: boolean;
+  /** With `files` and `force`, milliseconds to wait for the tool calls of stopped runs, see `RewindOptions` */
+  toolSettleMs?: number;
   /**
    * Make no thread and change no files, only report what the fork would restore (default:
    * false). Into another workspace than `source`, the checkpoint to restore is copied into its

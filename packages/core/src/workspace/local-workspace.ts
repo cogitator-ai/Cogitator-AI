@@ -671,7 +671,10 @@ export class LocalWorkspace implements Workspace {
       });
     }
     if (this.snapshotConfig.retain) {
-      await this.pruneSnapshots(this.snapshotConfig.retain).catch((error: unknown) => {
+      await this.pruneSnapshots(this.snapshotConfig.retain, [
+        snapshot.id,
+        ...(options.protect ?? []),
+      ]).catch((error: unknown) => {
         getLogger().warn('Old workspace snapshots could not be pruned, the new one is kept', {
           workspace: this.id,
           snapshot: snapshot.id,
@@ -722,12 +725,13 @@ export class LocalWorkspace implements Workspace {
 
   /**
    * Deletes the snapshots `retention` (default `snapshots.retain`, else none) does not keep,
-   * then collects the contents no snapshot uses: a mark over every manifest, a sweep of the rest
+   * never one of `protect`, then collects the contents no snapshot uses: a mark over every manifest, a sweep of the rest
    */
   async pruneSnapshots(
-    retention: SnapshotRetention = this.snapshotConfig.retain ?? {}
+    retention: SnapshotRetention = this.snapshotConfig.retain ?? {},
+    protect: readonly string[] = []
   ): Promise<{ deleted: string[]; gc: SnapshotGcReport }> {
-    return (await this.snapshotStore()).prune(retention, this.gcGrace());
+    return (await this.snapshotStore()).prune(retention, this.gcGrace(), protect);
   }
 
   /**
