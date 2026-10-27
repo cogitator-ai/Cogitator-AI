@@ -33,6 +33,8 @@ import type {
   RawSpan,
   RegistryInfo,
   ReplayEntry,
+  ThreadLineage,
+  ThreadReplay,
   RewindRequest,
   RewindSummary,
   RunRecord,
@@ -151,11 +153,25 @@ function treeEntry(entry: MemoryEntry): TreeEntry {
 /** What brings a thread of the studio's own memory back after a restart. */
 interface ThreadSeed {
   history: readonly HistoryMessage[];
-  replay?: readonly ReplayEntry[];
+  replay?: ThreadReplay;
+  lineage?: readonly ThreadLineage[];
 }
 
 function seedOf(request: ThreadSeed): ThreadSeed {
-  return { history: request.history, ...(request.replay && { replay: request.replay }) };
+  return {
+    history: request.history,
+    ...(request.replay && { replay: request.replay }),
+    ...(request.lineage && { lineage: request.lineage }),
+  };
+}
+
+/** Thread metadata of a run's state, which a replay leaves out: paused and durable runs */
+function replayable(metadata: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(metadata).filter(
+      ([key]) => key !== 'pausedRun' && key !== 'durableRuns' && !key.startsWith('durableFence')
+    )
+  );
 }
 
 /** The text of a message entry, its text parts joined. */
@@ -389,12 +405,14 @@ export class StudioHost {
    * The active branch of a thread entry by entry, with ids and metadata, for the server to replay
    * into a fresh memory after a restart
    */
-  private async replayOf(threadId: string): Promise<ReplayEntry[]> {
+  private async replayOf(threadId: string): Promise<ThreadReplay> {
     const memory = await this.project.cogitator.getMemory();
-    if (!memory?.getPath) return [];
+    if (!memory?.getPath) return { metadata: {}, entries: [] };
+    const thread = await memory.getThread(threadId);
+    if (!thread.success) throw new Error(thread.error);
     const path = await memory.getPath({ threadId, types: 'all', includeToolCalls: true });
     if (!path.success) throw new Error(path.error);
-    return path.data.map((entry) => ({
+    const entries = path.data.map((entry): ReplayEntry => ({
       id: entry.id,
       ...(entry.type !== undefined && { type: entry.type }),
       message: entry.message,
@@ -403,13 +421,14 @@ export class StudioHost {
       ...(entry.metadata && { metadata: entry.metadata }),
       ...(entry.event && { event: entry.event }),
     }));
+    return { metadata: replayable(thread.data?.metadata ?? {}), entries };
   }
 
   /** Tells the server the active branch of a thread of the studio's own memory, after a run */
   private async reportReplay(threadId: string): Promise<void> {
     if (this.options.memory !== 'studio') return;
     try {
-      this.emit({ type: 'thread.replay', threadId, entries: await this.replayOf(threadId) });
+      this.emit({ type: 'thread.replay', threadId, replay: await this.replayOf(threadId) });
     } catch (error) {
       console.error(
         `[studio host] could not read thread ${threadId} to keep it: ${message(error)}`
@@ -566,16 +585,27 @@ export class StudioHost {
    */
   private async seed(threadId: string, agent: Agent, seed: ThreadSeed): Promise<void> {
     if (this.options.memory !== 'studio' || this.seeded.has(threadId)) return;
+    for (const ancestor of seed.lineage ?? []) {
+      const owner = this.project.agents.get(ancestor.agent) ?? agent;
+      await this.seed(ancestor.threadId, owner, {
+        history: ancestor.history,
+        ...(ancestor.replay && { replay: ancestor.replay }),
+      });
+    }
     this.seeded.add(threadId);
     const { history, replay } = seed;
-    if (history.length === 0 && !replay?.length) return;
+    if (history.length === 0 && !replay?.entries.length) return;
     const memory = await this.project.cogitator.getMemory();
     if (!memory) return;
     const existing = await memory.getThread(threadId);
-    if (!existing.success || !existing.data) await memory.createThread(agent.id, {}, threadId);
-    if (replay?.length) {
+    if (!existing.success || !existing.data) {
+      await memory.createThread(agent.id, replay?.metadata ?? {}, threadId);
+    } else if (replay) {
+      await memory.updateThread(threadId, replay.metadata);
+    }
+    if (replay?.entries.length) {
       let parentId: string | null = null;
-      for (const entry of replay) {
+      for (const entry of replay.entries) {
         const added = await memory.addEntry({
           id: entry.id,
           threadId,

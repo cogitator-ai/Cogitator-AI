@@ -13,6 +13,8 @@ import type {
   RawSpan,
   RegistryInfo,
   ReplayEntry,
+  ThreadLineage,
+  ThreadReplay,
   RunRecord,
   RunStatus,
   SpanRecord,
@@ -411,18 +413,46 @@ export class StudioStore {
    * after a restart. A forked thread's `base` follows it: the messages it copied from its origin
    * that are still on the branch
    */
-  keepReplay(threadId: string, entries: readonly ReplayEntry[]): ThreadRecord | undefined {
+  keepReplay(threadId: string, replay: ThreadReplay): ThreadRecord | undefined {
     const thread = this.threads.get(threadId);
     if (!thread) return undefined;
-    thread.replay = entries.map((entry) => ({ ...entry }));
-    if (thread.forkOf) thread.base = baseOf(entries);
+    thread.replay = {
+      metadata: { ...replay.metadata },
+      entries: replay.entries.map((entry) => ({ ...entry })),
+    };
+    if (thread.forkOf) thread.base = baseOf(replay.entries);
     this.persistThreads();
     return thread;
   }
 
-  /** The active branch the studio keeps of a thread, for a fresh memory after a restart. */
-  replay(threadId: string): ReplayEntry[] | undefined {
+  /** The thread as the studio keeps it, for a fresh memory after a restart. */
+  replay(threadId: string): ThreadReplay | undefined {
     return this.threads.get(threadId)?.replay;
+  }
+
+  /**
+   * The threads a thread was forked from (`forkOf`, in turn), oldest first, with what replays
+   * each, so a fresh memory knows where the fork comes from
+   */
+  lineage(threadId: string): ThreadLineage[] {
+    const lineage: ThreadLineage[] = [];
+    const seen = new Set<string>([threadId]);
+    for (
+      let from = this.threads.get(threadId)?.forkOf?.threadId;
+      from !== undefined && !seen.has(from) && lineage.length < 64;
+      from = this.threads.get(from)?.forkOf?.threadId
+    ) {
+      seen.add(from);
+      const source = this.threads.get(from);
+      if (!source) break;
+      lineage.unshift({
+        threadId: source.id,
+        agent: source.agent,
+        history: this.history(source.id),
+        ...(source.replay && { replay: source.replay }),
+      });
+    }
+    return lineage;
   }
 
   /** The thread a fork of `source` at `entryId` made, starting from the messages `base`. */
@@ -432,7 +462,7 @@ export class StudioStore {
       threadId: string;
       entryId: string;
       base: readonly HistoryMessage[];
-      replay?: readonly ReplayEntry[];
+      replay?: ThreadReplay;
     }
   ): ThreadRecord {
     if (this.threads.has(fork.threadId)) throw new Error(`Thread ${fork.threadId} exists already`);
@@ -446,7 +476,12 @@ export class StudioStore {
       runs: [],
       forkOf: { threadId: source.id, entryId: fork.entryId },
       base: fork.base.map((message) => ({ role: message.role, content: message.content })),
-      ...(fork.replay && { replay: fork.replay.map((entry) => ({ ...entry })) }),
+      ...(fork.replay && {
+        replay: {
+          metadata: { ...fork.replay.metadata },
+          entries: fork.replay.entries.map((entry) => ({ ...entry })),
+        },
+      }),
     };
     this.threads.set(thread.id, thread);
     this.persistThreads();
@@ -622,7 +657,7 @@ export class StudioStore {
   private change(event: HostEvent): StoreChange {
     switch (event.type) {
       case 'thread.replay': {
-        const thread = this.keepReplay(event.threadId, event.entries);
+        const thread = this.keepReplay(event.threadId, event.replay);
         return { runs: [], ...(thread && { thread }) };
       }
       case 'run.started': {

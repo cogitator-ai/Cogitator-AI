@@ -350,10 +350,28 @@ export interface ThreadRecord {
   /** The conversation a forked thread starts from, shown above its own turns. */
   base?: HistoryMessage[];
   /**
-   * The active branch of the thread as the studio's own memory last had it, entry by entry with
-   * their ids and metadata, replayed into a fresh memory after a restart.
+   * The thread as the studio's own memory last had it, its metadata and its active branch entry
+   * by entry with ids and metadata, replayed into a fresh memory after a restart.
    */
-  replay?: ReplayEntry[];
+  replay?: ThreadReplay;
+}
+
+/**
+ * A thread of the studio's own memory as a fresh memory gets it back: its metadata (where it
+ * was forked from among it, which file rewinds check) and its active branch.
+ */
+export interface ThreadReplay {
+  metadata: Record<string, unknown>;
+  entries: ReplayEntry[];
+}
+
+/** A thread a forked thread comes from, replayed before it so the fork's provenance resolves. */
+export interface ThreadLineage {
+  threadId: string;
+  /** The registry key of the thread's agent. */
+  agent: string;
+  history: HistoryMessage[];
+  replay?: ThreadReplay;
 }
 
 /** An entry of a thread's active branch, as a fresh memory gets it back after a restart. */
@@ -414,8 +432,8 @@ export interface RewindSummary {
     /** Durable runs of the thread dropped. */
     durable: string[];
   };
-  /** The active branch after the rewind, when the studio keeps its own memory. */
-  replay?: ReplayEntry[];
+  /** The thread after the rewind, when the studio keeps its own memory. */
+  replay?: ThreadReplay;
 }
 
 /** A thread forked from another at an entry. */
@@ -426,8 +444,8 @@ export interface ForkSummary {
   files?: FileRestoreSummary;
   /** The user and assistant messages of the forked branch, oldest first. */
   base: HistoryMessage[];
-  /** The active branch of the new thread, when the studio keeps its own memory. */
-  replay?: ReplayEntry[];
+  /** The new thread, when the studio keeps its own memory. */
+  replay?: ThreadReplay;
 }
 
 /** What a fork with its files would restore, made without a thread. */
@@ -560,7 +578,7 @@ export type HostEvent =
       error?: string;
     }
   | { type: 'swarm.event'; runId: string; event: SwarmEventRecord }
-  | { type: 'thread.replay'; threadId: string; entries: ReplayEntry[] };
+  | { type: 'thread.replay'; threadId: string; replay: ThreadReplay };
 
 /** An event of a swarm run as the swarm emitted it (`team:task-claimed` and the rest). */
 export interface SwarmEventRecord {
@@ -606,7 +624,9 @@ export type HostRequest =
       input: string;
       threadId: string;
       history: HistoryMessage[];
-      replay?: ReplayEntry[];
+      replay?: ThreadReplay;
+      /** The threads it was forked from, oldest first, to replay before it. */
+      lineage?: ThreadLineage[];
     }
   | { type: 'stop'; requestId: string; runId: string }
   | {
@@ -625,7 +645,9 @@ export type HostRequest =
       threadId: string;
       agent: string;
       history: HistoryMessage[];
-      replay?: ReplayEntry[];
+      replay?: ThreadReplay;
+      /** The threads it was forked from, oldest first, to replay before it. */
+      lineage?: ThreadLineage[];
     }
   | ({
       type: 'thread.rewind';
@@ -633,7 +655,9 @@ export type HostRequest =
       threadId: string;
       agent: string;
       history: HistoryMessage[];
-      replay?: ReplayEntry[];
+      replay?: ThreadReplay;
+      /** The threads it was forked from, oldest first, to replay before it. */
+      lineage?: ThreadLineage[];
     } & RewindRequest)
   | ({
       type: 'thread.fork';
@@ -642,7 +666,9 @@ export type HostRequest =
       agent: string;
       newThreadId: string;
       history: HistoryMessage[];
-      replay?: ReplayEntry[];
+      replay?: ThreadReplay;
+      /** The threads it was forked from, oldest first, to replay before it. */
+      lineage?: ThreadLineage[];
     } & ThreadForkRequest)
   | { type: 'workflow.run'; requestId: string; workflow: string; input: unknown }
   | { type: 'swarm.run'; requestId: string; swarm: string; input: string }

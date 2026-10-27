@@ -9,8 +9,9 @@ import type {
   ForkPreview,
   ForkSummary,
   HostStatus,
-  ReplayEntry,
   RewindSummary,
+  ThreadLineage,
+  ThreadReplay,
   RunRecord,
   StudioEvent,
   ThreadRecord,
@@ -341,9 +342,10 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
   }
 
   /** The active branch the studio keeps of a thread, for the host to replay after a restart */
-  function replayOf(threadId: string): { replay?: ReplayEntry[] } {
+  function replayOf(threadId: string): { replay?: ThreadReplay; lineage?: ThreadLineage[] } {
     const replay = store.replay(threadId);
-    return replay ? { replay } : {};
+    const lineage = store.lineage(threadId);
+    return { ...(replay && { replay }), ...(lineage.length > 0 && { lineage }) };
   }
 
   function runOr404(id: string): RunRecord {
