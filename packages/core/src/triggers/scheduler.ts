@@ -74,7 +74,12 @@ export interface SchedulerOptions extends TimerClaimListeners {
    * of channels keeps them
    */
   reschedule?: 'update' | 'append';
-  /** The next time of a repeating entry instead of the plan's, null to end it */
+  /**
+   * The next time of a repeating entry instead of the plan's, null to end it. Called once the
+   * occurrences fired, with the time they ended: the next time counts from the end of the run
+   * (a fixed delay, as `HeartbeatScheduler` has it), so a long run never makes the next one due
+   * at once
+   */
   nextFire?: (entry: TimerEntry, now: number) => number | null;
   /** How late an occurrence may still fire with `catchUp: 'none'`, ms. Default: 2 polls, at least a minute */
   graceMs?: number;
@@ -132,6 +137,8 @@ export class experimental_Scheduler {
       ...(options.accepts && { accepts: options.accepts }),
       pollInterval: options.pollInterval ?? 1000,
       batchSize: options.batchSize ?? 100,
+      runnable: (entry) =>
+        entry.enabled !== false && (entry.consecutiveErrors ?? 0) < (options.maxRetries ?? 5),
       ...(options.staggerMs !== undefined && { staggerMs: options.staggerMs }),
       afterPoll: () => this.cleanupIfDue(),
       ...(options.onError && { onError: options.onError }),
@@ -349,7 +356,10 @@ export class experimental_Scheduler {
     }
 
     await store.update(entry.id, patch);
-    const next = plan.next;
+    const repeating =
+      Boolean(entry.cron) || (entry.type === 'recurring' && Boolean(entry.interval));
+    const next =
+      this.options.nextFire && repeating ? this.options.nextFire(entry, Date.now()) : plan.next;
     const retry = status === 'error' && next === null && !meta.bestEffort;
 
     if ((this.options.reschedule ?? 'update') === 'update') {
@@ -409,9 +419,6 @@ export class experimental_Scheduler {
         ...(this.options.maxCatchUp !== undefined && { maxCatchUp: this.options.maxCatchUp }),
       }
     );
-    if (this.options.nextFire && repeating) {
-      return { ...plan, next: this.options.nextFire(entry, now) };
-    }
     return repeating ? plan : { ...plan, next: null };
   }
 }

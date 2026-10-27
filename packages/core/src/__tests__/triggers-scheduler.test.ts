@@ -45,6 +45,35 @@ describe('experimental_Scheduler', () => {
     );
   });
 
+  it('counts the next time of nextFire from the end of a long run (fixed delay)', async () => {
+    let clock = 1_000_000;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    try {
+      const nextFire = vi.fn((_entry: TimerEntry, at: number) => at + 60_000);
+      const s = scheduler(
+        store,
+        () => {
+          clock += 5 * 60_000;
+        },
+        { reschedule: 'append', nextFire }
+      );
+      const id = await store.schedule({
+        workflowId: 'heartbeat',
+        runId: 'scheduler',
+        nodeId: 'task',
+        firesAt: clock - 1,
+        type: 'recurring',
+        interval: 60_000,
+      });
+      expect(await s.processNow()).toBe(1);
+      expect(nextFire).toHaveBeenCalledWith(expect.objectContaining({ id }), 1_000_000 + 300_000);
+      const [following] = await store.getPending();
+      expect(following.firesAt).toBe(1_000_000 + 300_000 + 60_000);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it('fires a due cron entry once and moves the same entry to its next occurrence', async () => {
     const fired: ScheduledFire[] = [];
     const s = scheduler(store, (fire) => {
@@ -153,6 +182,23 @@ describe('experimental_Scheduler', () => {
     await s.start();
     await vi.waitFor(() => expect(fire).toHaveBeenCalledOnce(), { timeout: 1_000 });
     await s.stop();
+  });
+});
+
+describe('batchSize', () => {
+  it('counts only entries that will run, so paused ones never hold up the rest', async () => {
+    const store = new InMemoryTimerStore();
+    const fired: string[] = [];
+    const s = scheduler(store, ({ entry }) => void fired.push(entry.id), {
+      batchSize: 1,
+      maxRetries: 2,
+    });
+    const base = { workflowId: 'w', runId: 'r', nodeId: 'n', type: 'fixed' as const };
+    await store.schedule({ ...base, firesAt: Date.now() - 3_000, enabled: false });
+    await store.schedule({ ...base, firesAt: Date.now() - 2_000, consecutiveErrors: 2 });
+    const due = await store.schedule({ ...base, firesAt: Date.now() - 1_000 });
+    await s.processNow();
+    expect(fired).toEqual([due]);
   });
 });
 

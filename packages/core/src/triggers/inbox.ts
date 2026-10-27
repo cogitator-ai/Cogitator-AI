@@ -37,8 +37,14 @@ export function matchesInboxFilter(item: InboxItem, filter: InboxFilter | undefi
   if (filter.routineId !== undefined && item.routineId !== filter.routineId) return false;
   if (filter.userId === null && item.userId !== undefined) return false;
   if (typeof filter.userId === 'string' && item.userId !== filter.userId) return false;
-  if (filter.before !== undefined && item.createdAt >= filter.before) return false;
+  if (filter.before !== undefined && !isBefore(item, filter.before, filter.beforeId)) return false;
   return true;
+}
+
+/** Whether an item comes after the cursor `before` (and `beforeId`) in the list's order */
+function isBefore(item: InboxItem, before: number, beforeId: string | undefined): boolean {
+  if (item.createdAt < before) return true;
+  return beforeId !== undefined && item.createdAt === before && item.id < beforeId;
 }
 
 function newestFirst(a: InboxItem, b: InboxItem): number {
@@ -53,13 +59,29 @@ function select(items: Iterable<InboxItem>, filter: InboxFilter | undefined): In
     .map((item) => structuredClone(item));
 }
 
-function patched(item: InboxItem, patch: InboxItemPatch): InboxItem {
+/** The item answered now and archived, null when it was answered before */
+function answered(item: InboxItem, answeredAt: number): InboxItem | null {
+  if (item.answeredAt !== undefined) return null;
+  return { ...item, answeredAt, status: 'archived', updatedAt: answeredAt };
+}
+
+/** The item with its answer taken back, unread again */
+function unanswered(item: InboxItem): InboxItem {
+  const { answeredAt: _answeredAt, ...rest } = item;
+  return { ...rest, status: 'unread', updatedAt: Date.now() };
+}
+
+function checkPatch(patch: InboxItemPatch): void {
   if (patch.status !== undefined && !STATUSES.includes(patch.status)) {
     throw new CogitatorError({
       message: `An inbox item's status is unread, read or archived, got ${String(patch.status)}`,
       code: ErrorCode.VALIDATION_ERROR,
     });
   }
+}
+
+function patched(item: InboxItem, patch: InboxItemPatch): InboxItem {
+  checkPatch(patch);
   return {
     ...item,
     ...(patch.status !== undefined && { status: patch.status }),
@@ -91,6 +113,19 @@ export class experimental_InMemoryInboxStore implements InboxStore {
     const next = patched(item, patch);
     this.items.set(id, next);
     return structuredClone(next);
+  }
+
+  async claimAnswer(id: string, answeredAt: number): Promise<InboxItem | null> {
+    const item = this.items.get(id);
+    const next = item ? answered(item, answeredAt) : null;
+    if (!next) return null;
+    this.items.set(id, next);
+    return structuredClone(next);
+  }
+
+  async releaseAnswer(id: string): Promise<void> {
+    const item = this.items.get(id);
+    if (item?.answeredAt !== undefined) this.items.set(id, unanswered(item));
   }
 
   async delete(id: string): Promise<void> {
@@ -155,6 +190,23 @@ export class experimental_FileInboxStore implements InboxStore {
     });
   }
 
+  claimAnswer(id: string, answeredAt: number): Promise<InboxItem | null> {
+    return this.file.update((items) => {
+      const at = items.findIndex((item) => item.id === id);
+      const next = at === -1 ? null : answered(items[at], answeredAt);
+      if (!next) return null;
+      items[at] = next;
+      return structuredClone(next);
+    });
+  }
+
+  async releaseAnswer(id: string): Promise<void> {
+    await this.file.update((items) => {
+      const at = items.findIndex((item) => item.id === id);
+      if (at !== -1 && items[at].answeredAt !== undefined) items[at] = unanswered(items[at]);
+    });
+  }
+
   async delete(id: string): Promise<void> {
     await this.file.update((items) => {
       const at = items.findIndex((item) => item.id === id);
@@ -169,7 +221,47 @@ export interface RedisInboxStoreOptions {
   keyPrefix?: string;
 }
 
-/** Experimental. Inbox items in Redis: JSON under each id, a sorted set by creation time */
+/**
+ * One page of an index, newest first: KEYS[1] the index, ARGV the highest score (`+inf`, a
+ * number, or `(` and a number to leave it out), the offset, how many, the prefix of item keys.
+ * Returns how many ids the index gave and the items found under them
+ */
+const PAGE_SCRIPT = `
+local ids = redis.call('ZREVRANGEBYSCORE', KEYS[1], ARGV[1], '-inf', 'LIMIT', ARGV[2], ARGV[3])
+local items = {}
+for _, id in ipairs(ids) do
+  local value = redis.call('GET', ARGV[4] .. id)
+  if value then items[#items + 1] = value end
+end
+return { #ids, items }`;
+
+/**
+ * Replaces an item only when it is as it was read, and moves it between status indexes: KEYS[1]
+ * the item, then pairs of the index it leaves and the one it joins (of all items, of its user's),
+ * ARGV the value read, the new value, the id, the score
+ */
+const SWAP_SCRIPT = `
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+redis.call('SET', KEYS[1], ARGV[2])
+for at = 2, #KEYS, 2 do
+  if KEYS[at] ~= KEYS[at + 1] then
+    redis.call('ZREM', KEYS[at], ARGV[3])
+    redis.call('ZADD', KEYS[at + 1], ARGV[4], ARGV[3])
+  end
+end
+return 1`;
+
+/** Most rounds a change retries when the item changed under it */
+const MAX_SWAPS = 20;
+/** Fewest ids one page of an index reads */
+const MIN_PAGE = 50;
+
+/**
+ * Experimental. Inbox items in Redis: JSON under each id, and sorted sets by creation time of all
+ * items, of each user's (and of those without one), each also by status. A listing reads the
+ * narrowest index for its filter a page at a time until it has `limit` items, never the whole
+ * inbox. Changes swap an item only when it is as it was read, so two at once both land
+ */
 export class experimental_RedisInboxStore implements InboxStore {
   private readonly client: TriggerStoreRedisClient;
   private readonly prefix: string;
@@ -183,13 +275,30 @@ export class experimental_RedisInboxStore implements InboxStore {
     return `${this.prefix}:item:${id}`;
   }
 
-  private get indexKey(): string {
-    return `${this.prefix}:items`;
+  /** The index of a scope (`all`, `nouser`, `user:<id>`), of one status when given */
+  private indexKey(scope: string, status?: InboxItemStatus): string {
+    const base = scope === 'all' ? `${this.prefix}:items` : `${this.prefix}:items:${scope}`;
+    return status === undefined ? base : `${base}:status:${status}`;
+  }
+
+  private scopeOf(userId: string | undefined): string {
+    return userId === undefined ? 'nouser' : `user:${userId}`;
+  }
+
+  /** The status indexes an item is in: of all items and of its user's */
+  private statusIndexes(item: InboxItem): [string, string] {
+    return [
+      this.indexKey('all', item.status),
+      this.indexKey(this.scopeOf(item.userId), item.status),
+    ];
   }
 
   async add(item: InboxItem): Promise<void> {
     await this.client.set(this.itemKey(item.id), JSON.stringify(item));
-    await this.client.zadd(this.indexKey, item.createdAt, item.id);
+    const scope = this.scopeOf(item.userId);
+    for (const index of [this.indexKey('all'), this.indexKey(scope), ...this.statusIndexes(item)]) {
+      await this.client.zadd(index, item.createdAt, item.id);
+    }
   }
 
   async get(id: string): Promise<InboxItem | null> {
@@ -198,26 +307,98 @@ export class experimental_RedisInboxStore implements InboxStore {
   }
 
   async list(filter?: InboxFilter): Promise<InboxItem[]> {
-    const ids = await this.client.zrange(this.indexKey, 0, -1);
-    if (ids.length === 0) return [];
-    const values = await this.client.mget(...ids.map((id) => this.itemKey(id)));
-    const items = values
-      .filter((value): value is string => value !== null)
-      .map((value) => JSON.parse(value) as InboxItem);
-    return select(items, filter);
+    const limit = filter?.limit ?? 50;
+    if (limit <= 0) return [];
+    const statuses = asList(filter?.status);
+    const scope =
+      filter?.userId === undefined
+        ? 'all'
+        : filter.userId === null
+          ? 'nouser'
+          : this.scopeOf(filter.userId);
+    const index = this.indexKey(scope, statuses?.length === 1 ? statuses[0] : undefined);
+    const max =
+      filter?.before === undefined
+        ? '+inf'
+        : filter.beforeId === undefined
+          ? `(${filter.before}`
+          : String(filter.before);
+    const page = Math.max(MIN_PAGE, limit * 2);
+    const found: InboxItem[] = [];
+    for (let offset = 0; found.length < limit; offset += page) {
+      const reply = (await this.client.eval(
+        PAGE_SCRIPT,
+        1,
+        index,
+        max,
+        offset,
+        page,
+        `${this.prefix}:item:`
+      )) as [number, string[]];
+      const [read, values] = reply;
+      for (const value of values) {
+        const item = JSON.parse(value) as InboxItem;
+        if (matchesInboxFilter(item, filter)) found.push(item);
+      }
+      if (Number(read) < page) break;
+    }
+    return found.sort(newestFirst).slice(0, limit);
   }
 
-  async update(id: string, patch: InboxItemPatch): Promise<InboxItem | null> {
-    const item = await this.get(id);
-    if (!item) return null;
-    const next = patched(item, patch);
-    await this.client.set(this.itemKey(id), JSON.stringify(next));
-    return next;
+  /** Changes an item with `change` until the swap lands, null when there is no such item or `change` says so */
+  private async swap(
+    id: string,
+    change: (item: InboxItem) => InboxItem | null
+  ): Promise<InboxItem | null> {
+    for (let round = 0; round < MAX_SWAPS; round++) {
+      const raw = await this.client.get(this.itemKey(id));
+      if (!raw) return null;
+      const item = JSON.parse(raw) as InboxItem;
+      const next = change(item);
+      if (!next) return null;
+      const [allLeaves, scopeLeaves] = this.statusIndexes(item);
+      const [allJoins, scopeJoins] = this.statusIndexes(next);
+      const swapped = await this.client.eval(
+        SWAP_SCRIPT,
+        5,
+        this.itemKey(id),
+        allLeaves,
+        allJoins,
+        scopeLeaves,
+        scopeJoins,
+        raw,
+        JSON.stringify(next),
+        id,
+        item.createdAt
+      );
+      if (Number(swapped) === 1) return next;
+    }
+    throw new CogitatorError({
+      message: `Inbox item ${id} kept changing, the change did not land`,
+      code: ErrorCode.INTERNAL_ERROR,
+    });
+  }
+
+  update(id: string, patch: InboxItemPatch): Promise<InboxItem | null> {
+    return this.swap(id, (item) => patched(item, patch));
+  }
+
+  claimAnswer(id: string, answeredAt: number): Promise<InboxItem | null> {
+    return this.swap(id, (item) => answered(item, answeredAt));
+  }
+
+  async releaseAnswer(id: string): Promise<void> {
+    await this.swap(id, (item) => (item.answeredAt === undefined ? null : unanswered(item)));
   }
 
   async delete(id: string): Promise<void> {
+    const item = await this.get(id);
     await this.client.del(this.itemKey(id));
-    await this.client.zrem(this.indexKey, id);
+    await this.client.zrem(this.indexKey('all'), id);
+    if (item) {
+      await this.client.zrem(this.indexKey(this.scopeOf(item.userId)), id);
+      for (const index of this.statusIndexes(item)) await this.client.zrem(index, id);
+    }
   }
 }
 
@@ -306,26 +487,72 @@ export class experimental_PostgresInboxStore implements InboxStore {
     if (filter?.routineId !== undefined) add((at) => `routine_id = ${at}`, filter.routineId);
     if (filter?.userId === null) conditions.push('user_id IS NULL');
     else if (filter?.userId !== undefined) add((at) => `user_id = ${at}`, filter.userId);
-    if (filter?.before !== undefined) add((at) => `created_at < ${at}`, filter.before);
+    if (filter?.before !== undefined) {
+      if (filter.beforeId === undefined) {
+        add((at) => `created_at < ${at}`, filter.before);
+      } else {
+        values.push(filter.before, filter.beforeId);
+        const time = `$${values.length - 1}`;
+        const id = `$${values.length}`;
+        conditions.push(
+          `(created_at < ${time} OR (created_at = ${time} AND id COLLATE "C" < ${id}))`
+        );
+      }
+    }
     values.push(filter?.limit ?? 50);
     const { rows } = await this.client.query(
       `SELECT data FROM ${this.table} ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}
-       ORDER BY created_at DESC, id DESC LIMIT $${values.length}`,
+       ORDER BY created_at DESC, id COLLATE "C" DESC LIMIT $${values.length}`,
       values
     );
     return rows.map((row) => fromJson<InboxItem>(row.data));
   }
 
+  /** Changes the status and metadata in one statement, so an answer claimed meanwhile is kept */
   async update(id: string, patch: InboxItemPatch): Promise<InboxItem | null> {
-    const item = await this.get(id);
-    if (!item) return null;
-    const next = patched(item, patch);
-    await this.client.query(`UPDATE ${this.table} SET status = $2, data = $3 WHERE id = $1`, [
-      id,
-      next.status,
-      JSON.stringify(next),
-    ]);
-    return next;
+    await this.ensure();
+    checkPatch(patch);
+    const { rows } = await this.client.query(
+      `UPDATE ${this.table} SET status = COALESCE($2::text, status),
+         data = data || jsonb_strip_nulls(jsonb_build_object('status', $2::text,
+             'updatedAt', $3::double precision))
+           || CASE WHEN $4::jsonb IS NULL THEN '{}'::jsonb
+              ELSE jsonb_build_object('metadata', COALESCE(data->'metadata', '{}'::jsonb) || $4::jsonb)
+              END
+       WHERE id = $1
+       RETURNING data`,
+      [
+        id,
+        patch.status ?? null,
+        Date.now(),
+        patch.metadata === undefined ? null : JSON.stringify(patch.metadata),
+      ]
+    );
+    return rows[0] ? fromJson<InboxItem>(rows[0].data) : null;
+  }
+
+  async claimAnswer(id: string, answeredAt: number): Promise<InboxItem | null> {
+    await this.ensure();
+    const { rows } = await this.client.query(
+      `UPDATE ${this.table} SET status = 'archived',
+         data = data || jsonb_build_object('answeredAt', $2::double precision,
+           'updatedAt', $2::double precision, 'status', 'archived')
+       WHERE id = $1 AND NOT (data ? 'answeredAt')
+       RETURNING data`,
+      [id, answeredAt]
+    );
+    return rows[0] ? fromJson<InboxItem>(rows[0].data) : null;
+  }
+
+  async releaseAnswer(id: string): Promise<void> {
+    await this.ensure();
+    await this.client.query(
+      `UPDATE ${this.table} SET status = 'unread',
+         data = (data - 'answeredAt') || jsonb_build_object('status', 'unread',
+           'updatedAt', $2::double precision)
+       WHERE id = $1 AND data ? 'answeredAt'`,
+      [id, Date.now()]
+    );
   }
 
   async delete(id: string): Promise<void> {
@@ -432,6 +659,20 @@ export class experimental_Inbox implements InboxWriter {
     const item = await this.store.update(id, patch);
     if (item) this.emit({ type: 'updated', item });
     return item;
+  }
+
+  /** Claims the item as answered now, see `InboxStore.claimAnswer`: null when it was answered before */
+  async claimAnswer(id: string): Promise<InboxItem | null> {
+    const item = await this.store.claimAnswer(id, Date.now());
+    if (item) this.emit({ type: 'updated', item });
+    return item;
+  }
+
+  /** Takes back an answer whose run could not be given it */
+  async releaseAnswer(id: string): Promise<void> {
+    await this.store.releaseAnswer(id);
+    const item = await this.store.get(id);
+    if (item) this.emit({ type: 'updated', item });
   }
 
   markRead(id: string): Promise<InboxItem | null> {

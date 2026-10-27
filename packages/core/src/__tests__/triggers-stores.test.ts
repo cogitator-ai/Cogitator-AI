@@ -56,11 +56,57 @@ function fakeRedis(): TriggerStoreRedisClient {
     zrange: async (key, start, stop) => slice(key, start, stop),
     zrem: async (key, ...members) =>
       members.filter((member) => sets.get(key)?.delete(member)).length,
-    eval: async (script, _keys, key, ttl) => {
-      if (!script.includes("'NX'")) throw new Error(`unexpected script ${script}`);
-      if (live(String(key))) return 0;
-      strings.set(String(key), { value: '1', until: Date.now() + Number(ttl) });
-      return 1;
+    eval: async (script, count, ...args) => {
+      const keys = args.slice(0, count).map(String);
+      const argv = args.slice(count).map(String);
+      if (script.includes("'NX'")) {
+        if (live(keys[0])) return 0;
+        strings.set(keys[0], { value: '1', until: Date.now() + Number(argv[0]) });
+        return 1;
+      }
+      if (script.includes('cjson.decode(ARGV[3])')) {
+        const raw = live(keys[0])?.value;
+        const state = raw
+          ? (JSON.parse(raw) as Record<string, unknown>)
+          : { id: argv[0], routineId: argv[1], fireCount: 0 };
+        Object.assign(state, JSON.parse(argv[2]) as Record<string, unknown>);
+        state.id = argv[0];
+        state.routineId = argv[1];
+        state.fireCount = Number(state.fireCount ?? 0) + Number(argv[3]);
+        const encoded = JSON.stringify(state);
+        strings.set(keys[0], { value: encoded });
+        const set = sets.get(keys[1]) ?? new Map<string, number>();
+        set.set(argv[0], Number(argv[4]));
+        sets.set(keys[1], set);
+        return encoded;
+      }
+      if (script.includes('ZREVRANGEBYSCORE')) {
+        const [max, offset, page, itemPrefix] = argv;
+        const exclusive = max.startsWith('(');
+        const bound = max === '+inf' ? Infinity : Number(exclusive ? max.slice(1) : max);
+        const ids = sorted(keys[0])
+          .reverse()
+          .filter(([, score]) => (exclusive ? score < bound : score <= bound))
+          .slice(Number(offset), Number(offset) + Number(page))
+          .map(([member]) => member);
+        const items = ids
+          .map((id) => live(`${itemPrefix}${id}`)?.value)
+          .filter((value): value is string => value !== undefined);
+        return [ids.length, items];
+      }
+      if (script.includes('~= ARGV[1]')) {
+        if (live(keys[0])?.value !== argv[0]) return 0;
+        strings.set(keys[0], { value: argv[1] });
+        for (let at = 1; at + 1 < keys.length; at += 2) {
+          if (keys[at] === keys[at + 1]) continue;
+          sets.get(keys[at])?.delete(argv[2]);
+          const set = sets.get(keys[at + 1]) ?? new Map<string, number>();
+          set.set(argv[2], Number(argv[3]));
+          sets.set(keys[at + 1], set);
+        }
+        return 1;
+      }
+      throw new Error(`unexpected script ${script}`);
     },
   };
 }
@@ -140,6 +186,53 @@ describe.each<[string, () => RoutineStore]>([
     expect(await store.claimKey('k', 5)).toBe(true);
   });
 
+  it('patches trigger state so a firing and a token rotation at once keep both', async () => {
+    await store.saveTriggerState({ id: 'r1.api', routineId: 'r1', fireCount: 0, tokenHash: 'old' });
+    await Promise.all([
+      ...Array.from({ length: 5 }, () =>
+        store.patchTriggerState('r1.api', 'r1', { fireCountDelta: 1, lastFiredAt: 7 })
+      ),
+      store.patchTriggerState('r1.api', 'r1', { tokenHash: 'new', tokenHint: 'abcd' }),
+      store.patchTriggerState('r1.api', 'r1', { enabled: false }),
+    ]);
+    expect(await store.getTriggerState('r1.api')).toEqual({
+      id: 'r1.api',
+      routineId: 'r1',
+      fireCount: 5,
+      lastFiredAt: 7,
+      tokenHash: 'new',
+      tokenHint: 'abcd',
+      enabled: false,
+    });
+    expect(await store.patchTriggerState('r2.cron', 'r2', { scheduleId: 's1' })).toEqual({
+      id: 'r2.cron',
+      routineId: 'r2',
+      fireCount: 0,
+      scheduleId: 's1',
+    });
+    expect((await store.listTriggerStates('r2')).map((state) => state.id)).toEqual(['r2.cron']);
+  });
+
+  it('keeps runs going on apart from the history', async () => {
+    const active = {
+      runId: 'trg_r1.cron.1',
+      kind: 'routine' as const,
+      eventId: 'evt_1',
+      triggerId: 'r1.cron',
+      routineId: 'r1',
+      source: 'cron' as const,
+      at: 1,
+      threadId: 't1',
+    };
+    await store.saveActiveRun(active);
+    for (let at = 0; at < 205; at++) await store.recordRun(run('r1', at + 10));
+    expect(await store.getActiveRun('trg_r1.cron.1')).toEqual(active);
+    expect((await store.listActiveRuns()).map((kept) => kept.runId)).toEqual(['trg_r1.cron.1']);
+    await store.deleteActiveRun('trg_r1.cron.1');
+    expect(await store.getActiveRun('trg_r1.cron.1')).toBeNull();
+    expect(await store.listActiveRuns()).toEqual([]);
+  });
+
   it('keeps the history newest first, replaces by id and keeps the latest 200 per routine', async () => {
     for (let at = 0; at < 205; at++) await store.recordRun(run('a', at));
     await store.recordRun(run('b', 1_000));
@@ -162,6 +255,60 @@ describe('experimental_FileRoutineStore', () => {
 });
 
 describe('experimental_PostgresRoutineStore', () => {
+  it('sweeps expired claims in bounded batches, at most once a minute', async () => {
+    vi.useFakeTimers({ now: 1_000_000, toFake: ['Date'] });
+    try {
+      const statements: string[] = [];
+      const client: TriggerStorePgClient = {
+        query: async (text) => {
+          statements.push(text.replace(/\s+/g, ' ').trim());
+          return { rows: text.includes('RETURNING key') ? [{ key: 'k' }] : [] };
+        },
+      };
+      const store = new experimental_PostgresRoutineStore({ client });
+      const sweeps = () =>
+        statements.filter((sql) => sql.startsWith('DELETE FROM cogitator_routines_claims'));
+      await store.claimKey('a', 1000);
+      await store.claimKey('b', 1000);
+      expect(sweeps()).toEqual([
+        'DELETE FROM cogitator_routines_claims WHERE key IN ( SELECT key FROM cogitator_routines_claims WHERE expires_at <= now() LIMIT 500)',
+      ]);
+      vi.setSystemTime(1_000_000 + 61_000);
+      await store.claimKey('c', 1000);
+      expect(sweeps()).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('patches trigger state in one statement, adding to the fire count', async () => {
+    const calls: { sql: string; values: unknown[] }[] = [];
+    const client: TriggerStorePgClient = {
+      query: async (text, values = []) => {
+        calls.push({ sql: text.replace(/\s+/g, ' ').trim(), values });
+        return {
+          rows: text.includes('RETURNING data')
+            ? [{ data: { id: 'r.api', routineId: 'r', fireCount: 3, tokenHash: 'h' } }]
+            : [],
+        };
+      },
+    };
+    const store = new experimental_PostgresRoutineStore({ client });
+    const state = await store.patchTriggerState('r.api', 'r', {
+      fireCountDelta: 1,
+      lastFiredAt: 5,
+    });
+    expect(state.fireCount).toBe(3);
+    const patch = calls.find((call) => call.sql.includes('RETURNING data'))!;
+    expect(patch.sql).toContain(
+      'ON CONFLICT (id) DO UPDATE SET data = cogitator_routines_triggers.data ||'
+    );
+    expect(patch.sql).toContain(
+      "COALESCE((cogitator_routines_triggers.data->>'fireCount')::bigint, 0) + $4::bigint"
+    );
+    expect(patch.values).toEqual(['r.api', 'r', JSON.stringify({ lastFiredAt: 5 }), 1]);
+  });
+
   it('claims with one insert that takes an expired row, and checks its table prefix', async () => {
     const statements: string[] = [];
     const client: TriggerStorePgClient = {
@@ -209,6 +356,65 @@ describe.each<[string, () => InboxStore]>([
     expect(await store.update('zzz', { status: 'read' })).toBeNull();
     await store.delete('a');
     expect(await store.get('a')).toBeNull();
+  });
+
+  it('pages by creation time and id, so items of the same millisecond are not skipped', async () => {
+    const store = create();
+    for (const id of ['x1', 'x2', 'x3']) await store.add(item(id, 5, { userId: 'u' }));
+    await store.add(item('older', 4, { userId: 'u' }));
+    const seen: string[] = [];
+    let cursor: { before: number; beforeId: string } | undefined;
+    for (let page = 0; page < 6; page++) {
+      const [next] = await store.list({ userId: 'u', limit: 1, ...cursor });
+      if (!next) break;
+      seen.push(next.id);
+      cursor = { before: next.createdAt, beforeId: next.id };
+    }
+    expect(seen).toEqual(['x3', 'x2', 'x1', 'older']);
+  });
+
+  it('claims an answer once, and a status change never makes it unanswered', async () => {
+    const store = create();
+    await store.add(item('q', 1, { kind: 'approval', status: 'archived' }));
+    const claims = await Promise.all([store.claimAnswer('q', 10), store.claimAnswer('q', 11)]);
+    expect(claims.filter((claimed) => claimed !== null)).toHaveLength(1);
+    expect(await store.update('q', { status: 'unread' })).toMatchObject({ status: 'unread' });
+    expect((await store.get('q'))?.answeredAt).toBeDefined();
+    expect(await store.claimAnswer('q', 12)).toBeNull();
+    await store.releaseAnswer('q');
+    expect((await store.get('q'))?.answeredAt).toBeUndefined();
+    expect(await store.claimAnswer('q', 13)).toMatchObject({ answeredAt: 13, status: 'archived' });
+    expect(await store.claimAnswer('missing', 1)).toBeNull();
+  });
+});
+
+describe('experimental_RedisInboxStore', () => {
+  it('reads a page of the narrowest index, not the whole inbox', async () => {
+    const client = fakeRedis();
+    const evals: string[] = [];
+    const store = new experimental_RedisInboxStore({
+      client: {
+        ...client,
+        eval: (script, count, ...args) => {
+          if (script.includes('ZREVRANGEBYSCORE')) evals.push(String(args[0]));
+          return client.eval(script, count, ...args);
+        },
+        mget: () => Promise.reject(new Error('the whole inbox was read')),
+      },
+    });
+    for (let at = 1; at <= 300; at++) {
+      await store.add(item(`a${at}`, at, { userId: at % 2 === 0 ? 'alice' : 'bob' }));
+    }
+    await store.update('a10', { status: 'read' });
+    const page = await store.list({ userId: 'alice', status: 'unread', limit: 3 });
+    expect(page.map((entry) => entry.id)).toEqual(['a300', 'a298', 'a296']);
+    expect(evals).toEqual(['cogitator:inbox:items:user:alice:status:unread']);
+    expect(
+      (await store.list({ userId: 'alice', status: 'read' })).map((entry) => entry.id)
+    ).toEqual(['a10']);
+    expect(
+      (await store.list({ userId: 'alice', status: 'unread', limit: 200 })).map((entry) => entry.id)
+    ).not.toContain('a10');
   });
 });
 

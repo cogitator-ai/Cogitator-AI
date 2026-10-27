@@ -105,8 +105,14 @@ export interface TimerPollerOptions extends TimerClaimListeners {
   accepts?: (entry: TimerEntry) => boolean;
   /** How often the store is polled, ms (default 1000) */
   pollInterval?: number;
-  /** Most timers run per poll, the rest are given back (default: all) */
+  /**
+   * Most timers run per poll, the rest are given back (default: all). Only timers `runnable`
+   * takes count: those it does not (paused, out of retries) are handed to `process` past the
+   * limit too, so they never hold up the rest
+   */
   batchSize?: number;
+  /** Whether a timer will run when processed, rather than be passed over. Default: all */
+  runnable?: (entry: TimerEntry) => boolean;
   /** The first poll waits a random time up to this, ms, so workers started together spread out */
   staggerMs?: number;
   /** Runs after each poll, such as a cleanup */
@@ -182,16 +188,23 @@ export class experimental_TimerPoller {
   }
 
   private async pollOnce(manual: boolean): Promise<number> {
-    const { store, accepts, batchSize, onError } = this.options;
+    const { store, accepts, batchSize, runnable, onError } = this.options;
     let ran = 0;
     try {
       const overdue = await store.getOverdue();
       const limit = batchSize ?? overdue.length;
-      for (const [index, entry] of overdue.entries()) {
-        if (index >= limit || (!manual && !this.running) || (accepts && !accepts(entry))) {
+      let taken = 0;
+      for (const entry of overdue) {
+        const counts = !runnable || runnable(entry);
+        if (
+          (counts && taken >= limit) ||
+          (!manual && !this.running) ||
+          (accepts && !accepts(entry))
+        ) {
           await this.claims.release(entry);
           continue;
         }
+        if (counts) taken++;
         try {
           await this.options.process(entry, this.claims);
           ran++;

@@ -4,10 +4,12 @@
  */
 
 import type {
+  ActiveRoutineRun,
   RoutineDefinition,
   RoutineRunRecord,
   RoutineStore,
   TriggerState,
+  TriggerStatePatch,
 } from '@cogitator-ai/types';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import { SharedJsonFile } from './json-file';
@@ -21,6 +23,24 @@ function checkStorable(routine: RoutineDefinition): void {
 
 function clone<T>(value: T): T {
   return structuredClone(value);
+}
+
+/** A trigger's state with `patch` applied: its fields replace, `fireCountDelta` adds */
+export function patchedTriggerState(
+  current: TriggerState | null | undefined,
+  id: string,
+  routineId: string,
+  patch: TriggerStatePatch
+): TriggerState {
+  const { fireCountDelta, ...fields } = patch;
+  const base: TriggerState = current ?? { id, routineId, fireCount: 0 };
+  return {
+    ...base,
+    ...fields,
+    id,
+    routineId,
+    fireCount: (base.fireCount ?? 0) + (fireCountDelta ?? 0),
+  };
 }
 
 function newestFirst(a: RoutineRunRecord, b: RoutineRunRecord): number {
@@ -57,6 +77,7 @@ export class experimental_InMemoryRoutineStore implements RoutineStore {
   private readonly routines = new Map<string, RoutineDefinition>();
   private readonly states = new Map<string, TriggerState>();
   private readonly keys = new Map<string, number>();
+  private readonly active = new Map<string, ActiveRoutineRun>();
   private runs: RoutineRunRecord[] = [];
 
   async listRoutines(): Promise<RoutineDefinition[]> {
@@ -92,6 +113,16 @@ export class experimental_InMemoryRoutineStore implements RoutineStore {
     this.states.set(state.id, clone(state));
   }
 
+  async patchTriggerState(
+    id: string,
+    routineId: string,
+    patch: TriggerStatePatch
+  ): Promise<TriggerState> {
+    const next = patchedTriggerState(this.states.get(id), id, routineId, patch);
+    this.states.set(id, next);
+    return clone(next);
+  }
+
   async deleteTriggerState(id: string): Promise<void> {
     this.states.delete(id);
   }
@@ -118,6 +149,23 @@ export class experimental_InMemoryRoutineStore implements RoutineStore {
   async listRuns(filter?: { routineId?: string; limit?: number }): Promise<RoutineRunRecord[]> {
     return selectRuns(this.runs, filter);
   }
+
+  async saveActiveRun(run: ActiveRoutineRun): Promise<void> {
+    this.active.set(run.runId, clone(run));
+  }
+
+  async getActiveRun(runId: string): Promise<ActiveRoutineRun | null> {
+    const run = this.active.get(runId);
+    return run ? clone(run) : null;
+  }
+
+  async listActiveRuns(): Promise<ActiveRoutineRun[]> {
+    return [...this.active.values()].map(clone);
+  }
+
+  async deleteActiveRun(runId: string): Promise<void> {
+    this.active.delete(runId);
+  }
 }
 
 interface RoutineFile {
@@ -126,10 +174,11 @@ interface RoutineFile {
   triggers: Record<string, TriggerState>;
   keys: Record<string, number>;
   runs: RoutineRunRecord[];
+  active: Record<string, ActiveRoutineRun>;
 }
 
 function emptyFile(): RoutineFile {
-  return { version: 1, routines: {}, triggers: {}, keys: {}, runs: [] };
+  return { version: 1, routines: {}, triggers: {}, keys: {}, runs: [], active: {} };
 }
 
 function parseFile(value: unknown): RoutineFile {
@@ -147,6 +196,7 @@ function parseFile(value: unknown): RoutineFile {
     triggers: file.triggers ?? {},
     keys: file.keys ?? {},
     runs: file.runs ?? [],
+    active: file.active ?? {},
   };
 }
 
@@ -205,6 +255,18 @@ export class experimental_FileRoutineStore implements RoutineStore {
     });
   }
 
+  patchTriggerState(
+    id: string,
+    routineId: string,
+    patch: TriggerStatePatch
+  ): Promise<TriggerState> {
+    return this.file.update((data) => {
+      const next = patchedTriggerState(data.triggers[id], id, routineId, patch);
+      data.triggers[id] = next;
+      return clone(next);
+    });
+  }
+
   async deleteTriggerState(id: string): Promise<void> {
     await this.file.update((data) => {
       delete data.triggers[id];
@@ -238,6 +300,27 @@ export class experimental_FileRoutineStore implements RoutineStore {
   async listRuns(filter?: { routineId?: string; limit?: number }): Promise<RoutineRunRecord[]> {
     return selectRuns((await this.file.read()).runs, filter);
   }
+
+  async saveActiveRun(run: ActiveRoutineRun): Promise<void> {
+    await this.file.update((data) => {
+      data.active[run.runId] = clone(run);
+    });
+  }
+
+  async getActiveRun(runId: string): Promise<ActiveRoutineRun | null> {
+    const run = (await this.file.read()).active[runId];
+    return run ? clone(run) : null;
+  }
+
+  async listActiveRuns(): Promise<ActiveRoutineRun[]> {
+    return Object.values((await this.file.read()).active).map(clone);
+  }
+
+  async deleteActiveRun(runId: string): Promise<void> {
+    await this.file.update((data) => {
+      delete data.active[runId];
+    });
+  }
 }
 
 /** The Redis commands the routine and inbox stores use: `@cogitator-ai/redis` clients and ioredis both have them */
@@ -253,6 +336,23 @@ export interface TriggerStoreRedisClient {
 }
 
 const CLAIM_SCRIPT = `return redis.call('SET', KEYS[1], '1', 'PX', ARGV[1], 'NX') and 1 or 0`;
+
+/**
+ * Applies a patch to a trigger's state in one step: KEYS[1] the state, KEYS[2] the index of
+ * states, ARGV the id, the routine id, the fields as JSON, what to add to `fireCount`, the score
+ */
+export const PATCH_TRIGGER_STATE_SCRIPT = `
+local raw = redis.call('GET', KEYS[1])
+local state
+if raw then state = cjson.decode(raw) else state = { id = ARGV[1], routineId = ARGV[2], fireCount = 0 } end
+for key, value in pairs(cjson.decode(ARGV[3])) do state[key] = value end
+state.id = ARGV[1]
+state.routineId = ARGV[2]
+state.fireCount = (tonumber(state.fireCount) or 0) + tonumber(ARGV[4])
+local encoded = cjson.encode(state)
+redis.call('SET', KEYS[1], encoded)
+redis.call('ZADD', KEYS[2], ARGV[5], ARGV[1])
+return encoded`;
 
 export interface RedisRoutineStoreOptions {
   client: TriggerStoreRedisClient;
@@ -277,7 +377,7 @@ export class experimental_RedisRoutineStore implements RoutineStore {
     return [this.prefix, ...parts].join(':');
   }
 
-  private async readMany<T>(index: string, kind: 'routine' | 'trigger'): Promise<T[]> {
+  private async readMany<T>(index: string, kind: 'routine' | 'trigger' | 'active'): Promise<T[]> {
     const ids = await this.client.zrange(index, 0, -1);
     if (ids.length === 0) return [];
     const values = await this.client.mget(...ids.map((id) => this.key(kind, id)));
@@ -319,6 +419,26 @@ export class experimental_RedisRoutineStore implements RoutineStore {
   async saveTriggerState(state: TriggerState): Promise<void> {
     await this.client.set(this.key('trigger', state.id), JSON.stringify(state));
     await this.client.zadd(this.key('triggers'), Date.now(), state.id);
+  }
+
+  async patchTriggerState(
+    id: string,
+    routineId: string,
+    patch: TriggerStatePatch
+  ): Promise<TriggerState> {
+    const { fireCountDelta, ...fields } = patch;
+    const encoded = await this.client.eval(
+      PATCH_TRIGGER_STATE_SCRIPT,
+      2,
+      this.key('trigger', id),
+      this.key('triggers'),
+      id,
+      routineId,
+      JSON.stringify(fields),
+      fireCountDelta ?? 0,
+      Date.now()
+    );
+    return JSON.parse(String(encoded)) as TriggerState;
   }
 
   async deleteTriggerState(id: string): Promise<void> {
@@ -366,7 +486,29 @@ export class experimental_RedisRoutineStore implements RoutineStore {
       .map((value) => JSON.parse(value) as RoutineRunRecord)
       .sort(newestFirst);
   }
+
+  async saveActiveRun(run: ActiveRoutineRun): Promise<void> {
+    await this.client.set(this.key('active', run.runId), JSON.stringify(run));
+    await this.client.zadd(this.key('actives'), run.at, run.runId);
+  }
+
+  async getActiveRun(runId: string): Promise<ActiveRoutineRun | null> {
+    const raw = await this.client.get(this.key('active', runId));
+    return raw ? (JSON.parse(raw) as ActiveRoutineRun) : null;
+  }
+
+  listActiveRuns(): Promise<ActiveRoutineRun[]> {
+    return this.readMany<ActiveRoutineRun>(this.key('actives'), 'active');
+  }
+
+  async deleteActiveRun(runId: string): Promise<void> {
+    await this.client.del(this.key('active', runId));
+    await this.client.zrem(this.key('actives'), runId);
+  }
 }
+
+const CLAIM_SWEEP_INTERVAL_MS = 60_000;
+const CLAIM_SWEEP_BATCH = 500;
 
 export interface PostgresRoutineStoreOptions {
   client: TriggerStorePgClient;
@@ -382,6 +524,7 @@ export class experimental_PostgresRoutineStore implements RoutineStore {
   private readonly client: TriggerStorePgClient;
   private readonly prefix: string;
   private ready?: Promise<void>;
+  private lastSweepAt = 0;
 
   constructor(options: PostgresRoutineStoreOptions) {
     this.client = options.client;
@@ -424,6 +567,15 @@ export class experimental_PostgresRoutineStore implements RoutineStore {
     await createIfMissing(
       this.client,
       `CREATE INDEX IF NOT EXISTS ${index}_runs_idx ON ${this.table('runs')} (routine_id, at)`
+    );
+    await createIfMissing(
+      this.client,
+      `CREATE INDEX IF NOT EXISTS ${index}_claims_expiry_idx ON ${this.table('claims')} (expires_at)`
+    );
+    await createIfMissing(
+      this.client,
+      `CREATE TABLE IF NOT EXISTS ${this.table('active')} (
+         run_id TEXT PRIMARY KEY, data JSONB NOT NULL)`
     );
   }
 
@@ -487,13 +639,55 @@ export class experimental_PostgresRoutineStore implements RoutineStore {
     );
   }
 
+  async patchTriggerState(
+    id: string,
+    routineId: string,
+    patch: TriggerStatePatch
+  ): Promise<TriggerState> {
+    await this.ensure();
+    const { fireCountDelta, ...fields } = patch;
+    const table = this.table('triggers');
+    const delta = fireCountDelta ?? 0;
+    const { rows } = await this.client.query(
+      `INSERT INTO ${table} (id, routine_id, data)
+       VALUES ($1, $2, jsonb_build_object('id', $1::text, 'routineId', $2::text, 'fireCount', 0)
+         || $3::jsonb || jsonb_build_object('fireCount', $4::bigint))
+       ON CONFLICT (id) DO UPDATE SET data = ${table}.data || $3::jsonb
+         || jsonb_build_object('id', $1::text, 'routineId', $2::text,
+              'fireCount', COALESCE((${table}.data->>'fireCount')::bigint, 0) + $4::bigint)
+       RETURNING data`,
+      [id, routineId, JSON.stringify(fields), delta]
+    );
+    return fromJson<TriggerState>(rows[0]?.data);
+  }
+
   async deleteTriggerState(id: string): Promise<void> {
     await this.ensure();
     await this.client.query(`DELETE FROM ${this.table('triggers')} WHERE id = $1`, [id]);
   }
 
+  /**
+   * Removes a bounded batch of expired claims, at most once a minute: every firing leaves a
+   * `run:` claim and every delivery a `dedup:` one, keys that are never claimed again
+   */
+  private async sweepClaims(): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastSweepAt < CLAIM_SWEEP_INTERVAL_MS) return;
+    this.lastSweepAt = now;
+    const table = this.table('claims');
+    await this.client.query(
+      `DELETE FROM ${table} WHERE key IN (
+         SELECT key FROM ${table} WHERE expires_at <= now() LIMIT ${CLAIM_SWEEP_BATCH})`
+    );
+  }
+
   async claimKey(key: string, ttlMs: number): Promise<boolean> {
     await this.ensure();
+    try {
+      await this.sweepClaims();
+    } catch {
+      this.lastSweepAt = 0;
+    }
     const table = this.table('claims');
     const { rows } = await this.client.query(
       `INSERT INTO ${table} (key, expires_at)
@@ -540,5 +734,36 @@ export class experimental_PostgresRoutineStore implements RoutineStore {
             [filter.routineId, limit]
           );
     return rows.map((row) => fromJson<RoutineRunRecord>(row.data));
+  }
+
+  async saveActiveRun(run: ActiveRoutineRun): Promise<void> {
+    await this.ensure();
+    await this.client.query(
+      `INSERT INTO ${this.table('active')} (run_id, data) VALUES ($1, $2)
+       ON CONFLICT (run_id) DO UPDATE SET data = EXCLUDED.data`,
+      [run.runId, JSON.stringify(run)]
+    );
+  }
+
+  async getActiveRun(runId: string): Promise<ActiveRoutineRun | null> {
+    await this.ensure();
+    const { rows } = await this.client.query(
+      `SELECT data FROM ${this.table('active')} WHERE run_id = $1`,
+      [runId]
+    );
+    return rows[0] ? fromJson<ActiveRoutineRun>(rows[0].data) : null;
+  }
+
+  async listActiveRuns(): Promise<ActiveRoutineRun[]> {
+    await this.ensure();
+    const { rows } = await this.client.query(
+      `SELECT data FROM ${this.table('active')} ORDER BY run_id`
+    );
+    return rows.map((row) => fromJson<ActiveRoutineRun>(row.data));
+  }
+
+  async deleteActiveRun(runId: string): Promise<void> {
+    await this.ensure();
+    await this.client.query(`DELETE FROM ${this.table('active')} WHERE run_id = $1`, [runId]);
   }
 }

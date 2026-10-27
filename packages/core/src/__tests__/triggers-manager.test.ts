@@ -2,15 +2,11 @@ import { createHmac } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MockLLMBackend } from '@cogitator-ai/test-utils';
 import type {
-  ChatRequest,
-  CogitatorConfig,
   RoutineDefinition,
   RoutineWorkflow,
   RoutineWorkflowOutcome,
   RunMiddleware,
   RunNotification,
-  TriggerHttpRequest,
-  TriggersConfig,
 } from '@cogitator-ai/types';
 import { Cogitator } from '../cogitator';
 import { Agent } from '../agent';
@@ -20,57 +16,21 @@ import { experimental_definePlugin } from '../plugins/define';
 import { experimental_InMemoryRoutineStore } from '../triggers/routine-stores';
 import { InMemoryTimerStore } from '../triggers/timer-stores';
 import { experimental_InMemoryInboxStore } from '../triggers/inbox';
-import type { experimental_TriggerManager } from '../triggers/manager';
+import {
+  closeRuntimes,
+  keepRuntime,
+  lastUserText,
+  request,
+  routine,
+  runtime,
+} from './helpers/triggers';
 
-const runtimes: Cogitator[] = [];
-
-afterEach(async () => {
-  for (const cog of runtimes.splice(0)) await cog.close();
-});
-
-function worker() {
-  return new Agent({ name: 'worker', model: 'mock/m', instructions: 'You work.' });
-}
-
-function runtime(
-  triggers: Omit<TriggersConfig, 'agents'> & { agents?: TriggersConfig['agents'] },
-  backend = new MockLLMBackend().setResponses([{ content: 'done' }]),
-  config: Partial<CogitatorConfig> = {}
-): { cog: Cogitator; manager: experimental_TriggerManager; backend: MockLLMBackend } {
-  const cog = new Cogitator({
-    llm: { backends: { mock: backend }, retry: false },
-    memory: { adapter: 'memory' },
-    ...config,
-    experimental_triggers: { agents: { worker: worker() }, pollInterval: 20, ...triggers },
-  });
-  runtimes.push(cog);
-  return { cog, manager: cog.experimental_triggers!, backend };
-}
-
-function routine(extra: Partial<RoutineDefinition> = {}): RoutineDefinition {
-  return {
-    id: 'digest',
-    prompt: 'Summarize what came in.',
-    target: { agent: 'worker' },
-    ...extra,
-  };
-}
-
-function request(body: unknown, headers: Record<string, string> = {}): TriggerHttpRequest {
-  const rawBody = typeof body === 'string' ? body : JSON.stringify(body);
-  return { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, rawBody };
-}
-
-function lastUserText(call: ChatRequest | undefined): string {
-  const users = (call?.messages ?? []).filter((message) => message.role === 'user');
-  const last = users[users.length - 1];
-  return typeof last?.content === 'string' ? last.content : JSON.stringify(last?.content);
-}
+afterEach(closeRuntimes);
 
 describe('experimental_TriggerManager', () => {
   it('is undefined without experimental_triggers', () => {
     const cog = new Cogitator({});
-    runtimes.push(cog);
+    keepRuntime(cog);
     expect(cog.experimental_triggers).toBeUndefined();
   });
 
@@ -86,7 +46,7 @@ describe('experimental_TriggerManager', () => {
         routines: [routine({ triggers: [{ kind: 'cron', cron: 'nope' }] })],
       },
     });
-    runtimes.push(cog);
+    keepRuntime(cog);
     return expect(cog.experimental_triggers!.start()).rejects.toThrow(/digest.cron/);
   });
 
@@ -212,7 +172,7 @@ describe('experimental_TriggerManager', () => {
     const occurrences = runs.map((run) => run.scheduledFor);
     expect(new Set(occurrences).size).toBe(occurrences.length);
     expect(a.backend.getCallCount() + b.backend.getCallCount()).toBe(runs.length);
-    for (const run of runs) expect(run.runId).toBe(`trg_digest.cron_${run.scheduledFor}`);
+    for (const run of runs) expect(run.runId).toBe(`trg_digest.cron.${run.scheduledFor}`);
   });
 
   it('skips, queues, runs side by side or replaces as overlap says', async () => {
@@ -498,7 +458,7 @@ describe('experimental_TriggerManager', () => {
         routines: [routine({ triggers: [{ kind: 'api', token: 't' }] })],
       },
     });
-    runtimes.push(cog);
+    keepRuntime(cog);
     const manager = cog.experimental_triggers!;
     await manager.start();
     await manager.fire('digest.api');
@@ -643,6 +603,7 @@ describe('experimental_TriggerManager', () => {
   it('takes routines and triggers plugins register, and drops them when the plugin goes', async () => {
     const plugin = experimental_definePlugin({
       name: 'watcher',
+      permissions: { allow: ['Routine'] },
       activate(context) {
         context.registerRoutine({
           id: 'nightly',
@@ -653,9 +614,13 @@ describe('experimental_TriggerManager', () => {
         context.registerTrigger('nightly', { kind: 'api', token: 'p' });
       },
     });
-    const { cog, manager, backend } = runtime({}, undefined, {
-      experimental_plugins: { plugins: [plugin] },
-    });
+    const { cog, manager, backend } = runtime(
+      { pluginTargets: { agents: ['worker'] } },
+      undefined,
+      {
+        experimental_plugins: { plugins: [plugin] },
+      }
+    );
     await cog.experimental_plugins.load();
     await manager.start();
     const [info] = await manager.list();

@@ -314,6 +314,35 @@ describe('HeartbeatScheduler', () => {
     scheduler.stop();
   });
 
+  it('counts the next time of a task from the end of its run, not its start', async () => {
+    const now = Date.now();
+    store.getOverdue
+      .mockResolvedValueOnce([
+        {
+          id: 't5',
+          firesAt: now - 100,
+          type: 'recurring',
+          interval: 1_000,
+          metadata: { description: 'Long job' },
+        },
+      ])
+      .mockResolvedValue([]);
+    let endedAt = 0;
+    onFire.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      endedAt = Date.now();
+    });
+    const scheduler = new HeartbeatScheduler(store as unknown as TimerStore, {
+      onFire,
+      pollInterval: 50,
+    });
+    scheduler.start();
+    await vi.waitFor(() => expect(store.schedule).toHaveBeenCalled(), { timeout: 3_000 });
+    const entry = store.schedule.mock.calls[0][0];
+    expect(entry.firesAt).toBeGreaterThanOrEqual(endedAt + 1_000);
+    scheduler.stop();
+  });
+
   it('at-job fires once and is not rescheduled', async () => {
     store.getOverdue
       .mockResolvedValueOnce([

@@ -6,6 +6,7 @@
 
 import { createHash } from 'node:crypto';
 import type {
+  ActiveRoutineRun,
   Agent,
   CronEngine,
   InboxItem,
@@ -31,6 +32,7 @@ import type {
   TriggerManagerEvent,
   TriggerSpec,
   TriggerState,
+  TriggerStatePatch,
   TriggersConfig,
 } from '@cogitator-ai/types';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
@@ -121,6 +123,8 @@ interface LiveRun {
 interface PendingFiring {
   event: TriggerEvent;
   runId: string;
+  /** The claim of the event's delivery id, given back when the firing never starts */
+  dedup?: string;
 }
 
 interface RoutineLive {
@@ -130,6 +134,8 @@ interface RoutineLive {
 
 /** Firings a routine run id is made of: its trigger and what tells the event apart */
 const RUN_ID_PREFIX = 'trg_';
+/** The longest run id the runtime takes */
+const MAX_RUN_ID = 200;
 const DEFAULT_DEDUP_TTL = 24 * 60 * 60 * 1000;
 const DEFAULT_CATCH_UP_WINDOW = 7 * 24 * 60 * 60 * 1000;
 /** How long the claim on a firing's run id is kept: longer than a provider retries */
@@ -143,7 +149,24 @@ function errorText(error: unknown): string {
 }
 
 function idPart(text: string): string {
-  return text.replace(/[^A-Za-z0-9_.-]/g, '-');
+  return text.replace(/[^A-Za-z0-9_.:-]/g, '-');
+}
+
+/** What tells a firing apart in its run id: no `.`, so the run id splits at its last one */
+function keyPart(text: string): string {
+  return text.replace(/[^A-Za-z0-9_-]/g, '-');
+}
+
+/**
+ * The run id of a firing: `trg_<routineId>.<triggerId>.<key>`. Routine and trigger ids hold no
+ * `.` and the key none either, so two triggers never share a run id. A trigger id too long for a
+ * run id goes by its digest
+ */
+export function routineRunId(triggerId: string, key: string): string {
+  const id = `${RUN_ID_PREFIX}${triggerId}.${keyPart(key)}`;
+  return id.length <= MAX_RUN_ID
+    ? id
+    : `${RUN_ID_PREFIX}${digest(triggerId)}.${keyPart(key)}`.slice(0, MAX_RUN_ID);
 }
 
 function digest(text: string): string {
@@ -192,6 +215,8 @@ export class experimental_TriggerManager {
   /** Runs aborted by `overlap: 'replace'`: their end is recorded as replaced, not failed */
   private readonly replaced = new Set<string>();
   private readonly listeners = new Set<(event: TriggerManagerEvent) => void>();
+  /** Tasks agents gave themselves whose run goes on, by schedule entry: their next occurrence is skipped */
+  private readonly runningTasks = new Map<string, string>();
   private cronEngine?: CronEngine;
   private started?: Promise<void>;
   private unsubscribePlugins?: () => void;
@@ -253,28 +278,69 @@ export class experimental_TriggerManager {
   private async begin(): Promise<void> {
     const engine = await this.cron();
     for (const { routine } of this.code.values()) this.checkCron(routine, engine);
+    if (this.stopped) return;
     if (this.runtime.plugins) {
       this.unsubscribePlugins = this.runtime.plugins.onChange(() => {
         this.track(this.syncPlugins());
       });
       await this.syncPlugins();
     }
-    for (const registered of await this.all()) await this.syncSchedules(registered);
+    for (const registered of await this.all()) {
+      if (this.stopped) return;
+      await this.syncSchedules(registered);
+    }
+    if (this.stopped) return;
     await this.scheduler.start();
+    if (this.stopped) {
+      await this.scheduler.stop();
+      return;
+    }
     await this.recover();
   }
 
   /**
-   * Stops polling the schedules. Runs going on are left to finish, their results still reach the
-   * inbox. Resolves once the poll going on and the work it started are done
+   * Stops polling the schedules, after a `start()` going on is done. Runs going on are left to
+   * finish, their results still reach the inbox. Firings queued behind them are dropped: their
+   * claims are given back, so a provider's redelivery starts them, and the history says so.
+   * Resolves once the poll going on and the work it started are done
    */
   async stop(): Promise<void> {
     this.stopped = true;
+    const starting = this.started;
+    if (starting) await starting.catch(() => undefined);
     this.unsubscribePlugins?.();
     this.unsubscribePlugins = undefined;
     await this.scheduler.stop();
     this.started = undefined;
+    await this.dropQueued();
     while (this.pending.size > 0) await Promise.allSettled([...this.pending]);
+  }
+
+  /** Gives back the claims of the firings waiting in the queues and records them skipped */
+  private async dropQueued(): Promise<void> {
+    for (const [routineId, live] of this.live) {
+      for (const waiting of live.queue.splice(0)) {
+        const { event } = waiting;
+        try {
+          await this.store.releaseKey(`run:${waiting.runId}`);
+          if (waiting.dedup !== undefined) await this.store.releaseKey(waiting.dedup);
+        } catch (error) {
+          this.report({ type: 'error', error: errorText(error), routineId });
+        }
+        await this.record({
+          id: event.id,
+          routineId,
+          triggerId: event.triggerId,
+          source: event.source,
+          at: event.occurredAt,
+          ...(event.scheduledFor !== undefined && { scheduledFor: event.scheduledFor }),
+          status: 'skipped',
+          runId: waiting.runId,
+          reason: 'the trigger manager stopped before the firing started',
+          finishedAt: Date.now(),
+        });
+      }
+    }
   }
 
   /** Resolves once every run of every routine going on now has ended and reached the inbox */
@@ -375,6 +441,12 @@ export class experimental_TriggerManager {
     for (const [id, registered] of current) {
       const before = this.fromPlugins.get(id);
       if (before?.routine === registered.routine) continue;
+      const refused = this.pluginRoutineProblem(registered);
+      if (refused) {
+        this.report({ type: 'error', error: refused, routineId: id });
+        current.delete(id);
+        continue;
+      }
       try {
         if (engine) this.checkCron(registered.routine, engine);
       } catch (error) {
@@ -389,6 +461,44 @@ export class experimental_TriggerManager {
       this.fromPlugins.delete(id);
       await this.dropSchedules(registered.routine.id, []);
     }
+  }
+
+  /**
+   * Why a plugin's routine may not run, undefined when it may: it acts for a user, continues a
+   * thread or tells an owner (only the host's code decides those), or targets an agent or workflow
+   * by a name `pluginTargets` does not list
+   */
+  private pluginRoutineProblem(registered: Registered): string | undefined {
+    const { routine } = registered;
+    const by = `Routine ${routine.id} of plugin ${registered.plugin ?? 'unknown'}`;
+    if (routine.userId !== undefined || routine.owner !== undefined) {
+      return `${by} may not set userId or owner`;
+    }
+    if (routine.session !== undefined && routine.session !== 'new') {
+      return `${by} may not continue a thread`;
+    }
+    const allowed = this.config.pluginTargets;
+    if ('agent' in routine.target) {
+      const agent = routine.target.agent;
+      if (typeof agent === 'string' && !allowed?.agents?.includes(agent)) {
+        return `${by} targets agent ${agent}, which experimental_triggers.pluginTargets.agents does not list`;
+      }
+    } else {
+      const workflow = routine.target.workflow;
+      if (typeof workflow === 'string' && !allowed?.workflows?.includes(workflow)) {
+        return `${by} targets workflow ${workflow}, which experimental_triggers.pluginTargets.workflows does not list`;
+      }
+    }
+    return undefined;
+  }
+
+  /** Changes a trigger's state in one step of the store */
+  private patchState(
+    routineId: string,
+    triggerId: string,
+    patch: TriggerStatePatch
+  ): Promise<TriggerState> {
+    return this.store.patchTriggerState(fullTriggerId(routineId, triggerId), routineId, patch);
   }
 
   private async state(routineId: string, triggerId: string): Promise<TriggerState> {
@@ -408,6 +518,7 @@ export class experimental_TriggerManager {
     const { routine } = registered;
     const engine = await this.cron();
     const kept: string[] = [];
+    const lockedOut: string[] = [];
     for (const spec of routine.triggers ?? []) {
       if (spec.kind !== 'cron') continue;
       const triggerId = triggerIdOf(spec);
@@ -434,7 +545,10 @@ export class experimental_TriggerManager {
         continue;
       }
       const lock = `schedule:${id}`;
-      if (!(await this.store.claimKey(lock, SCHEDULE_INIT_TTL))) continue;
+      if (!(await this.store.claimKey(lock, SCHEDULE_INIT_TTL))) {
+        lockedOut.push(triggerId);
+        continue;
+      }
       try {
         const fresh = await this.state(routine.id, triggerId);
         const existing = fresh.scheduleId ? await this.scheduler.get(fresh.scheduleId) : null;
@@ -454,21 +568,31 @@ export class experimental_TriggerManager {
           runId: routine.id,
           nodeId: triggerId,
         });
-        await this.store.saveTriggerState({ ...fresh, scheduleId: added.id });
+        await this.patchState(routine.id, triggerId, { scheduleId: added.id });
         kept.push(added.id);
       } finally {
         await this.store.releaseKey(lock);
       }
     }
-    await this.dropSchedules(routine.id, kept);
+    await this.dropSchedules(routine.id, kept, lockedOut);
   }
 
-  /** Cancels the pending schedule entries of a routine but those in `keep` */
-  private async dropSchedules(routineId: string, keep: readonly string[]): Promise<void> {
+  /**
+   * Cancels the pending schedule entries of a routine but those in `keep` and those of the
+   * triggers in `keepTriggers`: another process holds the lock that creates their entry, so the
+   * one it just added is not stale
+   */
+  private async dropSchedules(
+    routineId: string,
+    keep: readonly string[],
+    keepTriggers: readonly string[] = []
+  ): Promise<void> {
     for (const entry of await this.scheduler.store.getPending()) {
-      if (entry.trigger?.routineId === routineId && !keep.includes(entry.id)) {
-        await this.scheduler.remove(entry.id);
+      if (entry.trigger?.routineId !== routineId || keep.includes(entry.id)) continue;
+      if (entry.trigger.triggerId !== undefined && keepTriggers.includes(entry.trigger.triggerId)) {
+        continue;
       }
+      await this.scheduler.remove(entry.id);
     }
   }
 
@@ -593,8 +717,7 @@ export class experimental_TriggerManager {
     if (specs.length === 0 && routineId !== id) throw notFound(`No trigger ${id}`);
     for (const spec of specs) {
       const triggerId = triggerIdOf(spec);
-      const state = await this.state(routineId, triggerId);
-      await this.store.saveTriggerState({ ...state, enabled });
+      const state = await this.patchState(routineId, triggerId, { enabled });
       if (spec.kind === 'cron' && state.scheduleId) {
         if (enabled) await this.scheduler.resume(state.scheduleId);
         else await this.scheduler.pause(state.scheduleId);
@@ -616,10 +739,8 @@ export class experimental_TriggerManager {
       });
     }
     const token = generateTriggerToken();
-    const state = await this.state(registered.routine.id, triggerIdOf(spec));
     const hint = token.slice(-4);
-    await this.store.saveTriggerState({
-      ...state,
+    await this.patchState(registered.routine.id, triggerIdOf(spec), {
       tokenHash: hashTriggerToken(token),
       tokenHint: hint,
       tokenIssuedAt: Date.now(),
@@ -713,11 +834,29 @@ export class experimental_TriggerManager {
         },
       };
     }
+    const replay =
+      outcome.replay !== undefined ? `replay:${id}:${digest(outcome.replay.key)}` : undefined;
+    if (
+      replay !== undefined &&
+      outcome.replay !== undefined &&
+      !(await this.store.claimKey(
+        replay,
+        Math.max(outcome.replay.ttlMs, this.config.dedupTtlMs ?? DEFAULT_DEDUP_TTL)
+      ))
+    ) {
+      return {
+        status: 200,
+        body: this.result(outcome.event, routine.id, 'duplicate', {
+          reason: 'The signature was used before',
+        }),
+      };
+    }
     try {
       const result = await this.dispatch(registered, outcome.event, this.eventKey(outcome.event));
       const status = result.status === 'duplicate' ? 200 : spec.kind === 'slack' ? 200 : 202;
       return { status, body: result };
     } catch (error) {
+      if (replay !== undefined) await this.store.releaseKey(replay).catch(() => undefined);
       this.report({ type: 'error', error: errorText(error), routineId: routine.id, triggerId: id });
       return {
         status: 500,
@@ -763,7 +902,7 @@ export class experimental_TriggerManager {
 
   /** What tells an event's run apart: its delivery id when it has one, else the event */
   private eventKey(event: TriggerEvent): string {
-    return event.dedupKey !== undefined ? digest(event.dedupKey) : idPart(event.id);
+    return event.dedupKey !== undefined ? digest(event.dedupKey) : keyPart(event.id);
   }
 
   private async fireScheduled(fire: ScheduledFire): Promise<void> {
@@ -800,7 +939,10 @@ export class experimental_TriggerManager {
     await this.dispatch(registered, event, String(occurrence));
   }
 
-  /** A task an agent gave itself came due: its agent continues the thread it was given in */
+  /**
+   * A task an agent gave itself came due: its agent continues the thread it was given in. While
+   * the run of an earlier occurrence of the task goes on, this one is skipped
+   */
   private async fireAgentTask(entry: TimerEntry, occurrence: number): Promise<void> {
     const name = entry.trigger?.agent ?? '';
     const agent = this.config.agents?.[name];
@@ -808,6 +950,14 @@ export class experimental_TriggerManager {
       throw configurationError(
         `Task ${entry.id} runs on agent ${name}, which is not in experimental_triggers.agents`
       );
+    }
+    const going = this.runningTasks.get(entry.id);
+    if (going !== undefined) {
+      this.report({
+        type: 'error',
+        error: `Task ${entry.id} skipped the occurrence of ${new Date(occurrence).toISOString()}: its run ${going} goes on`,
+      });
+      return;
     }
     const meta = entry.metadata ?? {};
     const description =
@@ -823,6 +973,19 @@ export class experimental_TriggerManager {
       verified: { method: 'agent', ok: true },
       text: description,
     });
+    const task: ActiveRoutineRun = {
+      runId,
+      kind: 'task',
+      eventId: event.id,
+      triggerId: entry.id,
+      source: 'agent',
+      at: event.occurredAt,
+      scheduledFor: occurrence,
+      threadId,
+      agent: name,
+      description,
+      ...(userId !== undefined && { userId }),
+    };
     const handle = this.runtime.start(agent, {
       input: experimental_agentTaskInput(event),
       threadId,
@@ -831,36 +994,95 @@ export class experimental_TriggerManager {
       ...(this.durable && { durable: true }),
       inputMetadata: { trigger: event },
     });
+    await this.followTask(task, handle.result);
+  }
+
+  /**
+   * Waits for the run of a task in the background: the task's next occurrences are skipped
+   * meanwhile, its outcome goes to the inbox, and a durable run is kept for `recover`
+   */
+  private async followTask(task: ActiveRoutineRun, result: Promise<RunResult>): Promise<void> {
+    this.runningTasks.set(task.triggerId, task.runId);
+    if (this.durable) await this.saveActive(task);
+    const lease = this.runtime.plugins?.lease();
     this.track(
-      handle.result.then(
-        async (result) => {
-          await this.addToInbox({
-            kind: result.status === 'paused' ? 'question' : 'result',
-            title: `Scheduled task: ${description}`,
-            summary: summaryOf(result.output),
-            ...(result.output.length > MAX_SUMMARY && { body: result.output }),
-            source: 'agent',
-            runId,
-            threadId,
-            triggerEventId: event.id,
-            ...(userId !== undefined && { userId }),
-          });
-        },
-        async (error: unknown) => {
-          if (isRunLeased(error)) return;
-          await this.addToInbox({
-            kind: 'failure',
-            title: `Scheduled task failed: ${description}`,
-            summary: errorText(error),
-            source: 'agent',
-            runId,
-            threadId,
-            triggerEventId: event.id,
-            ...(userId !== undefined && { userId }),
-          });
-        }
-      )
+      result
+        .then(
+          (done): Outcome => ({ kind: 'agent', result: done }),
+          (error: unknown): Outcome => ({ kind: 'error', error })
+        )
+        .then((outcome) => this.finishTask(task, outcome))
+        .finally(async () => {
+          lease?.release();
+          if (this.runningTasks.get(task.triggerId) === task.runId) {
+            this.runningTasks.delete(task.triggerId);
+          }
+          await this.dropActive(task.runId);
+        })
     );
+  }
+
+  /** What a task's run came to, in the inbox: its answer, its failure, or what it waits for */
+  private async finishTask(task: ActiveRoutineRun, outcome: Outcome): Promise<void> {
+    const description = task.description ?? '';
+    const common = {
+      source: 'agent' as const,
+      runId: task.runId,
+      threadId: task.threadId,
+      triggerEventId: task.eventId,
+      ...(task.userId !== undefined && { userId: task.userId }),
+    };
+    if (outcome.kind === 'error') {
+      if (isRunLeased(outcome.error)) return;
+      await this.addToInbox({
+        ...common,
+        kind: 'failure',
+        title: `Scheduled task failed: ${description}`,
+        summary: errorText(outcome.error),
+      });
+      return;
+    }
+    if (outcome.kind !== 'agent') return;
+    const result = outcome.result;
+    if (result.status === 'paused') {
+      await this.addToInbox(
+        waitingItem(result, `Scheduled task: ${description}`, common, {
+          agent: task.agent,
+          taskId: task.triggerId,
+          description,
+        })
+      );
+      return;
+    }
+    await this.addToInbox({
+      ...common,
+      kind: 'result',
+      title: `Scheduled task: ${description}`,
+      summary: summaryOf(result.output),
+      ...(result.output.length > MAX_SUMMARY && { body: result.output }),
+    });
+  }
+
+  /** Keeps a run going on in the store, for `recover` after a restart */
+  private async saveActive(run: ActiveRoutineRun): Promise<void> {
+    try {
+      await this.store.saveActiveRun(run);
+    } catch (error) {
+      this.report({
+        type: 'error',
+        error: `Could not keep run ${run.runId} for recovery: ${errorText(error)}`,
+        ...(run.routineId !== undefined && { routineId: run.routineId }),
+      });
+    }
+  }
+
+  private async dropActive(runId: string): Promise<void> {
+    if (!this.durable) return;
+    try {
+      await this.store.deleteActiveRun(runId);
+    } catch (error) {
+      this.report({ type: 'error', error: errorText(error) });
+    }
   }
 
   private get durable(): boolean {
@@ -913,15 +1135,16 @@ export class experimental_TriggerManager {
         reason: 'The event was delivered before',
       });
     }
-    const runId = `${RUN_ID_PREFIX}${idPart(event.triggerId)}_${key}`;
-    if (!(await this.store.claimKey(`run:${runId}`, RUN_CLAIM_TTL))) {
+    const runId = routineRunId(event.triggerId, key);
+    const runTtl = dedup !== undefined ? dedupTtl : RUN_CLAIM_TTL;
+    if (!(await this.store.claimKey(`run:${runId}`, runTtl))) {
       return this.result(event, routine.id, 'duplicate', {
         runId,
         reason: 'The firing started a run before',
       });
     }
     try {
-      return await this.admit(registered, event, runId);
+      return await this.admit(registered, event, runId, dedup);
     } catch (error) {
       if (dedup !== undefined) await this.store.releaseKey(dedup);
       await this.store.releaseKey(`run:${runId}`);
@@ -935,10 +1158,8 @@ export class experimental_TriggerManager {
     const split = splitTriggerId(event.triggerId);
     if (!split) return;
     try {
-      const state = await this.state(split.routineId, split.triggerId);
-      await this.store.saveTriggerState({
-        ...state,
-        fireCount: state.fireCount + 1,
+      await this.patchState(split.routineId, split.triggerId, {
+        fireCountDelta: 1,
         lastFiredAt: event.occurredAt,
       });
     } catch (error) {
@@ -949,7 +1170,8 @@ export class experimental_TriggerManager {
   private async admit(
     registered: Registered,
     event: TriggerEvent,
-    runId: string
+    runId: string,
+    dedup: string | undefined
   ): Promise<TriggerFireResult> {
     const { routine } = registered;
     const overlap = routine.overlap ?? 'skip';
@@ -996,19 +1218,27 @@ export class experimental_TriggerManager {
         if (live.queue.length >= (this.config.maxQueued ?? 10)) {
           return skip(`the queue of the routine is full (${live.queue.length})`);
         }
-        live.queue.push({ event, runId });
+        live.queue.push({ event, runId, ...(dedup !== undefined && { dedup }) });
         await this.record({ ...base, status: 'queued', runId });
         this.report({ type: 'fired', event, status: 'queued', runId });
         return this.result(event, routine.id, 'queued', { runId });
       }
-      const oldest = [...live.runs.values()].sort((a, b) => a.startedAt - b.startedAt)[0];
-      if (oldest) this.abortRun(routine.id, oldest, `replaced by ${event.id}`);
+      const oldest = [...live.runs.values()]
+        .filter((run) => run.handle !== undefined || run.abort !== undefined)
+        .sort((a, b) => a.startedAt - b.startedAt)[0];
+      if (!oldest) return skip('the runs of the routine going on cannot be aborted');
+      this.abortRun(routine.id, live, oldest, `replaced by ${event.id}`);
     }
     return this.launch(registered, event, runId);
   }
 
-  private abortRun(routineId: string, run: LiveRun, reason: string): void {
+  /**
+   * Aborts a run for `overlap: 'replace'`: it is recorded as replaced, whatever it ends with, and
+   * no longer counts against `maxConcurrent`
+   */
+  private abortRun(routineId: string, live: RoutineLive, run: LiveRun, reason: string): void {
     this.replaced.add(run.runId);
+    live.runs.delete(run.runId);
     run.handle?.abort(new Error(reason));
     run.abort?.abort(new Error(reason));
     void this.record({
@@ -1063,7 +1293,6 @@ export class experimental_TriggerManager {
     }
     const threadId = this.threadOf(routine, runId);
     const input = experimental_routineInput(routine, event);
-    const live = this.liveOf(routine.id);
     const run: LiveRun = {
       runId,
       eventId: event.id,
@@ -1096,10 +1325,7 @@ export class experimental_TriggerManager {
           inputMetadata: { trigger: event, routine: routine.id },
         });
         run.handle = handle;
-        finished = handle.result.then(
-          (result): Outcome => ({ kind: 'agent', result }),
-          (error: unknown): Outcome => ({ kind: 'error', error })
-        );
+        finished = settle(handle.result);
       } else {
         const controller = new AbortController();
         run.abort = controller;
@@ -1114,19 +1340,56 @@ export class experimental_TriggerManager {
       lease?.release();
       throw error;
     }
-    live.runs.set(runId, run);
+    this.liveOf(routine.id).runs.set(runId, run);
     await this.record(record);
     this.report({ type: 'fired', event, status: 'started', runId });
+    await this.follow(registered, event, run, record, finished, lease, agent !== undefined);
+    return this.result(event, routine.id, 'started', { runId, threadId });
+  }
+
+  /**
+   * Follows a run of a routine in the background: it counts against `maxConcurrent` while it
+   * goes on, a durable agent run is kept for `recover`, and once it ends its outcome is written
+   * down and the next queued firing may start
+   */
+  private async follow(
+    registered: Registered,
+    event: TriggerEvent,
+    run: LiveRun,
+    record: RoutineRunRecord,
+    finished: Promise<Outcome>,
+    lease: PluginLease | undefined,
+    recoverable: boolean
+  ): Promise<void> {
+    const { routine } = registered;
+    const live = this.liveOf(routine.id);
+    live.runs.set(run.runId, run);
+    const kept = recoverable && this.durable;
+    if (kept) {
+      await this.saveActive({
+        runId: run.runId,
+        kind: 'routine',
+        eventId: event.id,
+        triggerId: event.triggerId,
+        routineId: routine.id,
+        source: event.source,
+        at: record.at,
+        ...(event.scheduledFor !== undefined && { scheduledFor: event.scheduledFor }),
+        threadId: run.threadId,
+        ...(routine.userId !== undefined && { userId: routine.userId }),
+      });
+    }
     this.track(
       finished
         .then((outcome) => this.finish(registered, event, run, record, outcome))
-        .finally(() => {
+        .finally(async () => {
           lease?.release();
-          live.runs.delete(runId);
+          this.replaced.delete(run.runId);
+          if (live.runs.get(run.runId) === run) live.runs.delete(run.runId);
+          if (kept) await this.dropActive(run.runId);
           this.next(registered);
         })
     );
-    return this.result(event, routine.id, 'started', { runId, threadId });
   }
 
   /** Starts the next queued firing of a routine, when one waits and a run may start */
@@ -1153,6 +1416,16 @@ export class experimental_TriggerManager {
     const { routine } = registered;
     const name = routine.name ?? routine.id;
     const finishedAt = Date.now();
+    if (outcome.kind === 'error' && isRunLeased(outcome.error)) {
+      await this.record({
+        ...record,
+        status: 'skipped',
+        reason: 'another process holds the run',
+        finishedAt,
+      });
+      return;
+    }
+    if (this.replaced.has(run.runId)) return;
     const common = {
       routineId: routine.id,
       triggerId: event.triggerId,
@@ -1167,16 +1440,6 @@ export class experimental_TriggerManager {
     let item: InboxItemInput | undefined;
     let notification: RunNotification | undefined;
     if (outcome.kind === 'error') {
-      if (isRunLeased(outcome.error)) {
-        await this.record({
-          ...record,
-          status: 'skipped',
-          reason: 'another process holds the run',
-          finishedAt,
-        });
-        return;
-      }
-      if (this.replaced.delete(run.runId)) return;
       const message = errorText(outcome.error);
       status = 'failed';
       await this.record({ ...record, status, reason: message, finishedAt });
@@ -1195,44 +1458,12 @@ export class experimental_TriggerManager {
       if (result.status === 'paused') {
         status = 'paused';
         await this.record({ ...record, status, finishedAt });
-        const approvals = result.pendingApprovals ?? [];
-        const questions = (result.interrupts ?? []).filter(
-          (interrupt) => interrupt.kind !== 'approval'
+        item = waitingItem(
+          result,
+          name,
+          common,
+          routine.owner !== undefined ? { owner: { ...routine.owner } } : {}
         );
-        item = {
-          ...common,
-          kind: approvals.length > 0 ? 'approval' : 'question',
-          title: approvals.length > 0 ? `${name} needs approval` : `${name} has a question`,
-          summary: summaryOf(
-            [
-              ...approvals.map((approval) => `${approval.toolName}: ${approval.description}`),
-              ...questions.map((question) => question.message),
-            ].join('\n') || 'The run waits for a person'
-          ),
-          actions: approvals.flatMap((approval) => [
-            {
-              id: `approve:${approval.toolCallId}`,
-              label: 'Approve',
-              kind: 'approve' as const,
-              approvalId: approval.toolCallId,
-            },
-            {
-              id: `reject:${approval.toolCallId}`,
-              label: 'Reject',
-              kind: 'reject' as const,
-              approvalId: approval.toolCallId,
-            },
-          ]),
-          metadata: {
-            ...(routine.owner !== undefined && { owner: { ...routine.owner } }),
-            interrupts: (result.interrupts ?? []).map((interrupt) => ({
-              id: interrupt.id,
-              kind: interrupt.kind,
-              message: interrupt.message,
-              ...(interrupt.toolName !== undefined && { toolName: interrupt.toolName }),
-            })),
-          },
-        };
       } else {
         status = 'completed';
         await this.record({ ...record, status, finishedAt });
@@ -1329,36 +1560,41 @@ export class experimental_TriggerManager {
   }
 
   /**
-   * Answers a routine run that waits for a person, from its inbox item: `decisions` for approvals
-   * (by tool call id), `responses` for questions (by interrupt id). The run goes on and its
-   * outcome reaches the inbox; the item is archived
+   * Answers a run that waits for a person, from its inbox item: `decisions` for approvals (by
+   * tool call id), `responses` for questions (by interrupt id). The run of a routine, or of a task
+   * an agent gave itself, goes on and its outcome reaches the inbox. The item is claimed as
+   * answered in one step of the inbox store, so two answers at once resume the run once
+   *
+   * @throws CogitatorError `INBOX_ITEM_ANSWERED` when the item was answered already,
+   * `TRIGGER_NOT_FOUND` when it waits for nothing or its routine or agent is gone
    */
   async respond(itemId: string, answer: RoutineAnswer): Promise<TriggerFireResult> {
     const item = await this.inbox.get(itemId);
     if (!item || (item.kind !== 'approval' && item.kind !== 'question') || !item.runId) {
       throw notFound(`No inbox item ${itemId} that waits for an answer`);
     }
-    if (item.status === 'archived') {
-      throw new CogitatorError({
-        message: `Inbox item ${itemId} was answered or archived already`,
-        code: ErrorCode.INBOX_ITEM_ANSWERED,
-      });
-    }
+    if (item.answeredAt !== undefined) throw answeredAlready(itemId);
     if (item.approvalId !== undefined && item.threadId === undefined) {
       return this.respondToWorkflow(item, answer);
     }
     const threadId = item.threadId;
     if (!threadId) throw notFound(`No inbox item ${itemId} that waits for an answer`);
+    const taskAgent =
+      item.source === 'agent' && typeof item.metadata?.agent === 'string'
+        ? item.metadata.agent
+        : undefined;
+    if (taskAgent !== undefined) return this.respondToTask(item, taskAgent, threadId, answer);
     const registered = item.routineId ? await this.find(item.routineId) : undefined;
     const agent = registered ? this.agentOf(registered.routine) : undefined;
     if (!registered || !agent) throw notFound(`The routine of inbox item ${itemId} is gone`);
-    await this.inbox.archive(itemId);
+    if (!(await this.inbox.claimAnswer(itemId))) throw answeredAlready(itemId);
     const event = experimental_createTriggerEvent({
       source: 'manual',
       triggerId: item.triggerId ?? fullTriggerId(registered.routine.id, 'manual'),
       routineId: registered.routine.id,
       verified: { method: 'manual', ok: true },
     });
+    const controller = new AbortController();
     const run: LiveRun = {
       runId: item.runId,
       eventId: item.triggerEventId ?? event.id,
@@ -1366,6 +1602,7 @@ export class experimental_TriggerManager {
       source: item.source ?? 'manual',
       threadId,
       startedAt: Date.now(),
+      abort: controller,
     };
     const record: RoutineRunRecord = {
       id: run.eventId,
@@ -1377,31 +1614,62 @@ export class experimental_TriggerManager {
       runId: run.runId,
       threadId: run.threadId,
     };
-    const live = this.liveOf(registered.routine.id);
-    live.runs.set(run.runId, run);
     const lease = this.runtime.plugins?.lease();
-    this.track(
-      this.runtime
-        .resume(agent, threadId, {
-          ...(answer.decisions !== undefined && { decisions: answer.decisions }),
-          ...(answer.defaultDecision !== undefined && { defaultDecision: answer.defaultDecision }),
-          ...(answer.responses !== undefined && { responses: answer.responses }),
-          ...(registered.routine.userId !== undefined && { userId: registered.routine.userId }),
-        })
-        .then(
-          (result): Outcome => ({ kind: 'agent', result }),
-          (error: unknown): Outcome => ({ kind: 'error', error })
-        )
-        .then((outcome) => this.finish(registered, event, run, record, outcome))
-        .finally(() => {
-          lease?.release();
-          live.runs.delete(run.runId);
-        })
+    const finished = settle(
+      this.runtime.resume(agent, threadId, {
+        ...resumeAnswer(answer),
+        signal: controller.signal,
+        ...(registered.routine.userId !== undefined && { userId: registered.routine.userId }),
+      })
     );
+    await this.follow(registered, event, run, record, finished, lease, false);
     return this.result(event, registered.routine.id, 'started', {
       runId: run.runId,
       threadId: run.threadId,
     });
+  }
+
+  /** Answers a task an agent gave itself whose run waits for a person: its agent resumes it */
+  private async respondToTask(
+    item: InboxItem,
+    agentName: string,
+    threadId: string,
+    answer: RoutineAnswer
+  ): Promise<TriggerFireResult> {
+    const agent = this.config.agents?.[agentName];
+    if (!agent || item.runId === undefined) {
+      throw notFound(`The agent ${agentName} of inbox item ${item.id} is gone`);
+    }
+    if (!(await this.inbox.claimAnswer(item.id))) throw answeredAlready(item.id);
+    const meta = item.metadata ?? {};
+    const taskId = typeof meta.taskId === 'string' ? meta.taskId : item.runId;
+    const task: ActiveRoutineRun = {
+      runId: item.runId,
+      kind: 'task',
+      eventId: item.triggerEventId ?? item.id,
+      triggerId: taskId,
+      source: 'agent',
+      at: item.createdAt,
+      threadId,
+      agent: agentName,
+      description: typeof meta.description === 'string' ? meta.description : '',
+      ...(item.userId !== undefined && { userId: item.userId }),
+    };
+    await this.followTask(
+      task,
+      this.runtime.resume(agent, threadId, {
+        ...resumeAnswer(answer),
+        ...(item.userId !== undefined && { userId: item.userId }),
+      })
+    );
+    return {
+      type: 'routine_fire',
+      status: 'started',
+      eventId: task.eventId,
+      triggerId: taskId,
+      runId: item.runId,
+      threadId,
+    };
   }
 
   /** Answers an approval a routine's workflow waits on, through its `respond` */
@@ -1424,8 +1692,15 @@ export class experimental_TriggerManager {
         code: ErrorCode.VALIDATION_ERROR,
       });
     }
-    await workflow.respond(item.approvalId, decision, answer.respondedBy);
-    await this.inbox.archive(item.id);
+    if (!(await this.inbox.claimAnswer(item.id))) throw answeredAlready(item.id);
+    try {
+      await workflow.respond(item.approvalId, decision, answer.respondedBy);
+    } catch (error) {
+      const answered =
+        CogitatorError.isCogitatorError(error) && error.code === ErrorCode.INBOX_ITEM_ANSWERED;
+      if (!answered) await this.inbox.releaseAnswer(item.id);
+      throw error;
+    }
     return {
       type: 'routine_fire',
       status: 'started',
@@ -1463,50 +1738,152 @@ export class experimental_TriggerManager {
     });
   }
 
-  /** Continues the durable runs of routines a stopped process left, their outcome to the inbox */
+  /**
+   * Continues the durable runs of routines and of tasks agents gave themselves that a stopped
+   * process left, as the store kept them going on (not from the history, which drops old
+   * records). Each takes a lease on the plugins, its outcome reaches the inbox
+   */
   private async recover(): Promise<void> {
     if (!this.durable || !this.runtime.recoverRuns) return;
+    const active = new Map((await this.store.listActiveRuns()).map((run) => [run.runId, run]));
+    if (active.size === 0) return;
     const agents = this.config.agents ?? {};
     const recovered = await this.runtime.recoverRuns(
-      (runId) => runId.startsWith(RUN_ID_PREFIX),
+      (runId) => active.has(runId),
       (agentName, agentId) =>
         Object.values(agents).find((agent) => agent.id === agentId) ??
         Object.values(agents).find((agent) => agent.name === agentName)
     );
     for (const { runId, handle } of recovered) {
-      const record = (await this.store.listRuns({ limit: 500 })).find((run) => run.runId === runId);
-      const registered = record ? await this.find(record.routineId) : undefined;
-      if (!record || !registered) continue;
+      const kept = active.get(runId);
+      if (!kept) continue;
+      if (kept.kind === 'task') {
+        await this.followTask(kept, handle.result);
+        continue;
+      }
+      const registered = kept.routineId ? await this.find(kept.routineId) : undefined;
+      if (!registered) {
+        this.report({
+          type: 'error',
+          error: `Run ${runId} of routine ${kept.routineId ?? '?'} came back, but the routine is gone`,
+        });
+        this.track(settle(handle.result).finally(() => this.dropActive(runId)));
+        continue;
+      }
       const event = experimental_createTriggerEvent({
-        id: record.id,
-        source: record.source,
-        triggerId: record.triggerId,
-        routineId: record.routineId,
-        occurredAt: record.at,
+        id: kept.eventId,
+        source: kept.source,
+        triggerId: kept.triggerId,
+        routineId: registered.routine.id,
+        occurredAt: kept.at,
+        ...(kept.scheduledFor !== undefined && { scheduledFor: kept.scheduledFor }),
         verified: { method: 'manual', ok: true },
       });
       const run: LiveRun = {
         runId,
-        eventId: record.id,
-        triggerId: record.triggerId,
-        source: record.source,
-        threadId: record.threadId ?? this.threadOf(registered.routine, runId),
+        eventId: kept.eventId,
+        triggerId: kept.triggerId,
+        source: kept.source,
+        threadId: kept.threadId,
         startedAt: Date.now(),
         handle,
       };
-      const live = this.liveOf(registered.routine.id);
-      live.runs.set(runId, run);
-      this.track(
-        handle.result
-          .then(
-            (result): Outcome => ({ kind: 'agent', result }),
-            (error: unknown): Outcome => ({ kind: 'error', error })
-          )
-          .then((outcome) => this.finish(registered, event, run, record, outcome))
-          .finally(() => live.runs.delete(runId))
+      const record: RoutineRunRecord = {
+        id: kept.eventId,
+        routineId: registered.routine.id,
+        triggerId: kept.triggerId,
+        source: kept.source,
+        at: kept.at,
+        ...(kept.scheduledFor !== undefined && { scheduledFor: kept.scheduledFor }),
+        status: 'started',
+        runId,
+        threadId: kept.threadId,
+      };
+      await this.follow(
+        registered,
+        event,
+        run,
+        record,
+        settle(handle.result),
+        this.runtime.plugins?.lease(),
+        true
       );
     }
   }
+}
+
+function answeredAlready(itemId: string): CogitatorError {
+  return new CogitatorError({
+    message: `Inbox item ${itemId} was answered already`,
+    code: ErrorCode.INBOX_ITEM_ANSWERED,
+  });
+}
+
+/** A run's result as an outcome, its failure too */
+function settle(result: Promise<RunResult>): Promise<Outcome> {
+  return result.then(
+    (done): Outcome => ({ kind: 'agent', result: done }),
+    (error: unknown): Outcome => ({ kind: 'error', error })
+  );
+}
+
+/** What of an answer the runtime's `resume` takes */
+function resumeAnswer(
+  answer: RoutineAnswer
+): Pick<ResumeOptions, 'decisions' | 'defaultDecision' | 'responses'> {
+  return {
+    ...(answer.decisions !== undefined && { decisions: answer.decisions }),
+    ...(answer.defaultDecision !== undefined && { defaultDecision: answer.defaultDecision }),
+    ...(answer.responses !== undefined && { responses: answer.responses }),
+  };
+}
+
+/**
+ * The inbox item of a run that waits for a person: an `approval` with Approve and Reject for each
+ * tool call it holds, else a `question` with its interrupts, `metadata` kept with them
+ */
+function waitingItem(
+  result: RunResult,
+  name: string,
+  common: Omit<InboxItemInput, 'kind' | 'title' | 'summary'>,
+  metadata: Record<string, unknown>
+): InboxItemInput {
+  const approvals = result.pendingApprovals ?? [];
+  const questions = (result.interrupts ?? []).filter((interrupt) => interrupt.kind !== 'approval');
+  return {
+    ...common,
+    kind: approvals.length > 0 ? 'approval' : 'question',
+    title: approvals.length > 0 ? `${name} needs approval` : `${name} has a question`,
+    summary: summaryOf(
+      [
+        ...approvals.map((approval) => `${approval.toolName}: ${approval.description}`),
+        ...questions.map((question) => question.message),
+      ].join('\n') || 'The run waits for a person'
+    ),
+    actions: approvals.flatMap((approval) => [
+      {
+        id: `approve:${approval.toolCallId}`,
+        label: 'Approve',
+        kind: 'approve' as const,
+        approvalId: approval.toolCallId,
+      },
+      {
+        id: `reject:${approval.toolCallId}`,
+        label: 'Reject',
+        kind: 'reject' as const,
+        approvalId: approval.toolCallId,
+      },
+    ]),
+    metadata: {
+      ...metadata,
+      interrupts: (result.interrupts ?? []).map((interrupt) => ({
+        id: interrupt.id,
+        kind: interrupt.kind,
+        message: interrupt.message,
+        ...(interrupt.toolName !== undefined && { toolName: interrupt.toolName }),
+      })),
+    },
+  };
 }
 
 /**

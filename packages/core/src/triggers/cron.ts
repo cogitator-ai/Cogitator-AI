@@ -207,6 +207,46 @@ export interface PlanOptions {
   maxCatchUp?: number;
 }
 
+/** Longer than any daylight saving shift, so walking forward from before it misses nothing */
+const SHIFT_MARGIN_MS = 3 * 60 * 60 * 1000;
+/** Occurrences one step of the forward walk reads */
+const WALK_STEP = 1000;
+
+/**
+ * The latest `count` occurrences after `after` up to and including `now`, newest first. They are
+ * found walking forward with `between`, as the schedule fires them: walking back over a daylight
+ * saving change would give an hour that repeats twice or a time that does not exist. The walk
+ * starts a margin before the oldest of the latest `count`, not at `after`, so a long downtime
+ * reads few occurrences
+ */
+function latestOccurrences(
+  cron: CronEngine,
+  expression: string,
+  after: number,
+  now: number,
+  timezone: string | undefined,
+  count: number
+): number[] {
+  let from = after;
+  const previous = cron.previous(expression, now, timezone, count);
+  const oldest = previous[previous.length - 1];
+  if (previous.length === count && oldest !== undefined) {
+    from = Math.max(from, oldest - SHIFT_MARGIN_MS);
+  }
+  const kept: number[] = [];
+  for (;;) {
+    const step = cron.between(expression, from, now, timezone, WALK_STEP);
+    for (const at of step) {
+      kept.push(at);
+      if (kept.length > count) kept.shift();
+    }
+    const last = step[step.length - 1];
+    if (step.length < WALK_STEP || last === undefined || last <= from) break;
+    from = last;
+  }
+  return kept.reverse();
+}
+
 /**
  * Which occurrences of a due schedule fire now. The occurrences due are the entry's `firesAt` and
  * every later one up to `now`. Those older than `catchUpWindowMs` are let go, then `latest`
@@ -227,9 +267,14 @@ export function planOccurrences(
   let next: number | null = null;
   if (schedule.cron) {
     if (!cron) throw new Error('A cron schedule needs a cron engine');
-    recent = cron
-      .previous(schedule.cron, now, schedule.timezone, wanted)
-      .filter((at) => at > schedule.firesAt);
+    recent = latestOccurrences(
+      cron,
+      schedule.cron,
+      schedule.firesAt,
+      now,
+      schedule.timezone,
+      wanted
+    );
     next = cron.next(schedule.cron, now, schedule.timezone);
   } else if (schedule.interval !== undefined && schedule.interval > 0) {
     const step = schedule.interval;

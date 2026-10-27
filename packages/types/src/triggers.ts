@@ -85,8 +85,9 @@ export interface TriggerFireResult {
   type: 'routine_fire';
   status: 'started' | 'queued' | 'skipped' | 'duplicate';
   eventId: string;
-  routineId: string;
-  /** `<routineId>.<triggerId>` */
+  /** The routine fired, absent for a task an agent gave itself that `respond()` resumed */
+  routineId?: string;
+  /** `<routineId>.<triggerId>`, or the schedule entry of a task an agent gave itself */
   triggerId: string;
   runId?: string;
   threadId?: string;
@@ -319,6 +320,42 @@ export interface TriggerState {
   lastError?: string;
 }
 
+/**
+ * A change to a trigger's state that a store applies in one step, on top of the state as it is
+ * then: the fields given replace theirs, `fireCountDelta` adds to `fireCount`. Two changes at once
+ * (a firing and a token rotation) both land, neither overwrites the other's fields
+ */
+export type TriggerStatePatch = Partial<Omit<TriggerState, 'id' | 'routineId' | 'fireCount'>> & {
+  /** Added to `fireCount` */
+  fireCountDelta?: number;
+};
+
+/**
+ * A run of a routine, or of a task an agent gave itself, going on: what the manager needs to take
+ * it up again after a restart (a durable run the runtime recovers). Kept apart from the history,
+ * which drops old records, and removed once the run ends
+ */
+export interface ActiveRoutineRun {
+  runId: string;
+  /** `routine` for a routine's run, `task` for a task an agent gave itself */
+  kind: 'routine' | 'task';
+  /** The event's id */
+  eventId: string;
+  /** `<routineId>.<triggerId>`, or the schedule entry of a task */
+  triggerId: string;
+  routineId?: string;
+  source: TriggerSource;
+  /** When it fired */
+  at: number;
+  scheduledFor?: number;
+  threadId: string;
+  /** The agent of a task, by its name in `experimental_triggers.agents` */
+  agent?: string;
+  /** The description of a task */
+  description?: string;
+  userId?: string;
+}
+
 /** How a firing of a routine ended up, kept in its history */
 export type RoutineRunStatus =
   'started' | 'queued' | 'skipped' | 'completed' | 'failed' | 'paused' | 'replaced';
@@ -358,6 +395,12 @@ export interface RoutineStore {
   getTriggerState(id: string): Promise<TriggerState | null>;
   listTriggerStates(routineId?: string): Promise<TriggerState[]>;
   saveTriggerState(state: TriggerState): Promise<void>;
+  /**
+   * Changes a trigger's state in one atomic step (a new state when it has none) and returns it.
+   * The manager makes every change through it, so a firing and a pause or a token rotation at the
+   * same time keep each other's fields
+   */
+  patchTriggerState(id: string, routineId: string, patch: TriggerStatePatch): Promise<TriggerState>;
   deleteTriggerState(id: string): Promise<void>;
   /** Takes `key` for `ttlMs`: true for the first caller, false while it is taken */
   claimKey(key: string, ttlMs: number): Promise<boolean>;
@@ -367,6 +410,11 @@ export interface RoutineStore {
   recordRun(record: RoutineRunRecord): Promise<void>;
   /** The history, newest first */
   listRuns(filter?: { routineId?: string; limit?: number }): Promise<RoutineRunRecord[]>;
+  /** Keeps a run going on, for `recover` after a restart */
+  saveActiveRun(run: ActiveRoutineRun): Promise<void>;
+  getActiveRun(runId: string): Promise<ActiveRoutineRun | null>;
+  listActiveRuns(): Promise<ActiveRoutineRun[]>;
+  deleteActiveRun(runId: string): Promise<void>;
 }
 
 /** What a routine's workflow gets for one firing */
@@ -430,6 +478,12 @@ export interface InboxItem {
   status: InboxItemStatus;
   createdAt: number;
   updatedAt?: number;
+  /**
+   * When a person answered the approval or question (`respond()` of the trigger manager). Set
+   * once, by `InboxStore.claimAnswer`: an answered item cannot be answered again, whatever its
+   * status, and a status change never makes it unanswered
+   */
+  answeredAt?: number;
   routineId?: string;
   triggerId?: string;
   triggerEventId?: string;
@@ -446,7 +500,10 @@ export interface InboxItem {
 }
 
 /** What `add` takes: the item without what the inbox fills in */
-export type InboxItemInput = Omit<InboxItem, 'id' | 'status' | 'createdAt' | 'updatedAt'> & {
+export type InboxItemInput = Omit<
+  InboxItem,
+  'id' | 'status' | 'createdAt' | 'updatedAt' | 'answeredAt'
+> & {
   id?: string;
   status?: InboxItemStatus;
 };
@@ -460,6 +517,12 @@ export interface InboxFilter {
   userId?: string | null;
   /** Only items created before this time, for paging */
   before?: number;
+  /**
+   * With `before`: also the items created at `before` whose id sorts before this one, as the
+   * list orders them (newest first, then by id from the end). The cursor of a page is then the
+   * `createdAt` and `id` of its last item, and items of the same millisecond are not skipped
+   */
+  beforeId?: string;
   /** Default 50 */
   limit?: number;
 }
@@ -478,6 +541,14 @@ export interface InboxStore {
   list(filter?: InboxFilter): Promise<InboxItem[]>;
   /** The item after the change, null when there is no such item */
   update(id: string, patch: InboxItemPatch): Promise<InboxItem | null>;
+  /**
+   * Marks the item answered at `answeredAt` and archived, in one atomic step: the item after the
+   * change for the first caller, null when it is answered already or there is no such item. Two
+   * answers at once to one approval resume its run once
+   */
+  claimAnswer(id: string, answeredAt: number): Promise<InboxItem | null>;
+  /** Takes back an answer whose run could not be given it, so it can be answered again */
+  releaseAnswer(id: string): Promise<void>;
   delete(id: string): Promise<void>;
 }
 
@@ -532,6 +603,12 @@ export type TriggerManagerEvent =
 export interface TriggersConfig {
   /** Agents routines run, by name */
   agents?: Record<string, Agent>;
+  /**
+   * The agents and workflows of `agents` and `workflows`, by name, that routines of plugins may
+   * run. A plugin's routine whose target is a name not listed here is refused (an agent or
+   * workflow the plugin passes itself, in its own code, needs no listing). Default: none
+   */
+  pluginTargets?: { agents?: readonly string[]; workflows?: readonly string[] };
   /** Workflows routines run, by name, `experimental_routineWorkflow()` of the workflows package */
   workflows?: Record<string, RoutineWorkflow>;
   /** Routines in code */
