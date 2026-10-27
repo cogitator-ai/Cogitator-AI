@@ -635,7 +635,8 @@ const triggers = createTriggerManager({
 });
 await triggers.start(); // brings back the triggers of its store, disabled ones stay disabled
 
-// registering the same trigger again (on every boot) takes over the one the store brought back
+// registering the same trigger again (on every boot) takes over the one the store brought back,
+// one whose filter or transform is another function stays a trigger of its own
 
 await triggers.register({
   workflowName: 'daily-report',
