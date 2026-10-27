@@ -302,12 +302,10 @@ export class experimental_TriggerManager {
       await this.syncSchedules(registered);
     }
     if (this.stopped) return;
-    await this.scheduler.start();
-    if (this.stopped) {
-      await this.scheduler.stop();
-      return;
-    }
     await this.recover();
+    if (this.stopped) return;
+    await this.scheduler.start();
+    if (this.stopped) await this.scheduler.stop();
   }
 
   /**
@@ -1149,7 +1147,14 @@ export class experimental_TriggerManager {
     }
     const runId = routineRunId(event.triggerId, key);
     const runTtl = dedup !== undefined ? dedupTtl : RUN_CLAIM_TTL;
-    if (!(await this.store.claimKey(`run:${runId}`, runTtl))) {
+    let claimed: boolean;
+    try {
+      claimed = await this.store.claimKey(`run:${runId}`, runTtl);
+    } catch (error) {
+      if (dedup !== undefined) await this.store.releaseKey(dedup).catch(() => undefined);
+      throw error;
+    }
+    if (!claimed) {
       return this.result(event, routine.id, 'duplicate', {
         runId,
         reason: 'The firing started a run before',

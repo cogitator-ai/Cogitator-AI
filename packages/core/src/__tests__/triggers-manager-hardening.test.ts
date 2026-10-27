@@ -939,6 +939,91 @@ describe('second review', () => {
   });
 });
 
+describe('third review', () => {
+  it('gives the delivery id back when the run key cannot be claimed', async () => {
+    let broken = true;
+    class FlakyClaims extends experimental_InMemoryRoutineStore {
+      override async claimKey(key: string, ttlMs: number): Promise<boolean> {
+        if (broken && key.startsWith('run:')) throw new Error('the store is down');
+        return super.claimKey(key, ttlMs);
+      }
+    }
+    const { manager, backend } = runtime({
+      store: new FlakyClaims(),
+      routines: [
+        routine({
+          id: 'hook',
+          triggers: [{ kind: 'webhook', secret: 's', deliveryHeader: 'x-delivery' }],
+        }),
+      ],
+    });
+    await manager.start();
+    const deliver = () =>
+      manager.handle(
+        'hook.webhook',
+        'webhook',
+        request('{}', { 'x-signature': sign('s', '{}'), 'x-delivery': 'd1' })
+      );
+    expect((await deliver()).status).toBe(500);
+    broken = false;
+    expect((await deliver()).body).toMatchObject({ status: 'started' });
+    await manager.idle();
+    expect(backend.getCallCount()).toBe(1);
+  });
+
+  it('takes up runs a stopped process left before it polls the schedules', async () => {
+    const store = new experimental_InMemoryRoutineStore();
+    const schedules = new InMemoryTimerStore();
+    await store.saveActiveRun({
+      runId: 'trg_digest.cron.1',
+      kind: 'routine',
+      eventId: 'evt_1',
+      triggerId: 'digest.cron',
+      routineId: 'digest',
+      source: 'cron',
+      at: 1,
+      threadId: 'thread_1',
+    });
+    const scheduleId = await schedules.schedule({
+      workflowId: 'routines',
+      runId: 'digest',
+      nodeId: 'cron',
+      firesAt: Date.now() - 1_000,
+      type: 'cron',
+      cron: '* * * * *',
+      trigger: { routineId: 'digest', triggerId: 'cron' },
+    });
+    await store.patchTriggerState('digest.cron', 'digest', { scheduleId });
+    const left = pending();
+    const { runtime: fake, started } = fakeRuntime({
+      durable: true,
+      recoverRuns: async (filter) => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return filter('trg_digest.cron.1')
+          ? [{ runId: 'trg_digest.cron.1', handle: handleOf(left.promise, () => undefined) }]
+          : [];
+      },
+    });
+    const manager = new experimental_TriggerManager(
+      {
+        agents: { worker: worker() },
+        store,
+        schedules,
+        pollInterval: 20,
+        routines: [routine({ triggers: [{ kind: 'cron', cron: '* * * * *' }] })],
+      },
+      fake
+    );
+    await manager.start();
+    await vi.waitFor(async () =>
+      expect((await manager.history()).some((run) => run.status === 'skipped')).toBe(true)
+    );
+    expect(started).toHaveLength(0);
+    left.settle.ok('done');
+    await manager.stop();
+  });
+});
+
 describe('a shared store', () => {
   it('runs the stores of other processes through the same patch', async () => {
     const store: RoutineStore = new experimental_InMemoryRoutineStore();

@@ -32,16 +32,29 @@ export interface SchedulerToolsConfig {
 /** How many tasks may wait at once unless `maxTasks` says otherwise */
 export const DEFAULT_MAX_TASKS = 20;
 
+/** Occurrences of a cron task compared to tell how often it runs */
+const FREQUENCY_SAMPLE = 10;
+const MINUTE = 60_000;
+
 /**
- * Why a cron expression fires a task more often than once a minute, undefined when it does not:
- * with 6 fields the seconds field must be one second
+ * Why a cron expression fires a task more often than once a minute, undefined when it does not.
+ * Read from occurrences the engine computes one after another, so a preset (`@secondly`) or a
+ * burst of seconds is caught whatever the expression looks like
  */
-function subMinuteProblem(expression: string): string | undefined {
-  const fields = expression.trim().split(/\s+/);
-  if (fields.length !== 6) return undefined;
-  return /^[0-5]?\d$/.test(fields[0])
-    ? undefined
-    : `A task runs at most once a minute: the seconds field of "${expression}" must be one second, such as 0`;
+function subMinuteProblem(
+  engine: CronEngine,
+  expression: string,
+  timezone: string | undefined
+): string | undefined {
+  let previous = engine.next(expression, Date.now(), timezone);
+  for (let at = 1; at < FREQUENCY_SAMPLE; at++) {
+    const next = engine.next(expression, previous, timezone);
+    if (next - previous < MINUTE) {
+      return `A task runs at most once a minute: "${expression}" runs ${Math.round((next - previous) / 1000)} s apart`;
+    }
+    previous = next;
+  }
+  return undefined;
 }
 
 const scheduleParams = z.object({
@@ -143,7 +156,7 @@ export function createSchedulerTools(config: SchedulerToolsConfig) {
         const problem = engineNow.problem(cronExpression, zone);
         if (problem) throw new Error(problem);
         cronExpr = engineNow.normalize(cronExpression);
-        const tooOften = subMinuteProblem(cronExpr);
+        const tooOften = subMinuteProblem(engineNow, cronExpr, zone);
         if (tooOften) throw new Error(tooOften);
         firesAt = engineNow.next(cronExpr, Date.now(), zone);
         type = 'cron';

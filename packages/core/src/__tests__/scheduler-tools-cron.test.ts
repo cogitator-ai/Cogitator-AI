@@ -43,7 +43,13 @@ describe('schedule_task with cron', () => {
 
   it('refuses a cron task that would run more often than once a minute', async () => {
     const { store, schedule } = tools();
-    for (const cron of ['*/10 * * * * *', '* 5 * * * *', '0,30 * * * * *']) {
+    for (const cron of [
+      '*/10 * * * * *',
+      '* 5 * * * *',
+      '0,30 * * * * *',
+      '@secondly',
+      '0,1 0 0 * * *',
+    ]) {
       await expect(schedule.execute({ description: 'Tick', cron }, context)).rejects.toThrow(
         /at most once a minute/
       );
