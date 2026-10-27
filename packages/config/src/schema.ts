@@ -997,6 +997,46 @@ export const CommandsConfigSchema = z.object({
   commands: z.record(z.string(), z.union([z.string(), CommandDefinitionSchema])).optional(),
 });
 
+/**
+ * Experimental. The plugins of the runtime, see `PluginsConfig`. Plugins in code, the MCP connector,
+ * a secret store of your own and the callbacks are given in code only
+ */
+export const PluginsConfigSchema = z.object({
+  dirs: z.array(z.string().min(1)).optional(),
+  installed: z.union([z.boolean(), z.object({ root: z.string().min(1) })]).optional(),
+  settings: z
+    .union([
+      z.boolean(),
+      z.object({
+        root: z.string().optional(),
+        userDirs: z.array(z.string()).optional(),
+        managedDirs: z.array(z.string()).optional(),
+        layers: z.array(z.enum(['managed', 'user', 'project', 'local'])).optional(),
+        trusted: z.boolean().optional(),
+        trustedRoots: z.array(z.string()).optional(),
+      }),
+    ])
+    .optional(),
+  enabled: z.record(z.string(), z.boolean()).optional(),
+  options: z
+    .record(
+      z.string(),
+      z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]))
+    )
+    .optional(),
+  permissions: z.object({ deny: z.array(z.string()).optional() }).optional(),
+  isolation: z
+    .object({
+      activateTimeoutMs: z.number().int().positive().optional(),
+      callTimeoutMs: z.number().int().positive().optional(),
+      maxHeapMb: z.number().int().positive().optional(),
+    })
+    .optional(),
+  watch: z
+    .union([z.boolean(), z.object({ debounceMs: z.number().int().nonnegative().optional() })])
+    .optional(),
+});
+
 /** What a run does when its thread has a run going on, see `CogitatorConfig.multitaskStrategy` */
 export const MultitaskStrategySchema = z.enum(['enqueue', 'reject', 'interrupt', 'rollback']);
 
@@ -1039,6 +1079,7 @@ export const CogitatorConfigSchema = z.object({
   instructions: InstructionsConfigSchema.optional(),
   subagents: SubagentsConfigSchema.optional(),
   commands: CommandsConfigSchema.optional(),
+  experimental_plugins: PluginsConfigSchema.optional(),
   budget: SessionBudgetConfigSchema.optional(),
   memory: MemoryConfigSchema.optional(),
   sandbox: SandboxConfigSchema.optional(),
