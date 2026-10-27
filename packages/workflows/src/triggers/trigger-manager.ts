@@ -158,6 +158,8 @@ export class DefaultTriggerManager implements ITriggerManager {
   private config: TriggerManagerConfig;
   private _started = false;
   private restoring?: Promise<void>;
+  /** Changes with every `start()` and `stop()`: a restore of an earlier start stops there */
+  private generation = 0;
 
   constructor(config: TriggerManagerConfig = {}) {
     this.config = config;
@@ -198,12 +200,16 @@ export class DefaultTriggerManager implements ITriggerManager {
   start(): Promise<void> {
     if (this._started && this.restoring) return this.restoring;
     this._started = true;
-    this.restoring = this.restore();
+    const generation = ++this.generation;
+    this.restoring = this.restore(generation);
     return this.restoring;
   }
 
-  private async restore(): Promise<void> {
-    for (const trigger of await this.store.list()) {
+  /** Brings back the stored triggers, unless `stop()` came while the store was read */
+  private async restore(generation: number): Promise<void> {
+    const stored = await this.store.list();
+    for (const trigger of stored) {
+      if (generation !== this.generation) return;
       try {
         this.activate(trigger);
         if (!trigger.enabled) this.deactivate(trigger);
@@ -271,6 +277,7 @@ export class DefaultTriggerManager implements ITriggerManager {
    */
   stop(): void {
     this._started = false;
+    this.generation++;
     this.restoring = undefined;
     this.cronExecutor.dispose();
     this.webhookExecutor.dispose();

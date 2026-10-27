@@ -294,6 +294,28 @@ describe('workflows on the core scheduler', () => {
     second.dispose();
   });
 
+  it('brings back no trigger when stop() comes while it reads its store', async () => {
+    const store = new InMemoryTriggerStore();
+    const first = createTriggerManager({ store, onTriggerFire: async () => 'run' });
+    await first.start();
+    await first.register({
+      workflowName: 'w',
+      type: 'cron',
+      config: cronTrigger('0 9 * * *', { runImmediately: true }),
+      enabled: true,
+    });
+    first.dispose();
+    const fired = vi.fn(async () => 'run');
+    const second = createTriggerManager({ store, onTriggerFire: fired });
+    const starting = second.start();
+    second.stop();
+    await starting;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(fired).not.toHaveBeenCalled();
+    expect(second.isRunning).toBe(false);
+    second.dispose();
+  });
+
   it('keeps triggers whose functions differ apart, and takes over one with the same functions', async () => {
     const store = new InMemoryTriggerStore();
     const manager = createTriggerManager({ store, onTriggerFire: async () => 'run' });
