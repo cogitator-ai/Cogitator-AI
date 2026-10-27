@@ -245,7 +245,7 @@ Pass the same options as `pool` to `SandboxManager`, `DockerSandboxExecutor` or 
 
 ## Docker Workspace
 
-`DockerWorkspace` is a [workspace](https://cogitator.app/docs/tools/workspace) whose commands run in one long-lived container: created on first use (or in `start()`), kept between commands, removed in `dispose()`. The root of a host workspace (a `LocalWorkspace` from `@cogitator-ai/core`) is bind-mounted at `/workspace`, files are read and written through the host workspace and its path guard (a path under `/workspace` is mapped to the root), `remove` and `rename` run in the container where no symlink reaches the host, and commands run with `docker exec` in the matching directory.
+`DockerWorkspace` is a [workspace](https://cogitator.app/docs/tools/workspace) whose commands run in one long-lived container: created on first use (or in `start()`), kept between commands, removed in `dispose()`. The root of a host workspace (a `LocalWorkspace` from `@cogitator-ai/core`) is bind-mounted at `/workspace`, files are read and written through the host workspace and its path guard (a path under `/workspace` is mapped to the root), `remove` and `rename` run in the container where no symlink reaches the host, and commands run with `docker exec` in the matching directory. A snapshot restore removes what goes in the container too, then the host writes what changed, and is refused with `BUSY` while a command runs in the container or on the host.
 
 ```typescript
 import { Agent, LocalWorkspace, workspaceTools } from '@cogitator-ai/core';
