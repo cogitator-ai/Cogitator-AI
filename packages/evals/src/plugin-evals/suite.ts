@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve } from 'node:path';
-import { errorText, isDirectory, isFile, isInside, plainRelativeProblem, posixPath } from './files';
+import { errorText, isDirectory, isFile, isInside, plainRelativePath, posixPath } from './files';
 import { globMatches } from './glob';
 import { loadMocks } from './mocks';
 import {
@@ -103,25 +103,28 @@ function manifestEvalDir(root: string): unknown {
 
 function evalDirOf(root: string, flag: string | undefined, warnings: string[]): string {
   if (flag !== undefined) {
-    const problem = plainRelativeProblem(flag);
-    if (problem) {
+    const checked = plainRelativePath(flag);
+    if ('problem' in checked) {
       throw new PluginEvalError(
-        `--eval-dir ${flag} ${problem}: give a relative path of plain directory names such as qa or quality/evals`
+        `--eval-dir ${flag} ${checked.problem}: give a relative path of plain directory names such as qa or quality/evals`
       );
     }
-    return flag;
+    return checked.path;
   }
   const fromManifest = manifestEvalDir(root);
   if (fromManifest === undefined) return 'evals';
-  const problem =
-    typeof fromManifest === 'string' ? plainRelativeProblem(fromManifest) : 'is not a string';
-  if (problem) {
+  const value = Array.isArray(fromManifest) ? (fromManifest as unknown[])[0] : fromManifest;
+  const checked =
+    typeof value === 'string'
+      ? plainRelativePath(value)
+      : { problem: Array.isArray(fromManifest) ? 'has no path first' : 'is not a string' };
+  if ('problem' in checked) {
     warnings.push(
-      `Warning: experimental.evals ${JSON.stringify(fromManifest)} in plugin.json ${problem}, using evals/`
+      `Warning: experimental.evals ${JSON.stringify(fromManifest)} in plugin.json ${checked.problem}, using evals/`
     );
     return 'evals';
   }
-  return fromManifest as string;
+  return checked.path;
 }
 
 /** Resolves the target, finds the eval directory and loads every case the filters keep */
@@ -202,9 +205,9 @@ export async function loadSuite(options: SuiteOptions): Promise<LoadedSuite> {
       names.add(loaded.name);
       cases.push({ name: loaded.name, path: casePath, case: loaded });
     } catch (error) {
-      const name = basename(dir);
-      if (!keep(name, undefined, options)) continue;
-      cases.push({ name, path: casePath, error: errorText(error) });
+      const loose = looseIdentity(dir);
+      if (!keep(loose.name, loose.tags, options)) continue;
+      cases.push({ name: loose.name, path: casePath, error: errorText(error) });
     }
   }
   if (cases.length === 0) {
@@ -218,11 +221,51 @@ export async function loadSuite(options: SuiteOptions): Promise<LoadedSuite> {
   return { pluginRoot, evalDir, resultsDir, named, cases, warnings };
 }
 
+/**
+ * Whether the filters keep a case. `tags` is undefined for a case whose tags could not be read:
+ * a tag filter keeps it, so a broken case still counts and fails the run
+ */
 function keep(name: string, tags: readonly string[] | undefined, options: SuiteOptions): boolean {
   if (options.caseGlob !== undefined && !globMatches(options.caseGlob, name)) return false;
   const wanted = options.tags ?? [];
-  if (wanted.length === 0) return true;
-  return tags?.some((tag) => wanted.includes(tag)) ?? false;
+  if (wanted.length === 0 || tags === undefined) return true;
+  return tags.some((tag) => wanted.includes(tag));
+}
+
+function stringList(value: unknown): string[] | undefined {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string')
+    ? value
+    : undefined;
+}
+
+/**
+ * The name and tags of a case that did not load, as far as its files can still be read: the
+ * `prompt.md` frontmatter over `case.yaml`, the directory name without either
+ */
+function looseIdentity(dir: string): { name: string; tags?: string[] } {
+  let name: string | undefined;
+  let rawTags: unknown;
+  let readable = true;
+  const yamlPath = join(dir, 'case.yaml');
+  if (isFile(yamlPath)) {
+    const parsed = readYaml(readFileSync(yamlPath, 'utf8'));
+    if ('error' in parsed || !isRecord(parsed.value)) readable = false;
+    else {
+      if (typeof parsed.value.name === 'string') name = parsed.value.name;
+      if (parsed.value.tags !== undefined) rawTags = parsed.value.tags;
+    }
+  }
+  const promptPath = join(dir, 'prompt.md');
+  if (isFile(promptPath)) {
+    const parts = readMarkdown(readFileSync(promptPath, 'utf8'));
+    if ('error' in parts) readable = false;
+    else {
+      if (typeof parts.fields.name === 'string') name = parts.fields.name;
+      if (parts.fields.tags !== undefined) rawTags = parts.fields.tags;
+    }
+  }
+  const tags = rawTags !== undefined ? stringList(rawTags) : readable ? [] : undefined;
+  return { name: name?.trim() || basename(dir), ...(tags && { tags }) };
 }
 
 function isCaseDir(dir: string): boolean {
@@ -372,17 +415,19 @@ export function loadCase(
     }
   }
   const addDirs = (context.add_dirs ?? []).map((added) => {
-    const problem = plainRelativeProblem(added);
-    if (problem) throw new Error(`invalid case.yaml: context.add_dirs ${added} ${problem}`);
-    if (!isDirectory(join(dir, added))) {
+    const checked = plainRelativePath(added);
+    if ('problem' in checked) {
+      throw new Error(`invalid case.yaml: context.add_dirs ${added} ${checked.problem}`);
+    }
+    if (!isDirectory(join(dir, checked.path))) {
       throw new Error(
         `invalid case.yaml: context.add_dirs ${added} is not a directory of the case`
       );
     }
-    return posixPath(added).replace(/\/+$/, '');
+    return checked.path;
   });
 
-  let mocks: PluginEvalCase['mocks'];
+  let mocks: ReturnType<typeof loadMocks>;
   try {
     mocks = loadMocks(suiteMocks, dir);
   } catch (error) {
@@ -416,7 +461,8 @@ export function loadCase(
       addDirs,
     },
     graders,
-    mocks,
+    mocks: mocks.mocks,
+    mockProblems: mocks.problems,
   };
 }
 

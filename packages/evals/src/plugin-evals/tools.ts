@@ -10,7 +10,6 @@ const CLAUDE_NAME_OF: Readonly<Record<string, string>> = {
   edit_file: 'Edit',
   run_command: 'Bash',
   use_skill: 'Skill',
-  read_skill_file: 'Skill',
   write_todos: 'TodoWrite',
   agent: 'Agent',
   send_message: 'SendMessage',

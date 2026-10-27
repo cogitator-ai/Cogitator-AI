@@ -68,6 +68,13 @@ class ScriptedBackend extends MockLLMBackend {
     if (user.includes('Keep going')) {
       return this.call('use_skill', { skill: 'greeter:house-greeting' });
     }
+    if (user.includes('Read the skill notes')) {
+      if (results.length === 0) return this.call('use_skill', { skill: 'demo:notes' });
+      if (results.length === 1) {
+        return this.call('read_skill_file', { skill: 'demo:notes', path: 'notes.md' });
+      }
+      return this.answer(textOf(results.at(-1)));
+    }
     if (user.includes('Run the commands')) {
       const commands = ['echo hi', 'touch stray.txt'];
       const next = commands[results.length];
@@ -630,5 +637,143 @@ describe('experimental_runPluginEvals suites', () => {
     await expect(
       experimental_runPluginEvals(options(backend, { target: 'missing', pluginsRoot }))
     ).rejects.toThrow('no installed plugin is named missing');
+  });
+
+  it('judges each case with its own agent model when no judge model is given', async () => {
+    const root = plugin({
+      'evals/own-model/prompt.md': '---\nruns: 1\nmodel: mock/case-model\n---\nGreet Ada.\n',
+      'evals/own-model/graders/judged.md': '---\ntype: llm\n---\nPASS if it greets Ada.\n',
+    });
+    const judgedWith = (backend: ScriptedBackend) =>
+      backend.requests
+        .filter((request) =>
+          textOf(request.messages.find((m) => m.role === 'user')).includes('You grade one run')
+        )
+        .map((request) => request.model);
+
+    const onlyCase = new ScriptedBackend();
+    const run = await experimental_runPluginEvals({
+      target: root,
+      llm: { backends: { mock: onlyCase } },
+      ablation: 'none',
+      outputDir: tempDir(),
+    });
+    expect(run.result.cases[0]?.error).toBeUndefined();
+    expect(judgedWith(onlyCase)).toEqual(['case-model', 'case-model', 'case-model']);
+
+    const withDefault = new ScriptedBackend();
+    await experimental_runPluginEvals(options(withDefault, { target: root, ablation: 'none' }));
+    expect(new Set(judgedWith(withDefault))).toEqual(new Set(['case-model']));
+
+    const explicit = new ScriptedBackend();
+    await experimental_runPluginEvals(
+      options(explicit, { target: root, ablation: 'none', judgeModel: 'mock/judge' })
+    );
+    expect(new Set(judgedWith(explicit))).toEqual(new Set(['judge']));
+  });
+
+  it('accepts eval directories written with ./ and a list of them in plugin.json', async () => {
+    const backend = new ScriptedBackend();
+    const hello = (dir: string) => ({
+      [`${dir}/hello/prompt.md`]: '---\nruns: 1\n---\nGreet Ada.\n',
+      [`${dir}/hello/graders/hello.md`]: GRADER,
+    });
+    const dotted = plugin({
+      '.claude-plugin/plugin.json': '{"name":"demo","experimental":{"evals":"./quality/evals"}}',
+      ...hello('quality/evals'),
+    });
+    const first = await experimental_runPluginEvals(
+      options(backend, { target: dotted, ablation: 'none' })
+    );
+    expect(first.result.evalDir).toBe(join(dotted, 'quality', 'evals'));
+    expect(first.result.warnings).toEqual([]);
+
+    const listed = plugin({
+      '.claude-plugin/plugin.json': '{"name":"demo","experimental":{"evals":["./qa","other"]}}',
+      ...hello('qa'),
+    });
+    const second = await experimental_runPluginEvals(
+      options(backend, { target: listed, ablation: 'none' })
+    );
+    expect(second.result.evalDir).toBe(join(listed, 'qa'));
+
+    const flagged = await experimental_runPluginEvals(
+      options(backend, { target: listed, ablation: 'none', evalDir: './qa' })
+    );
+    expect(flagged.result.evalDir).toBe(join(listed, 'qa'));
+    await expect(
+      experimental_runPluginEvals(options(backend, { target: listed, evalDir: './qa/../..' }))
+    ).rejects.toThrow('contains ..');
+  });
+
+  it('fails only the cases whose plugin declares a suite mock server that cannot be used', async () => {
+    const root = plugin({
+      '.mcp.json': '{"mcpServers":{"tracker":{"command":"tracker-mcp"}}}',
+      'vendor/plain/.claude-plugin/plugin.json': '{"name":"plain"}',
+      'evals/mocks/tracker/ask.md': '---\ntype: agent\n---\nAnswer as the tracker.\n',
+      'evals/mocks/elsewhere/_server.md': '---\ntools: [a]\n---\nAnswer.\n',
+      'evals/uses-tracker/prompt.md': '---\nruns: 1\n---\nGreet Ada.\n',
+      'evals/uses-tracker/graders/hello.md': GRADER,
+      'evals/plain/prompt.md': '---\nruns: 1\nplugins: ["../../vendor/plain"]\n---\nGreet Ada.\n',
+      'evals/plain/graders/hello.md': GRADER,
+    });
+    const backend = new ScriptedBackend();
+    const { result } = await experimental_runPluginEvals(
+      options(backend, { target: root, ablation: 'none' })
+    );
+    const byName = Object.fromEntries(result.cases.map((c) => [c.name, c]));
+    expect(byName['uses-tracker']?.error).toMatch(
+      /^invalid mock: .*ask\.md: type: agent mocks are not supported/
+    );
+    expect(byName.plain?.error).toBeUndefined();
+    expect(byName.plain?.aggregates.passed).toBe(true);
+    expect(byName.plain?.notices).toContainEqual(
+      expect.stringMatching(
+        /^mocks\/elsewhere left out: .*_server\.md agent mocks are not supported/
+      )
+    );
+    expect(result).toMatchObject({ loadErrors: 1, outcome: 'failed' });
+  });
+
+  it('counts a case that fails to load under --tag unless its tags are known not to match', async () => {
+    const root = plugin({
+      'evals/broken-smoke/prompt.md': '---\ntags: [smoke]\ncolour: red\n---\nGreet Ada.\n',
+      'evals/broken-smoke/graders/hello.md': GRADER,
+      'evals/unreadable/prompt.md': '---\ntags: [smoke\n---\nGreet Ada.\n',
+      'evals/broken-other/prompt.md': '---\ntags: [other]\ncolour: red\n---\nGreet Ada.\n',
+      'evals/broken-untagged/prompt.md': '---\ncolour: red\n---\nGreet Ada.\n',
+      'evals/fine/prompt.md': '---\ntags: [smoke]\nruns: 1\n---\nGreet Ada.\n',
+      'evals/fine/graders/hello.md': GRADER,
+    });
+    const backend = new ScriptedBackend();
+    const { result } = await experimental_runPluginEvals(
+      options(backend, { target: root, ablation: 'none', tags: ['smoke'] })
+    );
+    expect(result.cases.map((c) => c.name).sort()).toEqual(['broken-smoke', 'fine', 'unreadable']);
+    expect(result).toMatchObject({ loadErrors: 2, outcome: 'failed' });
+  });
+
+  it('counts only use_skill calls as Skill, not read_skill_file', async () => {
+    const root = plugin({
+      'skills/notes/SKILL.md': '---\nname: notes\ndescription: Notes.\n---\nRead notes.md.\n',
+      'skills/notes/notes.md': 'Ahoy from the notes\n',
+      'evals/notes/prompt.md': '---\nruns: 1\nallowed_tools: [Skill]\n---\nRead the skill notes.\n',
+      'evals/notes/graders/one-skill.md':
+        '---\ntype: tool_used\ntool: Skill\nmin: 1\nmax: 1\n---\n',
+      'evals/notes/graders/read-file.md': '---\ntype: tool_used\ntool: read_skill_file\n---\n',
+      'evals/notes/graders/order.md':
+        '---\ntype: tool_order\nbefore: Skill\nafter: read_skill_file\n---\n',
+    });
+    const backend = new ScriptedBackend();
+    const { result } = await experimental_runPluginEvals(
+      options(backend, { target: root, ablation: 'none' })
+    );
+    const run = result.cases[0]?.arms.with[0];
+    expect(run?.toolCalls.map((call) => call.name)).toEqual(['Skill', 'read_skill_file']);
+    expect(run?.graders.map((g) => [g.name, g.passed])).toEqual([
+      ['one-skill', true],
+      ['order', true],
+      ['read-file', true],
+    ]);
   });
 });

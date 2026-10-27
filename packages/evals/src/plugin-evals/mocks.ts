@@ -27,54 +27,86 @@ const EXPECT_TYPES: ReadonlySet<string> = new Set([
   'null',
 ]);
 
-/** The mocks of one directory (`evals/mocks/` or a case's `mocks/`), by server and tool */
-type MockFiles = Map<string, Map<string, PluginEvalMockTool>>;
+/** The mocks of one server directory: its tools, and the files that cannot be used, by file name */
+interface ServerMocks {
+  tools: Map<string, PluginEvalMockTool>;
+  problems: Map<string, string>;
+}
+
+/** The mocks of a case, and why the servers that cannot be used cannot, by server */
+export interface CaseMocks {
+  mocks: Record<string, PluginEvalMockTool[]>;
+  problems: Record<string, string>;
+}
 
 /**
  * The mocked tools of a case: the suite's mocks with the case's own over them, file by file.
- * Throws with the file and the reason when a mock cannot be used
+ * A file of the case's own `mocks/` that cannot be used throws with the file and the reason, since
+ * the case asked for it. A suite file that cannot be used is reported in `problems` under its
+ * server, so it fails only the cases that use that server
  */
-export function loadMocks(
-  suiteDir: string | undefined,
-  caseDir: string
-): Record<string, PluginEvalMockTool[]> {
-  const merged: MockFiles = new Map();
-  for (const dir of [suiteDir, join(caseDir, 'mocks')]) {
+export function loadMocks(suiteDir: string | undefined, caseDir: string): CaseMocks {
+  const merged = new Map<string, ServerMocks>();
+  const own = join(caseDir, 'mocks');
+  for (const dir of [suiteDir, own]) {
     if (dir === undefined || !isDirectory(dir)) continue;
-    for (const [server, tools] of readMockDir(dir)) {
-      const into = merged.get(server) ?? new Map<string, PluginEvalMockTool>();
-      for (const [name, tool] of tools) into.set(name, tool);
+    for (const [server, found] of readMockDir(dir)) {
+      if (dir === own) {
+        const [problem] = found.problems.values();
+        if (problem !== undefined) throw new Error(problem);
+      }
+      const into = merged.get(server) ?? { tools: new Map(), problems: new Map() };
+      for (const [name, tool] of found.tools) {
+        into.tools.set(name, tool);
+        into.problems.delete(`${name}.md`);
+      }
+      for (const [file, problem] of found.problems) into.problems.set(file, problem);
       merged.set(server, into);
     }
   }
-  return Object.fromEntries(
-    [...merged].map(([server, tools]) => [
-      server,
-      [...tools.values()].sort((a, b) => a.tool.localeCompare(b.tool)),
-    ])
-  );
+  const mocks: Record<string, PluginEvalMockTool[]> = {};
+  const problems: Record<string, string> = {};
+  for (const [server, found] of merged) {
+    if (found.problems.size > 0) {
+      problems[server] = [...found.problems.values()].join(', ');
+      continue;
+    }
+    mocks[server] = [...found.tools.values()].sort((a, b) => a.tool.localeCompare(b.tool));
+  }
+  return { mocks, problems };
 }
 
-function readMockDir(dir: string): MockFiles {
-  const servers: MockFiles = new Map();
+function readMockDir(dir: string): Map<string, ServerMocks> {
+  const servers = new Map<string, ServerMocks>();
   for (const server of readdirSync(dir).sort()) {
     const serverDir = join(dir, server);
     if (server.startsWith('.') || !isDirectory(serverDir)) continue;
-    const schemas = readToolsList(serverDir);
-    const tools = new Map<string, PluginEvalMockTool>();
+    const found: ServerMocks = { tools: new Map(), problems: new Map() };
+    servers.set(server, found);
+    let schemas = new Map<string, ToolSchemaEntry>();
+    try {
+      schemas = readToolsList(serverDir);
+    } catch (error) {
+      found.problems.set('_tools.json', errorText(error));
+    }
     for (const file of readdirSync(serverDir).sort()) {
       const path = join(serverDir, file);
       if (file === '_server.md') {
-        throw new Error(
+        found.problems.set(
+          file,
           `${path}: _server.md agent mocks are not supported by Cogitator's plugin evals, give each tool a fixed mock file`
         );
+        continue;
       }
       if (!file.endsWith('.md') || file.startsWith('_') || file.startsWith('.')) continue;
       if (!statSync(path).isFile()) continue;
       const tool = file.slice(0, -'.md'.length);
-      tools.set(tool, readMockFile(path, server, tool, serverDir, schemas.get(tool)));
+      try {
+        found.tools.set(tool, readMockFile(path, server, tool, serverDir, schemas.get(tool)));
+      } catch (error) {
+        found.problems.set(file, errorText(error));
+      }
     }
-    servers.set(server, tools);
   }
   return servers;
 }

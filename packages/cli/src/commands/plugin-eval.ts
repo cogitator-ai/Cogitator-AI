@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Command, type CommanderError } from 'commander';
 import chalk from 'chalk';
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -42,6 +42,15 @@ export interface PluginEvalFlags {
   keepTemp?: boolean;
   verbose?: boolean;
   config?: string;
+  /** Accepted for Claude Code's command lines: there is no trust prompt */
+  trustPlugin?: boolean;
+  /** `--no-publish` sets it false. Accepted for Claude Code's command lines: the report stays local */
+  publish?: boolean;
+  /** Accepted for Claude Code's command lines: the report stays local */
+  publishReport?: boolean;
+  /** `record` only: mocked MCP tools answer from their files */
+  mocks?: string;
+  allowRealServers?: boolean;
 }
 
 /** What `runPluginEval` runs the suite with, replaceable in tests */
@@ -96,6 +105,18 @@ export function pluginEvalOptions(
   flags: PluginEvalFlags,
   env: NodeJS.ProcessEnv
 ): PluginEvalOptions {
+  const realServers =
+    "real plugin MCP servers are not started by Cogitator's plugin evals: mock their tools under mocks/<server>/<tool>.md";
+  if (flags.mocks !== undefined && flags.mocks !== 'record') {
+    throw new CommandError(
+      flags.mocks === 'off'
+        ? `--mocks off is not supported, ${realServers}`
+        : `--mocks takes record, got ${flags.mocks}`
+    );
+  }
+  if (flags.allowRealServers) {
+    throw new CommandError(`--allow-real-servers is not supported, ${realServers}`);
+  }
   if (typeof flags.json === 'string' && !flags.json.endsWith('.json')) {
     throw new CommandError(`--json output path must end in .json, got ${flags.json}`, {
       hints: ['Put the target before --json, as in: cogitator plugin eval . --json'],
@@ -341,8 +362,25 @@ export async function runPluginEval(
   return terminated ? PLUGIN_EVAL_EXIT.terminated : exitCodeOf(result);
 }
 
+/**
+ * A command whose command-line errors (an unknown option, a missing or wrong value) exit 1 as
+ * `CommandError`s: exit 2 means a partial run for `claude plugin eval`, so it is never a usage error
+ * here. Commander's own message is not printed, the entry point reports the error once
+ */
+class PluginEvalCommand extends Command {
+  override exitOverride(callback?: (error: CommanderError) => void): this {
+    return super.exitOverride((error) => {
+      if (error.exitCode === 0) {
+        if (callback) return callback(error);
+        throw error;
+      }
+      throw new CommandError(error.message.replace(/^error: /, ''), { cause: error });
+    });
+  }
+}
+
 /** `eval`: runs the eval cases of a plugin, mounted under `cogitator plugin` */
-export const pluginEvalCommand = new Command('eval')
+export const pluginEvalCommand = new PluginEvalCommand('eval')
   .description(
     "Run a plugin's eval cases (Claude Code's plugin eval format) with and without the plugin, and score them"
   )
@@ -388,6 +426,22 @@ export const pluginEvalCommand = new Command('eval')
   .option('--keep-temp', "keep every run's temporary directory and print its path")
   .option('--verbose', "print every grader's explanation")
   .option('-c, --config <path>', 'config file with the LLM providers (default: cogitator.yml)')
+  .option('--trust-plugin', 'accepted for Claude Code command lines, there is no trust prompt')
+  .option('--no-publish', 'accepted for Claude Code command lines, the report always stays local')
+  .option(
+    '--publish-report',
+    'accepted for Claude Code command lines, the report always stays local'
+  )
+  .option(
+    '--mocks <mode>',
+    'record (the only mode): mocked MCP tools answer from their files',
+    'record'
+  )
+  .option(
+    '--allow-real-servers',
+    'not supported: real plugin MCP servers are not started, the command exits 1'
+  )
+  .configureOutput({ outputError: () => undefined })
   .addHelpText(
     'after',
     examplesHelp([

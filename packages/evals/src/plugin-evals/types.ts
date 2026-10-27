@@ -146,6 +146,11 @@ export interface PluginEvalCase {
   graders: PluginEvalGrader[];
   /** Mocked tools by server, the case's own over the suite's */
   mocks: Record<string, PluginEvalMockTool[]>;
+  /**
+   * Why a suite mock server cannot be used, by server: it fails the case only when the case uses
+   * the server, that is when one of its plugins declares it
+   */
+  mockProblems: Record<string, string>;
 }
 
 /** A judge's vote on an `llm` or `baseline` grader */
@@ -326,7 +331,7 @@ export interface PluginEvalOptions {
   llm: CogitatorConfig['llm'];
   /** Model of the agent under test, over each case's `model` and `llm.defaultModel` */
   model?: string;
-  /** Model of `llm` and `baseline` graders (default: the agent's model) */
+  /** Model of `llm` and `baseline` graders (default: each case's agent model) */
   judgeModel?: string;
   /** Runs per case per arm, 1 to 50, over each case's `runs` */
   runs?: number;

@@ -8,16 +8,17 @@ export function isInside(root: string, path: string): boolean {
 }
 
 /**
- * Why `path` is not a relative path of plain directory names (`qa`, `quality/evals`),
- * undefined when it is one
+ * `path` as a relative path of plain directory names (`qa`, `./quality/evals`), with `.`
+ * segments dropped, or why it is not one: absolute, holding `..`, or empty
  */
-export function plainRelativeProblem(path: string): string | undefined {
-  if (isAbsolute(path) || /^[A-Za-z]:/.test(path)) return 'is absolute';
-  const segments = path.split(/[\\/]/).filter((segment) => segment !== '');
-  if (segments.length === 0) return 'is empty';
-  if (segments.some((segment) => segment === '..')) return 'contains ..';
-  if (segments.some((segment) => segment === '.')) return 'contains .';
-  return undefined;
+export function plainRelativePath(path: string): { path: string } | { problem: string } {
+  if (isAbsolute(path) || /^[A-Za-z]:/.test(path) || /^[\\/]/.test(path)) {
+    return { problem: 'is absolute' };
+  }
+  const segments = path.split(/[\\/]/).filter((segment) => segment !== '' && segment !== '.');
+  if (segments.some((segment) => segment === '..')) return { problem: 'contains ..' };
+  if (segments.length === 0) return { problem: 'is empty' };
+  return { path: segments.join('/') };
 }
 
 export function isDirectory(path: string): boolean {

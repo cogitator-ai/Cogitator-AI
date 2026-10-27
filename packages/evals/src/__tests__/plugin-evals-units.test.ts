@@ -87,7 +87,7 @@ describe('mocked tools', () => {
         '[{"name":"list","description":"List issues","inputSchema":{"type":"object","properties":{}}}]',
     });
     const caseDir = mocksDir({ 'mocks/tracker/create.md': '---\nerror: true\n---\ncase create' });
-    const mocks = loadMocks(suite, caseDir);
+    const { mocks } = loadMocks(suite, caseDir);
     expect(mocks.tracker?.map((m) => [m.tool, m.body, m.error])).toEqual([
       ['create', 'case create', true],
       ['list', 'suite list', false],

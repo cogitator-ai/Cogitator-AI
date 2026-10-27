@@ -4,12 +4,14 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { experimental_runPluginEvals, type PluginEvalOptions } from '@cogitator-ai/evals';
 import type { ChatRequest, ChatResponse, ChatStreamChunk, LLMBackend } from '@cogitator-ai/types';
+import { createProgram } from '../program.js';
 import {
   pluginEvalCommand,
   pluginEvalOptions,
   runPluginEval,
   summaryLines,
   type PluginEvalDependencies,
+  type PluginEvalFlags,
 } from '../commands/plugin-eval.js';
 
 const dirs: string[] = [];
@@ -322,5 +324,61 @@ describe('cogitator plugin eval', () => {
       ])
     );
     expect(pluginEvalCommand.name()).toBe('eval');
+  });
+
+  it('exits 1, never 2, on command-line errors', async () => {
+    for (const argv of [['--bogus'], ['--runs'], ['.', '--ablation']]) {
+      await expect(
+        createProgram().parseAsync(['node', 'cogitator', 'plugin', 'eval', ...argv])
+      ).rejects.toMatchObject({ name: 'CommandError', exitCode: 1 });
+    }
+    await expect(
+      createProgram().parseAsync(['node', 'cogitator', 'plugin', 'eval', '--bogus'])
+    ).rejects.toThrow("unknown option '--bogus'");
+  });
+
+  it('refuses real MCP servers with exit 1 and a clear reason', async () => {
+    const root = pluginProject();
+    for (const flags of [{ mocks: 'off' }, { allowRealServers: true }]) {
+      await expect(runPluginEval(root, flags, dependencies(backend()))).rejects.toMatchObject({
+        exitCode: 1,
+        message: expect.stringContaining(
+          "real plugin MCP servers are not started by Cogitator's plugin evals"
+        ),
+      });
+    }
+  });
+
+  it("runs Claude Code's documented CI command line unchanged", async () => {
+    const root = pluginProject();
+    quietConsole();
+    const out = join(root, 'results.json');
+    const argv = [
+      root,
+      '--trust-plugin',
+      '--json',
+      out,
+      '--threshold',
+      '0',
+      '--model',
+      'mock/agent',
+      '--judge-model',
+      'mock/agent',
+      '--no-publish',
+      '--max-cost-usd',
+      '20',
+    ];
+    const { operands, unknown } = pluginEvalCommand.parseOptions(argv);
+    expect(unknown).toEqual([]);
+    expect(operands).toEqual([root]);
+    const flags = pluginEvalCommand.opts<PluginEvalFlags>();
+    expect(flags).toMatchObject({ trustPlugin: true, publish: false, mocks: 'record', json: out });
+    const code = await runPluginEval(
+      root,
+      { ...flags, outputDir: join(root, 'out') },
+      dependencies(backend())
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(readFileSync(out, 'utf8'))).toMatchObject({ outcome: 'passed' });
   });
 });

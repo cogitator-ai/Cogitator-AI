@@ -156,9 +156,7 @@ function excludedGraders(
     if (grader.arm === 'both') return false;
     if (grader.arm === 'with-only') return true;
     if (grader.type === 'tool_used') {
-      return (
-        grader.tool === 'Skill' || grader.tool === 'use_skill' || grader.tool === 'read_skill_file'
-      );
+      return grader.tool === 'Skill' || grader.tool === 'use_skill';
     }
     if (!pluginMocksOnly) return false;
     if (grader.type === 'regex') return grader.target === 'mock_calls';
@@ -178,7 +176,7 @@ interface PlannedCase {
   grants: ToolGrant[];
   excluded: Set<string>;
   runs: number;
-  model: string | undefined;
+  model: string;
   pluginServers: Map<string, Set<string>>;
   notices: string[];
 }
@@ -298,6 +296,17 @@ export async function experimental_runPluginEvals(
       caseResult.aggregates.score = 0;
       continue;
     }
+    const usedProblems = Object.entries(evalCase.mockProblems).filter(([server]) =>
+      declared(server)
+    );
+    if (usedProblems.length > 0) {
+      caseResult.error = `invalid mock: ${usedProblems.map(([, problem]) => problem).join(', ')}`;
+      caseResult.aggregates.score = 0;
+      continue;
+    }
+    for (const [server, problem] of Object.entries(evalCase.mockProblems)) {
+      if (!declared(server)) notices.push(`mocks/${server} left out: ${problem}`);
+    }
     if (model === undefined) {
       throw new PluginEvalError(
         'No model for the agent under test: pass --model, set model in the case, or llm.defaultModel in the configuration'
@@ -347,17 +356,18 @@ export async function experimental_runPluginEvals(
   }
 
   const needsJudge = plans.some((plan) => plan.case.graders.some(isPaidGrader));
-  const judgeModel = options.judgeModel ?? options.model ?? input.llm?.defaultModel;
-  if (needsJudge && judgeModel === undefined) {
-    throw new PluginEvalError(
-      'No judge model for the llm and baseline graders: pass --judge-model or --model, or set llm.defaultModel'
-    );
-  }
   const judgeRuntime = needsJudge ? new core.Cogitator({ llm: input.llm }) : undefined;
-  const judge: PluginEvalJudge | undefined =
-    judgeRuntime && judgeModel !== undefined
-      ? createPluginEvalJudge(judgeRuntime, judgeModel)
-      : undefined;
+  const judges = new Map<string, PluginEvalJudge>();
+  const judgeOf = (plan: PlannedCase): PluginEvalJudge | undefined => {
+    if (!judgeRuntime) return undefined;
+    const model = options.judgeModel ?? plan.model;
+    let judge = judges.get(model);
+    if (!judge) {
+      judge = createPluginEvalJudge(judgeRuntime, model);
+      judges.set(model, judge);
+    }
+    return judge;
+  };
 
   const jobs: Job[] = [];
   for (const plan of plans) {
@@ -388,6 +398,7 @@ export async function experimental_runPluginEvals(
         const excluded = plan.excluded.has(grader.name);
         if (excluded && arm === 'without') continue;
         const base = { name: grader.name, type: grader.type, weight: grader.weight };
+        const judge = isPaidGrader(grader) ? judgeOf(plan) : undefined;
         if (isPaidGrader(grader) && (ceilingReached() || !judge)) {
           skippedPaid = true;
           graders.push({
@@ -553,7 +564,7 @@ export async function experimental_runPluginEvals(
       ...(options.runs !== undefined && { runs: options.runs }),
       concurrency: options.concurrency,
       ...(options.model !== undefined && { model: options.model }),
-      ...(judgeModel !== undefined && { judgeModel }),
+      ...(options.judgeModel !== undefined && { judgeModel: options.judgeModel }),
       ...(options.ablation !== undefined && { ablation: options.ablation }),
       threshold: options.threshold,
       ...(options.maxCostUsd !== undefined && { maxCostUsd: options.maxCostUsd }),
