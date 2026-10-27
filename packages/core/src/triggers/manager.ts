@@ -1042,7 +1042,7 @@ export class experimental_TriggerManager {
       threadId,
       runId,
       ...(userId !== undefined && { userId }),
-      ...(this.durable && { durable: true }),
+      durable: this.durable,
       inputMetadata: { trigger: event },
     });
     const retried =
@@ -1446,7 +1446,7 @@ export class experimental_TriggerManager {
           threadId,
           runId,
           ...(routine.userId !== undefined && { userId: routine.userId }),
-          ...(this.durable && { durable: true }),
+          durable: this.durable,
           inputMetadata: { trigger: event, routine: routine.id },
         });
         run.handle = handle;
@@ -1765,7 +1765,7 @@ export class experimental_TriggerManager {
       this.runtime.resume(agent, threadId, run.runId, {
         ...resumeAnswer(answer),
         signal: controller.signal,
-        ...(this.durable && { durable: true }),
+        durable: this.durable,
         ...(registered.routine.userId !== undefined && { userId: registered.routine.userId }),
       })
     );
@@ -1834,7 +1834,7 @@ export class experimental_TriggerManager {
     const taken = await this.takeUp(item.id, () =>
       this.runtime.resume(agent, threadId, task.runId, {
         ...resumeAnswer(answer),
-        ...(this.durable && { durable: true }),
+        durable: this.durable,
         ...(item.userId !== undefined && { userId: item.userId }),
       })
     );

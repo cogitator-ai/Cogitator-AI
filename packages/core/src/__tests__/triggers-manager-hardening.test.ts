@@ -842,6 +842,40 @@ describe('second review', () => {
     await manager.idle();
   });
 
+  it('turns durable off for its runs when the manager is not durable on a durable runtime', async () => {
+    const { runtime: fake, started, resumed } = fakeRuntime({ durable: true });
+    const manager = new experimental_TriggerManager(
+      {
+        agents: { worker: worker() },
+        durable: false,
+        routines: [routine({ triggers: [{ kind: 'api', token: 't' }] })],
+      },
+      fake
+    );
+    await manager.start();
+    await manager.handle(
+      'digest.api',
+      'fire',
+      request({ text: 'x' }, { authorization: 'Bearer t' })
+    );
+    expect(started[0].options.durable).toBe(false);
+    const item = await manager.inbox.add({
+      kind: 'approval',
+      title: 'Approve',
+      summary: '',
+      routineId: 'digest',
+      triggerId: 'digest.api',
+      runId: 'trg_digest.api.two',
+      threadId: 'thread_two',
+    });
+    await manager.respond(item.id, { defaultDecision: { approved: true } });
+    expect(resumed[0].options.durable).toBe(false);
+    started[0].settle.ok('done');
+    resumed[0].settle.ok('done');
+    await manager.idle();
+    await manager.stop();
+  });
+
   it('keeps a durable run resumed by an answer for recovery', async () => {
     const store = new experimental_InMemoryRoutineStore();
     const { runtime: fake, resumed } = fakeRuntime({ durable: true });
