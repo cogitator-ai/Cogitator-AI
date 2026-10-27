@@ -128,6 +128,8 @@ interface DockerWorkspaceState {
   running: number;
   /** Process groups commands left in the background (`background: 'keep'`), while alive */
   kept: Set<number>;
+  /** Restores changing the files now: commands are refused meanwhile */
+  restoring: number;
 }
 
 /**
@@ -193,7 +195,7 @@ export class DockerWorkspace implements Workspace {
     this.id = options.id ?? options.host.id;
     this.workdir = posix.resolve('/', options.workdir ?? DEFAULT_WORKDIR);
     this.cwd = normalizeCwd(options.cwd ?? options.host.cwd);
-    this.state = { disposed: false, running: 0, kept: new Set() };
+    this.state = { disposed: false, running: 0, kept: new Set(), restoring: 0 };
     const host = options.host;
     if (host.snapshot && host.restore) {
       this.snapshot = (snapshotOptions) => host.snapshot!(snapshotOptions);
@@ -400,6 +402,12 @@ export class DockerWorkspace implements Workspace {
 
   async exec(command: string, options: WorkspaceExecOptions = {}): Promise<WorkspaceExecResult> {
     if (options.signal?.aborted) throw aborted(options.signal);
+    if (this.state.restoring > 0) {
+      throw new WorkspaceError(
+        'BUSY',
+        'A snapshot is being restored in the workspace: run the command once it is done'
+      );
+    }
     this.state.running++;
     try {
       return await this.execNow(command, options);
@@ -424,13 +432,30 @@ export class DockerWorkspace implements Workspace {
     const plan = await restore(snapshotId, { dryRun: true });
     const busy = (plan.busy ?? false) || this.state.running > 0 || (await this.keptAlive());
     if (options.dryRun) return { ...plan, busy };
-    if (busy) {
+    if (busy || this.state.running > 0) {
       throw new WorkspaceError(
         'BUSY',
         'The workspace cannot be restored while a command runs in its container (or left processes in the background): wait for it or dispose the workspace',
         { path: snapshotId }
       );
     }
+    this.state.restoring++;
+    try {
+      return await this.restoreNow(snapshotId, plan, restore);
+    } finally {
+      this.state.restoring--;
+    }
+  }
+
+  /** The removals in the container and the host's writes of a restore no command can race */
+  private async restoreNow(
+    snapshotId: string,
+    plan: WorkspaceRestoreResult,
+    restore: (
+      snapshotId: string,
+      options?: WorkspaceRestoreOptions
+    ) => Promise<WorkspaceRestoreResult>
+  ): Promise<WorkspaceRestoreResult> {
     const deleted = new Set(plan.deleted);
     const tops = plan.deleted.filter((path) => !ancestorsOf(path).some((dir) => deleted.has(dir)));
     for (const path of tops) {
