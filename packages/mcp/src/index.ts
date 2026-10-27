@@ -13,7 +13,7 @@ export {
   MCPToolInterruptedError,
   connectMCPServer,
 } from './client/mcp-client';
-export { createStdioTransport, createHttpTransport } from './client/transports';
+export { createStdioTransport, createHttpTransport, createSseTransport } from './client/transports';
 export {
   experimental_mcpConnector,
   mcpClientConfigOf,
@@ -57,6 +57,7 @@ export type {
   MCPElicitOption,
   MCPElicitMultiSelect,
   MCPTransportType,
+  MCPClientTransportType,
   MCPResource,
   MCPResourceContent,
   MCPResourceReadContent,

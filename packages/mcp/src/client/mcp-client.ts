@@ -9,7 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { McpError, ErrorCode, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { Tool } from '@cogitator-ai/types';
-import { createStdioTransport, createHttpTransport } from './transports';
+import { createStdioTransport, createHttpTransport, createSseTransport } from './transports';
 import type {
   MCPClientConfig,
   MCPResource,
@@ -208,6 +208,15 @@ export class MCPClient {
           throw new Error('URL is required for HTTP transport');
         }
         return createHttpTransport({
+          url: config.url,
+          headers: config.headers,
+        });
+
+      case 'legacy-sse':
+        if (!config.url) {
+          throw new Error('URL is required for the legacy SSE transport');
+        }
+        return createSseTransport({
           url: config.url,
           headers: config.headers,
         });

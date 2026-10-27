@@ -7,6 +7,13 @@ import type { ToolContext, ToolInvoker } from '@cogitator-ai/types';
 
 export type MCPTransportType = 'stdio' | 'http' | 'sse';
 
+/**
+ * How a client reaches a server: a {@link MCPTransportType} (`sse` being Streamable HTTP, as the
+ * server serves it), or `legacy-sse` for a server of the older HTTP+SSE protocol, which opens an
+ * event stream with a GET and takes messages in POSTs (`type: "sse"` of a `.mcp.json`)
+ */
+export type MCPClientTransportType = MCPTransportType | 'legacy-sse';
+
 export interface MCPRetryConfig {
   /** Maximum number of retry attempts (default: 3) */
   maxRetries?: number;
@@ -26,7 +33,7 @@ export interface MCPRetryConfig {
 
 export interface MCPClientConfig {
   /** Transport type */
-  transport: MCPTransportType;
+  transport: MCPClientTransportType;
 
   /** For stdio transport: command to spawn */
   command?: string;

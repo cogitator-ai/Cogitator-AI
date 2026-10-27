@@ -49,7 +49,7 @@ export function mcpClientConfigOf(
     }
     return {
       ...base,
-      transport: remote.data.type === 'sse' ? 'sse' : 'http',
+      transport: remote.data.type === 'sse' ? 'legacy-sse' : 'http',
       url: remote.data.url,
       ...(remote.data.headers && { headers: remote.data.headers }),
     };

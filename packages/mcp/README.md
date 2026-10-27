@@ -214,15 +214,16 @@ if (!client.isConnected()) {
 
 ### Transport Types
 
-| Transport | Use Case                                     |
-| --------- | -------------------------------------------- |
-| `stdio`   | Local MCP servers spawned as child processes |
-| `http`    | Remote MCP servers over Streamable HTTP      |
-| `sse`     | Alias of `http` (also Streamable HTTP)       |
+| Transport    | Use Case                                             |
+| ------------ | ---------------------------------------------------- |
+| `stdio`      | Local MCP servers spawned as child processes         |
+| `http`       | Remote MCP servers over Streamable HTTP              |
+| `sse`        | Alias of `http` (also Streamable HTTP)               |
+| `legacy-sse` | Servers of the older HTTP+SSE protocol (client only) |
 
-The legacy HTTP+SSE transport is not supported; `sse` connects with Streamable HTTP, which streams responses over SSE itself.
+`sse` connects with Streamable HTTP, which streams responses over SSE itself, as the server's `sse` serves it. A server of the older HTTP+SSE protocol, which opens its event stream with a GET and takes messages in POSTs to the endpoint it names, needs `legacy-sse`: `experimental_mcpConnector()` uses it for `type: "sse"` of a `.mcp.json`, as Claude Code does.
 
-`createStdioTransport()` and `createHttpTransport()` build the same SDK transports the client uses, if you drive `@modelcontextprotocol/sdk`'s `Client` directly.
+`createStdioTransport()`, `createHttpTransport()` and `createSseTransport()` build the same SDK transports the client uses, if you drive `@modelcontextprotocol/sdk`'s `Client` directly.
 
 ### Client Methods
 
