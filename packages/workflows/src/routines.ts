@@ -20,7 +20,9 @@ import type {
   WorkflowState,
 } from '@cogitator-ai/types';
 import type { Cogitator } from '@cogitator-ai/core';
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import { WorkflowExecutor } from './executor';
+import { ApprovalAlreadyAnsweredError } from './human/approval-outcomes';
 import { InMemoryApprovalStore } from './human/approval-store';
 import { CompositeNotifier } from './human/notifiers';
 import { InMemoryDLQ } from './saga/dead-letter';
@@ -31,10 +33,19 @@ export type InboxOrigin = Pick<
   'routineId' | 'triggerId' | 'triggerEventId' | 'source' | 'runId' | 'userId' | 'metadata'
 >;
 
+/** The id of the inbox item of an approval request: one item per request, whatever happens to it */
+export function experimental_approvalItemId(requestId: string): string {
+  return `inbox_approval_${requestId}`;
+}
+
 /**
- * Experimental. An approval notifier that puts each request of a human node in the inbox as an
- * `approval` item (its `approvalId` is the request), and escalations, delegations and timeouts as
- * items after it
+ * Experimental. An approval notifier that keeps one inbox item per request of a human node, so a
+ * request is never answerable from two items:
+ * - a request is an `approval` item (its `approvalId` is the request)
+ * - a timeout closes it, as a `failure` item nobody can answer any more
+ * - an escalation closes the request that timed out the same way, the escalated request (a new
+ *   one, for its new assignee) comes as its own `approval` item
+ * - a delegation is the delegated request's `approval` item, and closes the request it came from
  */
 export function experimental_inboxNotifier(
   inbox: InboxWriter,
@@ -42,15 +53,17 @@ export function experimental_inboxNotifier(
 ): ApprovalNotifier {
   const add = (
     request: ApprovalRequest,
-    item: Pick<InboxItemInput, 'kind' | 'title' | 'summary'>
+    item: Pick<InboxItemInput, 'kind' | 'title' | 'summary'>,
+    approvalId = request.id,
+    assignee = request.assignee
   ) =>
     inbox.add({
       ...origin,
       ...item,
-      approvalId: request.id,
+      id: experimental_approvalItemId(approvalId),
+      approvalId,
       workflowRunId: request.workflowId,
-      ...(request.assignee !== undefined &&
-        origin.userId === undefined && { userId: request.assignee }),
+      ...(assignee !== undefined && origin.userId === undefined && { userId: assignee }),
       metadata: {
         ...origin.metadata,
         nodeId: request.nodeId,
@@ -69,9 +82,9 @@ export function experimental_inboxNotifier(
     },
     async notifyEscalation(request, reason) {
       await add(request, {
-        kind: 'approval',
+        kind: 'failure',
         title: `Escalated: ${request.title}`,
-        summary: reason,
+        summary: `${reason}: the request went to whoever it escalates to`,
       });
     },
     async notifyTimeout(request) {
@@ -82,6 +95,19 @@ export function experimental_inboxNotifier(
       });
     },
     async notifyDelegation(request, from, to) {
+      const original = request.metadata?.originalRequestId;
+      if (typeof original === 'string') {
+        await add(
+          request,
+          {
+            kind: 'result',
+            title: `Delegated: ${request.title}`,
+            summary: `${from} handed it to ${to}`,
+          },
+          original,
+          from
+        );
+      }
       await add(request, {
         kind: 'approval',
         title: `Delegated: ${request.title}`,
@@ -128,7 +154,13 @@ export interface RoutineWorkflowOptions<S extends WorkflowState> {
   /** The runtime its agent nodes run on, or an executor */
   runtime: Cogitator | WorkflowExecutor;
   checkpointStore?: CheckpointStore;
-  /** The state a firing starts from. Default: `{ input, event }`, the prompt and the event */
+  /**
+   * The state a firing starts from. Default: `{ input, trigger }`, the prompt with the event
+   * wrapped as untrusted data and what the trigger manager vouches for about the event (its id,
+   * source, trigger, times and how its sender was checked). The event's own fields (payload,
+   * text, sender) are not in the state as they came: a custom `input` reads them from
+   * `context.event`, and should keep them apart from instructions
+   */
   input?: (context: RoutineWorkflowContext) => Partial<S>;
   /** What the inbox shows as the result. Default: `state.output` when it is text, else the state as JSON */
   output?: (result: WorkflowResult<S>) => string;
@@ -183,7 +215,7 @@ export function experimental_routineWorkflow<S extends WorkflowState>(
       const inboxNotifier = experimental_inboxNotifier(context.inbox, origin);
       const input =
         options.input?.(context) ??
-        ({ input: context.input, event: context.event } as unknown as Partial<S>);
+        ({ input: context.input, trigger: triggerOf(context) } as unknown as Partial<S>);
       const result = await executor.execute(options.workflow, input, {
         workflowId: context.runId,
         signal: context.signal,
@@ -202,12 +234,35 @@ export function experimental_routineWorkflow<S extends WorkflowState>(
       return { status: 'completed', output: output(result), workflowRunId: result.workflowId };
     },
     async respond(approvalId, decision, respondedBy) {
-      await approvalStore.submitResponse({
-        requestId: approvalId,
-        decision,
-        respondedBy: respondedBy ?? 'inbox',
-        respondedAt: Date.now(),
-      });
+      try {
+        await approvalStore.submitResponse({
+          requestId: approvalId,
+          decision,
+          respondedBy: respondedBy ?? 'inbox',
+          respondedAt: Date.now(),
+        });
+      } catch (error) {
+        if (!(error instanceof ApprovalAlreadyAnsweredError)) throw error;
+        throw new CogitatorError({
+          message: `The approval ${approvalId} was answered already, or timed out`,
+          code: ErrorCode.INBOX_ITEM_ANSWERED,
+          cause: error,
+        });
+      }
     },
+  };
+}
+
+/** What the trigger manager vouches for about a firing's event, without what came from outside */
+function triggerOf(context: RoutineWorkflowContext) {
+  const { event } = context;
+  return {
+    id: event.id,
+    source: event.source,
+    triggerId: event.triggerId,
+    routineId: context.routine.id,
+    occurredAt: event.occurredAt,
+    ...(event.scheduledFor !== undefined && { scheduledFor: event.scheduledFor }),
+    verified: { method: event.verified.method, ok: event.verified.ok },
   };
 }

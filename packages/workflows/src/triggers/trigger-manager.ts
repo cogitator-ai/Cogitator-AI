@@ -284,12 +284,37 @@ export class DefaultTriggerManager implements ITriggerManager {
   }
 
   /**
-   * Register a trigger
+   * Registers a trigger and returns its id. A trigger of the store with the same workflow, type
+   * and config (what `start()` brought back after a restart) is taken over instead of added
+   * again: it keeps its id and counts, takes the config and `enabled` given, and a program that
+   * registers its triggers on every boot does not get one more each time
    */
   async register(
     trigger: Omit<WorkflowTrigger, 'id' | 'createdAt' | 'triggerCount' | 'errorCount'>
   ): Promise<string> {
     if (!this._started) throw new Error('TriggerManager is not started');
+    await this.restoring;
+    const key = definitionKey(trigger);
+    const existing = (await this.store.list(trigger.workflowName)).find(
+      (stored) => definitionKey(stored) === key
+    );
+    if (existing) {
+      const updated: WorkflowTrigger = {
+        ...existing,
+        config: trigger.config,
+        enabled: trigger.enabled,
+      };
+      if (existing.type === 'webhook') {
+        const errors = validateWebhookTriggerConfig(updated.config as WebhookTriggerConfig);
+        if (errors.length > 0) {
+          throw new Error(`Invalid webhook trigger config: ${errors.join('; ')}`);
+        }
+      }
+      await this.store.save(updated);
+      this.activate(updated);
+      if (!updated.enabled) this.deactivate(updated);
+      return existing.id;
+    }
     const id = nanoid();
     const now = Date.now();
 
@@ -672,4 +697,23 @@ export function eventTrigger(
     eventType,
     ...options,
   };
+}
+
+/**
+ * What tells two trigger definitions apart: the workflow, the type and the config as JSON with
+ * its keys in order, `enabled` left out (it is state, not what the trigger is)
+ */
+function definitionKey(trigger: Pick<WorkflowTrigger, 'workflowName' | 'type' | 'config'>): string {
+  return JSON.stringify([trigger.workflowName, trigger.type, sortedJson(trigger.config)]);
+}
+
+function sortedJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortedJson);
+  if (typeof value !== 'object' || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key, entry]) => key !== 'enabled' && typeof entry !== 'function')
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([key, entry]) => [key, sortedJson(entry)])
+  );
 }

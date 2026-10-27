@@ -412,6 +412,7 @@ export {
   experimental_routineWorkflow,
   experimental_inboxNotifier,
   experimental_inboxDeadLetterQueue,
+  experimental_approvalItemId,
   type RoutineWorkflowOptions,
   type InboxOrigin,
 } from './routines';
