@@ -43,6 +43,8 @@ import type {
   CostEstimate,
   EstimateOptions,
   MemoryAdapter,
+  MemoryEntry,
+  WorkspaceRestoreResult,
   MemoryFilesConfig,
   MemoryFileAdapter,
   GraphAdapter,
@@ -122,6 +124,36 @@ import {
   parsePlaybook,
 } from '@cogitator-ai/memory';
 
+/** Thread forks and entry copies a checkpoint check follows back at most */
+const LINEAGE_HOPS = 64;
+
+/** What a rewind or a fork with files would race, see `Cogitator.goingOn` */
+interface GoingOn {
+  thread: { count: number; runIds: string[] };
+  inWorkspace: WorkspaceRun[];
+  held: { runId: string; foreign: boolean; expiresAt?: number }[];
+  /** Every run in the way, each once */
+  ids: string[];
+}
+
+/** Where the entries a rewind cuts start in the branch it read */
+function cutFrom(state: { index: number }): number {
+  return state.index + 1;
+}
+
+/** The refusal of a restore while commands the workspace started still run */
+function workspaceBusy(
+  what: 'rewind' | 'fork',
+  threadId: string,
+  plan: WorkspaceRestoreResult
+): CogitatorError {
+  return new CogitatorError({
+    message: `The workspace the ${what} would restore still runs commands (or processes they left in the background): wait for them, or dispose the workspace`,
+    code: ErrorCode.WORKSPACE_BUSY,
+    details: { threadId, snapshotId: plan.snapshotId },
+  });
+}
+
 /** The memory ids a thread's metadata names, see `MEMORY_AGENTS` */
 function memoryAgentsOf(metadata: Record<string, unknown>): string[] {
   return stringsOf(metadata[MEMORY_AGENTS]);
@@ -182,13 +214,21 @@ import { TruncateStrategy } from './context/strategies/index';
 import { ABORTED_BEFORE_DISPATCH, sanitizeToolHistory } from './utils/tool-history';
 import { RunQueue } from './cogitator/run-queue';
 import {
+  WorkspaceRuns,
+  type WorkspaceRegistration,
+  type WorkspaceRun,
+} from './cogitator/workspace-runs';
+import {
   checkpointSettings,
   checkpointsOn,
   emptyCascadeReport,
   fileRestorePlan,
   takeFileCheckpoint,
   unwrapMemory,
+  type FileRestorePlan,
+  type FileRewindReport,
   type ForkThreadOptions,
+  type ForkThreadPlan,
   type ForkThreadResult,
   type RewindOptions,
   type RewindReport,
@@ -747,6 +787,8 @@ export class Cogitator implements ToolInvoker {
   private threadCheckpoints?: { memory: MemoryAdapter; store: ThreadRunCheckpointStore };
   /** The runs going on in each thread, for `multitaskStrategy` */
   private readonly threadRuns = new ThreadRuns();
+  /** The runs going on in each workspace, which file restores of rewinds and forks look at */
+  private readonly workspaceRuns = new WorkspaceRuns();
   private processDurableRuns?: InMemoryDurableRunStore;
   private threadDurableRuns?: { memory: MemoryAdapter; store: ThreadDurableRunStore };
   /** Who this runtime's durable runs are held by, see `DurableRunsConfig.owner` */
@@ -2160,21 +2202,6 @@ export class Cogitator implements ToolInvoker {
       threadId,
       () => options
     );
-    const checkpoints = checkpointSettings(
-      this.config.checkpoints,
-      agent.config.checkpoints,
-      options.checkpoints
-    );
-    const checkpointWorkspace = options.workspace ?? agent.config.workspace;
-    if (
-      checkpoints &&
-      checkpointWorkspace &&
-      currentToolRuns().filter((id) => id !== runId).length === 0
-    ) {
-      runMemory.checkpoints((entryId) =>
-        takeFileCheckpoint(checkpointWorkspace, checkpoints, { entryId, threadId, runId })
-      );
-    }
     const durableConfig = this.durableConfig();
     const durable =
       resumeFrom?.recovered !== undefined ||
@@ -2227,6 +2254,12 @@ export class Cogitator implements ToolInvoker {
       this.config.limits?.defaultTimeout ??
       DEFAULT_RUN_TIMEOUT;
     const abortController = new AbortController();
+    let finishRun: () => void = () => undefined;
+    const runDone = new Promise<void>((resolve) => {
+      finishRun = resolve;
+    });
+    /** The run's place in the workspaces it works in, which file restores look at */
+    let workspaceSeat: WorkspaceRegistration | undefined;
     let usageSoFar: () => RunUsage | undefined = () => undefined;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let removeParentAbortListener: (() => void) | undefined;
@@ -2443,6 +2476,28 @@ export class Cogitator implements ToolInvoker {
       const middlewareState = new Map<string, unknown>();
       const workspaceOf = (owner: Agent): Workspace | undefined =>
         options.workspace ?? owner.config.workspace;
+      workspaceSeat = await this.workspaceRuns.enter(
+        {
+          runId: () => runId,
+          threadId,
+          abort: (reason) => abortController.abort(reason),
+          done: runDone,
+        },
+        workspaceOf(active),
+        abortController.signal
+      );
+      if (currentToolRuns().filter((id) => id !== runId).length === 0) {
+        runMemory.checkpoints(async (entryId) => {
+          const settings = checkpointSettings(
+            this.config.checkpoints,
+            active.config.checkpoints,
+            options.checkpoints
+          );
+          const workspace = workspaceOf(active);
+          if (!settings || !workspace) return undefined;
+          return takeFileCheckpoint(workspace, settings, { entryId, threadId, runId });
+        });
+      }
       const parentRunId = currentToolRuns()
         .filter((id) => id !== runId)
         .at(-1);
@@ -2969,6 +3024,8 @@ export class Cogitator implements ToolInvoker {
             options.onSpan
           )
         );
+        const targetWorkspace = workspaceOf(target);
+        if (targetWorkspace) await workspaceSeat?.add(targetWorkspace);
         active = target;
         agentBudgets.set(budgetKey(target), target.config.budget);
         await permissions.switchAgent(
@@ -5501,6 +5558,8 @@ export class Cogitator implements ToolInvoker {
       throw error;
     } finally {
       runEnded = true;
+      workspaceSeat?.release();
+      finishRun();
       if (reservedRun !== undefined) this.durableRunsGoing.delete(reservedRun);
       if (resumeFrom?.recovered) {
         resumeFrom.recovered.stopHolding();
@@ -6583,12 +6642,17 @@ export class Cogitator implements ToolInvoker {
       pipeline: MiddlewarePipeline;
       context: RunMiddlewareContext;
       tool: Tool;
-      /** The run's signal: an abort ends the wait for a person's answer */
+      /** The run's signal: an abort ends the wait for the hooks' and a person's answer */
       signal?: AbortSignal;
     }
   ): Promise<ToolApprovalDecision | 'pause'> {
+    const signal = gate?.signal;
+    const answer = <T>(asked: T | Promise<T>): Promise<T> =>
+      signal ? waitForAbortable(Promise.resolve(asked), signal) : Promise.resolve(asked);
     if (gate) {
-      const hooked = await gate.pipeline.decideApproval({ request, tool: gate.tool }, gate.context);
+      const hooked = await answer(
+        gate.pipeline.decideApproval({ request, tool: gate.tool }, gate.context)
+      );
       if (hooked) {
         this.hookDecisions.add(hooked);
         return hooked;
@@ -6602,9 +6666,6 @@ export class Cogitator implements ToolInvoker {
         gate.context
       );
     }
-    const signal = gate?.signal;
-    const answer = <T>(asked: T | Promise<T>): Promise<T> =>
-      signal ? waitForAbortable(Promise.resolve(asked), signal) : Promise.resolve(asked);
     const decided = onApproval ? await answer(onApproval(request)) : undefined;
     if (decided !== undefined) return decided;
     const legacy = this.config.guardrails?.onToolApproval;
@@ -7385,18 +7446,28 @@ export class Cogitator implements ToolInvoker {
    * - Files, only with `files: true` (or `checkpoints.rewindFiles`): the workspace is restored
    *   from the file checkpoint the runs took at that point (see `CogitatorConfig.checkpoints`),
    *   the one taken right after `toEntryId` when it is the last entry before a user message,
-   *   else the nearest one before it. Files are restored first, so a restore that fails leaves
-   *   the conversation as it was, and the call can be made again.
+   *   else the nearest one before it. The checkpoint must be one the workspace keeps for this
+   *   thread (or a thread it was forked from). A snapshot of the files as they were goes first
+   *   (`files.safetySnapshotId`, to undo the rewind with `workspace.restore()`), then the
+   *   restore, before the conversation moves, so a restore that fails leaves the conversation as
+   *   it was and the call can be made again.
    *
-   * `memory: false` restores the files only. `dryRun` changes nothing and reports what would
-   * change. While a run goes on in the thread, here or in a durable run another process holds,
-   * the rewind is refused with `THREAD_BUSY`, unless `force` aborts the runs here first.
+   * The thread is held for the whole rewind, and with files the workspace too: runs starting
+   * there meanwhile wait for it. `memory: false` restores the files only. `dryRun` changes
+   * nothing and reports what would change, `runs.going` the runs in the way. A run going on in
+   * the thread (here, or as a durable run another process holds) refuses the rewind with
+   * `THREAD_BUSY`, and with files a run of this runtime in the same workspace (of any thread)
+   * or a command the workspace still runs refuses it with `WORKSPACE_BUSY`, unless `force` stops
+   * them first. A durable run another process holds is never forced while files are restored, as
+   * its tools could still be writing: wait for its lease to run out.
    *
    * @throws CogitatorError (`VALIDATION_ERROR`) when no memory is configured, the adapter has no
    * branches, `toEntryId` is not on the active branch, the thread names no agents and `agents`
-   * is not passed, or files are to be restored and there is no checkpoint at that point or no
-   * workspace to restore (`workspace`, or the workspace of one of `agents`). `THREAD_BUSY` while
-   * a run goes on. A store that fails throws its own error, and the rewind can be made again.
+   * is not passed, a tool of a run of the thread or the workspace asks for the rewind, or files
+   * are to be restored and there is no checkpoint at that point, no workspace to restore
+   * (`workspace`, or the workspace of one of `agents`), or a checkpoint the workspace does not
+   * keep for this thread. `THREAD_BUSY` and `WORKSPACE_BUSY` as above. A store that fails throws
+   * its own error, and the rewind can be made again.
    */
   async rewind(
     threadId: string,
@@ -7428,24 +7499,7 @@ export class Cogitator implements ToolInvoker {
     }
     const dryRun = options.dryRun ?? false;
     const getPath = memory.getPath.bind(memory);
-    const durable = this.durableStore();
-
-    const active = this.threadRuns.active(threadId);
-    const now = Date.now();
-    const held = (await durable.list({ threadId }))
-      .filter(
-        (run) => run.lease && (run.lease.expiresAt === undefined || run.lease.expiresAt > now)
-      )
-      .map((run) => run.runId);
-    const going = [...new Set([...active.runIds, ...held])];
-    const busy = active.count > 0 || held.length > 0;
-    if (!dryRun && busy && !options.force) {
-      throw new CogitatorError({
-        message: `Thread ${threadId} has a run going on: wait for it, or pass force to abort it first`,
-        code: ErrorCode.THREAD_BUSY,
-        details: { threadId, runIds: going },
-      });
-    }
+    this.refuseFromOwnTool('rewind', threadId);
 
     const read = async () => {
       const thread = unwrapMemory(await memory.getThread(threadId));
@@ -7465,92 +7519,126 @@ export class Cogitator implements ToolInvoker {
         });
       }
       const files = rewindsFiles ? fileRestorePlan(path, index, options) : undefined;
+      if (files) await this.verifyCheckpoint(memory, threadId, files);
       return { thread, path, index, files };
     };
-    let { thread, path, index, files } = await read();
-    const cascade = rewindsMemory ? await this.cascadeFor('rewind', options) : undefined;
-    const agentIds = cascade ? await this.withThreadAgents(cascade.agentIds, [threadId]) : [];
 
-    const interrupted: string[] = [];
-    const takenOver: string[] = [];
-    if (!dryRun && busy) {
-      if (active.count > 0) {
-        interrupted.push(
-          ...(await this.threadRuns.interrupt(
-            threadId,
-            new CogitatorError({
-              message: `Thread ${threadId} is being rewound`,
-              code: ErrorCode.RUN_INTERRUPTED,
-              details: { threadId },
-            })
-          ))
+    const releaseThread = await this.threadRuns.lock(threadId);
+    let releaseWorkspace: (() => void) | undefined;
+    try {
+      let state = await read();
+      if (state.files) {
+        this.refuseFromOwnTool(
+          'rewind',
+          threadId,
+          await this.workspaceRuns.active(state.files.workspace)
         );
+        releaseWorkspace = await this.workspaceRuns.lock(state.files.workspace);
       }
-      for (const run of await durable.list({ threadId })) {
-        if (!held.includes(run.runId)) continue;
-        await durable.delete(run);
-        takenOver.push(run.runId);
+      const cascade = rewindsMemory ? await this.cascadeFor('rewind', options) : undefined;
+      const agentIds = cascade ? await this.withThreadAgents(cascade.agentIds, [threadId]) : [];
+      let plan = state.files ? await state.files.restore({ dryRun: true }) : undefined;
+      const going = await this.goingOn(threadId, state.files?.workspace);
+      const durable = this.durableStore();
+
+      const report: RewindReport = {
+        ...emptyCascadeReport(),
+        threadId,
+        toEntryId,
+        dryRun,
+        conversation: {
+          rewound: false,
+          cut: rewindsMemory ? state.path.slice(cutFrom(state)).map((entry) => entry.id) : [],
+          ...(state.thread.activeLeafId !== undefined && {
+            previousLeafId: state.thread.activeLeafId,
+          }),
+        },
+        runs: { going: going.ids, interrupted: [], paused: false, durable: [] },
+      };
+
+      if (dryRun) {
+        if (plan) report.files = plan;
+        if (cascade) {
+          Object.assign(
+            report,
+            await cascade.cascade.rewind(threadId, toEntryId, { agentIds }, { dryRun: true })
+          );
+          report.runs.paused = (await this.runCheckpointStore().load(threadId)) !== null;
+          report.runs.durable = (await durable.list({ threadId })).map((run) => run.runId);
+        }
+        return report;
       }
-      ({ thread, path, index, files } = await read());
-    }
 
-    const report: RewindReport = {
-      ...emptyCascadeReport(),
-      threadId,
-      toEntryId,
-      dryRun,
-      conversation: {
-        rewound: false,
-        cut: rewindsMemory ? path.slice(index + 1).map((entry) => entry.id) : [],
-        ...(thread.activeLeafId !== undefined && { previousLeafId: thread.activeLeafId }),
-      },
-      runs: { going, interrupted, paused: false, durable: [...takenOver] },
-    };
+      this.refuseBusy('rewind', threadId, going, plan, options.force ?? false, rewindsFiles);
+      if (going.thread.count > 0 || going.ids.length > 0) {
+        const stopped = await this.stopRuns(threadId, going, `Thread ${threadId} is being rewound`);
+        report.runs.interrupted = stopped.interrupted;
+        report.runs.durable = stopped.durable;
+        state = await read();
+        report.conversation.cut = rewindsMemory
+          ? state.path.slice(cutFrom(state)).map((entry) => entry.id)
+          : [];
+        plan = state.files ? await state.files.restore({ dryRun: true }) : undefined;
+        if (plan?.busy) throw workspaceBusy('rewind', threadId, plan);
+      }
 
-    if (dryRun) {
-      if (files) report.files = await files.restore({ dryRun: true });
+      if (state.files && plan)
+        report.files = await this.restoreWithSafety(state.files, plan, {
+          threadId,
+          reason: 'rewind',
+          entryId: toEntryId,
+        });
       if (cascade) {
-        Object.assign(
-          report,
-          await cascade.cascade.rewind(threadId, toEntryId, { agentIds }, { dryRun: true })
-        );
-        report.runs.paused = (await this.runCheckpointStore().load(threadId)) !== null;
-        report.runs.durable = (await durable.list({ threadId })).map((run) => run.runId);
+        Object.assign(report, await cascade.cascade.rewind(threadId, toEntryId, { agentIds }));
+        report.conversation.rewound = true;
+        const dropped = await this.dropPausedRuns([threadId]);
+        report.runs.paused = dropped.paused.length > 0;
+        report.runs.durable.push(...dropped.durable);
       }
       return report;
+    } finally {
+      releaseWorkspace?.();
+      releaseThread();
     }
-
-    if (files) report.files = await files.restore();
-    if (cascade) {
-      Object.assign(report, await cascade.cascade.rewind(threadId, toEntryId, { agentIds }));
-      report.conversation.rewound = true;
-      const dropped = await this.dropPausedRuns([threadId]);
-      report.runs.paused = dropped.paused.length > 0;
-      report.runs.durable.push(...dropped.durable);
-    }
-    return report;
   }
 
   /**
    * Forks `threadId` at `atEntryId` into a new thread holding the branch up to it (see
    * `MemoryAdapter.forkThread`): each copied entry keeps its metadata, the file checkpoints the
    * user messages name included. With `files: true` the workspace of the fork (`workspace`, or
-   * the workspace of one of `agents`) gets the files as they were at that point: when it is
-   * another workspace than `source` (where the checkpoints are kept, `workspace` by default),
-   * every checkpoint of the branch is copied into it first (`copySnapshot`), so later rewinds of
-   * the fork restore there too. The files are restored once the fork is made, so a fork that
-   * fails changes no files.
+   * the workspace of one of `agents`) gets the files as they were at that point, a snapshot of
+   * them as they were taken first (`files.safetySnapshotId`): when it is another workspace than
+   * `source` (where the checkpoints are kept, `workspace` by default), every checkpoint of the
+   * branch is copied into it first (`copySnapshot`), so later rewinds of the fork restore there
+   * too. The files are restored once the fork is made, so a fork that fails changes no files.
+   * With `files` the thread and the workspace are held for the whole fork, as by `rewind`, and
+   * `dryRun` reports what the fork would restore without making it.
    *
    * @throws CogitatorError (`VALIDATION_ERROR`) when no memory is configured or the adapter
-   * cannot fork, and with `files` when there is no checkpoint at that point, no workspace, or a
-   * source that cannot copy its snapshots. `THREAD_BUSY` with `files` while a run goes on in the
-   * thread, unless `force`
+   * cannot fork, and with `files` when there is no checkpoint at that point, no workspace, a
+   * checkpoint the source does not keep for this thread, or a source that cannot copy its
+   * snapshots. With `files`, `THREAD_BUSY` and `WORKSPACE_BUSY` as by `rewind`, unless `force`
    */
+  forkThread(
+    threadId: string,
+    atEntryId: string,
+    options: ForkThreadOptions & { dryRun: true }
+  ): Promise<ForkThreadPlan>;
+  forkThread(
+    threadId: string,
+    atEntryId: string,
+    options?: ForkThreadOptions & { dryRun?: false }
+  ): Promise<ForkThreadResult>;
+  forkThread(
+    threadId: string,
+    atEntryId: string,
+    options?: ForkThreadOptions
+  ): Promise<ForkThreadResult | ForkThreadPlan>;
   async forkThread(
     threadId: string,
     atEntryId: string,
     options: ForkThreadOptions = {}
-  ): Promise<ForkThreadResult> {
+  ): Promise<ForkThreadResult | ForkThreadPlan> {
     const memory = await this.getMemory();
     if (!memory?.forkThread || !memory.getPath) {
       throw new CogitatorError({
@@ -7560,9 +7648,9 @@ export class Cogitator implements ToolInvoker {
         code: ErrorCode.VALIDATION_ERROR,
       });
     }
-    const branch = unwrapMemory(
-      await memory.getPath({ threadId, leafId: atEntryId, types: 'all' })
-    );
+    const forkThread = memory.forkThread.bind(memory);
+    const getPath = memory.getPath.bind(memory);
+    const branch = unwrapMemory(await getPath({ threadId, leafId: atEntryId, types: 'all' }));
     if (branch.at(-1)?.id !== atEntryId) {
       throw new CogitatorError({
         message: `Entry ${atEntryId} is not in thread ${threadId}`,
@@ -7570,26 +7658,29 @@ export class Cogitator implements ToolInvoker {
         details: { threadId, atEntryId },
       });
     }
-    const active = options.files
-      ? unwrapMemory(await memory.getPath({ threadId, types: 'all' }))
-      : [];
-    const onActive = active.findIndex((entry) => entry.id === atEntryId);
-    const files = options.files
-      ? onActive === -1
-        ? fileRestorePlan(branch, branch.length - 1, options)
-        : fileRestorePlan(active, onActive, options)
-      : undefined;
-    const copied: string[] = [];
-    if (files) {
-      const going = this.threadRuns.active(threadId);
-      if (going.count > 0 && !options.force) {
-        throw new CogitatorError({
-          message: `Thread ${threadId} has a run going on, whose files the fork would restore: wait for it, or pass force`,
-          code: ErrorCode.THREAD_BUSY,
-          details: { threadId, runIds: going.runIds },
-        });
-      }
+    const dryRun = options.dryRun ?? false;
+    if (!options.files) {
+      if (dryRun) return { dryRun: true, snapshotsCopied: [], going: [] };
+      const thread = unwrapMemory(await forkThread(threadId, atEntryId, options.newThreadId));
+      return { thread, snapshotsCopied: [] };
+    }
+
+    this.refuseFromOwnTool('fork', threadId);
+    const releaseThread = await this.threadRuns.lock(threadId);
+    let releaseWorkspace: (() => void) | undefined;
+    try {
+      const active = unwrapMemory(await getPath({ threadId, types: 'all' }));
+      const onActive = active.findIndex((entry) => entry.id === atEntryId);
+      const files =
+        onActive === -1
+          ? fileRestorePlan(branch, branch.length - 1, options)
+          : fileRestorePlan(active, onActive, options);
       const source = options.source ?? files.workspace;
+      await this.verifyCheckpoint(memory, threadId, { ...files, workspace: source });
+      this.refuseFromOwnTool('fork', threadId, await this.workspaceRuns.active(files.workspace));
+      releaseWorkspace = await this.workspaceRuns.lock(files.workspace);
+
+      const copied: string[] = [];
       if (source !== files.workspace) {
         if (!source.copySnapshot) {
           throw new CogitatorError({
@@ -7597,9 +7688,11 @@ export class Cogitator implements ToolInvoker {
             code: ErrorCode.VALIDATION_ERROR,
           });
         }
-        for (const checkpoint of checkpointsOn(branch, files.at.checkpoint)) {
+        const copy = source.copySnapshot.bind(source);
+        const wanted = dryRun ? [files.at.checkpoint] : checkpointsOn(branch, files.at.checkpoint);
+        for (const checkpoint of wanted) {
           try {
-            await source.copySnapshot(checkpoint.snapshotId, files.workspace);
+            await copy(checkpoint.snapshotId, files.workspace);
             copied.push(checkpoint.snapshotId);
           } catch (error) {
             if (checkpoint.snapshotId === files.at.checkpoint.snapshotId) throw error;
@@ -7609,12 +7702,264 @@ export class Cogitator implements ToolInvoker {
             });
           }
         }
+        if (dryRun) {
+          copied.push(
+            ...checkpointsOn(branch)
+              .map((checkpoint) => checkpoint.snapshotId)
+              .filter((id) => !copied.includes(id))
+          );
+        }
       }
-      await files.restore({ dryRun: true });
+      let plan = await files.restore({ dryRun: true });
+      const going = await this.goingOn(threadId, files.workspace);
+      if (dryRun) return { dryRun: true, snapshotsCopied: copied, files: plan, going: going.ids };
+
+      this.refuseBusy('fork', threadId, going, plan, options.force ?? false, true);
+      if (going.thread.count > 0 || going.ids.length > 0) {
+        await this.stopRuns(threadId, going, `Thread ${threadId} is being forked with its files`);
+        plan = await files.restore({ dryRun: true });
+        if (plan.busy) throw workspaceBusy('fork', threadId, plan);
+      }
+      const thread = unwrapMemory(await forkThread(threadId, atEntryId, options.newThreadId));
+      const restored = await this.restoreWithSafety(files, plan, {
+        threadId: thread.id,
+        reason: 'fork',
+        entryId: atEntryId,
+      });
+      return { thread, snapshotsCopied: copied, files: restored };
+    } finally {
+      releaseWorkspace?.();
+      releaseThread();
     }
-    const thread = unwrapMemory(await memory.forkThread(threadId, atEntryId, options.newThreadId));
-    if (!files) return { thread, snapshotsCopied: copied };
-    return { thread, snapshotsCopied: copied, files: await files.restore() };
+  }
+
+  /**
+   * Refuses a rewind or a fork a tool call asked for of a run it would have to stop: one of the
+   * thread's runs, or of `inWorkspace` (the runs of the workspace it restores). Stopping that run
+   * would wait for the tool call, which waits for the rewind
+   */
+  private refuseFromOwnTool(
+    what: 'rewind' | 'fork',
+    threadId: string,
+    inWorkspace: readonly WorkspaceRun[] = []
+  ): void {
+    const callers = currentToolRuns();
+    if (callers.length === 0) return;
+    const own = [
+      ...this.threadRuns.active(threadId).runIds,
+      ...inWorkspace.map((run) => run.runId()),
+    ];
+    const caller = callers.find((runId) => own.includes(runId));
+    if (caller === undefined) return;
+    throw new CogitatorError({
+      message: `A tool of run ${caller} cannot ${what} thread ${threadId}: the ${what} would have to stop that very run. Ask for it after the run ends`,
+      code: ErrorCode.VALIDATION_ERROR,
+      details: { threadId, runId: caller },
+    });
+  }
+
+  /**
+   * The runs going on that a rewind or a fork with files would race: the runs of the thread
+   * here, the runs of this runtime in `workspace` (of any thread), and the durable runs of the
+   * thread whose lease is live, here or in another process (`foreign`)
+   */
+  private async goingOn(threadId: string, workspace: Workspace | undefined): Promise<GoingOn> {
+    const thread = this.threadRuns.active(threadId);
+    const inWorkspace = workspace
+      ? (await this.workspaceRuns.active(workspace)).filter((run) => run.threadId !== threadId)
+      : [];
+    const now = Date.now();
+    const instance = this.durableHolder.instance;
+    const held = (await this.durableStore().list({ threadId })).flatMap((run) =>
+      run.lease && (run.lease.expiresAt === undefined || run.lease.expiresAt > now)
+        ? [
+            {
+              runId: run.runId,
+              foreign: run.lease.instance !== instance,
+              ...(run.lease.expiresAt !== undefined && { expiresAt: run.lease.expiresAt }),
+            },
+          ]
+        : []
+    );
+    const ids = [
+      ...new Set([
+        ...thread.runIds,
+        ...inWorkspace.map((run) => run.runId()),
+        ...held.map((run) => run.runId),
+      ]),
+    ];
+    return { thread, inWorkspace, held, ids };
+  }
+
+  /**
+   * Refuses a rewind or a fork what `going` and the dry run `plan` say is in the way, unless
+   * `force`: a durable run another process holds is never forced while files are restored
+   */
+  private refuseBusy(
+    what: 'rewind' | 'fork',
+    threadId: string,
+    going: GoingOn,
+    plan: WorkspaceRestoreResult | undefined,
+    force: boolean,
+    files: boolean
+  ): void {
+    const foreign = going.held.filter((run) => run.foreign);
+    if (files && foreign.length > 0) {
+      const until = foreign
+        .map((run) => run.expiresAt)
+        .filter((at): at is number => at !== undefined)
+        .sort((a, b) => b - a)[0];
+      throw new CogitatorError({
+        message: `Thread ${threadId} has a durable run another process holds (${foreign.map((run) => run.runId).join(', ')}), whose tools may still write the files: wait for it to end${until !== undefined ? ` or its lease to run out at ${new Date(until).toISOString()}` : ''}, then ${what} again`,
+        code: ErrorCode.THREAD_BUSY,
+        details: { threadId, runIds: foreign.map((run) => run.runId) },
+      });
+    }
+    if (force) return;
+    if (going.thread.count > 0 || going.held.length > 0) {
+      throw new CogitatorError({
+        message: `Thread ${threadId} has a run going on: wait for it, or pass force to stop it first`,
+        code: ErrorCode.THREAD_BUSY,
+        details: { threadId, runIds: going.ids },
+      });
+    }
+    if (going.inWorkspace.length > 0) {
+      const runIds = going.inWorkspace.map((run) => run.runId());
+      throw new CogitatorError({
+        message: `Runs of other threads work in the workspace the ${what} would restore (${runIds.join(', ')}): wait for them, or pass force to stop them first`,
+        code: ErrorCode.WORKSPACE_BUSY,
+        details: { threadId, runIds },
+      });
+    }
+    if (plan?.busy) throw workspaceBusy(what, threadId, plan);
+  }
+
+  /**
+   * Stops what `going` lists before a forced rewind or fork: the thread's runs here, the runs of
+   * other threads in the workspace, and the records of the thread's durable runs (whose holder
+   * loses them and stops at its next step). Resolves once the runs here are done
+   */
+  private async stopRuns(
+    threadId: string,
+    going: GoingOn,
+    message: string
+  ): Promise<{ interrupted: string[]; durable: string[] }> {
+    const reason = new CogitatorError({
+      message,
+      code: ErrorCode.RUN_INTERRUPTED,
+      details: { threadId },
+    });
+    const interrupted =
+      going.thread.count > 0 ? await this.threadRuns.interrupt(threadId, reason) : [];
+    for (const run of going.inWorkspace) run.abort(reason);
+    await Promise.all(going.inWorkspace.map((run) => run.done));
+    interrupted.push(...going.inWorkspace.map((run) => run.runId()));
+    const durable: string[] = [];
+    const store = this.durableStore();
+    for (const run of await store.list({ threadId })) {
+      if (!going.held.some((held) => held.runId === run.runId)) continue;
+      await store.delete(run);
+      durable.push(run.runId);
+    }
+    return { interrupted: [...new Set(interrupted)], durable };
+  }
+
+  /**
+   * Checks the checkpoint a file restore takes against the workspace it restores from: the
+   * workspace keeps that snapshot, taken in this thread (or a thread it was forked from) before
+   * this entry (or the entry it was copied from), so a checkpoint reference forged into an
+   * entry's metadata cannot bring another thread's files
+   */
+  private async verifyCheckpoint(
+    memory: MemoryAdapter,
+    threadId: string,
+    files: Pick<FileRestorePlan, 'at' | 'workspace'>
+  ): Promise<void> {
+    const { at, workspace } = files;
+    const snapshotId = at.checkpoint.snapshotId;
+    const list = workspace.listSnapshots?.bind(workspace);
+    if (!list) {
+      throw new CogitatorError({
+        message: `Workspace ${workspace.id} cannot list its snapshots, so checkpoint ${snapshotId} cannot be checked before it is restored`,
+        code: ErrorCode.VALIDATION_ERROR,
+      });
+    }
+    const record = (await list()).find((snapshot) => snapshot.id === snapshotId);
+    if (!record) {
+      throw new CogitatorError({
+        message: `Workspace ${workspace.id} (${workspace.root}) does not keep checkpoint ${snapshotId}, which was taken in workspace ${at.checkpoint.workspaceId} (${at.checkpoint.root}): pass the workspace the thread ran in`,
+        code: ErrorCode.VALIDATION_ERROR,
+        details: { snapshotId },
+      });
+    }
+    const threads = new Set<string>();
+    for (
+      let id: string | undefined = threadId, hops = 0;
+      id !== undefined && !threads.has(id) && hops < LINEAGE_HOPS;
+      hops++
+    ) {
+      threads.add(id);
+      const thread: Thread | null = unwrapMemory(await memory.getThread(id));
+      const from: unknown = thread?.metadata.forkedFrom;
+      id =
+        typeof from === 'object' &&
+        from !== null &&
+        'threadId' in from &&
+        typeof from.threadId === 'string'
+          ? from.threadId
+          : undefined;
+    }
+    const entries = new Set<string>();
+    for (
+      let id: string | undefined = at.entryId, hops = 0;
+      id !== undefined && !entries.has(id) && hops < LINEAGE_HOPS;
+      hops++
+    ) {
+      entries.add(id);
+      const entry: MemoryEntry | null = unwrapMemory(await memory.getEntry(id));
+      const forkOf: unknown = entry?.metadata?.forkOf;
+      id = typeof forkOf === 'string' ? forkOf : undefined;
+    }
+    const tookIn = record.metadata?.threadId;
+    const tookAt = record.metadata?.entryId ?? record.label;
+    if (
+      typeof tookIn !== 'string' ||
+      typeof tookAt !== 'string' ||
+      !threads.has(tookIn) ||
+      !entries.has(tookAt)
+    ) {
+      throw new CogitatorError({
+        message: `Checkpoint ${snapshotId} was not taken for entry ${at.entryId} of thread ${threadId}: it is not restored`,
+        code: ErrorCode.VALIDATION_ERROR,
+        details: { snapshotId, threadId, entryId: at.entryId },
+      });
+    }
+  }
+
+  /**
+   * Restores the files of `files`, after a snapshot of them as they are when the restore changes
+   * anything and the workspace can snapshot, named in the report to undo it
+   */
+  private async restoreWithSafety(
+    files: FileRestorePlan,
+    plan: WorkspaceRestoreResult,
+    place: { threadId: string; reason: 'rewind' | 'fork'; entryId: string }
+  ): Promise<FileRewindReport> {
+    const { workspace } = files;
+    let safetySnapshotId: string | undefined;
+    const changes = plan.restored.length > 0 || plan.deleted.length > 0;
+    if (changes && workspace.snapshot) {
+      const settings = checkpointSettings(this.config.checkpoints, undefined, true);
+      const safety = await workspace.snapshot({
+        label: `before-${place.reason}`,
+        ...(settings && { exclude: settings.exclude }),
+        ...(settings?.maxFileBytes !== undefined && { maxFileBytes: settings.maxFileBytes }),
+        metadata: { ...place, safety: true },
+      });
+      safetySnapshotId = safety.id;
+    }
+    const restored = await files.restore();
+    return { ...restored, ...(safetySnapshotId !== undefined && { safetySnapshotId }) };
   }
 
   /** The cascade over this runtime's memory stores, and the memory ids of `options.agents` */

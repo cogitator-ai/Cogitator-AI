@@ -137,7 +137,11 @@ function optionalBoolean(body: Record<string, unknown>, field: string): boolean 
 function runtimeRefusal(error: unknown): unknown {
   if (!(error instanceof Error)) return error;
   const code = error instanceof HostRequestError ? error.code : undefined;
-  if (code === 'THREAD_BUSY' || error.message.includes('has a run going on')) {
+  if (
+    code === 'THREAD_BUSY' ||
+    code === 'WORKSPACE_BUSY' ||
+    error.message.includes('has a run going on')
+  ) {
     return new HttpError(409, error.message);
   }
   if (code === 'VALIDATION_ERROR') return new HttpError(400, error.message);

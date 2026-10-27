@@ -549,12 +549,14 @@ export interface RunOptions<TDeps = unknown> {
    * runtime's setting. A run started from a tool call of another run is never durable on its own:
    * its caller is, and recovers the call
    */
+  durable?: boolean;
   /**
    * Whether the run takes a file checkpoint before every user message it writes, see
-   * `CogitatorConfig.checkpoints`. Overrides the agent's and the runtime's setting
+   * `CogitatorConfig.checkpoints`. Overrides the agent's and the runtime's setting. The
+   * checkpoint is of the workspace of the agent the run is on when the message is written, the
+   * agent it handed over to included
    */
   checkpoints?: boolean | FileCheckpointsConfig;
-  durable?: boolean;
   /**
    * The id the run gets instead of a new one, unique among the runs of the runtime: a queue job
    * that may run again (on another worker) names its run so the next attempt recovers it. A

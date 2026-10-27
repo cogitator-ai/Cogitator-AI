@@ -178,8 +178,10 @@ export interface RewindOptions {
   /** Change nothing, report what the rewind would change (default: false) */
   dryRun?: boolean;
   /**
-   * Abort the runs going on in the thread here first, instead of refusing with `THREAD_BUSY`
-   * (default: false). A durable run another process holds loses its run and stops
+   * Stop what is in the way first instead of refusing (default: false): the runs going on in the
+   * thread here (`THREAD_BUSY`), and with files the runs of this runtime of other threads in the
+   * workspace (`WORKSPACE_BUSY`). A durable run another process holds loses its run and stops at
+   * its next step, and is never forced while files are restored, as its tools may still write
    */
   force?: boolean;
 }
@@ -192,6 +194,12 @@ export interface FileRewindReport extends WorkspaceRestoreResult {
   exact: boolean;
   /** The workspace restored */
   workspaceId: string;
+  /**
+   * The snapshot of the files as they were right before the restore, taken when the restore
+   * changed anything and the workspace can snapshot: `workspace.restore(safetySnapshotId)` undoes
+   * a rewind or a fork that went too far. Absent for a dry run
+   */
+  safetySnapshotId?: string;
 }
 
 /** What `Cogitator.rewind()` changed, or would change with `dryRun` */
@@ -232,18 +240,39 @@ export interface ForkThreadOptions {
   /** Where the checkpoints of the thread are kept, when not in `workspace` */
   source?: Workspace;
   agents?: readonly (Agent | string)[];
-  /** With `files`, restore while a run goes on in the thread instead of refusing (default: false) */
+  /**
+   * With `files`, abort the runs going on in the thread and in the fork's workspace first,
+   * instead of refusing with `THREAD_BUSY` or `WORKSPACE_BUSY` (default: false)
+   */
   force?: boolean;
+  /**
+   * Make no thread and change no files, only report what the fork would restore (default:
+   * false). Into another workspace than `source`, the checkpoint to restore is copied into its
+   * store first, as the plan needs it there
+   */
+  dryRun?: boolean;
 }
 
 /** What `Cogitator.forkThread()` made */
 export interface ForkThreadResult {
+  dryRun?: false;
   /** The new thread */
   thread: Thread;
   /** The checkpoints copied into the fork's workspace, when it is not `source` */
   snapshotsCopied: string[];
   /** The file restore, with `files` */
   files?: FileRewindReport;
+}
+
+/** What `Cogitator.forkThread()` with `dryRun` would do */
+export interface ForkThreadPlan {
+  dryRun: true;
+  /** The checkpoints the fork would copy into its workspace, when it is not `source` */
+  snapshotsCopied: string[];
+  /** What the file restore would change, with `files` */
+  files?: FileRewindReport;
+  /** Runs going on in the thread or the workspace that a fork with `files` would need `force` for */
+  going: string[];
 }
 
 /** The checkpoint a file restore takes, and how it restores the workspace */
