@@ -107,7 +107,7 @@ import { isLLMProvider } from './llm/providers';
 import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
 import { experimental_PluginHost } from './plugins/host';
 import { corePlugin } from './plugins/core-plugin';
-import type { PluginHookSet, PluginSnapshot } from './plugins/contributions';
+import type { PluginHookSet, PluginLease, PluginSnapshot } from './plugins/contributions';
 import { withLLMRetry } from './llm/retry';
 import { ModelFallbackChain, type ModelCandidate } from './llm/model-fallback';
 import { modelContextWindow } from './context/model-window';
@@ -2464,6 +2464,7 @@ export class Cogitator implements ToolInvoker {
 
     const rootSpanId = newSpanId();
     let releaseRunSlot: (() => void) | undefined;
+    let pluginLease: PluginLease | undefined;
     let budget: RunBudget | undefined;
     /** Set once a middleware asked to end the run, see `RunMiddlewareContext.stop` */
     let stopRequest: { reason: string; middleware: string } | undefined;
@@ -2490,7 +2491,8 @@ export class Cogitator implements ToolInvoker {
 
       const agentModel = this.resolveModel(agent);
       await this.initializeAll(agentModel);
-      const pluginSnapshot = this.pluginHost.snapshot();
+      pluginLease = this.pluginHost.lease();
+      const pluginSnapshot = pluginLease.snapshot;
 
       if (resumeFrom) {
         checkpoint ??= (await this.runCheckpointStore().load(threadId)) ?? undefined;
@@ -5765,6 +5767,7 @@ export class Cogitator implements ToolInvoker {
       this.classifierCharges.delete(abortController.signal);
       this.afterRunSpend.delete(runId);
       releaseRunSlot?.();
+      pluginLease?.release();
       if (timeoutId) {
         clearTimeout(timeoutId);
       }

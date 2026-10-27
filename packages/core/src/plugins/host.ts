@@ -56,6 +56,7 @@ import {
   Generation,
   isBuiltTool,
   toolFromSpec,
+  type PluginLease,
   type PluginPanelEntry,
   type PluginSnapshot,
 } from './contributions';
@@ -183,6 +184,12 @@ export class experimental_PluginHost {
   private readonly watchers = new Map<string, FSWatcher>();
   private readonly watchTimers = new Map<string, NodeJS.Timeout>();
   private snapshotCache?: PluginSnapshot;
+  /** The generations `snapshotCache` was taken from */
+  private snapshotGenerations: Generation[] = [];
+  /** What the plugins a reconcile rebuilds are found as now, before their build */
+  private next: ReadonlyMap<string, Found> = new Map();
+  /** Retired generations runs still hold, unloaded once the last one lets them go */
+  private readonly draining = new Map<Generation, string>();
   private version = 0;
   private loading?: Promise<void>;
   private queue: Promise<unknown> = Promise.resolve();
@@ -298,9 +305,11 @@ export class experimental_PluginHost {
     const hooks = [];
     const middleware: RunMiddleware[] = [];
     const panels: PluginPanelEntry[] = [];
+    const generations: Generation[] = [];
     for (const id of this.order) {
       const generation = this.states.get(id)?.generation;
       if (!generation?.live) continue;
+      generations.push(generation);
       const set = generation.contributions;
       for (const [name, tool] of set.tools) {
         const taken = tools.get(name);
@@ -349,7 +358,28 @@ export class experimental_PluginHost {
       backendOwners,
       panels,
     };
+    this.snapshotGenerations = generations;
     return this.snapshotCache;
+  }
+
+  /**
+   * The snapshot for one run, its generations held until `release()`: a reload during the run
+   * swaps in the new generation for later runs, and the one this run uses (its tools, skills,
+   * process) unloads only once every run that holds it let it go
+   */
+  lease(): PluginLease {
+    const snapshot = this.snapshot();
+    const held = [...this.snapshotGenerations];
+    for (const generation of held) generation.hold();
+    let released = false;
+    return {
+      snapshot,
+      release: () => {
+        if (released) return;
+        released = true;
+        for (const generation of held) generation.letGo();
+      },
+    };
   }
 
   /** The page of a panel: its HTML file, or the page it was registered with */
@@ -402,6 +432,7 @@ export class experimental_PluginHost {
         await this.unload(state);
         state.status = 'unloaded';
       }
+      for (const [generation, id] of [...this.draining]) await this.retire(id, generation, true);
       this.loading = undefined;
       this.disposed = false;
       this.changed();
@@ -628,6 +659,7 @@ export class experimental_PluginHost {
    */
   private async reconcile(rebuild: string): Promise<PluginReloadResult[]> {
     const rebuilds = (id: string) => rebuild === 'all' || rebuild === id;
+    this.next = new Map();
     if (this.disposed) return [];
     const candidates = await this.discover();
     this.settings = await loadPluginSettings(this.root, this.options.settings, {
@@ -666,8 +698,19 @@ export class experimental_PluginHost {
       this.states.delete(id);
       if (state.generation) gone.push(state);
     }
+    this.next = incoming;
     this.decideEnabled(candidates);
-    const graph = this.resolveGraph();
+    let graph = this.resolveGraph();
+    const refused = new Map<string, CogitatorError>();
+    for (const id of incoming.keys()) {
+      const blocked = graph.blocked.get(id);
+      if (blocked && this.states.get(id)?.enabled) refused.set(id, blocked);
+    }
+    if (refused.size > 0) {
+      for (const id of refused.keys()) incoming.delete(id);
+      this.decideEnabled(candidates);
+      graph = this.resolveGraph();
+    }
     const off = (id: string, state: PluginState) =>
       !state.enabled || graph.blocked.has(id) || state.shadowedBy !== undefined;
     for (const id of [...graph.order].reverse()) {
@@ -697,12 +740,32 @@ export class experimental_PluginHost {
         } else delete state.error;
         continue;
       }
+      const refusal = refused.get(id);
+      if (refusal && state.generation) {
+        results.push(this.refuseReload(state, refusal.message));
+        continue;
+      }
       if (state.generation && !rebuilds(id)) continue;
       results.push(await this.build(state, incoming.get(id)));
     }
+    this.next = new Map();
     this.watch();
     this.changed();
     return results;
+  }
+
+  /** The manifest `state` loads with now: the one a rebuild found, else the one it runs with */
+  private manifestOf(state: PluginState): PluginManifest {
+    return this.next.get(state.candidate.id)?.manifest ?? state.manifest;
+  }
+
+  /** The result of a reload that cannot load: the live generation goes on */
+  private refuseReload(state: PluginState, text: string): PluginReloadResult {
+    const id = state.candidate.id;
+    const generation = state.generation?.number ?? 0;
+    this.report(id, 'error', `Reload failed, generation ${generation} goes on: ${text}`);
+    this.emit({ type: 'reload-failed', plugin: id, generation: generation + 1, error: text });
+    return { id, ok: false, generation, error: text, code: ErrorCode.PLUGIN_RELOAD_FAILED };
   }
 
   /**
@@ -710,7 +773,7 @@ export class experimental_PluginHost {
    * keeps `state` from loading
    */
   private downDependency(state: PluginState): CogitatorError | undefined {
-    for (const dependency of state.manifest.dependencies ?? []) {
+    for (const dependency of this.manifestOf(state).dependencies ?? []) {
       const target = this.dependencyTarget(state, dependency);
       if (!target || target.generation?.live) continue;
       return new CogitatorError({
@@ -736,7 +799,7 @@ export class experimental_PluginHost {
         state.enabled = entry.value;
         state.enabledBy = entry.layer;
       } else {
-        state.enabled = state.manifest.defaultEnabled !== false;
+        state.enabled = this.manifestOf(state).defaultEnabled !== false;
         state.enabledBy = 'default';
       }
     }
@@ -763,7 +826,7 @@ export class experimental_PluginHost {
       grew = false;
       for (const state of this.states.values()) {
         if (!state.enabled || state.shadowedBy !== undefined) continue;
-        for (const dependency of state.manifest.dependencies ?? []) {
+        for (const dependency of this.manifestOf(state).dependencies ?? []) {
           const target = this.dependencyTarget(state, dependency);
           if (
             target &&
@@ -819,7 +882,7 @@ export class experimental_PluginHost {
       const state = this.states.get(id);
       if (!state) continue;
       const targets: string[] = [];
-      for (const dependency of state.manifest.dependencies ?? []) {
+      for (const dependency of this.manifestOf(state).dependencies ?? []) {
         const target = this.dependencyTarget(state, dependency);
         const named = `${dependency.name}${dependency.marketplace ? `@${dependency.marketplace}` : ''}`;
         if (!target) {
@@ -847,13 +910,13 @@ export class experimental_PluginHost {
         } else if (
           dependency.version !== undefined &&
           target.candidate.origin === 'installed' &&
-          (target.manifest.version === undefined ||
-            !satisfies(target.manifest.version, dependency.version))
+          (this.manifestOf(target).version === undefined ||
+            !satisfies(this.manifestOf(target).version ?? '', dependency.version))
         ) {
           blocked.set(
             id,
             new CogitatorError({
-              message: `Requires "${target.candidate.id}" ${dependency.version}, installed ${target.manifest.version ?? 'without a version'}`,
+              message: `Requires "${target.candidate.id}" ${dependency.version}, installed ${this.manifestOf(target).version ?? 'without a version'}`,
               code: ErrorCode.PLUGIN_DEPENDENCY_UNMET,
             })
           );
@@ -974,7 +1037,26 @@ export class experimental_PluginHost {
     return { id, ok: true, generation: generation.number };
   }
 
-  private async retire(id: string, generation: Generation): Promise<void> {
+  /**
+   * Unloads a generation that no longer serves: now, or once the runs that still hold it ended
+   * (`force`, on `dispose()`, does not wait for them)
+   */
+  private async retire(id: string, generation: Generation, force = false): Promise<void> {
+    if (!force) {
+      generation.live = false;
+      const now = generation.retireWhenFree(() => {
+        if (!this.draining.delete(generation)) return;
+        void this.finishRetire(id, generation);
+      });
+      if (!now) this.draining.set(generation, id);
+      else await this.finishRetire(id, generation);
+      return;
+    }
+    this.draining.delete(generation);
+    await this.finishRetire(id, generation);
+  }
+
+  private async finishRetire(id: string, generation: Generation): Promise<void> {
     const failures = await generation.dispose();
     for (const failure of failures) {
       this.report(id, 'warning', `A disposer (${failure.label}) failed: ${message(failure.error)}`);

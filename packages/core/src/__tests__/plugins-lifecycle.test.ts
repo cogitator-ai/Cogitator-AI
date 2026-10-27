@@ -386,6 +386,96 @@ describe('plugin lifecycle', () => {
     await plugins.dispose();
   });
 
+  it('keeps a replaced generation loaded while a run holds it', async () => {
+    let version = 1;
+    const unloaded: number[] = [];
+    const plugins = host([
+      {
+        name: 'leased',
+        activate(context) {
+          const current = version;
+          context.registerSkill({
+            name: 'notes',
+            description: `Notes ${current}`,
+            instructions: `Read the notes of version ${current}.`,
+          });
+          return () => {
+            unloaded.push(current);
+          };
+        },
+      },
+    ]);
+    await plugins.load();
+    const lease = plugins.lease();
+    version = 2;
+    expect(await plugins.reload('leased@code')).toEqual([
+      { id: 'leased@code', ok: true, generation: 2 },
+    ]);
+    expect(unloaded).toEqual([]);
+    const [held] = lease.snapshot.skills;
+    const catalog = await held?.discover();
+    expect(await catalog?.body('leased:notes')).toBe('Read the notes of version 1.');
+    const [fresh] = plugins.snapshot().skills;
+    expect(await (await fresh?.discover())?.body('leased:notes')).toBe(
+      'Read the notes of version 2.'
+    );
+    lease.release();
+    lease.release();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(unloaded).toEqual([1]);
+    await plugins.dispose();
+    expect(unloaded).toEqual([1, 2]);
+  });
+
+  it('unloads a held generation on dispose without waiting for the run', async () => {
+    const unloaded: string[] = [];
+    const plugins = host([
+      {
+        name: 'busy',
+        activate() {
+          return () => {
+            unloaded.push('busy');
+          };
+        },
+      },
+    ]);
+    await plugins.load();
+    const lease = plugins.lease();
+    await plugins.dispose();
+    expect(unloaded).toEqual(['busy']);
+    lease.release();
+    expect(unloaded).toEqual(['busy']);
+  });
+
+  it('checks the dependencies of the manifest a reload found, keeping the live generation', async () => {
+    const dir = join(base, 'grows');
+    mkdirSync(join(dir, '.claude-plugin'), { recursive: true });
+    mkdirSync(join(dir, 'commands'), { recursive: true });
+    writeFileSync(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'grows' }));
+    writeFileSync(join(dir, 'commands', 'one.md'), 'One.');
+    const plugins = host([], { dirs: [dir] });
+    await plugins.load();
+    writeFileSync(
+      join(dir, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'grows', dependencies: ['nowhere'] })
+    );
+    const [result] = await plugins.reload('grows@inline');
+    expect(result).toMatchObject({
+      id: 'grows@inline',
+      ok: false,
+      generation: 1,
+      code: ErrorCode.PLUGIN_RELOAD_FAILED,
+    });
+    expect(result?.error).toBe('grows@inline needs the plugin nowhere, which is not installed');
+    expect(plugins.get('grows@inline')).toMatchObject({ status: 'active', dependencies: [] });
+    expect(plugins.snapshot().commands.map((entry) => entry.name)).toEqual(['grows:one']);
+    writeFileSync(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'grows' }));
+    expect(await plugins.reload('grows@inline')).toEqual([
+      { id: 'grows@inline', ok: true, generation: 2 },
+    ]);
+    await plugins.dispose();
+  });
+
   it('does nothing for a reload asked for before dispose', async () => {
     let activations = 0;
     const plugins = host([

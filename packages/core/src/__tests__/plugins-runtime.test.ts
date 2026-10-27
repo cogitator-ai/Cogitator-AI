@@ -193,6 +193,59 @@ describe('plugins in the runtime', () => {
     expect((await cog.run(agent, { input: 'two' })).output).toBe('second: two');
   });
 
+  it('keeps the generation a run started with until the run ends, a reload during it aside', async () => {
+    const unloaded: number[] = [];
+    let version = 0;
+    const seenDuringRun: number[][] = [];
+    let cog: Cogitator | undefined;
+    const reloader = tool({
+      name: 'reload_plugins',
+      description: 'Reloads the plugins',
+      parameters: z.object({}),
+      execute: async () => {
+        await cog?.experimental_plugins.reload('counted@code');
+        seenDuringRun.push([...unloaded]);
+        return 'reloaded';
+      },
+    });
+    const backend = new MockLLMBackend().setResponses([
+      {
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'reload_plugins', arguments: {} }],
+        finishReason: 'tool_calls',
+      },
+      { content: 'done' },
+    ]);
+    ({ cog } = runtime(
+      {
+        experimental_plugins: plugins({
+          plugins: [
+            {
+              name: 'counted',
+              activate() {
+                const current = ++version;
+                return () => {
+                  unloaded.push(current);
+                };
+              },
+            },
+          ],
+        }),
+      },
+      backend
+    ));
+    const agent = new Agent({
+      name: 'a',
+      model: 'mock/m',
+      instructions: 'x',
+      tools: [reloader],
+    });
+    expect((await cog.run(agent, { input: 'go' })).output).toBe('done');
+    expect(seenDuringRun).toEqual([[]]);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(unloaded).toEqual([1]);
+  });
+
   it('never lets a plugin take over a provider registered globally, nor its config', async () => {
     const seen: unknown[] = [];
     const dispose = registerLLMBackend({

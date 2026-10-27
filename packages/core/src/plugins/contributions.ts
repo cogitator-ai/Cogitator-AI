@@ -63,6 +63,16 @@ export interface PluginSnapshot {
   readonly panels: readonly PluginPanelEntry[];
 }
 
+/**
+ * A snapshot a run holds until it ends: the generations it was taken from stay loaded, even when
+ * a reload replaces them, until every run that holds them released its lease
+ */
+export interface PluginLease {
+  readonly snapshot: PluginSnapshot;
+  /** Lets the generations go, once: a replaced one unloads when no other run holds it */
+  release(): void;
+}
+
 /** The registrations of one generation of one plugin */
 export class Contributions {
   readonly tools = new Map<string, Tool>();
@@ -103,6 +113,41 @@ export class Generation {
 
   /** Whether the generation replaces a live one, which goes on when this one fails to load */
   replacing = false;
+
+  private leases = 0;
+  private retire?: () => void;
+
+  /** Keeps the generation loaded for a run that took its registrations */
+  hold(): void {
+    this.leases++;
+  }
+
+  /** Ends one hold, unloading a generation that was retired while held once none is left */
+  letGo(): void {
+    this.leases--;
+    if (this.leases > 0 || !this.retire) return;
+    const retire = this.retire;
+    this.retire = undefined;
+    retire();
+  }
+
+  /**
+   * Runs `retire` (which unloads the generation) now when no run holds the generation, else once
+   * the last one lets it go. Returns whether it ran now
+   */
+  retireWhenFree(retire: () => void): boolean {
+    if (this.leases === 0) {
+      retire();
+      return true;
+    }
+    this.retire = retire;
+    return false;
+  }
+
+  /** Whether runs still hold the generation */
+  get held(): boolean {
+    return this.leases > 0;
+  }
 
   get signal(): AbortSignal {
     return this.controller.signal;
