@@ -37,6 +37,11 @@ const run = await sandbox.execute(
 );
 
 const wasmTools = [createCalcTool(), createJsonTool(), createHashTool()];
+
+const workspace = new LocalWorkspace({
+  root: './project',
+  exec: { sandbox: new OsSandbox({ policy: { network: { allowedDomains: ['registry.npmjs.org'] } } }) },
+});
 `;
 
 const SAFETY_CODE = `
@@ -211,7 +216,7 @@ export async function featuresB(): Promise<ExplorerFeature[]> {
       pkg: '@cogitator-ai/sandbox · @cogitator-ai/wasm-tools',
       title: 'Sandboxed execution',
       summary:
-        'Model-written code runs in a fresh Docker container with no network and capped memory, CPU and time, or as a WASM module with no Docker at all.',
+        "Model-written code runs in a fresh Docker container with no network and capped memory, CPU and time, or as a WASM module with no Docker at all. An agent's local commands run under Seatbelt or bubblewrap: writes kept to the project, hosts to your list, no approval needed.",
       href: '/docs/deployment/sandbox',
       code: sandbox,
     },

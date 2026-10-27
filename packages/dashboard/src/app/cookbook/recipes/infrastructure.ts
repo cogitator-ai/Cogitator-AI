@@ -544,6 +544,78 @@ await manager.shutdown();`,
       ],
     },
     {
+      id: 'os-sandbox',
+      title: 'Local Commands in the OS Sandbox',
+      difficulty: 'medium',
+      time: '10 min',
+      problem:
+        'An agent runs shell commands on your machine, and they should not write outside the project, read your keys or reach hosts you did not list.',
+      points: [
+        'Read the `sandbox` section of `.claude/settings.json` with `loadSandboxPolicy`',
+        'Run a `LocalWorkspace` under `OsSandbox`: Seatbelt on macOS, bubblewrap on Linux',
+        'Read what the sandbox refused from `result.sandbox.violations`',
+        'Delete into the trash with `delete_file` and restore',
+      ],
+      file: 'os-sandbox.ts',
+      code: `import { LocalWorkspace, loadSandboxPolicy, workspaceTools } from '@cogitator-ai/core';
+import { OsSandbox } from '@cogitator-ai/sandbox';
+import type { WorkspaceExecResult } from '@cogitator-ai/types';
+
+const availability = await OsSandbox.probe();
+if (!availability.available) throw new Error(\`No OS sandbox here: \${availability.reason}\`);
+
+const root = './project';
+const { policy } = await loadSandboxPolicy(root);
+const sandbox = new OsSandbox({
+  policy: policy.enabled ? policy : { network: { allowedDomains: ['registry.npmjs.org'] } },
+});
+const workspace = new LocalWorkspace({ root, exec: { sandbox } });
+await workspace.start();
+
+const [runCommand, deleteFile] = workspaceTools(workspace, {
+  tools: ['run_command', 'delete_file'],
+});
+const context = { agentId: 'demo', runId: 'demo', signal: new AbortController().signal };
+
+for (const command of ['echo ok > ok.txt', 'echo no > ~/escape.txt', 'curl -s https://example.com']) {
+  const result = (await runCommand.execute({ command }, context)) as WorkspaceExecResult;
+  console.log(command, '->', result.exitCode, result.sandbox?.violations);
+}
+
+await deleteFile.execute({ path: 'ok.txt' }, context);
+const [entry] = await workspace.listTrash();
+await workspace.restoreFromTrash(entry.id);
+
+await workspace.dispose();
+await sandbox.dispose();`,
+      install: 'pnpm add @cogitator-ai/core @cogitator-ai/sandbox',
+      setup: 'Linux only: apt-get install bubblewrap socat',
+      env: [],
+      run: 'npx tsx os-sandbox.ts',
+      repoRun: 'npx tsx examples/infrastructure/08-os-sandbox.ts',
+      notes: [
+        {
+          type: 'info',
+          text: 'A command that runs in the sandbox needs no approval. Deny rules, ask rules with a pattern and removals of critical paths still apply.',
+        },
+        {
+          type: 'warning',
+          text: 'An `rm` in a command deletes for good: only `delete_file` moves files to the trash.',
+        },
+      ],
+      example: 'infrastructure/08-os-sandbox.ts',
+      docs: [
+        {
+          href: '/docs/tools/os-sandbox',
+          label: 'OS Sandbox',
+        },
+        {
+          href: '/docs/tools/workspace',
+          label: 'Workspace',
+        },
+      ],
+    },
+    {
       id: 'deploy-docker',
       title: 'Plan a Docker Deploy',
       difficulty: 'easy',

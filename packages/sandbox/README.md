@@ -1,6 +1,6 @@
 # @cogitator-ai/sandbox
 
-Secure sandbox execution for Cogitator agents. Run untrusted code in isolated Docker containers, WASM modules, or native fallback with resource limits, network isolation, and timeout enforcement, and give agents a workspace in a Docker container or in a cloud sandbox on E2B, Daytona or Vercel Sandbox.
+Secure sandbox execution for Cogitator agents. Run untrusted code in isolated Docker containers, WASM modules, the operating system's own sandbox (Seatbelt on macOS, bubblewrap on Linux) or native fallback with resource limits, network isolation, and timeout enforcement, and give agents a workspace in a Docker container or in a cloud sandbox on E2B, Daytona or Vercel Sandbox.
 
 ## Installation
 
@@ -41,6 +41,7 @@ if (result.success) {
 
 - **Docker Sandbox** - Full container isolation with dropped capabilities
 - **WASM Sandbox** - Extism-powered WebAssembly execution
+- **OS Sandbox** - Local commands under Seatbelt (macOS) or bubblewrap (Linux): writes only in the workspace, reads everywhere but what you deny, network only through a proxy that checks each host, the `sandbox` settings of Claude Code read as they are
 - **Native Fallback** - Optional host execution for Docker tools when Docker is unavailable (`allowNativeFallback`)
 - **Container Pool** - A fresh, pre-started container for every execution
 - **Docker Workspace** - One long-lived container per agent workspace, the project mounted, files guarded on the host
@@ -102,7 +103,7 @@ if (result.success) {
 
 `initialize()` is idempotent and safe to call concurrently; `execute()` calls it automatically.
 
-The manager falls back in one case: a `docker` request while Docker is unavailable runs on the host through the native executor, with **no isolation**, and the first such call logs a warning. `allowNativeFallback: false` refuses those requests with `{ success: false, error }` instead; it defaults to `true`. The manager `defaults` apply to the fallback execution as well. A `wasm` request never falls back: without `@extism/extism` it fails with `WASM sandbox unavailable: install @extism/extism to run WASM tools`.
+The manager falls back in one case: a `docker` request while Docker is unavailable runs on the host through the native executor, with **no isolation**, and the first such call logs a warning. `allowNativeFallback: false` refuses those requests with `{ success: false, error }` instead, it defaults to `true`. The manager `defaults` apply to the fallback execution as well. A `wasm` request never falls back: without `@extism/extism` it fails with `WASM sandbox unavailable: install @extism/extism to run WASM tools`. An `os` request never falls back either, whatever `allowNativeFallback` says: on a machine without the OS sandbox it fails with the reason (unless its policy sets `failIfUnavailable: false`, see [OS Sandbox](#os-sandbox)).
 
 ### Finding the Docker Daemon
 
@@ -118,6 +119,7 @@ With `docker.socketPath` or `docker.host` (+ `port`) the executor connects there
 ```typescript
 const dockerAvailable = await manager.isDockerAvailable();
 const wasmAvailable = await manager.isWasmAvailable();
+const osAvailable = await manager.isOsAvailable();
 
 console.log('Docker:', dockerAvailable);
 console.log('WASM:', wasmAvailable);
@@ -356,6 +358,44 @@ await wasm.disconnect();
 
 ---
 
+## OS Sandbox
+
+`OsSandbox` runs local commands inside the operating system's sandbox, with the semantics of Claude Code's sandboxed Bash tool: Seatbelt (`sandbox-exec` with a generated profile) on macOS, bubblewrap (`bwrap`) on Linux. Linux also needs `socat`: `apt-get install bubblewrap socat`. Give it to a `LocalWorkspace` of `@cogitator-ai/core`, and every command the workspace runs (`run_command`) goes through it:
+
+```typescript
+import { LocalWorkspace, loadSandboxPolicy, workspaceTools } from '@cogitator-ai/core';
+import { OsSandbox } from '@cogitator-ai/sandbox';
+
+const { policy } = await loadSandboxPolicy('./project'); // the `sandbox` section of .claude/settings.json
+const sandbox = new OsSandbox({ policy });
+const workspace = new LocalWorkspace({ root: './project', exec: { sandbox } });
+await workspace.start(); // fails with SANDBOX_UNAVAILABLE when the sandbox cannot run here
+```
+
+What a sandboxed command can reach:
+
+| Access  | Default                                                                                | Change it with                                                     |
+| ------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Writes  | The workspace root and the sandbox's own temporary directory, which `TMPDIR` points to | `filesystem.allowWrite`, `filesystem.denyWrite`                    |
+| Reads   | Everywhere, credential files such as `~/.ssh` included                                 | `filesystem.denyRead`, `filesystem.allowRead`, `credentials.files` |
+| Network | No route out but the sandbox's proxy, which allows nothing until you list hosts        | `network.allowedDomains`, `network.deniedDomains`, `onUnknownHost` |
+| Env     | What the workspace passes (no API keys by default)                                     | `credentials.envVars`                                              |
+
+- **Filesystem.** The narrower rule wins: an `allowRead` inside a wider `denyRead` reopens that part, a `denyRead` inside a wider `allowRead` still holds. A write deny always wins over an allow. Paths are absolute, `~/` for the home directory, or relative to the workspace root. `*`, `?`, `**` and `[...]` work in every list on macOS and in the read lists on Linux, a trailing `/**` everywhere.
+- **Protected paths.** Even inside a writable directory a command cannot write the settings, hooks, skills, agents, commands and plugins of Claude Code and Cogitator (in the root and every directory above it, and `~/.claude`, `~/.cogitator`, `~/.claude.json`), the whole `.cogitator` directory of the root (its trash and snapshots), `.mcp.json`, shell startup files, `.gitconfig`, `.gitmodules`, `.vscode`, `.idea`, the repository's `.git/hooks` and `.git/config` (of the main repository too for a linked worktree), and a `HEAD` at the root, so no command turns the root into a bare repository whose config git outside the sandbox would read. A symlink at a protected path protects its target too. Only `filesystem.disabled` lifts them, with the rest of filesystem isolation.
+- **Network.** Commands get `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` (SOCKS5) pointing at a proxy that serves that command alone. A host `deniedDomains` names is refused, one `allowedDomains` names goes through (`github.com` that host only, `*.npmjs.org` its subdomains, `*` every host, IPv4 and bracketed IPv6 addresses, each with an optional `:port`), and any other host is decided by the call's `onUnknownHost` (a run wires it to its permissions as a `WebFetch(domain:...)` call), else the sandbox's own `onUnknownHost`, else refused. `strictAllowlist` refuses unknown hosts without asking. A host name that resolves only to loopback, link-local, a cloud metadata endpoint or an address of this machine is refused, `localhost` aside, list the address itself (`127.0.0.1:3000`) to reach a local server by name. UDP, QUIC and ICMP do not leave, and tools that ignore the proxy variables (plain `ssh`, most database drivers) cannot connect.
+- **Per-command hosts.** `exec(command, { allowedDomains })` (and `run_command`'s `allowedDomains`) opens hosts for that command alone, while it runs, and a host it does not list is then refused without asking. `deniedDomains` still wins, and a `strictAllowlist` policy refuses such a call.
+- **Violations.** What the proxy refused, and the file accesses the system refused (`Operation not permitted`, `Read-only file system`), are attributed to the command: `result.sandbox.violations`, and a sanitized `<sandbox_violations>` block appended to its stderr, so the model sees why it failed. `ignoreViolations` silences the expected ones (`{ "*": ["/etc/hosts"] }`).
+- **Outside the sandbox.** `excludedCommands` (the content of `Bash(...)` rules, such as `docker *`) run unsandboxed when every command of the line matches and the line has no redirection, `cd`, substitution or program from a variable. `dangerouslyDisableSandbox` on a call runs it unsandboxed only when the policy sets `allowUnsandboxed` (default false, ignored otherwise). Both go through the normal permission flow, and the result says `sandboxed: false` with the reason.
+- **Unavailable.** `failIfUnavailable` (default true) refuses to start, with a `SANDBOX_UNAVAILABLE` error naming why: no `sandbox-exec`, no `bwrap` or `socat`, user namespaces blocked (a container, Ubuntu's AppArmor restriction). With `false` commands run unsandboxed with a warning, and each result says so (`unsandboxedReason: 'unavailable'`). There is no silent fallback.
+- **Permissions.** A command that runs inside skips the approval it would need (`autoAllow`, default true): `run_command`'s own and a bare `Bash` ask rule. Deny rules, ask rules with a pattern (`Bash(git push *)`), `rm` and `rmdir` of a critical path (the root, `~`, `/`, `.git`) and plan mode still apply, and a command with `VAR=x` in front, `eval` or `make X=y` goes through the normal flow, as do commands that name hosts of their own.
+
+`OsSandbox.probe()` says whether the sandbox runs here, `OsSandbox.create(options)` returns a started one, `dispose()` closes the proxies of commands still running and removes its directories. The `os` type of the `SandboxManager` runs an execution under it (`{ type: 'os', workdir, os: policy }`, the workdir its writable root).
+
+Not covered, honestly: shell `rm` deletes for good (the trash is the `delete_file` tool's, see `@cogitator-ai/core`), processes a command leaves running in the background lose the network once it exits (and are stopped with it on Linux), Seatbelt violations are read from the command's errors, not from the system log, Linux denies paths a wildcard matches when the command starts (a file made later is not covered), Linux does not filter Unix sockets (no seccomp filter), and no TLS is inspected, so an allowed domain carries whatever goes to it.
+
+---
+
 ## Native Executor
 
 Direct execution without isolation (fallback mode).
@@ -552,6 +592,12 @@ import type {
   SandboxPoolConfig,
   SandboxDockerConfig,
   SandboxResult,
+  OsSandboxPolicy,
+  OsSandboxKind,
+  OsSandboxAvailability,
+  SandboxViolation,
+  SandboxHostRequest,
+  SandboxHostDecider,
 } from '@cogitator-ai/sandbox';
 ```
 

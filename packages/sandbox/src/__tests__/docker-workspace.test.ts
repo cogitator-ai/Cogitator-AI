@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -11,7 +12,12 @@ import { stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { WorkspaceError, type Workspace, type WorkspaceStat } from '@cogitator-ai/types';
+import {
+  WorkspaceError,
+  type Workspace,
+  type WorkspaceStat,
+  type WorkspaceTrashEntry,
+} from '@cogitator-ai/types';
 import {
   DockerWorkspace,
   ownerLabel,
@@ -456,6 +462,67 @@ describe.skipIf(!docker)('DockerWorkspace with Docker', () => {
       await docked.dispose();
       rmSync(root, { recursive: true, force: true });
     }
+  }, 120_000);
+});
+
+describe.skipIf(!docker)('DockerWorkspace trash over a host that lists it', () => {
+  let base: string;
+  let workspace: DockerWorkspace;
+
+  /** The host's trash read from the records the workspace writes next to each trash folder */
+  const listing = (root: string) => async (): Promise<WorkspaceTrashEntry[]> => {
+    const dir = join(root, '.cogitator', 'trash');
+    if (!existsSync(dir)) return [];
+    const entries: WorkspaceTrashEntry[] = [];
+    for (const name of readdirSync(dir).filter((file) => file.endsWith('.json'))) {
+      const id = name.slice(0, -'.json'.length);
+      const record = JSON.parse(readFileSync(join(dir, name), 'utf8')) as {
+        path: string;
+        trashedAt: number;
+        type: WorkspaceTrashEntry['type'];
+      };
+      if (!existsSync(join(dir, id, record.path))) continue;
+      entries.push({
+        id,
+        path: record.path,
+        trashedTo: `.cogitator/trash/${id}/${record.path}`,
+        trashedAt: record.trashedAt,
+        type: record.type,
+        size: 0,
+      });
+    }
+    return entries;
+  };
+
+  beforeAll(async () => {
+    base = realpathSync(mkdtempSync(join(tmpdir(), 'docker-trash-')));
+    const host = { ...directoryHost(base), listTrash: listing(base) };
+    workspace = new DockerWorkspace({ host, image: 'alpine:3.19', id: 'trash-ws', killGrace: 500 });
+  }, 120_000);
+
+  afterAll(async () => {
+    await workspace?.dispose();
+    rmSync(base, { recursive: true, force: true });
+  }, 60_000);
+
+  it('records a trashed entry, restores it in the container and empties the trash', async () => {
+    await workspace.exec('mkdir -p dir && echo keep > dir/f.txt && echo gone > g.txt');
+    const trashed = await workspace.remove('dir', { trash: true });
+    const [entry] = await workspace.listTrash!();
+    expect(entry).toMatchObject({ path: 'dir', type: 'directory', trashedTo: trashed.trashedTo });
+    expect(await workspace.restoreFromTrash!(entry.id)).toEqual({ path: 'dir' });
+    expect(readFileSync(join(base, 'dir', 'f.txt'), 'utf8')).toBe('keep\n');
+    expect(await workspace.listTrash!()).toEqual([]);
+    expect(existsSync(join(base, '.cogitator', 'trash', `${entry.id}.json`))).toBe(false);
+
+    await workspace.remove('g.txt', { trash: true });
+    const [second] = await workspace.listTrash!();
+    expect(await workspace.emptyTrash!({ olderThan: 60_000 })).toEqual({ deleted: [] });
+    expect(await workspace.emptyTrash!()).toEqual({ deleted: [second.id] });
+    expect(existsSync(join(base, '.cogitator', 'trash', second.id))).toBe(false);
+    await expect(workspace.restoreFromTrash!('missing')).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
   }, 120_000);
 });
 

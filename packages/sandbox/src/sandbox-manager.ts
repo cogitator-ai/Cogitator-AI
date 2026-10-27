@@ -13,6 +13,7 @@ import type {
 import { type BaseSandboxExecutor } from './executors/base';
 import { DockerSandboxExecutor } from './executors/docker';
 import { NativeSandboxExecutor } from './executors/native';
+import { OsSandboxExecutor } from './executors/os';
 import { WasmSandboxExecutor } from './executors/wasm';
 import { abortMessage } from './utils/abort';
 
@@ -35,6 +36,10 @@ export class SandboxManager {
     const native = new NativeSandboxExecutor();
     await native.connect();
     this.executors.set('native', native);
+
+    const os = new OsSandboxExecutor();
+    await os.connect();
+    this.executors.set('os', os);
 
     try {
       const docker = new DockerSandboxExecutor({
@@ -124,6 +129,13 @@ export class SandboxManager {
     await this.initialize();
     const docker = this.executors.get('docker');
     return docker ? docker.isAvailable() : false;
+  }
+
+  /** Whether the OS sandbox (Seatbelt on macOS, bubblewrap on Linux) runs on this machine */
+  async isOsAvailable(): Promise<boolean> {
+    await this.initialize();
+    const os = this.executors.get('os');
+    return os ? os.isAvailable() : false;
   }
 
   async isWasmAvailable(): Promise<boolean> {

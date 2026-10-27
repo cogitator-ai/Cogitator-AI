@@ -1,6 +1,6 @@
 # Infrastructure Examples
 
-Redis-backed memory, PostgreSQL persistence, distributed job queues, deployment automation, and agent workspaces in cloud sandboxes.
+Redis-backed memory, PostgreSQL persistence, distributed job queues, deployment automation, agent workspaces in cloud sandboxes, and local commands under the operating system's sandbox.
 
 ## Prerequisites
 
@@ -40,6 +40,7 @@ DATABASE_URL=postgresql://postgres:cogitator@localhost:5432/cogitator
 | 05  | `05-sandbox-execution.ts` | Docker                         | Docker and WASM sandboxing, resource limits, native fallback                      |
 | 06  | `06-redis-client.ts`      | Redis                          | Shared Redis client, key prefix, TTL, atomic counter, pub/sub                     |
 | 07  | `07-remote-workspace.ts`  | E2B, Daytona or Vercel Sandbox | Workspace in a cloud sandbox: files, commands, symlink guard, timeouts, snapshots |
+| 08  | `08-os-sandbox.ts`        | macOS, or Linux with bwrap     | Local commands under Seatbelt or bubblewrap, policy from `.claude/settings.json`  |
 
 ## Running
 
@@ -51,6 +52,9 @@ npx tsx examples/infrastructure/04-deploy-docker.ts
 npx tsx examples/infrastructure/05-sandbox-execution.ts
 npx tsx examples/infrastructure/06-redis-client.ts
 npx tsx examples/infrastructure/07-remote-workspace.ts
+npx tsx examples/infrastructure/08-os-sandbox.ts
 ```
+
+`08-os-sandbox.ts` needs no service and no API key: on macOS `sandbox-exec` ships with the system, on Linux install `bubblewrap` and `socat`. It says why when the sandbox cannot run.
 
 `07-remote-workspace.ts` picks the provider from `REMOTE_WORKSPACE` (`e2b`, `daytona` or `vercel`) or from the credentials it finds (`E2B_API_KEY`, `DAYTONA_API_KEY`, `VERCEL_OIDC_TOKEN` or `VERCEL_TOKEN` with `VERCEL_TEAM_ID` and `VERCEL_PROJECT_ID`), and says what to set when there are none. Install the provider's SDK first: `pnpm add e2b`, `@daytona/sdk` or `@vercel/sandbox`.

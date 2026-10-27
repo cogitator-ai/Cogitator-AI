@@ -1,18 +1,12 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
-import { WorkspaceError, type WorkspaceExecResult } from '@cogitator-ai/types';
+import {
+  WorkspaceError,
+  type WorkspaceExecResult,
+  type WorkspaceLaunch,
+} from '@cogitator-ai/types';
 
-/** What a workspace would spawn for a command, see `LocalWorkspaceExecConfig.launch`. */
-export interface WorkspaceLaunch {
-  /** The program, e.g. `/bin/sh` */
-  file: string;
-  /** Its arguments, e.g. `['-c', command]` */
-  args: string[];
-  /** The directory it runs in, inside the root */
-  cwd: string;
-  /** Its whole environment */
-  env: Record<string, string>;
-}
+export type { WorkspaceLaunch };
 
 /** Milliseconds after a command exits that its output pipes may still deliver what it wrote. */
 const STDIO_GRACE = 200;
@@ -59,7 +53,7 @@ export class ProcessGroups {
 }
 
 export interface RunProcessOptions {
-  launch: WorkspaceLaunch;
+  launch: Pick<WorkspaceLaunch, 'file' | 'args' | 'cwd' | 'env'>;
   timeout: number;
   maxOutput: number;
   /** Milliseconds between SIGTERM and SIGKILL when a command is stopped */

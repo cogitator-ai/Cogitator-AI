@@ -5,6 +5,7 @@ import {
   mkdir,
   open,
   readdir,
+  readFile,
   readlink,
   realpath,
   rename,
@@ -18,9 +19,20 @@ import {
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { nanoid } from 'nanoid';
 import {
+  CogitatorError,
+  ErrorCode,
   WorkspaceError,
   workspaceGlobMatcher,
   type Workspace,
+  type WorkspaceCommandSandbox,
+  type WorkspaceEmptyTrashOptions,
+  type WorkspaceEmptyTrashResult,
+  type WorkspaceLaunchOverride,
+  type WorkspaceLaunchReport,
+  type WorkspaceSandbox,
+  type WorkspaceTrashEntry,
+  type WorkspaceTrashRestoreOptions,
+  type WorkspaceTrashRestoreResult,
   type WorkspaceEntry,
   type WorkspaceEntryType,
   type WorkspaceExecOptions,
@@ -68,6 +80,11 @@ export const WORKSPACE_SERVICE_DIR = '.cogitator';
 /** Where `remove({ trash: true })` moves entries, relative to the root. */
 export const WORKSPACE_TRASH_DIR = `${WORKSPACE_SERVICE_DIR}/trash`;
 const PENDING_DIR = `${WORKSPACE_SERVICE_DIR}/pending`;
+/** The record next to a trash folder of what it holds, `<id>.json` */
+const TRASH_MANIFEST = '.json';
+/** What a trash folder's name looks like: the time it was trashed and a random suffix */
+const TRASH_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+const MAX_TREE_ENTRIES = 100_000;
 const TEMP_PREFIX = '.cogitator-tmp-';
 const LEFTOVER_AGE = 60 * 60 * 1000;
 const SWEEP_MAX_DIRS = 5_000;
@@ -172,12 +189,23 @@ export interface LocalWorkspaceExecConfig {
    */
   background?: 'kill' | 'keep';
   /**
-   * Changes what is spawned for a command, e.g. to run it under an OS sandbox (`sandbox-exec`,
-   * `bwrap`): it gets the program, arguments, directory and environment the workspace would use
-   * and returns the program and arguments to spawn instead. The process group, its kill on a
-   * timeout or an abort, the trimmed environment and the output caps stay
+   * Changes what is spawned for a command, e.g. to wrap it in a tool of your own: it gets the
+   * program, arguments, directory, environment, root, the command line and what the call asked
+   * of a sandbox, and returns (now or in a promise) the program and arguments to spawn instead,
+   * optionally the whole environment instead of the workspace's and a `cleanup` that runs once
+   * the command is over (its report can set the result's `sandbox` and append to its stderr).
+   * The process group, its kill on a timeout or an abort and the output caps stay. Give either
+   * this or `sandbox`
    */
-  launch?: (launch: WorkspaceLaunch) => Pick<WorkspaceLaunch, 'file' | 'args'>;
+  launch?: (launch: WorkspaceLaunch) => WorkspaceLaunchOverride | Promise<WorkspaceLaunchOverride>;
+  /**
+   * The OS sandbox commands run in, such as `OsSandbox` of `@cogitator-ai/sandbox` (Seatbelt on
+   * macOS, bubblewrap on Linux): it is checked when the workspace starts, which fails with code
+   * `UNAVAILABLE` (caused by a `SANDBOX_UNAVAILABLE` error) when it cannot run here, wraps every
+   * command, and is the workspace's `sandbox`, so the permission engine lets a command that runs
+   * inside skip its approval. Give either this or `launch`
+   */
+  sandbox?: WorkspaceCommandSandbox;
 }
 
 interface FileIdentity {
@@ -265,6 +293,9 @@ export class LocalWorkspace implements Workspace {
     positive(this.execConfig.timeout, DEFAULT_EXEC_TIMEOUT, 'exec.timeout');
     positive(this.execConfig.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES, 'exec.maxOutputBytes');
     positive(this.execConfig.killGrace, DEFAULT_KILL_GRACE, 'exec.killGrace');
+    if (this.execConfig.launch && this.execConfig.sandbox) {
+      throw new RangeError('Give exec.launch or exec.sandbox, not both');
+    }
     this.state = { disposed: false, groups: new ProcessGroups(), restoring: 0 };
   }
 
@@ -289,6 +320,11 @@ export class LocalWorkspace implements Workspace {
   /** The root with symlinks resolved once started, the given root before */
   get root(): string {
     return this.state.realRoot ?? this.givenRoot;
+  }
+
+  /** The OS sandbox commands run in (`exec.sandbox`), when there is one */
+  get sandbox(): WorkspaceSandbox | undefined {
+    return this.execConfig.sandbox;
   }
 
   /**
@@ -523,6 +559,25 @@ export class LocalWorkspace implements Workspace {
         throw ioError(error, path);
       }
       await rmdir(pinned.holder).catch(() => undefined);
+      const manifest: TrashManifest = {
+        version: 1,
+        path: rel,
+        trashedAt: Date.now(),
+        type: entryType(info),
+      };
+      await this.write(
+        `${WORKSPACE_TRASH_DIR}/${stamp}${TRASH_MANIFEST}`,
+        JSON.stringify(manifest)
+      ).catch((error: unknown) => {
+        getLogger().warn(
+          'The record of a trashed entry could not be written, it is listed by its folder',
+          {
+            workspace: this.id,
+            path: rel,
+            error: error instanceof Error ? error.message : String(error),
+          }
+        );
+      });
       return { path: rel, trashedTo };
     }
 
@@ -538,6 +593,113 @@ export class LocalWorkspace implements Workspace {
       throw ioError(error, path);
     }
     return { path: rel };
+  }
+
+  /**
+   * What `remove(path, { trash: true })` moved to `.cogitator/trash` and is still there, oldest
+   * first, with where each came from. An entry trashed before its record was kept (by an older
+   * version, or a `DockerWorkspace` over this root) is listed by the path under its folder
+   */
+  async listTrash(): Promise<WorkspaceTrashEntry[]> {
+    const trash = await this.trashDir();
+    if (!trash) return [];
+    const names = await readdir(trash, { withFileTypes: true }).catch(() => []);
+    const entries: WorkspaceTrashEntry[] = [];
+    for (const dirent of names) {
+      if (!dirent.isDirectory() || !TRASH_ID.test(dirent.name)) continue;
+      const entry = await this.trashEntry(trash, dirent.name);
+      if (entry) entries.push(entry);
+    }
+    return entries.sort((a, b) => a.trashedAt - b.trashedAt || a.id.localeCompare(b.id));
+  }
+
+  /**
+   * Moves an entry of the trash back where it was removed from, or to `to`, through the same safe
+   * placement as `rename`: `EXISTS` when something is there (unless `overwrite` replaces an empty
+   * directory or a file), `NOT_FOUND` for an id the trash does not hold, `BUSY` while a command
+   * the workspace started still runs
+   */
+  async restoreFromTrash(
+    id: string,
+    options: WorkspaceTrashRestoreOptions = {}
+  ): Promise<WorkspaceTrashRestoreResult> {
+    const trash = await this.trashDir();
+    const entry = trash && TRASH_ID.test(id) ? await this.trashEntry(trash, id) : undefined;
+    if (!trash || !entry) {
+      throw new WorkspaceError('NOT_FOUND', `The trash holds no entry ${id}`, { path: id });
+    }
+    const target = options.to ?? entry.path;
+    await this.rename(entry.trashedTo, target, { overwrite: options.overwrite ?? false });
+    await this.forgetTrashEntry(trash, id, dirname(join(this.root, ...entry.trashedTo.split('/'))));
+    const { relative: restored } = await this.locate(target, false);
+    return { path: restored };
+  }
+
+  /**
+   * Deletes for good the entries of the trash, or those trashed `olderThan` milliseconds ago or
+   * longer, each through the safe removal of `remove`. Refused with `BUSY` while a command the
+   * workspace started still runs
+   */
+  async emptyTrash(options: WorkspaceEmptyTrashOptions = {}): Promise<WorkspaceEmptyTrashResult> {
+    if (options.olderThan !== undefined && !(options.olderThan >= 0)) {
+      throw new RangeError('olderThan must be 0 or more milliseconds');
+    }
+    this.refuseWhileBusy(WORKSPACE_TRASH_DIR);
+    const trash = await this.trashDir();
+    if (!trash) return { deleted: [] };
+    const cutoff = options.olderThan === undefined ? Infinity : Date.now() - options.olderThan;
+    const deleted: string[] = [];
+    for (const entry of await this.listTrash()) {
+      if (entry.trashedAt > cutoff) continue;
+      await this.remove(`${WORKSPACE_TRASH_DIR}/${entry.id}`, { recursive: true });
+      await unlink(join(trash, `${entry.id}${TRASH_MANIFEST}`)).catch(() => undefined);
+      deleted.push(entry.id);
+    }
+    return { deleted };
+  }
+
+  /** The trash directory, resolved inside the root, undefined while there is none */
+  private async trashDir(): Promise<string | undefined> {
+    const { absolute } = await this.locate(WORKSPACE_TRASH_DIR, true);
+    const info = await lstat(absolute).catch(() => undefined);
+    return info?.isDirectory() ? absolute : undefined;
+  }
+
+  /** The entry of the trash folder `id`: from its record, else the path under its folder */
+  private async trashEntry(trash: string, id: string): Promise<WorkspaceTrashEntry | undefined> {
+    const folder = join(trash, id);
+    const manifest = await readTrashManifest(join(trash, `${id}${TRASH_MANIFEST}`));
+    let rel = manifest?.path;
+    if (rel !== undefined) {
+      if (!(await lstat(join(folder, ...rel.split('/'))).catch(() => undefined))) return undefined;
+    } else {
+      rel = await trashedPathIn(folder);
+      if (rel === undefined) return undefined;
+    }
+    const at = join(folder, ...rel.split('/'));
+    const info = await lstat(at).catch(() => undefined);
+    if (!info) return undefined;
+    return {
+      id,
+      path: rel,
+      trashedTo: `${WORKSPACE_TRASH_DIR}/${id}/${rel}`,
+      trashedAt: manifest?.trashedAt ?? stampTime(id) ?? info.ctimeMs,
+      type: entryType(info),
+      size: info.isDirectory() ? await treeSize(at) : info.size,
+    };
+  }
+
+  /** Removes the record of a restored entry and the folders the restore left empty */
+  private async forgetTrashEntry(trash: string, id: string, from: string): Promise<void> {
+    await unlink(join(trash, `${id}${TRASH_MANIFEST}`)).catch(() => undefined);
+    const folder = join(trash, id);
+    for (let dir = from; isWithin(folder, dir); dir = dirname(dir)) {
+      const removed = await rmdir(dir).then(
+        () => true,
+        () => false
+      );
+      if (!removed || dir === folder) break;
+    }
   }
 
   async rename(from: string, to: string, options: WorkspaceRenameOptions = {}): Promise<void> {
@@ -624,28 +786,86 @@ export class LocalWorkspace implements Workspace {
 
     const env = { ...this.inheritedEnv(), ...this.execConfig.env, ...options.env };
     const planned = this.shellLaunch(command, cwd, env);
-    const launch = this.execConfig.launch
-      ? { ...planned, ...this.execConfig.launch(planned) }
-      : planned;
+    this.refuseWhileRestoring(cwdPath);
+    const override = await this.prepareLaunch(
+      {
+        ...planned,
+        root: this.root,
+        command,
+        request: {
+          ...(options.dangerouslyDisableSandbox !== undefined && {
+            dangerouslyDisableSandbox: options.dangerouslyDisableSandbox,
+          }),
+          ...(options.allowedDomains !== undefined && { allowedDomains: options.allowedDomains }),
+          ...(options.onUnknownHost !== undefined && { onUnknownHost: options.onUnknownHost }),
+        },
+      },
+      cwdPath
+    );
+    let outcome: WorkspaceExecResult;
+    try {
+      if (options.signal?.aborted) throw abortError(options.signal);
+      this.refuseWhileRestoring(cwdPath);
+      this.state.groups.prune();
+      outcome = await runProcess({
+        launch: { file: override.file, args: override.args, cwd, env: override.env ?? env },
+        timeout,
+        maxOutput,
+        killGrace: this.execConfig.killGrace ?? DEFAULT_KILL_GRACE,
+        background: options.background ?? this.execConfig.background ?? 'kill',
+        groups: this.state.groups,
+        signal: options.signal,
+        onStdout: options.onStdout,
+        onStderr: options.onStderr,
+      });
+    } catch (error) {
+      await this.cleanupLaunch(override, undefined);
+      throw error;
+    }
+    const report = await this.cleanupLaunch(override, outcome);
+    return report ? withReport(outcome, report) : outcome;
+  }
+
+  /** What to spawn for a command: through the sandbox or the `launch` hook, else as planned */
+  private async prepareLaunch(
+    launch: WorkspaceLaunch,
+    path: string
+  ): Promise<WorkspaceLaunchOverride> {
+    const { sandbox, launch: hook } = this.execConfig;
+    try {
+      if (sandbox) return await sandbox.launch(launch);
+      if (hook) return await hook(launch);
+    } catch (error) {
+      throw launchError(error, path);
+    }
+    return { file: launch.file, args: launch.args };
+  }
+
+  /** Runs the launch's cleanup, whose failure is logged and never loses the command's result */
+  private async cleanupLaunch(
+    override: WorkspaceLaunchOverride,
+    result: WorkspaceExecResult | undefined
+  ): Promise<WorkspaceLaunchReport | undefined> {
+    if (!override.cleanup) return undefined;
+    try {
+      return (await override.cleanup(result)) ?? undefined;
+    } catch (error) {
+      getLogger().warn('The cleanup of a workspace command failed', {
+        workspace: this.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
+  private refuseWhileRestoring(path: string): void {
     if (this.state.restoring > 0) {
       throw new WorkspaceError(
         'BUSY',
         'A snapshot is being restored in the workspace: run the command once it is done',
-        { path: cwdPath }
+        { path }
       );
     }
-    this.state.groups.prune();
-    return runProcess({
-      launch,
-      timeout,
-      maxOutput,
-      killGrace: this.execConfig.killGrace ?? DEFAULT_KILL_GRACE,
-      background: options.background ?? this.execConfig.background ?? 'kill',
-      groups: this.state.groups,
-      signal: options.signal,
-      onStdout: options.onStdout,
-      onStderr: options.onStderr,
-    });
   }
 
   /**
@@ -902,7 +1122,11 @@ export class LocalWorkspace implements Workspace {
     }
   }
 
-  private shellLaunch(command: string, cwd: string, env: Record<string, string>): WorkspaceLaunch {
+  private shellLaunch(
+    command: string,
+    cwd: string,
+    env: Record<string, string>
+  ): Pick<WorkspaceLaunch, 'file' | 'args' | 'cwd' | 'env'> {
     const shell = this.execConfig.shell;
     if (process.platform === 'win32' && !shell) {
       return { file: env.ComSpec ?? 'cmd.exe', args: ['/d', '/s', '/c', `"${command}"`], cwd, env };
@@ -943,6 +1167,9 @@ export class LocalWorkspace implements Workspace {
           `The root ${this.givenRoot} is not a directory`
         );
       }
+      await this.execConfig.sandbox?.start().catch((error: unknown) => {
+        throw launchError(error, this.givenRoot);
+      });
       this.state.realRoot = real;
       this.state.sweeping = sweepLeftovers(real, this.leftoverAge).catch(() => undefined);
       return real;
@@ -1304,6 +1531,84 @@ async function recoverStaged(root: string, staged: string, cutoff: number): Prom
   }
 }
 
+/** What a trash folder's record says */
+interface TrashManifest {
+  version: 1;
+  /** Where the entry was removed from, relative to the root */
+  path: string;
+  /** Milliseconds since the epoch */
+  trashedAt: number;
+  type: WorkspaceEntryType;
+}
+
+async function readTrashManifest(file: string): Promise<TrashManifest | undefined> {
+  try {
+    const info = await lstat(file);
+    if (!info.isFile() || info.size > 64 * 1024) return undefined;
+    const parsed: unknown = JSON.parse(await readFile(file, 'utf8'));
+    if (typeof parsed !== 'object' || parsed === null) return undefined;
+    const { path, trashedAt, type } = parsed as Record<string, unknown>;
+    if (typeof path !== 'string' || !isTrashRelative(path)) return undefined;
+    return {
+      version: 1,
+      path,
+      trashedAt: typeof trashedAt === 'number' ? trashedAt : 0,
+      type: type === 'file' || type === 'directory' || type === 'symlink' ? type : 'other',
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a recorded path is a plain relative path that stays inside its trash folder */
+function isTrashRelative(path: string): boolean {
+  if (path === '' || path.includes('\0') || isAbsolute(path)) return false;
+  return path.split('/').every((part) => part !== '' && part !== '.' && part !== '..');
+}
+
+/**
+ * The path a trash folder without a record holds: down its folders while each holds exactly one
+ * directory, to the entry under the last. A trashed directory that held a single directory is
+ * found one level deeper, which restores to the same place
+ */
+async function trashedPathIn(folder: string): Promise<string | undefined> {
+  const parts: string[] = [];
+  let dir = folder;
+  for (;;) {
+    const names = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    if (names.length !== 1) return parts.length > 0 ? parts.join('/') : undefined;
+    const [only] = names;
+    parts.push(only.name);
+    if (!only.isDirectory()) return parts.join('/');
+    dir = join(dir, only.name);
+  }
+}
+
+/** The time a trash folder's name carries (`2026-10-28T12-34-56-789Z-abcdef`) */
+function stampTime(id: string): number | undefined {
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z/.exec(id);
+  if (!match) return undefined;
+  const time = Date.parse(`${match[1]}T${match[2]}:${match[3]}:${match[4]}.${match[5]}Z`);
+  return Number.isNaN(time) ? undefined : time;
+}
+
+/** Bytes of the files under a directory, symlinks not followed, at most so many entries looked at */
+async function treeSize(dir: string): Promise<number> {
+  let total = 0;
+  let seen = 0;
+  const queue = [dir];
+  while (queue.length > 0 && seen < MAX_TREE_ENTRIES) {
+    const current = queue.pop()!;
+    for (const dirent of await readdir(current, { withFileTypes: true }).catch(() => [])) {
+      if (++seen > MAX_TREE_ENTRIES) break;
+      const full = join(current, dirent.name);
+      if (dirent.isDirectory()) queue.push(full);
+      else if (dirent.isFile()) total += (await lstat(full).catch(() => undefined))?.size ?? 0;
+    }
+  }
+  return total;
+}
+
 async function readAtMost(handle: FileHandle, limit: number, path: string): Promise<Uint8Array> {
   const chunks: Buffer[] = [];
   let total = 0;
@@ -1422,6 +1727,33 @@ function ioError(error: unknown, path: string): WorkspaceError {
     default:
       return new WorkspaceError('IO', `${path}: ${code ?? message}`, { path, cause: error });
   }
+}
+
+/** A command's result with what its launch's cleanup reported: the sandbox, a notice on stderr */
+function withReport(
+  result: WorkspaceExecResult,
+  report: WorkspaceLaunchReport
+): WorkspaceExecResult {
+  const notice = report.notice;
+  return {
+    ...result,
+    ...(notice && {
+      stderr: result.stderr ? `${result.stderr.replace(/\n$/, '')}\n${notice}` : notice,
+    }),
+    ...(report.sandbox && { sandbox: report.sandbox }),
+  };
+}
+
+/**
+ * A failure to launch a command as a workspace error: a sandbox that cannot run here is
+ * `UNAVAILABLE` (caused by the `SANDBOX_UNAVAILABLE` error), anything else as it was thrown
+ */
+function launchError(error: unknown, path: string): unknown {
+  if (error instanceof WorkspaceError) return error;
+  if (error instanceof CogitatorError && error.code === ErrorCode.SANDBOX_UNAVAILABLE) {
+    return new WorkspaceError('UNAVAILABLE', error.message, { path, cause: error });
+  }
+  return error;
 }
 
 /** The `LocalWorkspace` behind `workspace`: itself, or the host of a workspace over one */

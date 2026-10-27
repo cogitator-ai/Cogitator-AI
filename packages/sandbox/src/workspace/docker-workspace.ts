@@ -23,6 +23,11 @@ import {
   type WorkspaceSnapshotOptions,
   type WorkspaceStat,
   type WorkspaceWriteOptions,
+  type WorkspaceTrashEntry,
+  type WorkspaceTrashRestoreOptions,
+  type WorkspaceTrashRestoreResult,
+  type WorkspaceEmptyTrashOptions,
+  type WorkspaceEmptyTrashResult,
 } from '@cogitator-ai/types';
 import type { Docker, DockerContainer, DockerExec, DockerStream } from '../docker-types';
 import { DockerStreamDemuxer } from '../executors/docker';
@@ -41,6 +46,8 @@ import {
 
 const DEFAULT_IMAGE = 'alpine:3.19';
 const DEFAULT_WORKDIR = '/workspace';
+/** Where `remove({ trash: true })` moves entries, relative to the root, as a `LocalWorkspace` does */
+const TRASH_DIR = '.cogitator/trash';
 const DEFAULT_EXEC_TIMEOUT = 120_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
 const DEFAULT_KILL_GRACE = 2_000;
@@ -179,6 +186,17 @@ export class DockerWorkspace implements Workspace {
   readonly listSnapshots?: () => Promise<WorkspaceSnapshot[]>;
   readonly deleteSnapshot?: (snapshotId: string) => Promise<void>;
   readonly copySnapshot?: (snapshotId: string, target: Workspace) => Promise<WorkspaceSnapshot>;
+  /** The trash of the host's root, listed through the host (a `LocalWorkspace`) */
+  readonly listTrash?: () => Promise<WorkspaceTrashEntry[]>;
+  /** Moves an entry of the trash back in the container, as `rename` moves */
+  readonly restoreFromTrash?: (
+    id: string,
+    options?: WorkspaceTrashRestoreOptions
+  ) => Promise<WorkspaceTrashRestoreResult>;
+  /** Deletes entries of the trash in the container, as `remove` deletes */
+  readonly emptyTrash?: (
+    options?: WorkspaceEmptyTrashOptions
+  ) => Promise<WorkspaceEmptyTrashResult>;
   /**
    * The workspace on the host whose root is mounted: files are read and written, and snapshots
    * taken and restored, through it
@@ -210,6 +228,53 @@ export class DockerWorkspace implements Workspace {
     if (host.deleteSnapshot) this.deleteSnapshot = (snapshotId) => host.deleteSnapshot!(snapshotId);
     if (host.copySnapshot) {
       this.copySnapshot = (snapshotId, target) => host.copySnapshot!(snapshotId, target);
+    }
+    if (host.listTrash) {
+      const list = () => host.listTrash!();
+      this.listTrash = list;
+      this.restoreFromTrash = (id, trashOptions) =>
+        this.restoreTrashed(list, id, trashOptions ?? {});
+      this.emptyTrash = (emptyOptions) => this.emptyTrashed(list, emptyOptions ?? {});
+    }
+  }
+
+  private async restoreTrashed(
+    list: () => Promise<WorkspaceTrashEntry[]>,
+    id: string,
+    options: WorkspaceTrashRestoreOptions
+  ): Promise<WorkspaceTrashRestoreResult> {
+    const entry = (await list()).find((candidate) => candidate.id === id);
+    if (!entry)
+      throw new WorkspaceError('NOT_FOUND', `The trash holds no entry ${id}`, { path: id });
+    const target = options.to ?? entry.path;
+    await this.rename(entry.trashedTo, target, { overwrite: options.overwrite ?? false });
+    await this.forgetTrashed(entry.id);
+    return { path: this.inside(target) };
+  }
+
+  private async emptyTrashed(
+    list: () => Promise<WorkspaceTrashEntry[]>,
+    options: WorkspaceEmptyTrashOptions
+  ): Promise<WorkspaceEmptyTrashResult> {
+    if (options.olderThan !== undefined && !(options.olderThan >= 0)) {
+      throw new RangeError('olderThan must be 0 or more milliseconds');
+    }
+    const cutoff = options.olderThan === undefined ? Infinity : Date.now() - options.olderThan;
+    const deleted: string[] = [];
+    for (const entry of await list()) {
+      if (entry.trashedAt > cutoff) continue;
+      await this.forgetTrashed(entry.id);
+      deleted.push(entry.id);
+    }
+    return { deleted };
+  }
+
+  /** Removes a trash folder (what is left of it) and its record, in the container */
+  private async forgetTrashed(id: string): Promise<void> {
+    for (const path of [`${TRASH_DIR}/${id}`, `${TRASH_DIR}/${id}.json`]) {
+      await this.remove(path, { recursive: true }).catch((error: unknown) => {
+        if (!WorkspaceError.is(error, 'NOT_FOUND')) throw error;
+      });
     }
   }
 
@@ -285,8 +350,10 @@ export class DockerWorkspace implements Workspace {
     if (rel === '.')
       throw new WorkspaceError('INVALID_PATH', 'The root cannot be removed', { path });
     let trashedTo: string | undefined;
+    let stamp: string | undefined;
     if (options.trash) {
-      trashedTo = `.cogitator/trash/${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 6)}/${rel}`;
+      stamp = `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 6)}`;
+      trashedTo = `${TRASH_DIR}/${stamp}/${rel}`;
       if (!(await this.host.exists('.cogitator/.gitignore'))) {
         await this.host.write('.cogitator/.gitignore', '*\n');
       }
@@ -304,7 +371,21 @@ export class DockerWorkspace implements Workspace {
         { path }
       );
     }
+    if (trashedTo && stamp) await this.recordTrashed(stamp, rel, trashedTo);
     return { path: rel, ...(trashedTo && { trashedTo }) };
+  }
+
+  /** Writes the record of a trashed entry through the host, as a `LocalWorkspace` keeps one */
+  private async recordTrashed(stamp: string, rel: string, trashedTo: string): Promise<void> {
+    try {
+      const info = await this.host.stat(trashedTo);
+      await this.host.write(
+        `${TRASH_DIR}/${stamp}.json`,
+        JSON.stringify({ version: 1, path: rel, trashedAt: Date.now(), type: info.type })
+      );
+    } catch {
+      return;
+    }
   }
 
   /** Moves in the container, for the same reason as `remove`. */

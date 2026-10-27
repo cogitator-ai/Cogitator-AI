@@ -5,6 +5,7 @@ import {
   type BudgetUsage,
   type PermissionClassifier,
   type PermissionClassifierInput,
+  type PermissionBehavior,
   type PermissionDecision,
   type PermissionDecisionEvent,
   type PermissionLayerSettings,
@@ -22,6 +23,7 @@ import {
   type Workspace,
 } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
+import { z } from 'zod';
 import {
   PermissionRuleSet,
   readAllowed,
@@ -37,6 +39,27 @@ import {
   settingsChanged,
   type LoadedPermissionSettings,
 } from '../permissions/settings';
+import { accessKindOf } from '../permissions/rules';
+
+let hostProbeTool: Tool | undefined;
+
+/** The call a connection of a sandboxed command is decided as: a `WebFetch` of its host */
+function hostProbe(): Tool {
+  hostProbeTool ??= {
+    name: 'sandbox_network',
+    description: 'A connection a sandboxed command opens to a host',
+    parameters: z.object({ url: z.string() }),
+    annotations: { readOnlyHint: true },
+    access: { kind: 'fetch', url: ({ url }: { url: string }) => url },
+    execute: async () => null,
+    toJSON: () => ({
+      name: 'sandbox_network',
+      description: '',
+      parameters: { type: 'object', properties: {} },
+    }),
+  };
+  return hostProbeTool;
+}
 
 /** Name of the tool a run in `plan` mode presents its plan with */
 export const EXIT_PLAN_MODE = 'exit_plan_mode';
@@ -181,6 +204,11 @@ export interface PermissionCall {
   toolCallId: string;
   /** Whether the call needs approval without rules: its tool's own setting and the guardrails */
   needsApproval: boolean;
+  /**
+   * Whether the guardrails (not the tool's own setting) make the call need approval: a command the
+   * workspace's OS sandbox runs skips only the tool's own approval
+   */
+  guardrailsApproval?: boolean;
   workspace?: Workspace;
   /** Rules of the run's active skills, by skill name */
   skillRules?: ReadonlyArray<{ name: string; rules: readonly string[] }>;
@@ -419,7 +447,39 @@ export class RunPermissions {
       rules: merged,
       inherited,
       canRead: (path) => readAllowed(path, this.rules(), context),
+      decideHost: (host, port) => this.decideHost(host, port, workspace),
+      allowHost: (host) => this.allowHost(host),
     };
+  }
+
+  /**
+   * How a host a sandboxed command connects to is decided when no sandbox list decides it: as a
+   * `WebFetch(domain:...)` call, a deny rule refusing it and an allow rule letting it through,
+   * else by the mode: `bypassPermissions` lets it through, `auto` and `dontAsk` refuse it (no
+   * classifier sees a connection), the others ask a person
+   */
+  async decideHost(host: string, port: number, workspace?: Workspace): Promise<PermissionBehavior> {
+    const mode = this.currentMode;
+    const shown = host.includes(':') ? `[${host}]` : host;
+    const decision = await resolvePermission(
+      hostProbe(),
+      { url: `https://${shown}:${port}/` },
+      {
+        mode: mode === 'auto' || mode === 'plan' ? 'default' : mode,
+        rules: this.rules(),
+        needsApproval: true,
+        ...this.context(workspace),
+      }
+    );
+    if (decision.decision === 'ask' && mode === 'auto') return 'deny';
+    return decision.decision;
+  }
+
+  /** Allows `host` for the rest of the session, as an answer allowing a connection to it does */
+  allowHost(host: string): void {
+    const rule = `WebFetch(domain:${host})`;
+    if (!this.remembered.includes(rule)) this.remembered.push(rule);
+    this.options.service.rememberForSession(this.options.threadId, rule);
   }
 
   private context(workspace: Workspace | undefined) {
@@ -433,6 +493,16 @@ export class RunPermissions {
     call: PermissionCall
   ): Promise<PermissionDecision> {
     if (!this.active) {
+      if (call.workspace?.sandbox && accessKindOf(tool) === 'command') {
+        return resolvePermission(tool, args, {
+          mode: 'default',
+          rules: new PermissionRuleSet([]),
+          needsApproval: call.needsApproval,
+          ...(call.guardrailsApproval && { guardrailsApproval: true }),
+          ...(call.allowedByHook && { allowedByHook: true }),
+          ...this.context(call.workspace),
+        });
+      }
       if (call.needsApproval && call.allowedByHook) {
         return {
           decision: 'allow',
@@ -463,6 +533,7 @@ export class RunPermissions {
       mode,
       rules: this.rules(call.skillRules),
       needsApproval: call.needsApproval,
+      ...(call.guardrailsApproval && { guardrailsApproval: true }),
       ...(call.allowedByHook && { allowedByHook: true }),
       ...this.context(call.workspace),
       planTools: this.planTools,

@@ -54,6 +54,13 @@ export function harnessPrompt(features: HarnessPromptFeatures): string {
       "- Run commands (tests, builds, git) with run_command. Check your changes with the project's own tests or build when it has them."
     );
   }
+  if (has('delete_file')) {
+    workspace.push(
+      has('run_command')
+        ? '- Delete files with delete_file, which moves them to the workspace trash so they can be restored. rm in a command deletes for good.'
+        : '- Delete files with delete_file, which moves them to the workspace trash so they can be restored.'
+    );
+  }
   if (features.offload && has('read_file')) {
     workspace.push(
       '- A tool result too long to show whole is saved to a file of the workspace: you get its start and its path, read the rest with read_file when you need it.'

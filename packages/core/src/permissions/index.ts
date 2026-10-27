@@ -28,7 +28,15 @@ export {
   type PathPattern,
 } from './paths';
 export {
+  readSandboxSection,
+  sandboxPolicyOf,
+  sandboxSettingsPath,
+  type SandboxPolicyResult,
+} from './sandbox-settings';
+export { criticalRemoval, plainForSandbox, removesOutside } from './sandbox';
+export {
   addAllowRule,
+  loadSandboxPolicy,
   defaultManagedDirs,
   defaultUserDirs,
   loadPermissionSettings,

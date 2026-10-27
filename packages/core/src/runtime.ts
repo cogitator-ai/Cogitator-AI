@@ -1432,6 +1432,8 @@ export class Cogitator implements ToolInvoker {
       needsApproval:
         needsApproval(baseTool, toolCall.arguments) ||
         constitutionalAI?.toolNeedsApproval(baseTool, toolCall.arguments) === true,
+      guardrailsApproval:
+        constitutionalAI?.toolNeedsApproval(baseTool, toolCall.arguments) === true,
       ...(workspace && { workspace }),
       classifierInput: () => ({
         toolName: tool.name,
@@ -1600,6 +1602,8 @@ export class Cogitator implements ToolInvoker {
               needsApproval:
                 needsApproval(changedTool, changedArgs) ||
                 constitutionalAI?.toolNeedsApproval(changedTool, changedArgs) === true,
+              guardrailsApproval:
+                constitutionalAI?.toolNeedsApproval(changedTool, changedArgs) === true,
               classifierInput: () => ({
                 toolName: tool.name,
                 description: tool.description,
@@ -1646,6 +1650,9 @@ export class Cogitator implements ToolInvoker {
                 !personApproved &&
                 (needsApproval(finalTool, finalArgs) ||
                   constitutionalAI?.toolNeedsApproval(finalTool, finalArgs) === true),
+              guardrailsApproval:
+                !personApproved &&
+                constitutionalAI?.toolNeedsApproval(finalTool, finalArgs) === true,
               classifierInput: () => ({
                 toolName: tool.name,
                 description: tool.description,
@@ -3456,6 +3463,9 @@ export class Cogitator implements ToolInvoker {
       ): PermissionCall => ({
         toolCallId: toolCall.id,
         needsApproval,
+        guardrailsApproval:
+          needsApproval &&
+          this.state.constitutionalAI?.toolNeedsApproval(tool, toolCall.arguments) === true,
         ...(workspaceOf(active) && { workspace: workspaceOf(active) }),
         skillRules: harness.activeSkillRules(
           active,

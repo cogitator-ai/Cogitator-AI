@@ -1,6 +1,7 @@
 import {
   WorkspaceError,
   workspaceGlobMatcher,
+  type SandboxHostDecider,
   type Tool,
   type ToolContext,
   type Workspace,
@@ -65,6 +66,7 @@ export const WORKSPACE_TOOL_NAMES = [
   'glob',
   'grep',
   'run_command',
+  'delete_file',
 ] as const;
 
 export type WorkspaceToolName = (typeof WORKSPACE_TOOL_NAMES)[number];
@@ -101,7 +103,8 @@ const WITHHELD_REASON =
 
 /**
  * Tools that work in a workspace: `read_file` (with line ranges), `write_file`, `edit_file`
- * (exact replacement of a unique string), `list_files`, `glob`, `grep` and `run_command`. Each
+ * (exact replacement of a unique string), `list_files`, `glob`, `grep`, `run_command` and
+ * `delete_file`, which moves what it deletes to the workspace's trash. Each
  * call uses `workspace` when given, else the run's (`context.workspace`, from
  * `RunOptions.workspace` or the agent's `workspace`), and fails with a clear error when there is
  * none. Paths are relative to the workspace root and cannot leave it. Their names differ from
@@ -525,7 +528,7 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
   const runCommand = tool({
     name: 'run_command',
     description:
-      'Run a shell command in the workspace (sh -c), in its current directory or `cwd` (relative to the root). Returns stdout, stderr, the exit code, and whether it timed out or its output was cut.',
+      'Run a shell command in the workspace (sh -c), in its current directory or `cwd` (relative to the root). Returns stdout, stderr, the exit code, and whether it timed out or its output was cut. In a workspace whose commands run in an OS sandbox, `sandbox` says how it ran and a `<sandbox_violations>` block in stderr names what the sandbox refused (a file outside the writable directories, a host not allowed). Note that `rm` in a command deletes for good: use delete_file to remove files recoverably.',
     parameters: z.object({
       command: z.string().min(1).describe('The shell command to run'),
       cwd: z.string().optional().describe('Directory to run in, relative to the workspace root'),
@@ -542,6 +545,19 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
         .describe(
           'Keep processes the command starts in the background (with &) running after it returns, e.g. a dev server. Redirect their output to a file, it is not captured (default: false, they are stopped)'
         ),
+      allowedDomains: z
+        .array(z.string().min(1))
+        .max(50)
+        .optional()
+        .describe(
+          'Sandboxed workspaces only: hosts this command needs to reach (such as registry.npmjs.org, *.pythonhosted.org, an IP with an optional :port), for this command alone. A command that lists hosts is always checked before it runs'
+        ),
+      dangerouslyDisableSandbox: z
+        .boolean()
+        .optional()
+        .describe(
+          'Sandboxed workspaces only: run the command outside the sandbox, after it failed inside because of the sandbox. Honored only when the sandbox policy allows it, and always checked before it runs'
+        ),
     }),
     category: 'system',
     sideEffects: ['process', 'filesystem', 'network'],
@@ -552,8 +568,12 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
       command: ({ command }) => command,
       cwd: ({ cwd }) => boundCwd(cwd),
     },
-    execute: async ({ command, cwd, timeout, background }, context) => {
+    execute: async (
+      { command, cwd, timeout, background, allowedDomains, dangerouslyDisableSandbox },
+      context
+    ) => {
       const ws = resolveWorkspace(context);
+      const onUnknownHost = hostDecider(context);
       const result = await call(() =>
         ws.exec(command, {
           ...(cwd !== undefined && { cwd }),
@@ -562,19 +582,82 @@ export function workspaceTools(workspace?: Workspace, options: WorkspaceToolsOpt
           }),
           signal: context.signal,
           background: background ? 'keep' : 'kill',
+          ...(allowedDomains !== undefined && { allowedDomains }),
+          ...(dangerouslyDisableSandbox !== undefined && { dangerouslyDisableSandbox }),
+          ...(onUnknownHost && { onUnknownHost }),
         })
       );
       return { command, ...result };
     },
   });
 
+  const deleteFile = tool({
+    name: 'delete_file',
+    description:
+      'Delete a file or a directory of the workspace by moving it to the workspace trash, from where it can be restored. A directory with entries needs `recursive`. Paths are relative to the workspace root.',
+    parameters: z.object({
+      path: z.string().min(1).describe('File or directory path relative to the workspace root'),
+      recursive: z
+        .boolean()
+        .optional()
+        .describe('Delete a directory with everything in it (default: false, only an empty one)'),
+    }),
+    category: 'file',
+    access: {
+      kind: 'edit',
+      paths: ({ path }) => [bound(path)],
+      subtree: ({ recursive }) => recursive === true,
+    },
+    sideEffects: ['filesystem'],
+    lockKeys: ({ path }, context) => lockFile(path, context),
+    presentation: ({ path }) => ({ label: 'Delete file', icon: 'trash-2', detail: path }),
+    ...approval('delete_file'),
+    execute: async ({ path, recursive = false }, context) => {
+      const ws = resolveWorkspace(context);
+      const removed = await call(() => ws.remove(path, { recursive, trash: true }));
+      return { path: removed.path, trashedTo: removed.trashedTo, recoverable: true };
+    },
+  });
+
   readFileBindings.set(readFile, workspace ? { workspace } : {});
-  const all = [readFile, writeFile, editFile, listFiles, glob, grep, runCommand];
+  const all = [readFile, writeFile, editFile, listFiles, glob, grep, runCommand, deleteFile];
   if (workspace) {
     for (const made of all) workspaceBindings.set(made, { workspace, options });
   }
   const wanted = options.tools ? new Set<string>(options.tools) : undefined;
   return wanted ? all.filter((t) => wanted.has(t.name)) : all;
+}
+
+/**
+ * How a sandboxed command's connection to a host no sandbox list decides is decided in a run:
+ * as a `WebFetch(domain:...)` call by the run's permissions, a person asked through the run's
+ * approval decider when the permissions would ask (and the host remembered for the session once
+ * allowed). Undefined without permissions, so the workspace's own decider (or a refusal) applies
+ */
+function hostDecider(context: ToolContext): SandboxHostDecider | undefined {
+  const permissions = context.permissions;
+  const decideHost = permissions?.decideHost;
+  if (!permissions || !decideHost) return undefined;
+  return async ({ host, port, command }) => {
+    const verdict = await decideHost.call(permissions, host, port);
+    if (verdict === 'allow') return true;
+    if (verdict === 'deny') return false;
+    const ask = context.delegation?.onApproval;
+    if (!ask) return false;
+    const shown = host.includes(':') ? `[${host}]` : host;
+    const answer = await ask({
+      toolCallId: `${context.toolCallId ?? 'call'}/network/${shown}:${port}`,
+      toolName: 'WebFetch',
+      arguments: { url: `https://${shown}:${port}/`, command },
+      description: `A sandboxed command connects to ${shown}:${port}, a host the sandbox does not allow by itself`,
+      reason: `The command ${command} connects to ${shown}:${port}`,
+      suggestedRule: `WebFetch(domain:${host})`,
+      mode: permissions.mode,
+    });
+    if (!answer || answer === 'pause' || !answer.approved) return false;
+    permissions.allowHost?.(host);
+    return true;
+  };
 }
 
 /** Runs a workspace operation, its `WorkspaceError` turned into a plain error the model reads. */

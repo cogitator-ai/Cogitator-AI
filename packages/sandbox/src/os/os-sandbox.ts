@@ -1,0 +1,584 @@
+import { randomUUID } from 'node:crypto';
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  realpath,
+  rm,
+  rmdir,
+  unlink,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  CogitatorError,
+  ErrorCode,
+  WorkspaceError,
+  type OsSandboxKind,
+  type OsSandboxPolicy,
+  type SandboxHostDecider,
+  type SandboxViolation,
+  type WorkspaceCommandSandbox,
+  type WorkspaceExecResult,
+  type WorkspaceLaunch,
+  type WorkspaceLaunchOverride,
+  type WorkspaceLaunchReport,
+  type WorkspaceSandboxRequest,
+  type WorkspaceSandboxRoute,
+} from '@cogitator-ai/types';
+import { BRIDGE_PORT, bubblewrapCommand, type BubblewrapPath } from './bubblewrap';
+import { isExcludedCommand } from './commands';
+import { parseDomainList, type DomainPattern } from './domains';
+import {
+  canonicalPath,
+  expandWildcard,
+  globSource,
+  kindOf,
+  namesOf,
+  resolvePolicyPath,
+  type PolicyPath,
+} from './paths';
+import { probeOsSandbox, type OsSandboxProbe } from './probe';
+import { protectedPaths } from './protected-paths';
+import { ProxySession, type ProxyRules } from './proxy';
+import { seatbeltLaunch, seatbeltProfile, type SeatbeltMatcher } from './seatbelt';
+import { fileViolations, violationsBlock, withoutIgnored } from './violations';
+
+export interface OsSandboxOptions {
+  /** What commands may read, write and reach (default: the defaults of {@link OsSandboxPolicy}) */
+  policy?: OsSandboxPolicy;
+  /**
+   * Decides a host no list decides, for commands whose call brings no decider of its own
+   * (`WorkspaceExecOptions.onUnknownHost`). Without either such a host is refused
+   */
+  onUnknownHost?: SandboxHostDecider;
+  /** Hears what the sandbox warns about: entries it cannot read, commands it runs without itself */
+  onWarning?: (message: string) => void;
+  /** The platform to sandbox for (default: this one), for tests of the generated profiles */
+  platform?: NodeJS.Platform;
+}
+
+/** The sandbox's own directories: the `TMPDIR` of its commands, the proxy sockets, an empty one */
+interface SandboxDirs {
+  base: string;
+  tmp: string;
+  sockets: string;
+  empty: string;
+}
+
+const PROXY_VARIABLES = [
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'FTP_PROXY',
+  'GRPC_PROXY',
+  'RSYNC_PROXY',
+];
+
+/** The plan of one sandboxed launch: what to spawn and what the filesystem rules are */
+interface Restrictions {
+  writable: PolicyPath[];
+  /** With whether a missing protected path would be a directory */
+  denyWrite: Array<PolicyPath & { directory?: boolean }>;
+  denyRead: PolicyPath[];
+  allowRead: PolicyPath[];
+}
+
+/**
+ * The operating system sandbox of local commands: Seatbelt (`sandbox-exec`) on macOS,
+ * bubblewrap (`bwrap`, with `socat`) on Linux, with the semantics of Claude Code's sandbox.
+ *
+ * A command may write in the workspace root, `filesystem.allowWrite` and a temporary directory
+ * of the sandbox's own, which its `TMPDIR` points to, never in the protected paths (settings,
+ * hooks and plugins of Cogitator and Claude Code, `.cogitator` of the root, shell startup files,
+ * `.gitconfig`, the repository's hooks and config, files that would turn the root into a bare
+ * repository), and may read everywhere but `filesystem.denyRead`, the narrower of a deny and an
+ * allow winning. It has no network but the sandbox's proxy, an HTTP and SOCKS5 proxy for that
+ * command alone, which lets through the hosts `network.allowedDomains` names, refuses
+ * `network.deniedDomains`, and asks `onUnknownHost` (of the call, else of the sandbox) about the
+ * rest. A host name that resolves only to this machine is refused, `localhost` aside.
+ *
+ * Give it to a `LocalWorkspace` as `exec.sandbox`: the workspace then runs its commands through
+ * it, and the permission engine lets a command that runs inside skip its approval
+ * (`policy.autoAllow`). When the sandbox cannot run on the machine it refuses to start
+ * (`SANDBOX_UNAVAILABLE`) unless `policy.failIfUnavailable` is false. A command never runs
+ * unprotected without its result saying so.
+ *
+ * @example
+ * ```ts
+ * const sandbox = new OsSandbox({ policy: { network: { allowedDomains: ['registry.npmjs.org'] } } });
+ * const workspace = new LocalWorkspace({ root: './project', exec: { sandbox } });
+ * await workspace.start();
+ * ```
+ */
+export class OsSandbox implements WorkspaceCommandSandbox {
+  readonly kind: OsSandboxKind;
+  readonly autoAllow: boolean;
+  readonly acceptsCommandDomains: boolean;
+  /** Problems with the policy found when it was read: entries left out */
+  readonly warnings: readonly string[];
+  private readonly policy: OsSandboxPolicy;
+  private readonly platform: NodeJS.Platform;
+  private readonly rules: ProxyRules;
+  private readonly failIfUnavailable: boolean;
+  private readonly onUnknownHost?: SandboxHostDecider;
+  private readonly warn: (message: string) => void;
+  private readonly sessions = new Set<ProxySession>();
+  private probing?: Promise<OsSandboxProbe>;
+  private directories?: Promise<SandboxDirs>;
+  private warnedUnavailable = false;
+  private disposed = false;
+
+  constructor(options: OsSandboxOptions = {}) {
+    const policy = options.policy ?? {};
+    if (policy.enabled === false) {
+      throw new RangeError('The sandbox policy is disabled (enabled: false): create no OsSandbox');
+    }
+    this.policy = policy;
+    this.platform = options.platform ?? process.platform;
+    this.kind = this.platform === 'darwin' ? 'seatbelt' : 'bubblewrap';
+    this.autoAllow = policy.autoAllow ?? true;
+    this.failIfUnavailable = policy.failIfUnavailable ?? true;
+    this.onUnknownHost = options.onUnknownHost;
+    this.warn = options.onWarning ?? ((message) => console.warn(`[sandbox] ${message}`));
+    const allowed = parseDomainList(policy.network?.allowedDomains ?? [], 'allow');
+    const denied = parseDomainList(policy.network?.deniedDomains ?? [], 'deny');
+    this.rules = {
+      allowed: allowed.patterns,
+      denied: denied.patterns,
+      strict: policy.network?.strictAllowlist === true,
+    };
+    this.acceptsCommandDomains = !this.rules.strict;
+    this.warnings = [...allowed.warnings, ...denied.warnings];
+    for (const warning of this.warnings) this.warn(warning);
+  }
+
+  /** Whether the OS sandbox runs on this machine, and why not */
+  static probe(
+    options: { platform?: NodeJS.Platform; bwrapPath?: string; socatPath?: string } = {}
+  ): Promise<OsSandboxProbe> {
+    return probeOsSandbox(options);
+  }
+
+  /** A sandbox for `options`, started: it fails here when the sandbox cannot run, see {@link start} */
+  static async create(options: OsSandboxOptions = {}): Promise<OsSandbox> {
+    const sandbox = new OsSandbox(options);
+    await sandbox.start();
+    return sandbox;
+  }
+
+  /** Whether the sandbox runs here, probed once */
+  availability(): Promise<OsSandboxProbe> {
+    this.probing ??= probeOsSandbox({
+      platform: this.platform,
+      ...(this.policy.bwrapPath !== undefined && { bwrapPath: this.policy.bwrapPath }),
+      ...(this.policy.socatPath !== undefined && { socatPath: this.policy.socatPath }),
+    });
+    return this.probing;
+  }
+
+  /**
+   * Checks that the sandbox runs on this machine
+   *
+   * @throws CogitatorError `SANDBOX_UNAVAILABLE` with the reason, when it does not and the policy
+   * does not let commands run without it (`failIfUnavailable`, default true)
+   */
+  async start(): Promise<void> {
+    const probe = await this.availability();
+    if (probe.available) return;
+    if (this.failIfUnavailable) throw unavailableError(probe.reason);
+    this.warnUnavailable(probe.reason);
+  }
+
+  async route(
+    command: string,
+    request: WorkspaceSandboxRequest = {}
+  ): Promise<WorkspaceSandboxRoute> {
+    const probe = await this.availability();
+    if (!probe.available && !this.failIfUnavailable) {
+      return { sandboxed: false, reason: 'unavailable' };
+    }
+    if (isExcludedCommand(command, this.policy.excludedCommands ?? [])) {
+      return { sandboxed: false, reason: 'excluded' };
+    }
+    if (request.dangerouslyDisableSandbox === true && this.policy.allowUnsandboxed === true) {
+      return { sandboxed: false, reason: 'requested' };
+    }
+    return { sandboxed: true };
+  }
+
+  /**
+   * What to spawn for a command of a workspace: the command under the sandbox with the proxy
+   * variables and `TMPDIR` set, or as it is when it runs outside, with a cleanup that closes its
+   * proxy and reports what was refused
+   */
+  async launch(launch: WorkspaceLaunch): Promise<WorkspaceLaunchOverride> {
+    if (this.disposed) throw new WorkspaceError('DISPOSED', 'The OS sandbox is disposed');
+    const route = await this.route(launch.command, launch.request);
+    if (!route.sandboxed) {
+      const probe = await this.availability();
+      if (!probe.available) this.warnUnavailable(probe.reason);
+      return {
+        file: launch.file,
+        args: launch.args,
+        cleanup: (): WorkspaceLaunchReport => ({
+          sandbox: {
+            sandboxed: false,
+            kind: this.kind,
+            unsandboxedReason: route.reason,
+            violations: [],
+          },
+        }),
+      };
+    }
+    const probe = await this.availability();
+    if (!probe.available) throw unavailableError(probe.reason);
+    const commandAllowed = this.commandDomains(launch.request.allowedDomains);
+    const dirs = await this.dirs();
+    const decide = launch.request.onUnknownHost ?? this.onUnknownHost;
+    const session = await ProxySession.start({
+      command: launch.command,
+      rules: this.rules,
+      ...(commandAllowed && { commandAllowed }),
+      ...(decide && { decide }),
+      listen:
+        this.kind === 'seatbelt'
+          ? { tcp: true }
+          : { path: join(dirs.sockets, `${randomUUID().slice(0, 12)}.sock`) },
+    });
+    this.sessions.add(session);
+    let mountPoints: string[] = [];
+    try {
+      const env = this.environment(launch.env, dirs, session);
+      const restrictions = await this.restrictions(launch.root, dirs);
+      let spawned: { file: string; args: string[] };
+      if (this.kind === 'seatbelt') {
+        spawned = seatbeltLaunch(
+          seatbeltProfile({
+            writable: await this.matchers(restrictions.writable, 'write-allow'),
+            denyWrite: await this.matchers(restrictions.denyWrite, 'deny'),
+            read: [
+              ...(await this.matchers(restrictions.denyRead, 'deny')).map((matcher) => ({
+                matcher,
+                allow: false,
+              })),
+              ...(await this.matchers(restrictions.allowRead, 'deny')).map((matcher) => ({
+                matcher,
+                allow: true,
+              })),
+            ],
+            filesystemDisabled: this.policy.filesystem?.disabled === true,
+            proxyPort: session.port,
+            allowLocalBinding: this.policy.network?.allowLocalBinding === true,
+            unixSockets: await Promise.all(
+              (this.policy.network?.allowUnixSockets ?? []).map(async (path) =>
+                canonicalPath(resolvePolicyPath(path, launch.root).path)
+              )
+            ),
+            allUnixSockets: this.policy.network?.allowAllUnixSockets === true,
+          }),
+          launch.file,
+          launch.args
+        );
+      } else {
+        const linux = await this.bubblewrap(launch, restrictions, dirs, probe, session);
+        mountPoints = linux.mountPoints;
+        spawned = { file: linux.file, args: linux.args };
+      }
+      return {
+        ...spawned,
+        env,
+        cleanup: (result) => this.finish(session, launch.command, mountPoints, result),
+      };
+    } catch (error) {
+      this.sessions.delete(session);
+      await session.close();
+      throw error;
+    }
+  }
+
+  /** Closes the proxies of commands still running and removes the sandbox's directories */
+  async dispose(): Promise<void> {
+    this.disposed = true;
+    const sessions = [...this.sessions];
+    this.sessions.clear();
+    await Promise.all(sessions.map((session) => session.close()));
+    const dirs = await this.directories?.catch(() => undefined);
+    if (dirs) {
+      await chmod(dirs.empty, 0o700).catch(() => undefined);
+      await rm(dirs.base, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
+  private warnUnavailable(reason: string): void {
+    if (this.warnedUnavailable) return;
+    this.warnedUnavailable = true;
+    this.warn(
+      `The OS sandbox cannot run here (${reason}): commands run UNSANDBOXED because the policy sets failIfUnavailable: false`
+    );
+  }
+
+  private commandDomains(entries: readonly string[] | undefined): DomainPattern[] | undefined {
+    if (!entries || entries.length === 0) return undefined;
+    if (!this.acceptsCommandDomains) {
+      throw new WorkspaceError(
+        'DENIED',
+        'The sandbox policy has strictAllowlist: a command cannot name hosts of its own (allowedDomains)'
+      );
+    }
+    const list = parseDomainList(entries, 'allow');
+    if (list.warnings.length > 0) {
+      throw new WorkspaceError(
+        'DENIED',
+        `The hosts the command lists: ${list.warnings.join(', ')}`
+      );
+    }
+    return list.patterns;
+  }
+
+  private dirs(): Promise<SandboxDirs> {
+    this.directories ??= (async () => {
+      const base = await mkdtemp(join(await realpath(tmpdir()), 'cogitator-sandbox-'));
+      await chmod(base, 0o700);
+      const dirs = {
+        base,
+        tmp: join(base, 'tmp'),
+        sockets: join(base, 'sockets'),
+        empty: join(base, 'empty'),
+      };
+      await mkdir(dirs.tmp, { mode: 0o700 });
+      await mkdir(dirs.sockets, { mode: 0o700 });
+      await mkdir(dirs.empty, { mode: 0o500 });
+      return dirs;
+    })();
+    this.directories.catch(() => {
+      this.directories = undefined;
+    });
+    return this.directories;
+  }
+
+  private environment(
+    given: Record<string, string>,
+    dirs: SandboxDirs,
+    session: ProxySession
+  ): Record<string, string> {
+    const env = { ...given };
+    for (const name of PROXY_VARIABLES) {
+      delete env[name];
+      delete env[name.toLowerCase()];
+    }
+    for (const name of this.policy.credentials?.envVars ?? []) delete env[name];
+    const proxy =
+      this.kind === 'seatbelt' ? `127.0.0.1:${session.port}` : `127.0.0.1:${BRIDGE_PORT}`;
+    for (const name of ['HTTP_PROXY', 'HTTPS_PROXY', 'GRPC_PROXY']) {
+      env[name] = `http://${proxy}`;
+      env[name.toLowerCase()] = `http://${proxy}`;
+    }
+    env.ALL_PROXY = `socks5h://${proxy}`;
+    env.all_proxy = `socks5h://${proxy}`;
+    env.RSYNC_PROXY = proxy;
+    if (this.kind === 'seatbelt' && this.policy.network?.allowLocalBinding === true) {
+      env.NO_PROXY = 'localhost,127.0.0.1,::1';
+      env.no_proxy = env.NO_PROXY;
+    }
+    if (this.policy.filesystem?.disabled !== true) {
+      env.TMPDIR = dirs.tmp;
+      env.TMP = dirs.tmp;
+      env.TEMP = dirs.tmp;
+    }
+    env.COGITATOR_SANDBOX = this.kind;
+    return env;
+  }
+
+  /** The filesystem lists of a launch in the workspace at `root`, resolved */
+  private async restrictions(root: string, dirs: SandboxDirs): Promise<Restrictions> {
+    const fs = this.policy.filesystem ?? {};
+    const resolveAll = (entries: readonly string[] | undefined) =>
+      (entries ?? []).map((entry) => resolvePolicyPath(entry, root));
+    const protectedList =
+      fs.disabled === true
+        ? []
+        : (await protectedPaths(root)).map((entry) => ({
+            entry: entry.path,
+            path: entry.path,
+            directory: entry.directory,
+          }));
+    return {
+      writable: [
+        { entry: '.', path: root },
+        { entry: 'TMPDIR', path: dirs.tmp },
+        ...resolveAll(fs.allowWrite),
+      ],
+      denyWrite: [...resolveAll(fs.denyWrite), ...protectedList],
+      denyRead: [...resolveAll(fs.denyRead), ...resolveAll(this.policy.credentials?.files)],
+      allowRead: resolveAll(fs.allowRead),
+    };
+  }
+
+  /**
+   * Seatbelt filters for entries: a wildcard entry as an expression over the real path of its
+   * base, a path as a subpath under each name it has (as written and where its symlinks lead)
+   */
+  private async matchers(
+    entries: readonly PolicyPath[],
+    use: 'write-allow' | 'deny'
+  ): Promise<SeatbeltMatcher[]> {
+    const out: SeatbeltMatcher[] = [];
+    for (const entry of entries) {
+      if (entry.pattern && entry.base) {
+        const base = await canonicalPath(entry.base);
+        const rest = entry.path.slice(entry.base.length);
+        out.push({ kind: 'regex', source: `^${globSource(base + rest, 'posix')}(/.*)?$` });
+        continue;
+      }
+      const names = use === 'deny' ? await namesOf(entry.path) : [await canonicalPath(entry.path)];
+      for (const path of names) out.push({ kind: 'subpath', path });
+    }
+    return out;
+  }
+
+  private async bubblewrap(
+    launch: WorkspaceLaunch,
+    restrictions: Restrictions,
+    dirs: SandboxDirs,
+    probe: OsSandboxProbe,
+    session: ProxySession
+  ): Promise<{ file: string; args: string[]; mountPoints: string[] }> {
+    const writable: string[] = [];
+    for (const entry of restrictions.writable) {
+      if (entry.pattern) {
+        this.warn(`allowWrite ${entry.entry}: wildcards are not supported on Linux, it is skipped`);
+        continue;
+      }
+      const real = await canonicalPath(entry.path);
+      if (await kindOf(real)) writable.push(real);
+    }
+    const denyWrite: BubblewrapPath[] = [];
+    for (const entry of restrictions.denyWrite) {
+      const paths = entry.pattern
+        ? (await expandWildcard(entry)).matches
+        : await namesOf(entry.path);
+      for (const path of paths) {
+        const kind = await kindOf(path);
+        denyWrite.push({
+          path,
+          exists: kind !== undefined,
+          directory: kind === undefined ? entry.directory === true : kind === 'directory',
+        });
+      }
+    }
+    const denyRead: BubblewrapPath[] = [];
+    for (const entry of restrictions.denyRead) {
+      let paths: string[];
+      if (entry.pattern) {
+        const expanded = await expandWildcard(entry);
+        if (expanded.truncated && entry.base) {
+          this.warn(
+            `denyRead ${entry.entry}: too many entries to expand, all of ${entry.base} is denied`
+          );
+          paths = [entry.base];
+        } else {
+          paths = expanded.matches;
+        }
+      } else {
+        paths = await namesOf(entry.path);
+      }
+      for (const path of paths) {
+        const kind = await kindOf(path);
+        if (kind === undefined) continue;
+        const real = kind === 'symlink' ? await canonicalPath(path) : path;
+        const realKind = await kindOf(real);
+        if (realKind === undefined) continue;
+        denyRead.push({ path: real, exists: true, directory: realKind === 'directory' });
+      }
+    }
+    const allowRead: string[] = [];
+    for (const entry of restrictions.allowRead) {
+      const paths = entry.pattern ? (await expandWildcard(entry)).matches : [entry.path];
+      for (const path of paths) {
+        const real = await canonicalPath(path);
+        if (await kindOf(real)) allowRead.push(real);
+      }
+    }
+    const existing = new Set<string>();
+    for (const entry of denyWrite) {
+      if (entry.exists) continue;
+      const parts = entry.path.split('/');
+      for (let i = 2; i <= parts.length; i++) {
+        const prefix = parts.slice(0, i).join('/');
+        if (await kindOf(prefix)) existing.add(prefix);
+      }
+    }
+    return bubblewrapCommand(
+      {
+        bwrap: probe.bwrap ?? 'bwrap',
+        socat: probe.socat ?? 'socat',
+        writable,
+        denyWrite,
+        denyRead,
+        allowRead,
+        filesystemDisabled: this.policy.filesystem?.disabled === true,
+        proxySocket: sessionSocket(session, dirs),
+        emptyDir: dirs.empty,
+        cwd: launch.cwd,
+        file: launch.file,
+        args: launch.args,
+      },
+      (path) => existing.has(path)
+    );
+  }
+
+  private async finish(
+    session: ProxySession,
+    command: string,
+    mountPoints: readonly string[],
+    result: WorkspaceExecResult | undefined
+  ): Promise<WorkspaceLaunchReport> {
+    this.sessions.delete(session);
+    await session.close();
+    for (const point of mountPoints) await removeMountPoint(point);
+    const found: SandboxViolation[] = [
+      ...session.violations,
+      ...(result ? fileViolations(result.stderr) : []),
+    ];
+    const violations = withoutIgnored(found, command, this.policy.ignoreViolations);
+    const notice = violationsBlock(violations);
+    return {
+      sandbox: { sandboxed: true, kind: this.kind, violations },
+      ...(notice && { notice }),
+    };
+  }
+}
+
+/** The socket path a Linux session listens on */
+function sessionSocket(session: ProxySession, dirs: SandboxDirs): string {
+  const path = session.socketPath;
+  if (!path) {
+    throw new Error(`The proxy of a bubblewrap command listens on no socket in ${dirs.sockets}`);
+  }
+  return path;
+}
+
+/** Removes a mount point bubblewrap left on the host: an empty file or an empty directory */
+async function removeMountPoint(path: string): Promise<void> {
+  const info = await lstat(path).catch(() => undefined);
+  if (!info) return;
+  if (info.isFile() && info.size === 0) {
+    await unlink(path).catch(() => undefined);
+    return;
+  }
+  if (info.isDirectory() && (await readdir(path).catch(() => ['?'])).length === 0) {
+    await rmdir(path).catch(() => undefined);
+  }
+}
+
+function unavailableError(reason: string): CogitatorError {
+  return new CogitatorError({
+    message: `The OS sandbox cannot run here: ${reason}`,
+    code: ErrorCode.SANDBOX_UNAVAILABLE,
+    details: { reason, platform: process.platform },
+  });
+}

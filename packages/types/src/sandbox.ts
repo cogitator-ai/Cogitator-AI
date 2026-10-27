@@ -2,7 +2,9 @@
  * Sandbox types for isolated tool execution
  */
 
-export type SandboxType = 'docker' | 'native' | 'wasm';
+import type { OsSandboxPolicy } from './os-sandbox';
+
+export type SandboxType = 'docker' | 'native' | 'wasm' | 'os';
 
 export interface SandboxResourceLimits {
   /** Memory limit (e.g., '256MB', '1GB') */
@@ -57,6 +59,12 @@ export interface SandboxConfig {
   wasmFunction?: string;
   /** Enable WASI (for wasm type, default: false) */
   wasi?: boolean;
+  /**
+   * The OS sandbox policy (for os type): Seatbelt on macOS, bubblewrap on Linux. The command
+   * runs in `workdir` (default: the process's working directory), which is its writable root.
+   * There is no fallback: an `os` execution on a machine without the sandbox fails
+   */
+  os?: OsSandboxPolicy;
 }
 
 export interface SandboxExecutionRequest {
