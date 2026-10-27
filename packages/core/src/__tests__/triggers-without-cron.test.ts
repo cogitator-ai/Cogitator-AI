@@ -10,13 +10,12 @@ vi.mock('../triggers/cron', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../triggers/cron')>();
   return {
     ...actual,
-    experimental_loadCronEngine: () =>
-      Promise.reject(
-        new CogitatorError({
-          message: 'Cron schedules need the cron-parser package',
-          code: ErrorCode.CONFIGURATION_ERROR,
-        })
-      ),
+    experimental_loadCronEngine: async () => {
+      throw new CogitatorError({
+        message: 'Cron schedules need the cron-parser package',
+        code: ErrorCode.CONFIGURATION_ERROR,
+      });
+    },
   };
 });
 
