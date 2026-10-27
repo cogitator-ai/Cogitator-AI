@@ -78,7 +78,7 @@ interface CogitatorAppOptions {
 - The thread routes use `cogitator.getMemory()` and return `503 UNAVAILABLE` without memory; another user's thread returns `403 THREAD_ACCESS_DENIED`.
 - `GET /threads/:id` answers the whole thread, or a page of it with `?limit=50`: the newest 50 messages, oldest first within the page, and a `nextCursor`. Send `?limit=50&cursor=<nextCursor>` for the 50 before them, until an answer has no `nextCursor`. A `limit` outside 1 to 1000 or a cursor the server did not give answers `400 INVALID_INPUT`.
 - Every error answer is the envelope `{ error: { message, code } }`. A `CogitatorError` keeps its message, HTTP status and code (for example `429 LLM_RATE_LIMITED`) and adds `Retry-After` in whole seconds when the provider said when to retry. A swarm that ran out of time answers `504 RUN_TIMEOUT`. `HTTPException`s keep their response, and other errors are logged and returned as `500` with the message `Internal server error`, in JSON answers, stream `error` events and WebSocket errors alike. A workflow that ends with an error is answered like the error itself.
-- Disconnecting clients abort the running agent, workflow or swarm.
+- Disconnecting clients abort the running agent, workflow or swarm. Agent streams can go on instead with `resumableStreams`, see [Resumable Streams](/docs/server-adapters/resumable-streams).
 - `GET /agents` exposes each agent's `description`, never its `instructions`; `GET /tools` returns parameters as JSON Schema.
 
 ## Multi-Runtime Deployment

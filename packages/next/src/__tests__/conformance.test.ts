@@ -3,8 +3,15 @@ import {
   CONFORMANCE_CASES,
   ConformanceRuntime,
   checkConformance,
-  conformanceContentType,
+  conformanceAuthorizeThread,
+  conformanceCaller,
+  conformanceResumableStreams,
+  defaultStreamOwner,
+  runConformanceCase,
+  sendConformanceRequest,
   type ConformanceCase,
+  type ConformanceResponse,
+  type ResumableStreamOptions,
 } from '@cogitator-ai/server-shared';
 import type { Agent, Cogitator } from '@cogitator-ai/core';
 import { createAgentHandler } from '../handlers/agent.js';
@@ -18,16 +25,41 @@ const agent = { name: 'assistant', config: { tools: [] } } as unknown as Agent;
  * run is `createAgentHandler`, a resume `createResumeHandler` (with `stream: true` for a resume
  * over SSE). The cases for those run against them, and the streaming cases run against `createChatHandler` in the next block.
  */
+/** The identity a request of a case carries */
+const callerOf = (req: Request) => conformanceCaller((name) => req.headers.get(name));
+
 /** The handler options a case's server options map to */
 function contractOf(testCase: ConformanceCase) {
   const server = testCase.server ?? {};
-  const { anonymous, forbiddenThreads: forbidden, deps } = server;
+  const { anonymous, deps } = server;
+  const authorize = conformanceAuthorizeThread(server);
   return {
     ...(anonymous && { anonymous }),
-    ...(forbidden && {
-      authorizeThread: (_req: Request, threadId: string) => !forbidden.includes(threadId),
+    ...(authorize && {
+      authorizeThread: (req: Request, threadId: string) => authorize(callerOf(req), threadId),
     }),
     ...(deps && { deps: () => deps }),
+  };
+}
+
+/**
+ * The `resumableStreams` of a case for a Next handler, whose `owner` reads the request: the
+ * identity of a case with `callers`, by the same rules as the other adapters
+ */
+function resumableStreamsOf(
+  testCase: ConformanceCase
+): boolean | ResumableStreamOptions<Request> | undefined {
+  const server = testCase.server;
+  if (!server?.callers) return server?.resumableStreams;
+  const option = conformanceResumableStreams(server);
+  if (!option) return option;
+  const { owner, ...options } = option === true ? {} : option;
+  return {
+    ...options,
+    owner: (req) => {
+      const caller = req && callerOf(req);
+      return owner ? owner(caller) : defaultStreamOwner(caller);
+    },
   };
 }
 
@@ -43,8 +75,36 @@ const handlers = {
     createResumeHandler(runtime as unknown as Cogitator, agent, {
       ...contractOf(testCase),
       stream: true,
+      sseHeartbeatMs: 0,
+      resumableStreams: resumableStreamsOf(testCase),
     }),
 } as const;
+
+/**
+ * Sends a case to a handler, and its follow-ups: the route of a request decides nothing for a
+ * route handler, only its query does, and a cancel goes to the same handler as `DELETE` with
+ * `?streamId=`
+ */
+function answer(
+  handler: (req: Request) => Promise<Response>,
+  testCase: ConformanceCase,
+  runtime: ConformanceRuntime,
+  body?: string
+): Promise<ConformanceResponse> {
+  return runConformanceCase(testCase, runtime, (request) =>
+    sendConformanceRequest(
+      body === undefined || request.body === undefined ? request : { ...request, body },
+      (path, init) => {
+        const query = path.includes('?') ? path.slice(path.indexOf('?')) : '';
+        const cancel = init.method === 'DELETE' && path.startsWith('/agents/');
+        const url = cancel
+          ? `http://localhost/api?streamId=${path.slice(path.lastIndexOf('/') + 1)}`
+          : `http://localhost/api${query}`;
+        return handler(new Request(url, init));
+      }
+    )
+  );
+}
 
 function isHandled(testCase: ConformanceCase): testCase is ConformanceCase & {
   route: keyof typeof handlers;
@@ -58,20 +118,33 @@ describe('server protocol conformance', () => {
   )('%s', async (_name, testCase) => {
     const runtime = new ConformanceRuntime(testCase);
     const handler = handlers[testCase.route](runtime, testCase);
-    const res = await handler(
-      new Request('http://localhost/api', {
-        method: 'POST',
-        headers: { 'Content-Type': conformanceContentType(testCase) },
-        body: testCase.body,
-      })
+    expect(checkConformance(testCase, await answer(handler, testCase, runtime), runtime)).toEqual(
+      []
     );
-    const body = await res.text();
-    const code = res.ok ? undefined : (JSON.parse(body) as { error: { code: string } }).error.code;
-    const headers = Object.fromEntries(res.headers);
-    expect(
-      checkConformance(testCase, { status: res.status, code, body, headers }, runtime)
-    ).toEqual([]);
   });
+});
+
+describe('chat stream resumable conformance', () => {
+  const cases = CONFORMANCE_CASES.filter(
+    (testCase) => testCase.route === 'agentStream' && testCase.expect.streamIds !== undefined
+  );
+
+  it.each(cases.map((testCase) => [testCase.name, testCase] as const))(
+    '%s',
+    async (_name, testCase) => {
+      const runtime = new ConformanceRuntime(testCase);
+      const handler = createChatHandler(runtime as unknown as Cogitator, agent, {
+        ...contractOf(testCase),
+        sseHeartbeatMs: 0,
+        resumableStreams: resumableStreamsOf(testCase),
+      });
+      const { input } = JSON.parse(testCase.body ?? '{}') as { input: string };
+      const body = JSON.stringify({ messages: [{ role: 'user', content: input }] });
+      expect(
+        checkConformance(testCase, await answer(handler, testCase, runtime, body), runtime)
+      ).toEqual([]);
+    }
+  );
 });
 
 describe('chat stream conformance', () => {

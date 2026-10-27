@@ -49,7 +49,16 @@ export function handleRouteError(res: Response, error: unknown, label: string): 
   sendFailure(res, resolveError(error, label));
 }
 
+/**
+ * Calls `handler` once the client goes away before the answer ended, also when it already went
+ * away: a request can lose its client while a route awaits (the store creating a stream, the
+ * `deps` hook), and a `close` that fired then would never reach a handler added later
+ */
 export function onClientDisconnect(res: Response, handler: () => void): void {
+  if (res.closed) {
+    if (!res.writableEnded) handler();
+    return;
+  }
   res.on('close', () => {
     if (!res.writableEnded) handler();
   });

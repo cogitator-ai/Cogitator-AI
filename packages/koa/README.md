@@ -55,6 +55,7 @@ Creates a Koa Router with all Cogitator endpoints.
 | `swagger`             | `SwaggerConfig`                                   | Swagger configuration                                                                                                                                            |
 | `bodyLimit`           | `number`                                          | Max JSON body size in bytes (default 1 MiB)                                                                                                                      |
 | `sseHeartbeatMs`      | `number`                                          | How often SSE streams write a `: keep-alive` comment while a run is silent (default `5000`, `0` turns it off)                                                    |
+| `resumableStreams`    | `boolean \| ResumableStreamOptions`               | Keep the streams of agent runs so a client that loses one reconnects with `Last-Event-ID`, see [Resumable streams](#resumable-streams). Off by default           |
 | `acceptContext`       | `boolean \| string[]`                             | Keys of a run `context` clients may send: none by default, a list, or `true` for any (the model reads it as data from the application)                           |
 | `threadMessageRoles`  | `ThreadMessageRole[]`                             | Roles `POST /threads/:id/messages` accepts (default `user` and `assistant`)                                                                                      |
 | `limits`              | `RunLimits`                                       | `{ swarmTimeout?, workflowMaxIterations?, workflowMaxConcurrency? }`: caps on what a request may ask a swarm or workflow run for (see [Run limits](#run-limits)) |
@@ -350,6 +351,29 @@ custom.post('/custom/stream', (ctx) => {
   writer.close();
 });
 ```
+
+## Resumable streams
+
+With `resumableStreams` on, a client that loses the stream of `/agents/:name/stream` or `/agents/:name/resume/stream` (a flaky network, a tab that went to sleep) gets back what it missed, and the run goes on while it is away:
+
+```typescript
+const router = cogitatorApp({
+  cogitator,
+  agents: { chat: chatAgent },
+  resumableStreams: true,
+});
+```
+
+- Every event carries an SSE `id`, `<streamId>:<seq>` with `seq` from 1 up. Heartbeat comments carry none.
+- A client that disconnects no longer stops the run. Its events keep going into the store.
+- The same route with `Last-Event-ID: <id>` reconnects instead of starting a run, and the body is not read: the answer replays the events after that id with their ids, then follows the run to `finish` (and `data: [DONE]`) or `error`. Several clients may follow one stream. `?lastEventId=<id>` works too, for clients that cannot set headers, but it puts the id into URLs and access logs, so prefer the header.
+- `DELETE /agents/:name/stream/:streamId` cancels the run (`204`): its stream ends with an `error` event `STREAM_CANCELLED`. The stream id is the part of an event id before the last `:`.
+- A stream is bound to the caller who started it: every field of what `auth` returned (user id, roles, permissions, metadata such as a tenant), so callers without a user id are told apart too. Give `owner: (auth) => key` to bind it to fewer fields, such as the user id alone when the identity carries a token expiry. Anyone else, an unknown or expired stream and an event id the stream never sent get `404 STREAM_NOT_FOUND` before any SSE header, an id that is not `<streamId>:<seq>` gets `400 INVALID_INPUT`. `authorizeThread` is asked about the stream's thread on every reconnect and cancel (`403 THREAD_FORBIDDEN`).
+- A reconnect after events that are no longer kept (more than `maxEvents` since) gets one `error` event with `STREAM_RESUME_GAP`: fetch the thread (`GET /threads/:id`) to catch up. A client that reads slowly holds at most `maxEvents` events and catches up from the store.
+- A run nobody follows for `detachedTimeoutMs` (5 minutes by default) is stopped, so a client that never comes back does not run up cost, and so is every run when `until` aborts (pass the signal your server stops on, and abort it before `server.close()`, which waits for the streams still open). Such a stream ends with an `error` event `STREAM_ABORTED`.
+- A stream whose run goes on is never evicted: when `maxStreams` streams all go on, a new one is refused with `503 STREAM_LIMIT_REACHED`.
+
+`true` keeps the events in the memory of the process: 1000 events of each stream, a finished stream for 5 minutes, 1000 streams at once (`maxEvents`, `retentionMs`, `maxStreams`). Behind a load balancer with several processes, pass a `store` they share (`StreamReplayStore` from `@cogitator-ai/server-shared`, backed by Redis or similar with pub/sub), so a reconnect or a cancel that lands on another process reaches the stream and its run. Off by default: no ids, and a client that disconnects stops the run.
 
 ## Event Factories
 

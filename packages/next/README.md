@@ -95,7 +95,7 @@ Creates a streaming chat handler. The handler:
 - uses the **last user message** as the run input, conversation history is carried by `threadId` (configure `memory` on the `Cogitator` instance). Without one the handler opens a new thread and names it in the `start` event, and the `finish` event repeats it, and `useCogitatorChat` adopts it automatically
 - passes request `metadata` to the run as `context`, only the keys `acceptContext` allows: the run sends `context` to the model as data the application supplied, so by default a request with `metadata` is refused with `400`
 - writes a `: keep-alive` comment every `sseHeartbeatMs` (5 s by default, `0` turns it off) while the run is silent, so a proxy or the platform does not close a stream that waits on a slow tool
-- aborts the run when the client disconnects (`req.signal`)
+- aborts the run when the client disconnects (`req.signal`), unless `resumableStreams` is on (see [Resumable streams](#resumable-streams))
 - reads only JSON bodies (`415` for `text/plain` and forms, which browsers send across origins without a preflight), validates the body (JSON object, `messages` array, non-blank `threadId`, object `metadata`, a `multitaskStrategy` of `enqueue`, `reject`, `interrupt` or `rollback`), limits it to 1 MB (413 otherwise) and returns `400` when there is no user message
 
 ```typescript
@@ -128,6 +128,36 @@ export const POST = createChatHandler(cogitator, agent, {
   },
 });
 ```
+
+### Resumable streams
+
+With `resumableStreams`, a run outlives a dropped connection and the client picks its stream up where it stopped. `useCogitatorChat` does the client side by itself:
+
+```typescript
+// app/api/chat/route.ts
+const handler = createChatHandler(cogitator, agent, {
+  beforeRun: async (req) => ({ userId: await userIdFrom(req) }),
+  resumableStreams: { owner: (req) => (req ? userIdFrom(req) : undefined) },
+});
+export const POST = handler;
+export const DELETE = handler;
+
+// app/api/chat/resume/route.ts
+const resume = createResumeHandler(cogitator, agent, {
+  stream: true,
+  beforeRun: async (req) => ({ userId: await userIdFrom(req) }),
+  resumableStreams: { owner: (req) => (req ? userIdFrom(req) : undefined) },
+});
+export const POST = resume;
+export const DELETE = resume;
+```
+
+- Every event carries an SSE `id`, `<streamId>:<seq>`, and a client that disconnects no longer stops the run (the `signal` `beforeRun` returns still does).
+- The same request again with `Last-Event-ID: <id>` reconnects instead of starting a run: the answer replays the events after the id, then follows the run to `finish` or `error`. `?lastEventId=<id>` works too, but it puts the id into URLs and logs, so prefer the header.
+- `DELETE` on the same route with `?streamId=<streamId>` cancels the run (`204`): its stream ends with `STREAM_CANCELLED`. `useCogitatorChat` sends it on `stop()`, `reload()` and every other interrupt, so a stopped answer does not go on spending tokens.
+- A reconnect and a cancel read no body and run neither `beforeRun` nor `deps`, whose side effects would repeat. The stream is bound to `owner(req)`: only a request with the same owner may reconnect or cancel, after `authorizeThread(req, threadId)` on the stream's thread (`403 THREAD_FORBIDDEN`). With `beforeRun`, `owner` is required and the handler throws without it. Without `beforeRun` every caller is anonymous. Anyone else, an unknown or expired stream get `404 STREAM_NOT_FOUND`, a malformed id `400 INVALID_INPUT`.
+- A reconnect after events that are no longer kept (more than `maxEvents` since) gets one `error` event with `STREAM_RESUME_GAP`. A run nobody follows for `detachedTimeoutMs` (5 minutes) is stopped, so is every run when `until` aborts, and such a stream ends with `STREAM_ABORTED`. A new stream while `maxStreams` streams all go on is refused with `503 STREAM_LIMIT_REACHED`.
+- `true` keeps the events in the memory of the handler: 1000 events of each stream, a finished stream for 5 minutes, 1000 streams (`{ maxEvents, retentionMs, maxStreams, detachedTimeoutMs }` to change them). On a serverless platform or several instances, a reconnect or a cancel may reach an instance that did not start the run: pass a `store` they share (`StreamReplayStore` from `@cogitator-ai/server-shared`, backed by Redis or similar with pub/sub), and run where a function may outlive its request.
 
 ### `createAgentHandler`
 
@@ -330,8 +360,15 @@ const {
     delay: 1000,
     backoff: 'exponential', // 1s, 2s, 4s
   },
+
+  // Resume a stream that drops mid-run (default, false turns it off)
+  reconnect: { attempts: 3, delayMs: 1000 },
 });
 ```
+
+#### Reconnecting
+
+Against a handler with `resumableStreams`, whose events carry ids, the hook keeps the id of the last event it got. When the stream drops in the middle of a run (the network fails, or the body ends before `finish` or `error`), it sends the same request again with `Last-Event-ID` and the assistant message goes on in place, with no event lost or repeated. It waits `delayMs` before the first reconnect and twice as long before each next one, and gives up after `attempts` reconnects in a row that failed or brought no event, with the last error (a stream that keeps ending before `finish` gives up with `The stream ended before the run finished`, never a cut answer as if it were done). `STREAM_NOT_FOUND` (the server no longer keeps the stream) and `STREAM_RESUME_GAP` (it lost events after the id) end the request with that error: call `setMessages` with the thread from your own thread route to catch up. `stop()`, `reload()` and a new message that interrupts the current one also cancel its run on the server (`DELETE` with `?streamId=`). A stream without ids ends as before.
 
 #### Sending with Metadata
 

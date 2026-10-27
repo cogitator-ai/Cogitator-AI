@@ -2,11 +2,17 @@ import { Router, json } from 'express';
 import { getLogger } from '@cogitator-ai/core';
 import {
   DEFAULT_THREAD_MESSAGE_ROLES,
+  ResumableStreams,
   checkRunLimits,
   resolveSseHeartbeatMs,
 } from '@cogitator-ai/server-shared';
 import type { Server as HttpServer } from 'http';
-import type { CogitatorServerConfig, ResolvedServerConfig, RouteContext } from './types.js';
+import type {
+  AuthContext,
+  CogitatorServerConfig,
+  ResolvedServerConfig,
+  RouteContext,
+} from './types.js';
 import {
   createAnonymousGuard,
   createAuthMiddleware,
@@ -40,6 +46,7 @@ export class CogitatorServer {
   private workflows: NonNullable<CogitatorServerConfig['workflows']>;
   private swarms: NonNullable<CogitatorServerConfig['swarms']>;
   private config: ResolvedServerConfig;
+  private resumableStreams: ResumableStreams<AuthContext> | undefined;
   private routeContext: RouteContext | null = null;
   private initialized = false;
 
@@ -65,6 +72,7 @@ export class CogitatorServer {
       limits: checkRunLimits(cfg.limits),
       anonymous: cfg.anonymous ?? 'allow',
     } as ResolvedServerConfig;
+    this.resumableStreams = ResumableStreams.from<AuthContext>(cfg.resumableStreams);
   }
 
   async init(): Promise<void> {
@@ -94,6 +102,7 @@ export class CogitatorServer {
       workflows: this.workflows,
       swarms: this.swarms,
       config: this.config,
+      resumableStreams: this.resumableStreams,
     };
     this.routeContext = ctx;
 
@@ -124,6 +133,7 @@ export class CogitatorServer {
       servers: this.config.swagger?.servers ?? [{ url: this.config.basePath }],
       auth: this.config.swagger?.auth ?? Boolean(this.config.auth),
       limits: this.config.limits,
+      resumableStreams: this.resumableStreams !== undefined,
     });
 
     router.get('/openapi.json', (_req, res) => {

@@ -1000,9 +1000,26 @@ export const CommandsConfigSchema = z.object({
 /** What a run does when its thread has a run going on, see `CogitatorConfig.multitaskStrategy` */
 export const MultitaskStrategySchema = z.enum(['enqueue', 'reject', 'interrupt', 'rollback']);
 
+/**
+ * Durable runs, see `CogitatorConfig.durable`. A file sets whether runs are durable, the lease and
+ * the owner, a store of its own is given in code
+ */
+export const DurableRunsConfigSchema = z.union([
+  z.boolean(),
+  z.object({
+    enabled: z.boolean().optional(),
+    leaseMs: z.number().positive().optional(),
+    owner: z.string().min(1).optional(),
+    takeoverOnRestart: z.boolean().optional(),
+    onStoreError: z.enum(['suspend', 'continue']).optional(),
+    storeRetries: z.number().int().min(0).max(20).optional(),
+  }),
+]);
+
 export const CogitatorConfigSchema = z.object({
   llm: LLMConfigSchema.optional(),
   multitaskStrategy: MultitaskStrategySchema.optional(),
+  durable: DurableRunsConfigSchema.optional(),
   prompts: PromptsConfigSchema.optional(),
   limits: LimitsConfigSchema.optional(),
   permissions: PermissionsConfigSchema.optional(),

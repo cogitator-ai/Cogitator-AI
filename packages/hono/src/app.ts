@@ -40,6 +40,7 @@ export function cogitatorApp(opts: CogitatorAppOptions): Hono<HonoEnv> {
         ...opts.swagger,
         auth: opts.swagger?.auth ?? Boolean(opts.auth),
         ...(opts.limits && { limits: opts.limits }),
+        ...(opts.resumableStreams && { resumableStreams: true }),
       })
     );
   }

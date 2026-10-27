@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import {
+  CORS_ALLOWED_HEADERS,
   admitCaller,
   authorizeThreadAccess,
   checkRunLimits,
@@ -123,5 +124,16 @@ describe('workflowRunFailure', () => {
     expect(errorEnvelope(workflowRunFailure(described, undefined))).toEqual({
       error: { message: 'Internal server error', code: 'INTERNAL_ERROR' },
     });
+  });
+});
+
+describe('CORS_ALLOWED_HEADERS', () => {
+  it('lets a browser send every header a client of the API sends, Last-Event-ID included', () => {
+    expect(CORS_ALLOWED_HEADERS).toEqual([
+      'Content-Type',
+      'Authorization',
+      'X-Request-ID',
+      'Last-Event-ID',
+    ]);
   });
 });

@@ -1,15 +1,18 @@
 import { describe, expect, test } from 'bun:test';
 import { createApp, group } from '@tetsujs/core';
+import type { BaseCtx } from '@tetsujs/core';
 import { serve } from '@tetsujs/core/testing';
 import {
   CONFORMANCE_CASES,
   CONFORMANCE_NAMES,
-  CONFORMANCE_ROUTES,
   CONFORMANCE_SWARM,
   ConformanceRuntime,
   checkConformance,
-  conformanceContentType,
-  conformanceMethod,
+  conformanceAuthorizeThread,
+  conformanceCaller,
+  conformanceResumableStreams,
+  runConformanceCase,
+  sendConformanceRequest,
   type ConformanceCase,
   type ConformanceServerOptions,
 } from '@cogitator-ai/server-shared';
@@ -23,14 +26,40 @@ import type { CogitatorDeps } from '../index.js';
 const TETSU_CONVENTIONS = { codes: { INVALID_INPUT: 'VALIDATION_FAILED' }, statuses: { 400: 422 } };
 
 function serverOptions(server: ConformanceServerOptions = {}): Partial<CogitatorDeps> {
-  const { forbiddenThreads, deps, ...options } = server;
+  const {
+    acceptContext,
+    threadMessageRoles,
+    limits,
+    anonymous,
+    workflowCheckpoints,
+    callers,
+    deps,
+  } = server;
+  const authorizeThread = conformanceAuthorizeThread(server);
+  const resumableStreams = conformanceResumableStreams(server);
   return {
-    ...options,
-    ...(forbiddenThreads && {
-      authorizeThread: (_auth, id) => !forbiddenThreads.includes(id),
+    ...(acceptContext !== undefined && { acceptContext }),
+    ...(threadMessageRoles && { threadMessageRoles }),
+    ...(limits && { limits }),
+    ...(anonymous && { anonymous }),
+    ...(workflowCheckpoints && { workflowCheckpoints }),
+    ...(callers && {
+      auth: (ctx: BaseCtx) => conformanceCaller((name) => ctx.req.headers.get(name)),
     }),
+    ...(authorizeThread && { authorizeThread }),
     ...(deps && { deps: () => deps }),
+    ...(resumableStreams !== undefined && { resumableStreams }),
   };
+}
+
+/** The code of the Tetsu envelope, `{ status, message, error }` */
+function tetsuCode(body: unknown): string | undefined {
+  return typeof body === 'object' &&
+    body !== null &&
+    'error' in body &&
+    typeof body.error === 'string'
+    ? body.error
+    : undefined;
 }
 
 async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
@@ -58,18 +87,9 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
     })
   );
 
-  const method = conformanceMethod(testCase);
-  const res = await request(`/api${CONFORMANCE_ROUTES[testCase.route]}`, {
-    method,
-    headers: { 'content-type': conformanceContentType(testCase) },
-    ...(method === 'POST' && { body: testCase.body }),
-  });
-  const body = await res.text();
-  const code = res.ok ? undefined : (JSON.parse(body) as { error: string }).error;
-  const headers = Object.fromEntries(
-    [...res.headers.entries()].map(([name, value]) => [name.toLowerCase(), value])
+  return runConformanceCase(testCase, runtime, (sent) =>
+    sendConformanceRequest(sent, (path, init) => request(`/api${path}`, init), tetsuCode)
   );
-  return { status: res.status, code, body, headers };
 }
 
 describe('server protocol conformance', () => {

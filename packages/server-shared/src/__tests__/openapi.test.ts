@@ -161,3 +161,46 @@ describe('generateOpenAPISpec', () => {
     ).toMatchObject({ type: 'boolean' });
   });
 });
+
+describe('generateOpenAPISpec with resumable streams', () => {
+  const context = { agents: { bot: { config: { instructions: 'x' } } }, workflows: {}, swarms: {} };
+  const post = (resumableStreams: boolean, path: string) =>
+    generateOpenAPISpec(context, { resumableStreams }).paths[path]?.post as {
+      parameters?: Array<{ name: string; in: string }>;
+      requestBody: { required: boolean };
+      responses: Record<string, { description: string }>;
+    };
+
+  it.each(['/agents/bot/stream', '/agents/bot/resume/stream'])(
+    'documents the reconnect of %s',
+    (path) => {
+      const operation = post(true, path);
+      expect(operation.parameters?.map(({ name, in: where }) => [name, where])).toEqual([
+        ['Last-Event-ID', 'header'],
+        ['lastEventId', 'query'],
+      ]);
+      expect(operation.requestBody.required).toBe(false);
+      expect(operation.responses[404]?.description).toContain('STREAM_NOT_FOUND');
+      expect(operation.responses[200]?.description).toContain('STREAM_RESUME_GAP');
+    }
+  );
+
+  it('documents the cancel route of a stream', () => {
+    const spec = generateOpenAPISpec(context, { resumableStreams: true });
+    const cancel = spec.paths['/agents/bot/stream/{streamId}']?.delete as {
+      responses: Record<string, { description: string }>;
+    };
+    expect(Object.keys(cancel.responses)).toEqual(['204', '400', '403', '404']);
+    expect(post(true, '/agents/bot/stream').responses[503]?.description).toContain(
+      'STREAM_LIMIT_REACHED'
+    );
+    expect(generateOpenAPISpec(context, {}).paths['/agents/bot/stream/{streamId}']).toBeUndefined();
+  });
+
+  it('documents none of it where streams are not resumable', () => {
+    const operation = post(false, '/agents/bot/stream');
+    expect(operation.parameters).toBeUndefined();
+    expect(operation.requestBody.required).toBe(true);
+    expect(JSON.stringify(operation)).not.toContain('STREAM_NOT_FOUND');
+  });
+});

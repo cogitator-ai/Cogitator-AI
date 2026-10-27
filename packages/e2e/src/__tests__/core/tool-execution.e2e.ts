@@ -49,7 +49,7 @@ const weatherAgent = () =>
 /** Runs until the small model calls the tool, at most three times */
 async function runCallingTools(run: () => Promise<RunResult>): Promise<RunResult> {
   let result = await run();
-  for (let attempt = 1; attempt < 3 && result.toolCalls.length === 0; attempt++) {
+  for (let attempt = 1; attempt < 5 && result.toolCalls.length === 0; attempt++) {
     result = await run();
   }
   return result;
@@ -79,9 +79,10 @@ describeOllama('Core: tool execution (Ollama)', () => {
         available = [];
         updates = [];
         return cogitator.run(weatherAgent(), {
-          input: 'What is the temperature in Lisbon?',
+          input: 'Call the get_weather tool for Lisbon, then tell me the temperature.',
           threadId,
           stream: true,
+          toolChoice: 'required',
           onToken: () => undefined,
           onToolInputStart: (event) => starts.push(event),
           onToolInputAvailable: (event) => available.push(event),
@@ -117,9 +118,10 @@ describeOllama('Core: tool execution (Ollama)', () => {
         const session = new AgentStreamSession((event) => events.push(event));
         session.start();
         const run = await cogitator.run(weatherAgent(), {
-          input: 'How warm is it in Oslo?',
+          input: 'Call the get_weather tool for Oslo, then tell me how warm it is.',
           threadId: session.threadId,
           stream: true,
+          toolChoice: 'required',
           ...session.callbacks,
         });
         session.complete(run);

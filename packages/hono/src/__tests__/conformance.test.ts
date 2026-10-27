@@ -2,12 +2,14 @@ import { describe, it, expect } from 'vitest';
 import {
   CONFORMANCE_CASES,
   CONFORMANCE_NAMES,
-  CONFORMANCE_ROUTES,
   CONFORMANCE_SWARM,
   ConformanceRuntime,
   checkConformance,
-  conformanceContentType,
-  conformanceMethod,
+  conformanceAuthorizeThread,
+  conformanceCaller,
+  conformanceResumableStreams,
+  runConformanceCase,
+  sendConformanceRequest,
   type ConformanceCase,
   type ConformanceServerOptions,
 } from '@cogitator-ai/server-shared';
@@ -17,13 +19,27 @@ import type { CogitatorAppOptions } from '../types.js';
 type Options = CogitatorAppOptions;
 
 function serverOptions(server: ConformanceServerOptions = {}): Partial<Options> {
-  const { forbiddenThreads, deps, ...options } = server;
+  const {
+    acceptContext,
+    threadMessageRoles,
+    limits,
+    anonymous,
+    workflowCheckpoints,
+    callers,
+    deps,
+  } = server;
+  const authorizeThread = conformanceAuthorizeThread(server);
+  const resumableStreams = conformanceResumableStreams(server);
   return {
-    ...options,
-    ...(forbiddenThreads && {
-      authorizeThread: (_auth, id) => !forbiddenThreads.includes(id),
-    }),
+    ...(acceptContext !== undefined && { acceptContext }),
+    ...(threadMessageRoles && { threadMessageRoles }),
+    ...(limits && { limits }),
+    ...(anonymous && { anonymous }),
+    ...(workflowCheckpoints && { workflowCheckpoints }),
+    ...(callers && { auth: (c) => conformanceCaller((name) => c.req.header(name)) }),
+    ...(authorizeThread && { authorizeThread }),
     ...(deps && { deps: () => deps }),
+    ...(resumableStreams !== undefined && { resumableStreams }),
   };
 }
 
@@ -41,17 +57,9 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
     ...serverOptions(testCase.server),
   });
 
-  const res = await app.request(CONFORMANCE_ROUTES[testCase.route], {
-    method: conformanceMethod(testCase),
-    headers: { 'Content-Type': conformanceContentType(testCase) },
-    body: testCase.body,
-  });
-  const body = await res.text();
-  const code = res.ok ? undefined : (JSON.parse(body) as { error: { code: string } }).error.code;
-  const headers = Object.fromEntries(
-    [...res.headers.entries()].map(([name, value]) => [name.toLowerCase(), value])
+  return runConformanceCase(testCase, runtime, (request) =>
+    sendConformanceRequest(request, (path, init) => app.request(path, init))
   );
-  return { status: res.status, code, body, headers };
 }
 
 describe('server protocol conformance', () => {

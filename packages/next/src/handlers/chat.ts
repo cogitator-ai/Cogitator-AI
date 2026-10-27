@@ -19,7 +19,7 @@ import {
   jsonError,
   readJsonBody,
 } from './http.js';
-import { streamAgentRun } from './stream-run.js';
+import { answerStreamRequest, resumableStreamsOf, streamAgentRun } from './stream-run.js';
 
 const CHAT_ROLES: ReadonlySet<string> = new Set(['user', 'assistant', 'system']);
 
@@ -105,7 +105,14 @@ export function createChatHandler(
   agent: Agent,
   options?: ChatHandlerOptions
 ) {
+  const streams = resumableStreamsOf(options?.resumableStreams, Boolean(options?.beforeRun));
+
   return async (req: Request): Promise<Response> => {
+    if (streams) {
+      const answered = await answerStreamRequest(req, streams, options, options?.sseHeartbeatMs);
+      if (answered) return answered;
+    }
+
     if (exceedsDeclaredSize(req)) {
       return jsonError('Payload too large', 413, 'PAYLOAD_TOO_LARGE');
     }
@@ -151,14 +158,15 @@ export function createChatHandler(
     return streamAgentRun({
       req,
       runContext,
-      threadId: input.threadId,
+      threadId: threadOf(runContext, input),
+      streams,
       start: (callbacks, threadId) =>
         cogitator.run(agent, {
           input: userMessage,
-          threadId,
           context: input.metadata,
           ...runRequestRunOptions(input),
           ...runContext,
+          threadId,
           ...callbacks,
         }),
       afterRun: options?.afterRun,

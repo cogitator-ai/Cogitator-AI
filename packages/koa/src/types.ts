@@ -10,6 +10,8 @@ import type {
   PendingInterrupt,
   ReadinessCheckStatus,
   ReadinessResponse,
+  ResumableStreamOptions,
+  ResumableStreams,
   RunLimits,
   ThreadMessageRole,
   WorkflowResumeRequestBody,
@@ -163,6 +165,19 @@ export interface CogitatorAppOptions {
    * answers 404 `CHECKPOINT_NOT_FOUND`.
    */
   workflowCheckpoints?: CheckpointStore;
+  /**
+   * Keeps the streams of `/agents/:name/stream` and `/agents/:name/resume/stream` so a
+   * client that loses one can resume it. Every event then carries an SSE `id`, and a client
+   * that disconnects no longer stops the run: it goes on, and the same route with
+   * `Last-Event-ID` (or `?lastEventId=`) replays what the client missed and follows the run to
+   * its end, and `DELETE /agents/:name/stream/:streamId` cancels the run. Only the caller who
+   * started a stream (every field of what `auth` returned, see `owner`) may reconnect to it or
+   * cancel its run, after `authorizeThread` on its thread. A run nobody follows for
+   * `detachedTimeoutMs` (5 minutes) is stopped, and every run when `until` aborts (pass the
+   * signal your server stops on). `true` keeps the events in memory with the default limits.
+   * Default: off, a client that disconnects stops the run.
+   */
+  resumableStreams?: boolean | ResumableStreamOptions<AuthContext>;
 }
 
 export interface CogitatorState {
@@ -204,6 +219,8 @@ export interface RouteContext {
   deps?: DepsFunction;
   /** The `workflowCheckpoints` option. Default: none, workflow runs keep no checkpoints */
   workflowCheckpoints?: CheckpointStore;
+  /** The streams kept for clients to resume, when `resumableStreams` is on */
+  resumableStreams?: ResumableStreams<AuthContext>;
 }
 
 export interface AgentListResponse {

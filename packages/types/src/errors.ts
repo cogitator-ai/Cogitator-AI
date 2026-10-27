@@ -58,6 +58,15 @@ export enum ErrorCode {
   INTERRUPT_EXPIRED = 'INTERRUPT_EXPIRED',
   /** An answer does not match its interrupt's schema: the run still waits for a fitting one */
   INTERRUPT_ANSWER_INVALID = 'INTERRUPT_ANSWER_INVALID',
+  /** Another process holds the durable run (`durable`), or took it over from this one */
+  RUN_LEASED = 'RUN_LEASED',
+  /** No durable run with that id is kept */
+  RUN_NOT_FOUND = 'RUN_NOT_FOUND',
+  /**
+   * The process stopped the run to hand it over: a durable run keeps its checkpoint, so another
+   * process recovers it (`cogitator.recoverRuns()`) instead of starting over
+   */
+  RUN_SUSPENDED = 'RUN_SUSPENDED',
   BUDGET_EXCEEDED = 'BUDGET_EXCEEDED',
 
   WORKFLOW_NOT_FOUND = 'WORKFLOW_NOT_FOUND',
@@ -123,6 +132,9 @@ export const ERROR_STATUS_CODES: Record<ErrorCode, number> = {
   [ErrorCode.THREAD_BUSY]: 409,
   [ErrorCode.INTERRUPT_EXPIRED]: 410,
   [ErrorCode.INTERRUPT_ANSWER_INVALID]: 400,
+  [ErrorCode.RUN_LEASED]: 409,
+  [ErrorCode.RUN_NOT_FOUND]: 404,
+  [ErrorCode.RUN_SUSPENDED]: 503,
   [ErrorCode.BUDGET_EXCEEDED]: 429,
 
   [ErrorCode.WORKFLOW_NOT_FOUND]: 404,

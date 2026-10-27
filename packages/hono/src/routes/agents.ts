@@ -4,12 +4,16 @@ import type { RunResult } from '@cogitator-ai/types';
 import { streamSSE } from 'hono/streaming';
 import {
   AgentStreamSession,
+  authorizeThreadAccess,
+  lastEventIdOf,
   parseResumeRequest,
   parseRunRequest,
   toAgentRunResponse,
+  type StreamCaller,
+  type StreamFollower,
 } from '@cogitator-ai/server-shared';
 import { HonoStreamWriter } from '../streaming/hono-stream-writer.js';
-import type { HonoEnv, AgentListResponse } from '../types.js';
+import type { AuthContext, HonoEnv, AgentListResponse } from '../types.js';
 import { getOwn } from '../utils/lookup.js';
 import { describeError } from '../utils/errors.js';
 import {
@@ -26,12 +30,68 @@ import {
   sendError,
 } from '../utils/request.js';
 
-function streamAgent(
+/** Writes the frames of a resumable stream to one client, until it ends or the client leaves */
+function followStream(c: Context<HonoEnv>, stream: StreamFollower): Response {
+  const client = createRequestAbortController(c);
+
+  return streamSSE(c, async (sse) => {
+    const writer = new HonoStreamWriter(sse, { heartbeatMs: c.get('cogitator').sseHeartbeatMs });
+    sse.onAbort(() => {
+      writer.close();
+      client.abort();
+    });
+
+    try {
+      for await (const frame of stream.frames(client.signal)) {
+        await writer.send(frame.event, frame.id);
+      }
+    } finally {
+      await writer.flush();
+      writer.close();
+    }
+  });
+}
+
+/**
+ * The answer to a request that reconnects to a resumable stream with `Last-Event-ID` or
+ * `?lastEventId=`, `undefined` for a request that is no reconnect
+ */
+async function reconnect(c: Context<HonoEnv>): Promise<Response | undefined> {
+  const streams = c.get('cogitator').resumableStreams;
+  const lastEventId =
+    streams && lastEventIdOf(c.req.header('last-event-id'), c.req.queries('lastEventId'));
+  if (!streams || lastEventId === undefined) return undefined;
+  const attached = await streams.reconnect(lastEventId, callerOf(c));
+  return attached.ok ? followStream(c, attached.stream) : sendError(c, attached.error);
+}
+
+/** The caller of a reconnect or cancel, with `authorizeThread` for the stream's thread */
+function callerOf(c: Context<HonoEnv>): StreamCaller<AuthContext> {
+  const auth = c.get('cogitatorAuth');
+  return { auth, authorizeThread: (threadId) => refuseThreadOf(c, auth, threadId) };
+}
+
+function refuseThreadOf(c: Context<HonoEnv>, auth: AuthContext | undefined, threadId: string) {
+  return authorizeThreadAccess(c.get('cogitator').authorizeThread, auth, threadId);
+}
+
+async function streamAgent(
   c: Context<HonoEnv>,
   threadId: string | undefined,
   errorLabel: string,
   execute: (session: AgentStreamSession, signal: AbortSignal) => Promise<RunResult>
-): Response {
+): Promise<Response> {
+  const streams = c.get('cogitator').resumableStreams;
+  if (streams) {
+    const opened = await streams.startAgentRun({
+      auth: c.get('cogitatorAuth'),
+      threadId,
+      execute,
+      describeError: (error) => describeError(error, errorLabel),
+    });
+    return opened.ok ? followStream(c, opened.stream) : sendError(c, opened.error);
+  }
+
   const abortController = createRequestAbortController(c);
 
   return streamSSE(c, async (stream) => {
@@ -59,6 +119,16 @@ function streamAgent(
 
 export function createAgentRoutes(): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
+
+  app.delete('/agents/:name/stream/:streamId', async (c) => {
+    const ctx = c.get('cogitator');
+    const name = c.req.param('name');
+    const streams = ctx.resumableStreams;
+    if (!streams) return notFound(c, 'Not found');
+    if (!getOwn(ctx.agents, name)) return notFound(c, `Agent '${name}' not found`);
+    const cancelled = await streams.cancel(c.req.param('streamId'), callerOf(c));
+    return cancelled.ok ? c.body(null, 204) : sendError(c, cancelled.error);
+  });
 
   app.get('/agents', (c) => {
     const ctx = c.get('cogitator');
@@ -151,6 +221,9 @@ export function createAgentRoutes(): Hono<HonoEnv> {
 
     if (!agent) return notFound(c, `Agent '${name}' not found`);
 
+    const reconnected = await reconnect(c);
+    if (reconnected) return reconnected;
+
     const body = await readJsonBody(c);
     if (!body.ok) return bodyRefused(c, body.refusal);
     const parsed = parseRunRequest(body.value, { acceptContext: ctx.acceptContext });
@@ -180,6 +253,9 @@ export function createAgentRoutes(): Hono<HonoEnv> {
     const agent = getOwn(ctx.agents, name);
 
     if (!agent) return notFound(c, `Agent '${name}' not found`);
+
+    const reconnected = await reconnect(c);
+    if (reconnected) return reconnected;
 
     const body = await readJsonBody(c);
     if (!body.ok) return bodyRefused(c, body.refusal);

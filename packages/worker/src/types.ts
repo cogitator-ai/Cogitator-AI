@@ -286,6 +286,12 @@ export interface JobExecutionOptions {
    * stopped, which another worker takes up. Default: no attempt follows
    */
   willRetry?: (error: unknown) => boolean;
+  /**
+   * Runs an agent job as a durable run named after the job (`job:<jobId>`), see
+   * `WorkerConfig.durable`: an attempt that finds the run a stopped attempt left recovers it
+   * from its last step instead of starting over. Default: false
+   */
+  durable?: boolean;
 }
 
 /**
@@ -316,6 +322,16 @@ export interface WorkerConfig extends QueueConfig, WorkerRuntime {
   lockDuration?: number;
   /** Stalled job check interval */
   stalledInterval?: number;
+  /**
+   * Agent jobs run durable (`durable` of the Cogitator): each keeps a checkpoint after every model
+   * turn and tool batch, so the attempt after a crash or a shutdown, on this worker or another,
+   * goes on from the last step instead of running the whole job again. A tool call that was
+   * running when the attempt stopped gets "outcome unknown, verify before retrying". All workers
+   * must share the store: the pool's own Cogitator (no `cogitator` given) keeps the runs in its
+   * Redis, a Cogitator of yours needs `durable: { store }` with a shared one, such as
+   * `RedisDurableRunStore`. Default: false, a retried job starts over
+   */
+  durable?: boolean;
   /**
    * Seconds the default Redis store keeps a workflow checkpoint after its last save, for a run
    * that is never resumed or let go, such as one whose worker crashed on its last attempt.

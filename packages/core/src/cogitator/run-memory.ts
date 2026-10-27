@@ -26,6 +26,18 @@ export class RunMemory {
   private opened = false;
   private branchPoint: string | null | undefined;
   private leafId: string | undefined;
+  /** The entry each message the run saved became */
+  private readonly entries = new WeakMap<Message, string>();
+  /** Entries the run wrote */
+  private count = 0;
+  /** Set once the run may write no more, see {@link seal} */
+  private sealed = false;
+  /** The lease epoch the run's entries name, see {@link epoch} */
+  private leaseEpoch: number | undefined;
+  /** Checked before every write, see {@link guard} */
+  private check: (() => Promise<void>) | undefined;
+  /** What the run's entries name in their metadata, for a durable run */
+  private taggedRun: string | undefined;
 
   /**
    * @param memory the runtime's memory adapter when it writes, read then: memory connects
@@ -99,6 +111,54 @@ export class RunMemory {
     };
   }
 
+  /**
+   * Names `tag` in the metadata (`durableRun`) of every entry the run writes from now on, so a
+   * durable run that stopped finds the entries it wrote after its last checkpoint
+   */
+  tag(tag: string): void {
+    this.taggedRun = tag;
+  }
+
+  /**
+   * Names the epoch of the durable run's lease in the metadata (`durableEpoch`) of every entry it
+   * writes from now on, so readers drop what it wrote late, after another process took it over
+   */
+  epoch(epoch: number): void {
+    this.leaseEpoch = epoch;
+  }
+
+  /** What the run's entries name in their metadata, see {@link tag} */
+  get tagged(): string | undefined {
+    return this.taggedRun;
+  }
+
+  /** The entry `message` became, when the run saved this very message */
+  entryOf(message: Message): string | undefined {
+    return this.entries.get(message);
+  }
+
+  /** How many entries the run wrote */
+  get written(): number {
+    return this.count;
+  }
+
+  /**
+   * Stops every write from now on: the run lost its thread to another process (a durable run
+   * another process took over), which writes there instead
+   */
+  seal(): void {
+    this.sealed = true;
+  }
+
+  /**
+   * Runs `check` before every write from now on, which fails the write by throwing: a durable run
+   * confirms it still holds its lease, so a process that lost it never writes after the one that
+   * took it over
+   */
+  guard(check: () => Promise<void>): void {
+    this.check = check;
+  }
+
   /** Resolves once every write asked for so far is done, failed ones included */
   settled(): Promise<void> {
     return this.queue.then(() => undefined);
@@ -138,9 +198,14 @@ export class RunMemory {
     event?: EntryEvent,
     metadata?: Record<string, unknown>
   ): Promise<void> {
-    if (!this.opened || !this.enabled) return Promise.resolve();
+    if (!this.opened || !this.enabled || this.sealed) return Promise.resolve();
     const options = this.options();
     const written = this.queue.then(async () => {
+      if (this.sealed) return;
+      if (this.check) {
+        await this.check();
+        if (this.sealed) return;
+      }
       const entry = await saveEntry(
         this.threadId,
         agentId,
@@ -152,9 +217,17 @@ export class RunMemory {
         options.userId,
         this.place,
         event,
-        metadata
+        this.taggedRun === undefined
+          ? metadata
+          : {
+              ...metadata,
+              durableRun: this.taggedRun,
+              ...(this.leaseEpoch !== undefined && { durableEpoch: this.leaseEpoch }),
+            }
       );
       if (!entry) return;
+      this.entries.set(message, entry.id);
+      this.count++;
       if (this.branchPoint === undefined) this.branchPoint = entry.parentId ?? null;
       this.leafId = entry.id;
       if (this.place.parentId !== undefined) this.place.parentId = entry.id;

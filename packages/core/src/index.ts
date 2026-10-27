@@ -464,6 +464,16 @@ export {
 
 export { InMemoryRunCheckpointStore, ThreadRunCheckpointStore } from './cogitator/run-checkpoints';
 export {
+  InMemoryDurableRunStore,
+  RedisDurableRunStore,
+  ThreadDurableRunStore,
+} from './cogitator/durable-stores';
+export type {
+  DurableRunRedisClient,
+  RedisDurableRunStoreOptions,
+} from './cogitator/durable-stores';
+export { DEFAULT_DURABLE_LEASE_MS } from './cogitator/durable-runs';
+export {
   ABORTED_BEFORE_DISPATCH,
   OUTCOME_UNKNOWN,
   repairUnansweredToolCalls,

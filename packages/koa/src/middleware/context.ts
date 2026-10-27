@@ -1,7 +1,8 @@
 import type { Context, Next } from 'koa';
-import type { CogitatorAppOptions, CogitatorState, RouteContext } from '../types.js';
+import type { AuthContext, CogitatorAppOptions, CogitatorState, RouteContext } from '../types.js';
 import {
   DEFAULT_THREAD_MESSAGE_ROLES,
+  ResumableStreams,
   checkRunLimits,
   generateId,
   resolveSseHeartbeatMs,
@@ -10,7 +11,8 @@ import {
 /**
  * Sets the Cogitator state of each request.
  *
- * @throws Error when `opts.limits` holds a limit that is not a positive integer
+ * @throws Error when `opts.limits` holds a limit that is not a positive integer, RangeError
+ * for a `resumableStreams` limit that is not a positive whole number
  */
 export function createContextMiddleware(opts: CogitatorAppOptions) {
   const routeCtx: RouteContext = {
@@ -26,6 +28,7 @@ export function createContextMiddleware(opts: CogitatorAppOptions) {
     anonymous: opts.anonymous,
     deps: opts.deps,
     workflowCheckpoints: opts.workflowCheckpoints,
+    resumableStreams: ResumableStreams.from<AuthContext>(opts.resumableStreams),
   };
 
   return async (ctx: Context, next: Next) => {

@@ -9,6 +9,7 @@ import {
   isJsonObject,
   parseAddMessageRequest,
   parseRunRequest,
+  parseStreamEventId,
   parseThreadPageQuery,
 } from '@cogitator-ai/server-shared';
 import type {
@@ -23,6 +24,7 @@ const JsonObject = z.record(z.string(), z.unknown());
 
 export const NameParams = z.object({ name: z.string().min(1) });
 export const ThreadParams = z.object({ id: z.string().min(1) });
+export const StreamParams = z.object({ name: z.string().min(1), streamId: z.string().min(1) });
 
 const ThreadPageFields = z.object({
   limit: z
@@ -455,6 +457,35 @@ export interface ClientTrust {
   limits?: RunLimits;
   /** A workflow run may ask for checkpoints only where the server keeps them */
   workflowCheckpoints?: CheckpointStore;
+  /** A stream route may name a stream to reconnect to only where the server keeps them (truthy) */
+  resumableStreams?: unknown;
+}
+
+/** The id of the last event a client got, to reconnect after it: `<streamId>:<seq>` */
+const LastEventId = z
+  .string()
+  .refine((id) => id.trim() === '' || parseStreamEventId(id.trim()) !== undefined, {
+    message: 'must be the id of a stream event: <streamId>:<seq>',
+  });
+
+/**
+ * The reconnect of a stream route where streams are resumable, which documents it: the
+ * `Last-Event-ID` header or the `lastEventId` query parameter. Elsewhere neither is read
+ */
+function reconnectSchemas(resumable: boolean) {
+  if (!resumable) return { ReconnectHeaders: z.object({}), ReconnectQuery: z.object({}) };
+  return {
+    ReconnectHeaders: z.object({
+      'last-event-id': LastEventId.optional().describe(
+        'Reconnect to the stream of a run instead of starting one: the `id` of the last event the client got (`<streamId>:<seq>`). The answer replays the events after it, then follows the run to its end. The body is not read'
+      ),
+    }),
+    ReconnectQuery: z.object({
+      lastEventId: LastEventId.optional().describe(
+        'The same as the `Last-Event-ID` header, for clients that cannot set it'
+      ),
+    }),
+  };
 }
 
 /**
@@ -485,6 +516,7 @@ export function requestSchemas(trust: ClientTrust) {
   });
 
   return {
+    ...reconnectSchemas(Boolean(trust.resumableStreams)),
     RunBody: RunBody.superRefine(acceptedContext),
     SwarmRunBody: SwarmRunBody.extend({
       timeout: limited(SwarmTimeout, SWARM_TIMEOUT, limits?.swarmTimeout, ' ms'),

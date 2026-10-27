@@ -296,6 +296,29 @@ While an SSE stream is open it writes a `: keep-alive` comment every `sseHeartbe
 
 Text is emitted in `text-start`/`text-delta`/`text-end` blocks that are closed around tool calls; when the agent sets `reasoning: { summary: true }` and the provider returns a reasoning summary, it streams as separate `reasoning-start`/`reasoning-delta`/`reasoning-end` blocks that are closed before text or a tool call starts; the stream ends with `data: [DONE]` after `finish`. Headers set by your hooks (CORS, rate-limit) are kept on SSE responses.
 
+## Resumable streams
+
+With `resumableStreams` on, a client that loses the stream of `/agents/:name/stream` or `/agents/:name/resume/stream` (a flaky network, a tab that went to sleep) gets back what it missed, and the run goes on while it is away:
+
+```typescript
+await fastify.register(cogitatorPlugin, {
+  cogitator,
+  agents: { chat: chatAgent },
+  resumableStreams: true,
+});
+```
+
+- Every event carries an SSE `id`, `<streamId>:<seq>` with `seq` from 1 up. Heartbeat comments carry none.
+- A client that disconnects no longer stops the run. Its events keep going into the store.
+- The same route with `Last-Event-ID: <id>` reconnects instead of starting a run, and the body is not read: the answer replays the events after that id with their ids, then follows the run to `finish` (and `data: [DONE]`) or `error`. Several clients may follow one stream. `?lastEventId=<id>` works too, for clients that cannot set headers, but it puts the id into URLs and access logs, so prefer the header.
+- `DELETE /agents/:name/stream/:streamId` cancels the run (`204`): its stream ends with an `error` event `STREAM_CANCELLED`. The stream id is the part of an event id before the last `:`.
+- A stream is bound to the caller who started it: every field of what `auth` returned (user id, roles, permissions, metadata such as a tenant), so callers without a user id are told apart too. Give `owner: (auth) => key` to bind it to fewer fields, such as the user id alone when the identity carries a token expiry. Anyone else, an unknown or expired stream and an event id the stream never sent get `404 STREAM_NOT_FOUND` before any SSE header, an id that is not `<streamId>:<seq>` gets `400 INVALID_INPUT`. `authorizeThread` is asked about the stream's thread on every reconnect and cancel (`403 THREAD_FORBIDDEN`).
+- A reconnect after events that are no longer kept (more than `maxEvents` since) gets one `error` event with `STREAM_RESUME_GAP`: fetch the thread (`GET /threads/:id`) to catch up. A client that reads slowly holds at most `maxEvents` events and catches up from the store.
+- A run nobody follows for `detachedTimeoutMs` (5 minutes by default) is stopped, so a client that never comes back does not run up cost, and so is every run as soon as the Fastify instance starts closing (`preClose`, before it waits for open connections), or when `until` aborts. Such a stream ends with an `error` event `STREAM_ABORTED`.
+- A stream whose run goes on is never evicted: when `maxStreams` streams all go on, a new one is refused with `503 STREAM_LIMIT_REACHED`.
+
+`true` keeps the events in the memory of the process: 1000 events of each stream, a finished stream for 5 minutes, 1000 streams at once (`maxEvents`, `retentionMs`, `maxStreams`). Behind a load balancer with several processes, pass a `store` they share (`StreamReplayStore` from `@cogitator-ai/server-shared`, backed by Redis or similar with pub/sub), so a reconnect or a cancel that lands on another process reaches the stream and its run. Off by default: no ids, and a client that disconnects stops the run.
+
 ## WebSocket Support
 
 Enable real-time bidirectional communication (requires `@fastify/websocket`, without it the plugin logs a warning and skips the endpoint). The endpoint is `<prefix>/ws` unless `websocket.path` says otherwise, and the `auth` hook runs on the upgrade request, which `anonymous: 'deny'` refuses with 401 when it gives no `userId`. A `run` or `resume` on a thread `authorizeThread` refuses answers `{ type: 'error', id, error }` without starting, and `deps` is called with the upgrade request.
@@ -441,6 +464,7 @@ interface CogitatorPluginOptions {
   authorizeThread?: (auth: AuthContext | undefined, threadId: string) => boolean | Promise<boolean>;
   deps?: (request: FastifyRequest) => unknown | Promise<unknown>;
   workflowCheckpoints?: CheckpointStore; // workflow checkpoints and /resume, none by default
+  resumableStreams?: boolean | ResumableStreamOptions; // see Resumable streams, off by default
 }
 ```
 

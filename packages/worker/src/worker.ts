@@ -5,10 +5,11 @@
  * Supports graceful shutdown and health monitoring.
  */
 
-import { UnrecoverableError, Worker, type Job } from 'bullmq';
-import { Cogitator, findAgentRunPausedError } from '@cogitator-ai/core';
+import { DelayedError, UnrecoverableError, Worker, type Job } from 'bullmq';
+import { Cogitator, RedisDurableRunStore, findAgentRunPausedError } from '@cogitator-ai/core';
 import { RedisCheckpointStore } from '@cogitator-ai/workflows';
 import type { CheckpointStore } from '@cogitator-ai/types';
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import type { WorkerConfig, JobPayload, JobResult, QueueMetrics, WorkerRuntime } from './types';
 import { processAgentJob } from './processors/agent.js';
 import { forgetWorkflowRun, processWorkflowJob } from './processors/workflow.js';
@@ -59,9 +60,30 @@ export class WorkerPool {
     this.config = config;
     this.events = events;
     this.runtime = {
-      cogitator: config.cogitator ?? new Cogitator(),
+      cogitator:
+        config.cogitator ??
+        new Cogitator(
+          config.durable ? { durable: { store: this.durableRunStore(), enabled: false } } : {}
+        ),
       tools: config.tools ?? [],
     };
+  }
+
+  /**
+   * Where the pool's own Cogitator keeps durable agent jobs: this pool's Redis, under the queue's
+   * prefix and name, its client opened on first use
+   */
+  private durableRunStore(): RedisDurableRunStore {
+    const redis = () => this.getPublisher();
+    return new RedisDurableRunStore({
+      client: {
+        get: (key) => redis().get(key),
+        eval: (script, numKeys, ...args) => redis().eval(script, numKeys, ...args),
+        zrange: (key, start, stop) => redis().zrange(key, String(start), String(stop)),
+        zrem: (key, ...members) => redis().zrem(key, ...members),
+      },
+      keyPrefix: `${queuePrefix(this.config.redis)}:${this.config.name ?? DEFAULT_QUEUE_NAME}:durable-runs`,
+    });
   }
 
   /**
@@ -78,7 +100,7 @@ export class WorkerPool {
       this.connections.push(connection);
       const worker = new Worker<JobPayload, JobResult>(
         this.config.name ?? DEFAULT_QUEUE_NAME,
-        async (job, _token, signal) => this.processJob(job, signal),
+        async (job, token, signal) => this.processJob(job, signal, token),
         {
           connection: connection.connection,
           prefix: queuePrefix(this.config.redis),
@@ -131,14 +153,25 @@ export class WorkerPool {
    * A job cancelled while the pool runs fails without retries. One stopped by a shutdown is left
    * to BullMQ, which hands it to another worker once its lock expires. A workflow or swarm job
    * whose agent run paused for tool approvals fails without retries too: another attempt would
-   * only pause again.
+   * only pause again. A durable agent job whose run another worker still holds (BullMQ handed
+   * the job on before the run's lease ran out) waits until the lease runs out, without using an
+   * attempt.
    */
-  private async processJob(job: Job<JobPayload>, signal?: AbortSignal): Promise<JobResult> {
+  private async processJob(
+    job: Job<JobPayload>,
+    signal?: AbortSignal,
+    token?: string
+  ): Promise<JobResult> {
     this.events.onJobStarted?.(job.id ?? job.data.jobId, job.data.type);
 
     try {
       return await this.runJob(job, signal);
     } catch (error) {
+      const held = this.config.durable && job.data.type === 'agent' ? leaseHeld(error) : undefined;
+      if (held && token !== undefined) {
+        await job.moveToDelayed(held.until, token);
+        throw new DelayedError();
+      }
       if (signal?.aborted && this.isRunning) {
         throw new UnrecoverableError(`Job cancelled: ${abortMessage(signal)}`);
       }
@@ -152,7 +185,12 @@ export class WorkerPool {
     const execution = { ...(signal && { signal }) };
     switch (job.data.type) {
       case 'agent':
-        return processAgentJob(job.data, this.runtime, execution);
+        return this.config.durable
+          ? processAgentJob(job.data, this.runtime, {
+              ...(signal && { signal: this.handOverOnStop(signal) }),
+              durable: true,
+            })
+          : processAgentJob(job.data, this.runtime, execution);
       case 'workflow':
         return processWorkflowJob(
           job.data,
@@ -173,6 +211,28 @@ export class WorkerPool {
         throw new Error(`Unknown job type: ${(_exhaustive as JobPayload).type}`);
       }
     }
+  }
+
+  /**
+   * The signal of a durable agent job: a stop of the pool aborts its run with `RUN_SUSPENDED`, so
+   * the run keeps its checkpoint for the worker that takes the job up next, any other abort goes
+   * through as it came
+   */
+  private handOverOnStop(signal: AbortSignal): AbortSignal {
+    const controller = new AbortController();
+    const forward = () => {
+      controller.abort(
+        this.isRunning
+          ? signal.reason
+          : new CogitatorError({
+              message: `The worker pool stopped: ${abortMessage(signal)}`,
+              code: ErrorCode.RUN_SUSPENDED,
+            })
+      );
+    };
+    if (signal.aborted) forward();
+    else signal.addEventListener('abort', forward, { once: true });
+    return controller.signal;
   }
 
   /**
@@ -310,6 +370,20 @@ export class WorkerPool {
       await publisher.quit();
     }
   }
+}
+
+/** How long to wait before trying a durable run again that another worker holds */
+const HELD_RUN_WAIT_MS = 5_000;
+
+/**
+ * When to try again a job whose durable run another worker holds (`RUN_LEASED`): once its lease
+ * runs out, or in a few seconds when the store did not say. Undefined for any other error
+ */
+function leaseHeld(error: unknown): { until: number } | undefined {
+  if (!(error instanceof CogitatorError) || error.code !== ErrorCode.RUN_LEASED) return undefined;
+  const expiresAt = error.details?.expiresAt;
+  const until = typeof expiresAt === 'number' ? expiresAt + 250 : Date.now() + HELD_RUN_WAIT_MS;
+  return { until: Math.max(until, Date.now() + 250) };
 }
 
 function abortMessage(signal: AbortSignal): string {

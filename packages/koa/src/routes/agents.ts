@@ -1,13 +1,17 @@
 import Router from '@koa/router';
 import type { ParameterizedContext } from 'koa';
 import type { RunResult } from '@cogitator-ai/types';
-import type { CogitatorState, AgentListResponse } from '../types.js';
+import type { AuthContext, CogitatorState, AgentListResponse } from '../types.js';
 import { KoaStreamWriter, setupSSEHeaders } from '../streaming/index.js';
 import {
   AgentStreamSession,
+  authorizeThreadAccess,
+  lastEventIdOf,
   parseResumeRequest,
   parseRunRequest,
   toAgentRunResponse,
+  type StreamCaller,
+  type StreamFollower,
 } from '@cogitator-ai/server-shared';
 import { getOwn } from '../utils/lookup.js';
 import {
@@ -19,12 +23,69 @@ import {
 } from '../utils/errors.js';
 import { getRequestBody, onClientDisconnect, refuseThread, runDeps } from '../utils/request.js';
 
+/** Writes the frames of a resumable stream to one client, until it ends or the client leaves */
+async function followStream(
+  ctx: ParameterizedContext<CogitatorState>,
+  stream: StreamFollower
+): Promise<void> {
+  setupSSEHeaders(ctx);
+  const writer = new KoaStreamWriter(ctx, { heartbeatMs: ctx.state.cogitator.sseHeartbeatMs });
+  const client = new AbortController();
+  onClientDisconnect(ctx, () => {
+    writer.close();
+    client.abort();
+  });
+
+  try {
+    for await (const frame of stream.frames(client.signal)) writer.send(frame.event, frame.id);
+  } finally {
+    writer.close();
+  }
+}
+
+/**
+ * Answers a request that reconnects to a resumable stream with `Last-Event-ID` or
+ * `?lastEventId=`, and says whether it was one
+ */
+async function reconnect(ctx: ParameterizedContext<CogitatorState>): Promise<boolean> {
+  const streams = ctx.state.cogitator.resumableStreams;
+  const lastEventId = streams && lastEventIdOf(ctx.get('last-event-id'), ctx.query.lastEventId);
+  if (!streams || lastEventId === undefined) return false;
+  const attached = await streams.reconnect(lastEventId, callerOf(ctx));
+  if (attached.ok) await followStream(ctx, attached.stream);
+  else sendError(ctx, attached.error);
+  return true;
+}
+
+/** The caller of a reconnect or cancel, with `authorizeThread` for the stream's thread */
+function callerOf(ctx: ParameterizedContext<CogitatorState>): StreamCaller<AuthContext> {
+  const auth = ctx.state.auth;
+  return {
+    auth,
+    authorizeThread: (threadId) =>
+      authorizeThreadAccess(ctx.state.cogitator.authorizeThread, auth, threadId),
+  };
+}
+
 async function streamAgent(
   ctx: ParameterizedContext<CogitatorState>,
   threadId: string | undefined,
   errorLabel: string,
   execute: (session: AgentStreamSession, signal: AbortSignal) => Promise<RunResult>
 ): Promise<void> {
+  const streams = ctx.state.cogitator.resumableStreams;
+  if (streams) {
+    const opened = await streams.startAgentRun({
+      auth: ctx.state.auth,
+      threadId,
+      execute,
+      describeError: (error) => describeError(error, errorLabel),
+    });
+    if (opened.ok) await followStream(ctx, opened.stream);
+    else sendError(ctx, opened.error);
+    return;
+  }
+
   setupSSEHeaders(ctx);
   const writer = new KoaStreamWriter(ctx, {
     heartbeatMs: ctx.state.cogitator.sseHeartbeatMs,
@@ -53,6 +114,22 @@ async function streamAgent(
 
 export function createAgentRoutes(): Router<CogitatorState> {
   const router = new Router<CogitatorState>();
+
+  router.delete('/agents/:name/stream/:streamId', async (ctx) => {
+    const { agents, resumableStreams: streams } = ctx.state.cogitator;
+    const { name, streamId } = ctx.params;
+    if (!streams) {
+      notFound(ctx, 'Not found');
+      return;
+    }
+    if (!getOwn(agents, name)) {
+      notFound(ctx, `Agent '${name}' not found`);
+      return;
+    }
+    const cancelled = await streams.cancel(streamId, callerOf(ctx));
+    if (cancelled.ok) ctx.status = 204;
+    else sendError(ctx, cancelled.error);
+  });
 
   router.get('/agents', (ctx) => {
     const { agents } = ctx.state.cogitator;
@@ -161,6 +238,8 @@ export function createAgentRoutes(): Router<CogitatorState> {
       return;
     }
 
+    if (await reconnect(ctx)) return;
+
     const parsed = parseRunRequest(getRequestBody(ctx), {
       acceptContext: ctx.state.cogitator.acceptContext,
     });
@@ -197,6 +276,8 @@ export function createAgentRoutes(): Router<CogitatorState> {
       notFound(ctx, `Agent '${name}' not found`);
       return;
     }
+
+    if (await reconnect(ctx)) return;
 
     const parsed = parseResumeRequest(getRequestBody(ctx));
     if (!parsed.ok) {

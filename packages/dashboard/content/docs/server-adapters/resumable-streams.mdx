@@ -1,0 +1,138 @@
+---
+title: Resumable Streams
+description: Let a client that lost the stream of an agent run reconnect with Last-Event-ID, replay what it missed and follow the run to its end, or cancel the run on purpose.
+---
+
+A streamed agent run can take minutes. A flaky network, a phone that switches cells or a laptop that goes to sleep cuts the SSE connection, and by default the adapter then stops the run. With `resumableStreams` the run goes on without the client, every event is kept, and the client reconnects to pick the stream up exactly where it stopped. A client that wants the run stopped says so on the cancel route.
+
+It works the same in every adapter: Express, Fastify, Hono, Koa, Tetsu and the Next.js handlers, on `/agents/:name/stream` and `/agents/:name/resume/stream`.
+
+## Turn it on
+
+```typescript
+// Express
+new CogitatorServer({ app, cogitator, agents, config: { resumableStreams: true } });
+
+// Fastify
+await fastify.register(cogitatorPlugin, { cogitator, agents, resumableStreams: true });
+
+// Hono and Koa
+cogitatorApp({ cogitator, agents, resumableStreams: true });
+
+// Tetsu
+cogitatorController({ cogitator, agents, resumableStreams: true });
+
+// Next.js (owner is required next to beforeRun, see below)
+export const POST = createChatHandler(cogitator, agent, { resumableStreams: true });
+```
+
+`true` keeps the events in the memory of the process with the default limits. An object sets them:
+
+| Option              | Default        | What it does                                                                                                                |
+| ------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `maxEvents`         | `1000`         | Events kept of each stream, past it the oldest are evicted. Also what may wait for a client that reads slowly               |
+| `retentionMs`       | 5 minutes      | How long a finished stream stays replayable                                                                                 |
+| `maxStreams`        | `1000`         | Streams kept at once. A new one evicts the stream that finished first, and is refused while every stream kept still goes on |
+| `detachedTimeoutMs` | 5 minutes      | How long a run goes on with no client following its stream before it is stopped                                             |
+| `owner`             | whole identity | The key a stream is bound to, from what `auth` returned, see [Who may reconnect](#who-may-reconnect)                        |
+| `until`             | none           | Stops every run of a resumable stream when it aborts, such as the signal of a server that shuts down                        |
+| `store`             | in-memory      | Where the events are kept, see [Several processes](#several-processes)                                                      |
+
+Off by default: events carry no ids and a client that disconnects stops the run, as before.
+
+## Event ids
+
+Every event frame of a resumable stream carries an SSE `id`:
+
+```
+id: stream_6f1c2b7e-3a4d-4e8f-9b0a-1c2d3e4f5a6b:3
+data: {"type":"text-delta","id":"txt_1","delta":"Hel"}
+```
+
+The id is `<streamId>:<seq>`. The stream id is random and cannot be guessed, the sequence number starts at 1 and grows by one with each event, so the id alone names the stream and the place in it. Heartbeat comments carry no id.
+
+## Reconnect
+
+Send the same route again with the id of the last event the client got, in the `Last-Event-ID` header:
+
+```typescript
+const res = await fetch('/cogitator/agents/assistant/stream', {
+  method: 'POST',
+  headers: { 'Last-Event-ID': lastEventId },
+});
+```
+
+The request starts no run and its body is not read. The answer replays the events after that id, with their ids, then follows the run live until `finish` (and `data: [DONE]`) or `error`. Several clients may follow the same stream at once. The `lastEventId` query parameter works too, for clients that cannot set headers, but it puts the id into URLs and access logs: prefer the header.
+
+| Case                                                                   | Answer                                                  |
+| ---------------------------------------------------------------------- | ------------------------------------------------------- |
+| A stream of the caller                                                 | `200`, the events after the id, then the live ones      |
+| An unknown or expired stream, another caller's, or an id it never sent | `404 STREAM_NOT_FOUND`, before any SSE header           |
+| A thread `authorizeThread` turns the caller away from                  | `403 THREAD_FORBIDDEN`                                  |
+| An id that is not `<streamId>:<seq>`                                   | `400 INVALID_INPUT` (Tetsu: `422 VALIDATION_FAILED`)    |
+| Events after the id are no longer kept                                 | `200` with one `error` event `STREAM_RESUME_GAP`, no id |
+
+On `STREAM_RESUME_GAP` the client should fetch the thread (`GET /threads/:id`) to catch up, the message names the thread. A client that reads slowly holds at most `maxEvents` events, one that falls further behind catches up from the store, and gets the gap only for events the store no longer keeps. A store that lost an event in the middle is caught by its sequence numbers the same way: nothing is skipped silently.
+
+A client on another origin sends `Last-Event-ID` after a CORS preflight, which must allow the header. The Express adapter allows it by default. With the CORS middleware of Fastify, Hono, Koa, Tetsu or Next.js, add it to the allowed headers: `CORS_ALLOWED_HEADERS` from `@cogitator-ai/server-shared` lists every header a client of the API sends. The cancel route also needs `DELETE` among the allowed methods.
+
+## Cancel
+
+Stopping the client's fetch only disconnects it, the run goes on. To stop the run, send `DELETE` to the cancel route of its stream, the stream id being the part of an event id before the last `:`:
+
+```typescript
+await fetch(`/cogitator/agents/assistant/stream/${streamId}`, { method: 'DELETE' });
+```
+
+It answers `204` and stops the run on whatever process runs it, its stream then ends with an `error` event `STREAM_CANCELLED`. A stream that already finished is left as it is. The cancel takes the same checks as a reconnect (`404 STREAM_NOT_FOUND`, `403 THREAD_FORBIDDEN`). In Next.js the cancel is `DELETE` on the route of the handler with `?streamId=`, and `useCogitatorChat` sends it on `stop()`, `reload()` and every other interrupt.
+
+## Who may reconnect
+
+A stream is bound to the caller who started it, and only that caller may reconnect to it or cancel its run:
+
+- By default the key is every field of what the adapter's `auth` returned: user id, roles, permissions and metadata such as a tenant. Callers without a user id are still told apart by the rest of their identity, and a caller with no identity (no `auth`, or `auth` that returned `{}`) is the anonymous caller, who reaches only anonymous streams.
+- `owner: (auth) => key` binds streams to a key of your own, for example `auth?.userId` when the identity carries values that change between requests, such as the expiry of a token.
+- After the owner check, a reconnect and a cancel ask `authorizeThread` about the stream's thread, so a caller it turns away since the run started is refused.
+- In Next.js a reconnect and a cancel run neither `beforeRun` nor `deps`, whose side effects would repeat. `owner(req)` reads the request instead, and a handler with `beforeRun` throws without it. See [Next.js](/docs/integrations/nextjs#reconnecting).
+
+## Detached runs
+
+When the last client leaves, the run goes on and its events keep going into the store. If nobody reconnects within `detachedTimeoutMs`, the run is stopped, so a client that never comes back does not run up cost. Every run is also stopped when `until` aborts: pass the signal your server stops on, and abort it before the HTTP server closes, since a close waits for the streams still open. Fastify stops them by itself as the instance starts closing (`preClose`), Tetsu also on its controller's `until`, and Next.js also on the `signal` `beforeRun` returns. Such a stream ends with an `error` event `STREAM_ABORTED`, which a late reconnect still gets.
+
+The clients of the process that runs a stream get every event straight from it, the last one too, also when the store fails. A store that cannot keep an event stops the run.
+
+## Room for streams
+
+A stream whose run goes on is never evicted, since its client could no longer reconnect. When the store keeps `maxStreams` streams that all go on, a new resumable stream is refused with `503 STREAM_LIMIT_REACHED` before anything is sent, and the client may try again once a run finished.
+
+## Several processes
+
+The default store lives in the memory of one process. Behind a load balancer, a reconnect or a cancel may land on a process that did not start the run. Give every process one shared `store`, an implementation of `StreamReplayStore` from `@cogitator-ai/server-shared`:
+
+```typescript
+import type { StreamReplayStore } from '@cogitator-ai/server-shared';
+
+const store: StreamReplayStore = {
+  create: (stream) => redisCreateUnlessFull(stream),
+  append: (streamId, entry) => redisAppendAndPublish(streamId, entry),
+  read: (streamId, afterSeq) => redisRead(streamId, afterSeq),
+  finish: (streamId) => redisFinishAndPublish(streamId),
+  get: (streamId) => redisGet(streamId),
+  subscribe: (streamId, subscriber) => redisSubscribe(streamId, subscriber),
+  cancel: (streamId) => redisPublishCancel(streamId),
+  onCancel: (streamId, listener) => redisSubscribeCancel(streamId, listener),
+};
+
+cogitatorApp({ cogitator, agents, resumableStreams: { store } });
+```
+
+- `create` answers `false` when the store has no room without evicting a stream that goes on.
+- `read` answers the events after a sequence number, whether some were evicted (`gap`) and whether the stream finished.
+- `subscribe` and `onCancel` must reach listeners on every process, which takes pub/sub (Redis `PUBLISH`/`SUBSCRIBE` or similar), and `subscribe` delivers events in order.
+- `get` reports the `owner`, the `subscribers` across every process and `detachedAt`, when the last of them left on any process: a run checks them before it stops as detached, so a client following it on another process keeps it going, and one that came and went there restarts the count. Stamp `detachedAt` with the clock the hubs use (`now`, `Date.now` by default).
+
+`retentionMs` and `maxStreams` belong to the in-memory store, next to a `store` of your own they throw. `maxEvents` still bounds what waits for one client.
+
+## WebSocket
+
+The WebSocket endpoints do not resume. Their frames use their own vocabulary (`token`, `tool-call`, `complete`, `cancelled`) rather than the stream protocol the store keeps, and a run lives as long as its socket: closing it or sending `stop` cancels the run. Use the SSE routes for runs a client must be able to resume.

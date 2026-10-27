@@ -1,14 +1,16 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import {
   CONFORMANCE_CASES,
   CONFORMANCE_NAMES,
-  CONFORMANCE_ROUTES,
   CONFORMANCE_SWARM,
   ConformanceRuntime,
   checkConformance,
-  conformanceContentType,
-  conformanceMethod,
+  conformanceAuthorizeThread,
+  conformanceCaller,
+  conformanceResumableStreams,
+  runConformanceCase,
+  sendConformanceRequest,
   type ConformanceCase,
 } from '@cogitator-ai/server-shared';
 import { cogitatorPlugin } from '../plugin.js';
@@ -24,13 +26,33 @@ afterEach(async () => {
 });
 
 function pluginOptions(testCase: ConformanceCase): Partial<Options> {
-  const { forbiddenThreads, deps, ...options } = testCase.server ?? {};
+  const {
+    acceptContext,
+    threadMessageRoles,
+    limits,
+    anonymous,
+    workflowCheckpoints,
+    callers,
+    deps,
+  } = testCase.server ?? {};
+  const authorizeThread = conformanceAuthorizeThread(testCase.server);
+  const resumableStreams = conformanceResumableStreams(testCase.server);
   return {
-    ...options,
-    ...(forbiddenThreads && {
-      authorizeThread: (_auth, threadId) => !forbiddenThreads.includes(threadId),
+    ...(acceptContext !== undefined && { acceptContext }),
+    ...(threadMessageRoles && { threadMessageRoles }),
+    ...(limits && { limits }),
+    ...(anonymous && { anonymous }),
+    ...(workflowCheckpoints && { workflowCheckpoints }),
+    ...(callers && {
+      auth: (request: FastifyRequest) =>
+        conformanceCaller((name) => {
+          const value = request.headers[name];
+          return typeof value === 'string' ? value : undefined;
+        }),
     }),
+    ...(authorizeThread && { authorizeThread }),
     ...(deps && { deps: () => deps }),
+    ...(resumableStreams !== undefined && { resumableStreams }),
   };
 }
 
@@ -49,21 +71,11 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
     sseHeartbeatMs: 0,
     ...pluginOptions(testCase),
   });
+  const address = await app.listen({ port: 0, host: '127.0.0.1' });
 
-  const res = await app.inject({
-    method: conformanceMethod(testCase),
-    url: `/api${CONFORMANCE_ROUTES[testCase.route]}`,
-    ...(testCase.body !== undefined && {
-      headers: { 'content-type': conformanceContentType(testCase) },
-      payload: testCase.body,
-    }),
-  });
-  const ok = res.statusCode < 400;
-  const code = ok ? undefined : (res.json() as { error: { code: string } }).error.code;
-  const headers = Object.fromEntries(
-    Object.entries(res.headers).map(([name, value]) => [name.toLowerCase(), String(value)])
+  return runConformanceCase(testCase, runtime, (request) =>
+    sendConformanceRequest(request, (path, init) => fetch(`${address}/api${path}`, init))
   );
-  return { status: res.statusCode, code, body: res.body, headers };
 }
 
 describe('server protocol conformance', () => {

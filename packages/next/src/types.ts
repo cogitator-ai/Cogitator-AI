@@ -6,7 +6,12 @@ import type {
   ToolApprovalDecision,
   MultitaskStrategy,
 } from '@cogitator-ai/types';
-import type { AgentRunResponse, AnonymousPolicy, ContextPolicy } from '@cogitator-ai/server-shared';
+import type {
+  AgentRunResponse,
+  AnonymousPolicy,
+  ContextPolicy,
+  ResumableStreamOptions,
+} from '@cogitator-ai/server-shared';
 import type { PendingApproval, PendingInterrupt } from './streaming/protocol.js';
 
 export type {
@@ -85,6 +90,22 @@ export interface ChatHandlerOptions extends ServerContractOptions {
    * \`0\` turns heartbeats off.
    */
   sseHeartbeatMs?: number;
+  /**
+   * Keeps the stream of each run so a client that loses it can resume it. Every event then
+   * carries an SSE `id`, and a client that disconnects no longer stops the run: it goes on, and
+   * the same request again with `Last-Event-ID` (or `?lastEventId=`, which puts the id in URLs
+   * and logs, so prefer the header) replays what the client missed and follows the run to its
+   * end, `useCogitatorChat` does it by itself. `DELETE` on the route with `?streamId=` cancels
+   * the run (export the handler as `DELETE` too). A reconnect and a cancel read no body and run
+   * neither `beforeRun` nor `deps`: the stream is bound to `owner(req)`, and only a request with
+   * the same owner may reconnect or cancel, after `authorizeThread` on the stream's thread. With
+   * `beforeRun`, `owner` is required (it throws otherwise), without it every caller is
+   * anonymous. A run nobody follows for `detachedTimeoutMs` (5 minutes) is stopped, so is every
+   * run when `until` aborts. `true` keeps the events in the memory of this handler with the
+   * default limits: give every instance one shared `store` where several serve the route.
+   * Default: off, a client that disconnects stops the run.
+   */
+  resumableStreams?: boolean | ResumableStreamOptions<Request>;
 }
 
 export interface AgentHandlerOptions extends ServerContractOptions {
@@ -132,6 +153,23 @@ export interface ResumeHandlerOptions extends ServerContractOptions {
    * \`0\` turns heartbeats off.
    */
   sseHeartbeatMs?: number;
+  /**
+   * With `stream: true`, keeps the stream of each resumed run so a client that loses it can
+   * resume it. Every event then
+   * carries an SSE `id`, and a client that disconnects no longer stops the run: it goes on, and
+   * the same request again with `Last-Event-ID` (or `?lastEventId=`, which puts the id in URLs
+   * and logs, so prefer the header) replays what the client missed and follows the run to its
+   * end, `useCogitatorChat` does it by itself. `DELETE` on the route with `?streamId=` cancels
+   * the run (export the handler as `DELETE` too). A reconnect and a cancel read no body and run
+   * neither `beforeRun` nor `deps`: the stream is bound to `owner(req)`, and only a request with
+   * the same owner may reconnect or cancel, after `authorizeThread` on the stream's thread. With
+   * `beforeRun`, `owner` is required (it throws otherwise), without it every caller is
+   * anonymous. A run nobody follows for `detachedTimeoutMs` (5 minutes) is stopped, so is every
+   * run when `until` aborts. `true` keeps the events in the memory of this handler with the
+   * default limits: give every instance one shared `store` where several serve the route.
+   * Default: off, a client that disconnects stops the run.
+   */
+  resumableStreams?: boolean | ResumableStreamOptions<Request>;
 }
 
 /**
@@ -191,6 +229,24 @@ export interface UseChatOptions {
    */
   multitaskStrategy?: MultitaskStrategy;
   retry?: RetryConfig;
+  /**
+   * Resumes a stream that drops in the middle of a run, when the network fails or the body
+   * ends before `finish`: the hook sends the request again with `Last-Event-ID` set to the last
+   * event it got, and the message goes on where it stopped. It works with servers that keep
+   * `resumableStreams`, which give every event an id: a stream without ids ends as before.
+   * `attempts` is how many reconnects in a row may fail or bring no event (default 3), the
+   * first after `delayMs` (default 1000), each next one twice as late. A stream the server no
+   * longer keeps (`STREAM_NOT_FOUND`) or that lost events (`STREAM_RESUME_GAP`) ends with the
+   * error. `false` turns reconnects off.
+   */
+  reconnect?: false | ReconnectConfig;
+}
+
+export interface ReconnectConfig {
+  /** Reconnects in a row that may fail or bring no event. Default: 3 */
+  attempts?: number;
+  /** How long to wait before the first reconnect, in ms, each next one twice as long. Default: 1000 */
+  delayMs?: number;
 }
 
 export interface UseChatReturn {

@@ -12,7 +12,7 @@ import {
   runErrorResponse,
 } from './http.js';
 import { toAgentResponse } from './result.js';
-import { streamAgentRun } from './stream-run.js';
+import { answerStreamRequest, resumableStreamsOf, streamAgentRun } from './stream-run.js';
 
 function decisionsOf(input: ResumeInput): ResumeDecisions {
   return {
@@ -47,7 +47,16 @@ export function createResumeHandler(
   agent: Agent,
   options?: ResumeHandlerOptions
 ) {
+  const streams = options?.stream
+    ? resumableStreamsOf(options.resumableStreams, Boolean(options.beforeRun))
+    : undefined;
+
   return async (req: Request): Promise<Response> => {
+    if (streams) {
+      const answered = await answerStreamRequest(req, streams, options, options?.sseHeartbeatMs);
+      if (answered) return answered;
+    }
+
     if (exceedsDeclaredSize(req)) {
       return jsonError('Payload too large', 413, 'PAYLOAD_TOO_LARGE');
     }
@@ -92,6 +101,7 @@ export function createResumeHandler(
         req,
         runContext,
         threadId: input.threadId,
+        streams,
         start: (callbacks) =>
           cogitator.resume(agent, input.threadId, { ...decisions, ...runContext, ...callbacks }),
         afterRun: options.afterRun,

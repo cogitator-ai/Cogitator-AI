@@ -113,7 +113,7 @@ describe('cogitator init Ollama connection', () => {
       expect.objectContaining({ headers: { Authorization: 'Bearer env-key' } })
     );
     expect(
-      fetchMock.mock.calls.some(([url]) => String(url).startsWith('http://config.example'))
+      fetchMock.mock.calls.some(([url]) => new URL(String(url)).origin === 'http://config.example')
     ).toBe(false);
     expect(scaffold).toHaveBeenCalled();
   });

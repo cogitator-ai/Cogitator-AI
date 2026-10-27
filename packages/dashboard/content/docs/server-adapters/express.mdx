@@ -214,11 +214,13 @@ config: {
 }
 ```
 
+Preflights allow the headers of `CORS_ALLOWED_HEADERS` from `@cogitator-ai/server-shared` by default: `Content-Type`, `Authorization`, `X-Request-ID` and `Last-Event-ID`, which a client on another origin sends to reconnect to a [resumable stream](/docs/server-adapters/resumable-streams). An `allowedHeaders` of your own replaces the list, so keep `Last-Event-ID` in it.
+
 `credentials` defaults to `true` for explicit origins and to `false` for `origin: '*'` (plain `Access-Control-Allow-Origin: *`). Setting `credentials: true` together with `'*'` reflects every origin with credentials — only do that deliberately. Disallowed origins get no CORS grants, including on preflight.
 
 ## Streaming
 
-The `/agents/:name/stream` endpoint returns an SSE stream: `start`, `text-start`/`text-delta`/`text-end` blocks, `tool-call-start`/`tool-call-delta`/`tool-call-end` as the model writes the call (the id is the model's tool call id, matching `tool-result.toolCallId`), `tool-update` while the tool runs, `tool-result`, then `finish` and `[DONE]`, or an `error` event. Disconnecting aborts the run. Read it with `fetch` (EventSource cannot send a POST body):
+The `/agents/:name/stream` endpoint returns an SSE stream: `start`, `text-start`/`text-delta`/`text-end` blocks, `tool-call-start`/`tool-call-delta`/`tool-call-end` as the model writes the call (the id is the model's tool call id, matching `tool-result.toolCallId`), `tool-update` while the tool runs, `tool-result`, then `finish` and `[DONE]`, or an `error` event. Disconnecting aborts the run. With `resumableStreams` on, a client that disconnects no longer stops the run: it reconnects with `Last-Event-ID` and gets the rest, see [Resumable Streams](/docs/server-adapters/resumable-streams). Read it with `fetch` (EventSource cannot send a POST body):
 
 ```typescript
 const response = await fetch('http://localhost:3000/cogitator/agents/assistant/stream', {

@@ -154,6 +154,56 @@ export { AgentStreamSession, createThreadId } from './stream-session.js';
 
 export type { AgentStreamCallbacks, AgentStreamSessionOptions } from './stream-session.js';
 
+export {
+  DEFAULT_DETACHED_TIMEOUT_MS,
+  ResumableStreams,
+  STREAM_ABORTED,
+  STREAM_CANCELLED,
+  STREAM_LIMIT_REACHED,
+  STREAM_NOT_FOUND,
+  STREAM_RESUME_GAP,
+  defaultStreamOwner,
+  formatStreamEventId,
+  invalidLastEventId,
+  invalidStreamId,
+  isStreamId,
+  lastEventIdOf,
+  parseStreamEventId,
+  streamLimitReached,
+  streamNotFound,
+} from './resumable-stream.js';
+
+export type {
+  ResumableAgentRunOptions,
+  ResumableStream,
+  ResumableStreamOptions,
+  StreamCaller,
+  StreamCancellation,
+  StreamEventId,
+  StreamFollower,
+  StreamFrame,
+  StreamOpening,
+  StreamReconnection,
+} from './resumable-stream.js';
+
+export {
+  DEFAULT_STREAM_MAX_EVENTS,
+  DEFAULT_STREAM_MAX_STREAMS,
+  DEFAULT_STREAM_RETENTION_MS,
+  InMemoryStreamReplayStore,
+} from './stream-replay-store.js';
+
+export type {
+  InMemoryStreamReplayStoreOptions,
+  NewStreamRecord,
+  StoredStreamEvent,
+  StreamOwner,
+  StreamRecord,
+  StreamReplay,
+  StreamReplayStore,
+  StreamSubscriber,
+} from './stream-replay-store.js';
+
 export { swarmAgentNames, withSwarm } from './swarm.js';
 
 export type { ClosableSwarm, SwarmAgentSlots } from './swarm.js';
@@ -169,14 +219,25 @@ export {
   conformanceContentType,
   conformanceMethod,
   conformancePausedResult,
+  conformanceAuthorizeThread,
+  conformanceCaller,
+  conformanceResumableStreams,
   conformanceRunResult,
   parseSseEvents,
+  parseSseFrames,
+  runConformanceCase,
+  sendConformanceRequest,
 } from './conformance.js';
 
 export type {
   ConformanceCase,
+  ConformanceCaller,
   ConformanceCheckOptions,
+  ConformanceFollowUp,
+  ConformanceRequest,
   ConformanceResponse,
+  ConformanceRuntimeOptions,
+  ConformanceSend,
   ConformanceRoute,
   ConformanceServerOptions,
 } from './conformance.js';
@@ -202,6 +263,7 @@ export type {
 } from './readiness.js';
 
 export {
+  CORS_ALLOWED_HEADERS,
   INTERNAL_ERROR,
   UNAUTHORIZED,
   admitCaller,

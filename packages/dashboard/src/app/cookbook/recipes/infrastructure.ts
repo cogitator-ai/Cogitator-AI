@@ -257,6 +257,80 @@ await queue.close();`,
       ],
     },
     {
+      id: 'durable-runs',
+      title: 'Durable Agent Runs',
+      difficulty: 'medium',
+      time: '10 min',
+      problem:
+        'A deploy or a crash kills a long agent run halfway through a tool, and nobody finishes the task.',
+      points: [
+        'Turn on `durable` so a run keeps a checkpoint after every step',
+        'Continue what a stopped process left with `cog.recoverRuns()` at startup',
+        'A tool call that was running reaches the model as "outcome unknown", never runs twice',
+      ],
+      file: 'durable-runs.ts',
+      code: `import { z } from 'zod';
+import { Agent, Cogitator, tool } from '@cogitator-ai/core';
+
+const apiKey = process.env.GOOGLE_API_KEY;
+if (!apiKey) throw new Error('Set GOOGLE_API_KEY');
+
+const cog = new Cogitator({
+  llm: { providers: { google: { apiKey } } },
+  memory: { adapter: 'sqlite', sqlite: { path: 'agent.db' } },
+  durable: { owner: 'report-host', takeoverOnRestart: true },
+});
+
+const exportReport = tool({
+  name: 'export_report',
+  description: 'Export the quarterly report as a PDF',
+  parameters: z.object({ quarter: z.string() }),
+  execute: async ({ quarter }) => {
+    await new Promise((resolve) => setTimeout(resolve, 30_000));
+    return \`report-\${quarter}.pdf\`;
+  },
+});
+
+const reporter = new Agent({
+  id: 'reporter',
+  name: 'reporter',
+  model: 'google/gemini-3.5-flash-lite',
+  instructions: 'Export the report the user asks for, then say what you did in one sentence.',
+  tools: [exportReport],
+});
+
+const { resumed } = await cog.recoverRuns({ agents: [reporter] });
+for (const { run, handle } of resumed) {
+  const result = await handle.result;
+  console.log(\`Recovered \${run.runId}: \${result.output}\`);
+}
+
+if (resumed.length === 0) {
+  console.log('Starting a run: press Ctrl+C during the export, then run this file again');
+  const result = await cog.run(reporter, { input: 'Export the Q3 report', threadId: 'q3' });
+  console.log(result.output);
+}
+
+await cog.close();`,
+      install: 'pnpm add @cogitator-ai/core @cogitator-ai/memory better-sqlite3 zod',
+      env: ['GOOGLE_API_KEY'],
+      run: 'GOOGLE_API_KEY=your-key npx tsx durable-runs.ts',
+      repoRun: 'npx tsx examples/core/30-durable-runs.ts',
+      example: 'core/30-durable-runs.ts',
+      notes: [
+        {
+          type: 'info',
+          text: 'A stable `owner` with `takeoverOnRestart: true` lets the restarted process take its own runs back at once, only safe when one live process at a time has that owner. Several processes need a store with atomic leases: `durable: { store: new RedisDurableRunStore({ client }) }`.',
+        },
+      ],
+      docs: [
+        {
+          href: '/docs/core/durable-runs',
+          label: 'Durable Runs',
+        },
+      ],
+    },
+    {
       id: 'sandbox-execution',
       title: 'Sandboxed Execution',
       difficulty: 'medium',

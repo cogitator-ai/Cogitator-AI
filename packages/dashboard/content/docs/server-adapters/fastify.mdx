@@ -214,7 +214,7 @@ One run per connection at a time (a second `run` or `resume` answers `A run is a
 
 ## Streaming
 
-The streaming endpoints use SSE, identical to other adapters: `text-*` blocks closed around tool calls, `tool-call-*` events whose `id` matches `tool-result.toolCallId`, then `finish` and `[DONE]` (or an `error` event). `FastifyStreamWriter` hijacks the reply and keeps headers set by your hooks (CORS, rate limit). Disconnecting aborts the run:
+The streaming endpoints use SSE, identical to other adapters: `text-*` blocks closed around tool calls, `tool-call-*` events whose `id` matches `tool-result.toolCallId`, then `finish` and `[DONE]` (or an `error` event). `FastifyStreamWriter` hijacks the reply and keeps headers set by your hooks (CORS, rate limit). Disconnecting aborts the run. With `resumableStreams` on, a client that disconnects no longer stops the run: it reconnects with `Last-Event-ID` and gets the rest, see [Resumable Streams](/docs/server-adapters/resumable-streams):
 
 ```typescript
 const response = await fetch('http://localhost:3000/cogitator/agents/math/stream', {

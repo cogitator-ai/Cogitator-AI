@@ -5,12 +5,14 @@ import type { AddressInfo } from 'net';
 import {
   CONFORMANCE_CASES,
   CONFORMANCE_NAMES,
-  CONFORMANCE_ROUTES,
   CONFORMANCE_SWARM,
   ConformanceRuntime,
   checkConformance,
-  conformanceContentType,
-  conformanceMethod,
+  conformanceAuthorizeThread,
+  conformanceCaller,
+  conformanceResumableStreams,
+  runConformanceCase,
+  sendConformanceRequest,
   type ConformanceCase,
 } from '@cogitator-ai/server-shared';
 import { CogitatorServer } from '../server.js';
@@ -24,18 +26,35 @@ type Swarms = NonNullable<CogitatorServerConfig['swarms']>;
 let server: Server | undefined;
 
 afterEach(async () => {
-  if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+  if (server) {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server!.close(() => resolve()));
+  }
   server = undefined;
 });
 
 function serverOptions(testCase: ConformanceCase): CogitatorServerConfig['config'] {
-  const { forbiddenThreads, deps, ...options } = testCase.server ?? {};
+  const {
+    acceptContext,
+    threadMessageRoles,
+    limits,
+    anonymous,
+    workflowCheckpoints,
+    callers,
+    deps,
+  } = testCase.server ?? {};
+  const authorizeThread = conformanceAuthorizeThread(testCase.server);
+  const resumableStreams = conformanceResumableStreams(testCase.server);
   return {
-    ...options,
-    ...(forbiddenThreads && {
-      authorizeThread: (_auth, threadId) => !forbiddenThreads.includes(threadId),
-    }),
+    ...(acceptContext !== undefined && { acceptContext }),
+    ...(threadMessageRoles && { threadMessageRoles }),
+    ...(limits && { limits }),
+    ...(anonymous && { anonymous }),
+    ...(workflowCheckpoints && { workflowCheckpoints }),
+    ...(callers && { auth: (req) => conformanceCaller((name) => req.get(name)) }),
+    ...(authorizeThread && { authorizeThread }),
     ...(deps && { deps: () => deps }),
+    ...(resumableStreams !== undefined && { resumableStreams }),
   };
 }
 
@@ -64,14 +83,11 @@ async function answer(testCase: ConformanceCase, runtime: ConformanceRuntime) {
   });
   const { port } = server.address() as AddressInfo;
 
-  const res = await fetch(`http://127.0.0.1:${port}/api${CONFORMANCE_ROUTES[testCase.route]}`, {
-    method: conformanceMethod(testCase),
-    headers: { 'Content-Type': conformanceContentType(testCase) },
-    body: testCase.body,
-  });
-  const body = await res.text();
-  const code = res.ok ? undefined : (JSON.parse(body) as { error: { code: string } }).error.code;
-  return { status: res.status, code, body, headers: Object.fromEntries(res.headers) };
+  return runConformanceCase(testCase, runtime, (request) =>
+    sendConformanceRequest(request, (path, init) =>
+      fetch(`http://127.0.0.1:${port}/api${path}`, init)
+    )
+  );
 }
 
 describe('server protocol conformance', () => {

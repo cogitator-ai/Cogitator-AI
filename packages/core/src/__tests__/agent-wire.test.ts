@@ -104,6 +104,8 @@ function project(key: keyof AgentConfig, config: AgentConfig): unknown {
       return AGENT_CONFIG_WIRE_FIELDS.budget;
     case 'subagents':
       return AGENT_CONFIG_WIRE_FIELDS.subagents;
+    case 'durable':
+      return AGENT_CONFIG_WIRE_FIELDS.durable;
     case 'responseFormat': {
       const format = config.responseFormat;
       return format?.type === 'json_schema'
@@ -183,6 +185,7 @@ describe('agent wire format', () => {
       permissions: { mode: 'bypassPermissions', allow: ['Bash'] },
       budget: { maxCostUsd: 1000 },
       subagents: ['reviewer'],
+      durable: true,
     };
     const original = new Agent(full);
 
@@ -199,6 +202,7 @@ describe('agent wire format', () => {
     expect(received.config.permissions).toBeUndefined();
     expect(received.config.budget).toBeUndefined();
     expect(received.config.subagents).toBeUndefined();
+    expect(received.config.durable).toBeUndefined();
   });
 
   it('carries the agents a handoff reaches, cycles included', () => {

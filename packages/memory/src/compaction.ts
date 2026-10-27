@@ -787,3 +787,72 @@ const strategies: Record<CompactionStrategy, StrategyFn> = {
   'sliding-window': slidingWindowStrategy,
   hybrid: hybridStrategy,
 };
+
+/** The event kind of the entry that marks a new lease epoch of a durable run in its thread */
+export const DURABLE_FENCE = 'durable_fence';
+
+/**
+ * The prefix of the thread metadata keys that keep the newest lease epoch of each durable run
+ * taken over, one key per run (`durableFence.<runId>`), so two runs fenced at once never write
+ * over each other
+ */
+export const DURABLE_FENCE_KEY_PREFIX = 'durableFence.';
+
+/** Where a lease epoch of a durable run began in its thread: its fence entry's place */
+export interface DurableFence {
+  epoch: number;
+  /** The fence entry's position among the thread's entries, when the adapter keeps one */
+  seq?: number;
+  /** When the fence entry was written, ISO 8601 */
+  at: string;
+}
+
+/** The fences a thread's metadata keeps (`durableFence.<runId>`), by run id */
+export function durableFencesOf(
+  metadata: Readonly<Record<string, unknown>> | undefined
+): Record<string, DurableFence> {
+  const fences: Record<string, DurableFence> = {};
+  for (const [key, value] of Object.entries(metadata ?? {})) {
+    if (!key.startsWith(DURABLE_FENCE_KEY_PREFIX)) continue;
+    const runId = key.slice(DURABLE_FENCE_KEY_PREFIX.length);
+    if (typeof value !== 'object' || value === null) continue;
+    const epoch: unknown = Reflect.get(value, 'epoch');
+    const seq: unknown = Reflect.get(value, 'seq');
+    const at: unknown = Reflect.get(value, 'at');
+    if (typeof epoch !== 'number' || typeof at !== 'string') continue;
+    fences[runId] = { epoch, at, ...(typeof seq === 'number' && { seq }) };
+  }
+  return fences;
+}
+
+/** Whether `entry` was written after `fence` began, by the adapter's sequence, else by time */
+function afterFence(entry: MemoryEntry, fence: DurableFence): boolean {
+  if (entry.seq !== undefined && fence.seq !== undefined) return entry.seq > fence.seq;
+  return entry.createdAt.getTime() > Date.parse(fence.at);
+}
+
+/**
+ * `entries` (in the order they were written) without the entries a durable run wrote late: an
+ * entry that names a lease epoch (`metadata.durableEpoch`) older than one its run reached before
+ * it, by a fence the thread's metadata keeps (`fences`, see {@link durableFencesOf}), a fence
+ * entry (`DURABLE_FENCE`) or an entry of a newer epoch in the list. A process that lost its run
+ * to another can have a write land after the takeover, memory adapters cannot refuse it, so
+ * readers leave it out. Entries of other runs and entries without an epoch pass as they are
+ */
+export function withoutStaleDurableEntries<T extends MemoryEntry>(
+  entries: readonly T[],
+  fences: Readonly<Record<string, DurableFence>> = {}
+): T[] {
+  const newest = new Map<string, number>();
+  return entries.filter((entry) => {
+    const tag = entry.metadata?.durableRun;
+    const epoch = entry.metadata?.durableEpoch;
+    if (typeof tag !== 'string' || typeof epoch !== 'number') return true;
+    const runId = tag.slice(0, tag.lastIndexOf('/'));
+    const fence = Object.hasOwn(fences, runId) ? fences[runId] : undefined;
+    if (fence && epoch < fence.epoch && afterFence(entry, fence)) return false;
+    if (epoch < (newest.get(runId) ?? 0)) return false;
+    newest.set(runId, epoch);
+    return true;
+  });
+}

@@ -14,14 +14,14 @@ import type {
   ToolResultEvent,
 } from '../types.js';
 import type { StreamEvent } from '../streaming/protocol.js';
-import { parseSSEStream } from './sse-parser.js';
+import { parseSSEFrames } from './sse-parser.js';
 import {
   chatReducer,
   createInitialState,
   type ChatAction,
   type ChatState,
 } from './use-chat-state.js';
-import { withRetry } from './retry.js';
+import { isRetryableError, sleep, withRetry } from './retry.js';
 import { HttpError, toHttpError } from './http-error.js';
 
 let idCounter = 0;
@@ -74,7 +74,33 @@ interface ChatRequest {
   ended: boolean;
   /** The code of the `error` event the stream sent, when it sent one */
   errorCode?: string;
+  /** The id of the last event the stream sent, on a server that sends ids */
+  lastEventId?: string;
+  /** Sends the request again to resume its stream after `lastEventId` */
+  resend?: (lastEventId: string) => Promise<Response>;
+  /** Asks the server to cancel the run of the request's stream */
+  cancelRun?: (streamId: string) => void;
 }
+
+/** The stream an event id names: the part before its last `:` */
+function streamIdOf(lastEventId: string): string {
+  return lastEventId.slice(0, lastEventId.lastIndexOf(':'));
+}
+
+/**
+ * Asks the server to stop the run of a request's stream: aborting the fetch alone only
+ * disconnects from a resumable stream, whose run goes on without the client
+ */
+function cancelRunOf(request: ChatRequest): void {
+  if (request.lastEventId === undefined || request.ended) return;
+  request.cancelRun?.(streamIdOf(request.lastEventId));
+}
+
+/** How a read of a stream ended: at `finish` or `error`, cut short, or no longer wanted */
+type StreamEnd = 'ended' | 'cut' | 'closed';
+
+const DEFAULT_RECONNECT_ATTEMPTS = 3;
+const DEFAULT_RECONNECT_DELAY_MS = 1000;
 
 /** Codes of a resume the server refused before it ran: the paused run still waits */
 const REFUSED_RESUME_CODES = new Set(['INTERRUPT_ANSWER_INVALID', 'INTERRUPT_EXPIRED']);
@@ -176,7 +202,14 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     resumeApi,
     multitaskStrategy,
     retry,
+    reconnect,
   } = options;
+  const reconnectAttempts =
+    reconnect === false
+      ? 0
+      : Math.max(0, Math.floor(reconnect?.attempts ?? DEFAULT_RECONNECT_ATTEMPTS));
+  const reconnectDelayMs =
+    reconnect === false ? 0 : Math.max(0, reconnect?.delayMs ?? DEFAULT_RECONNECT_DELAY_MS);
 
   const [state, dispatch] = useReducer(
     chatReducer,
@@ -215,7 +248,10 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
 
   const interrupt = useCallback(() => {
     closeOpen();
-    for (const request of liveRef.current) request.controller.abort();
+    for (const request of liveRef.current) {
+      cancelRunOf(request);
+      request.controller.abort();
+    }
   }, [closeOpen]);
 
   const handOver = useCallback((): ChatRequest[] => {
@@ -443,31 +479,100 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
     [handleStreamEvent, release, report]
   );
 
-  const processStream = useCallback(
-    async (response: Response, request: ChatRequest) => {
+  /**
+   * Reads one response of a stream, noting the id of each event, and says how it ended. It
+   * stops at `finish` or `error` and lets the rest of the body go, so a connection that drops
+   * before `[DONE]` cannot turn a whole answer into a cut one
+   */
+  const readStream = useCallback(
+    async (response: Response, request: ChatRequest, onEvent: () => void): Promise<StreamEnd> => {
       if (!response.body) {
         throw new Error('Response body is null');
       }
 
       const reader = response.body.getReader();
+      let terminal = false;
 
       try {
-        for await (const event of parseSSEStream(reader)) {
+        for await (const { event, id } of parseSSEFrames(reader)) {
+          if (id !== undefined) request.lastEventId = id;
+          onEvent();
+          if (event.type === 'finish' || event.type === 'error') terminal = true;
           const threadId = announcedThread(event);
           if (threadId) request.announce(threadId);
-          if (request.detached) continue;
-          if (!isOpen(request)) return;
-          deliver(request, event);
+          if (!request.detached) {
+            if (!isOpen(request)) return 'closed';
+            deliver(request, event);
+          }
+          if (terminal) break;
         }
       } finally {
+        if (terminal) await reader.cancel().catch(() => undefined);
         reader.releaseLock();
+      }
+
+      return terminal ? 'ended' : 'cut';
+    },
+    [deliver, isOpen]
+  );
+
+  /**
+   * Reads a stream to its end. One cut short, by the network or by a body that ends before
+   * `finish`, is resumed where it stopped when the server sends event ids: the request goes
+   * again with `Last-Event-ID`, up to `reconnect.attempts` times in a row without an event
+   */
+  const processStream = useCallback(
+    async (response: Response, request: ChatRequest) => {
+      let current: Response | undefined = response;
+      let failure: { error: unknown } | undefined;
+      let failures = 0;
+
+      for (;;) {
+        let progressed = false;
+        if (current) {
+          failure = undefined;
+          try {
+            const end = await readStream(current, request, () => (progressed = true));
+            if (end === 'closed') return;
+            if (end === 'ended') break;
+            if (request.lastEventId !== undefined && reconnectAttempts > 0) {
+              failure = { error: new Error('The stream ended before the run finished') };
+            }
+          } catch (error) {
+            if (isAbortError(error) || request.controller.signal.aborted) throw error;
+            failure = { error };
+          }
+        }
+        if (progressed) failures = 0;
+
+        const { lastEventId, resend } = request;
+        const resumable = !request.detached && lastEventId !== undefined && resend !== undefined;
+        if (!resumable || failures >= reconnectAttempts) {
+          if (failure) throw failure.error;
+          break;
+        }
+
+        failures++;
+        await sleep(reconnectDelayMs * 2 ** (failures - 1), request.controller.signal);
+        if (!isOpen(request)) return;
+        try {
+          current = await resend(lastEventId);
+          if (!current.ok) throw await toHttpError(current);
+          if (!isEventStream(current)) {
+            throw new Error('The server answered the reconnect without a stream');
+          }
+        } catch (error) {
+          if (isAbortError(error) || !isRetryableError(error)) throw error;
+          current = undefined;
+          failure = { error };
+        }
       }
 
       if (!isOpen(request)) return;
       request.ended = true;
       if (requestsRef.current[0] === request) advance();
     },
-    [advance, deliver, isOpen]
+    [advance, isOpen, readStream, reconnectAttempts, reconnectDelayMs]
   );
 
   const processResult = useCallback(
@@ -536,16 +641,28 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
         if (thread !== undefined) chatRequest.announce(thread);
         sent = true;
 
-        const doFetch = async () => {
-          const response = await fetch(url, {
+        const payload = JSON.stringify(body(thread));
+        const send = (resumeAfter?: string) =>
+          fetch(url, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               ...headers,
+              ...(resumeAfter !== undefined && { 'Last-Event-ID': resumeAfter }),
             },
-            body: JSON.stringify(body(thread)),
+            body: payload,
             signal: controller.signal,
           });
+        chatRequest.resend = send;
+        chatRequest.cancelRun = (streamId) => {
+          const cancelUrl = `${url}${url.includes('?') ? '&' : '?'}streamId=${encodeURIComponent(streamId)}`;
+          void fetch(cancelUrl, { method: 'DELETE', headers: { ...headers } }).catch(
+            () => undefined
+          );
+        };
+
+        const doFetch = async () => {
+          const response = await send();
 
           if (!response.ok) {
             throw await toHttpError(response);
@@ -568,7 +685,9 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
         if (sent || !previous) chatRequest.announce(undefined);
         else void previous.then(chatRequest.announce);
         for (const predecessor of chatRequest.supersedes) {
-          if (liveRef.current.has(predecessor)) predecessor.controller.abort();
+          if (!liveRef.current.has(predecessor)) continue;
+          cancelRunOf(predecessor);
+          predecessor.controller.abort();
         }
       }
     },

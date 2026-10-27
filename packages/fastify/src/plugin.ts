@@ -1,6 +1,7 @@
 import fp from 'fastify-plugin';
 import {
   DEFAULT_THREAD_MESSAGE_ROLES,
+  ResumableStreams,
   admitCaller,
   checkRunLimits,
   documentStreamEvents,
@@ -8,7 +9,7 @@ import {
   resolveSseHeartbeatMs,
 } from '@cogitator-ai/server-shared';
 import type { FastifyPluginAsync, FastifyError } from 'fastify';
-import type { CogitatorPluginOptions, CogitatorContext } from './types.js';
+import type { AuthContext, CogitatorPluginOptions, CogitatorContext } from './types.js';
 import { createAnonymousHook, createAuthHook, errorHandler } from './hooks/index.js';
 import {
   healthRoutes,
@@ -33,6 +34,7 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
     authorizeThread: opts.authorizeThread,
     deps: opts.deps,
     workflowCheckpoints: opts.workflowCheckpoints,
+    resumableStreams: ResumableStreams.from<AuthContext>(opts.resumableStreams),
   };
 
   fastify.decorate('cogitator', context);

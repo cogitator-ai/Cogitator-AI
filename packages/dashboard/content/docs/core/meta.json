@@ -3,6 +3,7 @@
   "pages": [
     "cogitator",
     "run-control",
+    "durable-runs",
     "budgets",
     "agents",
     "harness-agent",

@@ -16,7 +16,7 @@ BullMQ, `@cogitator-ai/swarms` and `@cogitator-ai/workflows` come as dependencie
 - **Job Types** - Agents, workflow graphs, swarms and distributed swarm turns
 - **Worker Runtime** - Run jobs with your own `Cogitator` (provider keys, memory) and tool implementations
 - **Distributed Swarms** - `DistributedSwarmWorker` executes agent turns for `@cogitator-ai/swarms`
-- **Auto-Retry** - Exponential backoff for failed jobs, a retried workflow job goes on from its last checkpoint
+- **Auto-Retry** - Exponential backoff for failed jobs, a retried workflow job goes on from its last checkpoint, a durable agent job (`durable: true`) from its last step
 - **Job Ids** - Adding a job under an id the queue holds gives that job back, so producers can retry an add
 - **Usage** - Workflow and swarm results carry tokens and cost, the metrics count them by job type
 - **Priority Queue** - Process important jobs first
@@ -358,6 +358,7 @@ interface WorkerConfig extends QueueConfig {
   tools?: Tool[]; // Tool implementations, resolved by name
   checkpoints?: CheckpointStore; // Where workflow jobs keep their checkpoints. Default: the pool's Redis
   checkpointTtl?: number; // Seconds the default store keeps a checkpoint after its last save. Default: 7 days
+  durable?: boolean; // Agent jobs go on from their last step on the next attempt. Default: false
 }
 ```
 
@@ -367,6 +368,27 @@ interface WorkerConfig extends QueueConfig {
 | `concurrency`     | 5       | Concurrent jobs per worker                 |
 | `lockDuration`    | 30000   | Lock timeout before job considered stalled |
 | `stalledInterval` | 30000   | Interval to check for stalled jobs         |
+
+### Durable Agent Jobs
+
+With `durable: true` every agent job runs as a durable run named after the job (`job:<jobId>`): it keeps a checkpoint after every model turn and tool batch. When a worker crashes or the pool shuts down mid-job, the next attempt (on this worker or another) recovers the run and goes on from its last step instead of running the whole job again. A tool call that returned keeps its result and never runs twice, one that was running reaches the model as "outcome unknown, verify before retrying". On `stop()` and `forceStop()` the pool aborts its durable runs with `RUN_SUSPENDED`, so they hand over at once instead of waiting for their lease. When BullMQ hands a stalled job on while its run is still held, the job is delayed until the run's lease runs out instead of using up an attempt.
+
+```typescript
+const pool = new WorkerPool({ redis, tools, durable: true });
+```
+
+All workers must share the store. The pool's own Cogitator (no `cogitator` given) keeps the runs in its Redis under the queue's prefix. A Cogitator you pass needs a shared store, and `enabled: false` keeps its other runs as they were:
+
+```typescript
+import { Cogitator, RedisDurableRunStore } from '@cogitator-ai/core';
+
+const cogitator = new Cogitator({
+  durable: { store: new RedisDurableRunStore({ client: redisClient }), enabled: false },
+});
+const pool = new WorkerPool({ redis, cogitator, tools, durable: true });
+```
+
+`processAgentJob(payload, runtime, { durable: true })` does the same when you call the processor yourself. See [Durable runs](https://cogitator.app/docs/core/durable-runs).
 
 ### Worker Events
 

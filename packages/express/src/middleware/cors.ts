@@ -1,4 +1,5 @@
 import type { Response, NextFunction, Request } from 'express';
+import { CORS_ALLOWED_HEADERS } from '@cogitator-ai/server-shared';
 import type { CorsConfig } from '../types.js';
 
 function isOriginAllowed(origin: string, allowed: CorsConfig['origin']): boolean {
@@ -22,7 +23,7 @@ export function createCorsMiddleware(config: CorsConfig) {
     origin,
     credentials = origin !== '*',
     methods = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders = ['Content-Type', 'Authorization', 'X-Request-ID'],
+    allowedHeaders = [...CORS_ALLOWED_HEADERS],
     exposedHeaders = ['X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset'],
     maxAge = 86400,
   } = config;

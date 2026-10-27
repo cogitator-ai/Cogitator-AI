@@ -7,6 +7,7 @@ import type {
   HooksConfig,
   Message,
   PermissionMode,
+  RunCheckpoint,
   RunHandle,
   RunMiddleware,
   RunResult,
@@ -149,6 +150,41 @@ interface SubagentTask {
   note?: string;
 }
 
+/**
+ * A background subagent of a durable run whose process stopped while it ran, or after it ended
+ * and before the run read how
+ */
+interface LostTask {
+  taskId: string;
+  agent: string;
+  name?: string;
+  /** How it ended, when it ended before the process stopped */
+  status?: 'completed' | 'paused' | 'failed' | 'stopped';
+  output?: string;
+  error?: string;
+  /** The run that started it */
+  startedBy: string;
+  /** Whether the run read that it was lost */
+  delivered: boolean;
+}
+
+/** What became of a background subagent lost with its process */
+const LOST_TASK =
+  'The process that ran this agent stopped before it finished: outcome unknown, verify before retrying';
+
+function lostStatus(task: LostTask): BackgroundSubagentStatus {
+  if (task.status) {
+    return {
+      taskId: task.taskId,
+      agent: task.agent,
+      status: task.status,
+      ...(task.output !== undefined && { output: task.output }),
+      ...(task.error !== undefined && { error: task.error }),
+    };
+  }
+  return { taskId: task.taskId, agent: task.agent, status: 'failed', error: LOST_TASK };
+}
+
 /** A subagent ready to run: its agent, mode and workspace, and how to undo what it set up */
 interface PreparedDelegate {
   agent: Agent;
@@ -271,6 +307,8 @@ export function taskNotification(status: BackgroundSubagentStatus): string {
 export class SubagentService {
   private readonly finder: SubagentFinder;
   private readonly threads = new Map<string, Map<string, SubagentTask>>();
+  /** Background subagents a recovered durable run had going, lost with its process, by thread */
+  private readonly lost = new Map<string, Map<string, LostTask>>();
   private readonly warned = new Set<string>();
   private running = 0;
   readonly middleware: RunMiddleware;
@@ -284,9 +322,12 @@ export class SubagentService {
       name: 'cogitator:subagents',
       beforeStop: async (_event, context) => {
         const mine = this.tasksStartedBy(context.threadId ?? '', context.runId);
+        const gone = [...(this.lost.get(context.threadId ?? '')?.values() ?? [])].filter(
+          (task) => task.startedBy === context.runId && !task.delivered
+        );
         const ready = (): SubagentTask[] =>
           mine.filter((task) => task.status !== 'running' && !task.delivered && task.background);
-        if (ready().length === 0) {
+        if (ready().length === 0 && gone.length === 0) {
           const going = mine.filter((task) => task.status === 'running' && task.done);
           if (going.length === 0) return undefined;
           await untilAborted(
@@ -295,10 +336,14 @@ export class SubagentService {
           );
         }
         const settled = ready();
-        if (settled.length === 0) return undefined;
+        if (settled.length === 0 && gone.length === 0) return undefined;
         for (const task of settled) task.delivered = true;
+        for (const task of gone) task.delivered = true;
         return {
-          continueWith: settled.map((task) => taskNotification(this.statusOf(task))).join('\n\n'),
+          continueWith: [
+            ...settled.map((task) => taskNotification(this.statusOf(task))),
+            ...gone.map((task) => taskNotification(lostStatus(task))),
+          ].join('\n\n'),
         };
       },
       afterRun: async (_event, context) => {
@@ -307,6 +352,58 @@ export class SubagentService {
         }
       },
     };
+  }
+
+  /**
+   * The background subagents run `runId` started that are still going, and those it lost with a
+   * process that it has not been told about yet, for a durable run's checkpoint
+   */
+  backgroundOf(threadId: string, runId: string): NonNullable<RunCheckpoint['background']> {
+    const lost = [...(this.lost.get(threadId)?.values() ?? [])].filter(
+      (task) => task.startedBy === runId && !task.delivered
+    );
+    return [
+      ...this.tasksStartedBy(threadId, runId)
+        .filter((task) => task.background && (task.status === 'running' || !task.delivered))
+        .map((task) => ({
+          taskId: task.id,
+          agent: task.definition.name,
+          ...(task.name !== undefined && { name: task.name }),
+          ...(task.status !== 'running' && { status: task.status }),
+          ...(task.status !== 'running' &&
+            task.result?.output !== undefined && { output: task.result.output }),
+          ...(task.status !== 'running' && task.error !== undefined && { error: task.error }),
+        })),
+      ...lost.map((task) => ({
+        taskId: task.taskId,
+        agent: task.agent,
+        ...(task.name !== undefined && { name: task.name }),
+        ...(task.status && { status: task.status }),
+        ...(task.output !== undefined && { output: task.output }),
+        ...(task.error !== undefined && { error: task.error }),
+      })),
+    ];
+  }
+
+  /**
+   * Notes background subagents a durable run had going when its process stopped: they are gone,
+   * so `task_output`, `task_stop`, `send_message` and the run's stop notice report them as failed
+   * with an unknown outcome
+   */
+  restoreLost(
+    threadId: string,
+    runId: string,
+    tasks: NonNullable<RunCheckpoint['background']>
+  ): void {
+    if (tasks.length === 0) return;
+    let kept = this.lost.get(threadId);
+    if (!kept) {
+      kept = new Map();
+      this.lost.set(threadId, kept);
+    }
+    for (const task of tasks) {
+      kept.set(task.taskId, { ...task, startedBy: runId, delivered: false });
+    }
   }
 
   /** The project root whose definitions a run in `workspace` reads */
@@ -701,6 +798,26 @@ export class SubagentService {
     );
   }
 
+  /** A background subagent a recovered run lost, by its id or name */
+  private findLost(threadId: string, key: string): LostTask | undefined {
+    const tasks = this.lost.get(threadId);
+    if (!tasks) return undefined;
+    return tasks.get(key) ?? [...tasks.values()].reverse().find((task) => task.name === key);
+  }
+
+  /** What `task_output` and `task_stop` report for a lost subagent, noting that it was read */
+  private reportLost(task: LostTask): Record<string, unknown> {
+    task.delivered = true;
+    const status = lostStatus(task);
+    return {
+      agentId: task.taskId,
+      agent: task.agent,
+      status: status.status,
+      ...(status.output !== undefined && { output: status.output }),
+      ...(status.error !== undefined && { error: status.error }),
+    };
+  }
+
   private find(threadId: string, key: string): SubagentTask | undefined {
     const tasks = this.threads.get(threadId);
     if (!tasks) return undefined;
@@ -746,6 +863,8 @@ export class SubagentService {
         execute: async ({ to, message }, context) => {
           const task = this.find(scope.threadId, to);
           if (!task) {
+            const gone = this.findLost(scope.threadId, to);
+            if (gone) return { delivered: false, ...this.reportLost(gone) };
             return { delivered: false, error: `No agent "${to}" was started in this conversation` };
           }
           if (task.status === 'running' && task.handle?.steer(message)) {
@@ -810,7 +929,11 @@ export class SubagentService {
         annotations: { readOnlyHint: true },
         execute: async ({ task_id, block }, context) => {
           const task = this.find(scope.threadId, task_id);
-          if (!task) return { error: `No agent "${task_id}" was started in this conversation` };
+          if (!task) {
+            const gone = this.findLost(scope.threadId, task_id);
+            if (gone) return this.reportLost(gone);
+            return { error: `No agent "${task_id}" was started in this conversation` };
+          }
           if (task.status === 'running' && block !== false && task.done) {
             await untilAborted(task.done, context.signal);
           }
@@ -833,7 +956,11 @@ export class SubagentService {
         sideEffects: ['external'],
         execute: async ({ task_id }, context) => {
           const task = this.find(scope.threadId, task_id);
-          if (!task) return { error: `No agent "${task_id}" was started in this conversation` };
+          if (!task) {
+            const gone = this.findLost(scope.threadId, task_id);
+            if (gone) return this.reportLost(gone);
+            return { error: `No agent "${task_id}" was started in this conversation` };
+          }
           if (task.status === 'running') {
             this.stopTask(task, 'Stopped with task_stop');
             if (task.done) await untilAborted(task.done, context.signal);

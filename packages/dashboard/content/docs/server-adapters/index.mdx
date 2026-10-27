@@ -202,6 +202,8 @@ Swarm routes close the swarm they build once the run ends, succeeded, failed or 
 
 Workflow streams send `workflow` events named `node_started`, `node_completed`, `node_error`, `node_progress` and `workflow_completed`, or `workflow_failed` (with the `checkpointId` of a checkpointed run) right before the `error` event of a failed run. Swarm streams send `swarm` events named `agent_start`, `agent_complete`, `agent_error`, `message`, the swarm's own events, and `swarm_completed`. Disconnecting the client aborts the run.
 
+Agent streams can outlive a dropped connection: with `resumableStreams` every event carries an SSE `id`, the run goes on without the client, and the same route with `Last-Event-ID` replays what the client missed and follows the run to its end. See [Resumable Streams](/docs/server-adapters/resumable-streams).
+
 The event types (`StreamEvent`, `TextDeltaEvent`, …), their factories (`createTextDeltaEvent`, `createFinishEvent`, …) and the `encodeSSE` / `encodeDone` helpers are exported from `@cogitator-ai/server-shared`, and the adapters re-export the event types. So are Zod schemas of the same shapes, for a client that checks what it receives:
 
 ```typescript

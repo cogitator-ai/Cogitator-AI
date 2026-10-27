@@ -23,6 +23,8 @@ import {
   countMessageTokens,
   HISTORY_ENTRY_TYPES,
   MEMORY_USERS_KEY,
+  withoutStaleDurableEntries,
+  durableFencesOf,
 } from '@cogitator-ai/memory';
 import { CogitatorError, ErrorCode, historyMessage } from '@cogitator-ai/types';
 import { getLogger } from '../logger';
@@ -286,7 +288,11 @@ export async function buildInitialMessages(
           : await memoryAdapter.getEntries({ threadId, limit: 20 });
     const messages: Message[] = [{ role: 'system', content: agent.instructions }];
     if (entries.success) {
-      const history = memoryAdapter.getPath ? compactedHistory(entries.data) : entries.data;
+      const thread = await memoryAdapter.getThread(threadId);
+      const history = withoutStaleDurableEntries(
+        memoryAdapter.getPath ? compactedHistory(entries.data) : entries.data,
+        durableFencesOf(thread.success ? thread.data?.metadata : undefined)
+      );
       messages.push(...sanitizeToolHistory(repairUnansweredToolCalls(history.map(historyMessage))));
     } else {
       reportMemoryError(

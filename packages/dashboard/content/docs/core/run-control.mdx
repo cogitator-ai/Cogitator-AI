@@ -187,3 +187,5 @@ A run is cancelled by its `signal`, its `timeout`, `handle.abort()` or a newer r
 ### History Repair
 
 A crash leaves tool calls without results in the log. When a run reads the thread's history from memory, every tool call without a result gets one, `The run stopped before this tool call returned: outcome unknown, verify before retrying` (`OUTCOME_UNKNOWN`), so the model knows the call may have run instead of losing it. The log itself is not rewritten. `repairUnansweredToolCalls(messages)` from `@cogitator-ai/core` does the same for messages you hold.
+
+A crash also loses the run itself: nothing goes on until the user writes again. [Durable runs](/docs/core/durable-runs) keep a checkpoint after every step, so another process continues the run from where it stopped, with the same repair for the calls that were running.

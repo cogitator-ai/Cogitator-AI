@@ -1,0 +1,181 @@
+---
+title: Durable Runs
+description: Keep a checkpoint after every step of an agent run, so a run whose process crashed or was stopped continues on another process from its last step instead of starting over.
+---
+
+## Overview
+
+An agent run lives in its process. When the process crashes, is redeployed or a worker shuts down halfway through, the run is gone: the thread keeps what was logged, but nobody finishes the task. A durable run keeps a checkpoint after every model turn and every batch of tool calls. Another process, or the same one after a restart, finds the runs left running with `cog.recoverRuns()` and continues each from its last step.
+
+- [Turning it on](#turning-it-on): `durable` for the runtime, an agent or one run
+- [Recovering runs](#recovering-runs): `recoverRuns()`, `recoverRun()`, `discardRun()`
+- [What a recovered run sees](#what-a-recovered-run-sees): finished calls kept, running calls "outcome unknown"
+- [Leases](#leases): one process holds a run at a time
+- [Stores](#stores): process memory, the memory adapter's threads, Redis
+- [Workers](#workers): queue jobs that go on from their last step
+
+Without `durable` nothing changes: runs keep no checkpoint while they go on, as before.
+
+## Turning It On
+
+```typescript
+import { Cogitator } from '@cogitator-ai/core';
+
+const cog = new Cogitator({
+  memory: { adapter: 'postgres', postgres: { connectionString: process.env.DATABASE_URL! } },
+  durable: { owner: process.env.POD_NAME, takeoverOnRestart: true },
+});
+```
+
+`durable: true` makes every run durable with the default store, an object sets it up:
+
+| Option              | Default                                    | What it does                                                                                                                                                                                                                                |
+| ------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`           | `true`                                     | Whether runs are durable unless their agent or their options say otherwise. `false` keeps the store for runs that ask with `durable: true`                                                                                                  |
+| `store`             | the memory adapter's threads, else process | Where checkpoints go, see [Stores](#stores)                                                                                                                                                                                                 |
+| `leaseMs`           | `60000`                                    | How long a run stays held after its process last renewed its lease                                                                                                                                                                          |
+| `owner`             | host name, process id and a random part    | Who this runtime's runs are held by, in leases and listings. A run is taken from another holder only once its lease ran out                                                                                                                 |
+| `takeoverOnRestart` | `false`                                    | Take back at once a run whose lease names this `owner` and an instance no runtime of this process has: a restarted process. Only with an owner unique to one live process at a time (a pod name), never a host name several processes share |
+| `storeRetries`      | `3`                                        | How often a failed write to the store is tried again, with a growing pause                                                                                                                                                                  |
+| `onStoreError`      | `'suspend'`                                | What a run does when its store keeps failing: `suspend` stops it with `RUN_SUSPENDED` and keeps its last checkpoint, `continue` goes on without checkpoints                                                                                 |
+
+An agent's `durable` and a run's own `durable` win over the runtime's setting:
+
+```typescript
+const agent = new Agent({ name: 'reporter', model, instructions, durable: true });
+await cog.run(agent, { input: 'Prepare the Q3 report', threadId: 'q3', durable: false });
+```
+
+A run started from a tool call of another run (a subagent, `agentAsTool`) is never durable on its own: its caller is, and the call that started it gets "outcome unknown" when the caller is recovered while it ran. Background subagents (`run_in_background`) live in their process too: the checkpoint names the ones going on, and the recovered run reads that they were lost, as `failed` with an unknown outcome, in `task_output`, `send_message` and its stop notice, so the model knows to check what they did.
+
+### What a Step Writes
+
+The checkpoint is a `RunCheckpoint` with `status: 'running'`, the same shape a paused run returns: counters, usage and cost, the turn going on, permission mode and rules, budgets, hook state, project instructions, the command the input named, and the messages queued on the run's handle. It is kept small:
+
+- **The conversation's start** (system prompt, history, input) is written once, as the record's `base`. Without a memory log the messages a step adds are added to the base, never written twice.
+- **Messages the thread's log already holds** are written as references to their log entries (`checkpoint.compact`), not copied. The [session log](/docs/memory) stays the source of truth.
+- **Tool calls** are kept by their place in those messages, not with their arguments again.
+- **Between steps** only small marks go to the record's journal: a tool call that starts, one that returns, the queue when it changes, a queued message the run delivered with what it added to the conversation.
+
+A checkpoint is written after every model turn, the final answer included, so a run that answered before its process stopped ends on recovery without asking the model again. When the stop of that answer had not settled (follow-ups queued for the stop, `beforeStop` middleware and `Stop` hooks), the recovered run settles it first, and a run that reached `maxIterations` asks for its closing answer as it would have.
+
+A step writes what is new since the last one, not the whole conversation.
+
+## Recovering Runs
+
+Call `recoverRuns()` at startup with the agents the runs were started with:
+
+```typescript
+const { resumed, skipped } = await cog.recoverRuns({ agents: [reporter, support] });
+
+for (const { run, handle } of resumed) {
+  handle.result.then((result) => notifyUser(run.threadId, result.output));
+}
+for (const { run, reason } of skipped) console.warn(`Not recovered: ${run.runId}: ${reason}`);
+```
+
+Each recovered run comes back as a `RunHandle`, as `cog.start()` gives it: `steer()`, `followUp()`, `inject()`, `abort()` and `result` work on it. Runs a live process holds are left alone.
+
+| Option    | What it does                                                                                                   |
+| --------- | -------------------------------------------------------------------------------------------------------------- |
+| `agents`  | The agents, matched by id, then by name, or a function from the run to its agent. A run without one is skipped |
+| `resume`  | `false` only reports the runs in `found`, for the host to decide                                               |
+| `filter`  | Which runs to look at                                                                                          |
+| `options` | Options for each continued run: `deps`, callbacks such as `onToken`, a `signal`, `workspace`                   |
+
+The options a run was started with that only lived in its process (callbacks, `deps`, the workspace, `signal`) are not in the checkpoint: pass them in `options`. Everything the run decided (its model, tool execution settings, permission mode and rules, budgets) comes back from the checkpoint.
+
+To decide run by run:
+
+```typescript
+const { found } = await cog.recoverRuns({ agents: [], resume: false });
+
+for (const run of found) {
+  if (await stillWanted(run.threadId)) {
+    const handle = await cog.recoverRun(reporter, run.runId, { onToken });
+    await handle.result;
+  } else {
+    await cog.discardRun(run.runId);
+  }
+}
+```
+
+`cog.durableRuns(filter)` lists the kept runs with `held` (a live process has them). `discardRun()` answers the calls of the run's last step that have no answer in the thread and forgets the run, so the next run of the thread reads a whole history. Both `recoverRun()` and `discardRun()` fail with `RUN_NOT_FOUND` for a run that is not kept and `RUN_LEASED` for one a live process holds.
+
+## What a Recovered Run Sees
+
+The conversation comes back from the base, the inline messages and the thread's log. Entries the run wrote after its last checkpoint are taken in too, so a crash between a log write and the checkpoint loses nothing and repeats nothing: a model turn that was logged is not asked for again, a final answer that was logged ends the run without another model call.
+
+The tool calls of the step the process stopped in are settled from the journal:
+
+| The call                                  | Recovered as                                                                              |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Returned before the stop                  | Its result, saved to the thread. It never runs again                                      |
+| Started and never returned                | `The run stopped before this tool call returned: outcome unknown, verify before retrying` |
+| Never started, after a call that was lost | `Aborted before dispatch: the run stopped before this tool call started`                  |
+| Never started, nothing lost before it     | Runs, as it would have                                                                    |
+
+So a tool with side effects never runs twice behind the model's back: the model reads that the outcome is unknown and checks before it calls again. Messages queued on the run's handle and not delivered yet are delivered by the recovered run.
+
+## Leases
+
+A process holds each durable run it runs under a lease: it takes the lease when the run starts, renews it at every step and a third of the way through `leaseMs` while a long tool runs, and lets it go when the run ends. A lease belongs to the runtime's `owner` and to the instance of the `Cogitator`, so another live runtime never takes a run one holds, even with the same `owner`. `recoverRuns()` takes only runs whose lease ran out, and a runtime reserves a run before it takes its lease, so recovering one run twice at once, in one process or two, continues it once. With `takeoverOnRestart: true` it also takes at once a run whose lease names its own `owner` and an instance no runtime of its process has. That is a process that restarted only when no other live process has the same owner: with a host name several processes share, they would take each other's runs, so give each process an owner of its own (a pod name) or leave the option off and wait for the lease.
+
+A process that lost its lease writes nothing more: every write to the thread first confirms the lease, so no tool result, no late model answer, no log entry and no `afterRun` hook comes from it. Every write is fenced: a checkpoint, its journal and its base change only while the writer holds the lease. A process that lost its lease (it froze longer than `leaseMs` and another process took the run over) finds out at its next step and stops the run with `RUN_LEASED` before it starts another tool or writes again, it never overwrites the checkpoint of the process that took over.
+
+Writes to the thread's log are fenced by lease epochs. Every new holder of a run gets the next epoch (`DurableRunLease.epoch`), the run's log entries name it (`metadata.durableEpoch`), and a process that takes a run over writes a fence entry for its epoch before it reads the log, and notes it in the thread's metadata (`durableFence.<runId>`, one key per run), where every reader sees it. A memory adapter cannot refuse a write that was already on its way when the lease changed hands, so readers do: recovery, the history a later run reads and the context builder drop an entry of a run whose epoch is older than an epoch of that run that came before it in the log (a fence, or an entry of the newer holder). The guarantee holds in the order the adapter keeps entries (its sequence, else its timestamps), and an entry the former holder wrote before the fence counts as written before the takeover.
+
+A store that fails is tried again (`storeRetries`, with a growing pause). When it keeps failing, the run is suspended with `RUN_SUSPENDED` and its last good checkpoint stays for a recovery: a storage error never deletes a checkpoint. With `onStoreError: 'continue'` the run goes on without checkpoints instead (a recovery may then repeat what it did since the last one).
+
+A process that stops on purpose hands its runs over: abort a run with a `CogitatorError` of code `RUN_SUSPENDED` and it keeps its checkpoint and lets its lease go at once, for another process to recover. The worker pool does this when it shuts down.
+
+```typescript
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
+
+controller.abort(new CogitatorError({ message: 'redeploy', code: ErrorCode.RUN_SUSPENDED }));
+```
+
+A run forgets its checkpoint only for an end of its own: it completed, paused, failed in its loop or was cancelled there. Every other end keeps it for a recovery: a hand-over, an error of the store, a lost lease, a configuration error or a recovery that gave up before the run got going. Forgetting or redacting entries of a thread (`cog.forget()`, `cog.redactEntries()`) drops the durable runs of that thread too, since their checkpoints may hold the text that is gone: a run going on there loses its lease and stops. A paused run waits in the paused-run store as before, `resume()` makes it durable again.
+
+## Stores
+
+A store implements `DurableRunStore` (`acquire`, `renew`, `release`, `save`, `append`, `load`, `list`, `delete`), its writes taking the holder of the lease.
+
+| Store                     | Where                                                                                                           | Several processes                                                           |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `InMemoryDurableRunStore` | Process memory, the default without a memory adapter                                                            | No, lost with the process. For tests and several runtimes in one process    |
+| `ThreadDurableRunStore`   | The run's thread metadata (one `durableRuns` map, emptied when its runs end), the default with a memory adapter | One process at a time: a memory adapter cannot lock, leases are best effort |
+| `RedisDurableRunStore`    | Redis: atomic leases, each checkpoint written in one script, keys that expire after `ttl` (7 days)              | Yes, any number                                                             |
+
+```typescript
+import { Cogitator, RedisDurableRunStore } from '@cogitator-ai/core';
+import { createRedisClient } from '@cogitator-ai/redis';
+
+const client = await createRedisClient({ mode: 'standalone', url: process.env.REDIS_URL! });
+const cog = new Cogitator({
+  memory,
+  durable: { store: new RedisDurableRunStore({ client }) },
+});
+```
+
+The conversation's log references resolve through the runtime's memory adapter, so a recovering process needs the same memory as the one that ran. The Redis store keeps its keys under `{cogitator}:durable-runs` by default: a prefix of your own needs a `{hash tag}` in Redis Cluster, since one script writes all keys of a run and its indexes.
+
+## Workers
+
+`WorkerPool` with `durable: true` runs agent jobs as durable runs named after the job (`job:<jobId>`). The attempt after a crash or a shutdown, on this worker or another, finds the run the stopped attempt left and goes on from its last step instead of running the whole job again. On shutdown the pool aborts its runs with `RUN_SUSPENDED`, so they hand over at once.
+
+```typescript
+import { WorkerPool } from '@cogitator-ai/worker';
+
+const pool = new WorkerPool({ redis, tools, durable: true });
+```
+
+When BullMQ hands a job on while the run of its stalled attempt is still held (its lease has not run out yet), the job waits until the lease runs out, without using an attempt. The pool's own Cogitator keeps the runs in its Redis. A Cogitator you pass needs a store all workers share, such as `durable: { store: new RedisDurableRunStore({ client }), enabled: false }` (`enabled: false` keeps runs outside the queue as they were).
+
+## Streams
+
+A recovered run has no client attached. To let a client that lost its connection catch up with a run that is still going, use [resumable streams](/docs/server-adapters/resumable-streams) in the server adapters.
+
+## Example
+
+[`examples/core/30-durable-runs.ts`](https://github.com/cogitator-ai/Cogitator-AI/blob/main/examples/core/30-durable-runs.ts) starts a run in a child process, kills it with `SIGKILL` while a tool runs and recovers the run in the parent.
