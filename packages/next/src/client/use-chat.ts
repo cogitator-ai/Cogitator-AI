@@ -685,7 +685,9 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
         if (sent || !previous) chatRequest.announce(undefined);
         else void previous.then(chatRequest.announce);
         for (const predecessor of chatRequest.supersedes) {
-          if (liveRef.current.has(predecessor)) predecessor.controller.abort();
+          if (!liveRef.current.has(predecessor)) continue;
+          cancelRunOf(predecessor);
+          predecessor.controller.abort();
         }
       }
     },

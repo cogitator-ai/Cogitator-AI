@@ -105,7 +105,7 @@ export {
   withoutStaleDurableEntries,
   durableFencesOf,
   DURABLE_FENCE,
-  DURABLE_FENCES_KEY,
+  DURABLE_FENCE_KEY_PREFIX,
   type DurableFence,
   HISTORY_ENTRY_TYPES,
   type SummarizeFn,

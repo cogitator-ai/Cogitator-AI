@@ -141,13 +141,14 @@ export interface DurableRunStore {
    * the lease's epoch: one more than the last when a new holder takes it, the same when its
    * instance renews it. False while another instance holds a lease that has not run out, unless
    * `replacing` names that instance: the runtime passes it to take back a run of its own `owner`
-   * whose instance is gone (a process that restarted)
+   * whose instance is gone (a process that restarted). A new epoch is above `above`, the epoch the
+   * run's thread fenced last, so a run id used again never goes back to an epoch readers drop
    */
   acquire(
     ref: DurableRunRef,
     holder: DurableRunHolder,
     ttlMs: number,
-    options?: { replacing?: string }
+    options?: { replacing?: string; above?: number }
   ): Promise<number | false>;
   /**
    * Extends the lease `holder` holds by `ttlMs`. False when it holds none: it ran out, another

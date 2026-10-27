@@ -2232,6 +2232,74 @@ describe('durable runs after a hand-over or a follow-up', () => {
   });
 });
 
+describe('durable run fences across runs of a thread', () => {
+  it('keeps a run id used again above the epoch its thread fenced', async () => {
+    const hang = countedTool('hang', forever);
+    const agent = new Agent({
+      name: 'reused',
+      model: 'mock/m',
+      instructions: 'Go.',
+      tools: [hang.tool],
+    });
+    const first = processOn([callTools([{ id: 'h', name: 'hang', arguments: {} }])]);
+    first.cog.run(agent, { input: 'Go', threadId: 'reuse', runId: 'job:9' }).catch(() => undefined);
+    await hang.started;
+    await first.cog.close();
+
+    const second = processOn([answer('first job done')]);
+    const { resumed } = await second.cog.recoverRuns({ agents: [agent] });
+    await resumed[0].handle.result;
+    await second.cog.close();
+
+    const third = processOn([answer('second job done')]);
+    await third.cog.run(agent, { input: 'Go again', threadId: 'reuse', runId: 'job:9' });
+    await third.cog.close();
+
+    const fourth = processOn([answer('read')]);
+    await fourth.cog.run(agent, { input: 'What happened?', threadId: 'reuse', durable: false });
+    const said = fourth.requests[0].messages
+      .filter((message) => message.role === 'assistant')
+      .map((message) => message.content);
+    expect(said).toEqual(expect.arrayContaining(['first job done', 'second job done']));
+    await fourth.cog.close();
+  });
+
+  it('keeps the fence of every run of a thread recovered at once', async () => {
+    const hang = countedTool('hang', forever);
+    const agent = new Agent({
+      name: 'pair',
+      model: 'mock/m',
+      instructions: 'Go.',
+      tools: [hang.tool],
+    });
+    const first = processOn([callTools([{ id: 'h', name: 'hang', arguments: {} }])]);
+    first.cog
+      .run(agent, { input: 'One', threadId: 'pair', runId: 'pair:1' })
+      .catch(() => undefined);
+    first.cog
+      .run(agent, { input: 'Two', threadId: 'pair', runId: 'pair:2' })
+      .catch(() => undefined);
+    await vi.waitFor(async () => expect(await first.cog.durableRuns()).toHaveLength(2));
+    await vi.waitFor(() => expect(hang.calls).toHaveBeenCalledTimes(2));
+    await first.cog.close();
+
+    const second = processOn([answer('done')]);
+    const handles = await Promise.all([
+      second.cog.recoverRun(agent, 'pair:1'),
+      second.cog.recoverRun(agent, 'pair:2'),
+    ]);
+    await Promise.all(handles.map((handle) => handle.result));
+    const thread = await (await second.cog.getMemory())!.getThread('pair');
+    const metadata = thread.success ? (thread.data?.metadata ?? {}) : {};
+    expect(
+      Object.keys(metadata)
+        .filter((key) => key.startsWith('durableFence.'))
+        .sort()
+    ).toEqual(['durableFence.pair:1', 'durableFence.pair:2']);
+    await second.cog.close();
+  });
+});
+
 /** The durable record of the one run kept for `threadId`, read from the store on the memory */
 async function loadRecord(cog: Cogitator, threadId: string): Promise<DurableRunRecord | null> {
   const [run] = await cog.durableRuns({ threadId });

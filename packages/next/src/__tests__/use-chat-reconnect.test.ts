@@ -367,4 +367,29 @@ describe('useCogitatorChat reconnect', () => {
     expect(onFinish).toHaveBeenCalledWith(expect.objectContaining({ content: 'Hello' }));
     expect(hook.result.current.error).toBeNull();
   });
+
+  it.each(['interrupt', 'rollback'] as const)(
+    'cancels the run it handed over when the request that took over with %s is refused',
+    async (multitaskStrategy) => {
+      const calls = installFetch((call, index) => {
+        if (index === 0) firstHalf(call);
+        if (index === 1) return errorAnswer(403, 'THREAD_FORBIDDEN', 'Forbidden');
+        return undefined;
+      });
+      const hook = setup({ multitaskStrategy });
+
+      const first = hook.result.current.send('one');
+      await vi.waitFor(() => expect(hook.result.current.messages.at(-1)?.content).toBe('Hel'));
+      await hook.result.current.send('two');
+      await first;
+      await hook.flush();
+
+      expect(calls.map((call) => [call.method, call.url])).toEqual([
+        ['POST', '/api/chat'],
+        ['POST', '/api/chat'],
+        ['DELETE', '/api/chat?streamId=stream_abc'],
+      ]);
+      expect(hook.result.current.error?.message).toContain('Forbidden');
+    }
+  );
 });

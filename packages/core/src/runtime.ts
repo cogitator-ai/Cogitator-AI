@@ -314,7 +314,7 @@ import { InMemoryRunCheckpointStore, ThreadRunCheckpointStore } from './cogitato
 import { InMemoryDurableRunStore, ThreadDurableRunStore } from './cogitator/durable-stores';
 import {
   DURABLE_FENCE,
-  DURABLE_FENCES_KEY,
+  DURABLE_FENCE_KEY_PREFIX,
   durableFencesOf,
   type DurableFence,
 } from '@cogitator-ai/memory';
@@ -2358,7 +2358,7 @@ export class Cogitator implements ToolInvoker {
             if (!abortController.signal.aborted) abortController.abort(error);
           },
         });
-        await keeper.begin();
+        await keeper.begin(await this.fencedEpoch(threadId, runId));
         runMemory.epoch(keeper.epoch);
         const recovered = resumeFrom?.recovered;
         if (recovered) {
@@ -6115,6 +6115,15 @@ export class Cogitator implements ToolInvoker {
     return lease.instance;
   }
 
+  /** The last lease epoch the thread of run `runId` fenced, 0 for none */
+  private async fencedEpoch(threadId: string, runId: string): Promise<number> {
+    const memory = this.state.memoryAdapter;
+    if (!memory) return 0;
+    const thread = await memory.getThread(threadId);
+    if (!thread.success || !thread.data) return 0;
+    return durableFencesOf(thread.data.metadata)[runId]?.epoch ?? 0;
+  }
+
   /**
    * Notes in the thread of a durable run this runtime takes over that its lease epoch `epoch`
    * began: an entry of an older epoch that lands after it (a write of the former holder that
@@ -6149,7 +6158,7 @@ export class Cogitator implements ToolInvoker {
       ...(added.data.seq !== undefined && { seq: added.data.seq }),
     };
     const updated = await memory.updateThread(run.threadId, {
-      [DURABLE_FENCES_KEY]: { ...durableFencesOf(thread.data.metadata), [run.runId]: fence },
+      [DURABLE_FENCE_KEY_PREFIX + run.runId]: fence,
     });
     if (!updated.success) {
       throw new CogitatorError({
@@ -6202,6 +6211,7 @@ export class Cogitator implements ToolInvoker {
       const leaseMs = this.durableConfig()?.leaseMs ?? DEFAULT_DURABLE_LEASE_MS;
       const taken = await store().acquire(found, this.durableHolder, leaseMs, {
         ...(replacing !== undefined && { replacing }),
+        above: await this.fencedEpoch(found.threadId, runId),
       });
       if (taken === false) throw leased(lease?.expiresAt);
       held = found;

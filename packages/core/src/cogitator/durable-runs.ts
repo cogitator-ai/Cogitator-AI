@@ -125,10 +125,15 @@ export class DurableRunKeeper {
   /** The epoch of the lease this process holds, see `DurableRunLease.epoch` */
   epoch = 0;
 
-  /** Takes the run, or fails with `RUN_LEASED` when another process holds it */
-  async begin(): Promise<void> {
+  /**
+   * Takes the run, or fails with `RUN_LEASED` when another process holds it: its epoch above
+   * `above`, the last one its thread fenced
+   */
+  async begin(above = 0): Promise<void> {
     const taken = await this.faultless(() =>
-      this.retried(() => this.store.acquire(this.owner, this.holder, this.options.leaseMs))
+      this.retried(() =>
+        this.store.acquire(this.owner, this.holder, this.options.leaseMs, { above })
+      )
     );
     if (taken === false) throw leased(this.owner.runId);
     this.epoch = taken;

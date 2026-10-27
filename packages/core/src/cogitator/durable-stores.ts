@@ -71,8 +71,13 @@ function mayTake(
 }
 
 /** The epoch a lease taken by `holder` gets: the live one's when its instance renews it, else one more than `last` */
-function nextEpoch(live: HeldLease | undefined, holder: DurableRunHolder, last: number): number {
-  return live?.instance === holder.instance ? live.epoch : last + 1;
+function nextEpoch(
+  live: HeldLease | undefined,
+  holder: DurableRunHolder,
+  last: number,
+  above = 0
+): number {
+  return live?.instance === holder.instance ? live.epoch : Math.max(last, above) + 1;
 }
 
 function isHeldBy(lease: HeldLease | undefined, holder: DurableRunHolder): boolean {
@@ -106,12 +111,12 @@ export class InMemoryDurableRunStore implements DurableRunStore {
     ref: DurableRunRef,
     holder: DurableRunHolder,
     ttlMs: number,
-    options: { replacing?: string } = {}
+    options: { replacing?: string; above?: number } = {}
   ): Promise<number | false> {
     const ttl = positiveMs(ttlMs);
     const live = this.liveLease(ref.runId);
     if (!mayTake(live, holder, options.replacing)) return false;
-    const epoch = nextEpoch(live, holder, this.epochs.get(ref.runId) ?? 0);
+    const epoch = nextEpoch(live, holder, this.epochs.get(ref.runId) ?? 0, options.above);
     this.epochs.set(ref.runId, epoch);
     this.leases.set(ref.runId, { ...holder, expiresAt: this.now() + ttl, epoch });
     return epoch;
@@ -287,7 +292,7 @@ export class ThreadDurableRunStore implements DurableRunStore {
     ref: DurableRunRef,
     holder: DurableRunHolder,
     ttlMs: number,
-    options: { replacing?: string } = {}
+    options: { replacing?: string; above?: number } = {}
   ): Promise<number | false> {
     const ttl = positiveMs(ttlMs);
     let epoch = 0;
@@ -297,7 +302,7 @@ export class ThreadDurableRunStore implements DurableRunStore {
         const entry = entries.get(ref.runId) ?? {};
         const live = this.live(entry.lease);
         if (!mayTake(live, holder, options.replacing)) return false;
-        epoch = nextEpoch(live, holder, entry.epoch ?? entry.lease?.epoch ?? 0);
+        epoch = nextEpoch(live, holder, entry.epoch ?? entry.lease?.epoch ?? 0, options.above);
         entries.set(ref.runId, {
           ...entry,
           epoch,
@@ -518,7 +523,8 @@ local epoch
 if held == ARGV[1] then
   epoch = tonumber(redis.call('GET', KEYS[2]) or '0')
 else
-  epoch = redis.call('INCR', KEYS[2])
+  epoch = math.max(tonumber(redis.call('GET', KEYS[2]) or '0'), tonumber(ARGV[6])) + 1
+  redis.call('SET', KEYS[2], epoch)
 end
 redis.call('SET', KEYS[1], ARGV[1] .. '|' .. ARGV[2], 'PX', ARGV[3])
 if tonumber(ARGV[5]) > 0 then redis.call('EXPIRE', KEYS[2], ARGV[5]) end
@@ -617,7 +623,7 @@ export class RedisDurableRunStore implements DurableRunStore {
     ref: DurableRunRef,
     holder: DurableRunHolder,
     ttlMs: number,
-    options: { replacing?: string } = {}
+    options: { replacing?: string; above?: number } = {}
   ): Promise<number | false> {
     const epoch = Number(
       await this.client.eval(
@@ -629,7 +635,8 @@ export class RedisDurableRunStore implements DurableRunStore {
         holder.owner,
         positiveMs(ttlMs),
         options.replacing ?? '',
-        this.ttl
+        this.ttl,
+        options.above ?? 0
       )
     );
     return epoch > 0 ? epoch : false;

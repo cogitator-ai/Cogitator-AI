@@ -791,8 +791,12 @@ const strategies: Record<CompactionStrategy, StrategyFn> = {
 /** The event kind of the entry that marks a new lease epoch of a durable run in its thread */
 export const DURABLE_FENCE = 'durable_fence';
 
-/** The thread metadata key that lists the newest lease epoch of each durable run taken over */
-export const DURABLE_FENCES_KEY = 'durableFences';
+/**
+ * The prefix of the thread metadata keys that keep the newest lease epoch of each durable run
+ * taken over, one key per run (`durableFence.<runId>`), so two runs fenced at once never write
+ * over each other
+ */
+export const DURABLE_FENCE_KEY_PREFIX = 'durableFence.';
 
 /** Where a lease epoch of a durable run began in its thread: its fence entry's place */
 export interface DurableFence {
@@ -803,14 +807,14 @@ export interface DurableFence {
   at: string;
 }
 
-/** The fences a thread's metadata keeps (`durableFences`), by run id */
+/** The fences a thread's metadata keeps (`durableFence.<runId>`), by run id */
 export function durableFencesOf(
   metadata: Readonly<Record<string, unknown>> | undefined
 ): Record<string, DurableFence> {
-  const kept = metadata?.[DURABLE_FENCES_KEY];
-  if (typeof kept !== 'object' || kept === null || Array.isArray(kept)) return {};
   const fences: Record<string, DurableFence> = {};
-  for (const [runId, value] of Object.entries(kept as Record<string, unknown>)) {
+  for (const [key, value] of Object.entries(metadata ?? {})) {
+    if (!key.startsWith(DURABLE_FENCE_KEY_PREFIX)) continue;
+    const runId = key.slice(DURABLE_FENCE_KEY_PREFIX.length);
     if (typeof value !== 'object' || value === null) continue;
     const epoch: unknown = Reflect.get(value, 'epoch');
     const seq: unknown = Reflect.get(value, 'seq');
