@@ -448,6 +448,18 @@ describe('experimental_TriggerManager', () => {
           )
         ).status
       ).toBe(401);
+      await manager.setEnabled('hook.webhook', false);
+      expect(
+        (
+          await manager.handle(
+            'hook.webhook',
+            'webhook',
+            request(body, { 'x-signature': 'sha256=00' })
+          )
+        ).status
+      ).toBe(401);
+      expect((await manager.handle('hook.webhook', 'webhook', signed('0'))).status).toBe(409);
+      await manager.setEnabled('hook.webhook', true);
       expect((await manager.handle('hook.webhook', 'webhook', signed('1'))).status).toBe(202);
       const limited = await manager.handle('hook.webhook', 'webhook', signed('2'));
       expect(limited.status).toBe(429);

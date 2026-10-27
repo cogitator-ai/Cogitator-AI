@@ -672,12 +672,6 @@ export class experimental_TriggerManager {
       };
     }
     const state = await this.state(routine.id, triggerId);
-    if (!this.enabled(routine, spec, state)) {
-      return {
-        status: 409,
-        body: { error: { code: 'TRIGGER_DISABLED', message: `Trigger ${id} is paused` } },
-      };
-    }
     const target = { triggerId: id, routineId: routine.id };
     let outcome: SourceOutcome;
     switch (spec.kind) {
@@ -700,6 +694,12 @@ export class experimental_TriggerManager {
         return { status: 404, body: { error: { code: 'NOT_FOUND', message: `No trigger ${id}` } } };
     }
     if (outcome.kind === 'answer') return outcome.response;
+    if (!this.enabled(routine, spec, state)) {
+      return {
+        status: 409,
+        body: { error: { code: 'TRIGGER_DISABLED', message: `Trigger ${id} is paused` } },
+      };
+    }
     const limited = this.rateLimited(id, spec);
     if (limited !== undefined) {
       return {
