@@ -22,7 +22,9 @@ import {
 } from '../plugins/install/installer';
 import { experimental_PluginHost } from '../plugins/host';
 import { experimental_memorySecretStore } from '../plugins/secrets';
-import { marketplaceSourceOf, parseMarketplace } from '../plugins/install/marketplace';
+import { checkGitUrl, marketplaceSourceOf, parseMarketplace } from '../plugins/install/marketplace';
+import { npmNameProblem } from '../plugins/install/sources';
+import { cmdArgument, runTool } from '../plugins/install/run';
 import { pluginDataDir, readInstalledPlugins } from '../plugins/store';
 import { download, isLoopbackHost, isPrivateHost } from '../plugins/install/fetch';
 
@@ -784,6 +786,48 @@ describe('plugin installer', () => {
       (record) => record.id === 'lib@ranged'
     );
     expect(lib?.version).toBe('1.0.0');
+  });
+
+  it('lets nothing but an npm name and a version or tag reach the npm command line', async () => {
+    for (const name of ['foo', '@scope/foo', 'foo.bar_baz-1', 'Legacy~Name']) {
+      expect([name, npmNameProblem(name)]).toEqual([name, undefined]);
+    }
+    for (const name of ['foo & whoami & rem', '.hidden', '_under', '@scope', 'a/b', 'x"y', '']) {
+      expect(npmNameProblem(name)).toBeDefined();
+    }
+    const tools = installer();
+    await expect(tools.install('npm:foo&whoami&rem')).rejects.toThrow(/the package name/);
+    await expect(tools.install('npm:foo@1.0.0 & whoami')).rejects.toThrow(
+      /neither a semver range nor a dist-tag/
+    );
+    expect(questions).toEqual([]);
+  });
+
+  it('quotes an argument of a .cmd tool so cmd.exe reads none of it as syntax', () => {
+    expect(cmdArgument('foo')).toBe('^^^"foo^^^"');
+    expect(cmdArgument('a & b')).toBe('^^^"a^^^ ^^^&^^^ b^^^"');
+    expect(cmdArgument('say "hi"')).toBe('^^^"say^^^ \\^^^"hi\\^^^"^^^"');
+    expect(cmdArgument('C:\\path\\')).toBe('^^^"C:\\path\\\\^^^"');
+    for (const arg of ['x | y', 'x > y', '%PATH%', 'x ^ y', '(x)']) {
+      expect(cmdArgument(arg).replace(/\^./g, '')).not.toMatch(/[|>%^()&"]/);
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'kills what an install command started when it times out',
+    async () => {
+      const started = Date.now();
+      await expect(
+        runTool('/bin/sh', ['-c', 'sleep 3; echo done'], { timeoutMs: 50 })
+      ).rejects.toThrow(/timed out/);
+      expect(Date.now() - started).toBeLessThan(1500);
+    }
+  );
+
+  it('refuses a git URL that git would read as an option', async () => {
+    const tools = installer();
+    await expect(tools.install('git+-oProxyCommand=touch@x:y')).rejects.toThrow();
+    expect(() => checkGitUrl('-oProxyCommand=touch@x:y')).toThrow(/read as an option of git/);
   });
 
   it('gives every plugin id a data folder of its own', () => {

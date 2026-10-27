@@ -32,7 +32,77 @@ function installFailure(message: string): Error {
   return new CogitatorError({ message, code: ErrorCode.PLUGIN_INSTALL_FAILED });
 }
 
-/** Runs `file` with `args`, failing only when it cannot start or is killed by the timeout */
+/** The characters `cmd.exe` reads as its own syntax, escaped with `^` */
+const CMD_META = new Set([
+  '(',
+  ')',
+  '[',
+  ']',
+  '%',
+  '!',
+  '^',
+  '"',
+  '`',
+  '<',
+  '>',
+  '&',
+  '|',
+  ';',
+  ',',
+  ' ',
+  '*',
+  '?',
+]);
+
+function caretEscaped(text: string): string {
+  let out = '';
+  for (const char of text) out += CMD_META.has(char) ? `^${char}` : char;
+  return out;
+}
+
+/**
+ * `arg` as one argument of a `cmd.exe /c` line that runs a `.cmd` shim: quoted the way the C
+ * runtime splits arguments (backslashes before a quote doubled), then every `cmd.exe` meta
+ * character escaped twice, once for `cmd.exe` and once for the batch file it starts. Nothing in
+ * `arg` can end the argument or start another command
+ */
+export function cmdArgument(arg: string): string {
+  let quoted = '"';
+  let slashes = 0;
+  for (const char of arg) {
+    if (char === '\\') {
+      slashes++;
+      continue;
+    }
+    quoted += char === '"' ? `${'\\'.repeat(slashes * 2 + 1)}"` : `${'\\'.repeat(slashes)}${char}`;
+    slashes = 0;
+  }
+  quoted += `${'\\'.repeat(slashes * 2)}"`;
+  return caretEscaped(caretEscaped(quoted));
+}
+
+/**
+ * How to start `file` with `args`: as it is, or, for a `.cmd` or `.bat` file on Windows (which
+ * only `cmd.exe` runs), through `cmd.exe` with every argument escaped by {@link cmdArgument},
+ * never through a shell that would read the arguments as commands
+ */
+function launchOf(
+  file: string,
+  args: readonly string[],
+  shell: boolean
+): { file: string; args: string[]; verbatim: boolean; shell: boolean } {
+  if (shell || process.platform !== 'win32' || !/\.(cmd|bat)$/i.test(file)) {
+    return { file, args: [...args], verbatim: false, shell };
+  }
+  const line = [caretEscaped(file), ...args.map(cmdArgument)].join(' ');
+  return { file: 'cmd.exe', args: ['/d', '/s', '/c', `"${line}"`], verbatim: true, shell: false };
+}
+
+/**
+ * Runs `file` with `args`, failing only when it cannot start or is killed by the timeout or the
+ * signal. A kill reaches what the command started too: its process group on POSIX, its process
+ * tree on Windows
+ */
 export function runTool(
   file: string,
   args: readonly string[],
@@ -40,7 +110,8 @@ export function runTool(
 ): Promise<ToolResult> {
   return new Promise((resolve, reject) => {
     const windows = process.platform === 'win32';
-    const child = spawn(file, [...args], {
+    const launch = launchOf(file, args, options.shell === true);
+    const child = spawn(launch.file, launch.args, {
       ...(options.cwd !== undefined && { cwd: options.cwd }),
       env: {
         ...process.env,
@@ -52,20 +123,21 @@ export function runTool(
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      shell: options.shell === true || (windows && /\.(cmd|bat)$/i.test(file)),
+      windowsVerbatimArguments: launch.verbatim,
+      shell: launch.shell,
+      detached: !windows,
     });
     let stdout = '';
     let stderr = '';
     let killed = false;
     const timeoutMs = options.timeoutMs ?? 120_000;
-    const timer = setTimeout(() => {
+    const kill = () => {
+      if (killed) return;
       killed = true;
-      child.kill('SIGKILL');
-    }, timeoutMs);
-    const onAbort = () => {
-      killed = true;
-      child.kill('SIGKILL');
+      killTree(child.pid, () => child.kill('SIGKILL'));
     };
+    const timer = setTimeout(kill, timeoutMs);
+    const onAbort = kill;
     options.signal?.addEventListener('abort', onAbort, { once: true });
     child.stdout.on('data', (chunk: Buffer) => {
       if (stdout.length < MAX_OUTPUT) stdout += chunk.toString('utf8');
@@ -100,6 +172,28 @@ export function runTool(
       resolve({ code, stdout, stderr });
     });
   });
+}
+
+/**
+ * Kills the process `pid` and what it started: its process group on POSIX (it was spawned
+ * detached, so it leads one), `taskkill /T` on Windows. `fallback` kills the process alone when
+ * that fails
+ */
+function killTree(pid: number | undefined, fallback: () => void): void {
+  if (pid === undefined) return fallback();
+  if (process.platform === 'win32') {
+    const taskkill = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    taskkill.on('error', fallback);
+    return;
+  }
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    fallback();
+  }
 }
 
 /** Runs `file` and throws `PLUGIN_INSTALL_FAILED` with its error output unless it exits 0 */

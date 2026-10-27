@@ -19,7 +19,7 @@ import {
   type PluginSource,
 } from '@cogitator-ai/types';
 import { isInside, withoutTrailingSlashes } from '../manifest';
-import { compareVersions, maxSatisfying, parseVersion, satisfies } from '../semver';
+import { compareVersions, isValidRange, maxSatisfying, parseVersion, satisfies } from '../semver';
 import { download, isLoopbackHost } from './fetch';
 import { checkGitUrl, cloneAt, gitUrlOf } from './marketplace';
 import { mustRun, npmCommand, runTool } from './run';
@@ -222,6 +222,28 @@ function matchesRegistry(
   return false;
 }
 
+/** A dist-tag such as `latest` or `next`: what npm accepts besides a version range */
+const NPM_TAG = /^[A-Za-z][A-Za-z0-9._-]{0,99}$/;
+
+/** A package name part of npm's grammar: URL-safe, not starting with `.` or `_` */
+const NPM_NAME_PART = /^[A-Za-z0-9~-][A-Za-z0-9._~-]*$/;
+
+/**
+ * Why `name` is not an npm package name (`name` or `@scope/name`, URL-safe characters, at most
+ * 214 of them), undefined when it is one. Checked before npm runs, so nothing in a marketplace's
+ * package field reaches a command line but a name
+ */
+export function npmNameProblem(name: string): string | undefined {
+  if (name.length === 0 || name.length > 214) return 'must hold 1 to 214 characters';
+  const scoped = name.startsWith('@');
+  const parts = (scoped ? name.slice(1) : name).split('/');
+  if (parts.length !== (scoped ? 2 : 1)) return 'must be name or @scope/name';
+  if (!parts.every((part) => NPM_NAME_PART.test(part))) {
+    return 'may only hold letters, digits and - . _ ~, not starting with . or _';
+  }
+  return undefined;
+}
+
 /** The registry npm uses when none is given */
 async function defaultRegistry(): Promise<string | undefined> {
   const result = await runTool(npmCommand(), ['config', 'get', 'registry']).catch(() => undefined);
@@ -290,6 +312,11 @@ async function fetchNpm(
   }
   const { name, version: appended } = splitPackage(value);
   const wanted = appended ?? source.version ?? 'latest';
+  const nameProblem = npmNameProblem(name);
+  if (nameProblem) throw failed(`npm source ${value}: the package name ${nameProblem}`);
+  if (!isValidRange(wanted) && !NPM_TAG.test(wanted)) {
+    throw failed(`npm source ${value}: "${wanted}" is neither a semver range nor a dist-tag`);
+  }
   const viewed = await mustRun(
     npmCommand(),
     ['view', `${name}@${wanted}`, 'name', 'version', 'dist', '--json', ...registryArgs],

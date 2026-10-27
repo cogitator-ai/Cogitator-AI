@@ -342,6 +342,12 @@ export function gitUrlOf(
 
 /** Checks a git URL the way installs allow it: https, ssh, a local `file://`, http only to this machine */
 export function checkGitUrl(url: string): void {
+  if (url.startsWith('-')) {
+    throw new CogitatorError({
+      message: `${url} is not a git URL: it would be read as an option of git`,
+      code: ErrorCode.PLUGIN_INSTALL_FAILED,
+    });
+  }
   if (/^[^\s@/]+@[^\s:]+:/.test(url)) return;
   let parsed: URL;
   try {
