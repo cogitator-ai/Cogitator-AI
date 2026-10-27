@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { MockLLMBackend, createMockRunResult } from '@cogitator-ai/test-utils';
+import { CogitatorError, ErrorCode } from '@cogitator-ai/types';
 import type {
   ResumeOptions,
   RoutineStore,
@@ -1106,6 +1107,55 @@ describe('fourth review', () => {
       (cog.experimental_triggers as unknown as { durable: boolean }).durable;
     expect(durableOf(off)).toBe(false);
     expect(durableOf(on)).toBe(true);
+  });
+});
+
+describe('runs handed over', () => {
+  it.each([
+    ['suspended', ErrorCode.RUN_SUSPENDED],
+    ['held by another process', ErrorCode.RUN_LEASED],
+  ])('keep the record of a run %s for recovery and write no failure', async (_name, code) => {
+    const store = new experimental_InMemoryRoutineStore();
+    const { runtime: fake, started } = fakeRuntime({ durable: true });
+    const manager = new experimental_TriggerManager(
+      {
+        agents: { worker: worker() },
+        store,
+        routines: [routine({ triggers: [{ kind: 'api', token: 't' }] })],
+      },
+      fake
+    );
+    const fired = await manager.fire('digest.api');
+    started[0].settle.fail(new CogitatorError({ message: 'handed over', code }));
+    await manager.idle();
+    expect((await store.listActiveRuns()).map((run) => run.runId)).toEqual([fired.runId]);
+    expect((await manager.inbox.list()).filter((item) => item.kind === 'failure')).toEqual([]);
+    expect((await manager.history()).map((run) => run.status)).not.toContain('failed');
+  });
+
+  it('keep the record of a suspended task for recovery, with no failure and no retry', async () => {
+    const store = new experimental_InMemoryRoutineStore();
+    const { runtime: fake, started } = fakeRuntime({ durable: true });
+    const manager = new experimental_TriggerManager(
+      { agents: { worker: worker() }, store, pollInterval: 20 },
+      fake
+    );
+    await manager.start();
+    const entry = await manager.scheduler.add({
+      at: Date.now() - 1,
+      trigger: { agent: 'worker' },
+      metadata: { description: 'Remind', source: 'agent' },
+    });
+    await vi.waitFor(() => expect(started).toHaveLength(1));
+    started[0].settle.fail(
+      new CogitatorError({ message: 'store down', code: ErrorCode.RUN_SUSPENDED })
+    );
+    await vi.waitFor(async () => expect((await manager.scheduler.get(entry.id))?.fired).toBe(true));
+    await manager.idle();
+    expect(started).toHaveLength(1);
+    expect(await store.listActiveRuns()).toHaveLength(1);
+    expect(await manager.inbox.list()).toEqual([]);
+    await manager.stop();
   });
 });
 

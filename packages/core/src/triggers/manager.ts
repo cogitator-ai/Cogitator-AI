@@ -191,6 +191,19 @@ function isRunLeased(error: unknown): boolean {
   return CogitatorError.isCogitatorError(error) && error.code === ErrorCode.RUN_LEASED;
 }
 
+function isRunSuspended(error: unknown): boolean {
+  return CogitatorError.isCogitatorError(error) && error.code === ErrorCode.RUN_SUSPENDED;
+}
+
+/**
+ * Whether a run ended without ending: another process holds it (`RUN_LEASED`), or it stopped to
+ * be taken up later with its checkpoint kept (`RUN_SUSPENDED`, its durable store was down). Its
+ * record of a run going on stays for `recover`, and it writes no failure
+ */
+function handedOver(outcome: Outcome): boolean {
+  return outcome.kind === 'error' && (isRunLeased(outcome.error) || isRunSuspended(outcome.error));
+}
+
 function summaryOf(text: string): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   return flat.length <= MAX_SUMMARY ? flat : `${flat.slice(0, MAX_SUMMARY - 3)}...`;
@@ -1016,7 +1029,7 @@ export class experimental_TriggerManager {
     const followed = await this.followTask(task, handle.result, { reportFailure: !retried });
     if (!oneShot) return;
     const outcome = await followed.outcome;
-    if (outcome.kind === 'error' && !isRunLeased(outcome.error)) {
+    if (outcome.kind === 'error' && !handedOver(outcome)) {
       await this.store.releaseKey(`run:${runId}`);
       throw outcome.error;
     }
@@ -1035,19 +1048,21 @@ export class experimental_TriggerManager {
     if (this.durable) await this.saveActive(task);
     const lease = this.runtime.plugins?.lease();
     const outcome = settle(result);
+    let ended: Outcome | undefined;
     this.track(
       outcome
-        .then((settled) =>
-          settled.kind === 'error' && options.reportFailure === false
+        .then((settled) => {
+          ended = settled;
+          return settled.kind === 'error' && options.reportFailure === false
             ? undefined
-            : this.finishTask(task, settled)
-        )
+            : this.finishTask(task, settled);
+        })
         .finally(async () => {
           lease?.release();
           if (this.runningTasks.get(task.triggerId) === task.runId) {
             this.runningTasks.delete(task.triggerId);
           }
-          await this.dropActive(task.runId);
+          if (!(ended && handedOver(ended))) await this.dropActive(task.runId);
         })
     );
     return { outcome };
@@ -1064,7 +1079,7 @@ export class experimental_TriggerManager {
       ...(task.userId !== undefined && { userId: task.userId }),
     };
     if (outcome.kind === 'error') {
-      if (isRunLeased(outcome.error)) return;
+      if (handedOver(outcome)) return;
       await this.addToInbox({
         ...common,
         kind: 'failure',
@@ -1418,14 +1433,18 @@ export class experimental_TriggerManager {
         ...(routine.userId !== undefined && { userId: routine.userId }),
       });
     }
+    let ended: Outcome | undefined;
     this.track(
       finished
-        .then((outcome) => this.finish(registered, event, run, record, outcome))
+        .then((outcome) => {
+          ended = outcome;
+          return this.finish(registered, event, run, record, outcome);
+        })
         .finally(async () => {
           lease?.release();
           this.replaced.delete(run.runId);
           if (live.runs.get(run.runId) === run) live.runs.delete(run.runId);
-          if (kept) await this.dropActive(run.runId);
+          if (kept && !(ended && handedOver(ended))) await this.dropActive(run.runId);
           this.next(registered);
         })
     );
@@ -1471,6 +1490,14 @@ export class experimental_TriggerManager {
         status: 'skipped',
         reason: 'another process holds the run',
         finishedAt,
+      });
+      return;
+    }
+    if (outcome.kind === 'error' && isRunSuspended(outcome.error)) {
+      this.report({
+        type: 'error',
+        error: `Run ${run.runId} was suspended, it goes on when a runtime recovers it: ${errorText(outcome.error)}`,
+        routineId: routine.id,
       });
       return;
     }
@@ -1860,7 +1887,11 @@ export class experimental_TriggerManager {
           type: 'error',
           error: `Run ${runId} of routine ${kept.routineId ?? '?'} came back, but the routine is gone`,
         });
-        this.track(settle(handle.result).finally(() => this.dropActive(runId)));
+        this.track(
+          settle(handle.result).then((outcome) =>
+            handedOver(outcome) ? undefined : this.dropActive(runId)
+          )
+        );
         continue;
       }
       const event = experimental_createTriggerEvent({
