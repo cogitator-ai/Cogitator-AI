@@ -248,7 +248,11 @@ export class StudioHost {
   private readonly als = new AsyncLocalStorage<RunContext>();
   private readonly controllers = new Map<string, AbortController>();
   private readonly approvals = new Map<string, PendingApproval>();
-  private readonly seeded = new Set<string>();
+  /**
+   * The replay of each thread into the studio's memory, once per host: a request asked for while
+   * it runs waits for it, so no run sees part of a thread
+   */
+  private readonly seeded = new Map<string, Promise<void>>();
   /** The thread of each chat run going on, which a forced rewind of the thread stops first. */
   private readonly runThreads = new Map<string, string>();
   private readonly workflowRunIds = new Map<string, string>();
@@ -388,7 +392,7 @@ export class StudioHost {
       newThreadId: request.newThreadId,
     });
     const threadId = result.thread.id;
-    this.seeded.add(threadId);
+    this.seeded.set(threadId, Promise.resolve());
     return {
       threadId,
       snapshotsCopied: [...result.snapshotsCopied],
@@ -582,14 +586,24 @@ export class StudioHost {
     return { runId, done };
   }
 
-  /** Replays a thread's earlier messages into the studio's own memory, once per host. */
   /**
    * Brings a thread of the studio's own memory back after a restart: its active branch entry by
    * entry, with the ids and metadata it had (file checkpoints included), or for a thread kept
    * before the studio kept branches, its finished turns
    */
-  private async seed(threadId: string, agent: Agent, seed: ThreadSeed): Promise<void> {
-    if (this.options.memory !== 'studio' || this.seeded.has(threadId)) return;
+  private seed(threadId: string, agent: Agent, seed: ThreadSeed): Promise<void> {
+    if (this.options.memory !== 'studio') return Promise.resolve();
+    const known = this.seeded.get(threadId);
+    if (known) return known;
+    const replayed = this.replay(threadId, agent, seed);
+    this.seeded.set(threadId, replayed);
+    replayed.catch(() => {
+      if (this.seeded.get(threadId) === replayed) this.seeded.delete(threadId);
+    });
+    return replayed;
+  }
+
+  private async replay(threadId: string, agent: Agent, seed: ThreadSeed): Promise<void> {
     for (const ancestor of seed.lineage ?? []) {
       const owner = this.project.agents.get(ancestor.agent) ?? agent;
       await this.seed(ancestor.threadId, owner, {
@@ -597,7 +611,6 @@ export class StudioHost {
         ...(ancestor.replay && { replay: ancestor.replay }),
       });
     }
-    this.seeded.add(threadId);
     const { history, replay } = seed;
     if (history.length === 0 && !replay?.entries.length) return;
     const memory = await this.project.cogitator.getMemory();
