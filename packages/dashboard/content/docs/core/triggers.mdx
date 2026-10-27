@@ -75,7 +75,7 @@ app.use(router);
 app.listen(3000);
 ```
 
-Cron triggers need the `cron-parser` package (`pnpm add cron-parser`), an optional peer of the core loaded when the manager starts. The routine runs every weekday at 9 in Berlin, and on every call of its API trigger:
+Cron triggers need the `cron-parser` package (`pnpm add cron-parser`), an optional peer of the core loaded the first time a cron expression is read: routines without cron triggers and one-shot tasks run without it. The routine runs every weekday at 9 in Berlin, and on every call of its API trigger:
 
 ```bash
 curl -X POST http://localhost:3000/cogitator/triggers/digest.api/fire \
@@ -85,7 +85,7 @@ curl -X POST http://localhost:3000/cogitator/triggers/digest.api/fire \
 #      "triggerId":"digest.api","runId":"trg_digest.api.evt_...","threadId":"routine_digest_digest.api.evt_..."}
 ```
 
-`start()` is not called for you, since routines call real models. It loads the cron engine, makes sure each cron trigger has its entry in the schedules store, polls that store and continues the durable runs of routines a stopped process left. `cog.close()` stops the manager. The token the manager issued is kept as its SHA-256 in the routine store, which lives in memory here: use [a store that persists](#stores), or give the trigger a token of its own (`{ kind: 'api', token: { env: 'DIGEST_TOKEN' } }`).
+`start()` is not called for you, since routines call real models. It loads the cron engine when a routine has a cron trigger, makes sure each cron trigger has its entry in the schedules store, polls that store and continues the durable runs of routines a stopped process left. `cog.close()` stops the manager. The token the manager issued is kept as its SHA-256 in the routine store, which lives in memory here: use [a store that persists](#stores), or give the trigger a token of its own (`{ kind: 'api', token: { env: 'DIGEST_TOKEN' } }`).
 
 ## Routines
 
