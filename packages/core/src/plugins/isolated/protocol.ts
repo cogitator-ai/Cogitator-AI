@@ -36,7 +36,9 @@ export type WireRegistration =
   | { kind: 'hooks'; hooks: Record<string, unknown> }
   | { kind: 'mcp'; name: string; config: Record<string, unknown> }
   | { kind: 'llm'; provider: string; metadata: Record<string, unknown> }
-  | { kind: 'panel'; panel: Record<string, unknown>; methods: string[] };
+  | { kind: 'panel'; panel: Record<string, unknown>; methods: string[] }
+  | { kind: 'routine'; routine: Record<string, unknown> }
+  | { kind: 'trigger'; routineId: string; trigger: Record<string, unknown> };
 
 /** What the host asks of a plugin's own registrations */
 export type WireCallTarget =

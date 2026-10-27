@@ -13,11 +13,13 @@ import type {
   PluginDisposer,
   PluginPanelSpec,
   PluginToolSpec,
+  RoutineDefinition,
   RunMiddleware,
   SkillLoader,
   SubagentDefinition,
   Tool,
   ToolSchema,
+  TriggerSpec,
 } from '@cogitator-ai/types';
 import { assertToolName } from '../tool-name';
 import { toToolParameters } from '../tool-schema';
@@ -46,6 +48,35 @@ export interface PluginPanelEntry {
   handlers: Readonly<Record<string, (params: unknown) => unknown>>;
 }
 
+/** A routine a plugin registered, as the trigger manager takes it */
+export interface PluginRoutineEntry {
+  /** The plugin's id */
+  plugin: string;
+  /** The routine, named `plugin:id`, with the triggers `registerTrigger` added */
+  routine: RoutineDefinition;
+}
+
+/** A routine of one generation and the triggers registered for it later */
+export class PluginRoutine {
+  private merged?: RoutineDefinition;
+  readonly extra: TriggerSpec[] = [];
+
+  constructor(readonly routine: RoutineDefinition) {}
+
+  /** The routine with every trigger, the same object until a trigger comes or goes */
+  get full(): RoutineDefinition {
+    this.merged ??= {
+      ...this.routine,
+      triggers: [...(this.routine.triggers ?? []), ...this.extra],
+    };
+    return this.merged;
+  }
+
+  changed(): void {
+    this.merged = undefined;
+  }
+}
+
 /** Everything the live generations of the plugins add, in the order the plugins loaded */
 export interface PluginSnapshot {
   /** Changes whenever a plugin loads, unloads or a registration comes or goes */
@@ -61,6 +92,8 @@ export interface PluginSnapshot {
   /** The id of the plugin each provider of `backends` comes from */
   readonly backendOwners: ReadonlyMap<string, string>;
   readonly panels: readonly PluginPanelEntry[];
+  /** Routines for the trigger manager */
+  readonly routines: readonly PluginRoutineEntry[];
 }
 
 /**
@@ -85,6 +118,8 @@ export class Contributions {
   readonly middleware: RunMiddleware[] = [];
   readonly panels = new Map<string, PluginPanelEntry>();
   readonly mcpServers = new Set<string>();
+  /** By id with `plugin:` */
+  readonly routines = new Map<string, PluginRoutine>();
 }
 
 /** A failure of a disposer, kept to report */

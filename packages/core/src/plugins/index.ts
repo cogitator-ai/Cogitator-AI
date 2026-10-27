@@ -1,6 +1,12 @@
 export { experimental_definePlugin } from './define';
 export { experimental_PluginHost, type PluginHostOptions, type PluginReloadResult } from './host';
-export type { PluginHookSet, PluginLease, PluginPanelEntry, PluginSnapshot } from './contributions';
+export type {
+  PluginHookSet,
+  PluginLease,
+  PluginPanelEntry,
+  PluginRoutineEntry,
+  PluginSnapshot,
+} from './contributions';
 export {
   experimental_validatePlugin,
   readPluginLayout,

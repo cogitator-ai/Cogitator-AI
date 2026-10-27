@@ -67,6 +67,7 @@ import type {
   ToolInvoker,
   ChatRequest,
   RunMiddlewareContext,
+  RunNotification,
   ModelCallRequest,
   ModelStreamSink,
   RunMiddleware,
@@ -108,6 +109,7 @@ import { isLLMProvider } from './llm/providers';
 import { createLLMBackendFromPlugin, hasLLMPlugin } from './llm/plugin';
 import { experimental_PluginHost } from './plugins/host';
 import { corePlugin } from './plugins/core-plugin';
+import { experimental_TriggerManager, type TriggerNotifyScope } from './triggers/manager';
 import type { PluginHookSet, PluginLease, PluginSnapshot } from './plugins/contributions';
 import { withLLMRetry } from './llm/retry';
 import { ModelFallbackChain, type ModelCandidate } from './llm/model-fallback';
@@ -852,6 +854,8 @@ export class Cogitator implements ToolInvoker {
   public readonly tools: ToolRegistry = new ToolRegistry();
   /** The plugins of this runtime: the core's own, and those of `experimental_plugins` */
   private readonly pluginHost: experimental_PluginHost;
+  /** The routines and triggers of `experimental_triggers` */
+  private readonly triggerManager?: experimental_TriggerManager;
   /**
    * The hooks middleware of each hook set a plugin registered, per snapshot it runs in: its
    * `mcp_tool` hooks call the MCP servers of that snapshot
@@ -966,6 +970,63 @@ export class Cogitator implements ToolInvoker {
       this.commandFinder = new CommandFinder(commands, () => this.pluginHost.snapshot().commands);
       this.commandFiles = files;
     }
+    if (config.experimental_triggers) {
+      this.triggerManager = new experimental_TriggerManager(config.experimental_triggers, {
+        start: (agent, options) => this.start(agent, options),
+        resume: (agent, threadId, options) => this.resume(agent, threadId, options),
+        notify: (notification, scope) => this.notifyRoutine(notification, scope),
+        recoverRuns: async (filter, agentOf) => {
+          const recovered = await this.recoverRuns({
+            agents: (run) => agentOf(run.agentName, run.agentId),
+            filter: (run) => filter(run.runId),
+          });
+          return recovered.resumed.map(({ run, handle }) => ({ runId: run.runId, handle }));
+        },
+        plugins: {
+          routines: () => this.pluginHost.snapshot().routines,
+          lease: () => this.pluginHost.lease(),
+          onChange: (listener) => this.pluginHost.onChange(listener),
+        },
+        durable: Boolean(config.durable),
+      });
+    }
+  }
+
+  /**
+   * Experimental. The routines of `experimental_triggers` and what starts them: start it with
+   * `start()`, fire a trigger by hand, answer a trigger's HTTP request (the server adapters do),
+   * read the inbox. Undefined without `experimental_triggers`
+   */
+  get experimental_triggers(): experimental_TriggerManager | undefined {
+    return this.triggerManager;
+  }
+
+  /**
+   * Runs the `Notification` hooks and middleware for a routine's run that ended: the runtime's
+   * hooks, its middleware, the plugins' and the agent's, as the run itself had them
+   */
+  private async notifyRoutine(
+    notification: RunNotification,
+    scope: TriggerNotifyScope
+  ): Promise<void> {
+    const snapshot = this.pluginHost.snapshot();
+    const pipeline = new MiddlewarePipeline([
+      ...this.hooksMiddlewareLayers(snapshot),
+      ...(this.config.middleware ?? []),
+      ...snapshot.middleware,
+      ...(scope.agent.config.middleware ?? []),
+    ]);
+    const context: RunMiddlewareContext = {
+      runId: scope.runId,
+      agentId: scope.agent.id,
+      agentName: scope.agent.name,
+      iteration: 0,
+      signal: new AbortController().signal,
+      state: new Map(),
+      ...(scope.threadId !== undefined && { threadId: scope.threadId }),
+      ...(scope.userId !== undefined && { userId: scope.userId }),
+    };
+    await pipeline.onNotification(notification, context);
   }
 
   /**
@@ -5965,10 +6026,11 @@ export class Cogitator implements ToolInvoker {
       addContextToMessages(messages, options.context);
     }
 
-    await runMemory.saveUser(agent.id, {
-      role: 'user',
-      content: buildUserContent(options.input, options.images),
-    });
+    await runMemory.saveUser(
+      agent.id,
+      { role: 'user', content: buildUserContent(options.input, options.images) },
+      options.inputMetadata
+    );
     for (const text of added) {
       const note: Message = { role: 'system', content: text };
       messages.push(note);
@@ -8698,6 +8760,7 @@ export class Cogitator implements ToolInvoker {
    * ```
    */
   async close(): Promise<void> {
+    await this.triggerManager?.stop();
     LIVE_INSTANCES.delete(this.durableHolder.instance);
     await this.pluginHost.dispose();
     this.interruptSchemas.clear();

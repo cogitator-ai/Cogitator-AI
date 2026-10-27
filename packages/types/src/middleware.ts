@@ -185,11 +185,13 @@ export interface ModelSwitchDecision {
 }
 
 /**
- * Something a person should hear about: an approval the run asks for (`permission_prompt`), or a
- * question, plan or budget a paused run waits on (`agent_needs_input`)
+ * Something a person should hear about: an approval the run asks for (`permission_prompt`), a
+ * question, plan or budget a paused run waits on (`agent_needs_input`), or what a routine's run
+ * came to (`routine_result`, `routine_failed`, sent after the run with the trigger manager's inbox
+ * item)
  */
 export interface RunNotification {
-  readonly type: 'permission_prompt' | 'agent_needs_input';
+  readonly type: 'permission_prompt' | 'agent_needs_input' | 'routine_result' | 'routine_failed';
   readonly message: string;
   readonly title?: string;
 }
