@@ -8,7 +8,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   CogitatorError,
@@ -44,6 +44,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const cog of cogs.splice(0)) await cog.close();
   await workspace.dispose();
   rmSync(base, { recursive: true, force: true });
@@ -355,11 +356,13 @@ describe('file checkpoints', () => {
 
   it('refuses while a run goes on in the thread, and aborts it with force', async () => {
     const gate = deferred();
+    const waitStarted = deferred();
     const wait = tool({
       name: 'wait',
       description: 'Waits',
       parameters: z.object({}),
       execute: async () => {
+        waitStarted.resolve();
         await gate.promise;
         return 'waited';
       },
@@ -373,7 +376,7 @@ describe('file checkpoints', () => {
     const point = (await path(cog, 'busy')).at(-1)!;
     const running = cog.run(agent, { input: 'go', threadId: 'busy' });
     running.catch(() => undefined);
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await waitStarted.promise;
 
     const refused = await cog
       .rewind('busy', point.id, { agents: [agent] })
@@ -444,11 +447,15 @@ describe('file checkpoints', () => {
   });
 
   it('drops the durable run a stopped process left in the thread', async () => {
+    const started = deferred();
     const hang = tool({
       name: 'hang',
       description: 'Hangs',
       parameters: z.object({}),
-      execute: () => new Promise<string>(() => undefined),
+      execute: () => {
+        started.resolve();
+        return new Promise<string>(() => undefined);
+      },
     });
     const sqlite: CogitatorConfig['memory'] = {
       adapter: 'sqlite',
@@ -457,14 +464,14 @@ describe('file checkpoints', () => {
     const plan = { one: [], go: [{ id: 'h', name: 'hang', arguments: {} }] };
     const first = runtime(
       plan,
-      { checkpoints: true, durable: { owner: 'a', leaseMs: 200 } },
+      { checkpoints: true, durable: { owner: 'a', leaseMs: 60_000 } },
       sqlite
     );
     const agent = coder({ tools: [hang] });
     await first.cog.run(agent, { input: 'one', threadId: 'crash' });
     const point = (await path(first.cog, 'crash')).at(-1)!;
     first.cog.run(agent, { input: 'go', threadId: 'crash' }).catch(() => undefined);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await started.promise;
     await first.cog.close();
 
     const second = runtime(plan, { checkpoints: true, durable: { owner: 'b' } }, sqlite);
@@ -472,7 +479,8 @@ describe('file checkpoints', () => {
       .rewind('crash', point.id, { agents: [agent] })
       .catch((error: unknown) => error);
     expect((held as CogitatorError).code).toBe(ErrorCode.THREAD_BUSY);
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    const past = Date.now() + 120_000;
+    vi.spyOn(Date, 'now').mockReturnValue(past);
     const kept = await second.cog.durableRuns();
     expect(kept).toHaveLength(1);
     const report = await second.cog.rewind('crash', point.id, { agents: [agent], files: true });

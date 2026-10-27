@@ -80,13 +80,23 @@ function runtime(
   return { cog, requests };
 }
 
-/** A tool that waits for `gate`, or ends when its call is aborted */
-const waiting = (gate: Promise<void>) =>
+/** Resolves once `probe` gives true, polling, so a test waits for a condition rather than a delay */
+async function until(probe: () => boolean | Promise<boolean>, timeoutMs = 30_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await probe())) {
+    if (Date.now() > deadline) throw new Error('The condition never held');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+/** A tool that waits for `gate`, or ends when its call is aborted, telling `started` it began */
+const waiting = (gate: Promise<void>, started?: { resolve(): void }) =>
   tool({
     name: 'wait',
     description: 'Waits',
     parameters: z.object({}),
     execute: async (_args, context) => {
+      started?.resolve();
       await Promise.race([
         gate,
         new Promise<void>((resolve) => {
@@ -124,11 +134,14 @@ function codeOf(error: unknown): string | undefined {
 describe('rewind and fork guards, round two', () => {
   it('waits with force for a tool that ignores its abort before it restores, and refuses past the wait', async () => {
     const wrote = deferred();
+    const slowStarted = deferred();
+    const stuckStarted = deferred();
     const stubborn = tool({
       name: 'stubborn',
       description: 'Ignores its abort signal, then writes',
       parameters: z.object({}),
       execute: async () => {
+        slowStarted.resolve();
         await new Promise((resolve) => setTimeout(resolve, 300));
         writeFileSync(join(root, 'a.txt'), 'late write');
         wrote.resolve();
@@ -139,7 +152,10 @@ describe('rewind and fork guards, round two', () => {
       name: 'forever',
       description: 'Never ends',
       parameters: z.object({}),
-      execute: () => new Promise<string>(() => undefined),
+      execute: () => {
+        stuckStarted.resolve();
+        return new Promise<string>(() => undefined);
+      },
     });
     const { cog } = runtime({
       one: [write('a.txt', '1')],
@@ -156,7 +172,7 @@ describe('rewind and fork guards, round two', () => {
 
     const slow = cog.run(agent, { input: 'slow', threadId: 't' });
     slow.catch(() => undefined);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await slowStarted.promise;
     const report = await cog.rewind('t', point.id, { files: true, agents: [agent], force: true });
     await wrote.promise;
     expect(report.files?.restored).toContain('a.txt');
@@ -165,7 +181,7 @@ describe('rewind and fork guards, round two', () => {
     const stopper = new AbortController();
     const stuck = cog.run(agent, { input: 'stuck', threadId: 't', signal: stopper.signal });
     stuck.catch(() => undefined);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await stuckStarted.promise;
     stopper.abort();
     await stuck.catch(() => undefined);
     const later = (await path(cog, 't')).at(-1)!;
@@ -234,6 +250,7 @@ describe('rewind and fork guards, round two', () => {
 
   it('counts a run on a side branch of the thread as busy, and stops it with force', async () => {
     const gate = deferred();
+    const toolStarted = deferred();
     const { cog } = runtime({
       one: [write('a.txt', '1')],
       go: [{ id: 'w', name: 'wait', arguments: {} }],
@@ -241,7 +258,7 @@ describe('rewind and fork guards, round two', () => {
     const agent = coder({
       tools: [
         ...workspaceTools(undefined, { requireApproval: () => false }),
-        waiting(gate.promise),
+        waiting(gate.promise, toolStarted),
       ],
     });
     await cog.run(agent, { input: 'one', threadId: 'side' });
@@ -254,7 +271,7 @@ describe('rewind and fork guards, round two', () => {
       branch: { fromEntryId: point.id, activate: false },
     });
     aside.catch(() => undefined);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await toolStarted.promise;
     const refused = await cog
       .rewind('side', point.id, { files: true, agents: [agent] })
       .catch((error: unknown) => error);
@@ -273,6 +290,7 @@ describe('rewind and fork guards, round two', () => {
 describe('rewind and fork guards', () => {
   it('refuses while a run of another thread works in the same workspace, and stops it with force', async () => {
     const gate = deferred();
+    const toolStarted = deferred();
     const { cog } = runtime({
       one: [write('a.txt', '1')],
       go: [{ id: 'w', name: 'wait', arguments: {} }],
@@ -280,7 +298,7 @@ describe('rewind and fork guards', () => {
     const agent = coder({
       tools: [
         ...workspaceTools(undefined, { requireApproval: () => false }),
-        waiting(gate.promise),
+        waiting(gate.promise, toolStarted),
       ],
     });
     await cog.run(agent, { input: 'one', threadId: 'a' });
@@ -288,7 +306,7 @@ describe('rewind and fork guards', () => {
     writeFileSync(join(root, 'a.txt'), 'later');
     const other = cog.run(agent, { input: 'go', threadId: 'b' });
     other.catch(() => undefined);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await toolStarted.promise;
     const entries = await path(cog, 'a');
     const point = entries[entries.findIndex((entry) => entry.message.content === 'one more') - 1]!;
 
@@ -352,6 +370,7 @@ describe('rewind and fork guards', () => {
 
   it('checks the restore before it stops anything, and its dry run says when commands run', async () => {
     const gate = deferred();
+    const toolStarted = deferred();
     const { cog } = runtime({
       one: [write('a.txt', '1')],
       go: [{ id: 'w', name: 'wait', arguments: {} }],
@@ -359,7 +378,7 @@ describe('rewind and fork guards', () => {
     const agent = coder({
       tools: [
         ...workspaceTools(undefined, { requireApproval: () => false }),
-        waiting(gate.promise),
+        waiting(gate.promise, toolStarted),
       ],
     });
     await cog.run(agent, { input: 'one', threadId: 't' });
@@ -375,7 +394,7 @@ describe('rewind and fork guards', () => {
         ended = true;
       }
     );
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await toolStarted.promise;
     await workspace.deleteSnapshot(fileCheckpointOf(users[1]!.metadata)!.snapshotId);
     const refused = await cog
       .rewind('t', point.id, { files: true, agents: [agent], force: true })
@@ -386,8 +405,14 @@ describe('rewind and fork guards', () => {
     gate.resolve();
     await running;
 
-    const command = workspace.exec('sleep 0.4');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const stopCommand = new AbortController();
+    const command = workspace
+      .exec('sleep 60', { signal: stopCommand.signal })
+      .catch(() => undefined);
+    const firstSnapshot = fileCheckpointOf(users[0]!.metadata)!.snapshotId;
+    await until(
+      async () => (await workspace.restore(firstSnapshot, { dryRun: true })).busy === true
+    );
     const first = entries[entries.indexOf(users[0]!)]!;
     const plan = await cog.rewind('t', first.id, { files: true, agents: [agent], dryRun: true });
     expect(plan.files?.busy).toBe(true);
@@ -395,15 +420,20 @@ describe('rewind and fork guards', () => {
       .rewind('t', first.id, { files: true, agents: [agent] })
       .catch((error: unknown) => error);
     expect(codeOf(busy)).toBe(ErrorCode.WORKSPACE_BUSY);
+    stopCommand.abort();
     await command;
   });
 
   it('never forces a durable run another process holds while files are restored', async () => {
+    const hanging = deferred();
     const hang = tool({
       name: 'hang',
       description: 'Hangs',
       parameters: z.object({}),
-      execute: () => new Promise<string>(() => undefined),
+      execute: () => {
+        hanging.resolve();
+        return new Promise<string>(() => undefined);
+      },
     });
     const sqlite: CogitatorConfig['memory'] = {
       adapter: 'sqlite',
@@ -415,7 +445,7 @@ describe('rewind and fork guards', () => {
     await first.cog.run(agent, { input: 'one', threadId: 'held' });
     const point = (await path(first.cog, 'held')).at(-1)!;
     first.cog.run(agent, { input: 'go', threadId: 'held' }).catch(() => undefined);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await hanging.promise;
 
     const second = runtime(plan, { durable: { owner: 'b' } }, sqlite);
     for (const call of [
