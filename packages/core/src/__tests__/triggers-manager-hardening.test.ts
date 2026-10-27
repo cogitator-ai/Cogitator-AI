@@ -683,13 +683,21 @@ describe('runs the manager follows', () => {
     const asked: string[] = [];
     const { runtime: fake } = fakeRuntime({
       durable: true,
-      recoverRuns: async (filter) =>
-        ['trg_digest.api.old', 'trg_task_1', 'trg_other.api.x']
-          .filter((runId) => {
-            asked.push(runId);
-            return filter(runId);
-          })
-          .map((runId) => ({ runId, handle: handleOf(runs.get(runId)!.promise, () => undefined) })),
+      recoverRuns: async (filter) => {
+        const kept = ['trg_digest.api.old', 'trg_task_1', 'trg_other.api.x'];
+        return {
+          resumed: kept
+            .filter((runId) => {
+              asked.push(runId);
+              return filter(runId);
+            })
+            .map((runId) => ({
+              runId,
+              handle: handleOf(runs.get(runId)!.promise, () => undefined),
+            })),
+          kept,
+        };
+      },
       plugins: {
         routines: () => [],
         lease: () => {
@@ -947,10 +955,13 @@ describe('second review', () => {
     const run = pending();
     const { runtime: fake } = fakeRuntime({
       durable: true,
-      recoverRuns: async (filter, agentOf) =>
-        filter('trg_own.api.old') && agentOf('direct', direct.id) === direct
-          ? [{ runId: 'trg_own.api.old', handle: handleOf(run.promise, () => undefined) }]
-          : [],
+      recoverRuns: async (filter, agentOf) => ({
+        resumed:
+          filter('trg_own.api.old') && agentOf('direct', direct.id) === direct
+            ? [{ runId: 'trg_own.api.old', handle: handleOf(run.promise, () => undefined) }]
+            : [],
+        kept: ['trg_own.api.old'],
+      }),
     });
     const manager = new experimental_TriggerManager(
       {
@@ -1034,9 +1045,12 @@ describe('third review', () => {
       durable: true,
       recoverRuns: async (filter) => {
         await new Promise((resolve) => setTimeout(resolve, 100));
-        return filter('trg_digest.cron.1')
-          ? [{ runId: 'trg_digest.cron.1', handle: handleOf(left.promise, () => undefined) }]
-          : [];
+        return {
+          resumed: filter('trg_digest.cron.1')
+            ? [{ runId: 'trg_digest.cron.1', handle: handleOf(left.promise, () => undefined) }]
+            : [],
+          kept: ['trg_digest.cron.1'],
+        };
       },
     });
     const manager = new experimental_TriggerManager(
@@ -1267,6 +1281,86 @@ describe('one-shot tasks held while they run', () => {
     expect((await schedules.get(kept))?.firesAt).toBeGreaterThan(Date.now() + 60_000);
     started[0].settle.ok('done');
     await vi.waitFor(async () => expect((await schedules.get(lost))?.fired).toBe(true));
+    await manager.stop();
+  });
+});
+
+describe('recovery after a lease runs out', () => {
+  it('takes up a run whose lease was held at start once it runs out, and lets go of a lost one', async () => {
+    const store = new experimental_InMemoryRoutineStore();
+    const schedules = new InMemoryTimerStore();
+    await store.saveActiveRun({
+      runId: 'trg_digest.api.left',
+      kind: 'routine',
+      eventId: 'evt_left',
+      triggerId: 'digest.api',
+      routineId: 'digest',
+      source: 'api',
+      at: 1,
+      threadId: 'thread_left',
+    });
+    const taskEntry = await schedules.schedule({
+      workflowId: 'heartbeat',
+      runId: 'scheduler',
+      nodeId: 'task',
+      firesAt: Date.now() + 500,
+      type: 'fixed',
+      trigger: { agent: 'worker' },
+      metadata: { description: 'Remind', source: 'agent', taskRun: 'trg_lost_1' },
+    });
+    await store.saveActiveRun({
+      runId: 'trg_lost_1',
+      kind: 'task',
+      eventId: 'evt_lost',
+      triggerId: taskEntry,
+      source: 'agent',
+      at: 1,
+      threadId: 'thread_lost',
+      agent: 'worker',
+    });
+    const leaseEndsAt = Date.now() + 150;
+    const left = pending();
+    let taken = false;
+    const { runtime: fake, started } = fakeRuntime({
+      durable: true,
+      durableLeaseMs: 100,
+      recoverRuns: async (filter) => {
+        const free = Date.now() >= leaseEndsAt && !taken && filter('trg_digest.api.left');
+        if (free) taken = true;
+        return {
+          resumed: free
+            ? [{ runId: 'trg_digest.api.left', handle: handleOf(left.promise, () => undefined) }]
+            : [],
+          kept: ['trg_digest.api.left'],
+        };
+      },
+    });
+    const manager = new experimental_TriggerManager(
+      {
+        agents: { worker: worker() },
+        store,
+        schedules,
+        pollInterval: 20,
+        routines: [routine({ triggers: [{ kind: 'api', token: 't' }] })],
+      },
+      fake
+    );
+    await manager.start();
+    expect((await manager.get('digest'))?.active).toBe(0);
+    await vi.waitFor(async () => expect((await manager.get('digest'))?.active).toBe(1), {
+      timeout: 2_000,
+    });
+    left.settle.ok('recovered late');
+    await vi.waitFor(async () =>
+      expect((await manager.inbox.list()).map((item) => item.summary)).toContain('recovered late')
+    );
+    await vi.waitFor(async () => expect(await store.getActiveRun('trg_lost_1')).toBeNull(), {
+      timeout: 2_000,
+    });
+    await vi.waitFor(() => expect(started).toHaveLength(1), { timeout: 2_000 });
+    expect(started[0].options.threadId).toBe(`task_${taskEntry}`);
+    started[0].settle.ok('reminded');
+    await vi.waitFor(async () => expect((await schedules.get(taskEntry))?.fired).toBe(true));
     await manager.stop();
   });
 });

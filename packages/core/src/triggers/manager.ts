@@ -99,7 +99,16 @@ export interface TriggerRuntime {
   recoverRuns?(
     filter: (runId: string) => boolean,
     agentOf: (agentName: string, agentId: string) => Agent | undefined
-  ): Promise<{ runId: string; handle: RunHandle }[]>;
+  ): Promise<{
+    resumed: { runId: string; handle: RunHandle }[];
+    /** Every durable run the runtime keeps, held or not */
+    kept: readonly string[];
+  }>;
+  /**
+   * How long the lease of a durable run lasts, ms: a run a stopped process held can be taken up
+   * once it ran out, so the manager tries again every half of it
+   */
+  durableLeaseMs?: number;
   /** The plugins: their routines, and a lease a routine's run holds */
   plugins?: {
     routines(): readonly PluginRoutineEntry[];
@@ -153,6 +162,10 @@ const DEFAULT_CATCH_UP_WINDOW = 7 * 24 * 60 * 60 * 1000;
 /** How long the claim on a firing's run id is kept: longer than a provider retries */
 const RUN_CLAIM_TTL = 3 * 24 * 60 * 60 * 1000;
 const SCHEDULE_INIT_TTL = 30_000;
+/** The durable lease the runtime's runs default to, ms */
+const DEFAULT_RECOVERY_LEASE_MS = 60_000;
+/** The shortest wait between two attempts to take up runs a stopped process left */
+const MIN_RECOVERY_INTERVAL_MS = 50;
 /** Failed firings in a row after which a schedule entry is skipped until resumed */
 const SCHEDULE_RETRIES = 5;
 /** How far ahead the entry of a one-shot task is held while its run goes on, renewed meanwhile */
@@ -253,6 +266,10 @@ export class experimental_TriggerManager {
   private started?: Promise<void>;
   private unsubscribePlugins?: () => void;
   private stopped = false;
+  private recoveryTimer?: ReturnType<typeof setInterval>;
+  private recovering?: Promise<void>;
+  /** Runs kept going on that no runtime keeps, with when that was first seen */
+  private readonly orphans = new Map<string, number>();
 
   constructor(
     private readonly config: TriggersConfig,
@@ -323,10 +340,39 @@ export class experimental_TriggerManager {
       await this.syncSchedules(registered);
     }
     if (this.stopped) return;
-    await this.recover();
+    await this.recoverOnce();
     if (this.stopped) return;
     await this.scheduler.start();
-    if (this.stopped) await this.scheduler.stop();
+    if (this.stopped) {
+      await this.scheduler.stop();
+      return;
+    }
+    this.watchRecovery();
+  }
+
+  /**
+   * Tries again every half of the durable lease to take up runs kept going on that no process
+   * holds: a run a stopped process held cannot be taken up until its lease ran out, which may be
+   * after this manager started
+   */
+  private watchRecovery(): void {
+    if (!this.durable || !this.runtime.recoverRuns) return;
+    const every = Math.max(
+      MIN_RECOVERY_INTERVAL_MS,
+      Math.floor((this.runtime.durableLeaseMs ?? DEFAULT_RECOVERY_LEASE_MS) / 2)
+    );
+    this.recoveryTimer = setInterval(() => {
+      if (!this.stopped) this.track(this.recoverOnce());
+    }, every);
+    this.recoveryTimer.unref?.();
+  }
+
+  /** One `recover()` at a time */
+  private recoverOnce(): Promise<void> {
+    this.recovering ??= this.recover().finally(() => {
+      this.recovering = undefined;
+    });
+    return this.recovering;
   }
 
   /**
@@ -341,6 +387,9 @@ export class experimental_TriggerManager {
     if (starting) await starting.catch(() => undefined);
     this.unsubscribePlugins?.();
     this.unsubscribePlugins = undefined;
+    if (this.recoveryTimer) clearInterval(this.recoveryTimer);
+    this.recoveryTimer = undefined;
+    await this.recovering?.catch(() => undefined);
     await this.scheduler.stop();
     this.started = undefined;
     await this.dropQueued();
@@ -1929,22 +1978,65 @@ export class experimental_TriggerManager {
     return [...found];
   }
 
+  /** Drops the records of runs no runtime keeps, seen so for a whole lease */
+  private async dropOrphans(
+    active: ReadonlyMap<string, ActiveRoutineRun>,
+    kept: ReadonlySet<string>
+  ): Promise<void> {
+    const now = Date.now();
+    const grace = this.runtime.durableLeaseMs ?? DEFAULT_RECOVERY_LEASE_MS;
+    for (const runId of [...this.orphans.keys()]) {
+      if (!active.has(runId) || kept.has(runId)) this.orphans.delete(runId);
+    }
+    for (const runId of active.keys()) {
+      if (kept.has(runId) || this.runsHere().has(runId)) continue;
+      const since = this.orphans.get(runId);
+      if (since === undefined) this.orphans.set(runId, now);
+      else if (now - since >= grace) {
+        this.orphans.delete(runId);
+        await this.store.deleteActiveRun(runId);
+        this.report({
+          type: 'error',
+          error: `Run ${runId} was kept going on, but no runtime keeps it: its record is dropped`,
+        });
+      }
+    }
+  }
+
+  /** The runs that go on in this process */
+  private runsHere(): Set<string> {
+    const here = new Set<string>(this.runningTasks.values());
+    for (const live of this.live.values()) for (const runId of live.runs.keys()) here.add(runId);
+    return here;
+  }
+
   /**
    * Continues the durable runs of routines and of tasks agents gave themselves that a stopped
    * process left, as the store kept them going on (not from the history, which drops old
-   * records). Each takes a lease on the plugins, its outcome reaches the inbox
+   * records), leaving alone those that go on here and those another process holds. Each takes a
+   * lease on the plugins, its outcome reaches the inbox. A record no runtime keeps a run for is
+   * dropped once it was seen so for a whole lease, so a task held for it is fired again
    */
   private async recover(): Promise<void> {
     if (!this.durable || !this.runtime.recoverRuns) return;
-    const active = new Map((await this.store.listActiveRuns()).map((run) => [run.runId, run]));
-    if (active.size === 0) return;
+    const here = this.runsHere();
+    const active = new Map(
+      (await this.store.listActiveRuns())
+        .filter((run) => !here.has(run.runId))
+        .map((run) => [run.runId, run])
+    );
+    if (active.size === 0) {
+      this.orphans.clear();
+      return;
+    }
     const agents = await this.knownAgents();
-    const recovered = await this.runtime.recoverRuns(
-      (runId) => active.has(runId),
+    const { resumed: recovered, kept: keptRuns } = await this.runtime.recoverRuns(
+      (runId) => active.has(runId) && !this.runsHere().has(runId),
       (agentName, agentId) =>
         agents.find((agent) => agent.id === agentId) ??
         agents.find((agent) => agent.name === agentName)
     );
+    await this.dropOrphans(active, new Set(keptRuns));
     for (const { runId, handle } of recovered) {
       const kept = active.get(runId);
       if (!kept) continue;

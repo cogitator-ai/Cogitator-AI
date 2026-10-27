@@ -1004,8 +1004,12 @@ export class Cogitator implements ToolInvoker {
             agents: (run) => agentOf(run.agentName, run.agentId),
             filter: (run) => filter(run.runId),
           });
-          return recovered.resumed.map(({ run, handle }) => ({ runId: run.runId, handle }));
+          return {
+            resumed: recovered.resumed.map(({ run, handle }) => ({ runId: run.runId, handle })),
+            kept: (await this.durableRuns()).map((run) => run.runId),
+          };
         },
+        durableLeaseMs: this.durableConfig()?.leaseMs ?? DEFAULT_DURABLE_LEASE_MS,
         plugins: {
           routines: () => this.pluginHost.snapshot().routines,
           lease: () => this.pluginHost.lease(),
