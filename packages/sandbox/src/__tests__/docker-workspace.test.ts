@@ -399,6 +399,64 @@ describe.skipIf(!docker)('DockerWorkspace with Docker', () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 120_000);
+
+  it('holds the host for the whole restore and counts groups still stopping as busy', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'docker-hold-')));
+    writeFileSync(join(root, 'loose.txt'), 'loose');
+    const log: string[] = [];
+    let held = 0;
+    const planned = {
+      snapshotId: 'snap_y_12345678',
+      restored: [],
+      deleted: ['loose.txt'],
+      unchanged: 0,
+      kept: [],
+    };
+    const host: Workspace = {
+      ...directoryHost(root),
+      snapshot: async () => ({
+        id: 'snap_y_12345678',
+        workspaceId: 'host',
+        createdAt: new Date().toISOString(),
+        exclude: [],
+      }),
+      holdForRestore: () => {
+        held++;
+        log.push(`hold, loose ${existsSync(join(root, 'loose.txt')) ? 'there' : 'gone'}`);
+        return () => {
+          held--;
+          log.push('release');
+        };
+      },
+      restore: async (_id, restoreOptions) => {
+        const dryRun = restoreOptions?.dryRun ?? false;
+        if (!dryRun) log.push(`restore, held ${held}`);
+        return { ...planned, dryRun, busy: false };
+      },
+    };
+    const docked = new DockerWorkspace({ host, image: 'alpine:3.19', killGrace: 4_000 });
+    try {
+      const stubborn = await docked.exec(
+        '(trap "" TERM; sleep 30) > /dev/null 2>&1 & echo started'
+      );
+      expect(stubborn.stdout).toBe('started\n');
+      await expect(docked.restore!('snap_y_12345678')).rejects.toMatchObject({ code: 'BUSY' });
+      await vi.waitFor(
+        async () => {
+          const dry = await docked.restore!('snap_y_12345678', { dryRun: true });
+          expect(dry.busy).toBe(false);
+        },
+        { timeout: 20_000, interval: 250 }
+      );
+      log.length = 0;
+      await docked.restore!('snap_y_12345678');
+      expect(log).toEqual(['hold, loose there', 'restore, held 1', 'release']);
+      expect(existsSync(join(root, 'loose.txt'))).toBe(false);
+    } finally {
+      await docked.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 120_000);
 });
 
 describe('MarkerScanner', () => {

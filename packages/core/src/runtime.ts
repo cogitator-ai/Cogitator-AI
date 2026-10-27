@@ -8141,9 +8141,10 @@ export class Cogitator implements ToolInvoker {
   }
 
   /**
-   * Restores the files of `files` once `safety` is taken. A restore refused before it changed
-   * anything (`BUSY`) drops the safety snapshot, one that failed on the way keeps it to undo what
-   * it changed
+   * Restores the files of `files` once `safety` is taken. A restore that fails keeps the safety
+   * snapshot to undo what it changed, unless the files are still those the snapshot holds (a dry
+   * run of it changes nothing): one refused before it changed anything drops it, whatever the
+   * error says
    */
   private async restoreAfterSafety(
     files: FileRestorePlan,
@@ -8153,7 +8154,7 @@ export class Cogitator implements ToolInvoker {
       const restored = await files.restore();
       return { ...restored, ...(safety && { safetySnapshotId: safety.id }) };
     } catch (error) {
-      if (error instanceof WorkspaceError && error.code === 'BUSY') await safety?.drop();
+      if (safety && (await this.unchangedSince(files.workspace, safety.id))) await safety.drop();
       else if (safety) {
         getLogger().warn(
           'A file restore failed on the way, the files as they were before it are in the safety snapshot',
@@ -8165,6 +8166,18 @@ export class Cogitator implements ToolInvoker {
         );
       }
       throw error;
+    }
+  }
+
+  /** Whether the files of `workspace` are those snapshot `snapshotId` holds, false when unsure */
+  private async unchangedSince(workspace: Workspace, snapshotId: string): Promise<boolean> {
+    const restore = workspace.restore?.bind(workspace);
+    if (!restore) return false;
+    try {
+      const plan = await restore(snapshotId, { dryRun: true });
+      return plan.restored.length === 0 && plan.deleted.length === 0;
+    } catch {
+      return false;
     }
   }
 

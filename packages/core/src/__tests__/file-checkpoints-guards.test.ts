@@ -464,21 +464,24 @@ describe('rewind and fork guards, round five', () => {
     expect(text('a.txt')).toBe('v1');
   });
 
-  it('takes the fork back when its files fail to restore, keeping the safety snapshot only for a restore that began', async () => {
+  it('takes the fork back when its files fail to restore, keeping the safety snapshot only when files changed', async () => {
     const { cog } = runtime({ one: [write('a.txt', 'v1')], two: [write('a.txt', 'v2')] });
     const agent = coder();
     await cog.run(agent, { input: 'one', threadId: 'q' });
     await cog.run(agent, { input: 'two', threadId: 'q' });
-    const target = new LocalWorkspace({ root: join(base, 'fork-failing') });
+    const forkRoot = join(base, 'fork-failing');
+    const target = new LocalWorkspace({ root: forkRoot });
     try {
       await target.start();
-      writeFileSync(join(base, 'fork-failing', 'a.txt'), 'in the fork');
+      writeFileSync(join(forkRoot, 'a.txt'), 'in the fork');
       const entries = await path(cog, 'q');
       const point = entries[entries.findIndex((entry) => entry.message.content === 'two') - 1]!;
       const restore = target.restore.bind(target);
       let failure = new WorkspaceError('BUSY', 'a command started');
+      let halfway = false;
       vi.spyOn(target, 'restore').mockImplementation(async (id, options) => {
         if (options?.dryRun) return restore(id, options);
+        if (halfway) writeFileSync(join(forkRoot, 'a.txt'), 'halfway');
         throw failure;
       });
       const options = { files: true, workspace: target, source: workspace } as const;
@@ -488,12 +491,20 @@ describe('rewind and fork guards, round five', () => {
       expect(await forksOf(cog, 'q')).toEqual([]);
       expect(await target.listSnapshots()).toEqual([]);
 
-      failure = new WorkspaceError('IO', 'the disk went away halfway');
+      failure = new WorkspaceError('IO', 'the disk went away before anything changed');
+      await expect(cog.forkThread('q', point.id, options)).rejects.toBe(failure);
+      expect(await target.listSnapshots()).toEqual([]);
+
+      failure = new WorkspaceError('BUSY', 'a command started halfway through');
+      halfway = true;
       await expect(cog.forkThread('q', point.id, options)).rejects.toBe(failure);
       expect(await threadIds(cog)).toEqual(['q']);
       const left = await target.listSnapshots();
       expect(left.map((snapshot) => snapshot.metadata?.safety)).toEqual([true]);
-      expect(text('a.txt', join(base, 'fork-failing'))).toBe('in the fork');
+      expect(text('a.txt', forkRoot)).toBe('halfway');
+      vi.mocked(target.restore).mockRestore();
+      await target.restore(left[0]!.id);
+      expect(text('a.txt', forkRoot)).toBe('in the fork');
     } finally {
       await target.dispose();
     }

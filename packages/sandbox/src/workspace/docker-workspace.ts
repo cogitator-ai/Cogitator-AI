@@ -126,7 +126,11 @@ interface DockerWorkspaceState {
   disposed: boolean;
   /** Commands running in the container now */
   running: number;
-  /** Process groups commands left in the background (`background: 'keep'`), while alive */
+  /**
+   * Process groups of the commands, kept until they are found gone: a group a command left in
+   * the background, or one still stopping after SIGTERM (`background: 'kill'`, a timeout, an
+   * abort) until SIGKILL, may still write
+   */
   kept: Set<number>;
   /** Restores changing the files now: commands are refused meanwhile */
   restoring: number;
@@ -439,11 +443,13 @@ export class DockerWorkspace implements Workspace {
         { path: snapshotId }
       );
     }
+    const releaseHost = this.host.holdForRestore?.();
     this.state.restoring++;
     try {
       return await this.restoreNow(snapshotId, plan, restore);
     } finally {
       this.state.restoring--;
+      releaseHost?.();
     }
   }
 
@@ -611,12 +617,14 @@ export class DockerWorkspace implements Workspace {
     const stopGroup = (signals: 'TERM' | 'KILL') => {
       if (group === undefined) return;
       const target = group;
+      const kill = () =>
+        void signalGroup(container, target, 'KILL').then(() => this.state.kept.delete(target));
       if (signals === 'KILL') {
-        void signalGroup(container, target, 'KILL');
+        kill();
         return;
       }
       void signalGroup(container, target, 'TERM').then(() => {
-        setTimeout(() => void signalGroup(container, target, 'KILL'), options.killGrace).unref();
+        setTimeout(kill, options.killGrace).unref();
       });
     };
     const markers = new MarkerScanner(
@@ -625,13 +633,13 @@ export class DockerWorkspace implements Workspace {
       (kind, value) => {
         if (kind === 'pgid') {
           group = value > 1 ? value : undefined;
+          if (group !== undefined) this.state.kept.add(group);
           if (stopReason) stopGroup('TERM');
           return;
         }
         if (kind !== 'exit') return;
         exitCode = value;
         if (options.background === 'kill') stopGroup('TERM');
-        else if (group !== undefined) this.state.kept.add(group);
         setTimeout(releaseRead, STDIO_GRACE).unref();
       }
     );
