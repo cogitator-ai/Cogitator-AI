@@ -170,7 +170,13 @@ function header(headers: GitHubWebhookRequest['headers'], name: string): string 
 }
 
 /** Whether `signature` (`sha256=<hex>`) is the HMAC SHA-256 of `body` with `secret`. */
-export const verifyGitHubSignature = coreVerifyGitHubSignature;
+export function verifyGitHubSignature(
+  body: string | Uint8Array,
+  signature: string | undefined,
+  secret: string
+): boolean {
+  return coreVerifyGitHubSignature(body, signature, secret);
+}
 
 /** The JSON of a delivery, sent as `application/json` or as the `payload` field of a form. */
 function payloadOf(raw: string | Uint8Array, contentType: string | undefined): unknown {

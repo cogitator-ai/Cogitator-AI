@@ -61,3 +61,4 @@ export * from './web';
 export * from './workspace';
 export * from './plugins';
 export * from './triggers';
+export * from './trigger-schemas';

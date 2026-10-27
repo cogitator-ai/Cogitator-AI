@@ -210,10 +210,19 @@ export function headerAuthentication(
  * Compares two secrets in constant time for their contents: unequal lengths still run one full
  * comparison (of the expected secret with itself), so only the length of the secret can show.
  */
-export const secretsEqual = coreSecretsEqual;
+export function secretsEqual(given: string, expected: string): boolean {
+  return coreSecretsEqual(given, expected);
+}
 
 /**
  * Whether `signature` is the hex HMAC SHA-256 of `timestamp` and `token` with Mailgun's webhook
  * signing key, as Mailgun signs the requests of its routes (in JSON mode `token` is the body).
  */
-export const verifyMailgunSignature = coreVerifyMailgunSignature;
+export function verifyMailgunSignature(
+  timestamp: string,
+  token: string | Uint8Array,
+  signature: string | undefined,
+  signingKey: string
+): boolean {
+  return coreVerifyMailgunSignature(timestamp, token, signature, signingKey);
+}

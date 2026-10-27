@@ -11,6 +11,7 @@
 
 import { CronExpressionParser } from 'cron-parser';
 import { experimental_createCronEngine, isKnownTimezone } from '@cogitator-ai/core';
+import type { CronEngine } from '@cogitator-ai/types';
 
 /**
  * Cron field descriptor
@@ -85,9 +86,21 @@ export const CRON_PRESETS: Record<string, string> = {
  * The cron engine of workflows: the core's, with the presets above on top of those of
  * `cron-parser`, so a workflow, a routine and `schedule_task` read an expression alike
  */
-export const workflowsCron = experimental_createCronEngine(CronExpressionParser, {
-  presets: CRON_PRESETS,
-});
+export const workflowsCron: CronEngine = {
+  next: (expression, after, timezone) => builtCron().next(expression, after, timezone),
+  previous: (expression, atOrBefore, timezone, count) =>
+    builtCron().previous(expression, atOrBefore, timezone, count),
+  between: (expression, from, to, timezone, limit) =>
+    builtCron().between(expression, from, to, timezone, limit),
+  problem: (expression, timezone) => builtCron().problem(expression, timezone),
+  normalize: (expression) => builtCron().normalize(expression),
+};
+
+let engine: CronEngine | undefined;
+function builtCron(): CronEngine {
+  engine ??= experimental_createCronEngine(CronExpressionParser, { presets: CRON_PRESETS });
+  return engine;
+}
 
 function normalize(expression: string): string {
   return workflowsCron.normalize(expression);
