@@ -69,7 +69,10 @@ export interface SchedulerOptions extends TimerClaimListeners {
    * {@link ScheduledHold} instead of finishing: its work goes on, the entry waits meanwhile
    */
   fire: (fire: ScheduledFire) => void | ScheduledHold | Promise<void | ScheduledHold>;
-  /** The cron engine. Default: the one over `cron-parser`, loaded by `start()` and `add()` */
+  /**
+   * The cron engine. Default: the one over `cron-parser`, loaded when an entry with a cron
+   * expression is added or comes due
+   */
   cron?: CronEngine;
   /** The entries this scheduler runs, the rest it gives back. Default: all */
   accepts?: (entry: TimerEntry) => boolean;
@@ -173,9 +176,11 @@ export class experimental_Scheduler {
     return this.engine;
   }
 
-  /** Starts polling. Loads the cron engine first when none was given */
+  /**
+   * Starts polling. The cron engine is loaded when an entry with a cron expression is added or
+   * comes due, so a store without such entries needs no `cron-parser`
+   */
   async start(): Promise<void> {
-    await this.cron();
     this.poller.start();
   }
 
@@ -329,6 +334,14 @@ export class experimental_Scheduler {
       return;
     }
     if (!(await claims.confirm(entry))) return;
+    if (entry.cron) {
+      try {
+        await this.cron();
+      } catch (error) {
+        await claims.release(entry);
+        throw error;
+      }
+    }
 
     const startedAt = Date.now();
     const plan = this.plan(entry, startedAt);

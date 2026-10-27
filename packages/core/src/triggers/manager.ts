@@ -240,9 +240,10 @@ function notFound(message: string): CogitatorError {
 /**
  * Experimental. Routines and their triggers in a runtime: `cog.experimental_triggers`.
  *
- * - `start()` loads the cron engine, makes sure every cron trigger has its entry in the schedules
- *   store (a routine kept in the store or registered by a plugin as much as one in code), starts
- *   polling it, and continues the durable runs of routines a stopped process left
+ * - `start()` loads the cron engine when a routine has a cron trigger (routines without one and
+ *   one-shot tasks need no `cron-parser`), makes sure every cron trigger has its entry in the
+ *   schedules store (a routine kept in the store or registered by a plugin as much as one in
+ *   code), starts polling it, and continues the durable runs of routines a stopped process left
  * - `handle()` answers the HTTP request of a trigger (the server adapters call it), `fire()` fires
  *   one by hand
  * - each firing starts a session with the routine's prompt as the task and the event as untrusted
@@ -330,8 +331,11 @@ export class experimental_TriggerManager {
   }
 
   private async begin(): Promise<void> {
-    const engine = await this.cron();
-    for (const { routine } of this.code.values()) this.checkCron(routine, engine);
+    const timed = [...this.code.values()].filter(({ routine }) => hasCron(routine));
+    if (timed.length > 0) {
+      const engine = await this.cron();
+      for (const { routine } of timed) this.checkCron(routine, engine);
+    }
     if (this.stopped) return;
     if (this.runtime.plugins) {
       this.unsubscribePlugins = this.runtime.plugins.onChange(() => {
@@ -524,7 +528,6 @@ export class experimental_TriggerManager {
         plugin: entry.plugin,
       });
     }
-    const engine = this.cronEngine;
     for (const [id, registered] of current) {
       const before = this.fromPlugins.get(id);
       if (before?.routine === registered.routine) continue;
@@ -535,7 +538,7 @@ export class experimental_TriggerManager {
         continue;
       }
       try {
-        if (engine) this.checkCron(registered.routine, engine);
+        if (hasCron(registered.routine)) this.checkCron(registered.routine, await this.cron());
       } catch (error) {
         this.report({ type: 'error', error: errorText(error), routineId: id });
         continue;
@@ -603,6 +606,10 @@ export class experimental_TriggerManager {
    */
   private async syncSchedules(registered: Registered): Promise<void> {
     const { routine } = registered;
+    if (!hasCron(routine)) {
+      await this.dropSchedules(routine.id, []);
+      return;
+    }
     const engine = await this.cron();
     const kept: string[] = [];
     const lockedOut: string[] = [];
@@ -766,10 +773,12 @@ export class experimental_TriggerManager {
         code: ErrorCode.VALIDATION_ERROR,
       });
     }
-    try {
-      this.checkCron(routine, await this.cron());
-    } catch (error) {
-      throw new CogitatorError({ message: errorText(error), code: ErrorCode.VALIDATION_ERROR });
+    if (hasCron(routine)) {
+      try {
+        this.checkCron(routine, await this.cron());
+      } catch (error) {
+        throw new CogitatorError({ message: errorText(error), code: ErrorCode.VALIDATION_ERROR });
+      }
     }
     await this.store.saveRoutine(routine);
     const registered: Registered = { routine, origin: 'store' };
@@ -2176,6 +2185,11 @@ function deliveryId(runId: string, item: InboxItemInput): string {
       : []),
   ].join(',');
   return `inbox_${digest(`${runId}\n${item.kind}\n${waitsOn}`)}`;
+}
+
+/** Whether a routine has a cron trigger, which needs the cron engine */
+function hasCron(routine: RoutineDefinition): boolean {
+  return (routine.triggers ?? []).some((spec) => spec.kind === 'cron');
 }
 
 function answeredAlready(itemId: string): CogitatorError {
