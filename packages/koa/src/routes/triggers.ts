@@ -9,6 +9,7 @@ import {
   triggerRequestOf,
   type TriggerRouteAnswer,
   type TriggersHost,
+  type AnonymousPolicy,
 } from '@cogitator-ai/server-shared';
 import type { CogitatorState } from '../types.js';
 import { isBodyConsumed, readRawBody } from '../middleware/body-parser.js';
@@ -72,7 +73,10 @@ export function createTriggerRoutes(
 }
 
 /** Experimental. `GET /inbox` and `PATCH /inbox/:id`, behind the router's auth */
-export function createInboxRoutes(host: TriggersHost): Router<CogitatorState> {
+export function createInboxRoutes(
+  host: TriggersHost,
+  anonymous?: AnonymousPolicy
+): Router<CogitatorState> {
   const router = new Router<CogitatorState>();
   router.get('/inbox', async (ctx) => {
     try {
@@ -82,7 +86,7 @@ export function createInboxRoutes(host: TriggersHost): Router<CogitatorState> {
           Array.isArray(value) ? value[0] : value,
         ])
       );
-      send(ctx, await listInboxRoute(host, query, ctx.state.auth?.userId));
+      send(ctx, await listInboxRoute(host, query, ctx.state.auth?.userId, anonymous));
     } catch (error) {
       respondWithError(ctx, error, 'Inbox error');
     }
@@ -91,7 +95,13 @@ export function createInboxRoutes(host: TriggersHost): Router<CogitatorState> {
     try {
       send(
         ctx,
-        await patchInboxRoute(host, ctx.params.id, getRequestBody(ctx), ctx.state.auth?.userId)
+        await patchInboxRoute(
+          host,
+          ctx.params.id,
+          getRequestBody(ctx),
+          ctx.state.auth?.userId,
+          anonymous
+        )
       );
     } catch (error) {
       respondWithError(ctx, error, 'Inbox error');

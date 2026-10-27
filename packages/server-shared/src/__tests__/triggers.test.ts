@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { InboxItem } from '@cogitator-ai/types';
 import {
   ConformanceTriggers,
   MAX_TRIGGER_BODY_BYTES,
@@ -6,6 +7,7 @@ import {
   listInboxRoute,
   patchInboxRoute,
   triggerRequestOf,
+  type TriggersHost,
 } from '../index.js';
 import { generateOpenAPISpec } from '../openapi.js';
 
@@ -46,10 +48,73 @@ describe('trigger routes', () => {
     expect((await listInboxRoute(host, { kind: 'nonsense' }, 'alice')).status).toBe(400);
     expect((await listInboxRoute(host, { before: 'yesterday' }, 'alice')).status).toBe(400);
     expect((await patchInboxRoute(host, 'i-anon', { status: 'read' }, 'alice')).status).toBe(404);
-    expect((await patchInboxRoute(host, 'i-anon', { status: 'read' }, undefined)).status).toBe(200);
     expect(
-      (await patchInboxRoute(host, 'i-anon', { status: 'read', extra: 1 }, undefined)).status
+      (await patchInboxRoute(host, 'i-anon', { status: 'read' }, undefined, 'allow')).status
+    ).toBe(200);
+    expect(
+      (await patchInboxRoute(host, 'i-anon', { status: 'read', extra: 1 }, undefined, 'allow'))
+        .status
     ).toBe(400);
+  });
+
+  it('closes the inbox to callers without a user id unless anonymous is allowed explicitly', async () => {
+    const host = new ConformanceTriggers();
+    for (const anonymous of [undefined, 'deny'] as const) {
+      expect(await listInboxRoute(host, {}, undefined, anonymous)).toMatchObject({
+        status: 401,
+        body: { error: { code: 'UNAUTHORIZED' } },
+      });
+      expect(
+        (await patchInboxRoute(host, 'i-anon', { status: 'read' }, undefined, anonymous)).status
+      ).toBe(401);
+    }
+    expect(await listInboxRoute(host, {}, undefined, 'allow')).toMatchObject({ status: 200 });
+    expect((await listInboxRoute(host, {}, 'alice')).status).toBe(200);
+  });
+
+  it('pages by the time and id of the last item, so items of one millisecond are all shown', async () => {
+    const items: InboxItem[] = ['a', 'b', 'c'].map((id) => ({
+      id,
+      kind: 'result',
+      title: id,
+      summary: '',
+      status: 'unread',
+      createdAt: 5,
+      userId: 'u',
+    }));
+    const host: TriggersHost = {
+      handle: async () => ({ status: 404, body: {} }),
+      inbox: {
+        list: async (filter) =>
+          items
+            .filter(
+              (item) =>
+                filter?.before === undefined ||
+                item.createdAt < filter.before ||
+                (filter.beforeId !== undefined &&
+                  item.createdAt === filter.before &&
+                  item.id < filter.beforeId)
+            )
+            .sort((a, b) => (a.id < b.id ? 1 : -1))
+            .slice(0, filter?.limit ?? 50),
+        get: async () => null,
+        update: async () => null,
+      },
+    };
+    const seen: string[] = [];
+    let query: Record<string, string> = { limit: '1' };
+    for (let page = 0; page < 5; page++) {
+      const answer = await listInboxRoute(host, query, 'u');
+      const body = answer.body as {
+        items: InboxItem[];
+        nextBefore?: number;
+        nextBeforeId?: string;
+      };
+      seen.push(...body.items.map((item) => item.id));
+      if (body.nextBefore === undefined || body.nextBeforeId === undefined) break;
+      query = { limit: '1', before: String(body.nextBefore), beforeId: body.nextBeforeId };
+    }
+    expect(seen).toEqual(['c', 'b', 'a']);
   });
 
   it('documents the routes only for a server with triggers', () => {

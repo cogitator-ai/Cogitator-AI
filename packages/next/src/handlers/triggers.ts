@@ -113,7 +113,8 @@ type Admission = { ok: true; userId: string | undefined } | { ok: false; respons
  * Experimental. The route handlers of the inbox of the runtime's trigger manager
  * (`cog.experimental_triggers`): `GET` lists the caller's items (`app/api/inbox/route.ts`),
  * `PATCH` marks one read, unread or archived (`app/api/inbox/[id]/route.ts`). A caller sees and
- * changes only the items of the user id `auth` returns, an anonymous caller only items without one
+ * changes only the items of the user id `auth` returns. A caller without one (no `auth`, or no
+ * `userId`) gets `401` unless `anonymous: 'allow'` is set, then they see the items without a user
  *
  * @example
  * ```ts
@@ -144,7 +145,7 @@ export function createInboxHandler(host: TriggersHost, options: InboxHandlerOpti
       const admitted = await admit(req);
       if (!admitted.ok) return admitted.response;
       try {
-        return send(await listInboxRoute(host, queryOf(req), admitted.userId));
+        return send(await listInboxRoute(host, queryOf(req), admitted.userId, options.anonymous));
       } catch (err) {
         return runErrorResponse(err);
       }
@@ -159,7 +160,7 @@ export function createInboxHandler(host: TriggersHost, options: InboxHandlerOpti
       const body = await readJsonBody(req);
       if (!body.ok) return body.response;
       try {
-        return send(await patchInboxRoute(host, id, body.body, admitted.userId));
+        return send(await patchInboxRoute(host, id, body.body, admitted.userId, options.anonymous));
       } catch (err) {
         return runErrorResponse(err);
       }

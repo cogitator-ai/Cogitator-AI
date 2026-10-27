@@ -83,7 +83,7 @@ describeE2E('triggers and routines on a real model', () => {
     expect(completed.length).toBeGreaterThanOrEqual(1);
     for (const run of completed) {
       expect(run.source).toBe('cron');
-      expect(run.runId).toBe(`trg_heartbeat.cron_${run.scheduledFor}`);
+      expect(run.runId).toBe(`trg_heartbeat.cron.${run.scheduledFor}`);
       expect(run.scheduledFor! % 2000).toBe(0);
     }
   }, 90_000);
@@ -235,7 +235,7 @@ describeE2E('triggers and routines on a real model', () => {
       app,
       cogitator: cog,
       triggers: manager,
-      config: { enableSwagger: false },
+      config: { enableSwagger: false, anonymous: 'allow' },
     }).init();
     server = await new Promise<Server>((resolve) => {
       const listening = app.listen(0, '127.0.0.1', () => resolve(listening));

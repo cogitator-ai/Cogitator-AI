@@ -64,13 +64,13 @@ export interface InboxCaller {
 export interface InboxHandlerOptions {
   /**
    * Establishes the caller of a request: a caller sees and changes only the items of its
-   * `userId`, an anonymous caller (no `userId`, or no `auth`) only the items without one. An
-   * error it throws answers `401`, or the client error `status` it carries
+   * `userId`. An error it throws answers `401`, or the client error `status` it carries
    */
   auth?: (req: Request) => InboxCaller | undefined | Promise<InboxCaller | undefined>;
   /**
-   * Whether a caller without a user id may read the inbox: `'allow'` (the default) lets them,
-   * `'deny'` answers `401 UNAUTHORIZED`
+   * Whether a caller without a user id (no `userId`, or no `auth`) may read the inbox: `'allow'`
+   * shows them the items without a user. Unset or `'deny'`: `401 UNAUTHORIZED`, so a handler
+   * without `auth` shows nobody the results of routines that run unattended
    */
   anonymous?: AnonymousPolicy;
 }

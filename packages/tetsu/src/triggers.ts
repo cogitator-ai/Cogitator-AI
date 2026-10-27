@@ -13,7 +13,11 @@ import {
   patchInboxRoute,
   triggerRequestOf,
 } from '@cogitator-ai/server-shared';
-import type { TriggerRouteAnswer, TriggersHost } from '@cogitator-ai/server-shared';
+import type {
+  AnonymousPolicy,
+  TriggerRouteAnswer,
+  TriggersHost,
+} from '@cogitator-ai/server-shared';
 import type { anonymousHook, CallerHook } from './auth.js';
 import { jsonBody } from './connection.js';
 import type { cogitatorErrors } from './errors.js';
@@ -27,7 +31,7 @@ const TriggerFireResult = z.object({
   type: z.literal('routine_fire'),
   status: z.enum(['started', 'queued', 'skipped', 'duplicate']),
   eventId: z.string(),
-  routineId: z.string(),
+  routineId: z.string().optional(),
   triggerId: z.string(),
   runId: z.string().optional(),
   threadId: z.string().optional(),
@@ -85,6 +89,14 @@ const InboxQuery = z.object({
     .positive()
     .optional()
     .describe('Only items created before this time (ms), the `nextBefore` of the page before'),
+  beforeId: z
+    .string()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe(
+      'With `before`: also the items created at that time whose id sorts before this one, the `nextBeforeId` of the page before'
+    ),
 });
 
 const InboxItem = z.object({
@@ -96,6 +108,11 @@ const InboxItem = z.object({
   status: z.enum(INBOX_STATUSES),
   createdAt: z.number().int(),
   updatedAt: z.number().int().optional(),
+  answeredAt: z
+    .number()
+    .int()
+    .optional()
+    .describe('When a person answered the approval or question, set once'),
   routineId: z.string().optional(),
   triggerId: z.string().optional(),
   triggerEventId: z.string().optional(),
@@ -116,12 +133,22 @@ const InboxPage = z.object({
     .int()
     .optional()
     .describe('Pass it as `before` to read the older items, absent on the last page'),
+  nextBeforeId: z
+    .string()
+    .optional()
+    .describe(
+      'Pass it as `beforeId` with `before`, so items of the same millisecond are not skipped'
+    ),
 });
 
 const InboxItemParams = z.object({ id: z.string().min(1) });
 const InboxPatchBody = z.object({ status: z.enum(INBOX_STATUSES) }).strict();
 
 const InboxItemNotFound = errorEnvelope('NOT_FOUND', "No such item of the caller's");
+const InboxSignInRequired = errorEnvelope(
+  'UNAUTHORIZED',
+  "A caller without a user id, where the controller is not set to anonymous: 'allow'"
+);
 
 function send(answer: TriggerRouteAnswer): Response {
   return Response.json(answer.body, { status: answer.status, headers: answer.headers });
@@ -162,6 +189,8 @@ interface Guards {
   caller: CallerHook;
   admitted: ReturnType<typeof anonymousHook>;
   errors: ReturnType<typeof cogitatorErrors>;
+  /** The controller's anonymous policy as configured: the inbox needs `'allow'` for callers without a user id */
+  anonymous: AnonymousPolicy | undefined;
 }
 
 /**
@@ -171,7 +200,7 @@ interface Guards {
  * came whatever its content type. `GET /inbox` and `PATCH /inbox/:id` run behind them, a caller
  * sees and changes only their own items
  */
-export function triggerRoutes(host: TriggersHost, { caller, admitted, errors }: Guards) {
+export function triggerRoutes(host: TriggersHost, { caller, admitted, errors, anonymous }: Guards) {
   return {
     fireTrigger: route({
       method: 'POST',
@@ -231,12 +260,12 @@ export function triggerRoutes(host: TriggersHost, { caller, admitted, errors }: 
     listInbox: route({
       method: 'GET',
       path: '/inbox',
-      schema: { query: InboxQuery, response: { 200: InboxPage } },
+      schema: { query: InboxQuery, response: { 200: InboxPage, 401: InboxSignInRequired } },
       hooks: { beforeParse: [caller, admitted], onError: [errors] },
       docs: {
         summary: "The caller's inbox",
         description:
-          "Results, failures, approvals and questions of routines, newest first: the items of the caller's user id, or of no user for an anonymous caller",
+          "Results, failures, approvals and questions of routines, newest first: the items of the caller's user id. A caller without one gets 401 unless the controller is set to anonymous: 'allow', then the items of no user",
         tags: ['triggers'],
       },
       handler: async (ctx) => {
@@ -246,7 +275,7 @@ export function triggerRoutes(host: TriggersHost, { caller, admitted, errors }: 
           ...(limit !== undefined && { limit: String(limit) }),
           ...(before !== undefined && { before: String(before) }),
         };
-        return inboxAnswer(await listInboxRoute(host, query, ctx.cogitatorAuth?.userId));
+        return inboxAnswer(await listInboxRoute(host, query, ctx.cogitatorAuth?.userId, anonymous));
       },
     }),
 
@@ -256,13 +285,13 @@ export function triggerRoutes(host: TriggersHost, { caller, admitted, errors }: 
       schema: {
         params: InboxItemParams,
         body: InboxPatchBody,
-        response: { 200: InboxItem, 404: InboxItemNotFound },
+        response: { 200: InboxItem, 401: InboxSignInRequired, 404: InboxItemNotFound },
       },
       hooks: { beforeParse: [caller, admitted, jsonBody], onError: [errors] },
       docs: { summary: 'Mark an inbox item read, unread or archived', tags: ['triggers'] },
       handler: async (ctx) =>
         inboxAnswer(
-          await patchInboxRoute(host, ctx.params.id, ctx.body, ctx.cogitatorAuth?.userId)
+          await patchInboxRoute(host, ctx.params.id, ctx.body, ctx.cogitatorAuth?.userId, anonymous)
         ),
     }),
   };

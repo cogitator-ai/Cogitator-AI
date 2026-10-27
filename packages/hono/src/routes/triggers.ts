@@ -9,6 +9,7 @@ import {
   triggerRequestOf,
   type TriggerRouteAnswer,
   type TriggersHost,
+  type AnonymousPolicy,
 } from '@cogitator-ai/server-shared';
 import type { HonoEnv } from '../types.js';
 import { bodyRefused, errorResponse, readJsonBody } from '../utils/request.js';
@@ -55,12 +56,17 @@ export function createTriggerRoutes(host: TriggersHost): Hono<HonoEnv> {
   return app;
 }
 
-/** Experimental. `GET /inbox` and `PATCH /inbox/:id`, behind the app's auth */
-export function createInboxRoutes(host: TriggersHost): Hono<HonoEnv> {
+/**
+ * Experimental. `GET /inbox` and `PATCH /inbox/:id`, behind the app's auth. A caller without a
+ * user id gets `401` unless `anonymous` (the app's policy as configured) is `'allow'`
+ */
+export function createInboxRoutes(host: TriggersHost, anonymous?: AnonymousPolicy): Hono<HonoEnv> {
   const app = new Hono<HonoEnv>();
   app.get('/inbox', async (c) => {
     try {
-      return send(await listInboxRoute(host, c.req.query(), c.get('cogitatorAuth')?.userId));
+      return send(
+        await listInboxRoute(host, c.req.query(), c.get('cogitatorAuth')?.userId, anonymous)
+      );
     } catch (error) {
       return errorResponse(c, error, 'Inbox error');
     }
@@ -70,7 +76,13 @@ export function createInboxRoutes(host: TriggersHost): Hono<HonoEnv> {
     if (!body.ok) return bodyRefused(c, body.refusal);
     try {
       return send(
-        await patchInboxRoute(host, c.req.param('id'), body.value, c.get('cogitatorAuth')?.userId)
+        await patchInboxRoute(
+          host,
+          c.req.param('id'),
+          body.value,
+          c.get('cogitatorAuth')?.userId,
+          anonymous
+        )
       );
     } catch (error) {
       return errorResponse(c, error, 'Inbox error');

@@ -90,10 +90,11 @@ export interface CogitatorAppOptions {
   workflows?: Record<string, Workflow<WorkflowState>>;
   swarms?: Record<string, SwarmConfig>;
   /**
-   * Experimental. The runtime's trigger manager (`cog.experimental_triggers`): the app then
-   * serves `POST /triggers/:id/fire` and `/webhook` (before `auth`, a trigger checks its caller
-   * by token or signature) and `GET /inbox`, `PATCH /inbox/:id` (behind `auth`, a caller's own
-   * items). Start it yourself with `start()`
+   * Experimental. The runtime's trigger manager (`cog.experimental_triggers`): the app then serves
+   * `POST /triggers/:id/fire` and `/webhook` (before `auth`, a trigger checks its caller by token
+   * or signature) and `GET /inbox`, `PATCH /inbox/:id` (behind `auth`, a caller's own items). A
+   * caller without a user id gets `401` from the inbox unless `anonymous` is set to `'allow'`.
+   * Start it yourself with `start()`
    */
   triggers?: TriggersHost;
   auth?: AuthFunction;

@@ -87,7 +87,15 @@ export class ConformanceTriggers implements TriggersHost {
             : filter?.userId === undefined || item.userId === filter.userId
         )
         .filter((item) => statuses === undefined || statuses.includes(item.status))
-        .sort((a, b) => b.createdAt - a.createdAt)
+        .filter(
+          (item) =>
+            filter?.before === undefined ||
+            item.createdAt < filter.before ||
+            (filter.beforeId !== undefined &&
+              item.createdAt === filter.before &&
+              item.id < filter.beforeId)
+        )
+        .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1))
         .slice(0, filter?.limit ?? 50)
         .map((item) => ({ ...item }));
     },
@@ -149,8 +157,11 @@ export interface TriggerConformanceCase {
   path: string;
   headers?: Readonly<Record<string, string>>;
   body?: string;
-  /** The adapter's anonymous policy, and whether it gets the triggers at all (default: yes) */
-  server?: { anonymous?: 'deny'; triggers?: false };
+  /**
+   * The adapter's anonymous policy as configured (unset: none), and whether it gets the triggers
+   * at all (default: yes)
+   */
+  server?: { anonymous?: 'allow' | 'deny'; triggers?: false };
   expect: {
     status: number;
     code?: string;
@@ -232,9 +243,24 @@ export const TRIGGER_CONFORMANCE_CASES: readonly TriggerConformanceCase[] = [
     expect: { status: 404, code: 'NOT_FOUND' },
   },
   {
-    name: 'shows an anonymous caller only the items without a user',
+    name: 'refuses an anonymous caller the inbox unless the server allows anonymous callers',
     method: 'GET',
     path: '/inbox',
+    expect: { status: 401, code: 'UNAUTHORIZED' },
+  },
+  {
+    name: 'refuses an anonymous caller a change to the inbox unless the server allows them',
+    method: 'PATCH',
+    path: '/inbox/i-anon',
+    headers: { 'content-type': 'application/json' },
+    body: '{"status":"read"}',
+    expect: { status: 401, code: 'UNAUTHORIZED' },
+  },
+  {
+    name: 'shows an anonymous caller only the items without a user where the server allows them',
+    method: 'GET',
+    path: '/inbox',
+    server: { anonymous: 'allow' },
     expect: { status: 200, items: ['i-anon'] },
   },
   {
@@ -256,7 +282,14 @@ export const TRIGGER_CONFORMANCE_CASES: readonly TriggerConformanceCase[] = [
     method: 'GET',
     path: '/inbox?limit=1',
     headers: ALICE,
-    expect: { status: 200, items: ['i-alice'], json: { nextBefore: 3 } },
+    expect: { status: 200, items: ['i-alice'], json: { nextBefore: 3, nextBeforeId: 'i-alice' } },
+  },
+  {
+    name: 'pages on from the cursor of the page before',
+    method: 'GET',
+    path: '/inbox?limit=1&before=3&beforeId=i-alice',
+    headers: ALICE,
+    expect: { status: 200, items: ['i-alice-old'] },
   },
   {
     name: 'refuses a limit out of range',

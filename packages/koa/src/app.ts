@@ -59,7 +59,7 @@ export function cogitatorApp(opts: CogitatorAppOptions): Router<CogitatorState> 
     createToolRoutes(),
     createWorkflowRoutes(),
     createSwarmRoutes(),
-    ...(opts.triggers ? [createInboxRoutes(opts.triggers)] : []),
+    ...(opts.triggers ? [createInboxRoutes(opts.triggers, opts.anonymous)] : []),
   ];
 
   for (const sub of publicRouters) router.use(sub.routes());

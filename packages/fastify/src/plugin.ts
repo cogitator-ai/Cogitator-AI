@@ -161,7 +161,12 @@ const cogitatorPluginImpl: FastifyPluginAsync<CogitatorPluginOptions> = async (f
         await api.register(toolRoutes);
         await api.register(workflowRoutes);
         await api.register(swarmRoutes);
-        if (triggers) await api.register(inboxRoutes, { host: triggers });
+        if (triggers) {
+          await api.register(inboxRoutes, {
+            host: triggers,
+            ...(opts.anonymous !== undefined && { anonymous: opts.anonymous }),
+          });
+        }
 
         if (websocketEnabled) {
           const { websocketRoutes } = await import('./websocket/handler.js');

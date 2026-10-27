@@ -859,7 +859,9 @@ export const cogitatorController = controller('Cogitator', (deps: CogitatorDeps)
         if (!cancelled.ok) throw refusalError(cancelled.error);
       },
     });
-  const triggers = deps.triggers && triggerRoutes(deps.triggers, { caller, admitted, errors });
+  const triggers =
+    deps.triggers &&
+    triggerRoutes(deps.triggers, { caller, admitted, errors, anonymous: deps.anonymous });
   return {
     ...routes,
     ...(cancelAgentStream && { cancelAgentStream }),

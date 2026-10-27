@@ -10,6 +10,7 @@ import {
   type StreamDocumentable,
   type TriggerRouteAnswer,
   type TriggersHost,
+  type AnonymousPolicy,
 } from '@cogitator-ai/server-shared';
 import { errorHandler } from '../hooks/error-handler.js';
 import { sendRouteError } from './utils.js';
@@ -34,6 +35,11 @@ function firstValues(query: unknown): Record<string, string | undefined> {
 
 export interface TriggerRoutesOptions {
   host: TriggersHost;
+  /**
+   * The plugin's anonymous policy as configured: without `'allow'` a caller without a user id
+   * gets `401` from the inbox
+   */
+  anonymous?: AnonymousPolicy;
 }
 
 /**
@@ -87,12 +93,20 @@ export const triggerRoutes: FastifyPluginAsync<TriggerRoutesOptions> = async (
 };
 
 /** Experimental. `GET /inbox` and `PATCH /inbox/:id`, behind the plugin's auth */
-export const inboxRoutes: FastifyPluginAsync<TriggerRoutesOptions> = async (fastify, { host }) => {
+export const inboxRoutes: FastifyPluginAsync<TriggerRoutesOptions> = async (
+  fastify,
+  { host, anonymous }
+) => {
   fastify.get('/inbox', async (request, reply) => {
     try {
       return send(
         reply,
-        await listInboxRoute(host, firstValues(request.query), request.cogitatorAuth?.userId)
+        await listInboxRoute(
+          host,
+          firstValues(request.query),
+          request.cogitatorAuth?.userId,
+          anonymous
+        )
       );
     } catch (error) {
       return sendRouteError(request, reply, error, 'inbox list error');
@@ -102,7 +116,13 @@ export const inboxRoutes: FastifyPluginAsync<TriggerRoutesOptions> = async (fast
     try {
       return send(
         reply,
-        await patchInboxRoute(host, request.params.id, request.body, request.cogitatorAuth?.userId)
+        await patchInboxRoute(
+          host,
+          request.params.id,
+          request.body,
+          request.cogitatorAuth?.userId,
+          anonymous
+        )
       );
     } catch (error) {
       return sendRouteError(request, reply, error, 'inbox update error');

@@ -56,7 +56,7 @@ export function cogitatorApp(opts: CogitatorAppOptions): Hono<HonoEnv> {
   app.route('/', createToolRoutes());
   app.route('/', createWorkflowRoutes());
   app.route('/', createSwarmRoutes());
-  if (opts.triggers) app.route('/', createInboxRoutes(opts.triggers));
+  if (opts.triggers) app.route('/', createInboxRoutes(opts.triggers, opts.anonymous));
 
   if (opts.enableWebSocket) {
     app.route('/', createWebSocketRoutes(opts.websocket));

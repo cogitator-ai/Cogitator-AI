@@ -5,6 +5,7 @@ import {
   ResumableStreams,
   checkRunLimits,
   resolveSseHeartbeatMs,
+  type AnonymousPolicy,
 } from '@cogitator-ai/server-shared';
 import type { Server as HttpServer } from 'http';
 import type {
@@ -48,6 +49,8 @@ export class CogitatorServer {
   private workflows: NonNullable<CogitatorServerConfig['workflows']>;
   private swarms: NonNullable<CogitatorServerConfig['swarms']>;
   private triggers: CogitatorServerConfig['triggers'];
+  /** `anonymous` as configured, unset when it was not: the inbox is closed to anonymous callers then */
+  private readonly configuredAnonymous: AnonymousPolicy | undefined;
   private config: ResolvedServerConfig;
   private resumableStreams: ResumableStreams<AuthContext> | undefined;
   private routeContext: RouteContext | null = null;
@@ -62,6 +65,7 @@ export class CogitatorServer {
     this.triggers = options.triggers;
 
     const cfg = options.config ?? {};
+    this.configuredAnonymous = cfg.anonymous;
     this.config = {
       ...DEFAULT_CONFIG,
       ...cfg,
@@ -123,7 +127,7 @@ export class CogitatorServer {
     router.use(createToolRoutes(ctx));
     router.use(createWorkflowRoutes(ctx));
     router.use(createSwarmRoutes(ctx));
-    if (this.triggers) router.use(createInboxRoutes(this.triggers));
+    if (this.triggers) router.use(createInboxRoutes(this.triggers, this.configuredAnonymous));
 
     router.use(notFoundHandler);
     router.use(errorHandler);

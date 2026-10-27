@@ -299,6 +299,8 @@ export {
   MAX_INBOX_PAGE,
   MAX_TRIGGER_BODY_BYTES,
   TRIGGER_BODY_TOO_LARGE,
+  INBOX_SIGN_IN_REQUIRED,
+  admitInboxCaller,
   handleTriggerRoute,
   listInboxRoute,
   patchInboxRoute,

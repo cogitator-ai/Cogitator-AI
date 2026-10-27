@@ -1,5 +1,6 @@
 import { Router, raw, type Request, type Response } from 'express';
 import {
+  type AnonymousPolicy,
   MAX_TRIGGER_BODY_BYTES,
   TRIGGER_BODY_TOO_LARGE,
   handleTriggerRoute,
@@ -63,8 +64,11 @@ export function createTriggerRoutes(host: TriggersHost): Router {
   return router;
 }
 
-/** Experimental. `GET /inbox` and `PATCH /inbox/:id`, behind the server's auth */
-export function createInboxRoutes(host: TriggersHost): Router {
+/**
+ * Experimental. `GET /inbox` and `PATCH /inbox/:id`, behind the server's auth. A caller without a
+ * user id gets `401` unless `anonymous` (the server's policy as configured) is `'allow'`
+ */
+export function createInboxRoutes(host: TriggersHost, anonymous?: AnonymousPolicy): Router {
   const router = Router();
   router.get('/inbox', async (req: CogitatorRequest, res: Response) => {
     try {
@@ -73,7 +77,8 @@ export function createInboxRoutes(host: TriggersHost): Router {
         await listInboxRoute(
           host,
           req.query as Record<string, string | undefined>,
-          req.cogitator?.auth?.userId
+          req.cogitator?.auth?.userId,
+          anonymous
         )
       );
     } catch (error) {
@@ -82,7 +87,10 @@ export function createInboxRoutes(host: TriggersHost): Router {
   });
   router.patch('/inbox/:id', async (req: CogitatorRequest<{ id: string }>, res: Response) => {
     try {
-      send(res, await patchInboxRoute(host, req.params.id, req.body, req.cogitator?.auth?.userId));
+      send(
+        res,
+        await patchInboxRoute(host, req.params.id, req.body, req.cogitator?.auth?.userId, anonymous)
+      );
     } catch (error) {
       handleRouteError(res, error, 'Inbox error');
     }

@@ -693,7 +693,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
         tags: ['triggers'],
         summary: "The caller's inbox",
         description:
-          "Results, failures, approvals and questions of routines, newest first: the items of the caller's user id, or of no user for an anonymous caller",
+          "Results, failures, approvals and questions of routines, newest first: the items of the caller's user id. A caller without one gets 401 unless the server is set to anonymous: 'allow', then the items of no user",
         parameters: [
           {
             name: 'status',
@@ -724,6 +724,14 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
               'Only items created before this time (ms), the `nextBefore` of the page before',
             schema: { type: 'integer' },
           },
+          {
+            name: 'beforeId',
+            in: 'query',
+            required: false,
+            description:
+              'With `before`: also the items created at that time whose id sorts before this one, the `nextBeforeId` of the page before',
+            schema: { type: 'string' },
+          },
         ],
         responses: {
           200: {
@@ -736,6 +744,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
                   properties: {
                     items: { type: 'array', items: { $ref: '#/components/schemas/InboxItem' } },
                     nextBefore: { type: 'integer' },
+                    nextBeforeId: { type: 'string' },
                   },
                 },
               },
@@ -745,6 +754,11 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
             description: 'A query parameter is not valid (INVALID_INPUT)',
             content: errorContent,
           },
+          401: {
+            description:
+              "A caller without a user id where the server is not set to anonymous: 'allow' (UNAUTHORIZED)",
+            content: errorContent,
+          },
         },
       },
     };
@@ -752,6 +766,8 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
       patch: {
         tags: ['triggers'],
         summary: 'Mark an inbox item read, unread or archived',
+        description:
+          'Changes the status only: whether an approval or question was answered (`answeredAt`) stays as it is',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         requestBody: {
           required: true,
@@ -774,6 +790,11 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
             description: 'The body is not `{ status }` (INVALID_INPUT)',
             content: errorContent,
           },
+          401: {
+            description:
+              "A caller without a user id where the server is not set to anonymous: 'allow' (UNAUTHORIZED)",
+            content: errorContent,
+          },
           404: { description: "No such item of the caller's (NOT_FOUND)", content: errorContent },
         },
       },
@@ -782,7 +803,7 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
     const schemas = (components.schemas ??= {});
     schemas.TriggerFireResult = {
       type: 'object',
-      required: ['type', 'status', 'eventId', 'routineId', 'triggerId'],
+      required: ['type', 'status', 'eventId', 'triggerId'],
       properties: {
         type: { type: 'string', enum: ['routine_fire'] },
         status: { type: 'string', enum: ['started', 'queued', 'skipped', 'duplicate'] },
@@ -806,6 +827,10 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
         status: { type: 'string', enum: ['unread', 'read', 'archived'] },
         createdAt: { type: 'integer' },
         updatedAt: { type: 'integer' },
+        answeredAt: {
+          type: 'integer',
+          description: 'When a person answered the approval or question, set once',
+        },
         routineId: { type: 'string' },
         triggerId: { type: 'string' },
         triggerEventId: { type: 'string' },

@@ -8,19 +8,23 @@ import type {
   TriggerHttpResponse,
 } from '@cogitator-ai/types';
 import { z } from 'zod';
+import type { AnonymousPolicy } from './contract.js';
 
 /**
  * Experimental. The routes of triggers and the inbox every adapter serves when given `triggers`
  * (the runtime's `cog.experimental_triggers`):
  * - `POST /triggers/:id/fire`: an API trigger, `Authorization: Bearer <token>`, `{ "text": "..." }`
  * - `POST /triggers/:id/webhook`: a webhook, GitHub, email or Slack trigger, signed by its sender
- * - `GET /inbox`: the caller's inbox items, `?status=unread&kind=failure&limit=20&before=<ms>`
+ * - `GET /inbox`: the caller's inbox items, `?status=unread&kind=failure&limit=20`, the next
+ *   page with `&before=<nextBefore>&beforeId=<nextBeforeId>` of the page before
  * - `PATCH /inbox/:id`: `{ "status": "read" | "unread" | "archived" }`
  *
  * The two trigger routes check their caller themselves (token, signature) and read the raw body,
  * so they run before the adapter's own auth and JSON body parsing. The inbox routes go through
- * the adapter's auth: a caller sees and changes only items of their user id, an anonymous caller
- * only items without one
+ * the adapter's auth: a caller sees and changes only items of their user id. A caller without
+ * one is refused (`401`) unless the adapter is set to `anonymous: 'allow'` explicitly, then they
+ * see the items without a user. Routines run without anyone watching, so the inbox stays closed
+ * by default even where the adapter lets anonymous callers chat
  */
 export const TRIGGER_ROUTES = {
   fire: '/triggers/:id/fire',
@@ -113,7 +117,26 @@ const listQuery = z.object({
   routineId: z.string().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(MAX_INBOX_PAGE).optional(),
   before: z.coerce.number().int().positive().optional(),
+  beforeId: z.string().min(1).max(200).optional(),
 });
+
+/** The refusal of an inbox request without a user id, under the inbox's anonymous policy */
+export const INBOX_SIGN_IN_REQUIRED: TriggerRouteAnswer = refusal(
+  401,
+  'UNAUTHORIZED',
+  "The inbox needs a caller with a user id: set the adapter's auth, or anonymous: 'allow' to show callers without one the items without a user"
+);
+
+/**
+ * The refusal of an inbox caller, none when they may go on: a caller without a user id only
+ * where the adapter is set to `anonymous: 'allow'`, explicitly
+ */
+export function admitInboxCaller(
+  userId: string | undefined,
+  anonymous: AnonymousPolicy | undefined
+): TriggerRouteAnswer | undefined {
+  return userId === undefined && anonymous !== 'allow' ? INBOX_SIGN_IN_REQUIRED : undefined;
+}
 
 function listOf<T extends string>(
   value: string | undefined,
@@ -127,17 +150,26 @@ function listOf<T extends string>(
 }
 
 /**
- * Answers `GET /inbox`: `{ items, nextBefore? }`, newest first, the caller's items only.
- * `nextBefore` pages on to older items
+ * Answers `GET /inbox`: `{ items, nextBefore?, nextBeforeId? }`, newest first, the caller's items
+ * only. `before` and `beforeId` set to `nextBefore` and `nextBeforeId` page on to older items,
+ * items of the same millisecond included. `anonymous` is the adapter's policy as configured,
+ * unset for none: see {@link admitInboxCaller}
  */
 export async function listInboxRoute(
   host: TriggersHost,
   query: Readonly<Record<string, string | undefined>>,
-  userId: string | undefined
+  userId: string | undefined,
+  anonymous?: AnonymousPolicy
 ): Promise<TriggerRouteAnswer> {
+  const refused = admitInboxCaller(userId, anonymous);
+  if (refused) return refused;
   const parsed = listQuery.safeParse(query);
   if (!parsed.success) {
-    return refusal(400, 'INVALID_INPUT', 'limit is 1 to 200, before a time in ms');
+    return refusal(
+      400,
+      'INVALID_INPUT',
+      'limit is 1 to 200, before a time in ms, beforeId an item id'
+    );
   }
   const statuses = listOf<InboxItemStatus>(parsed.data.status, STATUSES);
   const kinds = listOf<InboxItemKind>(parsed.data.kind, KINDS);
@@ -156,6 +188,8 @@ export async function listInboxRoute(
     ...(kinds && { kind: kinds }),
     ...(parsed.data.routineId !== undefined && { routineId: parsed.data.routineId }),
     ...(parsed.data.before !== undefined && { before: parsed.data.before }),
+    ...(parsed.data.before !== undefined &&
+      parsed.data.beforeId !== undefined && { beforeId: parsed.data.beforeId }),
   });
   const page = items.slice(0, limit);
   const last = page[page.length - 1];
@@ -163,20 +197,28 @@ export async function listInboxRoute(
     status: 200,
     body: {
       items: page,
-      ...(items.length > limit && last !== undefined && { nextBefore: last.createdAt }),
+      ...(items.length > limit &&
+        last !== undefined && { nextBefore: last.createdAt, nextBeforeId: last.id }),
     },
   };
 }
 
 const patchBody = z.object({ status: z.enum(STATUSES) }).strict();
 
-/** Answers `PATCH /inbox/:id`: the item after the change, `404` for an item of another user */
+/**
+ * Answers `PATCH /inbox/:id`: the item after the change, `404` for an item of another user. It
+ * changes the status only: whether an approval or question was answered is not the caller's to
+ * change, `answeredAt` stays as it is
+ */
 export async function patchInboxRoute(
   host: TriggersHost,
   id: string,
   body: unknown,
-  userId: string | undefined
+  userId: string | undefined,
+  anonymous?: AnonymousPolicy
 ): Promise<TriggerRouteAnswer> {
+  const refused = admitInboxCaller(userId, anonymous);
+  if (refused) return refused;
   const parsed = patchBody.safeParse(body);
   if (!parsed.success) {
     return refusal(
