@@ -78,17 +78,18 @@ Claude Code features without a counterpart here (`lspServers`, `outputStyles`, `
 
 ## What a plugin adds
 
-| Component     | Name in the runtime                                                       | Notes                                                                                       |
-| ------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Tools         | their own name                                                            | Every agent of the runtime gets them, after its own tools and `cog.tools`                   |
-| Skills        | `plugin:skill`                                                            | Every agent may activate them with `use_skill`                                              |
-| Subagents     | `plugin:folder:name`                                                      | `permissionMode`, `hooks` and `mcpServers` of a plugin agent are ignored, as in Claude Code |
-| Commands      | `/plugin:name`, `/plugin:folder:name`                                     | Expanded before the run, as [commands](/docs/core/commands)                                 |
-| Hooks         | in the plugin's own hook layer                                            | The managed `disableAllHooks` and `allowManagedHooksOnly` still apply                       |
-| MCP servers   | `plugin:<plugin>:<server>`, tools `mcp__plugin_<plugin>_<server>__<tool>` | Connected by `experimental_plugins.mcp`, without it skipped with a diagnostic               |
-| LLM backends  | `provider/model`                                                          | The [LLMPlugin](/docs/core/llm-backends) of before is one kind of contribution              |
-| Middleware    |                                                                           | Plugins in the host's process only                                                          |
-| Studio panels |                                                                           | See [Studio panels](#studio-panels)                                                         |
+| Component     | Name in the runtime                                                       | Notes                                                                                                    |
+| ------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| Tools         | their own name                                                            | Every agent of the runtime gets them, after its own tools and `cog.tools`                                |
+| Skills        | `plugin:skill`                                                            | Every agent may activate them with `use_skill`                                                           |
+| Subagents     | `plugin:folder:name`                                                      | `permissionMode`, `hooks` and `mcpServers` of a plugin agent are ignored, as in Claude Code              |
+| Commands      | `/plugin:name`, `/plugin:folder:name`                                     | Expanded before the run, as [commands](/docs/core/commands)                                              |
+| Hooks         | in the plugin's own hook layer                                            | The managed `disableAllHooks` and `allowManagedHooksOnly` still apply                                    |
+| MCP servers   | `plugin:<plugin>:<server>`, tools `mcp__plugin_<plugin>_<server>__<tool>` | Connected by `experimental_plugins.mcp`, without it skipped with a diagnostic                            |
+| LLM backends  | `provider/model`                                                          | The [LLMPlugin](/docs/core/llm-backends) of before is one kind of contribution                           |
+| Middleware    |                                                                           | Plugins in the host's process only                                                                       |
+| Studio panels |                                                                           | See [Studio panels](#studio-panels)                                                                      |
+| Routines      | `plugin:id`, triggers `plugin:id.<trigger>`                               | Fired by the runtime's [trigger manager](/docs/core/triggers#plugins), a run holds a lease on the plugin |
 
 A run takes what the live plugins add when it starts, so a reload never changes a run that is going on.
 
@@ -163,16 +164,17 @@ export default experimental_definePlugin({
 });
 ```
 
-| `PluginContext`                                                                           |                                                                             |
-| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `plugin`                                                                                  | `{ id, name, version, root, dataDir, isolated }`                            |
-| `options`, `secret(key)`                                                                  | Option values that are not secrets, and a secret from the store             |
-| `files`, `fetch`, `exec`                                                                  | What the plugin may do beyond its folder, checked against its `permissions` |
-| `registerTool(tool)`                                                                      | A `tool()` or a spec with a JSON Schema `parameters`                        |
-| `registerSkill`, `registerAgent`, `registerCommand`, `registerHooks`, `registerMcpServer` | The components a folder plugin declares, in code                            |
-| `registerLLMBackend(plugin)`                                                              | An `LLMPlugin`: agents with models `provider/model` run on it               |
-| `registerMiddleware(middleware)`, `registerPanel(panel)`                                  | Run middleware (host process only) and Studio panels                        |
-| `onDispose(dispose)`, `signal`, `logger`                                                  | Cleanup, an abort signal of the unload, a logger tagged with the plugin     |
+| `PluginContext`                                                                           |                                                                                     |
+| ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `plugin`                                                                                  | `{ id, name, version, root, dataDir, isolated }`                                    |
+| `options`, `secret(key)`                                                                  | Option values that are not secrets, and a secret from the store                     |
+| `files`, `fetch`, `exec`                                                                  | What the plugin may do beyond its folder, checked against its `permissions`         |
+| `registerTool(tool)`                                                                      | A `tool()` or a spec with a JSON Schema `parameters`                                |
+| `registerSkill`, `registerAgent`, `registerCommand`, `registerHooks`, `registerMcpServer` | The components a folder plugin declares, in code                                    |
+| `registerLLMBackend(plugin)`                                                              | An `LLMPlugin`: agents with models `provider/model` run on it                       |
+| `registerMiddleware(middleware)`, `registerPanel(panel)`                                  | Run middleware (host process only) and Studio panels                                |
+| `registerRoutine(routine)`, `registerTrigger(routineId, spec)`                            | [Routines](/docs/core/triggers#plugins) named `plugin:id` and more triggers of them |
+| `onDispose(dispose)`, `signal`, `logger`                                                  | Cleanup, an abort signal of the unload, a logger tagged with the plugin             |
 
 `ToolRegistry.register()` and `registerLLMBackend()` return their disposer too.
 

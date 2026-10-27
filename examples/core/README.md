@@ -47,6 +47,7 @@ cp .env.example .env  # add GOOGLE_API_KEY at minimum
 | 30  | `30-durable-runs.ts`      | A durable run killed with `SIGKILL` mid-tool, recovered by another process with `recoverRuns()`                                  |
 | 31  | `31-rewind.ts`            | File checkpoints per message, a rewind of conversation and files, a fork into another directory                                  |
 | 32  | `32-plugins.ts`           | A Claude Code plugin loaded unchanged, a plugin in code, an isolated plugin refused by its permissions, hot reload by generation |
+| 33  | `33-triggers.ts`          | Routines on a cron schedule, an API trigger and a signed GitHub webhook, an injection kept as data, the inbox and an approval    |
 
 ## Running
 

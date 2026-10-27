@@ -695,6 +695,8 @@ const scheduler = new HeartbeatScheduler(store, {
 scheduler.start();
 ```
 
+`HeartbeatScheduler` is a client of the core's scheduler (`experimental_Scheduler`) and `getNextCronMs` of its cron engine (`channelsCron`): 5 fields, 6 with seconds first, presets such as `@daily`, IANA time zones. A task's description reaches the agent wrapped as data it wrote earlier (`<trigger-payload source="agent" untrusted="true">`), not spliced into the instruction, and the message's `raw.trigger` carries the event. Entries of the core's trigger manager (`entry.trigger`) are left to it, so both may share one store.
+
 Schedule types: `cron` (recurring, next fire computed with `cron-parser`, honors `timezone`), `recurring` (interval), `fixed` (one-shot). Consecutive failures are carried across reschedules, and a one-shot job whose `onFire` throws stays pending to fire again (unless `bestEffort`). After `maxRetries` the job is skipped until `enableJob()`. A fired job reaches `onFire` as a message on the `channel` / `channelId` / `userId` / `topicId` / `conversationId` stored in its `metadata`, and `staggerMs` adds a random delay before the first poll. Docs: [Scheduler](https://cogitator.app/docs/channels/scheduler).
 
 With a store that claims timers (`claimTtl` / `renew` / `release`, e.g. the Redis/Postgres timer stores of `@cogitator-ai/workflows`), the claim is renewed right before a task fires and every `claimTtl / 3` while it runs; `onClaimLost(entry)` reports a claim that is gone (the task is skipped before firing, or another worker may fire it too). Claims are released for disabled tasks, tasks over `maxRetries` and overdue tasks not reached before `stop()`.
@@ -705,6 +707,41 @@ await scheduler.enableJob(id);
 await scheduler.disableJob(id);
 await scheduler.cancelJob(id);
 ```
+
+## Triggers and the inbox (experimental)
+
+The core's trigger manager (`experimental_triggers`) starts routines from schedules, API calls and webhooks. The channels package gives it two pieces:
+
+```typescript
+import { experimental_channelSink, experimental_emailTriggerParser } from '@cogitator-ai/channels';
+
+const cog = new Cogitator({
+  experimental_triggers: {
+    agents: { assistant },
+    sinks: [experimental_channelSink(telegram, { channelId: ownerChatId })], // results to the owner's chat
+    routines: [
+      {
+        id: 'mail',
+        prompt: 'Sort the mail that came in and tell me what needs an answer.',
+        target: { agent: 'assistant' },
+        owner: { channel: 'telegram', channelId: ownerChatId },
+        triggers: [
+          {
+            kind: 'email',
+            provider: 'mailgun',
+            signingKey: { env: 'MAILGUN_SIGNING_KEY' },
+            parse: experimental_emailTriggerParser('mailgun'), // MIME, DKIM/SPF verdict, quoted reply cut
+          },
+        ],
+      },
+    ],
+  },
+});
+```
+
+- `experimental_channelSink(channel, { channelId?, filter?, format? })` sends each new inbox item to the routine's `owner` chat when the owner is on this channel, else to `channelId`.
+- `experimental_emailTriggerParser(provider)` reads a provider's inbound webhook as the email channel does. The email trigger checks the Mailgun signature or the Postmark and SendGrid secret before.
+- `verifyGitHubSignature`, `verifyMailgunSignature` and `secretsEqual` are the core's, so a channel and a trigger check a webhook alike.
 
 ## RuntimeBuilder (YAML assistants)
 

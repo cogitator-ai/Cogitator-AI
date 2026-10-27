@@ -84,8 +84,11 @@ interface CogitatorAppOptions {
   authorizeThread?: (auth, threadId) => boolean | Promise<boolean>; // false answers 403 THREAD_FORBIDDEN
   deps?: (ctx) => unknown | Promise<unknown>; // the deps agent runs pass to their tools, never from the body
   workflowCheckpoints?: CheckpointStore; // workflow checkpoints and /workflows/:name/resume, none by default
+  triggers?: TriggersHost; // experimental: the trigger manager, serves /triggers/:id/fire, /webhook and /inbox
 }
 ```
+
+With `triggers` the router serves the [trigger and inbox routes](/docs/server-adapters#triggers-and-inbox), the two trigger routes before `auth`, the JSON body parser and `bodyLimit`.
 
 WebSocket support is attached to the HTTP server with [`setupWebSocket`](#websocket), not through router options.
 

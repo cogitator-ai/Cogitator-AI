@@ -48,7 +48,7 @@ const PROOF_POINTS = [
   },
   {
     label: 'cronTrigger · webhookTrigger',
-    text: 'Start runs on a cron schedule in any time zone, from a rate-limited webhook, or on an internal event.',
+    text: 'Start runs on a cron schedule in any time zone, from a rate-limited webhook, or on an internal event. Routines start them from GitHub, email or Slack too, once per event, with the results in an inbox.',
     href: '/docs/workflows/scheduling',
     link: 'Scheduling',
   },

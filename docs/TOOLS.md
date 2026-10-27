@@ -219,7 +219,7 @@ function createOrderTools(api: OrdersApi) {
 }
 ```
 
-`createMemoryTools`, `createSchedulerTools` and the browser tool factories return their tools the same way.
+`createMemoryTools`, `createSchedulerTools` and the browser tool factories return their tools the same way. `createSchedulerTools` takes cron expressions of 5 or 6 fields and presets such as `@daily` in a `timezone`, first fires a cron task at its real occurrence, and never shows or cancels the schedules of routines kept in the same store.
 
 ---
 

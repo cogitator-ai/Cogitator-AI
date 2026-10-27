@@ -86,10 +86,11 @@ interface CogitatorPluginOptions {
   authorizeThread?: (auth: AuthContext | undefined, threadId: string) => boolean | Promise<boolean>;
   deps?: (request: FastifyRequest) => unknown | Promise<unknown>; // deps of agent runs, built per request
   workflowCheckpoints?: CheckpointStore; // workflow checkpoints and /workflows/:name/resume, none by default
+  triggers?: TriggersHost; // experimental: the trigger manager, serves /triggers/:id/fire, /webhook and /inbox
 }
 ```
 
-`enableSwagger` and `enableWebSocket` default to off.
+`enableSwagger` and `enableWebSocket` default to off. With `triggers` the plugin serves the [trigger and inbox routes](/docs/server-adapters#triggers-and-inbox), the two trigger routes in a context of their own with a raw body parser, so none of the plugin's hooks (`auth`, the anonymous policy, the JSON body check, rate limiting) run on them.
 
 ## Authentication
 

@@ -804,6 +804,52 @@ cog.experimental_plugins.list(); // id, status, generation, contributions, diagn
 
 See [Plugins](https://cogitator.app/docs/core/plugins).
 
+### Triggers, routines and the inbox (experimental)
+
+`experimental_triggers` gives the runtime routines: a saved task (`prompt`) on an agent or a workflow, and what starts it, a cron schedule, an API call with its own bearer token, a webhook signed with HMAC, GitHub deliveries, inbound mail (Mailgun, Postmark, SendGrid) or Slack events. Each firing starts a session with the routine's prompt as the task and what the event carried after it in a `<trigger-payload untrusted="true">` block, as data. Results, failures and runs waiting for a person land in an inbox, and in the `Notification` hooks as `routine_result` and `routine_failed`.
+
+```typescript
+import { Agent, Cogitator, experimental_fileTriggerStores } from '@cogitator-ai/core';
+
+const assistant = new Agent({ name: 'assistant', model: 'ollama/qwen2.5:7b', instructions: '...' });
+
+const cog = new Cogitator({
+  durable: true, // a firing's run survives a restart
+  experimental_triggers: {
+    ...experimental_fileTriggerStores(), // .cogitator/triggers, shared with the CLI
+    agents: { assistant },
+    routines: [
+      {
+        id: 'digest',
+        prompt: 'Summarize what happened in the repository today.',
+        target: { agent: 'assistant' },
+        triggers: [
+          { kind: 'cron', cron: '0 18 * * 1-5', timezone: 'Europe/Moscow' },
+          {
+            kind: 'github',
+            secret: { env: 'GITHUB_WEBHOOK_SECRET' },
+            events: ['pull_request.opened'],
+          },
+          { kind: 'api' }, // POST /triggers/digest.api/fire with a token from issueToken()
+        ],
+      },
+    ],
+  },
+});
+
+const triggers = cog.experimental_triggers!;
+await triggers.start(); // schedules from the routines, polling, durable runs continued
+const { token } = await triggers.issueToken('digest.api'); // shown once, kept as its SHA-256
+await triggers.inbox.list({ status: 'unread' });
+```
+
+- One scheduler core: `experimental_createCronEngine` over `cron-parser` (an optional peer, loaded on first use: 5 or 6 fields, `@daily` and the other presets, time zones), `experimental_TimerClaims` and `experimental_TimerPoller` for the claim, renew and release logic over any `TimerStore`, `experimental_Scheduler` on top. `HeartbeatScheduler` of channels and `TimerManager`, `JobScheduler` and `CronTriggerExecutor` of workflows run on them. `InMemoryTimerStore` and `FileTimerStore` live here now.
+- A firing starts one run: deliveries are deduplicated by their id (`X-GitHub-Delivery`, Slack's `event_id`, `Idempotency-Key`), the run id is made from the trigger and the occurrence, both claimed in the routine store, and a durable run with that id is held by its process. `overlap` (`skip`, `queue`, `parallel`, `replace`) and `maxConcurrent` decide what a firing does while a run goes on, `catchUp` (`latest`, `none`, `all`, `catchUpWindowMs`) what a schedule does about occurrences it missed.
+- Stores: routines made at run time, trigger state, history and claims in `experimental_InMemoryRoutineStore`, `experimental_FileRoutineStore`, `experimental_RedisRoutineStore` or `experimental_PostgresRoutineStore`, the inbox in the same four kinds. The Redis and Postgres stores start each firing once across processes.
+- `triggers.schedulerTools('assistant')` gives an agent `schedule_task`, `list_tasks` and `cancel_task` whose tasks this manager runs on it. `createSchedulerTools` takes `timezone`, presets and 6 fields, first fires at the real occurrence, and takes `maxTasks` and `requiresApproval`.
+- Plugins register routines and triggers with `registerRoutine` and `registerTrigger`. Server adapters serve `POST /triggers/:id/fire`, `/triggers/:id/webhook`, `GET /inbox` and `PATCH /inbox/:id` when given `triggers`. Studio has Inbox and Schedules, the CLI `cogitator schedule`, `cogitator inbox` and `cogitator trigger`.
+- Missing routines, triggers and items fail with `TRIGGER_NOT_FOUND`, an inbox item answered twice with `INBOX_ITEM_ANSWERED`.
+
 ### PII Masking
 
 `security.pii` replaces emails, phones, card numbers (Luhn-checked), IBANs, SSNs, IP addresses, API keys and your own patterns with placeholders before every LLM request, so the provider never sees them:
@@ -1101,7 +1147,7 @@ Also not in `builtinTools`, these build tools around your own stores. `createMem
 | `createMemoryTools({ graphAdapter, agentId, coreFacts?, embeddingFn?, items?, memory? })`                      | `remember`, `recall`, `forget` on a knowledge graph and memory items (`items`). With `memory`, `remember` keeps a fact as the user's only when its `quote` is in one of the run user's own messages on the thread's active branch, and `recall` ranks the items with the `MemoryRetriever` of `hybrid` recall |
 | `createMemorySearchTools({ memory, agentId, items?, embedding?, messageIndex?, timeZone?, placeOf? })`         | `search_memory`, `open_turns`, `list_entities`: the agent searches the turns of its thread and memory items itself, with references to cite. `cog.memorySearchTools(memoryAgentId)` builds them over the runtime's memory                                                                                     |
 | `memoryFileTool({ memory, agentId, scope?, readOnly?, placeOf?, files? })`                                     | `memory`: notes under `/memories` with the commands of Anthropic's memory tool, sent as the native `memory_20250818` to Claude 4 and later. `memory.files` gives it to every agent                                                                                                                            |
-| `createSchedulerTools({ store, defaultChannel?, defaultUserId? })`                                             | `schedule_task`, `list_tasks`, `cancel_task` on a `TimerStore`                                                                                                                                                                                                                                                |
+| `createSchedulerTools({ store, defaultChannel?, defaultUserId?, cron?, timezone?, agent?, maxTasks? })`        | `schedule_task` (delay, time, or cron with `timezone`, presets and 6 fields), `list_tasks`, `cancel_task` on a `TimerStore`                                                                                                                                                                                   |
 | `createDeviceTools()`, `createCapabilitiesTool(doc)`, `createSelfTools({ toolsDir })` / `loadCustomTools(dir)` | Device info, a capabilities description, and tools an agent writes to a directory                                                                                                                                                                                                                             |
 
 ### Web Search Tool

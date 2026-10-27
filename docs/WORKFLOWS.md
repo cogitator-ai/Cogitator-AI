@@ -893,6 +893,10 @@ const docWorkflow = new WorkflowBuilder<DocState>('analyze-documents')
 
 `executeMapReduce(state, config)` runs the same config outside a workflow; built-in reducers (`collect`, `sum`, `count`, `groupBy`, `stats`, ...) are on the [patterns page](https://cogitator.app/docs/workflows/patterns).
 
+### Routines (experimental)
+
+A routine of the core's trigger manager (`experimental_triggers`) can run a workflow: `experimental_routineWorkflow({ workflow, runtime })` makes one, its human nodes wait for approvals in the inbox and the manager's `respond()` answers them, nodes that finally fail go to the inbox and the dead letter queue (`experimental_inboxNotifier`, `experimental_inboxDeadLetterQueue`). The cron helpers, `TimerManager`, `JobScheduler` and `CronTriggerExecutor` run on the core's scheduler, and `InMemoryTimerStore` and `FileTimerStore` are the core's classes. See [Triggers](https://cogitator.app/docs/core/triggers).
+
 ### Event-Driven (Webhooks & Cron)
 
 `TriggerManager` keeps triggers and calls `onTriggerFire` when one fires; start the workflow there:
@@ -917,7 +921,7 @@ const triggerManager = createTriggerManager({
       triggerId: trigger.id,
     }),
 });
-triggerManager.start(); // register / fire / handleWebhook throw until started
+await triggerManager.start(); // brings back the triggers of its store, register / fire / handleWebhook throw until started
 
 const webhookId = await triggerManager.register({
   workflowName: 'pr-review',
@@ -1024,6 +1028,7 @@ const jobId = manager.registerCronJob(researchWorkflow, '0 9 * * *', {
   jobOptions: { input: { topic: 'WebGPU' }, timeout: 10 * 60 * 1000, maxRetries: 2 },
 });
 manager.setCronJobEnabled(jobId, false); // also: unregisterCronJob(jobId), getCronJobs()
+// an invalid expression or time zone throws VALIDATION_ERROR when the job is registered
 
 // inspect runs
 const run = await manager.getStatus(runId);
