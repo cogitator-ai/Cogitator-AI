@@ -316,6 +316,24 @@ describe('workflows on the core scheduler', () => {
     second.dispose();
   });
 
+  it('tells apart triggers whose inputs differ by an enabled field', async () => {
+    const store = new InMemoryTriggerStore();
+    const manager = createTriggerManager({ store, onTriggerFire: async () => 'run' });
+    await manager.start();
+    const cron = (enabled: boolean, triggerEnabled = true) => ({
+      workflowName: 'w',
+      type: 'cron' as const,
+      config: { ...cronTrigger('0 9 * * *', { input: { enabled } }), enabled: triggerEnabled },
+      enabled: triggerEnabled,
+    });
+    const on = await manager.register(cron(true));
+    const off = await manager.register(cron(false));
+    expect(off).not.toBe(on);
+    expect(await manager.register(cron(true, false))).toBe(on);
+    expect(await store.list()).toHaveLength(2);
+    manager.dispose();
+  });
+
   it('keeps triggers whose functions differ apart, and takes over one with the same functions', async () => {
     const store = new InMemoryTriggerStore();
     const manager = createTriggerManager({ store, onTriggerFire: async () => 'run' });
