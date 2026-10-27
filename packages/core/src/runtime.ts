@@ -314,6 +314,7 @@ import {
   ErrorCode,
   resolveModelRoute,
   WORKSPACE_SNAPSHOT_MAX_FILE_BYTES,
+  WorkspaceError,
 } from '@cogitator-ai/types';
 import {
   buildInitialMessages,
@@ -8010,7 +8011,9 @@ export class Cogitator implements ToolInvoker {
    * covers every path the restore changes or deletes: it leaves out only what the checkpoint
    * `target` left out (which the restore never touches), keeps files as large as the largest one
    * the restore rewrites or deletes, and keeps a retention of the workspace from pruning `target`
-   * before it is restored
+   * before it is restored. A restore that would change a path the safety snapshot could not keep
+   * (an unreadable file) is refused with `DENIED` before anything changes, as it could not be
+   * undone
    */
   private async restoreWithSafety(
     files: FileRestorePlan,
@@ -8034,6 +8037,18 @@ export class Cogitator implements ToolInvoker {
         protect: [target.id],
         metadata: { ...place, safety: true },
       });
+      const changed = [...plan.restored, ...plan.deleted];
+      const missed = (safety.skipped ?? [])
+        .map((skip) => skip.path)
+        .filter((path) => changed.some((each) => each === path || each.startsWith(`${path}/`)));
+      if (missed.length > 0) {
+        await workspace.deleteSnapshot?.(safety.id).catch(() => undefined);
+        throw new WorkspaceError(
+          'DENIED',
+          `The ${place.reason} would change ${missed.join(', ')}, which cannot be read, so the snapshot taken first could not keep them to undo it: make them readable (or move them away) and ${place.reason} again`,
+          { path: missed[0] }
+        );
+      }
       safetySnapshotId = safety.id;
     }
     const restored = await files.restore();

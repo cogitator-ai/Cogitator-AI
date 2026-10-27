@@ -353,26 +353,31 @@ export class SnapshotStore {
     return this.exclusive(() => this.collect(graceMs));
   }
 
-  /** Copies snapshot `id`, its manifest and every blob it uses, into `target` */
+  /**
+   * Copies snapshot `id`, its manifest and every blob it uses, into `target`, with a working
+   * marker in both stores, so a collection of another process sweeps neither meanwhile
+   */
   copyTo(id: string, target: SnapshotStore): Promise<WorkspaceSnapshot> {
     if (target === this) return this.get(id);
     const [first, second] = this.root < target.root ? [this, target] : [target, this];
     return first.exclusive(() =>
       second.exclusive(() =>
-        target.working(async () => {
-          const manifest = await this.manifest(id);
-          const hashes = await this.reachable(manifest);
-          await target.prepare();
-          const shards = new Set<string>();
-          for (const hash of hashes) {
-            const bytes = await this.readBlob(hash);
-            if (await target.blobSized(hash, bytes.byteLength)) continue;
-            await target.putBlob(hash, bytes, shards);
-          }
-          await target.syncShards(shards);
-          await target.writeManifest(manifest);
-          return recordOf(manifest);
-        })
+        this.working(() =>
+          target.working(async () => {
+            const manifest = await this.manifest(id);
+            const hashes = await this.reachable(manifest);
+            await target.prepare();
+            const shards = new Set<string>();
+            for (const hash of hashes) {
+              const bytes = await this.readBlob(hash);
+              if (await target.blobSized(hash, bytes.byteLength)) continue;
+              await target.putBlob(hash, bytes, shards);
+            }
+            await target.syncShards(shards);
+            await target.writeManifest(manifest);
+            return recordOf(manifest);
+          })
+        )
       )
     );
   }

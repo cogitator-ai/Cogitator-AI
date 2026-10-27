@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -6,6 +6,7 @@ import { z } from 'zod';
 import {
   CogitatorError,
   ErrorCode,
+  WorkspaceError,
   FILE_CHECKPOINT_KEY,
   fileCheckpointOf,
   type ChatRequest,
@@ -19,6 +20,7 @@ import { Cogitator } from '../cogitator';
 import { tool } from '../tool';
 import { workspaceTools } from '../tools/workspace-tools';
 import { LocalWorkspace } from '../workspace/local-workspace';
+import { WorkspaceRuns } from '../cogitator/workspace-runs';
 import { answer, callTools, deferred, scriptedBackend } from './helpers/scripted-backend';
 
 let base: string;
@@ -284,6 +286,120 @@ describe('rewind and fork guards, round two', () => {
     expect(report.runs.interrupted).toHaveLength(1);
     await expect(aside).rejects.toMatchObject({ code: ErrorCode.RUN_INTERRUPTED });
     gate.resolve();
+  });
+});
+
+describe('rewind and fork guards, round three', () => {
+  const asRoot = process.getuid?.() === 0;
+
+  it('refuses a restore it could not undo, a file in the way that cannot be read', async () => {
+    if (asRoot) return;
+    const { cog } = runtime({ one: [write('a.txt', '1')], two: [write('a.txt', '2')] });
+    const agent = coder();
+    await cog.run(agent, { input: 'one', threadId: 'u' });
+    await cog.run(agent, { input: 'two', threadId: 'u' });
+    const entries = await path(cog, 'u');
+    const point = entries[entries.findIndex((entry) => entry.message.content === 'two') - 1]!;
+    const before = (await workspace.listSnapshots()).map((snapshot) => snapshot.id);
+    chmodSync(join(root, 'a.txt'), 0o000);
+    try {
+      const refused = await cog
+        .rewind('u', point.id, { files: true, agents: [agent] })
+        .catch((error: unknown) => error);
+      expect(WorkspaceError.is(refused, 'DENIED')).toBe(true);
+      expect((refused as Error).message).toContain('a.txt');
+      expect((await workspace.listSnapshots()).map((snapshot) => snapshot.id)).toEqual(before);
+      expect((await path(cog, 'u')).at(-1)!.id).toBe(entries.at(-1)!.id);
+    } finally {
+      chmodSync(join(root, 'a.txt'), 0o644);
+    }
+    expect(text('a.txt')).toBe('2');
+  });
+
+  it('counts a run in a workspace nested in the one a rewind restores', async () => {
+    const gate = deferred();
+    const toolStarted = deferred();
+    const inner = new LocalWorkspace({ root: join(root, 'sub'), id: 'sub-ws' });
+    try {
+      const { cog } = runtime({
+        one: [write('a.txt', '1')],
+        go: [{ id: 'w', name: 'wait', arguments: {} }],
+      });
+      const outer = coder();
+      await cog.run(outer, { input: 'one', threadId: 'outer' });
+      await cog.run(outer, { input: 'one more', threadId: 'outer' });
+      const nested = coder({
+        id: 'nested',
+        name: 'nested',
+        workspace: inner,
+        tools: [waiting(gate.promise, toolStarted)],
+      });
+      const working = cog.run(nested, { input: 'go', threadId: 'inner' });
+      working.catch(() => undefined);
+      await toolStarted.promise;
+      const entries = await path(cog, 'outer');
+      const point =
+        entries[entries.findIndex((entry) => entry.message.content === 'one more') - 1]!;
+      const refused = await cog
+        .rewind('outer', point.id, { files: true, agents: [outer] })
+        .catch((error: unknown) => error);
+      expect(codeOf(refused)).toBe(ErrorCode.WORKSPACE_BUSY);
+      gate.resolve();
+      await working;
+      writeFileSync(join(root, 'a.txt'), 'changed');
+      const report = await cog.rewind('outer', point.id, { files: true, agents: [outer] });
+      expect(report.files?.restored).toContain('a.txt');
+    } finally {
+      await inner.dispose();
+    }
+  });
+
+  it('matches runs, tool calls and holds of overlapping roots both ways', async () => {
+    const runs = new WorkspaceRuns();
+    const parent = new LocalWorkspace({ root });
+    const child = new LocalWorkspace({ root: join(root, 'pkg') });
+    const sibling = new LocalWorkspace({ root: join(base, 'project-other') });
+    const done = deferred();
+    const run = (runId: string) => ({
+      runId: () => runId,
+      threadId: runId,
+      abort: () => undefined,
+      done: done.promise,
+    });
+    try {
+      await Promise.all([parent.start(), child.start(), sibling.start()]);
+      const inChild = await runs.enter(run('child-run'), child);
+      expect((await runs.active(parent)).map((each) => each.runId())).toEqual(['child-run']);
+      expect(await runs.active(sibling)).toEqual([]);
+      const inParent = await runs.enter(run('parent-run'), parent);
+      expect((await runs.active(child)).map((each) => each.runId()).sort()).toEqual([
+        'child-run',
+        'parent-run',
+      ]);
+      const tool = deferred();
+      inChild.track(tool.promise);
+      expect(await runs.toolsInFlight(parent)).toBe(1);
+      expect(await runs.toolsSettled(parent, 20)).toBe(false);
+      tool.resolve();
+      expect(await runs.toolsSettled(parent, 1000)).toBe(true);
+      const release = await runs.lock(parent);
+      let entered = false;
+      const waiting = runs.enter(run('late'), child).then((seat) => {
+        entered = true;
+        return seat;
+      });
+      const siblingSeat = await runs.enter(run('free'), sibling);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(entered).toBe(false);
+      release();
+      (await waiting).release();
+      inChild.release();
+      inParent.release();
+      siblingSeat.release();
+    } finally {
+      done.resolve();
+      await Promise.all([parent.dispose(), child.dispose(), sibling.dispose()]);
+    }
   });
 });
 

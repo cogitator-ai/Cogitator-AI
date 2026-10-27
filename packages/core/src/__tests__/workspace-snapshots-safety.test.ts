@@ -419,6 +419,36 @@ describe('snapshot store safety', () => {
     expect(text('a.txt')).toBe('a'.repeat(1000));
   });
 
+  it('marks the source store too while a copy reads it, so a collection elsewhere waits', async () => {
+    put('a.txt', 'copied content');
+    const source = SnapshotStore.detached(root);
+    const snapshot = await source.take({ workspaceId: 'a' });
+    const elsewhere = join(base, 'elsewhere-root');
+    mkdirSync(elsewhere);
+    const target = SnapshotStore.detached(elsewhere);
+    const other = SnapshotStore.detached(root);
+    const sourceManifest = join(store, 'manifests', `${snapshot.id}.json`);
+    const patched = target as unknown as { putBlob(...args: unknown[]): Promise<void> };
+    const putBlob = patched.putBlob.bind(target);
+    let swept: { deferred: boolean } | undefined;
+    patched.putBlob = async (...args: unknown[]) => {
+      if (!swept) {
+        rmSync(sourceManifest);
+        swept = await other.gc(0);
+      }
+      return putBlob(...args);
+    };
+    await source.copyTo(snapshot.id, target);
+    expect(swept?.deferred).toBe(true);
+    const fresh = new LocalWorkspace({ root: elsewhere });
+    try {
+      await fresh.restore(snapshot.id);
+      expect(readFileSync(join(elsewhere, 'a.txt'), 'utf8')).toBe('copied content');
+    } finally {
+      await fresh.dispose();
+    }
+  });
+
   it('lets go of a store once every workspace over its root is disposed', async () => {
     const held = SnapshotStore.held;
     const extra = new LocalWorkspace({ root: join(base, 'extra') });

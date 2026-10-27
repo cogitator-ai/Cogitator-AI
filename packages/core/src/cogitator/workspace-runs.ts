@@ -1,5 +1,5 @@
 import { realpath } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { resolve, sep } from 'node:path';
 import type { Workspace } from '@cogitator-ai/types';
 import { LocalWorkspace } from '../workspace/local-workspace';
 
@@ -31,15 +31,17 @@ export interface WorkspaceRegistration {
  * The runs of a runtime going on in each workspace, by the real path of its root, so a file
  * restore (`rewind`, `forkThread` with `files`) knows which runs it would race: those of other
  * threads too, as threads may share a workspace. A restore holds the workspace while it changes
- * the files ({@link lock}), and a run starting there meanwhile waits for it.
+ * the files ({@link lock}), and a run starting there meanwhile waits for it. Workspaces overlap
+ * when one root holds the other (`/project` and `/project/sub`): runs, tool calls and holds of
+ * either count for both
  */
 export class WorkspaceRuns {
   private readonly roots = new Map<string, Set<WorkspaceRun>>();
-  private readonly locks = new Map<string, Promise<void>>();
+  private readonly locks = new Map<string, Set<Promise<void>>>();
   /** Tool executions that have not settled yet, by workspace */
   private readonly tools = new Map<string, Set<Promise<unknown>>>();
 
-  /** Registers `run` in `workspace`, once a restore holding it is done */
+  /** Registers `run` in `workspace`, once a restore holding it (or one it overlaps) is done */
   async enter(
     run: WorkspaceRun,
     workspace: Workspace | undefined,
@@ -49,9 +51,7 @@ export class WorkspaceRuns {
     const add = async (each: Workspace): Promise<void> => {
       const key = await keyOf(each);
       if (entered.has(key)) return;
-      for (let held = this.locks.get(key); held; held = this.locks.get(key)) {
-        await untilSettled(held, signal);
-      }
+      await this.waitForHolds(key, signal);
       entered.add(key);
       const runs = this.roots.get(key) ?? new Set<WorkspaceRun>();
       runs.add(run);
@@ -86,21 +86,24 @@ export class WorkspaceRuns {
     };
   }
 
-  /** How many tool executions in `workspace` have not settled yet, of runs going on or ended */
+  /**
+   * How many tool executions in `workspace` (or a workspace it overlaps) have not settled yet, of
+   * runs going on or ended
+   */
   async toolsInFlight(workspace: Workspace): Promise<number> {
-    return this.tools.get(await keyOf(workspace))?.size ?? 0;
+    return this.pendingTools(await keyOf(workspace)).length;
   }
 
   /**
-   * Resolves true once every tool execution in `workspace` settled, false when some still run
-   * after `timeoutMs`
+   * Resolves true once every tool execution in `workspace` (or a workspace it overlaps) settled,
+   * false when some still run after `timeoutMs`
    */
   async toolsSettled(workspace: Workspace, timeoutMs: number): Promise<boolean> {
     const key = await keyOf(workspace);
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      const pending = this.tools.get(key);
-      if (!pending || pending.size === 0) return true;
+      const pending = this.pendingTools(key);
+      if (pending.length === 0) return true;
       const left = deadline - Date.now();
       if (left <= 0) return false;
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -114,36 +117,62 @@ export class WorkspaceRuns {
     }
   }
 
-  /** The runs going on in `workspace` */
+  /** The runs going on in `workspace`, or in a workspace it overlaps */
   async active(workspace: Workspace): Promise<WorkspaceRun[]> {
-    return [...(this.roots.get(await keyOf(workspace)) ?? [])];
+    const key = await keyOf(workspace);
+    const found = new Set<WorkspaceRun>();
+    for (const [other, runs] of this.roots) {
+      if (overlap(key, other)) for (const run of runs) found.add(run);
+    }
+    return [...found];
   }
 
   /**
-   * Holds `workspace` until the returned release: runs starting in it meanwhile wait, and a
-   * second hold waits for the first
+   * Holds `workspace` until the returned release: runs starting in it (or in a workspace it
+   * overlaps) meanwhile wait, and a second hold of an overlapping workspace waits for the first
    */
   async lock(workspace: Workspace, signal?: AbortSignal): Promise<() => void> {
     const key = await keyOf(workspace);
-    for (let held = this.locks.get(key); held; held = this.locks.get(key)) {
-      await untilSettled(held, signal);
-    }
+    await this.waitForHolds(key, signal);
     let release: () => void = () => undefined;
     const hold = new Promise<void>((done) => {
       release = done;
     });
-    this.locks.set(key, hold);
+    const holds = this.locks.get(key) ?? new Set<Promise<void>>();
+    holds.add(hold);
+    this.locks.set(key, holds);
     return () => {
-      if (this.locks.get(key) === hold) this.locks.delete(key);
+      holds.delete(hold);
+      if (holds.size === 0 && this.locks.get(key) === holds) this.locks.delete(key);
       release();
     };
+  }
+
+  private pendingTools(key: string): Promise<unknown>[] {
+    const found: Promise<unknown>[] = [];
+    for (const [other, pending] of this.tools) if (overlap(key, other)) found.push(...pending);
+    return [...new Set(found)];
+  }
+
+  /** Resolves once no hold of a workspace overlapping `key` is left */
+  private async waitForHolds(key: string, signal: AbortSignal | undefined): Promise<void> {
+    for (;;) {
+      const held = [...this.locks].flatMap(([other, holds]) =>
+        overlap(key, other) ? [...holds] : []
+      );
+      if (held.length === 0) return;
+      await untilSettled(
+        Promise.all(held).then(() => undefined),
+        signal
+      );
+    }
   }
 }
 
 /**
  * The key of a workspace: for a directory of this machine (a `LocalWorkspace`, or a workspace over
- * one such as `DockerWorkspace`) the real path of its root, so every workspace over one directory
- * shares it, for any other (a sandbox) its id
+ * one such as `DockerWorkspace`, whose root is its host's) the real path of its root, so every
+ * workspace over one directory shares it, for any other (a sandbox) its id
  */
 async function keyOf(workspace: Workspace): Promise<string> {
   const local =
@@ -152,6 +181,19 @@ async function keyOf(workspace: Workspace): Promise<string> {
   if (!local) return `workspace:${workspace.id}`;
   const root = resolve(workspace.root);
   return `local:${await realpath(root).catch(() => root)}`;
+}
+
+/** Whether two workspace keys share files: the same sandbox, or local roots one holding the other */
+function overlap(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (!a.startsWith('local:') || !b.startsWith('local:')) return false;
+  const [x, y] = [a.slice(6), b.slice(6)];
+  return within(x, y) || within(y, x);
+}
+
+function within(inner: string, outer: string): boolean {
+  const prefix = outer.endsWith(sep) ? outer : `${outer}${sep}`;
+  return inner.startsWith(prefix);
 }
 
 function untilSettled(held: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
