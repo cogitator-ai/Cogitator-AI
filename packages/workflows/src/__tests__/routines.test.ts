@@ -210,6 +210,21 @@ describe('experimental_inboxNotifier', () => {
     expect(items.filter((item) => item.kind === 'approval')).toHaveLength(1);
   });
 
+  it('puts a request in the inbox of its assignee, the routine user kept beside it', async () => {
+    const inbox = new core.experimental_Inbox();
+    const notifier = experimental_inboxNotifier(inbox, { routineId: 'r', userId: 'alice' });
+    await notifier.notify(request('req_1', { assignee: 'bob' }));
+    await notifier.notify(request('req_2'));
+    expect(await inbox.get(experimental_approvalItemId('req_1'))).toMatchObject({
+      userId: 'bob',
+      metadata: { routineUserId: 'alice', assignee: 'bob' },
+    });
+    expect((await inbox.get(experimental_approvalItemId('req_2')))?.userId).toBe('alice');
+    await notifier.notifyEscalation(request('req_1', { assignee: 'bob' }), 'Timeout exceeded');
+    await notifier.notify(request('req_1_esc', { assignee: 'carol' }));
+    expect((await inbox.get(experimental_approvalItemId('req_1_esc')))?.userId).toBe('carol');
+  });
+
   it('closes the request a delegation came from and asks the new assignee', async () => {
     const inbox = new core.experimental_Inbox();
     const notifier = experimental_inboxNotifier(inbox);
@@ -254,6 +269,28 @@ describe('workflows on the core scheduler', () => {
       id
     );
     expect(await store.list()).toHaveLength(2);
+    second.dispose();
+  });
+
+  it('fires a cron trigger with runImmediately once per start, not again when it is registered again', async () => {
+    const store = new InMemoryTriggerStore();
+    const definition = {
+      workflowName: 'w',
+      type: 'cron' as const,
+      config: cronTrigger('0 9 * * *', { runImmediately: true }),
+      enabled: true,
+    };
+    const first = createTriggerManager({ store, onTriggerFire: async () => 'run' });
+    await first.start();
+    await first.register(definition);
+    first.dispose();
+    const fired = vi.fn(async () => 'run');
+    const second = createTriggerManager({ store, onTriggerFire: fired });
+    await second.start();
+    await vi.waitFor(() => expect(fired).toHaveBeenCalledTimes(1));
+    await second.register(definition);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(fired).toHaveBeenCalledTimes(1);
     second.dispose();
   });
 

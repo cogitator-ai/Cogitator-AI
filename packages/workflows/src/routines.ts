@@ -41,7 +41,9 @@ export function experimental_approvalItemId(requestId: string): string {
 /**
  * Experimental. An approval notifier that keeps one inbox item per request of a human node, so a
  * request is never answerable from two items:
- * - a request is an `approval` item (its `approvalId` is the request)
+ * - a request is an `approval` item (its `approvalId` is the request), the item of its assignee
+ *   (`userId`) when it has one, so the person who decides sees it in their inbox, with the user
+ *   the routine runs for kept as `metadata.routineUserId`
  * - a timeout closes it, as a `failure` item nobody can answer any more
  * - an escalation closes the request that timed out the same way, the escalated request (a new
  *   one, for its new assignee) comes as its own `approval` item
@@ -63,9 +65,11 @@ export function experimental_inboxNotifier(
       id: experimental_approvalItemId(approvalId),
       approvalId,
       workflowRunId: request.workflowId,
-      ...(assignee !== undefined && origin.userId === undefined && { userId: assignee }),
+      ...(assignee !== undefined && { userId: assignee }),
       metadata: {
         ...origin.metadata,
+        ...(origin.userId !== undefined && { routineUserId: origin.userId }),
+        ...(assignee !== undefined && { assignee }),
         nodeId: request.nodeId,
         approvalType: request.type,
         ...(request.choices !== undefined && { choices: request.choices }),

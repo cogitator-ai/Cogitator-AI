@@ -286,8 +286,10 @@ export class DefaultTriggerManager implements ITriggerManager {
   /**
    * Registers a trigger and returns its id. A trigger of the store with the same workflow, type
    * and config (what `start()` brought back after a restart) is taken over instead of added
-   * again: it keeps its id and counts, takes the config and `enabled` given, and a program that
-   * registers its triggers on every boot does not get one more each time
+   * again: it keeps its id and counts, takes the `enabled` given, and a program that registers
+   * its triggers on every boot does not get one more each time. It is not started a second
+   * time, so a cron trigger with `runImmediately` fires once per start, not once more for the
+   * registration
    */
   async register(
     trigger: Omit<WorkflowTrigger, 'id' | 'createdAt' | 'triggerCount' | 'errorCount'>
@@ -311,8 +313,10 @@ export class DefaultTriggerManager implements ITriggerManager {
         }
       }
       await this.store.save(updated);
-      this.activate(updated);
-      if (!updated.enabled) this.deactivate(updated);
+      if (existing.enabled !== updated.enabled) {
+        if (updated.enabled) await this.enable(existing.id);
+        else await this.disable(existing.id);
+      }
       return existing.id;
     }
     const id = nanoid();
