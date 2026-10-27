@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 import type { EmbeddingService } from '@cogitator-ai/types';
 
+/** Bytes in one SHA-256 digest, i.e. the components one hash can fill. */
+const DIGEST_BYTES = 32;
+
 export interface MockEmbeddingServiceOptions {
   /** Length of the returned vectors. Default 64. */
   dimensions?: number;
@@ -41,12 +44,12 @@ export class MockEmbeddingService implements EmbeddingService {
     return this.vectorFor(text);
   }
 
+  /** Returns exactly what `embed` returns for each item, but as one call. */
   async embedBatch(texts: string[]): Promise<number[][]> {
     this.calls.push({ method: 'embedBatch', args: [texts] });
     return texts.map((text) => this.vectorFor(text));
   }
 
-  /** Returns exactly what `embed` returns for each item, but as one call. */
   setEmbedding(text: string, vector: number[]): void {
     this.pinned.set(text, [...vector]);
     this.cache.delete(text);
@@ -79,14 +82,19 @@ export class MockEmbeddingService implements EmbeddingService {
   }
 
   /**
-   * One unit vector per distinct text: each word contributes the bytes of
-   * its SHA-256 digest along the vector, and the sum is normalized, so a
-   * word moves every text holding it in the same direction.
+   * One unit vector per distinct text: each word contributes signed bytes of
+   * its SHA-256 digest along the vector, and the sum is normalized, so a word
+   * moves every text holding it in the same direction.
+   *
+   * Components are signed (`byte / 127.5 - 1`), so unrelated texts sit near a
+   * cosine of 0 instead of all crowding into the positive orthant. A vector
+   * longer than the 32 bytes of a digest re-hashes the word once per block of
+   * 32 dimensions, so every dimension gets its own value.
    */
   private hashBagOfWords(text: string): number[] {
     const words = text
       .toLowerCase()
-      .split(/[^a-z0-9]+/)
+      .split(/[^\p{L}\p{N}]+/u)
       .filter((word) => word !== '');
 
     const vector = new Array<number>(this.dimensions).fill(0);
@@ -96,9 +104,15 @@ export class MockEmbeddingService implements EmbeddingService {
     }
 
     for (const word of words) {
-      const digest = createHash('sha256').update(word).digest();
-      for (let i = 0; i < this.dimensions; i++) {
-        vector[i] += digest[i % digest.length] / 255;
+      for (let block = 0; block * DIGEST_BYTES < this.dimensions; block++) {
+        const digest = createHash('sha256')
+          .update(block === 0 ? word : `${block}:${word}`)
+          .digest();
+        const start = block * DIGEST_BYTES;
+        const end = Math.min(start + DIGEST_BYTES, this.dimensions);
+        for (let i = start; i < end; i++) {
+          vector[i] += digest[i - start] / 127.5 - 1;
+        }
       }
     }
 

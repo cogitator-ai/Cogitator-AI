@@ -47,6 +47,33 @@ describe('MockEmbeddingService', () => {
     expect(cosine(cat, catAgain)).toBeGreaterThan(0.5);
   });
 
+  it('keeps unrelated texts far apart', async () => {
+    const cat = await embedder.embed('the cat sat');
+    const market = await embedder.embed('stock prices');
+    const physics = await embedder.embed('quantum physics lecture');
+    const bread = await embedder.embed('banana bread recipe');
+
+    expect(cosine(cat, market)).toBeLessThan(0.3);
+    expect(cosine(physics, bread)).toBeLessThan(0.3);
+  });
+
+  it('splits words in scripts that are not Latin', async () => {
+    const russian = await embedder.embed('привет мир');
+    const japanese = await embedder.embed('日本語のテキスト');
+    const accented = await embedder.embed('café');
+
+    expect(cosine(russian, japanese)).toBeLessThan(0.3);
+    expect(accented).not.toEqual(await embedder.embed('caf'));
+  });
+
+  it('gives every dimension its own value above the digest length', async () => {
+    const wide = new MockEmbeddingService({ dimensions: 96 });
+    const vector = await wide.embed('the cat sat');
+
+    expect(vector).toHaveLength(96);
+    expect(new Set(vector).size).toBeGreaterThan(64);
+  });
+
   it('embedBatch matches embed item for item', async () => {
     const texts = ['the cat sat', 'stock prices', ''];
     const batched = await embedder.embedBatch(texts);
