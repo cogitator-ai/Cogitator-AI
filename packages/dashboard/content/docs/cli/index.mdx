@@ -261,7 +261,7 @@ cogitator rewind thread_42 entry_abc --files --no-memory --yes
 | `-r, --registry <path>` | `src/cogitator.ts` | The registry module                                               |
 | `--json`                | `false`            | Print the report as JSON                                          |
 
-Before it rewinds, the command prints the dry run (entries that leave the branch, stale memory items, files restored and deleted, runs dropped) and asks.
+Before it rewinds, the command prints the dry run (entries that leave the branch, stale memory items, files restored and deleted, runs dropped) and asks. `--json` never prompts, so it needs `--dry-run` or `--yes`. Without `--agent`, the agent is the one whose id the thread names, else the only registry agent with a workspace. The command runs in a process of its own: a run of the project's other processes is seen only when it is durable, and the command warns when runs are not durable by default, so stop such runs before you rewind with `--files`.
 
 ### cogitator build
 

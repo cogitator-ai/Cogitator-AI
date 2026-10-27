@@ -939,7 +939,7 @@ const fork = await cog.forkThread('chat', entry.id, {
 });
 ```
 
-`restore(id, { dryRun })` writes through the workspace's safe placement (atomic, `O_NOFOLLOW`), deletes what the snapshot did not have and never touches excluded or skipped paths. A rewind refuses with `THREAD_BUSY` while a run goes on in the thread unless `force`, restores files only with `files: true` (or `checkpoints.rewindFiles`), and drops the thread's paused and durable runs. `snapshots: { retain, exclude, maxFileBytes, gcGraceMs }` on the workspace and `pruneSnapshots()` keep the store small. See [File Checkpoints and Rewind](https://cogitator.app/docs/core/file-checkpoints).
+`restore(id, { dryRun })` plans first, writes through the workspace's safe placement (atomic, `O_NOFOLLOW`), deletes what the snapshot did not have and never touches excluded or skipped paths or files it could not have kept (over its size limit, unreadable). The store is owner only and safe to share between processes. A rewind holds the thread (and with files the workspace) for the whole operation, refuses with `THREAD_BUSY` while a run goes on in the thread and with `WORKSPACE_BUSY` while another thread's run works in the workspace unless `force`, checks the checkpoint belongs to the thread, takes a safety snapshot before it restores (`files.safetySnapshotId`), restores files only with `files: true` (or `checkpoints.rewindFiles`), and drops the thread's paused and durable runs. `forkThread(..., { dryRun: true })` previews a fork with files. `snapshots: { retain, exclude, maxFileBytes, gcGraceMs }` on the workspace and `pruneSnapshots()` keep the store small. See [File Checkpoints and Rewind](https://cogitator.app/docs/core/file-checkpoints).
 
 ### Tool Registry
 

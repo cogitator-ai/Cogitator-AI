@@ -289,7 +289,7 @@ cogitator rewind thread_42 entry_abc --files                # shows the plan, as
 cogitator rewind thread_42 entry_abc --files --no-memory -y # restore the files only, without a prompt
 ```
 
-Loads the runtime and agents the registry exports (`src/cogitator.ts`, `--registry` for another) and calls `cog.rewind()`. `--agent <key>` picks the agent whose workspace to restore (the thread's agent by default), `--force` aborts the runs going on in the thread, `--json` prints the report. Without a terminal it needs `--yes`. See [File Checkpoints and Rewind](https://cogitator.app/docs/core/file-checkpoints).
+Loads the runtime and agents the registry exports (`src/cogitator.ts`, `--registry` for another) and calls `cog.rewind()`. `--agent <key>` picks the agent whose workspace to restore (the thread's agent by default), `--force` aborts the runs going on in the thread, `--json` prints the report. Without a terminal it needs `--yes`, and `--json` needs `--dry-run` or `--yes`. A thread whose agent has no configured `id` falls back to the only registry agent with a workspace. It sees runs of other processes only when they are durable, and warns when runs are not durable by default. See [File Checkpoints and Rewind](https://cogitator.app/docs/core/file-checkpoints).
 
 ---
 
