@@ -6,6 +6,8 @@ import {
   Monitor,
   Moon,
   Network,
+  PanelsTopLeft,
+  Puzzle,
   Search,
   Sun,
   Workflow,
@@ -83,7 +85,16 @@ export function Sidebar({
   const connected = useStudio((state) => state.connected);
   const runs = useStudio((state) => state.runs);
   const theme = useTheme();
+  const plugins = useStudio((state) => state.plugins);
   const registry = host.state === 'ready' ? host.registry : undefined;
+  const pluginTrouble = plugins?.plugins.some(
+    (plugin) => plugin.status === 'failed' || plugin.status === 'blocked'
+  );
+  const panels = (plugins?.plugins ?? []).flatMap((plugin) =>
+    plugin.status === 'active'
+      ? plugin.contributions.panels.map((panel) => ({ plugin, panel }))
+      : []
+  );
   const is = (...parts: string[]) => parts.every((part, i) => route[i] === part);
   const live = new Set(
     Object.values(runs)
@@ -130,6 +141,19 @@ export function Sidebar({
           meta={live.size > 0 ? <span className="spinner" aria-label="runs going" /> : undefined}
         >
           Runs
+        </NavLink>
+        <NavLink
+          to={['plugins']}
+          icon={Puzzle}
+          active={route[0] === 'plugins' && route[2] !== 'panels'}
+          testId="nav-plugins"
+          meta={
+            pluginTrouble ? (
+              <span className="dot" data-state="failed" aria-label="a plugin does not work" />
+            ) : undefined
+          }
+        >
+          Plugins
         </NavLink>
 
         <div className="sb-section">
@@ -192,6 +216,23 @@ export function Sidebar({
                 }
               >
                 {swarm.name}
+              </NavLink>
+            ))}
+          </div>
+        )}
+
+        {panels.length > 0 && (
+          <div className="sb-section">
+            <div className="sb-section-title">Panels</div>
+            {panels.map(({ plugin, panel }) => (
+              <NavLink
+                key={`${plugin.id}/${panel.id}`}
+                to={['plugins', plugin.id, 'panels', panel.id]}
+                icon={PanelsTopLeft}
+                active={is('plugins', plugin.id, 'panels', panel.id)}
+                testId={`panel-${panel.id}`}
+              >
+                {panel.title}
               </NavLink>
             ))}
           </div>

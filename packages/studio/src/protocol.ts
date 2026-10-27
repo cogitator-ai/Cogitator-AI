@@ -497,6 +497,107 @@ export interface ForkRequest {
   toolResults?: Record<string, unknown>;
 }
 
+/** A Studio panel a plugin adds: a page shown in a sandboxed frame. */
+export interface PluginPanelRecord {
+  /** Unique within the plugin. */
+  id: string;
+  title: string;
+  description?: string;
+  /** Name of a Lucide icon. */
+  icon?: string;
+}
+
+/** Something found wrong with a plugin, `error` kept it or one of its parts from loading. */
+export interface PluginDiagnosticRecord {
+  level: 'error' | 'warning';
+  message: string;
+  /** The file it is about. */
+  path?: string;
+}
+
+/** What a loaded plugin added, by kind. */
+export interface PluginContributionsRecord {
+  tools: string[];
+  skills: string[];
+  agents: string[];
+  commands: string[];
+  /** Hook handlers, counted. */
+  hooks: number;
+  mcpServers: string[];
+  llmBackends: string[];
+  /** Run middleware, counted. */
+  middleware: number;
+  panels: PluginPanelRecord[];
+}
+
+/**
+ * Whether a plugin works: `active` (its generation is loaded), `disabled` (switched off),
+ * `blocked` (a dependency is missing, off, of a wrong version or in a cycle), `failed` (it did
+ * not load, see `error`), `unloaded` (the runtime's plugins were disposed).
+ */
+export type PluginStatusRecord = 'active' | 'disabled' | 'blocked' | 'failed' | 'unloaded';
+
+/** A plugin of the project's runtime, as the plugins page shows it. */
+export interface PluginRecord {
+  /** `name@marketplace`, `name@inline` for a folder of the project, `name@code` for one in code. */
+  id: string;
+  name: string;
+  displayName?: string;
+  version?: string;
+  description?: string;
+  origin: 'core' | 'code' | 'dir' | 'installed';
+  /** The manifest's format: Claude Code's, Cogitator's extension over it, or code. */
+  format: 'claude' | 'cogitator' | 'code';
+  root?: string;
+  enabled: boolean;
+  /** What decided `enabled`: a settings layer (`project`, `user` and the rest), or `default`. */
+  enabledBy: string;
+  status: PluginStatusRecord;
+  /** Why it failed or is blocked. */
+  error?: string;
+  /** How many times it loaded: a reload that fails keeps the generation that works. */
+  generation: number;
+  /** Whether it runs in a process of its own. */
+  isolated: boolean;
+  dependencies: Array<{ name: string; marketplace?: string; version?: string }>;
+  /** The permission rules it runs under, when it declares any. */
+  permissions?: { allow: string[]; deny: string[] };
+  contributions: PluginContributionsRecord;
+  diagnostics: PluginDiagnosticRecord[];
+}
+
+/** The plugins of the project's runtime. */
+export interface PluginsState {
+  /** Whether the project's runtime has plugins at all: false with a core older than them. */
+  available: boolean;
+  /**
+   * Whether the project configures `experimental_plugins`. Without it the runtime has only the
+   * core's own plugin, and nothing can be reloaded, enabled or disabled.
+   */
+  configured: boolean;
+  plugins: PluginRecord[];
+}
+
+/** How a reload went for one plugin. */
+export interface PluginReloadRecord {
+  id: string;
+  ok: boolean;
+  /** The generation that serves now: the new one, or the old one after a failure. */
+  generation: number;
+  error?: string;
+}
+
+/** What a reload, an enable or a disable did, with the plugins after it. */
+export interface PluginActionResult {
+  results: PluginReloadRecord[];
+  plugins: PluginsState;
+}
+
+/** What a panel handler returned, as JSON. */
+export interface PluginPanelCallResult {
+  result: unknown;
+}
+
 /** What the host reports while it runs things. */
 export type HostEvent =
   | {
@@ -620,7 +721,8 @@ export type StudioEvent =
   | { type: 'run'; run: RunRecord }
   | { type: 'token'; runId: string; text: string; revision: number }
   | { type: 'reasoning'; runId: string; text: string; revision: number }
-  | { type: 'thread'; thread: ThreadRecord };
+  | { type: 'thread'; thread: ThreadRecord }
+  | { type: 'plugins'; plugins: PluginsState };
 
 export type HostStatus =
   | { state: 'starting' }
@@ -685,7 +787,19 @@ export type HostRequest =
     } & ThreadForkRequest)
   | { type: 'workflow.run'; requestId: string; workflow: string; input: unknown }
   | { type: 'swarm.run'; requestId: string; swarm: string; input: string }
-  | { type: 'workflow.rerun'; requestId: string; run: RunRecord; fromNode: string };
+  | { type: 'workflow.rerun'; requestId: string; run: RunRecord; fromNode: string }
+  | { type: 'plugins.list'; requestId: string }
+  | { type: 'plugins.reload'; requestId: string; plugin: string }
+  | { type: 'plugins.enable'; requestId: string; plugin: string; enabled: boolean }
+  | { type: 'plugins.panel'; requestId: string; plugin: string; panel: string }
+  | {
+      type: 'plugins.call';
+      requestId: string;
+      plugin: string;
+      panel: string;
+      method: string;
+      params?: unknown;
+    };
 
 /** A message of a thread, replayed into a fresh memory when the host restarts. */
 export interface HistoryMessage {
@@ -698,6 +812,7 @@ export type HostMessage =
   | { type: 'ready'; registry: RegistryInfo; memory: 'project' | 'studio' }
   | { type: 'load-failed'; error: string }
   | { type: 'event'; event: HostEvent }
+  | { type: 'plugins'; plugins: PluginsState }
   | { type: 'response'; requestId: string; ok: true; data: unknown }
   | {
       type: 'response';

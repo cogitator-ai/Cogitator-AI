@@ -4,7 +4,7 @@ import { existsSync, watch, type FSWatcher } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import type { HostEvent, HostMessage, HostRequest, HostStatus } from '../protocol.js';
+import type { HostEvent, HostMessage, HostRequest, HostStatus, PluginsState } from '../protocol.js';
 
 /** Distributes `Omit` over a union, so each request keeps its own fields. */
 type WithoutId<T> = T extends unknown ? Omit<T, 'requestId'> : never;
@@ -16,6 +16,8 @@ export interface HostManagerOptions {
   watch?: boolean;
   onStatus: (status: HostStatus) => void;
   onEvent: (event: HostEvent) => void;
+  /** The project's plugins changed: one loaded, reloaded, enabled, disabled or failed. */
+  onPlugins?: (plugins: PluginsState) => void;
   /** Runs still going when the host goes away. */
   onLost: (reason: string) => void;
   /** Output of the project's own code. */
@@ -174,6 +176,9 @@ export class HostManager {
           break;
         case 'event':
           this.options.onEvent(message.event);
+          break;
+        case 'plugins':
+          this.options.onPlugins?.(message.plugins);
           break;
         case 'response': {
           const pending = this.pending.get(message.requestId);

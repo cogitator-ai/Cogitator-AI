@@ -1,5 +1,12 @@
 import { useSyncExternalStore } from 'react';
-import type { HostStatus, RunRecord, StudioEvent, StudioStats, ThreadRecord } from '../protocol';
+import type {
+  HostStatus,
+  PluginsState,
+  RunRecord,
+  StudioEvent,
+  StudioStats,
+  ThreadRecord,
+} from '../protocol';
 import { api, subscribe, type RunTree } from './api';
 
 export interface UiState {
@@ -11,6 +18,8 @@ export interface UiState {
   threads: Record<string, ThreadRecord>;
   /** Aggregates of the whole history, refreshed shortly after runs change. */
   stats?: StudioStats;
+  /** The plugins of the project's runtime, once the project loaded. */
+  plugins?: PluginsState;
 }
 
 let state: UiState = {
@@ -57,10 +66,30 @@ function scheduleStats(): void {
   statsTimer = setTimeout(() => void loadStats(), 600);
 }
 
+/** Loads the plugins of the project's runtime, kept as they are when the project does not load. */
+export async function loadPlugins(): Promise<void> {
+  try {
+    set({ plugins: await api.plugins() });
+  } catch {
+    return;
+  }
+}
+
 function apply(event: StudioEvent): void {
   switch (event.type) {
-    case 'host':
+    case 'host': {
+      const before = state.host;
       set({ host: event.status });
+      if (
+        event.status.state === 'ready' &&
+        (before.state !== 'ready' || before.loadedAt !== event.status.loadedAt)
+      ) {
+        void loadPlugins();
+      }
+      break;
+    }
+    case 'plugins':
+      set({ plugins: event.plugins });
       break;
     case 'run':
       upsertRuns([event.run]);
@@ -98,6 +127,7 @@ export async function refresh(): Promise<void> {
     threads: Object.fromEntries(response.threads.map((thread) => [thread.id, thread])),
   });
   upsertRuns(response.runs);
+  if (response.host.state === 'ready') void loadPlugins();
   await loadStats();
 }
 

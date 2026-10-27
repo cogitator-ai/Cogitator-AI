@@ -3158,6 +3158,141 @@ a.list-row:hover {
   min-width: 0;
 }
 
+/* Plugins */
+.status[data-status='active'] {
+  color: var(--ok);
+  background: var(--ok-soft);
+}
+
+.status[data-status='blocked'] {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.plugin-list {
+  display: grid;
+  gap: 16px;
+}
+
+.plugin-card {
+  scroll-margin-top: 16px;
+}
+
+.plugin-card.is-focused {
+  border-color: var(--accent-ring);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.plugin-title {
+  min-width: 0;
+}
+
+.plugin-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.plugin-body {
+  display: grid;
+  gap: 14px;
+}
+
+.plugin-body > .panel-desc,
+.plugin-body > .error-text {
+  margin: 0;
+}
+
+.plugin-section {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.plugin-section-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.plugin-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.plugin-panels {
+  display: grid;
+  gap: 4px;
+}
+
+.plugin-panel-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--accent-text);
+}
+
+.plugin-panel-link:hover {
+  background: var(--hover);
+}
+
+.plugin-panel-link .muted {
+  font-size: 12px;
+}
+
+.plugin-diagnostics {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.plugin-diagnostics li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--text-2);
+  word-break: break-word;
+}
+
+.plugin-diagnostics li svg {
+  margin-top: 3px;
+  flex-shrink: 0;
+  color: var(--warn);
+}
+
+.plugin-diagnostics li[data-level='error'] svg {
+  color: var(--error);
+}
+
+.plugin-outcome svg {
+  color: var(--ok);
+}
+
+.plugin-frame-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  padding: 16px;
+  background: var(--surface-2);
+}
+
+.plugin-frame {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
 /* Compare */
 .compare {
   display: grid;

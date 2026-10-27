@@ -30,6 +30,7 @@ import type {
   HostEvent,
   HostRequest,
   MemoryPlace,
+  PluginsState,
   RawSpan,
   RegistryInfo,
   ReplayEntry,
@@ -46,6 +47,7 @@ import type {
 } from '../protocol.js';
 import { describeRegistry } from '../registry.js';
 import { openCheckpointStore } from './checkpoints.js';
+import { ProjectPlugins } from './plugins.js';
 import { importFromProject, loadProject, type LoadedProject } from './project.js';
 
 const CHECKPOINT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -262,6 +264,7 @@ export class StudioHost {
   private constructor(
     private readonly project: LoadedProject,
     private readonly core: typeof CoreModule,
+    private readonly plugins: ProjectPlugins,
     private readonly options: {
       projectDir: string;
       studioDir: string;
@@ -270,10 +273,15 @@ export class StudioHost {
     }
   ) {}
 
+  /**
+   * Loads the project and its plugins. `onPlugins` hears every change of the runtime's plugins:
+   * one loaded, reloaded, enabled, disabled or failed.
+   */
   static async create(
     projectDir: string,
     studioDir: string,
-    emit: (event: HostEvent) => void
+    emit: (event: HostEvent) => void,
+    onPlugins: (plugins: PluginsState) => void = () => undefined
   ): Promise<StudioHost> {
     const project = await loadProject(projectDir);
     const core = await importFromProject<typeof CoreModule>(projectDir, '@cogitator-ai/core');
@@ -284,7 +292,8 @@ export class StudioHost {
       project.cogitator.memory = adapter;
       memory = 'studio';
     }
-    const host = new StudioHost(project, core, { projectDir, studioDir, memory, emit });
+    const plugins = await ProjectPlugins.open(project.cogitator, onPlugins);
+    const host = new StudioHost(project, core, plugins, { projectDir, studioDir, memory, emit });
     project.cogitator.observe(host.observer());
     return host;
   }
@@ -299,6 +308,7 @@ export class StudioHost {
 
   async close(): Promise<void> {
     for (const controller of this.controllers.values()) controller.abort(new Error(STOPPED));
+    this.plugins.close();
     await this.project.cogitator.close();
   }
 
@@ -326,6 +336,16 @@ export class StudioHost {
         return this.rewind(request.threadId, request.agent, seedOf(request), request);
       case 'thread.fork':
         return this.forkThread(request);
+      case 'plugins.list':
+        return Promise.resolve(this.plugins.state());
+      case 'plugins.reload':
+        return this.plugins.reload(request.plugin);
+      case 'plugins.enable':
+        return this.plugins.setEnabled(request.plugin, request.enabled);
+      case 'plugins.panel':
+        return this.plugins.panelHtml(request.plugin, request.panel);
+      case 'plugins.call':
+        return this.plugins.call(request.plugin, request.panel, request.method, request.params);
     }
   }
 

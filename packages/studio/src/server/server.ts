@@ -4,11 +4,15 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { basename, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { calculateCost, initializeModels } from '@cogitator-ai/models';
+import { z } from 'zod';
 import type {
   ForkRequest,
   ForkPreview,
   ForkSummary,
   HostStatus,
+  PluginActionResult,
+  PluginPanelCallResult,
+  PluginsState,
   RewindSummary,
   ThreadLineage,
   ThreadReplay,
@@ -68,6 +72,30 @@ const MIME: Record<string, string> = {
   '.woff': 'font/woff',
 };
 
+/**
+ * What a plugin panel's page may do: run its own inline scripts and styles, show inline images and
+ * fonts, nothing over the network, no forms, and in a sandbox of its own also when opened on its
+ * own, so it never runs with the studio's origin.
+ */
+const PANEL_CSP = [
+  "default-src 'none'",
+  "script-src 'unsafe-inline'",
+  "style-src 'unsafe-inline'",
+  'img-src data:',
+  'font-src data:',
+  'media-src data:',
+  "form-action 'none'",
+  "base-uri 'none'",
+  "frame-ancestors 'self'",
+  'sandbox allow-scripts',
+].join('; ');
+
+const PluginEnabledBody = z.object({ enabled: z.boolean() });
+const PanelCallBody = z.object({
+  method: z.string().min(1).max(256),
+  params: z.unknown().optional(),
+});
+
 class HttpError extends Error {
   constructor(
     readonly status: number,
@@ -112,6 +140,17 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   return parsed as Record<string, unknown>;
 }
 
+/** The body as `schema` reads it, a 400 that names what is wrong otherwise. */
+function parseBody<T>(schema: z.ZodType<T>, body: unknown): T {
+  const parsed = schema.safeParse(body);
+  if (parsed.success) return parsed.data;
+  const problems = parsed.error.issues.map((issue) => {
+    const field = issue.path.map(String).join('.');
+    return field ? `"${field}": ${issue.message}` : issue.message;
+  });
+  throw new HttpError(400, problems.join(', '));
+}
+
 function requireString(body: Record<string, unknown>, field: string): string {
   const value = body[field];
   if (typeof value !== 'string' || value.trim() === '')
@@ -149,6 +188,25 @@ function runtimeRefusal(error: unknown): unknown {
   }
   if (code === 'VALIDATION_ERROR') return new HttpError(400, error.message);
   return error;
+}
+
+/**
+ * A refusal of a plugin request as the status it answers with: an unknown plugin or panel is not
+ * found, a project whose runtime has no plugins to change is a conflict, a bad request stays one.
+ */
+function pluginRefusal(error: unknown): unknown {
+  if (!(error instanceof HostRequestError)) return error;
+  switch (error.code) {
+    case 'PLUGIN_NOT_FOUND':
+      return new HttpError(404, error.message);
+    case 'PLUGINS_UNAVAILABLE':
+    case 'PLUGINS_NOT_CONFIGURED':
+      return new HttpError(409, error.message);
+    case 'VALIDATION_ERROR':
+      return new HttpError(400, error.message);
+    default:
+      return error;
+  }
 }
 
 function sameToken(given: string | undefined, expected: string): boolean {
@@ -254,6 +312,7 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
         broadcastThread(store.addRunToThread(event.threadId, event.runId));
       }
     },
+    onPlugins: (plugins) => broadcast({ type: 'plugins', plugins }),
     onLost: (reason) => broadcastRuns(store.abandonRunning(reason)),
     onOutput: log,
   });
@@ -346,6 +405,13 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
     const replay = store.replay(threadId);
     const lineage = store.lineage(threadId);
     return { ...(replay && { replay }), ...(lineage.length > 0 && { lineage }) };
+  }
+
+  /** A plugin request to the host, its refusals answered with their own status. */
+  function pluginRequest<T>(request: Parameters<HostManager['request']>[0]): Promise<T> {
+    return manager.request<T>(request).catch((error: unknown) => {
+      throw pluginRefusal(error);
+    });
   }
 
   function runOr404(id: string): RunRecord {
@@ -501,6 +567,60 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
         });
         broadcastThread(forked);
         return send(res, 201, { ...made, thread: forked });
+      }
+      case 'GET /plugins':
+        return send(res, 200, await pluginRequest<PluginsState>({ type: 'plugins.list' }));
+      case 'POST /plugins/:id/reload': {
+        await readJson(req);
+        return send(
+          res,
+          200,
+          await pluginRequest<PluginActionResult>({ type: 'plugins.reload', plugin: parts[1] })
+        );
+      }
+      case 'POST /plugins/:id/enabled': {
+        const { enabled } = parseBody(PluginEnabledBody, await readJson(req));
+        return send(
+          res,
+          200,
+          await pluginRequest<PluginActionResult>({
+            type: 'plugins.enable',
+            plugin: parts[1],
+            enabled,
+          })
+        );
+      }
+      case 'GET /plugins/:id/panels/:id': {
+        const { html } = await pluginRequest<{ html: string }>({
+          type: 'plugins.panel',
+          plugin: parts[1],
+          panel: parts[3],
+        });
+        res.writeHead(200, {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-store',
+          'content-length': Buffer.byteLength(html),
+          'x-content-type-options': 'nosniff',
+          'content-security-policy': PANEL_CSP,
+          'referrer-policy': 'no-referrer',
+          'cross-origin-resource-policy': 'same-origin',
+        });
+        res.end(html);
+        return;
+      }
+      case 'POST /plugins/:id/panels/:id/call': {
+        const { method: handler, params } = parseBody(PanelCallBody, await readJson(req));
+        return send(
+          res,
+          200,
+          await pluginRequest<PluginPanelCallResult>({
+            type: 'plugins.call',
+            plugin: parts[1],
+            panel: parts[3],
+            method: handler,
+            ...(params !== undefined && { params }),
+          })
+        );
       }
       case 'POST /chat': {
         const body = await readJson(req);

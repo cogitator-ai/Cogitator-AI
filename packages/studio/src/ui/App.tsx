@@ -9,6 +9,7 @@ import { connect, useStudio } from './store';
 import { AgentView } from './views/agent';
 import { CompareView } from './views/compare';
 import { OverviewView } from './views/overview';
+import { PluginPanelView, PluginsView } from './views/plugins';
 import { RunView } from './views/run';
 import { RunsView } from './views/runs';
 import { SwarmView } from './views/swarm';
@@ -54,7 +55,7 @@ function HostBanner() {
 }
 
 function Page({ route }: { route: string[] }) {
-  const [section, id, extra] = route;
+  const [section, id, extra, item] = route;
   if (section === 'agents' && id) return <AgentView key={id} agentKey={id} threadId={extra} />;
   if (section === 'runs' && id) return <RunView key={id} runId={id} />;
   if (section === 'runs') return <RunsView />;
@@ -62,6 +63,9 @@ function Page({ route }: { route: string[] }) {
     return <CompareView key={`${id}-${extra}`} originalId={id} forkId={extra} />;
   if (section === 'workflows' && id) return <WorkflowView key={id} workflowKey={id} />;
   if (section === 'swarms' && id) return <SwarmView key={id} swarmKey={id} />;
+  if (section === 'plugins' && id && extra === 'panels' && item)
+    return <PluginPanelView key={`${id}/${item}`} pluginId={id} panelId={item} />;
+  if (section === 'plugins') return <PluginsView focus={id} />;
   return <OverviewView />;
 }
 

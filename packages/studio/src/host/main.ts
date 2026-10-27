@@ -26,9 +26,16 @@ if (!projectDir || !studioDir) {
 }
 
 try {
-  const host = await StudioHost.create(projectDir, studioDir, (event) => {
-    void send({ type: 'event', event });
-  });
+  const host = await StudioHost.create(
+    projectDir,
+    studioDir,
+    (event) => {
+      void send({ type: 'event', event });
+    },
+    (plugins) => {
+      void send({ type: 'plugins', plugins });
+    }
+  );
   process.on('message', (request: HostRequest) => {
     host.handle(request).then(
       (data) => send({ type: 'response', requestId: request.requestId, ok: true, data }),
