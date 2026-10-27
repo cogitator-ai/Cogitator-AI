@@ -228,6 +228,7 @@ async function playbookNote(
 import { TruncateStrategy } from './context/strategies/index';
 import { ABORTED_BEFORE_DISPATCH, sanitizeToolHistory } from './utils/tool-history';
 import { RunQueue } from './cogitator/run-queue';
+import { leavesOut } from './workspace/snapshot-store';
 import {
   WorkspaceRuns,
   type WorkspaceRegistration,
@@ -8012,8 +8013,8 @@ export class Cogitator implements ToolInvoker {
    * `target` left out (which the restore never touches), keeps files as large as the largest one
    * the restore rewrites or deletes, and keeps a retention of the workspace from pruning `target`
    * before it is restored. A restore that would change a path the safety snapshot could not keep
-   * (an unreadable file) is refused with `DENIED` before anything changes, as it could not be
-   * undone
+   * (one it skipped, or one the workspace's own snapshot excludes leave out) is refused with
+   * `DENIED` before anything changes, as it could not be undone
    */
   private async restoreWithSafety(
     files: FileRestorePlan,
@@ -8038,15 +8039,24 @@ export class Cogitator implements ToolInvoker {
         metadata: { ...place, safety: true },
       });
       const changed = [...plan.restored, ...plan.deleted];
-      const missed = (safety.skipped ?? [])
+      const unread = (safety.skipped ?? [])
         .map((skip) => skip.path)
         .filter((path) => changed.some((each) => each === path || each.startsWith(`${path}/`)));
-      if (missed.length > 0) {
+      const leftOut = changed.filter(leavesOut(safety.exclude));
+      if (unread.length > 0 || leftOut.length > 0) {
         await workspace.deleteSnapshot?.(safety.id).catch(() => undefined);
+        const why = [
+          unread.length > 0 &&
+            `${unread.join(', ')}, which it could not read (unreadable, hard links the workspace refuses, too large or changing)`,
+          leftOut.length > 0 &&
+            `${leftOut.join(', ')}, which the workspace's own snapshot excludes leave out`,
+        ]
+          .filter((part): part is string => typeof part === 'string')
+          .join(', and ');
         throw new WorkspaceError(
           'DENIED',
-          `The ${place.reason} would change ${missed.join(', ')}, which cannot be read, so the snapshot taken first could not keep them to undo it: make them readable (or move them away) and ${place.reason} again`,
-          { path: missed[0] }
+          `The ${place.reason} would change files the snapshot taken first could not keep to undo it: ${why}. Move them away or change what the workspace leaves out, then ${place.reason} again`,
+          { path: [...unread, ...leftOut][0] }
         );
       }
       safetySnapshotId = safety.id;

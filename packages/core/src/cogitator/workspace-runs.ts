@@ -51,7 +51,14 @@ export class WorkspaceRuns {
     const add = async (each: Workspace): Promise<void> => {
       const key = await keyOf(each);
       if (entered.has(key)) return;
-      await this.waitForHolds(key, signal);
+      for (let held = this.holdsOverlapping(key); held.length > 0;) {
+        await untilSettled(
+          Promise.all(held).then(() => undefined),
+          signal
+        );
+        held = this.holdsOverlapping(key);
+      }
+      if (entered.has(key)) return;
       entered.add(key);
       const runs = this.roots.get(key) ?? new Set<WorkspaceRun>();
       runs.add(run);
@@ -133,7 +140,13 @@ export class WorkspaceRuns {
    */
   async lock(workspace: Workspace, signal?: AbortSignal): Promise<() => void> {
     const key = await keyOf(workspace);
-    await this.waitForHolds(key, signal);
+    for (let held = this.holdsOverlapping(key); held.length > 0;) {
+      await untilSettled(
+        Promise.all(held).then(() => undefined),
+        signal
+      );
+      held = this.holdsOverlapping(key);
+    }
     let release: () => void = () => undefined;
     const hold = new Promise<void>((done) => {
       release = done;
@@ -154,18 +167,12 @@ export class WorkspaceRuns {
     return [...new Set(found)];
   }
 
-  /** Resolves once no hold of a workspace overlapping `key` is left */
-  private async waitForHolds(key: string, signal: AbortSignal | undefined): Promise<void> {
-    for (;;) {
-      const held = [...this.locks].flatMap(([other, holds]) =>
-        overlap(key, other) ? [...holds] : []
-      );
-      if (held.length === 0) return;
-      await untilSettled(
-        Promise.all(held).then(() => undefined),
-        signal
-      );
-    }
+  /**
+   * The holds of workspaces overlapping `key`. Callers check it and register in the same turn,
+   * with nothing awaited in between, so two waiters woken by one release never both go on
+   */
+  private holdsOverlapping(key: string): Promise<void>[] {
+    return [...this.locks].flatMap(([other, holds]) => (overlap(key, other) ? [...holds] : []));
   }
 }
 

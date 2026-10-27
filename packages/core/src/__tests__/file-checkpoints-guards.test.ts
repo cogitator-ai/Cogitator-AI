@@ -354,6 +354,53 @@ describe('rewind and fork guards, round three', () => {
     }
   });
 
+  it('lets one waiter at a time take a workspace a release frees', async () => {
+    const runs = new WorkspaceRuns();
+    const order: string[] = [];
+    const first = await runs.lock(workspace);
+    const waiters = ['a', 'b', 'c'].map(async (name) => {
+      const release = await runs.lock(workspace);
+      order.push(`${name}+`);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      order.push(`${name}-`);
+      release();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    first();
+    await Promise.all(waiters);
+    for (let at = 0; at < order.length; at += 2) {
+      expect(order[at]?.endsWith('+')).toBe(true);
+      expect(order[at + 1]).toBe(`${order[at]!.slice(0, -1)}-`);
+    }
+    expect(order).toHaveLength(6);
+  });
+
+  it('refuses a fork whose files the workspace snapshot excludes would leave out of the safety snapshot', async () => {
+    const { cog } = runtime({
+      one: [write('private.txt', 'from the checkpoint')],
+      two: [write('a.txt', 'x')],
+    });
+    const agent = coder();
+    await cog.run(agent, { input: 'one', threadId: 'p' });
+    await cog.run(agent, { input: 'two', threadId: 'p' });
+    const forkRoot = join(base, 'fork-excluding');
+    const target = new LocalWorkspace({ root: forkRoot, snapshots: { exclude: ['private.txt'] } });
+    try {
+      await target.start();
+      writeFileSync(join(forkRoot, 'private.txt'), 'only here');
+      const entries = await path(cog, 'p');
+      const point = entries[entries.findIndex((entry) => entry.message.content === 'two') - 1]!;
+      const refused = await cog
+        .forkThread('p', point.id, { files: true, workspace: target, source: workspace })
+        .catch((error: unknown) => error);
+      expect(WorkspaceError.is(refused, 'DENIED')).toBe(true);
+      expect((refused as Error).message).toContain('private.txt');
+      expect(readFileSync(join(forkRoot, 'private.txt'), 'utf8')).toBe('only here');
+    } finally {
+      await target.dispose();
+    }
+  });
+
   it('matches runs, tool calls and holds of overlapping roots both ways', async () => {
     const runs = new WorkspaceRuns();
     const parent = new LocalWorkspace({ root });
