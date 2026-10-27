@@ -195,6 +195,13 @@ export class experimental_PluginInstaller {
   private readonly projectRoot: string;
   private readonly store: PluginSecretStore;
   private busy: Promise<unknown> = Promise.resolve();
+  /** The ranges of the plugins an install or update is in the middle of, see `holdRanges` */
+  private readonly pending: {
+    name: string;
+    marketplace: string;
+    range: string;
+    from: string;
+  }[] = [];
 
   constructor(private readonly options: PluginInstallerOptions = {}) {
     this.root = resolve(options.root ?? defaultPluginsRoot());
@@ -438,34 +445,39 @@ export class experimental_PluginInstaller {
    * too. What it fetched is pinned in its record, the permissions it asks for are agreed to first
    */
   install(spec: string, options: PluginInstallOptions = {}): Promise<PluginInstallResult> {
-    return this.serial(async () => {
-      await this.sweepOrphans();
-      const direct = directSource(spec);
-      if (direct) {
-        return this.installEntry(direct.entry, direct.marketplace, undefined, options, []);
-      }
-      const { name, marketplace } = await this.findEntry(spec);
-      const notes: string[] = [];
-      let known = marketplace;
-      if (known.source.source !== 'file' && known.source.source !== 'directory') {
-        try {
-          known = await this.refresh(known, options.signal);
-        } catch (error) {
-          notes.push(
-            `marketplace not refreshed: ${error instanceof Error ? error.message : String(error)}`
-          );
-        }
-      }
-      const read = await this.readKnown(known);
-      const entry = read.manifest.plugins.find((candidate) => candidate.name === name);
-      if (!entry)
-        throw failed(
-          `The marketplace ${known.name} has no plugin ${name}`,
-          ErrorCode.PLUGIN_NOT_FOUND
+    return this.serial(() => this.undoneOnFailure(() => this.installNow(spec, options)));
+  }
+
+  private async installNow(
+    spec: string,
+    options: PluginInstallOptions
+  ): Promise<PluginInstallResult> {
+    await this.sweepOrphans();
+    const direct = directSource(spec);
+    if (direct) {
+      return this.installEntry(direct.entry, direct.marketplace, undefined, options, []);
+    }
+    const { name, marketplace } = await this.findEntry(spec);
+    const notes: string[] = [];
+    let known = marketplace;
+    if (known.source.source !== 'file' && known.source.source !== 'directory') {
+      try {
+        known = await this.refresh(known, options.signal);
+      } catch (error) {
+        notes.push(
+          `marketplace not refreshed: ${error instanceof Error ? error.message : String(error)}`
         );
-      const result = await this.installEntry(entry, known.name, { known, read }, options, []);
-      return { ...result, notes: [...notes, ...result.notes] };
-    });
+      }
+    }
+    const read = await this.readKnown(known);
+    const entry = read.manifest.plugins.find((candidate) => candidate.name === name);
+    if (!entry)
+      throw failed(
+        `The marketplace ${known.name} has no plugin ${name}`,
+        ErrorCode.PLUGIN_NOT_FOUND
+      );
+    const result = await this.installEntry(entry, known.name, { known, read }, options, []);
+    return { ...result, notes: [...notes, ...result.notes] };
   }
 
   private async findEntry(spec: string): Promise<{ name: string; marketplace: KnownMarketplace }> {
@@ -589,19 +601,24 @@ export class experimental_PluginInstaller {
       checkOptions(id, layout, options);
       const granted = await this.grant(id, layout, undefined, options.yes === true, false);
       const installed: InstalledPluginRecord[] = [];
-      for (const need of layout.manifest.dependencies ?? []) {
-        const installedDependency = await this.installDependency(
-          need,
-          marketplaceName,
-          marketplace?.read,
-          {
-            ...(options.yes !== undefined && { yes: options.yes }),
-            ...(options.signal && { signal: options.signal }),
-          },
-          [...chain, id],
-          records
-        );
-        installed.push(...installedDependency);
+      const release = this.holdRanges(id, marketplaceName, layout);
+      try {
+        for (const need of layout.manifest.dependencies ?? []) {
+          const installedDependency = await this.installDependency(
+            need,
+            marketplaceName,
+            marketplace?.read,
+            {
+              ...(options.yes !== undefined && { yes: options.yes }),
+              ...(options.signal && { signal: options.signal }),
+            },
+            [...chain, id],
+            records
+          );
+          installed.push(...installedDependency);
+        }
+      } finally {
+        release();
       }
       if (!fetched.inPlace) {
         this.progress(`Installing ${id} ${version}`);
@@ -869,7 +886,9 @@ export class experimental_PluginInstaller {
       const records = await this.list();
       const targets = id === undefined ? records : [await this.record(id)];
       const results: PluginUpdateResult[] = [];
-      for (const record of targets) results.push(await this.updateOne(record, options));
+      for (const record of targets) {
+        results.push(await this.undoneOnFailure(() => this.updateOne(record, options)));
+      }
       return results;
     });
   }
@@ -993,19 +1012,24 @@ export class experimental_PluginInstaller {
           'Some permissions of the new version were not granted, the plugin runs without them'
         );
       }
-      for (const need of layout.manifest.dependencies ?? []) {
-        const added = await this.installDependency(
-          need,
-          record.marketplace,
-          marketplace?.read,
-          {
-            ...(options.yes !== undefined && { yes: options.yes }),
-            ...(options.signal && { signal: options.signal }),
-          },
-          [record.id],
-          await this.list()
-        );
-        for (const dependency of added) notes.push(`installed the dependency ${dependency.id}`);
+      const release = this.holdRanges(record.id, record.marketplace, layout);
+      try {
+        for (const need of layout.manifest.dependencies ?? []) {
+          const added = await this.installDependency(
+            need,
+            record.marketplace,
+            marketplace?.read,
+            {
+              ...(options.yes !== undefined && { yes: options.yes }),
+              ...(options.signal && { signal: options.signal }),
+            },
+            [record.id],
+            await this.list()
+          );
+          for (const dependency of added) notes.push(`installed the dependency ${dependency.id}`);
+        }
+      } finally {
+        release();
       }
       if (!fetched.inPlace) await copyPluginFolder(fetched.dir, installPath);
       if (
@@ -1101,8 +1125,62 @@ export class experimental_PluginInstaller {
         }
       }
     }
+    for (const pending of this.pending) {
+      if (
+        pending.name === target.name &&
+        pending.marketplace === target.marketplace &&
+        pending.from !== target.id
+      ) {
+        ranges.push({ range: pending.range, from: pending.from });
+      }
+    }
     if (need) ranges.push({ range: need.range, from: need.for });
     return ranges;
+  }
+
+  /**
+   * Keeps the ranges the plugin `id` (being installed or updated, its record not written yet)
+   * puts on its dependencies among the constraints of every version chosen until `release()`, so
+   * a dependency one of its own dependencies shares is never chosen outside them
+   */
+  private holdRanges(id: string, marketplace: string, layout: PluginLayout): () => void {
+    const held = (layout.manifest.dependencies ?? []).flatMap((need) =>
+      need.version === undefined
+        ? []
+        : [
+            {
+              name: need.name,
+              marketplace: need.marketplace ?? marketplace,
+              range: need.version,
+              from: id,
+            },
+          ]
+    );
+    this.pending.push(...held);
+    return () => {
+      for (const range of held) {
+        const at = this.pending.indexOf(range);
+        if (at !== -1) this.pending.splice(at, 1);
+      }
+    };
+  }
+
+  /**
+   * Runs `work`, and when it fails removes the plugins it installed (dependencies installed on the
+   * way included), so a failed install or update leaves no record behind
+   */
+  private async undoneOnFailure<T>(work: () => Promise<T>): Promise<T> {
+    const before = new Set((await this.list()).map((record) => record.id));
+    try {
+      return await work();
+    } catch (error) {
+      for (const record of await this.list()) {
+        if (!before.has(record.id)) {
+          await this.removeRecord(record, { keepData: false }).catch(() => undefined);
+        }
+      }
+      throw error;
+    }
   }
 
   private async dependentsOf(

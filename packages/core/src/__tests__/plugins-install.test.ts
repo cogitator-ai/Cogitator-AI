@@ -916,6 +916,55 @@ describe('plugin installer', () => {
     }
   );
 
+  it('counts the ranges of the plugins still being installed when it picks a shared dependency', async () => {
+    const lib = join(base, 'shared-lib');
+    plugin(lib, 'shared', { version: '1.0.0' });
+    gitRepo(lib);
+    git(lib, 'tag', 'shared--v1.0.0');
+    writeJson(join(lib, '.claude-plugin', 'plugin.json'), { name: 'shared', version: '2.0.0' });
+    git(lib, 'commit', '--quiet', '-am', 'two');
+    git(lib, 'tag', 'shared--v2.0.0');
+    const repo = join(base, 'chain');
+    plugin(join(repo, 'plugins', 'app'), 'app', {
+      version: '1.0.0',
+      dependencies: [{ name: 'shared', version: '^1.0.0' }, 'helper'],
+    });
+    plugin(join(repo, 'plugins', 'helper'), 'helper', {
+      version: '1.0.0',
+      dependencies: [{ name: 'shared', version: '^2.0.0' }],
+    });
+    plugin(join(repo, 'plugins', 'tool'), 'tool', {
+      version: '1.0.0',
+      dependencies: [{ name: 'shared', version: '>=1.0.0' }, 'helper'],
+    });
+    writeJson(join(repo, '.claude-plugin', 'marketplace.json'), {
+      name: 'chain',
+      owner: { name: 'Team' },
+      plugins: [
+        { name: 'app', source: './plugins/app' },
+        { name: 'helper', source: './plugins/helper' },
+        { name: 'tool', source: './plugins/tool' },
+        { name: 'shared', source: { source: 'url', url: `file://${lib}` } },
+      ],
+    });
+    gitRepo(repo);
+    const tools = installer();
+    await tools.addMarketplace(`file://${repo}`);
+    await expect(tools.install('app@chain')).rejects.toMatchObject({
+      code: ErrorCode.PLUGIN_DEPENDENCY_UNMET,
+    });
+    expect((await readInstalledPlugins(root)).records).toEqual([]);
+    await tools.install('tool@chain');
+    const versions = Object.fromEntries(
+      (await readInstalledPlugins(root)).records.map((record) => [record.id, record.version])
+    );
+    expect(versions).toEqual({
+      'tool@chain': '1.0.0',
+      'helper@chain': '1.0.0',
+      'shared@chain': '2.0.0',
+    });
+  });
+
   it('gives every plugin id a data folder of its own', () => {
     const folders = ['foo-bar@baz', 'foo@bar-baz', 'Tool@x', 'tool@x'].map((id) =>
       pluginDataDir(root, id).toLowerCase()
