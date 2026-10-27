@@ -162,7 +162,7 @@ Runs never stop to ask. A run gets the read-only tools its case lists in `allowe
 cogitator plugin eval . --allow-tools Write Edit "Bash(npm test *)"
 ```
 
-A grant with a specifier, such as `Bash(npm test *)` or `WebFetch(domain:example.com)`, gives the tool and refuses every call the rule does not allow, with the reason the model reads. A skill's `allowed-tools` and a case's `allowed_tools` cannot widen the grants. The grants hold for the agents a run delegates to through `Agent` as well, and their calls are recorded in the run's tool calls with the delegated agent's name in `agent`, so the graders see them.
+A grant with a specifier, such as `Bash(npm test *)` or `WebFetch(domain:example.com)`, gives the tool and refuses every call the rule does not allow, with the reason the model reads. A skill's `allowed-tools` and a case's `allowed_tools` cannot widen the grants. Each run gets plugin data and settings of its own: the plugins' `${CLAUDE_PLUGIN_DATA}` lives in the run's temporary folder, `${CLAUDE_PROJECT_DIR}` is its workspace, and no settings file is read. The grants hold for the agents a run delegates to through `Agent` as well, and their calls are recorded in the run's tool calls with the delegated agent's name in `agent`, so the graders see them.
 
 ## Mocks
 
