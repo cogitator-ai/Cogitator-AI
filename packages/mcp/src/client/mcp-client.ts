@@ -241,6 +241,11 @@ export class MCPClient {
     handlers: MCPSubscriptionHandlers;
   }>();
   private readonly connectionWatchers = new Set<() => void>();
+  /**
+   * How many open legacy subscriptions follow each resource: the server keeps one subscription
+   * per connection and URI, so it is unsubscribed only once the last of them closes
+   */
+  private readonly resourceRefs = new Map<string, number>();
   private readonly validator = new AjvJsonSchemaValidator();
   private prior: PriorDiscovery | undefined;
   private negotiatedVersion: string | undefined;
@@ -1015,8 +1020,27 @@ export class MCPClient {
     }
 
     const capabilities = this.client.getServerCapabilities();
-    const uris = capabilities?.resources?.subscribe ? (filter.resourceSubscriptions ?? []) : [];
-    for (const uri of uris) await this.client.subscribeResource({ uri });
+    const uris = capabilities?.resources?.subscribe
+      ? [...new Set(filter.resourceSubscriptions ?? [])]
+      : [];
+    for (const uri of uris) {
+      const refs = this.resourceRefs.get(uri) ?? 0;
+      if (refs === 0) await this.client.subscribeResource({ uri });
+      this.resourceRefs.set(uri, refs + 1);
+    }
+    const release = (): string[] => {
+      const last: string[] = [];
+      for (const uri of uris) {
+        const refs = (this.resourceRefs.get(uri) ?? 1) - 1;
+        if (refs > 0) {
+          this.resourceRefs.set(uri, refs);
+        } else {
+          this.resourceRefs.delete(uri);
+          last.push(uri);
+        }
+      }
+      return last;
+    };
     const honored: MCPSubscriptionFilter = {
       ...(filter.toolsListChanged &&
         capabilities?.tools?.listChanged && { toolsListChanged: true }),
@@ -1036,7 +1060,10 @@ export class MCPClient {
         resolve(how);
       };
     });
-    const onDrop = (): void => end('remote');
+    const onDrop = (): void => {
+      release();
+      end('remote');
+    };
     this.connectionWatchers.add(onDrop);
     return {
       filter: honored,
@@ -1044,7 +1071,7 @@ export class MCPClient {
       close: async () => {
         if (!this.listeners.has(listener)) return;
         end('local');
-        for (const uri of uris) {
+        for (const uri of release()) {
           await this.client.unsubscribeResource({ uri }).catch(() => undefined);
         }
       },

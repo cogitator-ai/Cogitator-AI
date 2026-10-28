@@ -99,4 +99,28 @@ describe('MCPClient.subscribe', () => {
     await subscription.close();
     expect(await subscription.closed).toBe('local');
   });
+
+  it('keeps a resource of a 2025-11-25 server subscribed until its last listener closes', async () => {
+    const client = await MCPClient.connect({
+      transport: 'stdio',
+      command: process.execPath,
+      args: [join(__dirname, 'fixtures', 'subscribing-server.mjs')],
+    });
+    cleanups.push(() => client.close());
+    expect(client.era).toBe('legacy');
+    const calls = async () =>
+      (await client.callTool('calls', {})) as { subscribe: string[]; unsubscribe: string[] };
+
+    const first = await client.subscribe({ resourceSubscriptions: ['notes://today'] }, {});
+    const second = await client.subscribe(
+      { resourceSubscriptions: ['notes://today', 'notes://today'] },
+      {}
+    );
+    expect((await calls()).subscribe).toEqual(['notes://today']);
+
+    await first.close();
+    expect((await calls()).unsubscribe).toEqual([]);
+    await second.close();
+    expect((await calls()).unsubscribe).toEqual(['notes://today']);
+  });
 });
