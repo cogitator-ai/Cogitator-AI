@@ -59,7 +59,7 @@ describe('A2A: Push Notifications', () => {
       pushNotificationStore: pushStore,
       allowPrivateUrls: true,
     });
-    client = new A2AClient(testServer.url);
+    client = new A2AClient(testServer.url, { protocolVersion: '0.3' });
   });
 
   afterAll(async () => {

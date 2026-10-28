@@ -3,9 +3,12 @@ import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { experimental_mcpConnector, mcpClientConfigOf } from '../client/connector';
+
+/** Each test starts real server processes, twice when the client probes the protocol revision */
+vi.setConfig({ testTimeout: 30_000 });
 
 const SERVER = join(__dirname, 'fixtures', 'ping-server.mjs');
 

@@ -25,7 +25,13 @@ import { InMemoryTaskStore } from './task-store.js';
 import { isStreamFinalState, isTerminalState } from './types.js';
 import { A2AError } from './errors.js';
 import * as errors from './errors.js';
-import { TASK_CREATED_AT_KEY, TASK_OWNER_KEY, taskCreatedAt, taskOwner } from './ownership.js';
+import {
+  TASK_AGENT_KEY,
+  TASK_CREATED_AT_KEY,
+  TASK_OWNER_KEY,
+  taskCreatedAt,
+  taskOwner,
+} from './ownership.js';
 import {
   TASK_PENDING_APPROVALS_KEY,
   readToolApprovalResponse,
@@ -57,6 +63,14 @@ export interface ExecuteTaskOptions {
   timeout?: number;
   /** The caller the run acts for */
   userId?: string;
+}
+
+/** Who a new task belongs to. */
+export interface CreateTaskOptions {
+  /** The user the task is visible to; without it every caller without a user sees it */
+  ownerId?: string;
+  /** The agent the task belongs to; over A2A 1.0 only that agent's endpoint reaches it */
+  agentName?: string;
 }
 
 /** What the task manager emits on `event`: the task changes a stream or a webhook relays. */
@@ -154,8 +168,17 @@ export class TaskManager extends EventEmitter {
     this.store = config?.taskStore ?? new InMemoryTaskStore();
   }
 
-  /** A new `submitted` task; `ownerId` keeps it visible only to that user. */
-  async createTask(message: A2AMessage, contextId?: string, ownerId?: string): Promise<A2ATask> {
+  /**
+   * A new `submitted` task. An owner (`ownerId`, or the options' `ownerId`) keeps it visible
+   * only to that user, an `agentName` binds it to that agent.
+   */
+  async createTask(
+    message: A2AMessage,
+    contextId?: string,
+    ownerOrOptions?: string | CreateTaskOptions
+  ): Promise<A2ATask> {
+    const { ownerId, agentName }: CreateTaskOptions =
+      typeof ownerOrOptions === 'string' ? { ownerId: ownerOrOptions } : (ownerOrOptions ?? {});
     const id = `task_${randomUUID()}`;
     const resolvedContextId = contextId ?? `ctx_${randomUUID()}`;
     const now = new Date().toISOString();
@@ -169,6 +192,7 @@ export class TaskManager extends EventEmitter {
       metadata: {
         [TASK_CREATED_AT_KEY]: now,
         ...(ownerId !== undefined && { [TASK_OWNER_KEY]: ownerId }),
+        ...(agentName !== undefined && { [TASK_AGENT_KEY]: agentName }),
       },
     };
     await this.store.create(task);

@@ -139,7 +139,7 @@ describe('A2A v2: Multi-turn Conversations + ListTasks', () => {
       expect(task.status.state).toBe('completed');
 
       await expect(client.continueTask(task.id, 'One more thing')).rejects.toMatchObject({
-        code: -32600,
+        code: -32004,
       });
     });
 

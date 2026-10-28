@@ -346,3 +346,59 @@ describe('recursive tool schemas in every provider format', () => {
     });
   });
 });
+
+describe('tool output schemas', () => {
+  const listScores = tool({
+    name: 'list_scores',
+    description: 'Scores',
+    parameters: z.object({}),
+    outputSchema: z.array(z.object({ player: z.string(), score: z.number() })),
+    execute: async () => [{ player: 'ann', score: 3 }],
+  });
+
+  it('toolToSchema carries the JSON Schema of any output schema', () => {
+    const schema = toolToSchema(listScores);
+    expect(schema.outputSchema).toMatchObject({
+      type: 'array',
+      items: { type: 'object', properties: { score: { type: 'number' } } },
+    });
+    expect(schema.outputSchema).not.toHaveProperty('$schema');
+    expect(
+      toolToSchema(
+        tool({ name: 'plain', description: 'p', parameters: z.object({}), execute: async () => 1 })
+      ).outputSchema
+    ).toBeUndefined();
+  });
+
+  it('Gemini gets it as responseJsonSchema', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { role: 'model', parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+      }),
+    });
+    await new GoogleBackend({ apiKey: 'k' }).chat({
+      model: 'gemini-2.5-flash',
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [toolToSchema(listScores)],
+    });
+    const body = JSON.parse(mockFetch.mock.calls.at(-1)![1].body as string) as {
+      tools: { functionDeclarations: Record<string, unknown>[] }[];
+    };
+    expect(body.tools[0].functionDeclarations[0].responseJsonSchema).toMatchObject({
+      type: 'array',
+    });
+  });
+
+  it('other providers get it in the description only when asked to', async () => {
+    const { withToolOutputSchemas } = await import('../llm/tool-output-schema');
+    const tools = [toolToSchema(listScores)];
+    expect(withToolOutputSchemas(tools, 'openai')).toBe(tools);
+    expect(withToolOutputSchemas(tools, 'google', 'description')).toBe(tools);
+    const described = withToolOutputSchemas(tools, 'anthropic', 'description');
+    expect(described?.[0]?.description).toContain(
+      'Returns JSON that matches this JSON Schema: {"type":"array"'
+    );
+    expect(tools[0]?.description).toBe('Scores');
+  });
+});

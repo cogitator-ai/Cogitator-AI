@@ -84,6 +84,8 @@ interface GeminiFunctionDeclaration {
   };
   /** JSON Schema form of the parameters, which unlike `parameters` can hold `$ref` and `$defs` */
   parametersJsonSchema?: Record<string, unknown>;
+  /** JSON Schema of what the function returns */
+  responseJsonSchema?: Record<string, unknown>;
 }
 
 interface GeminiTool {
@@ -589,11 +591,15 @@ export class GoogleBackend extends BaseLLMBackend {
    * and `$ref`, since `parameters` has no way to refer to a definition.
    */
   private convertTool(tool: ToolSchema): GeminiFunctionDeclaration {
+    const response = tool.outputSchema && {
+      responseJsonSchema: cleanJsonSchemaForGemini(tool.outputSchema),
+    };
     if (tool.parameters.$defs !== undefined || hasRef(tool.parameters)) {
       return {
         name: tool.name,
         description: tool.description,
         parametersJsonSchema: cleanJsonSchemaForGemini(tool.parameters),
+        ...response,
       };
     }
     return {
@@ -604,6 +610,7 @@ export class GoogleBackend extends BaseLLMBackend {
         properties: tool.parameters.properties,
         required: tool.parameters.required,
       }) as GeminiFunctionDeclaration['parameters'],
+      ...response,
     };
   }
 

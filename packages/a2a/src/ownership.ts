@@ -9,6 +9,12 @@ export const TASK_OWNER_KEY = 'cogitator:owner';
 /** Metadata key holding when a task was created, to order the tasks of a context; never sent to clients. */
 export const TASK_CREATED_AT_KEY = 'cogitator:createdAt';
 
+/**
+ * Metadata key holding the agent a task belongs to; never sent to clients. Over A2A 1.0 a task is
+ * visible only through its agent's endpoint (its tenant).
+ */
+export const TASK_AGENT_KEY = 'cogitator:agent';
+
 /** The user a task belongs to, or undefined for a task without an owner. */
 export function taskOwner(task: A2ATask): string | undefined {
   const owner = task.metadata?.[TASK_OWNER_KEY];
@@ -24,6 +30,18 @@ export function isTaskVisibleTo(task: A2ATask, userId: string | null | undefined
   return owner === undefined || owner === userId;
 }
 
+/** The agent a task belongs to, or undefined for a task created before tasks recorded it. */
+export function taskAgent(task: A2ATask): string | undefined {
+  const agent = task.metadata?.[TASK_AGENT_KEY];
+  return typeof agent === 'string' ? agent : undefined;
+}
+
+/** Whether a task belongs to an agent: its own tasks, and tasks that predate the record. */
+export function isTaskOfAgent(task: A2ATask, agentName: string): boolean {
+  const agent = taskAgent(task);
+  return agent === undefined || agent === agentName;
+}
+
 /** When the task last changed state, in ms since the epoch (0 when unknown). */
 export function taskTime(task: A2ATask): number {
   const time = task.status.timestamp ? Date.parse(task.status.timestamp) : NaN;
@@ -37,9 +55,20 @@ export function taskCreatedAt(task: A2ATask): number {
   return Number.isNaN(time) ? taskTime(task) : time;
 }
 
+/**
+ * The order tasks are listed in: the most recently updated first, ties broken by id (descending),
+ * so the order is total and a page cursor resumes exactly where the page ended.
+ */
+export function compareTasksNewestFirst(a: A2ATask, b: A2ATask): number {
+  const byTime = taskTime(b) - taskTime(a);
+  if (byTime !== 0) return byTime;
+  return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+}
+
 /** Metadata keys the server keeps for itself; never sent to clients. */
 const INTERNAL_KEYS: readonly string[] = [
   TASK_OWNER_KEY,
+  TASK_AGENT_KEY,
   TASK_PENDING_APPROVALS_KEY,
   TASK_PENDING_QUESTIONS_KEY,
   TASK_PAUSED_RUN_KEY,

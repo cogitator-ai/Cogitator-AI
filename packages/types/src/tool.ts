@@ -393,6 +393,12 @@ export interface ToolSchema {
   name: string;
   description: string;
   parameters: ToolParametersSchema;
+  /**
+   * JSON Schema of the tool's result (`Tool.outputSchema`), any shape. Gemini takes it as the
+   * function's `responseJsonSchema`, other providers have no place for it and do not get it
+   * unless `llm.toolOutputSchemas` is `description`
+   */
+  outputSchema?: Record<string, unknown>;
   /** The tool's type in a provider's own catalog, sent to that provider instead of `parameters` */
   providerTypes?: ProviderToolTypes;
 }

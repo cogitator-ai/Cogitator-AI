@@ -116,6 +116,7 @@ import { experimental_TriggerManager, type TriggerNotifyScope } from './triggers
 import type { PluginHookSet, PluginLease, PluginSnapshot } from './plugins/contributions';
 import { withLLMRetry } from './llm/retry';
 import { ModelFallbackChain, type ModelCandidate } from './llm/model-fallback';
+import { withToolOutputSchemas } from './llm/tool-output-schema';
 import { modelContextWindow } from './context/model-window';
 import {
   countMessagesTokens,
@@ -5315,7 +5316,11 @@ export class Cogitator implements ToolInvoker {
                   const request: ChatRequest = {
                     model: candidate.model,
                     messages: turnMessages,
-                    tools: turnTools,
+                    tools: withToolOutputSchemas(
+                      turnTools,
+                      candidate.backend.provider,
+                      this.config.llm?.toolOutputSchemas
+                    ),
                     ...(turnToolChoice && { toolChoice: turnToolChoice }),
                     temperature: active.config.temperature,
                     topP: active.config.topP,
