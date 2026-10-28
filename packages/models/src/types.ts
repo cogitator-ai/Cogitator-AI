@@ -30,8 +30,9 @@ export const ModelInfoSchema = z.object({
   id: z.string(),
   provider: z.string(),
   /**
-   * The key the LiteLLM catalogue lists the model under, e.g. `openrouter/deepseek/deepseek-v4-pro`
-   * or `gpt-6-luna`. Absent on built-in models the catalogue does not list.
+   * The key the catalogue lists the model under: LiteLLM's key, e.g. `gpt-6-luna` or
+   * `azure_ai/deepseek-v4-pro`, or `openrouter/<id>` for a model of OpenRouter's model list, e.g.
+   * `openrouter/deepseek/deepseek-v4-pro`. Absent on built-in models no catalogue lists.
    */
   catalogId: z.string().optional(),
   displayName: z.string(),

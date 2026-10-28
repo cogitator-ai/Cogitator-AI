@@ -44,7 +44,7 @@ Without `autoSelectModel`, the run uses the agent's model, and the budget check 
 
 ## Prices of Your Own
 
-A call whose provider reports no cost is priced from the [model registry](/docs/core/model-registry), which knows the LiteLLM catalogue, offline from the copy bundled with `@cogitator-ai/models`. For a fine-tune, a model the catalogue does not list yet, a negotiated rate or a self-hosted model you want to cost, set its price in `llm.pricing`, in USD per million tokens:
+A call whose provider reports no cost is priced from the [model registry](/docs/core/model-registry), which knows the LiteLLM catalogue and OpenRouter's model list, offline from the copies bundled with `@cogitator-ai/models`. For a fine-tune, a model the catalogue does not list yet, a negotiated rate or a self-hosted model you want to cost, set its price in `llm.pricing`, in USD per million tokens:
 
 ```typescript
 const cog = new Cogitator({

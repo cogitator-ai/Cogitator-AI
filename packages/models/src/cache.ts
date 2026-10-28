@@ -3,7 +3,7 @@ import type { ModelInfo, CacheOptions } from './types';
 import { ModelInfoSchema } from './types';
 
 /** Bumped whenever the cached model shape changes, so older cache files are refetched. */
-export const CACHE_VERSION = '2.1.0';
+export const CACHE_VERSION = '2.2.0';
 const CacheEntrySchema = z.object({
   models: z.array(ModelInfoSchema),
   timestamp: z.number().finite(),

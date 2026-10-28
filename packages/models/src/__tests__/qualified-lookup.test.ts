@@ -212,7 +212,11 @@ describe('offline catalogue', () => {
     const registry = new ModelRegistry();
 
     expect(registry.getModel('openai/gpt-6-luna')?.id).toBe('gpt-6-luna');
-    expect(registry.getModel('openrouter/openai/gpt-6-luna')?.id).toBe('gpt-6-luna');
+    expect(registry.getModel('openrouter/openai/gpt-6-luna')).toMatchObject({
+      id: 'openai/gpt-6-luna',
+      provider: 'openrouter',
+      catalogId: 'openrouter/openai/gpt-6-luna',
+    });
     expect(registry.getModel('openrouter/deepseek/no-such-model')).toBeNull();
   });
 

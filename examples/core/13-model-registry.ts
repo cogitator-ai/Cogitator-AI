@@ -7,6 +7,7 @@ import {
   getModelRegistry,
   shutdownModels,
   LITELLM_SNAPSHOT,
+  OPENROUTER_SNAPSHOT,
 } from '@cogitator-ai/models';
 
 header('Model Registry');
@@ -25,6 +26,11 @@ console.log(
 const deepseek = getModel('deepseek/deepseek-chat');
 console.log(
   `${deepseek?.id} (${deepseek?.provider}): $${deepseek?.pricing.input}/M input, from the LiteLLM copy of ${LITELLM_SNAPSHOT.fetchedAt}`
+);
+
+const viaOpenRouter = getModel('openrouter/deepseek/deepseek-v4-pro');
+console.log(
+  `${viaOpenRouter?.id} (${viaOpenRouter?.provider}): $${viaOpenRouter?.pricing.input}/M input, from the OpenRouter copy of ${OPENROUTER_SNAPSHOT.fetchedAt}`
 );
 
 section('Pricing lookup');
