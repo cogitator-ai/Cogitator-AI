@@ -115,13 +115,19 @@ export class MCPToolError extends Error {
  */
 export class MCPToolInterruptedError extends Error {
   readonly toolName: string;
-  readonly reason: 'timeout' | 'connection-lost';
+  readonly reason: 'timeout' | 'connection-lost' | 'task-lost';
 
-  constructor(toolName: string, reason: 'timeout' | 'connection-lost', cause: unknown) {
+  constructor(
+    toolName: string,
+    reason: 'timeout' | 'connection-lost' | 'task-lost',
+    cause: unknown
+  ) {
     const what =
       reason === 'timeout'
         ? `MCP tool "${toolName}" timed out${timeoutOf(cause)}`
-        : `The connection to the MCP server was lost during a call of tool "${toolName}"`;
+        : reason === 'task-lost'
+          ? `The server no longer knows the task an earlier run of a call of tool "${toolName}" started (it may have expired)`
+          : `The connection to the MCP server was lost during a call of tool "${toolName}"`;
     super(
       `${what}. It was not called again, since the server may have run it and the tool is ` +
         'not marked idempotent or read-only.',
@@ -800,7 +806,8 @@ export class MCPClient {
     } catch (error) {
       if (error instanceof ProtocolError) {
         await this.taskStore.delete(key);
-        return undefined;
+        if (options.idempotent === true) return undefined;
+        throw new MCPToolInterruptedError(name, 'task-lost', error);
       }
       throw error;
     }

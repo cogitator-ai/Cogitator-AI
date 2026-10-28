@@ -190,7 +190,7 @@ const client = await MCPClient.connect({
 
 Only transient failures are retried (connection loss, request timeouts, network errors). Protocol errors returned by the server, tool failures and aborted calls fail immediately, and concurrent calls that lose the connection share a single reconnect.
 
-Tool calls are only retried when sending them twice is harmless. After a timeout or a lost connection the server may still be running the call, or may have finished it, so `callTool` throws `MCPToolInterruptedError` (`reason: 'timeout' | 'connection-lost'`) instead of deploying twice or sending a second email. Tools from `getTools()` / `wrapMCPTools()` are retried like reads when the server marks them `readOnlyHint` or `idempotentHint` in their annotations. Pass `{ idempotent: true }` to `callTool` to retry a call yourself. A connection an earlier call lost is restored before the next call is sent.
+Tool calls are only retried when sending them twice is harmless. After a timeout or a lost connection the server may still be running the call, or may have finished it, so `callTool` throws `MCPToolInterruptedError` (`reason: 'timeout' | 'connection-lost'`) instead of deploying twice or sending a second email. A resumed call whose task the server no longer knows (it expired) throws the same error with `reason: 'task-lost'` rather than calling the tool again. Tools from `getTools()` / `wrapMCPTools()` are retried like reads when the server marks them `readOnlyHint` or `idempotentHint` in their annotations. Pass `{ idempotent: true }` to `callTool` to retry a call yourself. A connection an earlier call lost is restored before the next call is sent.
 
 ### Tool Results and Errors
 

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { tool } from '@cogitator-ai/core';
 import type { InterruptRequest, Tool } from '@cogitator-ai/types';
-import { MCPClient } from '../client/mcp-client';
+import { MCPClient, MCPToolInterruptedError } from '../client/mcp-client';
 import { InMemoryMCPClientTaskStore, MCPTaskEndedError } from '../client/tasks';
 import { MCPServer } from '../server/mcp-server';
 import { InMemoryMCPTaskStore } from '../server/tasks';
@@ -344,6 +344,43 @@ describe('MCPClient with tasks', () => {
     const answering = async <T>(): Promise<T> => ({ c: 'blue' }) as T;
     const value = await connected.callTool('ask', {}, { toolCallId: 'tc-1', interrupt: answering });
     expect(value).toContain('blue');
+    expect(runs).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not call a tool again when the task an earlier run started is gone', async () => {
+    const runs = vi.fn();
+    const book = tool({
+      name: 'book',
+      description: 'Books',
+      parameters: z.object({}),
+      execute: async () => {
+        runs();
+        return 'booked';
+      },
+    }) as Tool;
+    const url = await serve([book]);
+    const store = new InMemoryMCPClientTaskStore();
+    const connected = await client(url, { tasks: { store } });
+    const lost = {
+      taskId: 'gone-task',
+      tool: 'book',
+      createdAt: new Date().toISOString(),
+      asked: [],
+    };
+
+    await store.set('tc-lost', lost);
+    const error = await connected
+      .callTool('book', {}, { toolCallId: 'tc-lost' })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(MCPToolInterruptedError);
+    expect((error as MCPToolInterruptedError).reason).toBe('task-lost');
+    expect(runs).not.toHaveBeenCalled();
+    expect(await store.get('tc-lost')).toBeUndefined();
+
+    await store.set('tc-again', lost);
+    expect(await connected.callTool('book', {}, { toolCallId: 'tc-again', idempotent: true })).toBe(
+      'booked'
+    );
     expect(runs).toHaveBeenCalledTimes(1);
   });
 

@@ -5,6 +5,9 @@ import type { InterruptRequest } from '@cogitator-ai/types';
 import { MCPClient } from '../client/mcp-client';
 import type { MCPClientConfig } from '../types';
 
+/** Each test starts real server processes, twice when the client probes the protocol revision */
+vi.setConfig({ testTimeout: 30_000 });
+
 const MODERN = join(__dirname, 'fixtures', 'modern-server.mjs');
 const LEGACY = join(__dirname, 'fixtures', 'ping-server.mjs');
 

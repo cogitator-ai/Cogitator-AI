@@ -202,7 +202,7 @@ Requests that are safe to send twice (`listToolDefinitions`, `listResources`, `r
 - Request timeouts
 - Network failures
 
-A tool call is different: after a timeout or a lost connection the server may still be running it, or may have finished it, and a second call could deploy twice or send a second email. So `callTool` sends a call once and throws `MCPToolInterruptedError` (`reason: 'timeout' | 'connection-lost'`) instead of retrying, unless the call is marked `idempotent: true`. Tools from `getTools()` / `wrapMCPTools()` set `idempotent` from the server's tool annotations: a tool with `readOnlyHint` or `idempotentHint` is retried like a read, any other is not. A connection lost by an earlier call is restored before the next call is sent.
+A tool call is different: after a timeout or a lost connection the server may still be running it, or may have finished it, and a second call could deploy twice or send a second email. So `callTool` sends a call once and throws `MCPToolInterruptedError` (`reason: 'timeout' | 'connection-lost'`) instead of retrying, unless the call is marked `idempotent: true`. A resumed call whose task the server no longer knows (it expired) throws it with `reason: 'task-lost'` instead of calling again. Tools from `getTools()` / `wrapMCPTools()` set `idempotent` from the server's tool annotations: a tool with `readOnlyHint` or `idempotentHint` is retried like a read, any other is not. A connection lost by an earlier call is restored before the next call is sent.
 
 Deterministic failures are **not** retried: JSON-RPC protocol errors from the server (invalid params, unknown tool, internal handler errors), tool results with `isError: true`, and calls whose `signal` was aborted fail immediately.
 

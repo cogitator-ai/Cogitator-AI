@@ -7,6 +7,9 @@ import { McpServer, createMcpHandler, type McpHttpHandler } from '@modelcontextp
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { MCPClient } from '../client/mcp-client';
 
+/** Each test starts real server processes, twice when the client probes the protocol revision */
+vi.setConfig({ testTimeout: 30_000 });
+
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
