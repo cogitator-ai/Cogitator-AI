@@ -14,6 +14,7 @@ export {
   connectMCPServer,
 } from './client/mcp-client';
 export { MCPTaskEndedError, InMemoryMCPClientTaskStore } from './client/tasks';
+export { InMemoryMCPClientRoundStore } from './client/rounds';
 export {
   createMCPOAuthProvider,
   InMemoryMCPOAuthStore,
@@ -93,6 +94,9 @@ export type {
   MCPClientTaskRecord,
   MCPClientTaskStore,
   MCPAskedInput,
+  MCPClientRoundRecord,
+  MCPClientRoundStore,
+  MCPClientRoundOptions,
   MCPOAuthConfig,
   MCPOAuthStore,
   MCPSubscription,

@@ -144,6 +144,7 @@ interface MCPClientConfig {
   tasks?: boolean | { store?: MCPClientTaskStore; maxPollIntervalMs?: number }; // Default: true
   auth?: OAuthClientProvider | MCPOAuthConfig; // OAuth for a remote server
   maxInputRounds?: number; // Default: 10
+  rounds?: { store?: MCPClientRoundStore; ttlMs?: number }; // rounds paused runs wait on
 
   // Retry configuration
   retry?: MCPRetryConfig;
@@ -252,7 +253,7 @@ client.discover(); // { protocolVersion, era, supportedVersions, capabilities, i
 
 ### Input Requests (Elicitation)
 
-A server of 2026-07-28 asks the person at the client by answering a call with input requests (`resultType: "input_required"`), and the client calls again with the answers and the server's `requestState`. A tool from `getTools()` asks through the run of the call: the run pauses with an interrupt (`reason: 'mcp_elicitation'`, its `responseSchema` the server's form), `cogitator.resume()` with the answer runs the tool again, and the call goes on. Ending the pause without an answer (`cog.cancelPause()`) declines. Outside a run, the `elicitation` handler answers, and without one the client does not declare elicitation, so the server knows nobody can answer.
+A server of 2026-07-28 asks the person at the client by answering a call with input requests (`resultType: "input_required"`), and the client calls again with the answers and the server's `requestState`. A tool from `getTools()` asks through the run of the call: the run pauses with an interrupt (`reason: 'mcp_elicitation'`, its `responseSchema` the server's form), `cogitator.resume()` with the answer runs the tool again, and the call answers the round the server asked in instead of calling anew, so the server's work before the question is not done twice. The round is kept by tool call id until the call ends, for `rounds.ttlMs` (an hour) at most, in `rounds.store` (in memory by default, a store of your own keeps it across restarts). Ending the pause without an answer (`cog.cancelPause()`) declines. Outside a run, the `elicitation` handler answers, and without one the client does not declare elicitation, so the server knows nobody can answer.
 
 ```typescript
 const client = await MCPClient.connect({

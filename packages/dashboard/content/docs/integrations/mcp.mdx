@@ -143,7 +143,7 @@ client.discover(); // { protocolVersion, supportedVersions, capabilities, instru
 
 ### Input Requests
 
-A 2026-07-28 server asks the person at the client by answering a call with input requests, and the client calls again with the answers and the server's `requestState`, byte for byte. A tool from `getTools()` asks through its run: the run pauses with an [interrupt](/docs/core/run-control) (`reason: 'mcp_elicitation'`, the server's form as `responseSchema`), and `cogitator.resume()` with the answer runs the tool again, which goes on with it. `cancelPause()` declines. Outside a run the `elicitation` handler answers, and without one the client tells the server nobody can answer. The handler also answers the `elicitation/create` requests of 2025-11-25 servers.
+A 2026-07-28 server asks the person at the client by answering a call with input requests, and the client calls again with the answers and the server's `requestState`, byte for byte. A tool from `getTools()` asks through its run: the run pauses with an [interrupt](/docs/core/run-control) (`reason: 'mcp_elicitation'`, the server's form as `responseSchema`), and `cogitator.resume()` with the answer runs the tool again, which sends the answer to the round the server asked in (kept by tool call id in `rounds.store`, for `rounds.ttlMs`), so the server goes on with the same call instead of starting another. `cancelPause()` declines. Outside a run the `elicitation` handler answers, and without one the client tells the server nobody can answer. The handler also answers the `elicitation/create` requests of 2025-11-25 servers.
 
 ### Tasks and Subscriptions
 

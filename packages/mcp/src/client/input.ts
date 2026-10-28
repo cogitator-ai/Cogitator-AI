@@ -21,8 +21,10 @@ export interface InputAnswerer {
   source: MCPElicitationSource;
   interrupt?: ToolContext['interrupt'];
   handler?: MCPElicitationHandler;
-  /** What the call asked through its run so far, in order: a run answers its questions in order */
+  /** What the call asked so far, in order: a run answers its questions in order */
   ledger: MCPAskedInput[];
+  /** The keys of the ledger this run of the call asked already */
+  consumed: Set<string>;
 }
 
 const FormParamsSchema = z.looseObject({
@@ -70,12 +72,25 @@ export function toElicitRequest(params: unknown): MCPElicitRequest | MCPElicitUr
   };
 }
 
-/** The answers to `inputRequests`, by their keys, as `inputResponses` carries them */
-export async function answerInputRequests(
+/** An input request of a round, with the key the call's ledger keeps it under */
+export interface PlannedInput {
+  /** The request's key in the round's `inputRequests` */
+  key: string;
+  /** Its key in the ledger of the call (`call:<n>`) */
+  asked: string;
+  request: MCPElicitRequest | MCPElicitUrlRequest;
+}
+
+/**
+ * The elicitations of a round's `inputRequests`, added to the call's ledger in order
+ *
+ * @throws ProtocolError for a request of another kind, which this client never declares
+ */
+export function planInputRequests(
   inputRequests: Readonly<Record<string, unknown>>,
   answerer: InputAnswerer
-): Promise<Record<string, MCPElicitResult>> {
-  const responses: Record<string, MCPElicitResult> = {};
+): PlannedInput[] {
+  const planned: PlannedInput[] = [];
   for (const [key, entry] of Object.entries(inputRequests)) {
     const parsed = InputRequestSchema.safeParse(entry);
     if (!parsed.success || parsed.data.method !== 'elicitation/create') {
@@ -86,9 +101,41 @@ export async function answerInputRequests(
       );
     }
     const request = toElicitRequest(parsed.data.params);
-    responses[key] = await answerElicitation(request, answerer, `call:${answerer.ledger.length}`);
+    const asked = `call:${answerer.ledger.length}`;
+    answerer.ledger.push({ key: asked, request });
+    planned.push({ key, asked, request });
+  }
+  return planned;
+}
+
+/**
+ * The answers to a planned round, by the round's keys. Every question of the ledger this run of
+ * the call has not asked yet is asked first, in order, so a run that resumed reads the answers of
+ * its earlier questions before those of the round
+ */
+export async function answerPlanned(
+  planned: readonly Pick<PlannedInput, 'key' | 'asked'>[],
+  answerer: InputAnswerer
+): Promise<Record<string, MCPElicitResult>> {
+  const byAsked = new Map(planned.map((entry) => [entry.asked, entry.key]));
+  const responses: Record<string, MCPElicitResult> = {};
+  for (const entry of [...answerer.ledger]) {
+    if (answerer.consumed.has(entry.key)) continue;
+    const roundKey = byAsked.get(entry.key);
+    if (!answerer.interrupt && roundKey === undefined) continue;
+    const answer = await answerElicitation(entry.request, answerer);
+    answerer.consumed.add(entry.key);
+    if (roundKey !== undefined) responses[roundKey] = answer;
   }
   return responses;
+}
+
+/** The answers to `inputRequests`, by their keys, as `inputResponses` carries them */
+export async function answerInputRequests(
+  inputRequests: Readonly<Record<string, unknown>>,
+  answerer: InputAnswerer
+): Promise<Record<string, MCPElicitResult>> {
+  return answerPlanned(planInputRequests(inputRequests, answerer), answerer);
 }
 
 /**
@@ -97,12 +144,10 @@ export async function answerInputRequests(
  */
 export async function answerElicitation(
   request: MCPElicitRequest | MCPElicitUrlRequest,
-  answerer: InputAnswerer,
-  key: string
+  answerer: InputAnswerer
 ): Promise<MCPElicitResult> {
   const { interrupt, handler, source } = answerer;
   if (interrupt) {
-    if (!answerer.ledger.some((entry) => entry.key === key)) answerer.ledger.push({ key, request });
     const details = { server: source.server, ...(source.tool && { tool: source.tool }) };
     if (request.mode === 'url') {
       const answer = await interrupt({

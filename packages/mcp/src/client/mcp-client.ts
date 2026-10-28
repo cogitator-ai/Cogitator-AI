@@ -29,6 +29,7 @@ import type { Tool } from '@cogitator-ai/types';
 import { createStdioTransport, createHttpTransport, createSseTransport } from './transports';
 import type {
   MCPClientConfig,
+  MCPClientRoundStore,
   MCPClientTaskStore,
   MCPElicitationHandler,
   MCPResource,
@@ -53,9 +54,13 @@ import { mcpParamHeaders } from './param-headers';
 import {
   answerElicitation,
   answerInputRequests,
+  answerPlanned,
+  planInputRequests,
   toElicitRequest,
   type InputAnswerer,
 } from './input';
+import { DEFAULT_ROUND_TTL_MS, InMemoryMCPClientRoundStore } from './rounds';
+import { callDigest } from '../digest';
 import {
   DEFAULT_MAX_POLL_INTERVAL_MS,
   InMemoryMCPClientTaskStore,
@@ -218,6 +223,7 @@ export class MCPClient {
   private readonly authProvider: OAuthClientProvider | undefined;
   private readonly dispatcher: RawDispatcher;
   private readonly taskStore: MCPClientTaskStore;
+  private readonly roundStore: MCPClientRoundStore;
   private readonly toolDefinitions = new Map<string, MCPToolDefinition>();
   private readonly listeners = new Set<{
     filter: MCPSubscriptionFilter;
@@ -244,6 +250,7 @@ export class MCPClient {
     this.dispatcher = new RawDispatcher(() => this.requestMeta());
     const tasks = typeof config.tasks === 'object' ? config.tasks : undefined;
     this.taskStore = tasks?.store ?? new InMemoryMCPClientTaskStore();
+    this.roundStore = config.rounds?.store ?? new InMemoryMCPClientRoundStore();
     this.client = this.createSdkClient();
     this.transport = this.createTransport();
   }
@@ -282,8 +289,9 @@ export class MCPClient {
           source: { server: this.serverName ?? '' },
           handler,
           ledger: [],
+          consumed: new Set(),
         };
-        const answer = await answerElicitation(toElicitRequest(request.params), answerer, 'legacy');
+        const answer = await answerElicitation(toElicitRequest(request.params), answerer);
         return answer.action === 'accept'
           ? { action: 'accept', content: answer.content as Record<string, string> }
           : { action: answer.action };
@@ -692,21 +700,50 @@ export class MCPClient {
     if (reattached) return reattached;
 
     const maxRounds = this.config.maxInputRounds ?? DEFAULT_MAX_INPUT_ROUNDS;
+    const roundKey = answerer.interrupt ? options.toolCallId : undefined;
+    const digest = callDigest(name, args);
     let inputResponses: Record<string, unknown> | undefined;
     let requestState: string | undefined;
+
+    const pending = roundKey ? await this.roundStore.get(roundKey) : undefined;
+    if (pending?.tool === name && pending.digest === digest) {
+      answerer.ledger.push(...pending.asked);
+      inputResponses = await answerPlanned(pending.round, answerer);
+      requestState = pending.requestState;
+    }
+
     for (let round = 0; ; round++) {
-      const reply = await this.sendToolCall(name, args, inputResponses, requestState, options);
-      if (reply.kind === 'complete') return reply.result;
-      if (reply.kind === 'task') {
+      let reply: CallReply;
+      try {
+        reply = await this.sendToolCall(name, args, inputResponses, requestState, options);
+      } catch (error) {
+        if (roundKey) await this.roundStore.delete(roundKey);
+        throw error;
+      }
+      if (reply.kind !== 'input_required') {
+        if (roundKey) await this.roundStore.delete(roundKey);
+        if (reply.kind === 'complete') return reply.result;
         return this.toolResultOf(name, await this.settle(reply.task, name, answerer, options));
       }
       if (round >= maxRounds) {
+        if (roundKey) await this.roundStore.delete(roundKey);
         throw new ProtocolError(
           ProtocolErrorCode.InternalError,
           `MCP tool "${name}" kept asking for input: ${maxRounds} rounds without a result`
         );
       }
-      inputResponses = await answerInputRequests(reply.inputRequests, answerer);
+      const planned = planInputRequests(reply.inputRequests, answerer);
+      if (roundKey) {
+        await this.roundStore.set(roundKey, {
+          tool: name,
+          digest,
+          ...(reply.requestState !== undefined && { requestState: reply.requestState }),
+          round: planned.map(({ key, asked }) => ({ key, asked })),
+          asked: [...answerer.ledger],
+          expiresAt: Date.now() + (this.config.rounds?.ttlMs ?? DEFAULT_ROUND_TTL_MS),
+        });
+      }
+      inputResponses = await answerPlanned(planned, answerer);
       requestState = reply.requestState;
     }
   }
@@ -720,6 +757,7 @@ export class MCPClient {
         options.interrupt && { interrupt: options.interrupt }),
       ...(handler && { handler }),
       ledger: [],
+      consumed: new Set(),
     };
   }
 

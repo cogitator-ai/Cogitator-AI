@@ -111,7 +111,6 @@ export async function settleTask(
   };
   if (storeKey) await store.set(storeKey, record);
 
-  const consumed = new Set<string>();
   let current = task;
   let lastMessage: string | undefined;
   try {
@@ -129,8 +128,9 @@ export async function settleTask(
           if (storeKey) await store.delete(storeKey);
           throw new MCPTaskEndedError(current, options.toolName);
         case 'input_required': {
-          const responses = await answerTaskInput(current, answerer, consumed);
-          if (storeKey) await store.set(storeKey, { ...record, asked: [...answerer.ledger] });
+          const responses = await answerTaskInput(current, answerer, async () => {
+            if (storeKey) await store.set(storeKey, { ...record, asked: [...answerer.ledger] });
+          });
           if (Object.keys(responses).length > 0) {
             await withRestore(host, () =>
               host.request(
@@ -167,27 +167,27 @@ export async function settleTask(
 async function answerTaskInput(
   task: ClientTask,
   answerer: InputAnswerer,
-  consumed: Set<string>
+  persist: () => Promise<void>
 ): Promise<Record<string, unknown>> {
+  const consumed = answerer.consumed;
   const outstanding = task.inputRequests ?? {};
-  const responses: Record<string, unknown> = {};
-  if (answerer.interrupt) {
-    for (const entry of [...answerer.ledger]) {
-      if (consumed.has(entry.key)) continue;
-      const answer = await answerElicitation(entry.request, answerer, entry.key);
-      consumed.add(entry.key);
-      if (entry.key in outstanding) responses[entry.key] = answer;
-    }
-  }
   for (const [key, value] of Object.entries(outstanding)) {
-    if (consumed.has(key)) continue;
+    if (consumed.has(key) || answerer.ledger.some((entry) => entry.key === key)) continue;
     const params = z.looseObject({ method: z.string(), params: z.unknown() }).safeParse(value);
     if (!params.success || params.data.method !== 'elicitation/create') {
       consumed.add(key);
       continue;
     }
-    responses[key] = await answerElicitation(toElicitRequest(params.data.params), answerer, key);
-    consumed.add(key);
+    answerer.ledger.push({ key, request: toElicitRequest(params.data.params) });
+  }
+  await persist();
+  const responses: Record<string, unknown> = {};
+  for (const entry of [...answerer.ledger]) {
+    if (consumed.has(entry.key)) continue;
+    if (!answerer.interrupt && !(entry.key in outstanding)) continue;
+    const answer = await answerElicitation(entry.request, answerer);
+    consumed.add(entry.key);
+    if (entry.key in outstanding) responses[entry.key] = answer;
   }
   return responses;
 }

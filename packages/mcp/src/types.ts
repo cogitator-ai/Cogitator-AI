@@ -96,6 +96,38 @@ export interface MCPClientTaskStore {
   delete(key: string): Promise<void>;
 }
 
+/**
+ * A round of a tool call that waits on the person, kept while the call's run is paused on the
+ * question, so the resumed call answers that round instead of calling the tool anew
+ */
+export interface MCPClientRoundRecord {
+  tool: string;
+  /** Digest of the call's tool and arguments */
+  digest: string;
+  /** The server's state of the round, sent back unchanged with the answers */
+  requestState?: string;
+  /** The round's input requests: their key in the round and in `asked` */
+  round: Array<{ key: string; asked: string }>;
+  /** The questions the call asked so far, in order */
+  asked: MCPAskedInput[];
+  /** When the round is forgotten, ms since the epoch */
+  expiresAt: number;
+}
+
+/** Where a client keeps the rounds its paused calls wait on, by tool call id */
+export interface MCPClientRoundStore {
+  get(key: string): Promise<MCPClientRoundRecord | undefined>;
+  set(key: string, record: MCPClientRoundRecord): Promise<void>;
+  delete(key: string): Promise<void>;
+}
+
+export interface MCPClientRoundOptions {
+  /** Where rounds are kept by tool call id. Default: in the client's memory */
+  store?: MCPClientRoundStore;
+  /** How long a round is kept for the paused run to come back, in ms. Default: 3600000 (an hour) */
+  ttlMs?: number;
+}
+
 export interface MCPClientTaskOptions {
   /** Where tasks are kept by tool call id. Default: in the client's memory */
   store?: MCPClientTaskStore;
@@ -168,6 +200,12 @@ export interface MCPClientConfig {
 
   /** How many rounds of input requests one call may take before it fails. Default: 10 */
   maxInputRounds?: number;
+
+  /**
+   * The rounds of calls whose runs paused on a server's question: kept by tool call id, so the
+   * resumed call sends the answers to the round the server asked in, without calling anew
+   */
+  rounds?: MCPClientRoundOptions;
 
   /** For stdio transport: command to spawn */
   command?: string;
