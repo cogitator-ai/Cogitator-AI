@@ -106,7 +106,7 @@ function readsStdin(args: readonly string[]): boolean {
     const word = args[i];
     if (word === '--') return i + 1 >= args.length;
     if (/^-[A-Za-z]+$/.test(word) && word.includes('s')) return true;
-    if (/^-[A-Za-z]*c[A-Za-z]*$/.test(word)) return false;
+    if (/^-[A-Za-z]+$/.test(word) && word.includes('c')) return false;
     if (word === '-o' || word === '+o') {
       i++;
       continue;
@@ -135,7 +135,22 @@ interface RemovalTarget {
  * backtick), a brace expansion (`{a,b}`, `{1..3}`), or the `{}` of `find -exec` and `xargs -I`
  */
 function decidedAtRunTime(word: string): boolean {
-  return /[$`]/.test(word) || /\{[^{}]*(,|\.\.)[^{}]*\}/.test(word) || word.includes('{}');
+  return /[$`]/.test(word) || hasBraceExpansion(word) || word.includes('{}');
+}
+
+/** Whether `word` holds a `{...}` with a comma or `..` and no brace inside, scanned once */
+function hasBraceExpansion(word: string): boolean {
+  let open = -1;
+  for (let i = 0; i < word.length; i++) {
+    const char = word[i];
+    if (char === '{') open = i;
+    else if (char === '}' && open !== -1) {
+      const inner = word.slice(open + 1, i);
+      if (inner.includes(',') || inner.includes('..')) return true;
+      open = -1;
+    }
+  }
+  return false;
 }
 
 /** The operands of the `rm`, `rmdir` and `unlink` commands of a line, resolved from `cwd` */

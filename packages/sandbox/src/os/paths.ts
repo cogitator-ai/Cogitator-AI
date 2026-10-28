@@ -35,7 +35,7 @@ export function resolvePolicyPath(entry: string, base: string, home = homedir())
   if (text === '~') text = home;
   else if (text.startsWith('~/')) text = join(home, text.slice(2));
   while (text.endsWith('/**') && text.length > 3) text = text.slice(0, -3);
-  if (text.length > 1) text = text.replace(/\/+$/, '');
+  while (text.length > 1 && text.endsWith('/')) text = text.slice(0, -1);
   const path = isAbsolute(text) ? resolve(text) : resolve(base, text);
   if (!hasWildcard(path)) return { entry, path };
   const literal = path.split('/');

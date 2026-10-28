@@ -521,7 +521,10 @@ export function sandboxPolicyOf(
     }
   }
   const underTrustedDeny = (path: string) =>
-    trustedDenyRead.some((denied) => within(denied.replace(/\/\*\*.*$/, ''), path));
+    trustedDenyRead.some((denied) => {
+      const wildcard = denied.indexOf('/**');
+      return within(wildcard === -1 ? denied : denied.slice(0, wildcard), path);
+    });
 
   for (const layer of files) {
     const section = layer.sandbox ?? {};

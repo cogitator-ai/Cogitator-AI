@@ -53,6 +53,7 @@ describe('ProxySession', () => {
     sessions = [];
     upstream = createHttpServer((req, res) => {
       res.setHeader('connection', 'close');
+      res.setHeader('content-type', 'text/plain');
       res.end(`upstream saw ${req.method} ${req.url} host=${req.headers.host}`);
     });
     await new Promise<void>((done) => upstream.listen(0, '127.0.0.1', done));
