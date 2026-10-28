@@ -51,6 +51,7 @@ interface CogitatorConfig {
     plugins?: Record<string, unknown>; // config for registerLLMBackend() plugins
     retry?: LLMRetryConfig | false; // default: 2 retries with backoff
     promptCache?: PromptCacheConfig | false; // default: on
+    toolOutputSchemas?: 'native' | 'description'; // where a tool's outputSchema reaches the model
     modelCircuitBreaker?: ModelCircuitBreakerConfig; // when a failing fallbackModels model is skipped
     pricing?: Record<string, ModelPriceConfig>; // prices of your own, USD per million tokens, over the registry
   };

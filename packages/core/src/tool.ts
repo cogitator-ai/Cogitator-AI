@@ -221,12 +221,35 @@ export function toolToSchema<TParams, TResult>(t: Tool<TParams, TResult>): ToolS
     }
   }
 
+  const outputSchema = outputJsonSchema(t);
   return {
     name: t.name,
     description: t.description,
     parameters: toToolParameters(jsonSchema),
+    ...(outputSchema && { outputSchema }),
     ...(t.providerTypes && { providerTypes: t.providerTypes }),
   };
+}
+
+/** The JSON Schema of a tool's `outputSchema`, undefined when it has none or it does not convert */
+function outputJsonSchema<TParams, TResult>(
+  t: Tool<TParams, TResult>
+): Record<string, unknown> | undefined {
+  const schema: unknown = t.outputSchema;
+  if (!(schema instanceof z.ZodType)) return undefined;
+  try {
+    const json: Record<string, unknown> = {
+      ...(z.toJSONSchema(schema, {
+        target: 'openapi-3.0',
+        unrepresentable: 'any',
+        io: 'output',
+      }) as Record<string, unknown>),
+    };
+    delete json.$schema;
+    return json;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

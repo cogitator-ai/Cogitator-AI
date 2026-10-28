@@ -1,13 +1,19 @@
 import { CogitatorError, ErrorCode, type RunInterrupt } from '@cogitator-ai/types';
-import type { MCPElicitField, MCPElicitOption, MCPElicitRequest, MCPToolContext } from '../types';
+import type {
+  MCPElicitField,
+  MCPElicitOption,
+  MCPElicitRequest,
+  MCPElicitResult,
+  MCPToolContext,
+} from '../types';
 
 /** The field an answer that is not an object takes in the elicitation form. */
 const ANSWER_FIELD = 'answer';
 
-/** How a question becomes an elicitation form, and the form's content its answer. */
+/** How a question becomes an elicitation form, and whether its answer is the one `answer` field */
 interface QuestionForm {
   schema: MCPElicitRequest['schema'];
-  answerOf: (content: Record<string, unknown>) => unknown;
+  single: boolean;
 }
 
 /**
@@ -28,35 +34,63 @@ export async function elicitAnswers(
 ): Promise<Record<string, unknown>> {
   const responses: Record<string, unknown> = {};
   for (const question of questions) {
-    const form = questionForm(question.responseSchema);
-    if (!form) {
-      throw unanswered(
-        question,
-        agentName,
-        'its answer schema is not a flat form MCP elicitation can ask'
-      );
-    }
-    const problem = problems.get(question.id);
-    const plan = question.kind === 'plan' ? question.details?.plan : undefined;
-    const asked =
-      typeof plan === 'string' && plan.trim() !== ''
-        ? `${plan.trim()}\n\n${question.message}`
-        : question.message;
-    const message = problem ? `${problem}\n\n${asked}` : asked;
-    const reply = elicit ? await elicit({ message, schema: form.schema }) : undefined;
+    const asked = questionRequest(question, agentName, problems.get(question.id));
+    const reply = elicit ? await elicit(asked.request) : undefined;
     if (!reply) {
       throw unanswered(question, agentName, 'this MCP client cannot answer elicitation requests');
     }
-    if (reply.action !== 'accept') {
-      const why =
-        reply.action === 'decline'
-          ? 'the user declined to answer'
-          : 'the user dismissed the question without answering';
-      throw unanswered(question, agentName, why);
-    }
-    responses[question.id] = form.answerOf(reply.content);
+    responses[question.id] = answerOfReply(question, agentName, reply, asked.single);
   }
   return responses;
+}
+
+/**
+ * The elicitation form that asks `question`, and whether its answer is the form's one `answer`
+ * field. `problem` says why an earlier answer was refused, before the question.
+ *
+ * @throws CogitatorError `RUN_PAUSED` naming the question when its schema is no flat form
+ */
+export function questionRequest(
+  question: RunInterrupt,
+  agentName: string,
+  problem?: string
+): { request: MCPElicitRequest; single: boolean } {
+  const form = questionForm(question.responseSchema);
+  if (!form) {
+    throw unanswered(
+      question,
+      agentName,
+      'its answer schema is not a flat form MCP elicitation can ask'
+    );
+  }
+  const plan = question.kind === 'plan' ? question.details?.plan : undefined;
+  const asked =
+    typeof plan === 'string' && plan.trim() !== ''
+      ? `${plan.trim()}\n\n${question.message}`
+      : question.message;
+  const message = problem ? `${problem}\n\n${asked}` : asked;
+  return { request: { message, schema: form.schema }, single: form.single };
+}
+
+/**
+ * The answer to `question` a reply to its form gives.
+ *
+ * @throws CogitatorError `RUN_PAUSED` naming the question when the person declined or dismissed it
+ */
+export function answerOfReply(
+  question: RunInterrupt,
+  agentName: string,
+  reply: MCPElicitResult,
+  single: boolean
+): unknown {
+  if (reply.action !== 'accept') {
+    const why =
+      reply.action === 'decline'
+        ? 'the user declined to answer'
+        : 'the user dismissed the question without answering';
+    throw unanswered(question, agentName, why);
+  }
+  return single ? reply.content[ANSWER_FIELD] : reply.content;
 }
 
 /**
@@ -74,7 +108,7 @@ export function refusedQuestion(
   return question && { question, problem: error.message };
 }
 
-function unanswered(question: RunInterrupt, agentName: string, why: string): CogitatorError {
+export function unanswered(question: RunInterrupt, agentName: string, why: string): CogitatorError {
   return new CogitatorError({
     message:
       `Agent "${agentName}" paused to ask ${question.reason} ("${question.message}"), ` +
@@ -104,14 +138,14 @@ function questionForm(schema: Record<string, unknown> | undefined): QuestionForm
     : undefined;
   return {
     schema: { type: 'object', properties: fields, ...(required && { required }) },
-    answerOf: (content) => content,
+    single: false,
   };
 }
 
 function single(field: MCPElicitField): QuestionForm {
   return {
     schema: { type: 'object', properties: { [ANSWER_FIELD]: field }, required: [ANSWER_FIELD] },
-    answerOf: (content) => content[ANSWER_FIELD],
+    single: true,
   };
 }
 

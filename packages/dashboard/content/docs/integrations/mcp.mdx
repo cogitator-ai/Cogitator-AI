@@ -1,6 +1,6 @@
 ---
 title: Model Context Protocol (MCP)
-description: Full MCP support -- connect to external MCP servers to use their tools, or expose Cogitator tools as an MCP server.
+description: Full MCP support (2026-07-28 and 2025-11-25) -- connect to external MCP servers to use their tools, or expose Cogitator tools and agents as an MCP server.
 ---
 
 ## Overview
@@ -10,6 +10,8 @@ The `@cogitator-ai/mcp` package provides bidirectional MCP integration:
 - **MCPClient** -- connect to any MCP server (filesystem, database, GitHub, etc.) and use its tools inside Cogitator agents.
 - **MCPServer** -- expose your Cogitator tools, resources, and prompts as an MCP server for Claude Desktop, other AI assistants, or any MCP client.
 - **Tool Adapter** -- convert between Cogitator and MCP tool formats, including Zod-to-JSON Schema conversion.
+
+Client and server speak MCP 2026-07-28 (stateless requests, `server/discover`, multi round-trip requests, tasks, `subscriptions/listen`, OAuth with Client ID Metadata Documents) and 2025-11-25 with peers that have not moved yet.
 
 ```bash
 pnpm add @cogitator-ai/mcp @cogitator-ai/core
@@ -106,23 +108,64 @@ It also returns the connected `client`. For stdio servers, `env` is merged over 
 
 ### MCPClientConfig
 
-| Option                                                 | Type                         | Description                                          |
-| ------------------------------------------------------ | ---------------------------- | ---------------------------------------------------- |
-| `transport`                                            | `'stdio' \| 'http' \| 'sse'` | Transport protocol (`'sse'` is an alias of `'http'`) |
-| `command`                                              | `string`                     | Command for stdio transport                          |
-| `args`                                                 | `string[]`                   | Command arguments for stdio                          |
-| `env`                                                  | `Record<string, string>`     | Environment variables for stdio                      |
-| `cwd`                                                  | `string`                     | Working directory for the stdio process              |
-| `url`                                                  | `string`                     | Server URL for HTTP/SSE transport                    |
-| `headers`                                              | `Record<string, string>`     | Extra HTTP headers (e.g. `Authorization`)            |
-| `timeout`                                              | `number`                     | Connection timeout in ms (default: none)             |
-| `clientName`                                           | `string`                     | Client identification name                           |
-| `clientVersion`                                        | `string`                     | Client version string                                |
-| `retry`                                                | `MCPRetryConfig`             | Retry settings for failed operations                 |
-| `autoReconnect`                                        | `boolean`                    | Auto-reconnect on connection loss (default: true)    |
-| `onReconnecting`, `onReconnected`, `onReconnectFailed` | callbacks                    | Reconnection lifecycle hooks                         |
+| Option                                                 | Type                            | Description                                          |
+| ------------------------------------------------------ | ------------------------------- | ---------------------------------------------------- |
+| `transport`                                            | `'stdio' \| 'http' \| 'sse'`    | Transport protocol (`'sse'` is an alias of `'http'`) |
+| `command`                                              | `string`                        | Command for stdio transport                          |
+| `args`                                                 | `string[]`                      | Command arguments for stdio                          |
+| `env`                                                  | `Record<string, string>`        | Environment variables for stdio                      |
+| `cwd`                                                  | `string`                        | Working directory for the stdio process              |
+| `url`                                                  | `string`                        | Server URL for HTTP/SSE transport                    |
+| `headers`                                              | `Record<string, string>`        | Extra HTTP headers (e.g. `Authorization`)            |
+| `timeout`                                              | `number`                        | Connection timeout in ms (default: none)             |
+| `clientName`                                           | `string`                        | Client identification name                           |
+| `clientVersion`                                        | `string`                        | Client version string                                |
+| `retry`                                                | `MCPRetryConfig`                | Retry settings for failed operations                 |
+| `autoReconnect`                                        | `boolean`                       | Auto-reconnect on connection loss (default: true)    |
+| `onReconnecting`, `onReconnected`, `onReconnectFailed` | callbacks                       | Reconnection lifecycle hooks                         |
+| `protocol`                                             | `'auto' \| 'legacy' \| { pin }` | Protocol revision (default: `'auto'`)                |
+| `elicitation`                                          | `false \| handler`              | Answers input requests no run can answer             |
+| `tasks`                                                | `boolean \| { store }`          | Take MCP tasks (default: true)                       |
+| `auth`                                                 | `MCPOAuthConfig \| provider`    | OAuth 2.1 for a remote server                        |
+| `maxInputRounds`                                       | `number`                        | Rounds of input requests per call (default: 10)      |
 
 The `http` transport speaks MCP Streamable HTTP (`sse` is an alias of it, as the server's `sse` serves it). A server that only offers the older HTTP+SSE protocol, which opens its event stream with a GET and takes messages in POSTs, needs `transport: 'legacy-sse'`, which `experimental_mcpConnector()` uses for `type: "sse"` of a `.mcp.json`, as Claude Code does. Besides `getTools()`, the client has `listToolDefinitions()` (raw MCP definitions), `isConnected()`, `reconnect()` and `close()`.
+
+### Protocol Versions
+
+MCP 2026-07-28 has no `initialize` handshake: each request carries its protocol version and the client's capabilities in `_meta`, and the server describes itself through `server/discover`. With `protocol: 'auto'` (the default) the client asks `server/discover` first and speaks 2026-07-28 to a server that answers, 2025-11-25 to any other. On stdio the probe runs in a short-lived copy of the server process, so a stdio server starts twice on the first connect. A reconnect keeps the revision and asks nothing. `protocol: 'legacy'` keeps the old behavior, `{ pin: '2026-07-28' }` fails against older servers.
+
+```typescript
+const client = await MCPClient.connect({ transport: 'http', url });
+client.era; // 'modern' | 'legacy'
+client.discover(); // { protocolVersion, supportedVersions, capabilities, instructions, serverInfo }
+```
+
+### Input Requests
+
+A 2026-07-28 server asks the person at the client by answering a call with input requests, and the client calls again with the answers and the server's `requestState`, byte for byte. A tool from `getTools()` asks through its run: the run pauses with an [interrupt](/docs/core/run-control) (`reason: 'mcp_elicitation'`, the server's form as `responseSchema`), and `cogitator.resume()` with the answer runs the tool again, which sends the answer to the round the server asked in (kept by tool call id in `rounds.store`, for `rounds.ttlMs`), so the server goes on with the same call instead of starting another. `cancelPause()` declines. Outside a run the `elicitation` handler answers, and without one the client tells the server nobody can answer. The handler also answers the `elicitation/create` requests of 2025-11-25 servers.
+
+### Tasks and Subscriptions
+
+A server may answer a long call with a [task](https://modelcontextprotocol.io/extensions/tasks/overview). The client polls it at the interval the server suggests, answers its questions, reports its status message through the tool's `update`, and cancels it when the call's signal aborts. A task outlives a lost connection, and a call that runs again after a pause polls the task it started (tasks are kept by tool call id, `tasks: { store }` keeps them elsewhere).
+
+`client.subscribe(filter, handlers)` hears of tool, prompt and resource changes: a `subscriptions/listen` stream on 2026-07-28, list changes and per-resource subscriptions on earlier revisions. `subscription.filter` is what the server agreed to report.
+
+### OAuth
+
+```typescript
+const client = await MCPClient.connect({
+  transport: 'http',
+  url: 'https://mcp.example.com/mcp',
+  auth: {
+    redirectUrl: 'http://127.0.0.1:8976/callback',
+    clientMetadataUrl: 'https://my-app.example.com/oauth/client.json',
+    authorize: async (url) => openBrowserAndWaitForCallback(url),
+  },
+});
+```
+
+On a 401 the client discovers the authorization server from the server's Protected Resource Metadata, registers, sends the person to `authorize` (PKCE, the server as `resource`), checks the `iss` of the answer and connects with the token. It registers with a pre-registered `clientId`, else with its Client ID Metadata Document (an HTTPS JSON document you host, its URL the `client_id`) when the authorization server supports those, else by Dynamic Client Registration as a native app for a loopback redirect. Registrations and tokens are kept per authorization server in `store`, under the MCP server's URL, so a shared store never sends one server's token to another. A token or registration the authorization server rejects is forgotten for every authorization server.
 
 ### Retry and Reconnection
 
@@ -147,11 +190,11 @@ const client = await MCPClient.connect({
 
 Only transient failures are retried (connection loss, request timeouts, network errors). Protocol errors returned by the server, tool failures and aborted calls fail immediately, and concurrent calls that lose the connection share a single reconnect.
 
-Tool calls are only retried when sending them twice is harmless. After a timeout or a lost connection the server may still be running the call, or may have finished it, so `callTool` throws `MCPToolInterruptedError` (`reason: 'timeout' | 'connection-lost'`) instead of deploying twice or sending a second email. Tools from `getTools()` / `wrapMCPTools()` are retried like reads when the server marks them `readOnlyHint` or `idempotentHint` in their annotations. Pass `{ idempotent: true }` to `callTool` to retry a call yourself. A connection an earlier call lost is restored before the next call is sent.
+Tool calls are only retried when sending them twice is harmless. After a timeout or a lost connection the server may still be running the call, or may have finished it, so `callTool` throws `MCPToolInterruptedError` (`reason: 'timeout' | 'connection-lost'`) instead of deploying twice or sending a second email. A resumed call whose task the server no longer knows (it expired) throws the same error with `reason: 'task-lost'` rather than calling the tool again. Tools from `getTools()` / `wrapMCPTools()` are retried like reads when the server marks them `readOnlyHint` or `idempotentHint` in their annotations. Pass `{ idempotent: true }` to `callTool` to retry a call yourself. A connection an earlier call lost is restored before the next call is sent.
 
 ### Tool Results and Errors
 
-`callTool` returns `structuredContent` when the server provides it, otherwise the unwrapped content (text blocks are JSON-parsed when possible, a single block is returned on its own, an empty result is `null`). Content with images, audio or binary resources comes back as a [`toolContent()`](/docs/core/tools#media-results-with-toolcontent) result, so the model sees a screenshot as an image and audio stays out of the context. Text resources in such a result become `resource` parts with their URI, media type and text. A tool result with `isError: true` throws `MCPToolError`, so MCP failures show up as ordinary tool errors inside agent runs. Pass an `AbortSignal` to cancel a call, and tools created by `getTools()` forward the run's signal automatically.
+`callTool` returns `structuredContent` when the server provides it (any JSON value since 2026-07-28), otherwise the unwrapped content (text blocks are JSON-parsed when possible, a single block is returned on its own, an empty result is `null`). Content with images, audio or binary resources comes back as a [`toolContent()`](/docs/core/tools#media-results-with-toolcontent) result, so the model sees a screenshot as an image and audio stays out of the context. Text resources in such a result become `resource` parts with their URI, media type and text. A tool result with `isError: true` throws `MCPToolError`, so MCP failures show up as ordinary tool errors inside agent runs. Pass an `AbortSignal` to cancel a call, and tools created by `getTools()` forward the run's signal automatically.
 
 ```typescript
 import { MCPToolError } from '@cogitator-ai/mcp';
@@ -228,7 +271,7 @@ server.registerTools([calculator]);
 await server.start();
 ```
 
-Tool calls run the way an agent run executes them, through a `ToolInvoker` (`cogitator.invokeTool()`): the arguments are validated, a tool with `requiresApproval` (or one the guardrails flag) is asked from the person at the client through MCP elicitation, the guardrails apply, sandboxed tools run in the sandbox, `tool.timeout` holds and the Cogitator's `wrapToolCall` middleware applies. Pass your `Cogitator` as `toolInvoker` so its sandbox and guardrails are the ones used, otherwise the server uses a Cogitator of its own without configuration. A call that needs approval when nobody can be asked (a client without elicitation, or HTTP without `sessions: true`) does not run: it comes back as an `isError` result that says so, unless the invoker's `guardrails.onToolApproval` decides it.
+Tool calls run the way an agent run executes them, through a `ToolInvoker` (`cogitator.invokeTool()`): the arguments are validated, a tool with `requiresApproval` (or one the guardrails flag) is asked from the person at the client through MCP elicitation, the guardrails apply, sandboxed tools run in the sandbox, `tool.timeout` holds and the Cogitator's `wrapToolCall` middleware applies. Pass your `Cogitator` as `toolInvoker` so its sandbox and guardrails are the ones used, otherwise the server uses a Cogitator of its own without configuration. For 2026-07-28 clients the approval ends the round: the client gets the approval form with a signed `requestState` (HMAC under `requestStateKey`, bound to the caller, the tool and its arguments, valid for twice `elicitationTimeoutMs`), and the call runs once it comes back approved. A call that needs approval when nobody can be asked (a client without elicitation, or a 2025-11-25 client over HTTP without `sessions: true`) does not run: it comes back as an `isError` result that says so, unless the invoker's `guardrails.onToolApproval` decides it.
 
 ```typescript
 const server = new MCPServer({
@@ -241,7 +284,7 @@ const server = new MCPServer({
 
 `serveMCPTools(tools, config)` does the same in one call and returns the started server. Tools, resources and prompts can be added one by one (`registerTool`, `registerResource`, `registerPrompt`) or in batches (`registerTools`, `registerResources`, `registerPrompts`), removed with the matching `unregister*` methods and listed with `getRegisteredTools()` / `getRegisteredResources()` / `getRegisteredPrompts()`.
 
-A tool's `title`, `annotations` and `outputSchema` reach the clients with it. The result of a tool with a `z.object()` output schema is sent as `structuredContent`, with its JSON as text for clients that read only `content`, and a result the schema rejects comes back as an `isError` result that says why. Only a `z.object()` output schema (`z.strictObject` and `z.looseObject` too) is advertised, since MCP output schemas need an object root and the MCP SDK takes them only as zod object schemas: a record, a union or a pipe is left out, and `MCPServer` warns when it registers such a tool.
+A tool's `title`, `annotations` and `outputSchema` reach the clients with it. The result of a tool with an output schema is sent as `structuredContent`, with its JSON as text for clients that read only `content`, and a result the schema rejects comes back as an `isError` result that says why. The output schema may have any root (an array, a record, a union): 2025-11-25 clients get such a result wrapped as `{ result }`. Imported tools carry the server's output schema to the model: Gemini takes it as `responseJsonSchema`, other providers read it at the end of the description with `llm.toolOutputSchemas: 'description'`.
 
 ```typescript
 const getRepo = tool({
@@ -278,6 +321,8 @@ await server.start();
 Clients connect to `http://localhost:3000/mcp` (`port` defaults to `3000`, `host` to `localhost`; other paths answer `404`). Use `port: 0` to bind a random free port and read it back with `server.getPort()`. `maxBodySize` (default 10 MB), `corsOrigin` (default `'*'`) and `auth` (see below) tune the HTTP endpoint; `start()` rejects if the port cannot be bound and `stop()` closes open connections.
 
 Tool arguments are validated against the tool's full Zod schema before `execute` runs; invalid arguments and thrown errors come back to the client as `isError` tool results, while errors thrown by resource `read` and prompt `get` handlers are returned as JSON-RPC errors. With `logging: true`, diagnostics go to stderr so the stdio transport's stdout stays reserved for JSON-RPC.
+
+The server speaks 2026-07-28 and 2025-11-25 (`legacyClients: false` refuses the older revision). CORS preflights may send the MCP headers, `Mcp-Param-*` included, and `allowedOrigins` refuses other browser origins with `403`. Without it a server on a loopback host takes only loopback origins (and requests without `Origin`), against DNS rebinding. A call still running after `tasks.promoteAfterMs` (default 2 s) becomes an MCP task for clients that take tasks, its approvals and questions asked in the task, and `tasks/cancel` stops its run. Tasks belong to the caller that started them: its `userId`, else a digest of its `Authorization` or `Cookie` header (`auth` that gives neither is answered `401`). A task question nobody answers within `elicitationTimeoutMs` counts as dismissed, and a task still running at `tasks.ttlMs` is stopped. `tasks: false` turns them off.
 
 ### Authentication and Per-User Tools
 
@@ -394,13 +439,15 @@ In the client's MCP config:
 
 The tool answers `{ status: 'completed', output, threadId }`. Each tool is named after its agent, with characters other than letters, digits, `_` and `-` replaced (`toolNames: { [agent.name]: 'tool_name' }` renames them), and described by the agent's `description` — or by the first sentence of its instructions when it has none. `serveAgents` takes every `MCPServer` option (defaults: name `cogitator-agents`, `transport: 'stdio'`, `sessions: true`) and returns the started server. With `auth`, runs carry the caller's `userId`, so threads and memory stay per user ([Multiple Users](/docs/advanced/multi-user)), and the client's cancellation aborts the run.
 
-**Approvals.** When an agent's tool needs [approval](/docs/tools/approvals), the server asks the person at the client through MCP elicitation and the run goes on with their answer. Clients without elicitation get a paused answer (`{ status: 'paused', threadId, pendingApprovals, next }`) and continue with the `<agent>_resume` tool (the agent's tool name plus `_resume`, registered for every agent, since [permission rules](/docs/tools/permissions) of the runtime can make any call ask), passing `{ threadId, approved, reason? }` once the user decided. The approval message says why the call asks. With `allowRemember: true` in the server options, elicitation offers an `always` choice and `<agent>_resume` takes `remember`, which saves the request's suggested rule. It is off by default, so the client model cannot grant itself standing permissions. Imported MCP tools carry their server and name (`tool.mcp`, the server from the `server` option of `wrapMCPTools()`, else the name the server reports), so `mcp__<server>__<tool>` rules match them. Elicitation needs a connection the client can reply on: stdio, or HTTP with `sessions: true`, which `serveAgents` turns on.
+**Approvals.** When an agent's tool needs [approval](/docs/tools/approvals), the server asks the person at the client through MCP elicitation and the run goes on with their answer. For 2026-07-28 clients the run pauses, the round ends with every approval and question it waits on and a signed state that names its thread, and the next round resumes it with the decisions and answers, so nothing waits in the server between rounds. Clients without elicitation get a paused answer (`{ status: 'paused', threadId, pendingApprovals, next }`) and continue with the `<agent>_resume` tool (the agent's tool name plus `_resume`, registered for every agent, since [permission rules](/docs/tools/permissions) of the runtime can make any call ask), passing `{ threadId, approved, reason? }` once the user decided. The approval message says why the call asks. With `allowRemember: true` in the server options, elicitation offers an `always` choice and `<agent>_resume` takes `remember`, which saves the request's suggested rule. It is off by default, so the client model cannot grant itself standing permissions. Imported MCP tools carry their server and name (`tool.mcp`, the server from the `server` option of `wrapMCPTools()`, else the name the server reports), so `mcp__<server>__<tool>` rules match them. Elicitation needs a connection the client can reply on: stdio, or HTTP with `sessions: true`, which `serveAgents` turns on.
 
 `agentTools(cog, agents, toolNames?)` returns the same tools to register on an `MCPServer` you configure yourself. Both accept anything with Cogitator's `run` and `resume` (`AgentHost`).
 
 ### Sessions
 
-`MCPServer` over HTTP serves each request on its own by default. `sessions: true` keeps a session per client (`mcp-session-id`), which requests from the server to the client — such as elicitation — need. A session belongs to the caller that started it: a request with another caller's credentials gets `403`. Elicitation works over stdio or HTTP with `sessions: true`; elsewhere `elicit` is not available.
+2026-07-28 clients have no sessions: the server asks them with the answer of a round. For 2025-11-25 clients `MCPServer` over HTTP serves each request on its own by default, and `sessions: true` keeps a session per client (`mcp-session-id`), which requests from the server to such a client, like elicitation, need. A session belongs to the caller that started it: a request with another caller's credentials gets `403`.
+
+`elicit` keeps a 2026-07-28 call waiting in the server process between rounds, so every round of it has to reach the same process. A round for a question that expired or was answered already gets an error result, the tool does not run again. `context.input` asks without waiting: `input.ask(requests, state)` ends the round, and the tool runs again with `input.responses` and its `state`, on any process with the same `requestStateKey`.
 
 Your own tools reach the elicitation channel through their context. `elicit` resolves to `{ action: 'accept', content }`, `{ action: 'decline' | 'cancel' }`, or `undefined` when the client cannot answer:
 

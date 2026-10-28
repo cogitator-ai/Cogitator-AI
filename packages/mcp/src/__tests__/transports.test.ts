@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => {
+vi.mock('@modelcontextprotocol/client/stdio', () => {
   class StdioClientTransport {
     command: string;
     args?: string[];
@@ -22,7 +22,8 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => {
   return { StdioClientTransport };
 });
 
-vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => {
+vi.mock('@modelcontextprotocol/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@modelcontextprotocol/client')>();
   class StreamableHTTPClientTransport {
     url: URL;
     opts?: { requestInit?: RequestInit };
@@ -32,7 +33,7 @@ vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => {
       this.opts = opts;
     }
   }
-  return { StreamableHTTPClientTransport };
+  return { ...actual, StreamableHTTPClientTransport };
 });
 
 import { createStdioTransport, createHttpTransport } from '../client/transports';

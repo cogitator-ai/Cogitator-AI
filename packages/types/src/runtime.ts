@@ -155,6 +155,13 @@ export interface CogitatorConfig {
      */
     promptCache?: PromptCacheConfig | false;
     /**
+     * How the models learn what a tool returns (its `outputSchema`, such as an MCP tool's). With
+     * `native` (the default) Gemini gets it as the function's `responseJsonSchema` and other
+     * providers do not get it, with `description` the providers without a field for it read it
+     * at the end of the tool's description
+     */
+    toolOutputSchemas?: 'native' | 'description';
+    /**
      * When a model an agent falls back from (`fallbackModels`) is skipped. Each model has its
      * own breaker, shared by every run of this runtime: after `failureThreshold` failures in a
      * row, or at once for an out-of-quota account, a rejected key or a missing model, turns go
