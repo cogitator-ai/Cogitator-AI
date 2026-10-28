@@ -141,12 +141,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Query parameters as request fields: the first value of each, `true`/`false` as booleans. */
+/** The query parameters of the 1.0 requests that are booleans, in both ProtoJSON spellings */
+const BOOLEAN_QUERY_FIELDS = new Set(['includeArtifacts', 'include_artifacts']);
+
+/**
+ * Query parameters as request fields: the first value of each, `true`/`false` as booleans for the
+ * boolean fields only, so a string such as a `contextId` of `true` stays a string
+ */
 function queryParams(query: URLSearchParams | undefined): Record<string, unknown> {
   const params: Record<string, unknown> = {};
   for (const [key, value] of query ?? []) {
     if (key === A2A_VERSION_HEADER || key in params) continue;
-    params[key] = value === 'true' ? true : value === 'false' ? false : value;
+    params[key] =
+      BOOLEAN_QUERY_FIELDS.has(key) && (value === 'true' || value === 'false')
+        ? value === 'true'
+        : value;
   }
   return params;
 }

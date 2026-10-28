@@ -164,6 +164,12 @@ describe.each(Object.keys(adapters))('A2A 1.0 HTTP+JSON binding on %s', (adapter
     });
     expect(((await working.json()) as { totalSize: number }).totalSize).toBe(0);
 
+    const stringContext = await mounted.request('/a2a/rest/tasks?contextId=true', {
+      headers: { 'A2A-Version': '1.0' },
+    });
+    expect(stringContext.status).toBe(200);
+    expect(((await stringContext.json()) as { totalSize: number }).totalSize).toBe(0);
+
     const tooLarge = await mounted.request('/a2a/rest/tasks?pageSize=500', {
       headers: { 'A2A-Version': '1.0' },
     });
