@@ -54,7 +54,8 @@ cogitator run -m ollama/llama3.1:8b "What is the capital of France?"
 | `cogitator up`             | Run the assistant from `cogitator.yml`, or start Docker services                                                |
 | `cogitator down`           | Stop Docker Compose services                                                                                    |
 | `cogitator assistant`      | Run a gateway module (`src/gateway.ts`) with a live dashboard                                                   |
-| `cogitator run [msg]`      | Chat with an agent (one-shot or interactive REPL)                                                               |
+| `cogitator run [msg]`      | Chat with an agent (one-shot or interactive REPL), or run headless with `-p` (text, JSON or stream-json)        |
+| `cogitator app-server`     | Serve the typed JSON-RPC app-server on stdio, write its client (`generate-ts`) and JSON Schema                  |
 | `cogitator build`          | Bundle a gateway into a self-starting `dist/cogitator.mjs`                                                      |
 | `cogitator daemon <cmd>`   | Run in the background / install as a launchd or systemd service                                                 |
 | `cogitator skill <cmd>`    | Create, validate, install and remove skills                                                                     |
@@ -239,6 +240,60 @@ cogitator run            # interactive
 **Model resolution:** `-m` → `COGITATOR_MODEL` → `llm.defaultModel` from the config → the model of an assistant config → first installed Ollama model (preferring qwen3:8b, qwen3.5:9b, llama3.1:8b, llama3:8b, gemma3:4b, gemma2:9b, mistral:7b). Ollama is reached at `llm.providers.ollama.baseUrl`, `OLLAMA_URL` or `OLLAMA_HOST`.
 
 Interactive commands: `/model [name]`, `/clear`, `/help`, `exit` / `quit` (Ctrl+D also exits).
+
+#### Headless: `cogitator run -p`
+
+`-p` (`--print`) runs one session without a terminal, for scripts, CI and other programs. Only the answer, or protocol lines, reach stdout: the CLI's messages and the runtime's logs go to stderr.
+
+```bash
+cogitator run -p "Name three primary colors"
+git diff | cogitator run -p "Review this diff"
+cogitator run -p --output-format json "Summarize README.md"
+cogitator run -p --json-schema '{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}' "Capital of France?"
+cogitator run -p --resume <session-id> "And of Italy?"
+cogitator run -p --resume <session-id> --fork "Try another answer"
+cogitator run -p --input-format stream-json --output-format stream-json < turns.ndjson
+```
+
+| Option                     | Default | Description                                                                    |
+| -------------------------- | ------- | ------------------------------------------------------------------------------ |
+| `-p, --print`              | -       | Run headless: the prompt from the argument, stdin after it when piped          |
+| `--output-format <format>` | `text`  | `text` (the answer), `json` (one result object), `stream-json` (NDJSON events) |
+| `--input-format <format>`  | `text`  | `stream-json` reads turns as NDJSON lines on stdin (needs stream-json output)  |
+| `--resume <session-id>`    | -       | Continue a kept session                                                        |
+| `--fork`                   | -       | With `--resume`: continue in a new session forked from it                      |
+| `--session-id <id>`        | new     | The id of the new session (with `--resume`, only together with `--fork`)       |
+| `--json-schema <schema>`   | -       | JSON Schema, inline or a file, the answer must match: printed as that JSON     |
+| `--no-session-persistence` | -       | Keep the session in this process only, over `memory.adapter` too               |
+
+A stream-json line is a `StreamEvent` of the stream protocol (`start`, `text-delta`, `tool-call-start`, `tool-result`, `finish` and the others) with `session_id` and `parent_tool_use_id`, which names the tool call of a subagent's run and is `null` at the top. Each turn ends with a `result` line: `subtype` `success`, `paused`, `interrupted` or `error`, `is_error`, `session_id`, `result`, `structured_output`, `usage`, `total_cost_usd`, `duration_ms`, and `pending_approvals` with `interrupts` for a paused turn. `--output-format json` prints that result line alone.
+
+stream-json input takes one line per message:
+
+```json
+{"type":"user","message":{"role":"user","content":"Plan the release"}}
+{"type":"user","message":{"role":"user","content":"Skip the changelog"},"delivery":"steer"}
+{"type":"resume","decisions":{"call_1":{"approved":true}}}
+{"type":"interrupt"}
+```
+
+A `user` line without `delivery` is a turn of its own, run after the turns before it. With `delivery` (`steer`, `followUp` or `inject`) it reaches the turn going on or starting, and starts a turn when there is none. `content` is text or parts (`{"type":"text"}`, images as `{"type":"image","url"}` or Claude Code's `{"type":"image","source":{"type":"base64",...}}`). `resume` answers a paused turn, `interrupt` stops the turn going on. A line that cannot be read is skipped with a note on stderr.
+
+Exit codes: `0` when the last turn completed, `1` when it failed, was interrupted or missed `--json-schema`, `2` for a wrong command line, `3` when it was left paused (approve with a `resume` line).
+
+Without `memory.adapter` in the config, sessions are kept in SQLite at `~/.cogitator/sessions.db` (`COGITATOR_SESSIONS_DB` names another file), so `--resume` works across runs. A config with `memory.adapter` keeps them there. `--no-session-persistence` keeps the session in the process alone, also over a configured `memory.adapter`, and does not go with `--resume`.
+
+---
+
+### cogitator app-server
+
+Serves the JSON-RPC app-server of [`@cogitator-ai/app-server`](https://www.npmjs.com/package/@cogitator-ai/app-server) on stdin and stdout as NDJSON: threads, turns, steering, approvals (`approval/request`), reviews and the `_cogitator/*` extensions, with the agent of `cogitator run` (`-c`, `-m` and the session store work the same). Logs go to stderr. When stdin ends the turns going on are interrupted and the process exits.
+
+```bash
+cogitator app-server -m ollama/qwen3:8b
+cogitator app-server generate-ts --out src/generated          # cogitator-app-server.ts, the typed client
+cogitator app-server generate-json-schema --out schema        # cogitator-app-server.schema.json
+```
 
 ---
 
@@ -447,6 +502,7 @@ The model, memory and `deploy:` section all come from one config file: the `-c` 
 | ------------------------------------------------------- | --------------------------------------- | ------------------------------------------ |
 | `COGITATOR_CONFIG`                                      | `run`                                   | Config file path                           |
 | `COGITATOR_MODEL`                                       | `run`                                   | Default model                              |
+| `COGITATOR_SESSIONS_DB`                                 | `run -p`, `app-server`                  | SQLite file of the sessions                |
 | `COGITATOR_PLUGINS_DIR`                                 | `plugin`, runtime                       | Where installed plugins are kept           |
 | `COGITATOR_TRIGGERS_DIR`                                | `schedule`, `inbox`, `trigger`, runtime | Where the file stores of routines are kept |
 | `COGITATOR_URL`, `COGITATOR_TRIGGER_TOKEN`              | `trigger fire`                          | The server and the trigger's token         |

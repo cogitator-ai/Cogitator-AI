@@ -318,3 +318,46 @@ export {
   type TriggerConformanceCase,
   type TriggerConformanceResponse,
 } from './conformance-triggers.js';
+
+export {
+  JSON_RPC_ERROR_CODES,
+  JsonRpcCallError,
+  JsonRpcErrorResponseSchema,
+  JsonRpcErrorSchema,
+  JsonRpcIdSchema,
+  JsonRpcMessageSchema,
+  JsonRpcNotificationSchema,
+  JsonRpcParseError,
+  JsonRpcPeer,
+  JsonRpcRequestSchema,
+  JsonRpcSuccessResponseSchema,
+  createErrorResponse,
+  createNotification,
+  createRequest,
+  createSuccessResponse,
+  isJsonRpcNotification,
+  isJsonRpcResponse,
+  isValidRequest,
+  jsonRpcIdOf,
+  parseJsonRpcMessage,
+  parseJsonRpcRequest,
+} from './json-rpc.js';
+
+export type {
+  JsonRpcError,
+  JsonRpcHandlerContext,
+  JsonRpcId,
+  JsonRpcMessage,
+  JsonRpcNotification,
+  JsonRpcNotificationHandler,
+  JsonRpcPeerOptions,
+  JsonRpcRequest,
+  JsonRpcRequestHandler,
+  JsonRpcRequestOptions,
+  JsonRpcResponse,
+  ParseJsonRpcMessageOptions,
+} from './json-rpc.js';
+
+export { DEFAULT_NDJSON_MAX_LINE_BYTES, encodeNdjsonLine, readNdjson } from './ndjson.js';
+
+export type { NdjsonLine, NdjsonLineError, ReadNdjsonOptions } from './ndjson.js';

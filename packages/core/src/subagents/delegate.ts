@@ -1,4 +1,6 @@
 import type {
+  DelegatedRunStart,
+  DelegatedRunStream,
   DelegationApprovalMode,
   DelegationCompleteEvent,
   DelegationHooks,
@@ -288,7 +290,16 @@ export function delegateRunOptions(
         const decision = run.onApproval ? await run.onApproval(request) : 'pause';
         return decision === 'pause' ? DELEGATED_DECLINE : decision;
       };
+  const threadId = run.threadId ?? context.delegation?.resume?.checkpoint.threadId;
+  const stream = context.delegation?.stream?.({
+    agent: delegate.name,
+    ...(run.taskId !== undefined && { taskId: run.taskId }),
+    ...(threadId !== undefined && { threadId }),
+    background: run.background === true,
+  });
   return {
+    ...stream,
+    ...(stream && streamsLive(stream) && { stream: true }),
     timeout: run.timeout ?? delegate.config.timeout,
     signal: run.signal ?? context.signal,
     ...(context.userId !== undefined && { userId: context.userId }),
@@ -297,6 +308,40 @@ export function delegateRunOptions(
     ...(permissions && { permissions }),
     ...(onApproval && { onApproval }),
   };
+}
+
+/**
+ * The `ToolDelegationContext.stream` of a tool call of a run that hears of delegated runs with
+ * `open`: the delegated run is announced to it with `parent`, and passes `open` on to the runs it
+ * delegates in turn unless the stream `open` returned names an `onDelegatedRun` of its own
+ */
+export function delegatedStream(
+  open: (run: DelegatedRunStart) => DelegatedRunStream | undefined,
+  parent: Pick<DelegatedRunStart, 'parentToolCallId' | 'parentRunId' | 'depth'>
+): (
+  run: Pick<DelegatedRunStart, 'agent' | 'taskId' | 'threadId' | 'background'>
+) => DelegatedRunStream {
+  return (run) => {
+    let opened: DelegatedRunStream | undefined;
+    try {
+      opened = open({ ...parent, ...run });
+    } catch (error) {
+      getLogger().warn('Run onDelegatedRun failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return { ...opened, onDelegatedRun: opened?.onDelegatedRun ?? open };
+  };
+}
+
+/** Whether `stream` hears of what the model writes as it writes it, which needs a streamed run */
+function streamsLive(stream: DelegatedRunStream): boolean {
+  return (
+    stream.onToken !== undefined ||
+    stream.onReasoning !== undefined ||
+    stream.onToolInputStart !== undefined ||
+    stream.onToolInputDelta !== undefined
+  );
 }
 
 /** Why a delegate that paused could not go on, for the model of the run that delegated */
