@@ -28,6 +28,7 @@ Every adapter registers these routes. Express (`config.basePath`) and Fastify (`
 | `POST`   | `/agents/:name/stream`           | Run an agent (SSE stream)                                                              |
 | `POST`   | `/agents/:name/resume`           | Resume a run paused for [approvals](/docs/tools/approvals)                             |
 | `POST`   | `/agents/:name/resume/stream`    | Resume a paused run and stream the rest of it (SSE stream)                             |
+| `POST`   | `/agents/:name/agui`             | Run or resume an agent for an [AG-UI](/docs/integrations/ag-ui) client (AG-UI SSE)     |
 | `GET`    | `/threads/:id`                   | Get thread messages, whole or a page at a time (`limit`, `cursor`)                     |
 | `POST`   | `/threads/:id/messages`          | Add a message to a thread                                                              |
 | `DELETE` | `/threads/:id`                   | Delete a thread                                                                        |
@@ -209,6 +210,9 @@ data: [DONE]
 | `tool-call-start` / `tool-call-delta` / `tool-call-end` | `id` (the tool call id), `toolName`, `argsTextDelta`, `dropped?` on the end                                     |
 | `tool-update`                                           | `toolCallId`, `content?`, `details?`, `presentation?`                                                           |
 | `tool-result`                                           | `id`, `toolCallId`, `result`, `details?`, `presentation?`, or `dropped` and `reason` for a call that never runs |
+| `data`                                                  | `id`, `name`, `data`, `transient?`, `toolCallId?`                                                               |
+| `state-snapshot` / `state-delta`                        | `snapshot`, or `delta` (a JSON Patch, RFC 6902)                                                                 |
+| `reset-step`                                            | `partIds`, `toolCallIds`                                                                                        |
 | `approval-required`                                     | `threadId`, `approvals`                                                                                         |
 | `interrupt-required`                                    | `threadId`, `interrupts`                                                                                        |
 | `error`                                                 | `message`, `code?`                                                                                              |
@@ -220,6 +224,28 @@ The `start` event of an agent stream names the run's thread: the one the request
 The `finish` event of an agent stream (and of a resumed one) carries the run's `usage`, the same object as in the JSON answer of `POST /agents/:name/run`: `inputTokens`, `outputTokens`, `totalTokens`, and `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them. Workflow and swarm streams finish without `usage`. `createFinishEvent` builds it with `toRunUsage`, the converter of the JSON answer, so a run's `RunResult.usage` can be passed as is.
 
 Text and reasoning blocks are closed before a tool call starts. The `tool-call-*` events follow the model as it writes the call: `tool-call-start` once its id and name are known, a `tool-call-delta` with each piece of its JSON arguments, `tool-call-end` as soon as it is complete, so the events of two calls do not interleave unless the provider mixes their pieces, and no piece is lost when it does ([Streaming Tool Input](/docs/tools/streaming-input)). A run whose stream is held back (output guardrails) sends the three at once right before the call runs. A call that will never run, because the model never finished it or the run did not keep it, gets a `tool-result` with `dropped: true` and `reason` (`incomplete` or `discarded`) instead of a result, after a `tool-call-end` with `dropped: true` when its end had not gone out, and the stream drops every call it announced that never came to run before it ends. A dropped call that the run then gives another tool under the same id is announced again with a new `tool-call-start`. A client that does not know `dropped` sees such a call as a call with an empty result. `tool-update` carries what a running tool reported with `context.update()`, and `tool-result` its `details` and `presentation` next to the `result` the model read ([Results and Progress](/docs/tools/results)). An answer the model gave in one piece, without tokens, arrives as one text part before `finish`. With the Constitutional AI output filter on, tokens are held back until the filter checked the turn, so each turn arrives as one text part (see [Constitutional AI](/docs/advanced/constitutional-ai)). Agents with `reasoning: { summary: true }` stream their reasoning as its own part before the text it leads to. A run that pauses for approval sends `approval-required` with the pending calls (`toolCallId`, `toolName`, `arguments`, `description`, `sideEffects?`) right before `finish`, resume it with `POST /agents/:name/resume`, or with `POST /agents/:name/resume/stream` to stream the rest of the run the same way. A run that pauses on questions its tools asked (`context.interrupt()`) sends `interrupt-required` with them instead (`id`, `kind`, `reason`, `message`, `responseSchema?`, `expiresAt?`, `toolCallId?`, `toolName?`), and the JSON answer and `finish` carry them in `interrupts`: resume with the answers by id in `responses` (see [Interrupts](/docs/core/run-control#interrupts)).
+
+### Data parts, state and step resets
+
+A tool sends its client structured data with `context.data({ name, data, id?, transient? })`, which returns the part's id: the stream carries it as a `data` event, and a later `data` with the same `id` replaces the part in place, so a chart or a status card updates as the tool goes on. A `transient` part is for the moment only (a "searching..." status): a client shows it while the stream lasts and never keeps it with the message. Nothing of a data part reaches the model or memory.
+
+```typescript
+const forecast = tool({
+  name: 'forecast',
+  description: 'Weather forecast for a city',
+  parameters: z.object({ city: z.string() }),
+  execute: async ({ city }, context) => {
+    const id = context.data?.({ name: 'weather', data: { city, loading: true } });
+    const report = await fetchForecast(city);
+    context.data?.({ id, name: 'weather', data: report });
+    return report.summary;
+  },
+});
+```
+
+The run's state is shared with the client: `RunOptions.state` is the state the run starts from, `context.state.get()` reads it in a tool and `context.state.set(next)` replaces it. The stream sends it as `state-snapshot` the first time, then as `state-delta`, a JSON Patch (RFC 6902) on the state the client holds, so a large state that changes a little costs a few operations. `createJsonPatch` and `applyJsonPatch` of `@cogitator-ai/server-shared/json-patch` make and apply them. The state is not saved with the thread: a client that holds it sends it with every run.
+
+When a step the model streamed starts over, the stream sends `reset-step` with the text and reasoning parts (`partIds`) and tool calls (`toolCallIds`) it streamed, for the client to take back: the step streams anew after it. It happens when a model fails mid-answer and the turn moves to the next of the agent's `fallbackModels` (before, a stream that reached the client could not change model and failed), or when a streamed answer came out empty and the model is asked again. The server sends it to runs that hear `onStepReset`, which `AgentStreamSession` sets unless `resetSteps: false`. `useCogitatorChat` of `@cogitator-ai/next` handles all three: data parts land in the message's `data` (transient ones only reach `onData`), the state in `state`, a reset step is taken out of the message.
 
 A run or stream request may name `multitaskStrategy` (`enqueue`, `reject`, `interrupt` or `rollback`), what the run does when its thread has a run going on (see [Double-Texting](/docs/core/run-control#double-texting)). `reject` refuses the new run with `THREAD_BUSY`, and the run that `interrupt` or `rollback` stopped fails with `RUN_INTERRUPTED`. `POST /agents/:name/run` answers both with `409`. A stream has already sent `200` and its `start` event when the run is seated on its thread, so it gets them as an `error` event instead, `{ type: 'error', message, code: 'THREAD_BUSY' }`, and a WebSocket `run` gets an `error` frame. The same holds for a resume: `POST /agents/:name/resume` answers an answer after `expiresAt` with `410 INTERRUPT_EXPIRED`, `/agents/:name/resume/stream` sends it as an `error` event with that `code`. Without it the `multitaskStrategy` of the Cogitator config applies. Swarm routes have no thread to queue on and ignore `multitaskStrategy`.
 

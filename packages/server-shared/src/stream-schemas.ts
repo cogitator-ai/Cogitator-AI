@@ -145,6 +145,49 @@ export const ToolUpdateEventSchema = z
     'What the running tool call `toolCallId` has so far, or the arguments it runs with when they differ from the streamed ones'
   );
 
+export const DataEventSchema = z
+  .object({
+    type: z.literal('data'),
+    id: z.string().describe('Names the part: a later `data` with this id replaces it in place'),
+    name: z.string().describe('What kind of data it is, for the client to pick how it renders it'),
+    data: z.unknown(),
+    transient: z
+      .literal(true)
+      .optional()
+      .describe('Shown while the stream lasts only, never kept with the message'),
+    toolCallId: z.string().optional().describe('The tool call that sent it'),
+  })
+  .describe('A data part a tool sent: structured data the client renders as a widget of its own');
+
+export const JsonPatchOperationSchema = z
+  .discriminatedUnion('op', [
+    z.object({ op: z.literal('add'), path: z.string(), value: z.unknown() }),
+    z.object({ op: z.literal('remove'), path: z.string() }),
+    z.object({ op: z.literal('replace'), path: z.string(), value: z.unknown() }),
+    z.object({ op: z.literal('move'), from: z.string(), path: z.string() }),
+    z.object({ op: z.literal('copy'), from: z.string(), path: z.string() }),
+    z.object({ op: z.literal('test'), path: z.string(), value: z.unknown() }),
+  ])
+  .describe('One operation of a JSON Patch (RFC 6902)');
+
+export const StateSnapshotEventSchema = z
+  .object({ type: z.literal('state-snapshot'), snapshot: z.unknown() })
+  .describe("The run's whole state, sent when it is first set");
+
+export const StateDeltaEventSchema = z
+  .object({ type: z.literal('state-delta'), delta: z.array(JsonPatchOperationSchema) })
+  .describe("How the run's state changed, as a JSON Patch on the state the client holds");
+
+export const ResetStepEventSchema = z
+  .object({
+    type: z.literal('reset-step'),
+    partIds: z.array(z.string()).describe('The text and reasoning parts the step streamed'),
+    toolCallIds: z.array(z.string()).describe('The tool calls the step streamed'),
+  })
+  .describe(
+    'The step the model streamed starts over: remove its parts and tool calls, they never reach the conversation'
+  );
+
 export const ApprovalRequiredEventSchema = z
   .object({
     type: z.literal('approval-required'),
@@ -280,6 +323,10 @@ export const StreamEventSchema = z
     ToolCallEndEventSchema,
     ToolResultEventSchema,
     ToolUpdateEventSchema,
+    DataEventSchema,
+    StateSnapshotEventSchema,
+    StateDeltaEventSchema,
+    ResetStepEventSchema,
     ApprovalRequiredEventSchema,
     InterruptRequiredEventSchema,
     ErrorEventSchema,
@@ -307,6 +354,10 @@ const EVENT_COMPONENTS = [
   [ToolCallEndEventSchema, 'StreamToolCallEndEvent'],
   [ToolResultEventSchema, 'StreamToolResultEvent'],
   [ToolUpdateEventSchema, 'StreamToolUpdateEvent'],
+  [DataEventSchema, 'StreamDataEvent'],
+  [StateSnapshotEventSchema, 'StreamStateSnapshotEvent'],
+  [StateDeltaEventSchema, 'StreamStateDeltaEvent'],
+  [ResetStepEventSchema, 'StreamResetStepEvent'],
   [ApprovalRequiredEventSchema, 'StreamApprovalRequiredEvent'],
   [InterruptRequiredEventSchema, 'StreamInterruptRequiredEvent'],
   [ErrorEventSchema, 'StreamErrorEvent'],
@@ -345,6 +396,7 @@ export function streamEventComponents(): Record<string, OpenAPISchemaObject> {
   registry.add(PendingApprovalSchema, { id: 'PendingApproval' });
   registry.add(PendingInterruptSchema, { id: 'PendingInterrupt' });
   registry.add(ToolPresentationSchema, { id: 'ToolPresentation' });
+  registry.add(JsonPatchOperationSchema, { id: 'JsonPatchOperation' });
   for (const [schema, id] of EVENT_COMPONENTS) registry.add(schema, { id });
   registry.add(StreamEventSchema, { id: 'StreamEvent' });
 

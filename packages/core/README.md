@@ -339,7 +339,7 @@ const result = await cog.run(agent, {
 result.modelUsed; // 'openai/gpt-6.1-sol' when a fallback gave the final answer
 ```
 
-Every turn starts from `model` again. Each model has a circuit breaker shared by the runtime's runs (`llm.modelCircuitBreaker`, default 5 failures in a row, 30 s), which opens at once on a lasting failure such as an exhausted quota. A stream moves only before its first token, a fallback turn is priced at the model that answered it and leaves an `llm.fallback` span, and when every model fails the run ends with `LLM_UNAVAILABLE` (or the error code every model failed with), the failures in `details.attempts`. Agents without `fallbackModels` behave as before.
+Every turn starts from `model` again. Each model has a circuit breaker shared by the runtime's runs (`llm.modelCircuitBreaker`, default 5 failures in a row, 30 s), which opens at once on a lasting failure such as an exhausted quota. A stream moves only before its first token, unless the run has `onStepReset`: then a model that fails mid-answer moves too, and the run tells the callback to take back what the step streamed (`{ reason: 'fallback', model }`, servers send it as `reset-step`). A fallback turn is priced at the model that answered it and leaves an `llm.fallback` span, and when every model fails the run ends with `LLM_UNAVAILABLE` (or the error code every model failed with), the failures in `details.attempts`. Agents without `fallbackModels` behave as before.
 
 `llmUnavailable`, `llmTimeout`, `llmInvalidResponse`, `llmConfigError` and `wrapSDKError` build these errors in your own backends, and `providerErrorIn` reads the error a router such as OpenRouter puts in the body of a successful response; `withLLMRetry(backend, options)` / `RetryingBackend` add retries with `Retry-After` support to any backend.
 
@@ -887,8 +887,12 @@ interface ToolContext {
   deps?: unknown; // the run's deps, typed with ToolContext<YourDeps>
   interrupt?: <T>(request: InterruptRequest<T>) => Promise<T>; // pause the run to ask a person
   update?: (progress: ToolProgress) => void; // what the tool has so far, see Tool Execution
+  data?: (part: DataPart) => string; // a data part for the client, updated in place by its id
+  state?: RunStateAccess; // the run's state shared with the client: get() and set(next)
 }
 ```
+
+`context.data({ name, data, id?, transient? })` sends the run's client structured data to render as a widget of its own and returns the part's id, so the tool sends it again to update it in place. `context.state` reads and replaces the run's `state` (`RunOptions.state`, shared with a client such as an AG-UI frontend). The run hands them to `onData` and `onState`, and neither reaches the model or memory.
 
 ### Tool Execution
 

@@ -15,8 +15,10 @@ describe('createInitialState', () => {
       currentContent: '',
       currentReasoning: '',
       currentToolCalls: [],
+      currentData: [],
       pendingApprovals: [],
       pendingInterrupts: [],
+      agentState: undefined,
     });
   });
 

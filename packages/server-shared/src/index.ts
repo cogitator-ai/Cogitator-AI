@@ -12,6 +12,10 @@ export {
   createToolResultEvent,
   createToolUpdateEvent,
   createToolDroppedEvent,
+  createDataEvent,
+  createStateSnapshotEvent,
+  createStateDeltaEvent,
+  createResetStepEvent,
   createApprovalRequiredEvent,
   createInterruptRequiredEvent,
   createErrorEvent,
@@ -35,6 +39,11 @@ export type {
   ToolCallEndEvent,
   ToolResultEvent,
   ToolUpdateEvent,
+  DataEvent,
+  StateEvent,
+  StateSnapshotEvent,
+  StateDeltaEvent,
+  ResetStepEvent,
   ApprovalRequiredEvent,
   InterruptRequiredEvent,
   PendingApproval,
@@ -61,6 +70,11 @@ export {
   ToolResultEventSchema,
   ToolUpdateEventSchema,
   ToolPresentationSchema,
+  DataEventSchema,
+  JsonPatchOperationSchema,
+  StateSnapshotEventSchema,
+  StateDeltaEventSchema,
+  ResetStepEventSchema,
   ApprovalRequiredEventSchema,
   InterruptRequiredEventSchema,
   ErrorEventSchema,
@@ -75,6 +89,15 @@ export {
 export type { OpenAPISchemaObject } from './stream-schemas.js';
 
 export { generateId, encodeSSE, encodeDone } from './helpers.js';
+
+export {
+  JsonPatchError,
+  applyJsonPatch,
+  createJsonPatch,
+  jsonEqual,
+  parseJsonPointer,
+} from './json-patch.js';
+export type { JsonPatchOperation } from './json-patch.js';
 
 export {
   DEFAULT_SSE_HEARTBEAT_MS,

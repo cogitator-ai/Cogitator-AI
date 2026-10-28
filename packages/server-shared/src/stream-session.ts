@@ -6,8 +6,13 @@ import type {
 } from '@cogitator-ai/types';
 import { INTERNAL_ERROR, describeHttpError } from './contract.js';
 import { generateId } from './helpers.js';
+import { createJsonPatch } from './json-patch.js';
 import {
   createApprovalRequiredEvent,
+  createDataEvent,
+  createResetStepEvent,
+  createStateDeltaEvent,
+  createStateSnapshotEvent,
   createErrorEvent,
   createFinishEvent,
   createInterruptRequiredEvent,
@@ -41,9 +46,11 @@ export type AgentStreamCallbacks = Required<
     | 'onToolInputDelta'
     | 'onToolInputAvailable'
     | 'onToolInputAbandoned'
+    | 'onData'
+    | 'onState'
   >
 > &
-  Pick<RunOptions, 'onDelegatedRun'>;
+  Pick<RunOptions, 'onDelegatedRun' | 'onStepReset'>;
 
 export interface AgentStreamSessionOptions {
   /**
@@ -59,6 +66,18 @@ export interface AgentStreamSessionOptions {
    * `callbacks` carry `onDelegatedRun`. A background run may stream after this run finished
    */
   delegated?: (start: DelegatedRunStart) => ((event: StreamEvent) => void) | undefined;
+  /**
+   * Whether a step the model streamed may start over, announced by `reset-step` (default true):
+   * the callbacks then carry `onStepReset`, so a model that fails mid-answer moves on to the next
+   * of the agent's `fallbackModels` instead of failing the run. Turn it off for a client that
+   * cannot take back what it was sent
+   */
+  resetSteps?: boolean;
+  /**
+   * The state the client already holds, the run's `state`: the first change a tool makes goes
+   * out as a `state-delta` on it. Without one the first change is a `state-snapshot`
+   */
+  state?: unknown;
 }
 
 type PartKind = 'text' | 'reasoning';
@@ -102,6 +121,12 @@ export function createThreadId(): string {
  * the stream ends. `tool-update` carries what a running tool reported, `tool-result` what it
  * returned.
  *
+ * `data` carries a data part a tool sent (`context.data()`), replaced in place by a later one
+ * with its id. The run's state (`context.state`) goes out as a `state-snapshot` when the client
+ * holds none (`options.state`), then as `state-delta` JSON Patches. When a step the model
+ * streamed starts over (a fallback model takes over mid-answer, an empty answer is asked again),
+ * `reset-step` names its parts and tool calls for the client to take back.
+ *
  * Pass the thread to the run (`threadId: session.threadId`) and spread `callbacks` into its
  * options together with `stream: true`.
  */
@@ -120,17 +145,29 @@ export class AgentStreamSession {
   >();
   private streamedText = false;
   private streamedReasoning = false;
+  /** What the step the model streams now sent: its text and reasoning parts and tool calls */
+  private step: { parts: string[]; toolCalls: string[] } = { parts: [], toolCalls: [] };
+  private state: { known: boolean; value: unknown };
 
   constructor(
     private readonly emit: (event: StreamEvent) => void,
     options: AgentStreamSessionOptions = {}
   ) {
     this.threadId = options.threadId ?? createThreadId();
+    this.state = { known: options.state !== undefined, value: options.state };
     const delegated = options.delegated;
+    const resetSteps = options.resetSteps !== false;
     this.callbacks = {
       ...(delegated && {
-        onDelegatedRun: (start: DelegatedRunStart) => delegatedRunStream(start, delegated),
+        onDelegatedRun: (start: DelegatedRunStart) =>
+          delegatedRunStream(start, delegated, resetSteps),
       }),
+      ...(resetSteps && { onStepReset: () => this.resetStep() }),
+      onData: (part) => {
+        this.endPart();
+        this.emit(createDataEvent(part));
+      },
+      onState: (state) => this.changeState(state),
       onToken: (token) => {
         if (!token) return;
         this.streamedText = true;
@@ -145,6 +182,7 @@ export class AgentStreamSession {
         if (this.toolCalls.has(toolCallId)) return;
         this.endPart();
         this.toolCalls.set(toolCallId, 'open');
+        this.step.toolCalls.push(toolCallId);
         this.emit(createToolCallStartEvent(toolCallId, toolName));
       },
       onToolInputDelta: ({ toolCallId, delta }) => {
@@ -158,6 +196,7 @@ export class AgentStreamSession {
       onToolInputAvailable: ({ toolCallId }) => this.endToolCall(toolCallId),
       onToolInputAbandoned: ({ toolCallId, reason }) => this.dropToolCall(toolCallId, reason),
       onToolCall: (call) => {
+        this.endStep();
         const state = this.toolCalls.get(call.id);
         if (state === undefined || state === 'dropped') {
           this.endPart();
@@ -178,6 +217,7 @@ export class AgentStreamSession {
         this.emit(createToolUpdateEvent(update.callId, update));
       },
       onToolResult: (toolResult) => {
+        this.endStep();
         this.toolCalls.set(toolResult.callId, 'settled');
         this.emit(
           createToolResultEvent(generateId('res'), toolResult.callId, toolResult.result, {
@@ -223,6 +263,34 @@ export class AgentStreamSession {
     this.emit(createErrorEvent(message, code));
   }
 
+  /** The step the model streamed is over: what it sent stays */
+  private endStep(): void {
+    this.step = { parts: [], toolCalls: [] };
+  }
+
+  /** The step the model streamed starts over: what it sent is taken back */
+  private resetStep(): void {
+    this.endPart();
+    const { parts, toolCalls } = this.step;
+    this.step = { parts: [], toolCalls: [] };
+    for (const id of toolCalls) {
+      this.toolCalls.delete(id);
+      this.streamedArguments.delete(id);
+    }
+    this.emit(createResetStepEvent(parts, toolCalls));
+  }
+
+  private changeState(state: unknown): void {
+    const previous = this.state;
+    this.state = { known: true, value: state };
+    if (!previous.known) {
+      this.emit(createStateSnapshotEvent(state));
+      return;
+    }
+    const delta = createJsonPatch(previous.value, state);
+    if (delta.length > 0) this.emit(createStateDeltaEvent(delta));
+  }
+
   private endToolCall(id: string): void {
     if (this.toolCalls.get(id) !== 'open') return;
     this.toolCalls.set(id, 'ended');
@@ -251,6 +319,7 @@ export class AgentStreamSession {
     if (this.open?.kind !== kind) {
       this.endPart();
       this.open = { kind, id: generateId(part.prefix) };
+      this.step.parts.push(this.open.id);
       this.emit(part.start(this.open.id));
     }
     this.emit(part.delta(this.open.id, delta));
@@ -271,7 +340,8 @@ export class AgentStreamSession {
  */
 function delegatedRunStream(
   start: DelegatedRunStart,
-  delegated: NonNullable<AgentStreamSessionOptions['delegated']>
+  delegated: NonNullable<AgentStreamSessionOptions['delegated']>,
+  resetSteps: boolean
 ): DelegatedRunStream | undefined {
   const emit = delegated(start);
   if (!emit) return undefined;
@@ -281,6 +351,7 @@ function delegatedRunStream(
     session = new AgentStreamSession(emit, {
       ...(threadId !== undefined && { threadId }),
       delegated,
+      resetSteps,
     });
     session.start();
     return session;
@@ -296,7 +367,9 @@ function delegatedRunStream(
     onToolInputDelta: (event) => callbacks().onToolInputDelta(event),
     onToolInputAvailable: (event) => callbacks().onToolInputAvailable(event),
     onToolInputAbandoned: (event) => callbacks().onToolInputAbandoned(event),
-    onDelegatedRun: (child) => delegatedRunStream(child, delegated),
+    onData: (part) => callbacks().onData(part),
+    ...(resetSteps && { onStepReset: (reset) => callbacks().onStepReset?.(reset) }),
+    onDelegatedRun: (child) => delegatedRunStream(child, delegated, resetSteps),
     onRunStart: ({ threadId }) => {
       open(threadId);
     },

@@ -66,6 +66,11 @@ export class KoaStreamWriter {
     this.res.write(encodeSSE(data, id));
   }
 
+  /** Sends one SSE frame of `data` as JSON outside the stream protocol, such as an AG-UI event */
+  sendData(data: unknown): void {
+    this.write(data);
+  }
+
   /**
    * Sends one protocol event, with its `id` on a resumable stream. `finish`, the last one, is
    * followed by `data: [DONE]`

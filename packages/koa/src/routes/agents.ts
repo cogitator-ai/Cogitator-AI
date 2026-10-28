@@ -13,6 +13,7 @@ import {
   type StreamCaller,
   type StreamFollower,
 } from '@cogitator-ai/server-shared';
+import { parseAGUIRunInput, streamAGUIRun } from '@cogitator-ai/server-shared/agui';
 import { getOwn } from '../utils/lookup.js';
 import {
   describeError,
@@ -304,6 +305,54 @@ export function createAgentRoutes(): Router<CogitatorState> {
         ...session.callbacks,
       })
     );
+  });
+
+  router.post('/agents/:name/agui', async (ctx) => {
+    const { agents, runtime } = ctx.state.cogitator;
+    const { name } = ctx.params;
+    const agent = getOwn(agents, name);
+    if (!agent) {
+      notFound(ctx, `Agent '${name}' not found`);
+      return;
+    }
+
+    const parsed = parseAGUIRunInput(getRequestBody(ctx));
+    if (!parsed.ok) {
+      invalidInput(ctx, parsed.message);
+      return;
+    }
+    const threadId = parsed.value.input.threadId;
+    const refusal = await refuseThread(ctx, threadId);
+    if (refusal) {
+      sendError(ctx, refusal);
+      return;
+    }
+    const deps = await runDeps(ctx);
+    const userId = ctx.state.auth?.userId;
+
+    setupSSEHeaders(ctx);
+    const writer = new KoaStreamWriter(ctx, { heartbeatMs: ctx.state.cogitator.sseHeartbeatMs });
+    const abortController = new AbortController();
+    onClientDisconnect(ctx, () => {
+      writer.close();
+      abortController.abort();
+    });
+    try {
+      await streamAGUIRun({
+        request: parsed.value,
+        send: (event) => writer.sendData(event),
+        signal: abortController.signal,
+        describeError: (error) => describeError(error, 'AG-UI run error'),
+        host: {
+          run: (options) => runtime.run(agent, { ...options, userId, ...deps }),
+          resume: (options) => runtime.resume(agent, threadId, { ...options, userId, ...deps }),
+          pausedRun: () => runtime.pausedRun(threadId),
+          cancelPause: (reason) => runtime.cancelPause(threadId, { userId, reason }),
+        },
+      });
+    } finally {
+      writer.close();
+    }
   });
 
   return router;

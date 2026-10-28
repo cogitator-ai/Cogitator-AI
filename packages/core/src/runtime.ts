@@ -302,6 +302,9 @@ import { createLoggerFromConfig, getLogger, setLogger } from './logger';
 import { CallPricer, RunCostMeter } from './cogitator/run-cost';
 import { isDecisionModel } from '@cogitator-ai/models';
 import type {
+  DataPart,
+  RunStateAccess,
+  StepReset,
   DecideOptions,
   DecisionBackend,
   DecisionQuestions,
@@ -2513,6 +2516,14 @@ export class Cogitator implements ToolInvoker {
     if (!checkpoint && options.runId !== undefined) assertRunId(options.runId);
     let runId = checkpoint?.runId ?? options.runId ?? `run_${nanoid(12)}`;
     const threadId = options.threadId ?? `thread_${nanoid(12)}`;
+    let runState = options.state;
+    const runStateAccess: RunStateAccess = {
+      get: () => runState,
+      set: (next) => {
+        runState = next;
+        notify('onState', () => options.onState?.(next));
+      },
+    };
     const runMemory = new RunMemory(
       () => this.state.memoryAdapter,
       threadId,
@@ -4312,6 +4323,19 @@ export class Cogitator implements ToolInvoker {
                       interrupt: toolInterrupter(toolCall, askedBefore, (id, schema) =>
                         this.interruptSchemas.remember(runId, id, schema)
                       ),
+                      data: (part: DataPart) => {
+                        const id = part.id ?? `data_${nanoid(12)}`;
+                        notify('onData', () =>
+                          options.onData?.({
+                            ...part,
+                            id,
+                            toolCallId: toolCall.id,
+                            toolName: toolCall.name,
+                          })
+                        );
+                        return id;
+                      },
+                      state: runStateAccess,
                       ...(permissions.view(workspaceOf(active)) && {
                         permissions: permissions.view(workspaceOf(active)),
                       }),
@@ -5276,6 +5300,13 @@ export class Cogitator implements ToolInvoker {
           inputLedger.abandonAll();
           throw error;
         };
+        const resetStep = (reset: StepReset) => {
+          streamed = false;
+          streamedText = false;
+          shown.text = '';
+          notify('onStepReset', () => options.onStepReset?.(reset));
+          inputLedger.abandonAll();
+        };
         const turnPipeline = pipeline;
         const stage = turnStage(abortController.signal, timeouts);
         const turn = await stage
@@ -5284,6 +5315,7 @@ export class Cogitator implements ToolInvoker {
               this.fallbackChain().run<ChatResponse>(
                 candidates,
                 async (candidate) => {
+                  if (streamed) resetStep({ reason: 'fallback', model: candidate.name });
                   reachedModel = false;
                   const turnMessages =
                     candidate === candidates[0]
@@ -5359,7 +5391,7 @@ export class Cogitator implements ToolInvoker {
                 },
                 {
                   signal: stage.signal,
-                  canSwitch: () => !streamed,
+                  canSwitch: () => !streamed || options.onStepReset !== undefined,
                   onFallback: (event) => {
                     const reason = failureReason(event.error);
                     getLogger().warn('Model failed, falling back to the next model', {
@@ -5429,6 +5461,11 @@ export class Cogitator implements ToolInvoker {
           iterations < iterationCap
         ) {
           emptyAnswerRetries++;
+          if (streamed) {
+            notify('onStepReset', () =>
+              options.onStepReset?.({ reason: 'empty_answer', model: answeredBy.name })
+            );
+          }
           getLogger().warn('Model returned an empty answer, asking again', {
             model: answeredBy.model,
             iteration: iterations,

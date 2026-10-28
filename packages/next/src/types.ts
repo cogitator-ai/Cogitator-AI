@@ -12,7 +12,8 @@ import type {
   ContextPolicy,
   ResumableStreamOptions,
 } from '@cogitator-ai/server-shared';
-import type { PendingApproval, PendingInterrupt } from './streaming/protocol.js';
+import type { DataEvent, PendingApproval, PendingInterrupt } from './streaming/protocol.js';
+import type { RunAgentInput } from '@cogitator-ai/server-shared/agui';
 
 export type {
   Message,
@@ -25,6 +26,16 @@ export type {
   PendingInterrupt,
 };
 
+/** A data part of an assistant message: structured data a tool sent, updated in place by id */
+export interface ChatDataPart {
+  id: string;
+  /** What kind of data it is, such as `weather`, to pick how it renders */
+  name: string;
+  data: unknown;
+  /** The tool call that sent it */
+  toolCallId?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -32,6 +43,8 @@ export interface ChatMessage {
   /** The model's reasoning summary for an assistant message, when the agent streams one */
   reasoning?: string;
   toolCalls?: ToolCall[];
+  /** The data parts the run's tools sent, the latest of each id, transient ones left out */
+  data?: ChatDataPart[];
   metadata?: Record<string, unknown>;
   createdAt?: Date;
 }
@@ -144,6 +157,21 @@ export interface AgentHandlerOptions extends ServerContractOptions {
   acceptContext?: ContextPolicy;
 }
 
+export interface AGUIHandlerOptions extends ServerContractOptions {
+  /**
+   * Return run options such as `{ userId }` for the request: the run then acts for that user,
+   * and only that user may resume its pause
+   */
+  beforeRun?: (req: Request, input: RunAgentInput) => Promise<Record<string, unknown> | void>;
+  afterRun?: (result: RunResult) => Promise<void>;
+  /**
+   * How often a comment is written while the stream is open, in milliseconds, so a proxy or
+   * the platform's idle timeout does not cut a run that waits on a slow tool. Default: 5000.
+   * `0` turns heartbeats off.
+   */
+  sseHeartbeatMs?: number;
+}
+
 /** The decisions for the tool calls a paused run waits on, and the answers to its questions */
 export interface ResumeDecisions {
   /** Decisions by tool call id; calls left out pause the run again */
@@ -240,6 +268,13 @@ export interface UseChatOptions {
   onToolCallDropped?: (toolCallId: string) => void;
   /** Pieces of the assistant's reasoning summary as they stream in */
   onReasoning?: (delta: string) => void;
+  /**
+   * Every data part the stream sends, transient ones included, which never reach the message's
+   * `data`: render a status that is gone once the run ends from here
+   */
+  onData?: (part: DataEvent) => void;
+  /** The run's state each time it changes, see `state` of the hook */
+  onStateChange?: (state: unknown) => void;
   /** The run paused: these tool calls wait for `resume`, `approve` or `deny` */
   onApprovalRequired?: (approvals: PendingApproval[]) => void;
   /** The run paused for questions its tools asked: answer them with `resume({ responses })` */
@@ -291,6 +326,11 @@ export interface UseChatReturn {
   pendingApprovals: PendingApproval[];
   /** The questions the paused run of this thread waits on; empty when it asked none */
   pendingInterrupts: PendingInterrupt[];
+  /**
+   * The state of the last run (`RunOptions.state`), as its tools changed it: whole from a
+   * `state-snapshot`, patched by each `state-delta`. Undefined until a run sends one
+   */
+  state: unknown;
   /** Continues the paused run with these decisions and appends what the agent answers */
   resume: (decisions: ResumeDecisions) => Promise<void>;
   /** Approves every pending tool call and continues the run */

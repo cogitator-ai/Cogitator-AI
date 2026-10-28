@@ -63,6 +63,7 @@
   },
   "devDependencies": {
     "@a2a-js/sdk-v1": "npm:@a2a-js/sdk@1.3.0",
+    "@ag-ui/client": "1.0.3",
     "@types/bun": "^1.4.2",
     "@types/express": "^5.0.6",
     "@types/koa": "^3.0.3",

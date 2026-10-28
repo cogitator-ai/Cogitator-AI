@@ -37,4 +37,8 @@ export type {
   PendingInterrupt,
   ErrorEvent,
   FinishEvent,
+  DataEvent,
+  StateSnapshotEvent,
+  StateDeltaEvent,
+  ResetStepEvent,
 } from '@cogitator-ai/server-shared';

@@ -23,6 +23,7 @@ import {
   type StreamCaller,
   type StreamFollower,
 } from '@cogitator-ai/server-shared';
+import { parseAGUIRunInput, streamAGUIRun } from '@cogitator-ai/server-shared/agui';
 import { FastifyStreamWriter } from '../streaming/index.js';
 import {
   onClientDisconnect,
@@ -359,6 +360,53 @@ export const agentRoutes: FastifyPluginAsync = async (fastify) => {
           ...deps,
         })
       );
+    }
+  );
+
+  fastify.post<{ Params: AgentParams; Body: unknown }>(
+    '/agents/:name/agui',
+    { schema: { params: paramsSchema } },
+    async (request, reply) => {
+      const { name } = request.params;
+      const agent = findAgent(name);
+      if (!agent) {
+        return sendError(reply, 404, `Agent '${name}' not found`, 'NOT_FOUND');
+      }
+
+      const parsed = parseAGUIRunInput(request.body);
+      if (!parsed.ok) return sendError(reply, 400, parsed.message, 'INVALID_INPUT');
+      const threadId = parsed.value.input.threadId;
+      if (await refuseThread(request, reply, threadId)) return reply;
+      const deps = await requestDeps(request);
+      const userId = request.cogitatorAuth?.userId;
+      const runtime = fastify.cogitator.runtime;
+
+      const writer = new FastifyStreamWriter(reply, {
+        heartbeatMs: fastify.cogitator.sseHeartbeatMs,
+      });
+      const abortController = new AbortController();
+      onClientDisconnect(reply, () => {
+        abortController.abort();
+        writer.close();
+      });
+      writer.open();
+      try {
+        await streamAGUIRun({
+          request: parsed.value,
+          send: (event) => writer.sendData(event),
+          signal: abortController.signal,
+          describeError: (error) => resolveError(request, error, 'AG-UI run error'),
+          host: {
+            run: (options) => runtime.run(agent, { ...options, userId, ...deps }),
+            resume: (options) => runtime.resume(agent, threadId, { ...options, userId, ...deps }),
+            pausedRun: () => runtime.pausedRun(threadId),
+            cancelPause: (reason) => runtime.cancelPause(threadId, { userId, reason }),
+          },
+        });
+      } finally {
+        writer.close();
+      }
+      return reply;
     }
   );
 };

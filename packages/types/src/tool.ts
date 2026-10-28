@@ -295,6 +295,38 @@ export interface ToolProgress {
   presentation?: ToolPresentation;
 }
 
+/**
+ * Structured data a tool sends its run's client with `context.data()`, for the client to render as
+ * a widget of its own, such as a chart or a status card
+ */
+export interface DataPart {
+  /**
+   * Names the part: a part sent again with the same id replaces the one sent before, so a tool
+   * updates a widget in place. A new id when left out
+   */
+  id?: string;
+  /** What kind of data it is, such as `weather`, for the client to pick how it renders it */
+  name: string;
+  /** The data, any JSON value */
+  data: unknown;
+  /** Shown while the run streams only: never kept with the messages of the conversation */
+  transient?: boolean;
+}
+
+/** A data part as the run reports it to `RunOptions.onData`: with its id and the call that sent it */
+export interface RunDataPart extends DataPart {
+  id: string;
+  toolCallId?: string;
+  toolName?: string;
+}
+
+/** The run's state, as a tool reads and replaces it, see `RunOptions.state` */
+export interface RunStateAccess {
+  get(): unknown;
+  /** Replaces the state: the run reports it to `RunOptions.onState` */
+  set(state: unknown): void;
+}
+
 /** The model began to write a tool call */
 export interface ToolInputStart {
   toolCallId: string;
@@ -368,6 +400,18 @@ export interface BaseToolContext<TDeps = unknown> {
    * `invokeTool()`
    */
   update?: (progress: ToolProgress) => void;
+  /**
+   * Sends the run's client a data part: structured data it renders as a widget of its own. Send
+   * it again with the id this returns to replace it in place. The run hands it to `onData` and a
+   * server streams it as `data`. Nothing of it reaches the model or memory. Present in a run
+   */
+  data?: (part: DataPart) => string;
+  /**
+   * The run's state, shared with its client (`RunOptions.state`): a tool reads it with `get()`
+   * and replaces it with `set()`, the run hands each change to `onState` and a server streams it
+   * as a JSON Patch. Present in a run
+   */
+  state?: RunStateAccess;
   /**
    * The run's permission mode and `session` rules, when the run has permissions set up, so a tool
    * that starts a run of its own (an agent as a tool) holds it to the same rules

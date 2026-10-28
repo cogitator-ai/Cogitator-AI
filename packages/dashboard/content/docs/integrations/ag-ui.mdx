@@ -1,0 +1,128 @@
+---
+title: AG-UI
+description: Serve Cogitator agents to CopilotKit and any AG-UI 1.0 frontend, with subagents, shared state, activities and interrupts.
+---
+
+## Overview
+
+[AG-UI](https://docs.ag-ui.com/) is the open protocol between an agent backend and a user-facing app: the app sends a `RunAgentInput` and reads a stream of events. CopilotKit speaks it, and so does `HttpAgent` of `@ag-ui/client`. Every Cogitator server adapter serves it, with no code of your own:
+
+```
+POST /agents/:name/agui
+```
+
+The route takes an AG-UI 1.0 `RunAgentInput` and streams the run as AG-UI events over SSE. It is built on the same `AgentStreamSession` as the native stream, through `toAGUI()`, so an agent behaves the same over both. The translation is tested with the AG-UI client's own event verifier, and `HttpAgent` against the routes.
+
+## Connecting a client
+
+```typescript
+import { HttpAgent } from '@ag-ui/client';
+
+const agent = new HttpAgent({
+  url: 'http://localhost:3000/cogitator/agents/assistant/agui',
+  threadId: 'thread_42',
+  initialState: { cart: [] },
+});
+
+agent.addMessage({ id: 'u1', role: 'user', content: 'Order a shirt' });
+const { newMessages } = await agent.runAgent();
+```
+
+CopilotKit connects the same way, with the route as the URL of an `HttpAgent` it registers.
+
+What the route reads of the request:
+
+| `RunAgentInput` | Cogitator                                                                                            |
+| --------------- | ---------------------------------------------------------------------------------------------------- |
+| `threadId`      | the run's memory thread: the server keeps the conversation, owned by the user like every thread      |
+| `messages`      | the last one, which must be the user's, is the new turn (text, and images by URL or data)            |
+| `resume`        | answers to the interrupts of the paused run, all of them at once, see [Interrupts](#interrupts)      |
+| `state`         | the run's `state`: tools read it with `context.state.get()` and change it with `context.state.set()` |
+| `context`       | the run's `brief`, one `description: value` line per entry                                           |
+| `runId`         | echoed in `RUN_STARTED` and `RUN_FINISHED`                                                           |
+| `tools`         | not run: frontend tools are not supported yet                                                        |
+
+Since the server keeps the conversation in memory, the earlier messages a client sends are not read again. A body that is not a `RunAgentInput`, or one without a user message last and without `resume` entries, is answered `400 INVALID_INPUT` before the stream opens (`422` on Tetsu, its validation status). Auth, `authorizeThread`, `anonymous` and `deps` apply as on every other route.
+
+## Events
+
+| Cogitator stream                | AG-UI                                                                                                                 |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `start`                         | `RUN_STARTED` with `protocolVersion: "1.0"`                                                                           |
+| `text-*`                        | `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END`                                                      |
+| `reasoning-*`                   | `REASONING_START`, `REASONING_MESSAGE_START` / `_CONTENT` / `_END`, `REASONING_END`                                   |
+| `tool-call-*`                   | `TOOL_CALL_START` (its `parentMessageId` is the text it follows), `TOOL_CALL_ARGS`, `TOOL_CALL_END`                   |
+| `tool-result`                   | `TOOL_CALL_RESULT`: a string result as it is, anything else as JSON, `details` and `presentation` in its metadata     |
+| `tool-update`                   | `ACTIVITY_SNAPSHOT`, then `ACTIVITY_DELTA`, of activity type `tool-progress`                                          |
+| `data`                          | `ACTIVITY_SNAPSHOT`, then `ACTIVITY_DELTA` (a JSON Patch) by id, a transient part as `CUSTOM` `cogitator.data`        |
+| `state-snapshot`, `state-delta` | `STATE_SNAPSHOT`, `STATE_DELTA`                                                                                       |
+| delegated runs                  | `SUBAGENT_STARTED` / `SUBAGENT_FINISHED` / `SUBAGENT_ERROR`, their events carrying `subagentRunId`                    |
+| `finish`                        | `RUN_FINISHED`, outcome `success`, or `interrupt` for a paused run, with `usage` and `result` (the structured answer) |
+| `error`                         | `RUN_ERROR`, or `RUN_FINISHED` with outcome `cancelled` for a cancelled run                                           |
+| `workflow`                      | `STEP_STARTED` and `STEP_FINISHED` for each node, `CUSTOM` `cogitator.workflow` for the rest                          |
+| `swarm`                         | `CUSTOM` `cogitator.swarm`                                                                                            |
+
+AG-UI orders its events strictly, and the route keeps to it: `RUN_STARTED` comes first, every message, tool call, reasoning span, step and subagent is closed before `RUN_FINISHED`, and nothing comes after it. A call that never runs (the model never finished it) gets a `TOOL_CALL_RESULT` marked `dropped` in its metadata, so AG-UI never takes it for a call left for the app to answer. Cogitator's own fields ride under the `cogitator` key of `metadata`, such as `truncated` or `iterationLimitReached` on `RUN_FINISHED`. AG-UI has no way to take back what was streamed, so the route turns [step resets](/docs/server-adapters#data-parts-state-and-step-resets) off: a model that fails mid-answer fails the run there, as on a stream without them.
+
+## Subagents
+
+The runs an agent delegates in the foreground, [subagents](/docs/core/subagents) and agents used as tools, stream as AG-UI subagents: `SUBAGENT_STARTED` names the agent and the tool call that started it (`parentToolCallId`), with `parentSubagentRunId` for a run delegated from a subagent in turn, and its text, reasoning and tool calls carry its `subagentRunId`. A subagent that fails ends with `SUBAGENT_ERROR` while the run goes on, one that pauses with outcome `suspended`. Background subagents outlive the run, which AG-UI cannot follow, so they are left out.
+
+## Shared state and activities
+
+`state` goes both ways. The request's `state` is the run's, a tool changes it, and the route sends each change as `STATE_DELTA`, a JSON Patch on the state the client sent, or `STATE_SNAPSHOT` when it sent none. A data part a tool sends with `context.data()` becomes an activity message: `ACTIVITY_SNAPSHOT` the first time, an `ACTIVITY_DELTA` patch each time the tool sends it again with the same id. CopilotKit renders activities by their `activityType`, the part's `name`.
+
+```typescript
+const addToCart = tool({
+  name: 'add_to_cart',
+  description: 'Adds an item to the cart',
+  parameters: z.object({ item: z.string() }),
+  execute: async ({ item }, context) => {
+    const cart = (context.state?.get() as { cart?: string[] } | undefined)?.cart ?? [];
+    context.state?.set({ cart: [...cart, item] });
+    context.data?.({ name: 'receipt', data: { items: cart.length + 1 } });
+    return 'added';
+  },
+});
+```
+
+## Interrupts
+
+A run that pauses for an [approval](/docs/tools/approvals) or a question of a tool (`context.interrupt()`) ends with `RUN_FINISHED` and outcome `interrupt`: one `Interrupt` per approval or question, with its `id`, `reason`, `message`, `toolCallId`, `responseSchema` and `expiresAt`, its kind and details in `metadata.cogitator`. An approval's id is its tool call id and its `responseSchema` is `{ approved, reason? }`.
+
+The client answers every interrupt in one new run, as AG-UI asks:
+
+```typescript
+await agent.runAgent({
+  resume: [
+    { interruptId: 'call_refund', status: 'resolved', payload: { approved: true } },
+    { interruptId: 'int_size', status: 'resolved', payload: 'M' },
+  ],
+});
+```
+
+A resolved approval takes `{ approved, reason? }`, a boolean, or no payload to approve. A cancelled approval is declined. A question takes its answer as `payload`, checked against its `responseSchema`, and a cancelled question ends the paused run (`cogitator.cancelPause()`): every waiting call gets a declined result and the run finishes with outcome `cancelled`.
+
+## Using the translator yourself
+
+`toAGUI()` and `AGUITranslator` of `@cogitator-ai/server-shared/agui` turn our stream events into AG-UI events, for a server of your own:
+
+```typescript
+import { AgentStreamSession, encodeSSE } from '@cogitator-ai/server-shared';
+import { AGUITranslator, parseAGUIRunInput, streamAGUIRun } from '@cogitator-ai/server-shared/agui';
+
+const translator = new AGUITranslator({ threadId: input.threadId, runId: input.runId });
+const session = new AgentStreamSession(
+  (event) => translator.push(event).forEach((out) => res.write(encodeSSE(out))),
+  { threadId: input.threadId, resetSteps: false }
+);
+```
+
+`streamAGUIRun()` does all of it, the run, the resume and the subagents, given the calls of your Cogitator, which is how the adapters serve the route. In Next.js, `createAGUIHandler(cogitator, agent)` of `@cogitator-ai/next` is the route handler (see [Next.js](/docs/integrations/nextjs)).
+
+## Not supported yet
+
+- Frontend tools (`RunAgentInput.tools`): the agent does not call the app's tools.
+- `MESSAGES_SNAPSHOT`: the server keeps the conversation and never replaces the client's.
+- Encrypted reasoning (`REASONING_ENCRYPTED_VALUE`).
+- The binary (protobuf) transport: the route answers SSE.

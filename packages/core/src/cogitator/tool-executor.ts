@@ -54,6 +54,8 @@ type ExtraToolContext = Record<string, unknown> & {
   conversationId?: string;
   workspace?: Workspace;
   interrupt?: BaseToolContext['interrupt'];
+  data?: BaseToolContext['data'];
+  state?: BaseToolContext['state'];
 };
 
 /** One tool call of a run, or of `invokeTool()`, and what it runs with. */

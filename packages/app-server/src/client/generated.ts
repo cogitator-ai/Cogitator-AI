@@ -188,6 +188,52 @@ export type StreamEvent = {
   /** The arguments the call runs with, replacing the streamed ones */
   arguments?: Record<string, unknown>;
 } | {
+  type: 'data';
+  /** Names the part: a later `data` with this id replaces it in place */
+  id: string;
+  /** What kind of data it is, for the client to pick how it renders it */
+  name: string;
+  data: unknown;
+  /** Shown while the stream lasts only, never kept with the message */
+  transient?: true;
+  /** The tool call that sent it */
+  toolCallId?: string;
+} | {
+  type: 'state-snapshot';
+  snapshot: unknown;
+} | {
+  type: 'state-delta';
+  delta: Array<{
+    op: 'add';
+    path: string;
+    value: unknown;
+  } | {
+    op: 'remove';
+    path: string;
+  } | {
+    op: 'replace';
+    path: string;
+    value: unknown;
+  } | {
+    op: 'move';
+    from: string;
+    path: string;
+  } | {
+    op: 'copy';
+    from: string;
+    path: string;
+  } | {
+    op: 'test';
+    path: string;
+    value: unknown;
+  }>;
+} | {
+  type: 'reset-step';
+  /** The text and reasoning parts the step streamed */
+  partIds: Array<string>;
+  /** The tool calls the step streamed */
+  toolCallIds: Array<string>;
+} | {
   type: 'approval-required';
   threadId: string;
   approvals: Array<PendingApproval>;

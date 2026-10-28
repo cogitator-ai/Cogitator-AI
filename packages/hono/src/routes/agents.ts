@@ -12,6 +12,7 @@ import {
   type StreamCaller,
   type StreamFollower,
 } from '@cogitator-ai/server-shared';
+import { parseAGUIRunInput, streamAGUIRun } from '@cogitator-ai/server-shared/agui';
 import { HonoStreamWriter } from '../streaming/hono-stream-writer.js';
 import type { AuthContext, HonoEnv, AgentListResponse } from '../types.js';
 import { getOwn } from '../utils/lookup.js';
@@ -281,6 +282,51 @@ export function createAgentRoutes(): Hono<HonoEnv> {
         ...session.callbacks,
       })
     );
+  });
+
+  app.post('/agents/:name/agui', async (c) => {
+    const ctx = c.get('cogitator');
+    const name = c.req.param('name');
+    const agent = getOwn(ctx.agents, name);
+    if (!agent) return notFound(c, `Agent '${name}' not found`);
+
+    const body = await readJsonBody(c);
+    if (!body.ok) return bodyRefused(c, body.refusal);
+    const parsed = parseAGUIRunInput(body.value);
+    if (!parsed.ok) return invalidInput(c, parsed.message);
+
+    const threadId = parsed.value.input.threadId;
+    const refusal = await refuseThread(c, threadId);
+    if (refusal) return sendError(c, refusal);
+    const userId = c.get('cogitatorAuth')?.userId;
+    const deps = await runDeps(c);
+    const abortController = createRequestAbortController(c);
+
+    return streamSSE(c, async (stream) => {
+      const writer = new HonoStreamWriter(stream, { heartbeatMs: ctx.sseHeartbeatMs });
+      stream.onAbort(() => {
+        writer.close();
+        abortController.abort();
+      });
+      try {
+        await streamAGUIRun({
+          request: parsed.value,
+          send: (event) => void writer.sendData(event),
+          signal: abortController.signal,
+          describeError: (error) => describeError(error, 'AG-UI run error'),
+          host: {
+            run: (options) => ctx.runtime.run(agent, { ...options, userId, ...deps }),
+            resume: (options) =>
+              ctx.runtime.resume(agent, threadId, { ...options, userId, ...deps }),
+            pausedRun: () => ctx.runtime.pausedRun(threadId),
+            cancelPause: (reason) => ctx.runtime.cancelPause(threadId, { userId, reason }),
+          },
+        });
+      } finally {
+        await writer.flush();
+        writer.close();
+      }
+    });
   });
 
   return app;

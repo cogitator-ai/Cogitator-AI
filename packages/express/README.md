@@ -57,6 +57,7 @@ POST   /api/agents/:name/run               - Run agent (JSON response)
 POST   /api/agents/:name/stream            - Run agent (SSE stream)
 POST   /api/agents/:name/resume            - Resume a run paused for tool approvals
 POST   /api/agents/:name/resume/stream     - Resume a paused run (SSE stream)
+POST   /api/agents/:name/agui              - Run or resume for an AG-UI client (AG-UI SSE)
 ```
 
 Run/stream body: `{ input: string; context?: object; threadId?: string; multitaskStrategy?: 'enqueue' | 'reject' | 'interrupt' | 'rollback' }`. `input` must contain more than whitespace and `threadId`, when sent, must be a non-empty string (`400 INVALID_INPUT` otherwise, before the model is called). The validator comes from `@cogitator-ai/server-shared`, so Express, Fastify, Hono and Koa refuse exactly the same bodies. The `usage` of a run answer carries `inputTokens`, `outputTokens` and `totalTokens`, plus `reasoningTokens`, `cachedInputTokens` and `cacheWriteTokens` when the model reported them, the same shape as every other adapter. The `finish` event of an agent stream carries the same `usage` (never the run's cost or duration). The agent list exposes `config.description`, never the agent instructions. The authenticated `userId` (from `auth`) is passed to the run, and the run is aborted when the client disconnects.

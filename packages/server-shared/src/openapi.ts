@@ -328,6 +328,49 @@ export function generateOpenAPISpec(ctx: OpenAPIContext, config: SwaggerConfig):
       },
     };
 
+    spec.paths[`/agents/${name}/agui`] = {
+      post: {
+        tags: ['agents'],
+        summary: `Run or resume ${name} for an AG-UI client`,
+        description:
+          "Takes an AG-UI 1.0 RunAgentInput and streams the run as AG-UI events, for CopilotKit or an @ag-ui/client HttpAgent. The AG-UI thread is the run's memory thread: the last message, which must be the user's, starts a new turn, and `resume` entries answer every interrupt of the paused run at once. `state` is the run's state, `context` its brief",
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                description: 'An AG-UI 1.0 RunAgentInput',
+                required: ['threadId', 'runId', 'messages'],
+                properties: {
+                  threadId: { type: 'string' },
+                  runId: { type: 'string' },
+                  messages: { type: 'array', items: { type: 'object' } },
+                  state: {},
+                  context: { type: 'array', items: { type: 'object' } },
+                  resume: { type: 'array', items: { type: 'object' } },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description:
+              'SSE stream of AG-UI events: RUN_STARTED first, RUN_FINISHED (outcome success, interrupt or cancelled) or RUN_ERROR last, no [DONE]',
+            content: SSE_CONTENT,
+          },
+          ...refusals,
+          400: {
+            description: 'Not a RunAgentInput, or no user message last (INVALID_INPUT)',
+            content: errorContent,
+          },
+          403: threadForbidden,
+          404: { description: 'Agent not found' },
+        },
+      },
+    };
+
     if (resumable) {
       spec.paths[`/agents/${name}/stream/{streamId}`] = {
         delete: {
