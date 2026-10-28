@@ -119,12 +119,35 @@ export async function resolveAcpAgent(
   return { name: words[0]!, command: words[0]!, args: words.slice(1) };
 }
 
-/** A command line split into words, single and double quotes kept together */
+/**
+ * A command line split into words as a shell splits it, in one pass: single quotes keep what
+ * they hold, double quotes too but for a backslash escaping the next character, and quoted and
+ * bare parts next to each other make one word
+ */
 export function splitCommand(line: string): string[] {
   const words: string[] = [];
-  const pattern = /"((?:\\.|[^"\\])*)"|'([^']*)'|(\S+)/g;
-  for (const match of line.matchAll(pattern)) {
-    words.push(match[1]?.replace(/\\(.)/g, '$1') ?? match[2] ?? match[3] ?? '');
+  let word = '';
+  let inWord = false;
+  let quote: '"' | "'" | undefined;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i]!;
+    if (quote === "'") {
+      if (char === "'") quote = undefined;
+      else word += char;
+    } else if (quote === '"') {
+      if (char === '"') quote = undefined;
+      else if (char === '\\' && i + 1 < line.length) word += line[++i];
+      else word += char;
+    } else if (/\s/.test(char)) {
+      if (inWord) words.push(word);
+      word = '';
+      inWord = false;
+    } else {
+      inWord = true;
+      if (char === '"' || char === "'") quote = char;
+      else word += char;
+    }
   }
+  if (inWord) words.push(word);
   return words;
 }

@@ -34,6 +34,7 @@ import {
 import {
   AcpPermissions,
   commandLine,
+  shellQuote,
   subjectOf,
   type AcpCallSubject,
   type AcpPermissionOptions,
@@ -301,34 +302,34 @@ export class AcpAgentProvider implements SessionProvider {
       })
       .onRequest('fs/write_text_file', async ({ params }) => {
         const path = resolve(this.root, params.path);
-        if (!this.active.get(params.sessionId)?.edits.has(path)) {
-          await this.check(
-            params.sessionId,
-            subjectOf({ kind: 'edit', locations: [{ path }] }, this.name, this.root),
-            `write ${params.path}`
-          );
-        }
+        await this.check(
+          params.sessionId,
+          subjectOf({ kind: 'edit', locations: [{ path }] }, this.name, this.root),
+          `write ${params.path}`,
+          this.active.get(params.sessionId)?.edits.has(path) === true
+        );
         await this.options.workspace.write(params.path, params.content).catch(fsError);
         return {};
       })
       .onRequest('terminal/create', async ({ params }) => {
-        const line = commandLine(params.command, params.args ?? []);
+        const args = params.args ?? [];
+        const line = commandLine(params.command, args);
         const env = params.env ?? [];
         const cwd = resolve(this.root, params.cwd ?? '.');
         const granted =
-          env.length === 0 && this.active.get(params.sessionId)?.commands.has(grantKey(cwd, line));
-        if (!granted) {
-          await this.check(
-            params.sessionId,
-            subjectOf(
-              { kind: 'execute', rawInput: { command: line, cwd, env } },
-              this.name,
-              this.root
-            ),
-            `run ${line}`
-          );
-        }
-        return { terminalId: this.terminals.create(params, line) };
+          env.length === 0 &&
+          this.active.get(params.sessionId)?.commands.has(grantKey(cwd, line)) === true;
+        await this.check(
+          params.sessionId,
+          subjectOf(
+            { kind: 'execute', rawInput: { command: line, cwd, env } },
+            this.name,
+            this.root
+          ),
+          `run ${line}`,
+          granted
+        );
+        return { terminalId: this.terminals.create(params, invocation(params.command, args)) };
       })
       .onRequest('terminal/output', ({ params }) =>
         this.terminals.output(params.sessionId, params.terminalId)
@@ -400,8 +401,18 @@ export class AcpAgentProvider implements SessionProvider {
   }
 
   /** Refuses a file or terminal request the engine does not allow */
-  private async check(sessionId: string, subject: AcpCallSubject, what: string): Promise<void> {
-    if (!(await this.allowed(sessionId, subject, { description: what }))) {
+  /**
+   * Refuses a file or terminal request the engine does not allow. `approved` says the agent got
+   * permission for the same call in this turn: the engine still decides it with the mode and the
+   * rules as they are now, and only a question that would ask again is spared
+   */
+  private async check(
+    sessionId: string,
+    subject: AcpCallSubject,
+    what: string,
+    approved = false
+  ): Promise<void> {
+    if (!(await this.allowed(sessionId, subject, { description: what }, approved))) {
       throw permissionRefused(what);
     }
   }
@@ -414,13 +425,15 @@ export class AcpAgentProvider implements SessionProvider {
   private async allowed(
     sessionId: string,
     subject: AcpCallSubject,
-    call: { toolCallId?: string; description: string; rawInput?: unknown }
+    call: { toolCallId?: string; description: string; rawInput?: unknown },
+    approved = false
   ): Promise<boolean> {
     const active = this.active.get(sessionId);
     const threadId = active?.turn.threadId ?? sessionId;
     const mode: PermissionMode = active?.turn.permissionMode() ?? 'default';
     const decision = await this.permissions.decide(subject, mode, threadId);
     if (decision.decision !== 'ask') return decision.decision === 'allow';
+    if (approved) return true;
     const ask = active?.turn.onApproval;
     if (!ask || active.turn.signal.aborted) return false;
     const suggestedRule = this.permissions.suggest(subject);
@@ -565,6 +578,15 @@ const CLIENT_CAPABILITIES: ClientCapabilities = {
   fs: { readTextFile: true, writeTextFile: true },
   terminal: true,
 };
+
+/**
+ * What a terminal runs: the program the agent named with its exact arguments, quoted for the
+ * shell the workspace starts commands with, so `bash -lc '...'` keeps bash and its login files.
+ * A command without arguments is a command line of its own
+ */
+function invocation(command: string, args: readonly string[]): string {
+  return args.length === 0 ? command : [command, ...args].map(shellQuote).join(' ');
+}
 
 /** The key a command the agent got permission for is kept under: where it runs and its line */
 function grantKey(cwd: string, line: string): string {

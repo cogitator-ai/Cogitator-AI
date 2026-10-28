@@ -144,7 +144,16 @@ function otherTool(name: string): Tool {
 
 /** A name a permission rule can hold, from what an agent calls its tool */
 function ruleName(name: string): string {
-  return name.replace(/[^A-Za-z0-9_-]/g, '_').replace(/^_+|_+$/g, '') || 'tool';
+  return trimChar(name.replace(/[^A-Za-z0-9_-]/g, '_'), '_') || 'tool';
+}
+
+/** `text` without `char` at its start and its end, in one pass */
+export function trimChar(text: string, char: string): string {
+  let start = 0;
+  let end = text.length;
+  while (start < end && text[start] === char) start++;
+  while (end > start && text[end - 1] === char) end--;
+  return text.slice(start, end);
 }
 
 /** Quotes `word` for a POSIX shell when it needs it */
@@ -186,7 +195,7 @@ export function commandOf(call: Pick<ToolCallUpdate, 'rawInput' | 'title'>): str
     }
   }
   const title = stringOf(call.title);
-  return title?.replace(/^`+|`+$/g, '');
+  return title === undefined ? undefined : trimChar(title, '`');
 }
 
 /** The paths a call of an agent touches: its locations, else the paths of its raw input */

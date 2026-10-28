@@ -213,6 +213,33 @@ describe('AcpAgentProvider', () => {
     await host.close();
   });
 
+  it('decides an approved command again with the mode and rules of the moment', async () => {
+    const { fake, provider, host, run } = setup();
+    const thread = await host.startThread({});
+    const onApproval = vi.fn(async () => {
+      await host.setPermissionMode(thread.id, 'plan');
+      return { approved: true as const };
+    });
+    await run(thread.id, 'command touch made.txt', { onApproval });
+    expect(fake.log.permissions.at(-1)?.outcome).toBe('yes');
+    expect(fake.log.errors.at(-1)).toContain('Permission denied');
+    const { existsSync } = await import('node:fs');
+    expect(existsSync(join(dir, 'made.txt'))).toBe(false);
+    await provider.close();
+    await host.close();
+  });
+
+  it('runs the program a terminal names with its exact arguments', async () => {
+    const { provider, host, run } = setup();
+    const thread = await host.startThread({});
+    const { done } = await run(thread.id, 'bash echo "[$BASH_VERSION]"', {
+      onApproval: async () => ({ approved: true }),
+    });
+    expect(done.output).toMatch(/^out:\[\d+\.\d+/);
+    await provider.close();
+    await host.close();
+  });
+
   it('stops a turn interrupted while the agent starts its session', async () => {
     let release = () => undefined as void;
     const starts = new Promise<void>((resolve) => {

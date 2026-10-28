@@ -94,6 +94,23 @@ export function fakeAcpAgent(options: { sessionStarts?: Promise<void> } = {}): {
             sessionUpdate: 'plan',
             entries: [{ content: arg, priority: 'high', status: 'in_progress' }],
           });
+        } else if (verb === 'bash') {
+          try {
+            const terminal = await client.createTerminal({
+              sessionId,
+              command: '/bin/bash',
+              args: ['-c', arg],
+            });
+            await terminal.waitForExit();
+            const output = await terminal.currentOutput();
+            await terminal.release();
+            await send({
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: `out:${output.output.trim()}` },
+            });
+          } catch (error) {
+            log.errors.push(error instanceof Error ? error.message : String(error));
+          }
         } else if (verb === 'exitplan' || verb === 'tool') {
           const id = `call_${++next}`;
           const switching = verb === 'exitplan';

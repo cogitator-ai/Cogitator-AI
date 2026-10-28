@@ -8,10 +8,10 @@ import type { StreamEvent } from '@cogitator-ai/server-shared';
 import { DEFAULT_ACP_EFFORTS, applyConfigOption, configOptions, modeState } from '../agent/config';
 import { expandSkill } from '../agent/commands';
 import { mcpServerConfigs } from '../agent/mcp-servers';
-import { titleOf, toUserInput } from '../agent/prompt';
+import { titleOf, toUserInput, withoutResources } from '../agent/prompt';
 import { diffOfToolCall, resultContent, viewOfToolCall } from '../agent/tool-calls';
 import { TurnUpdates, type PendingUpdate } from '../agent/updates';
-import { AcpPermissions, commandLine, commandOf, subjectOf } from '../client/permissions';
+import { AcpPermissions, commandLine, commandOf, subjectOf, trimChar } from '../client/permissions';
 import { launchOfRegistryAgent, resolveAcpAgent, splitCommand } from '../client/registry';
 import { AcpTerminals, DEFAULT_AGENT_TERMINAL_OUTPUT_BYTES, keepLast } from '../client/terminals';
 import { AcpStreamMapper } from '../client/updates';
@@ -212,6 +212,36 @@ describe('tool calls', () => {
       },
     ]);
     expect(updates.finish).toEqual({ truncated: true });
+  });
+});
+
+describe('linear scans', () => {
+  const within = (work: () => void, ms = 500) => {
+    const started = performance.now();
+    work();
+    expect(performance.now() - started).toBeLessThan(ms);
+  };
+
+  it('strips resources, trims and splits long adversarial input in linear time', () => {
+    within(() =>
+      expect(titleOf('<resource'.repeat(100_000))).toBe(
+        '<resource'.repeat(100_000).slice(0, 77) + '...'
+      )
+    );
+    expect(withoutResources('a<resource uri="x">\nbody\n</resource>b<resource')).toBe(
+      'ab<resource'
+    );
+    within(() => expect(trimChar(`${'_'.repeat(200_000)}x${'_'.repeat(200_000)}`, '_')).toBe('x'));
+    within(() =>
+      expect(
+        subjectOf({ kind: 'other', name: `${'!'.repeat(200_000)}x` }, 'a', dir).tool.name
+      ).toBe('acp__a__x')
+    );
+    within(() =>
+      expect(commandOf({ title: `${'`'.repeat(200_000)}ls${'`'.repeat(200_000)}` })).toBe('ls')
+    );
+    within(() => expect(splitCommand(`"${'\\"!'.repeat(100_000)}`)).toHaveLength(1));
+    expect(splitCommand(`a"b c"d 'e'"f" "unclosed x`)).toEqual(['ab cd', 'ef', 'unclosed x']);
   });
 });
 

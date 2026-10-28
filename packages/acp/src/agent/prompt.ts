@@ -79,10 +79,26 @@ export function inputText(input: readonly UserInput[]): string {
     .trim();
 }
 
+/** `text` without the `<resource>` blocks embedded resources became, found in one pass */
+export function withoutResources(text: string): string {
+  const open = '<resource';
+  const close = '</resource>';
+  let kept = '';
+  let at = 0;
+  for (;;) {
+    const start = text.indexOf(open, at);
+    if (start === -1) break;
+    const end = text.indexOf(close, start + open.length);
+    if (end === -1) break;
+    kept += text.slice(at, start);
+    at = end + close.length;
+  }
+  return kept + text.slice(at);
+}
+
 /** A short title for a session, from what its first prompt says */
 export function titleOf(text: string, max = 80): string | undefined {
-  const line = text
-    .replace(/<resource[\s\S]*?<\/resource>/g, '')
+  const line = withoutResources(text)
     .split('\n')
     .map((part) => part.trim())
     .find((part) => part !== '');
