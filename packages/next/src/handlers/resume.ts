@@ -10,6 +10,7 @@ import {
   jsonResponse,
   readJsonBody,
   runErrorResponse,
+  runSignal,
 } from './http.js';
 import { toAgentResponse } from './result.js';
 import { answerStreamRequest, resumableStreamsOf, streamAgentRun } from './stream-run.js';
@@ -112,8 +113,8 @@ export function createResumeHandler(
     try {
       const result = await cogitator.resume(agent, input.threadId, {
         ...decisions,
-        signal: req.signal,
         ...runContext,
+        signal: runSignal(req.signal, runContext),
       });
 
       if (options?.afterRun) {

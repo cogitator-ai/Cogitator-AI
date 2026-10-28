@@ -11,6 +11,7 @@ import {
   readJsonBody,
   refuseRequest,
   runErrorResponse,
+  runSignal,
 } from './http.js';
 
 const SSE_HEADERS = {
@@ -88,7 +89,11 @@ export function createAGUIHandler(
           describeError: describeRunError,
           host: {
             run: async (runOptions) => {
-              const result = await cogitator.run(agent, { ...runOptions, ...runContext });
+              const result = await cogitator.run(agent, {
+                ...runOptions,
+                ...runContext,
+                signal: runSignal(runOptions.signal, runContext),
+              });
               if (options?.afterRun) await options.afterRun(result);
               return result;
             },
@@ -96,6 +101,7 @@ export function createAGUIHandler(
               const result = await cogitator.resume(agent, threadId, {
                 ...resumeOptions,
                 ...runContext,
+                signal: runSignal(resumeOptions.signal, runContext),
               });
               if (options?.afterRun) await options.afterRun(result);
               return result;

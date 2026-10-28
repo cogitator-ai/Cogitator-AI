@@ -28,6 +28,31 @@ function jsonRequest(body: unknown): Request {
 }
 
 describe('createAgentHandler', () => {
+  it('stops the run on the request signal and on the signal beforeRun returned', async () => {
+    const cog = mockCogitator();
+    const hook = new AbortController();
+    const client = new AbortController();
+    const handler = createAgentHandler(cog, mockAgent(), {
+      beforeRun: async () => ({ signal: hook.signal }),
+    });
+
+    await handler(
+      new Request('http://localhost/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: 'hi' }),
+        signal: client.signal,
+      })
+    );
+
+    const options = vi.mocked(cog.run).mock.calls[0]?.[1];
+    const signal = options?.signal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal?.aborted).toBe(false);
+    client.abort();
+    expect(signal?.aborted).toBe(true);
+  });
+
   it('handles valid request', async () => {
     const cog = mockCogitator();
     const handler = createAgentHandler(cog, mockAgent());

@@ -11,6 +11,7 @@ import {
   jsonResponse,
   readJsonBody,
   runErrorResponse,
+  runSignal,
 } from './http.js';
 import { toAgentResponse } from './result.js';
 
@@ -63,8 +64,8 @@ export function createAgentHandler(
         threadId: input.threadId,
         context: input.context,
         ...runRequestRunOptions(input),
-        signal: req.signal,
         ...runContext,
+        signal: runSignal(req.signal, runContext),
       });
 
       if (options?.afterRun) {
