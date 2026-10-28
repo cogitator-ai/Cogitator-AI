@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { ErrorCode, type PluginDefinition, type PluginHostEvent } from '@cogitator-ai/types';
 import { experimental_PluginHost } from '../plugins/host';
@@ -979,6 +979,48 @@ describe('plugin lifecycle', () => {
       status: 'failed',
       error: 'The plugin works with Cogitator >=1.0.0, this is 0.70.0',
     });
+    await plugins.dispose();
+  });
+
+  it('asks a lazy cogitatorVersion only for a plugin that declares a range', async () => {
+    const cogitatorVersion = vi.fn(() => '0.70.0');
+    const plugins = new experimental_PluginHost({
+      root: base,
+      cogitatorVersion,
+      config: { plugins: [{ name: 'plain' }], installed: false },
+    });
+    await plugins.load();
+    expect(plugins.get('plain@code')?.status).toBe('active');
+    expect(cogitatorVersion).not.toHaveBeenCalled();
+    await plugins.dispose();
+
+    const ranged = new experimental_PluginHost({
+      root: base,
+      cogitatorVersion,
+      config: {
+        plugins: [{ name: 'future', engines: { cogitator: '>=1.0.0' } }],
+        installed: false,
+      },
+    });
+    await ranged.load();
+    expect(cogitatorVersion).toHaveBeenCalledTimes(1);
+    expect(ranged.get('future@code')?.error).toBe(
+      'The plugin works with Cogitator >=1.0.0, this is 0.70.0'
+    );
+    await ranged.dispose();
+  });
+
+  it('loads a ranged plugin when the version cannot be read', async () => {
+    const plugins = new experimental_PluginHost({
+      root: base,
+      cogitatorVersion: () => undefined,
+      config: {
+        plugins: [{ name: 'future', engines: { cogitator: '>=1.0.0' } }],
+        installed: false,
+      },
+    });
+    await plugins.load();
+    expect(plugins.get('future@code')?.status).toBe('active');
     await plugins.dispose();
   });
 

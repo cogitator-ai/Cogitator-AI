@@ -103,10 +103,13 @@ export interface PluginHostOptions {
    * `permissions.settings`. Unset, no settings file is read
    */
   settings?: PluginSettingsOptions;
-  /** The core's own plugins, loaded at once and never off */
+  /** The core's own plugins, loaded at once and never off, without a `dataDir` */
   core?: readonly PluginDefinition[];
-  /** The version of Cogitator, for the plugins' `engines.cogitator` */
-  cogitatorVersion?: string;
+  /**
+   * The version of Cogitator, for the plugins' `engines.cogitator`, or a function that gives it,
+   * called only when a plugin declares a range. Unknown, no range is checked
+   */
+  cogitatorVersion?: string | (() => string | undefined);
   logger?: Logger;
 }
 
@@ -205,23 +208,28 @@ export class experimental_PluginHost {
   /** Bumped by `dispose()`: reloads asked for before it do nothing after it */
   private epoch = 0;
   private settings?: PluginSettings;
-  private readonly pluginsRoot: string;
+  /** Where installed plugins are kept, see `installedRoot` */
+  private installedPluginsRoot?: string;
 
   constructor(private readonly options: PluginHostOptions = {}) {
     this.config = options.config ?? {};
     this.root = resolve(options.root ?? process.cwd());
     this.logger = options.logger ?? getLogger();
     this.store = this.config.secrets ?? experimental_keychainSecretStore();
-    this.pluginsRoot =
-      typeof this.config.installed === 'object'
-        ? resolve(this.config.installed.root)
-        : defaultPluginsRoot();
+    if (typeof this.config.installed === 'object') {
+      this.installedPluginsRoot = resolve(this.config.installed.root);
+    }
     for (const definition of options.core ?? []) this.loadCore(definition);
   }
 
-  /** The folder installed plugins are kept in */
+  /**
+   * The folder installed plugins are kept in. The default one is worked out on first use, so a
+   * host that never reads installed plugins does not ask for the home folder (Deno without
+   * `--allow-sys`)
+   */
   get installedRoot(): string {
-    return this.pluginsRoot;
+    this.installedPluginsRoot ??= defaultPluginsRoot();
+    return this.installedPluginsRoot;
   }
 
   /**
@@ -562,7 +570,8 @@ export class experimental_PluginHost {
     };
     this.states.set(id, state);
     const generation = new Generation(++state.generations, () => this.changed());
-    const context = this.contextOf(state, generation, this.variablesOf(state, {}, {}), undefined);
+    const variables: PluginVariables = { projectDir: this.root, options: {}, secrets: {} };
+    const context = this.contextOf(state, generation, variables, undefined);
     const returned = definition.activate?.(context);
     if (returned instanceof Promise) {
       throw new TypeError(`The core plugin ${definition.name} must activate without waiting`);
@@ -624,7 +633,7 @@ export class experimental_PluginHost {
       }
     }
     if (this.config.installed !== false) {
-      const { records, warnings } = await readInstalledPlugins(this.pluginsRoot);
+      const { records, warnings } = await readInstalledPlugins(this.installedRoot);
       for (const warning of warnings) this.record({ level: 'error', message: warning });
       for (const record of records) {
         try {
@@ -1116,6 +1125,11 @@ export class experimental_PluginHost {
     await this.retire(state.candidate.id, generation);
   }
 
+  private cogitatorVersion(): string | undefined {
+    const version = this.options.cogitatorVersion;
+    return typeof version === 'function' ? version() : version;
+  }
+
   /** The values of a plugin's options: settings, then the defaults, checked against the spec */
   private optionsOf(state: PluginState): Record<string, PluginOptionValue> {
     const spec = state.manifest.userConfig ?? {};
@@ -1193,7 +1207,7 @@ export class experimental_PluginHost {
   ): PluginVariables {
     return {
       ...(state.candidate.dir !== undefined && { root: state.candidate.dir }),
-      data: pluginDataDir(this.pluginsRoot, state.candidate.id),
+      data: pluginDataDir(this.installedRoot, state.candidate.id),
       projectDir: this.root,
       options,
       secrets,
@@ -1267,7 +1281,7 @@ export class experimental_PluginHost {
       });
     }
     const engines = state.manifest.engines?.cogitator;
-    const version = this.options.cogitatorVersion;
+    const version = engines === undefined ? undefined : this.cogitatorVersion();
     if (engines !== undefined && version !== undefined && !satisfies(version, engines)) {
       throw new CogitatorError({
         message: `The plugin works with Cogitator ${engines}, this is ${version}`,
@@ -1902,7 +1916,7 @@ export class experimental_PluginHost {
       origin: candidate.origin,
       format: state.format,
       ...(candidate.dir !== undefined && { root: candidate.dir }),
-      dataDir: pluginDataDir(this.pluginsRoot, candidate.id),
+      dataDir: pluginDataDir(this.installedRoot, candidate.id),
       enabled: state.enabled,
       enabledBy: state.enabledBy,
       status: state.status,
