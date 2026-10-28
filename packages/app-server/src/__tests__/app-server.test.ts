@@ -267,6 +267,46 @@ describe('app-server', () => {
     await host.close();
   });
 
+  it('sends spans only to clients that asked for traces, and answers trace/get', async () => {
+    const { host } = createTestHost({ backend: scriptedBackend([answer('x')]).backend });
+    const tracing = connectClient(host);
+    const quiet = connectClient(host);
+    const optedOut = connectClient(host);
+    await tracing.client.initialize({
+      protocolVersion: 1,
+      clientInfo: { name: 'tracing' },
+      capabilities: { traces: true },
+    });
+    await quiet.client.initialize({ protocolVersion: 1, clientInfo: { name: 'quiet' } });
+    await optedOut.client.initialize({
+      protocolVersion: 1,
+      clientInfo: { name: 'opted-out' },
+      capabilities: { traces: true, optOutNotifications: ['_cogitator/trace/span'] },
+    });
+    const spans: string[] = [];
+    tracing.client.on('_cogitator/trace/span', ({ span }) => spans.push(span.id));
+    const turns = completions(tracing.client);
+    const { thread } = await tracing.client.threadStart();
+    const { turn } = await tracing.client.turnStart({ threadId: thread.id, input: text('hi') });
+    await turns.of(turn.id);
+    await waitUntil(() => spans.length > 0);
+
+    const trace = await quiet.client.traceGet({ turnId: turn.id });
+    expect(trace.threadId).toBe(thread.id);
+    expect(trace.spans.map((span) => span.id)).toEqual(spans);
+    const methods = (lines: typeof quiet.lines) =>
+      lines.filter((l) => l.from === 'server').map((l) => l.message.method);
+    expect(methods(quiet.lines)).not.toContain('_cogitator/trace/span');
+    expect(methods(optedOut.lines)).not.toContain('_cogitator/trace/span');
+    expect(methods(quiet.lines)).toContain('turn/completed');
+
+    const missing = await failure(quiet.client.traceGet({ turnId: 'turn_ghost' }));
+    expect(missing.code).toBe(APP_SERVER_ERROR_CODES.notFound);
+    expect(missing.data).toEqual({ kind: 'turn', id: 'turn_ghost' });
+    for (const connected of [tracing, quiet, optedOut]) connected.client.close();
+    await host.close();
+  });
+
   it('runs the extensions the host was given', async () => {
     const { host } = createTestHost({
       backend: scriptedBackend([answer('x')]).backend,

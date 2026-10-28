@@ -11,7 +11,8 @@ description: 'A typed JSON-RPC 2.0 app-server on stdio: threads, turns, steering
 - **Turns** - `turn/start`, `turn/steer`, `turn/interrupt`, every event as `turn/event`, subagent events tagged by their parent tool call
 - **Approvals** - asked live with `approval/request`, or the turn ends paused and is resumed with decisions
 - **Reviews** - `review/start` for uncommitted changes, a branch, a commit or custom instructions, the findings structured
-- **Extensions** - memory search, rewind, workflows and swarms under `_cogitator/*`
+- **Traces** - the spans of every turn, sent as they end to clients that ask and kept for `_cogitator/trace/get`
+- **Extensions** - memory search, rewind, traces, workflows and swarms under `_cogitator/*`
 - **Generated client** - `AppServerClient` and a type for every message, plus the JSON Schema
 
 ```bash
@@ -106,10 +107,24 @@ cogitator app-server generate-json-schema --out schema
 | `review/start`             | A review turn in a review thread of its own                                   |
 | `_cogitator/memory/search` | Searches the turns of a thread and the agent's memory items                   |
 | `_cogitator/thread/rewind` | Rewinds a thread to an entry, its files too with `files`                      |
+| `_cogitator/trace/get`     | The spans kept of a turn (`turnId`), `-32002` for a turn no longer kept       |
 | `_cogitator/workflow/*`    | `list` and `run` of the host's workflows, only when it has a runner           |
 | `_cogitator/swarm/*`       | `list` and `run` of the host's swarms, only when it has a runner              |
 
 The answer to `turn/start` always goes out before `turn/started`, then come `turn/event` (each a `StreamEvent`, with `parentToolCallId` and `agent` for delegated runs) and `turn/completed` with the turn: `completed`, `paused` (with `pending`), `interrupted` or `failed` (with `error`). Other notifications: `thread/started`, `thread/archived`, `thread/unarchived` and `thread/log`, the memory adapter's changes to a thread.
+
+## Traces
+
+Every turn runs with `onSpan`, and the host keeps the spans of each turn: the last 2000 of each of the last 200 turns. A client that initializes with `capabilities: { traces: true }` gets every span as it ends:
+
+```typescript
+client.on('_cogitator/trace/span', ({ turnId, span }) => {
+  console.log(turnId, span.name, `${span.duration}ms`, span.status);
+});
+const { spans } = await client.traceGet({ turnId: turn.id });
+```
+
+Others can still read a turn's spans with `_cogitator/trace/get`. `optOutNotifications` leaves the notification out too.
 
 ## Approvals
 

@@ -19,6 +19,10 @@ export const ClientCapabilitiesSchema = protocolObject({
     .describe(
       '`request` to be asked with `approval/request` while a turn waits, `pause` (the default) to have the turn end paused'
     ),
+  traces: z
+    .boolean()
+    .optional()
+    .describe('Whether to send `_cogitator/trace/span` as the spans of turns end'),
   optOutNotifications: z
     .array(z.string())
     .optional()
@@ -33,6 +37,7 @@ export const ServerCapabilitiesSchema = protocolObject({
   workflows: z.boolean(),
   swarms: z.boolean(),
   threadLog: z.boolean().describe('Whether `thread/log` notifications are sent'),
+  traces: z.boolean().describe('Whether the spans of turns are kept and sent'),
 });
 
 export const AgentInfoSchema = z.object({

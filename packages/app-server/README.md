@@ -17,7 +17,8 @@ Or run it with no code at all: `cogitator app-server -m ollama/qwen3:8b` serves 
 - **Reviews** - `review/start` reviews uncommitted changes, a branch, a commit or custom instructions in a review thread, the findings structured by a response format
 - **Structured output** - `outputSchema` on `turn/start`, read into `structured`
 - **Session log** - `thread/log` from the memory adapter's change feed
-- **Extensions** - `_cogitator/memory/search`, `_cogitator/thread/rewind`, `_cogitator/workflow/*` and `_cogitator/swarm/*`
+- **Traces** - the spans of every turn as `_cogitator/trace/span` for clients that ask, and `_cogitator/trace/get` for those of a past turn
+- **Extensions** - `_cogitator/memory/search`, `_cogitator/thread/rewind`, `_cogitator/trace/get`, `_cogitator/workflow/*` and `_cogitator/swarm/*`
 - **Generated client** - `@cogitator-ai/app-server/client` has a type for every params, result and notification and an `AppServerClient` with a method per request, with no runtime dependencies. A drift test keeps it in step with the schemas
 - **JSON Schema** - the whole protocol as one draft 2020-12 document
 
@@ -88,26 +89,27 @@ JSON-RPC 2.0, one message per line. Every params and result object takes `_meta`
 
 ### Methods
 
-| Method                     | Params                                                                                | Result                                                    |
-| -------------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| `initialize`               | `protocolVersion`, `clientInfo`, `capabilities?` (`approvals`, `optOutNotifications`) | `protocolVersion`, `serverInfo`, `capabilities`, `agents` |
-| `thread/start`             | `agent?`, `threadId?`, `metadata?`, `permissionMode?`                                 | `thread`, then `thread/started`                           |
-| `thread/resume`            | `threadId`                                                                            | `thread`, `messages`, `pending?`                          |
-| `thread/fork`              | `threadId`, `atEntryId?`, `newThreadId?`                                              | `thread`, then `thread/started`                           |
-| `thread/list`              | `archived?`, `agent?`, `cursor?`, `limit?`                                            | `threads`, `nextCursor?`                                  |
-| `thread/archive`           | `threadId`                                                                            | `thread`, then `thread/archived`                          |
-| `thread/unarchive`         | `threadId`                                                                            | `thread`, then `thread/unarchived`                        |
-| `thread/setPermissionMode` | `threadId`, `mode`                                                                    | `thread`                                                  |
-| `turn/start`               | `threadId`, `input?` or `resume?`, `outputSchema?`, `model?`, `permissionMode?`       | `turn`, then `turn/started`                               |
-| `turn/steer`               | `threadId`, `expectedTurnId`, `input`, `delivery?`                                    | `turnId`                                                  |
-| `turn/interrupt`           | `threadId`, `turnId`                                                                  | `undelivered`                                             |
-| `review/start`             | `threadId`, `target`, `model?`                                                        | `turn`, `reviewThreadId`                                  |
-| `_cogitator/memory/search` | `query`, `threadId?`, `agent?`, `limit?`                                              | `results`, `note?`                                        |
-| `_cogitator/thread/rewind` | `threadId`, `toEntryId`, `files?`, `dryRun?`, `force?`                                | the rewind report                                         |
-| `_cogitator/workflow/list` | -                                                                                     | `items`                                                   |
-| `_cogitator/workflow/run`  | `name`, `input?`                                                                      | `runId`, `result?`                                        |
-| `_cogitator/swarm/list`    | -                                                                                     | `items`                                                   |
-| `_cogitator/swarm/run`     | `name`, `input?`                                                                      | `runId`, `result?`                                        |
+| Method                     | Params                                                                                          | Result                                                    |
+| -------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `initialize`               | `protocolVersion`, `clientInfo`, `capabilities?` (`approvals`, `traces`, `optOutNotifications`) | `protocolVersion`, `serverInfo`, `capabilities`, `agents` |
+| `thread/start`             | `agent?`, `threadId?`, `metadata?`, `permissionMode?`                                           | `thread`, then `thread/started`                           |
+| `thread/resume`            | `threadId`                                                                                      | `thread`, `messages`, `pending?`                          |
+| `thread/fork`              | `threadId`, `atEntryId?`, `newThreadId?`                                                        | `thread`, then `thread/started`                           |
+| `thread/list`              | `archived?`, `agent?`, `cursor?`, `limit?`                                                      | `threads`, `nextCursor?`                                  |
+| `thread/archive`           | `threadId`                                                                                      | `thread`, then `thread/archived`                          |
+| `thread/unarchive`         | `threadId`                                                                                      | `thread`, then `thread/unarchived`                        |
+| `thread/setPermissionMode` | `threadId`, `mode`                                                                              | `thread`                                                  |
+| `turn/start`               | `threadId`, `input?` or `resume?`, `outputSchema?`, `model?`, `permissionMode?`                 | `turn`, then `turn/started`                               |
+| `turn/steer`               | `threadId`, `expectedTurnId`, `input`, `delivery?`                                              | `turnId`                                                  |
+| `turn/interrupt`           | `threadId`, `turnId`                                                                            | `undelivered`                                             |
+| `review/start`             | `threadId`, `target`, `model?`                                                                  | `turn`, `reviewThreadId`                                  |
+| `_cogitator/memory/search` | `query`, `threadId?`, `agent?`, `limit?`                                                        | `results`, `note?`                                        |
+| `_cogitator/thread/rewind` | `threadId`, `toEntryId`, `files?`, `dryRun?`, `force?`                                          | the rewind report                                         |
+| `_cogitator/trace/get`     | `turnId`                                                                                        | `threadId`, `turnId`, `spans`                             |
+| `_cogitator/workflow/list` | -                                                                                               | `items`                                                   |
+| `_cogitator/workflow/run`  | `name`, `input?`                                                                                | `runId`, `result?`                                        |
+| `_cogitator/swarm/list`    | -                                                                                               | `items`                                                   |
+| `_cogitator/swarm/run`     | `name`, `input?`                                                                                | `runId`, `result?`                                        |
 
 The workflow and swarm methods exist only when the host was given `workflows` or `swarms` runners, else they answer method not found.
 
@@ -126,8 +128,13 @@ A turn's answer always goes out before its `turn/started`, so a client knows the
 | `turn/completed`            | `threadId`, `turn`                                                             |
 | `_cogitator/workflow/event` | `runId`, `name`, `event`                                                       |
 | `_cogitator/swarm/event`    | `runId`, `name`, `event`                                                       |
+| `_cogitator/trace/span`     | `threadId`, `turnId`, `span`                                                   |
 
 `capabilities.optOutNotifications` in `initialize` leaves out the methods it names, such as `thread/log`.
+
+### Traces
+
+The host passes `onSpan` to every turn and keeps the spans of a turn (`id`, `traceId`, `parentId`, `name`, `kind`, `status`, times, `attributes`, `events`): the last 2000 of each of the last 200 turns. A client that says `capabilities.traces: true` gets each span as it ends in `_cogitator/trace/span`, still left out when `optOutNotifications` names it. `_cogitator/trace/get` with a `turnId` returns the spans kept of that turn, `-32002` with `data.kind: 'turn'` for a turn the host does not know or no longer keeps.
 
 ### Approvals
 

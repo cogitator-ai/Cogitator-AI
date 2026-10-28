@@ -463,6 +463,32 @@ describe('SessionHost', () => {
     await host.close();
   });
 
+  it('keeps the spans of each turn and sends them as they end', async () => {
+    const { host, notifications } = createTestHost({
+      backend: scriptedBackend([answer('traced')]).backend,
+    });
+    const thread = await host.startThread({});
+    const turn = await host.startTurn({ threadId: thread.id, input: text('trace me') });
+    await completed(notifications, turn.id);
+    const sent = notifications.flatMap((n) =>
+      n.method === '_cogitator/trace/span' ? [n.params] : []
+    );
+    expect(sent.length).toBeGreaterThan(0);
+    expect(sent.every((n) => n.threadId === thread.id && n.turnId === turn.id)).toBe(true);
+    const trace = host.getTrace(turn.id);
+    expect(trace).toMatchObject({ threadId: thread.id, turnId: turn.id });
+    expect(trace.spans.map((span) => span.id)).toEqual(sent.map((n) => n.span.id));
+    expect(trace.spans[0]).toMatchObject({
+      traceId: expect.any(String),
+      name: expect.any(String),
+      startTime: expect.any(Number),
+    });
+    expect((await host.describe()).capabilities.traces).toBe(true);
+    const missing = await rejection(() => host.getTrace('turn_ghost'));
+    expect(missing.data).toEqual({ kind: 'turn', id: 'turn_ghost' });
+    await host.close();
+  });
+
   it('names what does not exist', async () => {
     const { host } = createTestHost({ backend: scriptedBackend([answer('x')]).backend });
     expect((await rejection(host.resumeThread('ghost'))).data).toEqual({

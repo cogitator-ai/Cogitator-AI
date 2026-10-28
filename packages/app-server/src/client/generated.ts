@@ -250,6 +250,8 @@ export interface ServerInfo {
 export interface ClientCapabilities {
   /** `request` to be asked with `approval/request` while a turn waits, `pause` (the default) to have the turn end paused */
   approvals?: 'request' | 'pause';
+  /** Whether to send `_cogitator/trace/span` as the spans of turns end */
+  traces?: boolean;
   /** Notification methods not to send, such as `thread/log` */
   optOutNotifications?: Array<string>;
   _meta?: Meta;
@@ -264,6 +266,8 @@ export interface ServerCapabilities {
   swarms: boolean;
   /** Whether `thread/log` notifications are sent */
   threadLog: boolean;
+  /** Whether the spans of turns are kept and sent */
+  traces: boolean;
   _meta?: Meta;
 }
 
@@ -638,6 +642,49 @@ export interface ThreadRewindResult {
   _meta?: Meta;
 }
 
+/** A span of the trace of a turn: a model call, a tool call, the run itself */
+export interface Span {
+  id: string;
+  traceId: string;
+  parentId?: string;
+  name: string;
+  kind: 'internal' | 'client' | 'server' | 'producer' | 'consumer';
+  status: 'ok' | 'error' | 'unset';
+  /** Epoch milliseconds */
+  startTime: number;
+  /** Epoch milliseconds */
+  endTime: number;
+  /** Milliseconds */
+  duration: number;
+  attributes: Record<string, unknown>;
+  events?: Array<{
+    name: string;
+    timestamp: number;
+    attributes?: Record<string, unknown>;
+  }>;
+}
+
+export interface TraceGetParams {
+  turnId: string;
+  _meta?: Meta;
+}
+
+export interface TraceGetResult {
+  threadId: string;
+  turnId: string;
+  /** The spans the host keeps of the turn, oldest first */
+  spans: Array<Span>;
+  _meta?: Meta;
+}
+
+/** A span of a turn as it ends, sent to clients that asked for traces */
+export interface TraceSpanNotification {
+  threadId: string;
+  turnId: string;
+  span: Span;
+  _meta?: Meta;
+}
+
 /** A workflow or a swarm the host can run */
 export interface Runnable {
   name: string;
@@ -805,6 +852,8 @@ export interface AppServerMethods {
   '_cogitator/memory/search': { params: MemorySearchParams; result: MemorySearchResult };
   /** Rewinds a thread to an entry, its memory and optionally its files with it */
   '_cogitator/thread/rewind': { params: ThreadRewindParams; result: ThreadRewindResult };
+  /** The spans the host keeps of a turn */
+  '_cogitator/trace/get': { params: TraceGetParams; result: TraceGetResult };
   /** Lists the workflows the host runs */
   '_cogitator/workflow/list': { params: RunnableListParams; result: RunnableListResult };
   /** Runs a workflow, sending `_cogitator/workflow/event` while it goes on */
@@ -826,6 +875,7 @@ export interface AppServerNotifications {
   'turn/completed': TurnCompletedNotification;
   '_cogitator/workflow/event': RunnableEventNotification;
   '_cogitator/swarm/event': RunnableEventNotification;
+  '_cogitator/trace/span': TraceSpanNotification;
 }
 
 /** The requests the server sends to the client, by method */
@@ -1046,6 +1096,11 @@ export class AppServerClient {
   /** Rewinds a thread to an entry, its memory and optionally its files with it (`_cogitator/thread/rewind`) */
   threadRewind(params: ThreadRewindParams): Promise<ThreadRewindResult> {
     return this.request('_cogitator/thread/rewind', params);
+  }
+
+  /** The spans the host keeps of a turn (`_cogitator/trace/get`) */
+  traceGet(params: TraceGetParams): Promise<TraceGetResult> {
+    return this.request('_cogitator/trace/get', params);
   }
 
   /** Lists the workflows the host runs (`_cogitator/workflow/list`) */

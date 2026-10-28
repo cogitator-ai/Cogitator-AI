@@ -25,7 +25,12 @@ import type {
   ThreadLogNotificationSchema,
   TurnEventNotificationSchema,
 } from './session.js';
-import type { RunnableEventNotificationSchema } from './extensions.js';
+import type {
+  RunnableEventNotificationSchema,
+  SpanSchema,
+  TraceGetResultSchema,
+  TraceSpanNotificationSchema,
+} from './extensions.js';
 import type {
   ThreadForkParamsSchema,
   ThreadListParamsSchema,
@@ -92,6 +97,9 @@ export type TurnEventNotification = Omit<z.output<typeof TurnEventNotificationSc
 };
 export type ThreadLogNotification = z.output<typeof ThreadLogNotificationSchema>;
 export type RunnableEventNotification = z.output<typeof RunnableEventNotificationSchema>;
+export type TraceSpan = z.output<typeof SpanSchema>;
+export type TraceGetResult = z.output<typeof TraceGetResultSchema>;
+export type TraceSpanNotification = z.output<typeof TraceSpanNotificationSchema>;
 
 /** A notification of the app-server, told apart by `method` */
 export type AppServerNotification =
@@ -103,4 +111,5 @@ export type AppServerNotification =
   | { method: 'turn/event'; params: TurnEventNotification }
   | { method: 'turn/completed'; params: { threadId: string; turn: TurnInfo } }
   | { method: '_cogitator/workflow/event'; params: RunnableEventNotification }
-  | { method: '_cogitator/swarm/event'; params: RunnableEventNotification };
+  | { method: '_cogitator/swarm/event'; params: RunnableEventNotification }
+  | { method: '_cogitator/trace/span'; params: TraceSpanNotification };

@@ -16,6 +16,7 @@ import type {
   ResponseFormat,
   RunHandle,
   RunResult,
+  Span,
   Thread,
   ToolApprovalDecision,
   ToolApprovalRequest,
@@ -150,6 +151,16 @@ interface QueuedInput {
   input: UserInput[];
 }
 
+/** The spans the host keeps of one turn at most, the oldest dropped past it */
+export const MAX_TRACE_SPANS_PER_TURN = 2000;
+/** The turns the host keeps the spans of, the oldest forgotten past it */
+export const MAX_TRACED_TURNS = 200;
+
+interface TurnTrace {
+  threadId: string;
+  spans: Span[];
+}
+
 interface TurnRecord {
   info: TurnInfo;
   handle?: RunHandle;
@@ -184,6 +195,7 @@ export class SessionHost {
   private readonly defaultAgentName: string;
   private readonly listeners = new Set<SessionHostListener>();
   private readonly active = new Map<string, TurnRecord>();
+  private readonly traces = new Map<string, TurnTrace>();
   private readonly running = new Set<Promise<void>>();
   private readonly closing = new AbortController();
   private readonly reviewContext: ReviewContextReader;
@@ -256,6 +268,7 @@ export class SessionHost {
         workflows: this.options.workflows !== undefined,
         swarms: this.options.swarms !== undefined,
         threadLog: typeof memory?.onChange === 'function',
+        traces: true,
       },
       agents: this.agents(),
     };
@@ -564,6 +577,16 @@ export class SessionHost {
     return { runId, ...(result !== undefined && { result }) };
   }
 
+  /**
+   * The spans the host keeps of a turn, oldest first: the last {@link MAX_TRACE_SPANS_PER_TURN}
+   * of each of the last {@link MAX_TRACED_TURNS} turns
+   */
+  getTrace(turnId: string): { threadId: string; turnId: string; spans: Span[] } {
+    const trace = this.traces.get(turnId);
+    if (!trace) throw notFound('turn', turnId);
+    return { threadId: trace.threadId, turnId, spans: trace.spans.map((span) => ({ ...span })) };
+  }
+
   /** Stops every turn and waits for them, then stops reporting memory changes */
   async close(): Promise<void> {
     if (!this.closing.signal.aborted) this.closing.abort(new Error('The app-server host closed'));
@@ -572,6 +595,31 @@ export class SessionHost {
     this.stopLog?.();
     this.stopLog = undefined;
     this.listeners.clear();
+    this.traces.clear();
+  }
+
+  /** A new trace for a turn, forgetting the oldest turn past {@link MAX_TRACED_TURNS} */
+  private openTrace(threadId: string, turnId: string): TurnTrace {
+    const trace: TurnTrace = { threadId, spans: [] };
+    this.traces.set(turnId, trace);
+    while (this.traces.size > MAX_TRACED_TURNS) {
+      const oldest = this.traces.keys().next();
+      if (oldest.done) break;
+      this.traces.delete(oldest.value);
+    }
+    return trace;
+  }
+
+  private recordSpan(trace: TurnTrace, turnId: string, span: Span): void {
+    const copy = jsonCopy(span);
+    if (this.traces.get(turnId) === trace) {
+      trace.spans.push(copy);
+      if (trace.spans.length > MAX_TRACE_SPANS_PER_TURN) trace.spans.shift();
+    }
+    this.emit({
+      method: '_cogitator/trace/span',
+      params: { threadId: trace.threadId, turnId, span: copy },
+    });
   }
 
   private emit(notification: AppServerNotification): void {
@@ -637,6 +685,7 @@ export class SessionHost {
     await Promise.resolve(options.after).catch(() => undefined);
     const threadId = turn.info.threadId;
     const turnId = turn.info.id;
+    const trace = this.openTrace(threadId, turnId);
     this.emit({ method: 'turn/started', params: { threadId, turn: copyTurn(turn.info) } });
     if (turn.interrupted) {
       this.finish(turn, { status: 'interrupted' });
@@ -664,6 +713,7 @@ export class SessionHost {
     const runOptions = {
       stream: true,
       ...session.callbacks,
+      onSpan: (span: Span) => this.recordSpan(trace, turnId, span),
       ...(plan.mode !== undefined && { permissions: { mode: plan.mode } }),
       ...(asker && {
         onApproval: (request: ToolApprovalRequest) => asker({ threadId, turnId, request }),

@@ -180,6 +180,7 @@ export class AppServerConnection {
     );
     this.method('_cogitator/memory/search', (params) => this.host.searchMemory(params));
     this.method('_cogitator/thread/rewind', (params) => this.host.rewindThread(params));
+    this.method('_cogitator/trace/get', (params) => this.host.getTrace(params.turnId));
     if (this.host.runner('workflow')) {
       this.method('_cogitator/workflow/list', async () => ({
         items: [...(await this.host.runner('workflow')!.list())],
@@ -298,6 +299,12 @@ export class AppServerConnection {
 
   private forward(notification: AppServerNotification): void {
     if (!this.client || this.peer.closed || this.optedOut.has(notification.method)) return;
+    if (
+      notification.method === '_cogitator/trace/span' &&
+      this.client.capabilities?.traces !== true
+    ) {
+      return;
+    }
     this.peer.notify(notification.method, notification.params).catch((error: unknown) => {
       this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
     });

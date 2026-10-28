@@ -61,6 +61,44 @@ export const ThreadRewindResultSchema = protocolObject({
     .describe('The whole report of Cogitator.rewind(), memory items included'),
 });
 
+export const SpanSchema = z
+  .object({
+    id: z.string(),
+    traceId: z.string(),
+    parentId: z.string().optional(),
+    name: z.string(),
+    kind: z.enum(['internal', 'client', 'server', 'producer', 'consumer']),
+    status: z.enum(['ok', 'error', 'unset']),
+    startTime: z.number().describe('Epoch milliseconds'),
+    endTime: z.number().describe('Epoch milliseconds'),
+    duration: z.number().describe('Milliseconds'),
+    attributes: z.record(z.string(), z.unknown()),
+    events: z
+      .array(
+        z.object({
+          name: z.string(),
+          timestamp: z.number(),
+          attributes: z.record(z.string(), z.unknown()).optional(),
+        })
+      )
+      .optional(),
+  })
+  .describe('A span of the trace of a turn: a model call, a tool call, the run itself');
+
+export const TraceGetParamsSchema = protocolObject({ turnId: z.string() });
+
+export const TraceGetResultSchema = protocolObject({
+  threadId: z.string(),
+  turnId: z.string(),
+  spans: z.array(SpanSchema).describe('The spans the host keeps of the turn, oldest first'),
+});
+
+export const TraceSpanNotificationSchema = protocolObject({
+  threadId: z.string(),
+  turnId: z.string(),
+  span: SpanSchema,
+}).describe('A span of a turn as it ends, sent to clients that asked for traces');
+
 export const RunnableSchema = z
   .object({ name: z.string(), description: z.string().optional() })
   .describe('A workflow or a swarm the host can run');

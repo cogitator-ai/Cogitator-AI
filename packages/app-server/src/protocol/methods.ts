@@ -25,8 +25,12 @@ import {
   RunnableRunParamsSchema,
   RunnableRunResultSchema,
   RunnableSchema,
+  SpanSchema,
   ThreadRewindParamsSchema,
   ThreadRewindResultSchema,
+  TraceGetParamsSchema,
+  TraceGetResultSchema,
+  TraceSpanNotificationSchema,
 } from './extensions.js';
 import {
   ReviewFindingSchema,
@@ -193,6 +197,12 @@ export const APP_SERVER_METHODS = {
     'threadRewind',
     'Rewinds a thread to an entry, its memory and optionally its files with it'
   ),
+  '_cogitator/trace/get': method(
+    TraceGetParamsSchema,
+    TraceGetResultSchema,
+    'traceGet',
+    'The spans the host keeps of a turn'
+  ),
   '_cogitator/workflow/list': method(
     RunnableListParamsSchema,
     RunnableListResultSchema,
@@ -230,6 +240,7 @@ export const APP_SERVER_NOTIFICATIONS = {
   'turn/completed': TurnCompletedNotificationSchema,
   '_cogitator/workflow/event': RunnableEventNotificationSchema,
   '_cogitator/swarm/event': RunnableEventNotificationSchema,
+  '_cogitator/trace/span': TraceSpanNotificationSchema,
 } as const;
 
 /** The requests the app-server sends to the client */
@@ -314,6 +325,10 @@ export const APP_SERVER_SCHEMAS: ReadonlyArray<readonly [name: string, schema: z
   ['MemorySearchResult', MemorySearchResultSchema],
   ['ThreadRewindParams', ThreadRewindParamsSchema],
   ['ThreadRewindResult', ThreadRewindResultSchema],
+  ['Span', SpanSchema],
+  ['TraceGetParams', TraceGetParamsSchema],
+  ['TraceGetResult', TraceGetResultSchema],
+  ['TraceSpanNotification', TraceSpanNotificationSchema],
   ['Runnable', RunnableSchema],
   ['RunnableListParams', RunnableListParamsSchema],
   ['RunnableListResult', RunnableListResultSchema],
