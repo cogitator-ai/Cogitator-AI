@@ -30,7 +30,7 @@ export function ToolAppFrame({
   call,
 }: {
   agent: string;
-  call: Pick<ToolCallRecord, 'name' | 'arguments' | 'result' | 'error'>;
+  call: Pick<ToolCallRecord, 'name' | 'arguments' | 'result' | 'error' | 'details'>;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const host = useRef<ToolAppHost>(undefined);
@@ -84,8 +84,13 @@ export function ToolAppFrame({
   }, [info, agent, tool]);
 
   useEffect(() => {
-    host.current?.show({ arguments: call.arguments, result: call.result, error: call.error });
-  }, [info, call.arguments, call.result, call.error]);
+    host.current?.show({
+      arguments: call.arguments,
+      result: call.result,
+      error: call.error,
+      details: call.details,
+    });
+  }, [info, call.arguments, call.result, call.error, call.details]);
 
   if (failure) {
     return (

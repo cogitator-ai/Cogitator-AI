@@ -7,7 +7,7 @@ import {
   getToolUiResourceUri,
   isToolVisibilityAppOnly,
 } from '@modelcontextprotocol/ext-apps/app-bridge';
-import { tool } from '@cogitator-ai/core';
+import { Cogitator, tool, toolContent, toolOutput } from '@cogitator-ai/core';
 import type { Tool } from '@cogitator-ai/types';
 import { MCPServer } from '../server/mcp-server';
 import { MCPClient, appStructuredContent } from '../client/mcp-client';
@@ -392,7 +392,11 @@ describe('a server that sets visibility on tools without an app, and part of _me
     });
     expect(definitions.find((entry) => entry.name === 'move_card')?.app).toBeUndefined();
     const tools = await client.getTools();
-    expect(tools.map((entry) => entry.name).sort()).toEqual(['archive_board', 'show_board']);
+    expect(tools.map((entry) => entry.name).sort()).toEqual([
+      'archive_board',
+      'chart_board',
+      'show_board',
+    ]);
   });
 
   it('lets an app call the app-only tool, never a model-only one', async () => {
@@ -413,6 +417,38 @@ describe('a server that sets visibility on tools without an app, and part of _me
     });
     expect(appStructuredContent(null)).toEqual({ result: null });
     expect(appStructuredContent({ a: 1 })).toEqual({ a: 1 });
+  });
+
+  it('keeps the structured result of an answer with media for the app, not the model', async () => {
+    const forModel = toolContent(
+      { type: 'text', text: 'The chart' },
+      { type: 'image', data: 'iVBORw0KGgo=', mediaType: 'image/png' }
+    );
+    await expect(client.callTool('chart_board', {})).resolves.toEqual(forModel);
+    await expect(client.callTool('chart_board', {}, { structuredDetails: true })).resolves.toEqual(
+      toolOutput({ content: forModel, details: { structuredContent: { cards: 2 } } })
+    );
+    await expect(client.callTool('list_cards', {}, { structuredDetails: true })).resolves.toEqual([
+      'todo',
+      'done',
+    ]);
+
+    const tools = await client.getTools();
+    const chart = tools.find((entry) => entry.name === 'chart_board')!;
+    const board = tools.find((entry) => entry.name === 'show_board')!;
+    const cogitator = new Cogitator();
+    try {
+      const charted = await cogitator.invokeTool(chart, {});
+      expect(charted.error).toBeUndefined();
+      expect(charted.result).toEqual(forModel);
+      expect(charted.details).toEqual({ structuredContent: { cards: 2 } });
+
+      const shown = await cogitator.invokeTool(board, {});
+      expect(shown.result).toBe('board');
+      expect(shown.details).toBeUndefined();
+    } finally {
+      await cogitator.close();
+    }
   });
 
   it("merges the listing's _meta.ui with the content's, field by field", async () => {

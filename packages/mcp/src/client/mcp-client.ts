@@ -25,7 +25,14 @@ import {
   type VersionNegotiationMode,
 } from '@modelcontextprotocol/client';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/client/validators/ajv';
-import type { Tool, ToolApp, ToolAppCallResult, ToolAppResource } from '@cogitator-ai/types';
+import { toolOutput } from '@cogitator-ai/core';
+import type {
+  Tool,
+  ToolApp,
+  ToolAppCallResult,
+  ToolAppResource,
+  ToolStructuredDetails,
+} from '@cogitator-ai/types';
 import { createStdioTransport, createHttpTransport, createSseTransport } from './transports';
 import type {
   MCPClientConfig,
@@ -697,7 +704,9 @@ export class MCPClient {
    *
    * Returns `structuredContent` when the server provides it (and no media), the text/JSON
    * value(s) of text content, or a `toolContent()` result when the content holds images, audio
-   * or binary resources. Throws {@link MCPToolError} when the server reports `isError: true`.
+   * or binary resources. With `structuredDetails: true` a `structuredContent` that such a value
+   * leaves out comes back too, in the `details` of a `toolOutput()` result around the value.
+   * Throws {@link MCPToolError} when the server reports `isError: true`.
    *
    * A server may ask for input during the call (elicitation): it is asked through the run of
    * the call (`options.interrupt`), else from the `elicitation` handler, else declined. A server
@@ -714,8 +723,11 @@ export class MCPClient {
     args: Record<string, unknown>,
     options?: MCPCallToolOptions
   ): Promise<unknown> {
-    const call = async (): Promise<unknown> =>
-      toolResultValue(name, await this.callToolResult(name, args, options));
+    const call = async (): Promise<unknown> => {
+      const result = await this.callToolResult(name, args, options);
+      const value = toolResultValue(name, result);
+      return options?.structuredDetails === true ? withStructuredDetails(value, result) : value;
+    };
 
     if (options?.idempotent === true) {
       return this.withRetry(call, `callTool:${name}`, options.signal);
@@ -1407,6 +1419,19 @@ function toolResultValue(
     return result.toolResult;
   }
   return null;
+}
+
+/**
+ * `value` in a `toolOutput()` result whose `details` keep the result's `structuredContent`, when
+ * `value` leaves it out (a result with media), `value` itself otherwise
+ */
+function withStructuredDetails(value: unknown, result: MCPToolCallResult): unknown {
+  const { structuredContent } = result;
+  if (structuredContent === undefined || value === structuredContent) return value;
+  return toolOutput<unknown, ToolStructuredDetails>({
+    content: value,
+    details: { structuredContent },
+  });
 }
 
 /** The content blocks of a tool result; a link to a resource becomes a line of text. */

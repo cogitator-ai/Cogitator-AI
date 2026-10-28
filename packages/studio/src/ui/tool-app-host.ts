@@ -51,21 +51,41 @@ function errorResult(message: string): CallToolResult {
   return { content: [{ type: 'text', text: message }], isError: true };
 }
 
+/** What the app is told of a call of the run: its arguments, then its result or that it failed */
+export type ToolAppCallState = Pick<ToolCallRecord, 'arguments' | 'result' | 'error' | 'details'>;
+
 /**
  * The result of a call of the run as the app's `tool-result`: what the tool returned, as MCP has
  * it. A result with media (a `toolContent()` result, as a tool of an MCP server whose answer held
- * images, audio or resources gives) goes back to its content blocks
+ * images, audio or resources gives) goes back to its content blocks. The structured result is the
+ * one the call's `details` keep for the app (`ToolStructuredDetails`, as such an MCP tool's do),
+ * else a result without media itself, an object as it is and any other value as `{ result }`
  */
-export function recordResult(call: Pick<ToolCallRecord, 'result' | 'error'>): CallToolResult {
+export function recordResult(
+  call: Pick<ToolAppCallState, 'result' | 'error' | 'details'>
+): CallToolResult {
   if (call.error !== undefined) return errorResult(call.error);
   const { result } = call;
+  const kept = structuredDetailsOf(call.details);
+  const structured = kept && { structuredContent: appStructured(kept.value) };
   const blocks = contentBlocksOf(result);
-  if (blocks) return { content: blocks };
-  if (result === undefined) return { content: [] };
+  if (blocks) return { content: blocks, ...structured };
+  if (result === undefined) return { content: [], ...structured };
   return {
     content: [{ type: 'text', text: typeof result === 'string' ? result : JSON.stringify(result) }],
-    structuredContent: isRecord(result) ? result : { result },
+    structuredContent: appStructured(kept ? kept.value : result),
   };
+}
+
+/** The structured result a call's `details` keep for its app, see `ToolStructuredDetails` */
+function structuredDetailsOf(details: unknown): { value: unknown } | undefined {
+  if (!isRecord(details) || details.structuredContent === undefined) return undefined;
+  return { value: details.structuredContent };
+}
+
+/** A structured result as an app reads it: an object as it is, any other value as `{ result }` */
+function appStructured(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : { result: value };
 }
 
 /** The content blocks of a `toolContent()` result, undefined for any other result */
@@ -149,7 +169,7 @@ function argumentsOf(value: unknown): Record<string, unknown> {
 export interface ToolAppHost {
   bridge: AppBridge;
   /** Tells the app what it has not been told of the call yet, once it is initialized */
-  show(call: Pick<ToolCallRecord, 'arguments' | 'result' | 'error'>): void;
+  show(call: ToolAppCallState): void;
   close(): Promise<void>;
 }
 
@@ -194,7 +214,7 @@ export function createToolAppHost(options: ToolAppHostOptions): ToolAppHost {
   bridge.onloggingmessage = () => undefined;
 
   let initialized = false;
-  let latest: Pick<ToolCallRecord, 'arguments' | 'result' | 'error'> | undefined;
+  let latest: ToolAppCallState | undefined;
   let sentInput = false;
   let sentEnd = false;
 

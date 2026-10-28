@@ -393,7 +393,9 @@ function toolNames(definitions: readonly MCPToolDefinition[], prefix: string): M
  * read-only or idempotent. The tool keeps the server's `title`, `outputSchema` and annotations,
  * and needs approval when the server marks it destructive (see `requiresApproval`). It names the
  * server tool it calls in `mcp` (`ToolAdapterOptions.server`, else the name the server reports),
- * which `mcp__<server>__<tool>` permission rules match.
+ * which `mcp__<server>__<tool>` permission rules match. A result with media keeps the server's
+ * `structuredContent` in the call's `details` (`structuredDetails` of `MCPClient.callTool`), out
+ * of what the model reads.
  */
 export function mcpToCogitator(
   mcpTool: MCPToolDefinition,
@@ -440,6 +442,7 @@ export function mcpToCogitator(
       return client.callTool(mcpTool.name, (params ?? {}) as Record<string, unknown>, {
         signal: context?.signal,
         idempotent,
+        structuredDetails: true,
         ...(context?.toolCallId !== undefined && { toolCallId: context.toolCallId }),
         ...(context?.interrupt && { interrupt: context.interrupt }),
         ...(context?.update && { update: context.update }),

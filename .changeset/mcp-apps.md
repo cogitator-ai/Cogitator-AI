@@ -16,6 +16,7 @@ Server:
 Client:
 
 - `MCPClient` tells servers it takes apps (`apps: false` turns it off). A wrapped tool of a server that points at an app carries it as `tool.app`: `read()` gives the page with its CSP, permissions, domain and border preference, `callTool(name, args)` calls a tool of the same server for the page (only a tool open to apps, a structured result that is no object coming as `{ result: value }`), `requiresApproval(name)` says whether that tool needs approval, under the `requiresApproval` setting of `getTools()` (destructive tools by default).
+- A wrapped tool whose server answers with images, audio or binary resources next to `structuredContent` keeps the structured result in the call's `details` (`ToolStructuredDetails`), out of what the model reads, so the tool's app gets both. `callTool(name, args, { structuredDetails: true })` does the same by hand, `callTool` without it returns what it did.
 - `getTools()` leaves out the tools a server opens to apps only, as MCP Apps asks of a host. `getToolApp(name)`, `readApp(uri)` and `callToolForApp(name, args)` do the same by hand.
 - `@modelcontextprotocol/ext-apps` 2.0.4 is a new dependency of `@cogitator-ai/mcp`.
 

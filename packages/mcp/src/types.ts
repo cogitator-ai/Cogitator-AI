@@ -690,6 +690,15 @@ export interface MCPCallToolOptions {
 
   /** Reports progress, such as the status message of a server's task (`ToolContext.update`) */
   update?: ToolContext['update'];
+
+  /**
+   * Keep the server's `structuredContent` when the value leaves it out, as a result with images,
+   * audio or binary resources does: the call then returns a `toolOutput()` result of
+   * `@cogitator-ai/core`, the value as its `content` (what the model reads) and
+   * `{ structuredContent }` (`ToolStructuredDetails`) as its `details`, for the application and
+   * the tool's app. Default: false. Tools from `getTools()` / `wrapMCPTools()` set it
+   */
+  structuredDetails?: boolean;
 }
 
 /** How long a task lives and how often clients poll it */

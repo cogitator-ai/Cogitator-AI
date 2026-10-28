@@ -221,6 +221,47 @@ describe('results for apps', () => {
     await host.close();
   });
 
+  it('gives a result with media the structured result its details keep for the app', async () => {
+    const envelope = {
+      type: 'tool-content',
+      content: [
+        { type: 'text', text: 'The chart' },
+        { type: 'image', data: 'iVBORw0KGgo=', mediaType: 'image/png' },
+      ],
+    };
+    const blocks = [
+      { type: 'text', text: 'The chart' },
+      { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' },
+    ];
+    expect(recordResult({ result: envelope, details: { structuredContent: { rows: 2 } } })).toEqual(
+      { content: blocks, structuredContent: { rows: 2 } }
+    );
+    expect(recordResult({ result: envelope, details: { structuredContent: [1, 2] } })).toEqual({
+      content: blocks,
+      structuredContent: { result: [1, 2] },
+    });
+    expect(recordResult({ result: envelope, details: { structuredContent: null } })).toEqual({
+      content: blocks,
+      structuredContent: { result: null },
+    });
+    expect(recordResult({ result: envelope, details: { diff: '+1' } })).toEqual({
+      content: blocks,
+    });
+    expect(recordResult({ result: { total: 1 }, details: { structuredContent: 7 } })).toEqual({
+      content: [{ type: 'text', text: '{"total":1}' }],
+      structuredContent: { result: 7 },
+    });
+
+    const { host, seen } = await connect({
+      callTool: async () => done('unused'),
+      confirm: async () => true,
+    });
+    host.show({ arguments: {}, result: envelope, details: { structuredContent: { rows: 2 } } });
+    await settle();
+    expect(seen.result).toEqual({ content: blocks, structuredContent: { rows: 2 } });
+    await host.close();
+  });
+
   it('passes a server result through and refuses what is none', () => {
     const result = { content: [{ type: 'text', text: 'ok' }], structuredContent: { ok: true } };
     expect(toolCallResult(result)).toEqual(result);

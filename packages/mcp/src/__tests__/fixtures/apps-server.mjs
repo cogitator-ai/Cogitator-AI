@@ -16,6 +16,21 @@ serveStdio(() => {
     async () => ({ content: [{ type: 'text', text: 'board' }] })
   );
   server.registerTool(
+    'chart_board',
+    {
+      description: 'Charts the board',
+      inputSchema: z.object({}),
+      _meta: { ui: { resourceUri: 'ui://board/view' } },
+    },
+    async () => ({
+      content: [
+        { type: 'text', text: 'The chart' },
+        { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' },
+      ],
+      structuredContent: { cards: 2 },
+    })
+  );
+  server.registerTool(
     'move_card',
     {
       description: 'Moves a card, for the board page only',

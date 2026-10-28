@@ -367,6 +367,17 @@ export interface ToolOutputResult<TContent = unknown, TDetails = unknown> {
   presentation?: ToolPresentation;
 }
 
+/**
+ * The `details` of a call whose result for the model leaves out the tool's structured result, as
+ * an MCP tool's does when the server answered with images, audio or binary resources next to its
+ * `structuredContent`. A host of the tool's app gives it to the app as the result's
+ * `structuredContent`: an object as it is, any other value as `{ result: value }`
+ */
+export interface ToolStructuredDetails {
+  /** The tool's structured result, any JSON value */
+  structuredContent: unknown;
+}
+
 /** What a running tool has so far, reported with `context.update()` */
 export interface ToolProgress {
   /** The result so far, in the shape of `content` */
