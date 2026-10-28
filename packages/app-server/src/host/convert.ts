@@ -33,6 +33,7 @@ export const THREAD_KEYS = {
   forkedFrom: 'forkedFrom',
   archived: 'archived',
   reviewOf: 'reviewOf',
+  reviewModel: 'reviewModel',
 } as const;
 
 /** What a run takes of the input parts of a turn: its text and its images */

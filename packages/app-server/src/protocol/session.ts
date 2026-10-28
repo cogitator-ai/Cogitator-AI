@@ -62,11 +62,13 @@ export const InitializeResultSchema = protocolObject({
 
 export const PermissionOptionSchema = z
   .object({
-    optionId: z.enum(['allow_once', 'allow_always', 'reject_once', 'reject_always']),
+    optionId: z.enum(['allow_once', 'allow_always', 'reject_once']),
     name: z.string(),
-    kind: z.enum(['allow_once', 'allow_always', 'reject_once', 'reject_always']),
+    kind: z.enum(['allow_once', 'allow_always', 'reject_once']),
   })
-  .describe('A choice for an approval, as ACP `session/request_permission` offers it');
+  .describe(
+    'A choice for an approval, as ACP `session/request_permission` offers it. `reject_always` is not offered: the runtime keeps allow rules from answers, not deny rules'
+  );
 
 export const ApprovalToolCallSchema = PendingApprovalSchema.extend({
   subagent: z

@@ -224,7 +224,29 @@ describe('app-server', () => {
     const done = await turns.of(turn.id);
     expect(done.status).toBe(status);
     expect(done.output).toBe(seen);
-    expect(asked).toEqual(['deploy:allow_once,allow_always,reject_once,reject_always']);
+    expect(asked).toEqual(['deploy:allow_once,allow_always,reject_once']);
+    client.close();
+    await host.close();
+  });
+
+  it('leaves the turn paused for an option it did not offer', async () => {
+    const scripted = scriptedBackend([
+      callTools([{ id: 'c1', name: 'deploy', arguments: { target: 'prod' } }]),
+    ]);
+    const { host } = createTestHost({ backend: scripted.backend, tools: [deploy] });
+    const { client } = connectClient(host);
+    await initialize(client, 'request');
+    client.onRequest(
+      'approval/request',
+      () =>
+        ({ outcome: { outcome: 'selected', optionId: 'reject_always' } }) as unknown as {
+          outcome: { outcome: 'cancelled' };
+        }
+    );
+    const turns = completions(client);
+    const { thread } = await client.threadStart();
+    const { turn } = await client.turnStart({ threadId: thread.id, input: text('ship') });
+    expect((await turns.of(turn.id)).status).toBe('paused');
     client.close();
     await host.close();
   });

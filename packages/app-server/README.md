@@ -138,7 +138,7 @@ The host passes `onSpan` to every turn and keeps the spans of a turn (`id`, `tra
 
 ### Approvals
 
-With `capabilities.approvals: 'request'` the server asks `approval/request` while the turn waits. Its params are `threadId`, `turnId`, `toolCall` and the `options` `allow_once`, `allow_always`, `reject_once` and `reject_always`. The client answers `{ outcome: { outcome: 'selected', optionId } }` (with `updatedArguments` or `reason` when it likes), or `{ outcome: { outcome: 'cancelled' } }` to leave the turn paused. `allow_always` approves with `remember: true`. Without it (`'pause'`, the default) the turn ends paused.
+With `capabilities.approvals: 'request'` the server asks `approval/request` while the turn waits. Its params are `threadId`, `turnId`, `toolCall` and the `options` `allow_once`, `allow_always` and `reject_once`. The client answers `{ outcome: { outcome: 'selected', optionId } }` (with `updatedArguments` or `reason` when it likes), or `{ outcome: { outcome: 'cancelled' } }` to leave the turn paused. `allow_always` approves with `remember: true`, which saves the allow rule the request suggests. ACP's `reject_always` is not offered, since the runtime keeps allow rules from answers but not deny rules: put a lasting denial in the `deny` rules of the permissions instead. An answer with an option not offered leaves the turn paused. Without it (`'pause'`, the default) the turn ends paused.
 
 ### Reviews
 

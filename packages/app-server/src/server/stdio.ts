@@ -1,7 +1,10 @@
 import { encodeNdjsonLine, readNdjson, type JsonRpcMessage } from '@cogitator-ai/server-shared';
 import type { AppServer } from './app-server.js';
 
-/** What `serveStdio` writes to: a stream of the Node shape, as `process.stdout` is */
+/**
+ * What `serveStdio` writes to: a stream of the Node shape, as `process.stdout` is. `write` calls
+ * its callback once the chunk is written or failed, as Node's streams do
+ */
 export interface StdioOutput {
   write(chunk: string, callback?: (error?: Error | null) => void): boolean;
   once(event: 'drain', listener: () => void): unknown;
@@ -64,19 +67,41 @@ export class OrderedLineWriter {
     }
   }
 
+  /**
+   * Writes one line and settles once the stream reported it written (its callback) and, when
+   * it asked for it, drained: an error the stream reports later, such as an EPIPE after the
+   * reader went away, still fails the line instead of going unheard
+   */
   private writeLine(line: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const onError = (error: Error) => {
-        this.failed = error;
-        reject(error);
+      let written = false;
+      let drained = true;
+      let settled = false;
+      const settle = (error?: Error) => {
+        if (settled) return;
+        if (!error && (!written || !drained)) return;
+        settled = true;
+        if (error) {
+          this.failed = error;
+          reject(error);
+        } else {
+          this.output.off?.('error', onError);
+          resolve();
+        }
       };
+      const onError = (error: Error) => settle(error);
       this.output.once('error', onError);
-      const done = () => {
-        this.output.off?.('error', onError);
-        resolve();
-      };
-      if (this.output.write(line)) done();
-      else this.output.once('drain', done);
+      const accepted = this.output.write(line, (error) => {
+        written = true;
+        settle(error ?? undefined);
+      });
+      if (!accepted) {
+        drained = false;
+        this.output.once('drain', () => {
+          drained = true;
+          settle();
+        });
+      }
     });
   }
 }

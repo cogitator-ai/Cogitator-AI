@@ -720,11 +720,11 @@ export interface RunnableEventNotification {
   _meta?: Meta;
 }
 
-/** A choice for an approval, as ACP `session/request_permission` offers it */
+/** A choice for an approval, as ACP `session/request_permission` offers it. `reject_always` is not offered: the runtime keeps allow rules from answers, not deny rules */
 export interface PermissionOption {
-  optionId: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always';
+  optionId: 'allow_once' | 'allow_always' | 'reject_once';
   name: string;
-  kind: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always';
+  kind: 'allow_once' | 'allow_always' | 'reject_once';
 }
 
 export interface ApprovalToolCall {
@@ -758,7 +758,7 @@ export interface ApprovalRequestParams {
 export interface ApprovalRequestResult {
   outcome: {
     outcome: 'selected';
-    optionId: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always';
+    optionId: 'allow_once' | 'allow_always' | 'reject_once';
   } | {
     outcome: 'cancelled';
   };

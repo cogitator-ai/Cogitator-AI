@@ -332,6 +332,46 @@ describe('SessionHost', () => {
     await host.close();
   });
 
+  it('resumes a paused review as a review', async () => {
+    const review = { findings: [], overallCorrectness: 'correct', overallExplanation: 'Fine.' };
+    const scripted = scriptedBackend([
+      callTools([{ id: 'r1', name: 'deploy', arguments: { target: 'staging' } }]),
+      answer(JSON.stringify(review)),
+    ]);
+    const { host, notifications } = createTestHost({
+      backend: scripted.backend,
+      tools: [deploy],
+      review: { context: async () => 'diff --git a/x b/x' },
+    });
+    const thread = await host.startThread({});
+    const started = await host.startReview({
+      threadId: thread.id,
+      target: { type: 'uncommittedChanges' },
+      model: 'mock/review',
+    });
+    expect((await completed(notifications, started.turn.id)).status).toBe('paused');
+    const refused = await rejection(
+      host.startTurn({
+        threadId: started.reviewThreadId,
+        resume: { defaultDecision: { approved: true } },
+        outputSchema: { type: 'object' },
+      })
+    );
+    expect(refused.code).toBe(APP_SERVER_ERROR_CODES.invalidParams);
+    const resumed = await host.startTurn({
+      threadId: started.reviewThreadId,
+      resume: { defaultDecision: { approved: true } },
+    });
+    const done = await completed(notifications, resumed.id);
+    expect(done.status).toBe('completed');
+    expect(done.review).toEqual(review);
+    const last = scripted.requests.at(-1);
+    expect(last?.responseFormat).toMatchObject({ type: 'json_schema' });
+    expect(last?.model).toBe('review');
+    expect(String(last?.messages[0]?.content)).toContain('You review code changes');
+    await host.close();
+  });
+
   it('tags the events of delegated runs with the tool call that started them', async () => {
     const lead = scriptedBackend([
       callTools([{ id: 'p1', name: 'researcher', arguments: { task: 'find it' } }]),

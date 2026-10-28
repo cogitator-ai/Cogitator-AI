@@ -128,7 +128,7 @@ Others can still read a turn's spans with `_cogitator/trace/get`. `optOutNotific
 
 ## Approvals
 
-When the client says `capabilities.approvals: 'request'`, a tool call that needs approval is asked with `approval/request` while the turn waits, in the shape of ACP `session/request_permission`: the `toolCall` and the options `allow_once`, `allow_always`, `reject_once`, `reject_always`. `{ outcome: { outcome: 'cancelled' } }` leaves the turn paused. Otherwise the turn ends paused, and `turn/start` with `resume: { decisions, responses, defaultDecision }` goes on. New input to a paused thread is refused with `-32022`.
+When the client says `capabilities.approvals: 'request'`, a tool call that needs approval is asked with `approval/request` while the turn waits, in the shape of ACP `session/request_permission`: the `toolCall` and the options `allow_once`, `allow_always` (approves and saves the suggested allow rule) and `reject_once`. ACP's `reject_always` is not offered, as the runtime remembers allow rules from answers, not deny rules: a lasting denial belongs in the `deny` rules of the permissions. `{ outcome: { outcome: 'cancelled' } }` leaves the turn paused. Otherwise the turn ends paused, and `turn/start` with `resume: { decisions, responses, defaultDecision }` goes on. New input to a paused thread is refused with `-32022`.
 
 ## Reviews
 

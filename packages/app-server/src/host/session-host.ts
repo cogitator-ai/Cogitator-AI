@@ -426,8 +426,19 @@ export class SessionHost {
         throw invalidParams('Pass input to start a turn, or resume to go on with a paused one');
       }
       const mode = params.permissionMode ?? modeOf(thread);
+      const review = typeof thread.metadata[THREAD_KEYS.reviewOf] === 'string';
+      if (review && params.outputSchema !== undefined) {
+        throw invalidParams('A review thread answers with its findings: leave out outputSchema');
+      }
+      const reviewModel = thread.metadata[THREAD_KEYS.reviewModel];
       plan = {
-        agent: this.turnAgent(this.agentOf(thread), params.model, params.outputSchema),
+        agent: review
+          ? this.reviewAgent(
+              thread,
+              params.model ?? (typeof reviewModel === 'string' ? reviewModel : undefined)
+            )
+          : this.turnAgent(this.agentOf(thread), params.model, params.outputSchema),
+        ...(review && { review: true }),
         ...(mode !== undefined && { mode }),
         ...(params.input && { input: toRunInput(params.input) }),
         ...(params.resume && { resume: params.resume }),
@@ -450,7 +461,6 @@ export class SessionHost {
   ): Promise<{ turn: TurnInfo; reviewThreadId: string }> {
     const source = await this.requireThread(params.threadId);
     const memory = await this.requireMemory();
-    const base = this.options.review?.agent ?? this.agentOf(source);
     let changes: string;
     try {
       changes = await this.reviewContext(params.target);
@@ -461,11 +471,7 @@ export class SessionHost {
         error instanceof Error ? error.message : String(error)
       );
     }
-    const agent = base.clone({
-      instructions: REVIEW_INSTRUCTIONS,
-      responseFormat: { type: 'json_schema', schema: ReviewOutputSchema },
-      ...(params.model !== undefined && { model: params.model }),
-    });
+    const agent = this.reviewAgent(source, params.model);
     const reviewThreadId = `review_${randomUUID()}`;
     const thread = this.unwrap(
       await memory.createThread(
@@ -474,6 +480,7 @@ export class SessionHost {
           agentId: memoryAgentId(agent),
           [THREAD_KEYS.agent]: this.agentNameOf(source),
           [THREAD_KEYS.reviewOf]: params.threadId,
+          ...(params.model !== undefined && { [THREAD_KEYS.reviewModel]: params.model }),
         },
         reviewThreadId
       )
@@ -854,6 +861,19 @@ export class SessionHost {
     return agent.clone({
       ...(model !== undefined && { model }),
       ...(responseFormat !== undefined && { responseFormat }),
+    });
+  }
+
+  /**
+   * The agent a review of a thread of `thread`'s agent runs with: `review.agent` or that agent,
+   * with the review instructions and the findings as its response format
+   */
+  private reviewAgent(thread: Thread, model: string | undefined): Agent {
+    const base = this.options.review?.agent ?? this.agentOf(thread);
+    return base.clone({
+      instructions: REVIEW_INSTRUCTIONS,
+      responseFormat: { type: 'json_schema', schema: ReviewOutputSchema },
+      ...(model !== undefined && { model }),
     });
   }
 

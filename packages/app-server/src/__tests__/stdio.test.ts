@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import { createAppServer } from '../server/app-server';
 import { OrderedLineWriter, serveStdio, type StdioOutput } from '../server/stdio';
@@ -90,11 +90,12 @@ class SlowOutput extends EventEmitter implements StdioOutput {
   readonly written: string[] = [];
   private blocked = 0;
 
-  write(chunk: string): boolean {
+  write(chunk: string, callback?: (error?: Error | null) => void): boolean {
     this.written.push(chunk);
     this.blocked++;
     setTimeout(() => {
       this.blocked--;
+      callback?.();
       this.emit('drain');
     }, 2);
     return false;
@@ -122,8 +123,9 @@ describe('OrderedLineWriter', () => {
   it('writes a line given while it finishes the lines before', async () => {
     const written: string[] = [];
     const output = new EventEmitter() as EventEmitter & StdioOutput;
-    output.write = (chunk: string) => {
+    output.write = (chunk: string, callback?: (error?: Error | null) => void) => {
       written.push(chunk);
+      queueMicrotask(() => callback?.());
       return true;
     };
     const writer = new OrderedLineWriter(output);
@@ -138,6 +140,19 @@ describe('OrderedLineWriter', () => {
     await Promise.all(writes);
     await writer.drained();
     expect(written).toEqual(lines);
+  });
+
+  it('hears a write error the stream reports after it took the line', async () => {
+    const output = new Writable({
+      highWaterMark: 1024 * 1024,
+      write(_chunk, _encoding, callback) {
+        setImmediate(() => callback(new Error('EPIPE')));
+      },
+    });
+    const writer = new OrderedLineWriter(output);
+    await expect(writer.write('x\n')).rejects.toThrow('EPIPE');
+    await expect(writer.write('y\n')).rejects.toThrow('EPIPE');
+    await new Promise((resolve) => setImmediate(resolve));
   });
 
   it('fails the lines after a write error', async () => {
