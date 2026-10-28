@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { Agent, Cogitator, agentAsTool, tool } from '@cogitator-ai/core';
 import { MockLLMBackend } from '@cogitator-ai/test-utils';
@@ -486,6 +486,100 @@ describe('SessionHost', () => {
     expect((await host.describe()).capabilities.traces).toBe(true);
     const missing = await rejection(() => host.getTrace('turn_ghost'));
     expect(missing.data).toEqual({ kind: 'turn', id: 'turn_ghost' });
+    await host.close();
+  });
+
+  it('aborts the signal of an approval being asked once the turn is interrupted', async () => {
+    const scripted = scriptedBackend([
+      callTools([{ id: 'c1', name: 'deploy', arguments: { target: 'prod' } }]),
+    ]);
+    const { host, notifications } = createTestHost({ backend: scripted.backend, tools: [deploy] });
+    const thread = await host.startThread({});
+    let asked: AbortSignal | undefined;
+    const turn = await host.startTurn(
+      { threadId: thread.id, input: text('ship') },
+      {
+        onApproval: ({ signal }) => {
+          asked = signal;
+          return new Promise((resolve) =>
+            signal.addEventListener('abort', () => resolve('pause'), { once: true })
+          );
+        },
+      }
+    );
+    await waitUntil(() => asked !== undefined);
+    expect(asked?.aborted).toBe(false);
+    host.interruptTurn(thread.id, turn.id);
+    expect(asked?.aborted).toBe(true);
+    expect((await completed(notifications, turn.id)).status).toBe('interrupted');
+    await host.close();
+  });
+
+  it('tries the memory again after it failed to connect', async () => {
+    const { host, cogitator } = createTestHost({ backend: scriptedBackend([answer('x')]).backend });
+    vi.spyOn(cogitator, 'getMemory').mockRejectedValueOnce(new Error('down'));
+    await expect(host.ready()).rejects.toThrow('down');
+    await expect(host.ready()).resolves.toBeUndefined();
+    expect((await host.startThread({})).status).toBe('idle');
+    await host.close();
+  });
+
+  it('keeps the details of internal errors from clients unless exposeErrors', async () => {
+    const { host, cogitator } = createTestHost({
+      backend: scriptedBackend([answer('x')]).backend,
+      exposeErrors: false,
+      review: {
+        context: async () => {
+          throw new Error('fatal: /home/secret/repo is not a repository');
+        },
+      },
+    });
+    const thread = await host.startThread({});
+    const memory = await cogitator.getMemory();
+    vi.spyOn(memory!, 'getThread').mockResolvedValueOnce({
+      success: false,
+      error: 'connection to postgres://admin:hunter2@db failed',
+    });
+    const memoryError = await rejection(host.resumeThread(thread.id));
+    expect(memoryError.message).toBe('The memory store failed');
+    expect(JSON.stringify(memoryError.toJSON())).not.toContain('hunter2');
+    expect(memoryError.data).toEqual({ code: 'MEMORY_ERROR' });
+
+    const reviewError = await rejection(
+      host.startReview({ threadId: thread.id, target: { type: 'uncommittedChanges' } })
+    );
+    expect(reviewError.message).toBe('Reading the changes to review failed');
+    expect(reviewError.message).not.toContain('secret');
+
+    vi.spyOn(cogitator, 'invokeTool').mockResolvedValueOnce({
+      callId: 'c',
+      name: 'search_memory',
+      result: null,
+      error: 'index at /var/secret broke',
+    } as Awaited<ReturnType<typeof cogitator.invokeTool>>);
+    const searchError = await rejection(host.searchMemory({ query: 'x', threadId: thread.id }));
+    expect(searchError.message).toBe('Memory search failed');
+    await host.close();
+  });
+
+  it('hands back the messages queued for a turn whose run could not start', async () => {
+    const { host, cogitator, notifications } = createTestHost({
+      backend: scriptedBackend([answer('x')]).backend,
+    });
+    const thread = await host.startThread({});
+    let release = () => undefined as void;
+    const after = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const turn = await host.startTurn({ threadId: thread.id, input: text('go') }, { after });
+    host.steerTurn({ threadId: thread.id, expectedTurnId: turn.id, input: text('and this') });
+    vi.spyOn(cogitator, 'start').mockImplementationOnce(() => {
+      throw new Error('cannot start');
+    });
+    release();
+    const done = await completed(notifications, turn.id);
+    expect(done.status).toBe('failed');
+    expect(done.undelivered).toEqual([{ delivery: 'steer', input: text('and this') }]);
     await host.close();
   });
 

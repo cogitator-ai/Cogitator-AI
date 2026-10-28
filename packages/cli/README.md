@@ -257,7 +257,7 @@ cogitator run -p --input-format stream-json --output-format stream-json < turns.
 
 | Option                     | Default | Description                                                                    |
 | -------------------------- | ------- | ------------------------------------------------------------------------------ |
-| `-p, --print`              | -       | Run headless: the prompt from the argument or stdin                            |
+| `-p, --print`              | -       | Run headless: the prompt from the argument, stdin after it when piped          |
 | `--output-format <format>` | `text`  | `text` (the answer), `json` (one result object), `stream-json` (NDJSON events) |
 | `--input-format <format>`  | `text`  | `stream-json` reads turns as NDJSON lines on stdin (needs stream-json output)  |
 | `--resume <session-id>`    | -       | Continue a kept session                                                        |
@@ -277,7 +277,7 @@ stream-json input takes one line per message:
 {"type":"interrupt"}
 ```
 
-A `user` line starts a turn, or reaches the turn going on (`delivery`: `steer` by default, `followUp` or `inject`). `content` is text or parts (`{"type":"text"}`, images as `{"type":"image","url"}` or Claude Code's `{"type":"image","source":{"type":"base64",...}}`). `resume` answers a paused turn, `interrupt` stops the turn going on. A line that cannot be read is skipped with a note on stderr.
+A `user` line without `delivery` is a turn of its own, run after the turns before it. With `delivery` (`steer`, `followUp` or `inject`) it reaches the turn going on or starting, and starts a turn when there is none. `content` is text or parts (`{"type":"text"}`, images as `{"type":"image","url"}` or Claude Code's `{"type":"image","source":{"type":"base64",...}}`). `resume` answers a paused turn, `interrupt` stops the turn going on. A line that cannot be read is skipped with a note on stderr.
 
 Exit codes: `0` when the last turn completed, `1` when it failed, was interrupted or missed `--json-schema`, `2` for a wrong command line, `3` when it was left paused (approve with a `resume` line).
 

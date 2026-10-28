@@ -25,7 +25,8 @@ export interface ServeStdioOptions {
  * stream asks it to, so a slow reader never makes the process buffer without end
  */
 export class OrderedLineWriter {
-  private readonly queue: string[] = [];
+  private readonly queue: Array<{ line: string; done: () => void; fail: (error: Error) => void }> =
+    [];
   private flushing: Promise<void> | undefined;
   private failed: Error | undefined;
 
@@ -34,35 +35,49 @@ export class OrderedLineWriter {
   /** Queues `line`, resolving once it is written */
   write(line: string): Promise<void> {
     if (this.failed) return Promise.reject(this.failed);
-    this.queue.push(line);
-    this.flushing ??= this.flush().finally(() => {
-      this.flushing = undefined;
-    });
-    return this.flushing;
+    const written = new Promise<void>((done, fail) => this.queue.push({ line, done, fail }));
+    this.flushing ??= this.flush();
+    return written;
   }
 
   /** Resolves once every queued line is written */
   async drained(): Promise<void> {
-    while (this.flushing) await this.flushing.catch(() => undefined);
+    while (this.flushing) await this.flushing;
   }
 
   private async flush(): Promise<void> {
-    while (this.queue.length > 0) {
-      const line = this.queue.shift()!;
-      await new Promise<void>((resolve, reject) => {
-        const onError = (error: Error) => {
-          this.failed = error;
-          reject(error);
-        };
-        this.output.once('error', onError);
-        const done = () => {
-          this.output.off?.('error', onError);
-          resolve();
-        };
-        if (this.output.write(line)) done();
-        else this.output.once('drain', done);
-      });
+    try {
+      for (let next = this.queue.shift(); next; next = this.queue.shift()) {
+        if (this.failed) {
+          next.fail(this.failed);
+          continue;
+        }
+        try {
+          await this.writeLine(next.line);
+          next.done();
+        } catch (error) {
+          next.fail(error instanceof Error ? error : new Error(String(error)));
+        }
+      }
+    } finally {
+      this.flushing = undefined;
     }
+  }
+
+  private writeLine(line: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const onError = (error: Error) => {
+        this.failed = error;
+        reject(error);
+      };
+      this.output.once('error', onError);
+      const done = () => {
+        this.output.off?.('error', onError);
+        resolve();
+      };
+      if (this.output.write(line)) done();
+      else this.output.once('drain', done);
+    });
   }
 }
 

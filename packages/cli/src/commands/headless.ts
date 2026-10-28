@@ -24,6 +24,7 @@ import {
   resultLine,
   streamJsonEvent,
   type ClaimedStdout,
+  type InputLine,
   type HeadlessPlan,
 } from '../utils/headless.js';
 
@@ -50,6 +51,8 @@ export interface HeadlessRun {
 }
 
 type TurnRequest = Omit<TurnStartParams, 'threadId'>;
+
+type UserLine = Extract<InputLine, { type: 'user' }>;
 
 /**
  * Runs one headless session and returns the exit code: 0 when its last turn completed, 1 when it
@@ -120,7 +123,7 @@ export async function runHeadless(run: HeadlessRun): Promise<number> {
   try {
     threadId = await openSession(host, plan);
     if (plan.inputFormat === 'text') {
-      const prompt = run.message ?? (await readPrompt(io));
+      const prompt = await promptOf(run.message, io);
       let turn: TurnInfo;
       try {
         turn = await startTurn({ input: [{ type: 'text', text: prompt }] });
@@ -166,21 +169,31 @@ async function openSession(host: SessionHost, plan: HeadlessPlan): Promise<strin
   }
 }
 
-async function readPrompt(io: HeadlessIo): Promise<string> {
+/**
+ * The prompt of a text run: the argument, with what is piped on stdin after it (as
+ * `git diff | cogitator run -p "Review this"` sends it), or stdin alone without an argument
+ */
+async function promptOf(message: string | undefined, io: HeadlessIo): Promise<string> {
   if (io.stdinIsTTY) {
+    if (message !== undefined) return message;
     throw new UsageError('-p needs a prompt: pass it as the argument or on stdin', [
       'cogitator run -p "Summarize README.md"',
       'git diff | cogitator run -p "Review this diff"',
     ]);
   }
+  const piped = (await readStdin(io)).trim();
+  if (message !== undefined) return piped === '' ? message : `${message}\n\n${piped}`;
+  if (piped === '') throw new UsageError('-p got an empty prompt on stdin');
+  return piped;
+}
+
+async function readStdin(io: HeadlessIo): Promise<string> {
   const decoder = new TextDecoder();
   let text = '';
   for await (const chunk of io.stdin) {
     text += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true });
   }
-  text += decoder.decode();
-  if (text.trim() === '') throw new UsageError('-p got an empty prompt on stdin');
-  return text.trim();
+  return text + decoder.decode();
 }
 
 function writeText(turn: TurnInfo, io: HeadlessIo, structuredWanted: boolean): void {
@@ -225,22 +238,65 @@ async function streamSession(
 ): Promise<number> {
   const queue: TurnRequest[] = [];
   let active: string | undefined;
+  let starting = false;
+  let held: Array<{ type: 'interrupt' } | { type: 'user'; line: UserLine }> = [];
   let exitCode: number = HEADLESS_EXIT.ok;
   let pumping: Promise<void> | undefined;
 
+  const interrupt = (turnId: string) => {
+    try {
+      host.interruptTurn(threadId, turnId);
+    } catch {
+      io.stderr.write('Nothing to interrupt: the turn had ended\n');
+    }
+  };
+  const steer = (turnId: string, line: UserLine) => {
+    try {
+      host.steerTurn({
+        threadId,
+        expectedTurnId: turnId,
+        input: line.input,
+        delivery: line.delivery ?? 'steer',
+      });
+    } catch {
+      enqueue({ input: line.input });
+    }
+  };
+  /** What came while the turn was starting, applied once it has an id, or without one */
+  const release = (turnId: string | undefined) => {
+    const lines = held;
+    held = [];
+    for (const entry of lines) {
+      if (entry.type === 'interrupt') {
+        if (turnId === undefined) io.stderr.write('Nothing to interrupt: the turn did not start\n');
+        else interrupt(turnId);
+      } else if (turnId === undefined) {
+        enqueue({ input: entry.line.input });
+      } else {
+        steer(turnId, entry.line);
+      }
+    }
+  };
+
   const pump = async () => {
     for (let request = queue.shift(); request; request = queue.shift()) {
+      starting = true;
+      let turn: TurnInfo;
       try {
-        const turn = await startTurn(request);
-        active = turn.id;
-        const done = await completion(turn.id);
-        active = undefined;
-        exitCode = await report(done);
+        turn = await startTurn(request);
       } catch (error) {
-        active = undefined;
+        starting = false;
+        release(undefined);
         exitCode = HEADLESS_EXIT.failed;
         await io.stdout.write(encodeNdjsonLine(errorResult(threadId, error)));
+        continue;
       }
+      starting = false;
+      active = turn.id;
+      release(turn.id);
+      const done = await completion(turn.id);
+      active = undefined;
+      exitCode = await report(done);
     }
   };
   const enqueue = (request: TurnRequest) => {
@@ -261,38 +317,21 @@ async function streamSession(
       continue;
     }
     const line = parsed.line;
-    if (line.type === 'interrupt') {
-      if (active === undefined) {
-        io.stderr.write('Nothing to interrupt: no turn is going on\n');
-        continue;
-      }
-      try {
-        host.interruptTurn(threadId, active);
-      } catch {
-        io.stderr.write('Nothing to interrupt: the turn had ended\n');
-      }
-      continue;
-    }
     if (line.type === 'resume') {
       const { type: _type, ...resume } = line;
       enqueue({ resume });
       continue;
     }
-    if (active !== undefined) {
-      try {
-        host.steerTurn({
-          threadId,
-          expectedTurnId: active,
-          input: line.input,
-          delivery: line.delivery ?? 'steer',
-        });
-        continue;
-      } catch {
-        enqueue({ input: line.input });
-        continue;
-      }
+    if (line.type === 'interrupt') {
+      if (starting) held.push({ type: 'interrupt' });
+      else if (active !== undefined) interrupt(active);
+      else io.stderr.write('Nothing to interrupt: no turn is going on\n');
+      continue;
     }
-    enqueue({ input: line.input });
+    if (line.delivery === undefined) enqueue({ input: line.input });
+    else if (starting) held.push({ type: 'user', line });
+    else if (active !== undefined) steer(active, line);
+    else enqueue({ input: line.input });
   }
   while (pumping) await pumping;
   return exitCode;

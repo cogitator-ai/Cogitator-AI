@@ -119,6 +119,27 @@ describe('OrderedLineWriter', () => {
     expect(Math.max(...maxPending)).toBeLessThanOrEqual(1);
   });
 
+  it('writes a line given while it finishes the lines before', async () => {
+    const written: string[] = [];
+    const output = new EventEmitter() as EventEmitter & StdioOutput;
+    output.write = (chunk: string) => {
+      written.push(chunk);
+      return true;
+    };
+    const writer = new OrderedLineWriter(output);
+    const lines = Array.from({ length: 60 }, (_, i) => `${i}\n`);
+    const writes: Promise<void>[] = [];
+    for (const [i, line] of lines.entries()) {
+      if (i % 3 === 0) await Promise.resolve();
+      if (i % 7 === 0) await new Promise((resolve) => setImmediate(resolve));
+      writes.push(writer.write(line));
+      if (i % 5 === 0) await writes.at(-1);
+    }
+    await Promise.all(writes);
+    await writer.drained();
+    expect(written).toEqual(lines);
+  });
+
   it('fails the lines after a write error', async () => {
     const output = new EventEmitter() as EventEmitter & StdioOutput;
     output.write = () => {

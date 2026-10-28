@@ -11,13 +11,15 @@ git diff | cogitator run -p "Review this diff"
 cogitator run -p --output-format json "Summarize README.md" | jq -r .result
 ```
 
+With both a prompt argument and a piped stdin, what comes on stdin follows the prompt after a blank line, so `git diff | cogitator run -p "Review this"` sends the instruction and the diff.
+
 The model, the config file and the `.env` are found the same way as for `cogitator run` (see [CLI](/docs/cli)).
 
 ## Options
 
 | Option                     | Default | Description                                                                    |
 | -------------------------- | ------- | ------------------------------------------------------------------------------ |
-| `-p, --print`              | -       | Run headless, the prompt from the argument or stdin                            |
+| `-p, --print`              | -       | Run headless, the prompt from the argument, stdin after it when piped          |
 | `--output-format <format>` | `text`  | `text` (the answer), `json` (one result object), `stream-json` (NDJSON events) |
 | `--input-format <format>`  | `text`  | `stream-json`: turns as NDJSON lines on stdin, needs stream-json output        |
 | `--resume <session-id>`    | -       | Continue a kept session                                                        |
@@ -72,7 +74,7 @@ With `--input-format stream-json --output-format stream-json` the session reads 
 {"type":"interrupt"}
 ```
 
-- `user` starts a turn. While a turn goes on it reaches that turn instead: `delivery` is `steer` (after the current step's tool calls, the default), `followUp` (when the agent would stop) or `inject` (context for the next model call). `content` is text, or parts: `{"type":"text","text"}` and images as `{"type":"image","url"}` or `{"type":"image","source":{"type":"base64","media_type","data"}}`.
+- `user` without `delivery` is a turn of its own, run after the turns before it. With `delivery` it reaches the turn going on (or starting), and starts a turn when there is none: `steer` (after the current step's tool calls), `followUp` (when the agent would stop) or `inject` (context for the next model call). `content` is text, or parts: `{"type":"text","text"}` and images as `{"type":"image","url"}` or `{"type":"image","source":{"type":"base64","media_type","data"}}`.
 - `resume` answers a paused turn: `decisions` by tool call id, `responses` by interrupt id, `defaultDecision` for the rest.
 - `interrupt` stops the turn going on. It ends with an `interrupted` result.
 

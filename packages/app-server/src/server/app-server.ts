@@ -72,6 +72,13 @@ export class AppServerConnection {
   private readonly unsubscribe: () => void;
   private readonly asking = new AbortController();
   private client: InitializeParams | undefined;
+  /**
+   * Settles once the `initialize` being answered did: a second one is refused meanwhile, and
+   * the requests sent right after it wait for it
+   */
+  private initializing: Promise<void> | undefined;
+  /** Notifications go out once the answer to `initialize` did */
+  private forwarding = false;
   private optedOut = new Set<string>();
   private closing: Promise<void> | undefined;
 
@@ -101,6 +108,11 @@ export class AppServerConnection {
   /** What the client said of itself in `initialize` */
   get clientInfo(): InitializeParams['clientInfo'] | undefined {
     return this.client?.clientInfo;
+  }
+
+  /** How many requests of the server, such as `approval/request`, wait for the client */
+  get pendingRequests(): number {
+    return this.peer.pending;
   }
 
   get closed(): boolean {
@@ -137,17 +149,29 @@ export class AppServerConnection {
 
   private register(): void {
     this.peer.onNotification('initialized', () => undefined);
-    this.method('initialize', async (params) => {
-      if (this.client) {
+    this.method('initialize', async (params, context) => {
+      if (this.client || this.initializing) {
         throw new JsonRpcCallError({
           code: APP_SERVER_ERROR_CODES.alreadyInitialized,
           message: 'The client initialized already',
         });
       }
-      this.client = params;
-      this.optedOut = new Set(params.capabilities?.optOutNotifications ?? []);
-      const described = await this.host.describe();
-      return { protocolVersion: this.host.protocolVersion, ...described };
+      let settle = () => undefined as void;
+      this.initializing = new Promise<void>((resolve) => {
+        settle = resolve;
+      });
+      try {
+        const described = await this.host.describe();
+        this.holdUntilAnswered(context.id ?? null, () => {
+          this.forwarding = true;
+        });
+        this.client = params;
+        this.optedOut = new Set(params.capabilities?.optOutNotifications ?? []);
+        return { protocolVersion: this.host.protocolVersion, ...described };
+      } finally {
+        this.initializing = undefined;
+        settle();
+      }
     });
     this.method('thread/start', async (params) => ({
       thread: await this.host.startThread(params),
@@ -206,6 +230,7 @@ export class AppServerConnection {
   ): void {
     const schema = APP_SERVER_METHODS[method].params;
     this.peer.onRequest(method, async (raw, context) => {
+      if (method !== 'initialize' && !this.client && this.initializing) await this.initializing;
       if (method !== 'initialize' && !this.client) {
         throw new JsonRpcCallError({
           code: APP_SERVER_ERROR_CODES.notInitialized,
@@ -231,7 +256,7 @@ export class AppServerConnection {
     const after = new Promise<void>((resolve) => {
       settle = resolve;
     });
-    this.answered.set(id, settle);
+    this.holdUntilAnswered(id, settle);
     try {
       return await start({
         after,
@@ -247,6 +272,20 @@ export class AppServerConnection {
     }
   }
 
+  /**
+   * Runs `settle` once the answer to request `id` went out. Refuses an id a request still being
+   * answered uses, since the two answers could not be told apart
+   */
+  private holdUntilAnswered(id: JsonRpcId, settle: () => void): void {
+    if (this.answered.has(id)) {
+      throw new JsonRpcCallError({
+        code: APP_SERVER_ERROR_CODES.invalidRequest,
+        message: `Request id ${String(id)} is in use by a request still being answered`,
+      });
+    }
+    this.answered.set(id, settle);
+  }
+
   private settleAnswered(message: JsonRpcMessage | JsonRpcMessage[]): void {
     for (const item of Array.isArray(message) ? message : [message]) {
       if (!isJsonRpcResponse(item)) continue;
@@ -258,7 +297,7 @@ export class AppServerConnection {
   }
 
   private async askApproval(ask: ApprovalAsk): Promise<ToolApprovalDecision | 'pause'> {
-    if (this.peer.closed || this.asking.signal.aborted) return 'pause';
+    if (this.peer.closed || this.asking.signal.aborted || ask.signal.aborted) return 'pause';
     const [toolCall] = toPendingApprovals([ask.request]);
     const params: ApprovalRequestParams = {
       threadId: ask.threadId,
@@ -272,7 +311,7 @@ export class AppServerConnection {
     let answer: unknown;
     try {
       answer = await this.peer.request('approval/request', params, {
-        signal: this.asking.signal,
+        signal: AbortSignal.any([this.asking.signal, ask.signal]),
       });
     } catch (error) {
       this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
@@ -298,7 +337,8 @@ export class AppServerConnection {
   }
 
   private forward(notification: AppServerNotification): void {
-    if (!this.client || this.peer.closed || this.optedOut.has(notification.method)) return;
+    if (!this.client || !this.forwarding || this.peer.closed) return;
+    if (this.optedOut.has(notification.method)) return;
     if (
       notification.method === '_cogitator/trace/span' &&
       this.client.capabilities?.traces !== true

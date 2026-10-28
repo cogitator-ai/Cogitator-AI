@@ -62,6 +62,9 @@ function lines(text: string): Array<Record<string, unknown>> {
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
+const user = (content: string) =>
+  JSON.stringify({ type: 'user', message: { role: 'user', content } });
+
 function plan(overrides: Partial<HeadlessPlan> = {}): HeadlessPlan {
   return {
     outputFormat: 'text',
@@ -112,6 +115,7 @@ async function headless(options: {
         stdinIsTTY: false,
       },
     });
+    await new Promise((resolve) => setImmediate(resolve));
     return { code, stdout: stdoutText, stderr: stderrText, requests, cogitator };
   } finally {
     stdout.restore();
@@ -315,6 +319,18 @@ describe('runHeadless', () => {
     expect(last?.content).toBe('review this');
   });
 
+  it('puts what is piped on stdin after the prompt argument', async () => {
+    const run = await headless({
+      turns: [answer('reviewed')],
+      plan: plan(),
+      message: 'Review this',
+      stdin: ['diff --git a/x b/x', '+added'],
+    });
+    expect(run.stdout).toBe('reviewed\n');
+    const last = run.requests.at(-1)?.messages.at(-1);
+    expect(last?.content).toBe('Review this\n\ndiff --git a/x b/x\n+added');
+  });
+
   it('answers one JSON result with the structured answer', async () => {
     const run = await headless({
       turns: [answer('{"n":3}')],
@@ -402,6 +418,47 @@ describe('runHeadless', () => {
     ).toBe(true);
     expect(run.stderr).toContain('Skipped input line 2');
     expect(run.stderr).toContain('Skipped an input line');
+  });
+
+  it('applies an interrupt that comes while the turn is starting', async () => {
+    const run = await headless({
+      turns: [
+        (request) =>
+          new Promise<ChatResponse>((_resolve, reject) => {
+            request.signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+              once: true,
+            });
+          }),
+      ],
+      plan: plan({ outputFormat: 'stream-json', inputFormat: 'stream-json' }),
+      stdin: [user('go on forever'), JSON.stringify({ type: 'interrupt' })],
+    });
+    const results = lines(run.stdout).filter((line) => line.type === 'result');
+    expect(results.map((line) => line.subtype)).toEqual(['interrupted']);
+    expect(run.stderr).not.toContain('Nothing to interrupt');
+    expect(run.code).toBe(1);
+  });
+
+  it('delivers a user line that comes while the turn is starting to that turn', async () => {
+    const run = await headless({
+      turns: [answer('first'), answer('with more')],
+      plan: plan({ outputFormat: 'stream-json', inputFormat: 'stream-json' }),
+      stdin: [
+        user('one'),
+        JSON.stringify({
+          type: 'user',
+          delivery: 'followUp',
+          message: { role: 'user', content: 'more' },
+        }),
+      ],
+    });
+    const results = lines(run.stdout).filter((line) => line.type === 'result');
+    expect(results).toHaveLength(1);
+    const sent = run.requests
+      .at(-1)
+      ?.messages.filter((m) => m.role === 'user')
+      .map((m) => m.content);
+    expect(sent).toEqual(['one', 'more']);
   });
 
   it('resumes a paused turn from a resume line', async () => {

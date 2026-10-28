@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { Agent, Cogitator, tool } from '@cogitator-ai/core';
 import {
@@ -243,6 +243,75 @@ describe('app-server', () => {
     const done = await turns.of(turn.id);
     expect(done.status).toBe('paused');
     expect(done.pending?.approvals[0]?.toolCallId).toBe('c1');
+    client.close();
+    await host.close();
+  });
+
+  it('drops the approval/request of a turn that was interrupted', async () => {
+    const scripted = scriptedBackend([
+      callTools([{ id: 'c1', name: 'deploy', arguments: { target: 'prod' } }]),
+    ]);
+    const { host } = createTestHost({ backend: scripted.backend, tools: [deploy] });
+    const { client, connection } = connectClient(host);
+    await initialize(client, 'request');
+    let asked = 0;
+    client.onRequest('approval/request', () => {
+      asked++;
+      return new Promise(() => undefined);
+    });
+    const turns = completions(client);
+    const { thread } = await client.threadStart();
+    const { turn } = await client.turnStart({ threadId: thread.id, input: text('ship') });
+    await waitUntil(() => asked === 1);
+    expect(connection.pendingRequests).toBe(1);
+    await client.turnInterrupt({ threadId: thread.id, turnId: turn.id });
+    expect((await turns.of(turn.id)).status).toBe('interrupted');
+    await waitUntil(() => connection.pendingRequests === 0);
+    client.close();
+    await host.close();
+  });
+
+  it('stays uninitialized when initialize fails, and refuses a second one meanwhile', async () => {
+    const { host } = createTestHost({ backend: scriptedBackend([answer('x')]).backend });
+    const { client, lines } = connectClient(host);
+    vi.spyOn(host, 'describe').mockRejectedValueOnce(new Error('memory down'));
+    const failed = await failure(initialize(client));
+    expect(failed.code).toBe(APP_SERVER_ERROR_CODES.internalError);
+    expect((await failure(client.threadList())).code).toBe(APP_SERVER_ERROR_CODES.notInitialized);
+
+    const [first, second] = await Promise.allSettled([initialize(client), initialize(client)]);
+    expect(first.status).toBe('fulfilled');
+    expect(second.status === 'rejected' && second.reason).toMatchObject({
+      code: APP_SERVER_ERROR_CODES.alreadyInitialized,
+    });
+    const fromServer = lines.filter((l) => l.from === 'server').map((l) => l.message);
+    const answeredAt = fromServer.findIndex((m) => 'result' in m);
+    expect(fromServer.slice(0, answeredAt).some((m) => 'method' in m)).toBe(false);
+    client.close();
+    await host.close();
+  });
+
+  it('refuses a second turn/start that reuses the id of one still being answered', async () => {
+    const { host } = createTestHost({ backend: scriptedBackend([answer('once')]).backend });
+    const { client, connection, lines } = connectClient(host);
+    await initialize(client);
+    const turns = completions(client);
+    const { thread } = await client.threadStart();
+    const request = {
+      jsonrpc: '2.0',
+      id: 'dup',
+      method: 'turn/start',
+      params: { threadId: thread.id, input: text('hi') },
+    };
+    await Promise.all([connection.receive(request), connection.receive(request)]);
+    const answers = lines
+      .filter((l) => l.from === 'server' && l.message.id === 'dup')
+      .map((l) => l.message);
+    expect(answers).toHaveLength(2);
+    const refused = answers.find((m) => 'error' in m);
+    expect(refused).toMatchObject({ error: { code: APP_SERVER_ERROR_CODES.invalidRequest } });
+    const accepted = answers.find((m) => 'result' in m) as { result: { turn: { id: string } } };
+    expect((await turns.of(accepted.result.turn.id)).status).toBe('completed');
     client.close();
     await host.close();
   });

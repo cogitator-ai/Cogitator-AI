@@ -3,6 +3,7 @@ import type { Agent, Cogitator } from '@cogitator-ai/core';
 import {
   createMemorySearchTools,
   fromAgentWireResponseFormat,
+  getLogger,
   memoryAgentId,
 } from '@cogitator-ai/core';
 import { AgentStreamSession, createThreadId, type StreamEvent } from '@cogitator-ai/server-shared';
@@ -11,6 +12,7 @@ import type {
   ImageInput,
   MemoryAdapter,
   MemoryChange,
+  MemoryResult,
   MessageContent,
   PermissionMode,
   ResponseFormat,
@@ -127,6 +129,8 @@ export interface ApprovalAsk {
   threadId: string;
   turnId: string;
   request: ToolApprovalRequest;
+  /** Aborts once the turn is interrupted or ends: drop the question then */
+  signal: AbortSignal;
 }
 
 /** Decides a tool call while the turn waits, `'pause'` to end the turn paused */
@@ -165,6 +169,8 @@ interface TurnRecord {
   info: TurnInfo;
   handle?: RunHandle;
   interrupted: boolean;
+  /** Aborts as the turn is interrupted or finishes */
+  ended: AbortController;
   queued: QueuedInput[];
   undelivered: QueuedMessage[];
   done: Promise<void>;
@@ -240,7 +246,10 @@ export class SessionHost {
       this.memory = await this.cogitator.getMemory();
       const memory = this.memory;
       if (memory?.onChange) this.stopLog = memory.onChange((change) => this.logChange(change));
-    })();
+    })().catch((error: unknown) => {
+      this.memoryReady = undefined;
+      throw error;
+    });
     return this.memoryReady;
   }
 
@@ -291,7 +300,7 @@ export class SessionHost {
     if (params.threadId !== undefined && (await this.findThread(params.threadId))) {
       throw invalidParams(`Thread ${params.threadId} exists already: resume it instead`);
     }
-    const thread = unwrap(
+    const thread = this.unwrap(
       await memory.createThread(
         memoryAgentId(agent),
         {
@@ -313,7 +322,7 @@ export class SessionHost {
   async resumeThread(threadId: string): Promise<ThreadResumeResult> {
     const thread = await this.requireThread(threadId);
     const memory = await this.requireMemory();
-    const entries = unwrap(
+    const entries = this.unwrap(
       memory.getPath
         ? await memory.getPath({ threadId, types: ['message', 'tool_result'] })
         : await memory.getEntries({ threadId, types: ['message', 'tool_result'] })
@@ -333,11 +342,12 @@ export class SessionHost {
       throw invalidParams(`Thread ${params.threadId} has no entries to fork`);
     }
     const memory = await this.requireMemory();
-    if (!(await entryIn(memory, params.threadId, atEntryId))) throw notFound('entry', atEntryId);
+    if (!(await this.entryIn(memory, params.threadId, atEntryId)))
+      throw notFound('entry', atEntryId);
     const forked = await this.cogitator.forkThread(params.threadId, atEntryId, {
       ...(params.newThreadId !== undefined && { newThreadId: params.newThreadId }),
     });
-    const thread = unwrap(
+    const thread = this.unwrap(
       await memory.updateThread(forked.thread.id, {
         [THREAD_KEYS.agent]: this.agentNameOf(source),
         [THREAD_KEYS.forkedFrom]: params.threadId,
@@ -386,7 +396,7 @@ export class SessionHost {
     await this.requireThread(threadId);
     const memory = await this.requireMemory();
     this.active.get(threadId)?.handle?.setPermissionMode?.(mode);
-    const thread = unwrap(
+    const thread = this.unwrap(
       await memory.updateThread(threadId, { [THREAD_KEYS.permissionMode]: mode })
     );
     return this.threadInfo(thread);
@@ -445,9 +455,10 @@ export class SessionHost {
     try {
       changes = await this.reviewContext(params.target);
     } catch (error) {
-      throw runtimeError(
+      throw this.hiddenError(
         'REVIEW_CONTEXT_FAILED',
-        error instanceof Error ? error.message : 'Reading the changes to review failed'
+        'Reading the changes to review failed',
+        error instanceof Error ? error.message : String(error)
       );
     }
     const agent = base.clone({
@@ -456,7 +467,7 @@ export class SessionHost {
       ...(params.model !== undefined && { model: params.model }),
     });
     const reviewThreadId = `review_${randomUUID()}`;
-    const thread = unwrap(
+    const thread = this.unwrap(
       await memory.createThread(
         memoryAgentId(agent),
         {
@@ -525,7 +536,9 @@ export class SessionHost {
       { query: params.query, ...(params.limit !== undefined && { limit: params.limit }) },
       { agentId, ...(params.threadId !== undefined && { threadId: params.threadId }) }
     );
-    if (invoked.error !== undefined) throw runtimeError('MEMORY_SEARCH_FAILED', invoked.error);
+    if (invoked.error !== undefined) {
+      throw this.hiddenError('MEMORY_SEARCH_FAILED', 'Memory search failed', invoked.error);
+    }
     const parsed = MemorySearchResultSchema.safeParse(invoked.result);
     if (!parsed.success) throw runtimeError('MEMORY_SEARCH_FAILED', 'Memory search answered oddly');
     return parsed.data;
@@ -536,7 +549,7 @@ export class SessionHost {
     const going = this.active.get(params.threadId);
     if (going && !params.force && !params.dryRun) throw threadBusy(params.threadId, going.info.id);
     const memory = await this.requireMemory();
-    if (!(await entryIn(memory, params.threadId, params.toEntryId))) {
+    if (!(await this.entryIn(memory, params.threadId, params.toEntryId))) {
       throw notFound('entry', params.toEntryId);
     }
     const report = await this.cogitator.rewind(params.threadId, params.toEntryId, {
@@ -622,6 +635,31 @@ export class SessionHost {
     });
   }
 
+  /**
+   * An error for the client: `message` and `code`, the details shown only with `exposeErrors`,
+   * else logged
+   */
+  private hiddenError(code: string, message: string, details: string): Error {
+    if (this.exposesErrors) return runtimeError(code, details);
+    getLogger().warn(`app-server: ${message}`, { code, error: details });
+    return runtimeError(code, message);
+  }
+
+  private unwrap<T>(result: MemoryResult<T>): T {
+    if (!result.success)
+      throw this.hiddenError('MEMORY_ERROR', 'The memory store failed', result.error);
+    return result.data;
+  }
+
+  private async entryIn(
+    memory: MemoryAdapter,
+    threadId: string,
+    entryId: string
+  ): Promise<boolean> {
+    const entry = this.unwrap(await memory.getEntry(entryId));
+    return entry !== null && entry.threadId === threadId;
+  }
+
   private emit(notification: AppServerNotification): void {
     for (const listener of [...this.listeners]) {
       try {
@@ -664,6 +702,7 @@ export class SessionHost {
         startedAt: new Date().toISOString(),
       },
       interrupted: false,
+      ended: new AbortController(),
       queued: [],
       undelivered: [],
       done: Promise.resolve(),
@@ -716,7 +755,8 @@ export class SessionHost {
       onSpan: (span: Span) => this.recordSpan(trace, turnId, span),
       ...(plan.mode !== undefined && { permissions: { mode: plan.mode } }),
       ...(asker && {
-        onApproval: (request: ToolApprovalRequest) => asker({ threadId, turnId, request }),
+        onApproval: (request: ToolApprovalRequest) =>
+          asker({ threadId, turnId, request, signal: turn.ended.signal }),
       }),
     };
     let handle: RunHandle;
@@ -735,6 +775,7 @@ export class SessionHost {
             ...(plan.input?.images && { images: plan.input.images }),
           });
     } catch (error) {
+      turn.undelivered.push(...turn.queued.splice(0));
       const described = describeTurnError(error, this.exposesErrors);
       session.fail(described.message, described.code);
       this.finish(turn, { status: 'failed', error: described });
@@ -761,6 +802,7 @@ export class SessionHost {
   }
 
   private finish(turn: TurnRecord, outcome: Partial<TurnInfo> & Pick<TurnInfo, 'status'>): void {
+    turn.ended.abort(new Error('The turn ended'));
     const undelivered = [...turn.undelivered, ...(outcome.undelivered ?? [])];
     turn.info = {
       ...turn.info,
@@ -777,6 +819,7 @@ export class SessionHost {
 
   private interrupt(turn: TurnRecord): QueuedMessage[] {
     turn.interrupted = true;
+    turn.ended.abort(new Error('The turn was interrupted'));
     const queued = turn.queued.splice(0).map((message) => ({ ...message }));
     const left = turn.handle ? toQueuedMessages(turn.handle.abort()) : [];
     const undelivered = [...queued, ...left];
@@ -844,7 +887,7 @@ export class SessionHost {
 
   private async findThread(threadId: string): Promise<Thread | null> {
     const memory = await this.requireMemory();
-    return unwrap(await memory.getThread(threadId));
+    return this.unwrap(await memory.getThread(threadId));
   }
 
   private async requireThread(threadId: string): Promise<Thread> {
@@ -903,16 +946,6 @@ function fromResult(
   };
 }
 
-async function entryIn(memory: MemoryAdapter, threadId: string, entryId: string): Promise<boolean> {
-  const entry = unwrap(await memory.getEntry(entryId));
-  return entry !== null && entry.threadId === threadId;
-}
-
 function copyTurn(turn: TurnInfo): TurnInfo {
   return structuredClone(turn);
-}
-
-function unwrap<T>(result: { success: true; data: T } | { success: false; error: string }): T {
-  if (!result.success) throw runtimeError('MEMORY_ERROR', result.error);
-  return result.data;
 }
