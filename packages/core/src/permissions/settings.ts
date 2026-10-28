@@ -263,7 +263,7 @@ export async function loadPermissionSettings(
   return { layers, warnings, files, dirs };
 }
 
-/** The file an "always allow" rule of `layer` is saved to */
+/** The file an "always allow" or "always reject" rule of `layer` is saved to */
 export function rememberFile(
   layer: Exclude<PermissionRememberLayer, 'session'>,
   root: string,
@@ -280,8 +280,21 @@ const writes = new Map<string, Promise<void>>();
  * keeping everything else it holds. Saves of one file go one after another
  */
 export function addAllowRule(file: string, rule: string): Promise<void> {
+  return addPermissionRule(file, 'allow', rule);
+}
+
+/**
+ * Adds `rule` to the `permissions.allow` or `permissions.deny` of the settings file `file`,
+ * creating it when missing and keeping everything else it holds. Saves of one file go one after
+ * another
+ */
+export function addPermissionRule(
+  file: string,
+  behavior: 'allow' | 'deny',
+  rule: string
+): Promise<void> {
   const previous = writes.get(file) ?? Promise.resolve();
-  const next = previous.catch(() => undefined).then(() => writeAllowRule(file, rule));
+  const next = previous.catch(() => undefined).then(() => writeRule(file, behavior, rule));
   writes.set(file, next);
   void next
     .finally(() => {
@@ -291,7 +304,7 @@ export function addAllowRule(file: string, rule: string): Promise<void> {
   return next;
 }
 
-async function writeAllowRule(file: string, rule: string): Promise<void> {
+async function writeRule(file: string, behavior: 'allow' | 'deny', rule: string): Promise<void> {
   let json: Record<string, unknown> = {};
   try {
     const parsed: unknown = JSON.parse(await readFile(file, 'utf8'));
@@ -301,9 +314,10 @@ async function writeAllowRule(file: string, rule: string): Promise<void> {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
   const permissions = isRecord(json.permissions) ? { ...json.permissions } : {};
-  const allow: unknown[] = Array.isArray(permissions.allow) ? [...permissions.allow] : [];
-  if (allow.includes(rule)) return;
-  permissions.allow = [...allow, rule];
+  const list = permissions[behavior];
+  const rules: unknown[] = Array.isArray(list) ? [...list] : [];
+  if (rules.includes(rule)) return;
+  permissions[behavior] = [...rules, rule];
   json.permissions = permissions;
   await mkdir(dirname(file), { recursive: true });
   const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;

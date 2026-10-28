@@ -99,13 +99,13 @@ Path patterns use gitignore syntax. A path is made absolute against the workspac
 
 A `deny` rule of any layer wins, then an `ask` rule, then an `allow` rule: specificity does not change the order, so an allow rule cannot carve an exception out of a deny rule. Rules come from layers, highest first:
 
-| Layer     | Where                                                                                                                                                                                                 |
-| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `managed` | `managed-settings.json` and `managed-settings.d/*.json` in `/Library/Application Support/{Cogitator,ClaudeCode}`, `/etc/{cogitator,claude-code}`, `C:\Program Files\{Cogitator,ClaudeCode}`           |
-| `session` | rules in code (`CogitatorConfig.permissions`, `AgentConfig.permissions`, `RunOptions.permissions`), "always allow" answers for the session, the `allowed-tools` of active [skills](/docs/core/skills) |
-| `local`   | `.claude/settings.local.json`, `.cogitator/settings.local.json`                                                                                                                                       |
-| `project` | `.claude/settings.json`, `.cogitator/settings.json`                                                                                                                                                   |
-| `user`    | `~/.cogitator/settings.json`, `~/.claude/settings.json` (`CLAUDE_CONFIG_DIR` respected)                                                                                                               |
+| Layer     | Where                                                                                                                                                                                                                     |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `managed` | `managed-settings.json` and `managed-settings.d/*.json` in `/Library/Application Support/{Cogitator,ClaudeCode}`, `/etc/{cogitator,claude-code}`, `C:\Program Files\{Cogitator,ClaudeCode}`                               |
+| `session` | rules in code (`CogitatorConfig.permissions`, `AgentConfig.permissions`, `RunOptions.permissions`), "always allow" and "always reject" answers for the session, the `allowed-tools` of active [skills](/docs/core/skills) |
+| `local`   | `.claude/settings.local.json`, `.cogitator/settings.local.json`                                                                                                                                                           |
+| `project` | `.claude/settings.json`, `.cogitator/settings.json`                                                                                                                                                                       |
+| `user`    | `~/.cogitator/settings.json`, `~/.claude/settings.json` (`CLAUDE_CONFIG_DIR` respected)                                                                                                                                   |
 
 The layer decides which rule a decision names and which `defaultMode` applies. A managed file with `allowManagedPermissionRulesOnly: true` makes its rules the only ones.
 
@@ -141,6 +141,8 @@ await cog.run(agent, {
 ```
 
 `remember: true` saves `request.suggestedRule` to `permissions.rememberIn` (default `local`). Name the layer with `remember: { layer: 'session' }`, or the rule: only the suggested rule or the exact call (`run_command(npm test --watch)`) is accepted, a broader one is not saved, and there is no suggestion for a command line the parser does not fully understand, and only the layers in `permissions.rememberLayers` (default `session` and `local`) may be named, so a client cannot widen what it was asked about. `session` rules last for the thread in this process and travel in a paused run's checkpoint, file layers are written to `.cogitator/settings.local.json`, `.cogitator/settings.json` or `~/.cogitator/settings.json`, keeping what the file holds. Without `settings` every rule is saved for the session.
+
+A rejection takes `remember` too: `{ approved: false, remember: true }` ("always reject") saves the same rule as a deny rule, to the same layers, so such calls are refused from then on without asking. The decision event names it in `remembered: { rule, layer, behavior: 'deny' }`.
 
 ## Changed Arguments
 

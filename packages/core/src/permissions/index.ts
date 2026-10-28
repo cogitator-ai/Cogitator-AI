@@ -41,6 +41,7 @@ export {
 } from './sandbox';
 export {
   addAllowRule,
+  addPermissionRule,
   loadSandboxPolicy,
   defaultManagedDirs,
   defaultUserDirs,

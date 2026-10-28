@@ -66,6 +66,10 @@ Workflow builder, human-in-the-loop, map/reduce patterns.
 
 Expose and consume agents as A2A services.
 
+### [`acp/`](./acp/) - Agent Client Protocol
+
+An editor driving a Cogitator agent over ACP, and an external ACP agent (Claude Code, Codex, Gemini CLI) next to a native agent of an app-server host.
+
 ### [`mcp/`](./mcp/) — Model Context Protocol
 
 Connect to external MCP servers and use their tools.

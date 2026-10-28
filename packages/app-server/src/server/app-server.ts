@@ -36,6 +36,7 @@ const PERMISSION_OPTIONS: ApprovalRequestParams['options'] = [
   { optionId: 'allow_once', name: 'Allow', kind: 'allow_once' },
   { optionId: 'allow_always', name: 'Always allow', kind: 'allow_always' },
   { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' },
+  { optionId: 'reject_always', name: 'Always reject', kind: 'reject_always' },
 ];
 
 /**
@@ -328,9 +329,11 @@ export class AppServerConnection {
           ...(parsed.data.outcome.optionId === 'allow_always' && { remember: true }),
         };
       case 'reject_once':
+      case 'reject_always':
         return {
           approved: false,
           ...(parsed.data.reason !== undefined && { reason: parsed.data.reason }),
+          ...(parsed.data.outcome.optionId === 'reject_always' && { remember: true }),
         };
     }
   }

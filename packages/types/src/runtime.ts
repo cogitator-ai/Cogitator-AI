@@ -753,7 +753,8 @@ export interface ToolApprovalRequest {
  * The answer to an approval. An approval may change the arguments (`updatedArguments`): the call
  * runs with them once they pass the tool's schema and the permission rules again. `remember`
  * saves an allow rule ("always allow"): `true` saves the request's `suggestedRule` to
- * `permissions.rememberIn`, or name the rule and the layer
+ * `permissions.rememberIn`, or name the rule and the layer. On a rejection `remember` saves the
+ * same rule as a deny rule ("always reject"), so such calls are refused without asking
  */
 export type ToolApprovalDecision =
   | {
@@ -761,11 +762,11 @@ export type ToolApprovalDecision =
       updatedArguments?: Record<string, unknown>;
       remember?: boolean | ToolApprovalRemember;
     }
-  | { approved: false; reason?: string };
+  | { approved: false; reason?: string; remember?: boolean | ToolApprovalRemember };
 
-/** Which allow rule an "always allow" answer saves, and where */
+/** Which rule an "always allow" or "always reject" answer saves, and where */
 export interface ToolApprovalRemember {
-  /** The rule, which must match the approved call (default: the request's `suggestedRule`) */
+  /** The rule, which must match the answered call (default: the request's `suggestedRule`) */
   rule?: string;
   layer?: PermissionRememberLayer;
 }

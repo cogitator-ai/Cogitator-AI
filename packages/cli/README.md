@@ -56,6 +56,7 @@ cogitator run -m ollama/llama3.1:8b "What is the capital of France?"
 | `cogitator assistant`      | Run a gateway module (`src/gateway.ts`) with a live dashboard                                                   |
 | `cogitator run [msg]`      | Chat with an agent (one-shot or interactive REPL), or run headless with `-p` (text, JSON or stream-json)        |
 | `cogitator app-server`     | Serve the typed JSON-RPC app-server on stdio, write its client (`generate-ts`) and JSON Schema                  |
+| `cogitator acp`            | Serve a Cogitator coding agent to an editor over the Agent Client Protocol (stdio)                              |
 | `cogitator build`          | Bundle a gateway into a self-starting `dist/cogitator.mjs`                                                      |
 | `cogitator daemon <cmd>`   | Run in the background / install as a launchd or systemd service                                                 |
 | `cogitator skill <cmd>`    | Create, validate, install and remove skills                                                                     |
@@ -293,7 +294,39 @@ Serves the JSON-RPC app-server of [`@cogitator-ai/app-server`](https://www.npmjs
 cogitator app-server -m ollama/qwen3:8b
 cogitator app-server generate-ts --out src/generated          # cogitator-app-server.ts, the typed client
 cogitator app-server generate-json-schema --out schema        # cogitator-app-server.schema.json
+cogitator app-server -m ollama/qwen3:8b --acp-agent claude     # Claude Code as an agent of its own
 ```
+
+`--acp-agent <spec...>` serves external ACP agents next to the agent, each a thread provider of its own: a preset (`claude`, `codex`, `gemini`), `registry:<id>` for an agent of the ACP registry, or a command line, as `name=spec` to name it. They work in the current directory, and every permission they ask for is decided by the permission rules of its settings files, asking the client (`approval/request`) for what the rules leave open. See [`@cogitator-ai/acp`](https://www.npmjs.com/package/@cogitator-ai/acp).
+
+---
+
+### cogitator acp
+
+Serves a Cogitator coding agent to the editor that launches it, over the [Agent Client Protocol](https://agentclientprotocol.com) on stdio: Zed, JetBrains, Neovim, VS Code and others. The agent is the `coding` harness agent (workspace tools, a shell, todos, skills, subagents, commands, project instructions) on the model of `-m`, the config file or a local Ollama. Sessions are threads kept in the session store, so the editor can list, load and resume them.
+
+```bash
+cogitator acp -m ollama/qwen3:8b
+cogitator acp -m anthropic/claude-sonnet-5-5 --models openai/gpt-5.5 --trust
+```
+
+In Zed's `settings.json`:
+
+```json
+{
+  "agent_servers": {
+    "Cogitator": {
+      "command": "npx",
+      "args": ["-y", "@cogitator-ai/cli", "acp", "-m", "ollama/qwen3:8b"]
+    }
+  }
+}
+```
+
+- Files are read and written through the editor and commands run in its terminals when it offers them. Edits and commands ask with `session/request_permission`, showing the diff of an edit.
+- The editor picks the permission mode, the model (the ones of `--models` and the local Ollama models) and the reasoning effort of a session.
+- `--trust` trusts the project: its subagents, commands, hooks and the allow rules of its settings files apply, and an "always" answer is saved to `.cogitator/settings.local.json`. Without it an "always" answer lasts for the session.
+- The process starts without a model too, so an editor can list it: `authenticate` then says how to configure one.
 
 ---
 
@@ -502,7 +535,7 @@ The model, memory and `deploy:` section all come from one config file: the `-c` 
 | ------------------------------------------------------- | --------------------------------------- | ------------------------------------------ |
 | `COGITATOR_CONFIG`                                      | `run`                                   | Config file path                           |
 | `COGITATOR_MODEL`                                       | `run`                                   | Default model                              |
-| `COGITATOR_SESSIONS_DB`                                 | `run -p`, `app-server`                  | SQLite file of the sessions                |
+| `COGITATOR_SESSIONS_DB`                                 | `run -p`, `app-server`, `acp`           | SQLite file of the sessions                |
 | `COGITATOR_PLUGINS_DIR`                                 | `plugin`, runtime                       | Where installed plugins are kept           |
 | `COGITATOR_TRIGGERS_DIR`                                | `schedule`, `inbox`, `trigger`, runtime | Where the file stores of routines are kept |
 | `COGITATOR_URL`, `COGITATOR_TRIGGER_TOKEN`              | `trigger fire`                          | The server and the trigger's token         |

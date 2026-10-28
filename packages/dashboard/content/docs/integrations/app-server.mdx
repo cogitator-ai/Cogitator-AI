@@ -128,7 +128,7 @@ Others can still read a turn's spans with `_cogitator/trace/get`. `optOutNotific
 
 ## Approvals
 
-When the client says `capabilities.approvals: 'request'`, a tool call that needs approval is asked with `approval/request` while the turn waits, in the shape of ACP `session/request_permission`: the `toolCall` and the options `allow_once`, `allow_always` (approves and saves the suggested allow rule) and `reject_once`. ACP's `reject_always` is not offered, as the runtime remembers allow rules from answers, not deny rules: a lasting denial belongs in the `deny` rules of the permissions. `{ outcome: { outcome: 'cancelled' } }` leaves the turn paused. Otherwise the turn ends paused, and `turn/start` with `resume: { decisions, responses, defaultDecision }` goes on. New input to a paused thread is refused with `-32022`.
+When the client says `capabilities.approvals: 'request'`, a tool call that needs approval is asked with `approval/request` while the turn waits, in the shape of ACP `session/request_permission`: the `toolCall` and the options `allow_once`, `allow_always` (approves and saves the suggested allow rule), `reject_once` and `reject_always` (refuses and saves the same rule as a deny rule). `{ outcome: { outcome: 'cancelled' } }` leaves the turn paused. Otherwise the turn ends paused, and `turn/start` with `resume: { decisions, responses, defaultDecision }` goes on. New input to a paused thread is refused with `-32022`.
 
 ## Reviews
 
@@ -162,7 +162,7 @@ Plus the standard `-32700`, `-32600`, `-32601` and `-32603`.
 
 ## ACP mapping
 
-The core methods line up with the [Agent Client Protocol](https://agentclientprotocol.com), so an ACP agent maps onto them one to one:
+The core methods line up with the [Agent Client Protocol](https://agentclientprotocol.com), and the [ACP integration](/docs/integrations/acp) serves the agents of a host to editors over it:
 
 | ACP                          | App-server                      |
 | ---------------------------- | ------------------------------- |
@@ -172,5 +172,9 @@ The core methods line up with the [Agent Client Protocol](https://agentclientpro
 | `session/cancel`             | `turn/interrupt`                |
 | `session/update`             | `turn/event`                    |
 | `session/request_permission` | `approval/request`              |
+
+## External agents
+
+`SessionHost` takes `providers` next to `agents`: agents that run outside the runtime, such as ACP agents (Claude Code, Codex, Gemini CLI) through `AcpAgentProvider`. Clients see them in `initialize` with `external: true` and start threads with them like any agent. The host keeps the thread and its messages, the provider runs each turn and its events reach `turn/event`. Their threads cannot be forked, rewound or reviewed, and their turns take no steering. From the CLI: `cogitator app-server --acp-agent claude`. See the [ACP integration](/docs/integrations/acp#run-external-acp-agents).
 
 For one-shot and scripted runs without a client of your own, see [headless mode](/docs/cli/headless).
