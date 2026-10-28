@@ -43,14 +43,14 @@
   },
   "dependencies": {
     "@cogitator-ai/types": "workspace:*",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "optionalDependencies": {
     "@extism/extism": "^2.0.0-rc13",
     "dockerode": "^5.0.1"
   },
   "devDependencies": {
-    "@daytona/sdk": "^0.226.0",
+    "@daytona/sdk": "^0.226.1",
     "@types/dockerode": "^4.0.1",
     "@types/node": "^22.20.4",
     "@vercel/sandbox": "^3.9.0",
