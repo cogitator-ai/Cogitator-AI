@@ -8,6 +8,7 @@ import {
   realpath,
   rm,
   rmdir,
+  stat,
   unlink,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -455,6 +456,7 @@ export class OsSandbox implements WorkspaceCommandSandbox {
             ...(entry.watched && { watched: true }),
           }));
     const denyRead = [...resolveAll(fs.denyRead), ...resolveAll(this.policy.credentials?.files)];
+    if (fs.disabled !== true) await refuseLinkedDenies(denyRead);
     const allowRead: PolicyPath[] = [];
     for (const entry of resolveAll(fs.allowRead)) {
       if (await reopensThroughLink(entry.base ?? entry.path, denyRead)) {
@@ -751,4 +753,22 @@ function splitLoaderEnvironment(env: Record<string, string>): {
     (LOADER_VARIABLE.test(name) ? loader : launcher)[name] = value;
   }
   return { launcher, loader };
+}
+
+/**
+ * Fails when a file `denyRead` names (or a wildcard of it matches) has more than one hard link: a
+ * deny holds for the names it lists, so a command could read the file through another one
+ */
+async function refuseLinkedDenies(denyRead: readonly PolicyPath[]): Promise<void> {
+  for (const entry of denyRead) {
+    const paths = entry.pattern ? (await expandWildcard(entry)).matches : [entry.path];
+    for (const path of paths) {
+      const info = await stat(path).catch(() => undefined);
+      if (info?.isFile() && info.nlink > 1) {
+        throw new Error(
+          `${path} is denied reading but has ${info.nlink} hard links, through any of which a sandboxed command could read it: remove the other links before running commands`
+        );
+      }
+    }
+  }
 }

@@ -43,7 +43,7 @@ const coder = new Agent({
 
 ### Files
 
-Writes are allowed only in the writable roots, and a `denyWrite` wins over every allow. Reads are allowed everywhere but `denyRead`, and between a read deny and a read allow the narrower one wins. An `allowRead` reopens only a path it names inside the denied region: one that reaches in only through a symlink, made beforehand or by an earlier command, is ignored with a warning:
+Writes are allowed only in the writable roots, and a `denyWrite` wins over every allow. Reads are allowed everywhere but `denyRead`, and between a read deny and a read allow the narrower one wins. An `allowRead` reopens only a path it names inside the denied region: one that reaches in only through a symlink, made beforehand or by an earlier command, is ignored with a warning. A file a read deny names (or `credentials.files`) with more than one hard link fails the launch, since the deny holds only for the names it lists:
 
 | Rules                                               | Result                                                            |
 | --------------------------------------------------- | ----------------------------------------------------------------- |

@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import {
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -253,6 +254,15 @@ describe.skipIf(!probe.available)(`OsSandbox on this machine (${probe.kind})`, (
     expect(read.stdout).toBe('');
     expect(read.exitCode).not.toBe(0);
     expect(warnings.join('\n')).toMatch(/reaches into a denyRead region only through a symlink/);
+  });
+
+  it('refuses to launch while a denied file has another hard link', async () => {
+    await writeFile(join(outside, 'token'), 'secret');
+    await link(join(outside, 'token'), join(root, 'token-copy'));
+    const sandbox = make({ policy: { credentials: { files: [join(outside, 'token')] } } });
+    await expect(runSandboxed(sandbox, root, 'cat token-copy')).rejects.toThrow(
+      /denied reading but has 2 hard links/
+    );
   });
 
   it('keeps loader variables out of the launcher environment', async () => {
