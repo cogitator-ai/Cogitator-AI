@@ -4,7 +4,7 @@ import type { A2AServer } from '../server.js';
 import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
 import { AGENT_CARD_PATH, JWKS_PATH, LEGACY_AGENT_CARD_PATH } from '../types.js';
-import { SSE_HEADERS, handleA2AHttp, mountUrlOf } from './shared.js';
+import { SSE_HEADERS, handleA2AHttp, isRestPath, mountUrlOf } from './shared.js';
 import { trimTrailingSlashes } from '../url.js';
 
 /**
@@ -29,7 +29,9 @@ export function a2aHono(server: A2AServer): Hono {
         header: (name) => c.req.header(name),
         readBody: async () => {
           const text = await c.req.text();
-          return text.trim() === '' ? undefined : (JSON.parse(text) as unknown);
+          if (text.trim() !== '') return JSON.parse(text) as unknown;
+          if (isRestPath(server, relativePath)) return undefined;
+          throw new SyntaxError('Empty JSON body');
         },
         signal: controller.signal,
       });

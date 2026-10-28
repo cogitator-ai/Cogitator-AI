@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import express from 'express';
 import Fastify, { type FastifyInstance } from 'fastify';
 import Koa from 'koa';
@@ -349,13 +349,56 @@ describe('restPath', () => {
     );
   });
 
-  it('refuses a restPath that is an agent endpoint', () => {
+  it('turns the default REST mount off for an agent named rest, and refuses an explicit clash', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const server = new A2AServer({
+        agents: { helper: mockAgent('helper'), rest: mockAgent('rest') },
+        cogitator: echoCogitator(),
+      });
+      expect(server.restPath).toBeNull();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('agent "rest"'));
+    } finally {
+      warn.mockRestore();
+    }
     expect(
       () =>
         new A2AServer({
           agents: { helper: mockAgent('helper'), rest: mockAgent('rest') },
           cogitator: echoCogitator(),
+          restPath: '/a2a/rest',
         })
     ).toThrow(/endpoint of agent "rest"/);
+  });
+
+  it('reads the first segment as a tenant when an agent has that name', async () => {
+    const server = new A2AServer({
+      agents: { helper: mockAgent('helper'), tasks: mockAgent('tasks') },
+      cogitator: echoCogitator(),
+    });
+    const app = a2aHono(server);
+    const sent = await app.request('/a2a/rest/tasks/message:send', {
+      method: 'POST',
+      headers: V1_HEADERS,
+      body: JSON.stringify({ message: v1UserMessage('mine') }),
+    });
+    const { task } = (await sent.json()) as { task: V1Task };
+    const listed = await app.request('/a2a/rest/tasks/tasks', {
+      headers: { 'A2A-Version': '1.0' },
+    });
+    const page = (await listed.json()) as { tasks: V1Task[] };
+    expect(page.tasks.map((entry) => entry.id)).toEqual([task.id]);
+    const fetched = await app.request(`/a2a/rest/tasks/tasks/${task.id}`, {
+      headers: { 'A2A-Version': '1.0' },
+    });
+    expect(fetched.status).toBe(200);
+    const untenanted = await app.request(`/a2a/rest/tasks/${task.id}`, {
+      headers: { 'A2A-Version': '1.0' },
+    });
+    expect(untenanted.status).toBe(404);
+    expect(matchRestRoute('GET', '/tasks/tasks', (name) => name === 'tasks')).toEqual({
+      method: 'ListTasks',
+      tenant: 'tasks',
+    });
   });
 });

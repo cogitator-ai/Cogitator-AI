@@ -54,7 +54,7 @@ This exposes:
 - `/a2a/rest/...` - the A2A 1.0 HTTP+JSON binding
 - `GET /.well-known/agent.json` - the pre-v0.3 card path, kept as an alias
 
-`basePath` (default `/a2a`, must start with `/`) is the JSON-RPC path the adapters serve, relative to where they are mounted, readable as `a2aServer.basePath`. `restPath` (default `<basePath>/rest`, `false` turns it off) is where the REST binding is served.
+`basePath` (default `/a2a`, must start with `/`) is the JSON-RPC path the adapters serve, relative to where they are mounted, readable as `a2aServer.basePath`. `restPath` (default `<basePath>/rest`, `false` turns it off) is where the REST binding is served. When an agent is named `rest`, its endpoint is the default `restPath`: the server then leaves REST off with a warning, and an explicit `restPath` that is an agent's endpoint is refused.
 
 ### Protocol Versions
 
@@ -173,7 +173,9 @@ An unknown agent path answers `404`, an unknown `agentName` param `-32602 Invali
 
 Over A2A 1.0 every agent is a tenant. Its interfaces carry its name as `tenant`, and an A2A 1.0 client sends it back in every request: as `tenant` in the JSON-RPC params, as the `/<tenant>/` path segment on REST. On the shared endpoint the tenant picks the agent, on an agent's own endpoint a different tenant is refused with `-32602`.
 
-A task belongs to the agent that created it, and over 1.0 it is visible only through that agent: `GetTask`, `CancelTask`, `SubscribeToTask`, the push config methods, `ListTasks` and a message that continues the task answer a task of another agent with `-32001 Task not found`. The agent is kept in the task metadata (`cogitator:agent`) and never sent to clients. Tasks stored before tasks recorded their agent stay visible to every agent, and 0.3 requests see every task as they always did.
+A task created over 1.0 belongs to the agent that created it and is visible only through that agent, whatever the version of the request: `GetTask`, `CancelTask`, `SubscribeToTask`, the push config methods, `ListTasks` (and their 0.3 forms, `tasks/list` included) and a message that continues the task answer a task of another agent with `-32001 Task not found`. The agent is kept in the task metadata (`cogitator:agent`) and never sent to clients. Tasks created over 0.3, and tasks stored before tasks recorded their agent, are bound to no agent and stay visible to every agent, as they always were.
+
+On REST, a first path segment that is the name of an agent is read as its tenant first: with an agent named `tasks`, `GET /tasks/tasks` lists that agent's tasks, and a path that names no method under the tenant (`GET /tasks/<id>`) still reads without one.
 
 ### HTTP+JSON Binding
 
@@ -414,7 +416,7 @@ if (waiting) {
 
 ## Listing Tasks
 
-A2A 1.0 `ListTasks` pages through the caller's tasks of the agent, the most recently updated first (ties broken by id), behind a keyset cursor: a page never repeats or skips a task that did not change while the client paged.
+A2A 1.0 `ListTasks` pages through the caller's tasks of the agent, the most recently updated first (ties broken by id in the cursor's order), behind a keyset cursor: a page never repeats or skips a task that did not change while the client paged.
 
 ```typescript
 const page = await client.listTasksPage({ state: 'completed', pageSize: 20 });
@@ -434,7 +436,7 @@ if (page.nextPageToken) {
 | `historyLength`        | Trim each history, `0` leaves it out                          |
 | `includeArtifacts`     | Include artifacts (default `false`, then the field is absent) |
 
-The response carries `tasks`, `nextPageToken` (`''` on the last page), `pageSize` and `totalSize` (the matches across all pages). A page token the server did not issue is refused with `-32602`, its `BadRequest` naming `pageToken`. The cursor is base64url of `{ v: 1, t, id }` over `TaskStore.list()`, so any store works, and both built-in stores sort by status time with ties broken by id.
+The response carries `tasks`, `nextPageToken` (`''` on the last page), `pageSize` and `totalSize` (the matches across all pages). A page token the server did not issue is refused with `-32602`, its `BadRequest` naming `pageToken`. The cursor is base64url of `{ v: 1, t, id }` over `TaskStore.list()`, so any store works: the cursor sorts the tasks itself, and `tasks/list` keeps the order of the store.
 
 Over A2A 0.3, `tasks/list` is a Cogitator extension method with offset paging. `client.listTasks(filter?)` lists every match in either version (over 1.0 it walks the pages, with artifacts):
 
@@ -582,7 +584,7 @@ const a2aServer = new A2AServer({
 | `PS256` | RSA (or RSA-PSS), salt as long as the digest  |
 | `EdDSA` | Ed25519 or Ed448                              |
 
-A key that does not fit the algorithm is refused when the server is created. The A2A 1.0 card and the hybrid 0.3 card carry the same signature, since it covers the 1.0 form both hold. Signatures are kept per payload, so an unchanged card keeps its signature, and its `ETag`, even with randomized ECDSA and RSA-PSS signatures.
+A key that does not fit the algorithm is refused when the server is created. The A2A 1.0 card and the hybrid 0.3 card carry the same signature. It covers the 1.0 form, so the 0.3 fields of a signed card must follow from it: a 0.3 or hybrid card verifies only when its `url` (with `preferredTransport` and `protocolVersion`) and every `additionalInterfaces` entry are 0.3 interfaces of its `supportedInterfaces`, its security schemes and requirements come back from their 1.0 form unchanged (an OAuth scheme with several flows, or none, does not, since a 1.0 scheme holds one flow), and it claims no `stateTransitionHistory`. The signer refuses to sign a card that fails this, with the reason `legacyCoverageProblem(card)` gives, and a server that speaks only 1.0 serves the 0.3 form of its card unsigned. A client on 0.3 takes its endpoint from the signed 0.3 interface, never from `url`. Signatures are kept per payload, so an unchanged card keeps its signature, and its `ETag`, even with randomized ECDSA and RSA-PSS signatures.
 
 ### Client-Side Verification
 
@@ -679,6 +681,8 @@ import { a2aExpress } from '@cogitator-ai/a2a/express';
 app.use(a2aExpress(a2aServer));
 ```
 
+A body a parser upstream read (`express.json()`) is taken as it is. Otherwise the router parses `application/json` and `application/a2a+json` itself, up to 1 MiB (`413` above it), also when an Express 4 parser left `{}` on a body it skipped.
+
 ### Hono
 
 ```typescript
@@ -697,7 +701,7 @@ fastify.register(a2aFastify(a2aServer));
 
 ### Koa
 
-The Koa middleware takes `ctx.request.body` when a body parser set it, and reads the raw body itself otherwise (so an `application/a2a+json` body a parser skipped works too):
+The Koa middleware takes `ctx.request.body` when a body parser set it, and reads the raw body itself otherwise, up to 1 MiB (so an `application/a2a+json` body a parser skipped, or left as `{}`, works too, and a larger body gets `413`):
 
 ```typescript
 import bodyParser from 'koa-bodyparser';

@@ -112,16 +112,29 @@ function matchUntenanted(httpMethod: string, segments: readonly string[]): RestR
   return null;
 }
 
-/** The method a path names, with or without its leading `/{tenant}`. */
-export function matchRestRoute(httpMethod: string, path: string): RestRoute | null {
+/**
+ * The method a path names, with or without its leading `/{tenant}`. A first segment that is a
+ * tenant (`isTenant`) is read as one first, so an agent named `tasks` gets `GET /tasks/tasks` as
+ * its task list, and a path that names no method under that tenant still reads untenanted.
+ */
+export function matchRestRoute(
+  httpMethod: string,
+  path: string,
+  isTenant: (name: string) => boolean = () => false
+): RestRoute | null {
   const segments = path.split('/').slice(1);
   if (segments.length === 0 || segments.some((segment) => segment === '')) return null;
   const method = httpMethod.toUpperCase();
-  const untenanted = matchUntenanted(method, segments);
-  if (untenanted) return untenanted;
   const tenant = decode(segments[0]);
-  const route = tenant ? matchUntenanted(method, segments.slice(1)) : null;
-  return route && tenant ? { ...route, tenant } : null;
+  const tenanted = () => {
+    const route = tenant ? matchUntenanted(method, segments.slice(1)) : null;
+    return route && tenant ? { ...route, tenant } : null;
+  };
+  if (tenant && isTenant(tenant)) {
+    const route = tenanted();
+    if (route) return route;
+  }
+  return matchUntenanted(method, segments) ?? tenanted();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -194,7 +207,7 @@ export async function handleRestRequest(
   operations: A2AOperations,
   request: A2ARestRequest
 ): Promise<A2ARestResponse> {
-  const route = matchRestRoute(request.method, request.path);
+  const route = matchRestRoute(request.method, request.path, (name) => operations.hasAgent(name));
   if (!route) {
     return errorResponse(
       new A2AError(methodNotFound(`${request.method.toUpperCase()} ${request.path}`)),

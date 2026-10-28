@@ -22,6 +22,8 @@ export interface CallContext {
  * and call these.
  */
 export interface A2AOperations {
+  /** Whether the server hosts an agent under this name, a tenant */
+  hasAgent(name: string): boolean;
   /** The caller of a request, or `unauthorized` */
   authenticate(authToken: string | undefined): Promise<A2ACaller | undefined>;
   /**

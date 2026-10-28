@@ -472,7 +472,7 @@ describe('A2A 1.0 tenants', () => {
     expect(unknown.error?.code).toBe(A2A_ERROR_CODES.invalidParams);
   });
 
-  it("keeps an agent's tasks to its own tenant over 1.0, as 0.3 always did not", async () => {
+  it('keeps a task created over 1.0 to its agent, over 0.3 as well', async () => {
     const { server } = newServer();
     const writerTask = await send(server, 'mine', { agentName: 'writer' });
 
@@ -498,7 +498,44 @@ describe('A2A 1.0 tenants', () => {
     const legacy = expectResponse(
       await server.handleJsonRpc(request('tasks/get', { id: writerTask.id }))
     );
-    expect(legacy.error).toBeUndefined();
+    expect(legacy.error?.code).toBe(A2A_ERROR_CODES.taskNotFound);
+    const legacyCancel = expectResponse(
+      await server.handleJsonRpc(request('tasks/cancel', { id: writerTask.id }))
+    );
+    expect(legacyCancel.error?.code).toBe(A2A_ERROR_CODES.taskNotFound);
+    const legacyList = expectResponse(await server.handleJsonRpc(request('tasks/list', {})))
+      .result as { tasks: A2ATask[] };
+    expect(legacyList.tasks.map((task) => task.id)).not.toContain(writerTask.id);
+
+    const throughWriter = expectResponse(
+      await server.handleJsonRpc(request('tasks/get', { id: writerTask.id }), undefined, {
+        agentName: 'writer',
+      })
+    );
+    expect(throughWriter.error).toBeUndefined();
+  });
+
+  it('leaves tasks created over 0.3 unbound, visible to every agent as before', async () => {
+    const store = new InMemoryTaskStore();
+    const { server } = newServer({ taskStore: store });
+    const created = expectResponse(
+      await server.handleJsonRpc(
+        request('message/send', { message: userMessage('old way') }),
+        undefined,
+        {
+          agentName: 'writer',
+        }
+      )
+    ).result as A2ATask;
+    expect((await store.get(created.id))?.metadata?.[TASK_AGENT_KEY]).toBeUndefined();
+    const fromHelper = expectResponse(
+      await server.handleJsonRpc(request('tasks/get', { id: created.id }))
+    );
+    expect(fromHelper.error).toBeUndefined();
+    const overV1 = expectResponse(
+      await server.handleJsonRpc(request('GetTask', { id: created.id }), undefined, V1)
+    );
+    expect(overV1.error).toBeUndefined();
   });
 
   it('shows tasks stored before tasks recorded their agent to every tenant', async () => {

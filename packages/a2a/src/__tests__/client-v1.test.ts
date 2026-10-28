@@ -97,6 +97,18 @@ describe('A2AClient protocol versions', () => {
     expect(JSON.parse(call.body).method).toBe('tasks/get');
   });
 
+  it('takes the 0.3 endpoint of a hybrid card from its interfaces, which a signature covers', async () => {
+    target = await cardServer((url) => ({
+      ...legacyCard(url),
+      url: 'https://unsigned.example/a2a',
+      supportedInterfaces: [
+        { url: `${url}/rpc`, protocolBinding: 'JSONRPC', protocolVersion: '0.3' },
+      ],
+    }));
+    const client = new A2AClient(target.url, { protocolVersion: '0.3' });
+    expect((await client.endpoint()).url).toBe(`${target.url}/rpc`);
+  });
+
   it('refuses protocolVersion 1.0 against a 0.3-only card', async () => {
     target = await cardServer(legacyCard);
     const client = new A2AClient(target.url, { protocolVersion: '1.0' });

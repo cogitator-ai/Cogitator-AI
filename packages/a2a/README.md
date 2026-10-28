@@ -77,11 +77,11 @@ Cards also declare the agent `version` (`agentVersion`, default `1.0.0`) and, wi
 
 One server speaks A2A 1.0 and A2A 0.3 on the same endpoints. A request names its version in the `A2A-Version` header (or an `A2A-Version` query parameter) as `Major.Minor`, a request without one speaks 0.3, as the specification says. So every A2A 0.3 client keeps working unchanged, and an A2A 1.0 client gets the PascalCase methods, the ProtoJSON model (no `kind`, `ROLE_USER`, `TASK_STATE_COMPLETED`, one `Part` with `mediaType`), `google.rpc` error details and the REST binding. A version the server does not speak is refused with `-32009` (HTTP 400 on REST), its `ErrorInfo` listing the supported ones.
 
-| Option             | Default            | Effect                                                            |
-| ------------------ | ------------------ | ----------------------------------------------------------------- |
-| `protocolVersions` | `['1.0', '0.3']`   | The versions the server speaks. `['0.3']` restores the old one    |
-| `restPath`         | `<basePath>/rest`  | Where the HTTP+JSON binding is served. `false` turns it off       |
-| `extensions`       | the Cogitator ones | More extensions the cards declare (see [Extensions](#extensions)) |
+| Option             | Default            | Effect                                                                                                                         |
+| ------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `protocolVersions` | `['1.0', '0.3']`   | The versions the server speaks. `['0.3']` restores the old one                                                                 |
+| `restPath`         | `<basePath>/rest`  | Where the HTTP+JSON binding is served. `false` turns it off. The default is off, with a warning, when an agent is named `rest` |
+| `extensions`       | the Cogitator ones | More extensions the cards declare (see [Extensions](#extensions))                                                              |
 
 The card at `/.well-known/agent-card.json` comes in the version the client asks for. Without `A2A-Version` it is the A2A 0.3 card (`protocolVersion`, `url`, `preferredTransport`) with every interface of both versions added in `supportedInterfaces`, so any client finds its endpoint. With `A2A-Version: 1.0` it is the pure A2A 1.0 card. Interfaces come in the order clients should prefer them: JSON-RPC 1.0, HTTP+JSON 1.0, JSON-RPC 0.3. Card responses carry `Vary: A2A-Version`, an `ETag` (the SHA-256 of the body), `Cache-Control: public, max-age=300`, and a request with a matching `If-None-Match` gets `304`.
 
@@ -109,7 +109,7 @@ Bodies are `application/a2a+json` or `application/json`, query parameters camelC
 
 ## Tenants
 
-Over A2A 1.0 every agent is a tenant: its interfaces carry its name as `tenant`, and a client sends it back in every request (`tenant` in the JSON-RPC params, `/<tenant>/` in the REST path). On the shared endpoint the tenant picks the agent, on an agent's own endpoint a different tenant is refused with `-32602`. A task belongs to the agent that created it: over 1.0 it is visible only through that agent, so a task of `writer` is not found through `researcher`. Tasks stored before this version recorded their agent stay visible to every agent, and 0.3 requests see every task as before. The agent is kept in the task metadata (`cogitator:agent`) and never sent to clients.
+Over A2A 1.0 every agent is a tenant: its interfaces carry its name as `tenant`, and a client sends it back in every request (`tenant` in the JSON-RPC params, `/<tenant>/` in the REST path). On the shared endpoint the tenant picks the agent, on an agent's own endpoint a different tenant is refused with `-32602`. A task created over 1.0 belongs to the agent that created it and is visible only through that agent, over 1.0 and over 0.3 alike: a task of `writer` is not found (nor listed or canceled) through `researcher`. Tasks created over 0.3, and tasks stored before this version, are bound to no agent and stay visible to every agent, as before. On REST a first segment that is an agent's name is read as its tenant first, so an agent may be named `tasks`: `GET <restPath>/tasks/tasks` lists its tasks. The agent is kept in the task metadata (`cogitator:agent`) and never sent to clients.
 
 ### Several agents on one server
 
@@ -342,7 +342,7 @@ A new task in the same context starts a run on the context's thread, and the run
 
 ## Listing Tasks
 
-A2A 1.0 `ListTasks` pages through the caller's tasks of the agent, the most recently updated first (ties broken by id), behind a keyset cursor, so a page never repeats or skips a task that did not change meanwhile:
+A2A 1.0 `ListTasks` pages through the caller's tasks of the agent, the most recently updated first (ties broken by id in the cursor's order), behind a keyset cursor, so a page never repeats or skips a task that did not change meanwhile:
 
 ```typescript
 const page = await client.listTasksPage({ state: 'completed', pageSize: 20 });
@@ -414,7 +414,7 @@ const a2aServer = new A2AServer({
 });
 ```
 
-`RedisTaskStore` implements the full `TaskStore` interface including `list()` with filtering by `contextId`, `state`, pagination, and sorting by status time (ties broken by id, like `InMemoryTaskStore`, so the `ListTasks` cursor is stable). Updates are atomic when the client supports `eval` (Lua).
+`RedisTaskStore` implements the full `TaskStore` interface including `list()` with filtering by `contextId`, `state`, pagination, and sorting by status time, newest first (the `ListTasks` cursor breaks ties by id itself, so any store pages the same). Updates are atomic when the client supports `eval` (Lua).
 
 `InMemoryTaskStore` keeps at most `maxSize` tasks (default 10 000) and evicts the oldest finished tasks first.
 
@@ -472,7 +472,7 @@ await client.verifyAgentCard({}); // fetch the JWKS of a jku on the card's own o
 await client.verifyAgentCard({ trustJku: ['https://keys.example.com'] }); // or of trusted origins
 ```
 
-ES256 takes a P-256 key (signatures in IEEE P1363 form), RS256 and PS256 an RSA key, EdDSA an Ed25519 or Ed448 key, and a key that does not fit the algorithm is refused at construction. The 1.0 card and the hybrid card carry the same signature: it covers the 1.0 form, which the hybrid card holds as well. Signatures are kept per payload, so an unchanged card keeps its signature and its `ETag` even with randomized ECDSA signatures. `verifyAgentCardJws(card, options)` checks any card (1.0, hybrid or 0.3) without a client. A `jku` is fetched only from the card's own origin unless `trustJku` lists other origins, never otherwise.
+ES256 takes a P-256 key (signatures in IEEE P1363 form), RS256 and PS256 an RSA key, EdDSA an Ed25519 or Ed448 key, and a key that does not fit the algorithm is refused at construction. The 1.0 card and the hybrid card carry the same signature: it covers the 1.0 form, so the 0.3 fields of a signed card must follow from it. A 0.3 or hybrid card verifies only when its `url` (with `preferredTransport` and `protocolVersion`) and every `additionalInterfaces` entry are 0.3 interfaces of `supportedInterfaces`, its security schemes and requirements come back from their 1.0 form unchanged (an OAuth scheme with several flows, or none, does not) and it claims no `stateTransitionHistory`. The signer refuses to sign a card that fails this (`legacyCoverageProblem(card)` says why), and a server that speaks only 1.0 serves the 0.3 form of its card unsigned. A client on 0.3 takes its endpoint from the signed 0.3 interface, not from `url`. Signatures are kept per payload, so an unchanged card keeps its signature and its `ETag` even with randomized ECDSA signatures. `verifyAgentCardJws(card, options)` checks any card (1.0, hybrid or 0.3) without a client. A `jku` is fetched only from the card's own origin unless `trustJku` lists other origins, never otherwise.
 
 The shared-secret form `cardSigning: { secret }` (HMAC `HS256` over each served card) still works and is deprecated: anyone who can check such a signature can forge it. `verifyAgentCardSignature(card, secret)` and `client.verifyAgentCard(secret)` check it.
 
@@ -533,7 +533,7 @@ app.route('/', a2aHono(server));
 import { a2aFastify } from '@cogitator-ai/a2a/fastify';
 fastify.register(a2aFastify(server));
 
-// Koa (reads the body itself when no body parser did)
+// Koa (reads the body itself, up to 1 MiB, when no body parser did)
 import { a2aKoa } from '@cogitator-ai/a2a/koa';
 app.use(a2aKoa(server));
 

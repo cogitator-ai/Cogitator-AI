@@ -3,21 +3,21 @@ import type { A2AServer } from '../server.js';
 import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
 import { handleA2AHttp } from './shared.js';
+import { isEmptyObject, readRawBody } from './body.js';
 
 /**
- * The JSON body: what a body parser put on `ctx.request.body`, else the raw body read here, so an
- * `application/a2a+json` body the parser skipped is read too. Undefined without a body.
+ * The JSON body: what a body parser put on `ctx.request.body`, else the raw body read here (at
+ * most `A2A_BODY_LIMIT` bytes), so an `application/a2a+json` body a parser skipped is read too. A
+ * parser that skips a body may leave `{}` without a `rawBody`: that body is read as well.
+ * Undefined without a body.
  */
 async function readBody(ctx: Context): Promise<unknown> {
-  const parsed = (ctx.request as unknown as { body?: unknown }).body;
-  if (parsed !== undefined) return parsed;
-  const req = ctx.req;
-  if (req.readableEnded || req.complete) return undefined;
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : (chunk as Buffer));
-  }
-  const text = Buffer.concat(chunks).toString('utf8');
+  const request = ctx.request as unknown as { body?: unknown; rawBody?: unknown };
+  const parsed = request.body;
+  const skipped = isEmptyObject(parsed) && request.rawBody === undefined;
+  if (parsed !== undefined && !skipped) return parsed;
+  if (ctx.req.readableEnded) return parsed;
+  const text = await readRawBody(ctx.req);
   return text.trim() === '' ? undefined : (JSON.parse(text) as unknown);
 }
 

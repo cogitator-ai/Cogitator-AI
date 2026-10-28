@@ -188,6 +188,22 @@ function v1InterfacesOf(card: unknown): V1AgentInterface[] {
   );
 }
 
+/**
+ * The first JSON-RPC 0.3 interface a card lists in `supportedInterfaces`. A hybrid card's
+ * signature covers that list and not `url`, so a client on 0.3 takes its endpoint from there.
+ */
+function legacyRpcInterface(card: unknown): V1AgentInterface | undefined {
+  if (!isRecord(card) || !Array.isArray(card.supportedInterfaces)) return undefined;
+  return card.supportedInterfaces.find(
+    (entry): entry is V1AgentInterface =>
+      isRecord(entry) &&
+      typeof entry.url === 'string' &&
+      entry.protocolBinding === 'JSONRPC' &&
+      typeof entry.protocolVersion === 'string' &&
+      normalizeProtocolVersion(entry.protocolVersion).startsWith('0.')
+  );
+}
+
 interface CachedCard {
   /** The card in the A2A 0.3 form the client API speaks */
   card: AgentCard;
@@ -755,7 +771,7 @@ export class A2AClient {
 
   /** The JSON-RPC endpoint a card names: its `url`, or its first JSON-RPC interface. */
   private cardRpcUrl({ card, raw }: CachedCard): string {
-    if (!isV1Card(raw)) return card.url;
+    if (!isV1Card(raw)) return legacyRpcInterface(raw)?.url ?? card.url;
     const rpc = v1InterfacesOf(raw).find((entry) => entry.protocolBinding === 'JSONRPC');
     return rpc?.url ?? card.url;
   }
@@ -858,20 +874,16 @@ export class A2AClient {
       }
     }
 
-    if (isV1Card(cached.raw)) {
-      const legacy = (cached.raw as V1AgentCard).supportedInterfaces.find(
-        (entry) =>
-          entry.protocolBinding === 'JSONRPC' &&
-          normalizeProtocolVersion(entry.protocolVersion).startsWith('0.')
-      );
-      if (!legacy) {
-        throw new A2AError(errors.versionNotSupported('0.3', ['1.0']));
-      }
+    const legacy = legacyRpcInterface(cached.raw);
+    if (legacy) {
       return {
         protocolVersion: '0.3',
         transport: 'JSONRPC',
         url: this.resolveUrl(legacy.url, relativeTo),
       };
+    }
+    if (isV1Card(cached.raw)) {
+      throw new A2AError(errors.versionNotSupported('0.3', ['1.0']));
     }
     if (!cached.card.url) {
       throw new A2AError(errors.internalError('Agent card has no url for its JSON-RPC endpoint'));

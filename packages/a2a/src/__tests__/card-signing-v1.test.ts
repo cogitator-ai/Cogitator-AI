@@ -8,7 +8,12 @@ import {
 import { A2AServer } from '../server';
 import { A2AClient } from '../client';
 import { verifyAgentCardSignature } from '../agent-card';
-import { AgentCardSigner, canonicalizeAgentCard, verifyAgentCardJws } from '../card-signing';
+import {
+  AgentCardSigner,
+  canonicalizeAgentCard,
+  legacyCoverageProblem,
+  verifyAgentCardJws,
+} from '../card-signing';
 import type { AgentCardSigningAlgorithm, AgentCardSigningConfig } from '../types';
 import type { V1AgentCard } from '../v1/types';
 import { echoCogitator, mockAgent, serveExpress, type Served } from './v1-helpers';
@@ -236,5 +241,120 @@ describe('HS256 signing, deprecated', () => {
     expect(verifyAgentCardSignature(v1, 'shared')).toBe(true);
     expect(verifyAgentCardSignature(v1, 'wrong')).toBe(false);
     expect(await verifyAgentCardJws(v1, { keys: {} })).toBe(false);
+  });
+});
+
+describe('signatures over the 0.3 fields of a card', () => {
+  const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const keys = { k1: publicKey };
+  const options = { baseUrl: 'https://agents.example.com' };
+
+  function signedHybrid() {
+    return signedServer({ alg: 'ES256', privateKey, kid: 'k1' }).getAgentCard(undefined, options);
+  }
+
+  it('verifies the hybrid card only while its 0.3 endpoints are signed 0.3 interfaces', async () => {
+    const card = signedHybrid();
+    expect(legacyCoverageProblem(card)).toBeUndefined();
+    expect(await verifyAgentCardJws(card, { keys })).toBe(true);
+
+    const tampered = [
+      { ...card, url: 'https://evil.example/a2a' },
+      { ...card, preferredTransport: 'HTTP+JSON' },
+      { ...card, protocolVersion: '1.0' },
+      {
+        ...card,
+        additionalInterfaces: [
+          ...(card.additionalInterfaces ?? []),
+          { transport: 'JSONRPC', url: 'https://evil.example/a2a' },
+        ],
+      },
+      { ...card, capabilities: { ...card.capabilities, stateTransitionHistory: true } },
+    ];
+    for (const forged of tampered) {
+      expect(await verifyAgentCardJws(forged, { keys })).toBe(false);
+    }
+  });
+
+  it('does not verify a card whose OAuth flows the 1.0 form cannot hold', async () => {
+    const card = signedHybrid();
+    const oauth = {
+      type: 'oauth2' as const,
+      flows: {
+        clientCredentials: { tokenUrl: 'https://auth.example/token', scopes: {} },
+      },
+    };
+    const single = { ...card, securitySchemes: { oauth } };
+    const resigned = {
+      ...single,
+      signatures: [new AgentCardSigner({ alg: 'ES256', privateKey, kid: 'k1' }).signature(single)],
+    };
+    expect(await verifyAgentCardJws(resigned, { keys })).toBe(true);
+
+    const secondFlow = {
+      ...resigned,
+      securitySchemes: {
+        oauth: {
+          ...oauth,
+          flows: {
+            ...oauth.flows,
+            password: { tokenUrl: 'https://evil.example/token', scopes: {} },
+          },
+        },
+      },
+    };
+    expect(await verifyAgentCardJws(secondFlow, { keys })).toBe(false);
+    const withoutFlows = { ...resigned, securitySchemes: { oauth: { ...oauth, flows: {} } } };
+    expect(await verifyAgentCardJws(withoutFlows, { keys })).toBe(false);
+  });
+
+  it('refuses to sign a card its 1.0 form would not cover', () => {
+    const signer = new AgentCardSigner({ alg: 'ES256', privateKey, kid: 'k1' });
+    const card = signedHybrid();
+    expect(() =>
+      signer.signature({
+        ...card,
+        securitySchemes: {
+          oauth: {
+            type: 'oauth2',
+            flows: {
+              clientCredentials: { tokenUrl: 'https://auth.example/token', scopes: {} },
+              password: { tokenUrl: 'https://auth.example/token', scopes: {} },
+            },
+          },
+        },
+      })
+    ).toThrow(/security scheme oauth has no lossless A2A 1.0 form/);
+    expect(() => signer.signature({ ...card, url: 'https://elsewhere.example' })).toThrow(
+      /is not a 0.3 interface/
+    );
+  });
+
+  it('signs a plain 0.3 card, whose endpoints are its 1.0 interfaces', async () => {
+    const server = new A2AServer({
+      agents: { helper: mockAgent('helper') },
+      cogitator: echoCogitator(),
+      protocolVersions: ['0.3'],
+      cardSigning: {
+        alg: 'EdDSA',
+        privateKey: generateKeyPairSync('ed25519').privateKey,
+        kid: 'e',
+      },
+    });
+    const card = server.getAgentCard(undefined, options);
+    expect(card.supportedInterfaces).toBeUndefined();
+    expect(card.signatures).toHaveLength(1);
+    expect(legacyCoverageProblem(card)).toBeUndefined();
+  });
+
+  it('serves the 0.3 form of a 1.0-only server unsigned', () => {
+    const server = new A2AServer({
+      agents: { helper: mockAgent('helper') },
+      cogitator: echoCogitator(),
+      protocolVersions: ['1.0'],
+      cardSigning: { alg: 'ES256', privateKey, kid: 'k1' },
+    });
+    expect(server.getAgentCard().signatures).toBeUndefined();
+    expect(server.getV1AgentCard().signatures).toHaveLength(1);
   });
 });

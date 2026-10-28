@@ -3,15 +3,36 @@ import type { A2AServer } from '../server.js';
 import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
 import { handleA2AHttp, type A2AHttpResponse } from './shared.js';
+import { A2A_BODY_LIMIT, PayloadTooLargeError, isEmptyObject } from './body.js';
 
-const parseJson = json({ type: ['application/json', 'application/a2a+json'] });
+const parseJson = json({
+  type: ['application/json', 'application/a2a+json'],
+  limit: A2A_BODY_LIMIT,
+});
 
+/**
+ * The JSON body: the one a body parser read (`req._body`), else parsed here (at most
+ * `A2A_BODY_LIMIT` bytes). Express 4's parsers leave `{}` on a body of a type they skip, such as
+ * `application/a2a+json`, without reading it: that body is read here too.
+ */
 function readBody(req: Request, res: Response): Promise<unknown> {
-  if (req.body !== undefined) return Promise.resolve(req.body);
+  const parsedUpstream = (req as Request & { _body?: boolean })._body === true;
+  if (parsedUpstream || req.readableEnded) return Promise.resolve(req.body);
+  if (req.body !== undefined && !isEmptyObject(req.body)) return Promise.resolve(req.body);
   return new Promise((resolve, reject) => {
     parseJson(req, res, (error?: unknown) => {
-      if (error) reject(error instanceof Error ? error : new SyntaxError(String(error)));
-      else resolve(req.body);
+      if (!error) {
+        resolve(req.body);
+        return;
+      }
+      const status = (error as { status?: unknown }).status;
+      reject(
+        status === 413
+          ? new PayloadTooLargeError(A2A_BODY_LIMIT)
+          : error instanceof Error
+            ? error
+            : new SyntaxError(String(error))
+      );
     });
   });
 }

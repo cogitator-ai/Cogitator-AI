@@ -24,9 +24,9 @@ export function a2aFastify(server: A2AServer): FastifyPluginAsync {
     fastify.addContentTypeParser(
       ['application/json', A2A_CONTENT_TYPE],
       { parseAs: 'string' },
-      (_request: FastifyRequest, body: string | Buffer, done) => {
+      (request: FastifyRequest, body: string | Buffer, done) => {
         const text = typeof body === 'string' ? body : body.toString('utf8');
-        if (text.trim() === '') {
+        if (text.trim() === '' && isRest(request)) {
           done(null, undefined);
           return;
         }

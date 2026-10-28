@@ -87,17 +87,32 @@ describe('keyset cursor of ListTasks', () => {
     ]);
   });
 
-  it('sorts both stores by the same total order', async () => {
+  it('keeps the insertion order of the stores for equal times, the cursor its total order', async () => {
     const tasks = [taskAt('task_a', SAME), taskAt('task_c', SAME), taskAt('task_b', SAME)];
-    for (const store of [new InMemoryTaskStore(), new RedisTaskStore({ client: mapRedis() })]) {
-      for (const task of tasks) await store.create(task);
-      expect((await store.list()).map((task) => task.id)).toEqual(['task_c', 'task_b', 'task_a']);
-    }
+    const store = new InMemoryTaskStore();
+    for (const task of tasks) await store.create(task);
+    expect((await store.list()).map((task) => task.id)).toEqual(['task_a', 'task_c', 'task_b']);
+    expect(paginateTasks(await store.list(), {}).tasks.map((task) => task.id)).toEqual([
+      'task_c',
+      'task_b',
+      'task_a',
+    ]);
     expect([...tasks].sort(compareTasksNewestFirst).map((task) => task.id)).toEqual([
       'task_c',
       'task_b',
       'task_a',
     ]);
+  });
+
+  it('pages the same with RedisTaskStore', async () => {
+    const store = new RedisTaskStore({ client: mapRedis() });
+    for (const task of [taskAt('task_a', SAME), taskAt('task_b', SAME)]) await store.create(task);
+    const first = paginateTasks(await store.list(), { pageSize: 1 });
+    const second = paginateTasks(await store.list(), {
+      pageSize: 1,
+      pageToken: first.nextPageToken,
+    });
+    expect([...first.tasks, ...second.tasks].map((task) => task.id)).toEqual(['task_b', 'task_a']);
   });
 });
 

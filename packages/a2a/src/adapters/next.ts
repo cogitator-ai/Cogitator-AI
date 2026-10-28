@@ -2,7 +2,7 @@ import type { A2AServer } from '../server.js';
 import { createErrorResponse } from '../json-rpc.js';
 import * as errors from '../errors.js';
 import { AGENT_CARD_PATH } from '../types.js';
-import { handleA2AHttp, matchRoute, type A2AHttpResponse } from './shared.js';
+import { handleA2AHttp, isRestPath, matchRoute, type A2AHttpResponse } from './shared.js';
 import { trimTrailingSlashes } from '../url.js';
 
 type RouteParams = Record<string, string | string[] | undefined>;
@@ -50,9 +50,12 @@ function toResponse(response: A2AHttpResponse, abort: AbortController): Response
   }
 }
 
-async function readJson(request: Request): Promise<unknown> {
+/** The JSON body. An empty one is no body on REST, and invalid JSON on JSON-RPC as before. */
+async function readJson(request: Request, allowEmpty: boolean): Promise<unknown> {
   const text = await request.text();
-  return text.trim() === '' ? undefined : (JSON.parse(text) as unknown);
+  if (text.trim() !== '') return JSON.parse(text) as unknown;
+  if (allowEmpty) return undefined;
+  throw new SyntaxError('Empty JSON body');
 }
 
 /**
@@ -81,7 +84,7 @@ export function a2aNext(server: A2AServer) {
         mountUrl: url.origin,
         query: url.searchParams,
         header: (name) => request.headers.get(name),
-        readBody: () => readJson(request),
+        readBody: () => readJson(request, isRestPath(server, relativePath)),
         signal: controller.signal,
       });
       return toResponse(response, controller);

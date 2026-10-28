@@ -15,7 +15,14 @@ import type {
 } from './types.js';
 import type { V1AgentCard, V1SecurityScheme } from './v1/types.js';
 import { readAgentCard } from './v1/schema.js';
+import {
+  securityRequirementsFromV1,
+  securityRequirementsToV1,
+  securitySchemeFromV1,
+  securitySchemeToV1,
+} from './v1/translate.js';
 import { cardModelFromLegacy, toV1Card } from './agent-card.js';
+import { normalizeProtocolVersion } from './version.js';
 
 /** A public key as `verifyAgentCardJws` takes it: a `KeyObject`, a JWK, or PEM. */
 export type AgentCardPublicKey = KeyObject | JsonWebKey | string;
@@ -216,6 +223,61 @@ function v1Projection(card: AgentCard | V1AgentCard): V1AgentCard {
   return withoutProtoDefaults(readAgentCard(card));
 }
 
+/** Two values that are the same once what ProtoJSON leaves out is dropped. */
+function sameContent(a: unknown, b: unknown): boolean {
+  return jcs(dropEmpty(a) ?? null) === jcs(dropEmpty(b) ?? null);
+}
+
+/**
+ * Why the A2A 0.3 fields of a card are not covered by a signature over its A2A 1.0 form, or
+ * undefined when they are. The signature covers only the 1.0 form, so the 0.3 fields must follow
+ * from it: `url` (with `preferredTransport` and `protocolVersion`) and every entry of
+ * `additionalInterfaces` must be a 0.3 interface of `supportedInterfaces`, the security schemes and
+ * requirements must come back from their 1.0 form unchanged (an OAuth scheme with several flows, or
+ * none, does not), and no 0.3 claim without a 1.0 form (`stateTransitionHistory`) may be made.
+ */
+export function legacyCoverageProblem(card: AgentCard): string | undefined {
+  const signed = toV1Card(cardModelFromLegacy(card)).supportedInterfaces.filter((entry) =>
+    normalizeProtocolVersion(entry.protocolVersion).startsWith('0.')
+  );
+  const covered = (url: string, binding: string, version?: string) =>
+    signed.some(
+      (entry) =>
+        entry.url === url &&
+        entry.protocolBinding === binding &&
+        (version === undefined || normalizeProtocolVersion(entry.protocolVersion) === version)
+    );
+  const binding = card.preferredTransport ?? 'JSONRPC';
+  const version = normalizeProtocolVersion(card.protocolVersion) || '0.3';
+  if (!covered(card.url, binding, version)) {
+    return `url ${card.url} (${binding} ${version}) is not a 0.3 interface of supportedInterfaces`;
+  }
+  for (const entry of card.additionalInterfaces ?? []) {
+    if (!covered(entry.url, entry.transport)) {
+      return `additional interface ${entry.url} (${entry.transport}) is not a 0.3 interface of supportedInterfaces`;
+    }
+  }
+  for (const [name, scheme] of Object.entries(card.securitySchemes ?? {})) {
+    const v1 = securitySchemeToV1(scheme);
+    if (!v1 || !sameContent(securitySchemeFromV1(v1), scheme)) {
+      return `security scheme ${name} has no lossless A2A 1.0 form`;
+    }
+  }
+  const requirements = [
+    card.security ?? [],
+    ...(card.skills ?? []).map((skill) => skill.security ?? []),
+  ];
+  for (const security of requirements) {
+    if (!sameContent(securityRequirementsFromV1(securityRequirementsToV1(security)), security)) {
+      return 'a security requirement has no lossless A2A 1.0 form';
+    }
+  }
+  if (card.capabilities?.stateTransitionHistory) {
+    return 'capabilities.stateTransitionHistory has no A2A 1.0 form';
+  }
+  return undefined;
+}
+
 /**
  * The payload an Agent Card signature covers (A2A 1.0, section 8.4.1): the card's A2A 1.0 form
  * without `signatures`, with the fields ProtoJSON leaves out dropped, in JCS (RFC 8785). The
@@ -264,8 +326,20 @@ export class AgentCardSigner {
     );
   }
 
-  /** The signature of a card (of any version) over its A2A 1.0 form. */
+  /**
+   * The signature of a card (of any version) over its A2A 1.0 form. An A2A 0.3 card whose 0.3
+   * fields the 1.0 form does not cover (see `legacyCoverageProblem`) is refused: a signature
+   * would leave them open to tampering.
+   */
   signature(card: AgentCard | V1AgentCard): AgentCardSignature {
+    if (isLegacyCard(card)) {
+      const problem = legacyCoverageProblem(card);
+      if (problem) {
+        throw new Error(
+          `Agent Card signing: cannot sign the card of ${card.name}: ${problem}, so a signature over its A2A 1.0 form would not cover it`
+        );
+      }
+    }
     const payload = canonicalizeAgentCard(card);
     const cached = this.cache.get(payload);
     if (cached) return cached;
@@ -357,8 +431,9 @@ async function keyFromJku(
  * Whether one of the card's JWS signatures checks out with a key the options trust (A2A 1.0,
  * section 8.4.3): the key of its `kid` from `keys`, `resolveKey`, or the JWKS at its `jku` when
  * `trustJku` allows the URL. Works on A2A 1.0, A2A 0.3 and hybrid cards: the payload is always
- * the card's A2A 1.0 form. HMAC (`HS256`) signatures are skipped: check those with
- * `verifyAgentCardSignature`.
+ * the card's A2A 1.0 form, and an A2A 0.3 card whose 0.3 fields that form does not cover (see
+ * `legacyCoverageProblem`) never verifies. HMAC (`HS256`) signatures are skipped: check those
+ * with `verifyAgentCardSignature`.
  */
 export async function verifyAgentCardJws(
   card: AgentCard | V1AgentCard,
@@ -366,6 +441,7 @@ export async function verifyAgentCardJws(
 ): Promise<boolean> {
   const signatures = card.signatures ?? [];
   if (signatures.length === 0) return false;
+  if (isLegacyCard(card) && legacyCoverageProblem(card)) return false;
   let payload: string;
   try {
     payload = base64url(canonicalizeAgentCard(card));

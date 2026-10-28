@@ -23,6 +23,7 @@ import {
 import { V1_STREAMING_METHODS } from '../v1/json-rpc.js';
 import { restErrorBody, toRestError, toV1JsonRpcError } from '../v1/errors.js';
 import type { V1StreamResponse } from '../v1/types.js';
+import { PayloadTooLargeError } from './body.js';
 
 export type HeaderValue = string | string[] | null | undefined;
 
@@ -107,9 +108,8 @@ function agentNameFrom(segment: string): string | null {
  * `basePath`, or one agent's endpoint and card under `<basePath>/<agent name>`.
  */
 export function matchRoute(server: A2AServer, method: string, path: string): Route | null {
-  const restPath = server.restPath;
-  if (restPath && path.startsWith(`${restPath}/`)) {
-    return { kind: 'rest', path: path.slice(restPath.length) };
+  if (server.restPath && isRestPath(server, path)) {
+    return { kind: 'rest', path: path.slice(server.restPath.length) };
   }
   const basePath = trimTrailingSlashes(server.basePath) || '';
   if (method === 'GET') {
@@ -134,6 +134,11 @@ export function matchRoute(server: A2AServer, method: string, path: string): Rou
     }
   }
   return null;
+}
+
+/** Whether a path relative to the mount is under the HTTP+JSON binding. */
+export function isRestPath(server: A2AServer, path: string): boolean {
+  return server.restPath !== null && path.startsWith(`${server.restPath}/`);
 }
 
 function json(
@@ -228,6 +233,14 @@ function negotiateExtensions(
   return { requested, headers: activated.length > 0 ? { [header]: activated.join(', ') } : {} };
 }
 
+/** Whether a body was refused for its size: `PayloadTooLargeError`, or a parser's `413` error. */
+function isPayloadTooLarge(error: unknown): error is Error {
+  return (
+    error instanceof PayloadTooLargeError ||
+    (error instanceof Error && (error as { status?: unknown }).status === 413)
+  );
+}
+
 function mediaTypeOf(contentType: string): string {
   return contentType.split(';', 1)[0].trim().toLowerCase();
 }
@@ -294,7 +307,10 @@ export async function handleA2AHttp(
   let body: unknown;
   try {
     body = await request.readBody();
-  } catch {
+  } catch (error) {
+    if (isPayloadTooLarge(error)) {
+      return json(413, rpcError(null, new errors.A2AError(errors.invalidRequest(error.message))));
+    }
     return json(200, rpcError(null, new errors.A2AError(errors.parseError('Invalid JSON body'))));
   }
   if (body === undefined) {
@@ -420,7 +436,10 @@ async function handleRestHttp(
     }
     try {
       body = await request.readBody();
-    } catch {
+    } catch (failure) {
+      if (isPayloadTooLarge(failure)) {
+        return restJson(413, restErrorBody(413, 'INVALID_ARGUMENT', failure.message), headers);
+      }
       const { status, body: error } = toRestError(
         new errors.A2AError(errors.parseError('Invalid JSON body')),
         'parse'

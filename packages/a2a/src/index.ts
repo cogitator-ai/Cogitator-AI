@@ -30,7 +30,12 @@ export type {
   AgentCardInterface,
 } from './agent-card.js';
 
-export { AgentCardSigner, canonicalizeAgentCard, verifyAgentCardJws } from './card-signing.js';
+export {
+  AgentCardSigner,
+  canonicalizeAgentCard,
+  legacyCoverageProblem,
+  verifyAgentCardJws,
+} from './card-signing.js';
 export type {
   AgentCardPublicKey,
   AgentCardVerificationOptions,

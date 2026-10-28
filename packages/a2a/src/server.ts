@@ -249,6 +249,7 @@ export class A2AServer {
     });
 
     this.operations = {
+      hasAgent: (name) => this.hasAgent(name),
       authenticate: (token) => this.authenticate(token),
       agentFor: (endpointAgent, tenant) => this.agentFor(endpointAgent, tenant),
       sendMessage: (params, context) => this.sendMessage(params, context),
@@ -281,10 +282,16 @@ export class A2AServer {
     }
     const base = trimTrailingSlashes(this.basePath);
     const clash = agentNames.find((name) => `${base}/${encodeURIComponent(name)}` === path);
-    if (clash) {
+    if (clash && restPath !== undefined) {
       throw new Error(
         `A2AServer restPath "${path}" is the endpoint of agent "${clash}": set another restPath`
       );
+    }
+    if (clash) {
+      console.warn(
+        `[a2a] The default restPath "${path}" is the endpoint of agent "${clash}", so the HTTP+JSON binding is off. Set restPath to serve it elsewhere.`
+      );
+      return null;
     }
     return path;
   }
@@ -325,12 +332,18 @@ export class A2AServer {
    * names no version. Its `url` is the agent's JSON-RPC endpoint: `cardUrl`, or `baseUrl` plus
    * `basePath`, and `/<agent name>` after it for every agent but the first. When the server
    * speaks A2A 1.0 too, `supportedInterfaces` lists every interface of both versions.
+   *
+   * With a signing key the card carries the signature of its A2A 1.0 form, which covers its 0.3
+   * fields too. A server that speaks only A2A 1.0 has no 0.3 endpoint such a signature could
+   * cover, so this form of its card is unsigned (its 1.0 card is signed).
    */
   getAgentCard(agentName?: string, options?: AgentCardRequestOptions): AgentCard {
     const model = this.cardModel(agentName, options?.baseUrl);
     const card = toLegacyCard(model, { embedInterfaces: this.protocolVersions.includes('1.0') });
     if (this.legacySigning) return signAgentCard(card, this.legacySigning);
-    if (this.signer) return { ...card, signatures: [this.signer.signature(toV1Card(model))] };
+    if (this.signer && this.protocolVersions.includes('0.3')) {
+      return { ...card, signatures: [this.signer.signature(card)] };
+    }
     return card;
   }
 
@@ -742,15 +755,12 @@ export class A2AServer {
   }
 
   /**
-   * A task the caller may see; another user's task is reported as not found. Over A2A 1.0 a
-   * task of another agent is not found either.
+   * A task the caller may see; another user's task is reported as not found, and so is a task
+   * bound to another agent (one created over A2A 1.0), whatever the version of the request.
    */
   private async visibleTask(taskId: string, context: CallContext): Promise<A2ATask> {
     const task = await this.taskManager.getTask(taskId);
-    if (
-      !isTaskVisibleTo(task, context.caller?.userId) ||
-      (context.version === '1.0' && !isTaskOfAgent(task, context.agentName))
-    ) {
+    if (!isTaskVisibleTo(task, context.caller?.userId) || !isTaskOfAgent(task, context.agentName)) {
       throw new A2AError(errors.taskNotFound(taskId));
     }
     return task;
@@ -828,7 +838,7 @@ export class A2AServer {
     await this.assertContextAvailable(message.contextId, context.caller);
     const task = await this.taskManager.createTask(message, message.contextId, {
       ownerId: context.caller?.userId,
-      agentName: context.agentName,
+      ...(context.version === '1.0' && { agentName: context.agentName }),
     });
     await this.registerInitialPushConfig(task.id, configuration);
     return task;
@@ -859,7 +869,7 @@ export class A2AServer {
       case 'tasks/cancel':
         return this.cancelTask(parseTaskIdParams(params).id, context);
       case 'tasks/list':
-        return this.handleLegacyListTasks(params, caller);
+        return this.handleLegacyListTasks(params, context);
       case 'tasks/pushNotificationConfig/set': {
         const { taskId, pushNotificationConfig } = parseTaskPushNotificationConfig(params);
         const stored = await this.createPushConfig(taskId, pushNotificationConfig, context);
@@ -978,20 +988,25 @@ export class A2AServer {
     return publicTask(await this.taskManager.cancelTask(taskId));
   }
 
-  /** Cogitator extension `tasks/list` of A2A 0.3: the caller's tasks, newest first. */
+  /**
+   * Cogitator extension `tasks/list` of A2A 0.3: the caller's tasks, newest first, without the
+   * tasks bound to another agent.
+   */
   private async handleLegacyListTasks(
     params: unknown,
-    caller: A2ACaller | undefined
+    context: CallContext
   ): Promise<{ tasks: A2ATask[] }> {
     const raw = parseListTasksParams(params);
     const filter: TaskFilter = {
       contextId: raw.contextId,
       state: raw.state,
-      offset: raw.offset,
-      limit: Math.min(raw.limit ?? MAX_LIST_LIMIT, MAX_LIST_LIMIT),
-      visibleTo: caller?.userId ?? null,
+      visibleTo: context.caller?.userId ?? null,
     };
-    const tasks = await this.taskManager.listTasks(filter);
+    const offset = raw.offset ?? 0;
+    const limit = Math.min(raw.limit ?? MAX_LIST_LIMIT, MAX_LIST_LIMIT);
+    const tasks = (await this.taskManager.listTasks(filter))
+      .filter((task) => isTaskOfAgent(task, context.agentName))
+      .slice(offset, offset + limit);
     return { tasks: tasks.map(publicTask) };
   }
 
