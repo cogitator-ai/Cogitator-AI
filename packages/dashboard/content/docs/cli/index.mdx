@@ -55,7 +55,8 @@ cogitator run -m ollama/llama3.1:8b "What is the capital of France?"
 | `cogitator up`             | Run the assistant from `cogitator.yml`, or start Docker services                                                |
 | `cogitator down`           | Stop Docker Compose services                                                                                    |
 | `cogitator assistant`      | Run a gateway module (`src/gateway.ts`) with a live dashboard                                                   |
-| `cogitator run [msg]`      | Chat with an agent (one-shot or interactive REPL)                                                               |
+| `cogitator run [msg]`      | Chat with an agent (one-shot or interactive REPL), or run headless with `-p`                                    |
+| `cogitator app-server`     | Serve the typed JSON-RPC app-server on stdio, write its client and JSON Schema                                  |
 | `cogitator build`          | Bundle a gateway into a self-starting `dist/cogitator.mjs`                                                      |
 | `cogitator daemon <cmd>`   | Run in the background / install as a launchd or systemd service                                                 |
 | `cogitator skill <cmd>`    | Create, validate, install and remove skills                                                                     |
@@ -240,6 +241,19 @@ cogitator run            # interactive
 **Model resolution:** `-m` → `COGITATOR_MODEL` → `llm.defaultModel` from the config → the model of an assistant config → first installed Ollama model (preferring qwen3:8b, qwen3.5:9b, llama3.1:8b, llama3:8b, gemma3:4b, gemma2:9b, mistral:7b). Ollama is reached at `llm.providers.ollama.baseUrl`, `OLLAMA_URL` or `OLLAMA_HOST`.
 
 Interactive commands: `/model [name]`, `/clear`, `/help`, `exit` / `quit` (Ctrl+D also exits).
+
+With `-p` (`--print`) `run` works without a terminal: the answer as text, JSON or stream-json, many turns as stream-json input, sessions kept to `--resume` and `--fork`, and `--json-schema` for a structured answer. See [Headless mode](/docs/cli/headless).
+
+---
+
+### cogitator app-server
+
+Serves the [app-server](/docs/integrations/app-server) on stdin and stdout as NDJSON JSON-RPC, with the agent `run` would use (`-c`, `-m`, `--no-session-persistence`). `generate-ts --out <dir>` writes the typed client, `generate-json-schema --out <dir>` the JSON Schema of the protocol.
+
+```bash
+cogitator app-server -m ollama/qwen3:8b
+cogitator app-server generate-ts --out src/generated
+```
 
 ---
 
@@ -484,6 +498,7 @@ The model, memory and `deploy:` section all come from one config file: the `-c` 
 | ------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------- |
 | `COGITATOR_CONFIG`                                      | `run`                                   | Config file path                                                          |
 | `COGITATOR_MODEL`                                       | `run`                                   | Default model                                                             |
+| `COGITATOR_SESSIONS_DB`                                 | `run -p`, `app-server`                  | SQLite file of the sessions, default `~/.cogitator/sessions.db`           |
 | `COGITATOR_PLUGINS_DIR`                                 | `plugin`, runtime                       | Where installed plugins are kept                                          |
 | `COGITATOR_TRIGGERS_DIR`                                | `schedule`, `inbox`, `trigger`, runtime | Where the file stores of routines are kept, default `.cogitator/triggers` |
 | `COGITATOR_URL`, `COGITATOR_TRIGGER_TOKEN`              | `trigger fire`                          | The server and the trigger's token                                        |

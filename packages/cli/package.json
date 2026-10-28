@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/cli",
-  "version": "0.16.1",
+  "version": "0.17.0",
   "description": "CLI for Cogitator AI Agent Runtime",
   "keywords": [
     "cogitator",
@@ -41,6 +41,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.8.1",
+    "@cogitator-ai/app-server": "workspace:*",
     "@cogitator-ai/channels": "workspace:*",
     "@cogitator-ai/config": "workspace:*",
     "@cogitator-ai/core": "workspace:*",
@@ -49,6 +50,7 @@
     "@cogitator-ai/mcp": "workspace:*",
     "@cogitator-ai/memory": "workspace:*",
     "@cogitator-ai/models": "workspace:*",
+    "@cogitator-ai/server-shared": "workspace:*",
     "@cogitator-ai/studio": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
     "better-sqlite3": "^13.0.3",

@@ -1,4 +1,10 @@
-import type { RunOptions, RunResult } from '@cogitator-ai/types';
+import type {
+  DelegatedRunStart,
+  DelegatedRunStream,
+  RunOptions,
+  RunResult,
+} from '@cogitator-ai/types';
+import { INTERNAL_ERROR, describeHttpError } from './contract.js';
 import { generateId } from './helpers.js';
 import {
   createApprovalRequiredEvent,
@@ -36,7 +42,8 @@ export type AgentStreamCallbacks = Required<
     | 'onToolInputAvailable'
     | 'onToolInputAbandoned'
   >
->;
+> &
+  Pick<RunOptions, 'onDelegatedRun'>;
 
 export interface AgentStreamSessionOptions {
   /**
@@ -44,6 +51,14 @@ export interface AgentStreamSessionOptions {
    * the `start` event, so a client that loses the stream still knows where to continue.
    */
   threadId?: string;
+  /**
+   * Streams the runs the run delegates (subagents, agents used as tools): for each one it is
+   * told of, the function its events go out through, or undefined to leave it out. A delegated
+   * run gets a session of its own, with its own `start`, parts and `finish` (or `error`), and the
+   * runs it delegates in turn come here too, each tagged by its own parent call. With it set,
+   * `callbacks` carry `onDelegatedRun`. A background run may stream after this run finished
+   */
+  delegated?: (start: DelegatedRunStart) => ((event: StreamEvent) => void) | undefined;
 }
 
 type PartKind = 'text' | 'reasoning';
@@ -111,7 +126,11 @@ export class AgentStreamSession {
     options: AgentStreamSessionOptions = {}
   ) {
     this.threadId = options.threadId ?? createThreadId();
+    const delegated = options.delegated;
     this.callbacks = {
+      ...(delegated && {
+        onDelegatedRun: (start: DelegatedRunStart) => delegatedRunStream(start, delegated),
+      }),
       onToken: (token) => {
         if (!token) return;
         this.streamedText = true;
@@ -243,6 +262,50 @@ export class AgentStreamSession {
     this.open = undefined;
     this.emit(PART_EVENTS[open.kind].end(open.id));
   }
+}
+
+/**
+ * The callbacks of a run delegated with `start`, streamed through what `delegated` gives for it
+ * by a session of its own: opened as the run starts (or, for a resumed run, with its first
+ * event), finished with its result or failed with its error
+ */
+function delegatedRunStream(
+  start: DelegatedRunStart,
+  delegated: NonNullable<AgentStreamSessionOptions['delegated']>
+): DelegatedRunStream | undefined {
+  const emit = delegated(start);
+  if (!emit) return undefined;
+  let session: AgentStreamSession | undefined;
+  const open = (threadId = start.threadId): AgentStreamSession => {
+    if (session) return session;
+    session = new AgentStreamSession(emit, {
+      ...(threadId !== undefined && { threadId }),
+      delegated,
+    });
+    session.start();
+    return session;
+  };
+  const callbacks = (): AgentStreamCallbacks => open().callbacks;
+  return {
+    onToken: (token) => callbacks().onToken(token),
+    onReasoning: (delta) => callbacks().onReasoning(delta),
+    onToolCall: (call) => callbacks().onToolCall(call),
+    onToolResult: (result) => callbacks().onToolResult(result),
+    onToolUpdate: (update) => callbacks().onToolUpdate(update),
+    onToolInputStart: (event) => callbacks().onToolInputStart(event),
+    onToolInputDelta: (event) => callbacks().onToolInputDelta(event),
+    onToolInputAvailable: (event) => callbacks().onToolInputAvailable(event),
+    onToolInputAbandoned: (event) => callbacks().onToolInputAbandoned(event),
+    onDelegatedRun: (child) => delegatedRunStream(child, delegated),
+    onRunStart: ({ threadId }) => {
+      open(threadId);
+    },
+    onRunComplete: (result) => open(result.threadId).complete(result),
+    onRunError: (error) => {
+      const described = describeHttpError(error) ?? INTERNAL_ERROR;
+      open().fail(described.message, described.code);
+    },
+  };
 }
 
 /** Whether the argument text a call streamed reads as `args`, keys in any order */

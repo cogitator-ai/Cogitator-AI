@@ -1,0 +1,176 @@
+---
+title: App-server (JSON-RPC)
+description: 'A typed JSON-RPC 2.0 app-server on stdio: threads, turns, steering, approvals and reviews of a Cogitator runtime, with a generated client and JSON Schema.'
+---
+
+## Overview
+
+`@cogitator-ai/app-server` serves a Cogitator runtime to another program over JSON-RPC 2.0, one message per line (NDJSON) on stdio. It is how an editor, a desktop app or a script drives agents: it starts threads, runs turns, streams their events, steers and interrupts them, asks for tool approvals and reviews code changes. The protocol is written as Zod schemas, and a typed client with no dependencies is generated from them.
+
+- **SessionHost** - threads in the runtime's memory, one turn per thread at a time
+- **Turns** - `turn/start`, `turn/steer`, `turn/interrupt`, every event as `turn/event`, subagent events tagged by their parent tool call
+- **Approvals** - asked live with `approval/request`, or the turn ends paused and is resumed with decisions
+- **Reviews** - `review/start` for uncommitted changes, a branch, a commit or custom instructions, the findings structured
+- **Traces** - the spans of every turn, sent as they end to clients that ask and kept for `_cogitator/trace/get`
+- **Extensions** - memory search, rewind, traces, workflows and swarms under `_cogitator/*`
+- **Generated client** - `AppServerClient` and a type for every message, plus the JSON Schema
+
+```bash
+pnpm add @cogitator-ai/app-server @cogitator-ai/core
+```
+
+## Running it
+
+From the CLI, with the agent of `cogitator run`:
+
+```bash
+cogitator app-server -m ollama/qwen3:8b
+```
+
+Or from code, with your own agents:
+
+```typescript
+import { Agent, Cogitator } from '@cogitator-ai/core';
+import { SessionHost, createAppServer, serveStdio } from '@cogitator-ai/app-server';
+
+const cogitator = new Cogitator({
+  memory: { adapter: 'sqlite', sqlite: { path: './sessions.db' } },
+});
+
+const host = new SessionHost({
+  cogitator,
+  agents: {
+    assistant: new Agent({ name: 'assistant', model: 'ollama/qwen3:8b', instructions: 'Help.' }),
+  },
+});
+
+await serveStdio(createAppServer(host));
+await host.close();
+```
+
+The host needs memory, since threads live there. `SessionHost` takes `defaultAgent`, `review` (`agent`, `cwd`, `context`), `workflows` and `swarms` runners, `serverInfo`, and `exposeErrors` to show clients the message of errors that are not the runtime's own. `createAppServer(host).connect(send)` gives a connection for any other transport that moves whole messages.
+
+## The client
+
+```typescript
+import { APP_SERVER_PROTOCOL_VERSION, AppServerClient } from '@cogitator-ai/app-server/client';
+
+const client = new AppServerClient(transport); // { send(line), onLine(callback), close() }
+
+await client.initialize({
+  protocolVersion: APP_SERVER_PROTOCOL_VERSION,
+  clientInfo: { name: 'my-app', version: '1.0.0' },
+  capabilities: { approvals: 'request', optOutNotifications: ['thread/log'] },
+});
+
+client.on('turn/event', ({ event, parentToolCallId }) => {
+  if (event.type === 'text-delta' && !parentToolCallId) process.stdout.write(event.delta);
+});
+client.on('turn/completed', ({ turn }) => console.log(turn.status, turn.usage));
+client.onRequest('approval/request', ({ toolCall }) => ({
+  outcome: { outcome: 'selected', optionId: 'allow_once' },
+}));
+
+const { thread } = await client.threadStart();
+const { turn } = await client.turnStart({
+  threadId: thread.id,
+  input: [{ type: 'text', text: 'Plan the release' }],
+});
+await client.turnSteer({
+  threadId: thread.id,
+  expectedTurnId: turn.id,
+  input: [{ type: 'text', text: 'Skip the changelog' }],
+});
+```
+
+For a project of your own, write the client and the schema out:
+
+```bash
+cogitator app-server generate-ts --out src/generated
+cogitator app-server generate-json-schema --out schema
+```
+
+## Methods
+
+| Method                     | What it does                                                                  |
+| -------------------------- | ----------------------------------------------------------------------------- |
+| `initialize`               | Capabilities both ways, the server's agents. Everything else waits for it     |
+| `thread/start`             | A thread with an agent (`agent`, `threadId`, `metadata`, `permissionMode`)    |
+| `thread/resume`            | A kept thread with the messages of its active branch and what it waits on     |
+| `thread/fork`              | A new thread holding the branch up to an entry                                |
+| `thread/list`              | Threads a page at a time, by archive state and agent                          |
+| `thread/archive`           | Archives a thread, `thread/unarchive` takes it back                           |
+| `thread/setPermissionMode` | The permission mode of new turns, and of the turn going on from its next call |
+| `turn/start`               | A turn with `input`, or `resume` for a paused thread, `outputSchema`, `model` |
+| `turn/steer`               | A message to the turn going on: `steer`, `followUp` or `inject`               |
+| `turn/interrupt`           | Stops the turn, returns the messages it did not take                          |
+| `review/start`             | A review turn in a review thread of its own                                   |
+| `_cogitator/memory/search` | Searches the turns of a thread and the agent's memory items                   |
+| `_cogitator/thread/rewind` | Rewinds a thread to an entry, its files too with `files`                      |
+| `_cogitator/trace/get`     | The spans kept of a turn (`turnId`), `-32002` for a turn no longer kept       |
+| `_cogitator/workflow/*`    | `list` and `run` of the host's workflows, only when it has a runner           |
+| `_cogitator/swarm/*`       | `list` and `run` of the host's swarms, only when it has a runner              |
+
+The answer to `turn/start` always goes out before `turn/started`, then come `turn/event` (each a `StreamEvent`, with `parentToolCallId` and `agent` for delegated runs) and `turn/completed` with the turn: `completed`, `paused` (with `pending`), `interrupted` or `failed` (with `error`). Other notifications: `thread/started`, `thread/archived`, `thread/unarchived` and `thread/log`, the memory adapter's changes to a thread.
+
+## Traces
+
+Every turn runs with `onSpan`, and the host keeps the spans of each turn: the last 2000 of each of the last 200 turns. A client that initializes with `capabilities: { traces: true }` gets every span as it ends:
+
+```typescript
+client.on('_cogitator/trace/span', ({ turnId, span }) => {
+  console.log(turnId, span.name, `${span.duration}ms`, span.status);
+});
+const { spans } = await client.traceGet({ turnId: turn.id });
+```
+
+Others can still read a turn's spans with `_cogitator/trace/get`. `optOutNotifications` leaves the notification out too.
+
+## Approvals
+
+When the client says `capabilities.approvals: 'request'`, a tool call that needs approval is asked with `approval/request` while the turn waits, in the shape of ACP `session/request_permission`: the `toolCall` and the options `allow_once`, `allow_always` (approves and saves the suggested allow rule) and `reject_once`. ACP's `reject_always` is not offered, as the runtime remembers allow rules from answers, not deny rules: a lasting denial belongs in the `deny` rules of the permissions. `{ outcome: { outcome: 'cancelled' } }` leaves the turn paused. Otherwise the turn ends paused, and `turn/start` with `resume: { decisions, responses, defaultDecision }` goes on. New input to a paused thread is refused with `-32022`.
+
+## Reviews
+
+```typescript
+const { turn, reviewThreadId } = await client.reviewStart({
+  threadId: thread.id,
+  target: { type: 'baseBranch', branch: 'main' },
+});
+client.on('turn/completed', ({ turn: done }) => {
+  if (done.id === turn.id) console.log(done.review?.findings);
+});
+```
+
+Targets are `uncommittedChanges`, `baseBranch { branch }`, `commit { sha, title? }` (read with git in the host's `review.cwd`) and `custom { instructions }`. The review runs the thread's agent with review instructions and a response format, and the completed turn carries `review`: `findings` with `title`, `body`, `priority` (0 must be fixed, 3 a nit), `confidence` and `location`, then `overallCorrectness` and `overallExplanation`.
+
+## Errors
+
+| Code     | Meaning                                                     |
+| -------- | ----------------------------------------------------------- |
+| `-32602` | Invalid params, `data.issues` says where                    |
+| `-32002` | Not found, `data.kind` names a thread, turn, agent or entry |
+| `-32010` | Not initialized                                             |
+| `-32011` | Already initialized                                         |
+| `-32020` | The thread has a turn going on                              |
+| `-32021` | The turn named is not the one going on                      |
+| `-32022` | The thread is paused                                        |
+| `-32023` | The thread is archived                                      |
+| `-32030` | The runtime refused or failed, `data.code` is its code      |
+
+Plus the standard `-32700`, `-32600`, `-32601` and `-32603`.
+
+## ACP mapping
+
+The core methods line up with the [Agent Client Protocol](https://agentclientprotocol.com), so an ACP agent maps onto them one to one:
+
+| ACP                          | App-server                      |
+| ---------------------------- | ------------------------------- |
+| `session/new`                | `thread/start`                  |
+| `session/load`               | `thread/resume`                 |
+| `session/prompt`             | `turn/start` + `turn/completed` |
+| `session/cancel`             | `turn/interrupt`                |
+| `session/update`             | `turn/event`                    |
+| `session/request_permission` | `approval/request`              |
+
+For one-shot and scripted runs without a client of your own, see [headless mode](/docs/cli/headless).
