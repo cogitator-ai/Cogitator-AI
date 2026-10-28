@@ -549,7 +549,7 @@ export function RunView({ runId }: { runId: string }) {
                   </div>
                   <div className="panel-body" style={{ display: 'grid', gap: 8 }}>
                     {run.toolCalls.map((call) => (
-                      <ToolCallCard key={call.id} call={call} />
+                      <ToolCallCard key={call.id} call={call} run={run} />
                     ))}
                   </div>
                 </section>

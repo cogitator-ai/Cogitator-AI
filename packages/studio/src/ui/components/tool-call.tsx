@@ -1,7 +1,12 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { ChevronRight, ShieldAlert, Wrench } from 'lucide-react';
-import type { ToolCallRecord } from '../../protocol';
+import type { RunRecord, ToolCallRecord } from '../../protocol';
 import { api } from '../api';
+import { useStudio } from '../store';
+
+const ToolAppFrame = lazy(() =>
+  import('./tool-app-frame').then((module) => ({ default: module.ToolAppFrame }))
+);
 import { excerpt, pretty } from '../format';
 import { ErrorText, JsonBlock, messageOf, StatusBadge } from './common';
 
@@ -19,8 +24,38 @@ function summarize(args: unknown): string {
   return excerpt(pretty(args), 120);
 }
 
-/** A tool call of a run: one line until opened, the approval it waits for always in view. */
-export function ToolCallCard({ call }: { call: ToolCallRecord }) {
+/**
+ * The registry key of the run's agent when its tool `tool` has an MCP App, looked up by the run's
+ * target, else by the agent's name for a run an agent delegated to
+ */
+function useAppAgent(
+  run: Pick<RunRecord, 'target' | 'agentName'> | undefined,
+  tool: string
+): string | undefined {
+  return useStudio((state) => {
+    if (!run || state.host.state !== 'ready') return undefined;
+    const agents = state.host.registry.agents;
+    const agent =
+      agents.find((candidate) => candidate.key === run.target) ??
+      agents.find((candidate) => candidate.name === run.agentName);
+    return agent?.tools.some((candidate) => candidate.name === tool && candidate.app)
+      ? agent.key
+      : undefined;
+  });
+}
+
+/**
+ * A tool call of a run: one line until opened, the approval it waits for always in view, and the
+ * tool's MCP App, when it has one, below it.
+ */
+export function ToolCallCard({
+  call,
+  run,
+}: {
+  call: ToolCallRecord;
+  run?: Pick<RunRecord, 'target' | 'agentName'>;
+}) {
+  const appAgent = useAppAgent(run, call.name);
   const approval = call.approval;
   const waiting = approval?.status === 'waiting';
   const [open, setOpen] = useState(Boolean(call.error));
@@ -98,6 +133,11 @@ export function ToolCallCard({ call }: { call: ToolCallRecord }) {
           <span className="tool-result">→ {excerpt(pretty(call.result), 60)}</span>
         )}
       </button>
+      {appAgent && approval?.status !== 'waiting' && approval?.status !== 'rejected' && (
+        <Suspense fallback={null}>
+          <ToolAppFrame agent={appAgent} call={call} />
+        </Suspense>
+      )}
       {open && (
         <div className="tool-body">
           <JsonBlock label="Arguments" value={call.arguments} />

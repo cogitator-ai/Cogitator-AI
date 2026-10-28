@@ -2046,6 +2046,42 @@ a.tree-entry:hover {
   padding-top: 12px;
 }
 
+.tool-app {
+  display: grid;
+  border-top: 1px solid var(--border);
+}
+
+.tool-app-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.tool-app iframe {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color-scheme: normal;
+}
+
+.tool-app[data-border='true'] iframe {
+  background: var(--surface-2);
+}
+
+.tool-app-args {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-x: auto;
+}
+
 .approval {
   display: grid;
   gap: 10px;

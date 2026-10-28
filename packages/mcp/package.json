@@ -9,7 +9,8 @@
     "llm",
     "mcp",
     "model-context-protocol",
-    "tools"
+    "tools",
+    "mcp-apps"
   ],
   "type": "module",
   "main": "./dist/index.js",
@@ -38,6 +39,7 @@
     "@cogitator-ai/core": "workspace:*",
     "@cogitator-ai/types": "workspace:*",
     "@modelcontextprotocol/client": "^2.4.0",
+    "@modelcontextprotocol/ext-apps": "^2.0.4",
     "@modelcontextprotocol/node": "^2.1.2",
     "@modelcontextprotocol/server": "^2.4.0",
     "zod": "^4.6.5"

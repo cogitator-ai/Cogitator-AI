@@ -22,6 +22,7 @@ import type {
   ToolAdapterOptions,
 } from '../types';
 import type { MCPClient } from '../client/mcp-client';
+import { isToolVisibleTo } from '../apps';
 
 /**
  * Convert a Zod schema to JSON Schema
@@ -427,6 +428,7 @@ export function mcpToCogitator(
     ...(annotations && { annotations }),
     ...(requiresApproval && { requiresApproval }),
     mcp: { server, tool: mcpTool.name },
+    ...(mcpTool.app && { app: client.appOf(mcpTool) }),
 
     execute: async (params: unknown, context: ToolContext): Promise<unknown> => {
       return client.callTool(mcpTool.name, (params ?? {}) as Record<string, unknown>, {
@@ -471,7 +473,9 @@ function approvalOf(
  * Wrap all tools from an MCP client as Cogitator tools
  *
  * Names are normalized for LLM providers and kept distinct. Give each server its own
- * `namePrefix` when an agent uses several servers whose tools could share names.
+ * `namePrefix` when an agent uses several servers whose tools could share names. A tool with an
+ * MCP App carries it as its `app`, and a tool the server opens to apps only
+ * (`_meta.ui.visibility: ['app']`) is left out: its app calls it through `app.callTool()`.
  *
  * @example
  * ```typescript
@@ -487,7 +491,9 @@ export async function wrapMCPTools(
   client: MCPClient,
   options?: ToolAdapterOptions
 ): Promise<Tool[]> {
-  const definitions = await client.listToolDefinitions();
+  const definitions = (await client.listToolDefinitions()).filter((definition) =>
+    isToolVisibleTo(definition.app, 'model')
+  );
   const names = toolNames(definitions, options?.namePrefix ?? '');
   const server = options?.server ?? client.serverName ?? '';
   return definitions.map((def) =>

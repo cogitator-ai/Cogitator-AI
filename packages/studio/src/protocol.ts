@@ -12,6 +12,9 @@ import type {
   Message,
   RoutineOverlap,
   RoutineRunRecord,
+  ToolAppCallResult,
+  ToolAppResource,
+  ToolAppVisibility,
   ToolCall,
   ToolResult,
   TriggerFireResult,
@@ -24,7 +27,24 @@ export interface ToolInfo {
   /** JSON Schema of the arguments. */
   parameters: unknown;
   requiresApproval: boolean;
+  /** The MCP App the studio shows for the tool's calls */
+  app?: ToolAppInfo;
 }
+
+/** A tool's MCP App, as the registry describes it */
+export interface ToolAppInfo {
+  /** The `ui://` resource of the app */
+  resourceUri: string;
+  /** Who may call the tool: the agent (`model`), its app (`app`) */
+  visibility?: ToolAppVisibility[];
+}
+
+/** An MCP App as the UI frames it: what the app asks of its frame, without its HTML */
+export type ToolAppFrameInfo = Omit<ToolAppResource, 'html'>;
+
+/** What a tool call an MCP App asked for came to: its result, or the approval it waits for */
+export type ToolAppCallOutcome =
+  { status: 'done'; result: ToolAppCallResult } | { status: 'approval'; tool: string };
 
 export interface AgentInfo {
   /** The key the registry exports it under. */
@@ -953,6 +973,19 @@ export type HostRequest =
       panel: string;
       method: string;
       params?: unknown;
+    }
+  | { type: 'tools.app'; requestId: string; agent: string; tool: string }
+  | {
+      type: 'tools.app.call';
+      requestId: string;
+      agent: string;
+      /** The tool whose app asks */
+      tool: string;
+      /** The tool the app calls */
+      name: string;
+      arguments: Record<string, unknown>;
+      /** The person allowed the call, which the app's server marks as needing approval */
+      approved?: boolean;
     }
   | { type: 'triggers.state'; requestId: string }
   | { type: 'triggers.start'; requestId: string }

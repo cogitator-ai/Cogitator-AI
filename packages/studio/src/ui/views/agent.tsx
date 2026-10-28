@@ -124,7 +124,7 @@ function Turn({ run, rewound }: { run: RunRecord; rewound: boolean }) {
           />
         )}
         {run.toolCalls.map((call) => (
-          <ToolCallCard key={call.id} call={call} />
+          <ToolCallCard key={call.id} call={call} run={run} />
         ))}
         {run.output ? (
           <div data-testid="answer">

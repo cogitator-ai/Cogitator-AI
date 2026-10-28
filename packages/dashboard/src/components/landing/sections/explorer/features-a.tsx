@@ -179,7 +179,7 @@ export async function featuresA(): Promise<ExplorerFeature[]> {
       pkg: '@cogitator-ai/mcp',
       title: 'MCP, both ways',
       summary:
-        'Give agents the tools of any MCP server, and serve your agents to Claude Desktop, Cursor or Claude Code with one call.',
+        'Give agents the tools of any MCP server, and serve your agents to Claude Desktop, Cursor or Claude Code with one call. Tools bring MCP Apps, which Studio renders in a sandbox.',
       href: '/docs/integrations/mcp',
       code: mcp,
     },

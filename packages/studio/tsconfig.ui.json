@@ -10,5 +10,11 @@
     "allowImportingTsExtensions": false,
     "rootDir": "./src"
   },
-  "include": ["src/ui/**/*", "src/protocol.ts", "src/team.ts", "src/plugin-bridge.ts"]
+  "include": [
+    "src/ui/**/*",
+    "src/protocol.ts",
+    "src/team.ts",
+    "src/plugin-bridge.ts",
+    "src/tool-app-policy.ts"
+  ]
 }

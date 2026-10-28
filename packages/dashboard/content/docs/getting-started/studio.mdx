@@ -96,6 +96,20 @@ A request is `{ type: 'cogitator:request', id, method, params }`: `id` is a stri
 
 Ids are URL-encoded (`board%40code` for `board@code`) and bodies are JSON, as for every other post. A bad body answers 400, as do a panel without the handler and disabling the core's own plugin, an unknown plugin or panel answers 404, a reload or an enable in a project without `experimental_plugins` 409, and a handler that throws 500, with its message as `error`. The event stream sends `{ type: 'plugins', plugins }` whenever the runtime's plugins change.
 
+## MCP Apps
+
+A tool with an [MCP App](/docs/integrations/mcp#mcp-apps) (extension `io.modelcontextprotocol/ui`), such as a tool of an MCP server whose `_meta.ui.resourceUri` names a `ui://` app, or a tool given an `app` with `mcpApp()`, shows its app under each of its calls in the chat and on the run page. The studio reads the app through the tool (`tool.app.read()`), serves its page from its own address and frames it sandboxed with `allow-scripts` only, so the app runs with an opaque origin, never the studio's, as a plugin panel does. The page is served with a Content-Security-Policy built from the origins the app declares in `_meta.ui.csp`: inline scripts and styles, `data:` images, fonts and media, `connectDomains` for `fetch` and WebSockets, `resourceDomains` for scripts, styles, images, fonts and media, `frameDomains` for nested frames and `baseUriDomains` for `<base>`, and nothing else. An app that declares none reaches no address. A declared value that is no origin (a keyword, a value that would end the directive) is left out. The features the app asks for in `_meta.ui.permissions` (camera, microphone, geolocation, clipboard write) go to its frame's `allow` attribute and its `Permissions-Policy`, every other one is off.
+
+The studio is the app's host through the ext-apps `AppBridge`: it tells the app the call's arguments (`ui/notifications/tool-input`) and its result (`tool-result`), or that it failed (`tool-cancelled`), sizes the frame as the app asks (`ui/notifications/size-changed`) and opens the web links it asks for in a new tab. The tool calls the app makes (`tools/call`) go to the server the app came from, and only to tools open to apps (`visibility` with `app`, or none). A call of a tool its server marks destructive (`destructiveHint`) waits for the person: the card shows **The app asks to call** with the arguments, and the call runs once they press **Allow**, while **Deny** answers the app with an error. A web page is a host MCP Apps asks to put a sandbox proxy on an origin of its own between itself and the app. The studio gets the same isolation without one: the app's own frame has an opaque origin and the policy comes as a header the page cannot change. A dedicated `domain` an app asks for is not honored.
+
+| Request                                        | Body                              | Answer                                                                                 |
+| ---------------------------------------------- | --------------------------------- | -------------------------------------------------------------------------------------- |
+| `GET /api/agents/:agent/tools/:tool/app`       |                                   | What the app asks of its frame: `uri`, `csp`, `permissions`, `prefersBorder`, no HTML  |
+| `GET /api/agents/:agent/tools/:tool/app/view`  |                                   | The app's page, `text/html` with the policy above                                      |
+| `POST /api/agents/:agent/tools/:tool/app/call` | `{ name, arguments?, approved? }` | `{ status: 'done', result }`, or `{ status: 'approval', tool }` before an allowed call |
+
+An agent or a tool without an app answers 404, a call from an app that may call no tools 403.
+
 ## Routines: Inbox and Schedules
 
 A project whose runtime configures [`experimental_triggers`](/docs/core/triggers) gets two more pages in the sidebar and the command palette.

@@ -35,6 +35,7 @@ export default defineConfig({
           if (/[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return 'react';
           if (id.includes('lucide-react')) return 'icons';
           if (/[\\/]katex[\\/]/.test(id)) return 'math';
+          if (/[\\/](@modelcontextprotocol|zod|@standard-schema)[\\/]/.test(id)) return 'mcp-apps';
           return 'markdown';
         },
       },

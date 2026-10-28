@@ -55,6 +55,11 @@ export interface ToolConfig<TParams = unknown, TResult = unknown, TDeps = unknow
   access?: ToolAccess<TParams>;
   /** The MCP server tool this tool calls, so `mcp__<server>__<tool>` rules match it */
   mcp?: ToolMcpOrigin;
+  /**
+   * The interactive app (an MCP App) a host shows for this tool's calls: an MCP server serves it
+   * with the tool, and a tool from an MCP server that has one carries it here
+   */
+  app?: ToolApp;
   timeout?: number;
   sandbox?: SandboxConfig;
   /**
@@ -134,6 +139,8 @@ export interface Tool<TParams = unknown, TResult = unknown, TDeps = unknown> {
   access?: ToolAccess<TParams>;
   /** The MCP server tool this tool calls, see `ToolConfig.mcp` */
   mcp?: ToolMcpOrigin;
+  /** The interactive app a host shows for this tool's calls, see `ToolConfig.app` */
+  app?: ToolApp;
   timeout?: number;
   sandbox?: SandboxConfig;
   /**
@@ -232,6 +239,78 @@ export interface ToolAccess<TParams = unknown> {
 export type ToolAgentOf<TParams = unknown> = {
   agentOf(params: TParams): string | undefined;
 }['agentOf'];
+
+/** Who may call a tool that has an app: the agent (`model`), its app (`app`) */
+export type ToolAppVisibility = 'model' | 'app';
+
+/**
+ * The origins an app may reach, as the MCP Apps extension declares them (`_meta.ui.csp`). A host
+ * builds the Content Security Policy of the app from them, and reaches nothing else
+ */
+export interface ToolAppCsp {
+  /** Origins of `fetch`, XHR and WebSocket (`connect-src`) */
+  connectDomains?: string[];
+  /** Origins of scripts, styles, images, fonts and media */
+  resourceDomains?: string[];
+  /** Origins of frames the app nests (`frame-src`), none when left out */
+  frameDomains?: string[];
+  /** Origins the app's `<base>` may name (`base-uri`) */
+  baseUriDomains?: string[];
+}
+
+/** The browser features an app asks for, a host may grant (`_meta.ui.permissions`) */
+export interface ToolAppPermissions {
+  camera?: Record<string, never>;
+  microphone?: Record<string, never>;
+  geolocation?: Record<string, never>;
+  clipboardWrite?: Record<string, never>;
+}
+
+/** An app as a host renders it: its HTML and what it asks of the host */
+export interface ToolAppResource {
+  /** The `ui://` URI of the app */
+  uri: string;
+  /** `text/html;profile=mcp-app` */
+  mimeType: string;
+  html: string;
+  csp?: ToolAppCsp;
+  permissions?: ToolAppPermissions;
+  /** A dedicated origin the app asks for, as its host understands it */
+  domain?: string;
+  /** Whether the app wants the host to draw a border and background around it */
+  prefersBorder?: boolean;
+}
+
+/** What a tool call an app made returned, as an MCP `CallToolResult` */
+export interface ToolAppCallResult {
+  content: Array<{ type: string } & Record<string, unknown>>;
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+}
+
+/**
+ * The interactive app of a tool (an MCP App, extension `io.modelcontextprotocol/ui`): an HTML page
+ * a host shows in a sandboxed frame for the tool's calls, given the call's arguments and result
+ */
+export interface ToolApp {
+  /** The `ui://` resource of the app */
+  resourceUri: string;
+  /** Who may call the tool, both by default. A tool visible to `app` only is not offered to the model */
+  visibility?: readonly ToolAppVisibility[];
+  /** Reads the app: its HTML, and the origins and features it asks for */
+  read(): Promise<ToolAppResource>;
+  /**
+   * Calls a tool for the app, on the server the app came from: only a tool visible to apps.
+   * Absent when the app may call no tools
+   */
+  callTool?(
+    name: string,
+    args: Record<string, unknown>,
+    options?: { signal?: AbortSignal }
+  ): Promise<ToolAppCallResult>;
+  /** Whether a tool the app calls needs a person's approval before it runs, such as a destructive one */
+  requiresApproval?(name: string): Promise<boolean>;
+}
 
 /** An MCP server's tool, by the server's name and the tool's name there */
 export interface ToolMcpOrigin {

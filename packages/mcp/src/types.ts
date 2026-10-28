@@ -2,6 +2,7 @@
  * MCP Integration Types
  */
 
+import type { MCPToolAppRef } from './apps';
 import type { IncomingMessage } from 'node:http';
 import type { OAuthClientProvider } from '@modelcontextprotocol/client';
 import type { ToolContext, ToolInvoker } from '@cogitator-ai/types';
@@ -207,6 +208,13 @@ export interface MCPClientConfig {
    */
   rounds?: MCPClientRoundOptions;
 
+  /**
+   * MCP Apps (extension `io.modelcontextprotocol/ui`): tells servers the client takes apps, so
+   * they list their tools' `ui://` apps. `getToolApp()` and the `app` of a wrapped tool read them,
+   * a host renders them. Default: true
+   */
+  apps?: boolean;
+
   /** For stdio transport: command to spawn */
   command?: string;
 
@@ -296,6 +304,8 @@ export interface MCPResource {
   name: string;
   description?: string;
   mimeType?: string;
+  /** What the server attaches to the resource, such as `ui` for an MCP App */
+  _meta?: Record<string, unknown>;
 }
 
 export interface MCPResourceContent {
@@ -303,6 +313,8 @@ export interface MCPResourceContent {
   mimeType?: string;
   text?: string;
   blob?: string;
+  /** What the server attaches to the content, such as `ui` for an MCP App */
+  _meta?: Record<string, unknown>;
 }
 
 export interface MCPPrompt {
@@ -598,6 +610,8 @@ export interface MCPToolDefinition {
   outputSchema?: MCPJsonSchema;
   /** Hints the server gives about the tool's behavior */
   annotations?: MCPToolAnnotations;
+  /** The MCP App the tool points at (`_meta.ui.resourceUri`), and who may call the tool */
+  app?: MCPToolAppRef;
 }
 
 /** A JSON Schema of any shape, as MCP takes for tool output since 2026-07-28 */

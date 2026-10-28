@@ -8,6 +8,7 @@ import type {
   InboxItem,
   InboxItemKind,
   InboxItemStatus,
+  ToolAppResource,
   TriggerFireResult,
 } from '@cogitator-ai/types';
 import { z } from 'zod';
@@ -31,8 +32,11 @@ import type {
   StudioEvent,
   ThreadRecord,
   ThreadTree,
+  ToolAppCallOutcome,
+  ToolAppFrameInfo,
   TriggersState,
 } from '../protocol.js';
+import { appContentSecurityPolicy, appPermissionsPolicy } from '../tool-app-policy.js';
 import { HostManager, HostRequestError } from './host-manager.js';
 import { StudioStore, type Pricer } from './store.js';
 
@@ -154,6 +158,12 @@ const PluginEnabledBody = z.object({ enabled: z.boolean() });
 const PanelCallBody = z.object({
   method: z.string().min(1).max(256),
   params: z.unknown().optional(),
+});
+
+const ToolAppCallBody = z.object({
+  name: z.string().min(1).max(256),
+  arguments: z.record(z.string(), z.unknown()).default({}),
+  approved: z.boolean().optional(),
 });
 
 const Decision = z.object({ approved: z.boolean(), reason: z.string().max(4000).optional() });
@@ -297,6 +307,14 @@ function pluginRefusal(error: unknown): unknown {
     default:
       return error;
   }
+}
+
+/** A refusal of a tool app request as its status: an unknown app is not found, a forbidden call refused */
+function toolAppRefusal(error: unknown): unknown {
+  if (!(error instanceof HostRequestError)) return error;
+  if (error.code === 'TOOL_APP_NOT_FOUND') return new HttpError(404, error.message);
+  if (error.code === 'TOOL_APP_FORBIDDEN') return new HttpError(403, error.message);
+  return error;
 }
 
 /**
@@ -544,6 +562,13 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
     });
   }
 
+  /** A tool app request to the host, its refusals answered with their own status. */
+  function toolAppRequest<T>(request: Parameters<HostManager['request']>[0]): Promise<T> {
+    return manager.request<T>(request).catch((error: unknown) => {
+      throw toolAppRefusal(error);
+    });
+  }
+
   /** A trigger or inbox request to the host, its refusals answered with their own status. */
   function triggerRequest<T>(request: Parameters<HostManager['request']>[0]): Promise<T> {
     return manager.request<T>(request).catch((error: unknown) => {
@@ -738,6 +763,51 @@ export async function startStudio(options: StudioOptions): Promise<StudioHandle>
             type: 'plugins.enable',
             plugin: parts[1],
             enabled,
+          })
+        );
+      }
+      case 'GET /agents/:id/tools/:id/app': {
+        const { html: _html, ...info } = await toolAppRequest<ToolAppResource>({
+          type: 'tools.app',
+          agent: parts[1],
+          tool: parts[3],
+        });
+        return send(res, 200, info satisfies ToolAppFrameInfo);
+      }
+      case 'GET /agents/:id/tools/:id/app/:id': {
+        if (parts[5] !== 'view') throw new HttpError(404, 'Not found');
+        const app = await toolAppRequest<ToolAppResource>({
+          type: 'tools.app',
+          agent: parts[1],
+          tool: parts[3],
+        });
+        res.writeHead(200, {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-store',
+          'content-length': Buffer.byteLength(app.html),
+          'x-content-type-options': 'nosniff',
+          'content-security-policy': appContentSecurityPolicy(app.csp),
+          'permissions-policy': appPermissionsPolicy(app.permissions),
+          'referrer-policy': 'no-referrer',
+          'cross-origin-resource-policy': 'same-origin',
+          'x-dns-prefetch-control': 'off',
+        });
+        res.end(app.html);
+        return;
+      }
+      case 'POST /agents/:id/tools/:id/app/:id': {
+        if (parts[5] !== 'call') throw new HttpError(404, 'Not found');
+        const body = parseBody(ToolAppCallBody, await readJson(req));
+        return send(
+          res,
+          200,
+          await toolAppRequest<ToolAppCallOutcome>({
+            type: 'tools.app.call',
+            agent: parts[1],
+            tool: parts[3],
+            name: body.name,
+            arguments: body.arguments,
+            ...(body.approved !== undefined && { approved: body.approved }),
           })
         );
       }

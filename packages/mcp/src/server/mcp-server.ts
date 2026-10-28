@@ -36,6 +36,7 @@ import {
 import { Cogitator, withParsedArguments } from '@cogitator-ai/core';
 import type {
   Tool,
+  ToolAppResource,
   ToolApprovalDecision,
   ToolApprovalRequest,
   ToolInvoker,
@@ -54,6 +55,15 @@ import type {
   MCPToolContent,
 } from '../types';
 import { mcpOutputSchema, resultToMCPContent } from '../adapter/tool-adapter';
+import {
+  MCP_APPS_EXTENSION,
+  MCP_APP_MIME_TYPE,
+  appResourceMeta,
+  assertAppUri,
+  toolAppMeta,
+  type MCPAppConfig,
+  type MCPAppMeta,
+} from '../apps';
 import { approvalDecision, approvalForm, elicitApproval } from './approval';
 import {
   CallExecution,
@@ -172,12 +182,21 @@ interface RunMode {
  * await server.start();
  * ```
  */
+/** An app the server serves: how it is listed and how it is read */
+interface AppSource {
+  name: string;
+  description?: string;
+  listing?: { ui: MCPAppMeta };
+  read(): Promise<ToolAppResource>;
+}
+
 export class MCPServer {
   private stdio?: StdioServerHandle;
   private config: MCPServerConfig;
   private tools = new Map<string, Tool>();
   private resources = new Map<string, MCPResourceConfig>();
   private prompts = new Map<string, MCPPromptConfig>();
+  private apps = new Map<string, MCPAppConfig>();
   private started = false;
   private ownInvoker?: Cogitator;
   private httpServer?: HttpServer;
@@ -220,6 +239,7 @@ export class MCPServer {
     if (this.started) {
       throw new Error('Cannot register tools after server has started');
     }
+    if (tool.app) assertAppUri(tool.app.resourceUri);
     this.tools.set(tool.name, tool);
   }
 
@@ -290,6 +310,31 @@ export class MCPServer {
   }
 
   /**
+   * Serve an MCP App (extension `io.modelcontextprotocol/ui`): an HTML page at a `ui://` URI that
+   * hosts show for the calls of the tools that point at it (a tool's `app`, see `mcpApp()`). It is
+   * listed as a resource of type `text/html;profile=mcp-app`, with its CSP, permissions, domain
+   * and border preference in `_meta.ui`. A tool whose `app` is not registered here serves its
+   * own app at its URI
+   */
+  registerApp(config: MCPAppConfig): void {
+    if (this.started) {
+      throw new Error('Cannot register apps after server has started');
+    }
+    assertAppUri(config.uri);
+    if (this.resources.has(config.uri)) {
+      throw new Error(`The resource ${config.uri} is registered already`);
+    }
+    this.apps.set(config.uri, config);
+  }
+
+  /** The URIs of the apps the server serves, its own and those of its tools */
+  getRegisteredApps(): string[] {
+    const uris = new Set(this.apps.keys());
+    for (const tool of this.tools.values()) if (tool.app) uris.add(tool.app.resourceUri);
+    return [...uris];
+  }
+
+  /**
    * Register a single prompt
    */
   registerPrompt(config: MCPPromptConfig): void {
@@ -338,10 +383,15 @@ export class MCPServer {
    */
   private buildServer(scope: ServeScope): McpServer {
     const codec = callStateCodec(this.stateKey, scope.owner, 2 * this.elicitationTimeout());
+    const apps = this.servedApps();
+    const extensions = {
+      ...(this.tasks && { [TASKS_EXTENSION]: {} }),
+      ...(apps.size > 0 && { [MCP_APPS_EXTENSION]: { mimeTypes: [MCP_APP_MIME_TYPE] } }),
+    };
     const server = new McpServer(
       { name: this.config.name, version: this.config.version },
       {
-        ...(this.tasks && { capabilities: { extensions: { [TASKS_EXTENSION]: {} } } }),
+        ...(Object.keys(extensions).length > 0 && { capabilities: { extensions } }),
         requestState: { verify: codec.verify },
         inputRequired: { roundTimeoutMs: this.elicitationTimeout() },
       }
@@ -354,6 +404,7 @@ export class MCPServer {
     for (const resource of this.resources.values()) {
       this.registerMCPResource(server, resource, scope.caller);
     }
+    for (const [uri, app] of apps) this.registerMCPApp(server, uri, app);
     for (const prompt of this.prompts.values()) {
       this.registerMCPPrompt(server, prompt, scope.caller);
     }
@@ -380,6 +431,7 @@ export class MCPServer {
         inputSchema: wireArgsSchema(this.buildInputSchema(tool)),
         ...(outputSchema && { outputSchema }),
         ...(tool.annotations && { annotations: { ...tool.annotations } }),
+        ...(tool.app && { _meta: toolAppMeta(tool.app) }),
       },
       async (args: ToolArgs, ctx: ServerContext): Promise<CallToolResult | InputRequiredResult> =>
         this.handleToolCall(tool, args, ctx, scope, mint, outputSchema)
@@ -903,6 +955,66 @@ export class MCPServer {
         return { contents: formatContents(await readResource({}), uri.href) };
       });
     }
+  }
+
+  /**
+   * The apps the server serves, by URI: the registered ones, and the app of each tool that points
+   * at a URI no app or resource is registered at, read through the tool's `app`
+   */
+  private servedApps(): Map<string, AppSource> {
+    const served = new Map<string, AppSource>();
+    for (const [uri, config] of this.apps) {
+      served.set(uri, {
+        name: config.name ?? uri,
+        ...(config.description !== undefined && { description: config.description }),
+        listing: appResourceMeta(config),
+        read: async () => ({
+          uri,
+          mimeType: MCP_APP_MIME_TYPE,
+          html: typeof config.html === 'string' ? config.html : await config.html(),
+          ...appResourceMeta(config)?.ui,
+        }),
+      });
+    }
+    for (const tool of this.tools.values()) {
+      const app = tool.app;
+      if (!app || served.has(app.resourceUri) || this.resources.has(app.resourceUri)) continue;
+      served.set(app.resourceUri, { name: tool.title ?? tool.name, read: () => app.read() });
+    }
+    return served;
+  }
+
+  /** Register an app as a resource of type `text/html;profile=mcp-app`, `_meta.ui` on both */
+  private registerMCPApp(server: McpServer, uri: string, app: AppSource): void {
+    server.registerResource(
+      app.name,
+      uri,
+      {
+        mimeType: MCP_APP_MIME_TYPE,
+        ...(app.description !== undefined && { description: app.description }),
+        ...(app.listing && { _meta: app.listing }),
+      },
+      async () => {
+        let resource: ToolAppResource;
+        try {
+          resource = await app.read();
+        } catch (error) {
+          this.log('error', `App ${uri} error: ${errorMessageOf(error)}`);
+          throw error;
+        }
+        const meta = appResourceMeta(resource);
+        return {
+          contents: [
+            {
+              uri,
+              mimeType: MCP_APP_MIME_TYPE,
+              text: resource.html,
+              ...(meta && { _meta: meta }),
+            },
+          ],
+        };
+      }
+    );
   }
 
   /**

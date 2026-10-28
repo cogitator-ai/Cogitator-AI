@@ -12,6 +12,8 @@ import type {
   RunInterrupt,
   RunResult,
   Span,
+  ToolApp,
+  ToolAppResource,
   ToolApprovalDecision,
   ToolApprovalRequest,
   Workflow,
@@ -43,10 +45,22 @@ import type {
   ThreadForkRequest,
   StepRecord,
   ThreadTree,
+  ToolAppCallOutcome,
   TreeEntry,
   UsageInfo,
 } from '../protocol.js';
 import { describeRegistry } from '../registry.js';
+
+/** A tool app request the host refuses, by its code: an unknown app, or a call it may not make */
+class ToolAppRefusal extends Error {
+  constructor(
+    message: string,
+    readonly code: 'TOOL_APP_NOT_FOUND' | 'TOOL_APP_FORBIDDEN'
+  ) {
+    super(message);
+    this.name = 'ToolAppRefusal';
+  }
+}
 import { openCheckpointStore } from './checkpoints.js';
 import { ProjectPlugins } from './plugins.js';
 import { importFromProject, loadProject, type LoadedProject } from './project.js';
@@ -358,6 +372,10 @@ export class StudioHost {
         return this.plugins.panelHtml(request.plugin, request.panel);
       case 'plugins.call':
         return this.plugins.call(request.plugin, request.panel, request.method, request.params);
+      case 'tools.app':
+        return this.readToolApp(request.agent, request.tool);
+      case 'tools.app.call':
+        return this.callForApp(request);
       case 'triggers.state':
         return this.triggers.state();
       case 'triggers.start':
@@ -642,6 +660,49 @@ export class StudioHost {
         });
       },
     };
+  }
+
+  /** The MCP App of the tool `tool` of agent `key` */
+  private toolApp(key: string, tool: string): ToolApp {
+    const agent = this.project.agents.get(key);
+    const found = agent?.tools.find((candidate) => candidate.name === tool);
+    if (!found?.app) {
+      throw new ToolAppRefusal(
+        agent
+          ? `The tool "${tool}" of agent "${key}" has no MCP App`
+          : `There is no agent "${key}" in the registry`,
+        'TOOL_APP_NOT_FOUND'
+      );
+    }
+    return found.app;
+  }
+
+  private async readToolApp(key: string, tool: string): Promise<ToolAppResource> {
+    return this.toolApp(key, tool).read();
+  }
+
+  /**
+   * A tool call an MCP App asked for, on the server it came from: a call its server marks as
+   * needing approval waits for the person to allow it in the studio, and runs once they did
+   */
+  private async callForApp(request: {
+    agent: string;
+    tool: string;
+    name: string;
+    arguments: Record<string, unknown>;
+    approved?: boolean;
+  }): Promise<ToolAppCallOutcome> {
+    const app = this.toolApp(request.agent, request.tool);
+    if (!app.callTool) {
+      throw new ToolAppRefusal(
+        `The MCP App of "${request.tool}" may call no tools`,
+        'TOOL_APP_FORBIDDEN'
+      );
+    }
+    if (request.approved !== true && (await app.requiresApproval?.(request.name)) === true) {
+      return { status: 'approval', tool: request.name };
+    }
+    return { status: 'done', result: await app.callTool(request.name, request.arguments) };
   }
 
   private agent(key: string): Agent {
