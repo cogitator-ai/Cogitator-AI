@@ -12,6 +12,7 @@ import {
   refuseRequest,
   runErrorResponse,
   runSignal,
+  threadOf,
 } from './http.js';
 
 const SSE_HEADERS = {
@@ -27,7 +28,9 @@ const SSE_HEADERS = {
  * AG-UI thread is the run's thread, kept in the Cogitator's memory: a request runs its last
  * message, which must be the user's, or resumes the paused run with its `resume` entries, all
  * of the interrupts at once. The request's `state` is the run's state, `context` its brief.
- * Return `{ userId }` from `beforeRun` to run as the signed-in user.
+ * Return `{ userId }` from `beforeRun` to run as the signed-in user. A `threadId` it returns is the
+ * thread the AG-UI thread runs in: access is checked, runs and resumes go there, while the events
+ * keep the client's thread id.
  *
  * @example
  * ```ts
@@ -50,17 +53,18 @@ export function createAGUIHandler(
     if (!body.ok) return body.response;
     const parsed = parseAGUIRunInput(body.body);
     if (!parsed.ok) return jsonError(parsed.message, 400, 'INVALID_INPUT');
-    const threadId = parsed.value.input.threadId;
+    const { input } = parsed.value;
 
     let runContext: Record<string, unknown> = {};
     if (options?.beforeRun) {
       try {
-        const ctx = await options.beforeRun(req, parsed.value.input);
+        const ctx = await options.beforeRun(req, input);
         if (ctx) runContext = ctx;
       } catch (err) {
         return hookErrorResponse(err, 'Unauthorized');
       }
     }
+    const threadId = threadOf(runContext, input) ?? input.threadId;
     try {
       const refused = await refuseRequest(req, threadId, runContext, options);
       if (refused) return refused;
@@ -92,6 +96,7 @@ export function createAGUIHandler(
               const result = await cogitator.run(agent, {
                 ...runOptions,
                 ...runContext,
+                threadId,
                 signal: runSignal(runOptions.signal, runContext),
               });
               if (options?.afterRun) await options.afterRun(result);

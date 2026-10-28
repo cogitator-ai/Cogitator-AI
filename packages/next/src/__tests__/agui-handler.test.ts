@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { CONFORMANCE_NAMES, sendConformanceRequest } from '@cogitator-ai/server-shared';
 import {
   AGUIConformanceRuntime,
+  AGUI_CONFORMANCE_THREAD,
   aguiConformanceInput,
   runAGUIConformance,
 } from '@cogitator-ai/server-shared/agui';
@@ -64,6 +65,34 @@ describe('createAGUIHandler', () => {
     expect(problems).toEqual([]);
     expect(runtime.aguiRuns[0]?.userId).toBe('user_1');
     expect(runtime.aguiResumes[0]?.userId).toBe('user_1');
+  });
+
+  it('runs, resumes and authorizes the thread beforeRun maps the AG-UI thread to', async () => {
+    const runtime = new AGUIConformanceRuntime();
+    const authorized: string[] = [];
+    const handler = createAGUIHandler(runtime as unknown as Cogitator, agent, {
+      sseHeartbeatMs: 0,
+      beforeRun: async (_req, input) => ({ threadId: `tenant_1:${input.threadId}` }),
+      authorizeThread: async (_req, threadId) => {
+        authorized.push(threadId);
+        return true;
+      },
+    });
+
+    await runAGUIConformance(runtime, (request) =>
+      sendConformanceRequest(request, (path, init) =>
+        path === `/agents/${CONFORMANCE_NAMES.agent}/agui`
+          ? handler(new Request('http://localhost/api/agui', init))
+          : new Response(JSON.stringify({ error: { message: 'Not found', code: 'NOT_FOUND' } }), {
+              status: 404,
+            })
+      )
+    );
+    const mapped = `tenant_1:${AGUI_CONFORMANCE_THREAD}`;
+    expect(runtime.aguiRuns).toHaveLength(1);
+    expect(runtime.aguiRuns[0]?.threadId).toBe(mapped);
+    expect(runtime.aguiResumes[0]?.threadId).toBe(mapped);
+    expect(new Set(authorized)).toEqual(new Set([mapped]));
   });
 
   it('stops the run when the client leaves, even with a signal from beforeRun', async () => {
