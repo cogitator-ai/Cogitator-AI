@@ -1,6 +1,6 @@
 {
   "name": "@cogitator-ai/a2a",
-  "version": "0.10.10",
+  "version": "0.11.0",
   "description": "A2A (Agent-to-Agent) Protocol 1.0 and 0.3 for Cogitator: JSON-RPC and HTTP+JSON server, client, signed Agent Cards",
   "keywords": [
     "cogitator",
