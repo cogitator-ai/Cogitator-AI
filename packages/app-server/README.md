@@ -1,6 +1,6 @@
 # @cogitator-ai/app-server
 
-A typed JSON-RPC 2.0 app-server for Cogitator: threads, turns, steering, approvals and code reviews of a `Cogitator` runtime, served as NDJSON on stdio, with a client generated from the protocol's Zod schemas. It is what an editor, a desktop app or a script drives Cogitator through, and what the ACP agent (phase 45) maps onto.
+A typed JSON-RPC 2.0 app-server for Cogitator: threads, turns, steering, approvals and code reviews of a `Cogitator` runtime, served as NDJSON on stdio, with a client generated from the protocol's Zod schemas. It is what an editor, a desktop app or a script drives Cogitator through, and what the ACP agent of [`@cogitator-ai/acp`](https://www.npmjs.com/package/@cogitator-ai/acp) is built on.
 
 ```bash
 pnpm add @cogitator-ai/app-server @cogitator-ai/core
@@ -13,6 +13,7 @@ Or run it with no code at all: `cogitator app-server -m ollama/qwen3:8b` serves 
 - **SessionHost** - threads kept in the runtime's memory, one turn per thread at a time, each a run started with `cogitator.start()` (or `startResume()` for a paused thread) whose handle steers and interrupts it
 - **Turn streaming** - every event of the stream protocol as `turn/event`, the runs a turn delegates (subagents, agents as tools) tagged with the tool call that started them
 - **Approvals two ways** - asked live with `approval/request` (ACP `session/request_permission` shape), or the turn ends paused and the client resumes it with decisions
+- **External agents** - agents that run outside the runtime, such as ACP agents of `@cogitator-ai/acp`, serve threads next to the runtime's agents as `SessionProvider`s
 - **Steering** - `turn/steer` with `steer`, `followUp` or `inject` delivery, guarded by the expected turn id
 - **Reviews** - `review/start` reviews uncommitted changes, a branch, a commit or custom instructions in a review thread, the findings structured by a response format
 - **Structured output** - `outputSchema` on `turn/start`, read into `structured`
@@ -138,7 +139,7 @@ The host passes `onSpan` to every turn and keeps the spans of a turn (`id`, `tra
 
 ### Approvals
 
-With `capabilities.approvals: 'request'` the server asks `approval/request` while the turn waits. Its params are `threadId`, `turnId`, `toolCall` and the `options` `allow_once`, `allow_always` and `reject_once`. The client answers `{ outcome: { outcome: 'selected', optionId } }` (with `updatedArguments` or `reason` when it likes), or `{ outcome: { outcome: 'cancelled' } }` to leave the turn paused. `allow_always` approves with `remember: true`, which saves the allow rule the request suggests. ACP's `reject_always` is not offered, since the runtime keeps allow rules from answers but not deny rules: put a lasting denial in the `deny` rules of the permissions instead. An answer with an option not offered leaves the turn paused. Without it (`'pause'`, the default) the turn ends paused.
+With `capabilities.approvals: 'request'` the server asks `approval/request` while the turn waits. Its params are `threadId`, `turnId`, `toolCall` and the `options` `allow_once`, `allow_always` and `reject_once`. The client answers `{ outcome: { outcome: 'selected', optionId } }` (with `updatedArguments` or `reason` when it likes), or `{ outcome: { outcome: 'cancelled' } }` to leave the turn paused. `allow_always` approves with `remember: true`, which saves the allow rule the request suggests, and `reject_always` refuses with `remember: true`, which saves the same rule as a deny rule. An answer with an option not offered leaves the turn paused. Without it (`'pause'`, the default) the turn ends paused.
 
 ### Reviews
 
@@ -161,9 +162,28 @@ With `capabilities.approvals: 'request'` the server asks `approval/request` whil
 | `-32023` | Thread archived                                                                     |
 | `-32030` | Runtime error, `data.code` is the runtime's error code                              |
 
+## External agents
+
+A `SessionProvider` runs the turns of an agent outside the runtime: pass providers by name next to the agents, and clients see them in `initialize` with `external: true`. The host keeps the thread, its user and assistant messages and its turns, the provider runs each turn and sends its events, and the permission mode of the thread reaches it, which the provider may set (`setPermissionMode()`, such as when its agent leaves plan mode). A provider's threads cannot be forked, rewound or reviewed, and its turns take no steering. `AcpAgentProvider` of `@cogitator-ai/acp` is one for ACP agents such as Claude Code, Codex and Gemini CLI.
+
+```typescript
+const host = new SessionHost({
+  cogitator,
+  agents: { assistant },
+  providers: {
+    claude: new AcpAgentProvider({
+      agent: { command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp'] },
+      workspace,
+    }),
+  },
+});
+```
+
+`startTurn()` takes `run` for a client of its own, as the ACP agent passes it: the workspace of the turn, its reasoning, middleware, an agent made from the thread's (with more tools, say), and listeners of the todo list and the tool results. `updateThread()`, `getThread()` and `deleteThread()` keep the thread's own metadata, and `runOptions` passes options to every run, such as a harness agent's `runOptions`.
+
 ## ACP mapping
 
-The core methods line up with the Agent Client Protocol, so the ACP agent of phase 45 is a thin layer over this one:
+The core methods line up with the Agent Client Protocol, and [`@cogitator-ai/acp`](https://www.npmjs.com/package/@cogitator-ai/acp) serves the agents of a host to editors over it:
 
 | ACP                          | App-server                      |
 | ---------------------------- | ------------------------------- |

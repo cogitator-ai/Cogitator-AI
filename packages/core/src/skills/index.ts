@@ -7,6 +7,7 @@ export {
   DEFAULT_MAX_INSTRUCTION_CHARS,
   mergeSkillCatalogs,
   isSkillLoader,
+  skillLoadersOf,
 } from './skill-registry';
 export {
   parseSkillFile,

@@ -23,7 +23,11 @@ export const ApprovalDecisionSchema = z
         .describe('Arguments to run the call with instead'),
       remember: z.boolean().optional().describe('Also allow such calls from now on'),
     }),
-    z.object({ approved: z.literal(false), reason: z.string().optional() }),
+    z.object({
+      approved: z.literal(false),
+      reason: z.string().optional(),
+      remember: z.boolean().optional().describe('Also refuse such calls from now on'),
+    }),
   ])
   .describe('The answer to a tool call that waits for approval');
 

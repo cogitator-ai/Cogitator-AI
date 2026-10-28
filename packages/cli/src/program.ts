@@ -11,6 +11,7 @@ import { evalCommand } from './commands/eval.js';
 import { upCommand, downCommand } from './commands/up.js';
 import { runCommand } from './commands/run.js';
 import { appServerCommand } from './commands/app-server.js';
+import { acpCommand } from './commands/acp.js';
 import { statusCommand } from './commands/status.js';
 import { logsCommand } from './commands/logs.js';
 import { modelsCommand } from './commands/models.js';
@@ -52,6 +53,7 @@ export function createProgram(): Command {
     downCommand,
     runCommand,
     appServerCommand,
+    acpCommand,
     statusCommand,
     logsCommand,
     modelsCommand,

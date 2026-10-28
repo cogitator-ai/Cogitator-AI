@@ -5,7 +5,9 @@
   "type": "module",
   "dependencies": {
     "@ai-sdk/provider": "^4.0.21",
+    "@agentclientprotocol/sdk": "^2.0.2",
     "@cogitator-ai/a2a": "workspace:*",
+    "@cogitator-ai/acp": "workspace:*",
     "@cogitator-ai/app-server": "workspace:*",
     "create-cogitator-app": "workspace:*",
     "@cogitator-ai/ai-sdk": "workspace:*",

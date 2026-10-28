@@ -45,6 +45,12 @@ export const AgentInfoSchema = z.object({
   description: z.string().optional(),
   model: z.string().optional(),
   default: z.boolean(),
+  external: z
+    .boolean()
+    .optional()
+    .describe(
+      'Whether the agent runs outside the runtime, such as an ACP agent the host launched: its threads cannot be forked, rewound or reviewed'
+    ),
 });
 
 export const InitializeParamsSchema = protocolObject({
@@ -62,12 +68,12 @@ export const InitializeResultSchema = protocolObject({
 
 export const PermissionOptionSchema = z
   .object({
-    optionId: z.enum(['allow_once', 'allow_always', 'reject_once']),
+    optionId: z.enum(['allow_once', 'allow_always', 'reject_once', 'reject_always']),
     name: z.string(),
-    kind: z.enum(['allow_once', 'allow_always', 'reject_once']),
+    kind: z.enum(['allow_once', 'allow_always', 'reject_once', 'reject_always']),
   })
   .describe(
-    'A choice for an approval, as ACP `session/request_permission` offers it. `reject_always` is not offered: the runtime keeps allow rules from answers, not deny rules'
+    'A choice for an approval, as ACP `session/request_permission` offers it. `allow_always` saves an allow rule, `reject_always` a deny rule'
   );
 
 export const ApprovalToolCallSchema = PendingApprovalSchema.extend({

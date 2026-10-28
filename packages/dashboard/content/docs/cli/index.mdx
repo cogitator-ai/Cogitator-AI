@@ -57,6 +57,7 @@ cogitator run -m ollama/llama3.1:8b "What is the capital of France?"
 | `cogitator assistant`      | Run a gateway module (`src/gateway.ts`) with a live dashboard                                                   |
 | `cogitator run [msg]`      | Chat with an agent (one-shot or interactive REPL), or run headless with `-p`                                    |
 | `cogitator app-server`     | Serve the typed JSON-RPC app-server on stdio, write its client and JSON Schema                                  |
+| `cogitator acp`            | Serve a Cogitator coding agent to an editor over the Agent Client Protocol (stdio)                              |
 | `cogitator build`          | Bundle a gateway into a self-starting `dist/cogitator.mjs`                                                      |
 | `cogitator daemon <cmd>`   | Run in the background / install as a launchd or systemd service                                                 |
 | `cogitator skill <cmd>`    | Create, validate, install and remove skills                                                                     |
@@ -253,6 +254,19 @@ Serves the [app-server](/docs/integrations/app-server) on stdin and stdout as ND
 ```bash
 cogitator app-server -m ollama/qwen3:8b
 cogitator app-server generate-ts --out src/generated
+cogitator app-server -m ollama/qwen3:8b --acp-agent claude
+```
+
+`--acp-agent <spec...>` serves external ACP agents next to it: a preset (`claude`, `codex`, `gemini`), `registry:<id>` or a command line, as `name=spec` to name one. Their permission requests are decided by the permission rules and asked of the client otherwise.
+
+---
+
+### cogitator acp
+
+Serves a Cogitator coding agent to the editor that launches it over the [Agent Client Protocol](/docs/integrations/acp): the `coding` harness agent on the model of `-m`, the config or a local Ollama. `--models` adds models a session may switch to, `--trust` trusts the project (its own subagents, commands, hooks and allow rules apply, and "always" answers are saved to `.cogitator/settings.local.json`).
+
+```bash
+cogitator acp -m ollama/qwen3:8b
 ```
 
 ---

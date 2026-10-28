@@ -276,6 +276,8 @@ export interface AgentInfo {
   description?: string;
   model?: string;
   default: boolean;
+  /** Whether the agent runs outside the runtime, such as an ACP agent the host launched: its threads cannot be forked, rewound or reviewed */
+  external?: boolean;
 }
 
 export interface InitializeParams {
@@ -410,6 +412,8 @@ export type ApprovalDecision = {
 } | {
   approved: false;
   reason?: string;
+  /** Also refuse such calls from now on */
+  remember?: boolean;
 };
 
 /** How a paused thread goes on */
@@ -720,11 +724,11 @@ export interface RunnableEventNotification {
   _meta?: Meta;
 }
 
-/** A choice for an approval, as ACP `session/request_permission` offers it. `reject_always` is not offered: the runtime keeps allow rules from answers, not deny rules */
+/** A choice for an approval, as ACP `session/request_permission` offers it. `allow_always` saves an allow rule, `reject_always` a deny rule */
 export interface PermissionOption {
-  optionId: 'allow_once' | 'allow_always' | 'reject_once';
+  optionId: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always';
   name: string;
-  kind: 'allow_once' | 'allow_always' | 'reject_once';
+  kind: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always';
 }
 
 export interface ApprovalToolCall {
@@ -758,7 +762,7 @@ export interface ApprovalRequestParams {
 export interface ApprovalRequestResult {
   outcome: {
     outcome: 'selected';
-    optionId: 'allow_once' | 'allow_always' | 'reject_once';
+    optionId: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always';
   } | {
     outcome: 'cancelled';
   };

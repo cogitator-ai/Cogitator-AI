@@ -30,10 +30,11 @@ import {
   rememberableRules,
   resolvePermission,
   ruleAllowsCall,
+  ruleMatchesCall,
   suggestRule,
 } from '../permissions/engine';
 import {
-  addAllowRule,
+  addPermissionRule,
   loadPermissionSettings,
   rememberFile,
   settingsChanged,
@@ -110,7 +111,10 @@ function ownLayer(
 export class PermissionService {
   private readonly settingsCache = new Map<string, Promise<LoadedPermissionSettings>>();
   private readonly warned = new Set<string>();
-  private readonly sessionRules = new Map<string, string[]>();
+  private readonly sessionRules = new Map<
+    string,
+    Required<Pick<PermissionRules, 'allow' | 'deny'>>
+  >();
 
   constructor(
     readonly config: PermissionsConfig | undefined,
@@ -156,14 +160,16 @@ export class PermissionService {
     this.settingsCache.delete(root);
   }
 
-  rememberedFor(threadId: string): string[] {
-    return [...(this.sessionRules.get(threadId) ?? [])];
+  /** The rules a person allowed (or refused, with `deny`) for the session of `threadId` */
+  rememberedFor(threadId: string, behavior: 'allow' | 'deny' = 'allow'): string[] {
+    return [...(this.sessionRules.get(threadId)?.[behavior] ?? [])];
   }
 
-  rememberForSession(threadId: string, rule: string): void {
-    const rules = this.sessionRules.get(threadId) ?? [];
-    if (!rules.includes(rule)) rules.push(rule);
-    this.sessionRules.set(threadId, rules);
+  rememberForSession(threadId: string, rule: string, behavior: 'allow' | 'deny' = 'allow'): void {
+    const rules = this.sessionRules.get(threadId) ?? { allow: [], deny: [] };
+    const list = [...rules[behavior]];
+    if (!list.includes(rule)) list.push(rule);
+    this.sessionRules.set(threadId, { ...rules, [behavior]: list });
   }
 
   warnOnce(message: string, details: Record<string, unknown> = {}): void {
@@ -267,6 +273,7 @@ export class RunPermissions {
   private activated: boolean;
   private currentMode: PermissionMode;
   private readonly remembered: string[];
+  private readonly rememberedDeny: string[];
   private readonly rememberedFiles: PermissionLayerSettings[] = [];
   private settings: PermissionLayerSettings[] = [];
   private readonly listeners = new Set<(mode: PermissionMode) => void>();
@@ -284,13 +291,18 @@ export class RunPermissions {
       ...service.rememberedFor(options.threadId),
       ...(checkpoint?.remembered?.allow ?? []),
     ];
+    this.rememberedDeny = [
+      ...service.rememberedFor(options.threadId, 'deny'),
+      ...(checkpoint?.remembered?.deny ?? []),
+    ];
     this.activated =
       service.config !== undefined ||
       options.runtime.options !== undefined ||
       options.agent.options !== undefined ||
       this.ownScope !== undefined ||
       checkpoint !== undefined ||
-      this.remembered.length > 0;
+      this.remembered.length > 0 ||
+      this.rememberedDeny.length > 0;
     this.currentMode = 'default';
   }
 
@@ -402,7 +414,7 @@ export class RunPermissions {
       ...this.settings,
       ...this.rememberedFiles,
       ...this.scopes().flatMap((scope) => codeLayer(scope.options, scope.origin)),
-      ...codeLayer({ allow: this.remembered }, 'remembered'),
+      ...codeLayer({ allow: this.remembered, deny: this.rememberedDeny }, 'remembered'),
       ...skillRules.flatMap((skill) => codeLayer({ allow: skill.rules }, `skill:${skill.name}`)),
     ]);
   }
@@ -424,6 +436,7 @@ export class RunPermissions {
       }
     }
     merged.allow.push(...this.remembered);
+    merged.deny.push(...this.rememberedDeny);
     const context = this.context(workspace);
     const here = {
       root: this.root,
@@ -442,7 +455,7 @@ export class RunPermissions {
       pass(scope.options);
       inherited.push(...(scope.options?.inherited ?? []).map((entry) => ({ ...entry })));
     }
-    pass({ allow: this.remembered });
+    pass({ allow: this.remembered, deny: this.rememberedDeny });
     return {
       mode: this.currentMode,
       rules: merged,
@@ -559,35 +572,42 @@ export class RunPermissions {
   }
 
   /**
-   * Saves the allow rule of an "always allow" answer: to the run and the thread's session for
-   * `session` (and whenever the runtime reads no settings files), else to the layer's settings
-   * file. Only the suggested rule or the exact call may be saved, and only when it covers the call
+   * Saves the rule of an "always allow" answer (an allow rule) or an "always reject" one (a deny
+   * rule, `behavior: 'deny'`): to the run and the thread's session for `session` (and whenever
+   * the runtime reads no settings files), else to the layer's settings file. Only the suggested
+   * rule or the exact call may be saved, and only when it covers the call
    */
   async remember(
     tool: Tool,
     args: Record<string, unknown>,
     choice: true | ToolApprovalRemember,
-    workspace?: Workspace
-  ): Promise<{ rule: string; layer: PermissionRememberLayer } | undefined> {
+    workspace?: Workspace,
+    behavior: 'allow' | 'deny' = 'allow'
+  ): Promise<
+    { rule: string; layer: PermissionRememberLayer; behavior: 'allow' | 'deny' } | undefined
+  > {
     if (!this.active) return undefined;
     const { service, threadId } = this.options;
     const root = this.root;
     const config = service.config;
     const context = this.context(workspace);
+    const answer = behavior === 'allow' ? '"always allow"' : '"always reject"';
     const offered = rememberableRules(tool, args, context);
     const rule = (choice === true ? undefined : choice.rule) ?? offered[0];
     if (!rule) {
-      service.warnOnce('An "always allow" answer has no rule to save, the call is approved once', {
-        tool: tool.name,
-      });
+      service.warnOnce(
+        `An ${answer} answer has no rule to save, the call is ${behavior === 'allow' ? 'approved' : 'refused'} once`,
+        { tool: tool.name }
+      );
       return undefined;
     }
-    if (
-      !offered.includes(rule.trim()) ||
-      !(await ruleAllowsCall(rule, tool, args, context, root))
-    ) {
+    const covers =
+      behavior === 'allow'
+        ? await ruleAllowsCall(rule, tool, args, context, root)
+        : (await ruleMatchesCall(rule, tool, args, context, root)) === true;
+    if (!offered.includes(rule.trim()) || !covers) {
       service.warnOnce(
-        'An "always allow" rule is broader than the call it answers or does not cover it, it is not saved',
+        `An ${answer} rule is broader than the call it answers or does not cover it, it is not saved`,
         { tool: tool.name, rule }
       );
       return undefined;
@@ -595,7 +615,7 @@ export class RunPermissions {
     const requested = choice === true ? undefined : choice.layer;
     const allowedLayers = config?.rememberLayers ?? DEFAULT_REMEMBER_LAYERS;
     if (requested && !allowedLayers.includes(requested)) {
-      service.warnOnce('An "always allow" answer names a layer it may not save to', {
+      service.warnOnce(`An ${answer} answer names a layer it may not save to`, {
         layer: requested,
       });
     }
@@ -604,20 +624,21 @@ export class RunPermissions {
     const settings = service.settingsOptions;
     if (layer !== 'session' && !settings) layer = 'session';
     if (layer === 'session') {
-      if (!this.remembered.includes(rule)) this.remembered.push(rule);
-      service.rememberForSession(threadId, rule);
-      return { rule, layer };
+      const kept = behavior === 'allow' ? this.remembered : this.rememberedDeny;
+      if (!kept.includes(rule)) kept.push(rule);
+      service.rememberForSession(threadId, rule, behavior);
+      return { rule, layer, behavior };
     }
     const file = rememberFile(layer, root, settings);
-    await addAllowRule(file, rule);
+    await addPermissionRule(file, behavior, rule);
     service.forget(root);
     this.rememberedFiles.push({
       layer,
       origin: file,
       anchor: layer === 'user' ? resolve(file, '..') : root,
-      allow: [rule],
+      ...(behavior === 'allow' ? { allow: [rule] } : { deny: [rule] }),
     });
-    return { rule, layer };
+    return { rule, layer, behavior };
   }
 
   /** Records a decision: the caller hears it and the thread keeps it, once permissions are set up */
@@ -638,7 +659,12 @@ export class RunPermissions {
     };
     return {
       mode: this.currentMode,
-      ...(this.remembered.length > 0 && { remembered: { allow: [...this.remembered] } }),
+      ...((this.remembered.length > 0 || this.rememberedDeny.length > 0) && {
+        remembered: {
+          ...(this.remembered.length > 0 && { allow: [...this.remembered] }),
+          ...(this.rememberedDeny.length > 0 && { deny: [...this.rememberedDeny] }),
+        },
+      }),
       ...(rules && Object.keys(rules).length > 0 && { rules }),
     };
   }

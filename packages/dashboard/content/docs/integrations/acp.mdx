@@ -1,0 +1,177 @@
+---
+title: ACP (Agent Client Protocol)
+description: 'Use Cogitator agents in Zed, JetBrains, Neovim and VS Code over the Agent Client Protocol, and run Claude Code, Codex or Gemini CLI as agents of your own app-server.'
+---
+
+## Overview
+
+The [Agent Client Protocol](https://agentclientprotocol.com) is how editors talk to coding agents. `@cogitator-ai/acp` speaks it both ways:
+
+- **Cogitator in your editor** - `cogitator acp` (or `createAcpAgent()`) serves a Cogitator agent to any ACP editor. A Cogitator thread is an ACP session, a prompt is a turn.
+- **Other agents in Cogitator** - `AcpAgentProvider` launches an external ACP agent (Claude Code, Codex, Gemini CLI, any agent of the ACP registry) and serves it next to your own agents in an [app-server](/docs/integrations/app-server). Its permission requests are decided by Cogitator's permission engine.
+
+```bash
+pnpm add @cogitator-ai/acp @cogitator-ai/app-server @cogitator-ai/core
+```
+
+It is built on the official TypeScript SDK, `@agentclientprotocol/sdk` (ACP v1).
+
+## Cogitator in your editor
+
+With the CLI there is nothing to write. In Zed's `settings.json`:
+
+```json
+{
+  "agent_servers": {
+    "Cogitator": {
+      "command": "npx",
+      "args": ["-y", "@cogitator-ai/cli", "acp", "-m", "ollama/qwen3:8b"]
+    }
+  }
+}
+```
+
+`cogitator acp` runs the `coding` [harness agent](/docs/core/harness-agent): workspace tools and a shell, a todo list, skills, subagents, commands and the project's instructions, on the model of `-m`, of `cogitator.yml` or of a local Ollama. Sessions live in `~/.cogitator/sessions.db`, so the editor can list, load and resume them across restarts. It works in the project it is launched in, where its settings, commands, subagents and hooks are read: a session in a directory outside it is refused.
+
+| Flag                       | What                                                                                                   |
+| -------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `-m, --model`              | The model, as `provider/model`                                                                         |
+| `-c, --config`             | The config file (default `./cogitator.yml`)                                                            |
+| `--models <models...>`     | More models a session may switch to, next to the local Ollama models                                   |
+| `--trust`                  | Trust the project: its subagents, commands, hooks and allow rules apply, "always" answers go to a file |
+| `--no-session-persistence` | Keep sessions in this process only                                                                     |
+
+### What you see in the editor
+
+- **Messages and thoughts** stream as they are written.
+- **Tool calls** show what they do (`Edit file: src/app.ts`, a command line), their kind, the files they touch and, for an edit, the diff. A command shows the editor's terminal it ran in.
+- **The plan** is the agent's todo list from `write_todos`, kept current.
+- **Commands**: the `/` menu lists the project's commands (Markdown files in `commands/` folders) and the agent's skills. `/review src` runs a command, `/<skill> what to do` asks the agent to use a skill.
+- **Modes**: the session's mode is a permission mode (`default`, `acceptEdits`, `plan`, `dontAsk`, `bypassPermissions`). The model and the reasoning effort are configuration options too.
+- **Compaction** of a long conversation is shown as it happens.
+
+### Permissions
+
+Edits and commands ask with `session/request_permission` in the `default` mode. The editor offers four answers:
+
+| Answer        | What happens                                                               |
+| ------------- | -------------------------------------------------------------------------- |
+| Allow         | The call runs                                                              |
+| Always allow  | The call runs, and the rule the request suggests is saved as an allow rule |
+| Reject        | The call is refused, the model reads why                                   |
+| Always reject | The call is refused, and the same rule is saved as a deny rule             |
+
+A suggested rule names what the call does, such as `run_command(npm test *)` or `edit_file(./src/app.ts)`. Without `--trust` it lasts for the session, with it the rule goes to `.cogitator/settings.local.json`, where the [permission rules](/docs/tools/permissions) of later sessions read it.
+
+In `plan` mode only reads run. When the agent presents its plan, the editor asks "Ready to code?": yes goes on in `acceptEdits` or `default`, no keeps planning.
+
+### Files and terminals
+
+When the editor offers them, the agent reads and writes files through it (`fs/read_text_file`, `fs/write_text_file`), so it sees unsaved changes and the editor follows its edits, and runs commands in the editor's terminals (`terminal/*`). Listings, searches, deletes and every path check stay on the session's directory, which the agent cannot leave.
+
+### MCP servers
+
+The MCP servers the editor names for a session connect through Cogitator's `MCPClient` (stdio, HTTP and SSE). Their tools are named `mcp__<server>__<tool>`, so permission rules name them as in Claude Code.
+
+## Serve your own agent
+
+```typescript
+import { Agent, Cogitator, workspaceTools } from '@cogitator-ai/core';
+import { SessionHost } from '@cogitator-ai/app-server';
+import { createAcpAgent, serveAcpStdio } from '@cogitator-ai/acp';
+
+const cogitator = new Cogitator({
+  memory: { adapter: 'sqlite', sqlite: { path: './sessions.db' } },
+  permissions: {},
+});
+const coder = new Agent({
+  name: 'coder',
+  model: 'ollama/qwen3:8b',
+  instructions: 'You are a careful coding agent.',
+  tools: workspaceTools(),
+  todos: true,
+});
+
+const host = new SessionHost({ cogitator, agents: { coder } });
+const acp = createAcpAgent({
+  host,
+  cogitator,
+  agentInfo: { name: 'my-agent', version: '1.0.0' },
+  models: ['ollama/qwen3:8b', 'anthropic/claude-sonnet-5-5'],
+});
+await serveAcpStdio(acp);
+await host.close();
+```
+
+| Option                        | What                                                                               |
+| ----------------------------- | ---------------------------------------------------------------------------------- |
+| `host`, `cogitator`           | The app-server host whose threads are the sessions, and its runtime                |
+| `agent`                       | The agent of the host sessions run (default: the host's default agent)             |
+| `agentInfo`                   | What `initialize` says of the agent                                                |
+| `models`                      | Models a session may switch to                                                     |
+| `modes`, `defaultMode`        | Permission modes offered and the one a session starts in (default: all but `auto`) |
+| `efforts`                     | Reasoning efforts offered                                                          |
+| `workspace(cwd)`              | The workspace on this machine for a session's directory (default `LocalWorkspace`) |
+| `mcp`                         | How MCP servers connect (default the connector of `@cogitator-ai/mcp`)             |
+| `roots`                       | Directories sessions may work in, a session outside them refused (default any)     |
+| `authMethods`, `authenticate` | The auth methods `initialize` offers and the check of `authenticate`               |
+
+Nothing but the protocol may write to stdout: log to stderr.
+
+## Run external ACP agents
+
+`AcpAgentProvider` makes an ACP agent a session provider of an app-server host: each thread is a session of the agent, each turn a prompt, and its stream reaches app-server clients as the events of any turn.
+
+```typescript
+import { Agent, Cogitator, LocalWorkspace } from '@cogitator-ai/core';
+import { SessionHost, createAppServer, serveStdio } from '@cogitator-ai/app-server';
+import { AcpAgentProvider, resolveAcpAgent } from '@cogitator-ai/acp';
+
+const workspace = new LocalWorkspace({ root: process.cwd() });
+const launch = await resolveAcpAgent('claude');
+const claude = new AcpAgentProvider({
+  agent: { command: launch.command, args: launch.args },
+  workspace,
+  name: 'claude',
+  permissions: { rules: { allow: ['Bash(npm test *)'], deny: ['Bash(rm *)'] } },
+});
+
+const host = new SessionHost({
+  cogitator: new Cogitator({ memory: { adapter: 'sqlite', sqlite: { path: './sessions.db' } } }),
+  agents: {
+    assistant: new Agent({ name: 'assistant', model: 'ollama/qwen3:8b', instructions: 'Help.' }),
+  },
+  providers: { claude },
+});
+await serveStdio(createAppServer(host));
+await host.close();
+await claude.close();
+```
+
+Or from the CLI:
+
+```bash
+cogitator app-server -m ollama/qwen3:8b --acp-agent claude --acp-agent mine="./my-agent --acp"
+```
+
+`resolveAcpAgent()` knows the presets `claude`, `codex` and `gemini` (launched with `npx`), `registry:<id>` for an agent of the [ACP registry](https://agentclientprotocol.com/registry), and any command line.
+
+### How Cogitator decides for the agent
+
+Every `session/request_permission` of the agent goes through `resolvePermission`, in the thread's permission mode, with the rules in code, the settings files when asked to read them, and the rules people saved:
+
+| The agent's call          | Is read as             | Rules that name it     |
+| ------------------------- | ---------------------- | ---------------------- |
+| `execute` (a command)     | `run_command`          | `Bash(npm test *)`     |
+| `read`, `search` of paths | `read_file`            | `Read(src/**)`         |
+| `edit`, `delete`, `move`  | `edit_file`            | `Edit(src/**)`         |
+| `fetch` of a URL          | `web_fetch`            | `WebFetch(domain:...)` |
+| any other tool            | `acp__<agent>__<tool>` | its name               |
+
+What the rules allow is allowed, what they deny is refused, and what would ask goes to the client of the turn (`approval/request` of the app-server). An "always" answer saves the rule for the thread, or to the settings file of `permissions.rememberIn`, but not for a call known only by its kind (no tool name, command or paths). Without a client to ask, it is refused. A mode the settings files disable, and `auto`, decide as `default`. The files and terminals the agent asks for are served from the provider's workspace, inside its root, checked the same way: each request is decided with the mode and the rules of the moment (a call approved earlier in the turn is not asked about again), a terminal's directory and environment are checked with its command, it runs the program the agent names with its exact arguments, and its output is kept up to `outputByteLimit` (1 MiB by default). Leaving plan mode (`switch_mode`) always asks, and once approved the thread goes on in the mode the agent picked.
+
+The agent's session follows the thread's permission mode when the agent has a mode of that name (Claude Code does), and the turn's model when the agent offers it. Its threads cannot be forked, rewound or reviewed, and a turn of one takes no steering.
+
+## The registry
+
+`packages/acp/registry/cogitator/` holds the card of `cogitator acp` for the [ACP registry](https://github.com/agentclientprotocol/registry): `agent.json`, with the `npx` distribution of `@cogitator-ai/cli` and `acp` as its argument, and a 16x16 icon. The registry lists agents that offer an auth method: `cogitator acp` offers one that uses the model providers of the configuration, and `authenticate` says how to set one up when there is none.

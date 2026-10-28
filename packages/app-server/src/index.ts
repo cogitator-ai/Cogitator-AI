@@ -25,8 +25,14 @@ export {
   type SessionHostListener,
   type SessionHostOptions,
   type SessionHostReviewOptions,
+  type TurnRunOptions,
   type TurnStartOptions,
 } from './host/session-host.js';
+export type {
+  SessionProvider,
+  SessionProviderResult,
+  SessionProviderTurn,
+} from './host/provider.js';
 export {
   MAX_REVIEW_CHANGES_CHARS,
   REVIEW_INSTRUCTIONS,

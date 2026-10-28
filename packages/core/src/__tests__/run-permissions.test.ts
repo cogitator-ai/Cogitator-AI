@@ -220,6 +220,50 @@ describe('permission rules in a run', () => {
     await cog.close();
   });
 
+  it('keeps an "always reject" rule for the session, so the next call is refused without asking', async () => {
+    sent.mockClear();
+    const onApproval = vi.fn(async () => ({ approved: false as const, remember: true }));
+    const { cog } = setup(
+      [
+        turn(call('c1', 'send_email', { to: 'a@b.co', body: '1' })),
+        { content: 'refused' },
+        turn(call('c2', 'send_email', { to: 'a@b.co', body: '2' })),
+      ],
+      { permissions: {} }
+    );
+    await cog.run(coder(), { input: 'one', threadId: 't-never', onApproval });
+    const second = await cog.run(coder(), { input: 'two', threadId: 't-never', onApproval });
+    expect(second.status).toBe('completed');
+    expect(onApproval).toHaveBeenCalledTimes(1);
+    expect(sent).not.toHaveBeenCalled();
+    const events = (await approvalEvents(cog, 't-never')).map((entry) => entry.event);
+    expect(events[0]).toMatchObject({
+      decision: 'deny',
+      decidedBy: 'user',
+      remembered: { rule: 'send_email', layer: 'session', behavior: 'deny' },
+    });
+    expect(events[1]).toMatchObject({
+      decision: 'deny',
+      decidedBy: 'rule',
+      rule: { rule: 'send_email', behavior: 'deny', origin: 'remembered' },
+    });
+    await cog.close();
+  });
+
+  it('saves an "always reject" rule to the deny list of the local settings file', async () => {
+    const { cog } = setup([turn(call('c1', 'run_command', { command: 'echo hi' }))], {
+      permissions: { settings: { root, userDirs: [join(base, 'home')], managedDirs: [] } },
+    });
+    await cog.run(coder(), {
+      input: 'echo',
+      threadId: 't-local-deny',
+      onApproval: async () => ({ approved: false, remember: true }),
+    });
+    const saved = JSON.parse(readFileSync(join(root, '.cogitator', 'settings.local.json'), 'utf8'));
+    expect(saved).toEqual({ permissions: { deny: ['run_command(echo hi *)'] } });
+    await cog.close();
+  });
+
   it('does not save a rule that does not cover the call it answers', async () => {
     const { cog } = setup([turn(call('c1', 'run_command', { command: 'echo hi' }))], {
       permissions: {},

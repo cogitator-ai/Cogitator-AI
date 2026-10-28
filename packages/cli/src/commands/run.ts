@@ -214,11 +214,14 @@ async function runInteractive(cog: Cogitator, initialModel: string, stream: bool
   }
 }
 
-/** The runtime config and the model a run uses: the flags, the config file, else Ollama's models */
-export async function resolveRunRuntime(options: {
+/**
+ * The runtime config and the model a run would use: the flags, the config file, else Ollama's
+ * models. The model is undefined when none is named and Ollama has none
+ */
+export async function resolveRunConfig(options: {
   config?: string;
   model?: string;
-}): Promise<{ config: CogitatorConfig; model: string }> {
+}): Promise<{ config: CogitatorConfig; model?: string }> {
   const configPath = findConfig(options.config);
   if (options.config && !configPath) {
     throw new CommandError(`Config file not found: ${resolve(options.config)}`);
@@ -246,24 +249,33 @@ export async function resolveRunRuntime(options: {
     log.dim(`Using config: ${configPath}`);
   }
 
-  let model = resolveRunModel(options.model, process.env, config, loaded.model);
+  const model = resolveRunModel(options.model, process.env, config, loaded.model);
+  if (model) return { config, model };
+  const ollama = config.llm?.providers?.ollama;
+  const baseUrl = resolveOllamaUrl(process.env, ollama?.baseUrl);
+  const detected = await detectOllamaModel(baseUrl, ollama?.apiKey, ollama?.headers);
+  if (detected) log.dim(`Auto-detected model: ${detected}`);
+  return { config, ...(detected && { model: detected }) };
+}
 
+/** Hints for a run that found no model */
+export const NO_MODEL_HINTS = [
+  'Use -m to specify a model, e.g.: cogitator run -m ollama/qwen3:8b "Hello"',
+  'Or set COGITATOR_MODEL / llm.defaultModel in cogitator.yml',
+  'Or start Ollama and pull a model: ollama pull qwen3:8b',
+];
+
+/** The runtime config and the model a run uses: the flags, the config file, else Ollama's models */
+export async function resolveRunRuntime(options: {
+  config?: string;
+  model?: string;
+}): Promise<{ config: CogitatorConfig; model: string }> {
+  const { config, model } = await resolveRunConfig(options);
   if (!model) {
-    const ollama = config.llm?.providers?.ollama;
-    const baseUrl = resolveOllamaUrl(process.env, ollama?.baseUrl);
-    model = (await detectOllamaModel(baseUrl, ollama?.apiKey, ollama?.headers)) ?? undefined;
-    if (!model) {
-      throw new CommandError('No model specified and no Ollama models found', {
-        hints: [
-          'Use -m to specify a model, e.g.: cogitator run -m ollama/qwen3:8b "Hello"',
-          'Or set COGITATOR_MODEL / llm.defaultModel in cogitator.yml',
-          'Or start Ollama and pull a model: ollama pull qwen3:8b',
-        ],
-      });
-    }
-    log.dim(`Auto-detected model: ${model}`);
+    throw new CommandError('No model specified and no Ollama models found', {
+      hints: NO_MODEL_HINTS,
+    });
   }
-
   return { config, model };
 }
 

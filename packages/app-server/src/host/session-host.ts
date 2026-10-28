@@ -6,7 +6,13 @@ import {
   getLogger,
   memoryAgentId,
 } from '@cogitator-ai/core';
-import { AgentStreamSession, createThreadId, type StreamEvent } from '@cogitator-ai/server-shared';
+import {
+  AgentStreamSession,
+  createFinishEvent,
+  createStartEvent,
+  createThreadId,
+  type StreamEvent,
+} from '@cogitator-ai/server-shared';
 import type {
   DelegatedRunStart,
   ImageInput,
@@ -15,13 +21,19 @@ import type {
   MemoryResult,
   MessageContent,
   PermissionMode,
+  ReasoningConfig,
   ResponseFormat,
   RunHandle,
+  RunMiddleware,
+  RunOptions,
   RunResult,
   Span,
   Thread,
+  TodoItem,
   ToolApprovalDecision,
+  ToolResult,
   ToolApprovalRequest,
+  Workspace,
 } from '@cogitator-ai/types';
 import { MemorySearchResultSchema } from '../protocol/extensions.js';
 import { ReviewOutputSchema } from '../protocol/review.js';
@@ -80,6 +92,7 @@ import {
   reviewPrompt,
   type ReviewContextReader,
 } from './review.js';
+import type { SessionProvider, SessionProviderResult } from './provider.js';
 
 /** What a workflow or swarm run gets besides its input */
 export interface AppServerRunContext {
@@ -110,8 +123,15 @@ export interface SessionHostOptions {
   cogitator: Cogitator;
   /** The agents clients can start threads with, by the names they see */
   agents: Readonly<Record<string, Agent>> | ReadonlyMap<string, Agent>;
-  /** The agent of a thread started without one, the first of `agents` by default */
+  /**
+   * Agents that run outside the runtime, such as ACP agents the host launched, by the names
+   * clients see next to `agents` (see {@link SessionProvider})
+   */
+  providers?: Readonly<Record<string, SessionProvider>> | ReadonlyMap<string, SessionProvider>;
+  /** The agent of a thread started without one, the first of `agents` (else of `providers`) by default */
   defaultAgent?: string;
+  /** Options every run of the host's agents takes, such as a harness agent's `runOptions` */
+  runOptions?: Pick<RunOptions, 'parallelToolCalls' | 'maxParallelToolCalls'>;
   /** What `initialize` answers as `serverInfo` */
   serverInfo?: { name: string; version: string };
   review?: SessionHostReviewOptions;
@@ -136,9 +156,26 @@ export interface ApprovalAsk {
 /** Decides a tool call while the turn waits, `'pause'` to end the turn paused */
 export type ApprovalAsker = (ask: ApprovalAsk) => Promise<ToolApprovalDecision | 'pause'>;
 
+/** What the run of one turn gets on top of the host's own options, for a client of its own */
+export interface TurnRunOptions {
+  /** The agent the turn runs instead, made from the thread's: with more tools, say */
+  agent?: (agent: Agent) => Agent;
+  /** The workspace the agent's tools work in for this turn */
+  workspace?: Workspace;
+  reasoning?: ReasoningConfig;
+  /** Middleware of the turn's run, after the agent's own */
+  middleware?: RunMiddleware[];
+  /** Hears the agent's todo list each time it changes */
+  onTodos?: (todos: readonly TodoItem[]) => void;
+  /** Hears each tool result of the turn's run, its error among it, before its event goes out */
+  onToolResult?: (result: ToolResult) => void;
+}
+
 export interface TurnStartOptions {
   /** Asks the client about tool calls that need approval; without it such a turn pauses */
   onApproval?: ApprovalAsker;
+  /** More for the run of a turn of a runtime agent, ignored for an agent outside the runtime */
+  run?: TurnRunOptions;
   /**
    * The turn starts running once this settles, so the answer to the request that started it
    * reaches the client before `turn/started`
@@ -178,6 +215,8 @@ interface TurnRecord {
   mode?: PermissionMode;
   /** Aborts as the turn is interrupted or finishes */
   ended: AbortController;
+  /** Whether an agent outside the runtime runs the turn, which takes no steering */
+  external?: boolean;
   queued: QueuedInput[];
   undelivered: QueuedMessage[];
   done: Promise<void>;
@@ -190,7 +229,19 @@ interface TurnPlan {
   input?: { input: string; images?: ImageInput[] };
   resume?: TurnResume;
   review?: boolean;
+  run?: TurnRunOptions;
 }
+
+interface ProviderPlan {
+  provider: SessionProvider;
+  mode?: PermissionMode;
+  input: UserInput[];
+  model?: string;
+}
+
+/** The agent of a name: one of the runtime's, or one outside it */
+type Target =
+  { agent: Agent; provider?: undefined } | { provider: SessionProvider; agent?: undefined };
 
 /**
  * The threads and turns of an app-server over a {@link Cogitator}: threads live in the runtime's
@@ -205,6 +256,7 @@ interface TurnPlan {
 export class SessionHost {
   private readonly cogitator: Cogitator;
   private readonly agentMap: ReadonlyMap<string, Agent>;
+  private readonly providerMap: ReadonlyMap<string, SessionProvider>;
   private readonly defaultAgentName: string;
   private readonly listeners = new Set<SessionHostListener>();
   private readonly active = new Map<string, TurnRecord>();
@@ -226,9 +278,20 @@ export class SessionHost {
       options.agents instanceof Map
         ? new Map(options.agents)
         : new Map(Object.entries(options.agents as Readonly<Record<string, Agent>>));
-    const first = this.agentMap.keys().next();
-    const defaultAgent = options.defaultAgent ?? (first.done ? undefined : first.value);
-    if (defaultAgent === undefined || !this.agentMap.has(defaultAgent)) {
+    this.providerMap = toMap(options.providers);
+    for (const name of this.providerMap.keys()) {
+      if (this.agentMap.has(name)) {
+        throw new Error(
+          `The name ${name} is both an agent and a provider: give them names of their own`
+        );
+      }
+    }
+    const first = [...this.agentMap.keys(), ...this.providerMap.keys()][0];
+    const defaultAgent = options.defaultAgent ?? first;
+    if (
+      defaultAgent === undefined ||
+      (!this.agentMap.has(defaultAgent) && !this.providerMap.has(defaultAgent))
+    ) {
       throw new Error(
         defaultAgent === undefined
           ? 'SessionHost needs at least one agent'
@@ -264,14 +327,33 @@ export class SessionHost {
     return this.memoryReady;
   }
 
-  /** The agents clients see */
+  /** The agents clients see, those outside the runtime last */
   agents(): AgentInfo[] {
-    return [...this.agentMap].map(([name, agent]) => ({
-      name,
-      ...(agent.config.description !== undefined && { description: agent.config.description }),
-      ...(agent.config.model && { model: agent.config.model }),
-      default: name === this.defaultAgentName,
-    }));
+    return [
+      ...[...this.agentMap].map(([name, agent]) => ({
+        name,
+        ...(agent.config.description !== undefined && { description: agent.config.description }),
+        ...(agent.config.model && { model: agent.config.model }),
+        default: name === this.defaultAgentName,
+      })),
+      ...[...this.providerMap].map(([name, provider]) => ({
+        name,
+        ...(provider.description !== undefined && { description: provider.description }),
+        ...(provider.model !== undefined && { model: provider.model }),
+        default: name === this.defaultAgentName,
+        external: true,
+      })),
+    ];
+  }
+
+  /** The runtime agent of `name`, undefined for one outside the runtime or none */
+  agent(name: string): Agent | undefined {
+    return this.agentMap.get(name);
+  }
+
+  /** The name of the agent of a thread */
+  async threadAgent(threadId: string): Promise<string> {
+    return this.agentNameOf(await this.requireThread(threadId));
   }
 
   /** What `initialize` answers, but the protocol version */
@@ -306,9 +388,9 @@ export class SessionHost {
 
   async startThread(params: ThreadStartParams): Promise<ThreadInfo> {
     const name = params.agent ?? this.defaultAgentName;
-    const agent = this.agentNamed(name);
+    const target = this.targetNamed(name);
     const requested = params.threadId;
-    if (requested === undefined) return this.createThread(params, name, agent);
+    if (requested === undefined) return this.createThread(params, name, target);
     if (this.startingThreads.has(requested)) {
       throw invalidParams(`Thread ${requested} exists already: resume it instead`);
     }
@@ -317,7 +399,7 @@ export class SessionHost {
       if (await this.findThread(requested)) {
         throw invalidParams(`Thread ${requested} exists already: resume it instead`);
       }
-      return await this.createThread(params, name, agent);
+      return await this.createThread(params, name, target);
     } finally {
       this.startingThreads.delete(requested);
     }
@@ -326,15 +408,16 @@ export class SessionHost {
   private async createThread(
     params: ThreadStartParams,
     name: string,
-    agent: Agent
+    target: Target
   ): Promise<ThreadInfo> {
     const memory = await this.requireMemory();
+    const agentId = target.agent ? memoryAgentId(target.agent) : name;
     const thread = this.unwrap(
       await memory.createThread(
-        memoryAgentId(agent),
+        agentId,
         {
           ...params.metadata,
-          agentId: memoryAgentId(agent),
+          agentId,
           [THREAD_KEYS.agent]: name,
           ...(params.permissionMode !== undefined && {
             [THREAD_KEYS.permissionMode]: params.permissionMode,
@@ -366,6 +449,7 @@ export class SessionHost {
 
   async forkThread(params: ThreadForkParams): Promise<ThreadInfo> {
     const source = await this.requireThread(params.threadId);
+    this.refuseExternal(source, 'forked');
     const atEntryId = params.atEntryId ?? source.activeLeafId;
     if (atEntryId === undefined) {
       throw invalidParams(`Thread ${params.threadId} has no entries to fork`);
@@ -417,6 +501,29 @@ export class SessionHost {
     return this.threadInfo(thread);
   }
 
+  /** Merges `metadata` into a thread's metadata, the host's own keys aside */
+  async updateThread(threadId: string, metadata: Record<string, unknown>): Promise<ThreadInfo> {
+    await this.requireThread(threadId);
+    const own = new Set<string>(Object.values(THREAD_KEYS));
+    const kept = Object.fromEntries(Object.entries(metadata).filter(([key]) => !own.has(key)));
+    const memory = await this.requireMemory();
+    return this.threadInfo(this.unwrap(await memory.updateThread(threadId, kept)));
+  }
+
+  /** The thread of `threadId` */
+  async getThread(threadId: string): Promise<ThreadInfo> {
+    return this.threadInfo(await this.requireThread(threadId));
+  }
+
+  /** Deletes a thread and everything its memory keeps, refused while a turn goes on in it */
+  async deleteThread(threadId: string): Promise<void> {
+    await this.requireThread(threadId);
+    const going = this.active.get(threadId);
+    if (going) throw threadBusy(threadId, going.info.id);
+    const memory = await this.requireMemory();
+    this.unwrap(await memory.deleteThread(threadId));
+  }
+
   /**
    * Sets the permission mode of a thread: new turns start in it, and the turn going on switches
    * to it from its next tool call
@@ -457,6 +564,25 @@ export class SessionHost {
         throw invalidParams('Pass input to start a turn, or resume to go on with a paused one');
       }
       const mode = params.permissionMode ?? modeOf(thread);
+      const provider = this.providerMap.get(this.agentNameOf(thread));
+      if (provider) {
+        if (params.outputSchema !== undefined) {
+          throw invalidParams(
+            `The agent of thread ${params.threadId} runs outside the runtime: leave out outputSchema`
+          );
+        }
+        this.launchProvider(
+          turn,
+          {
+            provider,
+            input: params.input ?? [],
+            ...(mode !== undefined && { mode }),
+            ...(params.model !== undefined && { model: params.model }),
+          },
+          options
+        );
+        return copyTurn(turn.info);
+      }
       const review = typeof thread.metadata[THREAD_KEYS.reviewOf] === 'string';
       if (review && params.outputSchema !== undefined) {
         throw invalidParams('A review thread answers with its findings: leave out outputSchema');
@@ -468,8 +594,12 @@ export class SessionHost {
               thread,
               params.model ?? (typeof reviewModel === 'string' ? reviewModel : undefined)
             )
-          : this.turnAgent(this.agentOf(thread), params.model, params.outputSchema),
+          : this.runAgent(
+              this.turnAgent(this.agentOf(thread), params.model, params.outputSchema),
+              options.run
+            ),
         ...(review && { review: true }),
+        ...(!review && options.run && { run: options.run }),
         ...(mode !== undefined && { mode }),
         ...(params.input && { input: toRunInput(params.input) }),
         ...(params.resume && { resume: params.resume }),
@@ -498,6 +628,7 @@ export class SessionHost {
     options: TurnStartOptions
   ): Promise<{ turn: TurnInfo; reviewThreadId: string }> {
     const source = await this.requireThread(params.threadId);
+    this.refuseExternal(source, 'reviewed');
     const memory = await this.requireMemory();
     let changes: string;
     try {
@@ -546,6 +677,11 @@ export class SessionHost {
   /** Sends a message to the turn going on, `steer` by default */
   steerTurn(params: TurnSteerParams): { turnId: string } {
     const turn = this.activeTurn(params.threadId, params.expectedTurnId);
+    if (turn.external) {
+      throw invalidParams(
+        `The agent of thread ${params.threadId} runs outside the runtime and takes no messages while it works`
+      );
+    }
     const queued: QueuedInput = { delivery: params.delivery ?? 'steer', input: params.input };
     if (!turn.handle) {
       turn.queued.push(queued);
@@ -579,7 +715,9 @@ export class SessionHost {
   async searchMemory(params: MemorySearchParams): Promise<MemorySearchResult> {
     const memory = await this.requireMemory();
     const agent = this.agentNamed(params.agent ?? this.defaultAgentName);
-    if (params.threadId !== undefined) await this.requireThread(params.threadId);
+    if (params.threadId !== undefined) {
+      this.refuseExternal(await this.requireThread(params.threadId), 'searched');
+    }
     const agentId = memoryAgentId(agent);
     const threadId = params.threadId;
     const [search] = createMemorySearchTools({
@@ -602,6 +740,7 @@ export class SessionHost {
 
   async rewindThread(params: ThreadRewindParams): Promise<ThreadRewindResult> {
     const thread = await this.requireThread(params.threadId);
+    this.refuseExternal(thread, 'rewound');
     const going = this.active.get(params.threadId);
     if (going && !params.force && !params.dryRun) throw threadBusy(params.threadId, going.info.id);
     const memory = await this.requireMemory();
@@ -831,11 +970,23 @@ export class SessionHost {
     session.start();
     const asker = options.onApproval;
     const mode = turn.mode ?? plan.mode;
+    const run = plan.run;
     const runOptions = {
       stream: true,
+      ...this.options.runOptions,
       ...session.callbacks,
       onSpan: (span: Span) => this.recordSpan(trace, turnId, span),
       ...(mode !== undefined && { permissions: { mode } }),
+      ...(run?.workspace && { workspace: run.workspace }),
+      ...(run?.reasoning && { reasoning: run.reasoning }),
+      ...(run?.middleware && { middleware: run.middleware }),
+      ...(run?.onTodos && { onTodos: run.onTodos }),
+      ...(run?.onToolResult && {
+        onToolResult: (result: ToolResult) => {
+          run.onToolResult?.(result);
+          session.callbacks.onToolResult(result);
+        },
+      }),
       ...(asker && {
         onApproval: (request: ToolApprovalRequest) =>
           asker({ threadId, turnId, request, signal: turn.ended.signal }),
@@ -879,6 +1030,110 @@ export class SessionHost {
       }
       const described = describeTurnError(error, this.exposesErrors);
       session.fail(described.message, described.code);
+      this.finish(turn, { status: 'failed', error: described });
+    }
+  }
+
+  private launchProvider(turn: TurnRecord, plan: ProviderPlan, options: TurnStartOptions): void {
+    turn.external = true;
+    const done = this.runProviderTurn(turn, plan, options).finally(() => {
+      this.running.delete(done);
+    });
+    turn.done = done;
+    this.running.add(done);
+  }
+
+  private async runProviderTurn(turn: TurnRecord, plan: ProviderPlan, options: TurnStartOptions) {
+    await Promise.resolve(options.after).catch(() => undefined);
+    const threadId = turn.info.threadId;
+    const turnId = turn.info.id;
+    this.openTrace(threadId, turnId);
+    this.emit({ method: 'turn/started', params: { threadId, turn: copyTurn(turn.info) } });
+    if (turn.interrupted) {
+      this.finish(turn, { status: 'interrupted' });
+      return;
+    }
+    const emit = (event: StreamEvent) =>
+      this.emit({ method: 'turn/event', params: { threadId, turnId, event } });
+    const messageId = `msg_${randomUUID()}`;
+    const startedAt = Date.now();
+    const signal = AbortSignal.any([turn.ended.signal, this.closing.signal]);
+    const asker = options.onApproval;
+    emit(createStartEvent(messageId, threadId));
+    try {
+      const memory = await this.requireMemory();
+      const thread = await this.requireThread(threadId);
+      const content = toMessageContent(plan.input);
+      this.unwrap(
+        await memory.addEntry({
+          threadId,
+          message: { role: 'user', content },
+          tokenCount: 0,
+          type: 'message',
+        })
+      );
+      const result = await plan.provider.runTurn({
+        threadId,
+        turnId,
+        input: plan.input,
+        metadata: { ...thread.metadata },
+        saveMetadata: async (patch) => {
+          this.unwrap(await memory.updateThread(threadId, patch));
+        },
+        permissionMode: () => turn.mode ?? plan.mode ?? 'default',
+        setPermissionMode: async (mode: PermissionMode) => {
+          await this.setPermissionMode(threadId, mode);
+          turn.mode = mode;
+        },
+        ...(plan.model !== undefined && { model: plan.model }),
+        emit,
+        ...(asker && {
+          onApproval: (request: ToolApprovalRequest) =>
+            asker({ threadId, turnId, request, signal: turn.ended.signal }),
+        }),
+        signal,
+      });
+      if (turn.interrupted) throw new Error('The turn was interrupted');
+      if (result.output !== '') {
+        this.unwrap(
+          await memory.addEntry({
+            threadId,
+            message: { role: 'assistant', content: result.output },
+            tokenCount: 0,
+            type: 'message',
+          })
+        );
+      }
+      const usage = providerUsage(result);
+      emit(
+        createFinishEvent(messageId, usage, {
+          threadId,
+          status: 'completed',
+          ...(result.truncated && { truncated: true }),
+          ...(result.refused && { blocked: 'refusal' }),
+        })
+      );
+      this.finish(turn, {
+        status: 'completed',
+        output: result.output,
+        usage: toTurnUsage({
+          ...usage,
+          cost: result.usage?.cost ?? 0,
+          duration: Date.now() - startedAt,
+        }),
+      });
+    } catch (error) {
+      if (turn.interrupted || this.closing.signal.aborted) {
+        emit({ type: 'error', message: 'The turn was interrupted', code: 'INTERRUPTED' });
+        this.finish(turn, { status: 'interrupted' });
+        return;
+      }
+      const described = describeTurnError(error, this.exposesErrors);
+      emit({
+        type: 'error',
+        message: described.message,
+        ...(described.code && { code: described.code }),
+      });
       this.finish(turn, { status: 'failed', error: described });
     }
   }
@@ -956,8 +1211,33 @@ export class SessionHost {
 
   private agentNamed(name: string): Agent {
     const agent = this.agentMap.get(name);
-    if (!agent) throw notFound('agent', name);
-    return agent;
+    if (agent) return agent;
+    if (this.providerMap.has(name)) {
+      throw invalidParams(`The agent ${name} runs outside the runtime, which this needs`);
+    }
+    throw notFound('agent', name);
+  }
+
+  private targetNamed(name: string): Target {
+    const agent = this.agentMap.get(name);
+    if (agent) return { agent };
+    const provider = this.providerMap.get(name);
+    if (provider) return { provider };
+    throw notFound('agent', name);
+  }
+
+  /** Refuses what only threads of the runtime's agents can do */
+  private refuseExternal(thread: Thread, what: string): void {
+    if (this.providerMap.has(this.agentNameOf(thread))) {
+      throw invalidParams(
+        `Thread ${thread.id} runs an agent outside the runtime: it cannot be ${what}`
+      );
+    }
+  }
+
+  /** The agent of a turn, changed by the client's `run.agent` */
+  private runAgent(agent: Agent, run: TurnRunOptions | undefined): Agent {
+    return run?.agent ? run.agent(agent) : agent;
   }
 
   private agentNameOf(thread: Thread): string {
@@ -1005,6 +1285,27 @@ export class SessionHost {
   private async threadInfo(thread: Thread): Promise<ThreadInfo> {
     return toThreadInfo(thread, await this.statusOf(thread.id));
   }
+}
+
+function toMap<T>(
+  value: Readonly<Record<string, T>> | ReadonlyMap<string, T> | undefined
+): ReadonlyMap<string, T> {
+  if (value === undefined) return new Map();
+  return value instanceof Map
+    ? new Map(value)
+    : new Map(Object.entries(value as Readonly<Record<string, T>>));
+}
+
+function providerUsage(result: SessionProviderResult): {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+} {
+  return {
+    inputTokens: result.usage?.inputTokens ?? 0,
+    outputTokens: result.usage?.outputTokens ?? 0,
+    totalTokens: result.usage?.totalTokens ?? 0,
+  };
 }
 
 function modeOf(thread: Thread): PermissionMode | undefined {
