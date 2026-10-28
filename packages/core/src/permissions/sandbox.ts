@@ -4,8 +4,9 @@
  * workspace by a command that runs without the sandbox
  */
 
+import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, isAbsolute, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { Tool, Workspace, WorkspaceSandbox, WorkspaceSandboxRoute } from '@cogitator-ai/types';
 import type { ParsedCommandLine, ShellCommand } from './shell';
 
@@ -311,17 +312,41 @@ export function criticalRemoval(
 ): string | undefined {
   const { home = homedir(), ignoreCase = false } =
     typeof options === 'string' ? { home: options } : options;
+  const realRoot = realOf(root);
+  const realHome = realOf(home);
+  const critical = (path: string, entry: boolean) =>
+    isCriticalPath(path, root, home, ignoreCase) ||
+    isCriticalPath(entry ? throughParents(path) : realOf(path), realRoot, realHome, ignoreCase);
   for (const target of removalTargets(line, cwd, ignoreCase)) {
     if (target.glob) {
-      if (target.glob.matchesGit || isCriticalPath(target.glob.base, root, home, ignoreCase))
-        return target.word;
+      if (target.glob.matchesGit || critical(target.glob.base, false)) return target.word;
       continue;
     }
-    if (target.path === undefined || isCriticalPath(target.path, root, home, ignoreCase)) {
+    if (target.path === undefined || critical(target.path, !/\/\.?$/.test(target.word))) {
       return target.word;
     }
   }
   return undefined;
+}
+
+/** `path` with every symlink resolved, what does not exist kept after its nearest existing parent */
+function realOf(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    const parent = dirname(path);
+    return parent === path ? path : join(realOf(parent), basename(path));
+  }
+}
+
+/**
+ * `path` with the symlinks of its parents resolved and its last name kept: what a removal of it
+ * reaches, the link itself when it is one (`rm alias` removes the link, `rm -r alias/objects`
+ * what the link leads to)
+ */
+function throughParents(path: string): string {
+  const parent = dirname(path);
+  return parent === path ? path : join(realOf(parent), basename(path));
 }
 
 /**
@@ -336,6 +361,8 @@ export async function removesOutside(
   for (const target of removalTargets(line, cwd, false)) {
     const path = target.glob?.base ?? target.path;
     if (path === undefined || !(await inside(path))) return true;
+    const entry = !target.glob && !/\/\.?$/.test(target.word);
+    if (!(await inside(entry ? throughParents(path) : realOf(path)))) return true;
   }
   return false;
 }

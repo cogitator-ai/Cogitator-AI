@@ -1586,6 +1586,9 @@ export class Cogitator implements ToolInvoker {
           workspace: options.workspace ?? agent?.config.workspace,
         }),
         ...(permissions.view(workspace) && { permissions: permissions.view(workspace) }),
+        ...(options.onApproval && {
+          delegation: { conversation: () => [], onApproval: options.onApproval, depth: 0 },
+        }),
       },
       approved: approvedByUser,
       allowNativeFallback: this.config.sandbox?.allowNativeFallback !== false,

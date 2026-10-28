@@ -256,6 +256,27 @@ describe.skipIf(!probe.available)(`OsSandbox on this machine (${probe.kind})`, (
     expect(warnings.join('\n')).toMatch(/reaches into a denyRead region only through a symlink/);
   });
 
+  it('keeps protected and denied paths from being moved away', async () => {
+    await mkdir(join(root, '.claude'), { recursive: true });
+    await writeFile(join(root, '.claude', 'settings.json'), '{}');
+    await mkdir(join(root, 'secrets'));
+    await writeFile(join(root, 'secrets', 'key'), 'secret');
+    const sandbox = make({ policy: { filesystem: { denyRead: [join(root, 'secrets')] } } });
+    const moved = await runSandboxed(sandbox, root, 'mv .claude moved');
+    expect(moved.exitCode).not.toBe(0);
+    expect(await readFile(join(root, '.claude', 'settings.json'), 'utf8')).toBe('{}');
+    const read = await runSandboxed(sandbox, root, 'mv secrets open; cat open/key');
+    expect(read.stdout).toBe('');
+    expect(await readFile(join(root, 'secrets', 'key'), 'utf8')).toBe('secret');
+  });
+
+  it('still removes files in a writable root inside a wider denyRead', async () => {
+    const sandbox = make({ policy: { filesystem: { denyRead: [base], allowRead: [root] } } });
+    const result = await runSandboxed(sandbox, root, 'echo x > f && rm f && echo done');
+    expect(result.stdout).toBe('done\n');
+    expect(existsSync(join(root, 'f'))).toBe(false);
+  });
+
   it('refuses to launch while a denied file has another hard link', async () => {
     await writeFile(join(outside, 'token'), 'secret');
     await link(join(outside, 'token'), join(root, 'token-copy'));
@@ -403,7 +424,8 @@ describe.skipIf(!probe.available)(`OsSandbox on this machine (${probe.kind})`, (
         'rm .claude && mkdir .claude && echo evil > .claude/settings.json'
       );
       expect(result.exitCode).not.toBe(0);
-      expect(existsSync(join(root, '.claude', 'settings.json'))).toBe(false);
+      expect(await readFile(join(root, 'dotfiles', 'claude', 'settings.json'), 'utf8')).toBe('{}');
+      expect(await readFile(join(root, '.claude', 'settings.json'), 'utf8')).toBe('{}');
     }
   );
 

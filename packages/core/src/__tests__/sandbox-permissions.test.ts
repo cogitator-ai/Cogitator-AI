@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -17,6 +17,7 @@ import { LocalWorkspace } from '../workspace/local-workspace';
 import {
   PermissionRuleSet,
   criticalRemoval,
+  removesOutside,
   parseCommandLine,
   plainForSandbox,
   resolvePermission,
@@ -431,6 +432,29 @@ describe('the command checks', () => {
     expect(criticalRemoval(line('rm -rf .G*'), root, root, { ignoreCase: true })).toBe('.G*');
     expect(criticalRemoval(line('find build -name "*.o" -print'), root, root)).toBeUndefined();
     expect(criticalRemoval(line('xargs echo rm'), root, root)).toBe('xargs echo rm');
+  });
+
+  it('sees a critical path reached through a symlinked parent', () => {
+    const project = join(base, 'linked');
+    mkdirSync(join(project, '.git', 'objects'), { recursive: true });
+    symlinkSync(join(project, '.git'), join(project, 'alias'));
+    const at = (text: string) => criticalRemoval(parseCommandLine(text), project, project);
+    expect(at('rm -rf alias/objects')).toBe('alias/objects');
+    expect(at('rm -rf alias/')).toBe('alias/');
+    expect(at('rm alias')).toBeUndefined();
+  });
+
+  it('sees a removal outside the workspace through a symlinked parent', async () => {
+    const project = join(base, 'linking');
+    mkdirSync(join(base, 'elsewhere'), { recursive: true });
+    mkdirSync(project, { recursive: true });
+    symlinkSync(join(base, 'elsewhere'), join(project, 'out'));
+    const inside = async (path: string) => path === project || path.startsWith(`${project}/`);
+    const outside = (text: string) => removesOutside(parseCommandLine(text), project, inside);
+    expect(await outside('rm -rf out/data')).toBe(true);
+    expect(await outside('rm -rf out/')).toBe(true);
+    expect(await outside('rm out')).toBe(false);
+    expect(await outside('rm -rf build')).toBe(false);
   });
 
   it('sees a removal behind env options, other wrappers, tilde forms, mv and rsync', () => {

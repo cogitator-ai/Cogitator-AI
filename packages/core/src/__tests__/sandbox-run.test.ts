@@ -194,6 +194,23 @@ describe('a run in a sandboxed workspace', () => {
     await cog.close();
   });
 
+  it('asks the onApproval of a direct invokeTool about an unknown host', async () => {
+    const onApproval = vi.fn(async (_request: ToolApprovalRequest) => ({
+      approved: true as const,
+    }));
+    const cog = setup([], { permissions: { mode: 'default' } });
+    const [runCommand] = workspaceTools(workspace, { tools: ['run_command'] });
+    const result = await cog.invokeTool(
+      runCommand,
+      { command: 'echo fetch' },
+      { onApproval, workspace }
+    );
+    expect(result.error).toBeUndefined();
+    expect(hostAnswers).toEqual([true]);
+    expect(onApproval.mock.calls.some(([request]) => request.toolName === 'WebFetch')).toBe(true);
+    await cog.close();
+  });
+
   it('lets a WebFetch deny rule refuse a host and an allow rule let it through without asking', async () => {
     const onApproval = vi.fn(async () => ({ approved: true as const }));
     const denied = setup([turn(call('c1', 'run_command', { command: 'echo fetch' }))], {

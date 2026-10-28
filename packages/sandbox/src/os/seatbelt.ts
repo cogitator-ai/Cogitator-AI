@@ -17,7 +17,7 @@ export const SANDBOX_EXEC = '/usr/bin/sandbox-exec';
 export type SeatbeltMatcher =
   | { kind: 'literal'; path: string }
   | { kind: 'subpath'; path: string }
-  | { kind: 'regex'; source: string; depth: number };
+  | { kind: 'regex'; source: string; depth: number; base?: string };
 
 export interface SeatbeltProfileInput {
   /** Where commands may write: the workspace root, `allowWrite`, the sandbox's `TMPDIR` */
@@ -93,6 +93,29 @@ function specificity(rule: { matcher: SeatbeltMatcher; allow: boolean }): number
   return depth * 2 + (rule.allow ? 0 : 1);
 }
 
+/**
+ * The filters that keep the paths of `matchers` where they are: each path itself and every
+ * directory above it may not be renamed or removed. Seatbelt judges an access by the path it
+ * goes through, so a command that moved a protected file's directory elsewhere could write the
+ * file under its new name, and one that moved a denied directory could read it there. What a
+ * denied directory holds is kept in place by the depth-ordered unlink rules before these
+ */
+function moveBlocking(matchers: readonly SeatbeltMatcher[]): string[] {
+  const filters = new Set<string>();
+  for (const matcher of matchers) {
+    filters.add(
+      filter(matcher.kind === 'subpath' ? { kind: 'literal', path: matcher.path } : matcher)
+    );
+    const path = matcher.kind === 'regex' ? matcher.base : matcher.path;
+    if (path === undefined) continue;
+    for (let dir = path; dir !== '/' && dir.includes('/');) {
+      dir = dir.slice(0, dir.lastIndexOf('/')) || '/';
+      if (dir !== '/') filters.add(filter({ kind: 'literal', path: dir }));
+    }
+  }
+  return [...filters];
+}
+
 /** The profile for `input` */
 export function seatbeltProfile(input: SeatbeltProfileInput): string {
   const lines = [
@@ -127,9 +150,21 @@ export function seatbeltProfile(input: SeatbeltProfileInput): string {
     if (input.writable.length > 0) {
       lines.push(`(allow file-write* ${input.writable.map(filter).join(' ')})`);
     }
+    const denyRead = input.read.filter((rule) => !rule.allow).map((rule) => rule.matcher);
+    if (denyRead.length > 0) {
+      const unlinkRules = [
+        ...denyRead.map((matcher) => ({ matcher, allow: false })),
+        ...input.writable.map((matcher) => ({ matcher, allow: true })),
+      ].sort((a, b) => specificity(a) - specificity(b));
+      for (const rule of unlinkRules) {
+        lines.push(`(${rule.allow ? 'allow' : 'deny'} file-write-unlink ${filter(rule.matcher)})`);
+      }
+    }
     if (input.denyWrite.length > 0) {
       lines.push(`(deny file-write* ${input.denyWrite.map(filter).join(' ')})`);
     }
+    const unmovable = moveBlocking([...input.denyWrite, ...denyRead]);
+    if (unmovable.length > 0) lines.push(`(deny file-write-unlink ${unmovable.join(' ')})`);
   }
 
   if (input.proxyPort !== undefined) {

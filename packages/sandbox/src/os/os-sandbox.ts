@@ -497,6 +497,7 @@ export class OsSandbox implements WorkspaceCommandSandbox {
           kind: 'regex',
           source: `^${globSource(base + rest, 'posix')}(/.*)?$`,
           depth: depthOf(base) + names,
+          base,
         });
         continue;
       }
