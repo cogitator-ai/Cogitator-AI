@@ -46,21 +46,21 @@ Since the server keeps the conversation in memory, the earlier messages a client
 
 ## Events
 
-| Cogitator stream                | AG-UI                                                                                                                 |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `start`                         | `RUN_STARTED` with `protocolVersion: "1.0"`                                                                           |
-| `text-*`                        | `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END`                                                      |
-| `reasoning-*`                   | `REASONING_START`, `REASONING_MESSAGE_START` / `_CONTENT` / `_END`, `REASONING_END`                                   |
-| `tool-call-*`                   | `TOOL_CALL_START` (its `parentMessageId` is the text it follows), `TOOL_CALL_ARGS`, `TOOL_CALL_END`                   |
-| `tool-result`                   | `TOOL_CALL_RESULT`: a string result as it is, anything else as JSON, `details` and `presentation` in its metadata     |
-| `tool-update`                   | `ACTIVITY_SNAPSHOT`, then `ACTIVITY_DELTA`, of activity type `tool-progress`                                          |
-| `data`                          | `ACTIVITY_SNAPSHOT`, then `ACTIVITY_DELTA` (a JSON Patch) by id, a transient part as `CUSTOM` `cogitator.data`        |
-| `state-snapshot`, `state-delta` | `STATE_SNAPSHOT`, `STATE_DELTA`                                                                                       |
-| delegated runs                  | `SUBAGENT_STARTED` / `SUBAGENT_FINISHED` / `SUBAGENT_ERROR`, their events carrying `subagentRunId`                    |
-| `finish`                        | `RUN_FINISHED`, outcome `success`, or `interrupt` for a paused run, with `usage` and `result` (the structured answer) |
-| `error`                         | `RUN_ERROR`, or `RUN_FINISHED` with outcome `cancelled` for a cancelled run                                           |
-| `workflow`                      | `STEP_STARTED` and `STEP_FINISHED` for each node, `CUSTOM` `cogitator.workflow` for the rest                          |
-| `swarm`                         | `CUSTOM` `cogitator.swarm`                                                                                            |
+| Cogitator stream                | AG-UI                                                                                                                                                                     |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `start`                         | `RUN_STARTED` with `protocolVersion: "1.0"`                                                                                                                               |
+| `text-*`                        | `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END`                                                                                                          |
+| `reasoning-*`                   | `REASONING_START`, `REASONING_MESSAGE_START` / `_CONTENT` / `_END`, `REASONING_END`                                                                                       |
+| `tool-call-*`                   | `TOOL_CALL_START` (its `parentMessageId` is the text it follows), `TOOL_CALL_ARGS`, `TOOL_CALL_END`                                                                       |
+| `tool-result`                   | `TOOL_CALL_RESULT`: a string result as it is, anything else as JSON, `details` and `presentation` in its metadata                                                         |
+| `tool-update`                   | `ACTIVITY_SNAPSHOT`, then `ACTIVITY_DELTA`, of activity type `tool-progress`                                                                                              |
+| `data`                          | `ACTIVITY_SNAPSHOT`, then `ACTIVITY_DELTA` (a JSON Patch) by id, a transient part as `CUSTOM` `cogitator.data`                                                            |
+| `state-snapshot`, `state-delta` | `STATE_SNAPSHOT`, `STATE_DELTA`                                                                                                                                           |
+| delegated runs                  | `SUBAGENT_STARTED` / `SUBAGENT_FINISHED` / `SUBAGENT_ERROR`, their events carrying `subagentRunId`                                                                        |
+| `finish`                        | `RUN_FINISHED`, outcome `success`, `interrupt` for a paused run, or `cancelled` for a run a hook or middleware stopped, with `usage` and `result` (the structured answer) |
+| `error`                         | `RUN_ERROR`, or `RUN_FINISHED` with outcome `cancelled` for a cancelled run                                                                                               |
+| `workflow`                      | `STEP_STARTED` and `STEP_FINISHED` for each node, `CUSTOM` `cogitator.workflow` for the rest                                                                              |
+| `swarm`                         | `CUSTOM` `cogitator.swarm`                                                                                                                                                |
 
 AG-UI orders its events strictly, and the route keeps to it: `RUN_STARTED` comes first, every message, tool call, reasoning span, step and subagent is closed before `RUN_FINISHED`, and nothing comes after it. A call that never runs (the model never finished it) gets a `TOOL_CALL_RESULT` marked `dropped` in its metadata, so AG-UI never takes it for a call left for the app to answer. Cogitator's own fields ride under the `cogitator` key of `metadata`, such as `truncated` or `iterationLimitReached` on `RUN_FINISHED`. AG-UI has no way to take back what was streamed, so the route turns [step resets](/docs/server-adapters#data-parts-state-and-step-resets) off: a model that fails mid-answer fails the run there, as on a stream without them.
 

@@ -86,6 +86,19 @@ describe('AgentStreamSession state', () => {
     for (const event of events) expect(StreamEventSchema.parse(event)).toEqual(event);
   });
 
+  it('sends the changes of a state edited in place and set again', () => {
+    const held = { cart: ['shirt'] };
+    const { events, callbacks } = session({ state: held });
+    held.cart.push('hat');
+    callbacks.onState(held);
+    held.cart.push('scarf');
+    callbacks.onState(held);
+    expect(events).toEqual([
+      { type: 'state-delta', delta: [{ op: 'add', path: '/cart/1', value: 'hat' }] },
+      { type: 'state-delta', delta: [{ op: 'add', path: '/cart/2', value: 'scarf' }] },
+    ]);
+  });
+
   it('patches the state the client already holds', () => {
     const { events, callbacks } = session({ state: { count: 1 } });
     callbacks.onState({ count: 2 });
@@ -97,7 +110,7 @@ describe('AgentStreamSession state', () => {
 
 describe('AgentStreamSession reset-step', () => {
   it('takes back the parts and tool calls of the step that starts over', () => {
-    const { stream, events, callbacks } = session();
+    const { stream, events, callbacks } = session({ resetSteps: true });
     stream.start();
     callbacks.onReasoning('hmm');
     callbacks.onToken('Half an ans');
@@ -120,7 +133,7 @@ describe('AgentStreamSession reset-step', () => {
   });
 
   it('keeps what earlier steps sent', () => {
-    const { events, callbacks } = session();
+    const { events, callbacks } = session({ resetSteps: true });
     callbacks.onToken('First');
     callbacks.onToolCall({ id: 'c1', name: 'search', arguments: {} });
     callbacks.onToolResult({ callId: 'c1', name: 'search', result: 'r' });
@@ -135,7 +148,7 @@ describe('AgentStreamSession reset-step', () => {
     });
   });
 
-  it('leaves onStepReset out when resetSteps is off, for itself and its delegated runs', () => {
+  it('leaves onStepReset out unless resetSteps is on, for itself and its delegated runs', () => {
     const start: DelegatedRunStart = {
       parentToolCallId: 'c1',
       parentRunId: 'r',
@@ -143,10 +156,10 @@ describe('AgentStreamSession reset-step', () => {
       background: false,
       depth: 1,
     };
-    const off = session({ resetSteps: false, delegated: () => () => undefined });
+    const off = session({ delegated: () => () => undefined });
     expect(off.callbacks.onStepReset).toBeUndefined();
     expect(off.callbacks.onDelegatedRun?.(start)?.onStepReset).toBeUndefined();
-    const on = session({ delegated: () => () => undefined });
+    const on = session({ resetSteps: true, delegated: () => () => undefined });
     expect(on.callbacks.onStepReset).toBeTypeOf('function');
     expect(on.callbacks.onDelegatedRun?.(start)?.onStepReset).toBeTypeOf('function');
   });

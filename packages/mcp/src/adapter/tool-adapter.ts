@@ -416,7 +416,7 @@ export function mcpToCogitator(
   const title = mcpTool.title ?? annotationTitle;
   const annotations = Object.keys(hints).length > 0 ? hints : undefined;
   const idempotent = hints.readOnlyHint === true || hints.idempotentHint === true;
-  const requiresApproval = approvalOf(mcpTool, options?.requiresApproval);
+  const requiresApproval = mcpToolRequiresApproval(mcpTool, options?.requiresApproval);
   const server = options?.server ?? client.serverName ?? '';
 
   const tool: Tool = {
@@ -428,7 +428,13 @@ export function mcpToCogitator(
     ...(annotations && { annotations }),
     ...(requiresApproval && { requiresApproval }),
     mcp: { server, tool: mcpTool.name },
-    ...(mcpTool.app && { app: client.appOf(mcpTool) }),
+    ...(mcpTool.app && {
+      app: client.appOf(mcpTool, {
+        ...(options?.requiresApproval !== undefined && {
+          requiresApproval: options.requiresApproval,
+        }),
+      }),
+    }),
 
     execute: async (params: unknown, context: ToolContext): Promise<unknown> => {
       return client.callTool(mcpTool.name, (params ?? {}) as Record<string, unknown>, {
@@ -462,7 +468,11 @@ export function isDestructiveMCPTool(tool: MCPToolDefinition): boolean {
   return tool.annotations?.readOnlyHint !== true && tool.annotations?.destructiveHint === true;
 }
 
-function approvalOf(
+/**
+ * Whether a call of `tool` needs approval under the adapter's `requiresApproval` setting: the
+ * destructive tools by default, see `ToolAdapterOptions.requiresApproval`
+ */
+export function mcpToolRequiresApproval(
   tool: MCPToolDefinition,
   requiresApproval: ToolAdapterOptions['requiresApproval'] = isDestructiveMCPTool
 ): boolean {
@@ -492,7 +502,7 @@ export async function wrapMCPTools(
   options?: ToolAdapterOptions
 ): Promise<Tool[]> {
   const definitions = (await client.listToolDefinitions()).filter((definition) =>
-    isToolVisibleTo(definition.app, 'model')
+    isToolVisibleTo(definition, 'model')
   );
   const names = toolNames(definitions, options?.namePrefix ?? '');
   const server = options?.server ?? client.serverName ?? '';

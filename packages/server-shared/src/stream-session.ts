@@ -67,10 +67,11 @@ export interface AgentStreamSessionOptions {
    */
   delegated?: (start: DelegatedRunStart) => ((event: StreamEvent) => void) | undefined;
   /**
-   * Whether a step the model streamed may start over, announced by `reset-step` (default true):
+   * Whether a step the model streamed may start over, announced by `reset-step` (default false):
    * the callbacks then carry `onStepReset`, so a model that fails mid-answer moves on to the next
-   * of the agent's `fallbackModels` instead of failing the run. Turn it off for a client that
-   * cannot take back what it was sent
+   * of the agent's `fallbackModels` instead of failing the run. Turn it on only for a client that
+   * takes back what a `reset-step` names, such as `useCogitatorChat`: any other shows the text of
+   * the failed step before the new one
    */
   resetSteps?: boolean;
   /**
@@ -123,9 +124,9 @@ export function createThreadId(): string {
  *
  * `data` carries a data part a tool sent (`context.data()`), replaced in place by a later one
  * with its id. The run's state (`context.state`) goes out as a `state-snapshot` when the client
- * holds none (`options.state`), then as `state-delta` JSON Patches. When a step the model
- * streamed starts over (a fallback model takes over mid-answer, an empty answer is asked again),
- * `reset-step` names its parts and tool calls for the client to take back.
+ * holds none (`options.state`), then as `state-delta` JSON Patches. With `resetSteps`, when a step
+ * the model streamed starts over (a fallback model takes over mid-answer, an empty answer is asked
+ * again), `reset-step` names its parts and tool calls for the client to take back.
  *
  * Pass the thread to the run (`threadId: session.threadId`) and spread `callbacks` into its
  * options together with `stream: true`.
@@ -154,9 +155,12 @@ export class AgentStreamSession {
     options: AgentStreamSessionOptions = {}
   ) {
     this.threadId = options.threadId ?? createThreadId();
-    this.state = { known: options.state !== undefined, value: options.state };
+    this.state = {
+      known: options.state !== undefined,
+      value: options.state === undefined ? undefined : structuredClone(options.state),
+    };
     const delegated = options.delegated;
-    const resetSteps = options.resetSteps !== false;
+    const resetSteps = options.resetSteps === true;
     this.callbacks = {
       ...(delegated && {
         onDelegatedRun: (start: DelegatedRunStart) =>
@@ -280,14 +284,19 @@ export class AgentStreamSession {
     this.emit(createResetStepEvent(parts, toolCalls));
   }
 
+  /**
+   * Sends how the run's state changed. The session keeps a copy of each state it sent, so a tool
+   * that changes the state object in place and sets it again still gets its changes out
+   */
   private changeState(state: unknown): void {
     const previous = this.state;
-    this.state = { known: true, value: state };
+    const next = structuredClone(state);
+    this.state = { known: true, value: next };
     if (!previous.known) {
-      this.emit(createStateSnapshotEvent(state));
+      this.emit(createStateSnapshotEvent(next));
       return;
     }
-    const delta = createJsonPatch(previous.value, state);
+    const delta = createJsonPatch(previous.value, next);
     if (delta.length > 0) this.emit(createStateDeltaEvent(delta));
   }
 

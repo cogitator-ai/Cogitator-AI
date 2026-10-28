@@ -154,6 +154,27 @@ describe('the studio serving MCP Apps', () => {
     });
   });
 
+  it("holds the app's calls to the agent's permission rules", async () => {
+    const denied = await json<ToolAppCallOutcome>(`${app}/call`, { name: 'drop_tables' });
+    expect(denied.body).toMatchObject({ status: 'done', result: { isError: true } });
+    const allowedAnyway = await json<ToolAppCallOutcome>(`${app}/call`, {
+      name: 'drop_tables',
+      approved: true,
+    });
+    expect(allowedAnyway.body).toMatchObject({ status: 'done', result: { isError: true } });
+
+    const asked = await json<ToolAppCallOutcome>(`${app}/call`, { name: 'checkout' });
+    expect(asked.body).toEqual({ status: 'approval', tool: 'checkout' });
+    const allowed = await json<ToolAppCallOutcome>(`${app}/call`, {
+      name: 'checkout',
+      approved: true,
+    });
+    expect(allowed.body).toMatchObject({
+      status: 'done',
+      result: { structuredContent: { called: 'checkout' } },
+    });
+  });
+
   it('refuses an unknown app, and calls from an app that may call none', async () => {
     expect((await json('/api/agents/shop/tools/plain/app')).status).toBe(404);
     expect((await json('/api/agents/nobody/tools/show_cart/app')).status).toBe(404);

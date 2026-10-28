@@ -70,6 +70,10 @@ describe('useCogitatorChat data parts, state and reset-step', () => {
 
     expect(hook.result.current.state).toEqual({ items: ['a', 'b'] });
     expect(onStateChange).toHaveBeenCalledTimes(2);
+
+    hook.result.current.setThreadId('another-thread');
+    await hook.flush();
+    expect(hook.result.current.state).toBeUndefined();
   });
 
   it('takes back what a step streamed before it started over', async () => {

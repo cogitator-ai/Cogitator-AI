@@ -401,8 +401,9 @@ export interface RunDataPart extends DataPart {
 
 /** The run's state, as a tool reads and replaces it, see `RunOptions.state` */
 export interface RunStateAccess {
+  /** A copy of the state: change it and `set()` it to change the run's */
   get(): unknown;
-  /** Replaces the state: the run reports it to `RunOptions.onState` */
+  /** Replaces the state with a copy of `state`: the run reports it to `RunOptions.onState` */
   set(state: unknown): void;
 }
 

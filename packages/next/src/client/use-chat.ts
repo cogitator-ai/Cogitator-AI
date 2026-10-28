@@ -915,6 +915,7 @@ export function useCogitatorChat(options: UseChatOptions): UseChatReturn {
   const setThreadId = useCallback(
     (id: string | undefined) => {
       pendingThreadRef.current = null;
+      if (id !== stateRef.current.threadId) apply({ type: 'SET_AGENT_STATE', payload: undefined });
       apply({ type: 'SET_THREAD_ID', payload: id });
       if (id === undefined) clearPause();
     },

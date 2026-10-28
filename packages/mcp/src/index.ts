@@ -57,6 +57,7 @@ export {
   wrapMCPTools,
   normalizeMCPToolName,
   isDestructiveMCPTool,
+  mcpToolRequiresApproval,
   zodToJsonSchema,
   jsonSchemaToZod,
   jsonSchemaValueToZod,

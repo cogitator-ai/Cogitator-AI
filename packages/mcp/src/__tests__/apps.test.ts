@@ -11,6 +11,10 @@ import { tool } from '@cogitator-ai/core';
 import type { Tool } from '@cogitator-ai/types';
 import { MCPServer } from '../server/mcp-server';
 import { MCPClient } from '../client/mcp-client';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const APPS_SERVER = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'apps-server.mjs');
 import {
   MCP_APPS_EXTENSION,
   MCP_APP_MIME_TYPE,
@@ -19,6 +23,7 @@ import {
   mcpApp,
   toolAppMeta,
   toolAppRefOf,
+  toolVisibilityOf,
 } from '../apps';
 
 const CHART_HTML = '<!doctype html><html><body><div id="chart"></div></body></html>';
@@ -64,8 +69,15 @@ describe('app metadata', () => {
 
   it('opens a tool without visibility to the model and to apps', () => {
     expect(isToolVisibleTo(undefined, 'model')).toBe(true);
-    expect(isToolVisibleTo({ resourceUri: 'ui://a', visibility: ['app'] }, 'model')).toBe(false);
-    expect(isToolVisibleTo({ resourceUri: 'ui://a', visibility: ['model'] }, 'app')).toBe(false);
+    expect(isToolVisibleTo({ visibility: ['app'] }, 'model')).toBe(false);
+    expect(isToolVisibleTo({ visibility: ['model'] }, 'app')).toBe(false);
+  });
+
+  it('reads the visibility of a tool that points at no app', () => {
+    expect(toolVisibilityOf({ ui: { visibility: ['app'] } })).toEqual(['app']);
+    expect(toolAppRefOf({ ui: { visibility: ['app'] } })).toBeUndefined();
+    expect(toolVisibilityOf({ ui: { visibility: ['nobody'] } })).toBeUndefined();
+    expect(toolVisibilityOf({})).toBeUndefined();
   });
 });
 
@@ -239,6 +251,18 @@ describe('MCPServer and MCPClient with MCP Apps', () => {
     await expect(app?.callTool?.('nothing', {})).rejects.toThrow('no tool');
     await expect(app?.requiresApproval?.('wipe_sales')).resolves.toBe(true);
     await expect(app?.requiresApproval?.('refresh_sales')).resolves.toBe(false);
+
+    const gated = await client.getToolApp('show_chart', { requiresApproval: true });
+    await expect(gated?.requiresApproval?.('refresh_sales')).resolves.toBe(true);
+    const open = (await client.getTools({ requiresApproval: false })).find(
+      (entry) => entry.name === 'show_chart'
+    );
+    await expect(open?.app?.requiresApproval?.('wipe_sales')).resolves.toBe(false);
+    const byName = (
+      await client.getTools({ requiresApproval: (tool) => tool.name === 'refresh_sales' })
+    ).find((entry) => entry.name === 'show_chart');
+    await expect(byName?.app?.requiresApproval?.('refresh_sales')).resolves.toBe(true);
+    await expect(byName?.app?.requiresApproval?.('wipe_sales')).resolves.toBe(false);
     await expect(client.getToolApp('refresh_sales')).resolves.toBeDefined();
   });
 
@@ -343,5 +367,50 @@ describe('agentTools with apps', () => {
     expect(byName.get('writer')?.app?.resourceUri).toBe('ui://writer/draft');
     expect(byName.get('writer_resume')?.app).toBeUndefined();
     expect(byName.get('reviewer')?.app).toBeUndefined();
+  });
+});
+
+describe('a server that sets visibility on tools without an app, and part of _meta.ui on the content', () => {
+  let client: MCPClient;
+
+  beforeAll(async () => {
+    client = await MCPClient.connect({
+      transport: 'stdio',
+      command: process.execPath,
+      args: [APPS_SERVER],
+    });
+  });
+
+  afterAll(async () => {
+    await client?.close();
+  });
+
+  it('keeps an app-only tool without an app of its own from the agent', async () => {
+    const definitions = await client.listToolDefinitions();
+    expect(definitions.find((entry) => entry.name === 'move_card')).toMatchObject({
+      visibility: ['app'],
+    });
+    expect(definitions.find((entry) => entry.name === 'move_card')?.app).toBeUndefined();
+    const tools = await client.getTools();
+    expect(tools.map((entry) => entry.name).sort()).toEqual(['archive_board', 'show_board']);
+  });
+
+  it('lets an app call the app-only tool, never a model-only one', async () => {
+    const app = await client.getToolApp('show_board');
+    await expect(app?.callTool?.('move_card', {})).resolves.toMatchObject({
+      content: [{ type: 'text', text: 'moved' }],
+    });
+    await expect(app?.callTool?.('archive_board', {})).rejects.toThrow('not open to apps');
+  });
+
+  it("merges the listing's _meta.ui with the content's, field by field", async () => {
+    await expect(client.readApp('ui://board/view')).resolves.toEqual({
+      uri: 'ui://board/view',
+      mimeType: MCP_APP_MIME_TYPE,
+      html: '<p>board</p>',
+      csp: { connectDomains: ['https://board.example.com'] },
+      permissions: { clipboardWrite: {} },
+      prefersBorder: false,
+    });
   });
 });

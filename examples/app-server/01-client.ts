@@ -62,8 +62,10 @@ async function main() {
 
   const finished = new Map<string, (turn: Turn) => void>();
   client.on('turn/event', ({ event, parentToolCallId }) => {
-    if (event.type === 'text-delta' && parentToolCallId === undefined) {
-      process.stdout.write(event.delta);
+    if (parentToolCallId !== undefined) return;
+    if (event.type === 'text-delta') process.stdout.write(event.delta);
+    if (event.type === 'reset-step' && event.partIds.length > 0) {
+      process.stdout.write('\n[the model failed mid-answer, its fallback starts over]\n');
     }
   });
   client.on('turn/completed', ({ turn }) => finished.get(turn.id)?.(turn));

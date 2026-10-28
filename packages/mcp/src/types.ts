@@ -3,6 +3,7 @@
  */
 
 import type { MCPToolAppRef } from './apps';
+import type { ToolAppVisibility } from '@cogitator-ai/types';
 import type { IncomingMessage } from 'node:http';
 import type { OAuthClientProvider } from '@modelcontextprotocol/client';
 import type { ToolContext, ToolInvoker } from '@cogitator-ai/types';
@@ -612,6 +613,11 @@ export interface MCPToolDefinition {
   annotations?: MCPToolAnnotations;
   /** The MCP App the tool points at (`_meta.ui.resourceUri`), and who may call the tool */
   app?: MCPToolAppRef;
+  /**
+   * Who may call the tool (`_meta.ui.visibility`): `model`, the agent, and `app`, the pages of its
+   * server. Both when left out. A tool for apps only is not given to agents
+   */
+  visibility?: ToolAppVisibility[];
 }
 
 /** A JSON Schema of any shape, as MCP takes for tool output since 2026-07-28 */

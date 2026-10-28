@@ -80,6 +80,41 @@ describe('tool data parts and run state', () => {
     expect(states).toEqual([{ items: ['bread', 'milk'] }, { items: ['bread', 'milk', 'eggs'] }]);
   });
 
+  it('reports each change of a state a tool edits in place, and leaves the given state alone', async () => {
+    const scripted = scriptedBackend([
+      callTools([
+        { id: 'c1', name: 'tick', arguments: {} },
+        { id: 'c2', name: 'tick', arguments: {} },
+      ]),
+      answer('Ticked'),
+    ]);
+    const cog = new Cogitator({ llm: { backends: { mock: scripted.backend } } });
+    const tick = tool({
+      name: 'tick',
+      description: 'Counts up',
+      parameters: z.object({}),
+      execute: async (_args, context) => {
+        const state = context.state?.get() as { count: number };
+        state.count += 1;
+        context.state?.set(state);
+        state.count += 100;
+        return 'ok';
+      },
+    });
+    const given = { count: 0 };
+    const states: unknown[] = [];
+
+    await cog.run(new Agent({ name: 'w', model: 'mock/m', instructions: 'Help.', tools: [tick] }), {
+      input: 'Tick',
+      state: given,
+      onState: (state) => states.push(state),
+    });
+
+    expect(states).toEqual([{ count: 1 }, { count: 2 }]);
+    expect(states[0]).not.toBe(states[1]);
+    expect(given).toEqual({ count: 0 });
+  });
+
   it('passes data parts of a delegated run to its stream', async () => {
     const scripted = scriptedBackend([
       callTools([{ id: 'c1', name: 'helper', arguments: { task: 'chart it' } }]),

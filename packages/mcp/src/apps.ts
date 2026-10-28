@@ -69,6 +69,19 @@ export function assertAppUri(uri: string): void {
 }
 
 /**
+ * Who may call a tool, as its `_meta.ui.visibility` says: `model`, the agent, and `app`, the pages
+ * of its server. Read on its own, since a tool without an app of its own may be for apps only.
+ * Undefined when the tool names none, which opens it to both
+ */
+export function toolVisibilityOf(meta: unknown): ToolAppVisibility[] | undefined {
+  if (!isRecord(meta) || !isRecord(meta.ui)) return undefined;
+  const visibility = stringList(meta.ui.visibility)?.filter(
+    (entry): entry is ToolAppVisibility => entry === 'model' || entry === 'app'
+  );
+  return visibility && visibility.length > 0 ? visibility : undefined;
+}
+
+/**
  * The app a tool points at in its `_meta`: `_meta.ui.resourceUri`, else the older flat
  * `_meta['ui/resourceUri']`, with the tool's `visibility`. Undefined for a tool without one, or
  * one that names something other than a `ui://` URI
@@ -78,15 +91,16 @@ export function toolAppRefOf(meta: unknown): MCPToolAppRef | undefined {
   const ui = isRecord(meta.ui) ? meta.ui : undefined;
   const uri = ui?.resourceUri ?? meta[MCP_APP_LEGACY_META_KEY];
   if (typeof uri !== 'string' || !uri.startsWith('ui://')) return undefined;
-  const visibility = stringList(ui?.visibility)?.filter(
-    (entry): entry is ToolAppVisibility => entry === 'model' || entry === 'app'
-  );
-  return { resourceUri: uri, ...(visibility && visibility.length > 0 && { visibility }) };
+  const visibility = toolVisibilityOf(meta);
+  return { resourceUri: uri, ...(visibility && { visibility }) };
 }
 
-/** Whether a tool is visible to `who`: every tool is, unless its app's `visibility` leaves it out */
-export function isToolVisibleTo(ref: MCPToolAppRef | undefined, who: ToolAppVisibility): boolean {
-  return !ref?.visibility || ref.visibility.includes(who);
+/** Whether a tool is visible to `who`: every tool is, unless its `visibility` leaves it out */
+export function isToolVisibleTo(
+  tool: { visibility?: readonly ToolAppVisibility[] } | undefined,
+  who: ToolAppVisibility
+): boolean {
+  return !tool?.visibility || tool.visibility.includes(who);
 }
 
 /** The `_meta` a tool with an app is listed with: `ui` and, for older hosts, the flat key */

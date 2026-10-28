@@ -35,6 +35,7 @@ const showCart = tool({
   name: 'show_cart',
   description: 'Shows the cart',
   parameters: z.object({}),
+  mcp: { server: 'shop', tool: 'show_cart' },
   app: cartApp,
   execute: async () => ({ items: 2 }),
 });
@@ -66,6 +67,10 @@ const shop = new Agent({
   model: 'ollama/unused',
   instructions: 'Run the shop.',
   tools: [showCart, showReceipt, plain],
+  permissions: {
+    deny: ['mcp__shop__drop_tables'],
+    ask: ['mcp__shop__checkout'],
+  },
 });
 
 export const agents = { shop };

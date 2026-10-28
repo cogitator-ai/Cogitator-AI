@@ -39,6 +39,7 @@ function recorded(build: (session: AgentStreamSession, sources: AGUISourceEvent[
   const sources: AGUISourceEvent[] = [];
   const session = new AgentStreamSession((event) => sources.push(event), {
     threadId: ids.threadId,
+    resetSteps: true,
     delegated: (start: DelegatedRunStart) => {
       const run: DelegatedRunTag = {
         id: `sub_${start.parentToolCallId}`,
@@ -327,6 +328,29 @@ describe('toAGUI', () => {
       type: EventType.RUN_FINISHED,
       outcome: { type: 'cancelled' },
     });
+  });
+
+  it('ends a run a hook stopped with outcome cancelled, its stop reason kept', async () => {
+    const events = await verified(
+      toAGUI(
+        [
+          createStartEvent('m'),
+          createFinishEvent('m', undefined, {
+            status: 'completed',
+            structured: { partial: true },
+            stopped: { reason: 'budget spent', middleware: 'guard' },
+          }),
+        ],
+        ids
+      )
+    );
+    const finished = events.at(-1);
+    expect(finished).toMatchObject({
+      type: EventType.RUN_FINISHED,
+      outcome: { type: 'cancelled' },
+      metadata: { cogitator: { stopped: { reason: 'budget spent', middleware: 'guard' } } },
+    });
+    expect(finished && 'result' in finished).toBe(false);
   });
 
   it('opens the run even when its stream fails before start', async () => {

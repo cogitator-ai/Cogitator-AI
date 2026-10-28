@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { Agent, Cogitator, agentAsTool, tool } from '@cogitator-ai/core';
+import type { ChatStreamChunk, LLMBackend } from '@cogitator-ai/types';
 import { MockLLMBackend } from '@cogitator-ai/test-utils';
 import { JsonRpcCallError } from '@cogitator-ai/server-shared';
 import { APP_SERVER_ERROR_CODES } from '../protocol/errors';
@@ -67,6 +68,40 @@ describe('SessionHost', () => {
       ['user', 'Hi'],
       ['assistant', 'Hello there'],
     ]);
+    await host.close();
+  });
+
+  it('streams reset-step when a streamed step starts over', async () => {
+    let calls = 0;
+    const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+    const backend: LLMBackend = {
+      provider: 'openai',
+      chat: async () => ({ id: 'r', content: 'unused', finishReason: 'stop', usage }),
+      async *chatStream(): AsyncGenerator<ChatStreamChunk> {
+        calls++;
+        if (calls === 1) {
+          yield { id: 's', delta: { reasoning: 'thinking' } };
+          yield { id: 's', delta: {}, finishReason: 'stop', usage };
+          return;
+        }
+        yield { id: 's', delta: { content: 'Answer' } };
+        yield { id: 's', delta: {}, finishReason: 'stop', usage };
+      },
+    };
+    const { host, notifications } = createTestHost({ backend });
+    const thread = await host.startThread({});
+    const turn = await host.startTurn({ threadId: thread.id, input: text('Hi') });
+    const done = await completed(notifications, turn.id);
+    expect(done).toMatchObject({ status: 'completed', output: 'Answer' });
+    const events = notifications.flatMap((n) =>
+      n.method === 'turn/event' ? [n.params.event] : []
+    );
+    const reasoning = events.find((event) => event.type === 'reasoning-start');
+    expect(events.find((event) => event.type === 'reset-step')).toEqual({
+      type: 'reset-step',
+      partIds: [reasoning && 'id' in reasoning ? reasoning.id : ''],
+      toolCallIds: [],
+    });
     await host.close();
   });
 

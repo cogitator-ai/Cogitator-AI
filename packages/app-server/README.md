@@ -11,7 +11,7 @@ Or run it with no code at all: `cogitator app-server -m ollama/qwen3:8b` serves 
 ## Features
 
 - **SessionHost** - threads kept in the runtime's memory, one turn per thread at a time, each a run started with `cogitator.start()` (or `startResume()` for a paused thread) whose handle steers and interrupts it
-- **Turn streaming** - every event of the stream protocol as `turn/event`, the runs a turn delegates (subagents, agents as tools) tagged with the tool call that started them
+- **Turn streaming** - every event of the stream protocol as `turn/event`, the runs a turn delegates (subagents, agents as tools) tagged with the tool call that started them. A step a fallback model takes over mid-answer comes as `reset-step`, naming what the client takes back
 - **Approvals two ways** - asked live with `approval/request` (ACP `session/request_permission` shape), or the turn ends paused and the client resumes it with decisions
 - **Steering** - `turn/steer` with `steer`, `followUp` or `inject` delivery, guarded by the expected turn id
 - **Reviews** - `review/start` reviews uncommitted changes, a branch, a commit or custom instructions in a review thread, the findings structured by a response format

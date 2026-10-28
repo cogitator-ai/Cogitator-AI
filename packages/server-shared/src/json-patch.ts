@@ -177,6 +177,10 @@ function read(document: unknown, path: string, operation: JsonPatchOperation): u
   return value;
 }
 
+/**
+ * Writes the key as an own property, so a patch that names `__proto__` sets a key of that name
+ * instead of swapping the object's prototype
+ */
 function put(
   document: unknown,
   path: string,
@@ -198,7 +202,12 @@ function put(
     if (mode === 'replace' && !Object.hasOwn(parent, token)) {
       throw new JsonPatchError(`Nothing to replace at "${path}"`, operation);
     }
-    parent[token] = value;
+    Object.defineProperty(parent, token, {
+      value,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
   }
   return document;
 }

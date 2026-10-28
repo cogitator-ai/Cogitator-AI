@@ -93,7 +93,7 @@ type Lane = string | undefined;
  * | `data` | `ACTIVITY_SNAPSHOT`, then `ACTIVITY_DELTA` by id, a transient part as `CUSTOM` |
  * | `state-snapshot`, `state-delta` | `STATE_SNAPSHOT`, `STATE_DELTA` |
  * | `reset-step` | `CUSTOM`, the step's open tool calls closed |
- * | `finish` | `RUN_FINISHED` with outcome `success` or `interrupt`, `SUBAGENT_FINISHED` for a delegated run |
+ * | `finish` | `RUN_FINISHED` with outcome `success`, `interrupt`, or `cancelled` for a run a hook stopped, `SUBAGENT_FINISHED` for a delegated run |
  * | `error` | `RUN_ERROR`, outcome `cancelled` for a cancelled run, `SUBAGENT_ERROR` for a delegated run |
  * | `workflow` | `STEP_STARTED` and `STEP_FINISHED` for its nodes, `CUSTOM` for the rest |
  * | `swarm` | `CUSTOM` |
@@ -162,7 +162,7 @@ export class AGUITranslator {
           threadId: this.options.threadId,
           runId: this.options.runId,
           outcome: runOutcome(event),
-          ...(event.structured !== undefined && { result: event.structured }),
+          ...(event.structured !== undefined && !event.stopped && { result: event.structured }),
           ...(event.usage && { usage: [tokenUsage(event.usage)] }),
           ...withMetadata(finishMetadata(event)),
         });
@@ -603,8 +603,12 @@ export function questionInterrupt(interrupt: PendingInterrupt): Interrupt {
   };
 }
 
+/**
+ * How a run ended, for AG-UI: `interrupt` with what a paused run waits on, `cancelled` for a run a
+ * hook or middleware stopped before it was done (`stopped`), else `success`
+ */
 function runOutcome(event: FinishEvent): RunFinishedOutcome {
-  if (event.status !== 'paused') return { type: 'success' };
+  if (event.status !== 'paused') return event.stopped ? { type: 'cancelled' } : { type: 'success' };
   const interrupts =
     event.interrupts && event.interrupts.length > 0
       ? event.interrupts.map(questionInterrupt)

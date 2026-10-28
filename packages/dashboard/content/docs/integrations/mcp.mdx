@@ -595,7 +595,7 @@ await server.start();
 
 ### Using a server's apps
 
-`MCPClient` tells servers it takes apps (turn it off with `apps: false`). A tool of a server that points at an app carries it as its `app`, and a tool visible to apps only is left out of `getTools()`:
+`MCPClient` tells servers it takes apps (turn it off with `apps: false`). A tool of a server that points at an app carries it as its `app`, and a tool visible to apps only (`_meta.ui.visibility: ['app']`, with an app of its own or none) is left out of `getTools()`. `callTool` of an app reaches only the tools whose visibility has `app`, or names none:
 
 ```typescript
 const client = await MCPClient.connect({ transport: 'http', url: 'http://localhost:3000/mcp' });

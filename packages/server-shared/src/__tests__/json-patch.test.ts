@@ -106,6 +106,25 @@ describe('applyJsonPatch', () => {
     ).toThrow('into itself');
   });
 
+  it('writes __proto__ as a key of its own, never as the prototype', () => {
+    const patched = applyJsonPatch({}, [
+      { op: 'add', path: '/__proto__', value: { polluted: true } },
+      { op: 'copy', from: '/__proto__', path: '/constructor' },
+    ]) as Record<string, unknown>;
+    expect(Object.getPrototypeOf(patched)).toBe(Object.prototype);
+    expect(Object.keys(patched)).toEqual(['__proto__', 'constructor']);
+    expect(Object.getOwnPropertyDescriptor(patched, '__proto__')?.value).toEqual({
+      polluted: true,
+    });
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    const moved = applyJsonPatch({ a: { b: 1 } }, [
+      { op: 'move', from: '/a', path: '/__proto__' },
+      { op: 'replace', path: '/__proto__', value: 2 },
+    ]) as Record<string, unknown>;
+    expect(Object.getPrototypeOf(moved)).toBe(Object.prototype);
+    expect(Object.getOwnPropertyDescriptor(moved, '__proto__')?.value).toBe(2);
+  });
+
   it('replaces the root', () => {
     expect(applyJsonPatch({ a: 1 }, [{ op: 'replace', path: '', value: [1] }])).toEqual([1]);
   });

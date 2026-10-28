@@ -48,7 +48,7 @@ import type {
   MCPCallToolOptions,
   ToolAdapterOptions,
 } from '../types';
-import { wrapMCPTools, mcpContentToResult, isDestructiveMCPTool } from '../adapter/tool-adapter';
+import { wrapMCPTools, mcpContentToResult, mcpToolRequiresApproval } from '../adapter/tool-adapter';
 import { RawDispatcher } from './raw-dispatch';
 import { mcpParamHeaders } from './param-headers';
 import {
@@ -78,6 +78,7 @@ import {
   assertAppUri,
   isToolVisibleTo,
   toolAppRefOf,
+  toolVisibilityOf,
 } from '../apps';
 
 const DEFAULT_RETRY_CONFIG: Required<MCPRetryConfig> = {
@@ -91,6 +92,7 @@ const DEFAULT_RETRY_CONFIG: Required<MCPRetryConfig> = {
 const DEFAULT_MAX_INPUT_ROUNDS = 10;
 const CLIENT_CAPABILITIES_KEY = 'io.modelcontextprotocol/clientCapabilities';
 const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
+const APP_META_FIELDS = ['csp', 'permissions', 'domain', 'prefersBorder'] as const;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -667,6 +669,7 @@ export class MCPClient {
         }),
         ...(tool.annotations && { annotations: tool.annotations }),
         ...(toolAppRefOf(tool._meta) && { app: toolAppRefOf(tool._meta) }),
+        ...(toolVisibilityOf(tool._meta) && { visibility: toolVisibilityOf(tool._meta) }),
       }));
       this.toolDefinitions.clear();
       for (const tool of tools) this.toolDefinitions.set(tool.name, tool);
@@ -1169,7 +1172,8 @@ export class MCPClient {
 
   /**
    * Reads an MCP App: the HTML of the `ui://` resource, from `text` or base64 `blob`, and the CSP,
-   * permissions, domain and border preference of its `_meta.ui`, the content's over the listing's
+   * permissions, domain and border preference of its `_meta.ui`, field by field the content's
+   * over the listing's
    *
    * @throws Error when `uri` is not a `ui://` URI, or the resource is not `text/html;profile=mcp-app`
    */
@@ -1184,7 +1188,8 @@ export class MCPClient {
       content.text ??
       (content.blob !== undefined ? Buffer.from(content.blob, 'base64').toString('utf8') : '');
     const own = appMetaOf(content._meta);
-    const listed = Object.keys(own).length > 0 ? {} : await this.listedAppMeta(uri);
+    const complete = APP_META_FIELDS.every((field) => own[field] !== undefined);
+    const listed = complete ? {} : await this.listedAppMeta(uri);
     return { uri, mimeType: MCP_APP_MIME_TYPE, html, ...listed, ...own };
   }
 
@@ -1198,13 +1203,23 @@ export class MCPClient {
    * The MCP App of the server's tool `name`, or undefined for a tool without one: what it
    * points at, how to read it, and the calls of the server's tools it may make
    */
-  async getToolApp(name: string): Promise<ToolApp | undefined> {
+  async getToolApp(
+    name: string,
+    options: Pick<ToolAdapterOptions, 'requiresApproval'> = {}
+  ): Promise<ToolApp | undefined> {
     const definition = await this.toolDefinition(name);
-    return definition && this.appOf(definition);
+    return definition && this.appOf(definition, options);
   }
 
-  /** The MCP App of a tool definition this client listed, see {@link getToolApp} */
-  appOf(definition: MCPToolDefinition): ToolApp | undefined {
+  /**
+   * The MCP App of a tool definition this client listed, see {@link getToolApp}. A tool the app
+   * calls needs approval as `requiresApproval` says, the adapter's setting: the destructive tools
+   * by default
+   */
+  appOf(
+    definition: MCPToolDefinition,
+    options: Pick<ToolAdapterOptions, 'requiresApproval'> = {}
+  ): ToolApp | undefined {
     const ref = definition.app;
     if (!ref || !this.takesApps()) return undefined;
     return {
@@ -1214,7 +1229,7 @@ export class MCPClient {
       callTool: (tool, args, options) => this.callToolForApp(tool, args, options),
       requiresApproval: async (tool) => {
         const called = await this.toolDefinition(tool);
-        return called !== undefined && isDestructiveMCPTool(called);
+        return called !== undefined && mcpToolRequiresApproval(called, options.requiresApproval);
       },
     };
   }
@@ -1233,7 +1248,7 @@ export class MCPClient {
   ): Promise<ToolAppCallResult> {
     const definition = await this.toolDefinition(name);
     if (!definition) throw new Error(`The MCP server has no tool "${name}"`);
-    if (!isToolVisibleTo(definition.app, 'app')) {
+    if (!isToolVisibleTo(definition, 'app')) {
       throw new Error(`The MCP tool "${name}" is not open to apps`);
     }
     const result = await this.callOnce(

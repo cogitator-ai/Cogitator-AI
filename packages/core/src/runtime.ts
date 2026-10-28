@@ -2517,12 +2517,13 @@ export class Cogitator implements ToolInvoker {
     if (!checkpoint && options.runId !== undefined) assertRunId(options.runId);
     let runId = checkpoint?.runId ?? options.runId ?? `run_${nanoid(12)}`;
     const threadId = options.threadId ?? `thread_${nanoid(12)}`;
-    let runState = options.state;
+    let runState = options.state === undefined ? undefined : structuredClone(options.state);
     const runStateAccess: RunStateAccess = {
-      get: () => runState,
+      get: () => (runState === undefined ? undefined : structuredClone(runState)),
       set: (next) => {
-        runState = next;
-        notify('onState', () => options.onState?.(next));
+        runState = next === undefined ? undefined : structuredClone(next);
+        const reported = runState === undefined ? undefined : structuredClone(runState);
+        notify('onState', () => options.onState?.(reported));
       },
     };
     const runMemory = new RunMemory(

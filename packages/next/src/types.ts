@@ -328,7 +328,8 @@ export interface UseChatReturn {
   pendingInterrupts: PendingInterrupt[];
   /**
    * The state of the last run (`RunOptions.state`), as its tools changed it: whole from a
-   * `state-snapshot`, patched by each `state-delta`. Undefined until a run sends one
+   * `state-snapshot`, patched by each `state-delta`. Undefined until a run sends one, and again after
+   * `setThreadId` moves to another thread
    */
   state: unknown;
   /** Continues the paused run with these decisions and appends what the agent answers */

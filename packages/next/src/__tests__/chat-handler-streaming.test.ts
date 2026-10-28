@@ -64,6 +64,22 @@ describe('createChatHandler streaming', () => {
     expect(typeof options.onToken).toBe('function');
   });
 
+  it('lets a step start over, sending reset-step to useCogitatorChat', async () => {
+    const { cogitator, run } = cogitatorWith((options) => {
+      options.onToken?.('Half');
+      options.onStepReset?.({ reason: 'fallback', model: 'b' });
+      options.onToken?.('Whole');
+      return runResult({ output: 'Whole' });
+    });
+    const res = await createChatHandler(cogitator, agent)(chatRequest(userBody));
+    const events = parseEvents(await res.text());
+
+    expect(typeof run.mock.calls[0][1].onStepReset).toBe('function');
+    const reset = events.find((event) => event.type === 'reset-step');
+    expect(reset).toMatchObject({ toolCallIds: [] });
+    expect(events.filter((event) => event.type === 'text-start')).toHaveLength(2);
+  });
+
   it('emits the final output when the backend produced no tokens', async () => {
     const { cogitator } = cogitatorWith(() => runResult({ output: 'Full answer' }));
     const res = await createChatHandler(cogitator, agent)(chatRequest(userBody));
