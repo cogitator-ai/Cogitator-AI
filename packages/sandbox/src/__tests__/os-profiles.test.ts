@@ -157,6 +157,18 @@ describe('bubblewrapCommand', () => {
     expect(args).toContain('--proc');
   });
 
+  it('hands loader variables to the command alone, through the inner bubblewrap', () => {
+    const { args } = bubblewrapCommand(
+      { ...input, commandEnv: { LD_PRELOAD: '/w/hook.so' } },
+      (path) => existing.has(path)
+    );
+    const inner = args.lastIndexOf('/usr/bin/bwrap');
+    const setenv = args.indexOf('--setenv');
+    expect(setenv).toBeGreaterThan(inner);
+    expect(args.slice(setenv, setenv + 3)).toEqual(['--setenv', 'LD_PRELOAD', '/w/hook.so']);
+    expect(setenv).toBeLessThan(args.lastIndexOf('--'));
+  });
+
   it('mounts in depth order: writable roots, hidden reads, reopened reads, protected paths', () => {
     const { args } = bubblewrapCommand(input, (path) => existing.has(path));
     const joined = args.join(' ');

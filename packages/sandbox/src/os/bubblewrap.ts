@@ -48,7 +48,8 @@ export function innerBubblewrap(
   nesting: BubblewrapNesting,
   cwd: string,
   file: string,
-  args: readonly string[]
+  args: readonly string[],
+  commandEnv: Readonly<Record<string, string>> = {}
 ): string[] {
   if (!nesting.disableUserns && !nesting.seccomp) {
     throw new Error(
@@ -65,6 +66,7 @@ export function innerBubblewrap(
     '/',
     '--chdir',
     cwd,
+    ...Object.entries(commandEnv).flatMap(([name, value]) => ['--setenv', name, value]),
     '--',
     file,
     ...args,
@@ -92,6 +94,11 @@ export interface BubblewrapInput {
   cwd: string;
   file: string;
   args: readonly string[];
+  /**
+   * Variables for the command alone, set by the inner bubblewrap right before it starts: the
+   * loader ones, which in the launcher's own environment would run code outside the sandbox
+   */
+  commandEnv?: Readonly<Record<string, string>>;
   /** Whether bubblewrap has `--disable-userns`, see {@link BubblewrapNesting} */
   disableUserns: boolean;
   /** The seccomp filter's bytes, see `seccompFilter`, when the CPU has one */
@@ -216,7 +223,9 @@ export function bubblewrapCommand(
   args.push('--ro-bind', socketDir, socketDir);
   args.push('--chdir', input.cwd, '--', '/bin/sh', '-c', bridgeScript(input), 'cogitator-sandbox');
   const nesting = { disableUserns: input.disableUserns, seccomp: input.seccomp !== undefined };
-  args.push(...innerBubblewrap(input.bwrap, nesting, input.cwd, input.file, input.args));
+  args.push(
+    ...innerBubblewrap(input.bwrap, nesting, input.cwd, input.file, input.args, input.commandEnv)
+  );
   return {
     file: input.bwrap,
     args,

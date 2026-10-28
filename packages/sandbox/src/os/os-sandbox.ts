@@ -285,7 +285,9 @@ export class OsSandbox implements WorkspaceCommandSandbox {
     try {
       tmp = join(dirs.tmp, randomUUID().slice(0, 12));
       await mkdir(tmp, { mode: 0o700 });
-      const env = this.environment(launch.env, tmp, session);
+      const { launcher: env, loader } = splitLoaderEnvironment(
+        this.environment(launch.env, tmp, session)
+      );
       const restrictions = await this.restrictions(launch.root, tmp);
       let spawned: { file: string; args: string[] };
       if (this.kind === 'seatbelt') {
@@ -317,7 +319,7 @@ export class OsSandbox implements WorkspaceCommandSandbox {
           launch.args
         );
       } else {
-        const linux = await this.bubblewrap(launch, restrictions, dirs, probe, session);
+        const linux = await this.bubblewrap(launch, restrictions, dirs, probe, session, loader);
         mountPoints = linux.mountPoints;
         watched = linux.watched;
         spawned = { file: linux.file, args: linux.args };
@@ -507,7 +509,8 @@ export class OsSandbox implements WorkspaceCommandSandbox {
     restrictions: Restrictions,
     dirs: SandboxDirs,
     probe: OsSandboxProbe,
-    session: ProxySession
+    session: ProxySession,
+    commandEnv: Readonly<Record<string, string>>
   ): Promise<BubblewrapCommand & { watched: string[] }> {
     const writable: string[] = [];
     for (const entry of restrictions.writable) {
@@ -616,6 +619,7 @@ export class OsSandbox implements WorkspaceCommandSandbox {
         cwd: launch.cwd,
         file: launch.file,
         args: launch.args,
+        commandEnv,
       },
       (path) => existing.has(path)
     );
@@ -723,4 +727,28 @@ async function reopensThroughLink(
     if (coversReal(real) && !covers(written) && !coversReal(written)) return true;
   }
   return false;
+}
+
+/**
+ * Variables that make the dynamic loader run code of the caller's choosing (`LD_PRELOAD`,
+ * `LD_LIBRARY_PATH`, `LD_AUDIT`, the `DYLD_` ones of macOS) or glibc load modules (`GCONV_PATH`)
+ */
+const LOADER_VARIABLE = /^(LD_|DYLD_)|^GCONV_PATH$/;
+
+/**
+ * The environment of the launcher (`bwrap`, `sandbox-exec` and what runs before the command)
+ * without the loader variables, which would run code before any restriction holds, and those
+ * variables apart: bubblewrap hands them to the command alone, `sandbox-exec` (a system binary
+ * the loader drops them for anyway) to none
+ */
+function splitLoaderEnvironment(env: Record<string, string>): {
+  launcher: Record<string, string>;
+  loader: Record<string, string>;
+} {
+  const launcher: Record<string, string> = {};
+  const loader: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    (LOADER_VARIABLE.test(name) ? loader : launcher)[name] = value;
+  }
+  return { launcher, loader };
 }

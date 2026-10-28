@@ -236,22 +236,37 @@ export class ProxySession {
     throw failure instanceof Error ? failure : new Error('no address answered');
   }
 
+  /**
+   * Connects to `address`, the socket tracked from the start so a session closed while it
+   * connects destroys it, and refused once the session is closed (a decision that came after)
+   */
   private dialOne(address: string, port: number): Promise<Socket> {
+    if (this.closed) return Promise.reject(new Error('The proxy session is closed'));
     return new Promise((resolveDial, reject) => {
       const upstream = connect({ host: address, port });
-      const timeout = setTimeout(() => {
+      this.track(upstream);
+      const fail = (error: Error) => {
+        clearTimeout(timeout);
         upstream.destroy();
-        reject(new Error('connect timed out'));
-      }, this.options.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT);
+        reject(error);
+      };
+      const timeout = setTimeout(
+        () => fail(new Error('connect timed out')),
+        this.options.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT
+      );
+      const onError = (error: Error) => fail(error);
+      const onClose = () => fail(new Error('The connection closed before it was made'));
+      upstream.once('error', onError);
+      upstream.once('close', onClose);
       upstream.once('connect', () => {
         clearTimeout(timeout);
-        upstream.off('error', reject);
-        this.track(upstream);
+        upstream.off('error', onError);
+        upstream.off('close', onClose);
+        if (this.closed) {
+          fail(new Error('The proxy session is closed'));
+          return;
+        }
         resolveDial(upstream);
-      });
-      upstream.once('error', (error) => {
-        clearTimeout(timeout);
-        reject(error);
       });
     });
   }

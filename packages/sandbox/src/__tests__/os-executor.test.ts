@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -71,6 +71,17 @@ describe('SandboxManager with the os sandbox type', () => {
   it('refuses a writable root at the file system root', async () => {
     const executor = new OsSandboxExecutor();
     const result = await executor.execute({ command: ['echo hi'] }, { type: 'os', workdir: '/' });
+    await executor.disconnect();
+    expect(result.success).toBe(false);
+    if (!result.success)
+      expect(result.error).toContain('writable root of the os sandbox would be /');
+  });
+
+  it('refuses a workdir that is a symlink to the file system root', async () => {
+    const link = join(base, 'to-root');
+    await symlink('/', link);
+    const executor = new OsSandboxExecutor();
+    const result = await executor.execute({ command: ['echo hi'] }, { type: 'os', workdir: link });
     await executor.disconnect();
     expect(result.success).toBe(false);
     if (!result.success)

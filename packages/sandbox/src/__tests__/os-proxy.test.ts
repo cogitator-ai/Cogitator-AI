@@ -116,6 +116,28 @@ describe('ProxySession', () => {
     ]);
   });
 
+  it('dials nothing for a decision that comes after the session closed', async () => {
+    let connections = 0;
+    echo.on('connection', () => connections++);
+    let asked!: () => void;
+    const askedOnce = new Promise<void>((done) => (asked = done));
+    let answer!: (allowed: boolean) => void;
+    const session = await start({
+      rules: rules([]),
+      decide: () => {
+        asked();
+        return new Promise<boolean>((done) => (answer = done));
+      },
+    });
+    const reply = exchange(session.port!, `CONNECT 127.0.0.1:${echoPort} HTTP/1.1\r\n\r\n`);
+    await askedOnce;
+    await session.close();
+    answer(true);
+    await reply;
+    await new Promise((done) => setTimeout(done, 100));
+    expect(connections).toBe(0);
+  });
+
   it('lets a deny win over an allow', async () => {
     const session = await start({
       rules: rules(['*'], [`127.0.0.1:${upstreamPort}`]),

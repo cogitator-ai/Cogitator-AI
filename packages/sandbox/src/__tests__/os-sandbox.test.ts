@@ -255,6 +255,28 @@ describe.skipIf(!probe.available)(`OsSandbox on this machine (${probe.kind})`, (
     expect(warnings.join('\n')).toMatch(/reaches into a denyRead region only through a symlink/);
   });
 
+  it('keeps loader variables out of the launcher environment', async () => {
+    const sandbox = make();
+    const launch = await sandbox.launch({
+      file: '/bin/sh',
+      args: ['-c', 'true'],
+      cwd: root,
+      env: {
+        PATH: '/usr/bin:/bin',
+        LD_PRELOAD: join(root, 'hook.so'),
+        DYLD_INSERT_LIBRARIES: 'x',
+        KEEP: '1',
+      },
+      root,
+      command: 'true',
+      request: {},
+    });
+    await launch.cleanup?.(undefined);
+    expect(launch.env).toMatchObject({ KEEP: '1' });
+    expect(launch.env).not.toHaveProperty('LD_PRELOAD');
+    expect(launch.env).not.toHaveProperty('DYLD_INSERT_LIBRARIES');
+  });
+
   it('never lets an allowRead reopen a wildcard denyRead through a symlink', async () => {
     await mkdir(join(root, 'private'));
     await writeFile(join(root, 'private', 'token'), 'secret');
