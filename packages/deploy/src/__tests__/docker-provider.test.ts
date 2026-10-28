@@ -39,13 +39,14 @@ describe('DockerProvider', () => {
     expect(provider.name).toBe('docker');
   });
 
-  it('passes preflight when docker, its daemon and compose are available', async () => {
+  it('passes preflight when docker, its daemon, compose and BuildKit are available', async () => {
     const result = await provider.preflight({ target: 'docker', port: 3000 }, process.cwd());
 
     expect(checksByName(result.checks)).toEqual({
       'Docker installed': true,
       'Docker daemon running': true,
       'Docker Compose available': true,
+      'Docker BuildKit available': true,
     });
     expect(result.passed).toBe(true);
     expect(runMock).toHaveBeenCalledWith(
@@ -81,6 +82,34 @@ describe('DockerProvider', () => {
 
     expect(checksByName(result.checks)).toMatchObject({
       'Docker daemon running': false,
+      'Docker Compose available': true,
+    });
+    expect(result.passed).toBe(false);
+  });
+
+  it('fails preflight without BuildKit, which the cache mounts of the Dockerfile need', async () => {
+    runMock.mockImplementation((_command, args) => ({
+      success: args[0] !== 'buildx',
+      output: '',
+    }));
+
+    const result = await provider.preflight({ target: 'docker', port: 3000 }, process.cwd());
+
+    expect(runMock).toHaveBeenCalledWith(
+      'docker',
+      ['buildx', 'version'],
+      expect.objectContaining({ timeout: expect.any(Number) })
+    );
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({
+        name: 'Docker BuildKit available',
+        passed: false,
+        message: expect.stringContaining('RUN --mount=type=cache'),
+        fix: expect.stringContaining('buildx'),
+      })
+    );
+    expect(checksByName(result.checks)).toMatchObject({
+      'Docker daemon running': true,
       'Docker Compose available': true,
     });
     expect(result.passed).toBe(false);
