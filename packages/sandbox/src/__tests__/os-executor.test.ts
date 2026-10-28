@@ -55,6 +55,19 @@ describe('SandboxManager with the os sandbox type', () => {
     }
   );
 
+  it.skipIf(!probe.available)(
+    'keeps excluded and unsandboxed commands inside the sandbox',
+    async () => {
+      const outside = join(base, 'outside.txt');
+      const result = await manager.execute(
+        { command: ['touch', outside] },
+        { type: 'os', workdir: root, os: { excludedCommands: ['touch *'], allowUnsandboxed: true } }
+      );
+      expect(existsSync(outside)).toBe(false);
+      expect(result.success && result.data.exitCode).not.toBe(0);
+    }
+  );
+
   it('refuses a writable root at the file system root', async () => {
     const executor = new OsSandboxExecutor();
     const result = await executor.execute({ command: ['echo hi'] }, { type: 'os', workdir: '/' });

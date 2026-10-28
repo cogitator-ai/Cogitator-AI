@@ -360,9 +360,79 @@ function rulesOf(
   return out;
 }
 
-/** Whether `path` is `dir` or lies under it */
-function within(dir: string, path: string): boolean {
-  return path === dir || path.startsWith(dir.endsWith('/') ? dir : `${dir}/`);
+const WILDCARD = /[*?[]/;
+
+/** `path` without the trailing `/**` that covers the same directory, as path segments */
+function segmentsOf(path: string): string[] {
+  let text = path;
+  while (text.endsWith('/**') && text.length > 3) text = text.slice(0, -3);
+  return text.split('/').filter(Boolean);
+}
+
+/** `glob` with the literal directories before its first wildcard resolved through their symlinks */
+function realGlob(glob: string): string {
+  const parts = glob.split('/');
+  const first = parts.findIndex((part) => WILDCARD.test(part));
+  if (first === -1) return realOf(glob);
+  const base = parts.slice(0, first).join('/') || '/';
+  return join(realOf(base), ...parts.slice(first));
+}
+
+/**
+ * Whether the name `name` matches the one-name glob `pattern` of the sandbox path syntax: `*` and
+ * `?` within the name, `[abc]` and `[!abc]` one character of a set
+ */
+function nameMatches(pattern: string, name: string): boolean {
+  let source = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const char = pattern[i];
+    if (char === '*') source += '[^/]*';
+    else if (char === '?') source += '[^/]';
+    else if (char === '[' && pattern.includes(']', i + 2)) {
+      const close = pattern.indexOf(']', i + 2);
+      const body = pattern.slice(i + 1, close);
+      const negated = body.startsWith('!') || body.startsWith('^');
+      const members = (negated ? body.slice(1) : body).replace(/[\\\]^]/g, (c) => `\\${c}`);
+      source += negated ? `[^/${members}]` : `[${members}]`;
+      i = close;
+    } else source += char.replace(/[.*+?^${}()|[\]\\]/g, (c) => `\\${c}`);
+  }
+  try {
+    return new RegExp(`^${source}$`).test(name);
+  } catch {
+    return pattern === name;
+  }
+}
+
+/**
+ * Whether some path `allow` names (wildcards allowed) may lie at or under a match of the glob
+ * `deny`, so a read allow there would reopen what the deny hides. Two wildcard names are taken
+ * to match, and a `**` of `allow` to reach anywhere, which errs toward dropping the allow
+ */
+function mayLieUnder(allow: string, deny: string): boolean {
+  const a = segmentsOf(allow);
+  const d = segmentsOf(deny);
+  const match = (ai: number, di: number): boolean => {
+    if (di === d.length) return true;
+    if (d[di] === '**') {
+      for (let k = ai; k <= a.length; k++) if (match(k, di + 1)) return true;
+      return false;
+    }
+    if (ai === a.length) return false;
+    if (a[ai] === '**') return true;
+    const allowWild = WILDCARD.test(a[ai]);
+    const denyWild = WILDCARD.test(d[di]);
+    const same =
+      allowWild && denyWild
+        ? true
+        : allowWild
+          ? nameMatches(a[ai], d[di])
+          : denyWild
+            ? nameMatches(d[di], a[ai])
+            : a[ai] === d[di];
+    return same && match(ai + 1, di + 1);
+  };
+  return match(0, 0);
 }
 
 /** `path` with the symlinks of its nearest existing ancestor resolved, the rest kept as written */
@@ -531,15 +601,11 @@ export function sandboxPolicyOf(
       trustedDenyRead.push(...rulesOf(layer, anchor, home).denyRead);
     }
   }
-  const trustedDenyBases = trustedDenyRead.map((denied) => {
-    const wildcard = denied.indexOf('/**');
-    const base = wildcard === -1 ? denied : denied.slice(0, wildcard);
-    return { base, real: realOf(base) };
-  });
+  const trustedDenies = trustedDenyRead.map((denied) => ({ path: denied, real: realGlob(denied) }));
   const underTrustedDeny = (path: string) => {
-    const real = realOf(path);
-    return trustedDenyBases.some(
-      (denied) => within(denied.base, path) || within(denied.real, real)
+    const real = realGlob(path);
+    return trustedDenies.some(
+      (denied) => mayLieUnder(path, denied.path) || mayLieUnder(real, denied.real)
     );
   };
 

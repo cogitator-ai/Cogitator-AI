@@ -258,6 +258,22 @@ describe('sandboxPolicyOf', () => {
     expect(policy.filesystem?.allowWrite).toEqual([]);
   });
 
+  it('drops a repository allowRead that lies under a wildcard trusted denyRead', () => {
+    const kept = (deny: string, allow: string) =>
+      policyOf([
+        layer('user', { filesystem: { denyRead: [deny] } }),
+        layer('project', { filesystem: { allowRead: [allow] } }),
+      ]).policy.filesystem?.allowRead ?? [];
+    expect(kept('/secrets/*', '/secrets/account/token')).toEqual([]);
+    expect(kept('/secrets/acc?unt', '/secrets/account/token')).toEqual([]);
+    expect(kept('/secrets/[a-c]*', '/secrets/account/token')).toEqual([]);
+    expect(kept('/proj/**/.env', '/proj/public/.env')).toEqual([]);
+    expect(kept('/secrets/a', '/secrets/*/token')).toEqual([]);
+    expect(kept('/proj/**/.env', '/proj/public')).toEqual(['/proj/public']);
+    expect(kept('/proj/secrets', '/proj/*.md')).toEqual(['/proj/*.md']);
+    expect(kept('/secrets/[!a]*', '/secrets/account/token')).toEqual(['/secrets/account/token']);
+  });
+
   it('takes bwrapPath and socatPath from managed settings only, and credential files as denyRead', () => {
     const { policy, warnings } = policyOf([
       layer('managed', { bwrapPath: '/opt/bwrap' }),

@@ -255,6 +255,18 @@ describe.skipIf(!probe.available)(`OsSandbox on this machine (${probe.kind})`, (
     expect(warnings.join('\n')).toMatch(/reaches into a denyRead region only through a symlink/);
   });
 
+  it('never lets an allowRead reopen a wildcard denyRead through a symlink', async () => {
+    await mkdir(join(root, 'private'));
+    await writeFile(join(root, 'private', 'token'), 'secret');
+    const sandbox = make({
+      policy: { filesystem: { denyRead: ['private*'], allowRead: ['alias/token'] } },
+    });
+    const linked = await runSandboxed(sandbox, root, 'ln -s private alias');
+    expect(linked.exitCode).toBe(0);
+    const read = await runSandboxed(sandbox, root, 'cat alias/token');
+    expect(read.stdout).toBe('');
+  });
+
   it('hides what wildcard denyRead and credentials.files name', async () => {
     await mkdir(join(root, 'sub'), { recursive: true });
     await writeFile(join(root, '.env'), 'SECRET');

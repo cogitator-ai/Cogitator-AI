@@ -47,14 +47,19 @@ function bare(text: string): string {
   return text.replace(/^\[|\]$/g, '').replace(/%.*$/, '');
 }
 
-/** The canonical text of an address: IPv4 as it is, IPv6 lowercase and fully compressed by Node */
+/**
+ * The canonical text of an address, the one a connection goes to: IPv4 as it is, an IPv4-mapped
+ * IPv6 address (`::ffff:a.b.c.d`, the same endpoint) as its IPv4, any other IPv6 lowercase and
+ * fully compressed by Node
+ */
 export function canonicalAddress(text: string): string | undefined {
   const address = bare(text);
   if (isIPv4(address)) return address.split('.').map(Number).join('.');
   const groups = ipv6Groups(address);
   if (!groups) return undefined;
-  const embedded = embeddedIPv4(groups);
-  if (embedded) return embedded;
+  if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
+    return embeddedIPv4(groups);
+  }
   return new URL(`http://[${groups.map((group) => group.toString(16)).join(':')}]/`).hostname
     .slice(1, -1)
     .toLowerCase();
@@ -116,6 +121,17 @@ export function ownAddresses(): Set<string> {
 }
 
 /**
+ * The IPv4 address an IPv6 address carries (see {@link embeddedIPv4}), judged in its place when a
+ * connection is checked though the connection itself goes to the IPv6 address
+ */
+export function carriedIPv4(text: string): string | undefined {
+  const address = bare(text);
+  if (isIPv4(address)) return undefined;
+  const groups = ipv6Groups(address);
+  return groups ? embeddedIPv4(groups) : undefined;
+}
+
+/**
  * Why `address` is local (loopback, link-local, this machine's own, a cloud metadata endpoint),
  * undefined for an address elsewhere. An IPv6 address that carries an IPv4 one is judged by it
  */
@@ -123,7 +139,7 @@ export function localAddressClass(
   address: string,
   own: ReadonlySet<string> = ownAddresses()
 ): LocalAddressClass | undefined {
-  const canonical = canonicalAddress(address);
+  const canonical = carriedIPv4(address) ?? canonicalAddress(address);
   if (!canonical) return undefined;
   if (isIPv4(canonical)) {
     return classifyIPv4(canonical) ?? (own.has(canonical) ? "this host's" : undefined);

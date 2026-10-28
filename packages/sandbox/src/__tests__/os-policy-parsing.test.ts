@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalAddress, localAddressClass } from '../os/addresses';
+import { canonicalAddress, carriedIPv4, localAddressClass } from '../os/addresses';
 import { isExcludedCommand, matchesCommandPattern, plainCommands } from '../os/commands';
 import { domainMatches, firstMatch, normalizeHost, parseDomainList } from '../os/domains';
 import { globRegExp, globSource, resolvePolicyPath } from '../os/paths';
@@ -105,6 +105,15 @@ describe('local addresses', () => {
     expect(localAddressClass('::ffff:7f00:1', new Set())).toBe('loopback');
     expect(localAddressClass('64:ff9b::a9fe:a9fe', new Set())).toBe('link-local');
     expect(localAddressClass('2002:7f00:1::', new Set())).toBe('loopback');
+  });
+
+  it('keeps the IPv6 destination of a 6to4 or NAT64 address while judging its IPv4', () => {
+    expect(canonicalAddress('2002:7f00:1::abcd')).toBe('2002:7f00:1::abcd');
+    expect(canonicalAddress('64:ff9b::a9fe:a9fe')).toBe('64:ff9b::a9fe:a9fe');
+    expect(carriedIPv4('2002:7f00:1::abcd')).toBe('127.0.0.1');
+    expect(carriedIPv4('::ffff:7f00:1')).toBe('127.0.0.1');
+    expect(carriedIPv4('127.0.0.1')).toBeUndefined();
+    expect(carriedIPv4('2001:db8::1')).toBeUndefined();
   });
 });
 

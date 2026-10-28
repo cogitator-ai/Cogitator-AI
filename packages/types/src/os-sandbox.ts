@@ -62,7 +62,10 @@ export interface OsSandboxNetworkPolicy {
   allowLocalBinding?: boolean;
   /** macOS: Unix socket paths commands may connect to, such as an SSH agent's. Default none */
   allowUnixSockets?: readonly string[];
-  /** macOS: let commands connect to every Unix socket. Default false */
+  /**
+   * Let commands connect to every Unix socket. On Linux it also lets the sandbox run without its
+   * seccomp filter (on `--disable-userns` alone), which is otherwise required. Default false
+   */
   allowAllUnixSockets?: boolean;
 }
 

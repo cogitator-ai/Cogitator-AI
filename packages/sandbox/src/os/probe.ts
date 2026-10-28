@@ -27,6 +27,13 @@ export interface ProbeOptions {
   socatPath?: string;
   /** Linux: the CPU to build the seccomp filter for (default: this one), for tests */
   arch?: string;
+  /**
+   * Linux: whether commands may connect to every Unix socket (`network.allowAllUnixSockets`),
+   * the one case where the sandbox runs without its seccomp filter, on `--disable-userns` alone.
+   * Otherwise the filter is required: it is what keeps commands from the Docker socket or an SSH
+   * agent, which the network namespace does not hide
+   */
+  allowAllUnixSockets?: boolean;
 }
 
 async function executable(path: string): Promise<boolean> {
@@ -103,17 +110,20 @@ export function supportsDisableUserns(version: readonly number[] | undefined): b
 /**
  * The ways to keep commands from making namespaces of their own to try, strongest first: both
  * `--disable-userns` and the seccomp filter, then each alone, as far as this bubblewrap and this
- * CPU have them
+ * CPU have them. `--disable-userns` alone only when commands may reach every Unix socket anyway
+ * (`allowAllUnixSockets`): the seccomp filter is also what keeps them from Unix sockets
  */
 export function nestingCandidates(
   disableUserns: boolean,
-  arch: SeccompArch | undefined
+  arch: SeccompArch | undefined,
+  allowAllUnixSockets = false
 ): BubblewrapNesting[] {
   const seccomp = arch !== undefined;
   const candidates: BubblewrapNesting[] = [];
   if (disableUserns && seccomp) candidates.push({ disableUserns: true, seccomp: true });
   if (seccomp) candidates.push({ disableUserns: false, seccomp: true });
-  if (disableUserns) candidates.push({ disableUserns: true, seccomp: false });
+  if (disableUserns && allowAllUnixSockets)
+    candidates.push({ disableUserns: true, seccomp: false });
   return candidates;
 }
 
@@ -181,7 +191,12 @@ export async function probeOsSandbox(options: ProbeOptions = {}): Promise<OsSand
     const version = bubblewrapVersion((await run(bwrap, ['--version'])).stdout);
     const arch = seccompArch(options.arch);
     const failures: string[] = [];
-    for (const nesting of nestingCandidates(supportsDisableUserns(version), arch)) {
+    const candidates = nestingCandidates(
+      supportsDisableUserns(version),
+      arch,
+      options.allowAllUnixSockets === true
+    );
+    for (const nesting of candidates) {
       const inputs =
         nesting.seccomp && arch ? [seccompFilter({ arch, allowUnixSockets: false })] : [];
       const nested = await run(
@@ -201,10 +216,17 @@ export async function probeOsSandbox(options: ProbeOptions = {}): Promise<OsSand
       ...(arch ? [] : [`no seccomp filter for the ${options.arch ?? process.arch} CPU`]),
       ...failures.filter(Boolean),
     ];
+    if (!arch && options.allowAllUnixSockets !== true) {
+      return {
+        available: false,
+        kind,
+        reason: `there is no seccomp filter for the ${options.arch ?? process.arch} CPU, and without it commands could connect to every Unix socket (the Docker socket, an SSH agent): set network.allowAllUnixSockets to run with --disable-userns alone`,
+      };
+    }
     return {
       available: false,
       kind,
-      reason: `bwrap cannot keep commands from making namespaces of their own, which would let them undo the protected paths (${missing.join('; ')})`,
+      reason: `bwrap cannot keep commands from making namespaces of their own and from Unix sockets, which would let them undo the protected paths or bypass the proxy (${missing.join('; ')})`,
     };
   }
   return {

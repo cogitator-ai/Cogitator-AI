@@ -54,11 +54,13 @@ export class OsSandboxExecutor extends BaseSandboxExecutor {
   }
 
   /**
-   * The sandbox of a policy, made once. `failIfUnavailable` is always true here: an `os`
-   * execution has no unsandboxed fallback, whatever the policy says
+   * The sandbox of a policy, made once. An `os` execution never runs unsandboxed, whatever the
+   * policy says: `failIfUnavailable` is always true, and `excludedCommands` and `allowUnsandboxed`
+   * are dropped
    */
   private sandboxFor(given: OsSandboxPolicy): OsSandbox {
-    const policy: OsSandboxPolicy = { ...given, failIfUnavailable: true };
+    const { excludedCommands: _excluded, allowUnsandboxed: _unsandboxed, ...rest } = given;
+    const policy: OsSandboxPolicy = { ...rest, failIfUnavailable: true };
     const key = JSON.stringify(policy);
     let sandbox = this.sandboxes.get(key);
     if (!sandbox) {

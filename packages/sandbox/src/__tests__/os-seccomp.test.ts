@@ -149,10 +149,21 @@ describe('the bubblewrap probe helpers', () => {
     expect(nestingCandidates(true, 'x64')).toEqual([
       { disableUserns: true, seccomp: true },
       { disableUserns: false, seccomp: true },
+    ]);
+    expect(nestingCandidates(true, 'x64', true)).toEqual([
+      { disableUserns: true, seccomp: true },
+      { disableUserns: false, seccomp: true },
       { disableUserns: true, seccomp: false },
     ]);
     expect(nestingCandidates(false, 'arm64')).toEqual([{ disableUserns: false, seccomp: true }]);
-    expect(nestingCandidates(true, undefined)).toEqual([{ disableUserns: true, seccomp: false }]);
+    expect(nestingCandidates(true, undefined)).toEqual([]);
+    expect(nestingCandidates(true, undefined, true)).toEqual([
+      { disableUserns: true, seccomp: false },
+    ]);
+    expect(nestingCandidates(true, 'x64', false)).not.toContainEqual({
+      disableUserns: true,
+      seccomp: false,
+    });
     expect(nestingCandidates(false, undefined)).toEqual([]);
   });
 });

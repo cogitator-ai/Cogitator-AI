@@ -1,7 +1,13 @@
 import { lookup } from 'node:dns/promises';
 import { createServer, connect, isIPv6, type Server, type Socket } from 'node:net';
 import type { SandboxHostDecider, SandboxViolation } from '@cogitator-ai/types';
-import { canonicalAddress, isAddress, localAddressClass, ownAddresses } from './addresses';
+import {
+  canonicalAddress,
+  carriedIPv4,
+  isAddress,
+  localAddressClass,
+  ownAddresses,
+} from './addresses';
 import { firstMatch, normalizeHost, type DomainPattern } from './domains';
 
 /** The lists a proxy checks each host against */
@@ -127,7 +133,10 @@ export class ProxySession {
       return { ok: false, reason: 'not a host and port', policy: true };
     }
     const { rules } = this.options;
-    const denied = firstMatch(rules.denied, host, port);
+    const carriedHost = carriedIPv4(host);
+    const denied =
+      firstMatch(rules.denied, host, port) ??
+      (carriedHost === undefined ? undefined : firstMatch(rules.denied, carriedHost, port));
     if (denied) {
       return {
         ok: false,
@@ -158,7 +167,11 @@ export class ProxySession {
     const passed: string[] = [];
     for (const { address } of addresses) {
       const canonical = canonicalAddress(address) ?? address;
-      if (firstMatch(rules.denied, canonical, port)) {
+      const carried = carriedIPv4(canonical);
+      if (
+        firstMatch(rules.denied, canonical, port) ||
+        (carried !== undefined && firstMatch(rules.denied, carried, port))
+      ) {
         refusedAs ??= 'a deny-listed';
         continue;
       }

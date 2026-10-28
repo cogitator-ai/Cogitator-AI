@@ -40,6 +40,7 @@ import {
   canonicalPath,
   depthOf,
   expandWildcard,
+  globRegExp,
   globSource,
   isWithin,
   kindOf,
@@ -179,7 +180,12 @@ export class OsSandbox implements WorkspaceCommandSandbox {
 
   /** Whether the OS sandbox runs on this machine, and why not */
   static probe(
-    options: { platform?: NodeJS.Platform; bwrapPath?: string; socatPath?: string } = {}
+    options: {
+      platform?: NodeJS.Platform;
+      bwrapPath?: string;
+      socatPath?: string;
+      allowAllUnixSockets?: boolean;
+    } = {}
   ): Promise<OsSandboxProbe> {
     return probeOsSandbox(options);
   }
@@ -197,6 +203,7 @@ export class OsSandbox implements WorkspaceCommandSandbox {
       platform: this.platform,
       ...(this.policy.bwrapPath !== undefined && { bwrapPath: this.policy.bwrapPath }),
       ...(this.policy.socatPath !== undefined && { socatPath: this.policy.socatPath }),
+      allowAllUnixSockets: this.policy.network?.allowAllUnixSockets === true,
     });
     return this.probing;
   }
@@ -699,15 +706,21 @@ async function reopensThroughLink(
 ): Promise<boolean> {
   const real = await canonicalPath(written);
   for (const deny of denyRead) {
-    const denied = deny.base ?? deny.path;
-    const deniedReal = await canonicalPath(denied);
-    if (
-      isWithin(deniedReal, real) &&
-      !isWithin(denied, written) &&
-      !isWithin(deniedReal, written)
-    ) {
-      return true;
+    let covers: (path: string) => boolean;
+    let coversReal: (path: string) => boolean;
+    if (deny.pattern && deny.base) {
+      const pattern = deny.pattern;
+      const realPattern = globRegExp(
+        (await canonicalPath(deny.base)) + deny.path.slice(deny.base.length)
+      );
+      covers = (path) => pattern.test(path);
+      coversReal = (path) => realPattern.test(path) || pattern.test(path);
+    } else {
+      const deniedReal = await canonicalPath(deny.path);
+      covers = (path) => isWithin(deny.path, path);
+      coversReal = (path) => isWithin(deniedReal, path) || isWithin(deny.path, path);
     }
+    if (coversReal(real) && !covers(written) && !coversReal(written)) return true;
   }
   return false;
 }
