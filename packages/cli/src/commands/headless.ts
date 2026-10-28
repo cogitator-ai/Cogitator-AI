@@ -236,12 +236,10 @@ async function streamSession(
   completion: (turnId: string) => Promise<TurnInfo>,
   report: (turn: TurnInfo) => Promise<number>
 ): Promise<number> {
-  const queue: TurnRequest[] = [];
   let active: string | undefined;
   let starting = false;
   let held: Array<{ type: 'interrupt' } | { type: 'user'; line: UserLine }> = [];
   let exitCode: number = HEADLESS_EXIT.ok;
-  let pumping: Promise<void> | undefined;
 
   const interrupt = (turnId: string) => {
     try {
@@ -278,33 +276,26 @@ async function streamSession(
     }
   };
 
-  const pump = async () => {
-    for (let request = queue.shift(); request; request = queue.shift()) {
-      starting = true;
-      let turn: TurnInfo;
-      try {
-        turn = await startTurn(request);
-      } catch (error) {
-        starting = false;
-        release(undefined);
-        exitCode = HEADLESS_EXIT.failed;
-        await io.stdout.write(encodeNdjsonLine(errorResult(threadId, error)));
-        continue;
-      }
+  const turns = serialQueue<TurnRequest>(async (request) => {
+    starting = true;
+    let turn: TurnInfo;
+    try {
+      turn = await startTurn(request);
+    } catch (error) {
       starting = false;
-      active = turn.id;
-      release(turn.id);
-      const done = await completion(turn.id);
-      active = undefined;
-      exitCode = await report(done);
+      release(undefined);
+      exitCode = HEADLESS_EXIT.failed;
+      await io.stdout.write(encodeNdjsonLine(errorResult(threadId, error)));
+      return;
     }
-  };
-  const enqueue = (request: TurnRequest) => {
-    queue.push(request);
-    pumping ??= pump().finally(() => {
-      pumping = undefined;
-    });
-  };
+    starting = false;
+    active = turn.id;
+    release(turn.id);
+    const done = await completion(turn.id);
+    active = undefined;
+    exitCode = await report(done);
+  });
+  const enqueue = (request: TurnRequest) => turns.push(request);
 
   for await (const read of readNdjson(io.stdin)) {
     if ('error' in read) {
@@ -333,7 +324,7 @@ async function streamSession(
     else if (active !== undefined) steer(active, line);
     else enqueue({ input: line.input });
   }
-  while (pumping) await pumping;
+  await turns.drain();
   return exitCode;
 }
 
@@ -373,4 +364,33 @@ function asCommandError(error: unknown, threadId: string): CommandError {
     });
   }
   return new CommandError(rpcErrorOf(error).message, { cause: error });
+}
+
+/**
+ * Runs pushed items one at a time in order. An item pushed while the last run is ending starts a
+ * new run, so nothing waits in the queue with no run to take it
+ */
+export function serialQueue<T>(run: (item: T) => Promise<void>): {
+  push(item: T): void;
+  drain(): Promise<void>;
+} {
+  const queue: T[] = [];
+  let running: Promise<void> | undefined;
+  const start = () => {
+    running = (async () => {
+      for (let item = queue.shift(); item !== undefined; item = queue.shift()) await run(item);
+    })().finally(() => {
+      running = undefined;
+      if (queue.length > 0) start();
+    });
+  };
+  return {
+    push(item) {
+      queue.push(item);
+      if (!running) start();
+    },
+    async drain() {
+      while (running) await running;
+    },
+  };
 }

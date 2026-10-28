@@ -20,7 +20,7 @@ import {
   withSessionStore,
   type HeadlessPlan,
 } from '../utils/headless';
-import { runHeadless } from '../commands/headless';
+import { runHeadless, serialQueue } from '../commands/headless';
 
 const USAGE = { inputTokens: 3, outputTokens: 2, totalTokens: 5 };
 
@@ -542,5 +542,39 @@ describe('runHeadless', () => {
     await expect(
       headless({ turns: [], plan: plan({ sessionId: 'base' }), message: 'x', cogitator })
     ).rejects.toThrow(/exists already/);
+  });
+});
+
+describe('serialQueue', () => {
+  it('runs an item pushed while the last run is ending, at any point of that ending', async () => {
+    for (let depth = 0; depth < 8; depth++) {
+      const done: string[] = [];
+      const queue = serialQueue<string>(async (item) => {
+        done.push(item);
+        if (item !== 'first') return;
+        let tick: Promise<void> = Promise.resolve();
+        for (let i = 0; i < depth; i++) tick = tick.then(() => undefined);
+        void tick.then(() => queue.push('second'));
+      });
+      queue.push('first');
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      await queue.drain();
+      expect(done, `depth ${depth}`).toEqual(['first', 'second']);
+    }
+  });
+
+  it('keeps order and runs one item at a time', async () => {
+    const order: string[] = [];
+    let running = 0;
+    const queue = serialQueue<number>(async (n) => {
+      running++;
+      expect(running).toBe(1);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      order.push(String(n));
+      running--;
+    });
+    for (const n of [1, 2, 3]) queue.push(n);
+    await queue.drain();
+    expect(order).toEqual(['1', '2', '3']);
   });
 });
