@@ -61,10 +61,9 @@ export function recordResult(call: Pick<ToolCallRecord, 'result' | 'error'>): Ca
   const { result } = call;
   const blocks = contentBlocksOf(result);
   if (blocks) return { content: blocks };
-  if (typeof result === 'string') return { content: [{ type: 'text', text: result }] };
-  if (result === undefined || result === null) return { content: [] };
+  if (result === undefined) return { content: [] };
   return {
-    content: [{ type: 'text', text: JSON.stringify(result) }],
+    content: [{ type: 'text', text: typeof result === 'string' ? result : JSON.stringify(result) }],
     structuredContent: isRecord(result) ? result : { result },
   };
 }

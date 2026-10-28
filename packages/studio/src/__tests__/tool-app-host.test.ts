@@ -151,12 +151,17 @@ describe('results for apps', () => {
   it('turns a run result into a tool result', () => {
     expect(recordResult({ result: 'plain text' })).toEqual({
       content: [{ type: 'text', text: 'plain text' }],
+      structuredContent: { result: 'plain text' },
     });
     expect(recordResult({ result: [1, 2] })).toEqual({
       content: [{ type: 'text', text: '[1,2]' }],
       structuredContent: { result: [1, 2] },
     });
-    expect(recordResult({ result: null })).toEqual({ content: [] });
+    expect(recordResult({ result: null })).toEqual({
+      content: [{ type: 'text', text: 'null' }],
+      structuredContent: { result: null },
+    });
+    expect(recordResult({})).toEqual({ content: [] });
     expect(recordResult({ error: 'boom' })).toEqual({
       content: [{ type: 'text', text: 'boom' }],
       isError: true,
