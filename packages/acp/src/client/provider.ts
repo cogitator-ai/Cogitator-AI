@@ -529,7 +529,7 @@ export class AcpAgentProvider implements SessionProvider {
   ): Promise<void> {
     const agent = connected.connection.agent;
     const state = this.states.get(sessionId);
-    const mode = turn.permissionMode();
+    const mode = await this.permissions.effectiveMode(turn.permissionMode(), turn.threadId);
     if (
       state?.modes &&
       state.modes.currentModeId !== mode &&

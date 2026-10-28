@@ -258,11 +258,13 @@ export class AcpClientWorkspace implements Workspace {
     }
     try {
       await this.options.onTerminal?.(terminal.id, command);
-      const outcome = await settle(
-        terminal.waitForExit(),
-        options.timeout ?? this.options.timeout ?? DEFAULT_TERMINAL_TIMEOUT,
-        options.signal
-      );
+      const outcome: Outcome = options.signal?.aborted
+        ? { kind: 'aborted' }
+        : await settle(
+            terminal.waitForExit(),
+            options.timeout ?? this.options.timeout ?? DEFAULT_TERMINAL_TIMEOUT,
+            options.signal
+          );
       if (outcome.kind !== 'exited') await terminal.kill().catch(() => undefined);
       if (outcome.kind === 'aborted') throw aborted(command);
       const output = await terminal.currentOutput();
@@ -322,6 +324,10 @@ function settle(
   timeout: number,
   signal: AbortSignal | undefined
 ): Promise<Outcome> {
+  if (signal?.aborted) {
+    exit.catch(() => undefined);
+    return Promise.resolve({ kind: 'aborted' });
+  }
   return new Promise<Outcome>((done, fail) => {
     const timer = setTimeout(() => finish({ kind: 'timedOut' }), timeout);
     const onAbort = () => finish({ kind: 'aborted' });

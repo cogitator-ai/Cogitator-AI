@@ -375,6 +375,40 @@ describe('external agents', () => {
     expect((await permissions.decide(run, 'bypassPermissions', 'other')).decision).toBe('deny');
   });
 
+  it('falls back to default for a mode the settings files disable', async () => {
+    const { mkdirSync, writeFileSync: write } = await import('node:fs');
+    mkdirSync(join(dir, 'home'), { recursive: true });
+    write(
+      join(dir, 'home', 'settings.json'),
+      JSON.stringify({ permissions: { disableBypassPermissionsMode: 'disable' } })
+    );
+    const permissions = new AcpPermissions(workspace, {
+      settings: { root: dir, userDirs: [join(dir, 'home')], managedDirs: [] },
+    });
+    const run = subjectOf({ kind: 'execute', rawInput: { command: 'npm test' } }, 'a', dir);
+    const decision = await permissions.decide(run, 'bypassPermissions', 't');
+    expect(decision).toMatchObject({ decision: 'ask', mode: 'default' });
+    expect(await permissions.effectiveMode('bypassPermissions', 't')).toBe('default');
+    expect(await permissions.effectiveMode('acceptEdits', 't')).toBe('acceptEdits');
+    expect(await permissions.effectiveMode('auto', 't')).toBe('default');
+  });
+
+  it('stops applying a saved rule once it is removed from its file', async () => {
+    const { utimesSync, writeFileSync: write } = await import('node:fs');
+    const permissions = new AcpPermissions(workspace, {
+      settings: { root: dir, userDirs: [join(dir, 'home')], managedDirs: [] },
+      rememberIn: 'local',
+    });
+    const run = subjectOf({ kind: 'execute', rawInput: { command: 'make deploy' } }, 'a', dir);
+    await permissions.remember(run, 'allow', 't');
+    expect((await permissions.decide(run, 'default', 'other')).decision).toBe('allow');
+    const file = join(dir, '.cogitator', 'settings.local.json');
+    write(file, JSON.stringify({ permissions: { allow: [] } }));
+    const later = new Date(Date.now() + 5000);
+    utimesSync(file, later, later);
+    expect((await permissions.decide(run, 'default', 'other')).decision).toBe('ask');
+  });
+
   it('maps the updates of an agent to stream events', () => {
     const events: StreamEvent[] = [];
     const mapper = new AcpStreamMapper((event) => events.push(event));

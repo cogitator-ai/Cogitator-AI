@@ -353,10 +353,27 @@ export class AcpPermissions {
     if (!settings) return [];
     if (this.loaded) {
       const loaded = await this.loaded.catch(() => undefined);
-      if (!loaded || (await settingsChanged(loaded.files, loaded.dirs))) this.loaded = undefined;
+      if (!loaded || (await settingsChanged(loaded.files, loaded.dirs))) {
+        this.loaded = undefined;
+        this.savedFiles.length = 0;
+      }
     }
-    this.loaded ??= loadPermissionSettings(settings.root ?? this.root, settings);
+    this.loaded ??= this.load(settings);
     return (await this.loaded).layers;
+  }
+
+  private load(settings: PermissionSettingsOptions): Promise<LoadedPermissionSettings> {
+    return loadPermissionSettings(settings.root ?? this.root, settings);
+  }
+
+  /**
+   * The mode a call is decided in: `mode`, but `default` for one the settings files disable
+   * (`disableBypassPermissionsMode`, `disableAutoMode`) and for `auto`, which needs a classifier
+   * the engine of external agents does not have
+   */
+  async effectiveMode(mode: PermissionMode, threadId: string): Promise<PermissionMode> {
+    if (mode === 'auto') return 'default';
+    return (await this.rules(threadId)).disables(mode) ? 'default' : mode;
   }
 
   /** The rules of every layer for the thread `threadId` */
@@ -377,9 +394,10 @@ export class AcpPermissions {
     mode: PermissionMode,
     threadId: string
   ): Promise<PermissionDecision> {
+    const rules = await this.rules(threadId);
     return resolvePermission(subject.tool, subject.args, {
-      mode: mode === 'auto' ? 'default' : mode,
-      rules: await this.rules(threadId),
+      mode: mode === 'auto' || rules.disables(mode) ? 'default' : mode,
+      rules,
       needsApproval: subject.needsApproval,
       workspace: this.workspace,
       cwd: resolve(this.root, this.workspace.cwd),
@@ -401,7 +419,9 @@ export class AcpPermissions {
   /**
    * Saves the rule of an "always allow" or "always reject" answer: for the thread, or to the
    * settings file of `rememberIn`. Resolves with what it saved, undefined when no rule covers the
-   * call
+   * call. A rule saved to a file applies at once, also from a layer the settings would not read
+   * (the local file of an untrusted project), until a settings file changes: then the files say
+   * again, so a rule removed from its file stops applying
    */
   async remember(
     subject: AcpCallSubject,
@@ -420,7 +440,7 @@ export class AcpPermissions {
     }
     const file = rememberFile(layer, settings?.root ?? this.root, settings);
     await addPermissionRule(file, behavior, rule);
-    this.loaded = undefined;
+    this.loaded = this.load(settings ?? {});
     this.savedFiles.push({
       layer,
       origin: file,

@@ -21,9 +21,10 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function editor(files: Map<string, string>, hang = false) {
+function editor(files: Map<string, string>, hang = false, creating?: Promise<void>) {
   const created: string[] = [];
   let killed = 0;
+  let released = 0;
   const app = createClientApp({ name: 'editor' })
     .onRequest('fs/read_text_file', ({ params }) => {
       const content = files.get(params.path);
@@ -34,7 +35,8 @@ function editor(files: Map<string, string>, hang = false) {
       files.set(params.path, params.content);
       return {};
     })
-    .onRequest('terminal/create', ({ params }) => {
+    .onRequest('terminal/create', async ({ params }) => {
+      await creating;
       created.push(params.args?.at(-1) ?? params.command);
       return { terminalId: 't1' };
     })
@@ -46,9 +48,12 @@ function editor(files: Map<string, string>, hang = false) {
       killed++;
       return {};
     })
-    .onRequest('terminal/release', () => ({}));
+    .onRequest('terminal/release', () => {
+      released++;
+      return {};
+    });
   const connection = createAgentApp({ name: 'agent' }).connect(app);
-  return { context: connection.client, created, killed: () => killed };
+  return { context: connection.client, created, killed: () => killed, released: () => released };
 }
 
 describe('AcpClientWorkspace', () => {
@@ -130,6 +135,34 @@ describe('AcpClientWorkspace', () => {
     await expect(aborted).rejects.toSatisfy((error: unknown) =>
       WorkspaceError.is(error, 'ABORTED')
     );
+
+    let open = () => undefined as void;
+    const slowCreate = editor(
+      new Map(),
+      true,
+      new Promise<void>((resolve) => {
+        open = resolve;
+      })
+    );
+    const opening = new AcpClientWorkspace({
+      base,
+      client: slowCreate.context,
+      sessionId: 's',
+      capabilities: { terminal: true },
+    });
+    const early = new AbortController();
+    const started = Date.now();
+    const running = opening.exec('sleep 100', { signal: early.signal, timeout: 60_000 });
+    setTimeout(() => {
+      early.abort();
+      open();
+    }, 20);
+    await expect(running).rejects.toSatisfy((error: unknown) =>
+      WorkspaceError.is(error, 'ABORTED')
+    );
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(slowCreate.killed()).toBe(1);
+    expect(slowCreate.released()).toBe(1);
     await expect(hanging.exec('ls', { cwd: '../..' })).rejects.toMatchObject({
       code: 'OUTSIDE_ROOT',
     });
