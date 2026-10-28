@@ -1,5 +1,13 @@
 # @cogitator-ai/neuro-symbolic
 
+## 17.1.36
+
+### Patch Changes
+
+- Updated dependencies [[`2bb4941`](https://github.com/cogitator-ai/Cogitator-AI/commit/2bb4941dc40889458575db0893766c233dabaaaf)]:
+  - @cogitator-ai/core@0.75.0
+  - @cogitator-ai/types@0.86.0
+
 ## 17.1.35
 
 ### Patch Changes
