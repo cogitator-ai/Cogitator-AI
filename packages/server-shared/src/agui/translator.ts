@@ -90,7 +90,7 @@ type Lane = string | undefined;
  * | `tool-call-*` | `TOOL_CALL_START`, `_ARGS`, `_END` |
  * | `tool-result` | `TOOL_CALL_RESULT` (a dropped call gets one too, marked `dropped` in its metadata) |
  * | `tool-update` | `ACTIVITY_SNAPSHOT`, then `ACTIVITY_DELTA` of `tool-progress`, new arguments as `CUSTOM` |
- * | `data` | `ACTIVITY_SNAPSHOT`, then `ACTIVITY_DELTA` by id, a transient part as `CUSTOM` |
+ * | `data` | `ACTIVITY_SNAPSHOT`, then `ACTIVITY_DELTA` by id (`<subagentRunId>:<id>` for a delegated run), a transient part as `CUSTOM` |
  * | `state-snapshot`, `state-delta` | `STATE_SNAPSHOT`, `STATE_DELTA` |
  * | `reset-step` | `CUSTOM`, the step's open tool calls closed |
  * | `finish` | `RUN_FINISHED` with outcome `success`, `interrupt`, or `cancelled` for a run a hook stopped, `SUBAGENT_FINISHED` for a delegated run |
@@ -118,7 +118,7 @@ export class AGUITranslator {
   private readonly closedSubagents = new Set<string>();
   /** The text message a tool call of each lane follows, as its parent message */
   private readonly lastText = new Map<Lane, string>();
-  /** The content of each activity message, for the next delta */
+  /** A copy of the content each activity message was sent with, by its id, for the next delta */
   private readonly activities = new Map<string, Record<string, unknown>>();
 
   constructor(private readonly options: AGUITranslatorOptions) {}
@@ -444,21 +444,35 @@ export class AGUITranslator {
     });
   }
 
+  /**
+   * An activity message: its first content as `ACTIVITY_SNAPSHOT`, each later one as an
+   * `ACTIVITY_DELTA` on the content sent before. The id of a delegated run's activity is put in its
+   * lane (`<subagentRunId>:<id>`), so a run and the runs it delegates never share an activity, and
+   * the translator keeps a copy of what it sent, so content changed in place still shows as a delta
+   */
   private activity(
-    messageId: string,
+    id: string,
     activityType: string,
     content: Record<string, unknown>,
     lane: Lane,
     out: AGUIEvent[]
   ): void {
     const by = lane === undefined ? {} : { subagentRunId: lane };
+    const messageId = lane === undefined ? id : `${lane}:${id}`;
     const previous = this.activities.get(messageId);
-    this.activities.set(messageId, content);
+    const sent = structuredClone(content);
+    this.activities.set(messageId, sent);
     if (previous === undefined) {
-      out.push({ type: EventType.ACTIVITY_SNAPSHOT, messageId, activityType, content, ...by });
+      out.push({
+        type: EventType.ACTIVITY_SNAPSHOT,
+        messageId,
+        activityType,
+        content: structuredClone(sent),
+        ...by,
+      });
       return;
     }
-    const patch = createJsonPatch(previous, content);
+    const patch = createJsonPatch(previous, sent);
     if (patch.length > 0) {
       out.push({ type: EventType.ACTIVITY_DELTA, messageId, activityType, patch, ...by });
     }

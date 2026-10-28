@@ -10,8 +10,10 @@ import {
   conformancePausedResult,
   conformanceRunResult,
   createErrorEvent,
+  createDataEvent,
   createFinishEvent,
   createStartEvent,
+  createToolUpdateEvent,
   createTextDeltaEvent,
   createTextStartEvent,
   createWorkflowEvent,
@@ -278,6 +280,85 @@ describe('toAGUI', () => {
       (event) => event.type === EventType.TEXT_MESSAGE_START && event.subagentRunId === 'sub_c1'
     );
     expect(childText).toBeDefined();
+  });
+
+  it('keeps the activities of a run and of a run it delegated apart, ids alike', async () => {
+    const tag: DelegatedRunTag = {
+      id: 'sub_1',
+      agent: 'helper',
+      parentToolCallId: 'c1',
+      background: false,
+      depth: 1,
+    };
+    const status = (data: unknown) => createDataEvent({ id: 'status', name: 'status', data });
+    const events = await verified(
+      toAGUI(
+        [
+          createStartEvent('m', ids.threadId),
+          status({ step: 'parent' }),
+          { event: createStartEvent('m2'), run: tag },
+          { event: status({ step: 'child' }), run: tag },
+          { event: status({ step: 'child 2' }), run: tag },
+          status({ step: 'parent 2' }),
+          { event: createFinishEvent('m2'), run: tag },
+          createFinishEvent('m'),
+        ],
+        ids
+      )
+    );
+    const activities = events.filter((event) => event.type.startsWith('ACTIVITY_'));
+    expect(activities).toEqual([
+      expect.objectContaining({
+        type: EventType.ACTIVITY_SNAPSHOT,
+        messageId: 'status',
+        content: { step: 'parent' },
+      }),
+      expect.objectContaining({
+        type: EventType.ACTIVITY_SNAPSHOT,
+        messageId: 'sub_1:status',
+        subagentRunId: 'sub_1',
+        content: { step: 'child' },
+      }),
+      expect.objectContaining({
+        type: EventType.ACTIVITY_DELTA,
+        messageId: 'sub_1:status',
+        patch: [{ op: 'replace', path: '/step', value: 'child 2' }],
+      }),
+      expect.objectContaining({
+        type: EventType.ACTIVITY_DELTA,
+        messageId: 'status',
+        patch: [{ op: 'replace', path: '/step', value: 'parent 2' }],
+      }),
+    ]);
+  });
+
+  it('sends a delta for content changed in place, data parts and tool progress alike', () => {
+    const translator = new AGUITranslator(ids);
+    translator.push(createStartEvent('m'));
+    const chart = { points: [1] };
+    translator.push(createDataEvent({ id: 'chart', name: 'chart', data: { chart } }));
+    chart.points.push(2);
+    const chartDelta = translator.push(
+      createDataEvent({ id: 'chart', name: 'chart', data: { chart } })
+    );
+    expect(chartDelta).toEqual([
+      expect.objectContaining({
+        type: EventType.ACTIVITY_DELTA,
+        patch: [{ op: 'add', path: '/chart/points/1', value: 2 }],
+      }),
+    ]);
+
+    const rows = { found: 1 };
+    translator.push(createToolUpdateEvent('c1', { content: { rows } }));
+    rows.found = 2;
+    const progressDelta = translator.push(createToolUpdateEvent('c1', { content: { rows } }));
+    expect(progressDelta).toEqual([
+      expect.objectContaining({
+        type: EventType.ACTIVITY_DELTA,
+        messageId: 'progress_c1',
+        patch: [{ op: 'replace', path: '/content/rows/found', value: 2 }],
+      }),
+    ]);
   });
 
   it('closes subagents still open when the run ends, and drops what comes after', async () => {

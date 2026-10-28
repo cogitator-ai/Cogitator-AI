@@ -70,7 +70,7 @@ The runs an agent delegates in the foreground, [subagents](/docs/core/subagents)
 
 ## Shared state and activities
 
-`state` goes both ways. The request's `state` is the run's, a tool changes it, and the route sends each change as `STATE_DELTA`, a JSON Patch on the state the client sent, or `STATE_SNAPSHOT` when it sent none. A data part a tool sends with `context.data()` becomes an activity message: `ACTIVITY_SNAPSHOT` the first time, an `ACTIVITY_DELTA` patch each time the tool sends it again with the same id. CopilotKit renders activities by their `activityType`, the part's `name`.
+`state` goes both ways. The request's `state` is the run's, a tool changes it, and the route sends each change as `STATE_DELTA`, a JSON Patch on the state the client sent, or `STATE_SNAPSHOT` when it sent none. A data part a tool sends with `context.data()` becomes an activity message: `ACTIVITY_SNAPSHOT` the first time, an `ACTIVITY_DELTA` patch each time the tool sends it again with the same id. CopilotKit renders activities by their `activityType`, the part's `name`. The activity of a delegated run has the id `<subagentRunId>:<id>`, so a subagent's part never lands on the run's part of the same id, and a delta is computed against a copy of what was sent, so a tool may change its data in place and send it again.
 
 ```typescript
 const addToCart = tool({
