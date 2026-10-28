@@ -10,7 +10,11 @@ import {
   type McpUiHostContext,
   type McpUiSizeChangedNotification,
 } from '@modelcontextprotocol/ext-apps/app-bridge';
-import { isCallToolResult, type CallToolResult } from '@modelcontextprotocol/client';
+import {
+  isCallToolResult,
+  type CallToolResult,
+  type ContentBlock,
+} from '@modelcontextprotocol/client';
 import type { ToolAppCallResult } from '@cogitator-ai/types';
 import type { ToolAppCallOutcome, ToolCallRecord } from '../protocol';
 
@@ -47,16 +51,88 @@ function errorResult(message: string): CallToolResult {
   return { content: [{ type: 'text', text: message }], isError: true };
 }
 
-/** The result of a call of the run as the app's `tool-result`: what the tool returned, as MCP has it */
+/**
+ * The result of a call of the run as the app's `tool-result`: what the tool returned, as MCP has
+ * it. A result with media (a `toolContent()` result, as a tool of an MCP server whose answer held
+ * images, audio or resources gives) goes back to its content blocks
+ */
 export function recordResult(call: Pick<ToolCallRecord, 'result' | 'error'>): CallToolResult {
   if (call.error !== undefined) return errorResult(call.error);
   const { result } = call;
+  const blocks = contentBlocksOf(result);
+  if (blocks) return { content: blocks };
   if (typeof result === 'string') return { content: [{ type: 'text', text: result }] };
   if (result === undefined || result === null) return { content: [] };
   return {
     content: [{ type: 'text', text: JSON.stringify(result) }],
     structuredContent: isRecord(result) ? result : { result },
   };
+}
+
+/** The content blocks of a `toolContent()` result, undefined for any other result */
+function contentBlocksOf(result: unknown): ContentBlock[] | undefined {
+  if (!isRecord(result) || result.type !== 'tool-content' || !Array.isArray(result.content)) {
+    return undefined;
+  }
+  const blocks: ContentBlock[] = [];
+  for (const [index, part] of result.content.entries()) {
+    const block = isRecord(part) ? contentBlockOf(part, index) : undefined;
+    if (!block) return undefined;
+    blocks.push(block);
+  }
+  return blocks;
+}
+
+function text(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * One part of a `toolContent()` result as the MCP block it came from: text, an image, audio, a
+ * resource with its contents, or a link to one without
+ */
+function contentBlockOf(part: Record<string, unknown>, index: number): ContentBlock | undefined {
+  const data = text(part.data);
+  const mediaType = text(part.mediaType);
+  switch (part.type) {
+    case 'text': {
+      const value = text(part.text);
+      return value === undefined ? undefined : { type: 'text', text: value };
+    }
+    case 'json':
+      return { type: 'text', text: JSON.stringify(part.value ?? null) };
+    case 'image':
+      return data !== undefined && mediaType !== undefined
+        ? { type: 'image', data, mimeType: mediaType }
+        : undefined;
+    case 'file': {
+      if (data === undefined || mediaType === undefined) return undefined;
+      if (mediaType.startsWith('audio/')) return { type: 'audio', data, mimeType: mediaType };
+      const name = text(part.filename) ?? `file-${index + 1}`;
+      const uri = name.includes('://') ? name : `attachment:///${encodeURIComponent(name)}`;
+      return { type: 'resource', resource: { uri, mimeType: mediaType, blob: data } };
+    }
+    case 'resource': {
+      const uri = text(part.uri);
+      if (uri === undefined) return undefined;
+      const contents = text(part.text);
+      const mime = mediaType === undefined ? {} : { mimeType: mediaType };
+      if (contents !== undefined) {
+        return { type: 'resource', resource: { uri, ...mime, text: contents } };
+      }
+      if (data !== undefined) return { type: 'resource', resource: { uri, ...mime, blob: data } };
+      const description = text(part.description);
+      return {
+        type: 'resource_link',
+        uri,
+        name: text(part.name) ?? uri,
+        ...mime,
+        ...(description !== undefined && { description }),
+      };
+    }
+    default:
+      return undefined;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

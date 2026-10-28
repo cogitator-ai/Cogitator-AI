@@ -163,6 +163,59 @@ describe('results for apps', () => {
     });
   });
 
+  it('turns a result with media back into the content blocks the server sent', () => {
+    const envelope = {
+      type: 'tool-content',
+      content: [
+        { type: 'text', text: 'The chart' },
+        { type: 'image', data: 'iVBORw0KGgo=', mediaType: 'image/png' },
+        { type: 'file', data: 'SUQz', mediaType: 'audio/mpeg' },
+        { type: 'file', data: 'JVBERi0=', mediaType: 'application/pdf', filename: 'file:///r.pdf' },
+        { type: 'resource', uri: 'file:///notes.md', mediaType: 'text/markdown', text: '# Notes' },
+        { type: 'resource', uri: 'https://example.com/report', name: 'Report' },
+        { type: 'json', value: { rows: 2 } },
+      ],
+    };
+    const result = recordResult({ result: envelope });
+    expect(result).toEqual({
+      content: [
+        { type: 'text', text: 'The chart' },
+        { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' },
+        { type: 'audio', data: 'SUQz', mimeType: 'audio/mpeg' },
+        {
+          type: 'resource',
+          resource: { uri: 'file:///r.pdf', mimeType: 'application/pdf', blob: 'JVBERi0=' },
+        },
+        {
+          type: 'resource',
+          resource: { uri: 'file:///notes.md', mimeType: 'text/markdown', text: '# Notes' },
+        },
+        { type: 'resource_link', uri: 'https://example.com/report', name: 'Report' },
+        { type: 'text', text: '{"rows":2}' },
+      ],
+    });
+    expect(toolCallResult({ content: result.content })).toEqual(result);
+  });
+
+  it('sends a result with media to the app as its blocks', async () => {
+    const { host, seen } = await connect({
+      callTool: async () => done('unused'),
+      confirm: async () => true,
+    });
+    host.show({
+      arguments: {},
+      result: {
+        type: 'tool-content',
+        content: [{ type: 'image', data: 'iVBORw0KGgo=', mediaType: 'image/png' }],
+      },
+    });
+    await settle();
+    expect(seen.result).toEqual({
+      content: [{ type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' }],
+    });
+    await host.close();
+  });
+
   it('passes a server result through and refuses what is none', () => {
     const result = { content: [{ type: 'text', text: 'ok' }], structuredContent: { ok: true } };
     expect(toolCallResult(result)).toEqual(result);
